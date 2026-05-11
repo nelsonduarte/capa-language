@@ -822,6 +822,23 @@ class Analyzer:
             )
         )
 
+        # Total numeric conversions between Int and Float. Capa has no
+        # implicit coercion (intentional — explicit is better than
+        # mixed-mode arithmetic that silently loses precision), so these
+        # are the explicit bridges.
+        self.global_scope.define(
+            Symbol(
+                name="to_float", kind=SymbolKind.FUNCTION, pos=_BUILTIN_POS,
+                ty=TyFun((TyInt,), TyFloat),
+            )
+        )
+        self.global_scope.define(
+            Symbol(
+                name="to_int", kind=SymbolKind.FUNCTION, pos=_BUILTIN_POS,
+                ty=TyFun((TyFloat,), TyInt),
+            )
+        )
+
         # Python boundary: the two builtin functions that cross the
         # Capa/Python trust boundary. Both require the Unsafe capability
         # as their first argument — callers without it cannot even form

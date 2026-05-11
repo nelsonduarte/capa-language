@@ -66,6 +66,7 @@ from capa.runtime import (
     Stdio, Fs, Env, Clock, Random, Net, Proc, Db, Unsafe,
     CapaList, _NoneType,
     parse_int, parse_float,
+    to_float, to_int,
     py_import, py_invoke,
     JNull, JBool, JNum, JStr, JArr, JObj, JsonValue,
     parse_json, to_json,

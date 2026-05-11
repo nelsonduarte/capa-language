@@ -182,12 +182,23 @@ type JsonValue =
 
 ## Built-in conversion functions
 
-| Function | Type |
-|---|---|
-| `parse_int(s: String)` | `Option<Int>` |
-| `parse_float(s: String)` | `Option<Float>` |
-| `new_map()` | `Map<?, ?>` (requires annotation) |
-| `new_set()` | `Set<?>` (requires annotation) |
+| Function | Type | Notes |
+|---|---|---|
+| `parse_int(s: String)` | `Option<Int>` | Returns `None` on invalid input |
+| `parse_float(s: String)` | `Option<Float>` | Same for floats |
+| `to_float(i: Int)` | `Float` | Total — every Int has an exact Float representation |
+| `to_int(f: Float)` | `Int` | Truncates toward zero |
+| `new_map()` | `Map<?, ?>` | Requires `let` annotation to pin the types |
+| `new_set()` | `Set<?>` | Same |
+
+Capa has **no implicit numeric coercion** — `Float + Int` is a type
+error. Use `to_float` / `to_int` at the call site to make the
+conversion explicit:
+
+```capa
+fun avg(sum: Float, count: Int) -> Float
+    return sum / to_float(count)
+```
 
 ---
 

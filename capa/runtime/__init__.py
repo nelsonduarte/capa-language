@@ -401,6 +401,8 @@ __all__ = [
     "Unsafe",
     "py_import",
     "py_invoke",
+    "to_float",
+    "to_int",
     "_propagate_err",
 ]
 
@@ -476,6 +478,21 @@ def parse_float(s):
         return Some(float(s.strip()))
     except (ValueError, AttributeError):
         return None_
+
+
+def to_float(i):
+    """Convert an Int to a Float. Total — every Int has an exact Float
+    representation within the range Capa cares about. Used to bridge the
+    Int/Float divide in arithmetic when implicit coercion would hide
+    intent (Capa has no implicit numeric promotion)."""
+    return float(i)
+
+
+def to_int(f):
+    """Truncate a Float to an Int (toward zero). Total. The fractional
+    part is discarded; for round-to-nearest use a different primitive
+    when one is added."""
+    return int(f)
 
 
 # ===========================================================

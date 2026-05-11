@@ -59,9 +59,7 @@ fun compute_statistics(students: List<Student>) -> Statistics
 
     var average: Float = 0.0
     if count > 0
-        // Known bug (Float / Int friction): hardcoded count. Will be
-        // fixed when the language gains an `Int -> Float` conversion.
-        average = sum / 6.0
+        average = sum / to_float(count)
 
     return Statistics {
         average: average,

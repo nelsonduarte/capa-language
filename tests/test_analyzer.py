@@ -1882,6 +1882,62 @@ class TestParseFunctions(unittest.TestCase):
         )
 
 
+class TestNumericConversions(unittest.TestCase):
+    """to_float(Int) -> Float and to_int(Float) -> Int are the explicit
+    bridges between numeric types (Capa has no implicit coercion)."""
+
+    def test_to_float_typechecks(self):
+        from capa import Lexer, Parser, analyze, ty_str
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    let x: Int = 5\n"
+            "    let y = to_float(x)\n"
+            "    stdio.println(\"${y}\")\n"
+        )
+        tokens = Lexer(src).lex()
+        module = Parser(tokens, source=src).parse_module()
+        result = analyze(module, source=src)
+        self.assertTrue(result.ok, result.errors)
+        let_y = module.items[0].body.stmts[1]
+        self.assertEqual(ty_str(result.types[id(let_y.value)]), "Float")
+
+    def test_to_float_unblocks_int_to_float_division(self):
+        # The motivating use case: Float / Int is a type error, but
+        # Float / to_float(Int) is well-typed.
+        r = check(
+            "fun avg(sum: Float, count: Int) -> Float\n"
+            "    return sum / to_float(count)\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+    def test_to_int_typechecks(self):
+        r = check(
+            "fun f() -> Int\n"
+            "    return to_int(3.7)\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+    def test_to_float_rejects_non_int(self):
+        msgs = errors_of(
+            "fun f() -> Float\n"
+            "    return to_float(3.14)\n"
+        )
+        self.assertTrue(
+            any("expects Int, got Float" in m for m in msgs),
+            msgs,
+        )
+
+    def test_to_int_rejects_non_float(self):
+        msgs = errors_of(
+            "fun f() -> Int\n"
+            "    return to_int(42)\n"
+        )
+        self.assertTrue(
+            any("expects Float, got Int" in m for m in msgs),
+            msgs,
+        )
+
+
 # =============================================================
 # Typed capabilities: Fs, Env, Clock, Random
 # =============================================================
