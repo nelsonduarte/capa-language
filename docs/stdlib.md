@@ -261,6 +261,36 @@ fun square_root(unsafe: Unsafe, x: Float) -> Float
 | `int_range(low: Int, high: Int)` | `Int` | Integer in [low, high) |
 | `float_unit()` | `Float` | Float in [0, 1) |
 
+### `Net`
+
+| Method | Type | Description |
+|---|---|---|
+| `restrict_to(host: String)` | `Net` | Attenuate: return a fresh `Net` whose authority is the **intersection** of the current allowed-host set with `{host}`. Monotonic — restrictions only narrow. |
+| `allows(host: String)` | `Bool` | Query the current restriction set; performs no I/O. |
+| `get(url: String)` | `Result<String, IoError>` | Real HTTP GET (via `urllib.request`). Returns `Err` immediately if the URL's host is outside the current restriction set, *before* any system call. |
+
+A `Net` received from `main` is unrestricted; restrictions accumulate
+through `restrict_to`. The result of `restrict_to` is a fresh
+capability instance and is bindable in a `let`/`var` — Capa relaxes
+the "no capabilities in locals" rule specifically for method-call
+results (which are necessarily fresh, not aliases of an existing
+capability).
+
+```capa
+fun fetch(net: Net) -> Result<String, IoError>
+    return net.get("https://api.example.com/users")
+
+fun main(net: Net, stdio: Stdio)
+    let api = net.restrict_to("api.example.com")
+    match fetch(api)
+        Ok(body) -> stdio.println(body)
+        Err(e)   -> stdio.eprintln("${e}")
+```
+
+See `examples/net_attenuation.capa` for a fuller demonstration,
+including the monotonic-narrowing property (chaining two disjoint
+restrictions yields a `Net` that allows nothing).
+
 ### `Unsafe`
 
 Marker capability for crossing the Python boundary. Has no methods —

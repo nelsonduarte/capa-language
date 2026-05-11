@@ -521,6 +521,62 @@ class TestTranspileExamples(unittest.TestCase):
         self.assertIn("Excellent", out)
         self.assertIn("Passed:  5", out)
 
+    def test_net_attenuation(self):
+        rc, out, err = self._run_example("examples/net_attenuation.capa")
+        self.assertEqual(rc, 0, err)
+        # Baseline: unrestricted Net allows everything.
+        self.assertIn("=== before attenuation ===", out)
+        self.assertIn("api.example.com allowed?   True", out)
+        # After restrict_to: only the named host.
+        self.assertIn("=== after net.restrict_to(api.example.com) ===", out)
+        self.assertRegex(
+            out, r"api\.example\.com allowed\?\s+True"
+        )
+        self.assertRegex(
+            out, r"evil\.example\.com allowed\?\s+False"
+        )
+        # Monotonic narrowing: intersecting two disjoint single-host
+        # restrictions leaves nothing allowed.
+        self.assertIn("narrower allows 'api.example.com'? False", out)
+        self.assertIn("narrower allows 'other.example.com'? False", out)
+
+
+class TestNetRuntime(unittest.TestCase):
+    """Unit tests against the runtime Net class directly — the behaviour
+    that the analyzer types describe."""
+
+    def test_fresh_net_is_unrestricted(self):
+        from capa.runtime import Net
+        n = Net()
+        self.assertTrue(n.allows("a.com"))
+        self.assertTrue(n.allows("evil.example.com"))
+
+    def test_restrict_to_narrows(self):
+        from capa.runtime import Net
+        n = Net()
+        api = n.restrict_to("api.example.com")
+        self.assertTrue(api.allows("api.example.com"))
+        self.assertFalse(api.allows("evil.example.com"))
+        # The original Net is not mutated.
+        self.assertTrue(n.allows("evil.example.com"))
+
+    def test_monotonic_narrowing_to_empty(self):
+        # Two disjoint restrictions intersect to nothing.
+        from capa.runtime import Net
+        api = Net().restrict_to("a.com")
+        narrower = api.restrict_to("b.com")
+        self.assertFalse(narrower.allows("a.com"))
+        self.assertFalse(narrower.allows("b.com"))
+        self.assertFalse(narrower.allows("anything"))
+
+    def test_get_blocked_returns_err(self):
+        from capa.runtime import Net, Err, IoError
+        api = Net().restrict_to("api.example.com")
+        result = api.get("https://evil.example.com/x")
+        self.assertIsInstance(result, Err)
+        self.assertIsInstance(result.error, IoError)
+        self.assertIn("evil.example.com", str(result.error))
+
 
 if __name__ == "__main__":
     unittest.main()

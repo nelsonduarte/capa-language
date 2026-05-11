@@ -300,9 +300,67 @@ class _StubCapability:
         )
 
 
-class Net(_StubCapability):
-    def __init__(self):
-        super().__init__("Net")
+class Net:
+    """Capability for network access, with first-class attenuation.
+
+    An instance carries either ``None`` (unrestricted authority, the
+    fresh capability supplied by ``main``) or a frozen set of allowed
+    host names. ``restrict_to`` returns a new ``Net`` whose authority
+    is the *intersection* of the current restrictions with the newly
+    requested one — attenuation is monotonic by construction (WhitePaper
+    R4: restrictions can only narrow, never widen).
+
+    The actual HTTP transport uses ``urllib.request`` from the Python
+    stdlib. Restriction is enforced *before* any system call, so a
+    rejected host never reaches the network layer.
+
+    Capa code uses the capability through three methods:
+    - ``restrict_to(host: String) -> Net`` — attenuation
+    - ``allows(host: String) -> Bool`` — query, without performing IO
+    - ``get(url: String) -> Result<String, IoError>`` — real HTTP GET,
+      gated by the current restriction set
+    """
+
+    __slots__ = ("_allowed",)
+
+    def __init__(self, _allowed=None):
+        # _allowed: None means "no restriction" (full authority);
+        # frozenset means the only hosts this Net may reach.
+        self._allowed = _allowed
+
+    def restrict_to(self, host: str) -> "Net":
+        new = frozenset({host})
+        if self._allowed is not None:
+            new = new & self._allowed
+        return Net(_allowed=new)
+
+    def allows(self, host: str) -> bool:
+        return self._allowed is None or host in self._allowed
+
+    def get(self, url: str):
+        from urllib.parse import urlparse
+        from urllib.request import Request, urlopen
+
+        try:
+            host = urlparse(url).hostname or ""
+        except ValueError as e:
+            return Err(IoError("invalid URL", str(e)))
+
+        if not self.allows(host):
+            allowed_repr = (
+                sorted(self._allowed) if self._allowed is not None else "unrestricted"
+            )
+            return Err(IoError(
+                f"Net capability does not permit access to host {host!r}",
+                f"current restrictions: {allowed_repr}",
+            ))
+
+        try:
+            with urlopen(Request(url), timeout=10) as resp:
+                data = resp.read().decode("utf-8", errors="replace")
+                return Ok(data)
+        except (OSError, ValueError) as e:
+            return Err(IoError("HTTP GET failed", str(e)))
 
 
 class Proc(_StubCapability):

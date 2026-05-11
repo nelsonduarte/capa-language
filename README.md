@@ -44,17 +44,18 @@ Capa/
 │   ├── transpiler.py      # codegen for Python 3.10+
 │   └── runtime/
 │       └── __init__.py    # Result, Option, Stdio, Fs, ..., Unsafe, py_import
-├── tests/                 # 387 unit + end-to-end tests
+├── tests/                 # 398 unit + end-to-end tests
 │   ├── test_lexer.py
 │   ├── test_parser.py
 │   ├── test_analyzer.py
 │   └── test_transpiler.py # transpile and execute Capa programs
-├── examples/              # 18 .capa files demonstrating the language
+├── examples/              # 19 .capa files demonstrating the language
 │   ├── hello.capa         # hello world
 │   ├── basics.capa        # several constructs
 │   ├── tasks.capa         # canonical EBNF example
 │   ├── grades.capa        # non-trivial program (~110 lines)
 │   ├── io.capa            # exercises Result and the ? operator
+│   ├── net_attenuation.capa # capability attenuation (WhitePaper §4.3)
 │   ├── python_interop.capa# Python boundary under the Unsafe capability
 │   └── errors.capa        # test fixture with semantic errors
 ├── docs/                  # tutorial, reference, stdlib, getting-started
@@ -133,7 +134,7 @@ else:
 python -m unittest discover tests
 ```
 
-**387 tests** (lexer + parser + analyzer + transpiler). The transpiler
+**398 tests** (lexer + parser + analyzer + transpiler). The transpiler
 suite actually *executes* the generated Python and checks stdout — the
 only honest way to test a transpiler.
 
@@ -356,9 +357,9 @@ only honest way to test a transpiler.
   The transpiler does type-aware dispatch: `m.get(k)` → a ternary
   expression `Some(m[k]) if k in m else None_`.
 
-- **Typed capabilities (`Stdio`, `Fs`, `Env`, `Clock`, `Random`)**:
-  all methods have precise types in the checker, instead of the old
-  permissive `TyUnknown` fallback.
+- **Typed capabilities (`Stdio`, `Fs`, `Env`, `Clock`, `Random`,
+  `Net`)**: all methods have precise types in the checker, instead of
+  the old permissive `TyUnknown` fallback.
 
   | Capability | Methods | Return |
   |----------|-------------------------------------------|---------------------------|
@@ -373,11 +374,23 @@ only honest way to test a transpiler.
   | `Clock`  | `sleep(seconds: Float)`                   | `()`                      |
   | `Random` | `int_range(low: Int, high: Int)`          | `Int`                     |
   | `Random` | `float_unit()`                            | `Float`                   |
+  | `Net`    | `restrict_to(host: String)`               | `Net` (attenuated)        |
+  | `Net`    | `allows(host: String)`                    | `Bool`                    |
+  | `Net`    | `get(url: String)`                        | `Result<String, IoError>` |
 
   Consequence: `clock.sleep(1)` is now an error (expects Float).
   `fs.read(42)` is an error (expects String). And
   `match fs.exists(p) Ok(_) -> ...` is an error because `exists`
   returns `Bool`, not `Result`.
+
+- **First-class capability attenuation** (`Net.restrict_to`). The
+  result of attenuation is a fresh capability — bindable in `let`
+  (the structural "no caps in locals" rule is relaxed specifically
+  for method-call results, since those cannot be aliases). The
+  restriction is monotonic: chaining two `restrict_to` calls
+  intersects their allowed-host sets, never widens. Runtime check
+  fires *before* any system call, so a blocked host never touches
+  the network. See `examples/net_attenuation.capa`.
 
   Extraction helpers on `JsonValue`: `is_null() -> Bool`,
   `as_bool() -> Option<Bool>`, `as_num() -> Option<Float>`,

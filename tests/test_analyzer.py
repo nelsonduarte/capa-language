@@ -2024,6 +2024,88 @@ class TestCapabilityMethods(unittest.TestCase):
         )
 
 
+class TestNetAttenuation(unittest.TestCase):
+    """Net capability — attenuation by `restrict_to`. The fresh narrowed
+    capability is bindable in `let`/`var` (the structural rule against
+    bare-capability lets is relaxed for method-call RHS), but a bare
+    alias still is not."""
+
+    def test_restrict_to_typechecks(self):
+        from capa import Lexer, Parser, analyze, ty_str
+        src = (
+            "fun main(net: Net, stdio: Stdio)\n"
+            "    let api = net.restrict_to(\"api.example.com\")\n"
+            "    stdio.println(\"${api.allows(\\\"api.example.com\\\")}\")\n"
+        )
+        tokens = Lexer(src).lex()
+        module = Parser(tokens, source=src).parse_module()
+        result = analyze(module, source=src)
+        self.assertTrue(result.ok, result.errors)
+        let_api = module.items[0].body.stmts[0]
+        self.assertEqual(ty_str(result.types[id(let_api.value)]), "Net")
+
+    def test_allows_returns_bool(self):
+        from capa import Lexer, Parser, analyze, ty_str
+        src = (
+            "fun main(net: Net, stdio: Stdio)\n"
+            "    let b = net.allows(\"x\")\n"
+            "    stdio.println(\"${b}\")\n"
+        )
+        tokens = Lexer(src).lex()
+        module = Parser(tokens, source=src).parse_module()
+        result = analyze(module, source=src)
+        self.assertTrue(result.ok, result.errors)
+        let_b = module.items[0].body.stmts[0]
+        self.assertEqual(ty_str(result.types[id(let_b.value)]), "Bool")
+
+    def test_get_returns_result_string(self):
+        from capa import Lexer, Parser, analyze, ty_str
+        src = (
+            "fun main(net: Net, stdio: Stdio)\n"
+            "    let r = net.get(\"https://x\")\n"
+            "    stdio.println(\"x\")\n"
+        )
+        tokens = Lexer(src).lex()
+        module = Parser(tokens, source=src).parse_module()
+        result = analyze(module, source=src)
+        self.assertTrue(result.ok, result.errors)
+        let_r = module.items[0].body.stmts[0]
+        self.assertEqual(
+            ty_str(result.types[id(let_r.value)]),
+            "Result<String, IoError>",
+        )
+
+    def test_let_alias_of_bare_capability_still_rejected(self):
+        # The relaxation only applies to method-call RHS. Plain identifier
+        # aliases of capabilities remain forbidden — that is the case the
+        # structural rule was originally there to catch.
+        msgs = errors_of(
+            "fun main(net: Net, stdio: Stdio)\n"
+            "    let dup = net\n"
+            "    stdio.println(\"${dup.allows(\\\"x\\\")}\")\n"
+        )
+        self.assertTrue(
+            any("cannot appear in a 'let' binding" in m for m in msgs),
+            msgs,
+        )
+
+    def test_restrict_to_with_non_string_rejected(self):
+        msgs = errors_of(
+            "fun main(net: Net, stdio: Stdio)\n"
+            "    let api = net.restrict_to(42)\n"
+            "    stdio.println(\"x\")\n"
+        )
+        self.assertTrue(
+            any("expects String, got Int" in m for m in msgs),
+            msgs,
+        )
+
+    def test_attenuation_example_clean(self):
+        with open("examples/net_attenuation.capa", encoding="utf-8") as f:
+            r = check(f.read())
+        self.assertTrue(r.ok, r.errors)
+
+
 # =============================================================
 # JSON: built-in JsonValue type and parse_json/to_json
 # =============================================================

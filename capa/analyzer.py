@@ -795,6 +795,24 @@ class Analyzer:
                 ty=TyFun((TyFloat,), TyUnit),
             )
 
+        # Methods of the Net capability (attenuation + HTTP).
+        net_sym = self.global_scope.lookup("Net")
+        if net_sym is not None:
+            net_ty = TyName("Net")
+            io_err = TyName("IoError")
+            net_sym.methods["restrict_to"] = Symbol(
+                name="restrict_to", kind=SymbolKind.FUNCTION, pos=_BUILTIN_POS,
+                ty=TyFun((TyString,), net_ty),
+            )
+            net_sym.methods["allows"] = Symbol(
+                name="allows", kind=SymbolKind.FUNCTION, pos=_BUILTIN_POS,
+                ty=TyFun((TyString,), TyBool),
+            )
+            net_sym.methods["get"] = Symbol(
+                name="get", kind=SymbolKind.FUNCTION, pos=_BUILTIN_POS,
+                ty=TyFun((TyString,), TyName("Result", (TyString, io_err))),
+            )
+
         # Methods of the Random capability.
         random_sym = self.global_scope.lookup("Random")
         if random_sym is not None:
@@ -1589,7 +1607,14 @@ class Analyzer:
                     s.value.pos,
                 )
             actual = declared
-        self._check_no_capability(actual, s.pos, "a 'let' binding")
+        # Capabilities are normally forbidden in let bindings to prevent
+        # aliasing. Exception: a fresh attenuated capability, produced
+        # by a method call (e.g. `net.restrict_to("a.com")`), is OK —
+        # it is a brand-new capability instance, not an alias of an
+        # existing one. The flow-layer non-aliasing rule still applies
+        # at call sites.
+        if not isinstance(s.value, A.MethodCall):
+            self._check_no_capability(actual, s.pos, "a 'let' binding")
         self._bind_pattern(s.pattern, actual, mutable=False)
 
     def _check_var(self, s: A.VarStmt) -> None:
@@ -1603,7 +1628,10 @@ class Analyzer:
                     s.value.pos,
                 )
             actual = declared
-        self._check_no_capability(actual, s.pos, "a 'var' binding")
+        # See _check_let for the rationale: method-call RHS is a fresh
+        # attenuated capability, not an alias, so let it through.
+        if not isinstance(s.value, A.MethodCall):
+            self._check_no_capability(actual, s.pos, "a 'var' binding")
         if self.scope.lookup_local(s.name) is not None:
             self._err(f"duplicate declaration of {s.name!r}", s.pos)
         self.scope.define(
