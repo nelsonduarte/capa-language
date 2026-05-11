@@ -44,7 +44,7 @@ Capa/
 │   ├── transpiler.py      # codegen for Python 3.10+
 │   └── runtime/
 │       └── __init__.py    # Result, Option, Stdio, Fs, ..., Unsafe, py_import
-├── tests/                 # 373 unit + end-to-end tests
+├── tests/                 # 378 unit + end-to-end tests
 │   ├── test_lexer.py
 │   ├── test_parser.py
 │   ├── test_analyzer.py
@@ -133,7 +133,7 @@ else:
 python -m unittest discover tests
 ```
 
-**373 tests** (lexer + parser + analyzer + transpiler), with 17 that
+**378 tests** (lexer + parser + analyzer + transpiler), with 17 that
 actually *execute* Capa programs and check stdout — the only honest way
 to test a transpiler.
 
