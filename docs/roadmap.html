@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Roadmap — Capa</title>
+    <meta name="description" content="Where Capa is today, what is coming in v0.2 and beyond, what is explicitly out of scope, and what depends on which.">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header>
+    <nav>
+        <a href="index.html" class="logo">Capa</a>
+        <div class="nav-links">
+            <a href="index.html">Home</a>
+            <a href="why.html">Why Capa</a>
+            <a href="tour.html">Language tour</a>
+            <a href="start.html">Get started</a>
+            <a href="roadmap.html" class="current">Roadmap</a>
+            <a href="https://github.com/nelsonduarte/capa" class="github">GitHub</a>
+        </div>
+    </nav>
+</header>
+
+<main>
+
+<div class="page-heading">
+    <h1>Roadmap</h1>
+    <p>An honest inventory of what works, what is coming, and what is explicitly out of scope. Capa is in <strong>v0.1.0-alpha</strong>: the compiler runs, 420 tests pass on three operating systems, the discipline is implemented end-to-end, and the language is missing several things a v1 would need.</p>
+</div>
+
+<!-- =====================================================
+     Where we are
+===================================================== -->
+<section>
+    <h2>Where we are today</h2>
+
+    <p>Capa is a working alpha. It compiles, type-checks, transpiles to Python, and runs. Every example in this site, in <a href="https://github.com/nelsonduarte/capa/tree/main/examples">the examples directory</a>, and in the white paper is executable. The boundary between what is real and what is roadmap is sharp:</p>
+
+    <div class="status-grid">
+        <div class="status-yes">
+            <h4>Working today</h4>
+            <ul>
+                <li>Lexer + parser + analyzer + transpiler (4 stages, ~5K lines of Python)</li>
+                <li>Types: <code>Int</code>, <code>Float</code>, <code>Bool</code>, <code>String</code>, <code>Char</code>, <code>Unit</code>, tuples, <code>List</code>, <code>Map</code>, <code>Set</code>, <code>Option</code>, <code>Result</code>, <code>Fun(...) -&gt; ...</code></li>
+                <li>Structs, sum types (variants), generics with inference</li>
+                <li>Pattern matching (statement + expression form)</li>
+                <li>Closures and higher-order functions</li>
+                <li><code>?</code> operator and <code>Result</code>-based error handling</li>
+                <li>Built-in capabilities: <code>Stdio</code>, <code>Fs</code>, <code>Net</code>, <code>Env</code>, <code>Clock</code>, <code>Random</code>, <code>Unsafe</code></li>
+                <li>User-defined capabilities (<code>capability X</code> + <code>impl X for Y</code>)</li>
+                <li>Capability attenuation via <code>Net.restrict_to(host)</code></li>
+                <li><code>consume</code> qualifier with fork/merge tracking</li>
+                <li>Range expressions (<code>a..b</code> exclusive, <code>a..=b</code> inclusive)</li>
+                <li>Python interop via the <code>Unsafe</code> capability boundary</li>
+                <li>CLI with five modes (tokenize, parse, check, transpile, run)</li>
+                <li>VSCode syntax highlighting extension</li>
+                <li>420 unit + end-to-end tests, green on Ubuntu / macOS / Windows × Python 3.10 / 3.12 / 3.14</li>
+            </ul>
+        </div>
+        <div class="status-no">
+            <h4>Not yet</h4>
+            <ul>
+                <li>Language server (LSP) — no editor diagnostics, no hover, no go-to-definition</li>
+                <li>Formatter (<code>capa-fmt</code>)</li>
+                <li>Module system (<code>import</code> is parsed but rejected by the analyzer)</li>
+                <li>Visibility (<code>pub</code> is parsed but unenforced — waits on the module system)</li>
+                <li>Attenuation for capabilities other than <code>Net</code> (<code>Fs.restrict_to</code>, <code>Env.restrict_to_keys</code>, etc.)</li>
+                <li>Doc comments (<code>///</code>, <code>/**</code>) — lexer treats them as ordinary comments</li>
+                <li>Raw strings (<code>r"..."</code>)</li>
+                <li>Native (non-Python) backend — LLVM is far future</li>
+                <li>Async / await (keywords reserved, no runtime)</li>
+                <li>Package manager / registry</li>
+                <li>REPL (was deleted earlier; will be reimplemented when the language is stable)</li>
+            </ul>
+        </div>
+    </div>
+</section>
+
+<!-- =====================================================
+     v0.2 — public readiness
+===================================================== -->
+<section>
+    <h2>v0.2 — public readiness</h2>
+
+    <p>The bridge from "working alpha" to "shareable alpha". All three pieces have landed; tagging and flipping the repository to public is the last step.</p>
+
+    <ul class="milestone-list">
+        <li>
+            <span class="tag done">DONE</span>
+            <div class="item-body">
+                <strong>"Capa would have caught X" demo — event-stream</strong>
+                <p>A safe Capa version of the <code>flat_map</code> function whose JavaScript counterpart shipped a Bitcoin-wallet exfiltrator in 2018. Attack-attempt code shown rejected by the analyzer with source-aligned errors. Lives in <code>examples/demo_event_stream.capa</code> + <code>docs/demo-event-stream.md</code>.</p>
+            </div>
+        </li>
+        <li>
+            <span class="tag done">DONE</span>
+            <div class="item-body">
+                <strong>VSCode syntax highlighting</strong>
+                <p>TextMate grammar covering all keyword categories, with built-in capabilities highlighted distinctly. String interpolation, numeric literals in all bases, operators including <code>..</code>, <code>..=</code>, <code>=&gt;</code>, <code>?</code>. Lives in <code>vscode/</code>; install via symlink / junction. Marketplace publication after the public flip.</p>
+            </div>
+        </li>
+        <li>
+            <span class="tag done">DONE</span>
+            <div class="item-body">
+                <strong>Public-facing website</strong>
+                <p>A five-page static site (<a href="index.html">Home</a>, <a href="why.html">Why Capa</a>, <a href="tour.html">Language tour</a>, <a href="start.html">Get started</a>, <a href="roadmap.html">Roadmap</a>). No JS, no framework, no external fonts. Designed to serve directly from GitHub Pages.</p>
+            </div>
+        </li>
+        <li>
+            <span class="tag current">NEXT</span>
+            <div class="item-body">
+                <strong>Tag v0.2.0-alpha and flip the repository public</strong>
+                <p>One <code>git tag</code> and one <code>gh repo edit --visibility public</code>. After that, ship governance documents (<code>CONTRIBUTING</code>, <code>CHANGELOG</code>, issue templates, <code>SECURITY.md</code>).</p>
+            </div>
+        </li>
+    </ul>
+</section>
+
+<!-- =====================================================
+     The road ahead
+===================================================== -->
+<section>
+    <h2>The road ahead</h2>
+
+    <h3>White-paper promises still open</h3>
+    <ul class="milestone-list">
+        <li>
+            <span class="tag current">P1</span>
+            <div class="item-body">
+                <strong>Generic attenuation</strong>
+                <p>Extend the <code>Net.restrict_to</code> pattern to the other built-in capabilities: <code>Fs.restrict_to(path_prefix)</code>, <code>Env.restrict_to_keys([...])</code>, <code>Clock.restrict_to_after(t)</code>, and similar. The runtime infrastructure for narrowing is already in place; this is mostly per-capability API design and tests.</p>
+            </div>
+        </li>
+        <li>
+            <span class="tag future">P3</span>
+            <div class="item-body">
+                <strong>Native module system</strong>
+                <p>The keyword <code>import</code> is parsed but analyzer-rejected today. A proper design needs paths, visibility, cyclic-import rules, and a deterministic resolution algorithm. Practical win is small while projects are single-file; the v1 cut may ship without it.</p>
+            </div>
+        </li>
+        <li>
+            <span class="tag future">P3</span>
+            <div class="item-body">
+                <strong>Refinement types</strong>
+                <p>Marked as future in the white paper — a way to express, in the type system, properties like "this string is non-empty" or "this list is sorted". Research-grade; not in scope for a 1.0.</p>
+            </div>
+        </li>
+    </ul>
+
+    <h3>EBNF declares but not implemented</h3>
+    <ul class="milestone-list">
+        <li>
+            <span class="tag current">P2</span>
+            <div class="item-body">
+                <strong>Doc comments (<code>///</code>, <code>/**</code>)</strong>
+                <p>Lexer currently treats them as ordinary comments. Implement preservation through the AST and a tiny <code>capa-doc</code> generator. ~4-6 hours.</p>
+            </div>
+        </li>
+        <li>
+            <span class="tag current">P2</span>
+            <div class="item-body">
+                <strong>Raw strings (<code>r"..."</code>)</strong>
+                <p>Useful for regular expressions and Windows paths. ~1-2 hours.</p>
+            </div>
+        </li>
+        <li>
+            <span class="tag current">P2</span>
+            <div class="item-body">
+                <strong>Named arguments</strong>
+                <p>Syntax exists in the EBNF; analyzer needs to map argument names to parameter positions correctly and reject duplicates. ~1-2 hours.</p>
+            </div>
+        </li>
+    </ul>
+
+    <h3>Tooling that moves the adoption needle</h3>
+    <ul class="milestone-list">
+        <li>
+            <span class="tag current">P1</span>
+            <div class="item-body">
+                <strong>Language server (LSP)</strong>
+                <p>The single biggest multiplier for any new language. Python implementation using <code>pygls</code>: diagnostics first, then hover, then go-to-definition. ~1-2 weeks for a useful subset.</p>
+            </div>
+        </li>
+        <li>
+            <span class="tag current">P1</span>
+            <div class="item-body">
+                <strong>Formatter (<code>capa-fmt</code>)</strong>
+                <p>Canonical and non-configurable, gofmt-style. Walks the AST and re-emits. ~1-2 days for v1.</p>
+            </div>
+        </li>
+        <li>
+            <span class="tag future">P2</span>
+            <div class="item-body">
+                <strong><code>capa init</code></strong>
+                <p>Project scaffolding command. ~1-2 hours, but waits on the module system to be useful.</p>
+            </div>
+        </li>
+        <li>
+            <span class="tag future">P3</span>
+            <div class="item-body">
+                <strong>Package manager / registry</strong>
+                <p>Only meaningful once there is a module system and a plausible audience. Out of scope for v0.2 / v0.3.</p>
+            </div>
+        </li>
+    </ul>
+
+    <h3>Known limitations</h3>
+    <ul class="milestone-list">
+        <li>
+            <span class="tag current">P1</span>
+            <div class="item-body">
+                <strong>Multi-line <code>match</code> inside parentheses</strong>
+                <p>Parentheses currently suppress significant newlines, so <code>f(match x ... )</code> with multi-line arms does not parse. Workaround is an inline <code>{ }</code> block. ~1-2 hours to fix.</p>
+            </div>
+        </li>
+        <li>
+            <span class="tag current">P2</span>
+            <div class="item-body">
+                <strong><code>?</code> operator uses an internal exception</strong>
+                <p>Correct but slower than an expanded early-return at the transpiled level. Optimisation; no semantic change.</p>
+            </div>
+        </li>
+    </ul>
+
+    <h3>PhD-aligned work</h3>
+    <p>Capa as an artefact in the SBOM-Governance thesis. Not language work, but research that uses the language.</p>
+    <ul class="milestone-list">
+        <li>
+            <span class="tag future">P1</span>
+            <div class="item-body">
+                <strong>SPDX 2.3 parser written in Capa</strong>
+                <p>Proves Capa can interoperate with the real SBOM format. Becomes a thesis chapter on representation. ~1 week.</p>
+            </div>
+        </li>
+        <li>
+            <span class="tag future">P1</span>
+            <div class="item-body">
+                <strong>CycloneDX 1.5 parser written in Capa</strong>
+                <p>Same story for the second mainstream SBOM format.</p>
+            </div>
+        </li>
+        <li>
+            <span class="tag future">P1</span>
+            <div class="item-body">
+                <strong>User-defined <code>capability Provenance</code></strong>
+                <p>A capability representing the right to query / verify a piece of supply-chain metadata. Demonstrates user-defined caps in a concrete domain.</p>
+            </div>
+        </li>
+        <li>
+            <span class="tag future">P1</span>
+            <div class="item-body">
+                <strong>SBOM ↔ capability linking</strong>
+                <p>A Capa program that reads an npm package's SBOM and checks whether the declared capabilities of its dependencies match what static analysis of their source code says they actually need. The "auditable supply chain" pitch, made concrete.</p>
+            </div>
+        </li>
+    </ul>
+</section>
+
+<!-- =====================================================
+     NOT planned
+===================================================== -->
+<section>
+    <h2>Explicitly <em>not</em> planned for v1</h2>
+
+    <p>For honesty and scope control:</p>
+
+    <ul>
+        <li><strong>LLVM backend.</strong> Was Phase 4 of the original white-paper roadmap. Far future; not a priority while Python is a perfectly serviceable target.</li>
+        <li><strong>Self-hosting.</strong> Was Phase 5. Very far future. The compiler is unlikely to be rewritten in Capa before there is a working Capa community.</li>
+        <li><strong>Full async / await.</strong> Reserved keywords exist; no implementation. Async semantics that interact correctly with capabilities is a real research question and a large lift.</li>
+        <li><strong>Tail-call optimisation.</strong> The transpiler emits regular Python calls; recursion is bounded by the CPython stack.</li>
+        <li><strong>Garbage collection beyond CPython's.</strong> Capa inherits whatever the Python runtime gives it.</li>
+        <li><strong>Custom syntax extensions / macros.</strong> Capa is a fixed grammar by design. The discipline depends on the analyzer being able to read every program completely.</li>
+    </ul>
+</section>
+
+<section style="text-align: center;">
+    <h2>Help shape the next milestone</h2>
+    <p style="max-width: 60ch; margin: 0 auto 2rem;">Capa is a personal project; it is also an open one. Issues, design discussions, and pull requests are welcome. The fastest way to influence the roadmap is to show up with a real use case.</p>
+    <div class="cta">
+        <a href="https://github.com/nelsonduarte/capa/issues" class="btn primary">Open an issue</a>
+        <a href="https://github.com/nelsonduarte/capa/blob/main/TODO.md" class="btn">Read the full TODO</a>
+        <a href="start.html" class="btn">Install and try it</a>
+    </div>
+</section>
+
+</main>
+
+<footer>
+    <div class="footer-grid">
+        <div>
+            <h4>Pages</h4>
+            <ul>
+                <li><a href="index.html">Home</a></li>
+                <li><a href="why.html">Why Capa</a></li>
+                <li><a href="tour.html">Language tour</a></li>
+                <li><a href="start.html">Get started</a></li>
+            </ul>
+        </div>
+        <div>
+            <h4>Documentation</h4>
+            <ul>
+                <li><a href="getting-started.md">Getting started</a></li>
+                <li><a href="tutorial.md">Tutorial</a></li>
+                <li><a href="reference.md">Reference</a></li>
+                <li><a href="stdlib.md">Standard library</a></li>
+            </ul>
+        </div>
+        <div>
+            <h4>Specification</h4>
+            <ul>
+                <li><a href="../Capa-WhitePaper.md">White paper</a></li>
+                <li><a href="../Capa-EBNF.md">EBNF grammar</a></li>
+                <li><a href="demo-event-stream.md">Event-stream demo</a></li>
+            </ul>
+        </div>
+        <div>
+            <h4>Project</h4>
+            <ul>
+                <li><a href="https://github.com/nelsonduarte/capa">Source</a></li>
+                <li><a href="https://github.com/nelsonduarte/capa/blob/main/TODO.md">TODO / roadmap</a></li>
+                <li><a href="https://github.com/nelsonduarte/capa/blob/main/LICENSE">License (MIT)</a></li>
+            </ul>
+        </div>
+    </div>
+    <p class="colophon">Built by Nelson Duarte · v0.1.0-alpha · MIT-licensed</p>
+</footer>
+
+</body>
+</html>

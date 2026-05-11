@@ -22,11 +22,19 @@ Bridge from "working alpha" to "shareable v0.2 alpha". Three pieces:
   string interpolation, numeric literals in all bases, operators
   including `..`, `..=`, `=>`, `?`. Lives in `vscode/`. Install
   manually via symlink/junction; Marketplace publication later.
-- [ ] **Simple landing page** (`capalang.dev` or similar). Single page:
-  headline, capability story in 3 examples, link to GitHub. Pure
-  HTML+CSS, no framework. ⏱ 2-3h
+- [x] **Full website (5 pages)** — `docs/{index,why,tour,start,roadmap}.html`
+  + `docs/style.css`. Slim landing with three value-prop cards; "Why
+  Capa" makes the case (ambient authority, event-stream, three
+  pillars, attenuation, user-defined caps, honest limits); language
+  tour in 12 sections; getting-started with full CLI reference;
+  honest roadmap with status pills. Dark theme, single accent, no
+  JS, no framework, no external fonts. Header is purely typographic
+  (a hand-coded SVG logo was attempted and abandoned — bad call,
+  see memory). Ready to serve via GitHub Pages when enabled for
+  `docs/`.
 
-When these three land: tag `v0.2.0-alpha`, flip repo to public.
+When the public-readiness items land: tag `v0.2.0-alpha`, flip repo
+to public.
 
 ---
 

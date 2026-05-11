@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Capa — a capability-centric programming language</title>
+    <meta name="description" content="Capa is a programming language where every function declares the authorities it holds. Built around capability-based security with a pythonic syntax, designed for the EU Cyber Resilience Act era.">
+    <meta property="og:title" content="Capa — a capability-centric programming language">
+    <meta property="og:description" content="Every function declares the authorities it holds. Built for the EU Cyber Resilience Act era.">
+    <meta property="og:type" content="website">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header>
+    <nav>
+        <a href="index.html" class="logo">Capa</a>
+        <div class="nav-links">
+            <a href="index.html" class="current">Home</a>
+            <a href="why.html">Why Capa</a>
+            <a href="tour.html">Language tour</a>
+            <a href="start.html">Get started</a>
+            <a href="roadmap.html">Roadmap</a>
+            <a href="https://github.com/nelsonduarte/capa" class="github">GitHub</a>
+        </div>
+    </nav>
+</header>
+
+<main>
+
+<section class="hero">
+    <h1>Capa</h1>
+    <p class="tagline">A programming language where every function declares <strong>what it is allowed to do</strong>.</p>
+    <p class="subtitle">Capability-based security with a pythonic syntax. Designed for the era of supply-chain attacks and the EU Cyber Resilience Act.</p>
+    <div class="cta">
+        <a href="why.html" class="btn primary">Read the case</a>
+        <a href="start.html" class="btn">Get started</a>
+        <a href="https://github.com/nelsonduarte/capa" class="btn">GitHub</a>
+    </div>
+    <p class="status">v0.1.0-alpha · MIT · 420 tests · hand-written compiler in Python</p>
+</section>
+
+<section>
+    <div class="value-props">
+
+        <div class="value-prop">
+            <h3>Authority is explicit</h3>
+            <p>If a function can touch the network, the filesystem, the environment, or any other system resource — it has to say so in its signature. There is no ambient permission.</p>
+<pre><code><span class="kw-decl">fun</span> <span class="fn-name">fetch</span>(net: <span class="cap">Net</span>, url: <span class="ty-primitive">String</span>)
+    <span class="kw-ctrl">return</span> net.<span class="fn-call">get</span>(url)
+
+<span class="kw-decl">fun</span> <span class="fn-name">pure_thing</span>(x: <span class="ty-primitive">Int</span>) -&gt; <span class="ty-primitive">Int</span>
+    <span class="comment">// no caps: cannot do IO.</span>
+    <span class="kw-ctrl">return</span> x * 2</code></pre>
+        </div>
+
+        <div class="value-prop">
+            <h3>Capabilities can be narrowed</h3>
+            <p>A capability is not all-or-nothing. <code>Net.restrict_to(host)</code> returns a fresh <code>Net</code> with authority limited to one host. Restrictions only narrow, never widen.</p>
+<pre><code><span class="kw-decl">fun</span> <span class="fn-name">main</span>(net: <span class="cap">Net</span>)
+    <span class="kw-storage">let</span> api = net.<span class="fn-call">restrict_to</span>(<span class="str">"api.example.com"</span>)
+    <span class="comment">// `api` can only reach api.example.com.</span>
+    <span class="fn-call">fetch_users</span>(api)</code></pre>
+        </div>
+
+        <div class="value-prop">
+            <h3>Libraries define their own</h3>
+            <p>You declare your own capabilities — <code>SendEmail</code>, <code>QueryDB</code>, <code>PublishMessage</code>. The discipline applies uniformly. A library's contract is enforced at the type level.</p>
+<pre><code><span class="kw-decl">capability</span> <span class="ty-user">SendEmail</span>
+    <span class="kw-decl">fun</span> <span class="fn-name">send</span>(self,
+        to: <span class="ty-primitive">String</span>,
+        subject: <span class="ty-primitive">String</span>,
+        body: <span class="ty-primitive">String</span>)
+        -&gt; <span class="ty-builtin">Result</span>&lt;<span class="ty-primitive">Unit</span>, <span class="ty-builtin">IoError</span>&gt;</code></pre>
+        </div>
+
+    </div>
+</section>
+
+<section style="text-align: center;">
+    <h2>Where to go next</h2>
+    <p style="max-width: 56ch; margin: 0 auto 2rem;">Capa is in alpha. The compiler runs, 420 tests pass on three operating systems, and the three pillars of the discipline are implemented. There is still no language server, no module system, no native backend.</p>
+    <div class="cta">
+        <a href="why.html" class="btn primary">Understand the why</a>
+        <a href="tour.html" class="btn">Tour the language</a>
+        <a href="start.html" class="btn">Install and run</a>
+        <a href="roadmap.html" class="btn">See the roadmap</a>
+    </div>
+</section>
+
+</main>
+
+<footer>
+    <div class="footer-grid">
+        <div>
+            <h4>Pages</h4>
+            <ul>
+                <li><a href="why.html">Why Capa</a></li>
+                <li><a href="tour.html">Language tour</a></li>
+                <li><a href="start.html">Get started</a></li>
+                <li><a href="roadmap.html">Roadmap</a></li>
+            </ul>
+        </div>
+        <div>
+            <h4>Documentation</h4>
+            <ul>
+                <li><a href="getting-started.md">Getting started</a></li>
+                <li><a href="tutorial.md">Tutorial</a></li>
+                <li><a href="reference.md">Reference</a></li>
+                <li><a href="stdlib.md">Standard library</a></li>
+            </ul>
+        </div>
+        <div>
+            <h4>Specification</h4>
+            <ul>
+                <li><a href="../Capa-WhitePaper.md">White paper</a></li>
+                <li><a href="../Capa-EBNF.md">EBNF grammar</a></li>
+                <li><a href="demo-event-stream.md">Event-stream demo</a></li>
+            </ul>
+        </div>
+        <div>
+            <h4>Project</h4>
+            <ul>
+                <li><a href="https://github.com/nelsonduarte/capa">Source</a></li>
+                <li><a href="https://github.com/nelsonduarte/capa/blob/main/TODO.md">TODO / roadmap</a></li>
+                <li><a href="https://github.com/nelsonduarte/capa/blob/main/LICENSE">License (MIT)</a></li>
+            </ul>
+        </div>
+    </div>
+    <p class="colophon">Built by Nelson Duarte · v0.1.0-alpha · MIT-licensed</p>
+</footer>
+
+</body>
+</html>

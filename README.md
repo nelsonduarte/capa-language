@@ -106,6 +106,21 @@ manually with a symlink (`ln -s "$(pwd)/vscode" ~/.vscode/extensions/capa-langua
 on macOS/Linux, `New-Item -ItemType Junction ...` on Windows) and
 reload VSCode. A full LSP is on the roadmap.
 
+### Website
+
+A five-page static site lives in [`docs/`](docs/):
+
+- [`docs/index.html`](docs/index.html) — landing page
+- [`docs/why.html`](docs/why.html) — the case for the language
+- [`docs/tour.html`](docs/tour.html) — guided language tour
+- [`docs/start.html`](docs/start.html) — install + first program + CLI reference
+- [`docs/roadmap.html`](docs/roadmap.html) — honest status and roadmap
+
+No JavaScript, no framework, no external fonts; one stylesheet (`docs/style.css`).
+Preview locally with `cd docs && python -m http.server` and open
+`http://localhost:8000/`. Once GitHub Pages is enabled for the `docs/`
+directory it will be the public-facing site for the project.
+
 ## CLI
 
 ```bash

@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Get started — Capa</title>
+    <meta name="description" content="Install Capa, run your first program, and learn the four flags of the CLI: tokenize, parse, analyze, transpile, run.">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header>
+    <nav>
+        <a href="index.html" class="logo">Capa</a>
+        <div class="nav-links">
+            <a href="index.html">Home</a>
+            <a href="why.html">Why Capa</a>
+            <a href="tour.html">Language tour</a>
+            <a href="start.html" class="current">Get started</a>
+            <a href="roadmap.html">Roadmap</a>
+            <a href="https://github.com/nelsonduarte/capa" class="github">GitHub</a>
+        </div>
+    </nav>
+</header>
+
+<main>
+
+<div class="page-heading">
+    <h1>Get started</h1>
+    <p>From zero to a running Capa program in under five minutes. Capa is a Python 3.10+ package that transpiles <code>.capa</code> source into Python and executes it with a small runtime.</p>
+</div>
+
+<!-- =====================================================
+     Requirements
+===================================================== -->
+<section>
+    <h2>Requirements</h2>
+
+    <ul>
+        <li><strong>Python 3.10 or newer.</strong> Tested on 3.10, 3.12, and 3.14 across Linux, macOS, and Windows.</li>
+        <li><strong>Git.</strong> To clone the repository.</li>
+        <li><strong>No other dependencies.</strong> Capa is hand-written in pure Python and has zero runtime dependencies outside the standard library.</li>
+    </ul>
+</section>
+
+<!-- =====================================================
+     Install
+===================================================== -->
+<section>
+    <h2>Install</h2>
+
+    <p>Clone and install in editable mode:</p>
+
+<pre><code>$ git clone https://github.com/nelsonduarte/capa
+$ cd capa
+$ pip install -e .</code></pre>
+
+    <p>That's it. You can verify the install by running the test suite (420 tests, takes ~15 seconds):</p>
+
+<pre><code>$ python -m unittest discover tests
+............................................................
+----------------------------------------------------------------------
+Ran 420 tests in 14.2s
+
+OK</code></pre>
+
+    <div class="callout">
+        <p><strong>Note.</strong> You can skip <code>pip install -e .</code> entirely and invoke the compiler with <code>python -m capa</code> from the repository root. The pip install just adds a <code>capa</code> command on your <code>PATH</code> as a convenience.</p>
+    </div>
+</section>
+
+<!-- =====================================================
+     First program
+===================================================== -->
+<section>
+    <h2>Your first program</h2>
+
+    <p>Create a file <code>hello.capa</code> with the following contents:</p>
+
+<pre><code><span class="comment">// hello.capa</span>
+<span class="kw-decl">fun</span> <span class="fn-name">main</span>(stdio: <span class="cap">Stdio</span>)
+    stdio.<span class="fn-call">println</span>(<span class="str">"Hello, Capa!"</span>)</code></pre>
+
+    <p>Run it:</p>
+
+<pre><code>$ python -m capa --run hello.capa
+Hello, Capa!</code></pre>
+
+    <p>The <code>stdio: Stdio</code> parameter is the language asking explicitly for the right to write to standard output. The runtime hands one to <code>main</code>, and <code>main</code> can hand it further down — or not. This is the whole language in one line.</p>
+</section>
+
+<!-- =====================================================
+     CLI
+===================================================== -->
+<section>
+    <h2>The CLI</h2>
+
+    <p>The compiler exposes five modes, one per stage of the pipeline. Each subsumes the previous: <code>--run</code> implies <code>--transpile</code>, which implies <code>--check</code>, and so on.</p>
+
+    <table class="cli-table">
+        <thead>
+            <tr><th>Flag</th><th>What it does</th></tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td><code>(none)</code></td>
+                <td>Tokenize. Print the stream of lexer tokens. Useful for debugging lexer rules.</td>
+            </tr>
+            <tr>
+                <td><code>--parse</code></td>
+                <td>Parse to AST and print a structured dump. Useful for debugging the grammar.</td>
+            </tr>
+            <tr>
+                <td><code>--check</code></td>
+                <td>Run the full analyzer (name resolution, types, capability discipline). Prints errors with source-aligned context, or <code>OK</code> on success.</td>
+            </tr>
+            <tr>
+                <td><code>--transpile</code></td>
+                <td>Emit equivalent Python 3.10+ source to stdout. Useful for understanding how Capa lowers a construct.</td>
+            </tr>
+            <tr>
+                <td><code>--run</code></td>
+                <td>Transpile and execute. This is the everyday flag.</td>
+            </tr>
+        </tbody>
+    </table>
+
+    <p>Common invocations:</p>
+
+<pre><code>$ python -m capa --check examples/io.capa
+OK
+
+$ python -m capa --run examples/grades.capa
+=== Roster ===
+  Ana: 17.5 (Excellent)
+  Bruno: 13.0 (Pass)
+  ...
+
+$ python -m capa --transpile examples/hello.capa | head -20</code></pre>
+</section>
+
+<!-- =====================================================
+     Programmatic use
+===================================================== -->
+<section>
+    <h2>Programmatic use</h2>
+
+    <p>The compiler is also a library. The four-stage pipeline is exposed directly so you can embed any stage into a host program.</p>
+
+<pre><code><span class="kw-decl">from</span> capa <span class="kw-decl">import</span> Lexer, Parser, analyze, transpile
+
+source = open(<span class="str">"program.capa"</span>, encoding=<span class="str">"utf-8"</span>).read()
+tokens = Lexer(source, filename=<span class="str">"program.capa"</span>).lex()
+module = Parser(tokens, source=source, filename=<span class="str">"program.capa"</span>).parse_module()
+
+result = analyze(module, source=source, filename=<span class="str">"program.capa"</span>)
+<span class="kw-ctrl">if</span> <span class="kw-ctrl">not</span> result.ok:
+    <span class="kw-ctrl">for</span> e <span class="kw-ctrl">in</span> result.errors:
+        print(e.format())
+<span class="kw-ctrl">else</span>:
+    code = transpile(module, filename=<span class="str">"program.capa"</span>)
+    print(code)</code></pre>
+</section>
+
+<!-- =====================================================
+     Editor support
+===================================================== -->
+<section>
+    <h2>Editor support</h2>
+
+    <p>A VSCode extension lives in the <code>vscode/</code> directory of the repository. It provides syntax highlighting (TextMate grammar) — keywords by category, distinct colour for built-in capabilities, string interpolation, operator highlighting including <code>..</code>, <code>..=</code>, <code>=&gt;</code>, and <code>?</code>. It is not on the VSCode Marketplace yet; install manually:</p>
+
+    <div class="code-compare">
+        <div class="code-block">
+            <div class="lang">macOS / Linux</div>
+<pre><code>$ ln -s "$(pwd)/vscode" ~/.vscode/extensions/capa-language</code></pre>
+        </div>
+        <div class="code-block">
+            <div class="lang">Windows (PowerShell)</div>
+<pre><code>PS&gt; New-Item -ItemType Junction `
+    -Path  "$HOME\.vscode\extensions\capa-language" `
+    -Target "$PWD\vscode"</code></pre>
+        </div>
+    </div>
+
+    <p>Reload VSCode and any <code>.capa</code> file will be highlighted. A full language server (diagnostics, hover, go-to-definition) is on the roadmap.</p>
+</section>
+
+<!-- =====================================================
+     Where to go next
+===================================================== -->
+<section>
+    <h2>Where to go next</h2>
+
+    <div class="doc-grid">
+        <a href="why.html" class="doc-card">
+            <h3>Read the case →</h3>
+            <p>Why Capa exists, what problem it addresses, and what it does <em>not</em> claim to solve.</p>
+        </a>
+        <a href="tour.html" class="doc-card">
+            <h3>Tour the language →</h3>
+            <p>A guided pass through the syntax: types, control flow, generics, capabilities, attenuation.</p>
+        </a>
+        <a href="https://github.com/nelsonduarte/capa/tree/main/examples" class="doc-card">
+            <h3>Read the examples →</h3>
+            <p>Twenty-one runnable Capa programs in the repository, from <code>hello.capa</code> to user-defined capabilities and the event-stream demo.</p>
+        </a>
+        <a href="../Capa-WhitePaper.md" class="doc-card">
+            <h3>Read the white paper →</h3>
+            <p>Technical rationale, design decisions, and the roadmap from v0.1 to a hypothetical v1.0.</p>
+        </a>
+    </div>
+</section>
+
+</main>
+
+<footer>
+    <div class="footer-grid">
+        <div>
+            <h4>Pages</h4>
+            <ul>
+                <li><a href="index.html">Home</a></li>
+                <li><a href="why.html">Why Capa</a></li>
+                <li><a href="tour.html">Language tour</a></li>
+                <li><a href="roadmap.html">Roadmap</a></li>
+            </ul>
+        </div>
+        <div>
+            <h4>Documentation</h4>
+            <ul>
+                <li><a href="getting-started.md">Getting started</a></li>
+                <li><a href="tutorial.md">Tutorial</a></li>
+                <li><a href="reference.md">Reference</a></li>
+                <li><a href="stdlib.md">Standard library</a></li>
+            </ul>
+        </div>
+        <div>
+            <h4>Specification</h4>
+            <ul>
+                <li><a href="../Capa-WhitePaper.md">White paper</a></li>
+                <li><a href="../Capa-EBNF.md">EBNF grammar</a></li>
+                <li><a href="demo-event-stream.md">Event-stream demo</a></li>
+            </ul>
+        </div>
+        <div>
+            <h4>Project</h4>
+            <ul>
+                <li><a href="https://github.com/nelsonduarte/capa">Source</a></li>
+                <li><a href="https://github.com/nelsonduarte/capa/blob/main/TODO.md">TODO / roadmap</a></li>
+                <li><a href="https://github.com/nelsonduarte/capa/blob/main/LICENSE">License (MIT)</a></li>
+            </ul>
+        </div>
+    </div>
+    <p class="colophon">Built by Nelson Duarte · v0.1.0-alpha · MIT-licensed</p>
+</footer>
+
+</body>
+</html>
