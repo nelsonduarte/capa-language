@@ -1,0 +1,44 @@
+// generics.capa — program that exercises generic inference.
+
+type Pair<A, B> {
+    first: A,
+    second: B
+}
+
+type Box<T> {
+    value: T
+}
+
+// Generic function: T is inferred from the argument.
+fun wrap<T>(x: T) -> Box<T>
+    return Box { value: x }
+
+// Generic function with multiple params.
+fun pair<A, B>(a: A, b: B) -> Pair<A, B>
+    return Pair { first: a, second: b }
+
+// Generic function returning Option.
+fun first<T>(xs: List<T>) -> Option<T>
+    return Some(xs[0])
+
+fun main(stdio: Stdio)
+    // Inference in a builtin variant constructor.
+    let r1 = Ok(42)              // Result<Int, ?>
+    let r2 = Err("failed")       // Result<?, String>
+    let o1 = Some(3.14)          // Option<Float>
+
+    // Inference in a simple generic function.
+    let n = first([1, 2, 3])
+    stdio.println("first: ${n}")
+
+    // Inference in a multi-param generic function.
+    let p = pair(1, "one")        // Pair<Int, String>
+    stdio.println("pair: ${p.first}, ${p.second}")
+
+    // Inference in a generic struct literal.
+    let c = Box { value: true }  // Box<Bool>
+    stdio.println("box: ${c.value}")
+
+    // Nested inference.
+    let wrapped = wrap(42)        // Box<Int>
+    stdio.println("wrapped: ${wrapped.value}")

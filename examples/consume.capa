@@ -1,0 +1,51 @@
+// consume.capa — examples of the `consume` qualifier.
+// Demonstrates the use-after-consume rule and fork/merge in branches.
+
+// adopt consumes the capability — after the call, the caller cannot use it.
+fun adopt(consume stdio: Stdio)
+    stdio.println("kept forever")
+
+// borrow (default): caller can keep using the capability afterwards.
+fun borrow(stdio: Stdio)
+    stdio.println("temporary")
+
+// ============================================================
+// 1. Correct use: adopt at the end
+fun use_then_adopt(stdio: Stdio)
+    borrow(stdio)
+    borrow(stdio)
+    adopt(stdio)
+    // OK: stdio was consumed on the last call.
+
+// ============================================================
+// 2. ERROR: use after consume
+fun error_use_after_consume(stdio: Stdio)
+    adopt(stdio)
+    stdio.println("this should fail")
+
+// ============================================================
+// 3. ERROR: pass to another function after consume
+fun error_repass(stdio: Stdio)
+    adopt(stdio)
+    borrow(stdio)
+
+// ============================================================
+// 4. ERROR in branch: consumed inside an if
+fun error_after_if(stdio: Stdio, cond: Bool)
+    if cond
+        adopt(stdio)
+    // After the if, stdio may have been consumed (in the then-branch),
+    // so we cannot use it below (conservative rule).
+    borrow(stdio)
+
+// ============================================================
+// 5. OK: both branches consume and nothing follows
+fun ok_branch_consume(stdio: Stdio, cond: Bool)
+    if cond
+        adopt(stdio)
+    else
+        adopt(stdio)
+    // No use afterwards — OK, even though both branches consumed.
+
+fun main(stdio: Stdio)
+    stdio.println("consume.capa")

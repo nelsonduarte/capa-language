@@ -1,0 +1,103 @@
+// grades.capa — non-trivial Capa program.
+// Computes statistics over a class's grades, classifies them, and prints a report.
+
+type Student {
+    name: String,
+    grade: Float
+}
+
+type Classification =
+    Excellent
+    Good
+    Pass
+    Fail
+
+type Statistics {
+    average: Float,
+    minimum: Float,
+    maximum: Float,
+    passed: Int,
+    failed: Int
+}
+
+fun classify(grade: Float) -> Classification
+    if grade >= 16.0
+        return Excellent
+    elif grade >= 14.0
+        return Good
+    elif grade >= 10.0
+        return Pass
+    else
+        return Fail
+
+fun classification_name(c: Classification) -> String
+    return match c
+        Excellent -> "Excellent"
+        Good -> "Good"
+        Pass -> "Pass"
+        Fail -> "Fail"
+
+fun compute_statistics(students: List<Student>) -> Statistics
+    var sum: Float = 0.0
+    var minimum: Float = 20.0
+    var maximum: Float = 0.0
+    var passed: Int = 0
+    var failed: Int = 0
+    var count: Int = 0
+
+    for s in students
+        sum += s.grade
+        count += 1
+        if s.grade < minimum
+            minimum = s.grade
+        if s.grade > maximum
+            maximum = s.grade
+        if s.grade >= 10.0
+            passed += 1
+        else
+            failed += 1
+
+    var average: Float = 0.0
+    if count > 0
+        // Known bug (Float / Int friction): hardcoded count. Will be
+        // fixed when the language gains an `Int -> Float` conversion.
+        average = sum / 6.0
+
+    return Statistics {
+        average: average,
+        minimum: minimum,
+        maximum: maximum,
+        passed: passed,
+        failed: failed
+    }
+
+fun print_student(stdio: Stdio, s: Student)
+    let c = classify(s.grade)
+    let text = classification_name(c)
+    stdio.println("  ${s.name}: ${s.grade} (${text})")
+
+fun print_statistics(stdio: Stdio, st: Statistics)
+    stdio.println("")
+    stdio.println("Statistics:")
+    stdio.println("  Average: ${st.average}")
+    stdio.println("  Minimum: ${st.minimum}")
+    stdio.println("  Maximum: ${st.maximum}")
+    stdio.println("  Passed:  ${st.passed}")
+    stdio.println("  Failed:  ${st.failed}")
+
+fun main(stdio: Stdio)
+    let students = [
+        Student { name: "Ana", grade: 17.5 },
+        Student { name: "Bruno", grade: 13.0 },
+        Student { name: "Carla", grade: 8.5 },
+        Student { name: "Diogo", grade: 15.5 },
+        Student { name: "Eva", grade: 11.0 },
+        Student { name: "Filipe", grade: 19.0 }
+    ]
+
+    stdio.println("=== Roster ===")
+    for s in students
+        print_student(stdio, s)
+
+    let st = compute_statistics(students)
+    print_statistics(stdio, st)

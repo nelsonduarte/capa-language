@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "capa"
+version = "0.1.0"
+description = "Capa — a capability-centric programming language"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [
+    { name = "Nelson Duarte", email = "nelson.duarte31@gmail.com" },
+]
+keywords = ["language", "compiler", "capabilities", "type-checker", "transpiler"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Compilers",
+    "Topic :: Software Development :: Interpreters",
+]
+
+[project.scripts]
+capa = "capa.cli:main"
+
+[project.urls]
+# Homepage = "..."
+# Repository = "..."
+
+[tool.setuptools]
+packages = ["capa", "capa.runtime"]

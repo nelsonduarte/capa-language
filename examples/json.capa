@@ -1,0 +1,44 @@
+// json.capa — JSON processing with extraction helpers.
+
+// Composed helper: extract a field from a JSON object
+fun field(j: JsonValue, name: String) -> Option<JsonValue>
+    return match j.as_object()
+        Some(m) -> m.get(name)
+        None -> None
+
+fun main(stdio: Stdio)
+    let input = "{\"app\": \"Capa Demo\", \"version\": 1, \"author\": \"Master Nelson\", \"tags\": [\"language\", \"capability\", \"safe\"], \"limits\": {\"max_files\": 100, \"timeout\": 30}}"
+
+    match parse_json(input)
+        Err(msg) -> stdio.eprintln("JSON parse error: ${msg}")
+        Ok(config) ->
+            // Compact access via helpers
+            match field(config, "app")
+                Some(v) -> match v.as_string()
+                    Some(name) -> stdio.println("app: ${name}")
+                    None -> stdio.println("app is not a string")
+                None -> stdio.println("(no 'app' field)")
+
+            match field(config, "tags")
+                Some(v) -> match v.as_array()
+                    Some(xs) ->
+                        stdio.println("tags (${xs.length()}):")
+                        for tag in xs
+                            match tag.as_string()
+                                Some(s) -> stdio.println("  - ${s}")
+                                None -> stdio.println("  - (non-string)")
+                    None -> stdio.println("tags is not an array")
+                None -> stdio.println("(no 'tags' field)")
+
+            // Re-serialise
+            stdio.println("")
+            stdio.println("compact: ${to_json(config)}")
+
+    // Build a JsonValue from scratch
+    let response: Map<String, JsonValue> = new_map()
+    response.set("status", JStr("ok"))
+    response.set("count", JNum(42.0))
+    response.set("active", JBool(true))
+    let json_output = to_json(JObj(response))
+    stdio.println("")
+    stdio.println("response: ${json_output}")

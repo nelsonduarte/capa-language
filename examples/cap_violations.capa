@@ -1,0 +1,38 @@
+// cap_violations.capa — program that violates the capability discipline.
+// Each top-level item should produce a distinct analyzer error.
+
+// 1. Capability as struct field — forbidden
+type Service {
+    stdio: Stdio,
+    name: String
+}
+
+// 2. Capability as variant payload — forbidden
+type Resource =
+    Text(String)
+    Output(Stdio)
+
+// 3. Capability as return type — forbidden
+fun make() -> Stdio
+    return Stdio { }
+
+// 4. Capability as constant type — forbidden
+const STDOUT: Stdio = Stdio { }
+
+// 5. Capability inside a generic type — forbidden
+fun cap_list() -> List<Stdio>
+    return []
+
+// 6. Capability bound in a local let — forbidden
+fun use_cap(stdio: Stdio)
+    let copy = stdio
+    copy.println("oops")
+
+// 7. Capability in var — forbidden
+fun move_cap(stdio: Stdio)
+    var s: Stdio = stdio
+    s.println("oops")
+
+// 8. Capability inside a tuple — forbidden
+fun in_tuple() -> (Stdio, Int)
+    return (Stdio { }, 0)

@@ -1,0 +1,30 @@
+// closures.capa — closures (lambdas) and higher-order functions.
+
+// Higher-order function: takes a function and applies it.
+fun apply(f: Fun(Int) -> Int, x: Int) -> Int
+    return f(x)
+
+// Composition of two functions: g ∘ f
+fun compose(f: Fun(Int) -> Int, g: Fun(Int) -> Int) -> Fun(Int) -> Int
+    return fun (x: Int) -> Int => g(f(x))
+
+fun main(stdio: Stdio)
+    // Closure bound in a let
+    let double = fun (x: Int) -> Int => x * 2
+    let inc = fun (x: Int) -> Int => x + 1
+
+    stdio.println("double(21) = ${double(21)}")
+    stdio.println("inc(41) = ${inc(41)}")
+
+    // Higher-order: pass closure as argument
+    let n = apply(double, 5)
+    stdio.println("apply(double, 5) = ${n}")
+
+    // Inline lambda as argument
+    let m = apply(fun (x: Int) -> Int => x * x, 7)
+    stdio.println("apply(square, 7) = ${m}")
+
+    // Function that returns a function
+    let double_then_inc = compose(double, inc)
+    stdio.println("double_then_inc(10) = ${double_then_inc(10)}")
+    stdio.println("double_then_inc(20) = ${double_then_inc(20)}")

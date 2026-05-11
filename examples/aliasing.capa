@@ -1,0 +1,21 @@
+// aliasing.capa — program that violates the v2 non-aliasing rule.
+// Each case should produce a distinct analyzer error.
+
+fun works_with_two(a: Stdio, b: Stdio)
+    a.println("a")
+    b.println("b")
+
+fun mixed(stdio: Stdio, fs: Fs, other: Stdio)
+    stdio.println("a")
+    let _ = fs.exists("x")
+    other.println("b")
+
+fun main(stdio: Stdio, fs: Fs)
+    // 1. Same capability passed as two arguments
+    works_with_two(stdio, stdio)
+
+    // 2. Same capability as receiver and argument
+    stdio.println_ext(stdio)
+
+    // 3. Aliasing between multiple slots (stdio in 1 and 3)
+    mixed(stdio, fs, stdio)

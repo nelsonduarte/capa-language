@@ -1,0 +1,30 @@
+// python_interop.capa — demonstrates the Capa/Python boundary.
+//
+// Any call into Python code must cross the `Unsafe` capability, which
+// is obtained in `main` and propagated explicitly. The function that
+// crosses the boundary makes this visible in its signature — exactly
+// the kind of evidence an auditor looks for.
+//
+// Contrast this with the forbidden alternative: a top-level `import math`
+// would give *every* function access to the Python module without it
+// being flagged in their API. That's why Capa v1 rejects direct `import`
+// and forces interop through `py_import(unsafe, ...)` and
+// `py_invoke(unsafe, ...)`.
+
+// Bridge function: crosses the boundary to call Python's math.sqrt.
+// The `unsafe: Unsafe` in the signature is the audit marker.
+fun square_root(unsafe: Unsafe, x: Float) -> Float
+    let math = py_import(unsafe, "math")
+    return py_invoke(unsafe, math.sqrt, [x])
+
+// Pure Capa function, no Python boundary. All arithmetic is native.
+fun circle_area(radius: Float) -> Float
+    return 3.14159 * radius * radius
+
+fun main(stdio: Stdio, unsafe: Unsafe)
+    // The Unsafe capability was obtained in main and propagated explicitly.
+    let r = square_root(unsafe, 16.0)
+    stdio.println("sqrt(16) = ${r}")
+
+    let a = circle_area(2.0)
+    stdio.println("area(r=2) = ${a}")

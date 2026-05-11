@@ -1,0 +1,49 @@
+// stdlib_string.capa — builtin methods on String.
+
+fun main(stdio: Stdio)
+    let text = "  Hello, Capa World  "
+
+    // Length and trim
+    stdio.println("length = ${text.length()}")
+    let t = text.trim()
+    stdio.println("trim = '${t}'")
+
+    // Casing
+    stdio.println("upper = ${t.to_upper()}")
+    stdio.println("lower = ${t.to_lower()}")
+
+    // Predicates
+    let prefix = "Hello"
+    let suffix = "World"
+    stdio.println("starts? ${t.starts_with(prefix)}")
+    stdio.println("ends? ${t.ends_with(suffix)}")
+    let needle = "Capa"
+    let has_it = t.contains(needle)
+    stdio.println("contains 'Capa'? ${has_it}")
+
+    // Split and replace
+    let csv = "one,two,three"
+    let sep = ","
+    let parts = csv.split(sep)
+    stdio.println("parts: ${parts.length()}")
+    var i = 0
+    for p in parts
+        stdio.println("  [${i}] = ${p}")
+        i += 1
+
+    let original = "hello world"
+    let target = "world"
+    let repl = "Capa"
+    let updated = original.replace(target, repl)
+    stdio.println("replace = ${updated}")
+
+    // Chaining
+    let normalised = "  Hello   World  ".trim().to_lower()
+    stdio.println("normalised = '${normalised}'")
+
+    // Counting words
+    let phrase = "the quick brown fox jumps over the lazy dog"
+    let space = " "
+    let words = phrase.split(space)
+    let n_words = words.length()
+    stdio.println("'${phrase}' has ${n_words} words")

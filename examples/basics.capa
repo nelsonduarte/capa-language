@@ -1,0 +1,36 @@
+// basics.capa — exercises several language constructs
+
+const VERSION: String = "1.0"
+
+type Color =
+    Red
+    Green
+    Blue
+
+type Point {
+    x: Float,
+    y: Float
+}
+
+fun squared_distance(a: Point, b: Point) -> Float
+    let dx = a.x - b.x
+    let dy = a.y - b.y
+    return dx * dx + dy * dy
+
+fun classify(c: Color) -> String
+    match c
+        Red -> "warm"
+        Blue -> "cold"
+        Green -> "neutral"
+
+fun main(stdio: Stdio)
+    let p1 = Point { x: 0.0, y: 0.0 }
+    let p2 = Point { x: 3.0, y: 4.0 }
+    let d = squared_distance(p1, p2)
+    stdio.println("distance squared = ${d}")
+
+    var i = 0
+    while i < 10
+        if i % 2 == 0
+            stdio.println("even: ${i}")
+        i += 1

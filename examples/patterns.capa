@@ -1,0 +1,43 @@
+// patterns.capa — advanced pattern matching: tuples, nested, strings.
+
+// Function returning a (success, message) pair
+fun process(n: Int) -> (Bool, String)
+    if n > 0
+        return (true, "positive")
+    else
+        return (false, "non-positive")
+
+// Dispatcher-style function: receives the command as a string
+fun execute(cmd: String, stdio: Stdio)
+    match cmd
+        "help" -> stdio.println("commands: help, list, quit")
+        "list" -> stdio.println("nothing listed yet")
+        "quit" -> stdio.println("goodbye")
+        _ -> stdio.println("unknown command: ${cmd}")
+
+fun main(stdio: Stdio)
+    // Tuple deconstruction in let
+    let (ok, msg) = process(42)
+    stdio.println("${msg} (${ok})")
+
+    let (ok2, msg2) = process(-5)
+    stdio.println("${msg2} (${ok2})")
+
+    // Match over tuples with partial bindings
+    let pairs = [(1, "a"), (2, "b"), (3, "c")]
+    for p in pairs
+        match p
+            (1, s) -> stdio.println("first: ${s}")
+            (n, s) -> stdio.println("entry ${n}: ${s}")
+
+    // Nested pattern: variant inside a tuple
+    let data: (Option<Int>, String) = (Some(42), "value")
+    match data
+        (Some(n), label) -> stdio.println("${label} = ${n}")
+        (None, label) -> stdio.println("${label} = ?")
+
+    // Match with string literals — dispatcher
+    execute("help", stdio)
+    execute("list", stdio)
+    execute("nonsense", stdio)
+    execute("quit", stdio)

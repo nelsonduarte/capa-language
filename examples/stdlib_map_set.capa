@@ -1,0 +1,53 @@
+// stdlib_map_set.capa — Map<K, V> and Set<T> with builtin methods.
+
+fun main(stdio: Stdio)
+    // ====== Map<String, Int>: word counting ======
+    let phrase = "the quick brown fox jumps over the lazy dog the fox"
+    let space = " "
+    let words = phrase.split(space)
+
+    let counts: Map<String, Int> = new_map()
+    for w in words
+        match counts.get(w)
+            Some(n) -> counts.set(w, n + 1)
+            None -> counts.set(w, 1)
+
+    stdio.println("word counts:")
+    let keys = counts.keys()
+    for k in keys
+        match counts.get(k)
+            Some(n) -> stdio.println("  ${k} -> ${n}")
+            None -> stdio.println("  ${k} -> ?")
+
+    // ====== Set<String>: unique words ======
+    let unique: Set<String> = new_set()
+    for w in words
+        unique.add(w)
+
+    stdio.println("")
+    stdio.println("${unique.length()} distinct words in ${words.length()} words")
+
+    // ====== Map<String, Int>: bucketing ======
+    let nums = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+    let even = "even"
+    let odd = "odd"
+    let buckets: Map<String, Int> = new_map()
+    buckets.set(even, 0)
+    buckets.set(odd, 0)
+    for n in nums
+        if n % 2 == 0
+            match buckets.get(even)
+                Some(c) -> buckets.set(even, c + 1)
+                None -> buckets.set(even, 1)
+        else
+            match buckets.get(odd)
+                Some(c) -> buckets.set(odd, c + 1)
+                None -> buckets.set(odd, 1)
+
+    stdio.println("")
+    match buckets.get(even)
+        Some(n) -> stdio.println("${n} evens")
+        None -> stdio.println("?")
+    match buckets.get(odd)
+        Some(n) -> stdio.println("${n} odds")
+        None -> stdio.println("?")

@@ -1,0 +1,79 @@
+// tasks.capa — canonical example from the EBNF specification.
+// Demonstrates struct, sum type, trait, impl, guarded match, sum-type
+// pattern matching, capabilities, and JSON serialization through the
+// Capa stdlib (without crossing the Python boundary).
+
+type Priority =
+    Low
+    Medium
+    High
+
+type Task {
+    id: Int,
+    title: String,
+    priority: Priority,
+    done: Bool
+}
+
+trait Persistable
+    fun save(self, fs: Fs, path: String) -> Result<Unit, IoError>
+    fun load(fs: Fs, path: String) -> Result<Task, IoError>
+
+fun priority_to_json(p: Priority) -> JsonValue
+    return match p
+        Low -> JStr("Low")
+        Medium -> JStr("Medium")
+        High -> JStr("High")
+
+fun priority_from_string(s: String) -> Priority
+    return match s
+        "High" -> High
+        "Medium" -> Medium
+        _ -> Low
+
+impl Persistable for Task
+    fun save(self, fs: Fs, path: String) -> Result<Unit, IoError>
+        let fields: Map<String, JsonValue> = new_map()
+        // Note: JNum requires Float. A future Capa version will have a
+        // builtin `to_float(Int)`; for now, serialising IDs as strings
+        // avoids the cast.
+        fields.set("id", JStr("${self.id}"))
+        fields.set("title", JStr(self.title))
+        fields.set("priority", priority_to_json(self.priority))
+        fields.set("done", JBool(self.done))
+        let payload = to_json(JObj(fields))
+        return fs.write(path, payload)
+
+    fun load(fs: Fs, path: String) -> Result<Task, IoError>
+        let payload = fs.read(path)?
+        // parse_json returns Result<JsonValue, String>. To match the
+        // trait signature (Result<Task, IoError>), we convert the parse
+        // failure into an IoError.
+        match parse_json(payload)
+            Err(msg) ->
+                return Err(IoError("invalid json"))
+            Ok(JObj(m)) ->
+                return Ok(Task {
+                    id: 0,
+                    title: "stub",
+                    priority: Low,
+                    done: false
+                })
+            Ok(_) ->
+                return Err(IoError("expected JSON object"))
+
+fun classify_urgency(t: Task) -> String
+    return match t.priority
+        High if not t.done -> "urgent"
+        High -> "high (done)"
+        Medium -> "normal"
+        Low -> "deferrable"
+
+fun main(stdio: Stdio)
+    let tasks = [
+        Task { id: 1, title: "Review article", priority: High, done: false },
+        Task { id: 2, title: "Buy bread", priority: Low, done: false }
+    ]
+    for t in tasks
+        let urgency = classify_urgency(t)
+        stdio.println("${t.title}: ${urgency}")

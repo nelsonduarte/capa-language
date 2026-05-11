@@ -1,0 +1,47 @@
+// interactive.capa — interactive program: reads input, processes it, responds.
+
+fun ask(stdio: Stdio, prompt: String) -> Option<String>
+    stdio.print(prompt)
+    return match stdio.read_line()
+        Ok(line) -> Some(line.trim())
+        Err(_) -> None
+
+fun main(stdio: Stdio)
+    // Ask for the name
+    let name = match ask(stdio, "What's your name? ")
+        Some(s) -> s
+        None -> "anonymous"
+
+    // Ask for the age, with validation
+    let age = match ask(stdio, "How old are you? ")
+        Some(s) -> match parse_int(s)
+            Some(n) -> n
+            None -> 0
+        None -> 0
+
+    // Greeting
+    stdio.println("")
+    stdio.println("Hello, ${name}! You are ${age} years old.")
+
+    if age < 18
+        stdio.println("You are a minor.")
+    elif age < 65
+        stdio.println("You are an adult.")
+    else
+        stdio.println("You are a senior.")
+
+    stdio.println("")
+    stdio.println("Available commands: hi, age, quit")
+    var keep_going = true
+    while keep_going
+        match ask(stdio, "> ")
+            Some(cmd) -> match cmd
+                "hi" -> stdio.println("hi back, ${name}")
+                "age" -> stdio.println("your age is ${age}")
+                "quit" ->
+                    stdio.println("goodbye, ${name}!")
+                    keep_going = false
+                "" -> stdio.println("(empty command)")
+                _ -> stdio.println("unknown command: '${cmd}'")
+            None ->
+                keep_going = false

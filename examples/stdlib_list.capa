@@ -1,0 +1,35 @@
+// stdlib_list.capa — builtin methods on List<T>: map, filter, fold,
+// length, push, contains.
+
+fun main(stdio: Stdio)
+    let xs = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+
+    stdio.println("xs has ${xs.length()} elements")
+    stdio.println("contains 7? ${xs.contains(7)}")
+    stdio.println("contains 99? ${xs.contains(99)}")
+
+    // map: transform each element
+    let squares = xs.map(fun (x: Int) -> Int => x * x)
+    stdio.println("square of 5 = ${squares[4]}")
+
+    // filter: keep only the ones satisfying the predicate
+    let evens = xs.filter(fun (x: Int) -> Bool => x % 2 == 0)
+    stdio.println("${evens.length()} even numbers in xs")
+
+    // fold: reduce to a single value
+    let total = xs.fold(0, fun (acc: Int, x: Int) -> Int => acc + x)
+    stdio.println("sum of 1..10 = ${total}")
+
+    let product = xs.fold(1, fun (acc: Int, x: Int) -> Int => acc * x)
+    stdio.println("10! = ${product}")
+
+    // Multi-line chaining (idiomatic)
+    let doubled_evens_total = xs
+        .filter(fun (x: Int) -> Bool => x % 2 == 0)
+        .fold(0, fun (acc: Int, x: Int) -> Int => acc + x * 2)
+    stdio.println("doubled sum of evens = ${doubled_evens_total}")
+
+    // Strings too
+    let words = ["hello", "world", "capa"]
+    let lengths = words.map(fun (s: String) -> Int => 0)
+    stdio.println("we have ${lengths.length()} words")

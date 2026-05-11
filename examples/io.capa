@@ -1,0 +1,43 @@
+// io.capa — Capa program that exercises the ? operator and Result.
+// Reads a file, counts lines and words, writes a report.
+
+fun count_lines(text: String) -> Int
+    var count: Int = 1
+    for c in text
+        if c == '\n'
+            count += 1
+    return count
+
+fun process(fs: Fs, input_path: String, output_path: String) -> Result<Int, IoError>
+    let payload = fs.read(input_path)?
+    let n_lines = count_lines(payload)
+    let report = "Lines: ${n_lines}\n"
+    fs.write(output_path, report)?
+    return Ok(n_lines)
+
+fun main(stdio: Stdio, fs: Fs)
+    let input = "/tmp/capa_input.txt"
+    let output = "/tmp/capa_output.txt"
+
+    let initial = "line 1\nline 2\nline 3\n"
+    let written = fs.write(input, initial)
+    match written
+        Ok(_) ->
+            stdio.println("input file created at ${input}")
+        Err(e) ->
+            stdio.eprintln("failed to create input: ${e}")
+            return
+
+    let result = process(fs, input, output)
+    match result
+        Ok(n) ->
+            stdio.println("processing complete: ${n} lines")
+            let final = fs.read(output)
+            match final
+                Ok(text) ->
+                    stdio.println("report:")
+                    stdio.println(text)
+                Err(e) ->
+                    stdio.eprintln("failed to read report back: ${e}")
+        Err(e) ->
+            stdio.eprintln("processing error: ${e}")

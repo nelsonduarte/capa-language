@@ -1,0 +1,38 @@
+// errors.capa — program with several semantic errors for the type checker
+// to catch. This file is NOT well-formed; it is a test fixture for the
+// analyzer.
+
+import json
+
+type Color =
+    Red
+    Green
+    Blue
+
+type Point {
+    x: Float,
+    y: Float
+}
+
+const PI: Float = "string instead of number"
+
+fun add(a: Int, b: Int) -> Int
+    return a + b
+
+fun various_errors() -> Int
+    let x: Int = 3.14                 // mismatch: Float into Int
+    let y = add(1, 2, 3)              // wrong arity
+    let z = add("a", 1)               // wrong type
+    let p = Point { x: 1.0 }          // missing field y
+    let q = Point { x: 1.0, y: 2.0, z: 3.0 }   // unknown field z
+    let r = does_not_exist            // undefined name
+
+    if 42                             // condition is not Bool
+        return 1
+
+    var i = 0
+    PI = 3.0                          // assignment to constant
+    let immutable = 1
+    immutable = 2                     // assignment to 'let'
+
+    return "string"                   // wrong return type
