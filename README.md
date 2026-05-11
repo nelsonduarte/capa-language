@@ -5,7 +5,7 @@
 [![python: >=3.10](https://img.shields.io/badge/python-%3E%3D3.10-blue.svg)](pyproject.toml)
 
 A complete front-end for the **Capa** programming language: lexer, parser,
-semantic analyzer, Python transpiler, and runtime — all hand-written in
+semantic analyzer, Python transpiler and runtime, all hand-written in
 Python.
 
 **For the first time, Capa programs run.**
@@ -365,18 +365,18 @@ to test a transpiler.
   permissive `TyUnknown` fallback.
 
   | Capability | Methods | Return |
-  |---|---|---|
-  | `Stdio` | `print`, `println`, `eprintln(s: String)` | `()` |
-  | `Stdio` | `read_line()` | `Result<String, IoError>` |
-  | `Fs` | `read(p: String)` | `Result<String, IoError>` |
-  | `Fs` | `write(p: String, c: String)` | `Result<(), IoError>` |
-  | `Fs` | `exists(p: String)` | `Bool` |
-  | `Env` | `get(name: String)` | `Option<String>` |
-  | `Env` | `args()` | `List<String>` |
-  | `Clock` | `now_secs()`, `now_monotonic()` | `Float` |
-  | `Clock` | `sleep(seconds: Float)` | `()` |
-  | `Random` | `int_range(low: Int, high: Int)` | `Int` |
-  | `Random` | `float_unit()` | `Float` |
+  |----------|-------------------------------------------|---------------------------|
+  | `Stdio`  | `print`, `println`, `eprintln(s: String)` | `()`                      |
+  | `Stdio`  | `read_line()`                             | `Result<String, IoError>` |
+  | `Fs`     | `read(p: String)`                         | `Result<String, IoError>` |
+  | `Fs`     | `write(p: String, c: String)`             | `Result<(), IoError>`     |
+  | `Fs`     | `exists(p: String)`                       | `Bool`                    |
+  | `Env`    | `get(name: String)`                       | `Option<String>`          |
+  | `Env`    | `args()`                                  | `List<String>`            |
+  | `Clock`  | `now_secs()`, `now_monotonic()`           | `Float`                   |
+  | `Clock`  | `sleep(seconds: Float)`                   | `()`                      |
+  | `Random` | `int_range(low: Int, high: Int)`          | `Int`                     |
+  | `Random` | `float_unit()`                            | `Float`                   |
 
   Consequence: `clock.sleep(1)` is now an error (expects Float).
   `fs.read(42)` is an error (expects String). And
