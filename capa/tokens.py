@@ -108,7 +108,8 @@ class TokenKind(Enum):
     ARROW = auto()        # ->
     FAT_ARROW = auto()    # =>  (reserved for future use)
     QUESTION = auto()     # ?
-    DOT_DOT = auto()      # ..
+    DOT_DOT = auto()      # ..   (exclusive-end range)
+    DOT_DOT_EQ = auto()   # ..=  (inclusive-end range)
     DOT = auto()          # .
     COMMA = auto()        # ,
     COLON = auto()        # :

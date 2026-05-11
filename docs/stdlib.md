@@ -54,6 +54,32 @@ infers the type from the first `push`.
 
 Index access: `xs[i]` (no bounds checking — use `get(i)` for safe access).
 
+### Range expressions
+
+`a..b` (exclusive of `b`) and `a..=b` (inclusive) produce a
+`List<Int>` materialised from the half-open / closed integer range.
+Both endpoints must be `Int`. Float endpoints are deliberately
+excluded.
+
+```capa
+for i in 0..10            // 0, 1, 2, ..., 9
+    stdio.println("${i}")
+
+for i in 1..=5            // 1, 2, 3, 4, 5
+    stdio.println("${i}")
+
+let n = 4
+let xs = (n - 1)..(n * 2) // 3..8 — arithmetic endpoints
+
+let evens = (0..10).filter(fun (x: Int) -> Bool => x % 2 == 0)
+                              // ranges support the full List API
+```
+
+Range precedence sits between addition and comparison, so
+`1+2..5+3` parses as `(1+2)..(5+3)` and `a..b == c..d` as
+`(a..b) == (c..d)`. Range itself is non-associative — `a..b..c` is
+a syntax error.
+
 ---
 
 ## `Map<K, V>`

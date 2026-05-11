@@ -337,6 +337,54 @@ class TestMatchExpression(unittest.TestCase):
         self.assertEqual(out, "dois\n")
 
 
+class TestRangeExpressions(unittest.TestCase):
+    """Range expressions: `0..n` (exclusive) and `0..=n` (inclusive).
+    Tested via end-to-end execution since the materialised List<Int>
+    semantics depend on Python's range() behaviour."""
+
+    def test_exclusive_range_loop(self):
+        rc, out, err = run_capa(
+            'fun main(stdio: Stdio)\n'
+            '    var total: Int = 0\n'
+            '    for i in 0..5\n'
+            '        total = total + i\n'
+            '    stdio.println("${total}")\n'
+        )
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out, "10\n")  # 0+1+2+3+4
+
+    def test_inclusive_range_loop(self):
+        rc, out, err = run_capa(
+            'fun main(stdio: Stdio)\n'
+            '    var total: Int = 0\n'
+            '    for i in 1..=5\n'
+            '        total = total + i\n'
+            '    stdio.println("${total}")\n'
+        )
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out, "15\n")  # 1+2+3+4+5
+
+    def test_range_length(self):
+        rc, out, err = run_capa(
+            'fun main(stdio: Stdio)\n'
+            '    stdio.println("${(0..10).length()}")\n'
+            '    stdio.println("${(0..=10).length()}")\n'
+        )
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out, "10\n11\n")
+
+    def test_range_in_pipeline(self):
+        rc, out, err = run_capa(
+            'fun main(stdio: Stdio)\n'
+            '    let evens = (0..10).filter(fun (x: Int) -> Bool => x % 2 == 0)\n'
+            '    let total = evens.fold(0, fun (a: Int, x: Int) -> Int => a + x)\n'
+            '    stdio.println("${evens.length()}")\n'
+            '    stdio.println("${total}")\n'
+        )
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out, "5\n20\n")  # 5 evens (0,2,4,6,8), sum 20
+
+
 class TestInlineMatch(unittest.TestCase):
     """Inline match form: ``match scrutinee { p -> e, p -> e, ... }``.
 

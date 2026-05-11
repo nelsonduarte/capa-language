@@ -44,7 +44,7 @@ Capa/
 │   ├── transpiler.py      # codegen for Python 3.10+
 │   └── runtime/
 │       └── __init__.py    # Result, Option, Stdio, Fs, ..., Unsafe, py_import
-├── tests/                 # 409 unit + end-to-end tests
+├── tests/                 # 419 unit + end-to-end tests
 │   ├── test_lexer.py
 │   ├── test_parser.py
 │   ├── test_analyzer.py
@@ -135,7 +135,7 @@ else:
 python -m unittest discover tests
 ```
 
-**409 tests** (lexer + parser + analyzer + transpiler). The transpiler
+**419 tests** (lexer + parser + analyzer + transpiler). The transpiler
 suite actually *executes* the generated Python and checks stdout — the
 only honest way to test a transpiler.
 
@@ -162,7 +162,6 @@ only honest way to test a transpiler.
 
 - **`if`/`while`/`for` are statements**. The ternary
   `if cond then a else b` is the only expression form of `if`.
-- **Range expressions** (`a..b`, `a..=b`) are not implemented.
 
 ### Lexer / Parser
 

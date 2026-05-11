@@ -698,12 +698,14 @@ let cat = if n > 0 then "+" else if n < 0 then "-" else "0"
 
 The else-branch may itself be another `if_expr`, giving the natural right-associative chaining shown above.
 
-#### 5.12.3 Comparisons and arithmetic
+#### 5.12.3 Comparisons, ranges, and arithmetic
 
 ```ebnf
-compare_expr = add_expr [ compare_op add_expr ]
+compare_expr = range_expr [ compare_op range_expr ]
 
 compare_op = "==" | "!=" | "<" | "<=" | ">" | ">="
+
+range_expr = add_expr [ ( ".." | "..=" ) add_expr ]
 
 add_expr = mul_expr { ( "+" | "-" ) mul_expr }
 
@@ -714,6 +716,8 @@ unary_expr = ( "-" | "+" ) unary_expr
 ```
 
 Comparisons in Capa do not chain: `1 < x < 10` is a syntax error (because `<` is not associative under this grammar). To chain, write `1 < x and x < 10`. This restriction avoids subtle ambiguities.
+
+The `range_expr` production allows integer ranges. `a..b` is exclusive of `b`, `a..=b` is inclusive. Range itself is non-associative — `a..b..c` is a syntax error — and sits below comparisons in precedence, so `0..n == 0..m` parses as `(0..n) == (0..m)`. The value of a range expression has type `List<Int>` (materialised at runtime); the full `List<T>` API applies. Endpoints must be `Int`; Float endpoints are rejected at type-check time.
 
 #### 5.12.4 Postfix: calls, indexing, access
 
@@ -797,10 +801,11 @@ The table is ordered from lowest precedence (at the top, binding most loosely) t
 | 3 | `and` | Left |
 | 4 | `not` (unary) | — |
 | 5 | `==`  `!=`  `<`  `<=`  `>`  `>=` | Non-associative |
-| 6 | `+`  `-`  (binary) | Left |
-| 7 | `*`  `/`  `%` | Left |
-| 8 | `+`  `-`  (unary) | Right |
-| 9 (highest) | `.`  `()`  `[]`  `?`  (postfix) | Left |
+| 6 | `..`  `..=`  (range) | Non-associative |
+| 7 | `+`  `-`  (binary) | Left |
+| 8 | `*`  `/`  `%` | Left |
+| 9 | `+`  `-`  (unary) | Right |
+| 10 (highest) | `.`  `()`  `[]`  `?`  (postfix) | Left |
 
 ### 6.2 Notes on associativity
 
@@ -1063,7 +1068,8 @@ The following tokens are recognised by the lexer using the maximal munch rule. T
 | `->` | Structural | Return type; match arm |
 | `=>` | Structural | Lambda body separator (`fun (...) -> R => body`) |
 | `?` | Postfix | Result propagation |
-| `..` | Structural | Spread in patterns and structs |
+| `..` | Range / structural | Exclusive integer range `a..b`; also spread in patterns and structs |
+| `..=` | Range | Inclusive integer range `a..=b` |
 | `\|` | Pattern separator | Or-pattern alternatives in match arms |
 | `.` | Structural | Field / method access; module path |
 | `,` | Punctuation | Separator in lists, args, fields |

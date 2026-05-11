@@ -613,6 +613,15 @@ class Transpiler:
             return f"({then_e} if {cond} else {else_e})"
         if isinstance(e, A.LambdaExpr):
             return self._emit_lambda(e)
+        if isinstance(e, A.RangeExpr):
+            start = self._emit_expr(e.start)
+            end = self._emit_expr(e.end)
+            # `a..=b` is inclusive; Python's range stops one before the
+            # second argument, so we add 1. Wrap the result in CapaList
+            # so all List methods (length, map, filter, fold, ...)
+            # transparently apply.
+            stop = f"({end}) + 1" if e.inclusive else end
+            return f"CapaList(range({start}, {stop}))"
         raise TranspilerError(f"unsupported expression: {type(e).__name__}")
 
     def _emit_lambda(self, e: A.LambdaExpr) -> str:

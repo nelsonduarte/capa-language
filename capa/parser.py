@@ -1033,11 +1033,11 @@ class Parser:
         return self._parse_comparison()
 
     def _parse_comparison(self) -> A.Expr:
-        left = self._parse_additive()
+        left = self._parse_range()
         if self._peek().kind in _COMPARISON_OPS:
             op_tok = self._advance()
             op = _COMPARISON_OPS[op_tok.kind]
-            right = self._parse_additive()
+            right = self._parse_range()
             # Non-associative: reject if another comparison operator follows.
             if self._peek().kind in _COMPARISON_OPS:
                 next_tok = self._peek()
@@ -1047,6 +1047,28 @@ class Parser:
                     next_tok,
                 )
             return A.BinOp(pos=left.pos, op=op, left=left, right=right)
+        return left
+
+    def _parse_range(self) -> A.Expr:
+        """Range expression: ``start..end`` (exclusive) or
+        ``start..=end`` (inclusive). Non-associative — chained ranges
+        like ``a..b..c`` are not allowed and would be a syntax error.
+        Sits between comparison and addition in the precedence ladder,
+        so ``1+2..5+3`` parses as ``(1+2)..(5+3)``.
+        """
+        left = self._parse_additive()
+        if self._check(T.DOT_DOT):
+            start_tok = self._advance()
+            end = self._parse_additive()
+            return A.RangeExpr(
+                pos=start_tok.start, start=left, end=end, inclusive=False,
+            )
+        if self._check(T.DOT_DOT_EQ):
+            start_tok = self._advance()
+            end = self._parse_additive()
+            return A.RangeExpr(
+                pos=start_tok.start, start=left, end=end, inclusive=True,
+            )
         return left
 
     def _parse_additive(self) -> A.Expr:

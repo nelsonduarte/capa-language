@@ -281,6 +281,17 @@ class IfExpr(Expr):
 
 
 @dataclass(kw_only=True)
+class RangeExpr(Expr):
+    """A range expression: ``a..b`` (exclusive of ``b``) or ``a..=b``
+    (inclusive of ``b``). v1 supports only integer endpoints; the value
+    has type ``List<Int>`` (materialised) so all List methods apply.
+    """
+    start: Expr
+    end: Expr
+    inclusive: bool  # True for ..=, False for ..
+
+
+@dataclass(kw_only=True)
 class ReturnStmt(Stmt):
     value: Optional[Expr] = None
 

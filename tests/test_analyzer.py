@@ -1882,6 +1882,83 @@ class TestParseFunctions(unittest.TestCase):
         )
 
 
+class TestRangeExpressions(unittest.TestCase):
+    """Range expressions: `a..b` (exclusive) and `a..=b` (inclusive).
+    Endpoints must be Int; the result has type List<Int> (materialised)."""
+
+    def test_exclusive_range_is_list_int(self):
+        from capa import Lexer, Parser, analyze, ty_str
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    let xs = 0..10\n"
+            "    stdio.println(\"${xs.length()}\")\n"
+        )
+        tokens = Lexer(src).lex()
+        module = Parser(tokens, source=src).parse_module()
+        result = analyze(module, source=src)
+        self.assertTrue(result.ok, result.errors)
+        let_xs = module.items[0].body.stmts[0]
+        self.assertEqual(
+            ty_str(result.types[id(let_xs.value)]), "List<Int>"
+        )
+
+    def test_inclusive_range_is_list_int(self):
+        from capa import Lexer, Parser, analyze, ty_str
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    let xs = 1..=5\n"
+            "    stdio.println(\"${xs.length()}\")\n"
+        )
+        tokens = Lexer(src).lex()
+        module = Parser(tokens, source=src).parse_module()
+        result = analyze(module, source=src)
+        self.assertTrue(result.ok, result.errors)
+        let_xs = module.items[0].body.stmts[0]
+        self.assertEqual(
+            ty_str(result.types[id(let_xs.value)]), "List<Int>"
+        )
+
+    def test_range_with_arithmetic_endpoints(self):
+        r = check(
+            "fun main(stdio: Stdio)\n"
+            "    let n = 5\n"
+            "    let xs = (n - 1)..(n * 2)\n"
+            "    stdio.println(\"${xs.length()}\")\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+    def test_range_with_float_left_rejected(self):
+        msgs = errors_of(
+            "fun main(stdio: Stdio)\n"
+            "    let xs = 1.0..10\n"
+            "    stdio.println(\"${xs.length()}\")\n"
+        )
+        self.assertTrue(
+            any("requires Int endpoints" in m and "left side" in m for m in msgs),
+            msgs,
+        )
+
+    def test_range_with_string_right_rejected(self):
+        msgs = errors_of(
+            "fun main(stdio: Stdio)\n"
+            "    let xs = 0..\"ten\"\n"
+            "    stdio.println(\"${xs.length()}\")\n"
+        )
+        self.assertTrue(
+            any("requires Int endpoints" in m and "right side" in m for m in msgs),
+            msgs,
+        )
+
+    def test_range_chains_with_list_methods(self):
+        # `(0..10).filter(...)` — range value supports the full List API.
+        r = check(
+            "fun main(stdio: Stdio)\n"
+            "    let evens = (0..10).filter(fun (x: Int) -> Bool => x % 2 == 0)\n"
+            "    stdio.println(\"${evens.length()}\")\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+
 class TestNumericConversions(unittest.TestCase):
     """to_float(Int) -> Float and to_int(Float) -> Int are the explicit
     bridges between numeric types (Capa has no implicit coercion)."""

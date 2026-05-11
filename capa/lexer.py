@@ -747,7 +747,10 @@ class Lexer:
         if c == ".":
             self._advance()
             if self._consume("."):
-                self._emit(TokenKind.DOT_DOT, "..", start)
+                if self._consume("="):
+                    self._emit(TokenKind.DOT_DOT_EQ, "..=", start)
+                else:
+                    self._emit(TokenKind.DOT_DOT, "..", start)
             else:
                 self._emit(TokenKind.DOT, ".", start)
             return

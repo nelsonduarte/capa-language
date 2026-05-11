@@ -2518,8 +2518,34 @@ class Analyzer:
             return self._check_if_expr(e)
         if isinstance(e, A.LambdaExpr):
             return self._check_lambda(e)
+        if isinstance(e, A.RangeExpr):
+            return self._check_range(e)
         self._err(f"unknown expression {type(e).__name__}", e.pos)
         return TyUnknown
+
+    def _check_range(self, e: A.RangeExpr) -> Ty:
+        """Range expressions ``a..b`` / ``a..=b`` evaluate to a
+        ``List<Int>`` in v1. Both endpoints must be ``Int`` (Float ranges
+        are deliberately excluded because precision around the endpoint
+        is awkward). The result is fully materialised by the transpiler
+        so all ``List<T>`` methods apply.
+        """
+        start_ty = self._check_expr(e.start)
+        end_ty = self._check_expr(e.end)
+        op = "..=" if e.inclusive else ".."
+        if not compatible(TyInt, start_ty):
+            self._err(
+                f"range '{op}' requires Int endpoints; "
+                f"left side has type {ty_str(start_ty)}",
+                e.start.pos,
+            )
+        if not compatible(TyInt, end_ty):
+            self._err(
+                f"range '{op}' requires Int endpoints; "
+                f"right side has type {ty_str(end_ty)}",
+                e.end.pos,
+            )
+        return TyName("List", (TyInt,))
 
     def _check_ident(self, e: A.Ident) -> Ty:
         sym = self.scope.lookup(e.name)
