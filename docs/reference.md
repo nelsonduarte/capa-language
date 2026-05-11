@@ -196,13 +196,11 @@ match scrutinee
     pat1 -> body1
     pat2 -> body2
 
-// match (expression, multi-line)
+// match (expression, multi-line; only legal as the RHS of `return` or
+// `let`, since match itself is parsed as a statement in v1)
 let r = match scrutinee
     pat1 -> expr1
     pat2 -> expr2
-
-// match (expression, inline)
-let r = match scrutinee { pat1 -> expr1, pat2 -> expr2 }
 
 // break / continue (only inside loops)
 break
@@ -253,8 +251,9 @@ statement.
 
 ### 4.3. `match` as an expression
 
-Multi-line or inline. Each arm of the match evaluates to a value; all
-arms must have compatible types.
+Multi-line only (each arm on its own line, indented). Each arm of the
+match evaluates to a value; all arms must have compatible types. An
+inline brace form is not supported in v1.
 
 ### 4.4. Lambdas
 

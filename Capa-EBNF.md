@@ -213,6 +213,8 @@ RAW_STRING_LIT = "r\"" { any_char_except_quote } "\""
   (* variants with # to include quotes: r#"..."#, r##"..."##, ... *)
 ```
 
+> **Not in 1.0.** The grammar reserves the syntax, but the current lexer does not yet recognise raw strings. Programs that need a literal backslash should escape it (`"\\"`). Raw strings will land in a later version.
+
 #### 3.4.5 Character literals
 
 ```ebnf
@@ -239,8 +241,9 @@ The following words are reserved by the language and cannot be used as identifie
 | Category | Words |
 |---|---|
 | Declarations | `fun`, `type`, `trait`, `impl`, `capability`, `const`, `pub`, `import`, `as` |
-| Control flow | `if`, `elif`, `else`, `match`, `while`, `for`, `in`, `break`, `continue`, `return` |
+| Control flow | `if`, `then`, `elif`, `else`, `match`, `while`, `for`, `in`, `break`, `continue`, `return` |
 | Variables | `let`, `var` |
+| Capability discipline | `consume` |
 | Literal values | `true`, `false` |
 | Logical operators | `and`, `or`, `not` |
 | Self and types | `self`, `Self` |
@@ -256,9 +259,10 @@ The operator and punctuation tokens are recognised by the lexer using the maxima
 |---|---|
 | Arithmetic | `+`, `-`, `*`, `/`, `%` |
 | Comparison | `==`, `!=`, `<`, `<=`, `>`, `>=` |
-| Logical | `and`, `or`, `not` (words); `&&` and `||` do not exist |
+| Logical | `and`, `or`, `not` (words); `&&` and `\|\|` do not exist |
 | Assignment | `=`, `+=`, `-=`, `*=`, `/=`, `%=` |
-| Structural | `.`  `,`  `;`  `:`  `->`  `=>`  `?` |
+| Structural | `.`  `,`  `;`  `:`  `->`  `=>`  `?`  `..` |
+| Pattern | `\|`  (* or-pattern separator, only in match arms *) |
 | Delimiters | `( )`  `[ ]`  `{ }`  `< >` (in type args) |
 | Special | `_`  (* underscore as wildcard in patterns *) |
 
@@ -361,6 +365,8 @@ import_decl = "import" module_path [ "as" IDENT ] NEWLINE
 module_path = IDENT { "." IDENT }
 ```
 
+> **Status of `import` in 1.0.** The grammar accepts `import` syntactically, but the semantic analyzer rejects every occurrence with an error directing the user to `py_import(unsafe, "...")` instead. The reason is the capability discipline: transpiling `import` directly to a Python `import` would let any function in the program call into the imported module's globals without an `Unsafe` capability, punching a hole through the entire system. The `import` form is reserved for a future Capa module system; until that lands, the only legitimate crossing of the Python boundary is the `py_import` / `py_invoke` pair (see `docs/stdlib.md`), both of which require `Unsafe`.
+
 ### 5.2 Function declarations
 
 Functions are the dominant unit of abstraction in Capa. A function declaration has optional visibility, the keyword `fun`, a name, optional type parameters, a parameter list, an optional return type, and a block as its body.
@@ -379,8 +385,11 @@ trait_bound = qualified_name [ type_args ]
 
 param_list = param { "," param } [ "," ]
 
-param = IDENT ":" type
+param = [ "consume" ] IDENT ":" type
+      | "self"                          (* method receiver, type implicit *)
 ```
+
+The optional `consume` qualifier marks the parameter as taking ownership of the passed value (typically a capability). After a call to such a function, the caller can no longer use the argument it passed. This is enforced by the semantic analyzer's linearity check, not the grammar; see the Capabilities chapter of the white paper for details.
 
 Relevant notes. The return type is syntactically optional; if omitted, the type is inferred as `Unit` (the function does not return a useful value) — except in public functions, where a later semantic phase requires the explicit annotation. The trailing comma in `param_list` is allowed to facilitate clean diffs.
 
@@ -479,12 +488,12 @@ tuple_type = "(" ")"                                  (* Unit *)
            | "(" type "," ")"                          (* 1-tuple *)
            | "(" type "," type { "," type } [ "," ] ")"
 
-function_type = "fun" "(" [ type { "," type } ] ")" "->" type
+function_type = "Fun" "(" [ type { "," type } ] ")" "->" type
 
 qualified_name = IDENT { "." IDENT }
 ```
 
-Note that `List`, `Option`, `Result` and `Map` are not keywords — they are merely generic types defined in the standard library. The syntax `List<Int>` is an ordinary `named_type` with type arguments. This uniformity simplifies the grammar.
+Note that `List`, `Option`, `Result`, `Map`, and `Fun` are not keywords — they are merely generic types / built-in type constructors defined by the language and the standard library. The syntax `List<Int>` is an ordinary `named_type` with type arguments; `Fun(Int, Int) -> Int` is the dedicated `function_type` production. This uniformity simplifies the grammar (and keeps `fun`, the lowercase keyword, distinct from `Fun`, the uppercase type constructor).
 
 ### 5.9 Block and statements
 
@@ -531,7 +540,7 @@ for_stmt = "for" pattern "in" expression block
 
 match_stmt = "match" expression NEWLINE INDENT match_arm { match_arm } DEDENT
 
-match_arm = pattern [ "if" expression ]   (* optional guard *)
+match_arm = match_arm_pattern [ "if" expression ]   (* optional guard *)
     "->" ( expression NEWLINE | block )
 
 return_stmt = "return" [ expression ] NEWLINE
@@ -560,7 +569,6 @@ pattern = literal_pattern
         | tuple_pattern
         | ctor_pattern
         | struct_pattern
-        | or_pattern
 
 literal_pattern = INT_LIT | FLOAT_LIT | STRING_LIT | CHAR_LIT | BOOL_LIT
 
@@ -573,14 +581,23 @@ tuple_pattern = "(" pattern { "," pattern } [ "," ] ")"
 ctor_pattern = qualified_name [ "(" [ pattern { "," pattern } ] ")" ]
 
 struct_pattern = qualified_name "{" field_pattern { "," field_pattern }
-    [ "," ".." ] "}"
+    [ "," "..." ] "}"
 
 field_pattern = IDENT [ ":" pattern ]
 
-or_pattern = pattern "|" pattern { "|" pattern }
+(* Or-patterns are only valid at the match-arm level, not as nested
+   patterns. See the match_arm production in 5.10. *)
+match_arm_pattern = pattern { "|" pattern }
 ```
 
-Notes. A `binding_pattern` (a single identifier) binds the value to the name throughout the scope of the match arm or `let`. The wildcard `_` matches any value without binding anything. The `or_pattern` (`a | b`) matches if any alternative matches; all alternatives must bind exactly the same names (a later semantic check).
+Notes. A `binding_pattern` (a single identifier) binds the value to the name throughout the scope of the match arm or `let`. The wildcard `_` matches any value without binding anything.
+
+Or-patterns at match-arm level (`A | B | C -> body`) match if *any* alternative matches. The analyzer enforces two consistency rules at the binding level:
+
+- Every alternative must bind exactly the same set of names.
+- Each shared name must have a compatible type across all alternatives.
+
+`Add(n) | Sub(n) | Mul(n) -> n` is valid (every alternative binds `n: Int`). `Some(x) | None -> ...` is rejected (`None` does not bind `x`). `AsInt(x) | AsStr(x) -> ...` is rejected (the types of `x` differ).
 
 ### 5.12 Expressions
 
@@ -592,15 +609,31 @@ Expressions are presented in layers, from lowest precedence to highest. This for
 expression = lambda_expr
            | ternary_expr
 
-lambda_expr = "(" [ lambda_params ] ")" "->" expression
+lambda_expr = "fun" "(" [ param_list ] ")" [ "->" type ] "=>" lambda_body
 
-lambda_params = IDENT [ ":" type ] { "," IDENT [ ":" type ] }
+lambda_body = expression                  (* single-expression body *)
+            | NEWLINE INDENT { statement } DEDENT   (* block body *)
 ```
+
+Notes. The leading `fun` keyword makes lambdas trivially distinguishable from `paren_expr` — the parser does not need lookahead or backtracking (this supersedes the older Python-style `(params) -> expr` form). The return-type annotation is optional and inferred from the body when omitted.
+
+The block body shape allows multi-statement closures with explicit `return`:
+
+```capa
+let log = fun (x: Int) -> Int =>
+    stdio.println("got ${x}")
+    return x * 10
+```
+
+Closures capture their lexical environment. Captured capabilities are *borrowed* (the analyzer rejects `consume` on a capture, since a closure may run multiple times but a capability may only be consumed once — the same distinction as Rust's `Fn` vs `FnOnce`). Capabilities accepted as parameters of the closure itself are not captures and may be consumed.
 
 #### 5.12.2 Ternary expression and logical operators
 
 ```ebnf
-ternary_expr = or_expr [ "if" or_expr "else" expression ]
+ternary_expr = if_expr
+             | or_expr
+
+if_expr = "if" or_expr "then" expression "else" expression
 
 or_expr = and_expr { "or" and_expr }
 
@@ -610,7 +643,13 @@ not_expr = "not" not_expr
          | compare_expr
 ```
 
-The ternary expression `x if cond else y` is a restricted syntactic form, in the Python style, that produces a value based on a condition. It is the only form of "if as expression" in Capa.
+The ternary `if cond then e1 else e2` is the only form of "if as expression" in Capa. The `then` keyword is the disambiguator: an `if` followed by an indented block is a statement (Section 5.10); an `if` followed by `then` is an expression. Both `then` and `else` are required (there is no one-sided expression form).
+
+```capa
+let cat = if n > 0 then "+" else if n < 0 then "-" else "0"
+```
+
+The else-branch may itself be another `if_expr`, giving the natural right-associative chaining shown above.
 
 #### 5.12.3 Comparisons and arithmetic
 
@@ -691,6 +730,8 @@ The ambiguity between `map_expr` (map literal with braces) and `block_expr` (blo
 ### 5.13 Documentation comments
 
 Documentation comments (`///` for a line, `/** ... */` for a block) are syntactically comments — the lexer recognises them. But, unlike normal comments, they are preserved and associated with the immediately following declaration. The syntactic grammar does not model them explicitly; the parser attaches them to the AST as metadata.
+
+> **Not in 1.0.** The lexer currently treats `///` and `/**` exactly like regular line/block comments and discards them. Reservation of the syntax is deliberate so that future versions can attach doc strings to declarations without breaking source compatibility.
 
 ---
 
@@ -785,9 +826,9 @@ Already mentioned in 5.12.5: the comma resolves it. `(x)` is an expression; `(x,
 
 ### 7.5 Lambda vs. paren_expr
 
-A lambda starts with `(`. An expression in parentheses starts with `(`. How to distinguish? The answer: the presence of `->` after the closing parenthesis. The parser may need lookahead to find the `->` and classify the construct, but since all tokens between the parentheses are consumed before the decision, the complexity is linear in the size of the expression.
+In the current grammar there is no ambiguity: a lambda always starts with the `fun` keyword (`fun (params) -> Ret => body`), and a parenthesised expression starts with `(`. The two are trivially distinguishable with a single-token lookahead.
 
-In implementation, the simple approach is to try parsing as a lambda and fall back to an expression if the `->` does not appear. In a recursive descent parser, this is a controlled form of backtracking.
+This is a deliberate design choice over a Python-style `(params) -> expr` lambda — which would force the parser into backtracking (every `(` could start either a paren expression or a lambda, and you only know at the closing `)` followed by `->`). Reusing the `fun` keyword keeps lookahead constant.
 
 ---
 
@@ -799,9 +840,6 @@ This chapter presents a complete Capa program, with a progressive derivation thr
 
 ```capa
 // task_manager.capa — canonical example to illustrate the grammar
-
-import json
-import datetime as dt
 
 type Priority =
     Low
@@ -821,47 +859,49 @@ trait Persistable
 
 impl Persistable for Task
     fun save(self, fs: Fs, path: String) -> Result<Unit, IoError>
-        let content = json.serialize(self)
-        return fs.write(path, content)
+        return fs.write(path, self.title)
 
     fun load(fs: Fs, path: String) -> Result<Task, IoError>
         let content = fs.read(path)?
-        return json.parse(content)
+        return Ok(Task {
+            id: 0,
+            title: content,
+            priority: Low,
+            completed: false
+        })
 
 fun classify_urgency(t: Task) -> String
-    match t.priority
+    return match t.priority
         High if not t.completed -> "urgent"
         High -> "high (completed)"
         Medium -> "normal"
         Low -> "deferrable"
 
-fun main(fs: Fs, stdio: Stdio)
+fun main(stdio: Stdio)
     let tasks = [
         Task { id: 1, title: "Review paper", priority: High, completed: false },
         Task { id: 2, title: "Buy bread", priority: Low, completed: false }
     ]
     for t in tasks
         let urgency = classify_urgency(t)
-        stdio.print("${t.title}: ${urgency}")
+        stdio.println("${t.title}: ${urgency}")
 ```
 
 ### 8.2 Line-by-line syntactic analysis
 
 The following is, in compact form, the derivation of the most relevant elements of the program in terms of the grammar rules.
 
-Lines 1 and 3-4 are imports, derived from `import_decl`. Line 4 illustrates the optional use of `as`: `import datetime as dt` produces `IDENT "datetime"` as the module and `IDENT "dt"` as the alias.
+Lines 3-6 declare a sum type: `type_decl` with `sum_body`. The production is `"type" IDENT sum_body`, where `sum_body` begins with `"=" NEWLINE INDENT` followed by three `sum_variant`s (`Low`, `Medium`, `High`), each without `variant_payload`.
 
-Lines 6-9 declare a sum type: `type_decl` with `sum_body`. The production is `"type" IDENT sum_body`, where `sum_body` begins with `"=" NEWLINE INDENT` followed by three `sum_variant`s (`Low`, `Medium`, `High`), each without `variant_payload`.
+Lines 8-13 declare a struct: `type_decl` with `struct_body`. The syntactic difference between the two is that `sum_body` begins with `"="` and `struct_body` begins with `"{"`. The parser distinguishes them with a single lookahead token.
 
-Lines 11-16 declare a struct: `type_decl` with `struct_body`. The syntactic difference between the two is that `sum_body` begins with `"="` and `struct_body` begins with `"{"`. The parser distinguishes them with a single lookahead token.
+Lines 15-17 declare a trait with two `function_signature`s (no body, ending in `NEWLINE`). The `load` function does not have a `self` parameter and has `Self` in its return type — a feature indicating an associated function on the type (not an instance method).
 
-Lines 18-20 declare a trait with two `function_signature`s (no body, ending in `NEWLINE`). Note that the `load` function does not have a `self` parameter and has `Self` in its return type — a feature indicating an associated function on the type (not an instance method).
+Lines 19-29 are an `impl_decl` that satisfies the `Persistable` trait for the `Task` type. Each function in the body is a complete `function_decl`. Line 24 (`let content = fs.read(path)?`) illustrates the `?` operator applied to the return of a postfix call — the inferred return type of the enclosing function (`Result<Task, IoError>`) is what makes the propagation well-typed.
 
-Lines 22-29 are an `impl_decl` that satisfies the `Persistable` trait for the `Task` type. Each function in the body is a complete `function_decl`. Line 28 (`let content = fs.read(path)?`) illustrates the `?` operator applied to the return of a postfix call.
+Lines 31-36 declare a function `classify_urgency` whose body is a single `return match` (a `return_stmt` whose value is a `match_stmt` derived as an expression). Note the guard on the first arm (`High if not t.completed -> ...`): the syntax allows matches to be filtered by an additional condition, with no need to nest an `if` inside the block.
 
-Lines 31-35 declare a function `classify_urgency`, whose body consists of a single `match_stmt`. Note the guard on the first arm (`High if not t.completed -> ...`): the syntax allows matches to be filtered by an additional condition, with no need to nest an `if` inside the block.
-
-Lines 37-43 declare the function `main` with two capabilities (`Fs` and `Stdio`). The body illustrates a multi-line list literal, a `for_stmt` with a single identifier pattern, and string interpolation.
+Lines 38-44 declare the function `main` with the `Stdio` capability. The body illustrates a multi-line list literal, a `for_stmt` with a single identifier pattern, and string interpolation. Note that `main` does not take `Fs` here even though the impl block uses it — the must-use rule (Capability Flow, layer v2) would reject an unused capability parameter. Capabilities only travel down through the call graph as they are actually needed.
 
 ### 8.3 Token sequence (summary)
 
@@ -904,6 +944,7 @@ The following words are reserved by the Capa 1.0 language and cannot be used as 
 | `let` | Immutable binding | In use |
 | `var` | Mutable binding | In use |
 | `if` | Conditional | In use |
+| `then` | Ternary `if-then-else` discriminator | In use |
 | `elif` | Chained conditional | In use |
 | `else` | Alternative | In use |
 | `match` | Pattern matching | In use |
@@ -920,6 +961,7 @@ The following words are reserved by the Capa 1.0 language and cannot be used as 
 | `not` | Logical negation | In use |
 | `self` | Current instance | In use |
 | `Self` | Type of the current instance | In use |
+| `consume` | Ownership-transfer parameter qualifier | In use |
 | `async` | Asynchronous function | Reserved for future use |
 | `await` | Awaiting a future | Reserved for future use |
 | `yield` | Generators | Reserved for future use |
@@ -952,10 +994,11 @@ The following tokens are recognised by the lexer using the maximal munch rule. T
 | `*=` | Compound assignment | Analogous |
 | `/=` | Compound assignment | Analogous |
 | `%=` | Compound assignment | Analogous |
-| `->` | Structural | Return type; lambda; match arm |
-| `=>` | Reserved | No use in 1.0; reserved |
+| `->` | Structural | Return type; match arm |
+| `=>` | Structural | Lambda body separator (`fun (...) -> R => body`) |
 | `?` | Postfix | Result propagation |
 | `..` | Structural | Spread in patterns and structs |
+| `\|` | Pattern separator | Or-pattern alternatives in match arms |
 | `.` | Structural | Field / method access; module path |
 | `,` | Punctuation | Separator in lists, args, fields |
 | `:` | Punctuation | Type annotation; map entry |

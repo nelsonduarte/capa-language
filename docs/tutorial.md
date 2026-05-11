@@ -136,18 +136,18 @@ fun describe(n: Int) -> String
         _ -> "other"
 ```
 
-Inline form with braces:
-
-```capa
-let s = match n { 0 -> "zero", _ -> "other" }
-```
-
 `_` is the wildcard that matches any value. Or-patterns (`A | B`)
-allow grouping cases:
+allow grouping cases at the arm level:
 
 ```capa
-let r = match cmd { "h" | "help" | "?" -> "help", _ -> "other" }
+fun describe(cmd: String) -> String
+    return match cmd
+        "h" | "help" | "?" -> "help"
+        _ -> "other"
 ```
+
+Each alternative of an or-pattern must bind the same set of names (so
+`Add(n) | Sub(n)` works, `Add(n) | NoOp` does not).
 
 ---
 
