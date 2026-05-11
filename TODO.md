@@ -13,10 +13,10 @@ impact within the next 1–2 milestones · **P2** = nice to have ·
 
 Bridge from "working alpha" to "shareable v0.2 alpha". Three pieces:
 
-- [ ] **Demo: "Capa would have caught X"** — pick a real supply-chain
-  attack (xz, event-stream, ua-parser-js, log4shell) and show the
-  Capa version where the discipline blocks it. Highest payoff
-  per hour. Becomes a blog post / talk / WhitePaper section. ⏱ 3-5h
+- [x] **Demo: "Capa would have caught X"** — event-stream (Nov 2018).
+  Safe Capa library in `examples/demo_event_stream.capa`; writeup
+  with attack-attempt code + analyzer rejections in
+  `docs/demo-event-stream.md`; cross-referenced from README.
 - [ ] **VSCode syntax highlighting** (`.tmLanguage.json` grammar +
   package extension). Minimum viable: keywords + strings + comments
   + numbers. No LSP yet. ⏱ 2-3h

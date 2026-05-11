@@ -574,6 +574,15 @@ class TestTranspileExamples(unittest.TestCase):
         self.assertEqual(rc, 0, err)
         self.assertIn("sent welcome email", out)
 
+    def test_demo_event_stream(self):
+        # The supply-chain-attack walkthrough. The .capa file is the
+        # *safe* version of the library; the matching writeup in
+        # docs/demo-event-stream.md is what shows what the analyzer
+        # rejects.
+        rc, out, err = self._run_example("examples/demo_event_stream.capa")
+        self.assertEqual(rc, 0, err)
+        self.assertIn("flat_map produced 9 words from 2 lines", out)
+
     def test_net_attenuation(self):
         rc, out, err = self._run_example("examples/net_attenuation.capa")
         self.assertEqual(rc, 0, err)

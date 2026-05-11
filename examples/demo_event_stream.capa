@@ -1,0 +1,47 @@
+// demo_event_stream.capa — the event-stream npm supply-chain attack,
+// in Capa. The companion writeup is docs/demo-event-stream.md.
+//
+// In November 2018, the popular npm package `event-stream` (~2M weekly
+// downloads) was used to ship a Bitcoin-wallet-stealing payload into
+// the Copay wallet app. A new maintainer added an obfuscated
+// dependency that activated only inside a specific host application
+// and exfiltrated wallet keys to a remote server. The supply-chain
+// audit had been "yes, event-stream is a stream library; harmless".
+//
+// In Capa the same library cannot mount that attack, because its
+// signature would have to advertise the authorities it would need
+// (network, environment) to a level the audit could not miss. The
+// language structurally rules out the *class* of attack.
+
+// =============================================================
+// What a Capa version of the library actually looks like.
+// =============================================================
+// `flat_map` is the operation event-stream existed to provide:
+// given a list of records and a function that turns one record into
+// many, produce a flattened list. Nothing else.
+//
+// The signature says everything: data in, data out. No Net, no Fs,
+// no Env. The body cannot reach for any of them — none are in scope.
+fun flat_map(lines: List<String>, f: Fun(String) -> List<String>) -> List<String>
+    let result: List<String> = []
+    for line in lines
+        for out in f(line)
+            result.push(out)
+    return result
+
+// A typical caller: split each line into words. Pure data flow.
+fun explode_words(lines: List<String>) -> List<String>
+    return flat_map(lines, fun (line: String) -> List<String> => line.split(" "))
+
+// =============================================================
+// `main` — also pure of capabilities except Stdio for the demo print.
+// =============================================================
+fun main(stdio: Stdio)
+    let input = [
+        "the quick brown fox",
+        "jumps over the lazy dog"
+    ]
+    let words = explode_words(input)
+    stdio.println("flat_map produced ${words.length()} words from ${input.length()} lines")
+    stdio.println("first word: ${words.first()}")
+    stdio.println("last word:  ${words.last()}")

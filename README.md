@@ -10,6 +10,11 @@ Python.
 
 **For the first time, Capa programs run.**
 
+> **What would Capa have caught?** A walkthrough of the
+> [event-stream npm supply-chain attack](docs/demo-event-stream.md)
+> from 2018, showing concretely how the language structurally
+> prevents that class of attack.
+
 ```bash
 $ python -m capa --run examples/grades.capa
 === Roster ===
@@ -44,17 +49,18 @@ Capa/
 │   ├── transpiler.py      # codegen for Python 3.10+
 │   └── runtime/
 │       └── __init__.py    # Result, Option, Stdio, Fs, ..., Unsafe, py_import
-├── tests/                 # 419 unit + end-to-end tests
+├── tests/                 # 420 unit + end-to-end tests
 │   ├── test_lexer.py
 │   ├── test_parser.py
 │   ├── test_analyzer.py
 │   └── test_transpiler.py # transpile and execute Capa programs
-├── examples/              # 20 .capa files demonstrating the language
+├── examples/              # 21 .capa files demonstrating the language
 │   ├── hello.capa         # hello world
 │   ├── basics.capa        # several constructs
 │   ├── tasks.capa         # canonical EBNF example
 │   ├── grades.capa        # non-trivial program (~110 lines)
 │   ├── io.capa            # exercises Result and the ? operator
+│   ├── demo_event_stream.capa # supply-chain attack walkthrough (see docs/)
 │   ├── net_attenuation.capa  # capability attenuation (WhitePaper §4.3)
 │   ├── user_capabilities.capa # user-defined capabilities (WhitePaper §4.6)
 │   ├── python_interop.capa# Python boundary under the Unsafe capability
@@ -135,7 +141,7 @@ else:
 python -m unittest discover tests
 ```
 
-**419 tests** (lexer + parser + analyzer + transpiler). The transpiler
+**420 tests** (lexer + parser + analyzer + transpiler). The transpiler
 suite actually *executes* the generated Python and checks stdout — the
 only honest way to test a transpiler.
 
