@@ -5,6 +5,7 @@
     "fileTypes": ["capa"],
     "patterns": [
         { "include": "#comments" },
+        { "include": "#attributes" },
         { "include": "#strings" },
         { "include": "#chars" },
         { "include": "#keywords" },
@@ -22,6 +23,18 @@
                 {
                     "name": "comment.line.double-slash.capa",
                     "match": "//.*$"
+                }
+            ]
+        },
+
+        "attributes": {
+            "patterns": [
+                {
+                    "match": "(@)([A-Za-z_][A-Za-z0-9_]*)",
+                    "captures": {
+                        "1": { "name": "punctuation.definition.attribute.capa" },
+                        "2": { "name": "entity.name.function.decorator.capa" }
+                    }
                 }
             ]
         },

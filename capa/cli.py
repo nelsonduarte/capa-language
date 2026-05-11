@@ -22,6 +22,7 @@ from pathlib import Path
 from capa import (
     Lexer, LexerError, Parser, TokenKind, analyze, ast_dump, transpile,
 )
+from capa.manifest import build_manifest
 
 
 # ANSI colors for terminal highlighting
@@ -84,6 +85,15 @@ def main() -> int:
         help="transpile and execute the program (calls main with capabilities)",
     )
     parser.add_argument(
+        "--manifest",
+        action="store_true",
+        help=(
+            "emit a JSON capability manifest: per-function declared "
+            "capabilities, attributes, signature, and the user-defined "
+            "capability declarations and their implementors"
+        ),
+    )
+    parser.add_argument(
         "--no-color",
         action="store_true",
         help="disable ANSI colors in the output",
@@ -127,7 +137,13 @@ def main() -> int:
             print(e.format(), file=sys.stderr)
         return 1
 
-    if args.parse or args.check or args.transpile or args.run:
+    if (
+        args.parse
+        or args.check
+        or args.transpile
+        or args.run
+        or args.manifest
+    ):
         try:
             module = Parser(
                 tokens, source=source, filename=filename
@@ -140,7 +156,7 @@ def main() -> int:
             return 1
 
     result = None
-    if args.check or args.run:
+    if args.check or args.run or args.manifest:
         # Semantic analysis is required before running.
         result = analyze(module, source=source, filename=filename)
         if not result.ok:
@@ -158,6 +174,11 @@ def main() -> int:
             else:
                 print(msg, file=sys.stderr)
             return 1
+        if args.manifest:
+            import json
+            manifest = build_manifest(module, filename=filename)
+            print(json.dumps(manifest, indent=2))
+            return 0
         if args.check and not args.run:
             n_items = len(module.items)
             n_typed = len(result.types)

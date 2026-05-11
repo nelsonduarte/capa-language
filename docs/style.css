@@ -276,6 +276,7 @@ pre code {
 .fn-name       { color: var(--code-fn); font-weight: 600; }
 .fn-call       { color: var(--code-fn); }
 .variant       { color: var(--code-variant); }
+.attr          { color: var(--accent); font-weight: 600; }
 
 /* ============================================================
    Side-by-side code comparison
@@ -580,10 +581,11 @@ footer {
 }
 
 /* ============================================================
-   CLI flag table (start page)
+   CLI flag table (start page) + CRA mapping table (manifest page)
    ============================================================ */
 
-.cli-table {
+.cli-table,
+.cra-table {
     width: 100%;
     border-collapse: collapse;
     margin: 1.25rem 0;
@@ -591,14 +593,17 @@ footer {
 }
 
 .cli-table th,
-.cli-table td {
+.cli-table td,
+.cra-table th,
+.cra-table td {
     text-align: left;
     padding: 0.6rem 0.9rem;
     border-bottom: 1px solid var(--border);
     vertical-align: top;
 }
 
-.cli-table thead th {
+.cli-table thead th,
+.cra-table thead th {
     color: var(--fg-bright);
     font-weight: 600;
     border-bottom: 1px solid var(--accent);
@@ -618,8 +623,14 @@ footer {
     color: inherit;
 }
 
-.cli-table td:last-child {
+.cli-table td:last-child,
+.cra-table td {
     color: var(--fg-dim);
+}
+
+.cra-table td:first-child {
+    color: var(--fg);
+    width: 42%;
 }
 
 /* ============================================================

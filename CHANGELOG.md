@@ -11,6 +11,44 @@ breaking changes and the discipline is still being shaped.
 
 ### Added
 
+- **Function attributes** (`@security`, `@deprecated`, `@audited`) as
+  static, source-level metadata. Attributes appear on lines
+  immediately before a `fun` declaration (top-level or method inside
+  an `impl`), can stack, and accept keyword-style string arguments:
+
+  ```
+  @security(cve: "CVE-2024-12345", severity: "high")
+  @audited(date: "2026-05-11", by: "Nelson Duarte")
+  fun verify_token(token: String, expected: String) -> Bool
+      return token == expected
+  ```
+
+  The analyzer rejects unknown attribute names, unknown keys, and
+  duplicates. The v1 catalogue is fixed: `security`, `deprecated`,
+  `audited`.
+
+- **`python -m capa --manifest`** — emits a JSON capability manifest
+  describing, for every function in the program: its signature,
+  the capabilities it declares, whether it crosses the `Unsafe`
+  boundary, and any attached attributes. Module-level entries
+  include user-defined capability declarations and their
+  implementors, plus a summary count.
+
+  Designed as a CRA-aligned audit artefact: other languages cannot
+  emit this because the authority graph is not in their type
+  system; in Capa, it falls out of the analyser for free. The
+  format is schema-versioned (currently `schema_version: 1`).
+
+- **`examples/manifest_demo.capa`** — a small program showing the
+  attribute syntax and a manifest worth reading. Covers a
+  user-defined capability and its implementor, an audited method,
+  a function with a `@security` annotation, a deprecated function,
+  a pure function with no caps, an `Unsafe`-crossing function,
+  and a clean entry point.
+
+- **VSCode highlighting** for `@attribute` syntax in the bundled
+  extension.
+
 - Repository security hardening: Dependabot vulnerability alerts and
   automated security updates, secret scanning with push protection,
   GitHub private vulnerability reporting, CodeQL workflow

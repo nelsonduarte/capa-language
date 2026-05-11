@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Capability manifest — Capa</title>
+    <meta name="description" content="Capa emits a JSON capability manifest: every function's declared authority, its attributes, and whether it crosses the Unsafe boundary. The artefact an EU Cyber Resilience Act auditor wants.">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header>
+    <nav>
+        <a href="index.html" class="logo">Capa</a>
+        <div class="nav-links">
+            <a href="index.html">Home</a>
+            <a href="why.html">Why Capa</a>
+            <a href="tour.html">Language tour</a>
+            <a href="manifest.html" class="current">Manifest</a>
+            <a href="start.html">Get started</a>
+            <a href="roadmap.html">Roadmap</a>
+            <a href="https://github.com/nelsonduarte/capa" class="github">GitHub</a>
+        </div>
+    </nav>
+</header>
+
+<main>
+
+<div class="page-heading">
+    <h1>Capability manifest</h1>
+    <p>A machine-readable description of every function's declared authorities, attached metadata, and boundary crossings — emitted directly by the compiler. Designed as an audit artefact for the EU Cyber Resilience Act era.</p>
+</div>
+
+<!-- =====================================================
+     The artefact CRA needs
+===================================================== -->
+<section>
+    <h2>What CRA asks for, in plain terms</h2>
+
+    <p>The EU Cyber Resilience Act, in full application from December 2027, requires manufacturers of "products with digital elements" to demonstrate <strong>security by design and by default</strong>, supply a machine-readable <strong>SBOM</strong>, document the product's security properties, and maintain that documentation across the product lifecycle. The expectation is not "your code is secure": it is "you can show, with evidence, what your code is allowed to do."</p>
+
+    <p>That last sentence is the hard one. Existing SBOM formats (SPDX, CycloneDX) describe <em>which components</em> are in a product. They do not describe <em>what each component is authorised to do</em>. The information simply does not exist in the source — no mainstream language carries it in the type system.</p>
+
+    <p>Capa does. The capability manifest is the export of that information into a stable, schema-versioned JSON document.</p>
+</section>
+
+<!-- =====================================================
+     A concrete example
+===================================================== -->
+<section>
+    <h2>A concrete example</h2>
+
+    <p>Take a small Capa program with a known security history:</p>
+
+<pre><code><span class="attr">@security</span>(
+    cve: <span class="str">"CVE-2024-99999"</span>,
+    severity: <span class="str">"high"</span>,
+    fixed_in: <span class="str">"0.2.0"</span>,
+    description: <span class="str">"previous implementation was vulnerable to a timing attack"</span>
+)
+<span class="kw-decl">fun</span> <span class="fn-name">verify_token</span>(token: <span class="ty-primitive">String</span>, expected: <span class="ty-primitive">String</span>) -&gt; <span class="ty-primitive">Bool</span>
+    <span class="kw-ctrl">return</span> token == expected
+
+<span class="kw-decl">fun</span> <span class="fn-name">fetch_user</span>(net: <span class="cap">Net</span>, id: <span class="ty-primitive">String</span>) -&gt; <span class="ty-builtin">Result</span>&lt;<span class="ty-primitive">String</span>, <span class="ty-builtin">IoError</span>&gt;
+    <span class="kw-ctrl">return</span> net.<span class="fn-call">get</span>(<span class="str">"https://api.example.com/users/${id}"</span>)
+
+<span class="kw-decl">fun</span> <span class="fn-name">token_length</span>(token: <span class="ty-primitive">String</span>) -&gt; <span class="ty-primitive">Int</span>
+    <span class="kw-ctrl">return</span> token.<span class="fn-call">length</span>()</code></pre>
+
+    <p>Run it through the compiler with the new flag:</p>
+
+<pre><code>$ python -m capa --manifest verify.capa</code></pre>
+
+    <p>You get, on stdout:</p>
+
+<pre><code>{
+  <span class="str">"capa_version"</span>: <span class="str">"0.2.0"</span>,
+  <span class="str">"schema_version"</span>: 1,
+  <span class="str">"functions"</span>: [
+    {
+      <span class="str">"name"</span>: <span class="str">"verify_token"</span>,
+      <span class="str">"declared_capabilities"</span>: [],
+      <span class="str">"has_unsafe"</span>: <span class="kw-ctrl">false</span>,
+      <span class="str">"attributes"</span>: [
+        {
+          <span class="str">"name"</span>: <span class="str">"security"</span>,
+          <span class="str">"args"</span>: {
+            <span class="str">"cve"</span>: <span class="str">"CVE-2024-99999"</span>,
+            <span class="str">"severity"</span>: <span class="str">"high"</span>,
+            <span class="str">"fixed_in"</span>: <span class="str">"0.2.0"</span>,
+            <span class="str">"description"</span>: <span class="str">"previous implementation was vulnerable..."</span>
+          }
+        }
+      ]
+    },
+    {
+      <span class="str">"name"</span>: <span class="str">"fetch_user"</span>,
+      <span class="str">"declared_capabilities"</span>: [<span class="str">"Net"</span>],
+      <span class="str">"has_unsafe"</span>: <span class="kw-ctrl">false</span>,
+      <span class="str">"attributes"</span>: []
+    },
+    {
+      <span class="str">"name"</span>: <span class="str">"token_length"</span>,
+      <span class="str">"declared_capabilities"</span>: [],
+      <span class="str">"has_unsafe"</span>: <span class="kw-ctrl">false</span>,
+      <span class="str">"attributes"</span>: []
+    }
+  ],
+  <span class="str">"summary"</span>: {
+    <span class="str">"total_functions"</span>: 3,
+    <span class="str">"functions_with_capabilities"</span>: 1,
+    <span class="str">"functions_with_attributes"</span>: 1,
+    <span class="str">"functions_crossing_unsafe"</span>: 0
+  }
+}</code></pre>
+
+    <p>An auditor reading this knows, without running the program: <code>verify_token</code> is pure (no capabilities) and references a fixed CVE; <code>fetch_user</code> can touch the network; <code>token_length</code> is pure. There is no other way for any of these to leak data or contact a server — the type system already rejected such a program at compile time.</p>
+</section>
+
+<!-- =====================================================
+     CRA mapping
+===================================================== -->
+<section>
+    <h2>How the manifest maps to CRA requirements</h2>
+
+    <p>A non-exhaustive correspondence between fields the manifest emits and obligations the Act imposes. The mapping is not magic — it is just that capability-based security happens to align with what CRA was reaching for.</p>
+
+    <table class="cra-table">
+        <thead>
+            <tr>
+                <th>CRA obligation</th>
+                <th>Manifest field that documents it</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td>Security by design and by default: products operate with the minimum of privileges necessary.</td>
+                <td><code>functions[].declared_capabilities</code> — the exact set of authorities each function holds. A function that does not list <code>Net</code> cannot reach the network.</td>
+            </tr>
+            <tr>
+                <td>Documentation of security properties of the product.</td>
+                <td><code>functions[].attributes[@security]</code> — CVE references, severity, fix versions, free-form description.</td>
+            </tr>
+            <tr>
+                <td>Vulnerability handling and lifecycle support.</td>
+                <td><code>functions[].attributes[@deprecated]</code> — explicit deprecation markers with reason, since-version, and replacement function.</td>
+            </tr>
+            <tr>
+                <td>Audit trail throughout the product lifecycle.</td>
+                <td><code>functions[].attributes[@audited]</code> — date, auditor, scope, free-form notes.</td>
+            </tr>
+            <tr>
+                <td>Identifying components where standard guarantees do not hold.</td>
+                <td><code>functions[].has_unsafe</code> — explicit flag set whenever a function declares <code>Unsafe</code> as a parameter. The compiler also surfaces it in <code>summary.functions_crossing_unsafe</code>.</td>
+            </tr>
+            <tr>
+                <td>SBOM enrichment: capabilities of each component.</td>
+                <td><code>user_defined_capabilities</code> — high-level capability declarations and their implementors. A library that exposes <code>SendEmail</code> declares its surface; a CI gate can verify that no caller obtains more.</td>
+            </tr>
+        </tbody>
+    </table>
+</section>
+
+<!-- =====================================================
+     The attribute catalogue
+===================================================== -->
+<section>
+    <h2>The v1 attribute catalogue</h2>
+
+    <p>Three attributes are recognised. The analyzer rejects unknown names, unknown keys, and duplicates — the schema is fixed so downstream consumers can rely on it.</p>
+
+    <div class="pillars">
+        <div class="pillar">
+            <h3>@security</h3>
+            <p>Link a function to a known security history. Keys: <code>cve</code>, <code>cwe</code>, <code>severity</code>, <code>fixed_in</code>, <code>description</code>.</p>
+<pre><code><span class="attr">@security</span>(
+    cve: <span class="str">"CVE-2024-12345"</span>,
+    severity: <span class="str">"high"</span>,
+    fixed_in: <span class="str">"0.2.0"</span>
+)</code></pre>
+        </div>
+        <div class="pillar">
+            <h3>@deprecated</h3>
+            <p>Mark an API as superseded. Keys: <code>reason</code>, <code>since</code>, <code>use</code>, <code>removed_in</code>.</p>
+<pre><code><span class="attr">@deprecated</span>(
+    reason: <span class="str">"timing attack"</span>,
+    since: <span class="str">"0.2.0"</span>,
+    use: <span class="str">"verify_token"</span>
+)</code></pre>
+        </div>
+        <div class="pillar">
+            <h3>@audited</h3>
+            <p>Record a manual security audit. Keys: <code>date</code>, <code>by</code>, <code>scope</code>, <code>notes</code>.</p>
+<pre><code><span class="attr">@audited</span>(
+    date: <span class="str">"2026-05-11"</span>,
+    by: <span class="str">"Nelson Duarte"</span>,
+    scope: <span class="str">"full"</span>
+)</code></pre>
+        </div>
+    </div>
+</section>
+
+<!-- =====================================================
+     Using the manifest
+===================================================== -->
+<section>
+    <h2>How to use it in practice</h2>
+
+    <p>Three natural integration points:</p>
+
+    <ol>
+        <li><strong>CI gate.</strong> Run <code>python -m capa --manifest src/*.capa</code> in CI, diff the output against a baseline, and fail the build if a function unexpectedly gains a capability or crosses the <code>Unsafe</code> boundary. The capability surface of a library becomes a tracked artefact.</li>
+        <li><strong>Audit evidence.</strong> Generate the manifest at release time and ship it alongside the binary. An auditor can verify the claims without re-running the compiler.</li>
+        <li><strong>SBOM enrichment (planned).</strong> Wrap the manifest in a CycloneDX 1.5 document with capability metadata under <code>properties[]</code>. This makes Capa programs first-class citizens of existing SBOM tooling (Dependency-Track, OSV-Scanner, SBOM-CI). Targeted for v0.3.</li>
+    </ol>
+
+    <div class="callout">
+        <p><strong>The manifest is a stable contract.</strong> Versioned via <code>schema_version</code>; consumers should refuse to read manifests with a schema version they do not recognise. v1 is the current version. Breaking changes will bump it.</p>
+    </div>
+</section>
+
+<!-- =====================================================
+     Limits
+===================================================== -->
+<section>
+    <h2>What the manifest does <em>not</em> tell you</h2>
+
+    <ul>
+        <li><strong>Whether a capability holder behaves well.</strong> A function that legitimately receives <code>Net</code> can do whatever <code>Net</code> allows, including misuse. The manifest documents the <em>permission surface</em>; it does not predict <em>behaviour</em>.</li>
+        <li><strong>Anything beyond an <code>Unsafe</code> boundary.</strong> Once a value crosses into Python interop, the discipline ends. The manifest marks the crossing (<code>has_unsafe: true</code>); content beyond it must be audited separately.</li>
+        <li><strong>Dependencies you did not write.</strong> v1 only describes the program you compile. Aggregating manifests across the dependency graph is on the roadmap — it requires a module system first.</li>
+        <li><strong>Runtime configuration.</strong> Attenuation (<code>Net.restrict_to(host)</code>) is a runtime narrowing; the static manifest cannot enumerate which hosts a function is actually limited to. v0.3 work on per-call data flow will close this.</li>
+    </ul>
+</section>
+
+<section style="text-align: center;">
+    <h2>See it for yourself</h2>
+    <div class="cta">
+        <a href="start.html" class="btn primary">Install Capa</a>
+        <a href="https://github.com/nelsonduarte/capa/blob/main/examples/manifest_demo.capa" class="btn">Read the demo source</a>
+        <a href="tour.html" class="btn">Tour the language</a>
+    </div>
+</section>
+
+</main>
+
+<footer>
+    <div class="footer-grid">
+        <div>
+            <h4>Pages</h4>
+            <ul>
+                <li><a href="index.html">Home</a></li>
+                <li><a href="why.html">Why Capa</a></li>
+                <li><a href="tour.html">Language tour</a></li>
+                <li><a href="start.html">Get started</a></li>
+                <li><a href="roadmap.html">Roadmap</a></li>
+            </ul>
+        </div>
+        <div>
+            <h4>Documentation</h4>
+            <ul>
+                <li><a href="getting-started.md">Getting started</a></li>
+                <li><a href="tutorial.md">Tutorial</a></li>
+                <li><a href="reference.md">Reference</a></li>
+                <li><a href="stdlib.md">Standard library</a></li>
+            </ul>
+        </div>
+        <div>
+            <h4>Specification</h4>
+            <ul>
+                <li><a href="../Capa-WhitePaper.md">White paper</a></li>
+                <li><a href="../Capa-EBNF.md">EBNF grammar</a></li>
+                <li><a href="demo-event-stream.md">Event-stream demo</a></li>
+            </ul>
+        </div>
+        <div>
+            <h4>Project</h4>
+            <ul>
+                <li><a href="https://github.com/nelsonduarte/capa">Source</a></li>
+                <li><a href="https://github.com/nelsonduarte/capa/blob/main/TODO.md">TODO / roadmap</a></li>
+                <li><a href="https://github.com/nelsonduarte/capa/blob/main/LICENSE">License (MIT)</a></li>
+            </ul>
+        </div>
+    </div>
+    <p class="colophon">Built by Nelson Duarte · v0.2.0-alpha · MIT-licensed</p>
+</footer>
+
+</body>
+</html>

@@ -1570,7 +1570,73 @@ class Analyzer:
                 c.value.pos,
             )
 
+    # ===========================================================
+    # Attribute validation
+    #
+    # Attributes are static metadata attached to function declarations
+    # (``@security(...)``, ``@deprecated(...)``, ``@audited(...)``).
+    # v1 ships a fixed catalogue of known attributes; the analyzer
+    # rejects unknown names and unknown keys so that downstream
+    # consumers (the ``--manifest`` builder, future audit tooling)
+    # can rely on a stable schema.
+    #
+    # The parser already guarantees that argument values are string
+    # literals; here we only need to validate names and keys.
+    # ===========================================================
+
+    _ATTRIBUTE_SCHEMA: dict[str, set[str]] = {
+        "security":   {"cve", "cwe", "severity", "fixed_in", "description"},
+        "deprecated": {"reason", "since", "use", "removed_in"},
+        "audited":    {"date", "by", "scope", "notes"},
+    }
+
+    def _check_function_attributes(self, fn: A.FunDecl) -> None:
+        """Validate the names and keys of attributes attached to ``fn``."""
+        seen_names: set[str] = set()
+        for attr in fn.attributes:
+            allowed_keys = self._ATTRIBUTE_SCHEMA.get(attr.name)
+            if allowed_keys is None:
+                known = ", ".join(sorted(self._ATTRIBUTE_SCHEMA))
+                self._err(
+                    f"unknown attribute '@{attr.name}'; "
+                    f"known attributes are: {known}",
+                    attr.pos,
+                )
+                continue
+            # Reject duplicate attribute names on the same function.
+            if attr.name in seen_names:
+                self._err(
+                    f"attribute '@{attr.name}' appears more than once on "
+                    f"function {fn.name!r}",
+                    attr.pos,
+                )
+                continue
+            seen_names.add(attr.name)
+            # Validate every key against the schema for this attribute.
+            seen_keys: set[str] = set()
+            for key, _value in attr.args:
+                if key not in allowed_keys:
+                    keys_str = ", ".join(sorted(allowed_keys))
+                    self._err(
+                        f"unknown key '{key}' in '@{attr.name}'; "
+                        f"allowed keys are: {keys_str}",
+                        attr.pos,
+                    )
+                    continue
+                if key in seen_keys:
+                    self._err(
+                        f"key '{key}' appears more than once in "
+                        f"'@{attr.name}'",
+                        attr.pos,
+                    )
+                seen_keys.add(key)
+
     def _check_fun(self, fn: A.FunDecl) -> None:
+        # Validate any attribute metadata first — fast, scope-free,
+        # and a precondition for ``--manifest`` to trust the AST.
+        if fn.attributes:
+            self._check_function_attributes(fn)
+
         self._push_type_params(fn.type_params)
         self._push_scope()
 

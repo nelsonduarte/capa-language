@@ -493,9 +493,14 @@ class TestBackslashContinuation(unittest.TestCase):
 # =============================================================
 
 class TestErrorPositions(unittest.TestCase):
+    # `$` outside a string literal is rejected by the lexer (it has no
+    # meaning in the surface syntax — interpolation uses `${...}`
+    # inside a string). It is a useful sentinel for testing that
+    # the lexer reports positions and source context faithfully.
+
     def test_position_reported(self):
         try:
-            lex("hello\n@")
+            lex("hello\n$")
             self.fail("expected LexerError")
         except LexerError as e:
             self.assertEqual(e.pos.line, 2)
@@ -503,14 +508,14 @@ class TestErrorPositions(unittest.TestCase):
 
     def test_error_message_includes_filename(self):
         try:
-            Lexer("@", filename="teste.capa").lex()
+            Lexer("$", filename="teste.capa").lex()
             self.fail("expected LexerError")
         except LexerError as e:
             self.assertIn("teste.capa", e.format())
 
     def test_error_message_includes_caret(self):
         try:
-            Lexer("foo @ bar").lex()
+            Lexer("foo $ bar").lex()
             self.fail("expected LexerError")
         except LexerError as e:
             self.assertIn("^", e.format())

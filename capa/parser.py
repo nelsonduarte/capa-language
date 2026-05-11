@@ -226,32 +226,117 @@ class Parser:
     # ===========================================================
 
     def _parse_item(self) -> A.Item:
+        # Optional attributes (@name(...)). v1 supports them only on `fun`;
+        # presence on any other top-level construct is an explicit error.
+        attributes = self._parse_attributes_opt()
+
         # Optional `pub` modifier
         is_pub = bool(self._match(T.KW_PUB))
 
         if self._check(T.KW_IMPORT):
             if is_pub:
                 raise self._error("'pub' is not valid before 'import'")
+            if attributes:
+                raise self._error("attributes are not valid on 'import'")
             return self._parse_import()
         if self._check(T.KW_CONST):
+            if attributes:
+                raise self._error(
+                    "attributes are not valid on 'const' "
+                    "(v1 supports them on 'fun' only)"
+                )
             return self._parse_const(is_pub)
         if self._check(T.KW_TYPE):
+            if attributes:
+                raise self._error(
+                    "attributes are not valid on 'type' "
+                    "(v1 supports them on 'fun' only)"
+                )
             return self._parse_type_decl(is_pub)
         if self._check(T.KW_TRAIT):
+            if attributes:
+                raise self._error(
+                    "attributes are not valid on 'trait' "
+                    "(v1 supports them on 'fun' only)"
+                )
             return self._parse_trait_decl(is_pub)
         if self._check(T.KW_CAPABILITY):
+            if attributes:
+                raise self._error(
+                    "attributes are not valid on 'capability' "
+                    "(v1 supports them on 'fun' only)"
+                )
             return self._parse_capability_decl(is_pub)
         if self._check(T.KW_IMPL):
             if is_pub:
                 raise self._error("'pub' is not valid before 'impl'")
+            if attributes:
+                raise self._error(
+                    "attributes are not valid on 'impl' "
+                    "(v1 supports them on 'fun' only)"
+                )
             return self._parse_impl()
         if self._check(T.KW_FUN):
-            return self._parse_fun_decl(is_pub)
+            return self._parse_fun_decl(is_pub, attributes=attributes)
         raise self._error(
             f"expected top-level declaration "
             f"(import / const / type / trait / capability / impl / fun), "
             f"got {self._peek().kind.name}"
         )
+
+    # -------- attributes (@name(key: "value", ...)) --------
+
+    def _parse_attributes_opt(self) -> list[A.Attribute]:
+        """Parse zero or more attribute lines (``@name(key: "value", ...)``).
+
+        Each attribute is followed by its own newline. Stacking is
+        allowed:
+
+            @security(cve: "CVE-2024-12345", severity: "high")
+            @audited(date: "2026-05-11", by: "Nelson Duarte")
+            fun verify_token(stdio: Stdio, token: String) -> Bool
+                ...
+
+        The analyzer is responsible for validating attribute names and
+        the shape of their argument lists; the parser is permissive
+        about the name but requires string-literal values.
+        """
+        attributes: list[A.Attribute] = []
+        while self._check(T.AT):
+            attributes.append(self._parse_attribute())
+            self._skip_newlines()
+        return attributes
+
+    def _parse_attribute(self) -> A.Attribute:
+        start = self._peek().start
+        self._expect(T.AT, "expected '@' to begin attribute")
+        name_tok = self._expect(T.IDENT, "expected attribute name after '@'")
+        self._expect(T.LPAREN, f"expected '(' after attribute '@{name_tok.text}'")
+        args: list[tuple[str, str]] = []
+        if not self._check(T.RPAREN):
+            args.append(self._parse_attribute_arg())
+            while self._match(T.COMMA):
+                if self._check(T.RPAREN):
+                    # Trailing comma is permitted.
+                    break
+                args.append(self._parse_attribute_arg())
+        self._expect(T.RPAREN, "expected ')' to close attribute arguments")
+        self._expect_eos(f"after '@{name_tok.text}' attribute")
+        return A.Attribute(pos=start, name=name_tok.text, args=args)
+
+    def _parse_attribute_arg(self) -> tuple[str, str]:
+        """Parse ``key: "value"`` inside an attribute's argument list.
+
+        v1 restricts values to string literals so that attributes are
+        statically inspectable without running expression evaluation.
+        """
+        key_tok = self._expect(T.IDENT, "expected attribute argument name")
+        self._expect(T.COLON, f"expected ':' after attribute key '{key_tok.text}'")
+        val_tok = self._expect(
+            T.STRING_LIT,
+            f"attribute argument '{key_tok.text}' must be a string literal",
+        )
+        return (key_tok.text, val_tok.value)
 
     # -------- import --------
 
@@ -443,9 +528,10 @@ class Parser:
         self._expect(T.INDENT, "expected indented method definitions")
         methods: list[A.FunDecl] = []
         while not self._check(T.DEDENT) and not self._at_end():
-            # Methods inside impl can have `pub`.
+            # Methods inside impl can have attributes and `pub`.
+            attributes = self._parse_attributes_opt()
             is_pub = bool(self._match(T.KW_PUB))
-            methods.append(self._parse_fun_decl(is_pub))
+            methods.append(self._parse_fun_decl(is_pub, attributes=attributes))
             self._skip_newlines()
         self._expect(T.DEDENT, "expected dedent at end of impl block")
         return A.ImplBlock(
@@ -458,8 +544,17 @@ class Parser:
 
     # -------- fun --------
 
-    def _parse_fun_decl(self, is_pub: bool) -> A.FunDecl:
-        start = self._peek().start
+    def _parse_fun_decl(
+        self,
+        is_pub: bool,
+        attributes: Optional[list[A.Attribute]] = None,
+    ) -> A.FunDecl:
+        if attributes is None:
+            attributes = []
+        # If attributes were collected upstream, point the FunDecl at the
+        # first attribute's line so IDE tooling navigates to the start of
+        # the whole annotated block, not just the `fun` keyword.
+        start = attributes[0].pos if attributes else self._peek().start
         self._expect(T.KW_FUN, "expected 'fun'")
         name = self._expect(T.IDENT, "expected function name").text
         type_params = self._parse_type_params_opt()
@@ -478,6 +573,7 @@ class Parser:
             return_type=return_type,
             body=body,
             is_pub=is_pub,
+            attributes=attributes,
         )
 
     def _parse_type_params_opt(self) -> list[str]:

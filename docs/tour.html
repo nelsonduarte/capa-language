@@ -16,6 +16,7 @@
             <a href="index.html">Home</a>
             <a href="why.html">Why Capa</a>
             <a href="tour.html" class="current">Language tour</a>
+            <a href="manifest.html">Manifest</a>
             <a href="start.html">Get started</a>
             <a href="roadmap.html">Roadmap</a>
             <a href="https://github.com/nelsonduarte/capa" class="github">GitHub</a>
@@ -336,6 +337,48 @@ stdio.<span class="fn-call">println</span>(<span class="str">"hi, ${who}! mask=$
     <span class="comment">// Adding another call below would be a compile error.</span></code></pre>
 
     <p>Fork/merge tracking handles branches: if both arms of an <code>if</code> consume the same value, the value is consumed after the <code>if</code>; if only one arm consumes it, the analyzer is conservative and treats it as consumed.</p>
+</section>
+
+<!-- =====================================================
+     Attributes
+===================================================== -->
+<section>
+    <h2>Attributes and the capability manifest</h2>
+
+    <p>Functions can carry static, source-level metadata via attribute syntax that mirrors Python decorators or Rust attributes. v1 supports three: <code>@security</code> (link to a CVE or describe a known issue), <code>@deprecated</code>, and <code>@audited</code>. Each takes keyword-style string arguments validated against a fixed schema.</p>
+
+<pre><code><span class="attr">@security</span>(
+    cve: <span class="str">"CVE-2024-12345"</span>,
+    severity: <span class="str">"high"</span>,
+    fixed_in: <span class="str">"0.2.0"</span>
+)
+<span class="attr">@audited</span>(date: <span class="str">"2026-05-11"</span>, by: <span class="str">"Nelson Duarte"</span>)
+<span class="kw-decl">fun</span> <span class="fn-name">verify_token</span>(token: <span class="ty-primitive">String</span>, expected: <span class="ty-primitive">String</span>) -&gt; <span class="ty-primitive">Bool</span>
+    <span class="kw-ctrl">return</span> token == expected</code></pre>
+
+    <p>The analyzer rejects unknown attribute names, unknown keys, and duplicates, so consumers can trust the schema.</p>
+
+    <p>The <code>--manifest</code> flag of the compiler emits a JSON description of the program: per function, the declared capabilities, the attached attributes, and whether the function crosses the <code>Unsafe</code> boundary; per module, the user-defined capabilities and their implementors, plus a summary count. This is the artefact an EU Cyber Resilience Act auditor wants — evidence of the program's authority graph that does not require running it.</p>
+
+<pre><code>$ python -m capa --manifest verify.capa
+{
+  "schema_version": 1,
+  "functions": [
+    {
+      "name": "verify_token",
+      "declared_capabilities": [],
+      "has_unsafe": false,
+      "attributes": [
+        {"name": "security", "args": {"cve": "CVE-2024-12345", ...}},
+        {"name": "audited",  "args": {"date": "2026-05-11", ...}}
+      ],
+      ...
+    }
+  ],
+  "summary": {"total_functions": 1, "functions_with_capabilities": 0, ...}
+}</code></pre>
+
+    <p>No other mainstream language can emit this because the authority graph is not in their type system. In Capa, it falls out of the analyser for free.</p>
 </section>
 
 <section style="text-align: center;">

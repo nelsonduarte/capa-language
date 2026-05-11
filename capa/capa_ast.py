@@ -169,6 +169,19 @@ class TraitDecl(Item):
 
 
 @dataclass(kw_only=True)
+class Attribute(Node):
+    """A function attribute: ``@name(key: "value", key: "value")``.
+
+    Attributes are static metadata, surfaced in machine-readable form
+    by the ``--manifest`` output for CRA-style auditing. v1 attributes
+    are limited to a fixed set of names (``security``, ``deprecated``,
+    ``audited``) and their arguments must be string literals.
+    """
+    name: str
+    args: list[tuple[str, str]] = field(default_factory=list)
+
+
+@dataclass(kw_only=True)
 class FunDecl(Item):
     """Function declaration (top-level or method inside an impl)."""
     name: str
@@ -177,6 +190,7 @@ class FunDecl(Item):
     return_type: Optional[TypeExpr] = None
     body: Block
     is_pub: bool = False
+    attributes: list[Attribute] = field(default_factory=list)
 
 
 @dataclass(kw_only=True)

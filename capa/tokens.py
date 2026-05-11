@@ -105,6 +105,7 @@ class TokenKind(Enum):
     PERCENT_EQ = auto()
 
     # Structural
+    AT = auto()           # @ (attribute prefix)
     ARROW = auto()        # ->
     FAT_ARROW = auto()    # =>  (reserved for future use)
     QUESTION = auto()     # ?

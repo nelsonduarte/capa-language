@@ -35,6 +35,7 @@ _SINGLE_CHAR_TOKENS: dict[str, TokenKind] = {
     ";": TokenKind.SEMI,
     "?": TokenKind.QUESTION,
     "|": TokenKind.PIPE,
+    "@": TokenKind.AT,
     "(": TokenKind.LPAREN,
     ")": TokenKind.RPAREN,
     "[": TokenKind.LBRACKET,

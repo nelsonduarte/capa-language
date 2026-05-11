@@ -369,13 +369,17 @@ module_path = IDENT { "." IDENT }
 
 ### 5.2 Function declarations
 
-Functions are the dominant unit of abstraction in Capa. A function declaration has optional visibility, the keyword `fun`, a name, optional type parameters, a parameter list, an optional return type, and a block as its body.
+Functions are the dominant unit of abstraction in Capa. A function declaration has zero or more attributes (lines starting with `@`), optional visibility, the keyword `fun`, a name, optional type parameters, a parameter list, an optional return type, and a block as its body.
 
 ```ebnf
-function_decl = [ "pub" ] "fun" IDENT [ generic_params ]
+function_decl = { attribute NEWLINE } [ "pub" ] "fun" IDENT [ generic_params ]
     "(" [ param_list ] ")"
     [ "->" type ]
     block
+
+attribute = "@" IDENT "(" [ attribute_arg { "," attribute_arg } [ "," ] ] ")"
+
+attribute_arg = IDENT ":" STRING
 
 generic_params = "<" generic_param { "," generic_param } ">"
 
@@ -390,6 +394,8 @@ param = [ "consume" ] IDENT ":" type
 ```
 
 The optional `consume` qualifier marks the parameter as taking ownership of the passed value (typically a capability). After a call to such a function, the caller can no longer use the argument it passed. This is enforced by the semantic analyzer's linearity check, not the grammar; see the Capabilities chapter of the white paper for details.
+
+Attributes are static, source-level metadata. The grammar accepts any identifier as the attribute name, but the analyzer restricts the v1 catalogue to `security`, `deprecated`, and `audited`, each with a fixed set of allowed keys. Attribute argument values must be string literals so that the metadata is statically inspectable without running expression evaluation. The `--manifest` tool emits attributes verbatim in JSON form for downstream consumption by audit tooling. Attributes are valid on top-level `fun` declarations and on methods inside an `impl` block; they are rejected on `const`, `type`, `trait`, `capability`, `impl`, and `import` in v1.
 
 Relevant notes. The return type is syntactically optional; if omitted, the type is inferred as `Unit` (the function does not return a useful value) — except in public functions, where a later semantic phase requires the explicit annotation. The trailing comma in `param_list` is allowed to facilitate clean diffs.
 
