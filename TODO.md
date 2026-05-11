@@ -146,8 +146,8 @@ work. Pick them up alongside the thesis chapters they unlock.
 - [ ] **`CODE_OF_CONDUCT.md`** — Contributor Covenant is the default.
 - [ ] **Security policy** — `SECURITY.md` with how to report
   vulnerabilities. Relevant because Capa is about security.
-- [ ] **Flip repo to public** — `gh repo edit --visibility public`.
-  Tag `v0.1.0-alpha` first.
+- [x] **Flip repo to public** — `gh repo edit --visibility public`.
+  Tagged `v0.2.0-alpha` first.
 
 ---
 
