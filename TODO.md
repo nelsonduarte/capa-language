@@ -139,11 +139,13 @@ work. Pick them up alongside the thesis chapters they unlock.
 
 ## Strategic / governance (P0 once we go public)
 
-- [ ] **`CONTRIBUTING.md`** — how to file an issue, what makes a good
-  PR, branch naming, etc.
+- [x] **`CONTRIBUTING.md`** — how to file an issue, what makes a good
+  PR, dev setup, compiler structure, what kinds of contributions help
+  and what does not currently fit.
 - [ ] **`CHANGELOG.md`** — start from this `v0.1.0` baseline.
 - [ ] **Issue / PR templates** in `.github/`.
-- [ ] **`CODE_OF_CONDUCT.md`** — Contributor Covenant is the default.
+- [x] **`CODE_OF_CONDUCT.md`** — adopts Contributor Covenant 2.1 by
+  reference with maintainer contact for reports.
 - [x] **Security policy** — `SECURITY.md` with how to report
   vulnerabilities. Lists in/out-of-scope issues, the GitHub private
   advisory channel, supported versions, disclosure flow.
