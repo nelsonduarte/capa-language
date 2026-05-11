@@ -142,7 +142,9 @@ work. Pick them up alongside the thesis chapters they unlock.
 - [x] **`CONTRIBUTING.md`** — how to file an issue, what makes a good
   PR, dev setup, compiler structure, what kinds of contributions help
   and what does not currently fit.
-- [ ] **`CHANGELOG.md`** — start from this `v0.1.0` baseline.
+- [x] **`CHANGELOG.md`** — Keep-a-Changelog format starting at
+  `v0.2.0-alpha` (the first tagged release) with an `[Unreleased]`
+  section for the post-tag security + governance work.
 - [x] **Issue / PR templates** in `.github/` — two YAML issue forms
   (bug, feature) with required fields, a `config.yml` that disables
   blank issues and contact-links to security advisories + discussions,
