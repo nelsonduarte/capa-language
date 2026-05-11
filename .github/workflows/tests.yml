@@ -7,6 +7,11 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# Default the workflow token to read-only. Jobs that need more must
+# override per-job.
+permissions:
+  contents: read
+
 jobs:
   test:
     name: Python ${{ matrix.python }} on ${{ matrix.os }}

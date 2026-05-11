@@ -1,0 +1,14 @@
+# Keep the GitHub Actions used by our workflows up to date.
+# Capa has no runtime Python dependencies, so the pip ecosystem is
+# omitted; if dependencies are added to pyproject.toml later, add an
+# entry for "pip" here.
+
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "ci"

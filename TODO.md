@@ -144,10 +144,16 @@ work. Pick them up alongside the thesis chapters they unlock.
 - [ ] **`CHANGELOG.md`** — start from this `v0.1.0` baseline.
 - [ ] **Issue / PR templates** in `.github/`.
 - [ ] **`CODE_OF_CONDUCT.md`** — Contributor Covenant is the default.
-- [ ] **Security policy** — `SECURITY.md` with how to report
-  vulnerabilities. Relevant because Capa is about security.
+- [x] **Security policy** — `SECURITY.md` with how to report
+  vulnerabilities. Lists in/out-of-scope issues, the GitHub private
+  advisory channel, supported versions, disclosure flow.
 - [x] **Flip repo to public** — `gh repo edit --visibility public`.
   Tagged `v0.2.0-alpha` first.
+- [x] **Repo security hardening** — Dependabot vulnerability alerts +
+  security updates, secret scanning + push protection, private
+  vulnerability reporting, CodeQL workflow (push + PR + weekly
+  cron), `.github/dependabot.yml` for GitHub Actions, explicit
+  `permissions: contents: read` on the tests workflow.
 
 ---
 
