@@ -1,5 +1,9 @@
 # Capa
 
+[![tests](https://github.com/nelsonduarte/capa/actions/workflows/tests.yml/badge.svg)](https://github.com/nelsonduarte/capa/actions/workflows/tests.yml)
+[![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![python: >=3.10](https://img.shields.io/badge/python-%3E%3D3.10-blue.svg)](pyproject.toml)
+
 A complete front-end for the **Capa** programming language: lexer, parser,
 semantic analyzer, Python transpiler, and runtime — all hand-written in
 Python.

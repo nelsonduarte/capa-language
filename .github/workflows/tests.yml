@@ -1,0 +1,41 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Python ${{ matrix.python }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python: ["3.10", "3.12", "3.14"]
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Install the package
+        run: pip install -e .
+
+      - name: Run the test suite
+        run: python -m unittest discover tests -v
+
+      - name: Smoke run a few examples
+        shell: bash
+        run: |
+          for f in hello basics grades tasks io patterns json python_interop; do
+            echo "--- $f ---"
+            python -m capa --run "examples/$f.capa"
+          done
