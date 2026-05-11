@@ -79,6 +79,12 @@ class Parser:
         self.idx = 0
         self.source = source
         self.filename = filename
+        # When True, suppresses the "PascalCase IDENT followed by `{`"
+        # heuristic that parses a struct literal. Used while parsing the
+        # scrutinee of `match`, so `match SomeVariant { ... }` is read as
+        # inline match arms rather than `match (SomeVariant { ... })`.
+        # To use a struct literal as scrutinee, wrap it in parentheses.
+        self._no_struct_lit = False
 
     def _build_string_lit(self, value: str, pos) -> A.Expr:
         """Builds a string literal. If it contains ``${...}``, returns
@@ -704,8 +710,26 @@ class Parser:
     def _parse_match_expr(self) -> A.MatchExpr:
         start = self._peek().start
         self._expect(T.KW_MATCH, "expected 'match'")
-        scrutinee = self._parse_expr()
-        self._expect(T.NEWLINE, "expected newline after match scrutinee")
+        # Suppress the struct-literal heuristic while reading the
+        # scrutinee, so that `match X { ... }` parses as an inline match
+        # rather than `match (X { ... })`. Wrap the scrutinee in parens
+        # if you really want a struct literal there.
+        prev = self._no_struct_lit
+        self._no_struct_lit = True
+        try:
+            scrutinee = self._parse_expr()
+        finally:
+            self._no_struct_lit = prev
+
+        # Inline form: `match s { p -> e [, p -> e ]* [,] }`
+        if self._check(T.LBRACE):
+            return self._parse_match_inline_arms(start, scrutinee)
+
+        # Multi-line form: NEWLINE INDENT arms DEDENT
+        self._expect(
+            T.NEWLINE,
+            "expected newline or '{' after match scrutinee",
+        )
         self._expect(T.INDENT, "expected indented match arms")
         arms: list[A.MatchArm] = []
         while not self._check(T.DEDENT) and not self._at_end():
@@ -715,6 +739,46 @@ class Parser:
         if not arms:
             raise self._error("match must have at least one arm")
         return A.MatchExpr(pos=start, scrutinee=scrutinee, arms=arms)
+
+    def _parse_match_inline_arms(
+        self, start, scrutinee: A.Expr,
+    ) -> A.MatchExpr:
+        """Parses inline match arms: ``{ p -> e, p -> e [, ...] }``.
+
+        Each arm body is a single expression (no block bodies in the
+        inline form). Or-patterns and guards are supported.
+        """
+        self._expect(T.LBRACE, "expected '{' for inline match arms")
+        arms: list[A.MatchArm] = []
+        if not self._check(T.RBRACE):
+            arms.append(self._parse_inline_match_arm())
+            while self._match(T.COMMA):
+                if self._check(T.RBRACE):  # trailing comma
+                    break
+                arms.append(self._parse_inline_match_arm())
+        self._expect(T.RBRACE, "expected '}' to close inline match arms")
+        if not arms:
+            raise self._error("inline match must have at least one arm")
+        return A.MatchExpr(pos=start, scrutinee=scrutinee, arms=arms)
+
+    def _parse_inline_match_arm(self) -> A.MatchArm:
+        """Parses one arm of an inline match: ``pat [if guard] -> expr``.
+
+        Or-patterns (``a | b | c``) are accepted at the arm level.
+        """
+        start = self._peek().start
+        pattern = self._parse_pattern(in_match=True)
+        if self._check(T.PIPE):
+            alternatives: list[A.Pattern] = [pattern]
+            while self._match(T.PIPE):
+                alternatives.append(self._parse_pattern(in_match=True))
+            pattern = A.OrPat(pos=start, alternatives=alternatives)
+        guard: Optional[A.Expr] = None
+        if self._match(T.KW_IF):
+            guard = self._parse_expr()
+        self._expect(T.ARROW, "expected '->' in inline match arm")
+        body = self._parse_expr()
+        return A.MatchArm(pos=start, pattern=pattern, guard=guard, body=body)
 
     def _parse_match_arm(self) -> A.MatchArm:
         start = self._peek().start
@@ -1129,6 +1193,10 @@ class Parser:
         Otherwise, it is a plain reference. We use the PascalCase
         heuristic as additional confirmation to avoid ambiguity in
         statements like `if x { ... }` (not Capa, but avoids surprises).
+
+        The ``_no_struct_lit`` flag overrides the heuristic — used when
+        parsing the scrutinee of ``match`` so that ``match X { ... }``
+        is the inline-arm form, not a struct literal as the scrutinee.
         """
         tok = self._advance()
         # Struct literal: Type { field: value, ... }
@@ -1136,6 +1204,7 @@ class Parser:
         if (
             tok.text and tok.text[0].isupper()
             and self._check(T.LBRACE)
+            and not self._no_struct_lit
         ):
             self._advance()  # {
             fields = self._parse_struct_lit_fields()

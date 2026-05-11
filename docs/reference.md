@@ -196,11 +196,13 @@ match scrutinee
     pat1 -> body1
     pat2 -> body2
 
-// match (expression, multi-line; only legal as the RHS of `return` or
-// `let`, since match itself is parsed as a statement in v1)
+// match (expression, multi-line)
 let r = match scrutinee
     pat1 -> expr1
     pat2 -> expr2
+
+// match (expression, inline single-line)
+let r = match scrutinee { pat1 -> expr1, pat2 -> expr2 }
 
 // break / continue (only inside loops)
 break
@@ -251,9 +253,31 @@ statement.
 
 ### 4.3. `match` as an expression
 
-Multi-line only (each arm on its own line, indented). Each arm of the
-match evaluates to a value; all arms must have compatible types. An
-inline brace form is not supported in v1.
+`match` is the same production whether used as a statement or as an
+expression — the value is consumed in expression position and
+discarded in statement position. Two surface forms exist:
+
+```capa
+// Multi-line (indented arms, expression OR block body)
+let r = match scrutinee
+    pat1 -> expr1
+    pat2 -> expr2
+
+// Inline (single-line, comma-separated, expression body only)
+let r = match scrutinee { pat1 -> expr1, pat2 -> expr2 }
+```
+
+Both forms accept guards and or-patterns. All arms must produce
+compatible types.
+
+The inline form's `{ ... }` opens immediately after the scrutinee.
+This collides syntactically with the struct-literal heuristic — to
+force a struct literal as the scrutinee, wrap it in parentheses:
+
+```capa
+match (Point { x: 1.0, y: 2.0 })
+    Point { x, y } -> stdio.println("${x}, ${y}")
+```
 
 ### 4.4. Lambdas
 

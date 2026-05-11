@@ -337,6 +337,123 @@ class TestMatchExpression(unittest.TestCase):
         self.assertEqual(out, "dois\n")
 
 
+class TestInlineMatch(unittest.TestCase):
+    """Inline match form: ``match scrutinee { p -> e, p -> e, ... }``.
+
+    Single-expression arm bodies only, comma-separated. Lives in
+    expression position (RHS of let/var/return, inside string
+    interpolation, inside other expressions).
+    """
+
+    def test_inline_match_in_let(self):
+        rc, out, err = run_capa(
+            'fun main(stdio: Stdio)\n'
+            '    let n = 2\n'
+            '    let s = match n { 0 -> "zero", 1 -> "one", _ -> "other" }\n'
+            '    stdio.println(s)\n'
+        )
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out, "other\n")
+
+    def test_inline_match_in_return(self):
+        rc, out, err = run_capa(
+            'fun describe(n: Int) -> String\n'
+            '    return match n { 0 -> "zero", 1 -> "one", _ -> "other" }\n'
+            'fun main(stdio: Stdio)\n'
+            '    stdio.println(describe(0))\n'
+            '    stdio.println(describe(1))\n'
+            '    stdio.println(describe(7))\n'
+        )
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out, "zero\none\nother\n")
+
+    def test_inline_match_with_guards(self):
+        rc, out, err = run_capa(
+            'fun sign(n: Int) -> String\n'
+            '    return match n { x if x > 0 -> "+", x if x < 0 -> "-", _ -> "0" }\n'
+            'fun main(stdio: Stdio)\n'
+            '    stdio.println(sign(5))\n'
+            '    stdio.println(sign(-3))\n'
+            '    stdio.println(sign(0))\n'
+        )
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out, "+\n-\n0\n")
+
+    def test_inline_match_with_or_pattern(self):
+        rc, out, err = run_capa(
+            'fun classify(n: Int) -> String\n'
+            '    return match n { 0 | 1 -> "binary", 2 | 3 | 5 | 7 -> "small prime", _ -> "other" }\n'
+            'fun main(stdio: Stdio)\n'
+            '    stdio.println(classify(1))\n'
+            '    stdio.println(classify(5))\n'
+            '    stdio.println(classify(9))\n'
+        )
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out, "binary\nsmall prime\nother\n")
+
+    def test_inline_match_trailing_comma(self):
+        rc, out, err = run_capa(
+            'fun main(stdio: Stdio)\n'
+            '    let s = match 1 {\n'
+            '        0 -> "zero",\n'
+            '        1 -> "one",\n'
+            '        _ -> "other",\n'
+            '    }\n'
+            '    stdio.println(s)\n'
+        )
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out, "one\n")
+
+    def test_inline_match_inside_interpolation(self):
+        rc, out, err = run_capa(
+            'fun main(stdio: Stdio)\n'
+            '    let n = 2\n'
+            '    stdio.println("n is ${match n { 0 -> \\"zero\\", _ -> \\"nonzero\\" }}")\n'
+        )
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out, "n is nonzero\n")
+
+    def test_inline_match_with_pascalcase_scrutinee(self):
+        # Critical disambiguation test: `match Red { ... }` must parse
+        # as inline match, not as `match (Red { ... })` (struct literal).
+        rc, out, err = run_capa(
+            'type Color =\n'
+            '    Red\n'
+            '    Green\n'
+            '    Blue\n'
+            'fun main(stdio: Stdio)\n'
+            '    let s = match Red { Red -> "r", Green -> "g", Blue -> "b" }\n'
+            '    stdio.println(s)\n'
+        )
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out, "r\n")
+
+    def test_inline_match_with_variant_payload(self):
+        rc, out, err = run_capa(
+            'type Shape =\n'
+            '    Circle(Float)\n'
+            '    Square(Float)\n'
+            'fun area(s: Shape) -> Float\n'
+            '    return match s { Circle(r) -> r * r * 3.14, Square(l) -> l * l }\n'
+            'fun main(stdio: Stdio)\n'
+            '    stdio.println("${area(Square(5.0))}")\n'
+        )
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out, "25.0\n")
+
+    def test_inline_match_empty_is_error(self):
+        # `match x {}` is invalid — must have at least one arm.
+        from capa import Lexer, Parser, ParserError
+        src = (
+            'fun main(stdio: Stdio)\n'
+            '    let s = match 1 {}\n'
+            '    stdio.println(s)\n'
+        )
+        with self.assertRaises((ParserError, Exception)):
+            tokens = Lexer(src).lex()
+            Parser(tokens, source=src).parse_module()
+
+
 class TestLambdaExpr(unittest.TestCase):
     """Closures (lambda expressions): ``fun (params) -> Ret => body``."""
 

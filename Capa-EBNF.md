@@ -538,10 +538,19 @@ while_stmt = "while" expression block
 
 for_stmt = "for" pattern "in" expression block
 
-match_stmt = "match" expression NEWLINE INDENT match_arm { match_arm } DEDENT
+match_stmt = "match" match_scrutinee match_body
 
-match_arm = match_arm_pattern [ "if" expression ]   (* optional guard *)
+match_body = NEWLINE INDENT match_arm { match_arm } DEDENT     (* multi-line *)
+           | "{" inline_arm { "," inline_arm } [ "," ] "}"     (* inline *)
+
+match_arm = match_arm_pattern [ "if" expression ]
     "->" ( expression NEWLINE | block )
+
+inline_arm = match_arm_pattern [ "if" expression ] "->" expression
+
+(* The scrutinee parses as an expression with the struct-literal
+   heuristic disabled. See "Ambiguity 7.6" below. *)
+match_scrutinee = expression
 
 return_stmt = "return" [ expression ] NEWLINE
 
@@ -552,11 +561,25 @@ continue_stmt = "continue" NEWLINE
 expression_stmt = expression NEWLINE
 ```
 
-Important design decision: `if`, `while`, `for`, `match` are statements, not expressions. A programmer who wants to use a control structure to produce a value must use `return` or `let` inside the `match`/`if`, or use the ternary operator (Section 5.13).
+Important design decision: `if`, `while`, `for` are statements, not expressions. A programmer who wants to use a control structure to produce a value uses the ternary `if cond then a else b` (Section 5.12.2).
+
+`match` is **both** a statement and an expression — the same production serves both roles. In statement position the value is discarded; in expression position (RHS of `let`/`var`/`return`, inside string interpolation, as an argument to a function call written across the multi-line form, etc.) the value flows out. The inline `{ p -> e, ... }` form exists specifically for expression position and is single-line by design — multi-line block bodies are reserved for the indented form. Both forms accept guards and or-patterns.
+
+```capa
+let s = match x { 0 -> "zero", _ -> "other" }
+
+let urgency = match priority
+    High if not done -> "urgent"
+    High -> "high (done)"
+    Medium -> "normal"
+    Low -> "deferrable"
+
+stdio.println("got ${match x { 0 -> \"zero\", _ -> \"nonzero\" }}")
+```
 
 > **WHY NOT IF-AS-EXPRESSION LIKE RUST**
 >
-> The choice to keep `if` as a statement goes against the more recent trend in language design. The justification is pedagogical: Capa's target audience comes from Python and JavaScript, where `if` is a statement. The if-as-expression construct demands additional care in ergonomics (last expression as value) that adds a subtle rule. Capa prefers the simple rule.
+> The choice to keep `if` as a statement goes against the more recent trend in language design. The justification is pedagogical: Capa's target audience comes from Python and JavaScript, where `if` is a statement. The if-as-expression construct demands additional care in ergonomics (last expression as value) that adds a subtle rule. Capa prefers the simple rule of a dedicated ternary.
 
 ### 5.11 Patterns
 
@@ -829,6 +852,25 @@ Already mentioned in 5.12.5: the comma resolves it. `(x)` is an expression; `(x,
 In the current grammar there is no ambiguity: a lambda always starts with the `fun` keyword (`fun (params) -> Ret => body`), and a parenthesised expression starts with `(`. The two are trivially distinguishable with a single-token lookahead.
 
 This is a deliberate design choice over a Python-style `(params) -> expr` lambda — which would force the parser into backtracking (every `(` could start either a paren expression or a lambda, and you only know at the closing `)` followed by `->`). Reusing the `fun` keyword keeps lookahead constant.
+
+### 7.6 Inline match vs. struct literal as scrutinee
+
+The inline form `match X { ... }` collides syntactically with the struct-literal heuristic (`PascalCaseIdent { field: value, ... }`). Without intervention, the parser would read `match Color { Red -> 1 }` as `match (Color { Red -> 1 })` — a match whose scrutinee is a struct literal whose first field name is `Red` — and then fail at the `->`.
+
+The rule adopted is the same one Rust uses for its `if`/`while`/`match` scrutinees: while parsing the scrutinee of a `match`, the struct-literal heuristic is **suppressed**. Inside that window, a PascalCase identifier followed by `{` always opens inline match arms, never a struct literal.
+
+To use a struct literal as the scrutinee, wrap it in parentheses:
+
+```capa
+// Inline match against a variant constant
+let s = match Red { Red -> "r", Green -> "g", Blue -> "b" }
+
+// Match against a struct literal — parens force struct-literal interpretation
+match (Point { x: 1.0, y: 2.0 })
+    Point { x, y } -> stdio.println("${x}, ${y}")
+```
+
+This restriction only applies in the scrutinee position. Struct literals work normally everywhere else, including inside arm bodies and inside the match's argument expression once parentheses are present.
 
 ---
 

@@ -136,14 +136,25 @@ fun describe(n: Int) -> String
         _ -> "other"
 ```
 
+`match` works as a statement *and* as an expression. The same syntax
+in both positions; in expression position the value flows out:
+
+```capa
+// Multi-line: indented arms, expression OR block body
+let label = match n
+    0 -> "zero"
+    1 -> "one"
+    _ -> "other"
+
+// Inline: comma-separated single-expression arms, body in braces
+let label = match n { 0 -> "zero", 1 -> "one", _ -> "other" }
+```
+
 `_` is the wildcard that matches any value. Or-patterns (`A | B`)
 allow grouping cases at the arm level:
 
 ```capa
-fun describe(cmd: String) -> String
-    return match cmd
-        "h" | "help" | "?" -> "help"
-        _ -> "other"
+let r = match cmd { "h" | "help" | "?" -> "help", _ -> "other" }
 ```
 
 Each alternative of an or-pattern must bind the same set of names (so
