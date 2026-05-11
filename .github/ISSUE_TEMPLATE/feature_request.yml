@@ -1,0 +1,74 @@
+name: Feature request
+description: Propose a new language feature, capability, tooling improvement, or documentation addition.
+title: "[feature] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Capa has a deliberately small surface area and a published
+        roadmap. Before filing, please skim:
+
+        - [docs/roadmap.html](https://nelsonduarte.github.io/capa/roadmap.html)
+        - [TODO.md](https://github.com/nelsonduarte/capa/blob/main/TODO.md)
+        - [Capa-WhitePaper.md](https://github.com/nelsonduarte/capa/blob/main/Capa-WhitePaper.md)
+
+        Some things are explicitly out of scope for v1 (macros, full
+        async/await, LLVM backend, garbage collection beyond CPython's).
+        Proposals in those areas are unlikely to land.
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What would you like to see?
+      description: |
+        Describe the feature concretely. If it is a language
+        change, show the syntax. If it is a capability, sketch its
+        method signature.
+      placeholder: |
+        Add `Fs.restrict_to(path_prefix: String) -> Fs` for
+        attenuation, mirroring `Net.restrict_to(host)`.
+    validations:
+      required: true
+
+  - type: textarea
+    id: why
+    attributes:
+      label: Why does this matter? What problem does it solve?
+      description: |
+        A real use case is much stronger than a hypothetical one.
+        Mention the code you would write if the feature existed,
+        and the workaround (if any) you use today.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you considered
+      description: |
+        Other designs you weighed, or other ways to solve the
+        same problem without changing Capa.
+    validations:
+      required: false
+
+  - type: dropdown
+    id: contribute
+    attributes:
+      label: Would you be willing to implement this?
+      description: Honest answers welcome. "No" is fine.
+      options:
+        - "Yes, with guidance"
+        - "Yes, on my own"
+        - "No, but I will help review and test"
+        - "No"
+    validations:
+      required: true
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context
+      description: Prior art in other languages, references, links to discussion threads, etc.
+    validations:
+      required: false

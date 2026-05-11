@@ -143,7 +143,10 @@ work. Pick them up alongside the thesis chapters they unlock.
   PR, dev setup, compiler structure, what kinds of contributions help
   and what does not currently fit.
 - [ ] **`CHANGELOG.md`** — start from this `v0.1.0` baseline.
-- [ ] **Issue / PR templates** in `.github/`.
+- [x] **Issue / PR templates** in `.github/` — two YAML issue forms
+  (bug, feature) with required fields, a `config.yml` that disables
+  blank issues and contact-links to security advisories + discussions,
+  plus a `PULL_REQUEST_TEMPLATE.md`.
 - [x] **`CODE_OF_CONDUCT.md`** — adopts Contributor Covenant 2.1 by
   reference with maintainer contact for reports.
 - [x] **Security policy** — `SECURITY.md` with how to report

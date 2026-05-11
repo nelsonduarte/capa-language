@@ -1,0 +1,20 @@
+# Force every new issue through one of the YAML templates above.
+# Free-form issues without a template are rejected; this avoids
+# half-empty reports.
+blank_issues_enabled: false
+
+contact_links:
+  - name: Security vulnerability (private)
+    url: https://github.com/nelsonduarte/capa/security/advisories/new
+    about: |
+      For ways to bypass the capability discipline, escape
+      attenuation, or otherwise break Capa's security properties.
+      Goes through GitHub's private vulnerability reporting; only
+      maintainers see it.
+
+  - name: Question or discussion
+    url: https://github.com/nelsonduarte/capa/discussions
+    about: |
+      For open-ended questions, design discussions, or "how do
+      I ...?" help. Bug reports and feature requests should still
+      use the issue templates above.
