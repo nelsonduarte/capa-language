@@ -239,6 +239,8 @@ class Parser:
             return self._parse_type_decl(is_pub)
         if self._check(T.KW_TRAIT):
             return self._parse_trait_decl(is_pub)
+        if self._check(T.KW_CAPABILITY):
+            return self._parse_capability_decl(is_pub)
         if self._check(T.KW_IMPL):
             if is_pub:
                 raise self._error("'pub' is not valid before 'impl'")
@@ -247,7 +249,7 @@ class Parser:
             return self._parse_fun_decl(is_pub)
         raise self._error(
             f"expected top-level declaration "
-            f"(import / const / type / trait / impl / fun), "
+            f"(import / const / type / trait / capability / impl / fun), "
             f"got {self._peek().kind.name}"
         )
 
@@ -355,23 +357,39 @@ class Parser:
     # -------- trait --------
 
     def _parse_trait_decl(self, is_pub: bool) -> A.TraitDecl:
+        return self._parse_trait_or_capability(is_pub, is_capability=False)
+
+    def _parse_capability_decl(self, is_pub: bool) -> A.TraitDecl:
+        """A user-defined capability. Syntactically identical to a trait;
+        semantically, the analyzer treats the declared name as a
+        capability and subjects it (and types that implement it) to the
+        capability discipline. See WhitePaper §4.6.
+        """
+        return self._parse_trait_or_capability(is_pub, is_capability=True)
+
+    def _parse_trait_or_capability(
+        self, is_pub: bool, is_capability: bool,
+    ) -> A.TraitDecl:
         start = self._peek().start
-        self._expect(T.KW_TRAIT, "expected 'trait'")
-        name = self._expect(T.IDENT, "expected trait name").text
+        keyword = T.KW_CAPABILITY if is_capability else T.KW_TRAIT
+        word = "capability" if is_capability else "trait"
+        self._expect(keyword, f"expected '{word}'")
+        name = self._expect(T.IDENT, f"expected {word} name").text
         type_params = self._parse_type_params_opt()
-        self._expect(T.NEWLINE, "expected newline after trait header")
+        self._expect(T.NEWLINE, f"expected newline after {word} header")
         self._expect(T.INDENT, "expected indented method signatures")
         methods: list[A.MethodSig] = []
         while not self._check(T.DEDENT) and not self._at_end():
             methods.append(self._parse_method_sig())
             self._skip_newlines()
-        self._expect(T.DEDENT, "expected dedent at end of trait body")
+        self._expect(T.DEDENT, f"expected dedent at end of {word} body")
         return A.TraitDecl(
             pos=start,
             name=name,
             type_params=type_params,
             methods=methods,
             is_pub=is_pub,
+            is_capability=is_capability,
         )
 
     def _parse_method_sig(self) -> A.MethodSig:

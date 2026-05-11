@@ -44,18 +44,19 @@ Capa/
 │   ├── transpiler.py      # codegen for Python 3.10+
 │   └── runtime/
 │       └── __init__.py    # Result, Option, Stdio, Fs, ..., Unsafe, py_import
-├── tests/                 # 398 unit + end-to-end tests
+├── tests/                 # 409 unit + end-to-end tests
 │   ├── test_lexer.py
 │   ├── test_parser.py
 │   ├── test_analyzer.py
 │   └── test_transpiler.py # transpile and execute Capa programs
-├── examples/              # 19 .capa files demonstrating the language
+├── examples/              # 20 .capa files demonstrating the language
 │   ├── hello.capa         # hello world
 │   ├── basics.capa        # several constructs
 │   ├── tasks.capa         # canonical EBNF example
 │   ├── grades.capa        # non-trivial program (~110 lines)
 │   ├── io.capa            # exercises Result and the ? operator
-│   ├── net_attenuation.capa # capability attenuation (WhitePaper §4.3)
+│   ├── net_attenuation.capa  # capability attenuation (WhitePaper §4.3)
+│   ├── user_capabilities.capa # user-defined capabilities (WhitePaper §4.6)
 │   ├── python_interop.capa# Python boundary under the Unsafe capability
 │   └── errors.capa        # test fixture with semantic errors
 ├── docs/                  # tutorial, reference, stdlib, getting-started
@@ -134,7 +135,7 @@ else:
 python -m unittest discover tests
 ```
 
-**398 tests** (lexer + parser + analyzer + transpiler). The transpiler
+**409 tests** (lexer + parser + analyzer + transpiler). The transpiler
 suite actually *executes* the generated Python and checks stdout — the
 only honest way to test a transpiler.
 
@@ -391,6 +392,18 @@ only honest way to test a transpiler.
   intersects their allowed-host sets, never widens. Runtime check
   fires *before* any system call, so a blocked host never touches
   the network. See `examples/net_attenuation.capa`.
+
+- **User-defined capabilities** (`capability X { ... }`, WhitePaper
+  §4.6). Libraries can declare their own capabilities — `SendEmail`,
+  `QueryDB`, `PublishMessage` — and types that implement them are
+  treated as capabilities by the discipline (no aliasing, no
+  storing in plain locals, no leaking through generic args). The
+  structural rules are relaxed in two surgical ways: a type that
+  implements a user-defined capability *may* hold built-in caps as
+  struct fields (encapsulation), and a regular function *may* return
+  a user-defined cap (factory pattern). Built-in caps still cannot
+  be returned, so the chain of authority stays explicit at every
+  link. See `examples/user_capabilities.capa`.
 
   Extraction helpers on `JsonValue`: `is_null() -> Bool`,
   `as_bool() -> Option<Bool>`, `as_num() -> Option<Float>`,

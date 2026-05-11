@@ -521,6 +521,11 @@ class TestTranspileExamples(unittest.TestCase):
         self.assertIn("Excellent", out)
         self.assertIn("Passed:  5", out)
 
+    def test_user_capabilities(self):
+        rc, out, err = self._run_example("examples/user_capabilities.capa")
+        self.assertEqual(rc, 0, err)
+        self.assertIn("sent welcome email", out)
+
     def test_net_attenuation(self):
         rc, out, err = self._run_example("examples/net_attenuation.capa")
         self.assertEqual(rc, 0, err)

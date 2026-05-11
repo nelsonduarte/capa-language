@@ -155,10 +155,17 @@ class MethodSig(Node):
 
 @dataclass(kw_only=True)
 class TraitDecl(Item):
+    """A trait declaration. If ``is_capability`` is True, the declaration
+    used the ``capability`` keyword instead of ``trait``: the declared
+    name is registered as a capability (subject to the capability
+    discipline), and types that implement it can be used as receivers
+    of capability-typed parameters.
+    """
     name: str
     type_params: list[str] = field(default_factory=list)
     methods: list[MethodSig]
     is_pub: bool = False
+    is_capability: bool = False
 
 
 @dataclass(kw_only=True)

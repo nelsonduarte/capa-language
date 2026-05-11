@@ -131,6 +131,11 @@ class Symbol:
     # Methods defined in impl blocks. Maps name -> Symbol (kind=FUNCTION),
     # whose Ty (TyFun) covers only the explicit parameters (no self).
     methods: dict[str, "Symbol"] = field(default_factory=dict)
+    # For TYPE_STRUCT/TYPE_SUM: names of traits and user-defined
+    # capabilities this type implements (via `impl TraitOrCap for X`).
+    # Used by the compatibility check to accept the type wherever the
+    # trait/cap is expected.
+    implements: set[str] = field(default_factory=set)
     # For FUNCTION: list parallel to params indicating whether each parameter
     # consumes the argument (ownership move). For use in flow analysis.
     consuming_params: list[bool] = field(default_factory=list)
@@ -477,8 +482,11 @@ class Analyzer:
         It does not prevent all possible duplications (flow analysis
         would be needed for that), but it captures the common ways of
         violating the discipline and gives real meaning to Capa signatures.
+
+        Recognises both built-in (``Stdio``, ``Net``, ...) and user-
+        defined (declared with ``capability X { ... }``) capabilities.
         """
-        cap = contains_capability(ty)
+        cap = self._contains_any_capability(ty)
         if cap is None:
             return
         self._err(
@@ -486,6 +494,124 @@ class Analyzer:
             f"capabilities only flow through function parameters",
             pos,
         )
+
+    def _contains_any_capability(self, ty: Ty) -> Optional[TyName]:
+        """Recursive walk that returns the first capability found in
+        ``ty``. Three things count as capabilities for the structural
+        discipline:
+
+        - built-in caps (``Stdio``, ``Net``, ...) — names in ``CAPABILITY_NAMES``
+        - user-defined caps (Symbol with kind=CAPABILITY) declared via
+          the ``capability`` keyword
+        - cap-bearing structs (Symbol with kind=TYPE_STRUCT) that
+          implement at least one user-defined capability. The struct
+          value itself carries authority and must follow the same
+          aliasing/use rules as the underlying cap.
+        """
+        if isinstance(ty, TyName):
+            if ty.name in CAPABILITY_NAMES:
+                return ty
+            sym = self.global_scope.lookup(ty.name)
+            if sym is not None:
+                if sym.kind == SymbolKind.CAPABILITY:
+                    return ty
+                if (
+                    sym.kind == SymbolKind.TYPE_STRUCT
+                    and any(self._is_user_capability(t) for t in sym.implements)
+                ):
+                    return ty
+            for a in ty.args:
+                found = self._contains_any_capability(a)
+                if found is not None:
+                    return found
+        if isinstance(ty, TyTuple):
+            for elem in ty.elements:
+                found = self._contains_any_capability(elem)
+                if found is not None:
+                    return found
+        return None
+
+    def _is_user_capability(self, name: str) -> bool:
+        """True iff ``name`` resolves to a user-defined capability — i.e.
+        a Symbol whose kind is CAPABILITY but whose name is not in the
+        built-in capability set (``Stdio``, ``Net``, etc.). User-defined
+        capabilities (declared with the ``capability`` keyword) are
+        subject to most of the same rules as built-in capabilities, but
+        with two relaxations to support the WhitePaper §4.6 pattern:
+        they can be the return type of a regular function (factories
+        produce fresh instances), and they can wrap built-in
+        capabilities as struct fields when the struct implements a
+        user-defined capability.
+        """
+        if name in CAPABILITY_NAMES:
+            return False
+        sym = self.global_scope.lookup(name)
+        return sym is not None and sym.kind == SymbolKind.CAPABILITY
+
+    def _contains_builtin_capability(self, ty: Ty) -> Optional[TyName]:
+        """Like ``contains_capability``, but only flags **built-in**
+        capabilities (Stdio, Fs, Net, Env, ...). User-defined capabilities
+        are ignored — call sites that allow user-defined caps to flow
+        through use this helper instead of ``contains_capability``.
+        """
+        if isinstance(ty, TyName):
+            if ty.name in CAPABILITY_NAMES:
+                return ty
+            for a in ty.args:
+                found = self._contains_builtin_capability(a)
+                if found is not None:
+                    return found
+        if isinstance(ty, TyTuple):
+            for elem in ty.elements:
+                found = self._contains_builtin_capability(elem)
+                if found is not None:
+                    return found
+        return None
+
+    def _check_no_builtin_capability(
+        self, ty: Ty, pos: Pos, context: str,
+    ) -> None:
+        """Variant of ``_check_no_capability`` that only rejects
+        **built-in** capabilities. Used in contexts that legitimately
+        accept user-defined capabilities (notably: the return type of
+        a factory function).
+        """
+        cap = self._contains_builtin_capability(ty)
+        if cap is None:
+            return
+        self._err(
+            f"capability {cap.name!r} cannot appear in {context}; "
+            f"built-in capabilities only flow through function parameters",
+            pos,
+        )
+
+    def _compatible_with_impls(self, expected: Ty, actual: Ty) -> bool:
+        """Like ``compatible`` from ``typesys``, plus nominal subtyping
+        via trait/capability implementations.
+
+        When the expected type is the name of a trait or user-defined
+        capability, and the actual type is a struct/sum whose Symbol
+        records an ``impl`` of that trait/capability, the two are
+        compatible — the concrete type is a valid implementor.
+
+        Generic type args on the expected side are not yet substituted
+        here (v1 limitation): an `impl Trait for X` is matched
+        regardless of the type args on Trait. This is conservative for
+        non-generic traits (the common case) and slightly permissive
+        for generic ones; a future version should align the args.
+        """
+        if compatible(expected, actual):
+            return True
+        if isinstance(expected, TyName) and isinstance(actual, TyName):
+            exp_sym = self.global_scope.lookup(expected.name)
+            act_sym = self.global_scope.lookup(actual.name)
+            if (
+                exp_sym is not None and act_sym is not None
+                and exp_sym.kind in (SymbolKind.TRAIT, SymbolKind.CAPABILITY)
+                and expected.name in act_sym.implements
+            ):
+                return True
+        return False
 
     def _install_builtins(self) -> None:
         # Primitive types: we register them as symbols only so that the
@@ -1141,8 +1267,17 @@ class Analyzer:
                     sym.sum_variants[v.name] = vsym
                     self.global_scope.define(vsym)
             elif isinstance(item, A.TraitDecl):
+                # `capability X` declarations register as SymbolKind.CAPABILITY
+                # so that downstream capability-discipline checks treat them
+                # identically to built-in caps (Stdio, Net, etc). `trait X`
+                # declarations remain SymbolKind.TRAIT. The method dispatch
+                # and impl checking are the same in both cases.
+                kind = (
+                    SymbolKind.CAPABILITY if item.is_capability
+                    else SymbolKind.TRAIT
+                )
                 sym = Symbol(
-                    name=item.name, kind=SymbolKind.TRAIT, pos=item.pos,
+                    name=item.name, kind=kind, pos=item.pos,
                     type_params=list(item.type_params),
                     trait_methods={m.name for m in item.methods},
                 )
@@ -1159,6 +1294,21 @@ class Analyzer:
                 # methods to the associated type.
                 pass
 
+        # Intermediate sub-pass: identify structs that implement a
+        # user-defined capability. These structs are exempt from the
+        # "no capability as struct field" rule, so they can encapsulate
+        # built-in caps (the WhitePaper §4.6 pattern). The exemption
+        # only applies to such cap-bearing structs; plain structs still
+        # cannot have capability fields.
+        self._cap_bearing_structs: set[str] = set()
+        for item in module.items:
+            if not isinstance(item, A.ImplBlock):
+                continue
+            if item.trait_name is None:
+                continue
+            if self._is_user_capability(item.trait_name):
+                self._cap_bearing_structs.add(item.type_name)
+
         # Second sub-pass: now that all type names are in scope, we can
         # resolve the types of struct fields, variant payloads, and
         # types of constants/functions.
@@ -1168,11 +1318,13 @@ class Analyzer:
                 if sym is None:
                     continue
                 self._push_type_params(item.type_params)
+                is_cap_bearing = item.name in self._cap_bearing_structs
                 for fld in item.fields:
                     fty = self._resolve_type(fld.type_expr)
-                    self._check_no_capability(
-                        fty, fld.pos, f"struct field {fld.name!r}",
-                    )
+                    if not is_cap_bearing:
+                        self._check_no_capability(
+                            fty, fld.pos, f"struct field {fld.name!r}",
+                        )
                     sym.struct_fields[fld.name] = fty
                 self._pop_type_params()
             elif isinstance(item, A.TypeSum):
@@ -1207,7 +1359,13 @@ class Analyzer:
                         p.consuming for p in item.params if p.name != "self"
                     ]
                     if isinstance(sym.ty, TyFun):
-                        self._check_no_capability(
+                        # Only built-in capabilities are forbidden as
+                        # function return types. User-defined capabilities
+                        # can be returned by factory functions — they
+                        # are not "permission forgery" because the factory
+                        # consumed the underlying built-in caps to build
+                        # the higher-level one.
+                        self._check_no_builtin_capability(
                             sym.ty.ret, item.pos,
                             f"return type of function {item.name!r}",
                         )
@@ -1245,12 +1403,19 @@ class Analyzer:
 
         Does not check bodies — that is for phase 2. Only signatures are
         registered so that ``_check_method_call`` can dispatch.
+
+        Also records the trait/capability the target implements (if
+        any) on ``target.implements`` so that the compatibility check
+        accepts the target where the trait/cap is expected.
         """
         target = self.global_scope.lookup(impl.type_name)
         if target is None or target.kind not in (
             SymbolKind.TYPE_STRUCT, SymbolKind.TYPE_SUM,
         ):
             return
+        # Record the implemented trait/capability for subtyping.
+        if impl.trait_name is not None:
+            target.implements.add(impl.trait_name)
         # Configure Self and the target type's type params for the duration of the registration.
         self_args = tuple(TyVar(p) for p in target.type_params)
         prev_self = self.self_type
@@ -1498,10 +1663,15 @@ class Analyzer:
             )
             return
 
-        # Check trait, if applicable.
+        # Check trait, if applicable. Both `trait X` and `capability X`
+        # declarations are valid targets here — both produce a Symbol
+        # carrying `trait_methods` / `trait_method_sigs`; only the
+        # SymbolKind differs (TRAIT vs CAPABILITY).
         if impl.trait_name is not None:
             trait = self.global_scope.lookup(impl.trait_name)
-            if trait is None or trait.kind != SymbolKind.TRAIT:
+            if trait is None or trait.kind not in (
+                SymbolKind.TRAIT, SymbolKind.CAPABILITY,
+            ):
                 self._err(
                     f"trait {impl.trait_name!r} is not defined",
                     impl.pos,
@@ -1608,12 +1778,14 @@ class Analyzer:
                 )
             actual = declared
         # Capabilities are normally forbidden in let bindings to prevent
-        # aliasing. Exception: a fresh attenuated capability, produced
-        # by a method call (e.g. `net.restrict_to("a.com")`), is OK —
-        # it is a brand-new capability instance, not an alias of an
-        # existing one. The flow-layer non-aliasing rule still applies
-        # at call sites.
-        if not isinstance(s.value, A.MethodCall):
+        # aliasing. Exception: a fresh capability produced by a call —
+        # either a method call (built-in attenuation, e.g.
+        # `net.restrict_to("a.com")`) or a regular function call
+        # (user-defined cap factory, e.g. `make_smtp_mailer(net, ...)`).
+        # Both are brand-new capability instances, not aliases of
+        # existing ones. The flow-layer non-aliasing rule still applies
+        # at call sites if the binding is later passed around.
+        if not isinstance(s.value, (A.MethodCall, A.Call)):
             self._check_no_capability(actual, s.pos, "a 'let' binding")
         self._bind_pattern(s.pattern, actual, mutable=False)
 
@@ -1628,9 +1800,9 @@ class Analyzer:
                     s.value.pos,
                 )
             actual = declared
-        # See _check_let for the rationale: method-call RHS is a fresh
-        # attenuated capability, not an alias, so let it through.
-        if not isinstance(s.value, A.MethodCall):
+        # See _check_let for the rationale: call/method-call RHS is a
+        # fresh capability, not an alias, so let it through.
+        if not isinstance(s.value, (A.MethodCall, A.Call)):
             self._check_no_capability(actual, s.pos, "a 'var' binding")
         if self.scope.lookup_local(s.name) is not None:
             self._err(f"duplicate declaration of {s.name!r}", s.pos)
@@ -2569,7 +2741,7 @@ class Analyzer:
         # Phase 2: checking. Substitute in the param and check compatibility.
         for i, (param_ty, arg_ty) in enumerate(zip(fun_ty.params, arg_tys)):
             substituted = substitute(param_ty, mapping)
-            if not compatible(substituted, arg_ty):
+            if not self._compatible_with_impls(substituted, arg_ty):
                 self._err(
                     f"call to {name!r}: argument {i + 1} expects "
                     f"{ty_str(substituted)}, got {ty_str(arg_ty)}",
@@ -2671,7 +2843,7 @@ class Analyzer:
         # Check compatibility after substitution.
         for i, (param_ty, arg_ty) in enumerate(zip(method_fun_ty.params, arg_tys)):
             substituted = substitute(param_ty, mapping)
-            if not compatible(substituted, arg_ty):
+            if not self._compatible_with_impls(substituted, arg_ty):
                 self._err(
                     f"call to {recv_ty.name}.{e.method!r}: argument "
                     f"{i + 1} expects {ty_str(substituted)}, got "

@@ -2106,6 +2106,128 @@ class TestNetAttenuation(unittest.TestCase):
         self.assertTrue(r.ok, r.errors)
 
 
+class TestUserDefinedCapabilities(unittest.TestCase):
+    """`capability X { ... }` declarations and the relaxations they
+    enable: built-in caps as struct fields when the struct implements a
+    user-defined cap; user-defined caps as function return types;
+    `let`-binding factory-call results; nominal subtyping via `impl`."""
+
+    _SETUP = (
+        "capability SendEmail\n"
+        "    fun send(self, to: String, subject: String, body: String) -> Result<Unit, IoError>\n"
+        "\n"
+        "type SmtpMailer {\n"
+        "    server: String,\n"
+        "    net: Net\n"
+        "}\n"
+        "\n"
+        "impl SendEmail for SmtpMailer\n"
+        "    fun send(self, to: String, subject: String, body: String) -> Result<Unit, IoError>\n"
+        "        return Ok(())\n"
+        "\n"
+        "fun make_smtp_mailer(net: Net, server: String) -> SmtpMailer\n"
+        "    return SmtpMailer { server: server, net: net.restrict_to(server) }\n"
+    )
+
+    def test_capability_decl_parses_and_typechecks(self):
+        r = check(self._SETUP + "fun main()\n    return\n")
+        self.assertTrue(r.ok, r.errors)
+
+    def test_struct_with_cap_field_allowed_when_impl_user_cap(self):
+        # SmtpMailer has `net: Net` — normally forbidden, allowed here
+        # because SmtpMailer implements a user-defined capability.
+        r = check(self._SETUP + "fun main()\n    return\n")
+        self.assertTrue(r.ok, r.errors)
+
+    def test_struct_with_cap_field_rejected_when_no_user_cap_impl(self):
+        # Plain struct (no `impl SendEmail for ...`) — built-in cap as
+        # field still rejected.
+        msgs = errors_of(
+            "type Service { net: Net, label: String }\n"
+            "fun main()\n    return\n"
+        )
+        self.assertTrue(
+            any("cannot appear in struct field 'net'" in m for m in msgs),
+            msgs,
+        )
+
+    def test_factory_returning_user_cap_typechecks(self):
+        # `fun make_smtp_mailer(...) -> SmtpMailer` is allowed even
+        # though SmtpMailer is a user-defined capability.
+        r = check(self._SETUP + "fun main()\n    return\n")
+        self.assertTrue(r.ok, r.errors)
+
+    def test_factory_returning_builtin_cap_rejected(self):
+        # The relaxation is for *user-defined* caps. Built-in caps
+        # still cannot be returned.
+        msgs = errors_of(
+            "fun forge() -> Net\n"
+            "    return Net { }\n"
+        )
+        self.assertTrue(
+            any("'Net' cannot appear in return type" in m for m in msgs),
+            msgs,
+        )
+
+    def test_let_binding_of_factory_call_allowed(self):
+        # `let mailer = make_smtp_mailer(net, ...)` is allowed because
+        # the RHS is a Call producing a fresh user-defined cap.
+        r = check(
+            self._SETUP
+            + "fun main(net: Net)\n"
+            + "    let mailer = make_smtp_mailer(net, \"smtp.example.com\")\n"
+            + "    let _ = mailer.send(\"a@b\", \"s\", \"b\")\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+    def test_let_alias_of_bare_user_cap_rejected(self):
+        # `let dup = mailer` (plain Ident RHS, alias) is still rejected.
+        msgs = errors_of(
+            self._SETUP
+            + "fun use_mailer(mailer: SmtpMailer)\n"
+            + "    let dup = mailer\n"
+            + "    let _ = dup.send(\"a@b\", \"s\", \"b\")\n"
+        )
+        self.assertTrue(
+            any("cannot appear in a 'let' binding" in m for m in msgs),
+            msgs,
+        )
+
+    def test_struct_can_be_passed_where_user_cap_expected(self):
+        # Nominal subtyping: SmtpMailer is accepted where SendEmail
+        # is expected, because SmtpMailer implements SendEmail.
+        r = check(
+            self._SETUP
+            + "fun send_hello(mailer: SendEmail)\n"
+            + "    let _ = mailer.send(\"a@b\", \"s\", \"b\")\n"
+            + "fun main(net: Net)\n"
+            + "    let m = make_smtp_mailer(net, \"smtp.example.com\")\n"
+            + "    send_hello(m)\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+    def test_unrelated_struct_not_accepted_where_user_cap_expected(self):
+        # If Foo does NOT implement SendEmail, passing it to a
+        # SendEmail parameter is a type error.
+        msgs = errors_of(
+            self._SETUP
+            + "type Foo { x: Int }\n"
+            + "fun send_hello(mailer: SendEmail)\n"
+            + "    let _ = mailer.send(\"a@b\", \"s\", \"b\")\n"
+            + "fun main()\n"
+            + "    send_hello(Foo { x: 1 })\n"
+        )
+        self.assertTrue(
+            any("expects SendEmail, got Foo" in m for m in msgs),
+            msgs,
+        )
+
+    def test_user_capabilities_example_clean(self):
+        with open("examples/user_capabilities.capa", encoding="utf-8") as f:
+            r = check(f.read())
+        self.assertTrue(r.ok, r.errors)
+
+
 # =============================================================
 # JSON: built-in JsonValue type and parse_json/to_json
 # =============================================================

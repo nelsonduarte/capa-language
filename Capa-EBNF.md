@@ -462,6 +462,30 @@ capability_decl = [ "pub" ] "capability" IDENT [ generic_params ]
 capability_member = function_signature NEWLINE
 ```
 
+A user-defined capability is implemented exactly like a trait: `impl X for Type`, where `X` is the capability and `Type` is the concrete implementor. The implementor's value is then accepted anywhere `X` is expected (nominal subtyping).
+
+To make the encapsulation pattern from WhitePaper §4.6 workable, the analyzer relaxes two of the otherwise-strict structural rules **only for the cap-bearing struct**:
+
+- The struct that implements a user-defined capability **may hold built-in capabilities as fields** (e.g. `type SmtpMailer { server: String, net: Net }`). The struct's *value* still has to follow the capability discipline as a whole — aliasing it via `let dup = mailer` is rejected, the same as for built-in caps.
+- A regular function **may return a user-defined capability** (factory pattern: `fun make_smtp_mailer(net: Net, ...) -> SmtpMailer`). Built-in caps still cannot be returned, so the chain from `main` to any cap value remains visible in signatures at every link.
+
+```capa
+capability SendEmail
+    fun send(self, to: String, subject: String, body: String) -> Result<Unit, IoError>
+
+type SmtpMailer { server: String, net: Net }
+
+impl SendEmail for SmtpMailer
+    fun send(self, to: String, subject: String, body: String) -> Result<Unit, IoError>
+        return Ok(())
+
+fun make_smtp_mailer(net: Net, server: String) -> SmtpMailer
+    return SmtpMailer { server: server, net: net.restrict_to(server) }
+
+fun send_welcome(mailer: SendEmail, to: String) -> Result<Unit, IoError>
+    return mailer.send(to, "Welcome", "Hello!")
+```
+
 ### 5.7 Constant declarations
 
 ```ebnf

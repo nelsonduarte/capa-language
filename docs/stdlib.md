@@ -297,6 +297,45 @@ Marker capability for crossing the Python boundary. Has no methods —
 its only role is to gate `py_import` and `py_invoke` (see "Python
 interoperability" above).
 
+### User-defined capabilities
+
+Libraries can declare their own capabilities with the `capability`
+keyword. The declaration registers the name in the capability
+discipline; any type that implements the capability becomes a valid
+implementor.
+
+```capa
+capability SendEmail
+    fun send(self, to: String, subject: String, body: String) -> Result<Unit, IoError>
+
+type SmtpMailer {
+    server: String,
+    net: Net          // built-in cap as a field — allowed because
+                      // SmtpMailer implements a user-defined cap
+}
+
+impl SendEmail for SmtpMailer
+    fun send(self, to: String, subject: String, body: String) -> Result<Unit, IoError>
+        // delegate to self.net under the hood
+        return Ok(())
+
+// Factory that consumes the underlying built-in cap and produces the
+// higher-level capability. Allowed return type even though SmtpMailer
+// carries authority.
+fun make_smtp_mailer(net: Net, server: String) -> SmtpMailer
+    return SmtpMailer { server: server, net: net.restrict_to(server) }
+
+// Caller side: receive the capability by parameter (subtyping accepts
+// SmtpMailer where SendEmail is expected because of the impl).
+fun send_welcome(mailer: SendEmail, to: String) -> Result<Unit, IoError>
+    return mailer.send(to, "Welcome", "Hello!")
+```
+
+The discipline still applies: a `let dup = mailer` (plain identifier
+alias of a cap-bearing value) is rejected; only call/method-call RHSs
+produce fresh capability instances that can be bound. See
+`examples/user_capabilities.capa` for a complete example.
+
 ---
 
 ## The `IoError` type
