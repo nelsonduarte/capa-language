@@ -17,9 +17,11 @@ Bridge from "working alpha" to "shareable v0.2 alpha". Three pieces:
   Safe Capa library in `examples/demo_event_stream.capa`; writeup
   with attack-attempt code + analyzer rejections in
   `docs/demo-event-stream.md`; cross-referenced from README.
-- [ ] **VSCode syntax highlighting** (`.tmLanguage.json` grammar +
-  package extension). Minimum viable: keywords + strings + comments
-  + numbers. No LSP yet. ⏱ 2-3h
+- [x] **VSCode syntax highlighting** — TextMate grammar covering
+  keywords (by category), built-in caps highlighted distinctly,
+  string interpolation, numeric literals in all bases, operators
+  including `..`, `..=`, `=>`, `?`. Lives in `vscode/`. Install
+  manually via symlink/junction; Marketplace publication later.
 - [ ] **Simple landing page** (`capalang.dev` or similar). Single page:
   headline, capability story in 3 examples, link to GitHub. Pure
   HTML+CSS, no framework. ⏱ 2-3h

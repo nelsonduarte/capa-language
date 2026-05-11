@@ -98,6 +98,14 @@ From the project root (`Capa/`):
 pip install -e .          # or just use `python -m capa` directly
 ```
 
+### Editor support
+
+A VSCode extension providing syntax highlighting lives in
+[`vscode/`](vscode/). It is not on the Marketplace yet; install it
+manually with a symlink (`ln -s "$(pwd)/vscode" ~/.vscode/extensions/capa-language`
+on macOS/Linux, `New-Item -ItemType Junction ...` on Windows) and
+reload VSCode. A full LSP is on the roadmap.
+
 ## CLI
 
 ```bash

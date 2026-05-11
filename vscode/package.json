@@ -1,0 +1,46 @@
+{
+    "name": "capa-language",
+    "displayName": "Capa Language",
+    "description": "Syntax highlighting for the Capa programming language",
+    "version": "0.1.0",
+    "publisher": "nelsonduarte",
+    "engines": {
+        "vscode": "^1.80.0"
+    },
+    "categories": [
+        "Programming Languages"
+    ],
+    "keywords": [
+        "capa",
+        "capability",
+        "supply chain",
+        "security"
+    ],
+    "license": "MIT",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/nelsonduarte/capa.git"
+    },
+    "contributes": {
+        "languages": [
+            {
+                "id": "capa",
+                "aliases": [
+                    "Capa",
+                    "capa"
+                ],
+                "extensions": [
+                    ".capa"
+                ],
+                "configuration": "./language-configuration.json"
+            }
+        ],
+        "grammars": [
+            {
+                "language": "capa",
+                "scopeName": "source.capa",
+                "path": "./syntaxes/capa.tmLanguage.json"
+            }
+        ]
+    }
+}

@@ -1,0 +1,277 @@
+{
+    "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+    "name": "Capa",
+    "scopeName": "source.capa",
+    "fileTypes": ["capa"],
+    "patterns": [
+        { "include": "#comments" },
+        { "include": "#strings" },
+        { "include": "#chars" },
+        { "include": "#keywords" },
+        { "include": "#numbers" },
+        { "include": "#operators" },
+        { "include": "#types" },
+        { "include": "#builtin_functions" },
+        { "include": "#function_calls" },
+        { "include": "#identifiers" },
+        { "include": "#punctuation" }
+    ],
+    "repository": {
+        "comments": {
+            "patterns": [
+                {
+                    "name": "comment.line.double-slash.capa",
+                    "match": "//.*$"
+                }
+            ]
+        },
+
+        "strings": {
+            "patterns": [
+                {
+                    "name": "string.quoted.double.capa",
+                    "begin": "\"",
+                    "beginCaptures": {
+                        "0": { "name": "punctuation.definition.string.begin.capa" }
+                    },
+                    "end": "\"",
+                    "endCaptures": {
+                        "0": { "name": "punctuation.definition.string.end.capa" }
+                    },
+                    "patterns": [
+                        {
+                            "name": "constant.character.escape.capa",
+                            "match": "\\\\([nrt0\"'\\\\]|u\\{[0-9a-fA-F]+\\})"
+                        },
+                        {
+                            "name": "meta.interpolation.capa",
+                            "begin": "\\$\\{",
+                            "beginCaptures": {
+                                "0": { "name": "punctuation.definition.interpolation.begin.capa" }
+                            },
+                            "end": "\\}",
+                            "endCaptures": {
+                                "0": { "name": "punctuation.definition.interpolation.end.capa" }
+                            },
+                            "patterns": [
+                                { "include": "$self" }
+                            ]
+                        },
+                        {
+                            "name": "constant.character.escape.dollar.capa",
+                            "match": "\\$\\$"
+                        }
+                    ]
+                }
+            ]
+        },
+
+        "chars": {
+            "patterns": [
+                {
+                    "name": "string.quoted.single.capa",
+                    "match": "'(\\\\([nrt0\"'\\\\]|u\\{[0-9a-fA-F]+\\})|[^'\\\\])'"
+                }
+            ]
+        },
+
+        "keywords": {
+            "patterns": [
+                {
+                    "comment": "Block-opening declarations",
+                    "name": "keyword.declaration.capa",
+                    "match": "\\b(fun|type|trait|impl|capability|const|import|as)\\b"
+                },
+                {
+                    "comment": "Visibility / binding storage modifiers",
+                    "name": "storage.modifier.capa",
+                    "match": "\\b(pub|let|var|consume)\\b"
+                },
+                {
+                    "comment": "Control-flow keywords",
+                    "name": "keyword.control.capa",
+                    "match": "\\b(if|then|elif|else|match|while|for|in|break|continue|return)\\b"
+                },
+                {
+                    "comment": "Logical operators (words)",
+                    "name": "keyword.operator.logical.capa",
+                    "match": "\\b(and|or|not)\\b"
+                },
+                {
+                    "comment": "`self` is the receiver inside an impl; `Self` is the receiver type",
+                    "name": "variable.language.self.capa",
+                    "match": "\\b(self|Self)\\b"
+                },
+                {
+                    "comment": "Boolean literals",
+                    "name": "constant.language.boolean.capa",
+                    "match": "\\b(true|false)\\b"
+                },
+                {
+                    "comment": "Reserved for a future version of Capa",
+                    "name": "invalid.deprecated.reserved.capa",
+                    "match": "\\b(async|await|yield|defer|where|mut)\\b"
+                }
+            ]
+        },
+
+        "numbers": {
+            "patterns": [
+                {
+                    "comment": "Hexadecimal integer literal",
+                    "name": "constant.numeric.hex.capa",
+                    "match": "\\b0x[0-9a-fA-F][0-9a-fA-F_]*\\b"
+                },
+                {
+                    "comment": "Binary integer literal",
+                    "name": "constant.numeric.binary.capa",
+                    "match": "\\b0b[01][01_]*\\b"
+                },
+                {
+                    "comment": "Octal integer literal",
+                    "name": "constant.numeric.octal.capa",
+                    "match": "\\b0o[0-7][0-7_]*\\b"
+                },
+                {
+                    "comment": "Floating-point literal (with optional exponent)",
+                    "name": "constant.numeric.float.capa",
+                    "match": "\\b[0-9][0-9_]*\\.[0-9][0-9_]*([eE][+-]?[0-9][0-9_]*)?\\b"
+                },
+                {
+                    "comment": "Integer literal with optional exponent",
+                    "name": "constant.numeric.integer.capa",
+                    "match": "\\b[0-9][0-9_]*([eE][+-]?[0-9][0-9_]*)?\\b"
+                }
+            ]
+        },
+
+        "operators": {
+            "patterns": [
+                {
+                    "comment": "Inclusive range (must come before `..` to win the longest-match)",
+                    "name": "keyword.operator.range.inclusive.capa",
+                    "match": "\\.\\.="
+                },
+                {
+                    "comment": "Exclusive range / spread",
+                    "name": "keyword.operator.range.capa",
+                    "match": "\\.\\."
+                },
+                {
+                    "comment": "Lambda body separator",
+                    "name": "keyword.operator.fat-arrow.capa",
+                    "match": "=>"
+                },
+                {
+                    "comment": "Return type / match arm",
+                    "name": "keyword.operator.arrow.capa",
+                    "match": "->"
+                },
+                {
+                    "comment": "Comparison operators",
+                    "name": "keyword.operator.comparison.capa",
+                    "match": "==|!=|<=|>="
+                },
+                {
+                    "comment": "Compound assignment",
+                    "name": "keyword.operator.assignment.compound.capa",
+                    "match": "\\+=|-=|\\*=|/=|%="
+                },
+                {
+                    "comment": "Plain assignment",
+                    "name": "keyword.operator.assignment.capa",
+                    "match": "="
+                },
+                {
+                    "comment": "Result-propagation try operator",
+                    "name": "keyword.operator.try.capa",
+                    "match": "\\?"
+                },
+                {
+                    "comment": "Or-pattern separator (only valid in match arms; we highlight as operator everywhere)",
+                    "name": "keyword.operator.or-pattern.capa",
+                    "match": "\\|"
+                },
+                {
+                    "comment": "Arithmetic and angle brackets",
+                    "name": "keyword.operator.arithmetic.capa",
+                    "match": "[+\\-*/%<>]"
+                }
+            ]
+        },
+
+        "types": {
+            "patterns": [
+                {
+                    "comment": "Primitive types",
+                    "name": "support.type.primitive.capa",
+                    "match": "\\b(Int|Float|String|Bool|Char|Unit)\\b"
+                },
+                {
+                    "comment": "Built-in capabilities",
+                    "name": "support.class.capability.capa",
+                    "match": "\\b(Stdio|Fs|Net|Env|Clock|Random|Proc|Db|Unsafe)\\b"
+                },
+                {
+                    "comment": "Built-in generic types and the function-type constructor",
+                    "name": "support.class.builtin.capa",
+                    "match": "\\b(List|Option|Result|Map|Set|Fun|JsonValue|IoError)\\b"
+                },
+                {
+                    "comment": "Built-in variant constructors",
+                    "name": "support.constant.variant.capa",
+                    "match": "\\b(Some|None|Ok|Err|JNull|JBool|JNum|JStr|JArr|JObj)\\b"
+                },
+                {
+                    "comment": "User-declared types (PascalCase identifiers, declared after `type`, `trait`, `impl`, `capability`)",
+                    "name": "entity.name.type.capa",
+                    "match": "\\b[A-Z][A-Za-z0-9_]*\\b"
+                }
+            ]
+        },
+
+        "builtin_functions": {
+            "patterns": [
+                {
+                    "comment": "Built-in conversion and stdlib functions",
+                    "name": "support.function.builtin.capa",
+                    "match": "\\b(parse_int|parse_float|to_int|to_float|new_map|new_set|parse_json|to_json|py_import|py_invoke)\\b"
+                }
+            ]
+        },
+
+        "function_calls": {
+            "patterns": [
+                {
+                    "comment": "Lowercase identifier immediately followed by `(` — a function call",
+                    "name": "entity.name.function.call.capa",
+                    "match": "\\b([a-z_][A-Za-z0-9_]*)(?=\\s*\\()"
+                }
+            ]
+        },
+
+        "identifiers": {
+            "patterns": [
+                {
+                    "comment": "Snake-case identifiers (variables, fields, parameters)",
+                    "name": "variable.other.capa",
+                    "match": "\\b[a-z_][A-Za-z0-9_]*\\b"
+                },
+                {
+                    "comment": "Wildcard pattern",
+                    "name": "variable.language.wildcard.capa",
+                    "match": "\\b_\\b"
+                }
+            ]
+        },
+
+        "punctuation": {
+            "patterns": [
+                { "name": "punctuation.terminator.statement.capa", "match": ";" },
+                { "name": "punctuation.separator.comma.capa", "match": "," },
+                { "name": "punctuation.separator.colon.capa", "match": ":" },
+                { "name": "punctuation.accessor.capa", "match": "\\." }
+            ]
+        }
+    }
+}
