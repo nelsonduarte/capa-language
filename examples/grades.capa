@@ -1,4 +1,4 @@
-// grades.capa — non-trivial Capa program.
+// grades.capa, non-trivial Capa program.
 // Computes statistics over a class's grades, classifies them, and prints a report.
 
 type Student {

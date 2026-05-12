@@ -1,4 +1,4 @@
-// io.capa — Capa program that exercises the ? operator and Result.
+// io.capa, Capa program that exercises the ? operator and Result.
 // Reads a file, counts lines and words, writes a report.
 
 fun count_lines(text: String) -> Int

@@ -20,12 +20,12 @@ Types represented:
 - ``TyUnknown``: marker for "the checker couldn't type this, but it isn't
   necessarily an error". Used when the v1 type checker does not yet support
   some construct (e.g., method dispatch on capabilities). Comparisons against
-  TyUnknown silently succeed — it is an *escape hatch* to keep the checker
+  TyUnknown silently succeed, it is an *escape hatch* to keep the checker
   useful without being overly pedantic.
 
 Conventions:
 
-- Types are *frozen dataclasses* — they compare by structure.
+- Types are *frozen dataclasses*, they compare by structure.
 - Tuples are used instead of lists for args so they are hashable.
 - The ``ty_str`` function produces a friendly representation used in error
   messages.
@@ -80,7 +80,7 @@ TyUnit: Ty = _TyUnitSingleton()
 
 @dataclass(frozen=True)
 class _TyUnknownSingleton(Ty):
-    """"Unknown" type — checker escape hatch. Singleton."""
+    """"Unknown" type, checker escape hatch. Singleton."""
     pass
 
 
@@ -105,7 +105,7 @@ PRIMITIVE_NAMES: frozenset[str] = frozenset({
 })
 
 
-# Capabilities recognized by the system. They are opaque types — the v1
+# Capabilities recognized by the system. They are opaque types, the v1
 # checker does not verify the methods called on them, but knows they exist
 # so parameters of type Stdio, Fs, etc. are accepted as annotations.
 CAPABILITY_NAMES: frozenset[str] = frozenset({
@@ -150,7 +150,7 @@ def ty_str(t: Ty) -> str:
 def substitute(t: Ty, mapping: dict[str, Ty]) -> Ty:
     """Replaces occurrences of ``TyVar(name)`` in the type with the type
     given in ``mapping[name]``. Does not cross quantification boundaries
-    (this checker doesn't handle first-class polymorphism — only
+    (this checker doesn't handle first-class polymorphism, only
     instantiation at calls of generic functions and types).
     """
     if isinstance(t, TyVar):
@@ -218,7 +218,7 @@ def contains_capability(t: Ty) -> Ty | None:
     """Returns the first capability found in the type, or None.
 
     Traverses recursively: generic arguments, tuple elements.
-    **Does not traverse ``TyFun``** — capabilities as parameter or return
+    **Does not traverse ``TyFun``**, capabilities as parameter or return
     types of a stored function are merely the signature, not capabilities
     actually stored. The cap is only "real" when the function is called
     with a concrete cap value. This distinction lets closures take
@@ -265,7 +265,7 @@ def unify(expected: Ty, actual: Ty, mapping: dict[str, Ty]) -> bool:
     Returns ``True`` if unification is consistent (compatible with the
     existing mapping). Returns ``False`` on definitive structural
     incompatibility. In either case, ``mapping`` may have been updated
-    with tentative bindings — it is up to the caller to decide what to do
+    with tentative bindings, it is up to the caller to decide what to do
     (typically report an error via ``compatible`` after applying the mapping).
     """
     # TyUnknown on either side: passes silently.
@@ -280,7 +280,7 @@ def unify(expected: Ty, actual: Ty, mapping: dict[str, Ty]) -> bool:
             return True
         return unify(bound, actual, mapping)
 
-    # TyVar on the actual side with no pairing — a rare case that occurs
+    # TyVar on the actual side with no pairing, a rare case that occurs
     # when the caller hasn't yet inferred certain types. We don't bind.
     if isinstance(actual, TyVar):
         return True

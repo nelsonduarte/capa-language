@@ -5,7 +5,7 @@
 ## A capability-centric programming language
 
 Justification, Specification and Roadmap
-Version 1.0 — May 2026
+Version 1.0, May 2026
 
 *Technical design document*
 
@@ -31,7 +31,7 @@ Version 1.0 — May 2026
 
 ## Executive Summary
 
-This document presents the technical justification, conceptual design and implementation roadmap of Capa, a new general-purpose programming language whose central principle is the explicit expression of authority in the type system — a model known as capability-based security.
+This document presents the technical justification, conceptual design and implementation roadmap of Capa, a new general-purpose programming language whose central principle is the explicit expression of authority in the type system, a model known as capability-based security.
 
 The motivation for creating Capa is not to replace existing languages in domains where they are already adequate. It is, instead, to respond to a specific set of problems that mainstream 2026 languages continue to handle unsatisfactorily: the disproportionate growth of software supply chain attacks, the opacity of side effects in third-party code, the friction between strong static guarantees and developer ergonomics, and the difficulty of demonstrating regulatory compliance in code (notably under the EU Cyber Resilience Act).
 
@@ -51,7 +51,7 @@ The document is organised into twelve chapters. The first three establish the co
 
 ### 1.1 The 2026 context
 
-We are living through a paradoxical moment in software engineering. On the one hand, we have more expressive languages, more sophisticated static analysis tools, and richer library ecosystems than at any other point in history. On the other, security incidents originating in application code — not in operating systems or infrastructure — continue to grow year after year, and supply chain attacks have become one of the most difficult categories of threat to mitigate.
+We are living through a paradoxical moment in software engineering. On the one hand, we have more expressive languages, more sophisticated static analysis tools, and richer library ecosystems than at any other point in history. On the other, security incidents originating in application code, not in operating systems or infrastructure, continue to grow year after year, and supply chain attacks have become one of the most difficult categories of threat to mitigate.
 
 The recent literature on supply chain security consistently identifies three structural causes for this situation. The first is the opacity of third-party code: when an application imports hundreds of transitive packages, it is practically impossible to know, without dynamic analysis, what resources each of those packages accesses at runtime. The second is the absence of static guarantees over effects: mainstream languages treat access to the network, disk, environment and processes as operations ambiently available to any function, with no need for declaration or proof. The third is the disconnect between regulation and code: regulations such as the EU Cyber Resilience Act require manufacturers of products with digital elements to demonstrate control over their software inventory (SBOM) and over its behaviours, but the code is written in languages that were not designed to support that kind of evidence.
 
@@ -79,7 +79,7 @@ def compute_statistics(values: list[float]) -> dict:
     return { 'mean': mean, 'n': len(values) }
 ```
 
-The type system does not detect the change. The linter does not detect the change. The IDE does not detect the change. Only a human code review, or dynamic analysis tools running in a sandbox, would be able to detect this kind of exfiltration — and even these frequently fail when the malicious behaviour is conditional or time-deferred.
+The type system does not detect the change. The linter does not detect the change. The IDE does not detect the change. Only a human code review, or dynamic analysis tools running in a sandbox, would be able to detect this kind of exfiltration, and even these frequently fail when the malicious behaviour is conditional or time-deferred.
 
 > **OPERATIONAL DEFINITION**
 >
@@ -93,7 +93,7 @@ First, none of the cited languages combines, in a single system, capabilities as
 
 Second, the European regulatory context has changed substantially over the last two years. The EU Cyber Resilience Act, which entered into force in 2024 and whose main obligations begin to apply in 2027, requires manufacturers of products with digital elements to maintain an up-to-date SBOM and to be accountable for actively exploited vulnerabilities in any component of their product. A language whose types express directly what effects a component may produce offers a technical basis for satisfying these obligations in a way that languages with ambient authority simply cannot.
 
-Third, and more pragmatically: the opportunity exists. Current mainstream languages — Python, JavaScript, Java, C#, Go — share common blind spots in security, and none of them can solve this problem retroactively without breaking compatibility. A new language, designed from the ground up with this model, avoids that constraint.
+Third, and more pragmatically: the opportunity exists. Current mainstream languages, Python, JavaScript, Java, C#, Go, share common blind spots in security, and none of them can solve this problem retroactively without breaking compatibility. A new language, designed from the ground up with this model, avoids that constraint.
 
 ### 1.4 Objectives of this document
 
@@ -123,11 +123,11 @@ These languages share a relevant property: they have stronger static guarantees 
 
 Rust deserves a separate analysis because it occupies a unique position in the current landscape. Its ownership and borrowing system provides memory safety guarantees without a garbage collector, and its type system supports functional programming patterns that, in no other mainstream language, are accompanied by C++-level performance.
 
-Rust is, without circumlocution, the language that comes closest to Capa's objectives in terms of static guarantees. However, Rust does not treat capabilities as a primitive. The Rust model prevents whole classes of bugs (data races, use-after-free), but it does not prevent a function with no special marking from calling `std::fs::read()` or `std::net::TcpStream::connect()`. The learning curve of Rust is also, by general admission, high — partly for essential reasons (ownership is genuinely hard), partly for accidental reasons (the syntax and certain design choices impose cognitive cost).
+Rust is, without circumlocution, the language that comes closest to Capa's objectives in terms of static guarantees. However, Rust does not treat capabilities as a primitive. The Rust model prevents whole classes of bugs (data races, use-after-free), but it does not prevent a function with no special marking from calling `std::fs::read()` or `std::net::TcpStream::connect()`. The learning curve of Rust is also, by general admission, high, partly for essential reasons (ownership is genuinely hard), partly for accidental reasons (the syntax and certain design choices impose cognitive cost).
 
 ### 2.4 Functional languages with effect systems (Haskell, Koka, Effekt)
 
-This family represents, conceptually, the closest approximation to what Capa proposes — but via a different path. Haskell distinguishes, in the type system, pure code from effectful code via monads (in particular IO). More recent languages such as Koka and Effekt formalise this through algebraic effects and effect handlers, allowing effects to be declared and handled compositionally.
+This family represents, conceptually, the closest approximation to what Capa proposes, but via a different path. Haskell distinguishes, in the type system, pure code from effectful code via monads (in particular IO). More recent languages such as Koka and Effekt formalise this through algebraic effects and effect handlers, allowing effects to be declared and handled compositionally.
 
 The strengths are obvious: these languages offer very strong guarantees about what code can or cannot do. The weaknesses, for Capa's target audience, are equally so: the entry barrier is high, the industrial tooling is limited, and the paradigm is unfamiliar to most programmers trained in the last two decades. For a programmer trained in Python or JavaScript, reading idiomatic Haskell is frequently an opaque experience.
 
@@ -135,7 +135,7 @@ The strengths are obvious: these languages offer very strong guarantees about wh
 
 There are direct precedents for Capa's approach. Pony uses a system of reference capabilities to guarantee data race freedom. E and Newspeak are object-oriented languages with object capabilities as a native security model. The WebAssembly Component Model is exploring capabilities for the WASM ecosystem.
 
-These languages validate that the model is viable, but none of them has achieved significant adoption outside academic or research niches. The reasons vary — unfamiliar syntax, limited ecosystem, lack of a clear value proposition for the average programmer — but the pattern is consistent. Capa aims to learn from these attempts, preserving the capability model while adopting a radically different syntax and adoption strategy.
+These languages validate that the model is viable, but none of them has achieved significant adoption outside academic or research niches. The reasons vary, unfamiliar syntax, limited ecosystem, lack of a clear value proposition for the average programmer, but the pattern is consistent. Capa aims to learn from these attempts, preserving the capability model while adopting a radically different syntax and adoption strategy.
 
 ### 2.6 Comparative synthesis
 
@@ -160,7 +160,7 @@ The table below summarises, necessarily in a simplified form, the positioning of
 
 ## 3. Design Philosophy and Principles
 
-This section articulates the non-negotiable principles that guide Capa's design. Each principle is presented, justified and — when necessary — confronted with its main trade-off. These principles should be a permanent reference in all subsequent implementation decisions.
+This section articulates the non-negotiable principles that guide Capa's design. Each principle is presented, justified and, when necessary, confronted with its main trade-off. These principles should be a permanent reference in all subsequent implementation decisions.
 
 ### 3.1 Principle 1: Explicit authority
 
@@ -170,13 +170,13 @@ This principle is the central thesis of the language. Everything that follows de
 
 > **ASSUMED TRADE-OFF**
 >
-> Functions that need IO will have longer signatures than in Python or Go. This additional verbosity is the direct price of the guarantee, and the design team considers it acceptable — in particular because it makes the function's effect surface visible in the signature itself.
+> Functions that need IO will have longer signatures than in Python or Go. This additional verbosity is the direct price of the guarantee, and the design team considers it acceptable, in particular because it makes the function's effect surface visible in the signature itself.
 
 ### 3.2 Principle 2: Pythonic syntax as a starting point
 
 The syntax of Capa is designed to be readable by a Python programmer without prior training. Significant indentation, keywords in common English, absence of superfluous punctuation, and a small core of syntactic concepts. Where Capa diverges from Python, the divergence is only justified if it is necessary to support the type system or the capability system.
 
-The justification for this choice is not aesthetic — it is strategic. The greatest barrier to adopting a new language is not technical, it is cognitive. Reducing that barrier is the only realistic way to bring capabilities to an audience that does not write Haskell.
+The justification for this choice is not aesthetic, it is strategic. The greatest barrier to adopting a new language is not technical, it is cognitive. Reducing that barrier is the only realistic way to bring capabilities to an audience that does not write Haskell.
 
 ### 3.3 Principle 3: Static types with inference
 
@@ -186,7 +186,7 @@ This combination is deliberate: we want the static guarantees of Rust or Haskell
 
 ### 3.4 Principle 4: Pragmatic performance
 
-Capa does not pursue C++ or Rust level performance. In its initial transpiled version, it pursues performance comparable to CPython with types. In its future native-backend version, it pursues performance comparable to Go. This prioritisation reflects the target audience: server applications, command-line tools, infrastructure automation, enterprise business logic — not kernels, drivers, or AAA games.
+Capa does not pursue C++ or Rust level performance. In its initial transpiled version, it pursues performance comparable to CPython with types. In its future native-backend version, it pursues performance comparable to Go. This prioritisation reflects the target audience: server applications, command-line tools, infrastructure automation, enterprise business logic, not kernels, drivers, or AAA games.
 
 This choice allows design decisions that would be impractical for a systems language: garbage collection by default, runtime abstractions that simplify generated code, dynamic checks at capability boundaries.
 
@@ -194,7 +194,7 @@ This choice allows design decisions that would be impractical for a systems lang
 
 At least throughout Phase 1 of the project, Capa transpiles to Python and any Python library can be invoked from Capa code. This interoperability is assumed to be permanent, even after the introduction of a native backend: Python will remain a first-class execution platform.
 
-The justification is the ecosystem problem. A new language with no ecosystem is a dead language. Reusing the Python ecosystem — pandas, numpy, requests, FastAPI, scikit-learn, and others — gives Capa, on day one, access to hundreds of thousands of packages. The cost of this choice is that Python code invoked from Capa cannot offer the same capability guarantees — a trust boundary that is made explicit in the language (see Chapter 4).
+The justification is the ecosystem problem. A new language with no ecosystem is a dead language. Reusing the Python ecosystem, pandas, numpy, requests, FastAPI, scikit-learn, and others, gives Capa, on day one, access to hundreds of thousands of packages. The cost of this choice is that Python code invoked from Capa cannot offer the same capability guarantees, a trust boundary that is made explicit in the language (see Chapter 4).
 
 ### 3.6 Principle 6: Compiler errors as a pedagogical tool
 
@@ -217,9 +217,9 @@ This chapter describes, with the level of detail needed for implementation, the 
 
 ### 4.1 Theoretical foundation
 
-The capability-based security model has its origin in the work of Dennis and Van Horn in 1966, was formalised in operating systems such as KeyKOS and EROS, and was popularised in programming languages by Mark Miller in the context of the language E. The central idea is simple: the authorisation to carry out an operation is not a property of the agent performing it (a user, a process, a function), but a transferable capacity — an unforgeable reference that confers the right to invoke the operation.
+The capability-based security model has its origin in the work of Dennis and Van Horn in 1966, was formalised in operating systems such as KeyKOS and EROS, and was popularised in programming languages by Mark Miller in the context of the language E. The central idea is simple: the authorisation to carry out an operation is not a property of the agent performing it (a user, a process, a function), but a transferable capacity, an unforgeable reference that confers the right to invoke the operation.
 
-This inversion has profound consequences. In a capability-based system, the principle of least privilege ceases to be a good practice that is hard to implement and becomes the default behaviour: a function can only do what it has been given authority for. A malicious email attachment, executed in a process that never received network capabilities, is incapable of exfiltrating data — not because a sandbox prevents it, but because the operation simply is not available in its lexical context.
+This inversion has profound consequences. In a capability-based system, the principle of least privilege ceases to be a good practice that is hard to implement and becomes the default behaviour: a function can only do what it has been given authority for. A malicious email attachment, executed in a process that never received network capabilities, is incapable of exfiltrating data, not because a sandbox prevents it, but because the operation simply is not available in its lexical context.
 
 ### 4.2 The standard capabilities of Capa
 
@@ -264,10 +264,10 @@ Attenuation is unidirectional: once restricted, a capability cannot be widened. 
 
 The formal rules that govern the use of capabilities in Capa can be summarised in four points:
 
-- **R1 — Single origin:** instances of standard capabilities can only be obtained as parameters of the `main` function, as parameters of functions (which themselves received them), or by applying attenuation operations to existing capabilities.
-- **R2 — Non-forgeability:** the type system guarantees that there are no public constructors for capability types. Attempts at direct instantiation are compile errors.
-- **R3 — Explicit propagation:** a function that needs a capability must declare it in its signature. The compiler rejects calls that do not pass the required capability.
-- **R4 — Monotonic attenuation:** the restrictions applied to a capability can only reduce its authority, never widen it.
+- **R1 (Single origin):** instances of standard capabilities can only be obtained as parameters of the `main` function, as parameters of functions (which themselves received them), or by applying attenuation operations to existing capabilities.
+- **R2 (Non-forgeability):** the type system guarantees that there are no public constructors for capability types. Attempts at direct instantiation are compile errors.
+- **R3 (Explicit propagation):** a function that needs a capability must declare it in its signature. The compiler rejects calls that do not pass the required capability.
+- **R4 (Monotonic attenuation):** the restrictions applied to a capability can only reduce its authority, never widen it.
 
 ### 4.5 The boundary with Python
 
@@ -320,7 +320,7 @@ This chapter describes the concrete syntax of Capa, with progressively richer ex
 
 ### 5.1 Syntactic philosophy
 
-Capa's syntax pursues three properties simultaneously: readability for Python programmers, sufficient expressiveness to accommodate the type system, and absence of lexical ambiguities that complicate parser implementation. When these objectives collide, the priority is readability — provided expressiveness is not sacrificed.
+Capa's syntax pursues three properties simultaneously: readability for Python programmers, sufficient expressiveness to accommodate the type system, and absence of lexical ambiguities that complicate parser implementation. When these objectives collide, the priority is readability, provided expressiveness is not sacrificed.
 
 #### 5.1.1 Significant characters
 
@@ -331,7 +331,7 @@ Unlike Python, Capa does not use a colon as a separator between the block header
 ### 5.2 Minimal program
 
 ```capa
-// hello.capa — the smallest possible Capa program
+// hello.capa, the smallest possible Capa program
 fun main()
     print("Hello, world!")
 ```
@@ -425,7 +425,7 @@ fun area(s: Shape) -> Float
         Triangle(b, h) -> 0.5 * b * h
 ```
 
-The compiler checks exhaustiveness: if a `match` does not cover all the cases of the type, it is a compile error. This is, in practice, one of the most useful mechanisms for avoiding bugs in refactorings — adding a new variant to a sum type forces the compiler to point out every location where the new case needs to be handled.
+The compiler checks exhaustiveness: if a `match` does not cover all the cases of the type, it is a compile error. This is, in practice, one of the most useful mechanisms for avoiding bugs in refactorings, adding a new variant to a sum type forces the compiler to point out every location where the new case needs to be handled.
 
 ### 5.8 Result and Option
 
@@ -536,7 +536,7 @@ This separation is deliberate: it minimises visual noise in common application c
 
 ### 6.3 Subtyping
 
-Capa has limited nominal subtyping: a concrete type is a subtype of the traits it implements. There is no class-based subtyping (there are no classes as such — Capa is type- and trait-oriented, not based on class hierarchies).
+Capa has limited nominal subtyping: a concrete type is a subtype of the traits it implements. There is no class-based subtyping (there are no classes as such, Capa is type- and trait-oriented, not based on class hierarchies).
 
 This choice avoids known problems of deep hierarchies (covariant/contravariant misuse, fragile base class), while preserving polymorphism via traits.
 
@@ -550,7 +550,7 @@ Technically, these types are marked internally as capability types, and the type
 
 A function is considered pure if it receives no capability as a parameter and if all the functions it invokes are pure. Purity is not an annotation the programmer writes: it is a property automatically derived by the compiler from the signature.
 
-The practical consequence is important: the programmer can reason about their code by looking only at the signatures. A function whose signature does not mention capabilities is, by guarantee, isolated from side effects — with no need to inspect the body nor to audit its dependencies.
+The practical consequence is important: the programmer can reason about their code by looking only at the signatures. A function whose signature does not mention capabilities is, by guarantee, isolated from side effects, with no need to inspect the body nor to audit its dependencies.
 
 > **IMPLICATION FOR CODE AUDIT**
 >
@@ -564,7 +564,7 @@ A planned extension, but not included in the initial version of the language, ar
 
 ## 7. Compiler Architecture
 
-This chapter describes the internal architecture of the Capa compiler in its Phase 1 version (transpilation to Python). The architecture is designed to be modular, allowing individual passes to be replaced as the language evolves — in particular, the replacement of the Python generator by a bytecode or LLVM IR generator in the near future.
+This chapter describes the internal architecture of the Capa compiler in its Phase 1 version (transpilation to Python). The architecture is designed to be modular, allowing individual passes to be replaced as the language evolves, in particular, the replacement of the Python generator by a bytecode or LLVM IR generator in the near future.
 
 ### 7.1 Pipeline overview
 
@@ -574,7 +574,7 @@ The compilation pipeline has seven stages, each with a clear boundary and a well
 2. **Syntactic (parser):** transforms tokens into an abstract syntax tree (AST). The planned implementation is a hand-written recursive descent parser, or one based on Lark.
 3. **Name resolution:** associates each identifier with its declaration, detecting use of undeclared names and problematic shadowing.
 4. **Type checking:** infers and checks types of all expressions. This is where the rules of the capability system live.
-5. **Capability analysis:** a dedicated pass for checking rules R1–R4 (Chapter 4). Isolating this pass facilitates evolution and debugging.
+5. **Capability analysis:** a dedicated pass for checking rules R1-R4 (Chapter 4). Isolating this pass facilitates evolution and debugging.
 6. **Lowering:** transforms the typed AST into an intermediate representation (Capa IR) that is simpler and easier to map onto Python.
 7. **Code generation:** produces Python 3.12+ from the IR. Includes injection of runtime helpers for dynamic enforcement of attenuated capabilities.
 
@@ -584,9 +584,9 @@ The initial version of the compiler is implemented in Python 3.12, for three pra
 
 This choice is provisional. In Phase 4 of the roadmap, the rewriting of the compiler in Capa itself (self-hosting) is planned, once the language is sufficiently mature to sustain itself.
 
-### 7.3 Capa IR — intermediate representation
+### 7.3 Capa IR, intermediate representation
 
-Between the typed AST and the Python generator there is an intermediate representation (Capa IR) that serves two purposes. First, it simplifies the code generator: the IR is more regular than the AST and contains no redundant syntactic forms. Second, it prepares the ground for alternative code generations — generating Python bytecode, LLVM IR, or WebAssembly from the same IR is an isolated exercise, with no need to touch the earlier pipeline stages.
+Between the typed AST and the Python generator there is an intermediate representation (Capa IR) that serves two purposes. First, it simplifies the code generator: the IR is more regular than the AST and contains no redundant syntactic forms. Second, it prepares the ground for alternative code generations, generating Python bytecode, LLVM IR, or WebAssembly from the same IR is an isolated exercise, with no need to touch the earlier pipeline stages.
 
 The Capa IR is designed to support additional static analyses (escape analysis, devirtualisation, inlining of small functions). These analyses are not a priority for Phase 1, but the IR does not preclude them.
 
@@ -603,11 +603,11 @@ The Python code generated by Capa follows a set of conventions that preserve, at
 
 The initial Capa distribution includes:
 
-- `capac` — the command-line compiler (`capac` compiles `.capa` files to Python and/or to a startup executable).
-- `capa` — the runner that executes Capa programs (compiling if needed and injecting the runtime).
-- `capa-fmt` — the canonical code formatter, single and non-configurable (in the spirit of `gofmt`).
-- `capa-doc` — the documentation generator from structured comments.
-- `capa-lsp` — the language server for IDE integration (VS Code, Neovim, Helix, etc.).
+- `capac`, the command-line compiler (`capac` compiles `.capa` files to Python and/or to a startup executable).
+- `capa`, the runner that executes Capa programs (compiling if needed and injecting the runtime).
+- `capa-fmt`, the canonical code formatter, single and non-configurable (in the spirit of `gofmt`).
+- `capa-doc`, the documentation generator from structured comments.
+- `capa-lsp`, the language server for IDE integration (VS Code, Neovim, Helix, etc.).
 
 ---
 
@@ -617,19 +617,19 @@ Runtime performance is an explicit requirement for Capa. This section describes 
 
 ### 8.1 Performance objectives
 
-Capa does not aim to compete with C, C++, Rust or Zig in raw performance. The objective is different, and is aligned with the target audience: server applications, command-line tools, DevOps automation, enterprise business logic. For this audience, the relevant criteria are startup time, latency per request, throughput under concurrent load, and memory consumption — not raw arithmetic operation throughput.
+Capa does not aim to compete with C, C++, Rust or Zig in raw performance. The objective is different, and is aligned with the target audience: server applications, command-line tools, DevOps automation, enterprise business logic. For this audience, the relevant criteria are startup time, latency per request, throughput under concurrent load, and memory consumption, not raw arithmetic operation throughput.
 
 | Metric | Phase 1 (transpilation) | Phase 4 (native) |
 |---|---|---|
 | Startup time | Equal to Python (cold start) | Comparable to Go |
-| HTTP request latency | Equal to Python+FastAPI | Comparable to Go (1.2–2x) |
-| CPU-bound throughput | 0.8–1.0x of typed Python | 5–10x of Python |
+| HTTP request latency | Equal to Python+FastAPI | Comparable to Go (1.2-2x) |
+| CPU-bound throughput | 0.8-1.0x of typed Python | 5-10x of Python |
 | IO-bound throughput | Equal to Python asyncio | Comparable to Go |
 | Memory consumption | +10% over equivalent Python | Comparable to Go |
 
 ### 8.2 Strategy for Phase 1: efficient translation
 
-The transpilation-to-Python phase has a well-defined performance ceiling — Python's. The objective is to approach that ceiling, not to overtake it. To this end, the strategy has five strands:
+The transpilation-to-Python phase has a well-defined performance ceiling, Python's. The objective is to approach that ceiling, not to overtake it. To this end, the strategy has five strands:
 
 - **Idiomatic code generation:** the generated Python should use, whenever possible, the fastest known constructs (comprehensions instead of loops, builtins instead of pure-Python equivalents, dataclasses instead of dicts for composite types).
 - **Type-based specialisation:** since Capa knows the type of every expression, the transpiler can choose specialised implementations. For example, summation over `List<Int>` uses the `sum()` builtin; summation over user-defined types uses a specialised loop.
@@ -645,7 +645,7 @@ The preliminary decision is to generate LLVM IR via a library such as `llvmlite`
 
 ### 8.4 Garbage collection
 
-Capa uses garbage collection. In Phase 1, the GC is that of CPython (cyclic reference + tracing). In Phase 4, a concurrent generational GC is planned, similar to Go's. This choice sacrifices latency determinism (which Rust or Zig offer) in exchange for programming simplicity — consistent with the language's principles.
+Capa uses garbage collection. In Phase 1, the GC is that of CPython (cyclic reference + tracing). In Phase 4, a concurrent generational GC is planned, similar to Go's. This choice sacrifices latency determinism (which Rust or Zig offer) in exchange for programming simplicity, consistent with the language's principles.
 
 For scenarios where deterministic latency matters (embedded systems, soft real-time), Capa is not an appropriate choice. The document is clear on this point from Chapter 3 (non-objectives).
 
@@ -653,7 +653,7 @@ For scenarios where deterministic latency matters (embedded systems, soft real-t
 
 The concurrency primitive in Capa is the asynchronous task, in the async/await model. The runtime manages an event loop per thread (single-threaded by default, with optional parallelism via worker pools).
 
-Capabilities propagate naturally to asynchronous tasks — a task can only access the resources that were passed to it as an argument, exactly like a synchronous function. This property makes the capability system especially useful in concurrency scenarios: each task has its own view of authority, and it is impossible, by construction, for a task to access resources that were never handed to it.
+Capabilities propagate naturally to asynchronous tasks, a task can only access the resources that were passed to it as an argument, exactly like a synchronous function. This property makes the capability system especially useful in concurrency scenarios: each task has its own view of authority, and it is impossible, by construction, for a task to access resources that were never handed to it.
 
 ---
 
@@ -743,7 +743,7 @@ fun normalize(values: List<Float>) -> List<Float>
     return values.map((v) -> (v - minimum) / interval)
 ```
 
-The signature does not mention capabilities. This function is, and will continue to be, guaranteed pure. No internal change can introduce IO without altering the signature — a change that would be visible at all call sites and in any code review.
+The signature does not mention capabilities. This function is, and will continue to be, guaranteed pure. No internal change can introduce IO without altering the signature, a change that would be visible at all call sites and in any code review.
 
 ### 9.3 Qualitative synthesis
 
@@ -761,7 +761,7 @@ This section presents four scenarios in which Capa offers differentiated value c
 
 ### 10.1 Case 1: Systems that execute third-party plugins
 
-Consider a SaaS product that allows customers to write plugins that extend the platform's behaviour. The main risk is clear: a malicious or compromised plugin may access resources it should not. The traditional solutions are complex — sandboxes in separate processes, containers, virtual machines — and introduce latency and operational cost.
+Consider a SaaS product that allows customers to write plugins that extend the platform's behaviour. The main risk is clear: a malicious or compromised plugin may access resources it should not. The traditional solutions are complex, sandboxes in separate processes, containers, virtual machines, and introduce latency and operational cost.
 
 In Capa, a plugin is simply a function that explicitly receives the capabilities the product deems appropriate to grant. If the plugin needs to make HTTP requests to a set of domains and nothing else, it receives a `Net` capability attenuated to those domains. The isolation is structural, not operational.
 
@@ -781,7 +781,7 @@ Capa offers, in this context, two benefits. First, it forces the programmer to m
 
 Regulated sectors (finance, healthcare, defence) have auditing requirements that mandate demonstrating control over data flow and resource access. Implementing this control in code written in languages with ambient authority requires layering of mechanisms: external static analysis, runtime monitoring, sandboxes.
 
-In Capa, this control is a property of the language itself. The capability system is, simultaneously, the programming mechanism and the auditing mechanism. The information an auditor seeks — which parts of the code can do what — lives in the signatures of functions, and is verifiable by the compiler.
+In Capa, this control is a property of the language itself. The capability system is, simultaneously, the programming mechanism and the auditing mechanism. The information an auditor seeks, which parts of the code can do what, lives in the signatures of functions, and is verifiable by the compiler.
 
 ---
 
@@ -789,37 +789,37 @@ In Capa, this control is a property of the language itself. The capability syste
 
 This section details the five-phase roadmap to take Capa from its current state (specification) to a language usable in production. Duration estimates assume part-time work and should be interpreted as orders of magnitude, not commitments.
 
-### 11.1 Phase 0 — Specification (concluded with this document)
+### 11.1 Phase 0, Specification (concluded with this document)
 
 This phase produces the informal specification of the language (the present document), the initial set of canonical examples, and the definition of the EBNF grammar. Duration: two to three months.
 
 Exit criteria: reviewed technical document, complete EBNF grammar, at least 30 example programs covering all the constructs of the language.
 
-### 11.2 Phase 1 — Frontend and basic transpilation
+### 11.2 Phase 1, Frontend and basic transpilation
 
 This phase implements the lexer, the parser, the type checker (without capabilities yet), and a basic transpiler to Python. At the end of this phase, simple Capa programs (without side effects) compile and run. Estimated duration: three to four months.
 
 Exit criteria: 100% of the pure examples from Phase 0 compile and produce the expected result in Python.
 
-### 11.3 Phase 2 — Capability system
+### 11.3 Phase 2, Capability system
 
 This phase introduces the capability system proper: the standard capabilities, propagation rules, static checking, and the minimum runtime needed to support dynamic attenuation. Estimated duration: four to six months.
 
 Exit criteria: 100% of the effectful examples from Phase 0 compile and run with the expected guarantees. A suite of violation tests demonstrates that malformed code is rejected by the compiler.
 
-### 11.4 Phase 3 — Libraries, tooling and ergonomics
+### 11.4 Phase 3, Libraries, tooling and ergonomics
 
 This phase develops the standard library, the formatter, the documentation generator, the language server, and the integration with VS Code (and at least one other editor). Estimated duration: six to twelve months.
 
 Exit criteria: a programming experience comparable to that of Python+pylance or Rust+rust-analyzer in IDE ergonomics.
 
-### 11.5 Phase 4 — Native backend (LLVM)
+### 11.5 Phase 4, Native backend (LLVM)
 
 This phase introduces the native code generation backend via LLVM, retaining the Python backend as a portability alternative. Estimated duration: twelve to twenty-four months.
 
 Exit criteria: Capa programs compiled natively achieve performance comparable to Go in benchmarks typical of the target audience.
 
-### 11.6 Phase 5 — Self-hosting and maturation
+### 11.6 Phase 5, Self-hosting and maturation
 
 Rewriting of the compiler in the Capa language itself. This phase signals that the language is sufficiently mature to sustain itself. Estimated duration: twelve to eighteen months.
 
@@ -839,7 +839,7 @@ These limitations are deliberate: the initial version prioritises conceptual sim
 
 As discussed in 4.5, interoperability with Python introduces a boundary where Capa's guarantees do not apply. This boundary is made explicit (the `Unsafe` capability), but it remains a real risk vector: a plugin that receives `Unsafe` can, through Python, do anything the equivalent Python version could do.
 
-The long-term mitigation is the maturation of the native Capa ecosystem — libraries that offer functionality equivalent to Python's without the need to cross the boundary. This mitigation requires time and adoption, and the document acknowledges that for years Python interoperability will be simultaneously a strength (ecosystem access) and a weakness (risk vector).
+The long-term mitigation is the maturation of the native Capa ecosystem, libraries that offer functionality equivalent to Python's without the need to cross the boundary. This mitigation requires time and adoption, and the document acknowledges that for years Python interoperability will be simultaneously a strength (ecosystem access) and a weakness (risk vector).
 
 ### 12.3 Concurrency and parallelism
 
@@ -857,35 +857,35 @@ The adoption strategy identifies three levers. First, radical interoperability w
 
 ## Glossary
 
-**Ambient authority** — Property of systems in which code has implicit access to resources without need for declaration or proof. The opposite of capability-based security.
+**Ambient authority**, Property of systems in which code has implicit access to resources without need for declaration or proof. The opposite of capability-based security.
 
-**AST** — Abstract Syntax Tree. Intermediate representation produced by the parser, in which the syntactic structure of the program is represented as a tree.
+**AST**, Abstract Syntax Tree. Intermediate representation produced by the parser, in which the syntactic structure of the program is represented as a tree.
 
-**Capability** — Unforgeable reference that confers the right to invoke a privileged operation. In Capa, capabilities are opaque system types.
+**Capability**, Unforgeable reference that confers the right to invoke a privileged operation. In Capa, capabilities are opaque system types.
 
-**Capability attenuation** — Operation that produces a new capability with reduced authority relative to the original. Unidirectional and compositional.
+**Capability attenuation**, Operation that produces a new capability with reduced authority relative to the original. Unidirectional and compositional.
 
-**CRA** — Cyber Resilience Act. European regulation (Regulamento (UE) 2024/2847) that establishes obligations for manufacturers of products with digital elements regarding SBOM, vulnerability management and demonstration of compliance.
+**CRA**, Cyber Resilience Act. European regulation (Regulamento (UE) 2024/2847) that establishes obligations for manufacturers of products with digital elements regarding SBOM, vulnerability management and demonstration of compliance.
 
-**Effect system** — Extension of a type system that makes the side effects a function can produce visible in its type.
+**Effect system**, Extension of a type system that makes the side effects a function can produce visible in its type.
 
-**Hindley-Milner** — Type inference algorithm used in ML, Haskell, OCaml and variants. Capa uses an adaptation of it.
+**Hindley-Milner**, Type inference algorithm used in ML, Haskell, OCaml and variants. Capa uses an adaptation of it.
 
-**IR** — Intermediate Representation. In compilers, an intermediate form between source code and target code.
+**IR**, Intermediate Representation. In compilers, an intermediate form between source code and target code.
 
-**LLVM** — Low Level Virtual Machine. Compilation infrastructure used as a backend by languages such as Rust, Swift, Julia and many others.
+**LLVM**, Low Level Virtual Machine. Compilation infrastructure used as a backend by languages such as Rust, Swift, Julia and many others.
 
-**Purity** — Property of a function that produces no observable side effects. In Capa, purity is automatically inferred from the signature.
+**Purity**, Property of a function that produces no observable side effects. In Capa, purity is automatically inferred from the signature.
 
-**Refinement type** — Type annotated with a compile-time predicate. Not in Capa's core, but a planned extension.
+**Refinement type**, Type annotated with a compile-time predicate. Not in Capa's core, but a planned extension.
 
-**SBOM** — Software Bill of Materials. Formal inventory of the software components (including transitive dependencies) that constitute a product.
+**SBOM**, Software Bill of Materials. Formal inventory of the software components (including transitive dependencies) that constitute a product.
 
-**Self-hosting** — The ability of a language to be used to implement its own compiler. A maturity milestone.
+**Self-hosting**, The ability of a language to be used to implement its own compiler. A maturity milestone.
 
-**Trait** — A set of operations that a type can implement. Analogous to an interface (Java, C#) or type class (Haskell).
+**Trait**, A set of operations that a type can implement. Analogous to an interface (Java, C#) or type class (Haskell).
 
-**Transpilation** — Translation of source code in one language into source code in another language. The initial version of Capa transpiles to Python.
+**Transpilation**, Translation of source code in one language into source code in another language. The initial version of Capa transpiles to Python.
 
 ---
 
@@ -893,7 +893,7 @@ The adoption strategy identifies three levers. First, radical interoperability w
 
 The following references document prior work on capability-based security, type systems for effects, and the evolution of languages with priorities comparable to Capa's. The list is not exhaustive and will be expanded in later versions of this document.
 
-[1] Dennis, J. B. and Van Horn, E. C. (1966). Programming semantics for multiprogrammed computations. Communications of the ACM, 9(3), 143–155.
+[1] Dennis, J. B. and Van Horn, E. C. (1966). Programming semantics for multiprogrammed computations. Communications of the ACM, 9(3), 143-155.
 
 [2] Miller, M. S. (2006). Robust Composition: Towards a Unified Approach to Access Control and Concurrency Control. PhD thesis, Johns Hopkins University.
 

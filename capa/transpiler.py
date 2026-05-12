@@ -10,12 +10,12 @@ Main mappings:
 - Functions and methods: Python ``def`` without type annotations (simpler
   and avoids issues with generic types / capabilities whose exact
   signature does not always have an equivalent in ``typing``).
-- ``let`` and ``var``: indistinguishable in Python — both emit ``x = expr``.
+- ``let`` and ``var``: indistinguishable in Python, both emit ``x = expr``.
   The immutability of ``let`` was verified statically by the analyzer.
 - ``type T { ... }`` (struct): ``@dataclass`` with the fields.
 - ``type T = A | B(P) | ...`` (sum): each variant is a class. For
   variants with a payload, it is a dataclass with a single ``value`` field.
-  The type name becomes a union (not emitted — Capa does not need it at
+  The type name becomes a union (not emitted, Capa does not need it at
   runtime, and Python does not require it).
 - ``trait``: abstract ABC with abstract methods (informative). The impls
   generate concrete subclasses.
@@ -31,14 +31,14 @@ Main mappings:
 Known limitations (v1):
 
 - No optimizations: the output is reasonably readable but is not
-  "idiomatic Python" — it is Python that closely mirrors the Capa
+  "idiomatic Python", it is Python that closely mirrors the Capa
   structure.
 - No tail call detection.
 - ``self`` in methods is translated directly; Capa "self" and Python
   "self" align naturally.
 - The ``?`` operator requires the enclosing function to return ``Result``.
   If it does not, the generated code will produce an early return of an
-  Err — useful as a runtime diagnostic, but not detected at transpilation
+  Err, useful as a runtime diagnostic, but not detected at transpilation
   time in v1.
 """
 
@@ -243,7 +243,7 @@ class Transpiler:
         path = ".".join(imp.path)
         alias = f" as {imp.alias}" if imp.alias else ""
         self.em.write(
-            f"# capa: 'import {path}{alias}' rejected — "
+            f"# capa: 'import {path}{alias}' rejected, "
             f"use py_import(unsafe, ...) instead"
         )
 

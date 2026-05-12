@@ -1,4 +1,4 @@
-// interactive.capa — interactive program: reads input, processes it, responds.
+// interactive.capa, interactive program: reads input, processes it, responds.
 
 fun ask(stdio: Stdio, prompt: String) -> Option<String>
     stdio.print(prompt)

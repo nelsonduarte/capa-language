@@ -28,7 +28,7 @@ python -m capa --run hello.capa
 ```
 
 The difference between Capa and "traditional" languages is this: `stdio`
-is not a magical global — it is a **parameter**, and Capa guarantees
+is not a magical global, it is a **parameter**, and Capa guarantees
 that only functions which receive it can perform I/O.
 
 ### Variables
@@ -52,7 +52,7 @@ fun main(stdio: Stdio)
 
 ### Basic types
 
-Capa has local inference — you rarely need to declare types:
+Capa has local inference, you rarely need to declare types:
 
 | Type | Example |
 |---|---|
@@ -217,7 +217,7 @@ xs.length()       // 5
 xs.is_empty()     // false
 xs.first()        // Some(1)
 xs.last()         // Some(5)
-xs.get(2)         // Some(3) — safe indexed access
+xs.get(2)         // Some(3), safe indexed access
 xs.contains(3)    // true
 
 xs.push(6)        // mutation if var
@@ -328,20 +328,20 @@ let r = parse_int(s).ok_or("invalid input")
 
 | Method | On `Option<T>` | On `Result<T, E>` |
 |---|---|---|
-| `is_some` / `is_none` | ✓ | — |
-| `is_ok` / `is_err` | — | ✓ |
+| `is_some` / `is_none` | ✓ |, |
+| `is_ok` / `is_err` |, | ✓ |
 | `unwrap_or(default)` | ✓ | ✓ |
 | `map<U>(fn: T → U)` | `Option<U>` | `Result<U, E>` |
 | `and_then<U>(fn: T → ...)` | `Option<U>` | `Result<U, E>` |
-| `ok_or<E>(err)` | → `Result<T, E>` | — |
-| `map_err<F>(fn: E → F)` | — | `Result<T, F>` |
+| `ok_or<E>(err)` | → `Result<T, E>` |, |
+| `map_err<F>(fn: E → F)` |, | `Result<T, F>` |
 
 ---
 
 ## Chapter 6: Capabilities
 
 Capa's distinctive feature: I/O and system resources are only
-accessible via *capabilities* — values explicitly passed as parameters.
+accessible via *capabilities*, values explicitly passed as parameters.
 
 ```capa
 fun main(stdio: Stdio, fs: Fs)
@@ -368,7 +368,7 @@ A function without capability parameters **cannot** perform I/O:
 ```capa
 fun pure(x: Int) -> Int
     return x * 2
-    // Cannot call stdio.println — it has no stdio
+    // Cannot call stdio.println, it has no stdio
 ```
 
 This makes code auditable: to know what a function does, you only need
@@ -376,7 +376,7 @@ to look at its signature. "Pure" functions are obvious.
 
 ### Linearity
 
-Capabilities are *linear* — each one can only be passed to one
+Capabilities are *linear*, each one can only be passed to one
 function at a time (unless you use `consume` to indicate ownership
 transfer):
 
@@ -447,7 +447,7 @@ fun main(stdio: Stdio)
 
 ## Chapter 9: Traits
 
-Traits enable ad-hoc polymorphism — multiple types can implement the
+Traits enable ad-hoc polymorphism, multiple types can implement the
 same set of methods:
 
 ```capa

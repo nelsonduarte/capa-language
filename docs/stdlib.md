@@ -1,7 +1,7 @@
 # Standard Library Reference
 
 Documents every built-in function, type, and method available in any
-Capa program — no imports required.
+Capa program, no imports required.
 
 ---
 
@@ -16,7 +16,7 @@ Capa program — no imports required.
 | `Char` | Unicode code point | At runtime, a str of length 1 |
 | `Unit` | `()` | "Empty" type for functions with no return value |
 
-### `String` — methods
+### `String`, methods
 
 | Method | Type | Description |
 |---|---|---|
@@ -52,7 +52,7 @@ infers the type from the first `push`.
 | `filter(p: Fun(T) -> Bool)` | `List<T>` | Keep elements that match |
 | `fold<U>(init: U, f: Fun(U, T) -> U)` | `U` | Reduce to a single value |
 
-Index access: `xs[i]` (no bounds checking — use `get(i)` for safe access).
+Index access: `xs[i]` (no bounds checking, use `get(i)` for safe access).
 
 ### Range expressions
 
@@ -69,7 +69,7 @@ for i in 1..=5            // 1, 2, 3, 4, 5
     stdio.println("${i}")
 
 let n = 4
-let xs = (n - 1)..(n * 2) // 3..8 — arithmetic endpoints
+let xs = (n - 1)..(n * 2) // 3..8, arithmetic endpoints
 
 let evens = (0..10).filter(fun (x: Int) -> Bool => x % 2 == 0)
                               // ranges support the full List API
@@ -77,7 +77,7 @@ let evens = (0..10).filter(fun (x: Int) -> Bool => x % 2 == 0)
 
 Range precedence sits between addition and comparison, so
 `1+2..5+3` parses as `(1+2)..(5+3)` and `a..b == c..d` as
-`(a..b) == (c..d)`. Range itself is non-associative — `a..b..c` is
+`(a..b) == (c..d)`. Range itself is non-associative, `a..b..c` is
 a syntax error.
 
 ---
@@ -212,12 +212,12 @@ type JsonValue =
 |---|---|---|
 | `parse_int(s: String)` | `Option<Int>` | Returns `None` on invalid input |
 | `parse_float(s: String)` | `Option<Float>` | Same for floats |
-| `to_float(i: Int)` | `Float` | Total — every Int has an exact Float representation |
+| `to_float(i: Int)` | `Float` | Total, every Int has an exact Float representation |
 | `to_int(f: Float)` | `Int` | Truncates toward zero |
 | `new_map()` | `Map<?, ?>` | Requires `let` annotation to pin the types |
 | `new_set()` | `Set<?>` | Same |
 
-Capa has **no implicit numeric coercion** — `Float + Int` is a type
+Capa has **no implicit numeric coercion**, `Float + Int` is a type
 error. Use `to_float` / `to_int` at the call site to make the
 conversion explicit:
 
@@ -291,13 +291,13 @@ fun square_root(unsafe: Unsafe, x: Float) -> Float
 
 | Method | Type | Description |
 |---|---|---|
-| `restrict_to(host: String)` | `Net` | Attenuate: return a fresh `Net` whose authority is the **intersection** of the current allowed-host set with `{host}`. Monotonic — restrictions only narrow. |
+| `restrict_to(host: String)` | `Net` | Attenuate: return a fresh `Net` whose authority is the **intersection** of the current allowed-host set with `{host}`. Monotonic, restrictions only narrow. |
 | `allows(host: String)` | `Bool` | Query the current restriction set; performs no I/O. |
 | `get(url: String)` | `Result<String, IoError>` | Real HTTP GET (via `urllib.request`). Returns `Err` immediately if the URL's host is outside the current restriction set, *before* any system call. |
 
 A `Net` received from `main` is unrestricted; restrictions accumulate
 through `restrict_to`. The result of `restrict_to` is a fresh
-capability instance and is bindable in a `let`/`var` — Capa relaxes
+capability instance and is bindable in a `let`/`var`, Capa relaxes
 the "no capabilities in locals" rule specifically for method-call
 results (which are necessarily fresh, not aliases of an existing
 capability).
@@ -319,7 +319,7 @@ restrictions yields a `Net` that allows nothing).
 
 ### `Unsafe`
 
-Marker capability for crossing the Python boundary. Has no methods —
+Marker capability for crossing the Python boundary. Has no methods -
 its only role is to gate `py_import` and `py_invoke` (see "Python
 interoperability" above).
 
@@ -336,7 +336,7 @@ capability SendEmail
 
 type SmtpMailer {
     server: String,
-    net: Net          // built-in cap as a field — allowed because
+    net: Net          // built-in cap as a field, allowed because
                       // SmtpMailer implements a user-defined cap
 }
 

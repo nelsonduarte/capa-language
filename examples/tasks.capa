@@ -1,4 +1,4 @@
-// tasks.capa — canonical example from the EBNF specification.
+// tasks.capa, canonical example from the EBNF specification.
 // Demonstrates struct, sum type, trait, impl, guarded match, sum-type
 // pattern matching, capabilities, and JSON serialization through the
 // Capa stdlib (without crossing the Python boundary).

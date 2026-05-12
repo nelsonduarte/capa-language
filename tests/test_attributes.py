@@ -32,7 +32,7 @@ def check_errors(source: str) -> list[str]:
 def manifest_of(source: str, filename: str = "<test>") -> dict:
     tokens = Lexer(source).lex()
     module = Parser(tokens, source=source).parse_module()
-    # We do not require analysis to pass for the manifest tests — the
+    # We do not require analysis to pass for the manifest tests, the
     # builder is robust to ASTs that have only been parsed, and we
     # want to inspect manifests for programs that the discipline
     # legitimately rejects (e.g., unused capability params).
@@ -100,7 +100,7 @@ class TestAttributeParsing(unittest.TestCase):
         self.assertEqual(len(fn.attributes[0].args), 2)
 
     def test_empty_args_accepted_by_parser(self):
-        # Parser is permissive — analyzer may still complain about
+        # Parser is permissive, analyzer may still complain about
         # certain attributes that conceptually need arguments.
         m = parse('@security()\nfun f()\n    return\n')
         fn = m.items[0]
@@ -528,7 +528,7 @@ class TestCallExtraction(unittest.TestCase):
         self.assertEqual(restrict_call["args"], ['"api.example.com"'])
 
     def test_nested_calls_recorded(self):
-        # f(g(x)) — both f and g show up in the call list.
+        # f(g(x)), both f and g show up in the call list.
         calls = self._calls_of(
             'fun g(x: Int) -> Int\n    return x + 1\n'
             'fun f(x: Int) -> Int\n    return x * 2\n'

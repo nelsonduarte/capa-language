@@ -1,4 +1,4 @@
-"""capa/manifest.py — capability manifest builder.
+"""capa/manifest.py, capability manifest builder.
 
 Walks an analysed Capa module and emits a JSON-serialisable dict
 describing, for every top-level function and impl-method:
@@ -39,7 +39,7 @@ SCHEMA_VERSION = 1
 CYCLONEDX_SPEC_VERSION = "1.5"
 
 # Maximum length for a stringified call-site argument before it gets
-# truncated in the manifest. Pure aesthetics — avoids blowing up the
+# truncated in the manifest. Pure aesthetics, avoids blowing up the
 # JSON when a program passes a long string literal or a complex
 # lambda as an argument. The truncated form ends with "..." so it is
 # obvious to the reader that a manifest is not the source of truth.
@@ -179,7 +179,7 @@ def _fun_record(
 #   - args:    list of source-like stringifications of the argument
 #              expressions, truncated to _MAX_ARG_REPR characters
 #
-# The call list is the audit primitive — it lets a CRA reviewer see,
+# The call list is the audit primitive, it lets a CRA reviewer see,
 # for each function in the program, *what other functions it
 # invokes and with what arguments*, including restrictions applied
 # via `restrict_to(...)` calls visible directly in the argument
@@ -413,7 +413,7 @@ def build_cyclonedx(
     if timestamp is None:
         timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     if serial_number is None:
-        # Deterministic UUID per filename — reruns produce identical
+        # Deterministic UUID per filename, reruns produce identical
         # serial numbers, which is friendly to SBOM diffing.
         ns = uuid.uuid5(uuid.NAMESPACE_URL, "https://capa-lang.org/sbom")
         serial_number = "urn:uuid:" + str(uuid.uuid5(ns, filename))
@@ -595,7 +595,7 @@ def build_cyclonedx(
 def _flat_param(p: dict[str, Any]) -> str:
     """Render a parameter record as a single string for property values.
 
-    Format: ``name: Type [consume] [cap]`` — terse so it fits in
+    Format: ``name: Type [consume] [cap]``, terse so it fits in
     an SBOM properties cell; structured enough that downstream
     consumers can parse it back if they wish.
     """

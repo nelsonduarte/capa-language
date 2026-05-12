@@ -60,7 +60,7 @@ the process:
 - It can spawn processes (`child_process.exec(...)`)
 
 The function exported by event-stream was nominally `(stream) => stream`
-— a pure transformation of byte chunks. But the *language* could not
+- a pure transformation of byte chunks. But the *language* could not
 hold the implementation to that contract. There was no syntactic or
 semantic difference between a `flat_map` that just transformed data
 and a `flat_map` that also opened a socket to a server in another
@@ -70,7 +70,7 @@ The auditor reading the package's README saw "stream library".
 The auditor reading the package's source saw a few hundred lines of
 plausible stream code, plus an inscrutable obfuscated blob in a
 dependency. The auditor reading the *signatures* of the functions saw
-nothing useful — because the signatures said nothing about what the
+nothing useful, because the signatures said nothing about what the
 code was allowed to do.
 
 ---
@@ -98,7 +98,7 @@ first word: Some(the)
 last word:  Some(dog)
 ```
 
-The relevant fact is not in the body — it is in the **signature**.
+The relevant fact is not in the body, it is in the **signature**.
 The function takes a `List<String>` and a function, and returns a
 `List<String>`. There is **no** `Net` parameter, **no** `Fs`, **no**
 `Env`, **no** `Stdio`, **no** `Unsafe`. None of those names is in
@@ -156,12 +156,12 @@ fun flat_map(env: Env, net: Net, lines: List<String>, f: Fun(String) -> List<Str
     // now compiles, but...
 ```
 
-…and **every caller of `flat_map`** — the entire npm ecosystem
-downstream — would now have to thread an `Env` and a `Net` into a
+…and **every caller of `flat_map`**, the entire npm ecosystem
+downstream, would now have to thread an `Env` and a `Net` into a
 function that previously did not need them. That change is loud. It
 appears in pull requests, in code review, in dependency upgrade
 diffs, in SBOM analyses, in static-analysis tooling. It is exactly the
-kind of signal that an auditor — human or automated — can act on.
+kind of signal that an auditor, human or automated, can act on.
 
 That is the entire point of the capability discipline: not that any
 particular line of malicious code becomes impossible to write, but
@@ -169,18 +169,18 @@ that the *attempt* is forced into a place where it cannot hide.
 
 ---
 
-## Why this matters — beyond one incident
+## Why this matters, beyond one incident
 
 The event-stream class of attack is not rare. Comparable supply-chain
 incidents include:
 
-- **ua-parser-js (2021)** — popular npm parser, account hijacked,
+- **ua-parser-js (2021)**, popular npm parser, account hijacked,
   payload mined cryptocurrency and stole credentials.
-- **node-ipc (2022)** — maintainer added code that wiped files on
+- **node-ipc (2022)**, maintainer added code that wiped files on
   systems geolocated to Russia and Belarus.
-- **PyTorch nightly torchtriton (2022)** — typosquat that exfiltrated
+- **PyTorch nightly torchtriton (2022)**, typosquat that exfiltrated
   hostnames, environment variables, and SSH keys.
-- **xz-utils (CVE-2024-3094, 2024)** — multi-stage backdoor in a
+- **xz-utils (CVE-2024-3094, 2024)**, multi-stage backdoor in a
   compression utility, would have compromised SSH on every system
   using systemd.
 
@@ -193,8 +193,8 @@ For organisations that have to comply with the **EU Cyber Resilience
 Act** (in force from December 2027), this is not a hypothetical
 problem. The CRA requires manufacturers of products with digital
 elements to maintain a Software Bill of Materials and to respond to
-exploited vulnerabilities in any component. The harder question — which
-component is allowed to do what — has no good answer in ambient-authority
+exploited vulnerabilities in any component. The harder question, which
+component is allowed to do what, has no good answer in ambient-authority
 languages today. It has a good answer in Capa: read the signatures.
 
 ---

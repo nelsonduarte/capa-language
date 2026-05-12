@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Why Capa? — Capa</title>
+    <title>Why Capa? | Capa</title>
     <meta name="description" content="The case for Capa: ambient authority, the event-stream supply-chain attack, capability discipline as a language-level answer.">
     <link rel="stylesheet" href="style.css">
     <link rel="icon" type="image/svg+xml" href="favicon.svg">
@@ -41,7 +41,7 @@
 <section>
     <h2>The problem: ambient authority</h2>
 
-    <p>In Python, JavaScript, Java, Go, C#, Ruby, and almost every mainstream language, any function in any module has the same baseline access as any other function in the same process. It can open sockets, read your filesystem, leak environment variables, spawn subprocesses, change directory — without any of that being visible in its signature.</p>
+    <p>In Python, JavaScript, Java, Go, C#, Ruby, and almost every mainstream language, any function in any module has the same baseline access as any other function in the same process. It can open sockets, read your filesystem, leak environment variables, spawn subprocesses, change directory, without any of that being visible in its signature.</p>
 
     <p>This is called <strong>ambient authority</strong>. The authority is in the surrounding environment (the process, the runtime), not in the values the function holds. A function does not need to ask for a network handle to make a network request; the network is just there.</p>
 
@@ -62,7 +62,7 @@
 
     <div class="code-compare">
         <div class="code-block">
-            <div class="lang">JavaScript — the attack hides inside this signature</div>
+            <div class="lang">JavaScript, the attack hides inside this signature</div>
 <pre><code><span class="kw-decl">function</span> <span class="fn-name">flatMap</span>(input, f) {
     <span class="comment">// The signature says: pure stream transformation.</span>
     <span class="comment">// The implementation can do anything.</span>
@@ -74,7 +74,7 @@
 </code></pre>
         </div>
         <div class="code-block">
-            <div class="lang">Capa — the same function</div>
+            <div class="lang">Capa, the same function</div>
 <pre><code><span class="kw-decl">fun</span> <span class="fn-name">flat_map</span>(
     lines: <span class="ty-builtin">List</span>&lt;<span class="ty-primitive">String</span>&gt;,
     f: <span class="ty-builtin">Fun</span>(<span class="ty-primitive">String</span>) -&gt; <span class="ty-builtin">List</span>&lt;<span class="ty-primitive">String</span>&gt;
@@ -96,7 +96,7 @@ error: undefined name 'env'
    4 |     env.<span class="fn-call">get</span>(<span class="str">"WALLET_KEY"</span>)
                 ^</code></pre>
 
-    <p>To mount the attack, the malicious maintainer would have to <em>change the signature</em> of <code>flat_map</code> to take a <code>Net</code> and an <code>Env</code>. Every caller of <code>flat_map</code> in the dependency tree would then have to thread those capabilities through. The change is loud — it appears in pull requests, dependency-upgrade diffs, code review, and SBOM analyses. It is exactly the kind of signal an auditor, human or automated, can act on.</p>
+    <p>To mount the attack, the malicious maintainer would have to <em>change the signature</em> of <code>flat_map</code> to take a <code>Net</code> and an <code>Env</code>. Every caller of <code>flat_map</code> in the dependency tree would then have to thread those capabilities through. The change is loud, it appears in pull requests, dependency-upgrade diffs, code review, and SBOM analyses. It is exactly the kind of signal an auditor, human or automated, can act on.</p>
 
     <p>A complete walkthrough of the incident, with primary sources and the full Capa version, is at <a href="demo-event-stream.md">the event-stream demo</a>.</p>
 </section>
@@ -152,7 +152,7 @@ error: undefined name 'env'
 <section>
     <h2>Capabilities can be attenuated</h2>
 
-    <p>A capability is not all-or-nothing. <code>Net.restrict_to(host)</code> returns a fresh <code>Net</code> with authority narrowed to a single host. Restrictions only narrow — chaining two <code>restrict_to</code> calls intersects their allowed-host sets, never widens. The runtime check fires <em>before</em> any system call, so a blocked host never opens a socket.</p>
+    <p>A capability is not all-or-nothing. <code>Net.restrict_to(host)</code> returns a fresh <code>Net</code> with authority narrowed to a single host. Restrictions only narrow, chaining two <code>restrict_to</code> calls intersects their allowed-host sets, never widens. The runtime check fires <em>before</em> any system call, so a blocked host never opens a socket.</p>
 
 <pre><code><span class="kw-decl">fun</span> <span class="fn-name">fetch_user</span>(net: <span class="cap">Net</span>, id: <span class="ty-primitive">String</span>) -&gt; <span class="ty-builtin">Result</span>&lt;<span class="ty-primitive">String</span>, <span class="ty-builtin">IoError</span>&gt;
     <span class="kw-ctrl">return</span> net.<span class="fn-call">get</span>(<span class="str">"https://api.example.com/users/${id}"</span>)
@@ -164,7 +164,7 @@ error: undefined name 'env'
         <span class="variant">Ok</span>(body) -&gt; stdio.<span class="fn-call">println</span>(body)
         <span class="variant">Err</span>(e)   -&gt; stdio.<span class="fn-call">eprintln</span>(<span class="str">"${e}"</span>)</code></pre>
 
-    <p><code>fetch_user</code> receives the attenuated capability. It cannot reach <code>evil.example.com</code> even if its implementation tried — the runtime would short-circuit with an <code>Err</code> before any network call. The chain of authority from <code>main</code> downward is visible at every link.</p>
+    <p><code>fetch_user</code> receives the attenuated capability. It cannot reach <code>evil.example.com</code> even if its implementation tried, the runtime would short-circuit with an <code>Err</code> before any network call. The chain of authority from <code>main</code> downward is visible at every link.</p>
 </section>
 
 <!-- =====================================================
@@ -173,7 +173,7 @@ error: undefined name 'env'
 <section>
     <h2>Libraries declare their own capabilities</h2>
 
-    <p>Capa is not limited to the built-in capabilities <code>Stdio</code>, <code>Fs</code>, <code>Net</code>, <code>Env</code>, <code>Clock</code>, <code>Random</code>, and <code>Unsafe</code>. A library can declare its own — <code>SendEmail</code>, <code>QueryDB</code>, <code>PublishMessage</code> — and the discipline applies uniformly.</p>
+    <p>Capa is not limited to the built-in capabilities <code>Stdio</code>, <code>Fs</code>, <code>Net</code>, <code>Env</code>, <code>Clock</code>, <code>Random</code>, and <code>Unsafe</code>. A library can declare its own, <code>SendEmail</code>, <code>QueryDB</code>, <code>PublishMessage</code>, and the discipline applies uniformly.</p>
 
 <pre><code><span class="kw-decl">capability</span> <span class="ty-user">SendEmail</span>
     <span class="kw-decl">fun</span> <span class="fn-name">send</span>(self, to: <span class="ty-primitive">String</span>, subject: <span class="ty-primitive">String</span>, body: <span class="ty-primitive">String</span>) -&gt; <span class="ty-builtin">Result</span>&lt;<span class="ty-primitive">Unit</span>, <span class="ty-builtin">IoError</span>&gt;
@@ -187,7 +187,7 @@ error: undefined name 'env'
 <span class="kw-decl">fun</span> <span class="fn-name">welcome</span>(mailer: <span class="ty-user">SendEmail</span>, to: <span class="ty-primitive">String</span>) -&gt; <span class="ty-builtin">Result</span>&lt;<span class="ty-primitive">Unit</span>, <span class="ty-builtin">IoError</span>&gt;
     <span class="kw-ctrl">return</span> mailer.<span class="fn-call">send</span>(to, <span class="str">"Welcome"</span>, <span class="str">"Hello!"</span>)</code></pre>
 
-    <p>A function that takes a <code>SendEmail</code> can send email — and the type system guarantees that is the only thing the capability carries. No hidden <code>Net</code>, no hidden <code>Fs</code>. A higher-level library can encapsulate the low-level capabilities its implementation needs and expose only the higher-level contract to its callers.</p>
+    <p>A function that takes a <code>SendEmail</code> can send email, and the type system guarantees that is the only thing the capability carries. No hidden <code>Net</code>, no hidden <code>Fs</code>. A higher-level library can encapsulate the low-level capabilities its implementation needs and expose only the higher-level contract to its callers.</p>
 </section>
 
 <!-- =====================================================

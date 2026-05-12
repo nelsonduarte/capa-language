@@ -2,7 +2,7 @@
 
 Each test transpiles a Capa snippet and runs it as a Python sub-process,
 verifying the stdout produced. This is the only honest way to test
-the transpiler — syntactic comparisons with expected Python strings are
+the transpiler, syntactic comparisons with expected Python strings are
 fragile. Comparing behaviour is more robust.
 """
 
@@ -21,7 +21,7 @@ _PKG_ROOT = Path(__file__).resolve().parent.parent
 
 
 def transpile_only(source: str) -> str:
-    """Just transpiles — without running."""
+    """Just transpiles, without running."""
     tokens = Lexer(source).lex()
     module = Parser(tokens, source=source).parse_module()
     return transpile(module)
@@ -256,7 +256,7 @@ class TestTranspileImpl(unittest.TestCase):
 
 
 class TestMatchExpression(unittest.TestCase):
-    """Match as expression — produces a value, usable in RHS of let/var/return,
+    """Match as expression, produces a value, usable in RHS of let/var/return,
     and in any expression position."""
 
     def test_match_as_return_value(self):
@@ -490,7 +490,7 @@ class TestInlineMatch(unittest.TestCase):
         self.assertEqual(out, "25.0\n")
 
     def test_inline_match_empty_is_error(self):
-        # `match x {}` is invalid — must have at least one arm.
+        # `match x {}` is invalid, must have at least one arm.
         from capa import Lexer, Parser, ParserError
         src = (
             'fun main(stdio: Stdio)\n'
@@ -604,7 +604,7 @@ class TestTranspileExamples(unittest.TestCase):
 
 
 class TestNetRuntime(unittest.TestCase):
-    """Unit tests against the runtime Net class directly — the behaviour
+    """Unit tests against the runtime Net class directly, the behaviour
     that the analyzer types describe."""
 
     def test_fresh_net_is_unrestricted(self):

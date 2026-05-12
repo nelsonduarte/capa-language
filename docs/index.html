@@ -3,9 +3,9 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Capa — a capability-centric programming language</title>
+    <title>Capa | a capability-centric programming language</title>
     <meta name="description" content="Capa is a programming language where every function declares the authorities it holds. Built around capability-based security with a pythonic syntax, designed for the EU Cyber Resilience Act era.">
-    <meta property="og:title" content="Capa — a capability-centric programming language">
+    <meta property="og:title" content="Capa, a capability-centric programming language">
     <meta property="og:description" content="Every function declares the authorities it holds. Built for the EU Cyber Resilience Act era.">
     <meta property="og:type" content="website">
     <link rel="stylesheet" href="style.css">
@@ -51,7 +51,7 @@
 
         <div class="value-prop">
             <h3>Authority is explicit</h3>
-            <p>If a function can touch the network, the filesystem, the environment, or any other system resource — it has to say so in its signature. There is no ambient permission.</p>
+            <p>If a function can touch the network, the filesystem, the environment, or any other system resource, it has to say so in its signature. There is no ambient permission.</p>
 <pre><code><span class="kw-decl">fun</span> <span class="fn-name">fetch</span>(net: <span class="cap">Net</span>, url: <span class="ty-primitive">String</span>)
     <span class="kw-ctrl">return</span> net.<span class="fn-call">get</span>(url)
 
@@ -71,7 +71,7 @@
 
         <div class="value-prop">
             <h3>Libraries define their own</h3>
-            <p>You declare your own capabilities — <code>SendEmail</code>, <code>QueryDB</code>, <code>PublishMessage</code>. The discipline applies uniformly. A library's contract is enforced at the type level.</p>
+            <p>You declare your own capabilities, <code>SendEmail</code>, <code>QueryDB</code>, <code>PublishMessage</code>. The discipline applies uniformly. A library's contract is enforced at the type level.</p>
 <pre><code><span class="kw-decl">capability</span> <span class="ty-user">SendEmail</span>
     <span class="kw-decl">fun</span> <span class="fn-name">send</span>(self,
         to: <span class="ty-primitive">String</span>,

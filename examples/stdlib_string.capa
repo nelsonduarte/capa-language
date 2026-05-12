@@ -1,4 +1,4 @@
-// stdlib_string.capa — builtin methods on String.
+// stdlib_string.capa, builtin methods on String.
 
 fun main(stdio: Stdio)
     let text = "  Hello, Capa World  "

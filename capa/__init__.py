@@ -1,4 +1,4 @@
-"""capa — front-end for the Capa programming language.
+"""capa, front-end for the Capa programming language.
 
 This package contains the lexer, parser, AST, type system, semantic
 analyzer, transpiler, and runtime for Capa.

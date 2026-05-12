@@ -1147,7 +1147,7 @@ class Parser:
 
     def _parse_range(self) -> A.Expr:
         """Range expression: ``start..end`` (exclusive) or
-        ``start..=end`` (inclusive). Non-associative — chained ranges
+        ``start..=end`` (inclusive). Non-associative, chained ranges
         like ``a..b..c`` are not allowed and would be a syntax error.
         Sits between comparison and addition in the precedence ladder,
         so ``1+2..5+3`` parses as ``(1+2)..(5+3)``.
@@ -1330,7 +1330,7 @@ class Parser:
         heuristic as additional confirmation to avoid ambiguity in
         statements like `if x { ... }` (not Capa, but avoids surprises).
 
-        The ``_no_struct_lit`` flag overrides the heuristic — used when
+        The ``_no_struct_lit`` flag overrides the heuristic, used when
         parsing the scrutinee of ``match`` so that ``match X { ... }``
         is the inline-arm form, not a struct literal as the scrutinee.
         """

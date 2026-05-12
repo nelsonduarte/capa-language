@@ -1,9 +1,9 @@
-// net_attenuation.capa — first-class capability attenuation, the
+// net_attenuation.capa, first-class capability attenuation, the
 // pillar feature from WhitePaper §4.3.
 //
 // `main` receives a Net with full authority. We then narrow it to a
 // single host and propagate the narrowed cap to a helper. The helper
-// cannot reach any other host — not because of a sandbox, but because
+// cannot reach any other host, not because of a sandbox, but because
 // its parameter type *carries* the restriction. The static analyzer
 // confirms only that Net is propagated correctly; the runtime
 // enforces the host check before any system call.
@@ -13,7 +13,7 @@
 // would be used in `get(url)` for real HTTP, gated by the same check.
 
 // Helper that consumes the narrowed Net. From its perspective the API
-// surface is just `Net` — the restrictions are invisible. That is the
+// surface is just `Net`, the restrictions are invisible. That is the
 // whole point: the caller decides what the callee can do.
 fun probe_api(net: Net, stdio: Stdio)
     stdio.println("api.example.com allowed?   ${net.allows(\"api.example.com\")}")
@@ -29,7 +29,7 @@ fun main(net: Net, stdio: Stdio)
     stdio.println("=== after net.restrict_to(api.example.com) ===")
 
     // Attenuate: take the full Net and produce one limited to a single
-    // host. The new capability is bound in a let — a fresh capability,
+    // host. The new capability is bound in a let, a fresh capability,
     // not an alias of `net`. Then hand it to a helper.
     let api = net.restrict_to("api.example.com")
     probe_api(api, stdio)

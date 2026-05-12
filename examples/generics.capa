@@ -1,4 +1,4 @@
-// generics.capa — program that exercises generic inference.
+// generics.capa, program that exercises generic inference.
 
 type Pair<A, B> {
     first: A,

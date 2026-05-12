@@ -256,7 +256,7 @@
         "function_calls": {
             "patterns": [
                 {
-                    "comment": "Lowercase identifier immediately followed by `(` — a function call",
+                    "comment": "Lowercase identifier immediately followed by `(`, a function call",
                     "name": "entity.name.function.call.capa",
                     "match": "\\b([a-z_][A-Za-z0-9_]*)(?=\\s*\\()"
                 }

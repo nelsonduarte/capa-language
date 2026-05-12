@@ -4,8 +4,8 @@
 
 ## Lexical structure and syntactic grammar in EBNF
 
-Technical specification document — companion to the white paper
-Version 1.0 — May 2026
+Technical specification document, companion to the white paper
+Version 1.0, May 2026
 
 ## Table of Contents
 
@@ -17,8 +17,8 @@ Version 1.0 — May 2026
 - 6. Operator Precedence and Associativity
 - 7. Resolved Ambiguities
 - 8. Annotated Example Program
-- Appendix A — Complete List of Reserved Words
-- Appendix B — Complete List of Operators and Punctuation
+- Appendix A: Complete List of Reserved Words
+- Appendix B: Complete List of Operators and Punctuation
 
 ---
 
@@ -28,11 +28,11 @@ Version 1.0 — May 2026
 
 This document is the second in the set of specifications for the Capa language. The first document (the technical white paper) presented the justification, design principles, informal syntax and roadmap. This second document formalises, in EBNF notation, the complete lexical structure and syntactic grammar of version 1.0 of the language.
 
-The purpose is threefold. First, to serve as a normative reference for the compiler implementation: the lexer and the parser must accept exactly the language described here, no more and no less. Second, to provide a solid basis for external static analysis — formatters, linters, documentation generators, language servers — without the need for each tool to reconstruct its own understanding of the syntax. Third, to make Capa teachable: this document is the material that allows a student or an independent reader to exhaustively understand the shape of the language.
+The purpose is threefold. First, to serve as a normative reference for the compiler implementation: the lexer and the parser must accept exactly the language described here, no more and no less. Second, to provide a solid basis for external static analysis, formatters, linters, documentation generators, language servers, without the need for each tool to reconstruct its own understanding of the syntax. Third, to make Capa teachable: this document is the material that allows a student or an independent reader to exhaustively understand the shape of the language.
 
 ### 1.2 Structure of the document
 
-The document is divided into eight chapters and three appendices. Chapter 2 establishes the EBNF notation used, with examples. Chapters 3 and 4 cover the lexical level — what constitutes a token and how the lexer handles indentation, line breaks and whitespace. Chapter 5 is the core: the syntactic grammar, from the complete program down to atomic expressions. Chapters 6 and 7 deal with transverse questions (precedence, associativity, resolved ambiguities). Chapter 8 presents a complete annotated Capa program, rule by rule. The appendices exhaustively list the reserved words and the operators.
+The document is divided into eight chapters and three appendices. Chapter 2 establishes the EBNF notation used, with examples. Chapters 3 and 4 cover the lexical level, what constitutes a token and how the lexer handles indentation, line breaks and whitespace. Chapter 5 is the core: the syntactic grammar, from the complete program down to atomic expressions. Chapters 6 and 7 deal with transverse questions (precedence, associativity, resolved ambiguities). Chapter 8 presents a complete annotated Capa program, rule by rule. The appendices exhaustively list the reserved words and the operators.
 
 ### 1.3 Quality criteria
 
@@ -41,7 +41,7 @@ The grammar presented satisfies the following quality criteria, considered non-n
 - **Unambiguous:** every valid Capa program has one and only one derivation in the grammar. Inherent ambiguities (precedence, dangling else) are resolved by explicit rules documented in Chapter 7.
 - **Decidable by an LL(2) parser:** the grammar is designed so that it can be implemented by a recursive descent parser with maximum lookahead of two tokens. This drastically reduces the complexity of the implementation and the probability of subtle parser bugs.
 - **Stable:** version 1.0 is considered stable. Future extensions (refinement types, structured concurrency, macros) will enter through the addition of new productions, never by modification of existing ones.
-- **Pedagogically accessible:** the order in which rules are presented follows a didactic progression — from the most general (program) to the most specific (literals), and from the most common to the most rare.
+- **Pedagogically accessible:** the order in which rules are presented follows a didactic progression, from the most general (program) to the most specific (literals), and from the most common to the most rare.
 
 ### 1.4 What this grammar does not cover
 
@@ -278,7 +278,7 @@ Capa, like Python, uses significant indentation to delimit blocks. This chapter 
 
 ### 4.1 Spaces and tabs
 
-At the start of a logical line, the sequence of spaces (and only spaces) determines the indentation level of that line. Tabs are forbidden at the start of a line — the lexer rejects the program with a lexical error if it encounters a tab starting a line. This radical prohibition avoids whole classes of subtle bugs in environments that mix tabs and spaces.
+At the start of a logical line, the sequence of spaces (and only spaces) determines the indentation level of that line. Tabs are forbidden at the start of a line, the lexer rejects the program with a lexical error if it encounters a tab starting a line. This radical prohibition avoids whole classes of subtle bugs in environments that mix tabs and spaces.
 
 Outside the start of a line, spaces and tabs are consumed with no effect (except inside strings, of course). Canonical indentation is four spaces; any positive multiple is accepted, but the increase from one level to the next must be consistent within the same block.
 
@@ -289,7 +289,7 @@ A logical line break corresponds, in most cases, to a physical line break in the
 - **Implicit continuation by brackets:** a line break inside a pair of delimiters (parentheses, square brackets, braces) does not produce `NEWLINE`. This allows lists, function calls and long expressions to be broken across multiple physical lines without the need for explicit continuation.
 - **Explicit continuation by backslash:** a line terminated by `\` immediately before the break is continued on the following line. This form is discouraged in idiomatic code but supported for extreme cases.
 
-Lines containing only spaces or only comments do not produce `NEWLINE` — they are ignored by the lexer.
+Lines containing only spaces or only comments do not produce `NEWLINE`, they are ignored by the lexer.
 
 ```ebnf
 NEWLINE = line_terminated_by_break_not_inside_brackets_and_not_continued
@@ -337,7 +337,7 @@ Note that `INDENT` and `DEDENT` are produced automatically by the lexer based on
 
 ### 4.5 Blank lines and comments
 
-Blank lines and lines containing only comments are ignored for the purposes of indentation calculation — the lexer skips them and considers the next non-empty line. This rule prevents comments or blank lines in the middle of a block from breaking the structure.
+Blank lines and lines containing only comments are ignored for the purposes of indentation calculation, the lexer skips them and considers the next non-empty line. This rule prevents comments or blank lines in the middle of a block from breaking the structure.
 
 ---
 
@@ -347,7 +347,7 @@ This is the central chapter of the document. It presents Capa's complete grammar
 
 ### 5.1 Program and top-level declarations
 
-A Capa program is a source code file. It has zero or more imports, followed by zero or more top-level declarations. The order between `import` and declarations is flexible — imports may appear at any point, although the convention is to group them at the start.
+A Capa program is a source code file. It has zero or more imports, followed by zero or more top-level declarations. The order between `import` and declarations is flexible, imports may appear at any point, although the convention is to group them at the start.
 
 ```ebnf
 program = { top_item } EOF
@@ -397,7 +397,7 @@ The optional `consume` qualifier marks the parameter as taking ownership of the 
 
 Attributes are static, source-level metadata. The grammar accepts any identifier as the attribute name, but the analyzer restricts the v1 catalogue to `security`, `deprecated`, and `audited`, each with a fixed set of allowed keys. Attribute argument values must be string literals so that the metadata is statically inspectable without running expression evaluation. The `--manifest` tool emits attributes verbatim in JSON form for downstream consumption by audit tooling. Attributes are valid on top-level `fun` declarations and on methods inside an `impl` block; they are rejected on `const`, `type`, `trait`, `capability`, `impl`, and `import` in v1.
 
-Relevant notes. The return type is syntactically optional; if omitted, the type is inferred as `Unit` (the function does not return a useful value) — except in public functions, where a later semantic phase requires the explicit annotation. The trailing comma in `param_list` is allowed to facilitate clean diffs.
+Relevant notes. The return type is syntactically optional; if omitted, the type is inferred as `Unit` (the function does not return a useful value), except in public functions, where a later semantic phase requires the explicit annotation. The trailing comma in `param_list` is allowed to facilitate clean diffs.
 
 The absence of a `":"` between the function header and the block is a deliberate divergence from Python. The rule is: a header on a `NEWLINE`, followed by an `INDENT` that opens the block. This rule applies uniformly to all constructs with a block (`if`, `while`, `for`, `match`, `function_decl`).
 
@@ -459,7 +459,7 @@ When the `qualified_name for` part is omitted, the `impl` defines methods of the
 
 ### 5.6 Capability declarations
 
-Standard capabilities are provided by the runtime and not declared in user code. But the user can declare domain-specific capabilities, which behave structurally as traits, but with special semantics — they can only be constructed from other capabilities (see Chapter 4 of the white paper).
+Standard capabilities are provided by the runtime and not declared in user code. But the user can declare domain-specific capabilities, which behave structurally as traits, but with special semantics, they can only be constructed from other capabilities (see Chapter 4 of the white paper).
 
 ```ebnf
 capability_decl = [ "pub" ] "capability" IDENT [ generic_params ]
@@ -472,7 +472,7 @@ A user-defined capability is implemented exactly like a trait: `impl X for Type`
 
 To make the encapsulation pattern from WhitePaper §4.6 workable, the analyzer relaxes two of the otherwise-strict structural rules **only for the cap-bearing struct**:
 
-- The struct that implements a user-defined capability **may hold built-in capabilities as fields** (e.g. `type SmtpMailer { server: String, net: Net }`). The struct's *value* still has to follow the capability discipline as a whole — aliasing it via `let dup = mailer` is rejected, the same as for built-in caps.
+- The struct that implements a user-defined capability **may hold built-in capabilities as fields** (e.g. `type SmtpMailer { server: String, net: Net }`). The struct's *value* still has to follow the capability discipline as a whole, aliasing it via `let dup = mailer` is rejected, the same as for built-in caps.
 - A regular function **may return a user-defined capability** (factory pattern: `fun make_smtp_mailer(net: Net, ...) -> SmtpMailer`). Built-in caps still cannot be returned, so the chain from `main` to any cap value remains visible in signatures at every link.
 
 ```capa
@@ -498,7 +498,7 @@ fun send_welcome(mailer: SendEmail, to: String) -> Result<Unit, IoError>
 const_decl = [ "pub" ] "const" IDENT ":" type "=" expression NEWLINE
 ```
 
-Constants are evaluated at compile time. The expression must be a const expression — a subset of the expression grammar that excludes function calls (except `const fn` in a future version), mutation, and operations that depend on capabilities.
+Constants are evaluated at compile time. The expression must be a const expression, a subset of the expression grammar that excludes function calls (except `const fn` in a future version), mutation, and operations that depend on capabilities.
 
 ### 5.8 Types
 
@@ -523,7 +523,7 @@ function_type = "Fun" "(" [ type { "," type } ] ")" "->" type
 qualified_name = IDENT { "." IDENT }
 ```
 
-Note that `List`, `Option`, `Result`, `Map`, and `Fun` are not keywords — they are merely generic types / built-in type constructors defined by the language and the standard library. The syntax `List<Int>` is an ordinary `named_type` with type arguments; `Fun(Int, Int) -> Int` is the dedicated `function_type` production. This uniformity simplifies the grammar (and keeps `fun`, the lowercase keyword, distinct from `Fun`, the uppercase type constructor).
+Note that `List`, `Option`, `Result`, `Map`, and `Fun` are not keywords, they are merely generic types / built-in type constructors defined by the language and the standard library. The syntax `List<Int>` is an ordinary `named_type` with type arguments; `Fun(Int, Int) -> Int` is the dedicated `function_type` production. This uniformity simplifies the grammar (and keeps `fun`, the lowercase keyword, distinct from `Fun`, the uppercase type constructor).
 
 ### 5.9 Block and statements
 
@@ -593,7 +593,7 @@ expression_stmt = expression NEWLINE
 
 Important design decision: `if`, `while`, `for` are statements, not expressions. A programmer who wants to use a control structure to produce a value uses the ternary `if cond then a else b` (Section 5.12.2).
 
-`match` is **both** a statement and an expression — the same production serves both roles. In statement position the value is discarded; in expression position (RHS of `let`/`var`/`return`, inside string interpolation, as an argument to a function call written across the multi-line form, etc.) the value flows out. The inline `{ p -> e, ... }` form exists specifically for expression position and is single-line by design — multi-line block bodies are reserved for the indented form. Both forms accept guards and or-patterns.
+`match` is **both** a statement and an expression, the same production serves both roles. In statement position the value is discarded; in expression position (RHS of `let`/`var`/`return`, inside string interpolation, as an argument to a function call written across the multi-line form, etc.) the value flows out. The inline `{ p -> e, ... }` form exists specifically for expression position and is single-line by design, multi-line block bodies are reserved for the indented form. Both forms accept guards and or-patterns.
 
 ```capa
 let s = match x { 0 -> "zero", _ -> "other" }
@@ -668,7 +668,7 @@ lambda_body = expression                  (* single-expression body *)
             | NEWLINE INDENT { statement } DEDENT   (* block body *)
 ```
 
-Notes. The leading `fun` keyword makes lambdas trivially distinguishable from `paren_expr` — the parser does not need lookahead or backtracking (this supersedes the older Python-style `(params) -> expr` form). The return-type annotation is optional and inferred from the body when omitted.
+Notes. The leading `fun` keyword makes lambdas trivially distinguishable from `paren_expr`, the parser does not need lookahead or backtracking (this supersedes the older Python-style `(params) -> expr` form). The return-type annotation is optional and inferred from the body when omitted.
 
 The block body shape allows multi-statement closures with explicit `return`:
 
@@ -678,7 +678,7 @@ let log = fun (x: Int) -> Int =>
     return x * 10
 ```
 
-Closures capture their lexical environment. Captured capabilities are *borrowed* (the analyzer rejects `consume` on a capture, since a closure may run multiple times but a capability may only be consumed once — the same distinction as Rust's `Fn` vs `FnOnce`). Capabilities accepted as parameters of the closure itself are not captures and may be consumed.
+Closures capture their lexical environment. Captured capabilities are *borrowed* (the analyzer rejects `consume` on a capture, since a closure may run multiple times but a capability may only be consumed once, the same distinction as Rust's `Fn` vs `FnOnce`). Capabilities accepted as parameters of the closure itself are not captures and may be consumed.
 
 #### 5.12.2 Ternary expression and logical operators
 
@@ -723,7 +723,7 @@ unary_expr = ( "-" | "+" ) unary_expr
 
 Comparisons in Capa do not chain: `1 < x < 10` is a syntax error (because `<` is not associative under this grammar). To chain, write `1 < x and x < 10`. This restriction avoids subtle ambiguities.
 
-The `range_expr` production allows integer ranges. `a..b` is exclusive of `b`, `a..=b` is inclusive. Range itself is non-associative — `a..b..c` is a syntax error — and sits below comparisons in precedence, so `0..n == 0..m` parses as `(0..n) == (0..m)`. The value of a range expression has type `List<Int>` (materialised at runtime); the full `List<T>` API applies. Endpoints must be `Int`; Float endpoints are rejected at type-check time.
+The `range_expr` production allows integer ranges. `a..b` is exclusive of `b`, `a..=b` is inclusive. Range itself is non-associative, `a..b..c` is a syntax error, and sits below comparisons in precedence, so `0..n == 0..m` parses as `(0..n) == (0..m)`. The value of a range expression has type `List<Int>` (materialised at runtime); the full `List<T>` API applies. Endpoints must be `Int`; Float endpoints are rejected at type-check time.
 
 #### 5.12.4 Postfix: calls, indexing, access
 
@@ -786,7 +786,7 @@ The ambiguity between `map_expr` (map literal with braces) and `block_expr` (blo
 
 ### 5.13 Documentation comments
 
-Documentation comments (`///` for a line, `/** ... */` for a block) are syntactically comments — the lexer recognises them. But, unlike normal comments, they are preserved and associated with the immediately following declaration. The syntactic grammar does not model them explicitly; the parser attaches them to the AST as metadata.
+Documentation comments (`///` for a line, `/** ... */` for a block) are syntactically comments, the lexer recognises them. But, unlike normal comments, they are preserved and associated with the immediately following declaration. The syntactic grammar does not model them explicitly; the parser attaches them to the AST as metadata.
 
 > **Not in 1.0.** The lexer currently treats `///` and `/**` exactly like regular line/block comments and discards them. Reservation of the syntax is deliberate so that future versions can attach doc strings to declarations without breaking source compatibility.
 
@@ -805,7 +805,7 @@ The table is ordered from lowest precedence (at the top, binding most loosely) t
 | 1 (lowest) | `if-else` (ternary) | Right |
 | 2 | `or` | Left |
 | 3 | `and` | Left |
-| 4 | `not` (unary) | — |
+| 4 | `not` (unary) |, |
 | 5 | `==`  `!=`  `<`  `<=`  `>`  `>=` | Non-associative |
 | 6 | `..`  `..=`  (range) | Non-associative |
 | 7 | `+`  `-`  (binary) | Left |
@@ -866,7 +866,7 @@ This rule is decidable with two-token lookahead, satisfying the LL(2) parser imp
 In `Vec<Int>`, the symbols `<` and `>` delimit type arguments. In `x < y`, they are comparison operators. The distinction depends on the syntactic context:
 
 - In type position (after `let x:`, after `->`, inside another `type_args`), `<` opens `type_args`.
-- In expression position, `<` is a comparison operator. The exception is when preceded by a `qualified_name` and followed by a `type` — in that case the parser considers the possibility of an explicit generic function call `f<Int>(x)`.
+- In expression position, `<` is a comparison operator. The exception is when preceded by a `qualified_name` and followed by a `type`, in that case the parser considers the possibility of an explicit generic function call `f<Int>(x)`.
 
 The solution adopted is the turbofish, in the Rust spirit: to force interpretation as type arguments in an expression, use `::<T>`. This convention is visually strange but avoids the need for unlimited backtracking in the parser.
 
@@ -886,11 +886,11 @@ Already mentioned in 5.12.5: the comma resolves it. `(x)` is an expression; `(x,
 
 In the current grammar there is no ambiguity: a lambda always starts with the `fun` keyword (`fun (params) -> Ret => body`), and a parenthesised expression starts with `(`. The two are trivially distinguishable with a single-token lookahead.
 
-This is a deliberate design choice over a Python-style `(params) -> expr` lambda — which would force the parser into backtracking (every `(` could start either a paren expression or a lambda, and you only know at the closing `)` followed by `->`). Reusing the `fun` keyword keeps lookahead constant.
+This is a deliberate design choice over a Python-style `(params) -> expr` lambda, which would force the parser into backtracking (every `(` could start either a paren expression or a lambda, and you only know at the closing `)` followed by `->`). Reusing the `fun` keyword keeps lookahead constant.
 
 ### 7.6 Inline match vs. struct literal as scrutinee
 
-The inline form `match X { ... }` collides syntactically with the struct-literal heuristic (`PascalCaseIdent { field: value, ... }`). Without intervention, the parser would read `match Color { Red -> 1 }` as `match (Color { Red -> 1 })` — a match whose scrutinee is a struct literal whose first field name is `Red` — and then fail at the `->`.
+The inline form `match X { ... }` collides syntactically with the struct-literal heuristic (`PascalCaseIdent { field: value, ... }`). Without intervention, the parser would read `match Color { Red -> 1 }` as `match (Color { Red -> 1 })`, a match whose scrutinee is a struct literal whose first field name is `Red`, and then fail at the `->`.
 
 The rule adopted is the same one Rust uses for its `if`/`while`/`match` scrutinees: while parsing the scrutinee of a `match`, the struct-literal heuristic is **suppressed**. Inside that window, a PascalCase identifier followed by `{` always opens inline match arms, never a struct literal.
 
@@ -900,7 +900,7 @@ To use a struct literal as the scrutinee, wrap it in parentheses:
 // Inline match against a variant constant
 let s = match Red { Red -> "r", Green -> "g", Blue -> "b" }
 
-// Match against a struct literal — parens force struct-literal interpretation
+// Match against a struct literal, parens force struct-literal interpretation
 match (Point { x: 1.0, y: 2.0 })
     Point { x, y } -> stdio.println("${x}, ${y}")
 ```
@@ -916,7 +916,7 @@ This chapter presents a complete Capa program, with a progressive derivation thr
 ### 8.1 The program
 
 ```capa
-// task_manager.capa — canonical example to illustrate the grammar
+// task_manager.capa, canonical example to illustrate the grammar
 
 type Priority =
     Low
@@ -972,13 +972,13 @@ Lines 3-6 declare a sum type: `type_decl` with `sum_body`. The production is `"t
 
 Lines 8-13 declare a struct: `type_decl` with `struct_body`. The syntactic difference between the two is that `sum_body` begins with `"="` and `struct_body` begins with `"{"`. The parser distinguishes them with a single lookahead token.
 
-Lines 15-17 declare a trait with two `function_signature`s (no body, ending in `NEWLINE`). The `load` function does not have a `self` parameter and has `Self` in its return type — a feature indicating an associated function on the type (not an instance method).
+Lines 15-17 declare a trait with two `function_signature`s (no body, ending in `NEWLINE`). The `load` function does not have a `self` parameter and has `Self` in its return type, a feature indicating an associated function on the type (not an instance method).
 
-Lines 19-29 are an `impl_decl` that satisfies the `Persistable` trait for the `Task` type. Each function in the body is a complete `function_decl`. Line 24 (`let content = fs.read(path)?`) illustrates the `?` operator applied to the return of a postfix call — the inferred return type of the enclosing function (`Result<Task, IoError>`) is what makes the propagation well-typed.
+Lines 19-29 are an `impl_decl` that satisfies the `Persistable` trait for the `Task` type. Each function in the body is a complete `function_decl`. Line 24 (`let content = fs.read(path)?`) illustrates the `?` operator applied to the return of a postfix call, the inferred return type of the enclosing function (`Result<Task, IoError>`) is what makes the propagation well-typed.
 
 Lines 31-36 declare a function `classify_urgency` whose body is a single `return match` (a `return_stmt` whose value is a `match_stmt` derived as an expression). Note the guard on the first arm (`High if not t.completed -> ...`): the syntax allows matches to be filtered by an additional condition, with no need to nest an `if` inside the block.
 
-Lines 38-44 declare the function `main` with the `Stdio` capability. The body illustrates a multi-line list literal, a `for_stmt` with a single identifier pattern, and string interpolation. Note that `main` does not take `Fs` here even though the impl block uses it — the must-use rule (Capability Flow, layer v2) would reject an unused capability parameter. Capabilities only travel down through the call graph as they are actually needed.
+Lines 38-44 declare the function `main` with the `Stdio` capability. The body illustrates a multi-line list literal, a `for_stmt` with a single identifier pattern, and string interpolation. Note that `main` does not take `Fs` here even though the impl block uses it, the must-use rule (Capability Flow, layer v2) would reject an unused capability parameter. Capabilities only travel down through the call graph as they are actually needed.
 
 ### 8.3 Token sequence (summary)
 
@@ -1003,7 +1003,7 @@ INDENT
 
 ---
 
-## Appendix A — Complete List of Reserved Words
+## Appendix A: Complete List of Reserved Words
 
 The following words are reserved by the Capa 1.0 language and cannot be used as identifiers in any context.
 
@@ -1048,7 +1048,7 @@ The following words are reserved by the Capa 1.0 language and cannot be used as 
 
 ---
 
-## Appendix B — Complete List of Operators and Punctuation
+## Appendix B: Complete List of Operators and Punctuation
 
 The following tokens are recognised by the lexer using the maximal munch rule. The "Notes" column indicates how ambiguous sequences are disambiguated.
 
@@ -1091,4 +1091,4 @@ The following tokens are recognised by the lexer using the maximal munch rule. T
 
 ---
 
-— End of document —
+- End of document -

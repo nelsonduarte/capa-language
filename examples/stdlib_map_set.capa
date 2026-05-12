@@ -1,4 +1,4 @@
-// stdlib_map_set.capa — Map<K, V> and Set<T> with builtin methods.
+// stdlib_map_set.capa, Map<K, V> and Set<T> with builtin methods.
 
 fun main(stdio: Stdio)
     // ====== Map<String, Int>: word counting ======

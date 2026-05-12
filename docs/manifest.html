@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Capability manifest — Capa</title>
+    <title>Capability manifest | Capa</title>
     <meta name="description" content="Capa emits a JSON capability manifest: every function's declared authority, its attributes, and whether it crosses the Unsafe boundary. The artefact an EU Cyber Resilience Act auditor wants.">
     <link rel="stylesheet" href="style.css">
     <link rel="icon" type="image/svg+xml" href="favicon.svg">
@@ -32,7 +32,7 @@
 
 <div class="page-heading">
     <h1>Capability manifest</h1>
-    <p>A machine-readable description of every function's declared authorities, attached metadata, and boundary crossings — emitted directly by the compiler. Designed as an audit artefact for the EU Cyber Resilience Act era.</p>
+    <p>A machine-readable description of every function's declared authorities, attached metadata, and boundary crossings, emitted directly by the compiler. Designed as an audit artefact for the EU Cyber Resilience Act era.</p>
 </div>
 
 <!-- =====================================================
@@ -43,7 +43,7 @@
 
     <p>The EU Cyber Resilience Act, in full application from December 2027, requires manufacturers of "products with digital elements" to demonstrate <strong>security by design and by default</strong>, supply a machine-readable <strong>SBOM</strong>, document the product's security properties, and maintain that documentation across the product lifecycle. The expectation is not "your code is secure": it is "you can show, with evidence, what your code is allowed to do."</p>
 
-    <p>That last sentence is the hard one. Existing SBOM formats (SPDX, CycloneDX) describe <em>which components</em> are in a product. They do not describe <em>what each component is authorised to do</em>. The information simply does not exist in the source — no mainstream language carries it in the type system.</p>
+    <p>That last sentence is the hard one. Existing SBOM formats (SPDX, CycloneDX) describe <em>which components</em> are in a product. They do not describe <em>what each component is authorised to do</em>. The information simply does not exist in the source, no mainstream language carries it in the type system.</p>
 
     <p>Capa does. The capability manifest is the export of that information into a stable, schema-versioned JSON document.</p>
 </section>
@@ -118,11 +118,11 @@
   }
 }</code></pre>
 
-    <p>An auditor reading this knows, without running the program: <code>verify_token</code> is pure (no capabilities) and references a fixed CVE; <code>fetch_user</code> can touch the network; <code>token_length</code> is pure. There is no other way for any of these to leak data or contact a server — the type system already rejected such a program at compile time.</p>
+    <p>An auditor reading this knows, without running the program: <code>verify_token</code> is pure (no capabilities) and references a fixed CVE; <code>fetch_user</code> can touch the network; <code>token_length</code> is pure. There is no other way for any of these to leak data or contact a server, the type system already rejected such a program at compile time.</p>
 
     <h3>Call-site visibility</h3>
 
-    <p>Each function record also carries a <code>calls[]</code> array listing every function and method call inside its body, with the line:col of the call site and a stringified form of the argument expressions. This is where attenuation becomes visible at the audit level: the manifest does not just say "this function holds <code>Net</code>" — it shows the actual <code>restrict_to("api.example.com")</code> call before the cap is handed onward.</p>
+    <p>Each function record also carries a <code>calls[]</code> array listing every function and method call inside its body, with the line:col of the call site and a stringified form of the argument expressions. This is where attenuation becomes visible at the audit level: the manifest does not just say "this function holds <code>Net</code>", it shows the actual <code>restrict_to("api.example.com")</code> call before the cap is handed onward.</p>
 
 <pre><code>{
   <span class="str">"name"</span>: <span class="str">"main"</span>,
@@ -152,7 +152,7 @@
 <section>
     <h2>How the manifest maps to CRA requirements</h2>
 
-    <p>A non-exhaustive correspondence between fields the manifest emits and obligations the Act imposes. The mapping is not magic — it is just that capability-based security happens to align with what CRA was reaching for.</p>
+    <p>A non-exhaustive correspondence between fields the manifest emits and obligations the Act imposes. The mapping is not magic, it is just that capability-based security happens to align with what CRA was reaching for.</p>
 
     <table class="cra-table">
         <thead>
@@ -164,27 +164,27 @@
         <tbody>
             <tr>
                 <td>Security by design and by default: products operate with the minimum of privileges necessary.</td>
-                <td><code>functions[].declared_capabilities</code> — the exact set of authorities each function holds. A function that does not list <code>Net</code> cannot reach the network.</td>
+                <td><code>functions[].declared_capabilities</code>, the exact set of authorities each function holds. A function that does not list <code>Net</code> cannot reach the network.</td>
             </tr>
             <tr>
                 <td>Documentation of security properties of the product.</td>
-                <td><code>functions[].attributes[@security]</code> — CVE references, severity, fix versions, free-form description.</td>
+                <td><code>functions[].attributes[@security]</code>, CVE references, severity, fix versions, free-form description.</td>
             </tr>
             <tr>
                 <td>Vulnerability handling and lifecycle support.</td>
-                <td><code>functions[].attributes[@deprecated]</code> — explicit deprecation markers with reason, since-version, and replacement function.</td>
+                <td><code>functions[].attributes[@deprecated]</code>, explicit deprecation markers with reason, since-version, and replacement function.</td>
             </tr>
             <tr>
                 <td>Audit trail throughout the product lifecycle.</td>
-                <td><code>functions[].attributes[@audited]</code> — date, auditor, scope, free-form notes.</td>
+                <td><code>functions[].attributes[@audited]</code>, date, auditor, scope, free-form notes.</td>
             </tr>
             <tr>
                 <td>Identifying components where standard guarantees do not hold.</td>
-                <td><code>functions[].has_unsafe</code> — explicit flag set whenever a function declares <code>Unsafe</code> as a parameter. The compiler also surfaces it in <code>summary.functions_crossing_unsafe</code>.</td>
+                <td><code>functions[].has_unsafe</code>, explicit flag set whenever a function declares <code>Unsafe</code> as a parameter. The compiler also surfaces it in <code>summary.functions_crossing_unsafe</code>.</td>
             </tr>
             <tr>
                 <td>SBOM enrichment: capabilities of each component.</td>
-                <td><code>user_defined_capabilities</code> — high-level capability declarations and their implementors. A library that exposes <code>SendEmail</code> declares its surface; a CI gate can verify that no caller obtains more.</td>
+                <td><code>user_defined_capabilities</code>, high-level capability declarations and their implementors. A library that exposes <code>SendEmail</code> declares its surface; a CI gate can verify that no caller obtains more.</td>
             </tr>
         </tbody>
     </table>
@@ -196,7 +196,7 @@
 <section>
     <h2>The v1 attribute catalogue</h2>
 
-    <p>Three attributes are recognised. The analyzer rejects unknown names, unknown keys, and duplicates — the schema is fixed so downstream consumers can rely on it.</p>
+    <p>Three attributes are recognised. The analyzer rejects unknown names, unknown keys, and duplicates, the schema is fixed so downstream consumers can rely on it.</p>
 
     <div class="pillars">
         <div class="pillar">
@@ -254,7 +254,7 @@
 <section>
     <h2>CycloneDX 1.5 output</h2>
 
-    <p>The <code>--manifest</code> flag emits Capa's native JSON shape — compact, opinionated, and easy to consume from a Capa-aware tool. For interoperability with the broader supply-chain tooling ecosystem, Capa also emits a <strong>CycloneDX 1.5 SBOM</strong> with the same information embedded:</p>
+    <p>The <code>--manifest</code> flag emits Capa's native JSON shape, compact, opinionated, and easy to consume from a Capa-aware tool. For interoperability with the broader supply-chain tooling ecosystem, Capa also emits a <strong>CycloneDX 1.5 SBOM</strong> with the same information embedded:</p>
 
 <pre><code>$ python -m capa --cyclonedx verify.capa</code></pre>
 
@@ -294,7 +294,7 @@
     <ul>
         <li><strong>Validation</strong> by any CycloneDX schema validator.</li>
         <li><strong>Ingestion</strong> by Dependency-Track, OSV-Scanner, syft, sbom-utility, and other mainstream SBOM tooling. They will see the components and dependency graph without knowing anything Capa-specific.</li>
-        <li><strong>Deterministic <code>serialNumber</code></strong> derived from the filename (UUIDv5), so re-running the command on the same file produces an identical SBOM — friendly to diffing across releases.</li>
+        <li><strong>Deterministic <code>serialNumber</code></strong> derived from the filename (UUIDv5), so re-running the command on the same file produces an identical SBOM, friendly to diffing across releases.</li>
         <li><strong>Dependency edges</strong> from each function to the user-defined capabilities it depends on, so CycloneDX-aware tooling builds a usable graph.</li>
     </ul>
 
@@ -310,8 +310,8 @@
     <ul>
         <li><strong>Whether a capability holder behaves well.</strong> A function that legitimately receives <code>Net</code> can do whatever <code>Net</code> allows, including misuse. The manifest documents the <em>permission surface</em>; it does not predict <em>behaviour</em>.</li>
         <li><strong>Anything beyond an <code>Unsafe</code> boundary.</strong> Once a value crosses into Python interop, the discipline ends. The manifest marks the crossing (<code>has_unsafe: true</code>); content beyond it must be audited separately.</li>
-        <li><strong>Dependencies you did not write.</strong> v1 only describes the program you compile. Aggregating manifests across the dependency graph is on the roadmap — it requires a module system first.</li>
-        <li><strong>Full data-flow tracking.</strong> The manifest now records every call site with its argument expressions, including <code>restrict_to(...)</code> calls visible directly in the source, so an auditor reading the manifest can see that <code>main</code> calls <code>net.restrict_to("api.example.com")</code> before handing the cap to <code>fetch_user</code>. Full <em>flow</em> tracking — propagating restrictions through let-bindings and into method-call resolution — is a deeper analyser change still open for v0.4.</li>
+        <li><strong>Dependencies you did not write.</strong> v1 only describes the program you compile. Aggregating manifests across the dependency graph is on the roadmap, it requires a module system first.</li>
+        <li><strong>Full data-flow tracking.</strong> The manifest now records every call site with its argument expressions, including <code>restrict_to(...)</code> calls visible directly in the source, so an auditor reading the manifest can see that <code>main</code> calls <code>net.restrict_to("api.example.com")</code> before handing the cap to <code>fetch_user</code>. Full <em>flow</em> tracking, propagating restrictions through let-bindings and into method-call resolution, is a deeper analyser change still open for v0.4.</li>
     </ul>
 </section>
 

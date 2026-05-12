@@ -1,4 +1,4 @@
-// errors.capa — program with several semantic errors for the type checker
+// errors.capa, program with several semantic errors for the type checker
 // to catch. This file is NOT well-formed; it is a test fixture for the
 // analyzer.
 

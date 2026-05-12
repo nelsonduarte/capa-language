@@ -494,7 +494,7 @@ class TestBackslashContinuation(unittest.TestCase):
 
 class TestErrorPositions(unittest.TestCase):
     # `$` outside a string literal is rejected by the lexer (it has no
-    # meaning in the surface syntax — interpolation uses `${...}`
+    # meaning in the surface syntax, interpolation uses `${...}`
     # inside a string). It is a useful sentinel for testing that
     # the lexer reports positions and source context faithfully.
 

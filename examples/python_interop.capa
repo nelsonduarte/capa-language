@@ -1,8 +1,8 @@
-// python_interop.capa — demonstrates the Capa/Python boundary.
+// python_interop.capa, demonstrates the Capa/Python boundary.
 //
 // Any call into Python code must cross the `Unsafe` capability, which
 // is obtained in `main` and propagated explicitly. The function that
-// crosses the boundary makes this visible in its signature — exactly
+// crosses the boundary makes this visible in its signature, exactly
 // the kind of evidence an auditor looks for.
 //
 // Contrast this with the forbidden alternative: a top-level `import math`

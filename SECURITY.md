@@ -2,8 +2,8 @@
 
 Capa is a programming language whose design centres on security
 properties. If you find a way that the language fails to deliver on
-those properties — a way to bypass the capability discipline, escape
-attenuation, or compromise the analyzer — please report it.
+those properties, a way to bypass the capability discipline, escape
+attenuation, or compromise the analyzer, please report it.
 
 ## Reporting a vulnerability
 
@@ -62,7 +62,7 @@ minor when a fix is significant.
 | Version | Supported |
 | ------- | --------- |
 | 0.2.x   | yes       |
-| < 0.2   | no — please upgrade |
+| < 0.2   | no, please upgrade |
 
 ## Public disclosure
 

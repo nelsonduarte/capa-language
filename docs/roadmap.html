@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Roadmap — Capa</title>
+    <title>Roadmap | Capa</title>
     <meta name="description" content="Where Capa is today, what is coming in v0.2 and beyond, what is explicitly out of scope, and what depends on which.">
     <link rel="stylesheet" href="style.css">
     <link rel="icon" type="image/svg+xml" href="favicon.svg">
@@ -67,14 +67,14 @@
         <div class="status-no">
             <h4>Not yet</h4>
             <ul>
-                <li>Language server (LSP) — no editor diagnostics, no hover, no go-to-definition</li>
+                <li>Language server (LSP), no editor diagnostics, no hover, no go-to-definition</li>
                 <li>Formatter (<code>capa-fmt</code>)</li>
                 <li>Module system (<code>import</code> is parsed but rejected by the analyzer)</li>
-                <li>Visibility (<code>pub</code> is parsed but unenforced — waits on the module system)</li>
+                <li>Visibility (<code>pub</code> is parsed but unenforced, waits on the module system)</li>
                 <li>Attenuation for capabilities other than <code>Net</code> (<code>Fs.restrict_to</code>, <code>Env.restrict_to_keys</code>, etc.)</li>
-                <li>Doc comments (<code>///</code>, <code>/**</code>) — lexer treats them as ordinary comments</li>
+                <li>Doc comments (<code>///</code>, <code>/**</code>), lexer treats them as ordinary comments</li>
                 <li>Raw strings (<code>r"..."</code>)</li>
-                <li>Native (non-Python) backend — LLVM is far future</li>
+                <li>Native (non-Python) backend, LLVM is far future</li>
                 <li>Async / await (keywords reserved, no runtime)</li>
                 <li>Package manager / registry</li>
                 <li>REPL (was deleted earlier; will be reimplemented when the language is stable)</li>
@@ -84,10 +84,10 @@
 </section>
 
 <!-- =====================================================
-     v0.2 — public readiness
+     v0.2, public readiness
 ===================================================== -->
 <section>
-    <h2>v0.2 — public readiness</h2>
+    <h2>v0.2, public readiness</h2>
 
     <p>The bridge from "working alpha" to "shareable alpha". All three pieces have landed; tagging and flipping the repository to public is the last step.</p>
 
@@ -95,7 +95,7 @@
         <li>
             <span class="tag done">DONE</span>
             <div class="item-body">
-                <strong>"Capa would have caught X" demo — event-stream</strong>
+                <strong>"Capa would have caught X" demo, event-stream</strong>
                 <p>A safe Capa version of the <code>flat_map</code> function whose JavaScript counterpart shipped a Bitcoin-wallet exfiltrator in 2018. Attack-attempt code shown rejected by the analyzer with source-aligned errors. Lives in <code>examples/demo_event_stream.capa</code> + <code>docs/demo-event-stream.md</code>.</p>
             </div>
         </li>
@@ -149,7 +149,7 @@
             <span class="tag future">P3</span>
             <div class="item-body">
                 <strong>Refinement types</strong>
-                <p>Marked as future in the white paper — a way to express, in the type system, properties like "this string is non-empty" or "this list is sorted". Research-grade; not in scope for a 1.0.</p>
+                <p>Marked as future in the white paper, a way to express, in the type system, properties like "this string is non-empty" or "this list is sorted". Research-grade; not in scope for a 1.0.</p>
             </div>
         </li>
     </ul>

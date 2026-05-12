@@ -1,9 +1,9 @@
-// fs_env_attenuation.capa — generic attenuation on Fs and Env.
+// fs_env_attenuation.capa, generic attenuation on Fs and Env.
 //
 // Mirrors the Net attenuation pattern (examples/net_attenuation.capa).
 // `main` receives unrestricted `Fs` and `Env`; both are then narrowed
 // before being handed to helpers, and the helpers cannot escape the
-// narrowing — not because of a sandbox, but because the runtime
+// narrowing, not because of a sandbox, but because the runtime
 // gates every operation on the current restriction set.
 //
 // The static analyser checks that capabilities propagate correctly;
@@ -12,8 +12,8 @@
 
 // ---------------------------------------------------------------
 // Filesystem helper. Receives an Fs that has already been narrowed
-// to /tmp/. From its perspective the type is just Fs — the
-// restrictions are invisible — but the runtime intercepts any
+// to /tmp/. From its perspective the type is just Fs, the
+// restrictions are invisible, but the runtime intercepts any
 // read/write to a path outside the allowed prefix.
 // ---------------------------------------------------------------
 fun probe_fs(fs: Fs, stdio: Stdio)
@@ -35,7 +35,7 @@ fun probe_env(env: Env, stdio: Stdio)
 //   1. baseline (unrestricted Fs and Env)
 //   2. narrow Fs to /tmp/, hand to helper
 //   3. narrow Env to {HOME, PATH}, hand to helper
-//   4. monotonic narrowing — further restriction can only narrow
+//   4. monotonic narrowing, further restriction can only narrow
 // ---------------------------------------------------------------
 fun main(fs: Fs, env: Env, stdio: Stdio)
     stdio.println("=== baseline (unrestricted) ===")
@@ -55,7 +55,7 @@ fun main(fs: Fs, env: Env, stdio: Stdio)
 
     stdio.println("=== monotonic narrowing ===")
     // Further restrict the already-restricted Fs. The result allows
-    // only paths under /tmp/myapp/ — chaining intersects.
+    // only paths under /tmp/myapp/, chaining intersects.
     let app_fs = tmp_fs.restrict_to("/tmp/myapp/")
     stdio.println("tmp_fs allows /tmp/foo?         ${tmp_fs.allows(\"/tmp/foo\")}")
     stdio.println("app_fs allows /tmp/foo?         ${app_fs.allows(\"/tmp/foo\")}")

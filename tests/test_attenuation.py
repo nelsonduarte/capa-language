@@ -3,7 +3,7 @@
 ``Net.restrict_to(host)``.
 
 These are runtime-level unit tests on the capability objects
-themselves — they exercise the narrowing logic, the
+themselves, they exercise the narrowing logic, the
 information-hiding properties (denied access looks like absent
 data), and the monotonic intersection guarantee.
 
@@ -44,7 +44,7 @@ class TestFsAttenuation(unittest.TestCase):
         self.assertFalse(fs.allows("/tmp/other"))
 
     def test_conflicting_restrict_yields_empty_authority(self):
-        # /tmp/ AND /etc/ — no path can satisfy both, so the result
+        # /tmp/ AND /etc/, no path can satisfy both, so the result
         # is an Fs that allows nothing.
         fs = Fs().restrict_to("/tmp/").restrict_to("/etc/")
         self.assertFalse(fs.allows("/tmp/x"))
@@ -90,7 +90,7 @@ class TestFsAttenuation(unittest.TestCase):
 
     def test_exists_denied_returns_false_not_leaking_presence(self):
         # Even if the file actually exists, a denied Fs should report
-        # False — otherwise it leaks the existence of paths outside
+        # False, otherwise it leaks the existence of paths outside
         # its allowed set.
         with tempfile.NamedTemporaryFile(delete=False) as tf:
             outside_path = tf.name
@@ -137,7 +137,7 @@ class TestEnvAttenuation(unittest.TestCase):
         os.environ["CAPA_TEST_VAR"] = "secret"
         try:
             env = Env().restrict_to_keys(["UNRELATED_KEY"])
-            # Denied: get returns the None_ singleton — identical to
+            # Denied: get returns the None_ singleton, identical to
             # the result the caller would see for a missing variable.
             # This is the information-hiding property: the Env cap
             # does not leak the existence of variables outside its

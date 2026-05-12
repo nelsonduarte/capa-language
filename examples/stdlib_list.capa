@@ -1,4 +1,4 @@
-// stdlib_list.capa — builtin methods on List<T>: map, filter, fold,
+// stdlib_list.capa, builtin methods on List<T>: map, filter, fold,
 // length, push, contains.
 
 fun main(stdio: Stdio)

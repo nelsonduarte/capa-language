@@ -1,4 +1,4 @@
-"""capa-lex — command-line utility for the Capa lexer.
+"""capa-lex, command-line utility for the Capa lexer.
 
 Usage:
     python cli.py <file.capa>

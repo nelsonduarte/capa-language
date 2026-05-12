@@ -72,7 +72,7 @@ fun verify_token_legacy(token: String, expected: String) -> Bool
 
 // =====================================================================
 // A pure function, no capabilities, no attributes. Appears in the
-// manifest as a zero-authority node — useful as evidence in audits
+// manifest as a zero-authority node, useful as evidence in audits
 // that this function cannot affect the outside world even by
 // accident.
 // =====================================================================

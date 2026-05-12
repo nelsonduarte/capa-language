@@ -10,8 +10,8 @@ A copy in plain text:
 
 <https://www.contributor-covenant.org/version/2/1/code_of_conduct.txt>
 
-By participating in this project — through issues, pull requests,
-discussions, or any other channel associated with the repository —
+By participating in this project, through issues, pull requests,
+discussions, or any other channel associated with the repository -
 you agree to be bound by it.
 
 ## Scope
@@ -30,7 +30,7 @@ Use the subject line `[capa conduct]`. Reports are handled
 confidentially. The maintainer will respond within seven days and
 will work with the reporter to determine an appropriate response.
 
-Security vulnerabilities follow a separate process — see
+Security vulnerabilities follow a separate process, see
 [SECURITY.md](SECURITY.md).
 
 ## Enforcement

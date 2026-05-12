@@ -1,4 +1,4 @@
-// closures.capa — closures (lambdas) and higher-order functions.
+// closures.capa, closures (lambdas) and higher-order functions.
 
 // Higher-order function: takes a function and applies it.
 fun apply(f: Fun(Int) -> Int, x: Int) -> Int

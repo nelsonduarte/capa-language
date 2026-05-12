@@ -75,7 +75,7 @@ Capa/
 
 **Note on module names:** `capa_ast.py` (instead of `ast.py`) and
 `typesys.py` (instead of `types.py`) avoid colliding with Python stdlib
-modules — collisions that cause subtle circular-import errors when the
+modules, collisions that cause subtle circular-import errors when the
 package is invoked via `python -m capa`.
 
 ## Full pipeline
@@ -110,11 +110,11 @@ reload VSCode. A full LSP is on the roadmap.
 
 A five-page static site lives in [`docs/`](docs/):
 
-- [`docs/index.html`](docs/index.html) — landing page
-- [`docs/why.html`](docs/why.html) — the case for the language
-- [`docs/tour.html`](docs/tour.html) — guided language tour
-- [`docs/start.html`](docs/start.html) — install + first program + CLI reference
-- [`docs/roadmap.html`](docs/roadmap.html) — honest status and roadmap
+- [`docs/index.html`](docs/index.html), landing page
+- [`docs/why.html`](docs/why.html), the case for the language
+- [`docs/tour.html`](docs/tour.html), guided language tour
+- [`docs/start.html`](docs/start.html), install + first program + CLI reference
+- [`docs/roadmap.html`](docs/roadmap.html), honest status and roadmap
 
 No JavaScript, no framework, no external fonts; one stylesheet (`docs/style.css`).
 Preview locally with `cd docs && python -m http.server` and open
@@ -171,7 +171,7 @@ python -m unittest discover tests
 ```
 
 **490 tests** (lexer + parser + analyzer + transpiler). The transpiler
-suite actually *executes* the generated Python and checks stdout — the
+suite actually *executes* the generated Python and checks stdout, the
 only honest way to test a transpiler.
 
 ## Capa → Python mapping
@@ -229,20 +229,20 @@ only honest way to test a transpiler.
     least once in the function body. Convention: prefix the name with
     `_` to silence the warning (idiomatic in Rust and Haskell).
 
-  *Linear layer (v3) — `consume` keyword:*
+  *Linear layer (v3), `consume` keyword:*
   * **Optional move semantics**: marking a parameter as
     `consume cap: Cap` indicates the function consumes (takes
     ownership of) the passed capability. After the call, the caller
     can no longer use that capability.
   * **Flow analysis with fork/merge**: in `if/elif/else` and `match`,
     we snapshot the consumed set before each branch and take a
-    conservative union after — if *any* branch consumes, the cap is
+    conservative union after, if *any* branch consumes, the cap is
     considered consumed from that point on. This is the rule used by
     Rust, and prevents use after potential consume.
   * **Loops with dry-run + redo**: for `while` and `for`, we perform a
     silent pass over the body to discover which caps will be consumed;
     we then pre-mark those caps as consumed and do the real pass. This
-    catches "consume in iteration 1, use in iteration 2" — the
+    catches "consume in iteration 1, use in iteration 2", the
     linearity failure we used to miss in loops.
   * By default, parameters are *borrows*: the caller can keep using
     the cap. Typical pattern: several borrows followed by a final
@@ -351,7 +351,7 @@ only honest way to test a transpiler.
   let parts = "one,two,three".split(",")
   ```
 
-  Implementation: the transpiler does **type-aware dispatch** — it
+  Implementation: the transpiler does **type-aware dispatch**, it
   receives the type mapping from the analyzer and, for receivers of
   type `String`, maps Capa methods (`length`, `to_upper`, etc.) to
   their Python equivalents (`len`, `.upper()`, etc.). For user-defined
@@ -425,7 +425,7 @@ only honest way to test a transpiler.
   returns `Bool`, not `Result`.
 
 - **First-class capability attenuation** (`Net.restrict_to`). The
-  result of attenuation is a fresh capability — bindable in `let`
+  result of attenuation is a fresh capability, bindable in `let`
   (the structural "no caps in locals" rule is relaxed specifically
   for method-call results, since those cannot be aliases). The
   restriction is monotonic: chaining two `restrict_to` calls
@@ -434,8 +434,8 @@ only honest way to test a transpiler.
   the network. See `examples/net_attenuation.capa`.
 
 - **User-defined capabilities** (`capability X { ... }`, WhitePaper
-  §4.6). Libraries can declare their own capabilities — `SendEmail`,
-  `QueryDB`, `PublishMessage` — and types that implement them are
+  §4.6). Libraries can declare their own capabilities, `SendEmail`,
+  `QueryDB`, `PublishMessage`, and types that implement them are
   treated as capabilities by the discipline (no aliasing, no
   storing in plain locals, no leaking through generic args). The
   structural rules are relaxed in two surgical ways: a type that
@@ -476,7 +476,7 @@ only honest way to test a transpiler.
   ```
 
 - **`if`-expression (ternary)**: `if cond then e1 else e2` as an inline
-  expression. The `then` keyword is required in this form — without
+  expression. The `then` keyword is required in this form, without
   `then`, `if` is interpreted as a statement in the appropriate
   context.
 
@@ -526,12 +526,12 @@ only honest way to test a transpiler.
   let s = to_json(JObj(resp))
   ```
 
-  Exhaustiveness works naturally — `match j: JsonValue` requires
+  Exhaustiveness works naturally, `match j: JsonValue` requires
   coverage of all 6 variants or a catch-all `_`.
 
 - **Builtin conversion functions**:
-  - `parse_int(s: String) -> Option<Int>` — returns `None` on invalid input
-  - `parse_float(s: String) -> Option<Float>` — same for floats
+  - `parse_int(s: String) -> Option<Int>`, returns `None` on invalid input
+  - `parse_float(s: String) -> Option<Float>`, same for floats
 
   Idiomatic interactive program:
   ```capa
@@ -567,7 +567,7 @@ only honest way to test a transpiler.
   element is `Some(...)`. The pattern's arity is checked against the
   scrutinee's type.
 
-  *String literals in match*: `"help" -> ...`, `"quit" -> ...` —
+  *String literals in match*: `"help" -> ...`, `"quit" -> ...` -
   useful for command dispatchers.
 
   *Or-patterns*: `A | B -> ...` matches if *any* alternative matches.
@@ -616,7 +616,7 @@ only honest way to test a transpiler.
   ys.push("oops")    // also an error: it's already List<Int>
   ```
 
-  Works transitively — passing `xs` to a function that expects
+  Works transitively, passing `xs` to a function that expects
   `List<Int>` without an intermediate annotation also works.
 
 - **Index** on `List<T>[i]` returns `T`. Other indexable types (Map,
@@ -633,7 +633,7 @@ only honest way to test a transpiler.
   * Additional inference applies to the method's type params
 
   Exception: capabilities (`Stdio`, `Fs`, etc.) have no impls in Capa
-  code — their methods are still typed as `TyUnknown` and resolved at
+  code, their methods are still typed as `TyUnknown` and resolved at
   runtime against the Python runtime implementation.
 
 - **Match exhaustiveness** for sum types and `Bool`:
@@ -645,12 +645,12 @@ only honest way to test a transpiler.
     Messages like `non-exhaustive match on Bool: missing false`.
   * For non-sum types with high cardinality (Int, structs with
     heterogeneous fields), the checker does not yet require
-    exhaustiveness — intractable for Int (2^64 values) and
+    exhaustiveness, intractable for Int (2^64 values) and
     irrelevant for structs.
 
 ### Transpiler
 
-- The output is readable Python but not idiomatic — it mirrors the
+- The output is readable Python but not idiomatic, it mirrors the
   Capa structure closely.
 - The `?` operator uses an internal exception for propagation. It
   works and is correct, but is not as efficient as the expanded
@@ -663,17 +663,17 @@ design and in canonical examples** that the checker had not been able
 to catch:
 
 1. `match` as a statement with expression arms silently discards the
-   value — `tasks.capa` produced `None` instead of strings. Detected
+   value, `tasks.capa` produced `None` instead of strings. Detected
    by running the program.
 2. Builtin variants (`Ok`, `Err`, `Some`) were not marked as having a
-   payload in the analyzer — `Ok(n)` gave a checking error. Fixed.
-3. Builtin generic types had no `type_params` — `Result` appeared
+   payload in the analyzer, `Ok(n)` gave a checking error. Fixed.
+3. Builtin generic types had no `type_params`, `Result` appeared
    without args, incompatible with `Result<Int, IoError>`. Fixed.
 4. Functions that use `?` need a decorator that catches the internal
    exception; without it, `Err` propagates to the top of the program.
    We added an AST detector that applies the decorator automatically.
 
-This was exactly the reason to build the transpiler before linearity —
+This was exactly the reason to build the transpiler before linearity -
 running real code is the harshest test of a design.
 
 - **Full trait verification**. When you declare an `impl Trait for

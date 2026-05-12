@@ -19,20 +19,20 @@ This is a **pragmatic** implementation of the v1 checker:
 - Where the v1 checker cannot yet reason, it returns ``TyUnknown``,
   which is compatible with any other type. Cases that produce ``TyUnknown``:
 
-  * Method dispatch (``obj.method(...)``) — dispatch resolution requires
+  * Method dispatch (``obj.method(...)``), dispatch resolution requires
     trait information that is not yet implemented.
   * Field access on generic types whose concrete type has not yet been inferred.
   * Access to attributes of imported modules (``json.parse(...)``).
-  * The ``?`` (try) operator — requires inferring the error type from context.
+  * The ``?`` (try) operator, requires inferring the error type from context.
 
 - The v1 checker does *not* check:
 
   * Linearity of capabilities (single consumption, no aliasing). This is a
-    central property of the language and requires an effects/borrow system —
+    central property of the language and requires an effects/borrow system -
     deferred to phase 2.
   * Exhaustiveness of ``match``.
   * Full polymorphic inference (Hindley-Milner).
-  * Subtyping or implicit coercions — a future automatic ``Int -> Float``
+  * Subtyping or implicit coercions, a future automatic ``Int -> Float``
     coercion will have to be added explicitly.
 
 The public interface is the ``analyze(module, source, filename)`` function,
@@ -217,13 +217,13 @@ class Analyzer:
         # Stack of "names local to the lambda" for flow analysis in
         # closures. When inside a lambda, consuming a name that is NOT
         # in this stack means we are consuming a cap captured from the
-        # outside — that is an error because the lambda may be called
+        # outside, that is an error because the lambda may be called
         # multiple times.
         self._lambda_local_names_stack: list[set[str]] = []
         # Substitutions of fresh TyVars (introduced by expressions
         # like ``[]`` whose element is unknown). Per-function state;
         # reset in ``_check_fun``. When a call binds a fresh TyVar,
-        # the substitution is recorded here — on subsequent uses of
+        # the substitution is recorded here, on subsequent uses of
         # the same symbol, ``_resolve_ty`` applies it.
         self._ty_subs: dict[str, Ty] = {}
         self._fresh_counter: int = 0
@@ -239,7 +239,7 @@ class Analyzer:
     def _resolve_ty(self, ty: Ty) -> Ty:
         """Apply ``_ty_subs`` recursively. For TyVars that are not
         bound, return the TyVar itself unchanged. The result is the
-        type "as known so far" — subsequent calls may refine it further.
+        type "as known so far", subsequent calls may refine it further.
         """
         if isinstance(ty, TyVar):
             sub = self._ty_subs.get(ty.name)
@@ -277,7 +277,7 @@ class Analyzer:
         if isinstance(ty, TyVar):
             sub = mapping.get(ty.name)
             if sub is None:
-                # Not in the mapping — may be in _ty_subs.
+                # Not in the mapping, may be in _ty_subs.
                 return self._resolve_ty(ty)
             return self._apply_mapping(sub, mapping)
         if isinstance(ty, TyName):
@@ -354,7 +354,7 @@ class Analyzer:
 
         **Capture in lambdas**: if we are inside a lambda and the
         consumed name does not belong to the local parameters (or to
-        enclosing lambdas that contain us), it is a captured cap — and
+        enclosing lambdas that contain us), it is a captured cap, and
         consuming a captured cap is an error because the lambda may be
         invoked multiple times.
         """
@@ -417,7 +417,7 @@ class Analyzer:
         interested in detecting repetitions of **direct identifiers**
         that reference capabilities. More complex expressions (calls
         that return something else, field accesses) do not generate
-        aliasing — their effects are sequential.
+        aliasing, their effects are sequential.
         """
         if not isinstance(expr, A.Ident):
             return None
@@ -436,8 +436,8 @@ class Analyzer:
         messages. Each slot represents a position in a call where a
         capability could be passed (method receiver, function argument).
 
-        Capability aliasing — passing the same cap to two places in a
-        single call — violates the single-flow property that gives
+        Capability aliasing, passing the same cap to two places in a
+        single call, violates the single-flow property that gives
         meaning to Capa signatures. This check is the v2 of the
         discipline, complementary to v1 (which enforces where caps may
         appear structurally).
@@ -463,7 +463,7 @@ class Analyzer:
 
         Capabilities represent permissions for effects (IO, network, etc.)
         and their value lies in being **traceable through the program flow**
-        — any part of the program that may perform IO must have a
+       , any part of the program that may perform IO must have a
         capability in its signatures. For this tracing to work,
         capabilities cannot be:
 
@@ -500,7 +500,7 @@ class Analyzer:
         ``ty``. Three things count as capabilities for the structural
         discipline:
 
-        - built-in caps (``Stdio``, ``Net``, ...) — names in ``CAPABILITY_NAMES``
+        - built-in caps (``Stdio``, ``Net``, ...), names in ``CAPABILITY_NAMES``
         - user-defined caps (Symbol with kind=CAPABILITY) declared via
           the ``capability`` keyword
         - cap-bearing structs (Symbol with kind=TYPE_STRUCT) that
@@ -532,7 +532,7 @@ class Analyzer:
         return None
 
     def _is_user_capability(self, name: str) -> bool:
-        """True iff ``name`` resolves to a user-defined capability — i.e.
+        """True iff ``name`` resolves to a user-defined capability, i.e.
         a Symbol whose kind is CAPABILITY but whose name is not in the
         built-in capability set (``Stdio``, ``Net``, etc.). User-defined
         capabilities (declared with the ``capability`` keyword) are
@@ -551,7 +551,7 @@ class Analyzer:
     def _contains_builtin_capability(self, ty: Ty) -> Optional[TyName]:
         """Like ``contains_capability``, but only flags **built-in**
         capabilities (Stdio, Fs, Net, Env, ...). User-defined capabilities
-        are ignored — call sites that allow user-defined caps to flow
+        are ignored, call sites that allow user-defined caps to flow
         through use this helper instead of ``contains_capability``.
         """
         if isinstance(ty, TyName):
@@ -592,7 +592,7 @@ class Analyzer:
         When the expected type is the name of a trait or user-defined
         capability, and the actual type is a struct/sum whose Symbol
         records an ``impl`` of that trait/capability, the two are
-        compatible — the concrete type is a valid implementor.
+        compatible, the concrete type is a valid implementor.
 
         Generic type args on the expected side are not yet substituted
         here (v1 limitation): an `impl Trait for X` is matched
@@ -651,7 +651,7 @@ class Analyzer:
                 name="length", kind=SymbolKind.FUNCTION, pos=_BUILTIN_POS,
                 ty=TyFun((), TyInt),
             )
-            # push(x: T) -> () — appends to the end, mutating
+            # push(x: T) -> (), appends to the end, mutating
             list_sym.methods["push"] = Symbol(
                 name="push", kind=SymbolKind.FUNCTION, pos=_BUILTIN_POS,
                 ty=TyFun((T,), TyUnit),
@@ -709,7 +709,7 @@ class Analyzer:
 
         # Builtin methods of String. String is a primitive type (not a
         # genuine TYPE_STRUCT), but we register a specific Symbol so that
-        # method dispatch finds it. The kind=TYPE_STRUCT is a convention —
+        # method dispatch finds it. The kind=TYPE_STRUCT is a convention -
         # what matters is that ``methods`` is populated.
         string_sym = Symbol(
             name="String", kind=SymbolKind.TYPE_STRUCT, pos=_BUILTIN_POS,
@@ -967,7 +967,7 @@ class Analyzer:
         )
 
         # Total numeric conversions between Int and Float. Capa has no
-        # implicit coercion (intentional — explicit is better than
+        # implicit coercion (intentional, explicit is better than
         # mixed-mode arithmetic that silently loses precision), so these
         # are the explicit bridges.
         self.global_scope.define(
@@ -985,7 +985,7 @@ class Analyzer:
 
         # Python boundary: the two builtin functions that cross the
         # Capa/Python trust boundary. Both require the Unsafe capability
-        # as their first argument — callers without it cannot even form
+        # as their first argument, callers without it cannot even form
         # the call (rejected by the type checker). The return type is
         # deliberately TyUnknown: anything coming from the Python side
         # loses the capability system's guarantees, and the dynamic
@@ -1248,7 +1248,7 @@ class Analyzer:
                     if v.name in self.global_scope.symbols:
                         existing = self.global_scope.symbols[v.name]
                         # We accept the case of a user-type variant with
-                        # the same name as a builtin variant (e.g., None) —
+                        # the same name as a builtin variant (e.g., None) -
                         # it is not a problem as long as they are not used
                         # in the same context. To keep things simple, we
                         # ignore collisions with builtins, but we detect
@@ -1361,7 +1361,7 @@ class Analyzer:
                     if isinstance(sym.ty, TyFun):
                         # Only built-in capabilities are forbidden as
                         # function return types. User-defined capabilities
-                        # can be returned by factory functions — they
+                        # can be returned by factory functions, they
                         # are not "permission forgery" because the factory
                         # consumed the underlying built-in caps to build
                         # the higher-level one.
@@ -1374,7 +1374,7 @@ class Analyzer:
                 if sym is None:
                     continue
                 # Resolve the trait method signatures, with the trait's
-                # type params in scope. Self refers to the impl-er —
+                # type params in scope. Self refers to the impl-er -
                 # during trait registration, it stays as a TyVar
                 # placeholder that will be substituted during impl checking.
                 self._push_type_params(item.type_params)
@@ -1401,7 +1401,7 @@ class Analyzer:
         with the target type's ``type_params`` in scope. ``Self`` appears
         in the types via ``self_type``, set temporarily.
 
-        Does not check bodies — that is for phase 2. Only signatures are
+        Does not check bodies, that is for phase 2. Only signatures are
         registered so that ``_check_method_call`` can dispatch.
 
         Also records the trait/capability the target implements (if
@@ -1447,7 +1447,7 @@ class Analyzer:
     def _method_type_from_decl(self, method: A.FunDecl) -> Ty:
         """Compute the ``TyFun`` of a method, **excluding the ``self``
         parameter**. The method type covers only the explicit arguments
-        — the receiver is handled separately in ``_check_method_call``.
+       , the receiver is handled separately in ``_check_method_call``.
         """
         self._push_type_params(method.type_params)
         params: list[Ty] = []
@@ -1479,7 +1479,7 @@ class Analyzer:
         for p in fn.params:
             if p.name == "self" and p.type_expr is None:
                 # Inside an impl, self has the impl's type. In a top-level
-                # function, self should not appear — we assume TyUnknown.
+                # function, self should not appear, we assume TyUnknown.
                 params.append(TyUnknown)
             elif p.type_expr is None:
                 params.append(TyUnknown)
@@ -1632,7 +1632,7 @@ class Analyzer:
                 seen_keys.add(key)
 
     def _check_fun(self, fn: A.FunDecl) -> None:
-        # Validate any attribute metadata first — fast, scope-free,
+        # Validate any attribute metadata first, fast, scope-free,
         # and a precondition for ``--manifest`` to trust the AST.
         if fn.attributes:
             self._check_function_attributes(fn)
@@ -1679,7 +1679,7 @@ class Analyzer:
         # (not supported in v1) do not influence the boundary.
         prev_consumed = self._consumed
         self._consumed = set()
-        # Reset the fresh-TyVar substitutions — each function has
+        # Reset the fresh-TyVar substitutions, each function has
         # its own cross-statement inference universe.
         prev_subs = self._ty_subs
         self._ty_subs = {}
@@ -1730,7 +1730,7 @@ class Analyzer:
             return
 
         # Check trait, if applicable. Both `trait X` and `capability X`
-        # declarations are valid targets here — both produce a Symbol
+        # declarations are valid targets here, both produce a Symbol
         # carrying `trait_methods` / `trait_method_sigs`; only the
         # SymbolKind differs (TRAIT vs CAPABILITY).
         if impl.trait_name is not None:
@@ -1761,7 +1761,7 @@ class Analyzer:
                 for method in impl.methods:
                     if method.name not in trait.trait_method_sigs:
                         # Extra method (not declared in the trait).
-                        # Capa allows this — useful for helper methods.
+                        # Capa allows this, useful for helper methods.
                         continue
                     expected = trait.trait_method_sigs[method.name]
                     # Substitute Self in the trait signature with the
@@ -1844,7 +1844,7 @@ class Analyzer:
                 )
             actual = declared
         # Capabilities are normally forbidden in let bindings to prevent
-        # aliasing. Exception: a fresh capability produced by a call —
+        # aliasing. Exception: a fresh capability produced by a call -
         # either a method call (built-in attenuation, e.g.
         # `net.restrict_to("a.com")`) or a regular function call
         # (user-defined cap factory, e.g. `make_smtp_mailer(net, ...)`).
@@ -1969,7 +1969,7 @@ class Analyzer:
         else:
             # No else: the path where no branch runs does not consume
             # anything additional. But if an else exists, all conditions
-            # may be false and fall through — equivalent to an empty else.
+            # may be false and fall through, equivalent to an empty else.
             branch_results.append(before)
 
         # Conservative union: if any branch consumes, we consider it
@@ -2033,13 +2033,13 @@ class Analyzer:
         **Linear restriction (v1)**: inside the body of a lambda, any
         call that consumes a capability **captured from the outside** is
         rejected. The reason is that the lambda may be invoked multiple
-        times — each invocation would consume the cap, but the cap is
+        times, each invocation would consume the cap, but the cap is
         unique. Caps that are parameters of the lambda itself may be
         consumed freely (each call receives its own).
 
         Implementation: we record which names belong to the lambda's
         inner scope (params); in ``_check_call``, before marking as
-        consumed, we check whether the name is local — otherwise, it
+        consumed, we check whether the name is local, otherwise, it
         is a capture and is an error.
         """
         self._push_scope()
@@ -2062,7 +2062,7 @@ class Analyzer:
             param_names.add(p.name)
 
         # Reset _consumed for the lambda's scope. Snapshot the previous
-        # state; we restore at the end — the lambda itself does not
+        # state; we restore at the end, the lambda itself does not
         # consume from the outside, it only has effects when called.
         prev_consumed = self._consumed
         self._consumed = set(prev_consumed)
@@ -2075,7 +2075,7 @@ class Analyzer:
         # The body may be a single expression or an indented block.
         # For a single-expr, the body's type is the return type.
         # For a block body, explicit return statements are checked
-        # against current_return_type — without a return, it returns Unit.
+        # against current_return_type, without a return, it returns Unit.
         if isinstance(e.body, A.Block):
             # Block body: configure expected return type, check stmts.
             decl_ret_block: Ty
@@ -2117,7 +2117,7 @@ class Analyzer:
         """Type-check ``if cond then e1 else e2``.
 
         Cond must be Bool. The two branches must have compatible types
-        — uses the type of then_expr as expected, and checks else
+       , uses the type of then_expr as expected, and checks else
         against it. Returns the type of then.
         """
         cond_ty = self._check_expr(e.cond)
@@ -2176,7 +2176,7 @@ class Analyzer:
             merged |= r
         self._consumed = merged
 
-        # Exhaustiveness check — only applicable for sum types when the
+        # Exhaustiveness check, only applicable for sum types when the
         # scrutinee has a concrete type.
         self._check_match_exhaustiveness(s, scrutinee_ty)
 
@@ -2207,7 +2207,7 @@ class Analyzer:
           and ``false`` (via ``LiteralPat`` with ``BoolLit``).
         - If the scrutinee has a sum type (TYPE_SUM), check that all
           variants appear as ``VariantPat`` in some arm without a guard.
-        - Other cases (Int, structs) — we do not check for v1. The rule
+        - Other cases (Int, structs), we do not check for v1. The rule
           for Int would be intractable (Int has 2^64 values); structs do
           not have "alternatives".
         - Arms with a guard do not count toward "covering" a case (because
@@ -2428,7 +2428,7 @@ class Analyzer:
                 for sub, sub_ty in zip(p.elements, ty.elements):
                     self._bind_pattern(sub, sub_ty, mutable)
                 return
-            # Unknown or compatible type — bind each sub to TyUnknown.
+            # Unknown or compatible type, bind each sub to TyUnknown.
             for sub in p.elements:
                 self._bind_pattern(sub, TyUnknown, mutable)
             return
@@ -2519,7 +2519,7 @@ class Analyzer:
         return False
 
     # ===========================================================
-    # Expressions — return the inferred type
+    # Expressions, return the inferred type
     # ===========================================================
 
     def _check_expr(self, e: A.Expr) -> Ty:
@@ -2535,7 +2535,7 @@ class Analyzer:
         if isinstance(e, A.StringLit):
             return TyString
         if isinstance(e, A.InterpolatedString):
-            # Type each Expr part — any type is acceptable (it will be
+            # Type each Expr part, any type is acceptable (it will be
             # converted to string via str() at runtime). The final
             # result is always String.
             for part in e.parts:
@@ -2634,7 +2634,7 @@ class Analyzer:
         if sym.kind == SymbolKind.VARIANT:
             # Constructor without payload: the type is the owning sum type.
             # For generic types whose parameters we cannot infer from
-            # context, we use TyUnknown — which is compatible with any
+            # context, we use TyUnknown, which is compatible with any
             # concrete instantiation (e.g., 'None' produces Option<?>,
             # compatible with Option<Int>).
             if sym.variant_payload_ty is None and sym.variant_owner is not None:
@@ -2726,7 +2726,7 @@ class Analyzer:
         return TyUnknown
 
     def _check_call(self, e: A.Call) -> Ty:
-        # Check aliasing between the arguments before evaluating types —
+        # Check aliasing between the arguments before evaluating types -
         # the error is independent of whether the callee is known or not.
         self._check_no_aliasing(
             [(a, f"argument {i + 1}") for i, a in enumerate(e.args)]
@@ -2847,7 +2847,7 @@ class Analyzer:
         return instantiate(fun_ty.ret, type_params, mapping)
 
     def _check_method_call(self, e: A.MethodCall) -> Ty:
-        # The receiver of a method call occupies a call slot — a cap
+        # The receiver of a method call occupies a call slot, a cap
         # passed as receiver and also as argument is aliasing.
         slots: list[tuple[A.Expr, str]] = [(e.receiver, "receiver")]
         slots.extend((a, f"argument {i + 1}") for i, a in enumerate(e.args))
@@ -2877,7 +2877,7 @@ class Analyzer:
             ):
                 method_sym = type_sym.methods.get(e.method)
                 if method_sym is None:
-                    # No registered method — it may be an impl not yet
+                    # No registered method, it may be an impl not yet
                     # processed or a non-existent method. To be precise,
                     # we report an error.
                     self._err(
@@ -2890,7 +2890,7 @@ class Analyzer:
                     e, type_sym, method_sym, recv_ty, arg_tys,
                 )
 
-        # Non-nominal types (TyUnknown, TyVar, etc.) — we cannot check.
+        # Non-nominal types (TyUnknown, TyVar, etc.), we cannot check.
         return TyUnknown
 
     def _check_method_dispatch(

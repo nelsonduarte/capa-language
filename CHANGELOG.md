@@ -35,7 +35,7 @@ breaking changes and the discipline is still being shaped.
   line:col of the call site and a stringified rendering of the
   argument expressions. An auditor reading the manifest can see,
   for example, that `main` calls `net.restrict_to("api.example.com")`
-  on line 5 *before* calling `fetch_user(api, "42")` on line 6 —
+  on line 5 *before* calling `fetch_user(api, "42")` on line 6 -
   the restriction is visible in the static artefact, no source
   inspection needed.
 
@@ -55,8 +55,8 @@ breaking changes and the discipline is still being shaped.
 - **Generic attenuation: `Fs.restrict_to(prefix)` and
   `Env.restrict_to_keys([...])`.** The `restrict_to` pattern
   established by `Net` now extends to two more built-in
-  capabilities. Both narrow monotonically — chaining intersects
-  the restriction set, never widens — and both gate every
+  capabilities. Both narrow monotonically, chaining intersects
+  the restriction set, never widens, and both gate every
   operation against the current restriction set *before* any
   system call. Denied operations are information-hiding:
   `Fs.exists` on a denied path returns `False`, and `Env.get`
@@ -80,7 +80,7 @@ breaking changes and the discipline is still being shaped.
 - **`examples/fs_env_attenuation.capa`** demonstrating both new
   attenuators and the monotonic-narrowing guarantee.
 
-- **`python -m capa --cyclonedx`** — emits a valid CycloneDX 1.5
+- **`python -m capa --cyclonedx`**, emits a valid CycloneDX 1.5
   SBOM with the capability manifest embedded as standard
   `properties[]` entries under the `capa:*` namespace. Capa
   programs become first-class citizens of existing SBOM tooling
@@ -112,7 +112,7 @@ breaking changes and the discipline is still being shaped.
   duplicates. The v1 catalogue is fixed: `security`, `deprecated`,
   `audited`.
 
-- **`python -m capa --manifest`** — emits a JSON capability manifest
+- **`python -m capa --manifest`**, emits a JSON capability manifest
   describing, for every function in the program: its signature,
   the capabilities it declares, whether it crosses the `Unsafe`
   boundary, and any attached attributes. Module-level entries
@@ -124,7 +124,7 @@ breaking changes and the discipline is still being shaped.
   system; in Capa, it falls out of the analyser for free. The
   format is schema-versioned (currently `schema_version: 1`).
 
-- **`examples/manifest_demo.capa`** — a small program showing the
+- **`examples/manifest_demo.capa`**, a small program showing the
   attribute syntax and a manifest worth reading. Covers a
   user-defined capability and its implementor, an audited method,
   a function with a `@security` annotation, a deprecated function,
@@ -161,7 +161,7 @@ breaking changes and the discipline is still being shaped.
   set to `contents: read`. Any future job that needs broader scope
   must opt in explicitly.
 
-## [0.2.0-alpha] — 2026-05-11
+## [0.2.0-alpha], 2026-05-11
 
 First public release. Capa goes from private development to a
 public, MIT-licensed, security-hardened repository with a five-page

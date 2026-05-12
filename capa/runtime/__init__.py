@@ -3,13 +3,13 @@
 This module provides the primitives that Capa programs need at runtime but
 which are not part of the Python language:
 
-- ``Result[T, E]`` — sum type with variants ``Ok(value)`` and ``Err(error)``,
+- ``Result[T, E]``, sum type with variants ``Ok(value)`` and ``Err(error)``,
   used by functions that may fail.
-- ``Option[T]`` — sum type with variants ``Some(value)`` and ``None_``,
+- ``Option[T]``, sum type with variants ``Some(value)`` and ``None_``,
   used for optional values. (The name ``None_`` is a necessary suffix
   to avoid a clash with Python's builtin ``None``.)
 - Concrete capabilities: ``Stdio``, ``Fs``, ``Net``, ``Env``, ``Clock``,
-  ``Random``, ``Proc``, ``Db`` — real implementations that perform IO
+  ``Random``, ``Proc``, ``Db``, real implementations that perform IO
   against the operating system. In real programs, they are instantiated at
   the entry point (``main``) and explicitly propagated as arguments.
 
@@ -19,7 +19,7 @@ Design conventions:
   Python 3.10+ match natively matches against these classes.
 - Capability methods return ``Result`` when they can fail (real IO), and
   direct values when they cannot.
-- There are no "ambient capabilities" — a Python program that imports this
+- There are no "ambient capabilities", a Python program that imports this
   runtime does not gain capacities by a simple import. It must instantiate
   ``Stdio()``, ``Fs()``, etc. and pass them explicitly. That discipline is
   what gives meaning to Capa's signatures.
@@ -169,7 +169,7 @@ class _NoneType:
         return Err(err)
 
 
-# Singleton — in Capa, ``None`` is the variant. In Python, we add a suffix
+# Singleton, in Capa, ``None`` is the variant. In Python, we add a suffix
 # to avoid clashing with the builtin ``None``.
 None_ = _NoneType()
 
@@ -177,7 +177,7 @@ Option = Some | _NoneType
 
 
 # ===========================================================
-# IoError — used by the IO capabilities
+# IoError, used by the IO capabilities
 # ===========================================================
 
 
@@ -233,7 +233,7 @@ class Fs:
     path prefixes. ``restrict_to`` returns a new ``Fs`` whose
     authority is narrowed: the new restriction is *added* to the set,
     and a path is permitted only if every prefix in the set is a
-    prefix of it. Attenuation is monotonic by construction — adding
+    prefix of it. Attenuation is monotonic by construction, adding
     a prefix can only narrow.
 
     Prefix matching is performed on the raw string. Callers should
@@ -298,7 +298,7 @@ class Env:
     An instance carries either ``None`` (unrestricted authority) or a
     frozen set of allowed variable names. ``restrict_to_keys`` returns
     a new ``Env`` whose authority is narrowed to the intersection of
-    the current restriction (if any) and the requested key set —
+    the current restriction (if any) and the requested key set -
     monotonic narrowing, same contract as ``Net.restrict_to``.
 
     A denied variable looks like an unset variable to the caller
@@ -411,7 +411,7 @@ class Net:
     fresh capability supplied by ``main``) or a frozen set of allowed
     host names. ``restrict_to`` returns a new ``Net`` whose authority
     is the *intersection* of the current restrictions with the newly
-    requested one — attenuation is monotonic by construction (WhitePaper
+    requested one, attenuation is monotonic by construction (WhitePaper
     R4: restrictions can only narrow, never widen).
 
     The actual HTTP transport uses ``urllib.request`` from the Python
@@ -419,9 +419,9 @@ class Net:
     rejected host never reaches the network layer.
 
     Capa code uses the capability through three methods:
-    - ``restrict_to(host: String) -> Net`` — attenuation
-    - ``allows(host: String) -> Bool`` — query, without performing IO
-    - ``get(url: String) -> Result<String, IoError>`` — real HTTP GET,
+    - ``restrict_to(host: String) -> Net``, attenuation
+    - ``allows(host: String) -> Bool``, query, without performing IO
+    - ``get(url: String) -> Result<String, IoError>``, real HTTP GET,
       gated by the current restriction set
     """
 
@@ -643,7 +643,7 @@ def parse_float(s):
 
 
 def to_float(i):
-    """Convert an Int to a Float. Total — every Int has an exact Float
+    """Convert an Int to a Float. Total, every Int has an exact Float
     representation within the range Capa cares about. Used to bridge the
     Int/Float divide in arithmetic when implicit coercion would hide
     intent (Capa has no implicit numeric promotion)."""
@@ -666,10 +666,10 @@ import json as _stdlib_json
 
 class _JsonBase:
     """Base class for JsonValue. Defines default extraction methods that
-    return ``None_`` (Option) — overridden by each variant that matches
+    return ``None_`` (Option), overridden by each variant that matches
     the extracted type.
 
-    The methods here are called via the normal method dispatch — the
+    The methods here are called via the normal method dispatch, the
     user writes ``j.as_string()`` in Capa, and the transpiler emits
     ``j.as_string()`` in Python, which resolves via MRO to the right
     class.

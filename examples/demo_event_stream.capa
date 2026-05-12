@@ -1,4 +1,4 @@
-// demo_event_stream.capa — the event-stream npm supply-chain attack,
+// demo_event_stream.capa, the event-stream npm supply-chain attack,
 // in Capa. The companion writeup is docs/demo-event-stream.md.
 //
 // In November 2018, the popular npm package `event-stream` (~2M weekly
@@ -21,7 +21,7 @@
 // many, produce a flattened list. Nothing else.
 //
 // The signature says everything: data in, data out. No Net, no Fs,
-// no Env. The body cannot reach for any of them — none are in scope.
+// no Env. The body cannot reach for any of them, none are in scope.
 fun flat_map(lines: List<String>, f: Fun(String) -> List<String>) -> List<String>
     let result: List<String> = []
     for line in lines
@@ -34,7 +34,7 @@ fun explode_words(lines: List<String>) -> List<String>
     return flat_map(lines, fun (line: String) -> List<String> => line.split(" "))
 
 // =============================================================
-// `main` — also pure of capabilities except Stdio for the demo print.
+// `main`, also pure of capabilities except Stdio for the demo print.
 // =============================================================
 fun main(stdio: Stdio)
     let input = [

@@ -1,5 +1,5 @@
 /* ============================================================
-   Capa landing page — single stylesheet, no framework, no JS.
+   Capa landing page, single stylesheet, no framework, no JS.
 
    Palette: dark base with a single accent (soft purple).
    Typography: system stack, monospaced code.
@@ -434,7 +434,7 @@ footer {
 }
 
 /* ============================================================
-   Value props (home page) — three cards under the hero
+   Value props (home page), three cards under the hero
    ============================================================ */
 
 .value-props {
@@ -468,7 +468,7 @@ footer {
 }
 
 /* ============================================================
-   Doc grid (start / docs pages) — labeled link cards
+   Doc grid (start / docs pages), labeled link cards
    ============================================================ */
 
 .doc-grid {

@@ -9,7 +9,7 @@ body:
         Thanks for reporting. If your report concerns a **security**
         issue (a way to bypass the capability discipline, escape
         attenuation, or compromise the analyzer), please do **not**
-        file it here — use the private channel described in
+        file it here, use the private channel described in
         [SECURITY.md](https://github.com/nelsonduarte/capa/blob/main/SECURITY.md).
 
         For everything else, the fastest path to a fix is a minimal
@@ -21,7 +21,7 @@ body:
       label: Minimal `.capa` program that reproduces the issue
       description: |
         The smallest program that exhibits the problem. Strip
-        anything unrelated. Paste the source directly — please don't
+        anything unrelated. Paste the source directly, please don't
         link to an external file.
       render: capa
       placeholder: |
@@ -70,7 +70,7 @@ body:
     id: capa_version
     attributes:
       label: Capa version (`git rev-parse HEAD` or release tag)
-      placeholder: "v0.2.0-alpha — commit 32ea43d"
+      placeholder: "v0.2.0-alpha, commit 32ea43d"
     validations:
       required: true
 
@@ -99,7 +99,7 @@ body:
     attributes:
       label: Additional context
       description: |
-        Anything else that might help — when the bug started
+        Anything else that might help, when the bug started
         happening, related issues, hypotheses you ruled out.
     validations:
       required: false

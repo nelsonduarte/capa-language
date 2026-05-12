@@ -12,8 +12,8 @@ from .tokens import Pos
 class LexerError(Exception):
     """Error detected by the lexer.
 
-    Includes the exact position in the source, a descriptive message, and —
-    when the source is supplied — formats a multi-line message with the
+    Includes the exact position in the source, a descriptive message, and -
+    when the source is supplied, formats a multi-line message with the
     context line and a caret pointing at the position.
     """
 

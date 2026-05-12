@@ -1,6 +1,6 @@
-# Capa Language — VSCode extension
+# Capa Language, VSCode extension
 
-Syntax highlighting for the [Capa programming language](https://github.com/nelsonduarte/capa) — a capability-centric language with a pythonic surface, built around the idea that the authorities a function holds (network, filesystem, environment, ...) must be visible in its signature.
+Syntax highlighting for the [Capa programming language](https://github.com/nelsonduarte/capa), a capability-centric language with a pythonic surface, built around the idea that the authorities a function holds (network, filesystem, environment, ...) must be visible in its signature.
 
 This extension provides TextMate-based highlighting only. A full language server (diagnostics, hover, go-to-definition) is on the roadmap but not yet shipped.
 
@@ -8,11 +8,11 @@ This extension provides TextMate-based highlighting only. A full language server
 
 - Keywords by category: declarations (`fun`, `type`, `trait`, `impl`, `capability`, ...), control flow (`if`, `then`, `elif`, `else`, `match`, `while`, `for`, ...), storage modifiers (`let`, `var`, `pub`, `consume`), logical operators (`and`, `or`, `not`).
 - Built-in primitive types (`Int`, `Float`, `String`, `Bool`, `Char`, `Unit`).
-- Built-in capabilities (`Stdio`, `Fs`, `Net`, `Env`, `Clock`, `Random`, `Proc`, `Db`, `Unsafe`) — highlighted distinctly from regular user types.
+- Built-in capabilities (`Stdio`, `Fs`, `Net`, `Env`, `Clock`, `Random`, `Proc`, `Db`, `Unsafe`), highlighted distinctly from regular user types.
 - Built-in generic types (`List`, `Option`, `Result`, `Map`, `Set`, `Fun`, `JsonValue`, `IoError`).
 - Built-in variant constructors (`Some`, `None`, `Ok`, `Err`, and the `JsonValue` variants).
 - Built-in functions (`parse_int`, `parse_float`, `to_int`, `to_float`, `new_map`, `new_set`, `parse_json`, `to_json`, `py_import`, `py_invoke`).
-- Integer (decimal, hex, octal, binary), float, and string literals — with proper handling of `${...}` interpolation (the interpolated expression is highlighted recursively).
+- Integer (decimal, hex, octal, binary), float, and string literals, with proper handling of `${...}` interpolation (the interpolated expression is highlighted recursively).
 - Range operators `..` and `..=`, the lambda body separator `=>`, the result-propagation operator `?`, and the or-pattern separator `|`.
 - Reserved-for-future-use keywords (`async`, `await`, `yield`, `defer`, `where`, `mut`) are flagged with the `invalid.deprecated.reserved` scope so themes can render them as a warning.
 
@@ -20,7 +20,7 @@ This extension provides TextMate-based highlighting only. A full language server
 
 The extension is not on the VSCode Marketplace yet. To install it for local use:
 
-### Option A — symlink (preferred during development)
+### Option A, symlink (preferred during development)
 
 ```bash
 # macOS / Linux
@@ -32,7 +32,7 @@ New-Item -ItemType Junction -Path "$env:USERPROFILE\.vscode\extensions\capa-lang
 
 Restart VSCode. `.capa` files should now highlight.
 
-### Option B — copy
+### Option B, copy
 
 ```bash
 cp -r vscode ~/.vscode/extensions/capa-language
@@ -58,4 +58,4 @@ Open an issue at the main Capa repository: <https://github.com/nelsonduarte/capa
 
 ## License
 
-MIT — same as the rest of the Capa project.
+MIT, same as the rest of the Capa project.

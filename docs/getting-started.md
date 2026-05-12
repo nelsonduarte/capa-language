@@ -5,7 +5,7 @@ A 5-minute guide to writing your first Capa program.
 ## 1. Prerequisites
 
 - Python 3.10 or later (`python3 --version` to check)
-- Nothing else to install — Capa transpiles to Python and the package
+- Nothing else to install, Capa transpiles to Python and the package
   bundles everything
 
 ## 2. Verify it works
@@ -20,7 +20,7 @@ Expected output: `Hello, world!`
 
 ## 3. Two ways to start
 
-### Path A — A `.capa` file
+### Path A, A `.capa` file
 
 Create `my_first.capa`:
 
@@ -38,7 +38,7 @@ Run it:
 python -m capa --run my_first.capa
 ```
 
-### Path B — Tutorial
+### Path B, Tutorial
 
 For a progressive 10-chapter introduction to the language, open
 `docs/tutorial.md`.
@@ -64,7 +64,7 @@ fun main(stdio: Stdio)
     // your code here
 ```
 
-The `stdio` parameter is a *capability* — only functions that receive
+The `stdio` parameter is a *capability*, only functions that receive
 it can perform I/O. Other available capabilities: `fs` (filesystem),
 `env` (environment variables), `clock` (time), `random` (random
 numbers).
@@ -95,10 +95,10 @@ Output:
 
 ## 7. Where to learn more
 
-- **`docs/tutorial.md`** — guided 10-chapter tutorial
-- **`docs/reference.md`** — full language specification
-- **`docs/stdlib.md`** — standard library reference
-- **`examples/`** — 18 real programs to inspect (`hello`, `tasks`,
+- **`docs/tutorial.md`**, guided 10-chapter tutorial
+- **`docs/reference.md`**, full language specification
+- **`docs/stdlib.md`**, standard library reference
+- **`examples/`**, 18 real programs to inspect (`hello`, `tasks`,
   `grades`, `generics`, `closures`, `io`, `patterns`, `interactive`,
   `json`, `python_interop`, and the `stdlib_*` files that show each
   API)
@@ -108,8 +108,8 @@ Output:
 | Symptom | Likely cause |
 |---|---|
 | `expected top-level declaration` | You forgot the surrounding `fun main(stdio: Stdio)` around your statements |
-| `capability parameter not used` | You declared `stdio: Stdio` but didn't use it — prefix with `_stdio` or remove it |
+| `capability parameter not used` | You declared `stdio: Stdio` but didn't use it, prefix with `_stdio` or remove it |
 | `expects Bool, got Int` | You wrote `if 1 then ...` instead of `if x > 0 then ...` |
-| `non-exhaustive match` | A `match` on a sum type is missing cases — add `_ -> ...` |
+| `non-exhaustive match` | A `match` on a sum type is missing cases, add `_ -> ...` |
 
 Errors are reported with precise positions and explanatory messages.

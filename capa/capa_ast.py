@@ -1,7 +1,7 @@
 """Abstract syntax tree (AST) of the Capa language.
 
 Each node has an associated position (the `pos` field) that points to the
-start of the construct in the source — useful for type checker error
+start of the construct in the source, useful for type checker error
 messages and for IDE tooling.
 
 Design conventions:
@@ -282,11 +282,11 @@ class MatchExpr(Expr):
 
 @dataclass(kw_only=True)
 class IfExpr(Expr):
-    """``if cond then e1 else e2`` — Capa ternary operator.
+    """``if cond then e1 else e2``, Capa ternary operator.
 
     Inline syntax for choosing a value between two expressions. Useful
     in single-line closures and in the RHS of let/var. The two branches
-    must have compatible types. ``elif`` is not supported in this form —
+    must have compatible types. ``elif`` is not supported in this form -
     use match or an if-statement instead.
     """
     cond: Expr
@@ -327,7 +327,7 @@ class ExprStmt(Stmt):
 
 
 # ===========================================================
-# Expressions — literals and identifiers
+# Expressions, literals and identifiers
 # ===========================================================
 
 
@@ -380,7 +380,7 @@ class Ident(Expr):
 
 
 # ===========================================================
-# Expressions — operators
+# Expressions, operators
 # ===========================================================
 
 
@@ -398,7 +398,7 @@ class UnaryOp(Expr):
 
 
 # ===========================================================
-# Expressions — postfix
+# Expressions, postfix
 # ===========================================================
 
 
@@ -431,12 +431,12 @@ class Index(Expr):
 
 @dataclass(kw_only=True)
 class Try(Expr):
-    """expr? — propagates the error if it is Err."""
+    """expr?, propagates the error if it is Err."""
     expr: Expr
 
 
 # ===========================================================
-# Expressions — aggregates
+# Expressions, aggregates
 # ===========================================================
 
 
@@ -519,7 +519,7 @@ class StructPat(Pattern):
 
 @dataclass(kw_only=True)
 class TuplePat(Pattern):
-    """``(pat1, pat2, ...)`` — deconstructs a tuple into its components.
+    """``(pat1, pat2, ...)``, deconstructs a tuple into its components.
 
     Each element is itself a pattern, allowing nesting such as
     ``(Some(x), y)``. Empty tuples ``()`` match the ``Unit`` type.
@@ -529,7 +529,7 @@ class TuplePat(Pattern):
 
 @dataclass(kw_only=True)
 class OrPat(Pattern):
-    """``pat1 | pat2 | ... | patN`` — pattern alternatives.
+    """``pat1 | pat2 | ... | patN``, pattern alternatives.
 
     Matches if *any* of the alternatives matches. For v0, we do not
     support bindings inside or-patterns (each alternative must be a

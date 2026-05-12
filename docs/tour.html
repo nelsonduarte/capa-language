@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Language tour — Capa</title>
+    <title>Language tour | Capa</title>
     <meta name="description" content="A guided tour of Capa: types, control flow, pattern matching, generics, closures, error handling, capabilities, attenuation, and the consume qualifier.">
     <link rel="stylesheet" href="style.css">
     <link rel="icon" type="image/svg+xml" href="favicon.svg">
@@ -41,7 +41,7 @@
 <section>
     <h2>Hello, Capa</h2>
 
-    <p>The smallest Capa program. Notice the <code>stdio: Stdio</code> parameter — Capa has no <code>print</code> built in. Standard output is a <em>capability</em> that <code>main</code> receives from the runtime, and only code that holds it can write.</p>
+    <p>The smallest Capa program. Notice the <code>stdio: Stdio</code> parameter: Capa has no <code>print</code> built in. Standard output is a <em>capability</em> that <code>main</code> receives from the runtime, and only code that holds it can write.</p>
 
 <pre><code><span class="comment">// hello.capa</span>
 <span class="kw-decl">fun</span> <span class="fn-name">main</span>(stdio: <span class="cap">Stdio</span>)
@@ -168,7 +168,7 @@ stdio.<span class="fn-call">println</span>(<span class="str">"hi, ${who}! mask=$
 <section>
     <h2>Types: structs and variants</h2>
 
-    <p>The <code>type</code> keyword defines a struct (named fields) or a sum-type (named variants, optionally with payloads). The same keyword covers both — Capa uses syntax, not separate keywords, to distinguish them.</p>
+    <p>The <code>type</code> keyword defines a struct (named fields) or a sum-type (named variants, optionally with payloads). The same keyword covers both; Capa uses syntax, not separate keywords, to distinguish them.</p>
 
     <div class="code-compare">
         <div class="code-block">
@@ -199,7 +199,7 @@ stdio.<span class="fn-call">println</span>(<span class="str">"hi, ${who}! mask=$
 <section>
     <h2>Generics</h2>
 
-    <p>Type parameters in angle brackets. The analyzer infers concrete types from call-sites — type annotations on call expressions are almost never necessary.</p>
+    <p>Type parameters in angle brackets. The analyzer infers concrete types from call-sites, type annotations on call expressions are almost never necessary.</p>
 
 <pre><code><span class="kw-decl">type</span> <span class="ty-user">Pair</span>&lt;<span class="ty-user">A</span>, <span class="ty-user">B</span>&gt; {
     first: <span class="ty-user">A</span>,
@@ -238,7 +238,7 @@ stdio.<span class="fn-call">println</span>(<span class="str">"hi, ${who}! mask=$
 <section>
     <h2>Errors are values</h2>
 
-    <p>Capa has no exceptions in user code. Fallible operations return <code>Result&lt;T, E&gt;</code>. The <code>?</code> operator unwraps an <code>Ok</code> or short-circuits the function with the <code>Err</code> — the same pattern as Rust.</p>
+    <p>Capa has no exceptions in user code. Fallible operations return <code>Result&lt;T, E&gt;</code>. The <code>?</code> operator unwraps an <code>Ok</code> or short-circuits the function with the <code>Err</code>, the same pattern as Rust.</p>
 
 <pre><code><span class="kw-decl">fun</span> <span class="fn-name">process</span>(fs: <span class="cap">Fs</span>, input: <span class="ty-primitive">String</span>) -&gt; <span class="ty-builtin">Result</span>&lt;<span class="ty-primitive">Int</span>, <span class="ty-builtin">IoError</span>&gt;
     <span class="kw-storage">let</span> payload = fs.<span class="fn-call">read</span>(input)?
@@ -256,25 +256,25 @@ stdio.<span class="fn-call">println</span>(<span class="str">"hi, ${who}! mask=$
 <section>
     <h2>Capabilities</h2>
 
-    <p>This is what makes Capa Capa. Every <em>system effect</em> — IO, network, filesystem, environment, clock, randomness — is a value with a type, threaded through function signatures. The <a href="why.html">Why Capa</a> page makes the case; this section is the reference.</p>
+    <p>This is what makes Capa Capa. Every <em>system effect</em>, IO, network, filesystem, environment, clock, randomness, is a value with a type, threaded through function signatures. The <a href="why.html">Why Capa</a> page makes the case; this section is the reference.</p>
 
     <h3>Built-in capabilities</h3>
 
     <p>Seven, exposed by the runtime:</p>
 
     <ul>
-        <li><code>Stdio</code> — <code>print</code>, <code>println</code>, <code>eprint</code>, <code>eprintln</code>, <code>readline</code></li>
-        <li><code>Fs</code> — <code>read</code>, <code>write</code>, <code>exists</code>, <code>list_dir</code>, <code>delete</code></li>
-        <li><code>Net</code> — <code>get</code>, <code>post</code>, <code>allows</code>, <code>restrict_to</code></li>
-        <li><code>Env</code> — <code>get</code>, <code>set</code>, <code>keys</code></li>
-        <li><code>Clock</code> — <code>now</code>, <code>sleep</code></li>
-        <li><code>Random</code> — <code>int</code>, <code>float</code>, <code>choice</code></li>
-        <li><code>Unsafe</code> — the explicit escape hatch for Python interop</li>
+        <li><code>Stdio</code>, <code>print</code>, <code>println</code>, <code>eprint</code>, <code>eprintln</code>, <code>readline</code></li>
+        <li><code>Fs</code>, <code>read</code>, <code>write</code>, <code>exists</code>, <code>list_dir</code>, <code>delete</code></li>
+        <li><code>Net</code>, <code>get</code>, <code>post</code>, <code>allows</code>, <code>restrict_to</code></li>
+        <li><code>Env</code>, <code>get</code>, <code>set</code>, <code>keys</code></li>
+        <li><code>Clock</code>, <code>now</code>, <code>sleep</code></li>
+        <li><code>Random</code>, <code>int</code>, <code>float</code>, <code>choice</code></li>
+        <li><code>Unsafe</code>, the explicit escape hatch for Python interop</li>
     </ul>
 
     <h3>User-defined capabilities</h3>
 
-    <p>A library declares its own capability with the <code>capability</code> keyword. The discipline applies uniformly — a user-defined capability behaves exactly like a built-in one, by construction.</p>
+    <p>A library declares its own capability with the <code>capability</code> keyword. The discipline applies uniformly, a user-defined capability behaves exactly like a built-in one, by construction.</p>
 
 <pre><code><span class="kw-decl">capability</span> <span class="ty-user">SendEmail</span>
     <span class="kw-decl">fun</span> <span class="fn-name">send</span>(self,
@@ -295,7 +295,7 @@ stdio.<span class="fn-call">println</span>(<span class="str">"hi, ${who}! mask=$
 <span class="kw-decl">fun</span> <span class="fn-name">welcome</span>(mailer: <span class="ty-user">SendEmail</span>, to: <span class="ty-primitive">String</span>) -&gt; <span class="ty-builtin">Result</span>&lt;<span class="ty-primitive">Unit</span>, <span class="ty-builtin">IoError</span>&gt;
     <span class="kw-ctrl">return</span> mailer.<span class="fn-call">send</span>(to, <span class="str">"Welcome"</span>, <span class="str">"Hello!"</span>)</code></pre>
 
-    <p>A struct that implements a user-defined capability is allowed to hold built-in caps as fields (here, <code>net: Net</code>) — this is the only relaxation of the structural rule, and it exists precisely so that high-level caps can encapsulate low-level ones.</p>
+    <p>A struct that implements a user-defined capability is allowed to hold built-in caps as fields (here, <code>net: Net</code>), this is the only relaxation of the structural rule, and it exists precisely so that high-level caps can encapsulate low-level ones.</p>
 </section>
 
 <!-- =====================================================
@@ -304,7 +304,7 @@ stdio.<span class="fn-call">println</span>(<span class="str">"hi, ${who}! mask=$
 <section>
     <h2>Attenuation</h2>
 
-    <p><code>Net.restrict_to(host)</code> returns a fresh <code>Net</code> whose authority is narrowed to a single host. Restrictions only narrow — chaining two <code>restrict_to</code> calls intersects their allowed sets. The runtime checks the host <em>before</em> any system call.</p>
+    <p><code>Net.restrict_to(host)</code> returns a fresh <code>Net</code> whose authority is narrowed to a single host. Restrictions only narrow, chaining two <code>restrict_to</code> calls intersects their allowed sets. The runtime checks the host <em>before</em> any system call.</p>
 
 <pre><code><span class="kw-decl">fun</span> <span class="fn-name">probe</span>(net: <span class="cap">Net</span>, stdio: <span class="cap">Stdio</span>)
     stdio.<span class="fn-call">println</span>(<span class="str">"api allowed?  ${net.allows(\"api.example.com\")}"</span>)
@@ -338,7 +338,7 @@ stdio.<span class="fn-call">println</span>(<span class="str">"hi, ${who}! mask=$
 <section>
     <h2>The <code>consume</code> qualifier</h2>
 
-    <p>A parameter prefixed with <code>consume</code> takes ownership: after the call returns, the argument can no longer be used by the caller. This is the linear layer of the discipline — useful for resources whose handover semantics matter (file handles being closed, capabilities being transferred to a long-lived owner, etc).</p>
+    <p>A parameter prefixed with <code>consume</code> takes ownership: after the call returns, the argument can no longer be used by the caller. This is the linear layer of the discipline, useful for resources whose handover semantics matter (file handles being closed, capabilities being transferred to a long-lived owner, etc).</p>
 
 <pre><code><span class="kw-decl">fun</span> <span class="fn-name">adopt</span>(<span class="kw-storage">consume</span> stdio: <span class="cap">Stdio</span>)
     stdio.<span class="fn-call">println</span>(<span class="str">"kept forever by adopt"</span>)
@@ -375,7 +375,7 @@ stdio.<span class="fn-call">println</span>(<span class="str">"hi, ${who}! mask=$
 
     <p>The analyzer rejects unknown attribute names, unknown keys, and duplicates, so consumers can trust the schema.</p>
 
-    <p>The <code>--manifest</code> flag of the compiler emits a JSON description of the program: per function, the declared capabilities, the attached attributes, and whether the function crosses the <code>Unsafe</code> boundary; per module, the user-defined capabilities and their implementors, plus a summary count. This is the artefact an EU Cyber Resilience Act auditor wants — evidence of the program's authority graph that does not require running it.</p>
+    <p>The <code>--manifest</code> flag of the compiler emits a JSON description of the program: per function, the declared capabilities, the attached attributes, and whether the function crosses the <code>Unsafe</code> boundary; per module, the user-defined capabilities and their implementors, plus a summary count. This is the artefact an EU Cyber Resilience Act auditor wants, evidence of the program's authority graph that does not require running it.</p>
 
 <pre><code>$ python -m capa --manifest verify.capa
 {

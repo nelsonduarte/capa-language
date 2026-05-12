@@ -1,4 +1,4 @@
-// basics.capa — exercises several language constructs
+// basics.capa, exercises several language constructs
 
 const VERSION: String = "1.0"
 

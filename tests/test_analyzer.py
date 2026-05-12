@@ -852,7 +852,7 @@ class TestMethodDispatch(unittest.TestCase):
         self.assertEqual(ty_str(result.types[id(let_stmt.value)]), "Contador")
 
     def test_method_on_capability_passes(self):
-        # Capabilities don't have impl in Capa code — calls to their
+        # Capabilities don't have impl in Capa code, calls to their
         # methods should continue to be accepted as TyUnknown.
         r = check(
             "fun main(stdio: Stdio)\n"
@@ -927,7 +927,7 @@ class TestMatchExhaustiveness(unittest.TestCase):
         self.assertTrue(r.ok, r.errors)
 
     def test_guarded_arm_does_not_cover(self):
-        # Arms with guards may fail — they don't count toward coverage.
+        # Arms with guards may fail, they don't count toward coverage.
         msgs = errors_of(
             "type Cor =\n"
             "    Vermelho\n"
@@ -943,7 +943,7 @@ class TestMatchExhaustiveness(unittest.TestCase):
         )
 
     def test_non_sum_types_not_checked(self):
-        # Match over Int doesn't require exhaustiveness — user can use
+        # Match over Int doesn't require exhaustiveness, user can use
         # _ explicitly, but the checker doesn't require it.
         r = check(
             "fun classify(n: Int) -> String\n"
@@ -1118,7 +1118,7 @@ class TestLambdas(unittest.TestCase):
         )
 
     def test_closure_consumes_own_param_ok(self):
-        # Cap-as-param of the closure itself can be consumed — each
+        # Cap-as-param of the closure itself can be consumed, each
         # invocation receives its own.
         r = check(
             "fun adoptar(consume stdio: Stdio) -> Int\n"
@@ -1613,7 +1613,7 @@ class TestPatternTypeParams(unittest.TestCase):
     the owner's type params with the scrutinee's type args."""
 
     def test_some_payload_is_concrete_type(self):
-        # match m: Option<Int> with Some(n) — n should be Int, not T.
+        # match m: Option<Int> with Some(n), n should be Int, not T.
         from capa import Lexer, Parser, analyze
         src = (
             "fun main(stdio: Stdio)\n"
@@ -1662,7 +1662,7 @@ class TestTuplePatterns(unittest.TestCase):
         self.assertTrue(r.ok, r.errors)
 
     def test_nested_pattern_in_tuple(self):
-        # (Some(n), label) — variant + literal in a tuple.
+        # (Some(n), label), variant + literal in a tuple.
         r = check(
             "fun main(stdio: Stdio)\n"
             "    let opt: (Option<Int>, String) = (Some(42), \"x\")\n"
@@ -1950,7 +1950,7 @@ class TestRangeExpressions(unittest.TestCase):
         )
 
     def test_range_chains_with_list_methods(self):
-        # `(0..10).filter(...)` — range value supports the full List API.
+        # `(0..10).filter(...)`, range value supports the full List API.
         r = check(
             "fun main(stdio: Stdio)\n"
             "    let evens = (0..10).filter(fun (x: Int) -> Bool => x % 2 == 0)\n"
@@ -2020,7 +2020,7 @@ class TestNumericConversions(unittest.TestCase):
 # =============================================================
 
 class TestCapabilityMethods(unittest.TestCase):
-    """Fs, Env, Clock, Random have typed methods — they used to always
+    """Fs, Env, Clock, Random have typed methods, they used to always
     return TyUnknown, now they have precise types."""
 
     def test_fs_ler_returns_result_string(self):
@@ -2102,7 +2102,7 @@ class TestCapabilityMethods(unittest.TestCase):
 
 
 class TestNetAttenuation(unittest.TestCase):
-    """Net capability — attenuation by `restrict_to`. The fresh narrowed
+    """Net capability, attenuation by `restrict_to`. The fresh narrowed
     capability is bindable in `let`/`var` (the structural rule against
     bare-capability lets is relaxed for method-call RHS), but a bare
     alias still is not."""
@@ -2154,7 +2154,7 @@ class TestNetAttenuation(unittest.TestCase):
 
     def test_let_alias_of_bare_capability_still_rejected(self):
         # The relaxation only applies to method-call RHS. Plain identifier
-        # aliases of capabilities remain forbidden — that is the case the
+        # aliases of capabilities remain forbidden, that is the case the
         # structural rule was originally there to catch.
         msgs = errors_of(
             "fun main(net: Net, stdio: Stdio)\n"
@@ -2211,13 +2211,13 @@ class TestUserDefinedCapabilities(unittest.TestCase):
         self.assertTrue(r.ok, r.errors)
 
     def test_struct_with_cap_field_allowed_when_impl_user_cap(self):
-        # SmtpMailer has `net: Net` — normally forbidden, allowed here
+        # SmtpMailer has `net: Net`, normally forbidden, allowed here
         # because SmtpMailer implements a user-defined capability.
         r = check(self._SETUP + "fun main()\n    return\n")
         self.assertTrue(r.ok, r.errors)
 
     def test_struct_with_cap_field_rejected_when_no_user_cap_impl(self):
-        # Plain struct (no `impl SendEmail for ...`) — built-in cap as
+        # Plain struct (no `impl SendEmail for ...`), built-in cap as
         # field still rejected.
         msgs = errors_of(
             "type Service { net: Net, label: String }\n"
@@ -2457,7 +2457,7 @@ class TestOptionResultMethods(unittest.TestCase):
         self.assertEqual(ty_str(result.types[id(let_n.value)]), "Int")
 
     def test_option_unwrap_or_wrong_type_rejected(self):
-        # unwrap_or<T>(default: T) — default must have the same T as Option<T>.
+        # unwrap_or<T>(default: T), default must have the same T as Option<T>.
         msgs = errors_of(
             "fun main(stdio: Stdio)\n"
             "    let o: Option<Int> = None\n"
@@ -2688,7 +2688,7 @@ class TestConsume(unittest.TestCase):
         )
 
     def test_borrow_does_not_consume(self):
-        # Function without `consume` borrows — caller keeps the cap.
+        # Function without `consume` borrows, caller keeps the cap.
         r = check(
             "fun emprestar(stdio: Stdio)\n"
             "    stdio.println(\"x\")\n"
@@ -2729,7 +2729,7 @@ class TestConsume(unittest.TestCase):
         )
 
     def test_both_branches_consume_no_use_after_ok(self):
-        # Both branches consume, no use afterward — OK.
+        # Both branches consume, no use afterward, OK.
         r = check(
             "fun adoptar(consume stdio: Stdio)\n"
             "    stdio.println(\"x\")\n"

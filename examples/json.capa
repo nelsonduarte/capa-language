@@ -1,4 +1,4 @@
-// json.capa — JSON processing with extraction helpers.
+// json.capa, JSON processing with extraction helpers.
 
 // Composed helper: extract a field from a JSON object
 fun field(j: JsonValue, name: String) -> Option<JsonValue>

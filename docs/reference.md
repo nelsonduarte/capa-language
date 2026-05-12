@@ -115,7 +115,7 @@ type Shape =
 ```
 
 Variants may have zero or more payloads. Variants without a payload
-(`type X = A`) are *constants* — used without `()`.
+(`type X = A`) are *constants*, used without `()`.
 
 ### 2.4. Generics
 
@@ -248,13 +248,13 @@ In decreasing precedence:
 let cat = if cond then e1 else e2
 ```
 
-The `then` keyword is the discriminator — without it, `if` is a
+The `then` keyword is the discriminator, without it, `if` is a
 statement.
 
 ### 4.3. `match` as an expression
 
 `match` is the same production whether used as a statement or as an
-expression — the value is consumed in expression position and
+expression, the value is consumed in expression position and
 discarded in statement position. Two surface forms exist:
 
 ```capa
@@ -271,7 +271,7 @@ Both forms accept guards and or-patterns. All arms must produce
 compatible types.
 
 The inline form's `{ ... }` opens immediately after the scrutinee.
-This collides syntactically with the struct-literal heuristic — to
+This collides syntactically with the struct-literal heuristic, to
 force a struct literal as the scrutinee, wrap it in parentheses:
 
 ```capa
@@ -371,7 +371,7 @@ the scrutinee's type arguments.
 
 Capabilities are primitive types representing access to system
 resources (`Stdio`, `Fs`, `Env`, `Clock`, `Random`, `Unsafe`). They
-are only accessible via function parameters — there are no global
+are only accessible via function parameters, there are no global
 instances.
 
 ### 6.2. The capability discipline (3 layers)
@@ -421,7 +421,7 @@ system is reserved for a future version; for now, all useful code
 comes from the global standard library.
 
 For Python interop, use the typed builtins `py_import(unsafe, name)`
-and `py_invoke(unsafe, callable, args)` — both require the `Unsafe`
+and `py_invoke(unsafe, callable, args)`, both require the `Unsafe`
 capability. See `stdlib.md`.
 
 ---

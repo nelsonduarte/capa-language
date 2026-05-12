@@ -4,7 +4,7 @@ Thanks for your interest. Capa is a personal project but an open one;
 issues, design discussions, and pull requests are welcome. This
 document covers the practical bits.
 
-For security issues, please read [SECURITY.md](SECURITY.md) instead —
+For security issues, please read [SECURITY.md](SECURITY.md) instead -
 those go through a private channel.
 
 ## Before you start
@@ -78,7 +78,7 @@ project; the grammar is small.
   interesting. Include the program in the issue.
 - **More test coverage** in `tests/test_analyzer.py`, especially
   around capabilities and `consume`.
-- **Documentation fixes** — the white paper and the EBNF should match
+- **Documentation fixes**, the white paper and the EBNF should match
   the implementation; if they drift, please report it.
 - **Examples** in `examples/` that exercise an idiom not already
   covered. Real-world miniatures (a small parser, a small networking
@@ -109,7 +109,7 @@ project; the grammar is small.
 - Run the full test suite locally before submitting:
   `python -m unittest discover tests`.
 - Follow the existing style. The codebase prefers terse, explicit
-  Python — no over-engineering, no decorative comments, no
+  Python, no over-engineering, no decorative comments, no
   abstractions introduced for hypothetical future needs.
 - Commit messages: imperative present tense, short title (≤ 70
   chars), optional body wrapped at ~72 chars. Look at `git log` for
@@ -133,7 +133,7 @@ project; the grammar is small.
   well-named identifiers over restating what code does.
 - New modules go into `capa/`. The naming convention `capa_ast.py`
   and `typesys.py` (rather than `ast.py` / `types.py`) is deliberate
-  — it avoids collisions with Python stdlib modules under
+ , it avoids collisions with Python stdlib modules under
   `python -m capa` invocation.
 
 ## Reporting bugs
@@ -143,7 +143,7 @@ For non-security bugs, open a regular issue at
 
 - A minimal `.capa` program that reproduces the problem
 - The output of `python -m capa --check <file>` (or `--run`,
-  `--transpile` — whichever stage is wrong)
+  `--transpile`, whichever stage is wrong)
 - What you expected to happen instead
 - `python --version`, your OS, and `git rev-parse HEAD`
 
