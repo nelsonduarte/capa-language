@@ -678,37 +678,55 @@ footer {
     margin: 1.5rem 0;
 }
 
-/* Card variant used on the landing: one big clickable tile per OS. */
-.download-card-link {
+/* Button row used on the landing: one button per platform/arch. */
+.download-row {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 0.75rem;
+    margin: 1.5rem 0;
+}
+
+.download-btn {
     display: flex;
     flex-direction: column;
-    align-items: center;
-    gap: 0.35rem;
-    padding: 1.5rem 1.25rem;
+    align-items: flex-start;
+    gap: 0.15rem;
+    padding: 1rem 1.1rem;
     background: var(--bg-elevated);
     border: 1px solid var(--border);
-    border-radius: 8px;
+    border-radius: 6px;
     text-decoration: none;
     color: var(--fg);
-    transition: border-color 0.15s, background 0.15s, transform 0.15s;
+    transition: border-color 0.15s, background 0.15s;
     min-width: 0;
 }
 
-.download-card-link:hover {
+.download-btn:hover {
     border-color: var(--accent);
     background: var(--accent-soft);
     text-decoration: none;
-    transform: translateY(-1px);
 }
 
-.download-card-link .download-icon {
-    color: var(--accent);
-    margin-bottom: 0.25rem;
-}
-
-.download-card-link strong {
+.download-btn-os {
+    font-size: 1rem;
+    font-weight: 600;
     color: var(--fg-bright);
-    font-size: 1.1rem;
+    line-height: 1.2;
+}
+
+.download-btn-arch {
+    font-size: 0.82rem;
+    color: var(--fg-dim);
+    line-height: 1.2;
+}
+
+.download-btn-file {
+    margin-top: 0.4rem;
+    font-family: ui-monospace, "SF Mono", Menlo, Monaco, Consolas, monospace;
+    font-size: 0.74rem;
+    color: var(--accent);
+    word-break: break-all;
+    line-height: 1.3;
 }
 
 .download-arch {
@@ -1276,6 +1294,11 @@ pre.showcase {
     .release-tag { font-size: 0.72rem; }
     nav.toc ul { grid-template-columns: 1fr; }
     .download-grid { grid-template-columns: 1fr; }
+    .download-row { grid-template-columns: 1fr 1fr; }
+}
+
+@media (max-width: 560px) {
+    .download-row { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 480px) {
