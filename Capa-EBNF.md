@@ -369,13 +369,21 @@ module_path = IDENT { "." IDENT }
 
 ### 5.2 Function declarations
 
-Functions are the dominant unit of abstraction in Capa. A function declaration has zero or more attributes (lines starting with `@`), optional visibility, the keyword `fun`, a name, optional type parameters, a parameter list, an optional return type, and a block as its body.
+Functions are the dominant unit of abstraction in Capa. A function declaration has zero or more doc comments (`///` lines or a single `/** ... */` block), zero or more attributes (lines starting with `@`), optional visibility, the keyword `fun`, a name, optional type parameters, a parameter list, an optional return type, and a block as its body.
 
 ```ebnf
-function_decl = { attribute NEWLINE } [ "pub" ] "fun" IDENT [ generic_params ]
+function_decl = { doc_comment } { attribute NEWLINE } [ "pub" ] "fun" IDENT
+    [ generic_params ]
     "(" [ param_list ] ")"
     [ "->" type ]
     block
+
+doc_comment = "///" REST_OF_LINE NEWLINE
+            | "/**" block_doc_body "*/"     (* the second char must
+                                               be a star and not a
+                                               slash, so /**/ stays
+                                               a regular empty
+                                               comment *)
 
 attribute = "@" IDENT "(" [ attribute_arg { "," attribute_arg } [ "," ] ] ")"
 
@@ -396,6 +404,8 @@ param = [ "consume" ] IDENT ":" type
 The optional `consume` qualifier marks the parameter as taking ownership of the passed value (typically a capability). After a call to such a function, the caller can no longer use the argument it passed. This is enforced by the semantic analyzer's linearity check, not the grammar; see the Capabilities chapter of the white paper for details.
 
 Attributes are static, source-level metadata. The grammar accepts any identifier as the attribute name, but the analyzer restricts the v1 catalogue to `security`, `deprecated`, and `audited`, each with a fixed set of allowed keys. Attribute argument values must be string literals so that the metadata is statically inspectable without running expression evaluation. The `--manifest` tool emits attributes verbatim in JSON form for downstream consumption by audit tooling. Attributes are valid on top-level `fun` declarations and on methods inside an `impl` block; they are rejected on `const`, `type`, `trait`, `capability`, `impl`, and `import` in v1.
+
+Doc comments (`///` and `/** */`) are similar metadata but free-form: they are attached to the next `fun`, `type`, `trait` (including `capability`), or `impl`-block method, surfaced in the manifest as a `doc` field, and rendered into HTML by the `--doc` tool. `////+` (four or more slashes) and `/*` (without the second star) remain plain comments and are dropped by the lexer.
 
 Relevant notes. The return type is syntactically optional; if omitted, the type is inferred as `Unit` (the function does not return a useful value), except in public functions, where a later semantic phase requires the explicit annotation. The trailing comma in `param_list` is allowed to facilitate clean diffs.
 

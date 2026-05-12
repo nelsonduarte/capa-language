@@ -1,0 +1,79 @@
+// documented_demo.capa
+//
+// Showcases doc comments (/// and /** */). Run with:
+//
+//   python -m capa --doc examples/documented_demo.capa > demo.html
+//
+// then open demo.html. The generated page is the human-readable
+// counterpart to the JSON capability manifest emitted by --manifest.
+
+/// A capability for sending email through any backend.
+///
+/// Implementors encapsulate the low-level mechanism (SMTP over `Net`,
+/// or an API client over a restricted `Net`). Callers see only the
+/// `SendEmail` contract.
+capability SendEmail
+    fun send(self, to: String, subject: String) -> Result<Unit, IoError>
+
+/** Concrete implementor of `SendEmail` over SMTP.
+ *
+ * Holds the underlying `Net` capability, restricted to the SMTP
+ * server's hostname. This restriction is what stops a compromised
+ * mailer from being able to phone home anywhere else.
+ */
+type SmtpMailer {
+    server: String,
+    net: Net
+}
+
+impl SendEmail for SmtpMailer
+    fun send(self, to: String, subject: String) -> Result<Unit, IoError>
+        // Stub: a real implementation would invoke SMTP via self.net.
+        return Ok(())
+
+/// Constructs an SmtpMailer for a given server. Takes the full
+/// `Net` capability and attenuates it down to the server's hostname
+/// before storing it in the struct, so the resulting mailer can
+/// only ever reach that one host.
+fun make_smtp_mailer(net: Net, server: String) -> SmtpMailer
+    return SmtpMailer {
+        server: server,
+        net: net.restrict_to(server)
+    }
+
+/// Sends a fixed welcome email. The cap parameter `mailer` is a
+/// `SendEmail`, the user-defined capability, so the function cannot
+/// open arbitrary network sockets, read the filesystem, or read
+/// environment variables. The only thing it can do that touches the
+/// outside world is call `mailer.send(...)`.
+@audited(date: "2026-05-12", by: "Nelson Duarte", scope: "full review")
+fun send_welcome(mailer: SendEmail, to: String) -> Result<Unit, IoError>
+    return mailer.send(to, "Welcome to Capa")
+
+/// Verify a token against an expected value.
+///
+/// Caveat: this is a naive equality comparison; a real implementation
+/// would use a constant-time compare to avoid timing attacks.
+@security(
+    cwe: "CWE-208",
+    severity: "medium",
+    description: "naive comparison; replace with constant-time before production"
+)
+fun verify_token(token: String, expected: String) -> Bool
+    return token == expected
+
+/// Token length in characters. Pure: no capabilities required.
+fun token_length(token: String) -> Int
+    return token.length()
+
+/** Entry point. Wires the chain `main` -> `make_smtp_mailer` ->
+ *  `send_welcome` -> `SendEmail.send`. The `Net` capability is
+ *  attenuated to a single host on the very first call, so every
+ *  downstream function sees only the restricted version.
+ */
+fun main(net: Net, stdio: Stdio)
+    let mailer = make_smtp_mailer(net, "smtp.example.com")
+    let result = send_welcome(mailer, "ana@example.com")
+    match result
+        Ok(_)  -> stdio.println("sent welcome email (stub)")
+        Err(e) -> stdio.eprintln("failed: ${e}")

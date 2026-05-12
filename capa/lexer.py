@@ -50,6 +50,41 @@ _CLOSE_PAREN = ")]}"
 _MATCHING_PAREN = {")": "(", "]": "[", "}": "{"}
 
 
+def _strip_block_doc_margins(raw: str) -> str:
+    """Normalise the body of a ``/** ... */`` doc block.
+
+    Strips one leading space at the very start (idiomatic spacing),
+    and on every continuation line removes leading whitespace
+    followed by an optional ``*`` and one space, so that
+
+        /** line1
+         * line2
+         */
+
+    yields ``line1\\nline2`` and not ``line1\\n * line2``. The result
+    has trailing whitespace stripped.
+    """
+    lines = raw.splitlines()
+    if not lines:
+        return ""
+    out = []
+    for i, line in enumerate(lines):
+        if i == 0:
+            # First line: strip one leading space.
+            out.append(line[1:] if line.startswith(" ") else line)
+            continue
+        stripped = line.lstrip()
+        if stripped.startswith("* "):
+            out.append(stripped[2:])
+        elif stripped == "*":
+            out.append("")
+        else:
+            out.append(stripped)
+    while out and out[-1] == "":
+        out.pop()
+    return "\n".join(out).rstrip()
+
+
 class Lexer:
     """Recursive descent lexer for Capa.
 
@@ -222,12 +257,19 @@ class Lexer:
                 self._advance()  # \n
                 continue
 
-            # Comments
+            # Comments. Doc comments (/// or /**) emit a token; plain
+            # comments are dropped on the floor.
             if c == "/" and self._peek(1) == "/":
-                self._skip_line_comment()
+                if self._peek(2) == "/" and self._peek(3) != "/":
+                    self._lex_doc_line_comment()
+                else:
+                    self._skip_line_comment()
                 continue
             if c == "/" and self._peek(1) == "*":
-                self._skip_block_comment()
+                if self._peek(2) == "*" and self._peek(3) != "/":
+                    self._lex_doc_block_comment()
+                else:
+                    self._skip_block_comment()
                 continue
 
             # Real token
@@ -306,12 +348,29 @@ class Lexer:
                 self._advance()
                 continue
 
-            # Line comment: skip the whole line.
+            # Doc line comment at line start: treat as real content
+            # for the purposes of indentation. The main loop will
+            # then emit the DOC_COMMENT token.
+            if (
+                c == "/" and self._peek(1) == "/" and self._peek(2) == "/"
+                and self._peek(3) != "/"
+            ):
+                break
+
+            # Line comment (regular): skip the whole line.
             if c == "/" and self._peek(1) == "/":
                 self._skip_line_comment()
                 if self._peek() == "\n":
                     self._advance()
                 continue
+
+            # Doc block comment at line start: same treatment as
+            # doc line comments. Fall through to indent emit + return.
+            if (
+                c == "/" and self._peek(1) == "*" and self._peek(2) == "*"
+                and self._peek(3) != "/"
+            ):
+                break
 
             # Block comment at the start of the line: skip it and
             # re-evaluate the start of line from where we left off.
@@ -382,6 +441,71 @@ class Lexer:
         self._advance()  # /
         while not self._at_end() and self._peek() != "\n":
             self._advance()
+
+    def _lex_doc_line_comment(self) -> None:
+        """Emits a DOC_COMMENT token for ``/// text...`` up to (but not
+        consuming) the newline. The token's ``value`` is the text
+        content with one leading space stripped (the convention is
+        ``/// text``, not ``///text``).
+        """
+        start = self._pos()
+        self._advance()  # /
+        self._advance()  # /
+        self._advance()  # /
+        text_start = self.offset
+        while not self._at_end() and self._peek() != "\n":
+            self._advance()
+        body = self.source[text_start:self.offset]
+        # Strip one leading space if present (idiomatic spacing).
+        if body.startswith(" "):
+            body = body[1:]
+        # Strip trailing whitespace (but keep meaningful content).
+        body = body.rstrip()
+        self._emit(
+            TokenKind.DOC_COMMENT,
+            self.source[start.offset:self.offset],
+            start,
+            value=body,
+        )
+
+    def _lex_doc_block_comment(self) -> None:
+        """Emits a DOC_COMMENT token for ``/** ... */``. Supports
+        nesting on the outer ``/* ... */`` pair (matching
+        ``_skip_block_comment``). The token's ``value`` is the inner
+        text with the typical Javadoc-style ``*`` left-margin
+        decoration stripped, so ``/** line1\\n * line2 */`` reads as
+        ``line1\\nline2``.
+        """
+        start = self._pos()
+        self._advance()  # /
+        self._advance()  # *
+        self._advance()  # *  (second star, makes it a doc comment)
+        text_start = self.offset
+        depth = 1
+        while depth > 0:
+            if self._at_end():
+                raise self._error("unterminated doc block comment", start)
+            if self._peek() == "/" and self._peek(1) == "*":
+                self._advance()
+                self._advance()
+                depth += 1
+            elif self._peek() == "*" and self._peek(1) == "/":
+                end_inner = self.offset
+                self._advance()
+                self._advance()
+                depth -= 1
+                if depth == 0:
+                    raw = self.source[text_start:end_inner]
+                    body = _strip_block_doc_margins(raw)
+                    self._emit(
+                        TokenKind.DOC_COMMENT,
+                        self.source[start.offset:self.offset],
+                        start,
+                        value=body,
+                    )
+                    return
+            else:
+                self._advance()
 
     def _skip_block_comment(self) -> None:
         """Skips /* ... */, supporting nesting."""

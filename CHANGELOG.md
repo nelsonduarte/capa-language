@@ -9,6 +9,38 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+### Added
+
+- **Doc comments** (`///` line and `/** */` block) attach to the
+  next `fun`, `type`, `trait`, or `capability` declaration. The
+  block form recognises Javadoc-style `*` left margins and strips
+  them, so
+
+      /** line one
+       * line two
+       */
+
+  reads as `line one\nline two`. Consecutive `///` lines join with
+  newlines. `////+` and `/*` (without the second star) remain plain
+  comments, dropped by the lexer.
+
+- **`python -m capa --doc`** emits a self-contained HTML page
+  documenting every function, type, and user-defined capability in
+  a program. Uses the doc comments, capability signatures, and
+  attribute metadata already extracted by the analyzer. Inline CSS
+  matches the project's dark / accent-purple visual identity. No
+  external resources. The human-readable counterpart to the
+  machine-readable `--manifest`.
+
+- **Manifest carries doc**: the JSON manifest's per-function and
+  per-capability records gain a `doc` field; the CycloneDX output
+  surfaces them as `capa:doc` properties on the corresponding
+  components.
+
+- **`examples/documented_demo.capa`** uses every form of doc comment
+  on a realistic mini-program (capability + impl + factory +
+  audited function + CVE-tagged function).
+
 ## [0.3.0-alpha], 2026-05-12
 
 The second tagged release. Focus: full CRA alignment of the

@@ -111,6 +111,7 @@ class TypeStruct(Item):
     type_params: list[str] = field(default_factory=list)
     fields: list[Field]
     is_pub: bool = False
+    doc: Optional[str] = None
 
 
 @dataclass(kw_only=True)
@@ -130,6 +131,7 @@ class TypeSum(Item):
     type_params: list[str] = field(default_factory=list)
     variants: list[Variant]
     is_pub: bool = False
+    doc: Optional[str] = None
 
 
 @dataclass(kw_only=True)
@@ -166,6 +168,7 @@ class TraitDecl(Item):
     methods: list[MethodSig]
     is_pub: bool = False
     is_capability: bool = False
+    doc: Optional[str] = None
 
 
 @dataclass(kw_only=True)
@@ -191,6 +194,7 @@ class FunDecl(Item):
     body: Block
     is_pub: bool = False
     attributes: list[Attribute] = field(default_factory=list)
+    doc: Optional[str] = None
 
 
 @dataclass(kw_only=True)

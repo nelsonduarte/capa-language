@@ -226,6 +226,12 @@ class Parser:
     # ===========================================================
 
     def _parse_item(self) -> A.Item:
+        # Doc comments (/// or /**) attach to the next declaration if
+        # it accepts them (fun, type, trait, capability). They are
+        # collected here so that attribute and `pub` parsing below
+        # can stay simple.
+        doc = self._consume_doc_comments_opt()
+
         # Optional attributes (@name(...)). v1 supports them only on `fun`;
         # presence on any other top-level construct is an explicit error.
         attributes = self._parse_attributes_opt()
@@ -238,12 +244,19 @@ class Parser:
                 raise self._error("'pub' is not valid before 'import'")
             if attributes:
                 raise self._error("attributes are not valid on 'import'")
+            if doc:
+                raise self._error("doc comments are not valid on 'import'")
             return self._parse_import()
         if self._check(T.KW_CONST):
             if attributes:
                 raise self._error(
                     "attributes are not valid on 'const' "
                     "(v1 supports them on 'fun' only)"
+                )
+            if doc:
+                raise self._error(
+                    "doc comments are not valid on 'const' "
+                    "(v1 supports them on fun / type / trait / capability)"
                 )
             return self._parse_const(is_pub)
         if self._check(T.KW_TYPE):
@@ -252,21 +265,21 @@ class Parser:
                     "attributes are not valid on 'type' "
                     "(v1 supports them on 'fun' only)"
                 )
-            return self._parse_type_decl(is_pub)
+            return self._parse_type_decl(is_pub, doc=doc)
         if self._check(T.KW_TRAIT):
             if attributes:
                 raise self._error(
                     "attributes are not valid on 'trait' "
                     "(v1 supports them on 'fun' only)"
                 )
-            return self._parse_trait_decl(is_pub)
+            return self._parse_trait_decl(is_pub, doc=doc)
         if self._check(T.KW_CAPABILITY):
             if attributes:
                 raise self._error(
                     "attributes are not valid on 'capability' "
                     "(v1 supports them on 'fun' only)"
                 )
-            return self._parse_capability_decl(is_pub)
+            return self._parse_capability_decl(is_pub, doc=doc)
         if self._check(T.KW_IMPL):
             if is_pub:
                 raise self._error("'pub' is not valid before 'impl'")
@@ -275,14 +288,49 @@ class Parser:
                     "attributes are not valid on 'impl' "
                     "(v1 supports them on 'fun' only)"
                 )
+            if doc:
+                raise self._error(
+                    "doc comments are not valid on 'impl' "
+                    "(attach to its methods instead)"
+                )
             return self._parse_impl()
         if self._check(T.KW_FUN):
-            return self._parse_fun_decl(is_pub, attributes=attributes)
+            return self._parse_fun_decl(is_pub, attributes=attributes, doc=doc)
         raise self._error(
             f"expected top-level declaration "
             f"(import / const / type / trait / capability / impl / fun), "
             f"got {self._peek().kind.name}"
         )
+
+    # -------- doc comments (/// and /** */) --------
+
+    def _consume_doc_comments_opt(self) -> Optional[str]:
+        """Consume any DOC_COMMENT tokens at the current position and
+        return their concatenated text, or None if there are none.
+
+        Consecutive ``///`` lines are joined with newlines; intervening
+        NEWLINE tokens between them are absorbed silently so that
+
+            /// line one
+            /// line two
+            fun f()
+
+        produces ``"line one\\nline two"``. A single ``/** ... */``
+        block already carries multi-line content in its value, so it
+        is appended as-is.
+        """
+        parts: list[str] = []
+        # We may be after newlines from a previous item; skip them first.
+        self._skip_newlines()
+        while self._check(T.DOC_COMMENT):
+            tok = self._advance()
+            parts.append(tok.value)
+            # Allow a single NEWLINE between consecutive doc tokens.
+            while self._check(T.NEWLINE):
+                self._advance()
+        if not parts:
+            return None
+        return "\n".join(parts)
 
     # -------- attributes (@name(key: "value", ...)) --------
 
@@ -375,7 +423,12 @@ class Parser:
 
     # -------- type --------
 
-    def _parse_type_decl(self, is_pub: bool) -> A.Item:
+    def _parse_type_decl(
+        self,
+        is_pub: bool,
+        *,
+        doc: Optional[str] = None,
+    ) -> A.Item:
         start = self._peek().start
         self._expect(T.KW_TYPE, "expected 'type'")
         name = self._expect(T.IDENT, "expected type name").text
@@ -391,6 +444,7 @@ class Parser:
                 type_params=type_params,
                 fields=fields,
                 is_pub=is_pub,
+                doc=doc,
             )
         if self._match(T.EQ):
             # Sum type: type Name = INDENT variants DEDENT
@@ -409,6 +463,7 @@ class Parser:
                 type_params=type_params,
                 variants=variants,
                 is_pub=is_pub,
+                doc=doc,
             )
         raise self._error("expected '{' (struct) or '=' (sum) in type declaration")
 
@@ -441,19 +496,37 @@ class Parser:
 
     # -------- trait --------
 
-    def _parse_trait_decl(self, is_pub: bool) -> A.TraitDecl:
-        return self._parse_trait_or_capability(is_pub, is_capability=False)
+    def _parse_trait_decl(
+        self,
+        is_pub: bool,
+        *,
+        doc: Optional[str] = None,
+    ) -> A.TraitDecl:
+        return self._parse_trait_or_capability(
+            is_pub, is_capability=False, doc=doc,
+        )
 
-    def _parse_capability_decl(self, is_pub: bool) -> A.TraitDecl:
+    def _parse_capability_decl(
+        self,
+        is_pub: bool,
+        *,
+        doc: Optional[str] = None,
+    ) -> A.TraitDecl:
         """A user-defined capability. Syntactically identical to a trait;
         semantically, the analyzer treats the declared name as a
         capability and subjects it (and types that implement it) to the
         capability discipline. See WhitePaper §4.6.
         """
-        return self._parse_trait_or_capability(is_pub, is_capability=True)
+        return self._parse_trait_or_capability(
+            is_pub, is_capability=True, doc=doc,
+        )
 
     def _parse_trait_or_capability(
-        self, is_pub: bool, is_capability: bool,
+        self,
+        is_pub: bool,
+        is_capability: bool,
+        *,
+        doc: Optional[str] = None,
     ) -> A.TraitDecl:
         start = self._peek().start
         keyword = T.KW_CAPABILITY if is_capability else T.KW_TRAIT
@@ -475,6 +548,7 @@ class Parser:
             methods=methods,
             is_pub=is_pub,
             is_capability=is_capability,
+            doc=doc,
         )
 
     def _parse_method_sig(self) -> A.MethodSig:
@@ -528,10 +602,13 @@ class Parser:
         self._expect(T.INDENT, "expected indented method definitions")
         methods: list[A.FunDecl] = []
         while not self._check(T.DEDENT) and not self._at_end():
-            # Methods inside impl can have attributes and `pub`.
+            # Methods inside impl can have doc comments, attributes and `pub`.
+            doc = self._consume_doc_comments_opt()
             attributes = self._parse_attributes_opt()
             is_pub = bool(self._match(T.KW_PUB))
-            methods.append(self._parse_fun_decl(is_pub, attributes=attributes))
+            methods.append(
+                self._parse_fun_decl(is_pub, attributes=attributes, doc=doc)
+            )
             self._skip_newlines()
         self._expect(T.DEDENT, "expected dedent at end of impl block")
         return A.ImplBlock(
@@ -548,6 +625,8 @@ class Parser:
         self,
         is_pub: bool,
         attributes: Optional[list[A.Attribute]] = None,
+        *,
+        doc: Optional[str] = None,
     ) -> A.FunDecl:
         if attributes is None:
             attributes = []
@@ -574,6 +653,7 @@ class Parser:
             body=body,
             is_pub=is_pub,
             attributes=attributes,
+            doc=doc,
         )
 
     def _parse_type_params_opt(self) -> list[str]:

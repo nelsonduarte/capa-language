@@ -23,6 +23,7 @@ from capa import (
     Lexer, LexerError, Parser, TokenKind, analyze, ast_dump, transpile,
 )
 from capa.manifest import build_manifest, build_cyclonedx
+from capa.docgen import build_html as build_doc_html
 
 
 # ANSI colors for terminal highlighting
@@ -103,6 +104,16 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--doc",
+        action="store_true",
+        help=(
+            "emit a self-contained HTML documentation page built from "
+            "doc comments (///, /** */), capability signatures, and "
+            "attached attributes; the human-readable counterpart to "
+            "--manifest"
+        ),
+    )
+    parser.add_argument(
         "--no-color",
         action="store_true",
         help="disable ANSI colors in the output",
@@ -153,6 +164,7 @@ def main() -> int:
         or args.run
         or args.manifest
         or args.cyclonedx
+        or args.doc
     ):
         try:
             module = Parser(
@@ -166,7 +178,7 @@ def main() -> int:
             return 1
 
     result = None
-    if args.check or args.run or args.manifest or args.cyclonedx:
+    if args.check or args.run or args.manifest or args.cyclonedx or args.doc:
         # Semantic analysis is required before running.
         result = analyze(module, source=source, filename=filename)
         if not result.ok:
@@ -193,6 +205,10 @@ def main() -> int:
             import json
             sbom = build_cyclonedx(module, filename=filename)
             print(json.dumps(sbom, indent=2))
+            return 0
+        if args.doc:
+            html = build_doc_html(module, filename=filename)
+            print(html)
             return 0
         if args.check and not args.run:
             n_items = len(module.items)

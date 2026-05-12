@@ -22,6 +22,11 @@ class TokenKind(Enum):
     DEDENT = auto()
     EOF = auto()
 
+    # Doc comments: /// or /** ... */ (outer doc, attached to the
+    # next declaration by the parser). Distinct from regular // and
+    # /* comments which the lexer drops on the floor.
+    DOC_COMMENT = auto()
+
     # Literals
     INT_LIT = auto()
     FLOAT_LIT = auto()

@@ -49,7 +49,7 @@ Capa/
 │   ├── transpiler.py      # codegen for Python 3.10+
 │   └── runtime/
 │       └── __init__.py    # Result, Option, Stdio, Fs, ..., Unsafe, py_import
-├── tests/                 # 490 unit + end-to-end tests
+├── tests/                 # 519 unit + end-to-end tests
 │   ├── test_lexer.py
 │   ├── test_parser.py
 │   ├── test_analyzer.py
@@ -144,6 +144,9 @@ python -m capa --manifest examples/manifest_demo.capa
 
 # Emit a CycloneDX 1.5 SBOM with capability metadata embedded as properties
 python -m capa --cyclonedx examples/manifest_demo.capa
+
+# Emit a self-contained HTML doc page built from /// doc comments
+python -m capa --doc examples/documented_demo.capa > demo.html
 ```
 
 ## Programmatic use
@@ -170,7 +173,7 @@ else:
 python -m unittest discover tests
 ```
 
-**490 tests** (lexer + parser + analyzer + transpiler). The transpiler
+**519 tests** (lexer + parser + analyzer + transpiler). The transpiler
 suite actually *executes* the generated Python and checks stdout, the
 only honest way to test a transpiler.
 

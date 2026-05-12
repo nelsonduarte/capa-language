@@ -251,6 +251,38 @@
 </section>
 
 <!-- =====================================================
+     Human-readable counterpart
+===================================================== -->
+<section>
+    <h2>Human-readable counterpart: <code>--doc</code></h2>
+
+    <p>The manifest is for machines (CI gates, SBOM tools, audit pipelines). The same source carries enough information to produce a human-readable artefact too. <code>python -m capa --doc file.capa</code> emits a self-contained HTML page documenting every function, type, and user-defined capability, using:</p>
+
+    <ul>
+        <li><strong>Doc comments</strong> (<code>///</code> line and <code>/** */</code> block) attached to declarations. A small subset of markdown (paragraphs and inline <code>code</code> spans) is rendered; HTML special characters are always escaped.</li>
+        <li><strong>Function signatures</strong> with capability parameters highlighted, and a badge per declared capability (with a distinct colour for <code>Unsafe</code>).</li>
+        <li><strong>Attributes</strong> (<code>@security</code>, <code>@deprecated</code>, <code>@audited</code>) flattened to keyword-value rows.</li>
+        <li><strong>Call list</strong> per function (collapsed by default), with the line:col and stringified argument expressions of every call site.</li>
+    </ul>
+
+    <p>The output is one HTML file with inline CSS, no external resources, no JavaScript. Ship it next to the manifest as the auditor's reading copy.</p>
+
+<pre><code><span class="comment">/// Verify a token against an expected value.</span>
+<span class="comment">/// </span>
+<span class="comment">/// Caveat: this is a naive equality comparison; a real implementation</span>
+<span class="comment">/// would use a constant-time compare to avoid timing attacks.</span>
+<span class="attr">@security</span>(
+    cwe: <span class="str">"CWE-208"</span>,
+    severity: <span class="str">"medium"</span>,
+    description: <span class="str">"naive comparison; replace with constant-time before production"</span>
+)
+<span class="kw-decl">fun</span> <span class="fn-name">verify_token</span>(token: <span class="ty-primitive">String</span>, expected: <span class="ty-primitive">String</span>) -&gt; <span class="ty-primitive">Bool</span>
+    <span class="kw-ctrl">return</span> token == expected</code></pre>
+
+    <p>The rendered HTML carries the doc text as paragraphs, the CWE / severity / description as a `@security` row, and the function's pure-no-caps fact as the absence of any capability badge. A reviewer can read it without seeing the source file.</p>
+</section>
+
+<!-- =====================================================
      CycloneDX
 ===================================================== -->
 <section>

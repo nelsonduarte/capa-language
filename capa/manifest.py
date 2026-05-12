@@ -75,6 +75,7 @@ def build_manifest(
                 "name": item.name,
                 "methods": [m.name for m in item.methods],
                 "implementors": [],  # populated below
+                "doc": item.doc,
             })
         if isinstance(item, A.ImplBlock) and item.trait_name is not None:
             impl_map.setdefault(item.trait_name, []).append(item.type_name)
@@ -159,6 +160,7 @@ def _fun_record(
         "container": container,
         "pos": f"{filename}:{fn.pos.line}:{fn.pos.col}",
         "is_pub": fn.is_pub,
+        "doc": fn.doc,
         "params": param_records,
         "return_type": _ty_text(fn.return_type) if fn.return_type else "()",
         "declared_capabilities": declared_caps,
@@ -482,6 +484,8 @@ def build_cyclonedx(
         props: list[dict[str, str]] = [
             {"name": "capa:kind", "value": "capability"},
         ]
+        if uc.get("doc"):
+            props.append({"name": "capa:doc", "value": uc["doc"]})
         for method_name in uc["methods"]:
             props.append({
                 "name": "capa:capability:method",
@@ -517,6 +521,8 @@ def build_cyclonedx(
             {"name": "capa:has_unsafe", "value": str(fn["has_unsafe"]).lower()},
             {"name": "capa:is_pub", "value": str(fn["is_pub"]).lower()},
         ]
+        if fn.get("doc"):
+            props.append({"name": "capa:doc", "value": fn["doc"]})
         if fn["container"]:
             props.append({
                 "name": "capa:container",
