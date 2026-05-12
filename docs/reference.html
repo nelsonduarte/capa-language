@@ -1,0 +1,470 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Language reference | Capa</title>
+    <meta name="description" content="Full specification of the syntax and semantics of the Capa language: lexical structure, type system, statements, expressions, pattern matching, capabilities, imports, and known limitations.">
+    <meta property="og:title" content="Language reference | Capa">
+    <meta property="og:description" content="Full specification of Capa's syntax and semantics, from lexical structure to the capability discipline.">
+    <meta property="og:type" content="article">
+    <meta property="og:url" content="https://capa-language.com/reference.html">
+    <meta property="og:image" content="https://capa-language.com/capa_logo.png">
+    <meta property="og:site_name" content="Capa">
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="Language reference | Capa">
+    <meta name="twitter:description" content="Full specification of Capa's syntax and semantics.">
+    <meta name="twitter:image" content="https://capa-language.com/capa_logo.png">
+    <link rel="stylesheet" href="style.css">
+    <link rel="icon" type="image/svg+xml" href="favicon.svg">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'none'; object-src 'none'; base-uri 'self'; form-action 'self'">
+    <meta name="referrer" content="strict-origin-when-cross-origin">
+</head>
+<body>
+
+<header>
+    <nav>
+        <a href="index.html" class="logo">
+            <img src="capa_logo.svg" alt="" aria-hidden="true">
+            Capa
+        </a>
+        <div class="nav-links">
+            <a href="index.html">Home</a>
+            <a href="why.html">Why Capa</a>
+            <a href="tour.html">Language tour</a>
+            <a href="manifest.html">Manifest</a>
+            <a href="start.html">Get started</a>
+            <a href="community.html">Community</a>
+            <a href="roadmap.html">Roadmap</a>
+            <a href="https://github.com/nelsonduarte/capa" class="github">GitHub</a>
+        </div>
+    </nav>
+</header>
+
+<main>
+
+<div class="page-heading">
+    <h1>Language reference</h1>
+    <p>Full specification of the syntax and semantics of the Capa language. For a guided introduction, see the <a href="tour.html">language tour</a>. For the built-in APIs, see the <a href="stdlib.html">standard library</a> page.</p>
+</div>
+
+<nav class="toc">
+<ul>
+<li><a href="#lex">1. Lexical structure</a></li>
+<li><a href="#types">2. Type system</a></li>
+<li><a href="#stmts">3. Statements</a></li>
+<li><a href="#exprs">4. Expressions</a></li>
+<li><a href="#patterns">5. Pattern matching</a></li>
+<li><a href="#caps">6. Capabilities</a></li>
+<li><a href="#imports">7. Imports</a></li>
+<li><a href="#main">8. The main program</a></li>
+<li><a href="#vs-python">9. Differences from Python</a></li>
+<li><a href="#limits">10. Known limitations</a></li>
+</ul>
+</nav>
+
+<section id="lex">
+<h2>1. Lexical structure</h2>
+
+<h3>1.1. Encoding</h3>
+<p>UTF-8 is required. Identifiers may contain any Unicode letter, digits, and <code>_</code>, but must start with a letter or <code>_</code>.</p>
+
+<h3>1.2. Comments</h3>
+<pre><code>// Line comment (runs to the end of the line)
+/// Doc comment (attaches to the next declaration)
+/** Block doc comment (same role) */</code></pre>
+<p>Regular block comments <code>/* ... */</code> are also accepted by the lexer (and ignored). Only the doc variants are attached to AST nodes.</p>
+
+<h3>1.3. Indentation</h3>
+<p>Capa is <strong>indentation-sensitive</strong>, à la Python. Implicit <code>INDENT</code>/<code>DEDENT</code>/<code>NEWLINE</code> tokens are produced by the lexer:</p>
+<ul>
+<li>Leading whitespace on a line defines its indentation level</li>
+<li>Increase → <code>INDENT</code></li>
+<li>Decrease → <code>DEDENT</code></li>
+<li>End of line → <code>NEWLINE</code></li>
+<li>Inside <code>(</code>, <code>[</code>, <code>{</code>, <code>NEWLINE</code> is suppressed (implicit line continuation)</li>
+</ul>
+
+<h3>1.4. Implicit continuation by leading dot</h3>
+<p>For multi-line method chaining, a line beginning with <code>.</code> is treated as a continuation of the previous line:</p>
+<pre><code>let r = xs
+    .filter(...)
+    .map(...)
+    .fold(...)</code></pre>
+
+<h3>1.5. Keywords</h3>
+<pre><code>fun let var if then elif else match while for in
+break continue return import const type trait impl capability
+true false and or not consume self Self
+async await yield defer where mut</code></pre>
+<p>The last row lists reserved-for-future-use keywords. The lexer recognises them; the parser rejects their use.</p>
+
+<h3>1.6. Literals</h3>
+<table class="ref-table">
+<thead><tr><th>Type</th><th>Examples</th></tr></thead>
+<tbody>
+<tr><td>Integer</td><td><code>42</code>, <code>-7</code>, <code>0</code>, <code>1_000_000</code>, <code>0xff</code>, <code>0o755</code>, <code>0b1010</code></td></tr>
+<tr><td>Float</td><td><code>3.14</code>, <code>2.0</code>, <code>1e10</code></td></tr>
+<tr><td>String</td><td><code>"hello"</code>, <code>"a\nb"</code>, <code>"x = ${x}"</code></td></tr>
+<tr><td>Char</td><td><code>'a'</code>, <code>'\n'</code></td></tr>
+<tr><td>Bool</td><td><code>true</code>, <code>false</code></td></tr>
+<tr><td>List</td><td><code>[1, 2, 3]</code>, <code>[]</code></td></tr>
+<tr><td>Tuple</td><td><code>(1, "a")</code>, <code>(x,)</code>, <code>()</code></td></tr>
+<tr><td>Range</td><td><code>a..b</code> (exclusive), <code>a..=b</code> (inclusive)</td></tr>
+</tbody>
+</table>
+
+<h3>1.7. Interpolated strings</h3>
+<p><code>${expr}</code> inside a string literal is parsed as a Capa expression:</p>
+<pre><code>let n = 7
+"value = ${n * 2}"  // "value = 14"
+"len = ${xs.length()}"</code></pre>
+<p><code>$$</code> is the literal-<code>$</code> escape. Nested string literals inside interpolation are not supported.</p>
+</section>
+
+<section id="types">
+<h2>2. Type system</h2>
+
+<h3>2.1. Primitive types</h3>
+<p><code>Int</code>, <code>Float</code>, <code>String</code>, <code>Bool</code>, <code>Char</code>, <code>Unit</code>. See the <a href="stdlib.html">standard library</a> for the methods on each.</p>
+
+<h3>2.2. Compound types</h3>
+<table class="ref-table">
+<thead><tr><th>Construct</th><th>Syntax</th></tr></thead>
+<tbody>
+<tr><td>List</td><td><code>List&lt;T&gt;</code></td></tr>
+<tr><td>Tuple</td><td><code>(T1, T2, ..., Tn)</code></td></tr>
+<tr><td>Function</td><td><code>Fun(T1, T2) -&gt; Ret</code></td></tr>
+<tr><td>Map</td><td><code>Map&lt;K, V&gt;</code></td></tr>
+<tr><td>Set</td><td><code>Set&lt;T&gt;</code></td></tr>
+<tr><td>Option</td><td><code>Option&lt;T&gt;</code></td></tr>
+<tr><td>Result</td><td><code>Result&lt;T, E&gt;</code></td></tr>
+</tbody>
+</table>
+
+<h3>2.3. User-defined types</h3>
+<p>Structs:</p>
+<pre><code>type Person { name: String, age: Int }</code></pre>
+<p>Sum types (nominal variants):</p>
+<pre><code>type Shape =
+    Circle(Float)
+    Rectangle(Float, Float)
+    Square(Float)</code></pre>
+<p>Variants may have zero or more payloads. Variants without a payload (<code>type X = A</code>) are <em>constants</em>, used without <code>()</code>.</p>
+
+<h3>2.4. Generics</h3>
+<p>Functions and types can take type parameters delimited by <code>&lt;&gt;</code>:</p>
+<pre><code>fun first&lt;T&gt;(xs: List&lt;T&gt;) -&gt; Option&lt;T&gt;
+    return xs.first()
+
+type Pair&lt;A, B&gt; { first: A, second: B }</code></pre>
+<p>Local inference: the caller rarely needs to supply explicit args. <code>first&lt;Int&gt;([1,2,3])</code> is equivalent to <code>first([1,2,3])</code>.</p>
+
+<h3>2.5. Cross-statement inference</h3>
+<p><code>let xs = []</code> produces <code>List&lt;TyVar&gt;</code>. The first use pins the type parameter:</p>
+<pre><code>let xs = []
+xs.push(42)        // OK, infers List&lt;Int&gt;
+xs.push("oops")    // error: expects Int, got String</code></pre>
+<p><code>TyVar</code> sharing propagates through aliases (<code>let ys = xs</code>) and into calls to typed functions (<code>process(xs)</code> where <code>process: List&lt;Int&gt; -&gt; ...</code>).</p>
+
+<h3>2.6. Compatibility</h3>
+<p><code>compatible(expected, actual)</code> is structural with exceptions:</p>
+<ul>
+<li><code>TyUnknown</code> (an untyped expression) is compatible with any type</li>
+<li><code>TyVar</code> (inference placeholder) is compatible with any type</li>
+</ul>
+</section>
+
+<section id="stmts">
+<h2>3. Statements</h2>
+
+<h3>3.1. Bindings</h3>
+<pre><code>let name = "Ana"               // immutable, type inferred
+let age: Int = 30              // immutable, explicit type
+var counter = 0                // mutable
+counter = counter + 1          // assignment (only for var)</code></pre>
+<p>Pattern matching in bindings:</p>
+<pre><code>let (a, b) = pair()            // tuple destructuring
+let Person { name, age } = p   // struct destructuring</code></pre>
+
+<h3>3.2. Control flow</h3>
+<pre><code>// if-statement
+if cond
+    body1
+elif cond2
+    body2
+else
+    body3
+
+// while
+while cond
+    body
+
+// for
+for x in iter
+    body
+
+// match (statement)
+match scrutinee
+    pat1 -&gt; body1
+    pat2 -&gt; body2
+
+// match (expression, multi-line)
+let r = match scrutinee
+    pat1 -&gt; expr1
+    pat2 -&gt; expr2
+
+// match (expression, inline single-line)
+let r = match scrutinee { pat1 -&gt; expr1, pat2 -&gt; expr2 }
+
+// break / continue (only inside loops)
+break
+continue
+
+// return
+return                  // returns ()
+return expr             // returns a value</code></pre>
+
+<h3>3.3. Expressions as statements</h3>
+<p>Any expression can be a statement (value discarded):</p>
+<pre><code>stdio.println("hello")      // call with side effect
+xs.push(42)                 // mutation
+1 + 2                       // value discarded (valid but useless)</code></pre>
+</section>
+
+<section id="exprs">
+<h2>4. Expressions</h2>
+
+<h3>4.1. Operators</h3>
+<p>In decreasing precedence:</p>
+<table class="ref-table">
+<thead><tr><th>Operator</th><th>Description</th></tr></thead>
+<tbody>
+<tr><td><code>()</code> <code>[]</code> <code>.</code></td><td>Call, index, field access</td></tr>
+<tr><td><code>not</code> <code>-</code></td><td>Unary</td></tr>
+<tr><td><code>*</code> <code>/</code> <code>%</code></td><td>Multiplicative</td></tr>
+<tr><td><code>+</code> <code>-</code></td><td>Additive</td></tr>
+<tr><td><code>..</code> <code>..=</code></td><td>Range</td></tr>
+<tr><td><code>&lt;</code> <code>&lt;=</code> <code>&gt;</code> <code>&gt;=</code> <code>==</code> <code>!=</code></td><td>Comparison</td></tr>
+<tr><td><code>and</code></td><td>Short-circuit conjunction</td></tr>
+<tr><td><code>or</code></td><td>Short-circuit disjunction</td></tr>
+<tr><td><code>?</code></td><td>Try (Err propagation)</td></tr>
+</tbody>
+</table>
+
+<h3>4.2. <code>if</code> as an expression</h3>
+<pre><code>let cat = if cond then e1 else e2</code></pre>
+<p>The <code>then</code> keyword is the discriminator: without it, <code>if</code> is a statement.</p>
+
+<h3>4.3. <code>match</code> as an expression</h3>
+<p><code>match</code> is the same production whether used as a statement or as an expression: the value is consumed in expression position and discarded in statement position. Two surface forms exist:</p>
+<pre><code>// Multi-line (indented arms, expression OR block body)
+let r = match scrutinee
+    pat1 -&gt; expr1
+    pat2 -&gt; expr2
+
+// Inline (single-line, comma-separated, expression body only)
+let r = match scrutinee { pat1 -&gt; expr1, pat2 -&gt; expr2 }</code></pre>
+<p>Both forms accept guards and or-patterns. All arms must produce compatible types.</p>
+<p>The inline form's <code>{ ... }</code> opens immediately after the scrutinee. This collides syntactically with the struct-literal heuristic; to force a struct literal as the scrutinee, wrap it in parentheses:</p>
+<pre><code>match (Point { x: 1.0, y: 2.0 })
+    Point { x, y } -&gt; stdio.println("${x}, ${y}")</code></pre>
+
+<h3>4.4. Lambdas</h3>
+<pre><code>fun (x: Int) -&gt; Int =&gt; x * 2                    // single-expression
+fun (x: Int) -&gt; Int =&gt;                          // block body
+    let y = x * 2
+    return y + 1
+fun () -&gt; Int =&gt; 42                             // no params
+fun (a: Int, b: Int) -&gt; Int =&gt; a + b            // multiple params</code></pre>
+<p>Lambdas capture the lexical environment. If a single-line lambda contains a nested <code>match</code>, the transpiler automatically promotes it to a nested function.</p>
+
+<h3>4.5. The <code>?</code> operator</h3>
+<p>Propagates <code>Err</code> in functions that return <code>Result</code>:</p>
+<pre><code>fun read_two(fs: Fs) -&gt; Result&lt;(String, String), IoError&gt;
+    let a = fs.read("a")?      // if Err, returns immediately
+    let b = fs.read("b")?
+    return Ok((a, b))</code></pre>
+</section>
+
+<section id="patterns">
+<h2>5. Pattern matching</h2>
+
+<h3>5.1. Available patterns</h3>
+<table class="ref-table">
+<thead><tr><th>Pattern</th><th>Syntax</th><th>Matches</th></tr></thead>
+<tbody>
+<tr><td>Wildcard</td><td><code>_</code></td><td>Any value</td></tr>
+<tr><td>Identifier</td><td><code>x</code></td><td>Binds to <code>x</code></td></tr>
+<tr><td>Literal</td><td><code>42</code>, <code>"x"</code>, <code>true</code></td><td>Equality</td></tr>
+<tr><td>Variant without payload</td><td><code>None</code></td><td>Singleton variant</td></tr>
+<tr><td>Variant with payload</td><td><code>Some(x)</code>, <code>Ok(v)</code></td><td>Match + bind</td></tr>
+<tr><td>Struct</td><td><code>Person { name, age }</code></td><td>Match + bind fields</td></tr>
+<tr><td>Tuple</td><td><code>(a, b)</code>, <code>(x, _, z)</code></td><td>Tuple of the same arity</td></tr>
+<tr><td>Or-pattern</td><td><code>a | b | c</code></td><td>Any alternative</td></tr>
+</tbody>
+</table>
+
+<h3>5.2. Or-patterns with bindings</h3>
+<p>Each alternative can bind variables, provided all of them bind the same set of names with compatible types:</p>
+<pre><code>match op
+    Add(n) | Sub(n) | Mul(n) -&gt; n   // n is Int in all</code></pre>
+
+<h3>5.3. Guards</h3>
+<pre><code>match n
+    x if x &gt; 0 -&gt; "positive"
+    x if x &lt; 0 -&gt; "negative"
+    _ -&gt; "zero"</code></pre>
+
+<h3>5.4. Exhaustiveness</h3>
+<p>The checker requires full coverage:</p>
+<ul>
+<li>Sum types: every variant, or a catch-all <code>_</code></li>
+<li><code>Bool</code>: both <code>true</code> and <code>false</code>, or a catch-all</li>
+<li>Or-patterns count each alternative toward the count</li>
+</ul>
+<pre><code>type Color = Red | Green | Blue
+
+match c
+    Red -&gt; "r"
+    Green -&gt; "g"
+    // error: missing variant Blue</code></pre>
+
+<h3>5.5. Type-parameter substitution</h3>
+<p><code>match m.get(k)</code> where <code>m: Map&lt;String, Int&gt;</code> infers <code>Some(n)</code> with <code>n: Int</code>, not <code>n: T</code>. The owner's type parameters are substituted by the scrutinee's type arguments.</p>
+</section>
+
+<section id="caps">
+<h2>6. Capabilities</h2>
+
+<h3>6.1. What they are</h3>
+<p>Capabilities are primitive types representing access to system resources (<code>Stdio</code>, <code>Fs</code>, <code>Env</code>, <code>Net</code>, <code>Clock</code>, <code>Random</code>, <code>Unsafe</code>). They are only accessible via function parameters; there are no global instances.</p>
+
+<h3>6.2. The capability discipline (3 layers)</h3>
+<p><strong>Structural (v1):</strong> capabilities cannot appear in struct fields, variant payloads, function return types, constants, <code>let</code>/<code>var</code> bindings, generic args, or tuples. They only flow through parameters. One relaxation: cap-bearing structs that implement a user-defined capability may hold built-in caps as fields.</p>
+<p><strong>Flow (v2):</strong></p>
+<ul>
+<li><em>No aliasing:</em> the same capability cannot occupy two argument slots in a single call</li>
+<li><em>Mandatory use:</em> capability parameters must be used (or prefixed with <code>_</code> to silence the warning)</li>
+</ul>
+<p><strong>Linearity (v3):</strong> the <code>consume</code> keyword indicates ownership transfer:</p>
+<pre><code>fun close(consume f: File)
+    // f cannot be used after this call</code></pre>
+<p>"Consumed" variables are tracked across fork/merge in <code>if</code>/<code>elif</code>/<code>else</code> and <code>match</code>. In loops, the analysis uses dry-run + redo to discover consumes in the first iteration.</p>
+
+<h3>6.3. Capability in the signature</h3>
+<pre><code>fun main(stdio: Stdio, fs: Fs)            // multiple
+fun pure(x: Int) -&gt; Int                   // no capabilities (pure)
+fun with_consume(consume cap: MyCap)      // ownership transfer</code></pre>
+
+<h3>6.4. Attenuation</h3>
+<p>Every built-in capability has an attenuator that returns a fresh, narrower instance:</p>
+<table class="ref-table">
+<thead><tr><th>Capability</th><th>Attenuator</th><th>Semantics</th></tr></thead>
+<tbody>
+<tr><td><code>Net</code></td><td><code>restrict_to(host: String)</code></td><td>Allowed host set, monotonic intersection</td></tr>
+<tr><td><code>Fs</code></td><td><code>restrict_to(prefix: String)</code></td><td>Allowed path prefix, monotonic</td></tr>
+<tr><td><code>Env</code></td><td><code>restrict_to_keys(keys: List&lt;String&gt;)</code></td><td>Allowed key set, monotonic intersection</td></tr>
+<tr><td><code>Clock</code></td><td><code>restrict_to_after(t: Float)</code></td><td>Active only after timestamp</td></tr>
+<tr><td><code>Random</code></td><td><code>with_seed(seed: Int)</code></td><td>Deterministic sequence (no denied state)</td></tr>
+</tbody>
+</table>
+<p>Attenuated capabilities are also recorded in the <code>--manifest</code> output via the <code>args_flow</code> field. See the <a href="manifest.html">manifest page</a>.</p>
+</section>
+
+<section id="imports">
+<h2>7. Imports</h2>
+<pre><code>import std.fmt                       // the whole module
+import std.collections.HashMap       // a specific type
+import "./local.capa" as utils       // local file with alias</code></pre>
+<p>In v1, top-level <code>import</code> is <strong>rejected by the analyzer</strong>. The module system is reserved for a future version; for now, all useful code comes from the global standard library.</p>
+<p>For Python interop, use the typed builtins <code>py_import(unsafe, name)</code> and <code>py_invoke(unsafe, callable, args)</code>; both require the <code>Unsafe</code> capability. See the <a href="stdlib.html">standard library</a> page.</p>
+</section>
+
+<section id="main">
+<h2>8. The main program</h2>
+<p>The entry point is a function called <code>main</code> that may take one or more capabilities as parameters. The capabilities are instantiated by the runtime at boot:</p>
+<pre><code>fun main(stdio: Stdio, fs: Fs, env: Env)
+    let argv = env.args()
+    stdio.println("received ${argv.length()} arguments")</code></pre>
+<p>If <code>main</code> returns <code>Result&lt;(), E&gt;</code>, an <code>Err</code> causes a non-zero exit code.</p>
+</section>
+
+<section id="vs-python">
+<h2>9. Differences from Python</h2>
+<p>Capa transpiles to Python 3.10+, but the semantics differ:</p>
+<table class="ref-table">
+<thead><tr><th>Capa</th><th>Python</th></tr></thead>
+<tbody>
+<tr><td>Capabilities required for I/O</td><td>Globals such as <code>print</code>, <code>open</code></td></tr>
+<tr><td>Types checked at compile time</td><td>Duck typing</td></tr>
+<tr><td>Exhaustive <code>match</code> checked</td><td><code>match</code> at runtime, no exhaustiveness</td></tr>
+<tr><td>Or-patterns with consistent bindings</td><td>Or-patterns without bindings</td></tr>
+<tr><td><code>let x: List&lt;Int&gt; = []</code> valid</td><td>Python equivalent has no checks</td></tr>
+<tr><td>Mutation only with <code>var</code> or <code>consume</code></td><td>Everything mutable</td></tr>
+<tr><td>Manifest, SBOM, doc emitted by compiler</td><td>Manual via external tools</td></tr>
+</tbody>
+</table>
+</section>
+
+<section id="limits">
+<h2>10. Known limitations</h2>
+<ul>
+<li>String literals do not support multi-line (use <code>\n</code> for line breaks)</li>
+<li>Nested string literals inside interpolation (<code>"x ${"inner"} y"</code>) are not supported</li>
+<li>Errors inside interpolation report positions starting from the file start</li>
+<li>No module system (<code>import</code> is parsed but analyser-rejected)</li>
+<li>No asynchronous I/O operations</li>
+<li><code>if</code>/<code>match</code> in block-body lambdas need <code>=&gt;</code> before the indented block</li>
+<li>Multi-line <code>match</code> inside parentheses requires inline <code>{ }</code> form</li>
+</ul>
+<p>For the full roadmap, see the <a href="roadmap.html">roadmap page</a> and the <a href="https://github.com/nelsonduarte/capa/blob/main/TODO.md">TODO.md</a>.</p>
+</section>
+
+</main>
+
+<footer>
+    <div class="footer-grid">
+        <div>
+            <h4>Pages</h4>
+            <ul>
+                <li><a href="index.html">Home</a></li>
+                <li><a href="why.html">Why Capa</a></li>
+                <li><a href="tour.html">Language tour</a></li>
+                <li><a href="manifest.html">Manifest</a></li>
+                <li><a href="start.html">Get started</a></li>
+                <li><a href="roadmap.html">Roadmap</a></li>
+            </ul>
+        </div>
+        <div>
+            <h4>Documentation</h4>
+            <ul>
+                <li><a href="start.html">Getting started</a></li>
+                <li><a href="tour.html">Tutorial</a></li>
+                <li><a href="reference.html">Reference</a></li>
+                <li><a href="stdlib.html">Standard library</a></li>
+            </ul>
+        </div>
+        <div>
+            <h4>Specification</h4>
+            <ul>
+                <li><a href="https://github.com/nelsonduarte/capa/blob/main/Capa-WhitePaper.md">White paper</a></li>
+                <li><a href="https://github.com/nelsonduarte/capa/blob/main/Capa-EBNF.md">EBNF grammar</a></li>
+                <li><a href="https://github.com/nelsonduarte/capa/blob/main/docs/demo-event-stream.md">Event-stream demo</a></li>
+            </ul>
+        </div>
+        <div>
+            <h4>Project</h4>
+            <ul>
+                <li><a href="https://github.com/nelsonduarte/capa">Source</a></li>
+                <li><a href="community.html">Community</a></li>
+                <li><a href="brand.html">Brand assets</a></li>
+                <li><a href="https://github.com/nelsonduarte/capa/blob/main/LICENSE">License (MIT)</a></li>
+            </ul>
+        </div>
+    </div>
+    <p class="colophon">Built by Nelson Duarte · v0.4.0-alpha · MIT-licensed</p>
+</footer>
+
+</body>
+</html>

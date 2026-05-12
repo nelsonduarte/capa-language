@@ -1,0 +1,449 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Standard library | Capa</title>
+    <meta name="description" content="Every built-in type, function, and capability available in any Capa program. Primitive types, collections, Option/Result, JSON, conversions, Python interop, and the seven capabilities.">
+    <meta property="og:title" content="Standard library | Capa">
+    <meta property="og:description" content="Every built-in type, function, and capability available in any Capa program.">
+    <meta property="og:type" content="article">
+    <meta property="og:url" content="https://capa-language.com/stdlib.html">
+    <meta property="og:image" content="https://capa-language.com/capa_logo.png">
+    <meta property="og:site_name" content="Capa">
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="Standard library | Capa">
+    <meta name="twitter:description" content="Every built-in type, function, and capability in Capa.">
+    <meta name="twitter:image" content="https://capa-language.com/capa_logo.png">
+    <link rel="stylesheet" href="style.css">
+    <link rel="icon" type="image/svg+xml" href="favicon.svg">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'none'; object-src 'none'; base-uri 'self'; form-action 'self'">
+    <meta name="referrer" content="strict-origin-when-cross-origin">
+</head>
+<body>
+
+<header>
+    <nav>
+        <a href="index.html" class="logo">
+            <img src="capa_logo.svg" alt="" aria-hidden="true">
+            Capa
+        </a>
+        <div class="nav-links">
+            <a href="index.html">Home</a>
+            <a href="why.html">Why Capa</a>
+            <a href="tour.html">Language tour</a>
+            <a href="manifest.html">Manifest</a>
+            <a href="start.html">Get started</a>
+            <a href="community.html">Community</a>
+            <a href="roadmap.html">Roadmap</a>
+            <a href="https://github.com/nelsonduarte/capa" class="github">GitHub</a>
+        </div>
+    </nav>
+</header>
+
+<main>
+
+<div class="page-heading">
+    <h1>Standard library</h1>
+    <p>Every built-in type, function, and capability available in any Capa program, no imports required. For language syntax and semantics, see the <a href="reference.html">language reference</a>.</p>
+</div>
+
+<nav class="toc">
+<ul>
+<li><a href="#primitives">Primitive types</a></li>
+<li><a href="#list">List&lt;T&gt;</a></li>
+<li><a href="#map">Map&lt;K, V&gt;</a></li>
+<li><a href="#set">Set&lt;T&gt;</a></li>
+<li><a href="#option">Option&lt;T&gt;</a></li>
+<li><a href="#result">Result&lt;T, E&gt;</a></li>
+<li><a href="#json">JsonValue</a></li>
+<li><a href="#conversions">Conversion functions</a></li>
+<li><a href="#py-interop">Python interoperability</a></li>
+<li><a href="#caps">Capabilities</a></li>
+<li><a href="#io-error">IoError</a></li>
+</ul>
+</nav>
+
+<section id="primitives">
+<h2>Primitive types</h2>
+<table class="ref-table">
+<thead><tr><th>Type</th><th>Size/Range</th><th>Notes</th></tr></thead>
+<tbody>
+<tr><td><code>Int</code></td><td>64-bit signed</td><td>Arithmetic does not check for overflow</td></tr>
+<tr><td><code>Float</code></td><td>64-bit IEEE 754</td><td></td></tr>
+<tr><td><code>String</code></td><td>UTF-8</td><td>Immutable</td></tr>
+<tr><td><code>Bool</code></td><td><code>true</code> / <code>false</code></td><td></td></tr>
+<tr><td><code>Char</code></td><td>Unicode code point</td><td>At runtime, a str of length 1</td></tr>
+<tr><td><code>Unit</code></td><td><code>()</code></td><td>"Empty" type for functions with no return value</td></tr>
+</tbody>
+</table>
+
+<h3><code>String</code>, methods</h3>
+<table class="ref-table">
+<thead><tr><th>Method</th><th>Type</th><th>Description</th></tr></thead>
+<tbody>
+<tr><td><code>length()</code></td><td><code>Int</code></td><td>Number of characters</td></tr>
+<tr><td><code>is_empty()</code></td><td><code>Bool</code></td><td>True if the string is empty</td></tr>
+<tr><td><code>to_upper()</code></td><td><code>String</code></td><td>Convert to upper case</td></tr>
+<tr><td><code>to_lower()</code></td><td><code>String</code></td><td>Convert to lower case</td></tr>
+<tr><td><code>trim()</code></td><td><code>String</code></td><td>Strip leading/trailing whitespace</td></tr>
+<tr><td><code>contains(sub: String)</code></td><td><code>Bool</code></td><td>Substring is present</td></tr>
+<tr><td><code>starts_with(s: String)</code></td><td><code>Bool</code></td><td></td></tr>
+<tr><td><code>ends_with(s: String)</code></td><td><code>Bool</code></td><td></td></tr>
+<tr><td><code>split(sep: String)</code></td><td><code>List&lt;String&gt;</code></td><td>Split by separator</td></tr>
+<tr><td><code>replace(old: String, new: String)</code></td><td><code>String</code></td><td>Replace every occurrence</td></tr>
+</tbody>
+</table>
+</section>
+
+<section id="list">
+<h2><code>List&lt;T&gt;</code></h2>
+<p>Mutable homogeneous list. Construct with the literal <code>[a, b, c]</code> or by <code>push</code> on a <code>let</code>/<code>var</code>. Cross-statement inference: <code>let xs = []</code> infers the type from the first <code>push</code>.</p>
+<table class="ref-table">
+<thead><tr><th>Method</th><th>Type</th><th>Description</th></tr></thead>
+<tbody>
+<tr><td><code>length()</code></td><td><code>Int</code></td><td>Number of elements</td></tr>
+<tr><td><code>is_empty()</code></td><td><code>Bool</code></td><td></td></tr>
+<tr><td><code>push(x: T)</code></td><td><code>()</code></td><td>Append at the end (mutation)</td></tr>
+<tr><td><code>contains(x: T)</code></td><td><code>Bool</code></td><td></td></tr>
+<tr><td><code>first()</code></td><td><code>Option&lt;T&gt;</code></td><td>First element or <code>None</code></td></tr>
+<tr><td><code>last()</code></td><td><code>Option&lt;T&gt;</code></td><td>Last element or <code>None</code></td></tr>
+<tr><td><code>get(i: Int)</code></td><td><code>Option&lt;T&gt;</code></td><td>Safe indexed access</td></tr>
+<tr><td><code>map&lt;U&gt;(f: Fun(T) -&gt; U)</code></td><td><code>List&lt;U&gt;</code></td><td>Transform each element</td></tr>
+<tr><td><code>filter(p: Fun(T) -&gt; Bool)</code></td><td><code>List&lt;T&gt;</code></td><td>Keep elements that match</td></tr>
+<tr><td><code>fold&lt;U&gt;(init: U, f: Fun(U, T) -&gt; U)</code></td><td><code>U</code></td><td>Reduce to a single value</td></tr>
+</tbody>
+</table>
+<p>Index access: <code>xs[i]</code> (no bounds checking; use <code>get(i)</code> for safe access).</p>
+
+<h3>Range expressions</h3>
+<p><code>a..b</code> (exclusive of <code>b</code>) and <code>a..=b</code> (inclusive) produce a <code>List&lt;Int&gt;</code> materialised from the half-open / closed integer range. Both endpoints must be <code>Int</code>. Float endpoints are deliberately excluded.</p>
+<pre><code>for i in 0..10            // 0, 1, 2, ..., 9
+    stdio.println("${i}")
+
+for i in 1..=5            // 1, 2, 3, 4, 5
+    stdio.println("${i}")
+
+let n = 4
+let xs = (n - 1)..(n * 2) // 3..8, arithmetic endpoints
+
+let evens = (0..10).filter(fun (x: Int) -&gt; Bool =&gt; x % 2 == 0)
+                              // ranges support the full List API</code></pre>
+<p>Range precedence sits between addition and comparison, so <code>1+2..5+3</code> parses as <code>(1+2)..(5+3)</code> and <code>a..b == c..d</code> as <code>(a..b) == (c..d)</code>. Range itself is non-associative; <code>a..b..c</code> is a syntax error.</p>
+</section>
+
+<section id="map">
+<h2><code>Map&lt;K, V&gt;</code></h2>
+<p>Hash map. Construct via <code>new_map()</code> with a required type annotation.</p>
+<table class="ref-table">
+<thead><tr><th>Method</th><th>Type</th><th>Description</th></tr></thead>
+<tbody>
+<tr><td><code>length()</code></td><td><code>Int</code></td><td></td></tr>
+<tr><td><code>is_empty()</code></td><td><code>Bool</code></td><td></td></tr>
+<tr><td><code>get(k: K)</code></td><td><code>Option&lt;V&gt;</code></td><td>Returns the value if the key exists</td></tr>
+<tr><td><code>set(k: K, v: V)</code></td><td><code>()</code></td><td>Insert/update (mutation)</td></tr>
+<tr><td><code>contains_key(k: K)</code></td><td><code>Bool</code></td><td></td></tr>
+<tr><td><code>keys()</code></td><td><code>List&lt;K&gt;</code></td><td></td></tr>
+<tr><td><code>values()</code></td><td><code>List&lt;V&gt;</code></td><td></td></tr>
+</tbody>
+</table>
+<pre><code>let m: Map&lt;String, Int&gt; = new_map()
+m.set("a", 1)
+match m.get("a")
+    Some(n) -&gt; stdio.println("a = ${n}")
+    None -&gt; stdio.println("not found")</code></pre>
+</section>
+
+<section id="set">
+<h2><code>Set&lt;T&gt;</code></h2>
+<p>Set of unique elements. Construct via <code>new_set()</code> with a type annotation.</p>
+<table class="ref-table">
+<thead><tr><th>Method</th><th>Type</th><th>Description</th></tr></thead>
+<tbody>
+<tr><td><code>length()</code></td><td><code>Int</code></td><td></td></tr>
+<tr><td><code>is_empty()</code></td><td><code>Bool</code></td><td></td></tr>
+<tr><td><code>add(x: T)</code></td><td><code>()</code></td><td>Add (no-op if duplicate)</td></tr>
+<tr><td><code>remove(x: T)</code></td><td><code>()</code></td><td>Remove (no-op if absent)</td></tr>
+<tr><td><code>contains(x: T)</code></td><td><code>Bool</code></td><td></td></tr>
+<tr><td><code>to_list()</code></td><td><code>List&lt;T&gt;</code></td><td>Convert to a list</td></tr>
+</tbody>
+</table>
+</section>
+
+<section id="option">
+<h2><code>Option&lt;T&gt;</code></h2>
+<p>Built-in sum type:</p>
+<pre><code>type Option&lt;T&gt; =
+    Some(T)
+    None</code></pre>
+<table class="ref-table">
+<thead><tr><th>Method</th><th>Type</th><th>Description</th></tr></thead>
+<tbody>
+<tr><td><code>is_some()</code></td><td><code>Bool</code></td><td></td></tr>
+<tr><td><code>is_none()</code></td><td><code>Bool</code></td><td></td></tr>
+<tr><td><code>unwrap_or(default: T)</code></td><td><code>T</code></td><td>Return value or default</td></tr>
+<tr><td><code>map&lt;U&gt;(f: Fun(T) -&gt; U)</code></td><td><code>Option&lt;U&gt;</code></td><td>Transform if <code>Some</code></td></tr>
+<tr><td><code>and_then&lt;U&gt;(f: Fun(T) -&gt; Option&lt;U&gt;)</code></td><td><code>Option&lt;U&gt;</code></td><td>Monadic bind</td></tr>
+<tr><td><code>ok_or&lt;E&gt;(err: E)</code></td><td><code>Result&lt;T, E&gt;</code></td><td>Convert to a <code>Result</code></td></tr>
+</tbody>
+</table>
+</section>
+
+<section id="result">
+<h2><code>Result&lt;T, E&gt;</code></h2>
+<p>Built-in sum type for error handling:</p>
+<pre><code>type Result&lt;T, E&gt; =
+    Ok(T)
+    Err(E)</code></pre>
+<table class="ref-table">
+<thead><tr><th>Method</th><th>Type</th><th>Description</th></tr></thead>
+<tbody>
+<tr><td><code>is_ok()</code></td><td><code>Bool</code></td><td></td></tr>
+<tr><td><code>is_err()</code></td><td><code>Bool</code></td><td></td></tr>
+<tr><td><code>unwrap_or(default: T)</code></td><td><code>T</code></td><td>Return value or default</td></tr>
+<tr><td><code>map&lt;U&gt;(f: Fun(T) -&gt; U)</code></td><td><code>Result&lt;U, E&gt;</code></td><td>Transform the success value</td></tr>
+<tr><td><code>and_then&lt;U&gt;(f: Fun(T) -&gt; Result&lt;U, E&gt;)</code></td><td><code>Result&lt;U, E&gt;</code></td><td>Monadic bind</td></tr>
+<tr><td><code>map_err&lt;F&gt;(f: Fun(E) -&gt; F)</code></td><td><code>Result&lt;T, F&gt;</code></td><td>Transform only the error</td></tr>
+</tbody>
+</table>
+<p>The <code>?</code> operator automatically propagates <code>Err</code> in functions that return <code>Result</code>:</p>
+<pre><code>fun read_and_process(fs: Fs) -&gt; Result&lt;Int, IoError&gt;
+    let content = fs.read("x.txt")?  // if Err, returns immediately
+    return Ok(content.length())</code></pre>
+</section>
+
+<section id="json">
+<h2><code>JsonValue</code></h2>
+<p>Built-in sum type for JSON representation:</p>
+<pre><code>type JsonValue =
+    JNull
+    JBool(Bool)
+    JNum(Float)
+    JStr(String)
+    JArr(List&lt;JsonValue&gt;)
+    JObj(Map&lt;String, JsonValue&gt;)</code></pre>
+
+<h3>Extraction methods</h3>
+<table class="ref-table">
+<thead><tr><th>Method</th><th>Type</th><th>Description</th></tr></thead>
+<tbody>
+<tr><td><code>is_null()</code></td><td><code>Bool</code></td><td></td></tr>
+<tr><td><code>as_bool()</code></td><td><code>Option&lt;Bool&gt;</code></td><td><code>Some(b)</code> if <code>JBool(b)</code></td></tr>
+<tr><td><code>as_num()</code></td><td><code>Option&lt;Float&gt;</code></td><td><code>Some(n)</code> if <code>JNum(n)</code></td></tr>
+<tr><td><code>as_string()</code></td><td><code>Option&lt;String&gt;</code></td><td><code>Some(s)</code> if <code>JStr(s)</code></td></tr>
+<tr><td><code>as_array()</code></td><td><code>Option&lt;List&lt;JsonValue&gt;&gt;</code></td><td><code>Some(xs)</code> if <code>JArr(xs)</code></td></tr>
+<tr><td><code>as_object()</code></td><td><code>Option&lt;Map&lt;String, JsonValue&gt;&gt;</code></td><td><code>Some(m)</code> if <code>JObj(m)</code></td></tr>
+</tbody>
+</table>
+
+<h3>Top-level functions</h3>
+<table class="ref-table">
+<thead><tr><th>Function</th><th>Type</th></tr></thead>
+<tbody>
+<tr><td><code>parse_json(s: String)</code></td><td><code>Result&lt;JsonValue, String&gt;</code></td></tr>
+<tr><td><code>to_json(j: JsonValue)</code></td><td><code>String</code></td></tr>
+</tbody>
+</table>
+</section>
+
+<section id="conversions">
+<h2>Built-in conversion functions</h2>
+<table class="ref-table">
+<thead><tr><th>Function</th><th>Type</th><th>Notes</th></tr></thead>
+<tbody>
+<tr><td><code>parse_int(s: String)</code></td><td><code>Option&lt;Int&gt;</code></td><td>Returns <code>None</code> on invalid input</td></tr>
+<tr><td><code>parse_float(s: String)</code></td><td><code>Option&lt;Float&gt;</code></td><td>Same for floats</td></tr>
+<tr><td><code>to_float(i: Int)</code></td><td><code>Float</code></td><td>Total: every Int has an exact Float representation</td></tr>
+<tr><td><code>to_int(f: Float)</code></td><td><code>Int</code></td><td>Truncates toward zero</td></tr>
+<tr><td><code>new_map()</code></td><td><code>Map&lt;?, ?&gt;</code></td><td>Requires <code>let</code> annotation to pin the types</td></tr>
+<tr><td><code>new_set()</code></td><td><code>Set&lt;?&gt;</code></td><td>Same</td></tr>
+</tbody>
+</table>
+<p>Capa has <strong>no implicit numeric coercion</strong>: <code>Float + Int</code> is a type error. Use <code>to_float</code> / <code>to_int</code> at the call site to make the conversion explicit:</p>
+<pre><code>fun avg(sum: Float, count: Int) -&gt; Float
+    return sum / to_float(count)</code></pre>
+</section>
+
+<section id="py-interop">
+<h2>Python interoperability</h2>
+<p>The two functions below cross the Capa/Python trust boundary. Both require the <code>Unsafe</code> capability as the first argument.</p>
+<table class="ref-table">
+<thead><tr><th>Function</th><th>Type</th></tr></thead>
+<tbody>
+<tr><td><code>py_import(unsafe: Unsafe, name: String)</code></td><td>dynamic (untyped)</td></tr>
+<tr><td><code>py_invoke(unsafe: Unsafe, callable: ?, args: List&lt;?&gt;)</code></td><td>dynamic (untyped)</td></tr>
+</tbody>
+</table>
+<pre><code>fun square_root(unsafe: Unsafe, x: Float) -&gt; Float
+    let math = py_import(unsafe, "math")
+    return py_invoke(unsafe, math.sqrt, [x])</code></pre>
+<p>Crossing this boundary loses Capa's static guarantees: the Python value can do anything its type allows, with full ambient authority. The <code>--manifest</code> output marks functions with an <code>Unsafe</code> parameter via <code>has_unsafe: true</code>, so audit tooling can flag them for separate review.</p>
+</section>
+
+<section id="caps">
+<h2>Capabilities</h2>
+
+<h3><code>Stdio</code></h3>
+<table class="ref-table">
+<thead><tr><th>Method</th><th>Type</th><th>Description</th></tr></thead>
+<tbody>
+<tr><td><code>print(s: String)</code></td><td><code>()</code></td><td>No newline</td></tr>
+<tr><td><code>println(s: String)</code></td><td><code>()</code></td><td>With newline</td></tr>
+<tr><td><code>eprintln(s: String)</code></td><td><code>()</code></td><td>To stderr</td></tr>
+<tr><td><code>read_line()</code></td><td><code>Result&lt;String, IoError&gt;</code></td><td>Read a line without <code>\n</code></td></tr>
+</tbody>
+</table>
+
+<h3><code>Fs</code></h3>
+<table class="ref-table">
+<thead><tr><th>Method</th><th>Type</th><th>Description</th></tr></thead>
+<tbody>
+<tr><td><code>read(p: String)</code></td><td><code>Result&lt;String, IoError&gt;</code></td><td>Read the entire file</td></tr>
+<tr><td><code>write(p: String, c: String)</code></td><td><code>Result&lt;(), IoError&gt;</code></td><td>Write (overwrites)</td></tr>
+<tr><td><code>exists(p: String)</code></td><td><code>Bool</code></td><td>Check whether the path exists (returns false on denied paths)</td></tr>
+<tr><td><code>restrict_to(prefix: String)</code></td><td><code>Fs</code></td><td>Attenuated <code>Fs</code> allowing only paths under the prefix. Monotonic.</td></tr>
+<tr><td><code>allows(path: String)</code></td><td><code>Bool</code></td><td>Query the current restriction set without performing I/O</td></tr>
+</tbody>
+</table>
+
+<h3><code>Env</code></h3>
+<table class="ref-table">
+<thead><tr><th>Method</th><th>Type</th><th>Description</th></tr></thead>
+<tbody>
+<tr><td><code>get(name: String)</code></td><td><code>Option&lt;String&gt;</code></td><td>Environment variable; <code>None</code> for unset or denied keys</td></tr>
+<tr><td><code>args()</code></td><td><code>List&lt;String&gt;</code></td><td>Command-line arguments</td></tr>
+<tr><td><code>restrict_to_keys(keys: List&lt;String&gt;)</code></td><td><code>Env</code></td><td>Attenuated <code>Env</code> allowing only the listed keys. Monotonic intersection.</td></tr>
+<tr><td><code>allows(name: String)</code></td><td><code>Bool</code></td><td>Query the current allowed-key set</td></tr>
+</tbody>
+</table>
+
+<h3><code>Clock</code></h3>
+<table class="ref-table">
+<thead><tr><th>Method</th><th>Type</th><th>Description</th></tr></thead>
+<tbody>
+<tr><td><code>now_secs()</code></td><td><code>Float</code></td><td>Unix time in seconds</td></tr>
+<tr><td><code>now_monotonic()</code></td><td><code>Float</code></td><td>Monotonic time</td></tr>
+<tr><td><code>sleep(seconds: Float)</code></td><td><code>()</code></td><td>Pause execution (silent no-op on a denied Clock)</td></tr>
+<tr><td><code>restrict_to_after(t: Float)</code></td><td><code>Clock</code></td><td>Attenuated <code>Clock</code> active only after timestamp <code>t</code>. Chained calls take the maximum threshold.</td></tr>
+<tr><td><code>allows()</code></td><td><code>Bool</code></td><td>Whether the current time has passed the threshold</td></tr>
+</tbody>
+</table>
+
+<h3><code>Random</code></h3>
+<table class="ref-table">
+<thead><tr><th>Method</th><th>Type</th><th>Description</th></tr></thead>
+<tbody>
+<tr><td><code>int_range(low: Int, high: Int)</code></td><td><code>Int</code></td><td>Integer in [low, high)</td></tr>
+<tr><td><code>float_unit()</code></td><td><code>Float</code></td><td>Float in [0, 1)</td></tr>
+<tr><td><code>with_seed(seed: Int)</code></td><td><code>Random</code></td><td>Deterministic sequence from the given seed. Re-seeding overwrites.</td></tr>
+</tbody>
+</table>
+
+<h3><code>Net</code></h3>
+<table class="ref-table">
+<thead><tr><th>Method</th><th>Type</th><th>Description</th></tr></thead>
+<tbody>
+<tr><td><code>restrict_to(host: String)</code></td><td><code>Net</code></td><td>Attenuate: return a fresh <code>Net</code> whose authority is the <strong>intersection</strong> of the current allowed-host set with <code>{host}</code>. Monotonic; restrictions only narrow.</td></tr>
+<tr><td><code>allows(host: String)</code></td><td><code>Bool</code></td><td>Query the current restriction set; performs no I/O.</td></tr>
+<tr><td><code>get(url: String)</code></td><td><code>Result&lt;String, IoError&gt;</code></td><td>Real HTTP GET (via <code>urllib.request</code>). Returns <code>Err</code> immediately if the URL's host is outside the current restriction set, <em>before</em> any system call.</td></tr>
+</tbody>
+</table>
+<p>A <code>Net</code> received from <code>main</code> is unrestricted; restrictions accumulate through <code>restrict_to</code>. The result of <code>restrict_to</code> is a fresh capability instance and is bindable in a <code>let</code>/<code>var</code>; Capa relaxes the "no capabilities in locals" rule specifically for method-call results (which are necessarily fresh, not aliases of an existing capability).</p>
+<pre><code>fun fetch(net: Net) -&gt; Result&lt;String, IoError&gt;
+    return net.get("https://api.example.com/users")
+
+fun main(net: Net, stdio: Stdio)
+    let api = net.restrict_to("api.example.com")
+    match fetch(api)
+        Ok(body) -&gt; stdio.println(body)
+        Err(e)   -&gt; stdio.eprintln("${e}")</code></pre>
+<p>See <a href="https://github.com/nelsonduarte/capa/blob/main/examples/net_attenuation.capa"><code>examples/net_attenuation.capa</code></a> for a fuller demonstration, including the monotonic-narrowing property (chaining two disjoint restrictions yields a <code>Net</code> that allows nothing).</p>
+
+<h3><code>Unsafe</code></h3>
+<p>Marker capability for crossing the Python boundary. Has no methods, its only role is to gate <code>py_import</code> and <code>py_invoke</code> (see the <a href="#py-interop">Python interoperability</a> section above).</p>
+
+<h3>User-defined capabilities</h3>
+<p>Libraries can declare their own capabilities with the <code>capability</code> keyword. The declaration registers the name in the capability discipline; any type that implements the capability becomes a valid implementor.</p>
+<pre><code>capability SendEmail
+    fun send(self, to: String, subject: String, body: String) -&gt; Result&lt;Unit, IoError&gt;
+
+type SmtpMailer {
+    server: String,
+    net: Net          // built-in cap as a field, allowed because
+                      // SmtpMailer implements a user-defined cap
+}
+
+impl SendEmail for SmtpMailer
+    fun send(self, to: String, subject: String, body: String) -&gt; Result&lt;Unit, IoError&gt;
+        // delegate to self.net under the hood
+        return Ok(())
+
+// Factory that consumes the underlying built-in cap and produces the
+// higher-level capability. Allowed return type even though SmtpMailer
+// carries authority.
+fun make_smtp_mailer(net: Net, server: String) -&gt; SmtpMailer
+    return SmtpMailer { server: server, net: net.restrict_to(server) }
+
+// Caller side: receive the capability by parameter (subtyping accepts
+// SmtpMailer where SendEmail is expected because of the impl).
+fun send_welcome(mailer: SendEmail, to: String) -&gt; Result&lt;Unit, IoError&gt;
+    return mailer.send(to, "Welcome", "Hello!")</code></pre>
+<p>The discipline still applies: a <code>let dup = mailer</code> (plain identifier alias of a cap-bearing value) is rejected; only call/method-call right-hand sides produce fresh capability instances that can be bound. See <a href="https://github.com/nelsonduarte/capa/blob/main/examples/user_capabilities.capa"><code>examples/user_capabilities.capa</code></a> for a complete example.</p>
+</section>
+
+<section id="io-error">
+<h2>The <code>IoError</code> type</h2>
+<p>Opaque type representing I/O errors. Available as a type parameter in <code>Result&lt;T, IoError&gt;</code> and in pattern matching:</p>
+<pre><code>match fs.read("x.txt")
+    Ok(content) -&gt; stdio.println(content)
+    Err(e) -&gt; stdio.eprintln("error: ${e}")</code></pre>
+<p><code>IoError</code>'s string representation is human-readable, but its internal contents are private.</p>
+</section>
+
+</main>
+
+<footer>
+    <div class="footer-grid">
+        <div>
+            <h4>Pages</h4>
+            <ul>
+                <li><a href="index.html">Home</a></li>
+                <li><a href="why.html">Why Capa</a></li>
+                <li><a href="tour.html">Language tour</a></li>
+                <li><a href="manifest.html">Manifest</a></li>
+                <li><a href="start.html">Get started</a></li>
+                <li><a href="roadmap.html">Roadmap</a></li>
+            </ul>
+        </div>
+        <div>
+            <h4>Documentation</h4>
+            <ul>
+                <li><a href="start.html">Getting started</a></li>
+                <li><a href="tour.html">Tutorial</a></li>
+                <li><a href="reference.html">Reference</a></li>
+                <li><a href="stdlib.html">Standard library</a></li>
+            </ul>
+        </div>
+        <div>
+            <h4>Specification</h4>
+            <ul>
+                <li><a href="https://github.com/nelsonduarte/capa/blob/main/Capa-WhitePaper.md">White paper</a></li>
+                <li><a href="https://github.com/nelsonduarte/capa/blob/main/Capa-EBNF.md">EBNF grammar</a></li>
+                <li><a href="https://github.com/nelsonduarte/capa/blob/main/docs/demo-event-stream.md">Event-stream demo</a></li>
+            </ul>
+        </div>
+        <div>
+            <h4>Project</h4>
+            <ul>
+                <li><a href="https://github.com/nelsonduarte/capa">Source</a></li>
+                <li><a href="community.html">Community</a></li>
+                <li><a href="brand.html">Brand assets</a></li>
+                <li><a href="https://github.com/nelsonduarte/capa/blob/main/LICENSE">License (MIT)</a></li>
+            </ul>
+        </div>
+    </div>
+    <p class="colophon">Built by Nelson Duarte · v0.4.0-alpha · MIT-licensed</p>
+</footer>
+
+</body>
+</html>

@@ -668,6 +668,77 @@ footer {
 }
 
 /* ============================================================
+   In-page table of contents (reference and stdlib pages)
+   ============================================================ */
+
+nav.toc {
+    /* Reset the top-level nav flex/layout inherited from the
+       header bar; the TOC is a block-level navigation element. */
+    display: block;
+    max-width: none;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1rem 1.5rem;
+    margin: 1.5rem 0 2rem;
+}
+
+nav.toc ul {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.4rem 1.5rem;
+}
+
+nav.toc li {
+    font-size: 0.95rem;
+}
+
+nav.toc a {
+    color: var(--accent);
+}
+
+/* ============================================================
+   Reference / stdlib tables (method / type / description)
+   ============================================================ */
+
+.ref-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 1rem 0 1.5rem;
+    font-size: 0.92rem;
+}
+
+.ref-table th,
+.ref-table td {
+    text-align: left;
+    padding: 0.55rem 0.85rem;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+}
+
+.ref-table thead th {
+    color: var(--fg-bright);
+    font-weight: 600;
+    background: var(--bg-elevated);
+    border-bottom: 1px solid var(--accent);
+}
+
+.ref-table td:first-child {
+    white-space: nowrap;
+}
+
+.ref-table td code {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    padding: 0.05em 0.4em;
+    border-radius: 3px;
+    font-size: 0.85em;
+}
+
+/* ============================================================
    Roadmap milestone list
    ============================================================ */
 
@@ -1103,6 +1174,7 @@ pre.showcase {
     .type-row { grid-template-columns: 1fr; gap: 0.25rem; }
     .release-banner { font-size: 0.85rem; }
     .release-tag { font-size: 0.72rem; }
+    nav.toc ul { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 480px) {
