@@ -681,7 +681,7 @@ footer {
 /* Button row used on the landing: one button per platform/arch. */
 .download-row {
     display: grid;
-    grid-template-columns: repeat(4, 1fr);
+    grid-template-columns: repeat(3, 1fr);
     gap: 0.75rem;
     margin: 1.5rem 0;
 }

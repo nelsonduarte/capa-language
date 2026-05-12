@@ -11,6 +11,30 @@ breaking changes and the discipline is still being shaped.
 
 ### Added
 
+- **Doc-comment markdown extensions**: `--doc` now renders fenced
+  code blocks (triple backticks, with an optional language tag
+  emitted as a `class="lang-<name>"` on the inner `<code>`) and
+  bulleted lists (lines starting with `- `) inside doc-comment
+  bodies. HTML special characters inside code blocks are still
+  escaped. Paragraphs and inline `` `code` `` spans continue to
+  work as before.
+
+- **Trait section in `--doc`**: plain (non-capability) traits now
+  get their own section, listing each method signature and the
+  set of types that implement the trait. Capability declarations
+  (`capability X`) keep their separate section as before.
+
+### Changed
+
+- **Intel Macs are no longer a release target**. The
+  `release-binaries.yml` workflow matrix drops the `macos-13`
+  entry; pre-built binaries ship for Linux x86_64, macOS Apple
+  Silicon, and Windows x86_64 only. Apple stopped selling Intel
+  Macs in 2023 and GitHub's `macos-13` runner pool is unreliable
+  (the v0.5.0-alpha Intel job sat queued for over an hour without
+  ever picking up a runner). Intel-Mac users install from source
+  with Python 3.10+ via `pip install -e .`.
+
 - **Raw string literals**, `r"..."`. No escape processing and no
   `${}` interpolation: every character up to the next `"` is taken
   literally. Useful for Windows paths (`r"C:\Users\..."`) and
@@ -49,24 +73,26 @@ two new HTML documentation pages, and closing the capability-
 attenuation arc.
 
 Users no longer need to install Python to run Capa programs. The
-release ships standalone binaries for Linux, macOS (Intel +
-Apple Silicon) and Windows; each bundles the compiler and a
-Python interpreter into a single ~8 MB executable. The public
-site is at `https://capa-language.com/` with HTTPS enforced,
-HSTS, DNSSEC, full search-engine baseline, and a per-OS download
-section on the landing page. The standard library and language
-reference docs are now native HTML pages, not bare markdown.
-`Random.with_seed` closes the attenuator family so every built-in
-capability has one.
+release ships standalone binaries for Linux, macOS Apple Silicon,
+and Windows; each bundles the compiler and a Python interpreter
+into a single ~8 MB executable. Intel Macs are not shipped as a
+pre-built binary (Apple stopped selling Intel Macs in 2023 and
+the GitHub Actions Intel runner pool is unreliable); install from
+source. The public site is at `https://capa-language.com/` with
+HTTPS enforced, HSTS, DNSSEC, full search-engine baseline, and a
+per-OS download section on the landing page. The standard library
+and language reference docs are now native HTML pages, not bare
+markdown. `Random.with_seed` closes the attenuator family so every
+built-in capability has one.
 
 ### Added
 
-- **Pre-built binaries** for Linux x86_64, macOS x86_64, macOS
-  arm64, and Windows x86_64. PyInstaller spec at `deploy/capa.spec`
+- **Pre-built binaries** for Linux x86_64, macOS Apple Silicon,
+  and Windows x86_64. PyInstaller spec at `deploy/capa.spec`
   bundles the compiler and a Python interpreter into a single
   ~8 MB executable, with `.sha256` checksum for verification.
   Built automatically on every version tag by
-  `.github/workflows/release-binaries.yml`, a four-platform matrix
+  `.github/workflows/release-binaries.yml`, a three-platform matrix
   workflow that smoke-tests each binary before uploading to the
   GitHub Release.
 

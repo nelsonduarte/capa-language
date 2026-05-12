@@ -102,9 +102,11 @@ Download the binary for your platform from the
 | Platform | File |
 |---|---|
 | Linux x86_64 | `capa-linux-x86_64` |
-| macOS Intel | `capa-macos-x86_64` |
-| macOS Apple Silicon | `capa-macos-arm64` |
+| macOS Apple Silicon (M1 and later) | `capa-macos-arm64` |
 | Windows x86_64 | `capa-windows-x86_64.exe` |
+
+Intel Macs are not shipped as a pre-built binary; install from source
+(see below).
 
 ```bash
 # Linux / macOS

@@ -60,16 +60,22 @@ def build_html(
     funcs = manifest["functions"]
     user_caps = manifest["user_defined_capabilities"]
     types = _collect_types(module)
+    traits = _collect_traits(module)
 
     parts: list[str] = []
     parts.append(_html_prologue(title))
     parts.append(_render_header(title, manifest))
     parts.append("<main>\n")
-    parts.append(_render_toc(funcs, types, user_caps))
+    parts.append(_render_toc(funcs, types, user_caps, traits))
     if user_caps:
         parts.append('<section id="capabilities">\n<h2>Capabilities</h2>\n')
         for uc in user_caps:
             parts.append(_render_capability(uc))
+        parts.append("</section>\n")
+    if traits:
+        parts.append('<section id="traits">\n<h2>Traits</h2>\n')
+        for t in traits:
+            parts.append(_render_trait(t))
         parts.append("</section>\n")
     if types:
         parts.append('<section id="types">\n<h2>Types</h2>\n')
@@ -90,6 +96,45 @@ def build_html(
 # =====================================================================
 # Type extraction (the manifest does not surface types yet)
 # =====================================================================
+
+
+def _collect_traits(module: A.Module) -> list[dict[str, Any]]:
+    """Collect plain (non-capability) traits with their method
+    signatures, doc, and implementor types. Capability declarations
+    (``capability X``) are out of scope here; they appear in the
+    manifest's ``user_defined_capabilities`` list and are rendered
+    separately.
+    """
+    out: list[dict[str, Any]] = []
+    impl_map: dict[str, list[str]] = {}
+    for item in module.items:
+        if isinstance(item, A.ImplBlock) and item.trait_name is not None:
+            impl_map.setdefault(item.trait_name, []).append(item.type_name)
+    for item in module.items:
+        if isinstance(item, A.TraitDecl) and not item.is_capability:
+            out.append({
+                "name": item.name,
+                "type_params": item.type_params,
+                "doc": item.doc,
+                "methods": [
+                    {
+                        "name": m.name,
+                        "params": [
+                            {
+                                "name": p.name,
+                                "type": _ty_text(p.type_expr)
+                                if p.type_expr else "Self",
+                            }
+                            for p in m.params
+                        ],
+                        "return_type": _ty_text(m.return_type)
+                        if m.return_type else "()",
+                    }
+                    for m in item.methods
+                ],
+                "implementors": sorted(impl_map.get(item.name, [])),
+            })
+    return out
 
 
 def _collect_types(module: A.Module) -> list[dict[str, Any]]:
@@ -124,24 +169,95 @@ def _collect_types(module: A.Module) -> list[dict[str, Any]]:
 
 
 # =====================================================================
-# Markdown-lite (escape + paragraphs + inline code)
+# Markdown-lite (escape + paragraphs + inline code + fenced code blocks
+# + bulleted lists)
 # =====================================================================
 
 
 _CODE_SPAN_RE = re.compile(r"`([^`\n]+)`")
+_FENCE_RE = re.compile(r"\s*```\s*([a-zA-Z0-9_]*)\s*$")
+
+
+def _render_inline(text: str) -> str:
+    """Escape HTML in ``text`` and re-introduce inline ``code`` spans
+    written with backticks. Called on every chunk of paragraph or
+    list-item text before splicing into output."""
+    escaped = _html.escape(text)
+    return _CODE_SPAN_RE.sub(lambda m: f"<code>{m.group(1)}</code>", escaped)
 
 
 def _render_doc(doc: Optional[str]) -> str:
+    """Render a doc-comment body as HTML.
+
+    Supports a small markdown subset, processed line by line:
+    - blank lines separate paragraphs;
+    - a line beginning with ``- `` starts (or continues) a bulleted
+      list;
+    - a line containing only ```` ``` ```` (optionally followed by a
+      language tag) opens or closes a fenced code block; the body is
+      emitted verbatim (no inline-code re-substitution, no escaping
+      of backticks);
+    - inline ``code`` spans inside paragraphs and list items use
+      single backticks;
+    - HTML special characters are always escaped.
+    """
     if not doc:
         return ""
-    paragraphs = re.split(r"\n\s*\n", doc.strip())
+    lines = doc.strip().split("\n")
     out: list[str] = []
-    for para in paragraphs:
-        escaped = _html.escape(para).replace("\n", " ")
-        with_code = _CODE_SPAN_RE.sub(
-            lambda m: f"<code>{m.group(1)}</code>", escaped,
-        )
-        out.append(f"<p>{with_code}</p>")
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+
+        # Fenced code block.
+        fence = _FENCE_RE.match(line)
+        if fence:
+            lang = fence.group(1)
+            i += 1
+            code_lines: list[str] = []
+            while i < len(lines):
+                if _FENCE_RE.match(lines[i]):
+                    i += 1
+                    break
+                code_lines.append(lines[i])
+                i += 1
+            code_text = "\n".join(code_lines)
+            cls = f' class="lang-{_html.escape(lang)}"' if lang else ""
+            out.append(
+                f"<pre><code{cls}>{_html.escape(code_text)}</code></pre>"
+            )
+            continue
+
+        # Bulleted list: contiguous lines starting with "- ".
+        if line.lstrip().startswith("- "):
+            items: list[str] = []
+            while i < len(lines) and lines[i].lstrip().startswith("- "):
+                items.append(_render_inline(lines[i].lstrip()[2:]))
+                i += 1
+            out.append(
+                "<ul>" + "".join(f"<li>{it}</li>" for it in items) + "</ul>"
+            )
+            continue
+
+        # Blank line: paragraph separator.
+        if not line.strip():
+            i += 1
+            continue
+
+        # Paragraph: collect consecutive non-special lines.
+        para_lines: list[str] = []
+        while i < len(lines):
+            cur = lines[i]
+            if not cur.strip():
+                break
+            if _FENCE_RE.match(cur):
+                break
+            if cur.lstrip().startswith("- "):
+                break
+            para_lines.append(cur.strip())
+            i += 1
+        text = " ".join(para_lines)
+        out.append(f"<p>{_render_inline(text)}</p>")
     return "\n".join(out)
 
 
@@ -154,7 +270,7 @@ def _slug(name: str) -> str:
     return re.sub(r"[^a-zA-Z0-9_-]+", "-", name).strip("-").lower() or "x"
 
 
-def _render_toc(funcs, types, user_caps) -> str:
+def _render_toc(funcs, types, user_caps, traits) -> str:
     items: list[str] = []
     if user_caps:
         cap_links = ", ".join(
@@ -162,6 +278,12 @@ def _render_toc(funcs, types, user_caps) -> str:
             for c in user_caps
         )
         items.append(f"<li><strong>Capabilities:</strong> {cap_links}</li>")
+    if traits:
+        tr_links = ", ".join(
+            f'<a href="#tr-{_slug(t["name"])}">{_html.escape(t["name"])}</a>'
+            for t in traits
+        )
+        items.append(f"<li><strong>Traits:</strong> {tr_links}</li>")
     if types:
         ty_links = ", ".join(
             f'<a href="#ty-{_slug(t["name"])}">{_html.escape(t["name"])}</a>'
@@ -183,6 +305,45 @@ def _qualname(fn: dict[str, Any]) -> str:
     if fn["container"]:
         return f'{fn["container"]}::{fn["name"]}'
     return fn["name"]
+
+
+def _render_trait(t: dict[str, Any]) -> str:
+    name = _html.escape(t["name"])
+    slug = _slug(t["name"])
+    type_params = ""
+    if t["type_params"]:
+        type_params = (
+            "&lt;" + ", ".join(_html.escape(p) for p in t["type_params"])
+            + "&gt;"
+        )
+    if t["methods"]:
+        def _m(m):
+            params = ", ".join(
+                f'<span class="param">{_html.escape(p["name"])}</span>: '
+                f'{_html.escape(p["type"])}'
+                for p in m["params"]
+            )
+            ret = _html.escape(m["return_type"])
+            return (
+                f'<li><code>{_html.escape(m["name"])}({params}) '
+                f"-&gt; <span class=\"ret\">{ret}</span></code></li>"
+            )
+        methods_html = "<ul>" + "".join(_m(m) for m in t["methods"]) + "</ul>"
+    else:
+        methods_html = "<p><em>no methods</em></p>"
+    impls = ", ".join(
+        f'<code>{_html.escape(i)}</code>' for i in t["implementors"]
+    ) or "<em>none</em>"
+    return (
+        f'<article id="tr-{slug}" class="entry trait">\n'
+        f'<h3>trait <span class="name">{name}</span>{type_params}</h3>\n'
+        f"{_render_doc(t.get('doc'))}\n"
+        f"<dl>\n"
+        f"<dt>Methods</dt><dd>{methods_html}</dd>\n"
+        f"<dt>Implementors</dt><dd>{impls}</dd>\n"
+        f"</dl>\n"
+        f"</article>\n"
+    )
 
 
 def _render_capability(c: dict[str, Any]) -> str:
@@ -370,6 +531,11 @@ pre.sig .param { color: #c9d1d9; }
 .entry h3 .name { color: #a78bfa; }
 .entry h3 .kw { color: #ff7b72; font-weight: 600; }
 .entry > p, .entry .attributes, .entry .calls { margin: 0.5rem 0; }
+.entry pre { background: #1a1f29; border: 1px solid #30363d;
+             border-radius: 6px; padding: 0.6rem 0.9rem; overflow-x: auto;
+             font-size: 0.82rem; margin: 0.6rem 0; }
+.entry pre code { background: transparent; padding: 0; }
+.entry ul li { font-size: 0.92rem; padding: 0.1rem 0; }
 .badge { display: inline-block; padding: 0.1rem 0.55rem; border-radius:
          999px; font-family: ui-monospace, monospace; font-size: 0.78rem;
          margin-right: 0.3rem; background: rgba(121, 192, 255, 0.15);

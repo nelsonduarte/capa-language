@@ -288,6 +288,90 @@ class TestDocgen(unittest.TestCase):
         self.assertIn("&lt;", html)
         self.assertNotIn("use a < b", html)
 
+    def test_fenced_code_block_renders_as_pre(self):
+        m = parse(
+            "/// Example.\n"
+            "///\n"
+            "/// ```\n"
+            "/// let x = 1\n"
+            "/// let y = 2\n"
+            "/// ```\n"
+            "fun f()\n    return\n"
+        )
+        html = build_html(m, filename="t.capa")
+        # Inner code lines preserved verbatim inside <pre><code>.
+        self.assertIn("<pre><code>let x = 1\nlet y = 2</code></pre>", html)
+
+    def test_fenced_code_block_language_tag(self):
+        m = parse(
+            "/// ```capa\n"
+            "/// fun id(x: Int) -> Int\n"
+            "/// ```\n"
+            "fun f()\n    return\n"
+        )
+        html = build_html(m, filename="t.capa")
+        # Language tag becomes a class on the inner <code>.
+        self.assertIn('<code class="lang-capa">', html)
+
+    def test_fenced_code_block_html_inside_is_escaped(self):
+        m = parse(
+            "/// ```\n"
+            "/// <script>alert(1)</script>\n"
+            "/// ```\n"
+            "fun f()\n    return\n"
+        )
+        html = build_html(m, filename="t.capa")
+        self.assertIn("&lt;script&gt;", html)
+        self.assertNotIn("<script>alert(1)</script>", html)
+
+    def test_bulleted_list_renders_as_ul(self):
+        m = parse(
+            "/// Caveats:\n"
+            "///\n"
+            "/// - blocks the caller\n"
+            "/// - reads the whole file into memory\n"
+            "/// - returns Err on permission denied\n"
+            "fun f()\n    return\n"
+        )
+        html = build_html(m, filename="t.capa")
+        self.assertIn("<ul>", html)
+        self.assertIn("<li>blocks the caller</li>", html)
+        self.assertIn(
+            "<li>reads the whole file into memory</li>", html,
+        )
+
+    def test_trait_section_appears(self):
+        m = parse(
+            "/// Things that can be audited.\n"
+            "trait Auditable\n"
+            "    fun audit_label(self) -> String\n"
+        )
+        html = build_html(m, filename="t.capa")
+        self.assertIn("<h2>Traits</h2>", html)
+        self.assertIn("Auditable", html)
+        self.assertIn("Things that can be audited.", html)
+        # Method signature shows up under the trait.
+        self.assertIn("audit_label", html)
+
+    def test_trait_implementors_listed(self):
+        m = parse(
+            "trait Auditable\n"
+            "    fun audit_label(self) -> String\n"
+            "type Foo {\n"
+            "    n: Int\n"
+            "}\n"
+            "impl Auditable for Foo\n"
+            "    fun audit_label(self) -> String\n"
+            "        return \"foo\"\n"
+        )
+        html = build_html(m, filename="t.capa")
+        # The trait section lists Foo as an implementor.
+        trait_section = re.search(
+            r'<article id="tr-auditable".*?</article>', html, re.DOTALL,
+        )
+        self.assertIsNotNone(trait_section)
+        self.assertIn("<code>Foo</code>", trait_section.group(0))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -35,10 +35,6 @@ jobs:
             label: linux-x86_64
             asset: capa-linux-x86_64
             ext: ''
-          - os: macos-13         # Intel
-            label: macos-x86_64
-            asset: capa-macos-x86_64
-            ext: ''
           - os: macos-latest     # Apple Silicon
             label: macos-arm64
             asset: capa-macos-arm64

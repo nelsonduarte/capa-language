@@ -796,7 +796,9 @@ The ambiguity between `map_expr` (map literal with braces) and `block_expr` (blo
 
 Documentation comments (`///` for a line, `/** ... */` for a block) are syntactically comments, the lexer recognises them. But, unlike normal comments, they are preserved and associated with the immediately following declaration. The syntactic grammar does not model them explicitly; the parser attaches them to the AST as metadata.
 
-> **Not in 1.0.** The lexer currently treats `///` and `/**` exactly like regular line/block comments and discards them. Reservation of the syntax is deliberate so that future versions can attach doc strings to declarations without breaking source compatibility.
+The lexer emits a `DOC_COMMENT` token for each occurrence: one leading space is stripped from a `///` line (the idiomatic spacing is `/// text`, not `///text`); a `/** ... */` block has its Javadoc-style `*` left-margin stripped so that `/** line1\n * line2 */` reads as `line1\nline2`. Sequences of `////+` (four or more slashes) and any `/*` without the second star remain plain comments and are dropped by the lexer.
+
+The parser collects pending doc comments and attaches them to the next `fun`, `type`, `trait` (including `capability`), or `impl`-block method as a `doc` field; a doc comment that is not followed by such a declaration is a parse error. The `--doc` CLI flag invokes the HTML generator, which renders a small markdown subset in doc-comment bodies: paragraphs (separated by blank lines), inline `code` spans (single backticks), fenced code blocks (triple backticks, with optional language tag), and bulleted lists (lines starting with `- `).
 
 ---
 

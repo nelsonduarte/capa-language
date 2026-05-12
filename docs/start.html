@@ -80,16 +80,19 @@ $ ./capa --run hello.capa</code></pre>
 
         <div class="download-card">
             <h3>macOS</h3>
-            <p class="download-arch">Apple Silicon (M1+) and Intel</p>
-            <p>
-                <a class="btn primary" href="https://github.com/nelsonduarte/capa/releases/latest/download/capa-macos-arm64">Apple Silicon</a>
-                <a class="btn" href="https://github.com/nelsonduarte/capa/releases/latest/download/capa-macos-x86_64">Intel</a>
-            </p>
+            <p class="download-arch">Apple Silicon (M1 and later)</p>
+            <p><a class="btn primary" href="https://github.com/nelsonduarte/capa/releases/latest/download/capa-macos-arm64">Download</a></p>
 <pre><code>$ curl -L -o capa \
    https://github.com/nelsonduarte/capa/releases/latest/download/capa-macos-arm64
 $ chmod +x capa
 $ xattr -d com.apple.quarantine capa   # bypass Gatekeeper
 $ ./capa --run hello.capa</code></pre>
+            <p class="download-note">
+                Intel Macs are not shipped as a pre-built binary;
+                install from source (clone the repository, run
+                <code>pip install -e .</code> with Python 3.10+, then
+                use <code>python -m capa</code>).
+            </p>
         </div>
 
         <div class="download-card">

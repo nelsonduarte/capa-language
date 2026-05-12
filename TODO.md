@@ -59,9 +59,15 @@ to public.
 
 ## EBNF declares but not implemented (P2)
 
-- [ ] **Doc comments** (`///`, `/**`), lexer treats as ordinary
-  comments today. Implement preservation + a tiny `capa-doc`
-  generator. ⏱ 4-6h
+- [x] **Doc comments** (`///`, `/**`). Lexer emits `DOC_COMMENT`
+  tokens with leading-space and Javadoc star-margin stripped;
+  parser attaches them to the following `fun` / `type` / `trait` /
+  `capability` / `impl` method as the `doc` field; `--doc` runs
+  the `capa.docgen` HTML generator. The markdown subset covers
+  paragraphs, inline `code` spans, fenced code blocks (with
+  optional language tag), and bulleted lists. Plain (non-capability)
+  traits get their own section with method signatures and the
+  list of implementor types.
 - [x] **Raw strings** (`r"..."`), no escape processing and no
   `${}` interpolation; useful for regex and Windows paths. A raw
   string cannot embed `"`; use a regular string with `\"` for that.
