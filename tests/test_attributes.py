@@ -15,7 +15,7 @@ import unittest
 
 from capa import Lexer, Parser, ParserError, analyze
 from capa import ast as A
-from capa.manifest import build_manifest
+from capa.manifest import build_manifest, build_cyclonedx
 
 
 def parse(source: str) -> A.Module:
@@ -37,6 +37,25 @@ def manifest_of(source: str, filename: str = "<test>") -> dict:
     # want to inspect manifests for programs that the discipline
     # legitimately rejects (e.g., unused capability params).
     return build_manifest(module, filename=filename)
+
+
+def cyclonedx_of(source: str, filename: str = "test.capa", **kw) -> dict:
+    tokens = Lexer(source).lex()
+    module = Parser(tokens, source=source).parse_module()
+    return build_cyclonedx(
+        module,
+        filename=filename,
+        timestamp="2026-05-12T00:00:00Z",
+        **kw,
+    )
+
+
+def props_dict(props: list[dict]) -> dict:
+    """Flatten a properties list into a name -> [values] mapping."""
+    out: dict[str, list[str]] = {}
+    for p in props:
+        out.setdefault(p["name"], []).append(p["value"])
+    return out
 
 
 # =============================================================
@@ -283,6 +302,139 @@ class TestManifest(unittest.TestCase):
         self.assertEqual(fn["declared_capabilities"], [])
         self.assertFalse(fn["has_unsafe"])
         self.assertEqual(m["summary"]["functions_with_capabilities"], 0)
+
+
+# =============================================================
+# CycloneDX 1.5 wrapper
+# =============================================================
+
+class TestCycloneDX(unittest.TestCase):
+    def test_top_level_envelope(self):
+        sbom = cyclonedx_of(
+            'fun main(stdio: Stdio)\n'
+            '    stdio.println("hi")\n'
+        )
+        self.assertEqual(sbom["bomFormat"], "CycloneDX")
+        self.assertEqual(sbom["specVersion"], "1.5")
+        self.assertEqual(sbom["version"], 1)
+        self.assertTrue(sbom["serialNumber"].startswith("urn:uuid:"))
+        self.assertEqual(sbom["metadata"]["timestamp"], "2026-05-12T00:00:00Z")
+
+    def test_tool_metadata_records_capa(self):
+        sbom = cyclonedx_of('fun f()\n    return\n')
+        tools = sbom["metadata"]["tools"]["components"]
+        self.assertEqual(len(tools), 1)
+        self.assertEqual(tools[0]["name"], "capa")
+
+    def test_program_component_present(self):
+        sbom = cyclonedx_of('fun f()\n    return\n', filename="demo.capa")
+        program = sbom["metadata"]["component"]
+        self.assertEqual(program["name"], "demo.capa")
+        self.assertEqual(program["type"], "application")
+        self.assertEqual(program["bom-ref"], "capa:program:demo.capa")
+
+    def test_function_becomes_component(self):
+        sbom = cyclonedx_of(
+            'fun fetch_user(net: Net) -> Bool\n'
+            '    return net.allows("api.example.com")\n',
+            filename="api.capa",
+        )
+        # 1 function component, 0 user caps
+        components = sbom["components"]
+        self.assertEqual(len(components), 1)
+        fn = components[0]
+        self.assertEqual(fn["name"], "fetch_user")
+        self.assertEqual(fn["type"], "library")
+        self.assertEqual(fn["bom-ref"], "capa:fn:api.capa:fetch_user")
+
+    def test_function_properties_include_capabilities(self):
+        sbom = cyclonedx_of(
+            'fun fetch_user(net: Net) -> Bool\n'
+            '    return net.allows("api.example.com")\n',
+        )
+        fn = sbom["components"][0]
+        props = props_dict(fn["properties"])
+        self.assertEqual(props["capa:kind"], ["function"])
+        self.assertEqual(props["capa:has_unsafe"], ["false"])
+        self.assertEqual(props["capa:declared_capability"], ["Net"])
+
+    def test_security_attribute_flattened(self):
+        sbom = cyclonedx_of(
+            '@security(cve: "CVE-2024-99", severity: "high")\n'
+            'fun verify(token: String) -> Bool\n'
+            '    return true\n'
+        )
+        fn = sbom["components"][0]
+        props = props_dict(fn["properties"])
+        self.assertEqual(props["capa:attribute:security:cve"], ["CVE-2024-99"])
+        self.assertEqual(props["capa:attribute:security:severity"], ["high"])
+
+    def test_user_defined_capability_becomes_component(self):
+        sbom = cyclonedx_of(
+            'capability SendEmail\n'
+            '    fun send(self, to: String) -> Bool\n'
+            'type SmtpMailer { net: Net }\n'
+            'impl SendEmail for SmtpMailer\n'
+            '    fun send(self, to: String) -> Bool\n'
+            '        return true\n'
+        )
+        # The user-cap shows up as its own component, plus the impl method.
+        names = [c["name"] for c in sbom["components"]]
+        self.assertIn("SendEmail", names)
+        # The impl method has the qualified container::method name.
+        self.assertIn("SmtpMailer::send", names)
+
+        send_email = next(
+            c for c in sbom["components"] if c["name"] == "SendEmail"
+        )
+        props = props_dict(send_email["properties"])
+        self.assertEqual(props["capa:kind"], ["capability"])
+        self.assertEqual(props["capa:capability:method"], ["send"])
+        self.assertEqual(props["capa:capability:implementor"], ["SmtpMailer"])
+
+    def test_function_depending_on_user_cap_has_dependency_edge(self):
+        sbom = cyclonedx_of(
+            'capability SendEmail\n'
+            '    fun send(self, to: String) -> Bool\n'
+            'fun welcome(mailer: SendEmail, to: String) -> Bool\n'
+            '    return mailer.send(to)\n',
+            filename="email.capa",
+        )
+        # Find the dependency edge for the welcome function.
+        welcome_ref = "capa:fn:email.capa:welcome"
+        deps = [d for d in sbom["dependencies"] if d["ref"] == welcome_ref]
+        self.assertEqual(len(deps), 1)
+        cap_ref = "capa:cap:email.capa:SendEmail"
+        self.assertIn(cap_ref, deps[0]["dependsOn"])
+
+    def test_unsafe_boundary_property(self):
+        sbom = cyclonedx_of(
+            'fun crosses(_u: Unsafe)\n    return\n',
+        )
+        fn = sbom["components"][0]
+        props = props_dict(fn["properties"])
+        self.assertEqual(props["capa:has_unsafe"], ["true"])
+
+    def test_summary_in_metadata(self):
+        sbom = cyclonedx_of(
+            'fun a(net: Net)\n    let _x = net.allows("x")\n'
+            'fun b()\n    return\n'
+        )
+        props = props_dict(sbom["metadata"]["properties"])
+        self.assertEqual(props["capa:summary:total_functions"], ["2"])
+        self.assertEqual(props["capa:summary:functions_with_capabilities"], ["1"])
+
+    def test_serial_number_is_deterministic_for_same_filename(self):
+        a = cyclonedx_of('fun a()\n    return\n', filename="same.capa")
+        b = cyclonedx_of('fun b()\n    return\n', filename="same.capa")
+        # Different sources, same filename -> same UUID (intentional;
+        # for SBOM diffability across releases).
+        self.assertEqual(a["serialNumber"], b["serialNumber"])
+
+    def test_serial_number_differs_across_filenames(self):
+        a = cyclonedx_of('fun a()\n    return\n', filename="one.capa")
+        b = cyclonedx_of('fun a()\n    return\n', filename="two.capa")
+        self.assertNotEqual(a["serialNumber"], b["serialNumber"])
 
 
 if __name__ == "__main__":

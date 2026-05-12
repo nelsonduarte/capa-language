@@ -211,12 +211,65 @@
     <ol>
         <li><strong>CI gate.</strong> Run <code>python -m capa --manifest src/*.capa</code> in CI, diff the output against a baseline, and fail the build if a function unexpectedly gains a capability or crosses the <code>Unsafe</code> boundary. The capability surface of a library becomes a tracked artefact.</li>
         <li><strong>Audit evidence.</strong> Generate the manifest at release time and ship it alongside the binary. An auditor can verify the claims without re-running the compiler.</li>
-        <li><strong>SBOM enrichment (planned).</strong> Wrap the manifest in a CycloneDX 1.5 document with capability metadata under <code>properties[]</code>. This makes Capa programs first-class citizens of existing SBOM tooling (Dependency-Track, OSV-Scanner, SBOM-CI). Targeted for v0.3.</li>
+        <li><strong>SBOM enrichment via CycloneDX 1.5.</strong> Capa also emits the manifest wrapped in a valid CycloneDX 1.5 SBOM (<code>python -m capa --cyclonedx file.capa</code>). The capability metadata is embedded as standard <code>properties[]</code> entries under the <code>capa:*</code> namespace, so Dependency-Track, OSV-Scanner, syft, and any other CycloneDX-aware tool can ingest the document and surface the information without having to know anything about Capa. See the section below.</li>
     </ol>
 
     <div class="callout">
         <p><strong>The manifest is a stable contract.</strong> Versioned via <code>schema_version</code>; consumers should refuse to read manifests with a schema version they do not recognise. v1 is the current version. Breaking changes will bump it.</p>
     </div>
+</section>
+
+<!-- =====================================================
+     CycloneDX
+===================================================== -->
+<section>
+    <h2>CycloneDX 1.5 output</h2>
+
+    <p>The <code>--manifest</code> flag emits Capa's native JSON shape — compact, opinionated, and easy to consume from a Capa-aware tool. For interoperability with the broader supply-chain tooling ecosystem, Capa also emits a <strong>CycloneDX 1.5 SBOM</strong> with the same information embedded:</p>
+
+<pre><code>$ python -m capa --cyclonedx verify.capa</code></pre>
+
+    <p>The resulting document is a valid CycloneDX 1.5 BOM and validates against the published schema. Each function and each user-defined capability becomes a <code>library</code> sub-component with a deterministic <code>bom-ref</code>. Per-function metadata (declared capabilities, attributes, <code>Unsafe</code> crossings, position) is flattened into the standard <code>properties[]</code> array under the <code>capa:*</code> namespace.</p>
+
+<pre><code>{
+  <span class="str">"bomFormat"</span>: <span class="str">"CycloneDX"</span>,
+  <span class="str">"specVersion"</span>: <span class="str">"1.5"</span>,
+  <span class="str">"serialNumber"</span>: <span class="str">"urn:uuid:2687e40d-..."</span>,
+  <span class="str">"version"</span>: 1,
+  <span class="str">"metadata"</span>: {
+    <span class="str">"timestamp"</span>: <span class="str">"2026-05-12T00:00:00Z"</span>,
+    <span class="str">"tools"</span>: { <span class="str">"components"</span>: [{ <span class="str">"name"</span>: <span class="str">"capa"</span>, <span class="str">"version"</span>: <span class="str">"0.2.0"</span> }] },
+    <span class="str">"component"</span>: { <span class="str">"name"</span>: <span class="str">"verify.capa"</span>, <span class="str">"type"</span>: <span class="str">"application"</span> }
+  },
+  <span class="str">"components"</span>: [
+    {
+      <span class="str">"bom-ref"</span>: <span class="str">"capa:fn:verify.capa:verify_token"</span>,
+      <span class="str">"type"</span>: <span class="str">"library"</span>,
+      <span class="str">"name"</span>: <span class="str">"verify_token"</span>,
+      <span class="str">"properties"</span>: [
+        { <span class="str">"name"</span>: <span class="str">"capa:kind"</span>,                       <span class="str">"value"</span>: <span class="str">"function"</span> },
+        { <span class="str">"name"</span>: <span class="str">"capa:has_unsafe"</span>,                 <span class="str">"value"</span>: <span class="str">"false"</span> },
+        { <span class="str">"name"</span>: <span class="str">"capa:declared_capability"</span>,        <span class="str">"value"</span>: <span class="str">"Net"</span> },
+        { <span class="str">"name"</span>: <span class="str">"capa:attribute:security:cve"</span>,     <span class="str">"value"</span>: <span class="str">"CVE-2024-99999"</span> },
+        { <span class="str">"name"</span>: <span class="str">"capa:attribute:security:severity"</span>,<span class="str">"value"</span>: <span class="str">"high"</span> }
+      ]
+    }
+  ],
+  <span class="str">"dependencies"</span>: [
+    { <span class="str">"ref"</span>: <span class="str">"capa:program:verify.capa"</span>, <span class="str">"dependsOn"</span>: [<span class="str">"capa:fn:verify.capa:verify_token"</span>] }
+  ]
+}</code></pre>
+
+    <h3>What you get for free with CycloneDX</h3>
+
+    <ul>
+        <li><strong>Validation</strong> by any CycloneDX schema validator.</li>
+        <li><strong>Ingestion</strong> by Dependency-Track, OSV-Scanner, syft, sbom-utility, and other mainstream SBOM tooling. They will see the components and dependency graph without knowing anything Capa-specific.</li>
+        <li><strong>Deterministic <code>serialNumber</code></strong> derived from the filename (UUIDv5), so re-running the command on the same file produces an identical SBOM — friendly to diffing across releases.</li>
+        <li><strong>Dependency edges</strong> from each function to the user-defined capabilities it depends on, so CycloneDX-aware tooling builds a usable graph.</li>
+    </ul>
+
+    <p>A consumer that <em>is</em> Capa-aware can read the <code>capa:*</code> properties to get the same information the native <code>--manifest</code> flag would emit. The two outputs carry the same content; the CycloneDX form trades a slightly more verbose wrapper for ecosystem fit.</p>
 </section>
 
 <!-- =====================================================

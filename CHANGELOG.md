@@ -11,6 +11,22 @@ breaking changes and the discipline is still being shaped.
 
 ### Added
 
+- **`python -m capa --cyclonedx`** — emits a valid CycloneDX 1.5
+  SBOM with the capability manifest embedded as standard
+  `properties[]` entries under the `capa:*` namespace. Capa
+  programs become first-class citizens of existing SBOM tooling
+  (Dependency-Track, OSV-Scanner, syft, sbom-utility) without
+  those tools needing to know anything Capa-specific.
+
+  Each function and each user-defined capability becomes a
+  `library` sub-component with a deterministic `bom-ref`. The
+  call from a function to a user-defined capability is encoded
+  both as a `capa:declared_capability` property and as a
+  CycloneDX `dependencies[]` edge so dependency-graph tooling
+  sees the relation. The serial number is a UUIDv5 derived from
+  the filename, so re-running the command produces identical
+  output (SBOM diff-friendly across releases of the same file).
+
 - **Function attributes** (`@security`, `@deprecated`, `@audited`) as
   static, source-level metadata. Attributes appear on lines
   immediately before a `fun` declaration (top-level or method inside

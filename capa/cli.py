@@ -22,7 +22,7 @@ from pathlib import Path
 from capa import (
     Lexer, LexerError, Parser, TokenKind, analyze, ast_dump, transpile,
 )
-from capa.manifest import build_manifest
+from capa.manifest import build_manifest, build_cyclonedx
 
 
 # ANSI colors for terminal highlighting
@@ -94,6 +94,15 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--cyclonedx",
+        action="store_true",
+        help=(
+            "emit a CycloneDX 1.5 SBOM with the capability manifest "
+            "embedded as standard properties[] entries (consumable by "
+            "Dependency-Track, OSV-Scanner, syft, etc.)"
+        ),
+    )
+    parser.add_argument(
         "--no-color",
         action="store_true",
         help="disable ANSI colors in the output",
@@ -143,6 +152,7 @@ def main() -> int:
         or args.transpile
         or args.run
         or args.manifest
+        or args.cyclonedx
     ):
         try:
             module = Parser(
@@ -156,7 +166,7 @@ def main() -> int:
             return 1
 
     result = None
-    if args.check or args.run or args.manifest:
+    if args.check or args.run or args.manifest or args.cyclonedx:
         # Semantic analysis is required before running.
         result = analyze(module, source=source, filename=filename)
         if not result.ok:
@@ -178,6 +188,11 @@ def main() -> int:
             import json
             manifest = build_manifest(module, filename=filename)
             print(json.dumps(manifest, indent=2))
+            return 0
+        if args.cyclonedx:
+            import json
+            sbom = build_cyclonedx(module, filename=filename)
+            print(json.dumps(sbom, indent=2))
             return 0
         if args.check and not args.run:
             n_items = len(module.items)
