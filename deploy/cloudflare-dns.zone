@@ -1,0 +1,61 @@
+;; ============================================================
+;; Cloudflare DNS zone file for capa-language.com
+;;
+;; Points the apex and www subdomain to GitHub Pages, which
+;; serves the static site committed under docs/ on the main
+;; branch of nelsonduarte/capa.
+;;
+;; How to import (Cloudflare dashboard):
+;;
+;;   1. Sign in at https://dash.cloudflare.com
+;;   2. Pick the capa-language.com zone
+;;   3. DNS  ->  Records  ->  Import and Export  ->  Import
+;;   4. Upload this file
+;;   5. Cloudflare shows a preview; confirm.
+;;
+;; After import (one-time, manual on the dashboard):
+;;
+;;   For every record listed below, set the "Proxy status"
+;;   to "DNS only" (gray cloud). This is required for GitHub
+;;   Pages to issue the Let's Encrypt certificate on first
+;;   setup. Once HTTPS is active and stable, the proxy can
+;;   optionally be turned on (orange cloud) for caching and
+;;   DDoS protection -- BUT only with Cloudflare's SSL/TLS
+;;   mode set to "Full" (never "Flexible"), otherwise redirect
+;;   loops follow.
+;;
+;; Verification, from any machine with `dig` or `nslookup`:
+;;
+;;   dig capa-language.com +short
+;;     -> should print the four 185.199.x.153 addresses
+;;   dig www.capa-language.com +short
+;;     -> should print nelsonduarte.github.io. + the four IPs
+;;
+;; The IPv4 / IPv6 addresses are GitHub Pages' published
+;; anycast endpoints, current as of 2026. If GitHub ever
+;; rotates them, update this file and re-import.
+;; ============================================================
+
+$ORIGIN capa-language.com.
+$TTL 1                              ; 1 = "Auto" in Cloudflare's UI
+
+;; ------------------------------------------------------------
+;; Apex (capa-language.com)  ->  GitHub Pages IPv4
+;; ------------------------------------------------------------
+@   1   IN  A   185.199.108.153
+@   1   IN  A   185.199.109.153
+@   1   IN  A   185.199.110.153
+@   1   IN  A   185.199.111.153
+
+;; ------------------------------------------------------------
+;; Apex  ->  GitHub Pages IPv6
+;; ------------------------------------------------------------
+@   1   IN  AAAA    2606:50c0:8000::153
+@   1   IN  AAAA    2606:50c0:8001::153
+@   1   IN  AAAA    2606:50c0:8002::153
+@   1   IN  AAAA    2606:50c0:8003::153
+
+;; ------------------------------------------------------------
+;; www.capa-language.com  ->  GitHub Pages canonical hostname
+;; ------------------------------------------------------------
+www 1   IN  CNAME   nelsonduarte.github.io.
