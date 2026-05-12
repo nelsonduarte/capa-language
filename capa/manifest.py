@@ -50,7 +50,7 @@ def build_manifest(
     module: A.Module,
     *,
     filename: str = "<input>",
-    capa_version: str = "0.2.0",
+    capa_version: Optional[str] = None,
 ) -> dict[str, Any]:
     """Build a manifest dict from an analysed module.
 
@@ -58,6 +58,8 @@ def build_manifest(
     have run the analyser first; this builder does not re-validate
     attributes or types.
     """
+    if capa_version is None:
+        from . import __version__ as capa_version
     # Collect user-defined capabilities and the names of types that
     # implement them. Built-in capability names are already in
     # CAPABILITY_NAMES; we extend that set so that struct parameters
@@ -397,7 +399,7 @@ def build_cyclonedx(
     module: A.Module,
     *,
     filename: str = "<input>",
-    capa_version: str = "0.2.0",
+    capa_version: Optional[str] = None,
     timestamp: Optional[str] = None,
     serial_number: Optional[str] = None,
 ) -> dict[str, Any]:
@@ -408,6 +410,8 @@ def build_cyclonedx(
     as the defaults. The serial number defaults to a UUIDv5 derived
     from the filename (deterministic across runs of the same file).
     """
+    if capa_version is None:
+        from . import __version__ as capa_version
     inner = build_manifest(module, filename=filename, capa_version=capa_version)
 
     if timestamp is None:

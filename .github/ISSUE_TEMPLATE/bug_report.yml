@@ -70,7 +70,7 @@ body:
     id: capa_version
     attributes:
       label: Capa version (`git rev-parse HEAD` or release tag)
-      placeholder: "v0.2.0-alpha, commit 32ea43d"
+      placeholder: "v0.3.0-alpha, commit 4d66287"
     validations:
       required: true
 

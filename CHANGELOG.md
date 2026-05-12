@@ -9,6 +9,20 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+## [0.3.0-alpha], 2026-05-12
+
+The second tagged release. Focus: full CRA alignment of the
+capability discipline. The compiler now emits a machine-readable
+capability manifest plus a valid CycloneDX 1.5 SBOM with embedded
+metadata, and the three remaining built-in capabilities
+(`Fs`, `Env`, `Clock`) gained attenuation matching the
+`Net.restrict_to` pattern. Function-level audit attributes
+(`@security`, `@deprecated`, `@audited`) let authors record CVE
+references, deprecation, and audit evidence directly in source.
+The website was hardened with a strict Content-Security-Policy
+and a Referrer-Policy, and got a proper logo (hooded figure,
+purple, with a negative-space C in the body).
+
 ### Added
 
 - **Website security hardening.** The static site under `docs/`
@@ -267,5 +281,6 @@ systems and three Python versions.
   (`Capa-EBNF.md`) translated to English and synchronised with the
   implementation.
 
-[Unreleased]: https://github.com/nelsonduarte/capa/compare/v0.2.0-alpha...HEAD
+[Unreleased]: https://github.com/nelsonduarte/capa/compare/v0.3.0-alpha...HEAD
+[0.3.0-alpha]: https://github.com/nelsonduarte/capa/releases/tag/v0.3.0-alpha
 [0.2.0-alpha]: https://github.com/nelsonduarte/capa/releases/tag/v0.2.0-alpha

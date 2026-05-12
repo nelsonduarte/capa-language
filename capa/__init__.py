@@ -15,6 +15,12 @@ Example usage:
         print(e.format())
 """
 
+# Single source of truth for the package version. Bump here when
+# cutting a release; consumers (the manifest builder, the docs
+# tooling, the egg-info / wheel metadata) read this value rather
+# than hard-coding a string.
+__version__ = "0.3.0"
+
 from . import capa_ast as ast
 from .analyzer import Analyzer, AnalysisError, AnalysisResult, Symbol, SymbolKind, analyze
 from .capa_ast import dump as ast_dump
@@ -26,6 +32,7 @@ from .transpiler import Transpiler, TranspilerError, transpile
 from .typesys import Ty, TyName, TyFun, TyTuple, TyVar, TyUnit, TyUnknown, ty_str
 
 __all__ = [
+    "__version__",
     "analyze",
     "Analyzer",
     "AnalysisError",
