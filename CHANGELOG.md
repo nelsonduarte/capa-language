@@ -11,6 +11,17 @@ breaking changes and the discipline is still being shaped.
 
 ### Added
 
+- **`capa init`**, project scaffolding subcommand.
+  `python -m capa init [name]` creates a minimal Capa project at the
+  given path (defaults to the current directory, which must then be
+  empty): `main.capa` is a runnable starter that uses `Stdio` so the
+  capability discipline is visible from the first line a user reads,
+  `README.md` documents the two commands a user needs (`capa --run`
+  and `capa --check`), `.gitignore` covers Python bytecode and
+  common editor cruft, and `.capa-version` pins the Capa version
+  used at scaffold time. The starter passes `--check` and `--run`
+  out of the box and is in canonical `--fmt-check` form.
+
 - **`capa-fmt` (v1, line-level)**: CLI flags `--fmt` (rewrite the
   file in place) and `--fmt-check` (verify, exit 1 if not
   canonical). v1 is a safe, whitespace-only formatter: it

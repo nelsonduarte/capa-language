@@ -19,9 +19,11 @@ from pathlib import Path
 from capa import (
     Lexer, LexerError, Parser, TokenKind, analyze, ast_dump, transpile,
 )
+from capa import __version__ as _CAPA_VERSION
 from capa.manifest import build_manifest, build_cyclonedx
 from capa.docgen import build_html as build_doc_html
 from capa.formatter import format_source, is_formatted
+from capa.init_project import init_project
 
 
 # ANSI colors for terminal highlighting
@@ -53,7 +55,40 @@ def color_for(kind: TokenKind) -> str:
     return C.YELLOW
 
 
+def _dispatch_init(argv: list[str]) -> int:
+    """Handle ``python -m capa init [name]``.
+
+    Kept separate from the main argparse so the rest of the CLI
+    can stay flag-based without disrupting the subcommand shape
+    users expect from ``init`` (modelled on ``cargo new`` /
+    ``go mod init``).
+    """
+    sub = argparse.ArgumentParser(
+        prog="capa init",
+        description=(
+            "Scaffold a minimal Capa project (main.capa + README.md "
+            "+ .gitignore + .capa-version)."
+        ),
+    )
+    sub.add_argument(
+        "name",
+        nargs="?",
+        default=".",
+        help=(
+            "directory to create (default: current directory, which "
+            "must be empty)"
+        ),
+    )
+    args = sub.parse_args(argv)
+    return init_project(Path(args.name), capa_version=_CAPA_VERSION)
+
+
 def main() -> int:
+    # Subcommand dispatch happens before argparse so the rest of
+    # the CLI can stay flag-based without complicating help output.
+    if len(sys.argv) >= 2 and sys.argv[1] == "init":
+        return _dispatch_init(sys.argv[2:])
+
     parser = argparse.ArgumentParser(
         description="Lexer, parser and analyzer for the Capa language",
     )

@@ -105,7 +105,12 @@ to public.
   system. P3
 - [ ] **REPL**, deleted earlier. Reimplement when language is
   stable and demand exists. P2
-- [ ] **`capa init`**, project scaffolding command. ⏱ 1-2h
+- [x] **`capa init`**, project scaffolding. `python -m capa init [name]`
+  creates `main.capa` (a runnable, canonically-formatted starter that
+  uses `Stdio` so the capability discipline shows up on line one),
+  `README.md`, `.gitignore`, and `.capa-version`. Refuses to overwrite
+  a non-empty directory or a path that is a file. The starter passes
+  `--check` and `--run` out of the box.
 - [ ] **Debugger integration**, Python debugger works on the
   transpiled output but maps poorly. Source maps would help. P3
 

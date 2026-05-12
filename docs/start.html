@@ -167,7 +167,16 @@ OK</code></pre>
 <section>
     <h2>Your first program</h2>
 
-    <p>Create a file <code>hello.capa</code> with the following contents:</p>
+    <p>The fastest path is to let the compiler scaffold one for you:</p>
+
+<pre><code>$ capa init my-project
+$ cd my-project
+$ capa --run main.capa
+Hello from Capa!</code></pre>
+
+    <p><code>capa init</code> creates four files: <code>main.capa</code> (a runnable starter that already uses <code>Stdio</code> so the capability discipline is visible from the first line), <code>README.md</code>, <code>.gitignore</code>, and <code>.capa-version</code> (which pins the version used at scaffold time, useful for reproducibility). Pass <code>.</code> as the name to scaffold into the current directory (which must be empty), or omit the argument entirely.</p>
+
+    <p>If you prefer to type the file yourself, create <code>hello.capa</code> with the following contents:</p>
 
 <pre><code><span class="comment">// hello.capa</span>
 <span class="kw-decl">fun</span> <span class="fn-name">main</span>(stdio: <span class="cap">Stdio</span>)
@@ -187,13 +196,17 @@ Hello, Capa!</code></pre>
 <section>
     <h2>The CLI</h2>
 
-    <p>The compiler exposes five modes, one per stage of the pipeline. Each subsumes the previous: <code>--run</code> implies <code>--transpile</code>, which implies <code>--check</code>, and so on.</p>
+    <p>The compiler exposes pipeline modes (each subsumes the previous: <code>--run</code> implies <code>--transpile</code>, which implies <code>--check</code>) plus a few tooling flags for formatting, documentation, and manifests.</p>
 
     <table class="cli-table">
         <thead>
             <tr><th>Flag</th><th>What it does</th></tr>
         </thead>
         <tbody>
+            <tr>
+                <td><code>init [name]</code></td>
+                <td>Scaffold a new Capa project (subcommand, not a flag). Creates <code>main.capa</code>, <code>README.md</code>, <code>.gitignore</code>, <code>.capa-version</code>.</td>
+            </tr>
             <tr>
                 <td><code>(none)</code></td>
                 <td>Tokenize. Print the stream of lexer tokens. Useful for debugging lexer rules.</td>
@@ -213,6 +226,18 @@ Hello, Capa!</code></pre>
             <tr>
                 <td><code>--run</code></td>
                 <td>Transpile and execute. This is the everyday flag.</td>
+            </tr>
+            <tr>
+                <td><code>--fmt</code> / <code>--fmt-check</code></td>
+                <td>Rewrite the file in canonical Capa style (whitespace, indentation, blank-line clusters, final newline), or verify only.</td>
+            </tr>
+            <tr>
+                <td><code>--doc</code></td>
+                <td>Emit a self-contained HTML page documenting the file, built from <code>///</code> and <code>/** */</code> doc comments.</td>
+            </tr>
+            <tr>
+                <td><code>--manifest</code> / <code>--cyclonedx</code></td>
+                <td>Emit a JSON capability manifest, or a CycloneDX 1.5 SBOM with the manifest embedded.</td>
             </tr>
         </tbody>
     </table>
