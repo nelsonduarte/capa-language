@@ -329,7 +329,7 @@ systems and three Python versions.
 - **Five-page static website** under `docs/` (one stylesheet, no
   JavaScript, no framework, no external fonts): `index.html`,
   `why.html`, `tour.html`, `start.html`, `roadmap.html`. Served by
-  GitHub Pages at <https://nelsonduarte.github.io/capa/>.
+  GitHub Pages at <https://capa-language.com/>.
 - **20 example programs** in `examples/` exercising every major
   language feature.
 - **420 tests** (unit + end-to-end) green on Ubuntu, macOS, and

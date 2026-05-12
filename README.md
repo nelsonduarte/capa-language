@@ -4,6 +4,8 @@
 [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![python: >=3.10](https://img.shields.io/badge/python-%3E%3D3.10-blue.svg)](pyproject.toml)
 
+**Website: <https://capa-language.com/>**
+
 A complete front-end for the **Capa** programming language: lexer, parser,
 semantic analyzer, Python transpiler and runtime, all hand-written in
 Python.
