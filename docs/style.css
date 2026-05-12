@@ -81,11 +81,20 @@ nav {
 }
 
 .logo {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
     color: var(--fg-bright);
     font-weight: 700;
     font-size: 1.15rem;
     letter-spacing: -0.01em;
     text-decoration: none;
+}
+
+.logo img {
+    height: 28px;
+    width: auto;
+    display: block;
 }
 
 .nav-links {
