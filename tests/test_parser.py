@@ -478,5 +478,65 @@ class TestErrors(unittest.TestCase):
             parse("pub import json\n")
 
 
+# =============================================================
+# Documented restrictions (block-body inside parentheses)
+# =============================================================
+
+class TestBlockBodyInParensRestriction(unittest.TestCase):
+    """Inside ``(...)`` the lexer suppresses NEWLINE/INDENT/DEDENT
+    for implicit line continuation. Constructs whose body shape
+    relies on those layout tokens (block-body lambdas, indent-form
+    match) are unreachable there by design. The parser should
+    surface a clear, actionable error rather than a generic
+    "expected expression"."""
+
+    def test_block_body_lambda_inside_parens_has_targeted_error(self):
+        src = (
+            "fun apply(f: Fun(Int) -> Int, x: Int) -> Int\n"
+            "    return f(x)\n"
+            "fun main()\n"
+            "    let _ = apply(fun (x: Int) -> Int =>\n"
+            "        let y = x + 1\n"
+            "        return y\n"
+            "    , 5)\n"
+        )
+        with self.assertRaises(ParserError) as ctx:
+            parse(src)
+        msg = str(ctx.exception)
+        self.assertIn("block-body lambda", msg)
+        self.assertIn("inside parentheses", msg)
+        # The error should mention the recommended workaround.
+        self.assertTrue(
+            "let" in msg or "single-expression" in msg, msg,
+        )
+
+    def test_let_bound_block_body_lambda_then_pass_works(self):
+        # The documented workaround: bind the lambda to a let, pass
+        # the binding through the call. Must parse cleanly.
+        src = (
+            "fun apply(f: Fun(Int) -> Int, x: Int) -> Int\n"
+            "    return f(x)\n"
+            "fun main()\n"
+            "    let body = fun (x: Int) -> Int =>\n"
+            "        let y = x + 1\n"
+            "        return y * 10\n"
+            "    let _ = apply(body, 5)\n"
+        )
+        m = parse(src)
+        self.assertEqual(len(m.items), 2)
+
+    def test_single_expression_lambda_inside_parens_still_works(self):
+        # Single-expression lambdas inside parens must remain
+        # unaffected by the targeted block-body diagnostic.
+        src = (
+            "fun apply(f: Fun(Int) -> Int, x: Int) -> Int\n"
+            "    return f(x)\n"
+            "fun main()\n"
+            "    let _ = apply(fun (x: Int) -> Int => x * 2, 5)\n"
+        )
+        m = parse(src)
+        self.assertEqual(len(m.items), 2)
+
+
 if __name__ == "__main__":
     unittest.main()

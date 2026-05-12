@@ -125,9 +125,15 @@ to public.
   an argument. Reclassified from "bug" to "documented restriction";
   promote to a real fix only if someone proposes a lexer change
   whose blast radius does not eat the indent-based form elsewhere.
-- [ ] **Block-body lambdas in deep expression contexts**, README
-  flags this as a known parsing edge. Verify and either fix or
-  document precisely.
+- [x] **Block-body lambdas in deep expression contexts**, verified
+  and documented as a deliberate restriction. Same root cause as
+  indent-form match inside parens: the lexer suppresses
+  NEWLINE/INDENT/DEDENT inside `(...)` for implicit line continuation,
+  so block-body lambdas there are unreachable by design. The parser
+  now emits a targeted error pointing at the recommended workaround
+  (bind to `let` first, then pass the binding, or use a
+  single-expression body). README, EBNF section on lambdas, and the
+  reference page document this precisely.
 - [ ] **Operator `?` uses internal exception**, correct but slower
   than expanded early-return. Optimisation. P2
 

@@ -876,6 +876,12 @@ class Parser:
         Block body: if ``=>`` is followed by NEWLINE, parses as a block
         (NEWLINE INDENT stmts DEDENT) - useful for lambdas with multiple
         statements, explicit returns, etc.
+
+        Inside ``(...)``, the lexer suppresses NEWLINE/INDENT/DEDENT
+        for implicit line continuation, so a block-body lambda cannot
+        be written there: we detect that case (a statement-starter
+        keyword appears immediately after ``=>``) and report a
+        targeted error pointing at the recommended workaround.
         """
         start = self._peek().start
         self._expect(T.KW_FUN, "expected 'fun'")
@@ -896,6 +902,22 @@ class Parser:
         if self._check(T.NEWLINE):
             body = self._parse_block()
         else:
+            # Detect the block-body-inside-parens case: any of these
+            # tokens unambiguously starts a statement, not an
+            # expression. When we see one here, the user almost
+            # certainly wrote a block-body lambda inside a paren
+            # context where the lexer suppressed the NEWLINE that
+            # would have triggered the block branch above.
+            stmt_starters = (
+                T.KW_LET, T.KW_VAR, T.KW_RETURN,
+                T.KW_BREAK, T.KW_CONTINUE,
+            )
+            if self._peek().kind in stmt_starters:
+                raise self._error(
+                    "a block-body lambda cannot appear directly inside "
+                    "parentheses; bind it to a `let` first and pass the "
+                    "name, or use a single-expression body"
+                )
             body = self._parse_expr()
         return A.LambdaExpr(
             pos=start, params=params, return_type=return_type, body=body,

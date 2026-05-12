@@ -9,6 +9,18 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+### Changed
+
+- **Block-body lambdas inside `(...)`** now raise a targeted parser
+  error pointing at the recommended workaround, instead of the
+  generic "expected expression, got KW_LET". Same root cause as the
+  indent-form match-in-parens case already documented: the lexer
+  suppresses NEWLINE/INDENT/DEDENT inside parentheses for implicit
+  line continuation, so block-bodied constructs cannot reach their
+  layout-driven syntax there. The workaround (bind to `let` first,
+  then pass the binding) parses cleanly; single-expression lambdas
+  remain unaffected.
+
 ### Added
 
 - **`capa init`**, project scaffolding subcommand.

@@ -353,8 +353,16 @@ only honest way to test a transpiler.
     consumed**: each invocation receives its own, without sharing.
 
   *Current limitations*:
-  * Block-body in deep expression context (e.g. inside `(...)`) may
-    fail parsing due to NEWLINE/INDENT in parens.
+  * **Block-body lambdas cannot appear directly inside `(...)`.**
+    Capa relies on NEWLINE/INDENT/DEDENT to delimit the block, and
+    the lexer suppresses those tokens inside parentheses for
+    implicit line continuation. Writing `f(fun (x) => <block>, 5)`
+    is therefore rejected with a targeted parser error pointing at
+    the recommended workaround: bind the lambda to a `let` first,
+    then pass the binding (`let body = fun (x) => <block>;
+    f(body, 5)`), or use a single-expression body. This is a
+    deliberate restriction, not a bug; the same root cause applies
+    to indent-form `match` inside parens.
   * No let-polymorphic generalisation.
 
 - **Standard library: builtin methods on `List<T>`**. `length`, `push`,
