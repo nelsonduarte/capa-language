@@ -86,7 +86,6 @@
                 <li>Visibility (<code>pub</code> is parsed but unenforced, waits on the module system)</li>
                 <li>Attenuation for capabilities other than <code>Net</code> (<code>Fs.restrict_to</code>, <code>Env.restrict_to_keys</code>, etc.)</li>
                 <li>Doc comments (<code>///</code>, <code>/**</code>), lexer treats them as ordinary comments</li>
-                <li>Raw strings (<code>r"..."</code>)</li>
                 <li>Native (non-Python) backend, LLVM is far future</li>
                 <li>Async / await (keywords reserved, no runtime)</li>
                 <li>Package manager / registry</li>
@@ -177,17 +176,17 @@
             </div>
         </li>
         <li>
-            <span class="tag current">P2</span>
+            <span class="tag done">DONE</span>
             <div class="item-body">
                 <strong>Raw strings (<code>r"..."</code>)</strong>
-                <p>Useful for regular expressions and Windows paths. ~1-2 hours.</p>
+                <p>No escape processing and no <code>${}</code> interpolation: every character up to the next <code>"</code> is taken literally. Useful for Windows paths and regular-expression patterns. Landed post-v0.5.0-alpha.</p>
             </div>
         </li>
         <li>
-            <span class="tag current">P2</span>
+            <span class="tag done">DONE</span>
             <div class="item-body">
-                <strong>Named arguments</strong>
-                <p>Syntax exists in the EBNF; analyzer needs to map argument names to parameter positions correctly and reject duplicates. ~1-2 hours.</p>
+                <strong>Named arguments (<code>f(name: "Ana", age: 30)</code>)</strong>
+                <p>Parser accepts an optional <code>IDENT ":"</code> prefix on each call argument; the analyzer reorders to parameter order before type checking and rejects positional-after-named, unknown names, duplicates, and arity mismatches. Built-in methods on <code>String</code>, <code>Map</code>, <code>Set</code>, and capabilities reject named arguments because their parameter names are not tracked. Landed post-v0.5.0-alpha.</p>
             </div>
         </li>
     </ul>

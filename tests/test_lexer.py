@@ -179,6 +179,55 @@ class TestStringLiterals(unittest.TestCase):
 
 
 # =============================================================
+# Raw string literals
+# =============================================================
+
+class TestRawStringLiterals(unittest.TestCase):
+    def test_basic(self):
+        toks = lex('r"abc"')
+        self.assertEqual(toks[0].kind, TokenKind.STRING_LIT)
+        self.assertEqual(toks[0].value, "abc")
+
+    def test_backslashes_are_literal(self):
+        toks = lex(r'r"\n\t\\"')
+        # No escape processing: keep four characters literally.
+        self.assertEqual(toks[0].value, r"\n\t\\")
+
+    def test_windows_path(self):
+        toks = lex(r'r"C:\Users\nelso\file.txt"')
+        self.assertEqual(toks[0].value, r"C:\Users\nelso\file.txt")
+
+    def test_regex_pattern(self):
+        toks = lex(r'r"\d+\.\d+"')
+        self.assertEqual(toks[0].value, r"\d+\.\d+")
+
+    def test_dollar_brace_is_literal(self):
+        # ``${...}`` interpolation is NOT recognised in raw strings.
+        toks = lex(r'r"hello ${name}"')
+        self.assertEqual(toks[0].value, "hello ${name}")
+
+    def test_empty(self):
+        toks = lex('r""')
+        self.assertEqual(toks[0].kind, TokenKind.STRING_LIT)
+        self.assertEqual(toks[0].value, "")
+
+    def test_bare_r_is_identifier(self):
+        # ``r`` not followed by a quote is still an ordinary identifier.
+        toks = lex("r")
+        self.assertEqual(toks[0].kind, TokenKind.IDENT)
+        self.assertEqual(toks[0].value, "r")
+
+    def test_newline_rejected(self):
+        with self.assertRaises(LexerError):
+            lex('r"hello\nworld"')
+
+    def test_unterminated_rejected(self):
+        with self.assertRaises(LexerError) as ctx:
+            lex('r"hello')
+        self.assertIn("raw string", str(ctx.exception).lower())
+
+
+# =============================================================
 # Characters
 # =============================================================
 

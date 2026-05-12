@@ -62,11 +62,16 @@ to public.
 - [ ] **Doc comments** (`///`, `/**`), lexer treats as ordinary
   comments today. Implement preservation + a tiny `capa-doc`
   generator. ⏱ 4-6h
-- [ ] **Raw strings** (`r"..."`), useful for regex and Windows paths.
-  ⏱ 1-2h
-- [ ] **Named arguments** (`f(name: "Ana", age: 30)`), EBNF allows
-  it, parser may accept; need to verify analyzer maps to parameters
-  correctly + add tests. ⏱ 1-2h
+- [x] **Raw strings** (`r"..."`), no escape processing and no
+  `${}` interpolation; useful for regex and Windows paths. A raw
+  string cannot embed `"`; use a regular string with `\"` for that.
+- [x] **Named arguments** (`f(name: "Ana", age: 30)`), parser
+  accepts an optional `IDENT ":"` prefix on each call argument;
+  the analyzer reorders to parameter order before type checking,
+  rejects positional-after-named, unknown names, duplicates, and
+  arity mismatches; the transpiler emits Python keyword arguments.
+  Built-in methods (String, Map, Set, capabilities) reject named
+  arguments because their parameter names are not tracked.
 - [ ] **Turbofish (`::<T>`)**, EBNF §7.3 mentions; never needed
   because inference has been enough. Only implement if a real case
   comes up. P3
@@ -93,9 +98,13 @@ to public.
 
 ## Known bugs / partial features (P1)
 
-- [ ] **Multi-line `match` inside parentheses**, fails because parens
-  suppress NEWLINE. Workaround: inline `{ }`, but `f(match x ...)`
-  feels natural and doesn't work. ⏱ 1-2h
+- [ ] **Indent-based `match` inside parentheses**, by design fails
+  because parens suppress NEWLINE/INDENT/DEDENT. The braced inline
+  form (`match x { P1 -> e1, P2 -> e2, ... }`) does work inside a
+  call expression and is the documented way to write a `match` as
+  an argument. Reclassified from "bug" to "documented restriction";
+  promote to a real fix only if someone proposes a lexer change
+  whose blast radius does not eat the indent-based form elsewhere.
 - [ ] **Block-body lambdas in deep expression contexts**, README
   flags this as a known parsing edge. Verify and either fix or
   document precisely.

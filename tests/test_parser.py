@@ -355,11 +355,29 @@ class TestExpressions(unittest.TestCase):
         e = parse_expr("f(1, 2, 3)")
         self.assertIsInstance(e, A.Call)
         self.assertEqual(len(e.args), 3)
+        # All-positional: arg_names should be all None.
+        self.assertEqual(e.arg_names, [None, None, None])
+
+    def test_call_with_named_arguments(self):
+        e = parse_expr('f(1, name: "Ana", age: 30)')
+        self.assertIsInstance(e, A.Call)
+        self.assertEqual(len(e.args), 3)
+        self.assertEqual(e.arg_names, [None, "name", "age"])
+        self.assertIsInstance(e.args[0], A.IntLit)
+        self.assertIsInstance(e.args[1], A.StringLit)
+        self.assertIsInstance(e.args[2], A.IntLit)
 
     def test_method_call(self):
         e = parse_expr("obj.metodo(x)")
         self.assertIsInstance(e, A.MethodCall)
         self.assertEqual(e.method, "metodo")
+        self.assertEqual(e.arg_names, [None])
+
+    def test_method_call_with_named_arguments(self):
+        e = parse_expr("p.move(dx: 1, dy: 2)")
+        self.assertIsInstance(e, A.MethodCall)
+        self.assertEqual(e.method, "move")
+        self.assertEqual(e.arg_names, ["dx", "dy"])
 
     def test_field_access(self):
         e = parse_expr("p.x")

@@ -9,6 +9,38 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+### Added
+
+- **Raw string literals**, `r"..."`. No escape processing and no
+  `${}` interpolation: every character up to the next `"` is taken
+  literally. Useful for Windows paths (`r"C:\Users\..."`) and
+  regular-expression patterns (`r"\d+\.\d+"`) where backslashes
+  would otherwise need to be doubled. A raw string therefore
+  cannot itself contain `"`; for that case use a regular string
+  with `\"`. The hash-delimited `r#"..."#` form is not part of
+  v1.0. The bare identifier `r` continues to lex as `IDENT`; only
+  `r"` triggers the raw-string path.
+
+- **Named arguments**, `f(name: "Ana", age: 30)`. The parser
+  accepts an optional `IDENT ":"` prefix on each call argument;
+  the analyzer reorders the arguments into parameter order before
+  type checking and reports parameter-name typos at the
+  offending name; the transpiler emits Python keyword arguments.
+  Positional arguments must precede any named argument. Built-in
+  methods on `String`, `Map`, `Set`, and on the built-in
+  capabilities (`Stdio`, `Net`, `Fs`, ...) reject named arguments
+  because their parameter names are not tracked.
+
+### Documentation
+
+- **Indent-based `match` inside parentheses** is now documented as
+  a deliberate restriction rather than a known bug. Inside `(...)`
+  the lexer suppresses NEWLINE/INDENT/DEDENT to support implicit
+  line continuation, so the indent form (`match x` then indented
+  arms) cannot be reached. The braced inline form
+  (`match x { P1 -> e1, P2 -> e2 }`) works inside a call
+  expression and may itself be spread over multiple lines.
+
 ## [0.5.0-alpha], 2026-05-12
 
 The fourth tagged release. Focus: independence from Python at

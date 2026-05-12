@@ -209,11 +209,9 @@ Raw strings start with `r` followed by quotes and do not interpret escape sequen
 
 ```ebnf
 RAW_STRING_LIT = "r\"" { any_char_except_quote } "\""
-
-  (* variants with # to include quotes: r#"..."#, r##"..."##, ... *)
 ```
 
-> **Not in 1.0.** The grammar reserves the syntax, but the current lexer does not yet recognise raw strings. Programs that need a literal backslash should escape it (`"\\"`). Raw strings will land in a later version.
+Inside a raw string every character up to the next `"` is taken literally: backslashes are themselves, `\n` is two characters, and `${...}` is not recognised as an interpolation. A raw string therefore cannot itself contain `"`; for that case use a regular string with `\"`. The `r#"..."#` form (Rust-style hash-delimited raw strings, which allow embedded quotes) is not part of version 1.0.
 
 #### 3.4.5 Character literals
 

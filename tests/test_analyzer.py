@@ -2924,5 +2924,125 @@ class TestExamples(unittest.TestCase):
         self.assertTrue(r.ok, r.errors)
 
 
+# =============================================================
+# Named arguments
+# =============================================================
+
+class TestNamedArguments(unittest.TestCase):
+    """Functions and methods accept named arguments
+    (``f(name: "Ana", age: 30)``). Positional arguments must
+    precede any named argument; names must match a parameter;
+    no parameter may be given twice; arity must be respected."""
+
+    def test_call_with_named_args_in_order(self):
+        r = check(
+            'fun greet(name: String, age: Int) -> String\n'
+            '    return name\n'
+            'fun main(stdio: Stdio)\n'
+            '    let m = greet(name: "Ana", age: 30)\n'
+            '    stdio.println(m)\n'
+        )
+        self.assertTrue(r.ok, r.errors)
+
+    def test_call_with_named_args_reordered(self):
+        r = check(
+            'fun greet(name: String, age: Int) -> String\n'
+            '    return name\n'
+            'fun main(stdio: Stdio)\n'
+            '    let m = greet(age: 30, name: "Ana")\n'
+            '    stdio.println(m)\n'
+        )
+        self.assertTrue(r.ok, r.errors)
+
+    def test_mix_positional_then_named(self):
+        r = check(
+            'fun f(a: Int, b: Int, c: Int) -> Int\n'
+            '    return a + b + c\n'
+            'fun main(stdio: Stdio)\n'
+            '    stdio.println("${f(1, c: 3, b: 2)}")\n'
+        )
+        self.assertTrue(r.ok, r.errors)
+
+    def test_positional_after_named_rejected(self):
+        errs = errors_of(
+            'fun f(a: Int, b: Int) -> Int\n'
+            '    return a + b\n'
+            'fun main(stdio: Stdio)\n'
+            '    let _ = f(a: 1, 2)\n'
+        )
+        self.assertTrue(
+            any("positional argument cannot follow" in e for e in errs),
+            errs,
+        )
+
+    def test_unknown_parameter_name_rejected(self):
+        errs = errors_of(
+            'fun f(a: Int, b: Int) -> Int\n'
+            '    return a + b\n'
+            'fun main(stdio: Stdio)\n'
+            '    let _ = f(a: 1, x: 2)\n'
+        )
+        self.assertTrue(
+            any("unknown parameter name 'x'" in e for e in errs),
+            errs,
+        )
+
+    def test_duplicate_name_rejected(self):
+        errs = errors_of(
+            'fun f(a: Int, b: Int) -> Int\n'
+            '    return a + b\n'
+            'fun main(stdio: Stdio)\n'
+            '    let _ = f(a: 1, a: 2)\n'
+        )
+        self.assertTrue(
+            any("given more than once" in e for e in errs),
+            errs,
+        )
+
+    def test_named_arg_type_checked_at_right_slot(self):
+        # If the analyzer were comparing positionally without
+        # reordering, this would (wrongly) succeed because the values
+        # happen to be Int and String. Test that we still catch the
+        # type mismatch when the user swaps the *types* and *names*.
+        errs = errors_of(
+            'fun greet(name: String, age: Int) -> String\n'
+            '    return name\n'
+            'fun main(stdio: Stdio)\n'
+            '    let _ = greet(age: "thirty", name: 30)\n'
+        )
+        # Two type errors: age expects Int got String, name expects
+        # String got Int. The exact wording is not asserted, only that
+        # both mismatches are surfaced.
+        self.assertGreaterEqual(len(errs), 2, errs)
+
+    def test_named_args_on_method(self):
+        r = check(
+            'type Point {\n'
+            '    x: Int,\n'
+            '    y: Int\n'
+            '}\n'
+            'impl Point\n'
+            '    fun move_by(self, dx: Int, dy: Int) -> Point\n'
+            '        return Point { x: self.x + dx, y: self.y + dy }\n'
+            'fun main(stdio: Stdio)\n'
+            '    let p = Point { x: 0, y: 0 }\n'
+            '    let q = p.move_by(dy: 3, dx: 1)\n'
+            '    stdio.println("${q.x}")\n'
+        )
+        self.assertTrue(r.ok, r.errors)
+
+    def test_named_args_on_builtin_rejected(self):
+        errs = errors_of(
+            'fun main(stdio: Stdio)\n'
+            '    let s = "hello"\n'
+            '    let r = s.replace(old: "l", new: "L")\n'
+            '    stdio.println(r)\n'
+        )
+        self.assertTrue(
+            any("named arguments are not supported" in e for e in errs),
+            errs,
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

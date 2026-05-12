@@ -723,7 +723,9 @@ class Transpiler:
         recv = self._emit_expr(e.receiver)
         args_code = [self._emit_expr(a) for a in e.args]
 
-        # Type-aware dispatch.
+        # Type-aware dispatch. Built-in method maps (String, Map, Set)
+        # see only positional arguments because the analyzer rejects
+        # named arguments on builtins.
         recv_ty = self.types.get(id(e.receiver))
         if isinstance(recv_ty, TyName):
             if recv_ty.name == "String":
@@ -733,7 +735,8 @@ class Transpiler:
             if recv_ty.name == "Set":
                 return self._emit_set_method(e.method, recv, args_code)
 
-        args = ", ".join(args_code)
+        # User-defined methods: respect named arguments.
+        args = self._emit_call_arg_list(e.args, e.arg_names)
         return f"{recv}.{_safe_ident(e.method)}({args})"
 
     def _emit_string_method(
@@ -824,8 +827,26 @@ class Transpiler:
             if e.callee.name == "new_set" and not e.args:
                 return "set()"
         callee = self._emit_call_callee(e.callee)
-        args = ", ".join(self._emit_expr(a) for a in e.args)
+        args = self._emit_call_arg_list(e.args, e.arg_names)
         return f"{callee}({args})"
+
+    def _emit_call_arg_list(
+        self, args: list[A.Expr], arg_names: list,
+    ) -> str:
+        """Render a call argument list, including any named arguments
+        as Python keyword arguments (``name=value``). Capa parameter
+        names are mapped through ``_safe_ident`` because they may
+        collide with Python reserved words.
+        """
+        parts: list[str] = []
+        for i, a in enumerate(args):
+            name = arg_names[i] if i < len(arg_names) else None
+            code = self._emit_expr(a)
+            if name is None:
+                parts.append(code)
+            else:
+                parts.append(f"{_safe_ident(name)}={code}")
+        return ", ".join(parts)
 
     def _emit_call_callee(self, e: A.Expr) -> str:
         # When emitting a Call, the callee is a concrete call;

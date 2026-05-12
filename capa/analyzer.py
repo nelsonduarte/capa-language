@@ -139,6 +139,11 @@ class Symbol:
     # For FUNCTION: list parallel to params indicating whether each parameter
     # consumes the argument (ownership move). For use in flow analysis.
     consuming_params: list[bool] = field(default_factory=list)
+    # For FUNCTION: parameter names parallel to the TyFun's `params`.
+    # Used to resolve named arguments (`f(age: 30)`) and to give nicer
+    # error messages. Empty when the function comes from a builtin and
+    # named-arg dispatch is not supported.
+    param_names: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -1358,6 +1363,9 @@ class Analyzer:
                     sym.consuming_params = [
                         p.consuming for p in item.params if p.name != "self"
                     ]
+                    sym.param_names = [
+                        p.name for p in item.params if p.name != "self"
+                    ]
                     if isinstance(sym.ty, TyFun):
                         # Only built-in capabilities are forbidden as
                         # function return types. User-defined capabilities
@@ -1437,6 +1445,9 @@ class Analyzer:
                 type_params=list(method.type_params),
                 consuming_params=[
                     p.consuming for p in method.params if p.name != "self"
+                ],
+                param_names=[
+                    p.name for p in method.params if p.name != "self"
                 ],
             )
             target.methods[method.name] = m_sym
@@ -2725,6 +2736,104 @@ class Analyzer:
             return TyBool
         return TyUnknown
 
+    def _resolve_named_args(
+        self,
+        e: "A.Call | A.MethodCall",
+        param_names: list[str],
+        callee_label: str,
+    ) -> Optional[list[int]]:
+        """Validate ``e.arg_names`` and return a permutation that puts
+        the arguments into parameter order.
+
+        The result is a list ``perm`` of length ``len(e.args)`` such
+        that ``e.args[perm[i]]`` is the argument bound to the i-th
+        parameter. Returns ``None`` and reports an error if the named
+        arguments are not well-formed (positional after named, name
+        does not match a parameter, duplicate name, missing or extra
+        argument). When no name appears in ``e.arg_names`` (all
+        positional), returns the identity permutation without
+        consulting ``param_names`` (so plain calls work even for
+        builtins where ``param_names`` is empty).
+        """
+        names = e.arg_names
+        if not any(n is not None for n in names):
+            return list(range(len(e.args)))
+
+        if not param_names:
+            self._err(
+                f"call to {callee_label}: named arguments are not "
+                f"supported here",
+                e.pos,
+            )
+            return None
+
+        # Positional arguments must all precede any named argument.
+        seen_named = False
+        for i, n in enumerate(names):
+            if n is None:
+                if seen_named:
+                    self._err(
+                        f"call to {callee_label}: positional argument "
+                        f"cannot follow a named argument",
+                        e.args[i].pos,
+                    )
+                    return None
+            else:
+                seen_named = True
+
+        # Arity check.
+        if len(e.args) != len(param_names):
+            self._err(
+                f"call to {callee_label}: expected {len(param_names)} "
+                f"arguments, got {len(e.args)}",
+                e.pos,
+            )
+            return None
+
+        # Build the permutation: param index -> arg index.
+        assigned: list[Optional[int]] = [None] * len(param_names)
+        name_to_param = {p: i for i, p in enumerate(param_names)}
+
+        # Positional first.
+        for i, n in enumerate(names):
+            if n is not None:
+                break
+            assigned[i] = i
+
+        # Then named.
+        for i, n in enumerate(names):
+            if n is None:
+                continue
+            param_idx = name_to_param.get(n)
+            if param_idx is None:
+                self._err(
+                    f"call to {callee_label}: unknown parameter name "
+                    f"{n!r}",
+                    e.args[i].pos,
+                )
+                return None
+            if assigned[param_idx] is not None:
+                self._err(
+                    f"call to {callee_label}: parameter {n!r} given "
+                    f"more than once",
+                    e.args[i].pos,
+                )
+                return None
+            assigned[param_idx] = i
+
+        # No gaps allowed (every param must be assigned). Should be
+        # guaranteed by the arity check + duplicate check, but defend.
+        for i, a in enumerate(assigned):
+            if a is None:
+                self._err(
+                    f"call to {callee_label}: missing argument for "
+                    f"parameter {param_names[i]!r}",
+                    e.pos,
+                )
+                return None
+
+        return assigned  # type: ignore[return-value]
+
     def _check_call(self, e: A.Call) -> Ty:
         # Check aliasing between the arguments before evaluating types -
         # the error is independent of whether the callee is known or not.
@@ -2743,14 +2852,27 @@ class Analyzer:
                 self.bindings[id(e.callee)] = sym
                 if sym.kind == SymbolKind.FUNCTION:
                     if isinstance(sym.ty, TyFun):
+                        # Resolve named arguments (no-op if all positional).
+                        perm = self._resolve_named_args(
+                            e, sym.param_names, repr(sym.name),
+                        )
+                        if perm is None:
+                            return instantiate(
+                                sym.ty.ret, sym.type_params, {},
+                            )
+                        reordered_args = [e.args[j] for j in perm]
+                        reordered_tys = [arg_tys[j] for j in perm]
                         ret_ty = self._check_call_with_inference(
-                            e, sym.ty, arg_tys, sym.name, sym.type_params,
+                            e, sym.ty, reordered_tys, sym.name,
+                            sym.type_params, reordered_args,
                         )
                         # Mark as consumed the args corresponding to
                         # consuming parameters. Done after checking so
                         # that type errors are reported first.
                         if sym.consuming_params:
-                            self._mark_consumed_args(e.args, sym.consuming_params)
+                            self._mark_consumed_args(
+                                reordered_args, sym.consuming_params,
+                            )
                         return ret_ty
                     return TyUnknown
                 if sym.kind == SymbolKind.VARIANT:
@@ -2804,6 +2926,7 @@ class Analyzer:
         arg_tys: list[Ty],
         name: str,
         type_params: list[str],
+        reordered_args: Optional[list[A.Expr]] = None,
     ) -> Ty:
         """Check a function call, performing local inference of
         ``type_params`` when applicable.
@@ -2816,7 +2939,13 @@ class Analyzer:
 
         ``TyVar``s not inferred (not appearing in any parameter) become
         ``TyUnknown`` in the result.
+
+        ``reordered_args`` lets the caller pass arguments rearranged
+        into parameter order (used by named-argument resolution). When
+        ``None``, ``e.args`` is used directly.
         """
+        args_in_order = reordered_args if reordered_args is not None else e.args
+
         if len(fun_ty.params) != len(arg_tys):
             self._err(
                 f"call to {name!r}: expected {len(fun_ty.params)} arguments, "
@@ -2837,7 +2966,7 @@ class Analyzer:
                 self._err(
                     f"call to {name!r}: argument {i + 1} expects "
                     f"{ty_str(substituted)}, got {ty_str(arg_ty)}",
-                    e.args[i].pos,
+                    args_in_order[i].pos,
                 )
 
         # Persist substitutions of fresh TyVars (cross-statement).
@@ -2917,30 +3046,43 @@ class Analyzer:
             for param, arg in zip(type_sym.type_params, recv_ty.args):
                 mapping[param] = arg
 
+        # Resolve named arguments (no-op if all positional).
+        perm = self._resolve_named_args(
+            e, method_sym.param_names, f"{recv_ty.name}.{e.method!r}",
+        )
+        if perm is None:
+            all_type_params = type_sym.type_params + method_sym.type_params
+            return instantiate(method_fun_ty.ret, all_type_params, mapping)
+        reordered_args = [e.args[j] for j in perm]
+        reordered_tys = [arg_tys[j] for j in perm]
+
         # Check arity of the explicit arguments.
-        if len(method_fun_ty.params) != len(arg_tys):
+        if len(method_fun_ty.params) != len(reordered_tys):
             self._err(
                 f"call to {recv_ty.name}.{e.method!r}: expected "
-                f"{len(method_fun_ty.params)} arguments, got {len(arg_tys)}",
+                f"{len(method_fun_ty.params)} arguments, got "
+                f"{len(reordered_tys)}",
                 e.pos,
             )
             return instantiate(method_fun_ty.ret, method_sym.type_params, mapping)
 
         # Additional inference: some method type params may be inferred
         # from the explicit args (not from the receiver).
-        for param_ty, arg_ty in zip(method_fun_ty.params, arg_tys):
+        for param_ty, arg_ty in zip(method_fun_ty.params, reordered_tys):
             substituted = substitute(param_ty, mapping)
             unify(substituted, arg_ty, mapping)
 
         # Check compatibility after substitution.
-        for i, (param_ty, arg_ty) in enumerate(zip(method_fun_ty.params, arg_tys)):
+        for i, (param_ty, arg_ty) in enumerate(
+            zip(method_fun_ty.params, reordered_tys)
+        ):
             substituted = substitute(param_ty, mapping)
             if not self._compatible_with_impls(substituted, arg_ty):
                 self._err(
                     f"call to {recv_ty.name}.{e.method!r}: argument "
                     f"{i + 1} expects {ty_str(substituted)}, got "
                     f"{ty_str(arg_ty)}",
-                    e.args[i].pos,
+                    reordered_args[i].pos,
                 )
 
         # Persist substitutions of fresh TyVars (cross-statement).
@@ -2952,7 +3094,7 @@ class Analyzer:
 
         # Mark as consumed the args corresponding to consuming params.
         if method_sym.consuming_params:
-            self._mark_consumed_args(e.args, method_sym.consuming_params)
+            self._mark_consumed_args(reordered_args, method_sym.consuming_params)
 
         return ret_ty
 

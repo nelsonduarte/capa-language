@@ -13,7 +13,13 @@ Notes on the scope of version 1.0:
   kept as literal part of the string value. This limitation is
   deliberate to keep the lexer simple; the parser can re-lex the
   contents if needed.
-- Raw strings (r"...") are not yet implemented.
+- Raw strings (``r"..."``) are recognised. No escape processing
+  applies inside them: every character up to the next unescaped
+  quote is taken literally (no ``\\n``, no ``${}`` interpolation).
+  This means a raw string cannot itself contain ``"``; for those
+  cases use a regular string with ``\"``. The intended use is
+  Windows paths and regular-expression patterns where backslashes
+  would otherwise need to be doubled.
 """
 
 from typing import Optional
@@ -544,6 +550,14 @@ class Lexer:
         start = self._pos()
         c = self._peek()
 
+        # Raw string literal: r"..."
+        # Recognised only when "r" is immediately followed by a double
+        # quote; the bare identifier "r" is still a valid identifier.
+        if c == "r" and self._peek(1) == '"':
+            self._advance()  # 'r' prefix
+            self._lex_raw_string(start)
+            return
+
         # Identifier / keyword
         if c.isalpha() or c == "_":
             self._lex_identifier(start)
@@ -703,6 +717,33 @@ class Lexer:
             buf.append(c)
             self._advance()
         raise self._error("unterminated string literal", start)
+
+    def _lex_raw_string(self, start: Pos) -> None:
+        """Lexes a raw string literal ``r"..."``.
+
+        The opening ``r`` has already been consumed by the caller.
+        Inside a raw string, backslashes are literal and ``${...}``
+        interpolation is not recognised. The closing ``"`` cannot
+        therefore be escaped: include none, or use a regular string.
+        """
+        self._advance()  # opening quote
+        buf: list[str] = []
+        while not self._at_end():
+            c = self._peek()
+            if c == '"':
+                self._advance()
+                text = self.source[start.offset : self.offset]
+                self._emit(TokenKind.STRING_LIT, text, start, value="".join(buf))
+                return
+            if c == "\n":
+                raise self._error(
+                    "unterminated raw string literal "
+                    "(newline before closing quote)",
+                    start,
+                )
+            buf.append(c)
+            self._advance()
+        raise self._error("unterminated raw string literal", start)
 
     def _read_escape(self) -> str:
         """Reads an escape sequence after '\\\\' has been consumed."""

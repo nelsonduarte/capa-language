@@ -1279,12 +1279,13 @@ class Parser:
                 name_tok = self._expect(T.IDENT, "expected field or method name")
                 # Method call if followed by '(' or turbofish '::<'.
                 if self._check(T.LPAREN):
-                    args = self._parse_call_args()
+                    args, arg_names = self._parse_call_args()
                     expr = A.MethodCall(
                         pos=expr.pos,
                         receiver=expr,
                         method=name_tok.text,
                         args=args,
+                        arg_names=arg_names,
                     )
                 else:
                     expr = A.FieldAccess(
@@ -1293,8 +1294,10 @@ class Parser:
                 continue
             if self._check(T.LPAREN):
                 # Function call
-                args = self._parse_call_args()
-                expr = A.Call(pos=expr.pos, callee=expr, args=args)
+                args, arg_names = self._parse_call_args()
+                expr = A.Call(
+                    pos=expr.pos, callee=expr, args=args, arg_names=arg_names,
+                )
                 continue
             if self._check(T.LBRACKET):
                 self._advance()
@@ -1308,17 +1311,45 @@ class Parser:
             break
         return expr
 
-    def _parse_call_args(self) -> list[A.Expr]:
+    def _parse_call_args(self) -> tuple[list[A.Expr], list[Optional[str]]]:
+        """Parse ``( arg [, arg]* [,]? )`` where each ``arg`` is either
+        an expression (positional) or ``IDENT ":" expression`` (named).
+
+        Returns two parallel lists: the argument expressions and, for
+        each one, either the parameter name it targets or ``None`` if
+        it is positional. The analyzer checks that positional comes
+        before named and that names match a real parameter.
+        """
         self._expect(T.LPAREN, "expected '('")
         args: list[A.Expr] = []
+        names: list[Optional[str]] = []
         if not self._check(T.RPAREN):
-            args.append(self._parse_expr())
+            self._parse_one_call_arg(args, names)
             while self._match(T.COMMA):
                 if self._check(T.RPAREN):  # trailing comma
                     break
-                args.append(self._parse_expr())
+                self._parse_one_call_arg(args, names)
         self._expect(T.RPAREN, "expected ')' to close call argument list")
-        return args
+        return args, names
+
+    def _parse_one_call_arg(
+        self, args: list[A.Expr], names: list[Optional[str]],
+    ) -> None:
+        # Named argument: IDENT ":" expr. Only commit to this branch
+        # when we are certain (two-token lookahead), so identifiers
+        # involved in other expressions (e.g. struct literals via
+        # `Point { x: 1, y: 2 }`) are not misparsed here.
+        if (
+            self._peek().kind == T.IDENT
+            and self._peek(1).kind == T.COLON
+        ):
+            name_tok = self._advance()
+            self._advance()  # consume ':'
+            names.append(name_tok.value)
+            args.append(self._parse_expr())
+        else:
+            names.append(None)
+            args.append(self._parse_expr())
 
     def _parse_primary(self) -> A.Expr:
         tok = self._peek()
