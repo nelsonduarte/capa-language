@@ -94,10 +94,48 @@ package is invoked via `python -m capa`.
 
 ## Installation
 
+### Pre-built binary (no Python required)
+
+Download the binary for your platform from the
+[latest release](https://github.com/nelsonduarte/capa/releases/latest):
+
+| Platform | File |
+|---|---|
+| Linux x86_64 | `capa-linux-x86_64` |
+| macOS Intel | `capa-macos-x86_64` |
+| macOS Apple Silicon | `capa-macos-arm64` |
+| Windows x86_64 | `capa-windows-x86_64.exe` |
+
+```bash
+# Linux / macOS
+curl -L https://github.com/nelsonduarte/capa/releases/latest/download/capa-linux-x86_64 -o capa
+chmod +x capa
+./capa --run hello.capa
+```
+
+The binary bundles a Python interpreter and the Capa runtime via
+PyInstaller, so end users do not need Python installed. Each release
+also ships a `.sha256` checksum file alongside each binary; verify
+the download before running:
+
+```bash
+sha256sum -c capa-linux-x86_64.sha256
+```
+
+### From source
+
 From the project root (`Capa/`):
 
 ```bash
 pip install -e .          # or just use `python -m capa` directly
+```
+
+To build a binary yourself:
+
+```bash
+pip install pyinstaller>=6.0
+pyinstaller deploy/capa.spec
+./dist/capa --run examples/hello.capa
 ```
 
 ### Editor support

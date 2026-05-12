@@ -52,20 +52,53 @@
      Requirements
 ===================================================== -->
 <section>
-    <h2>Requirements</h2>
+    <h2>Install</h2>
 
-    <ul>
-        <li><strong>Python 3.10 or newer.</strong> Tested on 3.10, 3.12, and 3.14 across Linux, macOS, and Windows.</li>
-        <li><strong>Git.</strong> To clone the repository.</li>
-        <li><strong>No other dependencies.</strong> Capa is hand-written in pure Python and has zero runtime dependencies outside the standard library.</li>
-    </ul>
+    <p>Two paths. <strong>Pre-built binary</strong> if you just want to run Capa programs; <strong>from source</strong> if you intend to contribute, hack on the compiler, or want the test suite locally.</p>
 </section>
 
 <!-- =====================================================
-     Install
+     Binary install
 ===================================================== -->
 <section>
-    <h2>Install</h2>
+    <h2>Option A: pre-built binary (no Python required)</h2>
+
+    <p>Each tagged release publishes a standalone binary built with PyInstaller that bundles a Python interpreter. Download, mark executable, run. No <code>pip install</code>, no Python required.</p>
+
+    <table class="cli-table">
+        <thead><tr><th>Platform</th><th>File</th></tr></thead>
+        <tbody>
+            <tr><td>Linux x86_64</td><td><code>capa-linux-x86_64</code></td></tr>
+            <tr><td>macOS Intel</td><td><code>capa-macos-x86_64</code></td></tr>
+            <tr><td>macOS Apple Silicon</td><td><code>capa-macos-arm64</code></td></tr>
+            <tr><td>Windows x86_64</td><td><code>capa-windows-x86_64.exe</code></td></tr>
+        </tbody>
+    </table>
+
+    <p>Grab the file matching your system from the <a href="https://github.com/nelsonduarte/capa/releases/latest">latest release page</a>, or use <code>curl</code>:</p>
+
+<pre><code>$ curl -L https://github.com/nelsonduarte/capa/releases/latest/download/capa-linux-x86_64 -o capa
+$ chmod +x capa
+$ ./capa --run hello.capa</code></pre>
+
+    <p>Each binary ships with a <code>.sha256</code> checksum file. Verify before running:</p>
+
+<pre><code>$ curl -L .../capa-linux-x86_64.sha256 -o capa-linux-x86_64.sha256
+$ sha256sum -c capa-linux-x86_64.sha256
+capa-linux-x86_64: OK</code></pre>
+
+    <div class="callout">
+        <p><strong>Heads up.</strong> First-run startup is ~100-300 ms slower than running <code>python -m capa</code> directly: the binary self-extracts to a temp directory the first time. Subsequent runs are cached.</p>
+    </div>
+</section>
+
+<!-- =====================================================
+     Source install
+===================================================== -->
+<section>
+    <h2>Option B: from source</h2>
+
+    <p>Requirements: <strong>Python 3.10 or newer</strong>, <strong>git</strong>. Tested on 3.10, 3.12, and 3.14 across Linux, macOS, and Windows. Zero runtime dependencies outside the standard library.</p>
 
     <p>Clone and install in editable mode:</p>
 

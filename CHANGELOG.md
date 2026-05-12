@@ -11,6 +11,36 @@ breaking changes and the discipline is still being shaped.
 
 ### Added
 
+- **Pre-built binaries** (no Python required). PyInstaller spec at
+  `deploy/capa.spec` bundles the compiler and a Python interpreter
+  into a single ~8 MB executable. End users download
+  `capa-{linux,macos,windows}-{x86_64,arm64}` from the GitHub
+  Releases page and run it directly: no `pip install`, no
+  Python 3.10+ requirement on the host. Each binary ships with a
+  `.sha256` checksum.
+
+  Build locally with `pyinstaller deploy/capa.spec`. Released
+  binaries are produced by `.github/workflows/release-binaries.yml`,
+  a matrix workflow that runs on every version tag (or via manual
+  dispatch) and uploads to the matching GitHub Release. Smoke tests
+  in CI confirm each binary can `--check`, `--run`, and `--manifest`
+  before the upload step.
+
+- **`capa --run` now executes in-process** via `exec()` instead of
+  spawning a subprocess of `sys.executable`. Faster startup, no
+  temp-file dance, and the bundled binary works (the subprocess
+  approach assumed `sys.executable` was a generic Python interpreter
+  that could run arbitrary `.py` files, which fails under
+  PyInstaller). SystemExit propagation preserved; runtime tracebacks
+  go to stderr.
+
+### Changed
+
+- The website's `docs/start.html` is reorganised into two options:
+  "Pre-built binary (no Python required)" and "From source". The
+  binary is the recommended path for end users; source is for
+  contributors and people who want the test suite.
+
 - **`Random.with_seed(seed: Int) -> Random`** closes the generic
   attenuation arc. The unrestricted `Random()` is seeded from
   system entropy; `with_seed(seed)` returns a fresh `Random`

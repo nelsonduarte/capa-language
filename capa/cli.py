@@ -13,10 +13,7 @@ the lexer processes the file without errors.
 """
 
 import argparse
-import os
-import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 from capa import (
@@ -240,30 +237,40 @@ def main() -> int:
         return 0
 
     if args.run:
-        # Write the transpiled code to a temporary file and execute it
-        # as a subprocess, with PYTHONPATH pointing to the capa
-        # package (so that the runtime is importable).
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".py", delete=False, encoding="utf-8"
-        ) as f:
-            f.write(code)
-            temp_path = f.name
+        # Execute the transpiled Python in the current interpreter.
+        #
+        # The ``capa.runtime`` package is already importable here (we
+        # are running inside the ``capa`` package), so the transpiled
+        # code's ``from capa.runtime import ...`` resolves directly.
+        # We give it a ``__name__ = "__main__"`` so the conventional
+        # entry-point guard works; ``SystemExit`` is intercepted so
+        # the exit code propagates back to the OS naturally; any
+        # other exception prints a traceback and returns 1.
+        #
+        # Historical note: a ``subprocess.run([sys.executable, ...])``
+        # used to be invoked here. That does not survive PyInstaller
+        # bundling: the bundled binary is not a generic Python
+        # interpreter able to run an arbitrary ``.py`` file. In-process
+        # exec works in both plain-Python and frozen-binary modes,
+        # is faster (no fork), and avoids the temp-file dance.
+        import traceback
+        run_globals = {
+            "__name__": "__main__",
+            "__file__": "<transpiled>",
+        }
         try:
-            # __file__ is capa/cli.py; we need the directory that CONTAINS
-            # the 'capa' package, so the subprocess can do `from capa.runtime
-            # import ...`. Hence, .parent.parent.
-            pkg_parent = Path(__file__).resolve().parent.parent
-            env = os.environ.copy()
-            existing = env.get("PYTHONPATH", "")
-            env["PYTHONPATH"] = (
-                str(pkg_parent) + (os.pathsep + existing if existing else "")
-            )
-            r = subprocess.run(
-                [sys.executable, temp_path], env=env,
-            )
-            return r.returncode
-        finally:
-            os.unlink(temp_path)
+            exec(compile(code, "<transpiled>", "exec"), run_globals)
+            return 0
+        except SystemExit as e:
+            if e.code is None:
+                return 0
+            if isinstance(e.code, int):
+                return e.code
+            sys.stderr.write(str(e.code) + "\n")
+            return 1
+        except BaseException:
+            traceback.print_exc(file=sys.stderr)
+            return 1
 
     if args.parse:
         print(ast_dump(module))

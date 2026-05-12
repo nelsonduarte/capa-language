@@ -1,0 +1,103 @@
+name: release-binaries
+
+# Builds a standalone `capa` binary for each major platform when a
+# version tag is pushed (v0.5.0-alpha, v1.0.0, etc.) or when invoked
+# manually from the Actions tab. The binary bundles a Python
+# interpreter via PyInstaller, so end users do not need Python
+# installed to run Capa programs.
+#
+# Each matrix job uploads its artefact to the matching GitHub Release
+# (which must already exist; the workflow does not create the release).
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to attach the binaries to (e.g. v0.5.0-alpha)'
+        required: true
+        type: string
+
+permissions:
+  contents: write   # upload assets to the release
+
+jobs:
+  build:
+    name: Build ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            label: linux-x86_64
+            asset: capa-linux-x86_64
+            ext: ''
+          - os: macos-13         # Intel
+            label: macos-x86_64
+            asset: capa-macos-x86_64
+            ext: ''
+          - os: macos-latest     # Apple Silicon
+            label: macos-arm64
+            asset: capa-macos-arm64
+            ext: ''
+          - os: windows-latest
+            label: windows-x86_64
+            asset: capa-windows-x86_64.exe
+            ext: '.exe'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install PyInstaller
+        run: pip install pyinstaller>=6.0
+
+      - name: Build binary
+        run: pyinstaller deploy/capa.spec --distpath dist --workpath build/pyinstaller
+
+      - name: Smoke-test binary (non-Windows)
+        if: matrix.os != 'windows-latest'
+        run: |
+          ./dist/capa${{ matrix.ext }} --check examples/hello.capa
+          ./dist/capa${{ matrix.ext }} --run examples/hello.capa
+          ./dist/capa${{ matrix.ext }} --manifest examples/hello.capa > /dev/null
+
+      - name: Smoke-test binary (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: bash
+        run: |
+          ./dist/capa.exe --check examples/hello.capa
+          ./dist/capa.exe --run examples/hello.capa
+          ./dist/capa.exe --manifest examples/hello.capa > /dev/null
+
+      - name: Rename binary for upload
+        shell: bash
+        run: |
+          mv "dist/capa${{ matrix.ext }}" "dist/${{ matrix.asset }}"
+
+      - name: Compute SHA-256
+        shell: bash
+        run: |
+          if command -v shasum >/dev/null 2>&1; then
+            shasum -a 256 "dist/${{ matrix.asset }}" > "dist/${{ matrix.asset }}.sha256"
+          else
+            sha256sum "dist/${{ matrix.asset }}" > "dist/${{ matrix.asset }}.sha256"
+          fi
+          cat "dist/${{ matrix.asset }}.sha256"
+
+      - name: Upload binary to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          files: |
+            dist/${{ matrix.asset }}
+            dist/${{ matrix.asset }}.sha256
+          fail_on_unmatched_files: true
