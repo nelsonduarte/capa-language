@@ -38,6 +38,13 @@ SCHEMA_VERSION = 1
 # newer but adoption is less universal. Bump when 1.6 is everywhere.
 CYCLONEDX_SPEC_VERSION = "1.5"
 
+# Maximum length for a stringified call-site argument before it gets
+# truncated in the manifest. Pure aesthetics — avoids blowing up the
+# JSON when a program passes a long string literal or a complex
+# lambda as an argument. The truncated form ends with "..." so it is
+# obvious to the reader that a manifest is not the source of truth.
+_MAX_ARG_REPR = 80
+
 
 def build_manifest(
     module: A.Module,
@@ -142,6 +149,9 @@ def _fun_record(
         for a in fn.attributes
     ]
 
+    calls: list[dict[str, Any]] = []
+    _collect_calls(fn.body, calls)
+
     return {
         "name": fn.name,
         "container": container,
@@ -152,7 +162,176 @@ def _fun_record(
         "declared_capabilities": declared_caps,
         "has_unsafe": has_unsafe,
         "attributes": attrs,
+        "calls": calls,
     }
+
+
+# ===========================================================
+# Call-site extraction
+#
+# Walks a function body and records every call (plain function or
+# method) found anywhere in expression position, including inside
+# nested expressions. Each record carries:
+#
+#   - kind:    "fn" or "method"
+#   - callee:  function name, or "receiver.method" for method calls
+#   - pos:     "line:col" of the call site
+#   - args:    list of source-like stringifications of the argument
+#              expressions, truncated to _MAX_ARG_REPR characters
+#
+# The call list is the audit primitive — it lets a CRA reviewer see,
+# for each function in the program, *what other functions it
+# invokes and with what arguments*, including restrictions applied
+# via `restrict_to(...)` calls visible directly in the argument
+# expressions.
+# ===========================================================
+
+
+def _collect_calls(node, calls: list[dict[str, Any]]) -> None:
+    """Recursively collect Call/MethodCall expressions from any node."""
+    if node is None:
+        return
+
+    if isinstance(node, A.Call):
+        if isinstance(node.callee, A.Ident):
+            callee_name = node.callee.name
+        else:
+            callee_name = _stringify_expr(node.callee)
+        calls.append({
+            "kind": "fn",
+            "callee": callee_name,
+            "pos": f"{node.pos.line}:{node.pos.col}",
+            "args": [_stringify_expr(a) for a in node.args],
+        })
+        # Recurse into the callee expression (so f(g(x)) records g too)
+        # and into each argument.
+        _collect_calls(node.callee, calls)
+        for arg in node.args:
+            _collect_calls(arg, calls)
+        return
+
+    if isinstance(node, A.MethodCall):
+        receiver_str = _stringify_expr(node.receiver)
+        calls.append({
+            "kind": "method",
+            "callee": f"{receiver_str}.{node.method}",
+            "pos": f"{node.pos.line}:{node.pos.col}",
+            "args": [_stringify_expr(a) for a in node.args],
+        })
+        _collect_calls(node.receiver, calls)
+        for arg in node.args:
+            _collect_calls(arg, calls)
+        return
+
+    # Generic AST traversal: visit any Node-typed or list-of-Node field.
+    if isinstance(node, A.Node):
+        for f in node.__dataclass_fields__.values():
+            if f.name == "pos":
+                continue
+            v = getattr(node, f.name)
+            if isinstance(v, A.Node):
+                _collect_calls(v, calls)
+            elif isinstance(v, list):
+                for item in v:
+                    if isinstance(item, A.Node):
+                        _collect_calls(item, calls)
+                    elif isinstance(item, tuple):
+                        # struct field pairs (name, Expr), match arms etc.
+                        for it in item:
+                            if isinstance(it, A.Node):
+                                _collect_calls(it, calls)
+
+
+def _stringify_expr(e) -> str:
+    """Render an expression as a short source-like string for the
+    manifest. Truncates at ``_MAX_ARG_REPR`` chars with an ellipsis.
+    Designed for human-readable manifest output, not round-tripping.
+    """
+    s = _stringify_expr_full(e)
+    if len(s) > _MAX_ARG_REPR:
+        s = s[: _MAX_ARG_REPR - 3] + "..."
+    return s
+
+
+def _stringify_expr_full(e) -> str:
+    if e is None:
+        return ""
+    if isinstance(e, A.Ident):
+        return e.name
+    if isinstance(e, A.IntLit):
+        return str(e.value)
+    if isinstance(e, A.FloatLit):
+        return repr(e.value)
+    if isinstance(e, A.StringLit):
+        return _quote_string(e.value)
+    if isinstance(e, A.InterpolatedString):
+        # Approximate. The parts list alternates str literals and
+        # expressions; show "${...}" for the expression slots so the
+        # reader sees something interpolated without long bodies.
+        out = []
+        for p in e.parts:
+            if isinstance(p, str):
+                out.append(p)
+            else:
+                out.append("${...}")
+        return _quote_string("".join(out))
+    if isinstance(e, A.CharLit):
+        return f"'{e.value}'"
+    if isinstance(e, A.BoolLit):
+        return "true" if e.value else "false"
+    if isinstance(e, A.UnitLit):
+        return "()"
+    if isinstance(e, A.BinOp):
+        return f"{_stringify_expr_full(e.left)} {e.op} {_stringify_expr_full(e.right)}"
+    if isinstance(e, A.UnaryOp):
+        sep = " " if e.op.isalpha() else ""
+        return f"{e.op}{sep}{_stringify_expr_full(e.operand)}"
+    if isinstance(e, A.Call):
+        callee = _stringify_expr_full(e.callee)
+        args = ", ".join(_stringify_expr_full(a) for a in e.args)
+        return f"{callee}({args})"
+    if isinstance(e, A.MethodCall):
+        recv = _stringify_expr_full(e.receiver)
+        args = ", ".join(_stringify_expr_full(a) for a in e.args)
+        return f"{recv}.{e.method}({args})"
+    if isinstance(e, A.FieldAccess):
+        return f"{_stringify_expr_full(e.receiver)}.{e.field_name}"
+    if isinstance(e, A.Index):
+        return f"{_stringify_expr_full(e.receiver)}[{_stringify_expr_full(e.index)}]"
+    if isinstance(e, A.Try):
+        return f"{_stringify_expr_full(e.expr)}?"
+    if isinstance(e, A.ListLit):
+        return "[" + ", ".join(_stringify_expr_full(x) for x in e.elements) + "]"
+    if isinstance(e, A.TupleLit):
+        return "(" + ", ".join(_stringify_expr_full(x) for x in e.elements) + ")"
+    if isinstance(e, A.StructLit):
+        body = ", ".join(
+            f"{k}: {_stringify_expr_full(v)}" for k, v in e.fields
+        )
+        return f"{e.type_name} {{ {body} }}"
+    if isinstance(e, A.RangeExpr):
+        op = "..=" if e.inclusive else ".."
+        return f"{_stringify_expr_full(e.start)}{op}{_stringify_expr_full(e.end)}"
+    if isinstance(e, A.LambdaExpr):
+        return "fun(...) => ..."
+    if isinstance(e, A.IfExpr):
+        return f"if {_stringify_expr_full(e.cond)} then ... else ..."
+    if isinstance(e, A.MatchExpr):
+        return f"match {_stringify_expr_full(e.scrutinee)} {{ ... }}"
+    return f"<{type(e).__name__}>"
+
+
+def _quote_string(s: str) -> str:
+    """Render a Python string as a Capa-style double-quoted literal,
+    escaping the obvious problem characters. Used only for the
+    manifest representation; we are not round-tripping source."""
+    escaped = (
+        s.replace("\\", "\\\\")
+         .replace('"', '\\"')
+         .replace("\n", "\\n")
+         .replace("\t", "\\t")
+    )
+    return f'"{escaped}"'
 
 
 def _ty_text(t: Optional[A.TypeExpr]) -> str:
@@ -279,6 +458,18 @@ def build_cyclonedx(
     components: list[dict[str, Any]] = []
     dependencies: list[dict[str, Any]] = []
 
+    # bom-refs of top-level (non-impl-method) functions, keyed by name.
+    # Used below to translate intra-module call records into CycloneDX
+    # dependency edges. Impl methods are not in this map because the
+    # callee in a method call record is "receiver.method", which
+    # cannot be resolved to a specific impl without flow tracking.
+    fn_refs: dict[str, str] = {}
+    for fn in inner["functions"]:
+        if fn["container"] is None:
+            fn_refs[fn["name"]] = (
+                f"capa:fn:{bom_basename}:{fn['name']}"
+            )
+
     # bom-refs of user-defined caps, keyed by cap name
     user_cap_refs: dict[str, str] = {}
     for uc in inner["user_defined_capabilities"]:
@@ -361,13 +552,28 @@ def build_cyclonedx(
             "properties": props,
         })
 
-        # Dependency edges: function -> capability components it declares.
-        cap_deps: list[str] = [
+        # Dependency edges: function -> capability components it
+        # declares, AND function -> functions it actually calls in
+        # the same module. Method-call edges (kind="method") are
+        # skipped in v1 because resolving the receiver to a specific
+        # impl requires type-tracking we do not yet have.
+        deps_for_this_fn: list[str] = [
             user_cap_refs[c] for c in fn["declared_capabilities"]
             if c in user_cap_refs
         ]
-        if cap_deps:
-            dependencies.append({"ref": fn_ref, "dependsOn": cap_deps})
+        seen_call_refs: set[str] = set(deps_for_this_fn)
+        for call in fn["calls"]:
+            if call["kind"] != "fn":
+                continue
+            target_ref = fn_refs.get(call["callee"])
+            if target_ref and target_ref not in seen_call_refs:
+                deps_for_this_fn.append(target_ref)
+                seen_call_refs.add(target_ref)
+        if deps_for_this_fn:
+            dependencies.append({
+                "ref": fn_ref,
+                "dependsOn": deps_for_this_fn,
+            })
 
     if program_depends_on:
         dependencies.insert(0, {

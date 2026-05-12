@@ -436,6 +436,161 @@ class TestCycloneDX(unittest.TestCase):
         b = cyclonedx_of('fun a()\n    return\n', filename="two.capa")
         self.assertNotEqual(a["serialNumber"], b["serialNumber"])
 
+    def test_function_to_function_call_becomes_dependency_edge(self):
+        sbom = cyclonedx_of(
+            'fun helper(x: Int) -> Int\n'
+            '    return x * 2\n'
+            'fun main()\n'
+            '    let n = helper(21)\n',
+            filename="demo.capa",
+        )
+        # main depends on helper because it calls it
+        main_dep = next(
+            (d for d in sbom["dependencies"]
+             if d["ref"] == "capa:fn:demo.capa:main"),
+            None,
+        )
+        self.assertIsNotNone(main_dep, "expected a dependsOn entry for main")
+        self.assertIn("capa:fn:demo.capa:helper", main_dep["dependsOn"])
+
+    def test_method_calls_do_not_create_dependency_edge_v1(self):
+        # Method calls are not resolved to specific impls in v1; the
+        # manifest records them in calls[] but does not produce a
+        # CycloneDX edge for them. This is a deliberate v1 limit;
+        # data-flow tracking will close it later.
+        sbom = cyclonedx_of(
+            'type Foo {}\n'
+            'impl Foo\n'
+            '    fun bar(self) -> Int\n'
+            '        return 1\n'
+            'fun caller(f: Foo)\n'
+            '    let n = f.bar()\n'
+        )
+        caller_dep = next(
+            (d for d in sbom["dependencies"]
+             if d["ref"].endswith(":caller")),
+            None,
+        )
+        # caller should have no dependsOn (no declared user-caps,
+        # method call is not edge-promoted in v1).
+        self.assertIsNone(caller_dep)
+
+
+# =============================================================
+# Call-site extraction in the manifest
+# =============================================================
+
+class TestCallExtraction(unittest.TestCase):
+    def _calls_of(self, source: str, fn_name: str = "main") -> list:
+        m = manifest_of(source)
+        fn = next(f for f in m["functions"] if f["name"] == fn_name)
+        return fn["calls"]
+
+    def test_plain_function_call_recorded(self):
+        calls = self._calls_of(
+            'fun add(a: Int, b: Int) -> Int\n'
+            '    return a + b\n'
+            'fun main()\n'
+            '    let n = add(1, 2)\n'
+        )
+        self.assertEqual(len(calls), 1)
+        c = calls[0]
+        self.assertEqual(c["kind"], "fn")
+        self.assertEqual(c["callee"], "add")
+        self.assertEqual(c["args"], ["1", "2"])
+
+    def test_method_call_recorded_with_receiver_method_callee(self):
+        calls = self._calls_of(
+            'fun main(stdio: Stdio)\n'
+            '    stdio.println("hi")\n'
+        )
+        self.assertEqual(len(calls), 1)
+        c = calls[0]
+        self.assertEqual(c["kind"], "method")
+        self.assertEqual(c["callee"], "stdio.println")
+        self.assertEqual(c["args"], ['"hi"'])
+
+    def test_attenuation_visible_in_call_record(self):
+        # The whole point of this feature: an auditor reading the
+        # manifest sees the actual restrict_to call before the
+        # downstream function gets the cap.
+        calls = self._calls_of(
+            'fun fetch_user(net: Net) -> Bool\n'
+            '    return net.allows("x")\n'
+            'fun main(net: Net)\n'
+            '    let api = net.restrict_to("api.example.com")\n'
+            '    let ok = fetch_user(api)\n'
+        )
+        callees = [c["callee"] for c in calls]
+        self.assertIn("net.restrict_to", callees)
+        self.assertIn("fetch_user", callees)
+        restrict_call = next(c for c in calls if c["callee"] == "net.restrict_to")
+        self.assertEqual(restrict_call["args"], ['"api.example.com"'])
+
+    def test_nested_calls_recorded(self):
+        # f(g(x)) — both f and g show up in the call list.
+        calls = self._calls_of(
+            'fun g(x: Int) -> Int\n    return x + 1\n'
+            'fun f(x: Int) -> Int\n    return x * 2\n'
+            'fun main()\n    let n = f(g(3))\n'
+        )
+        callees = [c["callee"] for c in calls]
+        self.assertIn("f", callees)
+        self.assertIn("g", callees)
+
+    def test_position_recorded(self):
+        calls = self._calls_of(
+            'fun main(stdio: Stdio)\n'
+            '    let x = 1\n'
+            '    stdio.println("hi")\n'
+        )
+        c = calls[0]
+        # Line 3, columns are 1-indexed and point at the receiver.
+        line = int(c["pos"].split(":")[0])
+        self.assertEqual(line, 3)
+
+    def test_call_inside_branch_captured(self):
+        calls = self._calls_of(
+            'fun helper()\n    return\n'
+            'fun main()\n'
+            '    if true\n'
+            '        helper()\n'
+        )
+        callees = [c["callee"] for c in calls]
+        self.assertIn("helper", callees)
+
+    def test_call_inside_match_arm_captured(self):
+        calls = self._calls_of(
+            'fun ok_branch()\n    return\n'
+            'fun err_branch()\n    return\n'
+            'fun main()\n'
+            '    let x: Option<Int> = Some(1)\n'
+            '    match x\n'
+            '        Some(_) -> ok_branch()\n'
+            '        None    -> err_branch()\n'
+        )
+        callees = [c["callee"] for c in calls]
+        self.assertIn("ok_branch", callees)
+        self.assertIn("err_branch", callees)
+
+    def test_pure_function_has_empty_calls(self):
+        calls = self._calls_of(
+            'fun main(x: Int) -> Int\n'
+            '    return x * 2\n'
+        )
+        self.assertEqual(calls, [])
+
+    def test_long_arg_truncated_with_ellipsis(self):
+        # An argument longer than the max-arg-repr ceiling is
+        # truncated in the manifest so the JSON stays readable.
+        long_str = "x" * 200
+        calls = self._calls_of(
+            f'fun main(stdio: Stdio)\n'
+            f'    stdio.println("{long_str}")\n'
+        )
+        arg = calls[0]["args"][0]
+        self.assertTrue(arg.endswith("..."), f"arg was: {arg!r}")
+
 
 if __name__ == "__main__":
     unittest.main()

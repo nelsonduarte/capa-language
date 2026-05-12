@@ -11,6 +11,29 @@ breaking changes and the discipline is still being shaped.
 
 ### Added
 
+- **Per-call site recording in the manifest.** Each function in
+  `--manifest` / `--cyclonedx` output now carries a `calls[]` array
+  listing every function and method call in its body, with the
+  line:col of the call site and a stringified rendering of the
+  argument expressions. An auditor reading the manifest can see,
+  for example, that `main` calls `net.restrict_to("api.example.com")`
+  on line 5 *before* calling `fetch_user(api, "42")` on line 6 —
+  the restriction is visible in the static artefact, no source
+  inspection needed.
+
+  Argument expressions are stringified into a Capa-like form
+  (literals, identifiers, method chains, field access, struct
+  literals, tuple/list literals, etc.) and truncated at 80
+  characters with an ellipsis so long literals do not blow up
+  the JSON.
+
+  CycloneDX 1.5 output gains `dependencies[]` edges from each
+  function to every *function* it calls within the same module.
+  Method calls are not yet promoted to edges in v1 because
+  resolving `receiver.method` to a specific `impl` requires
+  type tracking we have not yet implemented; the call is still
+  in `calls[]` of the source function.
+
 - **Generic attenuation: `Fs.restrict_to(prefix)` and
   `Env.restrict_to_keys([...])`.** The `restrict_to` pattern
   established by `Net` now extends to two more built-in

@@ -115,6 +115,31 @@
 }</code></pre>
 
     <p>An auditor reading this knows, without running the program: <code>verify_token</code> is pure (no capabilities) and references a fixed CVE; <code>fetch_user</code> can touch the network; <code>token_length</code> is pure. There is no other way for any of these to leak data or contact a server — the type system already rejected such a program at compile time.</p>
+
+    <h3>Call-site visibility</h3>
+
+    <p>Each function record also carries a <code>calls[]</code> array listing every function and method call inside its body, with the line:col of the call site and a stringified form of the argument expressions. This is where attenuation becomes visible at the audit level: the manifest does not just say "this function holds <code>Net</code>" — it shows the actual <code>restrict_to("api.example.com")</code> call before the cap is handed onward.</p>
+
+<pre><code>{
+  <span class="str">"name"</span>: <span class="str">"main"</span>,
+  <span class="str">"declared_capabilities"</span>: [<span class="str">"Net"</span>, <span class="str">"Stdio"</span>],
+  <span class="str">"calls"</span>: [
+    {
+      <span class="str">"kind"</span>: <span class="str">"method"</span>,
+      <span class="str">"callee"</span>: <span class="str">"net.restrict_to"</span>,
+      <span class="str">"pos"</span>: <span class="str">"5:15"</span>,
+      <span class="str">"args"</span>: [<span class="str">"\"api.example.com\""</span>]
+    },
+    {
+      <span class="str">"kind"</span>: <span class="str">"fn"</span>,
+      <span class="str">"callee"</span>: <span class="str">"fetch_user"</span>,
+      <span class="str">"pos"</span>: <span class="str">"6:18"</span>,
+      <span class="str">"args"</span>: [<span class="str">"api"</span>, <span class="str">"\"42\""</span>]
+    }
+  ]
+}</code></pre>
+
+    <p>The auditor can see, without opening the source, that the unrestricted <code>net</code> never reaches <code>fetch_user</code>: it is narrowed to <code>api.example.com</code> on the line before. The CycloneDX SBOM mirrors this in <code>dependencies[]</code>: <code>main</code> now has an explicit edge to <code>fetch_user</code> in addition to the user-capability components it declared.</p>
 </section>
 
 <!-- =====================================================
@@ -282,7 +307,7 @@
         <li><strong>Whether a capability holder behaves well.</strong> A function that legitimately receives <code>Net</code> can do whatever <code>Net</code> allows, including misuse. The manifest documents the <em>permission surface</em>; it does not predict <em>behaviour</em>.</li>
         <li><strong>Anything beyond an <code>Unsafe</code> boundary.</strong> Once a value crosses into Python interop, the discipline ends. The manifest marks the crossing (<code>has_unsafe: true</code>); content beyond it must be audited separately.</li>
         <li><strong>Dependencies you did not write.</strong> v1 only describes the program you compile. Aggregating manifests across the dependency graph is on the roadmap — it requires a module system first.</li>
-        <li><strong>Runtime configuration.</strong> Attenuation (<code>Net.restrict_to(host)</code>) is a runtime narrowing; the static manifest cannot enumerate which hosts a function is actually limited to. v0.3 work on per-call data flow will close this.</li>
+        <li><strong>Full data-flow tracking.</strong> The manifest now records every call site with its argument expressions, including <code>restrict_to(...)</code> calls visible directly in the source, so an auditor reading the manifest can see that <code>main</code> calls <code>net.restrict_to("api.example.com")</code> before handing the cap to <code>fetch_user</code>. Full <em>flow</em> tracking — propagating restrictions through let-bindings and into method-call resolution — is a deeper analyser change still open for v0.4.</li>
     </ul>
 </section>
 
