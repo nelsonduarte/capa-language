@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Brand assets | Capa</title>
+    <meta name="description" content="Logo, colour palette, typography, and usage guidelines for the Capa programming language.">
+    <link rel="stylesheet" href="style.css">
+    <link rel="icon" type="image/svg+xml" href="favicon.svg">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'none'; object-src 'none'; base-uri 'self'; form-action 'self'">
+    <meta name="referrer" content="strict-origin-when-cross-origin">
+</head>
+<body>
+
+<header>
+    <nav>
+        <a href="index.html" class="logo">
+            <img src="capa_logo.svg" alt="" aria-hidden="true">
+            Capa
+        </a>
+        <div class="nav-links">
+            <a href="index.html">Home</a>
+            <a href="why.html">Why Capa</a>
+            <a href="tour.html">Language tour</a>
+            <a href="manifest.html">Manifest</a>
+            <a href="start.html">Get started</a>
+            <a href="community.html">Community</a>
+            <a href="roadmap.html">Roadmap</a>
+            <a href="https://github.com/nelsonduarte/capa" class="github">GitHub</a>
+        </div>
+    </nav>
+</header>
+
+<main>
+
+<div class="page-heading">
+    <h1>Brand assets</h1>
+    <p>Logo files, palette, typography, and a short usage guide. Released under the same MIT license as the rest of the project; use freely in articles, presentations, and integration material.</p>
+</div>
+
+<!-- =====================================================
+     Logo
+===================================================== -->
+<section>
+    <h2>Logo</h2>
+
+    <p>The Capa mark is a hooded figure rendered in a single accent purple, with a negative-space C-curve in the body. Two readings, both intended: "capa" in Portuguese is <em>cape</em> or <em>cloak</em>, and the negative space spells the C of the language name. Designed to read at any size, from a 16-pixel favicon to a poster.</p>
+
+    <div class="logo-gallery">
+        <a class="logo-tile dark" href="capa_logo.svg" download>
+            <img src="capa_logo.svg" alt="Capa logo on dark background">
+            <div class="logo-tile-meta">
+                <strong>SVG</strong>
+                <span>scalable, transparent</span>
+            </div>
+        </a>
+        <a class="logo-tile light" href="capa_logo.svg" download>
+            <img src="capa_logo.svg" alt="Capa logo on light background">
+            <div class="logo-tile-meta">
+                <strong>SVG (light bg)</strong>
+                <span>same file, light surface</span>
+            </div>
+        </a>
+        <a class="logo-tile dark" href="favicon.svg" download>
+            <img src="favicon.svg" alt="Capa favicon">
+            <div class="logo-tile-meta">
+                <strong>Favicon</strong>
+                <span>square viewBox, for icon slots</span>
+            </div>
+        </a>
+        <a class="logo-tile light" href="capa_logo.png" download>
+            <img src="capa_logo.png" alt="Capa logo PNG">
+            <div class="logo-tile-meta">
+                <strong>PNG</strong>
+                <span>raster fallback for sites that do not render SVG</span>
+            </div>
+        </a>
+    </div>
+
+    <p>Click any tile to download. The PNG is the project-root <code>capa_logo.png</code>; the two SVGs (<code>capa_logo.svg</code> and the square-viewBox <code>favicon.svg</code>) are served from this site.</p>
+</section>
+
+<!-- =====================================================
+     Palette
+===================================================== -->
+<section>
+    <h2>Palette</h2>
+
+    <p>The site uses a tight dark palette anchored on a single accent purple. Listed below in the order they appear most prominently in the design.</p>
+
+    <div class="palette">
+        <div class="swatch sw-accent">
+            <div class="swatch-color"></div>
+            <div class="swatch-meta">
+                <strong>Accent</strong>
+                <code>#a78bfa</code>
+                <span>The Capa purple. Used for the logo, headings highlight, primary links, current-page indicator. The logo SVG uses <code>#a885fa</code> as a close variant.</span>
+            </div>
+        </div>
+        <div class="swatch sw-bg">
+            <div class="swatch-color"></div>
+            <div class="swatch-meta">
+                <strong>Background</strong>
+                <code>#0d1117</code>
+                <span>Primary page background.</span>
+            </div>
+        </div>
+        <div class="swatch sw-bg-elevated">
+            <div class="swatch-color"></div>
+            <div class="swatch-meta">
+                <strong>Surface</strong>
+                <code>#161b22</code>
+                <span>Cards, footer, elevated surfaces.</span>
+            </div>
+        </div>
+        <div class="swatch sw-bg-pre">
+            <div class="swatch-color"></div>
+            <div class="swatch-meta">
+                <strong>Code background</strong>
+                <code>#1a1f29</code>
+                <span><code>&lt;pre&gt;</code> blocks for code samples.</span>
+            </div>
+        </div>
+        <div class="swatch sw-fg">
+            <div class="swatch-color"></div>
+            <div class="swatch-meta">
+                <strong>Foreground</strong>
+                <code>#c9d1d9</code>
+                <span>Body text.</span>
+            </div>
+        </div>
+        <div class="swatch sw-fg-dim">
+            <div class="swatch-color"></div>
+            <div class="swatch-meta">
+                <strong>Dim foreground</strong>
+                <code>#8b949e</code>
+                <span>Secondary text, footer links, captions.</span>
+            </div>
+        </div>
+        <div class="swatch sw-fg-bright">
+            <div class="swatch-color"></div>
+            <div class="swatch-meta">
+                <strong>Bright foreground</strong>
+                <code>#f0f6fc</code>
+                <span>Headings, emphasised text.</span>
+            </div>
+        </div>
+        <div class="swatch sw-border">
+            <div class="swatch-color"></div>
+            <div class="swatch-meta">
+                <strong>Border</strong>
+                <code>#30363d</code>
+                <span>Card borders, dividers, section rules.</span>
+            </div>
+        </div>
+        <div class="swatch sw-ok">
+            <div class="swatch-color"></div>
+            <div class="swatch-meta">
+                <strong>OK</strong>
+                <code>#7ee787</code>
+                <span>Success indicators, built-in types in code samples.</span>
+            </div>
+        </div>
+        <div class="swatch sw-warn">
+            <div class="swatch-color"></div>
+            <div class="swatch-meta">
+                <strong>Warn</strong>
+                <code>#ff7b72</code>
+                <span>Errors, danger callouts, declaration keywords in code samples.</span>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- =====================================================
+     Typography
+===================================================== -->
+<section>
+    <h2>Typography</h2>
+
+    <p>The site uses the operating system's default UI sans for body text and the platform monospace for code, with no external font requests. This is a deliberate choice: it keeps the site fast, sandboxable, CSP-clean, and consistent with what the user already sees on their device.</p>
+
+    <div class="type-spec">
+        <div class="type-row">
+            <strong>Body / UI</strong>
+            <code>-apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Helvetica, Arial, sans-serif</code>
+        </div>
+        <div class="type-row">
+            <strong>Code / monospace</strong>
+            <code>ui-monospace, "SF Mono", Menlo, Monaco, Consolas, monospace</code>
+        </div>
+    </div>
+
+    <p>The wordmark "Capa" in the header and hero uses the same UI sans at weight 700 with a slight negative letter-spacing (<code>-0.01em</code>). No custom letterforms.</p>
+</section>
+
+<!-- =====================================================
+     Usage
+===================================================== -->
+<section>
+    <h2>Usage guidelines</h2>
+
+    <p>The brand assets are MIT-licensed and freely usable. A few requests, no enforcement:</p>
+
+    <ul>
+        <li><strong>Keep the proportions.</strong> The logo SVG is designed to scale uniformly. Do not stretch, skew, or recolour.</li>
+        <li><strong>Use the accent colour</strong> on the logo whenever the surrounding design allows it. If a monochrome version is needed, prefer the foreground colour of the surrounding text over an arbitrary substitute.</li>
+        <li><strong>Capa is written with a capital C and a lowercase rest</strong> (<em>Capa</em>, not <em>CAPA</em> or <em>capa</em>). All-caps is reserved for code (the <code>Net</code>, <code>Stdio</code>, etc. capability types, which are written in <code>CamelCase</code>).</li>
+        <li><strong>The hooded figure is intentional</strong>, "capa" is Portuguese for cape or cloak. Please do not retitle it as a penguin, mage, or hooded ninja in third-party material; the metaphor matters.</li>
+    </ul>
+</section>
+
+</main>
+
+<footer>
+    <div class="footer-grid">
+        <div>
+            <h4>Pages</h4>
+            <ul>
+                <li><a href="index.html">Home</a></li>
+                <li><a href="why.html">Why Capa</a></li>
+                <li><a href="tour.html">Language tour</a></li>
+                <li><a href="manifest.html">Manifest</a></li>
+                <li><a href="start.html">Get started</a></li>
+                <li><a href="roadmap.html">Roadmap</a></li>
+            </ul>
+        </div>
+        <div>
+            <h4>Documentation</h4>
+            <ul>
+                <li><a href="getting-started.md">Getting started</a></li>
+                <li><a href="tutorial.md">Tutorial</a></li>
+                <li><a href="reference.md">Reference</a></li>
+                <li><a href="stdlib.md">Standard library</a></li>
+            </ul>
+        </div>
+        <div>
+            <h4>Specification</h4>
+            <ul>
+                <li><a href="../Capa-WhitePaper.md">White paper</a></li>
+                <li><a href="../Capa-EBNF.md">EBNF grammar</a></li>
+                <li><a href="demo-event-stream.md">Event-stream demo</a></li>
+            </ul>
+        </div>
+        <div>
+            <h4>Project</h4>
+            <ul>
+                <li><a href="https://github.com/nelsonduarte/capa">Source</a></li>
+                <li><a href="community.html">Community</a></li>
+                <li><a href="brand.html">Brand assets</a></li>
+                <li><a href="https://github.com/nelsonduarte/capa/blob/main/LICENSE">License (MIT)</a></li>
+            </ul>
+        </div>
+    </div>
+    <p class="colophon">Built by Nelson Duarte · v0.4.0-alpha · MIT-licensed</p>
+</footer>
+
+</body>
+</html>

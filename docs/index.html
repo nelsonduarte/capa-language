@@ -27,6 +27,7 @@
             <a href="tour.html">Language tour</a>
             <a href="manifest.html">Manifest</a>
             <a href="start.html">Get started</a>
+            <a href="community.html">Community</a>
             <a href="roadmap.html">Roadmap</a>
             <a href="https://github.com/nelsonduarte/capa" class="github">GitHub</a>
         </div>
@@ -46,6 +47,22 @@
         <a href="https://github.com/nelsonduarte/capa" class="btn">GitHub</a>
     </div>
     <p class="status">v0.4.0-alpha · MIT · 536 tests · hand-written compiler in Python</p>
+</section>
+
+<!-- =====================================================
+     Latest release callout
+===================================================== -->
+<section class="release-banner-wrap">
+    <div class="release-banner">
+        <span class="release-tag">v0.4.0-alpha</span>
+        <span class="release-body">
+            <strong>Released 2026-05-12.</strong>
+            Doc comments + <code>--doc</code> HTML generator,
+            per-call data-flow tracking in the manifest, custom
+            domain live with HTTPS.
+        </span>
+        <a class="release-link" href="https://github.com/nelsonduarte/capa/releases/tag/v0.4.0-alpha">Read the notes →</a>
+    </div>
 </section>
 
 <section>
@@ -82,6 +99,277 @@
         -&gt; <span class="ty-builtin">Result</span>&lt;<span class="ty-primitive">Unit</span>, <span class="ty-builtin">IoError</span>&gt;</code></pre>
         </div>
 
+    </div>
+</section>
+
+<!-- =====================================================
+     Capa at a glance: a full canonical example
+===================================================== -->
+<section>
+    <h2 class="section-centered">Capa at a glance</h2>
+    <p class="lead-prose">
+        Two functions and a <code>main</code>. The compiler rejects any
+        attempt to fetch from a host other than <code>api.example.com</code>,
+        because the attenuated <code>Net</code> is the only network
+        authority anything downstream of <code>main</code> ever sees.
+    </p>
+<pre class="showcase"><code><span class="comment">// A function that needs the network states it in its signature.</span>
+<span class="kw-decl">fun</span> <span class="fn-name">fetch_user</span>(net: <span class="cap">Net</span>, id: <span class="ty-primitive">String</span>) -&gt; <span class="ty-builtin">Result</span>&lt;<span class="ty-primitive">String</span>, <span class="ty-builtin">IoError</span>&gt;
+    <span class="kw-ctrl">return</span> net.<span class="fn-call">get</span>(<span class="str">"https://api.example.com/users/${id}"</span>)
+
+<span class="comment">// A pure function declares no capabilities and cannot do IO.</span>
+<span class="comment">// `net`, `stdio`, `fs`, `env` are not in scope; the compiler rejects</span>
+<span class="comment">// any reference to them.</span>
+<span class="kw-decl">fun</span> <span class="fn-name">extract_email</span>(payload: <span class="ty-primitive">String</span>) -&gt; <span class="ty-builtin">Option</span>&lt;<span class="ty-primitive">String</span>&gt;
+    ...
+
+<span class="kw-decl">fun</span> <span class="fn-name">main</span>(net: <span class="cap">Net</span>, stdio: <span class="cap">Stdio</span>)
+    <span class="comment">// Narrow the network capability before handing it onward.</span>
+    <span class="kw-storage">let</span> api = net.<span class="fn-call">restrict_to</span>(<span class="str">"api.example.com"</span>)
+    <span class="kw-ctrl">match</span> <span class="fn-call">fetch_user</span>(api, <span class="str">"42"</span>)
+        <span class="variant">Ok</span>(body) -&gt; stdio.<span class="fn-call">println</span>(body)
+        <span class="variant">Err</span>(e)   -&gt; stdio.<span class="fn-call">eprintln</span>(<span class="str">"${e}"</span>)</code></pre>
+</section>
+
+<!-- =====================================================
+     Who builds with Capa
+===================================================== -->
+<section>
+    <h2 class="section-centered">Who builds with Capa</h2>
+    <div class="personas">
+        <div class="persona">
+            <h3>Library authors</h3>
+            <p>
+                When someone installs your library, they want to know
+                what it can do, not trust your README. Capa puts the
+                authority surface in the type signatures, so the
+                contract is enforced at compile time.
+            </p>
+        </div>
+        <div class="persona">
+            <h3>Teams preparing for the EU CRA</h3>
+            <p>
+                The Cyber Resilience Act, applicable December 2027,
+                requires machine-readable evidence of behavioural
+                control. Capa produces it directly from the
+                compiler: capability manifest, CycloneDX 1.5 SBOM,
+                HTML doc page.
+            </p>
+        </div>
+        <div class="persona">
+            <h3>Researchers and academics</h3>
+            <p>
+                A working reference implementation of capability-based
+                security with a pythonic surface. Hand-written
+                compiler, formal EBNF grammar, complete white paper,
+                MIT-licensed. Suitable as study material or as the
+                substrate for further research.
+            </p>
+        </div>
+        <div class="persona">
+            <h3>Engineers tired of ambient authority</h3>
+            <p>
+                Every supply-chain incident of the last decade has
+                the same shape: a dependency did something its API
+                never claimed. Capa is the language where that
+                claim is checked at compile time, not in production.
+            </p>
+        </div>
+    </div>
+</section>
+
+<!-- =====================================================
+     Comparison
+===================================================== -->
+<section>
+    <h2 class="section-centered">How Capa compares</h2>
+    <p class="lead-prose">
+        A short matrix of properties that matter for supply-chain
+        security and CRA-style audit. Honest on alpha status.
+    </p>
+    <div class="compare-wrap">
+        <table class="compare-table">
+            <thead>
+                <tr>
+                    <th>Property</th>
+                    <th>Python</th>
+                    <th>TypeScript</th>
+                    <th>Rust</th>
+                    <th>Capa</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <th>Ambient authority</th>
+                    <td class="bad">full</td>
+                    <td class="bad">full</td>
+                    <td class="mid">limited</td>
+                    <td class="good">none</td>
+                </tr>
+                <tr>
+                    <th>Effects in the type system</th>
+                    <td class="bad">no</td>
+                    <td class="bad">no</td>
+                    <td class="mid"><code>Send</code>/<code>Sync</code> only</td>
+                    <td class="good">yes</td>
+                </tr>
+                <tr>
+                    <th>Capability attenuation</th>
+                    <td class="bad">no</td>
+                    <td class="bad">no</td>
+                    <td class="bad">no</td>
+                    <td class="good">yes (5 built-in caps)</td>
+                </tr>
+                <tr>
+                    <th>Audit artefact from compiler</th>
+                    <td class="bad">no</td>
+                    <td class="bad">no</td>
+                    <td class="bad">no</td>
+                    <td class="good">manifest + SBOM + HTML docs</td>
+                </tr>
+                <tr>
+                    <th>Static rejection of unintended IO</th>
+                    <td class="bad">no</td>
+                    <td class="bad">no</td>
+                    <td class="mid">partial</td>
+                    <td class="good">yes</td>
+                </tr>
+                <tr>
+                    <th>Production maturity</th>
+                    <td class="good">mature</td>
+                    <td class="good">mature</td>
+                    <td class="good">mature</td>
+                    <td class="bad">alpha</td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+    <p class="lead-prose-narrow compare-note">
+        Capa is not a replacement for Rust or Python. It is a different
+        slice through the language design space, focused on encoding
+        effect surfaces explicitly. Rust and Capa are orthogonal: one
+        prevents memory errors, the other prevents effect errors. A
+        future language could combine both.
+    </p>
+</section>
+
+<!-- =====================================================
+     FAQ
+===================================================== -->
+<section>
+    <h2 class="section-centered">Frequently asked</h2>
+    <div class="faq">
+        <details>
+            <summary>Is Capa production-ready?</summary>
+            <p>
+                No. v0.4.0-alpha means the compiler runs, the
+                discipline is implemented end-to-end, 536 tests pass
+                on three operating systems and three Python versions,
+                and the artefacts the language emits (manifest,
+                CycloneDX, HTML docs) are real. But the language
+                surface can still change between minor versions, and
+                tooling that a team needs day-to-day (language
+                server, formatter, native backend) is not there yet.
+                Use Capa for prototypes, research, security demos,
+                or as a study substrate, not yet as a production
+                runtime.
+            </p>
+        </details>
+        <details>
+            <summary>How does Capa compare to Rust?</summary>
+            <p>
+                Different problem. Rust prevents memory errors via
+                ownership and borrowing; Capa prevents effect errors
+                via capabilities. They are orthogonal: you can
+                imagine a future "Rust with capabilities" or "Capa
+                with linear types". Today, the discipline Capa
+                enforces is not expressible in idiomatic Rust without
+                a lot of newtype scaffolding, and Rust's memory
+                guarantees are not enforced by Capa.
+            </p>
+        </details>
+        <details>
+            <summary>Can I use my Python libraries from Capa?</summary>
+            <p>
+                Yes, through the <code>Unsafe</code> capability and
+                the <code>py_import</code> / <code>py_invoke</code>
+                builtins. Crossing into Python loses Capa's
+                guarantees (Python has ambient authority), but the
+                boundary is explicit: a function that uses Python
+                interop must declare <code>unsafe: Unsafe</code> in
+                its parameter list. The manifest flags every such
+                function with <code>has_unsafe: true</code> for
+                separate audit.
+            </p>
+        </details>
+        <details>
+            <summary>Why does the compiler target Python?</summary>
+            <p>
+                Speed of development. Capa is research-quality
+                software; binding the transpiler output to Python
+                let the capability discipline be implemented in
+                weeks instead of years, with full access to a mature
+                runtime, package ecosystem, and tooling. A native
+                LLVM backend is in the long-term roadmap; until then,
+                Capa programs are Python at runtime, with all the
+                tradeoffs that implies.
+            </p>
+        </details>
+        <details>
+            <summary>Does Capa prevent supply-chain attacks?</summary>
+            <p>
+                It eliminates a specific class: attacks that depend
+                on a dependency doing something its API never
+                claimed. The 2018 event-stream incident exfiltrated
+                cryptocurrency wallets from a function nominally
+                limited to stream transformations; the
+                <a href="demo-event-stream.md">walkthrough page</a>
+                shows the Capa version where the analyser rejects
+                the attack at compile time. Capa does not prevent a
+                dependency that legitimately needs <code>Net</code>
+                from then misusing it; capability attenuation
+                narrows that risk further but does not eliminate it.
+            </p>
+        </details>
+        <details>
+            <summary>Will Capa make my product CRA-compliant?</summary>
+            <p>
+                Capa is a tool, not a product, and compliance is at
+                the product level. What Capa does is make the
+                evidence trivial: every function's declared
+                authority, attached audit metadata, and effective
+                attenuation chain are emitted directly by the
+                compiler as JSON (<code>--manifest</code>),
+                CycloneDX 1.5 SBOM (<code>--cyclonedx</code>), and
+                HTML (<code>--doc</code>). The
+                <a href="manifest.html">Manifest page</a> maps each
+                CRA obligation to the manifest field that documents
+                it.
+            </p>
+        </details>
+        <details>
+            <summary>What about performance?</summary>
+            <p>
+                Currently Capa programs run as transpiled Python on
+                CPython, so the runtime characteristics are
+                Python's. The capability checks add no runtime
+                overhead; they are entirely compile-time, except for
+                runtime gating on attenuated capabilities (e.g.
+                <code>Fs.read</code> checking the path prefix before
+                opening). A native backend is not in the v1 scope.
+            </p>
+        </details>
+        <details>
+            <summary>Is the language stable?</summary>
+            <p>
+                No. Pre-1.0 minor-version bumps may introduce
+                breaking changes. The capability discipline itself
+                (structural, flow, linear layers) is stable and
+                unlikely to change. Surface syntax, the manifest
+                schema, and the attribute catalogue may evolve.
+                The <code>CHANGELOG.md</code> tracks every change.
+            </p>
+        </details>
     </div>
 </section>
 
@@ -130,7 +418,8 @@
             <h4>Project</h4>
             <ul>
                 <li><a href="https://github.com/nelsonduarte/capa">Source</a></li>
-                <li><a href="https://github.com/nelsonduarte/capa/blob/main/TODO.md">TODO / roadmap</a></li>
+                <li><a href="community.html">Community</a></li>
+                <li><a href="brand.html">Brand assets</a></li>
                 <li><a href="https://github.com/nelsonduarte/capa/blob/main/LICENSE">License (MIT)</a></li>
             </ul>
         </div>

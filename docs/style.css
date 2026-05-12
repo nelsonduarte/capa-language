@@ -699,6 +699,376 @@ footer {
 }
 
 /* ============================================================
+   Release banner (under the hero on the landing page)
+   ============================================================ */
+
+.release-banner-wrap {
+    padding: 0;
+    border-top: 0;
+    margin-top: -1.5rem;
+}
+
+.release-banner {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    flex-wrap: wrap;
+    background: var(--accent-soft);
+    border: 1px solid var(--accent);
+    border-radius: 8px;
+    padding: 0.75rem 1.25rem;
+    font-size: 0.92rem;
+}
+
+.release-tag {
+    background: var(--accent);
+    color: #0d1117;
+    padding: 0.15rem 0.55rem;
+    border-radius: 999px;
+    font-family: ui-monospace, "SF Mono", Menlo, Monaco, Consolas, monospace;
+    font-size: 0.8rem;
+    font-weight: 700;
+    white-space: nowrap;
+}
+
+.release-body {
+    flex: 1;
+    color: var(--fg);
+    min-width: 240px;
+}
+
+.release-link {
+    white-space: nowrap;
+    color: var(--accent);
+    font-weight: 600;
+}
+
+/* ============================================================
+   Showcase code (single big code block on the landing)
+   ============================================================ */
+
+pre.showcase {
+    background: var(--bg-pre);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1.5rem 1.75rem;
+    margin: 1.5rem 0;
+    font-size: 0.92rem;
+    line-height: 1.65;
+    overflow-x: auto;
+}
+
+/* ============================================================
+   Personas (who builds with Capa)
+   ============================================================ */
+
+.personas {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1.25rem;
+    margin: 1.5rem 0;
+}
+
+.persona {
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.25rem 1.4rem;
+}
+
+.persona h3 {
+    color: var(--accent);
+    margin: 0 0 0.5rem;
+    font-size: 1.05rem;
+}
+
+.persona p {
+    color: var(--fg-dim);
+    margin: 0;
+    font-size: 0.95rem;
+}
+
+/* ============================================================
+   Comparison table (landing page)
+   ============================================================ */
+
+.compare-wrap {
+    overflow-x: auto;
+    margin: 1.5rem 0;
+}
+
+.compare-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.92rem;
+    min-width: 640px;
+}
+
+.compare-table th,
+.compare-table td {
+    text-align: center;
+    padding: 0.6rem 0.8rem;
+    border-bottom: 1px solid var(--border);
+    vertical-align: middle;
+}
+
+.compare-table thead th {
+    color: var(--fg-bright);
+    font-weight: 600;
+    background: var(--bg-elevated);
+    border-bottom: 1px solid var(--accent);
+}
+
+.compare-table tbody th {
+    text-align: left;
+    color: var(--fg-bright);
+    font-weight: 500;
+    background: var(--bg-elevated);
+}
+
+.compare-table td.good {
+    color: var(--ok);
+}
+
+.compare-table td.bad {
+    color: var(--warn);
+}
+
+.compare-table td.mid {
+    color: #d9a866;
+}
+
+.compare-note {
+    color: var(--fg-dim);
+    font-size: 0.92rem;
+    margin-top: 1rem;
+}
+
+/* ============================================================
+   FAQ (collapsible accordion)
+   ============================================================ */
+
+.faq {
+    margin: 1.5rem 0;
+}
+
+.faq details {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 0.8rem 1.25rem;
+    margin-bottom: 0.6rem;
+    background: var(--bg-elevated);
+}
+
+.faq summary {
+    cursor: pointer;
+    color: var(--fg-bright);
+    font-weight: 600;
+    font-size: 1rem;
+    list-style: none;
+    position: relative;
+    padding-right: 1.5rem;
+}
+
+.faq summary::-webkit-details-marker {
+    display: none;
+}
+
+.faq summary::after {
+    content: "+";
+    position: absolute;
+    right: 0;
+    top: 0;
+    color: var(--accent);
+    font-size: 1.2rem;
+    line-height: 1;
+}
+
+.faq details[open] summary::after {
+    content: "−";
+}
+
+.faq details p {
+    color: var(--fg-dim);
+    margin: 0.6rem 0 0.2rem;
+    font-size: 0.95rem;
+}
+
+.faq details a {
+    color: var(--accent);
+}
+
+/* ============================================================
+   Channel cards (community page)
+   ============================================================ */
+
+.channels {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1.25rem;
+    margin: 1.5rem 0;
+}
+
+.channel-card {
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.25rem 1.4rem;
+    display: block;
+    text-decoration: none;
+    transition: border-color 0.15s, background 0.15s;
+}
+
+.channel-card:hover {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+    text-decoration: none;
+}
+
+.channel-card h3 {
+    color: var(--accent);
+    margin: 0 0 0.4rem;
+    font-size: 1.05rem;
+}
+
+.channel-card p {
+    color: var(--fg-dim);
+    margin: 0;
+    font-size: 0.92rem;
+}
+
+.channel-card a {
+    color: var(--accent);
+}
+
+/* ============================================================
+   Brand page: logo gallery, palette, type spec
+   ============================================================ */
+
+.logo-gallery {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1.25rem;
+    margin: 1.5rem 0;
+}
+
+.logo-tile {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    border-radius: 8px;
+    padding: 1.5rem;
+    text-decoration: none;
+    border: 1px solid var(--border);
+    transition: border-color 0.15s;
+}
+
+.logo-tile:hover {
+    border-color: var(--accent);
+    text-decoration: none;
+}
+
+.logo-tile.dark { background: var(--bg-elevated); }
+.logo-tile.light { background: #f0f6fc; }
+
+.logo-tile img {
+    height: 120px;
+    width: auto;
+    display: block;
+}
+
+.logo-tile-meta {
+    margin-top: 1rem;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.2rem;
+}
+
+.logo-tile.dark .logo-tile-meta strong { color: var(--fg-bright); }
+.logo-tile.dark .logo-tile-meta span   { color: var(--fg-dim); }
+.logo-tile.light .logo-tile-meta strong { color: #0d1117; }
+.logo-tile.light .logo-tile-meta span   { color: #57606a; }
+
+.palette {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.75rem;
+    margin: 1.5rem 0;
+}
+
+.swatch {
+    display: flex;
+    align-items: stretch;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+}
+
+.swatch-color {
+    width: 70px;
+    flex-shrink: 0;
+}
+
+.swatch-meta {
+    padding: 0.7rem 1rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+    flex: 1;
+}
+
+.swatch-meta strong { color: var(--fg-bright); font-size: 0.95rem; }
+.swatch-meta code {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    padding: 0.05em 0.4em;
+    border-radius: 3px;
+    width: max-content;
+    font-size: 0.82rem;
+}
+.swatch-meta span { color: var(--fg-dim); font-size: 0.85rem; }
+
+.sw-accent      .swatch-color { background: #a78bfa; }
+.sw-bg          .swatch-color { background: #0d1117; border-right: 1px solid var(--border); }
+.sw-bg-elevated .swatch-color { background: #161b22; border-right: 1px solid var(--border); }
+.sw-bg-pre      .swatch-color { background: #1a1f29; border-right: 1px solid var(--border); }
+.sw-fg          .swatch-color { background: #c9d1d9; }
+.sw-fg-dim      .swatch-color { background: #8b949e; }
+.sw-fg-bright   .swatch-color { background: #f0f6fc; }
+.sw-border      .swatch-color { background: #30363d; }
+.sw-ok          .swatch-color { background: #7ee787; }
+.sw-warn        .swatch-color { background: #ff7b72; }
+
+.type-spec {
+    margin: 1.5rem 0;
+}
+
+.type-row {
+    display: grid;
+    grid-template-columns: 200px 1fr;
+    gap: 1rem;
+    align-items: baseline;
+    padding: 0.6rem 0;
+    border-bottom: 1px solid var(--border);
+}
+
+.type-row:last-child { border-bottom: 0; }
+
+.type-row strong { color: var(--fg-bright); }
+
+.type-row code {
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    padding: 0.15rem 0.5rem;
+    border-radius: 3px;
+    color: var(--fg);
+    font-size: 0.82rem;
+    overflow-x: auto;
+}
+
+/* ============================================================
    Responsive
    ============================================================ */
 
@@ -720,6 +1090,13 @@ footer {
     .page-heading h1 { font-size: 1.85rem; }
     .milestone-list li { grid-template-columns: 1fr; gap: 0.25rem; }
     .cli-table th, .cli-table td { padding: 0.5rem 0.4rem; font-size: 0.88rem; }
+    .personas { grid-template-columns: 1fr; }
+    .channels { grid-template-columns: 1fr; }
+    .logo-gallery { grid-template-columns: 1fr; }
+    .palette { grid-template-columns: 1fr; }
+    .type-row { grid-template-columns: 1fr; gap: 0.25rem; }
+    .release-banner { font-size: 0.85rem; }
+    .release-tag { font-size: 0.72rem; }
 }
 
 @media (max-width: 480px) {

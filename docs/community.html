@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Community | Capa</title>
+    <meta name="description" content="Where to ask questions, file issues, report vulnerabilities, and contribute to the Capa programming language.">
+    <link rel="stylesheet" href="style.css">
+    <link rel="icon" type="image/svg+xml" href="favicon.svg">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'none'; object-src 'none'; base-uri 'self'; form-action 'self'">
+    <meta name="referrer" content="strict-origin-when-cross-origin">
+</head>
+<body>
+
+<header>
+    <nav>
+        <a href="index.html" class="logo">
+            <img src="capa_logo.svg" alt="" aria-hidden="true">
+            Capa
+        </a>
+        <div class="nav-links">
+            <a href="index.html">Home</a>
+            <a href="why.html">Why Capa</a>
+            <a href="tour.html">Language tour</a>
+            <a href="manifest.html">Manifest</a>
+            <a href="start.html">Get started</a>
+            <a href="community.html" class="current">Community</a>
+            <a href="roadmap.html">Roadmap</a>
+            <a href="https://github.com/nelsonduarte/capa" class="github">GitHub</a>
+        </div>
+    </nav>
+</header>
+
+<main>
+
+<div class="page-heading">
+    <h1>Community</h1>
+    <p>Where to ask questions, file issues, report vulnerabilities, and contribute. Capa is a personal project but an open one; the channels below are real and monitored.</p>
+</div>
+
+<!-- =====================================================
+     Channels
+===================================================== -->
+<section>
+    <h2>Channels</h2>
+    <div class="channels">
+        <a class="channel-card" href="https://github.com/nelsonduarte/capa/discussions">
+            <h3>GitHub Discussions</h3>
+            <p>Open-ended questions, design conversations, "how do I ...?" help. Use this when you are not sure if your message is a bug, a feature request, or a question; threads here are public and indexed.</p>
+        </a>
+        <a class="channel-card" href="https://github.com/nelsonduarte/capa/issues/new/choose">
+            <h3>Issues</h3>
+            <p>Concrete bug reports and feature proposals. Two YAML forms (bug, feature) collect the fields most likely to be needed; blank issues are turned off so reports never come in half-empty.</p>
+        </a>
+        <a class="channel-card" href="https://github.com/nelsonduarte/capa/security/advisories/new">
+            <h3>Security advisories (private)</h3>
+            <p>For a way to bypass the capability discipline, escape attenuation, or otherwise break Capa's security properties. GitHub's private advisory channel; only repository maintainers see the report. <a href="https://github.com/nelsonduarte/capa/blob/main/SECURITY.md">Full policy</a>.</p>
+        </a>
+        <a class="channel-card" href="https://github.com/nelsonduarte/capa/pulls">
+            <h3>Pull requests</h3>
+            <p>Small fixes can come straight as a PR. Larger changes deserve an issue first to align on scope and direction. The <a href="https://github.com/nelsonduarte/capa/blob/main/CONTRIBUTING.md">CONTRIBUTING guide</a> covers dev setup, the compiler architecture, and what kinds of contributions help most.</p>
+        </a>
+    </div>
+</section>
+
+<!-- =====================================================
+     Contributing in one screen
+===================================================== -->
+<section>
+    <h2>Contributing in one screen</h2>
+
+    <p>The full <a href="https://github.com/nelsonduarte/capa/blob/main/CONTRIBUTING.md">CONTRIBUTING.md</a> is the canonical reference. The short version:</p>
+
+    <ol>
+        <li><strong>Clone and install.</strong> <code>git clone https://github.com/nelsonduarte/capa &amp;&amp; cd capa &amp;&amp; pip install -e .</code></li>
+        <li><strong>Run the tests.</strong> <code>python -m unittest discover tests</code> (about 15 seconds, 536 tests).</li>
+        <li><strong>Open an issue first</strong> for anything more than a small fix. Avoids the worst kind of pull request: good work that cannot be accepted because the direction is wrong for the project.</li>
+        <li><strong>One concern per PR.</strong> A PR that fixes a bug and adds a feature is two PRs.</li>
+        <li><strong>Commit messages</strong>: imperative, short title (≤ 70 chars), optional wrapped body. Look at <code>git log</code> for examples.</li>
+    </ol>
+
+    <p>The compiler structure, the kinds of contributions that help most, and the kinds that do not currently fit are all in CONTRIBUTING. Read it before opening a non-trivial PR.</p>
+</section>
+
+<!-- =====================================================
+     What's in scope
+===================================================== -->
+<section>
+    <h2>What helps, what does not</h2>
+
+    <div class="status-grid">
+        <div class="status-yes">
+            <h4>Help wanted</h4>
+            <ul>
+                <li>Bugs in the analyzer: a <code>.capa</code> program that should compile and does not, or vice versa</li>
+                <li>Test coverage in <code>tests/test_analyzer.py</code>, especially around capabilities and <code>consume</code></li>
+                <li>Documentation fixes: the white paper, EBNF, and tour should match the implementation</li>
+                <li>New <code>examples/</code>: realistic miniatures (a small parser, a small networking client) more than synthetic demonstrations</li>
+                <li>Tooling on the roadmap: language server, formatter, <code>capa init</code></li>
+            </ul>
+        </div>
+        <div class="status-no">
+            <h4>Not currently a fit</h4>
+            <ul>
+                <li>Large refactors of analyzer or transpiler without a prior design discussion</li>
+                <li>New built-in capabilities (the seven are deliberate)</li>
+                <li>Major runtime dependencies (the compiler has zero runtime deps outside stdlib)</li>
+                <li>Macros, custom syntax extensions, async/await machinery: explicitly out of scope for v1</li>
+                <li>LLVM backend or self-hosting: far-future, not for v1</li>
+            </ul>
+        </div>
+    </div>
+</section>
+
+<!-- =====================================================
+     Code of conduct
+===================================================== -->
+<section>
+    <h2>Code of conduct</h2>
+    <p>Participation in this project is governed by the <a href="https://www.contributor-covenant.org/version/2/1/code_of_conduct/">Contributor Covenant 2.1</a>, adopted by reference. The maintainer contact for reports is <strong>nelson.duarte31@gmail.com</strong> (subject line <code>[capa conduct]</code>); reports are handled confidentially and acknowledged within seven days. The full text of the adoption notice is in <a href="https://github.com/nelsonduarte/capa/blob/main/CODE_OF_CONDUCT.md">CODE_OF_CONDUCT.md</a>.</p>
+</section>
+
+<section class="section-centered">
+    <h2>Show up</h2>
+    <p class="lead-prose-narrow">Capa is at a stage where a thoughtful issue, a small fix, or a use case from the field has a real effect on direction. Drop in.</p>
+    <div class="cta">
+        <a href="https://github.com/nelsonduarte/capa/discussions" class="btn primary">Open a discussion</a>
+        <a href="https://github.com/nelsonduarte/capa/issues/new/choose" class="btn">File an issue</a>
+        <a href="https://github.com/nelsonduarte/capa/blob/main/CONTRIBUTING.md" class="btn">Read the contributing guide</a>
+    </div>
+</section>
+
+</main>
+
+<footer>
+    <div class="footer-grid">
+        <div>
+            <h4>Pages</h4>
+            <ul>
+                <li><a href="index.html">Home</a></li>
+                <li><a href="why.html">Why Capa</a></li>
+                <li><a href="tour.html">Language tour</a></li>
+                <li><a href="manifest.html">Manifest</a></li>
+                <li><a href="start.html">Get started</a></li>
+                <li><a href="roadmap.html">Roadmap</a></li>
+            </ul>
+        </div>
+        <div>
+            <h4>Documentation</h4>
+            <ul>
+                <li><a href="getting-started.md">Getting started</a></li>
+                <li><a href="tutorial.md">Tutorial</a></li>
+                <li><a href="reference.md">Reference</a></li>
+                <li><a href="stdlib.md">Standard library</a></li>
+            </ul>
+        </div>
+        <div>
+            <h4>Specification</h4>
+            <ul>
+                <li><a href="../Capa-WhitePaper.md">White paper</a></li>
+                <li><a href="../Capa-EBNF.md">EBNF grammar</a></li>
+                <li><a href="demo-event-stream.md">Event-stream demo</a></li>
+            </ul>
+        </div>
+        <div>
+            <h4>Project</h4>
+            <ul>
+                <li><a href="https://github.com/nelsonduarte/capa">Source</a></li>
+                <li><a href="community.html">Community</a></li>
+                <li><a href="brand.html">Brand assets</a></li>
+                <li><a href="https://github.com/nelsonduarte/capa/blob/main/LICENSE">License (MIT)</a></li>
+            </ul>
+        </div>
+    </div>
+    <p class="colophon">Built by Nelson Duarte · v0.4.0-alpha · MIT-licensed</p>
+</footer>
+
+</body>
+</html>
