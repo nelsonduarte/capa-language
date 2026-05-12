@@ -21,6 +21,7 @@ from capa import (
 )
 from capa.manifest import build_manifest, build_cyclonedx
 from capa.docgen import build_html as build_doc_html
+from capa.formatter import format_source, is_formatted
 
 
 # ANSI colors for terminal highlighting
@@ -111,6 +112,25 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--fmt",
+        action="store_true",
+        help=(
+            "rewrite the file in canonical Capa style (line-level: "
+            "indentation normalised to 4-space multiples, trailing "
+            "whitespace stripped, blank-line clusters collapsed, "
+            "final newline ensured); prints to stdout when used "
+            "with --stdin"
+        ),
+    )
+    parser.add_argument(
+        "--fmt-check",
+        action="store_true",
+        help=(
+            "verify that the file is already in canonical style; "
+            "exits 0 if it is, 1 if it is not (no rewrite)"
+        ),
+    )
+    parser.add_argument(
         "--no-color",
         action="store_true",
         help="disable ANSI colors in the output",
@@ -144,6 +164,35 @@ def main() -> int:
         TokenKind.DEDENT,
         TokenKind.EOF,
     }
+
+    # --fmt and --fmt-check operate on the raw source text, before
+    # lexing, so they work on files with syntax errors as well.
+    if args.fmt_check:
+        if is_formatted(source):
+            return 0
+        # Print a one-line diagnostic to stderr (no diff, to keep
+        # the output compact for CI). Callers wanting the diff can
+        # use --fmt and compare to the original.
+        print(
+            f"{filename}: not in canonical Capa style "
+            f"(use --fmt to reformat)",
+            file=sys.stderr,
+        )
+        return 1
+    if args.fmt:
+        formatted = format_source(source)
+        if args.stdin:
+            sys.stdout.write(formatted)
+            return 0
+        # Only rewrite the file if its contents change, to keep
+        # mtimes stable for build systems.
+        if formatted != source:
+            try:
+                path.write_text(formatted, encoding="utf-8")
+            except OSError as e:
+                print(f"error writing {path}: {e}", file=sys.stderr)
+                return 2
+        return 0
 
     try:
         tokens = Lexer(source, filename=filename).lex()

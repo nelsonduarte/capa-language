@@ -90,8 +90,17 @@ to public.
   hover, then go-to-definition. The single biggest multiplier for
   any new language. ⏱ 1-2 weeks for a useful subset. P1 after the
   demo lands.
-- [ ] **`capa-fmt` (formatter)**, canonical, non-configurable
-  (gofmt-style). Walks the AST and re-emits. ⏱ 1-2 days for v1.
+- [~] **`capa-fmt` (formatter)**, canonical, non-configurable
+  (gofmt-style). **v1 (line-level) landed**: CLI flags `--fmt` and
+  `--fmt-check` normalise line endings, indentation (tabs to 4
+  spaces, partial indents floor to a 4-space multiple), trailing
+  whitespace, blank-line clusters (collapse to one), and the final
+  newline. Block-comment interiors (`/* ... */` and `/** ... */`)
+  are preserved verbatim so Javadoc-style `*` continuation lines
+  survive. Idempotent by construction. **Pending (v2)**: intra-line
+  canonicalisation (operator spacing, brace placement, expression
+  re-emission from the AST) and `//` comment preservation through
+  the future AST round-trip.
 - [ ] **Package manager**, only meaningful once there's a module
   system. P3
 - [ ] **REPL**, deleted earlier. Reimplement when language is

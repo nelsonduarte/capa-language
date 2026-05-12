@@ -11,6 +11,19 @@ breaking changes and the discipline is still being shaped.
 
 ### Added
 
+- **`capa-fmt` (v1, line-level)**: CLI flags `--fmt` (rewrite the
+  file in place) and `--fmt-check` (verify, exit 1 if not
+  canonical). v1 is a safe, whitespace-only formatter: it
+  normalises line endings to LF, replaces leading tabs with four
+  spaces each, floors partial space-indents to the nearest lower
+  4-space multiple (never deepens nesting), strips trailing
+  whitespace, collapses runs of blank lines to a single blank, and
+  ensures exactly one final newline. Block-comment interiors
+  (`/* ... */` and `/** ... */`) are preserved verbatim so
+  Javadoc-style `*` continuation lines survive. Idempotent by
+  construction. Intra-line canonicalisation (operator spacing, AST
+  round-trip, `//` comment preservation) is deferred to v2.
+
 - **Doc-comment markdown extensions**: `--doc` now renders fenced
   code blocks (triple backticks, with an optional language tag
   emitted as a `class="lang-<name>"` on the inner `<code>`) and

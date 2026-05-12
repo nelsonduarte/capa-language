@@ -25,6 +25,7 @@ from . import capa_ast as ast
 from .analyzer import Analyzer, AnalysisError, AnalysisResult, Symbol, SymbolKind, analyze
 from .capa_ast import dump as ast_dump
 from .errors import LexerError
+from .formatter import format_source, is_formatted
 from .lexer import Lexer
 from .parser import Parser, ParserError
 from .tokens import KEYWORDS, Pos, Token, TokenKind
@@ -39,6 +40,8 @@ __all__ = [
     "AnalysisResult",
     "ast",
     "ast_dump",
+    "format_source",
+    "is_formatted",
     "KEYWORDS",
     "Lexer",
     "LexerError",
