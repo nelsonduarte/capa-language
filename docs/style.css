@@ -668,6 +668,106 @@ footer {
 }
 
 /* ============================================================
+   Download grid (landing page + start page)
+   ============================================================ */
+
+.download-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 1.25rem;
+    margin: 1.5rem 0;
+}
+
+/* Card variant used on the landing: one big clickable tile per OS. */
+.download-card-link {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 1.5rem 1.25rem;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    text-decoration: none;
+    color: var(--fg);
+    transition: border-color 0.15s, background 0.15s, transform 0.15s;
+    min-width: 0;
+}
+
+.download-card-link:hover {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+    text-decoration: none;
+    transform: translateY(-1px);
+}
+
+.download-card-link .download-icon {
+    color: var(--accent);
+    margin-bottom: 0.25rem;
+}
+
+.download-card-link strong {
+    color: var(--fg-bright);
+    font-size: 1.1rem;
+}
+
+.download-arch {
+    color: var(--fg-dim);
+    font-size: 0.88rem;
+    margin: 0;
+}
+
+.download-size {
+    color: var(--fg-dim);
+    font-size: 0.82rem;
+    font-family: ui-monospace, "SF Mono", Menlo, Monaco, Consolas, monospace;
+}
+
+.download-size a {
+    color: var(--accent);
+}
+
+.download-note {
+    color: var(--fg-dim);
+    font-size: 0.92rem;
+    text-align: center;
+    margin: 1rem auto 0;
+    max-width: 70ch;
+}
+
+/* Card variant used on the start page: contains a code sample
+   showing the install command for that OS. */
+.download-card {
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.25rem 1.4rem;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+}
+
+.download-card h3 {
+    color: var(--accent);
+    margin: 0 0 0.25rem;
+}
+
+.download-card p.download-arch {
+    margin: 0 0 1rem;
+}
+
+.download-card pre {
+    background: var(--bg);
+    margin-top: auto;
+    font-size: 0.78rem;
+}
+
+.download-card .btn {
+    margin-right: 0.4rem;
+    margin-bottom: 0.5rem;
+}
+
+/* ============================================================
    In-page table of contents (reference and stdlib pages)
    ============================================================ */
 
@@ -1175,6 +1275,7 @@ pre.showcase {
     .release-banner { font-size: 0.85rem; }
     .release-tag { font-size: 0.72rem; }
     nav.toc ul { grid-template-columns: 1fr; }
+    .download-grid { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 480px) {
