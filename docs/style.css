@@ -467,6 +467,8 @@ footer {
     padding: 1.25rem;
     display: flex;
     flex-direction: column;
+    min-width: 0; /* allow the pre's overflow-x to kick in instead
+                     of stretching the grid column. */
 }
 
 .value-prop h3 {
@@ -774,6 +776,7 @@ pre.showcase {
     border: 1px solid var(--border);
     border-radius: 8px;
     padding: 1.25rem 1.4rem;
+    min-width: 0;
 }
 
 .persona h3 {
@@ -917,6 +920,7 @@ pre.showcase {
     display: block;
     text-decoration: none;
     transition: border-color 0.15s, background 0.15s;
+    min-width: 0;
 }
 
 .channel-card:hover {
@@ -961,6 +965,7 @@ pre.showcase {
     text-decoration: none;
     border: 1px solid var(--border);
     transition: border-color 0.15s;
+    min-width: 0;
 }
 
 .logo-tile:hover {
@@ -1004,6 +1009,7 @@ pre.showcase {
     border: 1px solid var(--border);
     border-radius: 8px;
     overflow: hidden;
+    min-width: 0;
 }
 
 .swatch-color {
