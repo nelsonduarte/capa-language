@@ -1,0 +1,13 @@
+# robots.txt for capa-language.com
+#
+# The site is a public, static documentation site for the Capa
+# programming language. All content is intended to be indexed by
+# search engines and crawled by anyone who wants to read it; there
+# are no private areas, no login, no forms. Permit everything.
+
+User-agent: *
+Allow: /
+
+# Sitemap location (XML index of all pages, used by search engines
+# to discover content efficiently).
+Sitemap: https://capa-language.com/sitemap.xml
