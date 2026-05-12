@@ -7,6 +7,8 @@
     <meta name="description" content="A guided tour of Capa: types, control flow, pattern matching, generics, closures, error handling, capabilities, attenuation, and the consume qualifier.">
     <link rel="stylesheet" href="style.css">
     <link rel="icon" type="image/svg+xml" href="favicon.svg">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'none'; object-src 'none'; base-uri 'self'; form-action 'self'">
+    <meta name="referrer" content="strict-origin-when-cross-origin">
 </head>
 <body>
 
@@ -398,7 +400,7 @@ stdio.<span class="fn-call">println</span>(<span class="str">"hi, ${who}! mask=$
     <p>No other mainstream language can emit this because the authority graph is not in their type system. In Capa, it falls out of the analyser for free.</p>
 </section>
 
-<section style="text-align: center;">
+<section class="section-centered">
     <h2>Ready to try it?</h2>
     <div class="cta">
         <a href="start.html" class="btn primary">Install and run</a>

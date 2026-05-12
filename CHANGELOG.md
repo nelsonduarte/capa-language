@@ -11,6 +11,26 @@ breaking changes and the discipline is still being shaped.
 
 ### Added
 
+- **Website security hardening.** The static site under `docs/`
+  is purely HTML / CSS / SVG (no JavaScript, no external
+  resources, no analytics, no fonts off-origin), but the
+  defensive headers were missing. All six pages now carry:
+
+  - **Content-Security-Policy** via `<meta http-equiv>`:
+    `default-src 'self'; img-src 'self' data:; style-src
+    'self'; script-src 'none'; object-src 'none'; base-uri
+    'self'; form-action 'self'`. Script execution is denied
+    outright; styles must come from the local stylesheet; no
+    plugins, no base-tag injection, no form posts off-origin.
+  - **Referrer-Policy** `strict-origin-when-cross-origin`, so
+    only the origin (not the full path) leaks when a visitor
+    clicks an external link.
+
+  To make `style-src 'self'` strict (no `'unsafe-inline'`), the
+  seven `style="..."` attributes scattered across the pages were
+  refactored into `.section-centered`, `.lead-prose`, and
+  `.lead-prose-narrow` classes in `style.css`.
+
 - **`Clock.restrict_to_after(t)` attenuation.** Closes the generic
   attenuation arc started with `Net`, then `Fs` and `Env`. A
   `Clock` can now be narrowed to "active only after time t"

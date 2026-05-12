@@ -423,6 +423,22 @@ footer {
 
 .footer-grid a:hover { color: var(--fg-bright); }
 
+/* ============================================================
+   Inline-style replacements (so CSP can disallow inline styles)
+   ============================================================ */
+
+.section-centered { text-align: center; }
+
+.lead-prose {
+    max-width: 60ch;
+    margin: 0 auto 2rem;
+}
+
+.lead-prose-narrow {
+    max-width: 56ch;
+    margin: 0 auto 2rem;
+}
+
 .colophon {
     max-width: 920px;
     margin: 2rem auto 0;

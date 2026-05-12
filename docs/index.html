@@ -10,6 +10,8 @@
     <meta property="og:type" content="website">
     <link rel="stylesheet" href="style.css">
     <link rel="icon" type="image/svg+xml" href="favicon.svg">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'none'; object-src 'none'; base-uri 'self'; form-action 'self'">
+    <meta name="referrer" content="strict-origin-when-cross-origin">
 </head>
 <body>
 
@@ -83,9 +85,9 @@
     </div>
 </section>
 
-<section style="text-align: center;">
+<section class="section-centered">
     <h2>Where to go next</h2>
-    <p style="max-width: 56ch; margin: 0 auto 2rem;">Capa is in alpha. The compiler runs, 490 tests pass on three operating systems, and the three pillars of the discipline are implemented. There is still no language server, no module system, no native backend.</p>
+    <p class="lead-prose-narrow">Capa is in alpha. The compiler runs, 490 tests pass on three operating systems, and the three pillars of the discipline are implemented. There is still no language server, no module system, no native backend.</p>
     <div class="cta">
         <a href="why.html" class="btn primary">Understand the why</a>
         <a href="tour.html" class="btn">Tour the language</a>
