@@ -9,6 +9,20 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+## [0.4.0-alpha], 2026-05-12
+
+The third tagged release. Focus: closing the audit-artefact loop
+and standing the project up on its own domain.
+
+The capability manifest gained a semantic dimension: per-call
+data-flow tracking surfaces the actual restriction chain a binding
+carries, not just the variable name. The compiler now also emits
+HTML documentation generated directly from doc comments, so the
+same source produces a machine-readable JSON manifest, a
+CycloneDX 1.5 SBOM, and a human-readable doc page. The project
+moved off `nelsonduarte.github.io/capa` onto its own DNS at
+`capa-language.com`.
+
 ### Added
 
 - **Per-call data-flow tracking in the manifest.** Each call site
@@ -338,6 +352,7 @@ systems and three Python versions.
   (`Capa-EBNF.md`) translated to English and synchronised with the
   implementation.
 
-[Unreleased]: https://github.com/nelsonduarte/capa/compare/v0.3.0-alpha...HEAD
+[Unreleased]: https://github.com/nelsonduarte/capa/compare/v0.4.0-alpha...HEAD
+[0.4.0-alpha]: https://github.com/nelsonduarte/capa/releases/tag/v0.4.0-alpha
 [0.3.0-alpha]: https://github.com/nelsonduarte/capa/releases/tag/v0.3.0-alpha
 [0.2.0-alpha]: https://github.com/nelsonduarte/capa/releases/tag/v0.2.0-alpha
