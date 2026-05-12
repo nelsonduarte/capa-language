@@ -43,7 +43,7 @@ Or package as a `.vsix`:
 ```bash
 npm install -g @vscode/vsce
 cd vscode && vsce package
-code --install-extension capa-language-0.4.0.vsix
+code --install-extension capa-language-0.5.0.vsix
 ```
 
 ## What's not in this extension yet

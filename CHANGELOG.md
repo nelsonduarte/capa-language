@@ -9,60 +9,115 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+## [0.5.0-alpha], 2026-05-12
+
+The fourth tagged release. Focus: independence from Python at
+the end-user level, the live HTTPS deployment of the public site,
+two new HTML documentation pages, and closing the capability-
+attenuation arc.
+
+Users no longer need to install Python to run Capa programs. The
+release ships standalone binaries for Linux, macOS (Intel +
+Apple Silicon) and Windows; each bundles the compiler and a
+Python interpreter into a single ~8 MB executable. The public
+site is at `https://capa-language.com/` with HTTPS enforced,
+HSTS, DNSSEC, full search-engine baseline, and a per-OS download
+section on the landing page. The standard library and language
+reference docs are now native HTML pages, not bare markdown.
+`Random.with_seed` closes the attenuator family so every built-in
+capability has one.
+
 ### Added
 
-- **Pre-built binaries** (no Python required). PyInstaller spec at
-  `deploy/capa.spec` bundles the compiler and a Python interpreter
-  into a single ~8 MB executable. End users download
-  `capa-{linux,macos,windows}-{x86_64,arm64}` from the GitHub
-  Releases page and run it directly: no `pip install`, no
-  Python 3.10+ requirement on the host. Each binary ships with a
-  `.sha256` checksum.
+- **Pre-built binaries** for Linux x86_64, macOS x86_64, macOS
+  arm64, and Windows x86_64. PyInstaller spec at `deploy/capa.spec`
+  bundles the compiler and a Python interpreter into a single
+  ~8 MB executable, with `.sha256` checksum for verification.
+  Built automatically on every version tag by
+  `.github/workflows/release-binaries.yml`, a four-platform matrix
+  workflow that smoke-tests each binary before uploading to the
+  GitHub Release.
 
-  Build locally with `pyinstaller deploy/capa.spec`. Released
-  binaries are produced by `.github/workflows/release-binaries.yml`,
-  a matrix workflow that runs on every version tag (or via manual
-  dispatch) and uploads to the matching GitHub Release. Smoke tests
-  in CI confirm each binary can `--check`, `--run`, and `--manifest`
-  before the upload step.
+- **`Random.with_seed(seed: Int) -> Random`** closes the generic
+  attenuation arc. Every built-in capability (`Net`, `Fs`, `Env`,
+  `Clock`, `Random`) now has an attenuator. `Random.with_seed`
+  returns a deterministic instance whose sequence is a function
+  of the integer seed; chained calls re-seed (last wins). Unlike
+  the other attenuators there is no denied state, but the audit
+  value is in determinism: the manifest's data-flow tracker
+  recognises `with_seed` and records it like the `restrict_to*`
+  family. Recognised attenuator names are collected in
+  `_ATTENUATION_METHODS` for future extensibility.
 
-- **`capa --run` now executes in-process** via `exec()` instead of
-  spawning a subprocess of `sys.executable`. Faster startup, no
-  temp-file dance, and the bundled binary works (the subprocess
-  approach assumed `sys.executable` was a generic Python interpreter
-  that could run arbitrary `.py` files, which fails under
-  PyInstaller). SystemExit propagation preserved; runtime tracebacks
-  go to stderr.
+- **`docs/reference.html` + `docs/stdlib.html`** as native HTML
+  pages with the site's chrome, in-page TOC, and tabular method
+  references. They replace the broken footer links that
+  previously pointed to raw markdown served by GitHub Pages as
+  `text/plain`.
+
+- **Download grid on the landing page**, with three clickable
+  cards (Linux, macOS, Windows) linking directly to the binary
+  in `releases/latest/download/`. The `Get started` page gains
+  a per-OS install section with the exact one-liner for each
+  platform (curl + chmod for Linux/macOS, Invoke-WebRequest for
+  Windows; `xattr -d` for macOS Gatekeeper).
+
+- **SEO + Open Graph metadata** on all ten pages.
+  `docs/sitemap.xml` lists every page with realistic lastmod /
+  priority; `docs/robots.txt` allows all and points at the
+  sitemap. Each page declares page-specific og:title,
+  og:description, og:type, og:url, og:image, og:site_name plus
+  the matching twitter: equivalents, so links shared on social
+  platforms render a structured card with the logo.
+
+- **`community.html` and `brand.html`** site pages, plus the
+  hooded-figure logo (header, favicon, hero on landing) and the
+  expanded landing-page content (hero code sample, four
+  personas, comparison table vs. Python / TypeScript / Rust,
+  FAQ with eight questions, release banner).
 
 ### Changed
 
-- The website's `docs/start.html` is reorganised into two options:
-  "Pre-built binary (no Python required)" and "From source". The
-  binary is the recommended path for end users; source is for
-  contributors and people who want the test suite.
+- **`capa --run` executes in-process** via `exec()` rather than
+  spawning a subprocess of `sys.executable`. Faster startup, no
+  temp-file dance, and survives PyInstaller bundling (the
+  subprocess approach assumed `sys.executable` was a generic
+  Python interpreter that could run arbitrary `.py` files,
+  which fails under PyInstaller). SystemExit propagation
+  preserved; runtime tracebacks go to stderr.
 
-- **`Random.with_seed(seed: Int) -> Random`** closes the generic
-  attenuation arc. The unrestricted `Random()` is seeded from
-  system entropy; `with_seed(seed)` returns a fresh `Random`
-  whose sequence is a deterministic function of the integer
-  seed. Chained calls (`r.with_seed(a).with_seed(b)`) simply
-  re-seed; the last seed wins.
+- **All in-site `.md` links replaced** with either the matching
+  HTML page (Getting started, Tutorial, Reference, Standard
+  library) or the rendered GitHub blob URL (white paper, EBNF,
+  event-stream demo, SECURITY, CONTRIBUTING). Visitors no
+  longer drop onto raw markdown rendered as plain text.
 
-  Unlike `Net`, `Fs`, `Env`, and `Clock`, `Random` has no
-  "denied" state; the narrowing is over the *space of possible
-  sequences* rather than over the *authority to generate*. The
-  audit value is in determinism: the manifest's data-flow
-  tracker recognises `with_seed` and records it like the other
-  attenuators, so an auditor sees that an RNG handed to a
-  function was made deterministic before the handoff.
+- **Em-dashes removed** from every text file in the repo
+  (commit messages, docs, code comments, capa source). Project
+  preference is hyphens or commas; the sweep replaced ~430
+  occurrences across 63 files.
 
-  Now every built-in capability (`Net`, `Fs`, `Env`, `Clock`,
-  `Random`) has an attenuator.
+### Fixed
 
-- **Manifest data-flow tracker recognises `with_seed`** in
-  addition to the `restrict_to*` family. The list of tracked
-  method names is exposed as `_ATTENUATION_METHODS` so future
-  user-defined attenuators can be added in one place.
+- `.value-props` and related card grids on the landing/community/
+  brand pages now share width equally: added `min-width: 0` so a
+  long line in a child `<pre>` triggers `overflow-x: auto`
+  rather than stretching the grid column.
+
+- Footer doc links across all eight (now ten) pages no longer
+  point at `.md` files served by GitHub Pages as `text/plain`.
+
+### Infrastructure
+
+- **Custom domain `capa-language.com`**, live at HTTPS. DNS
+  hosted on Cloudflare with DNSSEC active and the full zone
+  reproducible from `deploy/cloudflare-dns.zone`. Cloudflare
+  configured with Always Use HTTPS, Full (Strict) SSL/TLS,
+  HSTS (max-age six months), Minimum TLS 1.2, and Automatic
+  HTTPS Rewrites.
+
+- **`docs/CNAME`** in the repo points GitHub Pages at the
+  custom domain.
 
 ## [0.4.0-alpha], 2026-05-12
 
@@ -407,7 +462,8 @@ systems and three Python versions.
   (`Capa-EBNF.md`) translated to English and synchronised with the
   implementation.
 
-[Unreleased]: https://github.com/nelsonduarte/capa/compare/v0.4.0-alpha...HEAD
+[Unreleased]: https://github.com/nelsonduarte/capa/compare/v0.5.0-alpha...HEAD
+[0.5.0-alpha]: https://github.com/nelsonduarte/capa/releases/tag/v0.5.0-alpha
 [0.4.0-alpha]: https://github.com/nelsonduarte/capa/releases/tag/v0.4.0-alpha
 [0.3.0-alpha]: https://github.com/nelsonduarte/capa/releases/tag/v0.3.0-alpha
 [0.2.0-alpha]: https://github.com/nelsonduarte/capa/releases/tag/v0.2.0-alpha
