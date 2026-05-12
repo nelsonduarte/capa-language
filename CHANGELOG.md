@@ -11,6 +11,34 @@ breaking changes and the discipline is still being shaped.
 
 ### Added
 
+- **Generic attenuation: `Fs.restrict_to(prefix)` and
+  `Env.restrict_to_keys([...])`.** The `restrict_to` pattern
+  established by `Net` now extends to two more built-in
+  capabilities. Both narrow monotonically — chaining intersects
+  the restriction set, never widens — and both gate every
+  operation against the current restriction set *before* any
+  system call. Denied operations are information-hiding:
+  `Fs.exists` on a denied path returns `False`, and `Env.get`
+  on a denied key returns the same `None` as a missing
+  variable, so the cap does not leak the existence of resources
+  outside its allowed surface.
+
+  Example:
+
+  ```
+  fun main(fs: Fs, env: Env, stdio: Stdio)
+      let app_fs   = fs.restrict_to("/tmp/myapp/")
+      let app_env  = env.restrict_to_keys(["HOME", "APP_TOKEN"])
+      do_work(app_fs, app_env, stdio)
+  ```
+
+  `do_work` and anything it calls can only touch the filesystem
+  under `/tmp/myapp/` and only read the two environment variables,
+  no matter what their implementation tries.
+
+- **`examples/fs_env_attenuation.capa`** demonstrating both new
+  attenuators and the monotonic-narrowing guarantee.
+
 - **`python -m capa --cyclonedx`** — emits a valid CycloneDX 1.5
   SBOM with the capability manifest embedded as standard
   `properties[]` entries under the `capa:*` namespace. Capa

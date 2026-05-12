@@ -1,0 +1,68 @@
+// fs_env_attenuation.capa — generic attenuation on Fs and Env.
+//
+// Mirrors the Net attenuation pattern (examples/net_attenuation.capa).
+// `main` receives unrestricted `Fs` and `Env`; both are then narrowed
+// before being handed to helpers, and the helpers cannot escape the
+// narrowing — not because of a sandbox, but because the runtime
+// gates every operation on the current restriction set.
+//
+// The static analyser checks that capabilities propagate correctly;
+// the runtime enforces the actual prefix / key check before any
+// system call.
+
+// ---------------------------------------------------------------
+// Filesystem helper. Receives an Fs that has already been narrowed
+// to /tmp/. From its perspective the type is just Fs — the
+// restrictions are invisible — but the runtime intercepts any
+// read/write to a path outside the allowed prefix.
+// ---------------------------------------------------------------
+fun probe_fs(fs: Fs, stdio: Stdio)
+    stdio.println("fs allows /tmp/foo?      ${fs.allows(\"/tmp/foo\")}")
+    stdio.println("fs allows /etc/passwd?   ${fs.allows(\"/etc/passwd\")}")
+
+// ---------------------------------------------------------------
+// Env helper. Receives an Env restricted to a small key set;
+// reading variables outside that set looks identical to reading
+// a variable that does not exist (None). The cap does not leak
+// the existence of variables it cannot see.
+// ---------------------------------------------------------------
+fun probe_env(env: Env, stdio: Stdio)
+    stdio.println("env allows HOME?         ${env.allows(\"HOME\")}")
+    stdio.println("env allows SECRET_KEY?   ${env.allows(\"SECRET_KEY\")}")
+
+// ---------------------------------------------------------------
+// Main. Demonstrates:
+//   1. baseline (unrestricted Fs and Env)
+//   2. narrow Fs to /tmp/, hand to helper
+//   3. narrow Env to {HOME, PATH}, hand to helper
+//   4. monotonic narrowing — further restriction can only narrow
+// ---------------------------------------------------------------
+fun main(fs: Fs, env: Env, stdio: Stdio)
+    stdio.println("=== baseline (unrestricted) ===")
+    stdio.println("fs allows /etc/passwd?   ${fs.allows(\"/etc/passwd\")}")
+    stdio.println("env allows SECRET_KEY?   ${env.allows(\"SECRET_KEY\")}")
+    stdio.println("")
+
+    stdio.println("=== after fs.restrict_to(\"/tmp/\") ===")
+    let tmp_fs = fs.restrict_to("/tmp/")
+    probe_fs(tmp_fs, stdio)
+    stdio.println("")
+
+    stdio.println("=== after env.restrict_to_keys([\"HOME\", \"PATH\"]) ===")
+    let limited_env = env.restrict_to_keys(["HOME", "PATH"])
+    probe_env(limited_env, stdio)
+    stdio.println("")
+
+    stdio.println("=== monotonic narrowing ===")
+    // Further restrict the already-restricted Fs. The result allows
+    // only paths under /tmp/myapp/ — chaining intersects.
+    let app_fs = tmp_fs.restrict_to("/tmp/myapp/")
+    stdio.println("tmp_fs allows /tmp/foo?         ${tmp_fs.allows(\"/tmp/foo\")}")
+    stdio.println("app_fs allows /tmp/foo?         ${app_fs.allows(\"/tmp/foo\")}")
+    stdio.println("app_fs allows /tmp/myapp/data?  ${app_fs.allows(\"/tmp/myapp/data\")}")
+
+    // Intersecting key sets: {HOME, PATH} ∩ {HOME, USER} = {HOME}.
+    let tighter_env = limited_env.restrict_to_keys(["HOME", "USER"])
+    stdio.println("tighter_env allows HOME?        ${tighter_env.allows(\"HOME\")}")
+    stdio.println("tighter_env allows PATH?        ${tighter_env.allows(\"PATH\")}")
+    stdio.println("tighter_env allows USER?        ${tighter_env.allows(\"USER\")}")

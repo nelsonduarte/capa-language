@@ -226,9 +226,44 @@ class Stdio:
 
 
 class Fs:
-    """Capability for filesystem access."""
+    """Capability for filesystem access, with first-class attenuation.
+
+    An instance carries either ``None`` (unrestricted authority, the
+    fresh capability supplied by ``main``) or a frozen set of allowed
+    path prefixes. ``restrict_to`` returns a new ``Fs`` whose
+    authority is narrowed: the new restriction is *added* to the set,
+    and a path is permitted only if every prefix in the set is a
+    prefix of it. Attenuation is monotonic by construction — adding
+    a prefix can only narrow.
+
+    Prefix matching is performed on the raw string. Callers should
+    pass absolute paths (or be consistent in their use of relative
+    paths); v1 does not normalise ``./`` or symlinks.
+    """
+
+    __slots__ = ("_allowed_prefixes",)
+
+    def __init__(self, _allowed_prefixes=None):
+        self._allowed_prefixes = _allowed_prefixes
+
+    def restrict_to(self, prefix: str) -> "Fs":
+        existing = self._allowed_prefixes or frozenset()
+        return Fs(_allowed_prefixes=existing | {prefix})
+
+    def allows(self, path: str) -> bool:
+        if self._allowed_prefixes is None:
+            return True
+        return all(path.startswith(p) for p in self._allowed_prefixes)
+
+    def _deny(self, op: str, path: str) -> "Err":
+        return Err(IoError(
+            f"Fs capability does not permit {op} on {path!r}",
+            f"current allowed prefixes: {sorted(self._allowed_prefixes)}",
+        ))
 
     def read(self, path: str) -> "Result[str, IoError]":
+        if not self.allows(path):
+            return self._deny("read", path)
         try:
             with open(path, encoding="utf-8") as f:
                 return Ok(f.read())
@@ -236,6 +271,8 @@ class Fs:
             return Err(IoError(f"failed to read {path!r}", str(e)))
 
     def write(self, path: str, content: str) -> "Result[None, IoError]":
+        if not self.allows(path):
+            return self._deny("write", path)
         try:
             with open(path, "w", encoding="utf-8") as f:
                 f.write(content)
@@ -244,13 +281,51 @@ class Fs:
             return Err(IoError(f"failed to write {path!r}", str(e)))
 
     def exists(self, path: str) -> bool:
+        # `exists` is treated as a query, gated like a read.
+        # A denied path reports False, which is the same answer a
+        # caller would get for a path that genuinely does not exist.
+        # The Fs cap therefore does not leak the existence of paths
+        # outside its allowed prefixes.
+        if not self.allows(path):
+            return False
         return os.path.exists(path)
 
 
 class Env:
-    """Capability for reading environment variables."""
+    """Capability for reading environment variables, with first-class
+    attenuation.
+
+    An instance carries either ``None`` (unrestricted authority) or a
+    frozen set of allowed variable names. ``restrict_to_keys`` returns
+    a new ``Env`` whose authority is narrowed to the intersection of
+    the current restriction (if any) and the requested key set —
+    monotonic narrowing, same contract as ``Net.restrict_to``.
+
+    A denied variable looks like an unset variable to the caller
+    (``get`` returns ``None``). This is deliberate: it prevents the
+    cap from leaking the existence of variables outside its allowed
+    set. Callers that need to distinguish denied from absent can
+    consult ``allows(name)``.
+    """
+
+    __slots__ = ("_allowed_keys",)
+
+    def __init__(self, _allowed_keys=None):
+        self._allowed_keys = _allowed_keys
+
+    def restrict_to_keys(self, keys) -> "Env":
+        # Accept any iterable (CapaList, list, set, frozenset).
+        new = frozenset(keys)
+        if self._allowed_keys is not None:
+            new = new & self._allowed_keys
+        return Env(_allowed_keys=new)
+
+    def allows(self, name: str) -> bool:
+        return self._allowed_keys is None or name in self._allowed_keys
 
     def get(self, name: str) -> "Option[str]":
+        if not self.allows(name):
+            return None_
         v = os.environ.get(name)
         return Some(v) if v is not None else None_
 

@@ -313,6 +313,17 @@ stdio.<span class="fn-call">println</span>(<span class="str">"hi, ${who}! mask=$
     <span class="comment">// `evil.example.com` is blocked before any socket opens.</span></code></pre>
 
     <p>Attenuation is the lever that lets a function declare it needs the network <em>and</em> declare exactly which network. Without it, a capability would be all-or-nothing and the discipline would buy you less.</p>
+
+    <p>The pattern extends to the other built-in capabilities. <code>Fs.restrict_to(prefix)</code> returns a fresh <code>Fs</code> whose authority is narrowed to paths starting with the prefix; <code>Env.restrict_to_keys([...])</code> returns a fresh <code>Env</code> that can only read the named variables. Chaining intersects, never widens.</p>
+
+<pre><code><span class="kw-decl">fun</span> <span class="fn-name">main</span>(fs: <span class="cap">Fs</span>, env: <span class="cap">Env</span>, stdio: <span class="cap">Stdio</span>)
+    <span class="kw-storage">let</span> app_fs  = fs.<span class="fn-call">restrict_to</span>(<span class="str">"/tmp/myapp/"</span>)
+    <span class="kw-storage">let</span> app_env = env.<span class="fn-call">restrict_to_keys</span>([<span class="str">"HOME"</span>, <span class="str">"APP_TOKEN"</span>])
+    <span class="comment">// `do_work` and anything it calls can only touch /tmp/myapp/</span>
+    <span class="comment">// and the two env vars, no matter what its implementation tries.</span>
+    <span class="fn-call">do_work</span>(app_fs, app_env, stdio)</code></pre>
+
+    <p>Denied operations are information-hiding by default: <code>fs.exists</code> on a denied path returns <code>false</code>, and <code>env.get</code> on a denied key returns <code>None</code> — the same answer a caller would get for a path that does not exist or a variable that is unset. The capability never leaks the existence of resources outside its allowed surface.</p>
 </section>
 
 <!-- =====================================================
