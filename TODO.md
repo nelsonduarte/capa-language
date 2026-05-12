@@ -40,13 +40,13 @@ to public.
 
 ## WhitePaper promises still open (P1)
 
-- [x] **Atenuação genérica**: `Fs.restrict_to(path_prefix)`,
-  `Env.restrict_to_keys([...])`, and `Clock.restrict_to_after(t)`
-  shipped. All monotonic, all information-hiding / fail-closed on
-  denied access (`Fs.exists` returns False, `Env.get` returns
-  None, `Clock.sleep` becomes a silent no-op). Same shape as
-  `Net.restrict_to`. `Random` attenuation is still open and lower
-  priority (less obvious use cases).
+- [x] **Atenuação genérica**: every built-in capability has an
+  attenuator. `Net.restrict_to(host)`, `Fs.restrict_to(prefix)`,
+  `Env.restrict_to_keys([...])`, `Clock.restrict_to_after(t)`,
+  and `Random.with_seed(seed)`. The first four monotonically
+  narrow authority and are fail-closed on denied access; the
+  last has no denied state but produces a deterministic sequence
+  whose seed is visible in the manifest's data-flow tracker.
 - [ ] **Visibility (`pub`)**, KW_PUB is parsed but not enforced.
   Waits on a real module system. P2/P3
 - [ ] **Native Capa module system**, `import` is parsed but

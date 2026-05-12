@@ -45,6 +45,18 @@ CYCLONEDX_SPEC_VERSION = "1.5"
 # obvious to the reader that a manifest is not the source of truth.
 _MAX_ARG_REPR = 80
 
+# Method names the data-flow tracker recognises as attenuation. A
+# call to any of these on a tracked capability produces a derived
+# binding that the manifest follows. The first three are the
+# `restrict_to*` family on Net / Fs / Env / Clock; `with_seed`
+# is the analogue on Random (deterministic seeding).
+_ATTENUATION_METHODS: frozenset[str] = frozenset({
+    "restrict_to",
+    "restrict_to_keys",
+    "restrict_to_after",
+    "with_seed",
+})
+
 
 def build_manifest(
     module: A.Module,
@@ -362,16 +374,16 @@ def _build_attenuation_map(
 
 
 def _flatten_restrict_chain(expr):
-    """Walk a method-call expression that may chain ``.restrict_to*``
-    calls. Returns ``(innermost_receiver, [attenuation, ...])`` in
-    source order. If the expression is not a restrict-chain, returns
-    ``(expr, [])``.
+    """Walk a method-call expression that may chain attenuation
+    calls (any method named in ``_ATTENUATION_METHODS``). Returns
+    ``(innermost_receiver, [attenuation, ...])`` in source order.
+    If the expression is not such a chain, returns ``(expr, [])``.
     """
     atts: list[dict[str, Any]] = []
     cur = expr
     while (
         isinstance(cur, A.MethodCall)
-        and cur.method.startswith("restrict_to")
+        and cur.method in _ATTENUATION_METHODS
     ):
         atts.insert(0, {
             "method": cur.method,

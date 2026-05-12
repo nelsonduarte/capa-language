@@ -176,6 +176,19 @@ class TestMixedCaps(unittest.TestCase):
         att = c["args_flow"][0]["attenuations"][0]
         self.assertEqual(att["method"], "restrict_to_after")
 
+    def test_random_with_seed(self):
+        calls = main_calls(
+            "fun do_work(rng: Random)\n"
+            "    let _ = rng.int_range(0, 100)\n"
+            "fun main(rng: Random)\n"
+            "    let det = rng.with_seed(42)\n"
+            "    do_work(det)\n"
+        )
+        c = next(c for c in calls if c["callee"] == "do_work")
+        att = c["args_flow"][0]["attenuations"][0]
+        self.assertEqual(att["method"], "with_seed")
+        self.assertEqual(att["args"], ["42"])
+
 
 # =============================================================
 # Negative cases

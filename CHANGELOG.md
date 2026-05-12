@@ -9,6 +9,31 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+### Added
+
+- **`Random.with_seed(seed: Int) -> Random`** closes the generic
+  attenuation arc. The unrestricted `Random()` is seeded from
+  system entropy; `with_seed(seed)` returns a fresh `Random`
+  whose sequence is a deterministic function of the integer
+  seed. Chained calls (`r.with_seed(a).with_seed(b)`) simply
+  re-seed; the last seed wins.
+
+  Unlike `Net`, `Fs`, `Env`, and `Clock`, `Random` has no
+  "denied" state; the narrowing is over the *space of possible
+  sequences* rather than over the *authority to generate*. The
+  audit value is in determinism: the manifest's data-flow
+  tracker recognises `with_seed` and records it like the other
+  attenuators, so an auditor sees that an RNG handed to a
+  function was made deterministic before the handoff.
+
+  Now every built-in capability (`Net`, `Fs`, `Env`, `Clock`,
+  `Random`) has an attenuator.
+
+- **Manifest data-flow tracker recognises `with_seed`** in
+  addition to the `restrict_to*` family. The list of tracked
+  method names is exposed as `_ATTENUATION_METHODS` so future
+  user-defined attenuators can be added in one place.
+
 ## [0.4.0-alpha], 2026-05-12
 
 The third tagged release. Focus: closing the audit-artefact loop

@@ -376,10 +376,32 @@ class Clock:
 
 
 class Random:
-    """Capability for generating random numbers."""
+    """Capability for generating random numbers, with first-class
+    seeding.
+
+    The unrestricted form ``Random()`` is seeded from system entropy.
+    ``with_seed(seed)`` returns a fresh ``Random`` whose sequence is
+    a deterministic function of the integer ``seed``. Chained calls
+    (``r.with_seed(a).with_seed(b)``) simply re-seed; the last seed
+    wins. The manifest tracks the calls in source order so an
+    auditor sees that an RNG was made deterministic before being
+    handed onward.
+
+    Unlike ``Net``, ``Fs``, ``Env``, and ``Clock``, ``Random`` has
+    no "denied" state. A seeded Random still generates numbers; it
+    just generates them reproducibly. The narrowing semantic is
+    over the *space of possible sequences*, not over the
+    *authority to generate*.
+    """
+
+    __slots__ = ("_rng", "_seed")
 
     def __init__(self, seed: int | None = None):
         self._rng = random.Random(seed)
+        self._seed = seed
+
+    def with_seed(self, seed: int) -> "Random":
+        return Random(seed=seed)
 
     def int_range(self, low: int, high: int) -> int:
         return self._rng.randrange(low, high)

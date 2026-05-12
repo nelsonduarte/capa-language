@@ -18,7 +18,7 @@ import unittest
 
 import time
 
-from capa.runtime import Fs, Env, Net, Clock, Ok, Err, None_
+from capa.runtime import Fs, Env, Net, Clock, Random, Ok, Err, None_
 
 
 # =============================================================
@@ -227,6 +227,50 @@ class TestClockAttenuation(unittest.TestCase):
         # reports the current time.
         c = Clock().restrict_to_after(time.time() + 3600)
         self.assertGreater(c.now_secs(), 0)
+
+
+# =============================================================
+# Random attenuation (deterministic seeding)
+# =============================================================
+
+class TestRandomAttenuation(unittest.TestCase):
+    def test_seeded_random_is_deterministic(self):
+        # Two Random instances seeded with the same value produce
+        # the same first draw.
+        a = Random().with_seed(42)
+        b = Random().with_seed(42)
+        self.assertEqual(a.int_range(0, 1000), b.int_range(0, 1000))
+
+    def test_different_seeds_produce_different_sequences(self):
+        a = Random().with_seed(1)
+        b = Random().with_seed(2)
+        seq_a = [a.int_range(0, 100) for _ in range(5)]
+        seq_b = [b.int_range(0, 100) for _ in range(5)]
+        # Almost certainly different; if this ever flakes the
+        # RNG has bigger problems.
+        self.assertNotEqual(seq_a, seq_b)
+
+    def test_chained_with_seed_uses_last(self):
+        # ``r.with_seed(1).with_seed(2)`` is effectively re-seeding;
+        # the last seed wins (it just creates a fresh Random).
+        chained = Random().with_seed(1).with_seed(2)
+        direct = Random().with_seed(2)
+        self.assertEqual(
+            chained.int_range(0, 1000),
+            direct.int_range(0, 1000),
+        )
+
+    def test_with_seed_returns_fresh_instance(self):
+        r = Random()
+        seeded = r.with_seed(7)
+        self.assertIsNot(r, seeded)
+
+    def test_unseeded_still_generates(self):
+        # The default-constructed (unseeded) Random still produces
+        # a value in the requested range; just not reproducibly.
+        v = Random().int_range(10, 20)
+        self.assertGreaterEqual(v, 10)
+        self.assertLess(v, 20)
 
 
 # =============================================================
