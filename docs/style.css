@@ -128,6 +128,13 @@ nav {
     padding: 5rem 0 4rem;
 }
 
+.hero-logo {
+    display: block;
+    height: 140px;
+    width: auto;
+    margin: 0 auto 1.5rem;
+}
+
 .hero h1 {
     font-size: 4.5rem;
     margin: 0 0 0.5rem;
@@ -681,6 +688,7 @@ footer {
 
 @media (max-width: 720px) {
     .hero { padding: 3rem 0 2rem; }
+    .hero-logo { height: 96px; margin-bottom: 1rem; }
     .hero h1 { font-size: 3rem; }
     .tagline { font-size: 1.2rem; }
     .code-compare { grid-template-columns: 1fr; }
