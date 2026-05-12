@@ -11,6 +11,24 @@ breaking changes and the discipline is still being shaped.
 
 ### Added
 
+- **`Clock.restrict_to_after(t)` attenuation.** Closes the generic
+  attenuation arc started with `Net`, then `Fs` and `Env`. A
+  `Clock` can now be narrowed to "active only after time t"
+  (seconds since the epoch), the threshold is monotonic across
+  chained `restrict_to_after` calls (max wins), and the action
+  method `sleep` becomes a silent no-op on a denied Clock
+  (fail-closed, consistent with the information-hiding pattern
+  used by `Fs.exists` and `Env.get`). Reading the current time
+  via `now_secs` / `now_monotonic` stays ungated since it is a
+  pure query.
+
+  Example use cases: time-bombed activation, scheduled work that
+  is structurally inactive before its window, audit-window
+  enforcement.
+
+  `examples/clock_attenuation.capa` demonstrates the pattern with
+  one active and one dormant Clock handed to the same helper.
+
 - **Per-call site recording in the manifest.** Each function in
   `--manifest` / `--cyclonedx` output now carries a `calls[]` array
   listing every function and method call in its body, with the

@@ -16,7 +16,9 @@ import os
 import tempfile
 import unittest
 
-from capa.runtime import Fs, Env, Net, Ok, Err, None_
+import time
+
+from capa.runtime import Fs, Env, Net, Clock, Ok, Err, None_
 
 
 # =============================================================
@@ -162,6 +164,69 @@ class TestEnvAttenuation(unittest.TestCase):
         env = Env().restrict_to_keys(CapaList(["HOME", "PATH"]))
         self.assertTrue(env.allows("HOME"))
         self.assertFalse(env.allows("SECRET"))
+
+
+# =============================================================
+# Clock attenuation
+# =============================================================
+
+class TestClockAttenuation(unittest.TestCase):
+    def test_unrestricted_allows(self):
+        self.assertTrue(Clock().allows())
+
+    def test_past_threshold_allows_now(self):
+        # Threshold one second in the past: the cap is already
+        # active.
+        c = Clock().restrict_to_after(time.time() - 1)
+        self.assertTrue(c.allows())
+
+    def test_future_threshold_denies_now(self):
+        # Threshold an hour in the future: the cap is not yet
+        # active.
+        c = Clock().restrict_to_after(time.time() + 3600)
+        self.assertFalse(c.allows())
+
+    def test_chained_restrict_takes_max(self):
+        c1 = Clock().restrict_to_after(1000.0)
+        c2 = c1.restrict_to_after(2000.0)
+        # 2000 is the more restrictive threshold.
+        self.assertEqual(c2._not_before, 2000.0)
+
+    def test_chained_restrict_never_widens(self):
+        c1 = Clock().restrict_to_after(1000.0)
+        c2 = c1.restrict_to_after(500.0)
+        # A lower threshold cannot widen authority; the existing
+        # 1000 stays.
+        self.assertEqual(c2._not_before, 1000.0)
+
+    def test_restrict_returns_fresh_instance(self):
+        c1 = Clock()
+        c2 = c1.restrict_to_after(time.time() + 60)
+        self.assertIsNot(c1, c2)
+        self.assertTrue(c1.allows())
+        self.assertFalse(c2.allows())
+
+    def test_sleep_is_noop_when_denied(self):
+        c = Clock().restrict_to_after(time.time() + 3600)
+        start = time.monotonic()
+        c.sleep(2.0)
+        # The denied sleep returns immediately, so wall time
+        # elapsed is well under the requested sleep duration.
+        self.assertLess(time.monotonic() - start, 0.2)
+
+    def test_sleep_works_when_allowed(self):
+        # An unrestricted Clock sleeps normally. Use a short
+        # duration so the test stays fast.
+        c = Clock()
+        start = time.monotonic()
+        c.sleep(0.05)
+        self.assertGreaterEqual(time.monotonic() - start, 0.04)
+
+    def test_now_secs_works_regardless(self):
+        # now_secs is a query, not gated. A denied Clock still
+        # reports the current time.
+        c = Clock().restrict_to_after(time.time() + 3600)
+        self.assertGreater(c.now_secs(), 0)
 
 
 # =============================================================

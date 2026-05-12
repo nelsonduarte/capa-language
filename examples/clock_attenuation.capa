@@ -1,0 +1,45 @@
+// clock_attenuation.capa
+//
+// `Clock.restrict_to_after(t)` returns a Clock whose authority is
+// activated only after the given timestamp (seconds since the
+// epoch). The cap can be created and passed around at any time,
+// but its action method `sleep` is a silent no-op until the
+// threshold has been reached. Reading the current time is treated
+// as a pure query and is not gated.
+//
+// Use cases: time-bombed activation (license expiry handled in
+// reverse), scheduled work that is structurally inactive before
+// its window, audit-window enforcement.
+//
+// Run with:
+//   python -m capa --run examples/clock_attenuation.capa
+//
+// Generate the manifest to see the attenuation point recorded as
+// a call site in main:
+//   python -m capa --manifest examples/clock_attenuation.capa
+
+// Worker that uses Clock. From its perspective the type is just
+// Clock, the restriction is invisible. Calling `clock.allows()`
+// at the entry to the function is the documented way to check
+// whether the cap is active right now.
+fun do_scheduled_work(clock: Clock, stdio: Stdio)
+    if clock.allows()
+        stdio.println("clock is active, running work")
+        clock.sleep(0.0)
+    else
+        stdio.println("clock is dormant; threshold not reached")
+
+fun main(clock: Clock, stdio: Stdio)
+    // Threshold 0 seconds since the epoch is in the past for any
+    // realistic invocation, so the cap is active. A real program
+    // would use clock.now_secs() + delta or a fixed future
+    // timestamp.
+    let active = clock.restrict_to_after(0.0)
+    do_scheduled_work(active, stdio)
+
+    // A threshold far in the future leaves the cap dormant. The
+    // helper observes this through `allows()` and skips the work
+    // body; if it had called `sleep` directly, the sleep would
+    // have been a silent no-op.
+    let dormant = clock.restrict_to_after(clock.now_secs() + 3600.0)
+    do_scheduled_work(dormant, stdio)

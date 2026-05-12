@@ -334,7 +334,34 @@ class Env:
 
 
 class Clock:
-    """Capability for accessing time."""
+    """Capability for accessing time, with first-class attenuation.
+
+    An instance carries either ``None`` (unrestricted authority) or
+    a ``not_before`` threshold: the time, in seconds since the
+    epoch, at which the capability becomes active. Chaining
+    ``restrict_to_after`` raises the threshold (monotonic narrowing,
+    never widens).
+
+    Reading the current time (``now_secs``, ``now_monotonic``) is
+    treated as a pure query and is not gated: anyone with a wall
+    clock can observe the time. The action method ``sleep`` is
+    gated: on a denied Clock (threshold in the future) it becomes
+    a silent no-op, consistent with the fail-closed information-
+    hiding pattern used by ``Fs.exists`` and ``Env.get``.
+    """
+
+    __slots__ = ("_not_before",)
+
+    def __init__(self, _not_before=None):
+        self._not_before = _not_before
+
+    def restrict_to_after(self, t: float) -> "Clock":
+        existing = self._not_before
+        new_threshold = t if existing is None else max(existing, t)
+        return Clock(_not_before=new_threshold)
+
+    def allows(self) -> bool:
+        return self._not_before is None or time.time() >= self._not_before
 
     def now_secs(self) -> float:
         return time.time()
@@ -343,6 +370,8 @@ class Clock:
         return time.monotonic()
 
     def sleep(self, seconds: float) -> None:
+        if not self.allows():
+            return
         time.sleep(seconds)
 
 

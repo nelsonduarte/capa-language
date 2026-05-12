@@ -49,7 +49,7 @@ Capa/
 │   ├── transpiler.py      # codegen for Python 3.10+
 │   └── runtime/
 │       └── __init__.py    # Result, Option, Stdio, Fs, ..., Unsafe, py_import
-├── tests/                 # 481 unit + end-to-end tests
+├── tests/                 # 490 unit + end-to-end tests
 │   ├── test_lexer.py
 │   ├── test_parser.py
 │   ├── test_analyzer.py
@@ -170,7 +170,7 @@ else:
 python -m unittest discover tests
 ```
 
-**481 tests** (lexer + parser + analyzer + transpiler). The transpiler
+**490 tests** (lexer + parser + analyzer + transpiler). The transpiler
 suite actually *executes* the generated Python and checks stdout — the
 only honest way to test a transpiler.
 
@@ -403,10 +403,16 @@ only honest way to test a transpiler.
   | `Fs`     | `read(p: String)`                         | `Result<String, IoError>` |
   | `Fs`     | `write(p: String, c: String)`             | `Result<(), IoError>`     |
   | `Fs`     | `exists(p: String)`                       | `Bool`                    |
+  | `Fs`     | `restrict_to(prefix: String)`             | `Fs` (attenuated)         |
+  | `Fs`     | `allows(path: String)`                    | `Bool`                    |
   | `Env`    | `get(name: String)`                       | `Option<String>`          |
   | `Env`    | `args()`                                  | `List<String>`            |
+  | `Env`    | `restrict_to_keys(keys: List<String>)`    | `Env` (attenuated)        |
+  | `Env`    | `allows(name: String)`                    | `Bool`                    |
   | `Clock`  | `now_secs()`, `now_monotonic()`           | `Float`                   |
   | `Clock`  | `sleep(seconds: Float)`                   | `()`                      |
+  | `Clock`  | `restrict_to_after(t: Float)`             | `Clock` (attenuated)      |
+  | `Clock`  | `allows()`                                | `Bool`                    |
   | `Random` | `int_range(low: Int, high: Int)`          | `Int`                     |
   | `Random` | `float_unit()`                            | `Float`                   |
   | `Net`    | `restrict_to(host: String)`               | `Net` (attenuated)        |

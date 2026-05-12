@@ -40,12 +40,13 @@ to public.
 
 ## WhitePaper promises still open (P1)
 
-- [x] **Atenuação genérica** — `Fs.restrict_to(path_prefix)` and
-  `Env.restrict_to_keys([...])` shipped; both monotonic, both
-  information-hiding on denied access (`exists` returns False,
-  `get` returns None), same shape as `Net.restrict_to`. Still
-  open: `Clock.restrict_to_after(t)` and `Random` attenuation
-  (lower priority; less obvious use cases).
+- [x] **Atenuação genérica**: `Fs.restrict_to(path_prefix)`,
+  `Env.restrict_to_keys([...])`, and `Clock.restrict_to_after(t)`
+  shipped. All monotonic, all information-hiding / fail-closed on
+  denied access (`Fs.exists` returns False, `Env.get` returns
+  None, `Clock.sleep` becomes a silent no-op). Same shape as
+  `Net.restrict_to`. `Random` attenuation is still open and lower
+  priority (less obvious use cases).
 - [ ] **Visibility (`pub`)** — KW_PUB is parsed but not enforced.
   Waits on a real module system. P2/P3
 - [ ] **Native Capa module system** — `import` is parsed but

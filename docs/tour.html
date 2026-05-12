@@ -323,7 +323,9 @@ stdio.<span class="fn-call">println</span>(<span class="str">"hi, ${who}! mask=$
     <span class="comment">// and the two env vars, no matter what its implementation tries.</span>
     <span class="fn-call">do_work</span>(app_fs, app_env, stdio)</code></pre>
 
-    <p>Denied operations are information-hiding by default: <code>fs.exists</code> on a denied path returns <code>false</code>, and <code>env.get</code> on a denied key returns <code>None</code> — the same answer a caller would get for a path that does not exist or a variable that is unset. The capability never leaks the existence of resources outside its allowed surface.</p>
+    <p>Denied operations are information-hiding by default: <code>fs.exists</code> on a denied path returns <code>false</code>, and <code>env.get</code> on a denied key returns <code>None</code>, the same answer a caller would get for a path that does not exist or a variable that is unset. The capability never leaks the existence of resources outside its allowed surface.</p>
+
+    <p><code>Clock</code> also attenuates: <code>clock.restrict_to_after(t)</code> returns a Clock active only after the timestamp <code>t</code> (seconds since the epoch). Chained calls take the maximum threshold. <code>clock.sleep(...)</code> becomes a silent no-op on a denied Clock; <code>clock.now_secs()</code> stays ungated because reading the current time is a pure query.</p>
 </section>
 
 <!-- =====================================================
