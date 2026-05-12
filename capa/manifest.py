@@ -152,8 +152,13 @@ def _fun_record(
         for a in fn.attributes
     ]
 
+    # Build a syntactic flow map for this function body before
+    # collecting calls so each call's args_flow can be enriched
+    # with any tracked attenuations on its identifier arguments.
+    attenuation_map = _build_attenuation_map(fn.body)
+
     calls: list[dict[str, Any]] = []
-    _collect_calls(fn.body, calls)
+    _collect_calls(fn.body, calls, attenuation_map=attenuation_map)
 
     return {
         "name": fn.name,
@@ -191,8 +196,23 @@ def _fun_record(
 # ===========================================================
 
 
-def _collect_calls(node, calls: list[dict[str, Any]]) -> None:
-    """Recursively collect Call/MethodCall expressions from any node."""
+def _collect_calls(
+    node,
+    calls: list[dict[str, Any]],
+    *,
+    attenuation_map: Optional[dict[str, list[dict[str, Any]]]] = None,
+) -> None:
+    """Recursively collect Call/MethodCall expressions from any node.
+
+    When ``attenuation_map`` is supplied, each recorded call also
+    carries an ``args_flow`` parallel list. For arguments that are
+    plain identifiers tracked in the map, the corresponding entry
+    is a dict ``{"name": str, "attenuations": [...]}``; for other
+    arguments it is ``None``. This is the data-flow surface of the
+    manifest: an auditor sees not just that ``api`` was passed to
+    ``fetch_user``, but that ``api`` was a ``Net`` narrowed via
+    ``restrict_to("api.example.com")``.
+    """
     if node is None:
         return
 
@@ -201,30 +221,40 @@ def _collect_calls(node, calls: list[dict[str, Any]]) -> None:
             callee_name = node.callee.name
         else:
             callee_name = _stringify_expr(node.callee)
-        calls.append({
+        record: dict[str, Any] = {
             "kind": "fn",
             "callee": callee_name,
             "pos": f"{node.pos.line}:{node.pos.col}",
             "args": [_stringify_expr(a) for a in node.args],
-        })
+        }
+        if attenuation_map is not None:
+            record["args_flow"] = [
+                _arg_flow(a, attenuation_map) for a in node.args
+            ]
+        calls.append(record)
         # Recurse into the callee expression (so f(g(x)) records g too)
         # and into each argument.
-        _collect_calls(node.callee, calls)
+        _collect_calls(node.callee, calls, attenuation_map=attenuation_map)
         for arg in node.args:
-            _collect_calls(arg, calls)
+            _collect_calls(arg, calls, attenuation_map=attenuation_map)
         return
 
     if isinstance(node, A.MethodCall):
         receiver_str = _stringify_expr(node.receiver)
-        calls.append({
+        record = {
             "kind": "method",
             "callee": f"{receiver_str}.{node.method}",
             "pos": f"{node.pos.line}:{node.pos.col}",
             "args": [_stringify_expr(a) for a in node.args],
-        })
-        _collect_calls(node.receiver, calls)
+        }
+        if attenuation_map is not None:
+            record["args_flow"] = [
+                _arg_flow(a, attenuation_map) for a in node.args
+            ]
+        calls.append(record)
+        _collect_calls(node.receiver, calls, attenuation_map=attenuation_map)
         for arg in node.args:
-            _collect_calls(arg, calls)
+            _collect_calls(arg, calls, attenuation_map=attenuation_map)
         return
 
     # Generic AST traversal: visit any Node-typed or list-of-Node field.
@@ -234,16 +264,136 @@ def _collect_calls(node, calls: list[dict[str, Any]]) -> None:
                 continue
             v = getattr(node, f.name)
             if isinstance(v, A.Node):
-                _collect_calls(v, calls)
+                _collect_calls(v, calls, attenuation_map=attenuation_map)
             elif isinstance(v, list):
                 for item in v:
                     if isinstance(item, A.Node):
-                        _collect_calls(item, calls)
+                        _collect_calls(
+                            item, calls, attenuation_map=attenuation_map,
+                        )
                     elif isinstance(item, tuple):
                         # struct field pairs (name, Expr), match arms etc.
                         for it in item:
                             if isinstance(it, A.Node):
-                                _collect_calls(it, calls)
+                                _collect_calls(
+                                    it, calls,
+                                    attenuation_map=attenuation_map,
+                                )
+
+
+# =====================================================================
+# Per-call data-flow tracking
+#
+# Capa's manifest reports, for each call site, the *syntactic* form
+# of every argument. This block adds a parallel ``args_flow`` field
+# that tracks, by binding, what attenuations were applied to a
+# capability before it was handed to the callee.
+#
+# v1 scope (deliberately small):
+#   - only ``let x = <chain of .restrict_to*(args)>`` patterns
+#     where the root of the chain is an Ident
+#   - propagation across consecutive let bindings:
+#       let a = net.restrict_to("h1")
+#       let b = a.restrict_to("h2")    -> b carries [h1, h2]
+#   - method names matched: any prefixed with ``restrict_to``
+#     (covers restrict_to, restrict_to_keys, restrict_to_after,
+#     and any future variant)
+#   - traversal stops at function boundaries; this is intra-function
+# Out of scope (v1):
+#   - struct-field flow (``self.net``)
+#   - match-arm rebinding
+#   - var-stmt reassignment
+#   - inter-procedural propagation (resolving ``mailer.send`` to a
+#     specific ``impl`` of ``SendEmail``)
+# Out-of-scope cases simply yield no ``args_flow`` entry for those
+# arguments; the syntactic ``args`` field is still emitted.
+# =====================================================================
+
+
+def _build_attenuation_map(
+    body,
+) -> dict[str, list[dict[str, Any]]]:
+    """Walk a function body and record, per binding name, the list of
+    restriction calls applied to its value (in source order).
+
+    Only top-level ``LetStmt``s inside the body and its immediate
+    blocks are considered. Patterns are intentionally simple to
+    keep the surface tight; richer flow tracking can come later.
+    """
+    out: dict[str, list[dict[str, Any]]] = {}
+
+    def visit(n) -> None:
+        if n is None:
+            return
+        if isinstance(n, A.LetStmt) and isinstance(n.pattern, A.IdentPat):
+            name = n.pattern.name
+            root, atts = _flatten_restrict_chain(n.value)
+            if not atts:
+                # Not an attenuation chain; nothing to record. (We do
+                # *not* clear an existing entry, since Capa's let is
+                # immutable and shadowing in the same scope is unusual.)
+                return
+            if isinstance(root, A.Ident) and root.name in out:
+                # Chain off an already-tracked binding: prepend its
+                # restrictions so the new binding carries the full
+                # history.
+                out[name] = out[root.name] + atts
+            else:
+                out[name] = atts
+            return
+        if isinstance(n, A.Node):
+            for f in n.__dataclass_fields__.values():
+                if f.name == "pos":
+                    continue
+                v = getattr(n, f.name)
+                if isinstance(v, A.Node):
+                    visit(v)
+                elif isinstance(v, list):
+                    for it in v:
+                        if isinstance(it, A.Node):
+                            visit(it)
+                        elif isinstance(it, tuple):
+                            for tt in it:
+                                if isinstance(tt, A.Node):
+                                    visit(tt)
+
+    visit(body)
+    return out
+
+
+def _flatten_restrict_chain(expr):
+    """Walk a method-call expression that may chain ``.restrict_to*``
+    calls. Returns ``(innermost_receiver, [attenuation, ...])`` in
+    source order. If the expression is not a restrict-chain, returns
+    ``(expr, [])``.
+    """
+    atts: list[dict[str, Any]] = []
+    cur = expr
+    while (
+        isinstance(cur, A.MethodCall)
+        and cur.method.startswith("restrict_to")
+    ):
+        atts.insert(0, {
+            "method": cur.method,
+            "args": [_stringify_expr(a) for a in cur.args],
+        })
+        cur = cur.receiver
+    return cur, atts
+
+
+def _arg_flow(
+    arg,
+    attenuation_map: dict[str, list[dict[str, Any]]],
+):
+    """If ``arg`` is an Ident that names a tracked binding, return a
+    flow record. Otherwise return None.
+    """
+    if isinstance(arg, A.Ident) and arg.name in attenuation_map:
+        return {
+            "name": arg.name,
+            "attenuations": list(attenuation_map[arg.name]),
+        }
+    return None
 
 
 def _stringify_expr(e) -> str:

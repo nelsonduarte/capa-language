@@ -146,6 +146,31 @@
 }</code></pre>
 
     <p>The auditor can see, without opening the source, that the unrestricted <code>net</code> never reaches <code>fetch_user</code>: it is narrowed to <code>api.example.com</code> on the line before. The CycloneDX SBOM mirrors this in <code>dependencies[]</code>: <code>main</code> now has an explicit edge to <code>fetch_user</code> in addition to the user-capability components it declared.</p>
+
+    <h3>Per-call data-flow</h3>
+
+    <p>The same call record carries a parallel <code>args_flow</code> array. Where an argument names a binding produced by a chain of <code>.restrict_to*</code> calls, the corresponding entry records the bound name and the restrictions applied to it, in source order. For arguments that are literals or unrestricted parameters, the entry is <code>null</code>.</p>
+
+<pre><code>{
+  <span class="str">"callee"</span>: <span class="str">"fetch_user"</span>,
+  <span class="str">"args"</span>: [<span class="str">"narrower"</span>, <span class="str">"\"42\""</span>],
+  <span class="str">"args_flow"</span>: [
+    {
+      <span class="str">"name"</span>: <span class="str">"narrower"</span>,
+      <span class="str">"attenuations"</span>: [
+        { <span class="str">"method"</span>: <span class="str">"restrict_to"</span>,
+          <span class="str">"args"</span>: [<span class="str">"\"api.example.com\""</span>] },
+        { <span class="str">"method"</span>: <span class="str">"restrict_to"</span>,
+          <span class="str">"args"</span>: [<span class="str">"\"v2.api.example.com\""</span>] }
+      ]
+    },
+    <span class="kw-ctrl">null</span>
+  ]
+}</code></pre>
+
+    <p>The auditor sees the effective restriction surface the callee was given, not just the variable name. Source: a chain of <code>let api = net.restrict_to("api.example.com")</code> then <code>let narrower = api.restrict_to("v2.api.example.com")</code> then <code>fetch_user(narrower, "42")</code>. The narrowing history is reconstructed from the AST and surfaced in the static artefact.</p>
+
+    <p>v1 tracking is intentionally narrow: only ``let``-bindings whose right-hand side is a chain of ``.restrict_to*`` calls are recorded, and the walk is not lexical-scope-aware. Inter-procedural propagation (resolving <code>mailer.send</code> to the specific <code>impl</code>) is still out of scope and will arrive in a later pass.</p>
 </section>
 
 <!-- =====================================================

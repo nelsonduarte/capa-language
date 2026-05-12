@@ -11,6 +11,31 @@ breaking changes and the discipline is still being shaped.
 
 ### Added
 
+- **Per-call data-flow tracking in the manifest.** Each call site
+  in a function's `calls[]` now carries a parallel `args_flow`
+  array, the same length as `args`. For arguments that name a
+  binding produced by a chain of `.restrict_to*` calls, the entry
+  is `{"name": str, "attenuations": [{method, args}, ...]}` in
+  source order; for other arguments it is `null`. Example:
+
+  ```
+  fun main(net: Net)
+      let api = net.restrict_to("api.example.com")
+      let narrower = api.restrict_to("v2.api.example.com")
+      let ok = fetch_user(narrower, "42")
+  ```
+
+  The call record for `fetch_user(narrower, "42")` now reports
+  `args_flow[0]` as `narrower` carrying both restrictions, in
+  source order. The auditor sees the effective restriction the
+  callee received without re-reading the source.
+
+  Scope (v1): only `LetStmt`s with restrict-chain RHSs, only
+  intra-function, no scope-awareness (a re-binding inside an `if`
+  overwrites the outer one in the map). Method-call resolution
+  to a specific `impl` is still out of scope. The syntactic
+  `args` field is unchanged; schema_version stays at 1.
+
 - **Doc comments** (`///` line and `/** */` block) attach to the
   next `fun`, `type`, `trait`, or `capability` declaration. The
   block form recognises Javadoc-style `*` left margins and strips
