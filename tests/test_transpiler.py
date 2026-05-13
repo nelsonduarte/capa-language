@@ -21,10 +21,13 @@ _PKG_ROOT = Path(__file__).resolve().parent.parent
 
 
 def transpile_only(source: str) -> str:
-    """Just transpiles, without running."""
+    """Just transpiles, without running. Runs analyze() first so the
+    transpiler has the type map for type-aware method dispatch
+    (e.g. String / Map / Set method lowering)."""
     tokens = Lexer(source).lex()
     module = Parser(tokens, source=source).parse_module()
-    return transpile(module)
+    result = analyze(module, source=source)
+    return transpile(module, types=result.types)
 
 
 def run_capa(source: str) -> tuple[int, str, str]:
@@ -582,6 +585,20 @@ class TestTranspileExamples(unittest.TestCase):
         rc, out, err = self._run_example("examples/demo_event_stream.capa")
         self.assertEqual(rc, 0, err)
         self.assertIn("flat_map produced 9 words from 2 lines", out)
+
+    def test_spdx_parser(self):
+        # Real-world SBOM parsing in Capa: reads an SPDX 2.3 JSON
+        # sample, builds typed Capa structs, prints a summary.
+        # Exercises ?-chaining on Result through deeply-nested
+        # JsonValue extraction.
+        rc, out, err = self._run_example("examples/spdx_parser.capa")
+        self.assertEqual(rc, 0, err)
+        self.assertIn("SPDX document: capa-demo-sbom", out)
+        self.assertIn("Packages (1):", out)
+        self.assertIn("capa 0.6.0-alpha", out)
+        self.assertIn("SHA1 = aaaabbbbcccc", out)
+        self.assertIn("Relationships (1):", out)
+        self.assertIn("DESCRIBES", out)
 
     def test_net_attenuation(self):
         rc, out, err = self._run_example("examples/net_attenuation.capa")

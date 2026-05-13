@@ -233,7 +233,16 @@ class _ExpressionsMixin:
                 return recv_ty.args[0]
             return TyUnknown
         if isinstance(e, A.Try):
-            self._check_expr(e.expr)
+            inner = self._check_expr(e.expr)
+            # When the inner expression is a Result<T, E> or
+            # Option<T>, the ? operator unwraps and yields T;
+            # otherwise we don't know the inner type yet, so we
+            # fall back to TyUnknown. Tracking this is what makes
+            # type-aware dispatch (e.g. Map.get) work on the
+            # result of a `?` chain.
+            if isinstance(inner, TyName) and inner.args:
+                if inner.name in ("Result", "Option"):
+                    return inner.args[0]
             return TyUnknown
         if isinstance(e, A.StructLit):
             return self._check_struct_lit(e)

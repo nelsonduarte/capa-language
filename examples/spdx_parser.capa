@@ -1,0 +1,237 @@
+// SPDX 2.3 JSON parser, demonstration of Capa applied to real SBOM
+// data. Parses the core fields of an SPDX 2.3 document (the SPDX
+// JSON Schema published by the Linux Foundation): document
+// metadata, packages, file checksums, and relationships. The
+// parser builds a typed Capa AST from the loosely-typed
+// JsonValue, surfacing structural errors as Result<_, String>.
+//
+// What this demo shows:
+//
+// - A user-defined capability (capability SbomReader) representing
+//   the authority to read and verify SBOM metadata. It is method-
+//   less; its role is to make the trust boundary visible in every
+//   function that touches an SBOM.
+// - Pattern matching on JsonValue variants (JObj, JArr, JStr...)
+//   to traverse a real-world JSON tree.
+// - Result/Option chaining via the `?` operator, so every parser
+//   function reads top-down without the noise of manual
+//   match-on-error.
+// - Building typed Capa structs from the unstructured tree.
+//
+// Scope limits: only the SPDX fields needed to demonstrate the
+// approach. SPDX has dozens of optional fields (annotations,
+// snippets, external document refs, has-extracted-licensing-info);
+// extending this to the full spec is mechanical.
+
+capability SbomReader
+    fun read(self, source: String) -> Result<String, String>
+
+type Checksum {
+    algorithm: String,
+    value: String
+}
+
+type Package {
+    spdx_id: String,
+    name: String,
+    version: String,
+    download_location: String,
+    license_concluded: String,
+    license_declared: String,
+    files_analyzed: Bool,
+    checksums: List<Checksum>
+}
+
+type Relationship {
+    source: String,
+    kind: String,
+    target: String
+}
+
+type CreationInfo {
+    created: String,
+    creators: List<String>
+}
+
+type SpdxDocument {
+    spdx_version: String,
+    data_license: String,
+    spdx_id: String,
+    name: String,
+    document_namespace: String,
+    creation_info: CreationInfo,
+    packages: List<Package>,
+    relationships: List<Relationship>
+}
+
+// ---- typed-extraction helpers ----
+//
+// All helpers return Result, so the `?` operator chains them
+// cleanly in every parser function below. The convention is
+// "<extractor>_or_err" returns the inner value; "<field>" goes
+// through an object lookup; "_or" supplies a fallback for
+// optional fields.
+
+fun as_object_or_err(j: JsonValue, context: String) -> Result<Map<String, JsonValue>, String>
+    return match j.as_object()
+        None -> Err("expected object for ${context}")
+        Some(m) -> Ok(m)
+
+fun as_array_or_err(j: JsonValue, context: String) -> Result<List<JsonValue>, String>
+    return match j.as_array()
+        None -> Err("expected array for ${context}")
+        Some(xs) -> Ok(xs)
+
+fun as_string_or_err(j: JsonValue, context: String) -> Result<String, String>
+    return match j.as_string()
+        None -> Err("expected string for ${context}")
+        Some(s) -> Ok(s)
+
+// Look up a required field on a JSON object value.
+fun field(j: JsonValue, name: String) -> Result<JsonValue, String>
+    let obj = as_object_or_err(j, "lookup '${name}'")?
+    return match obj.get(name)
+        None -> Err("missing required field '${name}'")
+        Some(v) -> Ok(v)
+
+// Same as field, but returns None_ instead of Err on missing field
+// or non-object receiver.
+fun optional_field(j: JsonValue, name: String) -> Option<JsonValue>
+    return match j.as_object()
+        None -> None
+        Some(m) -> m.get(name)
+
+// Read an optional string field, falling back to a default.
+fun string_field_or(j: JsonValue, name: String, fallback: String) -> String
+    return match optional_field(j, name)
+        None -> fallback
+        Some(v) -> match v.as_string()
+            None -> fallback
+            Some(s) -> s
+
+// Read an optional bool field, falling back to a default.
+fun bool_field_or(j: JsonValue, name: String, fallback: Bool) -> Bool
+    return match optional_field(j, name)
+        None -> fallback
+        Some(v) -> match v.as_bool()
+            None -> fallback
+            Some(b) -> b
+
+// ---- per-record parsers ----
+
+fun parse_checksum(j: JsonValue) -> Result<Checksum, String>
+    return Ok(Checksum {
+        algorithm: as_string_or_err(field(j, "algorithm")?, "Checksum.algorithm")?,
+        value: as_string_or_err(field(j, "checksumValue")?, "Checksum.checksumValue")?
+    })
+
+fun parse_checksums(items: List<JsonValue>) -> Result<List<Checksum>, String>
+    let result: List<Checksum> = []
+    for item in items
+        result.push(parse_checksum(item)?)
+    return Ok(result)
+
+fun parse_package(j: JsonValue) -> Result<Package, String>
+    let checksums: List<Checksum> = []
+    match optional_field(j, "checksums")
+        None ->
+            ()
+        Some(v) ->
+            let xs = as_array_or_err(v, "Package.checksums")?
+            let parsed = parse_checksums(xs)?
+            for c in parsed
+                checksums.push(c)
+
+    return Ok(Package {
+        spdx_id: as_string_or_err(field(j, "SPDXID")?, "Package.SPDXID")?,
+        name: as_string_or_err(field(j, "name")?, "Package.name")?,
+        version: string_field_or(j, "versionInfo", ""),
+        download_location: string_field_or(j, "downloadLocation", "NOASSERTION"),
+        license_concluded: string_field_or(j, "licenseConcluded", "NOASSERTION"),
+        license_declared: string_field_or(j, "licenseDeclared", "NOASSERTION"),
+        files_analyzed: bool_field_or(j, "filesAnalyzed", true),
+        checksums: checksums
+    })
+
+fun parse_relationship(j: JsonValue) -> Result<Relationship, String>
+    return Ok(Relationship {
+        source: as_string_or_err(field(j, "spdxElementId")?, "Relationship.spdxElementId")?,
+        kind: as_string_or_err(field(j, "relationshipType")?, "Relationship.relationshipType")?,
+        target: as_string_or_err(field(j, "relatedSpdxElement")?, "Relationship.relatedSpdxElement")?
+    })
+
+fun parse_creation_info(j: JsonValue) -> Result<CreationInfo, String>
+    let info = field(j, "creationInfo")?
+    let created = as_string_or_err(field(info, "created")?, "creationInfo.created")?
+    let creators_arr = as_array_or_err(field(info, "creators")?, "creationInfo.creators")?
+    let creators: List<String> = []
+    for x in creators_arr
+        creators.push(as_string_or_err(x, "creator entry")?)
+    return Ok(CreationInfo { created: created, creators: creators })
+
+fun parse_document(j: JsonValue) -> Result<SpdxDocument, String>
+    let packages: List<Package> = []
+    match optional_field(j, "packages")
+        None ->
+            ()
+        Some(v) ->
+            let xs = as_array_or_err(v, "document.packages")?
+            for x in xs
+                packages.push(parse_package(x)?)
+
+    let relationships: List<Relationship> = []
+    match optional_field(j, "relationships")
+        None ->
+            ()
+        Some(v) ->
+            let xs = as_array_or_err(v, "document.relationships")?
+            for x in xs
+                relationships.push(parse_relationship(x)?)
+
+    return Ok(SpdxDocument {
+        spdx_version: as_string_or_err(field(j, "spdxVersion")?, "spdxVersion")?,
+        data_license: as_string_or_err(field(j, "dataLicense")?, "dataLicense")?,
+        spdx_id: as_string_or_err(field(j, "SPDXID")?, "SPDXID")?,
+        name: as_string_or_err(field(j, "name")?, "name")?,
+        document_namespace: as_string_or_err(field(j, "documentNamespace")?, "documentNamespace")?,
+        creation_info: parse_creation_info(j)?,
+        packages: packages,
+        relationships: relationships
+    })
+
+fun parse_spdx(json_text: String) -> Result<SpdxDocument, String>
+    return match parse_json(json_text)
+        Err(msg) -> Err("JSON parse error: ${msg}")
+        Ok(j) -> parse_document(j)
+
+// ---- demo ----
+
+fun main(stdio: Stdio)
+    // A trimmed SPDX 2.3 document, just enough to exercise every
+    // parser path: one package with two checksums plus one
+    // DESCRIBES relationship. Capa string literals do not span
+    // newlines in v1, so this is on a single line; in real
+    // pipelines the SBOM comes from an Fs.read.
+    let sample = "{\"spdxVersion\": \"SPDX-2.3\", \"dataLicense\": \"CC0-1.0\", \"SPDXID\": \"SPDXRef-DOCUMENT\", \"name\": \"capa-demo-sbom\", \"documentNamespace\": \"https://example.org/sbom/capa-demo-001\", \"creationInfo\": {\"created\": \"2026-05-13T10:00:00Z\", \"creators\": [\"Tool: capa-0.6\", \"Person: Nelson Duarte\"]}, \"packages\": [{\"SPDXID\": \"SPDXRef-Package-capa\", \"name\": \"capa\", \"versionInfo\": \"0.6.0-alpha\", \"downloadLocation\": \"https://github.com/nelsonduarte/capa\", \"licenseConcluded\": \"Apache-2.0\", \"licenseDeclared\": \"Apache-2.0\", \"filesAnalyzed\": true, \"checksums\": [{\"algorithm\": \"SHA1\", \"checksumValue\": \"aaaabbbbccccddddeeeeffffaaaabbbbccccdddd\"}, {\"algorithm\": \"SHA256\", \"checksumValue\": \"0011223344556677889900aabbccddeeff0011223344556677889900aabbccdd\"}]}], \"relationships\": [{\"spdxElementId\": \"SPDXRef-DOCUMENT\", \"relationshipType\": \"DESCRIBES\", \"relatedSpdxElement\": \"SPDXRef-Package-capa\"}]}"
+
+    match parse_spdx(sample)
+        Err(msg) ->
+            stdio.eprintln("SPDX parse failed: ${msg}")
+        Ok(doc) ->
+            stdio.println("SPDX document: ${doc.name}")
+            stdio.println("  version:   ${doc.spdx_version}")
+            stdio.println("  namespace: ${doc.document_namespace}")
+            stdio.println("  created:   ${doc.creation_info.created}")
+            stdio.println("  creators:  ${doc.creation_info.creators.length()} entries")
+            stdio.println("")
+            stdio.println("Packages (${doc.packages.length()}):")
+            for p in doc.packages
+                stdio.println("  - ${p.name} ${p.version}")
+                stdio.println("      license: ${p.license_concluded}")
+                stdio.println("      checksums: ${p.checksums.length()}")
+                for c in p.checksums
+                    stdio.println("        ${c.algorithm} = ${c.value}")
+            stdio.println("")
+            stdio.println("Relationships (${doc.relationships.length()}):")
+            for r in doc.relationships
+                stdio.println("  - ${r.source} -[${r.kind}]-> ${r.target}")
