@@ -32,6 +32,9 @@ htmlcov/
 *.swo
 *~
 
+# Per-machine editor session state
+.claude/
+
 # OS
 .DS_Store
 Thumbs.db
