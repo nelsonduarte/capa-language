@@ -1,0 +1,101 @@
+// cve_torchtriton.capa, the PyTorch nightly torchtriton
+// typosquat incident, in Capa. The companion writeup is
+// docs/cve_torchtriton.md.
+//
+// Between 25 and 30 December 2022, anyone installing PyTorch's
+// nightly build (e.g. with the Python wheels indexed by
+// download.pytorch.org/whl/nightly) ended up with a malicious
+// package called `torchtriton` pulled from the public PyPI
+// index, instead of the legitimate one bundled by the PyTorch
+// CI. The attacker had registered a typosquat on PyPI with the
+// same name as PyTorch's internal compiler dependency. Because
+// pip's resolution preferred PyPI over the private index in the
+// default configuration, the malicious version won.
+//
+// The payload (in the package's `triton/runtime/__init__.py`):
+//
+//   - Read /etc/hostname, /etc/passwd, $HOME, the IP from
+//     network interfaces, the user's nameservers from
+//     /etc/resolv.conf.
+//   - Walked $HOME and exfiltrated up to 1000 files matching
+//     specific suffixes (.ssh keys, .gitconfig, .docker config,
+//     environment-typed files).
+//   - POSTed everything to wildcard.h4ck.cfd, a host the
+//     attacker controlled.
+//
+// This is the fifth CVE case study in the repo and the third
+// **clean win**: torchtriton's legitimate role is to provide a
+// Python module for runtime compilation of GPU kernels. Its
+// signatures should be `tensor-in, tensor-out` (or kernel-in,
+// kernel-out). The malicious behaviour required `Fs` (to walk
+// $HOME), `Net` (to POST), and `Env` (to read environment
+// variables) - none of which has any business being in a
+// kernel-compilation library.
+
+// ===============================================================
+// What a Capa version of triton's runtime would look like.
+// ===============================================================
+//
+// A miniature kernel runtime: takes a kernel description, a
+// list of arguments, and returns a launch plan. Pure data
+// transformation. The signature is the contract.
+
+type KernelKind =
+    KernelMatMul
+    KernelConv
+    KernelReduce
+
+type Kernel {
+    kind: KernelKind,
+    arg_count: Int
+}
+
+type LaunchPlan {
+    grid_size: Int,
+    block_size: Int,
+    arg_count: Int
+}
+
+fun choose_block_size(kind: KernelKind, n: Int) -> Int
+    return match kind
+        KernelMatMul -> 256
+        KernelConv -> 128
+        KernelReduce -> 64
+
+fun choose_grid_size(block: Int, n: Int) -> Int
+    // Capa's `/` is float division; truncate back to Int for
+    // grid sizing. Real CUDA gives this is ceil-div; the
+    // expression `(n + block - 1) / block` realises that, the
+    // `to_int` makes the truncation explicit.
+    return to_int(to_float(n + block - 1) / to_float(block))
+
+// The actual entry point a deep-learning framework would call.
+// Note the signature: kernel-in, work-size-in, plan-out. No Fs,
+// no Net, no Env, no Stdio, no Unsafe. Anything the malicious
+// torchtriton wanted to do (read SSH keys, POST to an
+// attacker-controlled host) requires authority this function
+// has not been granted.
+fun plan_launch(k: Kernel, work_items: Int) -> LaunchPlan
+    let block = choose_block_size(k.kind, work_items)
+    let grid = choose_grid_size(block, work_items)
+    return LaunchPlan {
+        grid_size: grid,
+        block_size: block,
+        arg_count: k.arg_count
+    }
+
+fun describe_plan(p: LaunchPlan) -> String
+    return "grid=${p.grid_size} block=${p.block_size} args=${p.arg_count}"
+
+// ===============================================================
+// `main`, holding Stdio only for the demo.
+// ===============================================================
+fun main(stdio: Stdio)
+    let kernels: List<Kernel> = [
+        Kernel { kind: KernelMatMul, arg_count: 3 },
+        Kernel { kind: KernelConv,   arg_count: 4 },
+        Kernel { kind: KernelReduce, arg_count: 2 }
+    ]
+    for k in kernels
+        let plan = plan_launch(k, 1024)
+        stdio.println("launch plan: ${describe_plan(plan)}")

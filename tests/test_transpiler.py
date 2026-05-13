@@ -646,6 +646,20 @@ class TestTranspileExamples(unittest.TestCase):
         self.assertIn("DESCRIBES", out)
         self.assertIn("Validation: ok (refs resolve + acyclic)", out)
 
+    def test_cve_torchtriton(self):
+        # Fifth CVE walkthrough: the PyTorch nightly typosquat that
+        # exfiltrated SSH keys + env via Fs/Net/Env abuse from a
+        # package whose legitimate role (Triton kernel runtime)
+        # needed none of those. Same clean-win shape as
+        # eslint-scope and event-stream, different ecosystem
+        # (Python / PyPI) and different attack vector (pip
+        # resolution preferring public PyPI over private index).
+        rc, out, err = self._run_example("examples/cve_torchtriton.capa")
+        self.assertEqual(rc, 0, err)
+        self.assertIn("launch plan: grid=4 block=256 args=3", out)
+        self.assertIn("launch plan: grid=8 block=128 args=4", out)
+        self.assertIn("launch plan: grid=16 block=64 args=2", out)
+
     def test_cve_xz_utils(self):
         # Fourth CVE walkthrough, deliberately chosen because it
         # is the *most pessimistic* case: the actual xz-utils

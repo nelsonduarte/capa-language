@@ -296,7 +296,7 @@ items here so they stay visible:
   to λ_cap. **Pending**: mechanisation in Agda or Coq for
   thesis-grade proof of Theorem 1; this is the workshop-paper
   ticket the reviewer was pointing at.
-- [~] **3-5 CVE case studies** mapped to Capa typing rules.
+- [x] **3-5 CVE case studies** mapped to Capa typing rules.
   Each is a paired `examples/cve_*.capa` (safe library) +
   `docs/cve_*.md` (walkthrough showing the attack pattern,
   what an attacker would transliterate into Capa, and the
@@ -327,13 +327,25 @@ items here so they stay visible:
     those layers. Deliberately included as the most
     pessimistic case study: the thesis chapter has to
     acknowledge attacks beneath the language layer.
-  Four demos give the thesis a balanced experimental section:
-  two clean wins (event-stream, eslint-scope) and two honest
-  partial losses (node-ipc legitimate-authority-abuse,
-  xz-utils below-the-language). The remaining slot is a clean
-  win in a different shape (recommend `torchtriton` 2022 for
-  PyTorch-ecosystem credential exfiltration). Adding it is
-  mechanical from the paired-file template.
+  - **torchtriton 2022 (PyPI typosquat)**:
+    `examples/cve_torchtriton.capa` +
+    `docs/cve_torchtriton.md`. PyTorch nightly's
+    `torchtriton` Python module dependency typosquatted on
+    public PyPI. The malicious version walked `$HOME`,
+    captured SSH keys and env, POSTed to `*.h4ck.cfd`. A
+    Capa-shaped kernel-launch-planning library has zero
+    capabilities; the typosquat's `Fs`/`Net`/`Env` widening
+    is loud at the SBOM level. Third clean win, different
+    ecosystem (Python / PyPI) than event-stream and
+    eslint-scope (both npm).
+  Five demos now give the thesis a balanced experimental
+  section: three clean wins (event-stream, eslint-scope,
+  torchtriton) covering different ecosystems and attack
+  shapes (malicious-dependency, credential-theft,
+  typosquat); two honest partial losses (node-ipc for
+  legitimate-authority-abuse, xz-utils for below-the-
+  language attacks). The breakdown is summarised in
+  `docs/cve_torchtriton.md` § "The five-case-study summary".
 - [~] **Property-based testing with Hypothesis**. The most
   citable suggestion in the review. **Phases 1 and 2 landed**
   in `tests/test_properties.py`. Phase 1 (six properties on

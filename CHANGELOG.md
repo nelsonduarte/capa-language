@@ -11,6 +11,28 @@ breaking changes and the discipline is still being shaped.
 
 ### Added
 
+- **CVE case study: torchtriton 2022 (PyPI typosquat)**
+  (`examples/cve_torchtriton.capa` +
+  `docs/cve_torchtriton.md`). The fifth CVE walkthrough and
+  the third clean win, covering the Python / PyPI ecosystem
+  (after event-stream and eslint-scope on npm). Recaps the
+  attack: between 25-30 Dec 2022 a malicious PyPI package
+  named `torchtriton` was installed by anyone running
+  PyTorch's nightly build, because pip's default resolution
+  preferred public PyPI over the private index. The payload
+  walked `$HOME`, captured SSH keys and env vars, and POSTed
+  to `*.h4ck.cfd`. The Capa-shaped kernel-launch-planning
+  library has zero capabilities; the typosquat's
+  `Fs + Net + Env` widening is a loud SBOM diff. With this
+  fifth study the experimental section is now balanced: 3
+  wins covering different ecosystems / shapes
+  (malicious-dependency, credential-theft, typosquat) and
+  2 honest partial losses (legitimate-authority-abuse,
+  below-the-language). Regression test in
+  `tests/test_transpiler.py::test_cve_torchtriton`. The
+  full breakdown lives in `docs/cve_torchtriton.md`
+  § "The five-case-study summary".
+
 - **CVE case study: xz-utils 2024 / CVE-2024-3094**
   (`examples/cve_xz_utils.capa` + `docs/cve_xz_utils.md`). The
   fourth CVE walkthrough, and the most pessimistic one: a
