@@ -239,6 +239,10 @@ Hello, Capa!</code></pre>
                 <td><code>--manifest</code> / <code>--cyclonedx</code></td>
                 <td>Emit a JSON capability manifest, or a CycloneDX 1.5 SBOM with the manifest embedded.</td>
             </tr>
+            <tr>
+                <td><code>lsp</code></td>
+                <td>Start the language server on stdio (subcommand, requires <code>pip install -e '.[lsp]'</code>). See the next section for editor configuration.</td>
+            </tr>
         </tbody>
     </table>
 
@@ -254,6 +258,80 @@ $ python -m capa --run examples/grades.capa
   ...
 
 $ python -m capa --transpile examples/hello.capa | head -20</code></pre>
+</section>
+
+<!-- =====================================================
+     Editor integration (LSP)
+===================================================== -->
+<section>
+    <h2>Editor integration</h2>
+
+    <p>Capa ships a language server, so any LSP-capable editor (Helix, Neovim, Zed, VSCode with an LSP client, JetBrains, Emacs, ...) gets diagnostics, hover, go-to-definition, find-references, the outline view, and Quick Fixes for &quot;did you mean?&quot; hints without round-tripping to the terminal.</p>
+
+    <p>Install the optional dependency and launch:</p>
+
+<pre><code>$ pip install -e '.[lsp]'          # adds pygls&gt;=2.0
+$ python -m capa lsp               # speaks LSP over stdio</code></pre>
+
+    <p>The v1 server delivers six features. None are configurable; the server runs the same lexer / parser / analyzer the CLI runs.</p>
+
+    <table class="cli-table">
+        <thead>
+            <tr><th>LSP feature</th><th>Behaviour in Capa</th></tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td><code>publishDiagnostics</code></td>
+                <td>Full pipeline on every <code>didOpen</code> / <code>didChange</code> / <code>didSave</code>. Errors carry the <code>; did you mean 'X'?</code> hints when applicable.</td>
+            </tr>
+            <tr>
+                <td><code>hover</code></td>
+                <td>Cursor over a function shows the Capa signature; over a parameter, binding, constant, field, variant, or capability shows <code>name: T</code> plus a kind label. Fires on references <em>and</em> declaration sites.</td>
+            </tr>
+            <tr>
+                <td><code>definition</code></td>
+                <td>Jump from any reference (or the declaration itself) to the precise column of the declared name. Built-ins are filtered cleanly.</td>
+            </tr>
+            <tr>
+                <td><code>references</code></td>
+                <td>List every identifier in the file resolving to the same symbol; <code>includeDeclaration</code> is honoured.</td>
+            </tr>
+            <tr>
+                <td><code>documentSymbol</code></td>
+                <td>Hierarchical outline. Constants, structs (with fields), sum types (with variants), traits / capabilities (with method signatures), functions, and impl blocks (with methods) in source order.</td>
+            </tr>
+            <tr>
+                <td><code>codeAction</code></td>
+                <td>One-click Quick Fix for every <code>; did you mean 'X'?</code> diagnostic; marked preferred.</td>
+            </tr>
+        </tbody>
+    </table>
+
+    <h3>Client configuration</h3>
+
+    <p>One-liner for <strong>Helix</strong> (<code>languages.toml</code>):</p>
+
+<pre><code>[[language]]
+name = "capa"
+language-servers = ["capa"]
+file-types = ["capa"]
+
+[language-server.capa]
+command = "python"
+args = ["-m", "capa", "lsp"]</code></pre>
+
+    <p>For <strong>Neovim</strong> with <code>nvim-lspconfig</code>:</p>
+
+<pre><code>require("lspconfig").configs.capa = {
+  default_config = {
+    cmd = { "python", "-m", "capa", "lsp" },
+    filetypes = { "capa" },
+    root_dir = require("lspconfig.util").root_pattern(".git", "."),
+  },
+}
+require("lspconfig").capa.setup({})</code></pre>
+
+    <p>Completion, semantic tokens, and rename are tracked for v2.</p>
 </section>
 
 <!-- =====================================================

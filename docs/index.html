@@ -305,14 +305,18 @@
             <summary>Is Capa production-ready?</summary>
             <p>
                 No. v0.5.0-alpha means the compiler runs, the
-                discipline is implemented end-to-end, 536 tests pass
-                on three operating systems and three Python versions,
-                and the artefacts the language emits (manifest,
-                CycloneDX, HTML docs) are real. But the language
-                surface can still change between minor versions, and
-                tooling that a team needs day-to-day (language
-                server, formatter, native backend) is not there yet.
-                Use Capa for prototypes, research, security demos,
+                discipline is implemented end-to-end, 660+ tests
+                pass on three operating systems and three Python
+                versions, and the artefacts the language emits
+                (manifest, CycloneDX, HTML docs, LSP diagnostics
+                and hover) are real. The day-to-day tooling is in
+                place: a line-level formatter (<code>capa --fmt</code>),
+                a project scaffolder (<code>capa init</code>), and a
+                language server with diagnostics, hover, go-to-definition,
+                find-references, outline, and Quick Fixes. The
+                language surface can still change between minor
+                versions and there is no native backend yet, so
+                use Capa for prototypes, research, security demos,
                 or as a study substrate, not yet as a production
                 runtime.
             </p>
@@ -417,7 +421,7 @@
 
 <section class="section-centered">
     <h2>Where to go next</h2>
-    <p class="lead-prose-narrow">Capa is in alpha. The compiler runs, 536 tests pass on three operating systems, and the three pillars of the discipline are implemented. There is still no language server, no module system, no native backend.</p>
+    <p class="lead-prose-narrow">Capa is in alpha. The compiler runs, 660+ tests pass on three operating systems, the three pillars of the discipline are implemented, and the day-to-day tooling is in place (formatter, scaffolder, language server with diagnostics, hover, go-to-definition, find-references, outline, Quick Fixes). There is still no module system and no native backend.</p>
     <div class="cta">
         <a href="why.html" class="btn primary">Understand the why</a>
         <a href="tour.html" class="btn">Tour the language</a>

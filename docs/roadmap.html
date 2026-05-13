@@ -72,20 +72,21 @@
                 <li><code>consume</code> qualifier with fork/merge tracking</li>
                 <li>Range expressions (<code>a..b</code> exclusive, <code>a..=b</code> inclusive)</li>
                 <li>Python interop via the <code>Unsafe</code> capability boundary</li>
-                <li>CLI with five modes (tokenize, parse, check, transpile, run)</li>
+                <li>CLI with eleven modes (tokenize, <code>--parse</code>, <code>--check</code>, <code>--transpile</code>, <code>--run</code>, <code>--fmt</code>, <code>--fmt-check</code>, <code>--doc</code>, <code>--manifest</code>, <code>--cyclonedx</code>, <code>init</code>, <code>lsp</code>)</li>
+                <li>Project scaffolding via <code>capa init</code></li>
+                <li>Line-level canonical formatter (<code>capa --fmt</code> / <code>--fmt-check</code>)</li>
+                <li>Doc-comment HTML generator (<code>capa --doc</code>) with paragraphs, inline code, fenced code blocks, lists, and a trait section</li>
                 <li>VSCode syntax highlighting extension</li>
-                <li>536 unit + end-to-end tests, green on Ubuntu / macOS / Windows × Python 3.10 / 3.12 / 3.14</li>
+                <li><strong>Language server (LSP), v1</strong>: diagnostics, hover, go-to-definition, find-references, document symbols (outline), code actions (Quick Fix for &quot;did you mean?&quot;). Runs via <code>python -m capa lsp</code> with the optional <code>[lsp]</code> extra. One-line config for Helix, Neovim, Zed, VSCode.</li>
+                <li>660+ unit + end-to-end tests, green on Ubuntu / macOS / Windows × Python 3.10 / 3.12 / 3.14</li>
             </ul>
         </div>
         <div class="status-no">
             <h4>Not yet</h4>
             <ul>
-                <li>Language server (LSP), no editor diagnostics, no hover, no go-to-definition</li>
-                <li>Formatter (<code>capa-fmt</code>)</li>
+                <li>LSP v2 features: completion, semantic tokens, rename</li>
                 <li>Module system (<code>import</code> is parsed but rejected by the analyzer)</li>
                 <li>Visibility (<code>pub</code> is parsed but unenforced, waits on the module system)</li>
-                <li>Attenuation for capabilities other than <code>Net</code> (<code>Fs.restrict_to</code>, <code>Env.restrict_to_keys</code>, etc.)</li>
-                <li>Doc comments (<code>///</code>, <code>/**</code>), lexer treats them as ordinary comments</li>
                 <li>Native (non-Python) backend, LLVM is far future</li>
                 <li>Async / await (keywords reserved, no runtime)</li>
                 <li>Package manager / registry</li>
@@ -169,10 +170,10 @@
     <h3>EBNF declares but not implemented</h3>
     <ul class="milestone-list">
         <li>
-            <span class="tag current">P2</span>
+            <span class="tag done">DONE</span>
             <div class="item-body">
-                <strong>Doc comments (<code>///</code>, <code>/**</code>)</strong>
-                <p>Lexer currently treats them as ordinary comments. Implement preservation through the AST and a tiny <code>capa-doc</code> generator. ~4-6 hours.</p>
+                <strong>Doc comments (<code>///</code>, <code>/**</code>) + <code>capa --doc</code> generator</strong>
+                <p>Lexer emits <code>DOC_COMMENT</code> tokens with leading-space and Javadoc star-margin stripped; parser attaches them to the next declaration; <code>--doc</code> renders a self-contained HTML page with paragraphs, inline <code>code</code>, fenced code blocks (with language tags), bulleted lists, and a separate Traits section.</p>
             </div>
         </li>
         <li>
@@ -194,24 +195,24 @@
     <h3>Tooling that moves the adoption needle</h3>
     <ul class="milestone-list">
         <li>
-            <span class="tag current">P1</span>
+            <span class="tag done">DONE (v1)</span>
             <div class="item-body">
-                <strong>Language server (LSP)</strong>
-                <p>The single biggest multiplier for any new language. Python implementation using <code>pygls</code>: diagnostics first, then hover, then go-to-definition. ~1-2 weeks for a useful subset.</p>
+                <strong>Language server (LSP), v1</strong>
+                <p>Six features live: diagnostics (full pipeline on every buffer change), hover (signature or <code>name: T</code> in Markdown), go-to-definition, find-references, document symbols (hierarchical outline), and code actions (Quick Fix for &quot;did you mean?&quot; hints). Coverage includes both reference and declaration sites: the parser records <code>name_pos</code> for every declared name, so hovering on <code>foo</code> in <code>fun foo(...)</code> works the same as hovering on a call to <code>foo</code>. Python implementation using <code>pygls&gt;=2.0</code> as an optional dependency; ships with one-line config for Helix and Neovim. <strong>v2 pending</strong>: completion, semantic tokens, rename.</p>
             </div>
         </li>
         <li>
-            <span class="tag current">P1</span>
+            <span class="tag done">DONE (v1)</span>
             <div class="item-body">
-                <strong>Formatter (<code>capa-fmt</code>)</strong>
-                <p>Canonical and non-configurable, gofmt-style. Walks the AST and re-emits. ~1-2 days for v1.</p>
+                <strong>Formatter (<code>capa --fmt</code> / <code>--fmt-check</code>)</strong>
+                <p>Canonical, non-configurable, idempotent. v1 is line-level: line-ending normalisation, indentation snapped to 4-space multiples (never deepened), trailing whitespace stripped, blank-line clusters collapsed, final newline enforced. Block-comment interiors preserved verbatim. v2 (intra-line operator spacing via AST round-trip, with comment preservation) is queued.</p>
             </div>
         </li>
         <li>
-            <span class="tag future">P2</span>
+            <span class="tag done">DONE</span>
             <div class="item-body">
-                <strong><code>capa init</code></strong>
-                <p>Project scaffolding command. ~1-2 hours, but waits on the module system to be useful.</p>
+                <strong><code>capa init</code> project scaffolding</strong>
+                <p><code>capa init [name]</code> creates a runnable starter with <code>main.capa</code> (Stdio-using), <code>README.md</code>, <code>.gitignore</code>, and <code>.capa-version</code>. The starter passes <code>--check</code> and <code>--fmt-check</code> out of the box.</p>
             </div>
         </li>
         <li>

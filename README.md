@@ -150,16 +150,41 @@ reload VSCode.
 
 ### Language server (LSP)
 
-A diagnostics-only language server ships with the compiler. It
-runs the full lexer + parser + analyzer pipeline on each buffer
-change and publishes errors as LSP diagnostics, so any
-LSP-capable editor surfaces the same messages you would see from
-`capa --check`. Install the optional dependency and launch:
+A language server ships with the compiler. Install the optional
+dependency and launch:
 
 ```bash
 pip install 'pygls>=2.0'      # or: pip install -e '.[lsp]'
 python -m capa lsp            # speaks LSP over stdio
 ```
+
+The v1 server delivers:
+
+- **Diagnostics** on every change: the full lexer + parser +
+  analyzer pipeline runs on each buffer, so editors surface the
+  same errors you would see from `capa --check`, including the
+  `; did you mean 'X'?` hints.
+- **Hover**: cursor over a function gives the Capa-style
+  signature, over a parameter or binding gives `name: T` plus a
+  kind label, over a struct field / sum variant / capability /
+  constant gives the appropriate detail. Fires on both
+  references and declaration sites.
+- **Go-to-definition**: jump from any reference (or from the
+  declaration itself) to the precise column where the name was
+  declared. Built-in symbols (`Stdio`, `Net`, `Result`, …) are
+  filtered cleanly so no jump lands on "line 0".
+- **Find-references**: list every identifier in the file that
+  resolves to the same symbol; the `includeDeclaration` flag
+  from the LSP request is honoured.
+- **Document symbols** (outline): hierarchical view of the
+  module. Constants, structs (with fields nested), sum types
+  (with variants nested, payload types in the detail), traits
+  and capabilities (with method signatures nested), top-level
+  functions, and impl blocks (with methods nested) appear in
+  source order.
+- **Code actions** (Quick Fixes): every `; did you mean 'X'?`
+  hint produces a one-click "Replace with 'X'" action, marked
+  preferred so the editor's default keyboard shortcut applies it.
 
 Editor configuration is one-line for most clients. For Helix
 (`languages.toml`):
@@ -188,8 +213,7 @@ require("lspconfig").configs.capa = {
 require("lspconfig").capa.setup({})
 ```
 
-Hover, go-to-definition, completion, and semantic tokens are on
-the roadmap; v1 is diagnostics only.
+Completion, semantic tokens, and rename are queued for v2.
 
 ### Website
 
