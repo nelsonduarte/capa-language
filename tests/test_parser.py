@@ -477,6 +477,18 @@ class TestErrors(unittest.TestCase):
         with self.assertRaises(ParserError):
             parse("pub import json\n")
 
+    def test_python_def_keyword_hint(self):
+        # A user typing `def foo()` instead of `fun foo()` should
+        # get a targeted hint pointing at `fun`.
+        with self.assertRaises(ParserError) as ctx:
+            parse("def main()\n    1\n")
+        self.assertIn("'fun'", str(ctx.exception))
+
+    def test_python_class_keyword_hint(self):
+        with self.assertRaises(ParserError) as ctx:
+            parse("class Foo\n    1\n")
+        self.assertIn("'type'", str(ctx.exception))
+
 
 # =============================================================
 # Documented restrictions (block-body inside parentheses)

@@ -215,6 +215,30 @@ class TestTypeChecking(unittest.TestCase):
         )
         self.assertTrue(any("expected 2 arguments, got 3" in m for m in msgs))
 
+    def test_call_arity_includes_signature(self):
+        msgs = errors_of(
+            "fun add(a: Int, b: Int) -> Int\n    return a + b\n"
+            "fun f() -> Int\n    return add(1, 2, 3)\n"
+        )
+        self.assertTrue(
+            any("fun(Int, Int) -> Int" in m for m in msgs),
+            f"signature missing from arity error: {msgs}",
+        )
+
+    def test_capability_method_typo_hint(self):
+        msgs = errors_of(
+            "fun main(stdio: Stdio)\n"
+            "    stdio.prntln(\"hi\")\n"
+        )
+        self.assertTrue(
+            any("capability 'Stdio' has no method 'prntln'" in m for m in msgs),
+            f"expected capability-method-not-found error: {msgs}",
+        )
+        self.assertTrue(
+            any("did you mean 'println'" in m for m in msgs),
+            f"expected 'did you mean' hint: {msgs}",
+        )
+
     def test_call_arg_type(self):
         msgs = errors_of(
             "fun add(a: Int, b: Int) -> Int\n    return a + b\n"

@@ -37,6 +37,7 @@ class _DispatchMixin:
         e: "A.Call | A.MethodCall",
         param_names: list[str],
         callee_label: str,
+        fun_ty: Optional["TyFun"] = None,
     ) -> Optional[list[int]]:
         """Validate ``e.arg_names`` and return a permutation that
         puts the arguments into parameter order.
@@ -75,9 +76,10 @@ class _DispatchMixin:
                 seen_named = True
 
         if len(e.args) != len(param_names):
+            sig = f" (signature: {ty_str(fun_ty)})" if fun_ty is not None else ""
             self._err(
                 f"call to {callee_label}: expected {len(param_names)} "
-                f"arguments, got {len(e.args)}",
+                f"arguments, got {len(e.args)}{sig}",
                 e.pos,
             )
             return None
@@ -140,6 +142,7 @@ class _DispatchMixin:
                     if isinstance(sym.ty, TyFun):
                         perm = self._resolve_named_args(
                             e, sym.param_names, repr(sym.name),
+                            fun_ty=sym.ty,
                         )
                         if perm is None:
                             return instantiate(
@@ -226,7 +229,7 @@ class _DispatchMixin:
         if len(fun_ty.params) != len(arg_tys):
             self._err(
                 f"call to {name!r}: expected {len(fun_ty.params)} arguments, "
-                f"got {len(arg_tys)}",
+                f"got {len(arg_tys)} (signature: {ty_str(fun_ty)})",
                 e.pos,
             )
             return instantiate(fun_ty.ret, type_params, {})
@@ -259,9 +262,9 @@ class _DispatchMixin:
 
         from . import SymbolKind
 
-        # Capabilities: consult registered methods. Method not
-        # registered -> TyUnknown (a permissive fallback to
-        # preserve capability opacity).
+        # Capabilities: consult registered methods. For built-in
+        # capabilities the method table is closed, so an unknown
+        # method is a real error with a "did you mean" hint.
         if isinstance(recv_ty, TyName) and recv_ty.name in CAPABILITY_NAMES:
             cap_sym = self.global_scope.lookup(recv_ty.name)
             if cap_sym is not None:
@@ -269,6 +272,15 @@ class _DispatchMixin:
                 if method_sym is not None and isinstance(method_sym.ty, TyFun):
                     return self._check_method_dispatch(
                         e, cap_sym, method_sym, recv_ty, arg_tys,
+                    )
+                if cap_sym.methods:
+                    hint = self._hint_did_you_mean(
+                        e.method, list(cap_sym.methods.keys()),
+                    )
+                    self._err(
+                        f"capability {recv_ty.name!r} has no method "
+                        f"{e.method!r}{hint}",
+                        e.pos,
                     )
             return TyUnknown
 
@@ -322,6 +334,7 @@ class _DispatchMixin:
 
         perm = self._resolve_named_args(
             e, method_sym.param_names, f"{recv_ty.name}.{e.method!r}",
+            fun_ty=method_fun_ty,
         )
         if perm is None:
             all_type_params = type_sym.type_params + method_sym.type_params

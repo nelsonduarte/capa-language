@@ -102,10 +102,32 @@ class _ItemsMixin:
             return self._parse_impl()
         if self._check(T.KW_FUN):
             return self._parse_fun_decl(is_pub, attributes=attributes, doc=doc)
+        # Catch common newcomer typos: a Python/JS-style keyword where
+        # Capa wants its own. The lexer emits these as IDENT, so we
+        # peek the text and suggest the Capa equivalent.
+        tok = self._peek()
+        hint = ""
+        if tok.kind == T.IDENT:
+            keyword_map = {
+                "def": "fun",
+                "function": "fun",
+                "func": "fun",
+                "fn": "fun",
+                "class": "type",
+                "struct": "type",
+                "interface": "trait",
+                "enum": "type Name =\n        Variant1\n        Variant2",
+                "let": "const",          # at top level, Capa uses `const`
+            }
+            suggestion = keyword_map.get(tok.text)
+            if suggestion is not None:
+                hint = (
+                    f" (Capa uses {suggestion!r} here; did you mean that?)"
+                )
         raise self._error(
             f"expected top-level declaration "
             f"(import / const / type / trait / capability / impl / fun), "
-            f"got {self._peek().kind.name}"
+            f"got {tok.kind.name}{hint}"
         )
 
     # -------- doc comments (/// and /** */) --------
