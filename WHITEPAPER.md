@@ -42,3 +42,12 @@ which parts of the design predate it, which adjacent languages
 intellectual space, and which one-sentence claim Capa stands behind
 when challenged with "you could do this in Python". The page is
 intended for reviewers and prospective contributors.
+
+[`docs/semantics.md`](docs/semantics.md) is the working sketch of
+the formal core: a minimal lambda calculus *λ_cap* with syntax,
+typing rules, and small-step operational semantics that anchor
+the capability discipline, plus two soundness theorems (Capability
+Soundness, Manifest Completeness) with proof sketches. The full
+thesis chapter will expand the sketch into mechanically-checked
+proofs; this document is the referee-tractable target a paper
+reviewer can be pointed at when asked "where is the formal core?".

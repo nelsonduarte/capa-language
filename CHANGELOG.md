@@ -71,6 +71,27 @@ breaking changes and the discipline is still being shaped.
   Hypothesis is now an optional dev dependency
   (`pip install -e .[test]`).
 
+- **`docs/semantics.md`** is the working sketch of *λ_cap*, a
+  minimal lambda calculus that captures Capa's capability
+  discipline at a level a paper reviewer can engage with.
+  Defines syntax, typing rules (with a split between
+  non-linear and linear contexts so the consume discipline
+  rides on standard linear-types machinery), and small-step
+  operational semantics with a trace recording every
+  capability invocation. States two soundness theorems
+  with proof sketches: *Capability Soundness* says every
+  invocation in the trace has a class drawn from the
+  program's initial capability environment, *Manifest
+  Completeness* says the manifest is an upper bound on the
+  dynamic capability surface. Deferred to the full thesis
+  writeup: the branch/loop bookkeeping of the linear layer,
+  attenuation completeness as a lattice property, the
+  `Unsafe` boundary's relativised soundness, and the
+  translation lemma from full Capa to λ_cap. Linked from
+  `WHITEPAPER.md` and `docs/positioning.md`. The intended
+  next step is mechanising Theorem 1 in Agda or Coq for
+  workshop-paper submission.
+
 - **`docs/positioning.md`** captures the honest case for the
   language: what is and is not unique about Capa, which parts of
   the design predate it (capability typing as an idea is decades

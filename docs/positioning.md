@@ -103,7 +103,11 @@ adjacencies:
 - **By-construction soundness**: the type checker enforces that
   every external capability use is reachable only through a
   capability parameter in the function's signature. There is no
-  back-door (ambient state, global IO, hidden import).
+  back-door (ambient state, global IO, hidden import). The
+  underlying property is stated formally in
+  [`docs/semantics.md`](semantics.md) as the *Capability
+  Soundness* theorem over the *λ_cap* calculus; the proof
+  sketch is in section 6 of that document.
 - **Function-level SBOM granularity**: each function in
   `--cyclonedx` carries its own `capa:declared_capability` list,
   not an aggregate over a module.

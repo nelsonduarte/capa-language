@@ -280,14 +280,22 @@ the repo (not checked in: they cite the WhitePaper which itself
 is held back, see `WHITEPAPER.md`). Capturing the actionable
 items here so they stay visible:
 
-- [ ] **Small-step operational semantics + soundness theorem**.
-  Without a small formal calculus showing that capability layers
-  (structural, flow, linear) are sound, the whitepaper is a
-  design doc, not a research contribution. Recommended shape:
-  configurations `<E, σ, K>` where `K` is the consumed-capability
-  set, monotonic except under `consume`. Targets two theorems
-  (Capability Soundness, Manifest Completeness). Non-negotiable
-  before submitting to PLAS / EuroS&P / ESORICS.
+- [~] **Small-step operational semantics + soundness theorem**.
+  **Sketch landed** at `docs/semantics.md`. Defines λ_cap (a
+  minimal lambda calculus capturing Capa's capability surface),
+  states syntax + typing rules + small-step semantics with a
+  trace of capability invocations, and proves two theorems at
+  the sketch level: *Capability Soundness* (every invocation
+  recorded in the trace has class drawn from the initial
+  environment) and *Manifest Completeness* (the manifest is
+  an upper bound on the dynamic capability surface). The
+  proofs are sketched, not mechanised; deferred for full
+  paper writeup are (a) the branch/loop discipline of the
+  linear layer, (b) attenuation completeness, (c) the
+  `Unsafe` boundary, (d) the translation lemma from full Capa
+  to λ_cap. **Pending**: mechanisation in Agda or Coq for
+  thesis-grade proof of Theorem 1; this is the workshop-paper
+  ticket the reviewer was pointing at.
 - [~] **3-5 CVE case studies** mapped to Capa typing rules.
   Each is a paired `examples/cve_*.capa` (safe library) +
   `docs/cve_*.md` (walkthrough showing the attack pattern,
