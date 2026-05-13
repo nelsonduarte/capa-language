@@ -11,6 +11,29 @@ breaking changes and the discipline is still being shaped.
 
 ### Added
 
+- **CVE case study: node-ipc 2022 (protestware)**
+  (`examples/cve_node_ipc.capa` + `docs/cve_node_ipc.md`). The
+  third CVE walkthrough in the repo, deliberately picked as the
+  case where **Capa partially loses**: the package's legitimate
+  role (inter-process communication) requires `Net` and `Fs`,
+  so a rogue maintainer with legitimate authority can misuse
+  those capabilities within the bounds the type system allows.
+  The structural discipline that handled event-stream and
+  eslint-scope cleanly does not stop this one. The writeup is
+  explicit about that, and walks through what Capa still does
+  in this regime: the authority surface is SBOM-visible (not
+  hand-authored guesses), the caller can attenuate
+  (`net.restrict_to`, `fs.restrict_to`) so the blast radius
+  shrinks to a single host or directory, and the audit on the
+  SBOM flags any future widening of the declared capability.
+  Honest scope claim: Capa raises the bar on supply-chain
+  attacks; the height matters, but the ceiling above which it
+  does not reach (maintainer takeover, author-as-attacker) is
+  a scope limit that orthogonal defences (code signing,
+  reproducible builds, transparency logs) have to cover.
+  Regression test in
+  `tests/test_transpiler.py::test_cve_node_ipc`.
+
 - **CVE case study: eslint-scope 2018**
   (`examples/cve_eslint_scope.capa` +
   `docs/cve_eslint_scope.md`). A miniature scope analyser whose

@@ -646,6 +646,19 @@ class TestTranspileExamples(unittest.TestCase):
         self.assertIn("DESCRIBES", out)
         self.assertIn("Validation: ok (refs resolve + acyclic)", out)
 
+    def test_cve_node_ipc(self):
+        # The third CVE case study, deliberately picked because it
+        # is where Capa partially LOSES: an IPC library legitimately
+        # needs Net and Fs, so a rogue maintainer with that
+        # authority cannot be stopped by the structural discipline
+        # alone (only by attenuation in the caller). Companion
+        # writeup at docs/cve_node_ipc.md.
+        rc, out, err = self._run_example("examples/cve_node_ipc.capa")
+        self.assertEqual(rc, 0, err)
+        self.assertIn("sent via unrestricted Net to 127.0.0.1:8000", out)
+        self.assertIn("sent via attenuated Net to api.example.com", out)
+        self.assertIn("log_message holds only Stdio, by design", out)
+
     def test_cve_eslint_scope(self):
         # The eslint-scope credential-theft case study: a pure AST
         # scope analyser whose signature precludes the malicious

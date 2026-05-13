@@ -292,19 +292,32 @@ items here so they stay visible:
   Each is a paired `examples/cve_*.capa` (safe library) +
   `docs/cve_*.md` (walkthrough showing the attack pattern,
   what an attacker would transliterate into Capa, and the
-  exact analyzer rejection). Two landed so far:
+  exact analyzer rejection). Three landed so far:
   - **event-stream 2018**:
     `examples/demo_event_stream.capa` +
     `docs/demo-event-stream.md`. Bitcoin-wallet exfiltration via
-    a tampered dependency.
+    a tampered dependency. Capa wins structurally.
   - **eslint-scope 2018**:
     `examples/cve_eslint_scope.capa` +
     `docs/cve_eslint_scope.md`. npm credential theft via
-    reading `~/.npmrc` and POSTing to a Pastebin drop.
-  Pending: a third one of a different shape (recommend
-  `ua-parser-js` 2021 for cryptominer-drop, or `node-ipc` 2022
-  for the geofenced-wipe shape where Capa partially loses, to
-  keep the writeups honest).
+    reading `~/.npmrc` and POSTing to a Pastebin drop. Capa
+    wins structurally.
+  - **node-ipc 2022 (protestware)**:
+    `examples/cve_node_ipc.capa` +
+    `docs/cve_node_ipc.md`. Maintainer-as-attacker with
+    legitimate `Net` + `Fs` authority writes `❤️` to files on
+    hosts geolocated to Russia / Belarus. Deliberately picked
+    as the case where **Capa partially loses**: structural
+    rule does not help, attenuation in the caller can bound
+    the blast radius, the audit on the SBOM can flag any
+    later widening of the declared capability.
+  Three demos give the thesis a balanced experimental
+  section: two clean wins and one honest partial loss. Adding
+  more is mechanical; candidates for a fourth include
+  `xz-utils` 2024 (would partially win because Capa cannot
+  reason about build-system tampering but can about the
+  resulting symbol surface) and `torchtriton` 2022 (clean win,
+  same shape as eslint-scope).
 - [~] **Property-based testing with Hypothesis**. The most
   citable suggestion in the review. **Phase 1 landed** in
   `tests/test_properties.py`: six properties that hold over

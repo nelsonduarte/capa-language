@@ -1,0 +1,97 @@
+// cve_node_ipc.capa, the node-ipc "protestware" incident, in
+// Capa. The companion writeup is docs/cve_node_ipc.md.
+//
+// In March 2022 the maintainer of the popular npm package
+// `node-ipc` (~1M weekly downloads, used transitively by Vue
+// CLI and others) intentionally shipped versions that, on hosts
+// geolocated to Russia or Belarus, wrote heart-shaped emoji
+// to files in the user's home directory; some versions
+// overwrote files with the heart emoji. The package was not
+// compromised, the *legitimate* maintainer made it malicious
+// as a protest against the Russian invasion of Ukraine.
+//
+// This case study is in the repo precisely because it is the
+// case where Capa **partially loses**. node-ipc is an
+// inter-process-communication library, its legitimate role
+// is to open Unix sockets and TCP connections, so its
+// signatures must legitimately declare `Fs` and `Net`. A
+// maintainer with bad intent and legitimate authority over a
+// capability can use that capability for anything the
+// capability allows. The structural discipline narrows
+// *where* an attack can hide; it does not eliminate the
+// trust placed in libraries that need real authority to do
+// their job.
+//
+// What Capa *can* still do:
+//   1. Make the authority surface explicit and SBOM-visible.
+//   2. Let downstream callers *attenuate* (Fs.restrict_to,
+//      Net.restrict_to) so a misbehaving IPC library at most
+//      damages the project directory, not the user's home.
+//
+// What Capa *cannot* do:
+//   3. Prevent a maintainer from misusing capabilities the
+//      caller deliberately handed them.
+
+// ===============================================================
+// A Capa-shaped IPC API.
+// ===============================================================
+//
+// The shape mirrors node-ipc's role: open a connection, send
+// messages, receive messages, close. Real IPC needs both Fs
+// (Unix-domain sockets) and Net (TCP); a real Capa
+// implementation would expose both transports separately. For
+// the demo we show just the Net-side, since the attack vector
+// of interest (writing to disk) requires Fs.
+
+type IpcConnection {
+    host: String,
+    port: Int
+}
+
+fun connect(_net: Net, host: String, port: Int) -> IpcConnection
+    // A real implementation would open the socket via `_net`
+    // here; the demo is interested in the *signature*, so the
+    // body is a stub. The leading underscore on `_net` opts
+    // out of Capa's "declared but never used" check the way
+    // Rust's `_var` does, while still forcing every caller to
+    // supply a real Net.
+    return IpcConnection { host: host, port: port }
+
+fun send(_net: Net, _conn: IpcConnection, _msg: String) -> Unit
+    // Stub for the same reason: a real implementation would
+    // write the framed message through `_net`. The shape of
+    // the API surface is the demonstrand.
+    ()
+
+// A function that ONLY needs to print: no IPC, no surprises.
+// Cannot reach Net or Fs, structurally. This is the contrast.
+fun log_message(stdio: Stdio, msg: String) -> Unit
+    stdio.println(msg)
+
+// ===============================================================
+// `main`, showing both the unattenuated and attenuated patterns.
+// ===============================================================
+fun main(stdio: Stdio, fs: Fs, net: Net)
+    // --- Unattenuated use. The IPC library gets the full Net
+    // and Fs we hold. If the library is rogue, it has the same
+    // authority we do. Capa does not save us here.
+    let conn = connect(net, "127.0.0.1", 8000)
+    send(net, conn, "hello")
+    stdio.println("sent via unrestricted Net to 127.0.0.1:8000")
+
+    // --- Attenuated use. We narrow the capabilities before
+    // handing them off. A rogue IPC library can now only reach
+    // the host we authorised; even if its body tries to POST
+    // to evil.example.com or read ~/.npmrc, the runtime gating
+    // on the attenuated capability rejects the call before any
+    // syscall happens.
+    let api = net.restrict_to("api.example.com")
+    let project_fs = fs.restrict_to("/var/run/capa-ipc/")
+    let conn2 = connect(api, "api.example.com", 443)
+    send(api, conn2, "ping")
+    stdio.println("sent via attenuated Net to api.example.com")
+    stdio.println("(project_fs is bound to /var/run/capa-ipc/ only)")
+
+    // --- Functions that don't need IPC are unchanged. They
+    // never had Net or Fs and cannot acquire them.
+    log_message(stdio, "log_message holds only Stdio, by design")
