@@ -195,32 +195,35 @@ to public.
 
 ## Code-quality maintenance (P2)
 
-- [x] **Split `analyzer.py`** into a `capa/analyzer/` package.
-  Built-in registration moved to a declarative table in
-  `capa/builtins.py` (313 lines); Levenshtein matcher moved to
-  `capa/_suggest.py` (101 lines); the analyzer class itself was
-  split into four mixins:
-  - `_typing.py` (92 lines): `_fresh_ty_var`, `_resolve_ty`,
-    `_commit_fresh_substitutions`, `_apply_mapping`.
-  - `_discipline.py` (252 lines): the capability-discipline
-    methods (aliasing, no-capability, no-builtin-capability,
+- [x] **Split `analyzer.py`** into a `capa/analyzer/` package
+  with one mixin per responsibility. Built-in registration
+  moved to a declarative table in `capa/builtins.py` (313 lines);
+  Levenshtein matcher moved to `capa/_suggest.py` (101 lines);
+  the analyzer class itself was split into eight mixins:
+  - `_typing.py` (92 lines): TyVar generation + substitution.
+  - `_discipline.py` (252 lines): capability discipline
+    (aliasing, no-capability, no-builtin-capability,
     use-after-consume, self-substitution, impls-aware
     compatibility).
-  - `_dispatch.py` (365 lines): `_resolve_named_args`,
-    `_check_call`, `_check_call_with_inference`,
-    `_check_method_call`, `_check_method_dispatch`.
-  - `_patterns.py` (329 lines): `_bind_pattern`,
-    `_pattern_has_binding`, `_pattern_is_catchall`,
-    `_flatten_or_pat`, `_check_match_exhaustiveness`.
+  - `_statements.py` (265 lines): block / let / var / assign /
+    if / while / for / return + flow-analysis dry-run.
+  - `_items.py` (275 lines): const / fun / impl phase-2
+    checking + attribute schema validation.
+  - `_patterns.py` (329 lines): pattern binding + exhaustiveness.
+  - `_dispatch.py` (365 lines): call + method dispatch + named
+    arguments.
+  - `_declarations.py` (382 lines): phase-1 globals registration
+    + type resolution + signature inference.
+  - `_expressions.py` (492 lines): lambda / match / if-expr +
+    the per-shape expression checkers.
   
-  ``capa/analyzer/__init__.py`` is now 1751 lines (down from
-  3300+, almost half) and hosts the `Analyzer` composition, the
-  state types (Symbol, Scope, AnalysisResult, ...), `__init__`
-  and the public `analyze()` function, plus the
-  declaration-walk / item-checking / statement-checking /
-  expression-checking methods that have not been carved out
-  yet (those four families are reasonable next targets if the
-  remaining size still feels heavy).
+  ``capa/analyzer/__init__.py`` is now **423 lines** (down from
+  3300+, an 87% reduction), and hosts only the Analyzer
+  composition, the state types (Symbol, Scope, AnalysisResult,
+  AnalysisError, SymbolKind), `__init__`, the public `analyze()`
+  function, the small bookkeeping helpers (`_err`, scope and
+  type-param push/pop, suggestion haystack collectors), and the
+  shared `_signatures_match` helper.
 - [~] **Error-message audit**. First pass landed: the five most
   common typo-shaped errors (`undefined name`, `undefined type`,
   `type X has no method Y`, `struct S has no field F`,
