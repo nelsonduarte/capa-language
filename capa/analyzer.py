@@ -337,6 +337,139 @@ class Analyzer:
         assert self.scope.parent is not None
         self.scope = self.scope.parent
 
+    # ----------------------------------------------------------
+    # "Did you mean?" suggestions
+    # ----------------------------------------------------------
+
+    @staticmethod
+    def _edit_distance(a: str, b: str) -> int:
+        """Levenshtein distance between ``a`` and ``b``.
+
+        Inlined to avoid a stdlib dependency that does not exist;
+        used only at error time, so the O(len(a) * len(b)) cost is
+        not on the hot path.
+        """
+        if a == b:
+            return 0
+        if not a:
+            return len(b)
+        if not b:
+            return len(a)
+        prev = list(range(len(b) + 1))
+        for i, ca in enumerate(a, 1):
+            curr = [i] + [0] * len(b)
+            for j, cb in enumerate(b, 1):
+                cost = 0 if ca == cb else 1
+                curr[j] = min(
+                    curr[j - 1] + 1,        # insertion
+                    prev[j] + 1,            # deletion
+                    prev[j - 1] + cost,     # substitution
+                )
+            prev = curr
+        return prev[-1]
+
+    def _suggest(
+        self, needle: str, haystack: list[str],
+    ) -> Optional[str]:
+        """Return the closest candidate from ``haystack`` to
+        ``needle`` if it is plausibly a typo, otherwise ``None``.
+
+        Threshold scales with the length of ``needle``: distance 1
+        is enough for any name, distance 2 for names >= 4 chars,
+        distance 3 only for names >= 8 chars. The "did you mean"
+        hint is suppressed for very short needles (<= 2 chars)
+        because almost everything looks similar at that scale.
+        """
+        if len(needle) <= 2:
+            return None
+        # Score key: lower is better. Primary by edit distance
+        # (case-insensitive); ties broken by
+        #   (1) same first letter (case-sensitive): so ``Pint``
+        #       prefers ``Point`` over ``Int``,
+        #   (2) same first-letter case: so ``reslt`` prefers the
+        #       local ``result`` over the built-in ``Result``,
+        #   (3) longer candidate (more specific).
+        first_char = needle[:1] if needle else ""
+
+        def score(cand: str) -> tuple[int, int, int, int]:
+            d = self._edit_distance(needle.lower(), cand.lower())
+            same_letter = 0 if cand[:1].lower() == first_char.lower() else 1
+            same_case = 0 if cand[:1] == first_char else 1
+            return (d, same_letter, same_case, -len(cand))
+
+        best: tuple[tuple[int, int, int, int], str] | None = None
+        for cand in haystack:
+            if not cand or cand.startswith("_"):
+                continue
+            s = score(cand)
+            if best is None or s < best[0]:
+                best = (s, cand)
+        if best is None:
+            return None
+        d = best[0][0]
+        name = best[1]
+        if d == 0:
+            return None  # exact match makes no sense as a suggestion
+        if d == 1:
+            return name
+        if d == 2 and len(needle) >= 4:
+            return name
+        if d == 3 and len(needle) >= 8:
+            return name
+        return None
+
+    def _names_in_scope(self) -> list[str]:
+        """Flatten the current scope chain into a list of names
+        visible at the call site, for ``did you mean`` lookups
+        against undefined-name errors."""
+        seen: set[str] = set()
+        scope = self.scope
+        while scope is not None:
+            seen.update(scope.symbols.keys())
+            scope = scope.parent
+        return list(seen)
+
+    def _type_names(self) -> list[str]:
+        """All type-like names known to the global scope: structs,
+        sum types, traits, and capabilities. Used as the haystack
+        for ``undefined type`` hints."""
+        type_kinds = {
+            SymbolKind.TYPE_STRUCT, SymbolKind.TYPE_SUM,
+            SymbolKind.TRAIT, SymbolKind.CAPABILITY,
+        }
+        return [
+            name
+            for name, s in self.global_scope.symbols.items()
+            if s.kind in type_kinds
+        ]
+
+    def _variant_names(self, scrutinee_ty: "Ty") -> list[str]:
+        """Variants the user might have meant when an unknown
+        variant pattern is encountered. Prefers variants of the
+        scrutinee's sum type if known, otherwise falls back to
+        every variant in the global scope."""
+        from .typesys import TyName as _TyName  # local to avoid cycles
+        if isinstance(scrutinee_ty, _TyName):
+            owner = self.global_scope.lookup(scrutinee_ty.name)
+            if owner is not None and owner.kind == SymbolKind.TYPE_SUM:
+                return list(owner.sum_variants.keys())
+        return [
+            name
+            for name, s in self.global_scope.symbols.items()
+            if s.kind == SymbolKind.VARIANT
+        ]
+
+    def _hint_did_you_mean(
+        self, needle: str, haystack: list[str],
+    ) -> str:
+        """Render a parenthesised ``did you mean 'X'?`` suffix, or
+        ``""`` when no plausible suggestion exists. The caller
+        concatenates this onto the base error message."""
+        suggestion = self._suggest(needle, haystack)
+        if suggestion is None:
+            return ""
+        return f"; did you mean {suggestion!r}?"
+
     def _push_type_params(self, names: list[str]) -> None:
         self.type_param_stack.append(set(names))
 
@@ -1536,7 +1669,8 @@ class Analyzer:
                 return TyVar(name)
             sym = self.global_scope.lookup(name)
             if sym is None:
-                self._err(f"undefined type {name!r}", te.pos)
+                hint = self._hint_did_you_mean(name, self._type_names())
+                self._err(f"undefined type {name!r}{hint}", te.pos)
                 return TyUnknown
             if sym.kind not in (
                 SymbolKind.TYPE_STRUCT, SymbolKind.TYPE_SUM,
@@ -2340,7 +2474,10 @@ class Analyzer:
         if isinstance(p, A.VariantPat):
             sym = self.scope.lookup(p.name)
             if sym is None:
-                self._err(f"unknown variant {p.name!r}", p.pos)
+                hint = self._hint_did_you_mean(
+                    p.name, self._variant_names(ty),
+                )
+                self._err(f"unknown variant {p.name!r}{hint}", p.pos)
                 if p.payload is not None:
                     self._bind_pattern(p.payload, TyUnknown, mutable)
                 return
@@ -2627,7 +2764,8 @@ class Analyzer:
     def _check_ident(self, e: A.Ident) -> Ty:
         sym = self.scope.lookup(e.name)
         if sym is None:
-            self._err(f"undefined name {e.name!r}", e.pos)
+            hint = self._hint_did_you_mean(e.name, self._names_in_scope())
+            self._err(f"undefined name {e.name!r}{hint}", e.pos)
             return TyUnknown
         self.bindings[id(e)] = sym
         # Use-after-consume check: if the name is a capability marked
@@ -3009,9 +3147,12 @@ class Analyzer:
                     # No registered method, it may be an impl not yet
                     # processed or a non-existent method. To be precise,
                     # we report an error.
+                    hint = self._hint_did_you_mean(
+                        e.method, list(type_sym.methods.keys()),
+                    )
                     self._err(
                         f"type {recv_ty.name!r} has no method "
-                        f"{e.method!r}",
+                        f"{e.method!r}{hint}",
                         e.pos,
                     )
                     return TyUnknown
@@ -3105,8 +3246,12 @@ class Analyzer:
             if sym is not None and sym.kind == SymbolKind.TYPE_STRUCT:
                 fty = sym.struct_fields.get(e.field_name)
                 if fty is None:
+                    hint = self._hint_did_you_mean(
+                        e.field_name, list(sym.struct_fields.keys()),
+                    )
                     self._err(
-                        f"struct {rty.name!r} has no field {e.field_name!r}",
+                        f"struct {rty.name!r} has no field "
+                        f"{e.field_name!r}{hint}",
                         e.pos,
                     )
                     return TyUnknown
@@ -3119,7 +3264,8 @@ class Analyzer:
     def _check_struct_lit(self, e: A.StructLit) -> Ty:
         sym = self.global_scope.lookup(e.type_name)
         if sym is None:
-            self._err(f"undefined type {e.type_name!r}", e.pos)
+            hint = self._hint_did_you_mean(e.type_name, self._type_names())
+            self._err(f"undefined type {e.type_name!r}{hint}", e.pos)
             for _, v in e.fields:
                 self._check_expr(v)
             return TyUnknown
@@ -3138,8 +3284,12 @@ class Analyzer:
                 self._err(f"duplicate field {fname!r} in struct literal", e.pos)
             seen.add(fname)
             if fname not in sym.struct_fields:
+                hint = self._hint_did_you_mean(
+                    fname, list(sym.struct_fields.keys()),
+                )
                 self._err(
-                    f"struct {e.type_name!r} has no field {fname!r}",
+                    f"struct {e.type_name!r} has no field "
+                    f"{fname!r}{hint}",
                     fexpr.pos,
                 )
                 self._check_expr(fexpr)

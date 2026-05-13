@@ -11,6 +11,18 @@ breaking changes and the discipline is still being shaped.
 
 ### Changed
 
+- **"Did you mean?" hints on five common analyzer errors**:
+  `undefined name`, `undefined type`, `type X has no method Y`,
+  `struct S has no field F`, and `unknown variant V` now append
+  `; did you mean 'X'?` when a close candidate exists in scope.
+  The matcher is a Levenshtein distance with case-aware
+  tie-breaking: same-first-letter and same-case beat raw distance,
+  so `Pint` prefers `Point` over `Int` and `reslt` prefers a local
+  `result` over the built-in `Result`. Suppressed for needles of
+  two characters or fewer, where almost everything is plausibly
+  similar. Variant suggestions are scoped to the scrutinee's sum
+  type when known.
+
 - **Block-body lambdas inside `(...)`** now raise a targeted parser
   error pointing at the recommended workaround, instead of the
   generic "expected expression, got KW_LET". Same root cause as the

@@ -3044,5 +3044,121 @@ class TestNamedArguments(unittest.TestCase):
         )
 
 
+# =============================================================
+# "Did you mean?" suggestions
+# =============================================================
+
+class TestDidYouMeanHints(unittest.TestCase):
+    """The analyzer attaches ``; did you mean 'X'?`` to error
+    messages where the user almost certainly mistyped a name in
+    scope. Coverage: undefined name, undefined type, no method
+    on type, no field on struct, unknown variant in pattern.
+    Sub-3-char needles are deliberately not hinted (too many
+    plausible candidates)."""
+
+    def test_undefined_name_suggests_in_scope_name(self):
+        errs = errors_of(
+            "fun main(stdio: Stdio)\n"
+            "    let result = 1\n"
+            "    stdio.println(\"${reslt}\")\n"
+        )
+        self.assertTrue(
+            any("did you mean 'result'?" in e for e in errs), errs,
+        )
+
+    def test_undefined_type_suggests_known_type(self):
+        errs = errors_of(
+            "fun greet(s: Strng) -> Strng\n"
+            "    return s\n"
+        )
+        self.assertTrue(
+            any("did you mean 'String'?" in e for e in errs), errs,
+        )
+
+    def test_no_method_on_string_suggests_builtin(self):
+        errs = errors_of(
+            "fun main(stdio: Stdio)\n"
+            "    let n = \"hi\".lenght()\n"
+            "    stdio.println(\"${n}\")\n"
+        )
+        self.assertTrue(
+            any("did you mean 'length'?" in e for e in errs), errs,
+        )
+
+    def test_no_field_on_struct_suggests_field(self):
+        errs = errors_of(
+            "type Person {\n"
+            "    full_name: String,\n"
+            "    age: Int\n"
+            "}\n"
+            "fun main(stdio: Stdio)\n"
+            "    let p = Person { full_name: \"a\", age: 1 }\n"
+            "    stdio.println(p.full_naem)\n"
+        )
+        self.assertTrue(
+            any("did you mean 'full_name'?" in e for e in errs),
+            errs,
+        )
+
+    def test_struct_literal_field_typo_suggests_known(self):
+        errs = errors_of(
+            "type Person {\n"
+            "    full_name: String,\n"
+            "    age: Int\n"
+            "}\n"
+            "fun main(stdio: Stdio)\n"
+            "    let p = Person { full_naem: \"a\", age: 1 }\n"
+            "    stdio.println(p.full_name)\n"
+        )
+        self.assertTrue(
+            any("did you mean 'full_name'?" in e for e in errs),
+            errs,
+        )
+
+    def test_unknown_variant_suggests_scrutinee_variant(self):
+        errs = errors_of(
+            "type Color =\n"
+            "    Red\n"
+            "    Green\n"
+            "    Blue\n"
+            "fun name(c: Color) -> String\n"
+            "    return match c\n"
+            "        Red -> \"r\"\n"
+            "        Gren -> \"g\"\n"
+            "        Blue -> \"b\"\n"
+        )
+        self.assertTrue(
+            any("did you mean 'Green'?" in e for e in errs), errs,
+        )
+
+    def test_short_needle_does_not_hint(self):
+        # 'xx' is two characters; below the hinting threshold,
+        # so the message should NOT suggest anything.
+        errs = errors_of(
+            "fun main(stdio: Stdio)\n"
+            "    let x = xx\n"
+            "    stdio.println(\"${x}\")\n"
+        )
+        # 'xx' must still be reported as undefined, just without
+        # a 'did you mean' suffix.
+        self.assertTrue(any("undefined name 'xx'" in e for e in errs), errs)
+        self.assertFalse(
+            any("did you mean" in e for e in errs), errs,
+        )
+
+    def test_exact_match_does_not_hint(self):
+        # No hint should appear when the only candidate is itself
+        # (distance 0 is filtered).
+        errs = errors_of(
+            "fun main(stdio: Stdio)\n"
+            "    let length = 5\n"
+            "    stdio.println(\"${lenght}\")\n"
+        )
+        # 'length' is distance 1 from 'lenght'; a suggestion is
+        # expected, but should NOT be the needle itself.
+        for e in errs:
+            self.assertNotIn("did you mean 'lenght'?", e)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -145,8 +145,17 @@ to public.
   `analyzer/discipline.py`, `analyzer/inference.py`,
   `analyzer/dispatch.py`, etc. Currently navigable but starting to
   feel large.
-- [ ] **Error-message audit**, top 10 most common messages: are
-  they precise? Do they suggest fixes? Some are too terse.
+- [~] **Error-message audit**. First pass landed: the five most
+  common typo-shaped errors (`undefined name`, `undefined type`,
+  `type X has no method Y`, `struct S has no field F`,
+  `unknown variant V`) now carry a `did you mean 'X'?` suffix when
+  the analyzer can find a close candidate in scope. Levenshtein
+  with case-aware tie-breaking; suppressed for needles `<=` 2
+  characters. Variant suggestions are scoped to the scrutinee's
+  sum type when known. **Pending**: arity-mismatch hints
+  (`expected 2 arguments, got 3` could surface the function
+  signature), capability-mismatch suggestions, and a pass over
+  parser messages.
 - [ ] **Analyzer performance**, no benchmarks. Only worth attacking
   if someone reports slowness.
 - [ ] **Test-coverage review**, `coverage.py` run + identify which
