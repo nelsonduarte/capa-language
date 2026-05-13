@@ -44,3 +44,9 @@ desktop.ini
 *.bak
 debug_out.bin
 /tmp/
+
+# WhitePaper held back until thesis pre-print is published.
+# A working copy can live next to the repo (or in capa/private/);
+# the published version will live at a DOI referenced from
+# WHITEPAPER.md.
+Capa-WhitePaper.md

@@ -66,7 +66,7 @@ The CLI (`capa/cli.py`) wires the four stages together. Tests live in
 `tests/`, one file per stage plus end-to-end tests that transpile and
 run programs.
 
-The internals are documented in [`Capa-WhitePaper.md`](Capa-WhitePaper.md)
+The internals are documented in [`WHITEPAPER.md`](WHITEPAPER.md)
 (rationale and design decisions) and [`Capa-EBNF.md`](Capa-EBNF.md)
 (formal grammar). Reading both is the fastest way to understand the
 project; the grammar is small.

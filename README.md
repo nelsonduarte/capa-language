@@ -69,7 +69,7 @@ Capa/
 │   └── errors.capa        # test fixture with semantic errors
 ├── docs/                  # tutorial, reference, stdlib, getting-started
 ├── Capa-EBNF.md           # formal grammar of the language
-├── Capa-WhitePaper.md     # technical rationale + roadmap
+├── WHITEPAPER.md     # technical rationale + roadmap
 ├── pyproject.toml         # package metadata
 ├── LICENSE                # MIT
 └── README.md

@@ -42,7 +42,7 @@ GitHub UI rather than as "Ready for review".
 
 - [ ] Tests added or updated, and the full suite passes locally
 - [ ] Documentation updated if user-visible behaviour changed
-      (`docs/`, `Capa-WhitePaper.md`, `Capa-EBNF.md`, README)
+      (`docs/`, `WHITEPAPER.md`, `Capa-EBNF.md`, README)
 - [ ] Commit messages follow the project style (imperative, ≤ 70
       chars in the title, optional wrapped body)
 - [ ] One concern per PR, unrelated changes are split out

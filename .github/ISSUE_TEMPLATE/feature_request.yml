@@ -11,7 +11,7 @@ body:
 
         - [docs/roadmap.html](https://capa-language.com/roadmap.html)
         - [TODO.md](https://github.com/nelsonduarte/capa/blob/main/TODO.md)
-        - [Capa-WhitePaper.md](https://github.com/nelsonduarte/capa/blob/main/Capa-WhitePaper.md)
+        - [WHITEPAPER.md](https://github.com/nelsonduarte/capa/blob/main/WHITEPAPER.md)
 
         Some things are explicitly out of scope for v1 (macros, full
         async/await, LLVM backend, garbage collection beyond CPython's).

@@ -313,6 +313,17 @@ breaking changes and the discipline is still being shaped.
 
 ### Changed
 
+- **WhitePaper held back from the public repo until the
+  thesis pre-print is published**. The full design rationale
+  document (`Capa-WhitePaper.md`) underpins a PhD thesis on
+  SBOM Governance under the EU Cyber Resilience Act and is
+  embargoed until the pre-print has a citable DOI. `WHITEPAPER.md`
+  replaces it with a one-page stub explaining where the document
+  is and how to obtain a copy. References in code comments
+  (`// see WhitePaper §4.6`) and in the README / CONTRIBUTING /
+  docs site / issue templates all point at the stub for now;
+  once the pre-print is up the stub will redirect to the DOI.
+
 - **`?` operator now propagates the inner type**: previously the
   analyzer typed every `expr?` as `TyUnknown`, which silently
   defeated type-aware method dispatch on anything downstream of
@@ -897,7 +908,7 @@ systems and three Python versions.
   language feature.
 - **420 tests** (unit + end-to-end) green on Ubuntu, macOS, and
   Windows across Python 3.10, 3.12, and 3.14.
-- **White paper** (`Capa-WhitePaper.md`) and formal **EBNF grammar**
+- **White paper** (`WHITEPAPER.md`) and formal **EBNF grammar**
   (`Capa-EBNF.md`) translated to English and synchronised with the
   implementation.
 
