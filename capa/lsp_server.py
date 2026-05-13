@@ -30,8 +30,15 @@ A minimal Capa language server. v1 ships:
   position is approximate for some error families, like
   method/field typos, so we search the line for the misspelled
   token).
+- ``textDocument/rename`` (and ``prepareRename``): renames the
+  symbol under the cursor by editing every reference and the
+  declaration. Builds directly on ``compute_references``. The
+  new name is validated as a Capa identifier (must match the
+  lexer's IDENT pattern and not be a reserved keyword). Refuses
+  to rename built-in symbols (``Stdio``, ``Net``, ``Result``,
+  ...) cleanly.
 
-Completion, semantic tokens, and rename remain on the roadmap.
+Completion and semantic tokens remain on the roadmap.
 
 Runtime entry points:
 
@@ -56,7 +63,7 @@ from .analyzer import AnalysisResult, Symbol, SymbolKind, analyze
 from .errors import LexerError
 from .lexer import Lexer
 from .parser import Parser, ParserError
-from .tokens import Pos
+from .tokens import KEYWORDS, Pos
 from .typesys import Ty, TyFun, ty_str
 
 if TYPE_CHECKING:  # only for type hints; runtime import is lazy
@@ -968,6 +975,130 @@ def compute_code_actions(
 
 
 # ---------------------------------------------------------------
+# Rename
+# ---------------------------------------------------------------
+# Rename rewrites every reference + the declaration of the symbol
+# under the cursor. The hard part is collecting the positions
+# (already solved by compute_references with include_declaration);
+# the rest is validating the new name and packing each position
+# as a TextEdit covering the OLD name's span.
+#
+# The new name must satisfy the Capa identifier shape (matching
+# the lexer: start with letter or underscore, continue with
+# alphanumeric or underscore) and must not collide with a
+# reserved keyword. Built-in symbols (Stdio, Net, Result, ...)
+# refuse rename cleanly since their declarations live outside
+# the source.
+
+
+@dataclass
+class RenameEdit:
+    """A single position to rewrite. Line/col are 1-based; the
+    LSP handler converts to 0-based before emitting the TextEdit."""
+    line: int
+    col_start: int
+    col_end: int
+
+
+@dataclass
+class RenameResult:
+    """Outcome of a rename request."""
+    edits: list[RenameEdit] = field(default_factory=list)
+    error: Optional[str] = None
+
+
+def _is_valid_capa_identifier(name: str) -> bool:
+    """Return True iff ``name`` matches the lexer's IDENT pattern
+    and is not a reserved keyword. The lexer accepts identifiers
+    that start with a letter or underscore and continue with
+    alphanumerics or underscores, which ``str.isidentifier``
+    captures faithfully for ASCII; Capa source is ASCII for
+    identifiers in v1.
+    """
+    if not name:
+        return False
+    if not name.isidentifier():
+        return False
+    if name in KEYWORDS:
+        return False
+    return True
+
+
+def compute_prepare_rename(
+    source: str, filename: str, line: int, col: int,
+) -> Optional[tuple[Pos, str]]:
+    """Pre-flight check used by ``textDocument/prepareRename``:
+    is the cursor on a renameable symbol?
+
+    Returns ``(name_pos, name)`` describing the highlighted range
+    when rename is possible. Returns ``None`` to signal "not
+    renameable" (built-in, no symbol, parse error, ...).
+    """
+    try:
+        tokens = Lexer(source, filename=filename).lex()
+        module = Parser(tokens, source=source, filename=filename).parse_module()
+    except (LexerError, ParserError):
+        return None
+    result = analyze(module, source=source, filename=filename)
+
+    # Try a reference first.
+    ident = find_ident_at(collect_idents(module), line, col)
+    if ident is not None:
+        sym = result.bindings.get(id(ident))
+        if sym is not None and not (sym.pos.line == 0 and sym.pos.col == 0):
+            return ident.pos, ident.name
+
+    # Then a declaration site.
+    site = find_decl_site_at(collect_decl_sites(module), line, col)
+    if site is not None:
+        sym = _resolve_decl_symbol(site, result, module)
+        if sym is not None and not (sym.pos.line == 0 and sym.pos.col == 0):
+            return site.ident.pos, site.ident.name
+
+    return None
+
+
+def compute_rename(
+    source: str, filename: str, line: int, col: int, new_name: str,
+) -> RenameResult:
+    """Compute the set of edits needed to rename the symbol under
+    the cursor to ``new_name``.
+
+    Returns a ``RenameResult`` with either ``edits`` populated
+    (success) or ``error`` set to a human-readable explanation
+    (failure). The handler can render the error as an LSP
+    ResponseError or surface it through the editor's notification
+    channel; we keep the message readable rather than terse.
+    """
+    if not _is_valid_capa_identifier(new_name):
+        return RenameResult(
+            error=(
+                f"{new_name!r} is not a valid Capa identifier; "
+                f"identifiers start with a letter or underscore "
+                f"and must not be a reserved keyword"
+            ),
+        )
+
+    refs = compute_references(
+        source, filename, line, col, include_declaration=True,
+    )
+    if refs is None:
+        return RenameResult(
+            error="no renameable symbol at the cursor position",
+        )
+
+    edits = [
+        RenameEdit(
+            line=r.pos.line,
+            col_start=r.pos.col,
+            col_end=r.pos.col + len(r.name),
+        )
+        for r in refs
+    ]
+    return RenameResult(edits=edits)
+
+
+# ---------------------------------------------------------------
 # Server wiring
 # ---------------------------------------------------------------
 
@@ -1164,6 +1295,62 @@ def _build_server():
                     )
                 )
         return actions or None
+
+    @server.feature(lsp.TEXT_DOCUMENT_PREPARE_RENAME)
+    def prepare_rename(
+        ls, params: "lsp.PrepareRenameParams",
+    ) -> "Optional[lsp.Range]":
+        doc = ls.workspace.get_text_document(params.text_document.uri)
+        line = params.position.line + 1
+        col = params.position.character + 1
+        pre = compute_prepare_rename(
+            doc.source, params.text_document.uri, line, col,
+        )
+        if pre is None:
+            return None
+        pos, name = pre
+        start = lsp.Position(line=pos.line - 1, character=pos.col - 1)
+        end = lsp.Position(
+            line=pos.line - 1, character=pos.col - 1 + len(name),
+        )
+        return lsp.Range(start=start, end=end)
+
+    @server.feature(lsp.TEXT_DOCUMENT_RENAME)
+    def rename(
+        ls, params: "lsp.RenameParams",
+    ) -> "Optional[lsp.WorkspaceEdit]":
+        doc = ls.workspace.get_text_document(params.text_document.uri)
+        line = params.position.line + 1
+        col = params.position.character + 1
+        result = compute_rename(
+            doc.source, params.text_document.uri, line, col,
+            params.new_name,
+        )
+        if result.error is not None:
+            # Surface the error to the editor as a no-op rename.
+            # The LSP spec lets servers return null here; clients
+            # typically show a notification "rename failed".
+            ls.show_message(
+                result.error, lsp.MessageType.Warning,
+            )
+            return None
+        text_edits = [
+            lsp.TextEdit(
+                range=lsp.Range(
+                    start=lsp.Position(
+                        line=e.line - 1, character=e.col_start - 1,
+                    ),
+                    end=lsp.Position(
+                        line=e.line - 1, character=e.col_end - 1,
+                    ),
+                ),
+                new_text=params.new_name,
+            )
+            for e in result.edits
+        ]
+        return lsp.WorkspaceEdit(
+            changes={params.text_document.uri: text_edits},
+        )
 
     @server.feature(lsp.TEXT_DOCUMENT_REFERENCES)
     def references(

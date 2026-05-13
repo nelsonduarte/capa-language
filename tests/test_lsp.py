@@ -766,5 +766,145 @@ class TestDeclarationSiteSupport(unittest.TestCase):
         self.assertEqual(decl_entry.pos.col, 5)
 
 
+@unittest.skipUnless(_HAVE_LSP, "requires `pygls` extra (pip install '.[lsp]')")
+class TestRename(unittest.TestCase):
+    """Rename rewrites every reference + the declaration of the
+    symbol under the cursor. Built on top of compute_references
+    with include_declaration=True, plus a check that the new name
+    is a valid Capa identifier (not a reserved keyword)."""
+
+    def setUp(self):
+        from capa.lsp_server import compute_rename, compute_prepare_rename
+        self.rename = compute_rename
+        self.prepare = compute_prepare_rename
+
+    def test_prepare_rename_returns_range_for_reference(self):
+        src = (
+            "fun greet() -> Int\n"
+            "    return 0\n"
+            "fun main(stdio: Stdio)\n"
+            "    let _ = greet()\n"   # `greet` call at line 4 col 13
+            "    stdio.println(\"k\")\n"
+        )
+        result = self.prepare(src, "t.capa", 4, 13)
+        self.assertIsNotNone(result)
+        pos, name = result
+        self.assertEqual(name, "greet")
+        self.assertEqual((pos.line, pos.col), (4, 13))
+
+    def test_prepare_rename_returns_range_for_declaration(self):
+        src = (
+            "fun greet() -> Int\n"   # decl at line 1 col 5
+            "    return 0\n"
+        )
+        result = self.prepare(src, "t.capa", 1, 5)
+        self.assertIsNotNone(result)
+        pos, name = result
+        self.assertEqual(name, "greet")
+        self.assertEqual((pos.line, pos.col), (1, 5))
+
+    def test_prepare_rename_rejects_builtin(self):
+        src = (
+            "fun main(stdio: Stdio)\n"   # Stdio at col 17, built-in
+            "    stdio.println(\"hi\")\n"
+        )
+        # Stdio is a type-annotation Ident; it's renameable only
+        # if it has a real source origin, which it does not.
+        result = self.prepare(src, "t.capa", 1, 17)
+        self.assertIsNone(result)
+
+    def test_prepare_rename_returns_none_at_whitespace(self):
+        src = "fun main()\n    return\n"
+        self.assertIsNone(self.prepare(src, "t.capa", 2, 1))
+
+    def test_rename_function_edits_decl_and_all_call_sites(self):
+        src = (
+            "fun greet() -> Int\n"        # decl at line 1 col 5
+            "    return 0\n"
+            "fun main(stdio: Stdio)\n"
+            "    let a = greet()\n"       # line 4 col 13
+            "    let b = greet()\n"       # line 5 col 13
+            "    stdio.println(\"k\")\n"
+        )
+        # Rename from a call site.
+        r = self.rename(src, "t.capa", 4, 13, "say_hi")
+        self.assertIsNone(r.error)
+        positions = sorted((e.line, e.col_start) for e in r.edits)
+        self.assertEqual(positions, [(1, 5), (4, 13), (5, 13)])
+        for e in r.edits:
+            self.assertEqual(e.col_end - e.col_start, len("greet"))
+
+    def test_rename_from_declaration_site_is_consistent_with_from_use(self):
+        src = (
+            "fun greet() -> Int\n"
+            "    return 0\n"
+            "fun main(stdio: Stdio)\n"
+            "    let _ = greet()\n"
+            "    stdio.println(\"k\")\n"
+        )
+        from_decl = self.rename(src, "t.capa", 1, 5, "say")
+        from_use = self.rename(src, "t.capa", 4, 13, "say")
+        self.assertEqual(
+            sorted((e.line, e.col_start) for e in from_decl.edits),
+            sorted((e.line, e.col_start) for e in from_use.edits),
+        )
+
+    def test_rename_to_reserved_keyword_is_rejected(self):
+        src = (
+            "fun greet() -> Int\n"
+            "    return 0\n"
+            "fun main(stdio: Stdio)\n"
+            "    let _ = greet()\n"
+            "    stdio.println(\"k\")\n"
+        )
+        r = self.rename(src, "t.capa", 4, 13, "if")
+        self.assertIsNotNone(r.error)
+        self.assertIn("not a valid Capa identifier", r.error)
+        self.assertEqual(r.edits, [])
+
+    def test_rename_to_empty_name_is_rejected(self):
+        src = "fun greet() -> Int\n    return 0\n"
+        r = self.rename(src, "t.capa", 1, 5, "")
+        self.assertIsNotNone(r.error)
+        self.assertEqual(r.edits, [])
+
+    def test_rename_to_name_starting_with_digit_is_rejected(self):
+        src = "fun greet() -> Int\n    return 0\n"
+        r = self.rename(src, "t.capa", 1, 5, "1greet")
+        self.assertIsNotNone(r.error)
+        self.assertEqual(r.edits, [])
+
+    def test_rename_to_name_with_dash_is_rejected(self):
+        src = "fun greet() -> Int\n    return 0\n"
+        r = self.rename(src, "t.capa", 1, 5, "say-hi")
+        self.assertIsNotNone(r.error)
+        self.assertEqual(r.edits, [])
+
+    def test_rename_parameter_edits_param_and_body_uses(self):
+        src = (
+            "fun greet(name: String) -> String\n"   # `name` at col 11
+            "    return name\n"                     # use at col 12
+        )
+        r = self.rename(src, "t.capa", 2, 12, "who")
+        self.assertIsNone(r.error)
+        positions = sorted((e.line, e.col_start) for e in r.edits)
+        # Parameter declaration + one body use.
+        self.assertEqual(positions, [(1, 11), (2, 12)])
+
+    def test_rename_returns_no_edits_at_unknown_position(self):
+        src = "fun main()\n    return\n"
+        r = self.rename(src, "t.capa", 2, 1, "ok")
+        # The new name is valid, but there is no symbol at the
+        # cursor. The error must be present and edits empty.
+        self.assertIsNotNone(r.error)
+        self.assertEqual(r.edits, [])
+
+    def test_rename_returns_none_for_parse_error_buffer(self):
+        src = "fun main()\n    let = "
+        r = self.rename(src, "t.capa", 2, 9, "ok")
+        self.assertIsNotNone(r.error)
+        self.assertEqual(r.edits, [])
+
+
 if __name__ == "__main__":
     unittest.main()

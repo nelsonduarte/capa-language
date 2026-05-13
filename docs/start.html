@@ -304,6 +304,10 @@ $ python -m capa lsp               # speaks LSP over stdio</code></pre>
                 <td><code>codeAction</code></td>
                 <td>One-click Quick Fix for every <code>; did you mean 'X'?</code> diagnostic; marked preferred.</td>
             </tr>
+            <tr>
+                <td><code>rename</code> / <code>prepareRename</code></td>
+                <td>Renames the symbol under the cursor by rewriting every reference and the declaration in one workspace edit. New name validated as a Capa identifier (rejects reserved keywords); built-ins refuse rename cleanly.</td>
+            </tr>
         </tbody>
     </table>
 

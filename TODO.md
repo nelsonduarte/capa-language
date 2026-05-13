@@ -111,9 +111,13 @@ to public.
   (`pip install -e '.[lsp]'`) so the rest of the compiler stays
   standard-library-only. README carries one-line config snippets
   for Helix and Neovim.
-  **Pending (v2)**: completion, semantic tokens, rename
-  (workspace-wide identifier rewrite, builds directly on
-  find-references), positional fidelity for `${...}` contents.
+  Rename (`textDocument/rename` + `prepareRename`) also landed:
+  validates the new name against the lexer's IDENT shape (and
+  rejects reserved keywords), then rewrites every reference and
+  the declaration. Built-in symbols (`Stdio`, `Net`, `Result`,
+  ...) refuse rename cleanly.
+  **Pending (v2)**: completion, semantic tokens, positional
+  fidelity for `${...}` contents.
 - [~] **`capa-fmt` (formatter)**, canonical, non-configurable
   (gofmt-style). **v1 (line-level) landed**: CLI flags `--fmt` and
   `--fmt-check` normalise line endings, indentation (tabs to 4

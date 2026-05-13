@@ -11,6 +11,23 @@ breaking changes and the discipline is still being shaped.
 
 ### Added
 
+- **LSP rename** (`textDocument/rename` + `textDocument/prepareRename`):
+  rewrites every reference and the declaration of the symbol
+  under the cursor in a single `WorkspaceEdit`. Builds on the
+  existing `compute_references` with `include_declaration=True`,
+  so coverage matches find-references exactly (functions, types,
+  traits, capabilities, constants, parameters, variants, struct
+  fields, method signatures). The new name is validated against
+  the lexer's IDENT shape via `str.isidentifier()` plus a
+  reserved-keyword check, so renaming to `if`, `fun`, the empty
+  string, `1greet`, `say-hi`, or any other non-identifier
+  is refused with a human-readable message instead of producing
+  a broken source. Built-in symbols (`Stdio`, `Net`, `Result`,
+  ...) refuse rename cleanly because they have no source
+  declaration to edit. `prepareRename` answers
+  "is this position renameable?" so editors can grey out the
+  rename UI before the user types a new name.
+
 - **Parser records `name_pos` for declared names**: every
   declaration node (FunDecl, TypeStruct, TypeSum, TraitDecl,
   ConstDecl, Param, Variant, Field, MethodSig) now carries a
