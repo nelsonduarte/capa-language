@@ -11,6 +11,23 @@ breaking changes and the discipline is still being shaped.
 
 ### Added
 
+- **SBOM ↔ capability-policy audit, written in Capa**
+  (`examples/sbom_capability_audit.capa`): the "auditable
+  supply chain" pitch made concrete. Reads a CycloneDX SBOM in
+  the shape `capa --cyclonedx` emits, extracts each function's
+  declared capabilities from the `capa:declared_capability`
+  property entries, then checks every function against an
+  inline allow-list policy (`Map<String, List<String>>` from
+  function name to allowed capability types). Reports a
+  per-function summary plus a numbered list of violations. The
+  novel part vs npm / PyPI / cargo SBOM tooling: both sides of
+  the comparison are static. Capa's type system makes the
+  declared set rigorous, and the audit is a syntactic
+  comparison of two finite lists. A diff between SBOM and
+  policy is unambiguous, and it travels with the build
+  artefact. Regression test in
+  `tests/test_transpiler.py::test_sbom_capability_audit`.
+
 - **SPDX license-expression parser, written in Capa**
   (`examples/spdx_license_expr.capa`): a recursive-descent
   parser for the SPDX 2.3 Annex D grammar used in every

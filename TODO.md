@@ -322,10 +322,25 @@ Capa as artefact in the SBOM Governance thesis:
 - [ ] **`capability Provenance` (user-defined)**, capability that
   represents the right to query/verify a piece of supply-chain
   metadata. Demonstrates user-defined caps in a real domain.
-- [ ] **Example linking SBOM ↔ capabilities**: a Capa program that
-  reads an npm package's SBOM and shows that its declared
-  capabilities (network, fs, env) match what the package's
-  source-code analysis claims. The "auditable supply chain" pitch.
+- [~] **Example linking SBOM ↔ capabilities**: the headline
+  "auditable supply chain" pitch made concrete. **Demo landed**
+  at `examples/sbom_capability_audit.capa`: a Capa program reads
+  a CycloneDX SBOM in the shape `capa --cyclonedx` emits,
+  extracts each function's declared capabilities from the
+  `capa:declared_capability` properties, and checks them against
+  an inline allow-list policy. Reports per-function summary plus
+  a list of violations. The novel part vs npm/PyPI/cargo SBOM
+  tooling: in Capa both sides of the comparison are static (the
+  type system makes the declared set rigorous; the audit is a
+  syntactic comparison of two finite lists), so a diff between
+  SBOM and policy is unambiguous and travels with the build
+  artefact. Regression test in
+  `tests/test_transpiler.py::test_sbom_capability_audit`.
+  **Pending**: read SBOM + policy from `Fs` instead of inline,
+  support shared cross-function policies (e.g. "no Net anywhere
+  except in the `net::` namespace"), and the thesis-chapter
+  writeup that bridges Representation (the four parsers) and
+  Validation (the audit) into the CRA-aligned pitch.
 
 These are not Capa-the-language work; they're Capa-as-research-vehicle
 work. Pick them up alongside the thesis chapters they unlock.

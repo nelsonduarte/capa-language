@@ -602,6 +602,25 @@ class TestTranspileExamples(unittest.TestCase):
         self.assertIn("DESCRIBES", out)
         self.assertIn("Validation: ok (refs resolve + acyclic)", out)
 
+    def test_sbom_capability_audit(self):
+        # The headline "auditable supply chain" demo: a Capa
+        # program reads a CycloneDX SBOM (the shape `capa
+        # --cyclonedx` emits), extracts every function's
+        # declared capabilities via the `capa:*` properties, and
+        # checks them against an inline allow-list policy. The
+        # sample includes one function deliberately missing from
+        # the policy so the audit fires.
+        rc, out, err = self._run_example("examples/sbom_capability_audit.capa")
+        self.assertEqual(rc, 0, err)
+        self.assertIn("Auditing demo.capa (CycloneDX 1.5)", out)
+        self.assertIn("Functions found in SBOM (5):", out)
+        self.assertIn("main: declares { Stdio, Net, Fs }", out)
+        self.assertIn("log_event: declares { Stdio }", out)
+        # The audit must flag the deliberately-unauthorised function
+        self.assertIn("Audit: 1 violation(s)", out)
+        self.assertIn("notify_remote declares 'Net'", out)
+        self.assertIn("function not listed in policy", out)
+
     def test_spdx_license_expr(self):
         # SPDX 2.3 Annex D license-expression parser, recursive
         # descent over a tokenised input. Verifies precedence

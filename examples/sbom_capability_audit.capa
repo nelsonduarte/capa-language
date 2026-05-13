@@ -1,0 +1,273 @@
+// SBOM <-> capability-policy audit, the "auditable supply chain"
+// pitch made concrete.
+//
+// The story:
+//
+// 1. A Capa program is compiled. The compiler emits a CycloneDX
+//    1.5 SBOM via `capa --cyclonedx`, with each function as a
+//    component carrying `capa:declared_capability` properties
+//    derived from the function's signature (the parameter types
+//    that root in a built-in capability).
+//
+// 2. A security manager writes a *policy*: a small file mapping
+//    function name to the capabilities that function is allowed
+//    to declare. Anything else is forbidden. The policy is
+//    typically per-product or per-team.
+//
+// 3. This audit walks the SBOM, extracts every function's
+//    declared capabilities, and reports any function whose
+//    declared set is not a subset of its policy allowance.
+//
+// The novel part vs other ecosystems: in npm/PyPI/cargo SBOM
+// tooling, the declared capabilities are guesses (heuristic
+// taint analysis at best), and the policy is enforced at runtime
+// (a sandbox). Here both sides are *static*: Capa's type system
+// makes the declared set rigorous, and the audit is a syntactic
+// comparison of two finite lists. A diff between SBOM and policy
+// is unambiguous, and it travels with the build artefact.
+//
+// What this demo shows:
+//
+// - Capa parsing its own SBOM output shape (CycloneDX 1.5 with
+//   `capa:*` properties).
+// - The audit as a Capa function, with typed Policy and
+//   Violation records.
+// - Both a passing case (declarations match policy) and a
+//   failing case (a function declares Net without permission)
+//   in the same run.
+
+type DeclaredFn {
+    name: String,
+    container: String,
+    declared_capabilities: List<String>,
+    has_unsafe: Bool
+}
+
+type SbomSummary {
+    program_name: String,
+    spec_version: String,
+    components: List<DeclaredFn>
+}
+
+type Policy {
+    // Per-function allow-list of capabilities. A function not in
+    // this map is allowed nothing; a function in the map is
+    // allowed exactly the capabilities listed (no implicit Stdio).
+    rules: Map<String, List<String>>
+}
+
+type Violation {
+    function_name: String,
+    cap: String,
+    reason: String
+}
+
+// ---- helpers (typed extraction from JsonValue) ----
+
+fun as_object_or_err(j: JsonValue, context: String) -> Result<Map<String, JsonValue>, String>
+    return match j.as_object()
+        None -> Err("expected object for ${context}")
+        Some(m) -> Ok(m)
+
+fun as_array_or_err(j: JsonValue, context: String) -> Result<List<JsonValue>, String>
+    return match j.as_array()
+        None -> Err("expected array for ${context}")
+        Some(xs) -> Ok(xs)
+
+fun as_string_or_err(j: JsonValue, context: String) -> Result<String, String>
+    return match j.as_string()
+        None -> Err("expected string for ${context}")
+        Some(s) -> Ok(s)
+
+fun field(j: JsonValue, name: String) -> Result<JsonValue, String>
+    let obj = as_object_or_err(j, "lookup '${name}'")?
+    return match obj.get(name)
+        None -> Err("missing required field '${name}'")
+        Some(v) -> Ok(v)
+
+fun optional_field(j: JsonValue, name: String) -> Option<JsonValue>
+    return match j.as_object()
+        None -> None
+        Some(m) -> m.get(name)
+
+fun string_field_or(j: JsonValue, name: String, fallback: String) -> String
+    return match optional_field(j, name)
+        None -> fallback
+        Some(v) -> match v.as_string()
+            None -> fallback
+            Some(s) -> s
+
+// ---- CycloneDX property scanning ----
+//
+// CycloneDX represents arbitrary metadata as
+//     "properties": [{"name": "...", "value": "..."}, ...]
+//
+// Capa-emitted SBOMs use `capa:kind=function` to mark function
+// components, and `capa:declared_capability=<TypeName>` (one
+// entry per declared capability) for the capability surface.
+
+fun extract_first_property(props: List<JsonValue>, name: String) -> Result<Option<String>, String>
+    for p in props
+        let pname = as_string_or_err(field(p, "name")?, "property.name")?
+        if pname == name
+            let pval = as_string_or_err(field(p, "value")?, "property.value")?
+            return Ok(Some(pval))
+    return Ok(None)
+
+fun extract_all_properties(props: List<JsonValue>, name: String) -> Result<List<String>, String>
+    let out: List<String> = []
+    for p in props
+        let pname = as_string_or_err(field(p, "name")?, "property.name")?
+        if pname == name
+            let pval = as_string_or_err(field(p, "value")?, "property.value")?
+            out.push(pval)
+    return Ok(out)
+
+fun parse_component_as_fn(j: JsonValue) -> Result<Option<DeclaredFn>, String>
+    let props = match optional_field(j, "properties")
+        None -> []
+        Some(v) -> as_array_or_err(v, "component.properties")?
+
+    // Skip components that are not function records.
+    let kind = extract_first_property(props, "capa:kind")?
+    let is_fn = match kind
+        None -> false
+        Some(s) -> s == "function"
+    if not is_fn
+        return Ok(None)
+
+    let name = string_field_or(j, "name", "<anonymous>")
+    let container = match extract_first_property(props, "capa:container")?
+        None -> ""
+        Some(s) -> s
+    let caps = extract_all_properties(props, "capa:declared_capability")?
+    let has_unsafe_str = match extract_first_property(props, "capa:has_unsafe")?
+        None -> "false"
+        Some(s) -> s
+    let has_unsafe = has_unsafe_str == "true"
+
+    return Ok(Some(DeclaredFn {
+        name: name,
+        container: container,
+        declared_capabilities: caps,
+        has_unsafe: has_unsafe
+    }))
+
+fun parse_sbom_summary(json_text: String) -> Result<SbomSummary, String>
+    // `?` propagates a parse_json Err transparently; the upstream
+    // error string is already informative ("Expecting value: ...").
+    let doc = parse_json(json_text)?
+
+    let bom_format = string_field_or(doc, "bomFormat", "")
+    if bom_format != "CycloneDX"
+        return Err("expected bomFormat 'CycloneDX', got '${bom_format}'")
+    let spec = string_field_or(doc, "specVersion", "?")
+
+    let program_name = match optional_field(doc, "metadata")
+        None -> "<unknown>"
+        Some(md) -> match optional_field(md, "component")
+            None -> "<unknown>"
+            Some(c) -> string_field_or(c, "name", "<unknown>")
+
+    let components: List<DeclaredFn> = []
+    match optional_field(doc, "components")
+        None ->
+            ()
+        Some(v) ->
+            let xs = as_array_or_err(v, "components")?
+            for x in xs
+                match parse_component_as_fn(x)?
+                    None ->
+                        ()
+                    Some(fn_record) ->
+                        components.push(fn_record)
+
+    return Ok(SbomSummary {
+        program_name: program_name,
+        spec_version: spec,
+        components: components
+    })
+
+// ---- audit ----
+
+fun is_allowed(cap: String, allowed: List<String>) -> Bool
+    for a in allowed
+        if a == cap
+            return true
+    return false
+
+fun audit(summary: SbomSummary, policy: Policy) -> List<Violation>
+    let violations: List<Violation> = []
+    for fn in summary.components
+        let allowed = match policy.rules.get(fn.name)
+            None -> []
+            Some(xs) -> xs
+        for cap in fn.declared_capabilities
+            if not is_allowed(cap, allowed)
+                let reason = match policy.rules.get(fn.name)
+                    None -> "function not listed in policy (no capabilities allowed)"
+                    Some(_) -> "capability not in this function's allow-list"
+                violations.push(Violation {
+                    function_name: fn.name,
+                    cap: cap,
+                    reason: reason
+                })
+    return violations
+
+// ---- demo ----
+
+fun build_demo_policy() -> Policy
+    let rules: Map<String, List<String>> = new_map()
+    // `main` is the program entry point: it composes everything,
+    // it gets every capability we hand to it.
+    rules.set("main", ["Stdio", "Net", "Fs"])
+    // `log_event` writes to stdout. No filesystem, no network.
+    rules.set("log_event", ["Stdio"])
+    // `fetch_user` is the only function authorised to reach out.
+    rules.set("fetch_user", ["Net"])
+    // `save_report` writes the report to disk; no network.
+    rules.set("save_report", ["Fs"])
+    // Note: `notify_remote` is deliberately *missing* from the
+    // policy. The SBOM below declares Net on it, so the audit
+    // should flag it.
+    return Policy { rules: rules }
+
+fun main(stdio: Stdio)
+    // A Capa-emitted CycloneDX SBOM, abbreviated to the bits the
+    // audit cares about. In a real pipeline this comes from
+    // `capa --cyclonedx <file>.capa > sbom.json` and is read via
+    // `Fs.read`.
+    let sbom = "{\"bomFormat\": \"CycloneDX\", \"specVersion\": \"1.5\", \"version\": 1, \"metadata\": {\"component\": {\"bom-ref\": \"capa:program:demo\", \"type\": \"application\", \"name\": \"demo.capa\"}}, \"components\": [{\"type\": \"library\", \"name\": \"main\", \"properties\": [{\"name\": \"capa:kind\", \"value\": \"function\"}, {\"name\": \"capa:declared_capability\", \"value\": \"Stdio\"}, {\"name\": \"capa:declared_capability\", \"value\": \"Net\"}, {\"name\": \"capa:declared_capability\", \"value\": \"Fs\"}]}, {\"type\": \"library\", \"name\": \"log_event\", \"properties\": [{\"name\": \"capa:kind\", \"value\": \"function\"}, {\"name\": \"capa:declared_capability\", \"value\": \"Stdio\"}]}, {\"type\": \"library\", \"name\": \"fetch_user\", \"properties\": [{\"name\": \"capa:kind\", \"value\": \"function\"}, {\"name\": \"capa:declared_capability\", \"value\": \"Net\"}]}, {\"type\": \"library\", \"name\": \"save_report\", \"properties\": [{\"name\": \"capa:kind\", \"value\": \"function\"}, {\"name\": \"capa:declared_capability\", \"value\": \"Fs\"}]}, {\"type\": \"library\", \"name\": \"notify_remote\", \"properties\": [{\"name\": \"capa:kind\", \"value\": \"function\"}, {\"name\": \"capa:declared_capability\", \"value\": \"Net\"}]}]}"
+
+    match parse_sbom_summary(sbom)
+        Err(msg) ->
+            stdio.eprintln("SBOM parse failed: ${msg}")
+        Ok(summary) ->
+            stdio.println("Auditing ${summary.program_name} (CycloneDX ${summary.spec_version})")
+            stdio.println("")
+            stdio.println("Functions found in SBOM (${summary.components.length()}):")
+            for fn in summary.components
+                let caps_str = if fn.declared_capabilities.is_empty() then "none" else join_caps(fn.declared_capabilities)
+                stdio.println("  - ${fn.name}: declares { ${caps_str} }")
+            stdio.println("")
+
+            let policy = build_demo_policy()
+            let violations = audit(summary, policy)
+            if violations.is_empty()
+                stdio.println("Audit: ok (declared capabilities are within policy)")
+            else
+                stdio.println("Audit: ${violations.length()} violation(s)")
+                for v in violations
+                    stdio.println("  - ${v.function_name} declares '${v.cap}'")
+                    stdio.println("      ${v.reason}")
+
+fun join_caps(caps: List<String>) -> String
+    var s: String = ""
+    var first = true
+    for c in caps
+        if first
+            s = c
+            first = false
+        else
+            s = "${s}, ${c}"
+    return s
