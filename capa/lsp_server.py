@@ -202,6 +202,95 @@ def collect_idents(module: A.Module) -> list[A.Ident]:
     return [n for n in _walk(module) if isinstance(n, A.Ident)]
 
 
+# Declaration-site enumeration: the parser now records the
+# IDENT-token position for each declared name (``name_pos`` field).
+# We wrap each declaration as a synthetic ``A.Ident`` so the same
+# find-by-position / Symbol-lookup pipeline works on declarations.
+#
+# Each entry carries a ``decl_kind`` tag the caller uses to find
+# the symbol: ``global`` for items registered in the module's
+# global scope (functions, types, traits, capabilities, constants),
+# ``param`` for function parameters (resolved against the function's
+# local scope, but we can locate the symbol generically from the
+# bindings map by matching name+pos), ``variant`` for sum-type
+# variants, ``field`` for struct fields (which are not separate
+# symbols but project into the struct's ``struct_fields`` dict),
+# ``method_sig`` for trait/capability method signatures.
+
+
+@dataclass
+class _DeclSite:
+    """Synthetic identifier at a declaration site."""
+    ident: A.Ident                  # name + name_pos as an Ident
+    decl_kind: str                  # "global", "param", "variant", "field", "method_sig"
+    container_name: Optional[str] = None  # struct for fields, sum for variants, trait for methods
+
+
+def collect_decl_sites(module: A.Module) -> list[_DeclSite]:
+    """Walk the module and yield a ``_DeclSite`` for every named
+    declaration whose name position the parser has recorded.
+
+    Older AST nodes (or synthetic AST built in tests) may have
+    ``name_pos = None``; those are skipped silently so the LSP
+    machinery degrades gracefully rather than crashing.
+    """
+    sites: list[_DeclSite] = []
+
+    def maybe(name: str, pos: Optional[Pos], kind: str, container: Optional[str] = None) -> None:
+        if pos is None:
+            return
+        sites.append(
+            _DeclSite(
+                ident=A.Ident(pos=pos, name=name),
+                decl_kind=kind,
+                container_name=container,
+            )
+        )
+
+    for item in module.items:
+        if isinstance(item, A.ConstDecl):
+            maybe(item.name, item.name_pos, "global")
+        elif isinstance(item, A.TypeStruct):
+            maybe(item.name, item.name_pos, "global")
+            for f in item.fields:
+                maybe(f.name, f.name_pos, "field", container=item.name)
+        elif isinstance(item, A.TypeSum):
+            maybe(item.name, item.name_pos, "global")
+            for v in item.variants:
+                maybe(v.name, v.name_pos, "variant")
+        elif isinstance(item, A.TraitDecl):
+            maybe(item.name, item.name_pos, "global")
+            for m in item.methods:
+                maybe(m.name, m.name_pos, "method_sig", container=item.name)
+        elif isinstance(item, A.FunDecl):
+            maybe(item.name, item.name_pos, "global")
+            for p in item.params:
+                if p.name != "self":
+                    maybe(p.name, p.name_pos, "param", container=item.name)
+        elif isinstance(item, A.ImplBlock):
+            for m in item.methods:
+                maybe(m.name, m.name_pos, "global", container=item.type_name)
+                for p in m.params:
+                    if p.name != "self":
+                        maybe(p.name, p.name_pos, "param", container=m.name)
+
+    return sites
+
+
+def find_decl_site_at(
+    sites: list[_DeclSite], line: int, col: int,
+) -> Optional[_DeclSite]:
+    """Like ``find_ident_at`` but for the declaration list."""
+    for s in sites:
+        if s.ident.pos.line != line:
+            continue
+        col_start = s.ident.pos.col
+        col_end = col_start + len(s.ident.name)
+        if col_start <= col < col_end:
+            return s
+    return None
+
+
 def find_ident_at(
     idents: list[A.Ident], line: int, col: int,
 ) -> Optional[A.Ident]:
@@ -296,6 +385,127 @@ def _format_symbol_for_hover(
     return f"`{name}`"
 
 
+def _resolve_decl_symbol(
+    site: _DeclSite, result: AnalysisResult, module: A.Module,
+) -> Optional[Symbol]:
+    """Find the Symbol for a declaration site.
+
+    Global declarations (functions, types, traits, capabilities,
+    constants, impl-method names) live in
+    ``result.global_symbols``. Variants live nested inside their
+    owning sum type's ``sum_variants``. Method signatures inside
+    a trait/capability sit on the parent's ``methods`` dict.
+    Parameters and struct fields do not have first-class Symbols
+    in the analyzer's current model; they resolve to the first
+    parameter or field with a matching name on the containing
+    declaration, surfaced as a synthetic Symbol so the caller's
+    rendering code keeps working.
+    """
+    if site.decl_kind == "global":
+        # Top-level item or impl method.
+        if site.container_name is None:
+            return result.global_symbols.get(site.ident.name)
+        # Impl method: look it up on the target type's methods.
+        owner = result.global_symbols.get(site.container_name)
+        if owner is None:
+            return None
+        return owner.methods.get(site.ident.name)
+    if site.decl_kind == "variant":
+        for s in result.global_symbols.values():
+            if s.kind == SymbolKind.TYPE_SUM:
+                v = s.sum_variants.get(site.ident.name)
+                if v is not None:
+                    return v
+        return None
+    if site.decl_kind == "method_sig":
+        # Trait method signature. The trait/capability has the
+        # signature in trait_method_sigs (a TyFun), but not as a
+        # Symbol. We synthesise one carrying the TyFun.
+        if site.container_name is None:
+            return None
+        owner = result.global_symbols.get(site.container_name)
+        if owner is None:
+            return None
+        ty = owner.trait_method_sigs.get(site.ident.name)
+        if ty is None:
+            return None
+        return Symbol(
+            name=site.ident.name,
+            kind=SymbolKind.FUNCTION,
+            pos=site.ident.pos,
+            ty=ty,
+        )
+    if site.decl_kind == "field":
+        if site.container_name is None:
+            return None
+        owner = result.global_symbols.get(site.container_name)
+        if owner is None:
+            return None
+        fty = owner.struct_fields.get(site.ident.name)
+        if fty is None:
+            return None
+        # Fields are not first-class Symbols in the analyzer; we
+        # wrap them as a synthetic Symbol with kind=LOCAL so the
+        # hover renderer prints ``name: T`` plus a kind label.
+        return Symbol(
+            name=site.ident.name,
+            kind=SymbolKind.LOCAL,
+            pos=site.ident.pos,
+            ty=fty,
+        )
+    if site.decl_kind == "param":
+        # Find any binding inside the containing function's body
+        # that resolves to a param with this name. We scan
+        # bindings.values() because params are scoped locally and
+        # the analyzer does not expose function-local scopes on
+        # the result.
+        if site.container_name is None:
+            return None
+        # Locate the function so we can scan only its body.
+        target_fn = _find_fundecl(module, site.container_name)
+        if target_fn is None:
+            return None
+        body_idents = [
+            n for n in _walk(target_fn.body) if isinstance(n, A.Ident)
+        ]
+        for ident in body_idents:
+            sym = result.bindings.get(id(ident))
+            if (
+                sym is not None
+                and sym.kind == SymbolKind.PARAM
+                and sym.name == site.ident.name
+            ):
+                return sym
+        # Param exists in the parameter list but is unused inside
+        # the body. Synthesise a stand-in so hover still works.
+        for p in target_fn.params:
+            if p.name == site.ident.name and p.type_expr is not None:
+                return Symbol(
+                    name=p.name,
+                    kind=SymbolKind.PARAM,
+                    pos=site.ident.pos,
+                )
+        return None
+    return None
+
+
+def _find_fundecl(
+    module: A.Module, name: str,
+) -> Optional[A.FunDecl]:
+    """Locate a FunDecl by name across top-level items and impl
+    blocks. Returns the first match; method names are not unique
+    across impls but the LSP use cases only care about which
+    function-scope to search."""
+    for item in module.items:
+        if isinstance(item, A.FunDecl) and item.name == name:
+            return item
+        if isinstance(item, A.ImplBlock):
+            for m in item.methods:
+                if m.name == name:
+                    return m
+    return None
+
+
 def compute_hover(
     source: str, filename: str, line: int, col: int,
 ) -> Optional[tuple[str, A.Ident]]:
@@ -315,14 +525,20 @@ def compute_hover(
         return None
 
     result = analyze(module, source=source, filename=filename)
+    # 1) Try a reference Ident at the cursor.
     ident = find_ident_at(collect_idents(module), line, col)
-    if ident is None:
-        return None
-    sym = result.bindings.get(id(ident))
-    if sym is None:
-        return None
-    ident_ty = result.types.get(id(ident))
-    return _format_symbol_for_hover(sym, ident_ty), ident
+    if ident is not None:
+        sym = result.bindings.get(id(ident))
+        if sym is not None:
+            ident_ty = result.types.get(id(ident))
+            return _format_symbol_for_hover(sym, ident_ty), ident
+    # 2) Fall back to a declaration site.
+    site = find_decl_site_at(collect_decl_sites(module), line, col)
+    if site is not None:
+        sym = _resolve_decl_symbol(site, result, module)
+        if sym is not None:
+            return _format_symbol_for_hover(sym, None), site.ident
+    return None
 
 
 def compute_definition(
@@ -351,9 +567,20 @@ def compute_definition(
 
     result = analyze(module, source=source, filename=filename)
     ident = find_ident_at(collect_idents(module), line, col)
-    if ident is None:
-        return None
-    sym = result.bindings.get(id(ident))
+    sym: Optional[Symbol] = None
+    if ident is not None:
+        sym = result.bindings.get(id(ident))
+    if sym is None:
+        site = find_decl_site_at(collect_decl_sites(module), line, col)
+        if site is not None:
+            sym = _resolve_decl_symbol(site, result, module)
+            if sym is not None:
+                # On a declaration site, "go to definition" is a
+                # no-op: jump to the name itself. Use the site
+                # position so the editor lands exactly on the
+                # token even if Symbol.pos points at the start of
+                # the enclosing construct (e.g. ``fun``).
+                return site.ident.pos
     if sym is None:
         return None
     # Filter out built-in symbols (declared with line=0, col=0).
@@ -395,19 +622,40 @@ def compute_references(
 
     result = analyze(module, source=source, filename=filename)
     idents = collect_idents(module)
+    decl_sites = collect_decl_sites(module)
+
+    # The pivot can be either a reference Ident or a declaration
+    # site. Either way we end up with a Symbol and the position
+    # of the matching declaration's name.
+    target_sym: Optional[Symbol] = None
+    decl_name_pos: Optional[Pos] = None
+    decl_name: Optional[str] = None
+
     pivot = find_ident_at(idents, line, col)
-    if pivot is None:
-        return None
-    target_sym = result.bindings.get(id(pivot))
+    if pivot is not None:
+        target_sym = result.bindings.get(id(pivot))
+        if target_sym is not None:
+            # Find the matching decl_site (if any) so we can emit
+            # the declaration entry at the precise name position.
+            for s in decl_sites:
+                cand = _resolve_decl_symbol(s, result, module)
+                if cand is target_sym:
+                    decl_name_pos = s.ident.pos
+                    decl_name = s.ident.name
+                    break
+
+    if target_sym is None:
+        site = find_decl_site_at(decl_sites, line, col)
+        if site is not None:
+            target_sym = _resolve_decl_symbol(site, result, module)
+            if target_sym is not None:
+                decl_name_pos = site.ident.pos
+                decl_name = site.ident.name
+
     if target_sym is None:
         return None
 
     # Every Ident whose binding points at the same Symbol object.
-    # Symbol identity (Python ``is``) is the natural notion: the
-    # analyzer creates a single Symbol per declaration and reuses
-    # it for every reference, so an identity check matches all
-    # uses (including the pivot itself, which we keep so editors
-    # can render the active reference highlighted).
     refs: list[A.Ident] = [
         ident for ident in idents
         if result.bindings.get(id(ident)) is target_sym
@@ -416,21 +664,20 @@ def compute_references(
     if include_declaration and not (
         target_sym.pos.line == 0 and target_sym.pos.col == 0
     ):
-        # Synthesise an Ident-shaped entry at the declaration
-        # position so the caller can render a Location for it.
-        # We do not add it if a reference at that exact position
-        # already exists (which happens when the parser
-        # represented the declaration name as an Ident, rare in
-        # v1 but worth defending against).
+        # Prefer the precise name_pos when we found one; fall back
+        # to the symbol's recorded position otherwise.
+        if decl_name_pos is not None and decl_name is not None:
+            dpos = decl_name_pos
+            dname = decl_name
+        else:
+            dpos = target_sym.pos
+            dname = target_sym.name
         already_there = any(
-            r.pos.line == target_sym.pos.line
-            and r.pos.col == target_sym.pos.col
+            r.pos.line == dpos.line and r.pos.col == dpos.col
             for r in refs
         )
         if not already_there:
-            refs.append(
-                A.Ident(pos=target_sym.pos, name=target_sym.name)
-            )
+            refs.append(A.Ident(pos=dpos, name=dname))
 
     refs.sort(key=lambda i: (i.pos.line, i.pos.col))
     return refs

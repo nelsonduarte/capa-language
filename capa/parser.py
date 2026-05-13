@@ -407,7 +407,7 @@ class Parser:
     def _parse_const(self, is_pub: bool) -> A.ConstDecl:
         start = self._peek().start
         self._expect(T.KW_CONST, "expected 'const'")
-        name = self._expect(T.IDENT, "expected constant name").text
+        name_tok = self._expect(T.IDENT, "expected constant name")
         self._expect(T.COLON, "expected ':' after constant name")
         type_expr = self._parse_type()
         self._expect(T.EQ, "expected '=' in constant declaration")
@@ -415,7 +415,8 @@ class Parser:
         self._expect_eos("after constant declaration")
         return A.ConstDecl(
             pos=start,
-            name=name,
+            name=name_tok.text,
+            name_pos=name_tok.start,
             type_expr=type_expr,
             value=value,
             is_pub=is_pub,
@@ -431,7 +432,9 @@ class Parser:
     ) -> A.Item:
         start = self._peek().start
         self._expect(T.KW_TYPE, "expected 'type'")
-        name = self._expect(T.IDENT, "expected type name").text
+        name_tok = self._expect(T.IDENT, "expected type name")
+        name = name_tok.text
+        name_pos = name_tok.start
         type_params = self._parse_type_params_opt()
 
         if self._match(T.LBRACE):
@@ -441,6 +444,7 @@ class Parser:
             return A.TypeStruct(
                 pos=start,
                 name=name,
+                name_pos=name_pos,
                 type_params=type_params,
                 fields=fields,
                 is_pub=is_pub,
@@ -460,6 +464,7 @@ class Parser:
             return A.TypeSum(
                 pos=start,
                 name=name,
+                name_pos=name_pos,
                 type_params=type_params,
                 variants=variants,
                 is_pub=is_pub,
@@ -472,11 +477,15 @@ class Parser:
         fields: list[A.Field] = []
         self._skip_newlines()
         while not self._check(T.RBRACE):
-            fpos = self._peek().start
-            fname = self._expect(T.IDENT, "expected field name").text
+            fname_tok = self._expect(T.IDENT, "expected field name")
             self._expect(T.COLON, "expected ':' after field name")
             ftype = self._parse_type()
-            fields.append(A.Field(pos=fpos, name=fname, type_expr=ftype))
+            fields.append(A.Field(
+                pos=fname_tok.start,
+                name=fname_tok.text,
+                name_pos=fname_tok.start,
+                type_expr=ftype,
+            ))
             self._skip_newlines()
             if self._match(T.COMMA):
                 self._skip_newlines()
@@ -486,13 +495,17 @@ class Parser:
         return fields
 
     def _parse_variant(self) -> A.Variant:
-        vpos = self._peek().start
-        vname = self._expect(T.IDENT, "expected variant name").text
+        vname_tok = self._expect(T.IDENT, "expected variant name")
         payload: Optional[A.TypeExpr] = None
         if self._match(T.LPAREN):
             payload = self._parse_type()
             self._expect(T.RPAREN, "expected ')' after variant payload type")
-        return A.Variant(pos=vpos, name=vname, payload=payload)
+        return A.Variant(
+            pos=vname_tok.start,
+            name=vname_tok.text,
+            name_pos=vname_tok.start,
+            payload=payload,
+        )
 
     # -------- trait --------
 
@@ -532,7 +545,7 @@ class Parser:
         keyword = T.KW_CAPABILITY if is_capability else T.KW_TRAIT
         word = "capability" if is_capability else "trait"
         self._expect(keyword, f"expected '{word}'")
-        name = self._expect(T.IDENT, f"expected {word} name").text
+        name_tok = self._expect(T.IDENT, f"expected {word} name")
         type_params = self._parse_type_params_opt()
         self._expect(T.NEWLINE, f"expected newline after {word} header")
         self._expect(T.INDENT, "expected indented method signatures")
@@ -543,7 +556,8 @@ class Parser:
         self._expect(T.DEDENT, f"expected dedent at end of {word} body")
         return A.TraitDecl(
             pos=start,
-            name=name,
+            name=name_tok.text,
+            name_pos=name_tok.start,
             type_params=type_params,
             methods=methods,
             is_pub=is_pub,
@@ -554,7 +568,7 @@ class Parser:
     def _parse_method_sig(self) -> A.MethodSig:
         start = self._peek().start
         self._expect(T.KW_FUN, "expected 'fun' in method signature")
-        name = self._expect(T.IDENT, "expected method name").text
+        name_tok = self._expect(T.IDENT, "expected method name")
         type_params = self._parse_type_params_opt()
         self._expect(T.LPAREN, "expected '(' for parameter list")
         params = self._parse_params()
@@ -565,7 +579,8 @@ class Parser:
         self._expect_eos("after method signature")
         return A.MethodSig(
             pos=start,
-            name=name,
+            name=name_tok.text,
+            name_pos=name_tok.start,
             type_params=type_params,
             params=params,
             return_type=return_type,
@@ -635,7 +650,7 @@ class Parser:
         # the whole annotated block, not just the `fun` keyword.
         start = attributes[0].pos if attributes else self._peek().start
         self._expect(T.KW_FUN, "expected 'fun'")
-        name = self._expect(T.IDENT, "expected function name").text
+        name_tok = self._expect(T.IDENT, "expected function name")
         type_params = self._parse_type_params_opt()
         self._expect(T.LPAREN, "expected '(' for parameter list")
         params = self._parse_params()
@@ -646,7 +661,8 @@ class Parser:
         body = self._parse_block()
         return A.FunDecl(
             pos=start,
-            name=name,
+            name=name_tok.text,
+            name_pos=name_tok.start,
             type_params=type_params,
             params=params,
             return_type=return_type,
@@ -681,15 +697,17 @@ class Parser:
         ppos = self._peek().start
         # `self` is a special case: no type.
         if self._match(T.KW_SELF):
-            return A.Param(pos=ppos, name="self", type_expr=None)
+            return A.Param(pos=ppos, name="self", name_pos=ppos, type_expr=None)
         # Optional `consume`: marks the parameter as consuming (transfers
         # ownership of the passed capability).
         consuming = bool(self._match(T.KW_CONSUME))
-        name = self._expect(T.IDENT, "expected parameter name").text
+        name_tok = self._expect(T.IDENT, "expected parameter name")
+        name = name_tok.text
         self._expect(T.COLON, f"expected ':' after parameter name {name!r}")
         type_expr = self._parse_type()
         return A.Param(
-            pos=ppos, name=name, type_expr=type_expr, consuming=consuming,
+            pos=ppos, name=name, name_pos=name_tok.start,
+            type_expr=type_expr, consuming=consuming,
         )
 
     # ===========================================================

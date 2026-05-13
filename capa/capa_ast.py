@@ -95,6 +95,14 @@ class ConstDecl(Item):
     type_expr: TypeExpr
     value: Expr
     is_pub: bool = False
+    # Position of the ``name`` IDENT token specifically (vs ``pos``
+    # which points at the start of the declaration as a whole).
+    # Used by LSP features (hover, definition, references, rename)
+    # to identify the cursor's intent when it sits on a declaration
+    # site, and to compute precise ranges for token-shaped fixes.
+    # ``None`` means the parser did not record it (older code paths,
+    # synthetic AST in tests).
+    name_pos: Optional[Pos] = None
 
 
 @dataclass(kw_only=True)
@@ -102,6 +110,7 @@ class Field(Node):
     """Field of a struct."""
     name: str
     type_expr: TypeExpr
+    name_pos: Optional[Pos] = None
 
 
 @dataclass(kw_only=True)
@@ -112,6 +121,7 @@ class TypeStruct(Item):
     fields: list[Field]
     is_pub: bool = False
     doc: Optional[str] = None
+    name_pos: Optional[Pos] = None
 
 
 @dataclass(kw_only=True)
@@ -119,6 +129,7 @@ class Variant(Node):
     """Variant of a sum type; payload optional."""
     name: str
     payload: Optional[TypeExpr] = None
+    name_pos: Optional[Pos] = None
 
 
 @dataclass(kw_only=True)
@@ -132,6 +143,7 @@ class TypeSum(Item):
     variants: list[Variant]
     is_pub: bool = False
     doc: Optional[str] = None
+    name_pos: Optional[Pos] = None
 
 
 @dataclass(kw_only=True)
@@ -144,6 +156,7 @@ class Param(Node):
     name: str
     type_expr: Optional[TypeExpr] = None
     consuming: bool = False
+    name_pos: Optional[Pos] = None
 
 
 @dataclass(kw_only=True)
@@ -153,6 +166,7 @@ class MethodSig(Node):
     type_params: list[str] = field(default_factory=list)
     params: list[Param]
     return_type: Optional[TypeExpr] = None
+    name_pos: Optional[Pos] = None
 
 
 @dataclass(kw_only=True)
@@ -169,6 +183,7 @@ class TraitDecl(Item):
     is_pub: bool = False
     is_capability: bool = False
     doc: Optional[str] = None
+    name_pos: Optional[Pos] = None
 
 
 @dataclass(kw_only=True)
@@ -195,6 +210,7 @@ class FunDecl(Item):
     is_pub: bool = False
     attributes: list[Attribute] = field(default_factory=list)
     doc: Optional[str] = None
+    name_pos: Optional[Pos] = None
 
 
 @dataclass(kw_only=True)

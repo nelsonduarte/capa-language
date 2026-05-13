@@ -614,5 +614,157 @@ class TestCodeActions(unittest.TestCase):
         self.assertEqual(self.actions(src, msg, 2), [])
 
 
+@unittest.skipUnless(_HAVE_LSP, "requires `pygls` extra (pip install '.[lsp]')")
+class TestDeclarationSiteSupport(unittest.TestCase):
+    """The parser now records ``name_pos`` for declared names
+    (functions, types, traits, capabilities, constants, parameters,
+    variants, struct fields, method signatures). This unlocks
+    hover, go-to-definition, and find-references on the cursor
+    sitting on the declaration itself, not just on uses."""
+
+    def setUp(self):
+        from capa.lsp_server import (
+            compute_hover, compute_definition, compute_references,
+        )
+        self.hover = compute_hover
+        self.defn = compute_definition
+        self.refs = compute_references
+
+    def test_hover_on_function_declaration_shows_signature(self):
+        src = (
+            "fun greet(name: String) -> String\n"   # line 1, `greet` at col 5
+            "    return name\n"
+        )
+        r = self.hover(src, "t.capa", 1, 5)
+        self.assertIsNotNone(r)
+        md, _ = r
+        self.assertIn("fun greet(name: String) -> String", md)
+
+    def test_hover_on_parameter_declaration_shows_type(self):
+        src = (
+            "fun greet(name: String) -> String\n"   # line 1, `name` at col 11
+            "    return name\n"
+        )
+        r = self.hover(src, "t.capa", 1, 11)
+        self.assertIsNotNone(r)
+        md, _ = r
+        self.assertIn("name: String", md)
+        self.assertIn("parameter", md)
+
+    def test_hover_on_const_declaration(self):
+        src = 'const VERSION: String = "1.0"\n'   # `VERSION` at col 7
+        r = self.hover(src, "t.capa", 1, 7)
+        self.assertIsNotNone(r)
+        md, _ = r
+        self.assertIn("VERSION", md)
+        self.assertIn("constant", md)
+
+    def test_hover_on_struct_declaration(self):
+        src = (
+            "type Point {\n"   # `Point` at col 6
+            "    x: Int,\n"
+            "    y: Int\n"
+            "}\n"
+        )
+        r = self.hover(src, "t.capa", 1, 6)
+        self.assertIsNotNone(r)
+        md, _ = r
+        self.assertIn("type Point", md)
+        self.assertIn("struct", md)
+
+    def test_hover_on_struct_field_declaration(self):
+        src = (
+            "type Point {\n"
+            "    x: Int,\n"   # `x` at col 5 of line 2
+            "    y: Int\n"
+            "}\n"
+        )
+        r = self.hover(src, "t.capa", 2, 5)
+        self.assertIsNotNone(r)
+        md, _ = r
+        self.assertIn("x: Int", md)
+
+    def test_hover_on_variant_declaration(self):
+        src = (
+            "type Color =\n"
+            "    Red\n"      # line 2, `Red` at col 5
+            "    Green\n"
+            "    Blue\n"
+        )
+        r = self.hover(src, "t.capa", 2, 5)
+        self.assertIsNotNone(r)
+        md, _ = r
+        self.assertIn("Red", md)
+        self.assertIn("Color", md)  # owner
+
+    def test_hover_on_capability_declaration(self):
+        src = (
+            "capability SendEmail\n"   # `SendEmail` at col 12
+            "    fun send(self, to: String) -> Bool\n"
+        )
+        r = self.hover(src, "t.capa", 1, 12)
+        self.assertIsNotNone(r)
+        md, _ = r
+        self.assertIn("capability SendEmail", md)
+
+    def test_goto_def_on_declaration_is_a_noop(self):
+        # Cursor on the declaration name should resolve to the
+        # same position (jump-to-self).
+        src = (
+            "fun greet() -> Int\n"   # `greet` at col 5
+            "    return 0\n"
+        )
+        p = self.defn(src, "t.capa", 1, 5)
+        self.assertIsNotNone(p)
+        self.assertEqual((p.line, p.col), (1, 5))
+
+    def test_find_refs_from_declaration_includes_call_sites(self):
+        src = (
+            "fun greet() -> Int\n"   # decl at line 1 col 5
+            "    return 0\n"
+            "fun main(stdio: Stdio)\n"
+            "    let _ = greet()\n"   # call at line 4 col 13
+            "    let _ = greet()\n"   # call at line 5 col 13
+            "    stdio.println(\"k\")\n"
+        )
+        # Pivot on the declaration name (col 5 of line 1).
+        refs = self.refs(src, "t.capa", 1, 5)
+        self.assertIsNotNone(refs)
+        positions = sorted((r.pos.line, r.pos.col) for r in refs)
+        # Expect the declaration entry (at the name's position,
+        # NOT at column 1) plus the two call sites.
+        self.assertEqual(positions, [(1, 5), (4, 13), (5, 13)])
+
+    def test_find_refs_pivot_consistent_from_decl_or_use(self):
+        src = (
+            "fun foo() -> Int\n"
+            "    return 0\n"
+            "fun main(stdio: Stdio)\n"
+            "    let _ = foo()\n"
+            "    stdio.println(\"k\")\n"
+        )
+        from_decl = self.refs(src, "t.capa", 1, 5)
+        from_use = self.refs(src, "t.capa", 4, 13)
+        self.assertEqual(
+            sorted((r.pos.line, r.pos.col) for r in from_decl),
+            sorted((r.pos.line, r.pos.col) for r in from_use),
+        )
+
+    def test_declaration_entry_uses_name_pos_not_keyword(self):
+        # Before the parser change, the declaration "ref" landed
+        # at col 1 (the `fun` keyword). Now it must land at the
+        # name's column.
+        src = (
+            "fun greet() -> Int\n"   # `greet` at col 5
+            "    return 0\n"
+            "fun main(stdio: Stdio)\n"
+            "    let _ = greet()\n"
+            "    stdio.println(\"k\")\n"
+        )
+        refs = self.refs(src, "t.capa", 4, 13, include_declaration=True)
+        decl_entry = next(r for r in refs if r.pos.line == 1)
+        self.assertEqual(decl_entry.pos.col, 5)
+
+
 if __name__ == "__main__":
     unittest.main()

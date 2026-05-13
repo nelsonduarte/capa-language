@@ -96,20 +96,24 @@ to public.
   traits/capabilities with method signatures, functions, impl
   blocks with methods), and code actions (Quick Fix
   "Replace with 'X'" for every `did you mean 'X'?` hint emitted
-  by the analyzer). Coverage of cursor-driven features (hover,
-  definition, references) is limited to identifier references in
-  v1: declared names live as strings on declaration nodes, not
-  as Ident nodes, so the parser does not track their positions.
-  Typos inside string interpolation (`${...}`) similarly lose
+  by the analyzer). Coverage spans both **references** (uses of
+  a symbol) **and declaration sites**: the parser records
+  ``name_pos`` for every declared name (functions, types, traits,
+  capabilities, constants, parameters, struct fields, variants,
+  trait method signatures), so hovering on `foo` in
+  `fun foo(...)` fires the same way as hovering on a call to
+  `foo`. Go-to-definition from a declaration is a no-op (lands on
+  the name itself); find-references from either side returns the
+  same set, with the declaration entry at the precise name column.
+  Typos inside string interpolation (`${...}`) still lose
   positions because the interpolation contents go through a
   side parse channel. `pygls` is an optional dependency
   (`pip install -e '.[lsp]'`) so the rest of the compiler stays
   standard-library-only. README carries one-line config snippets
   for Helix and Neovim.
-  **Pending (v2)**: completion, semantic tokens, rename,
-  hover/definition on declaration sites (needs end-position
-  tracking in the parser), positional fidelity for `${...}`
-  contents.
+  **Pending (v2)**: completion, semantic tokens, rename
+  (workspace-wide identifier rewrite, builds directly on
+  find-references), positional fidelity for `${...}` contents.
 - [~] **`capa-fmt` (formatter)**, canonical, non-configurable
   (gofmt-style). **v1 (line-level) landed**: CLI flags `--fmt` and
   `--fmt-check` normalise line endings, indentation (tabs to 4

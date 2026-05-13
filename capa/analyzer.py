@@ -177,6 +177,11 @@ class AnalysisResult:
     errors: list[AnalysisError] = field(default_factory=list)
     types: dict[int, Ty] = field(default_factory=dict)        # id(node) -> Ty
     bindings: dict[int, Symbol] = field(default_factory=dict)  # id(Ident) -> Symbol
+    # Module-level symbols (functions, types, traits, capabilities,
+    # constants). Exposed so LSP tooling can resolve a declaration
+    # site to its Symbol even when the declaration has no
+    # references elsewhere in the file.
+    global_symbols: dict[str, Symbol] = field(default_factory=dict)
 
     @property
     def ok(self) -> bool:
@@ -316,7 +321,10 @@ class Analyzer:
         for item in module.items:
             self._check_item(item)
         return AnalysisResult(
-            errors=self.errors, types=self.types, bindings=self.bindings
+            errors=self.errors,
+            types=self.types,
+            bindings=self.bindings,
+            global_symbols=dict(self.global_scope.symbols),
         )
 
     # ===========================================================

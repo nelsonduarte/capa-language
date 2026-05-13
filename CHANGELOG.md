@@ -11,6 +11,36 @@ breaking changes and the discipline is still being shaped.
 
 ### Added
 
+- **Parser records `name_pos` for declared names**: every
+  declaration node (FunDecl, TypeStruct, TypeSum, TraitDecl,
+  ConstDecl, Param, Variant, Field, MethodSig) now carries a
+  `name_pos: Pos` field separate from the existing `pos`. The
+  `pos` of a FunDecl is still the start of the `fun` keyword
+  (or the first attribute), but `name_pos` points at the IDENT
+  token of the declared name. The analyzer's existing position
+  semantics are unchanged; `AnalysisResult` additionally exposes
+  `global_symbols: dict[str, Symbol]` so LSP tooling can resolve
+  a declaration site to its Symbol without poking at private
+  Analyzer state.
+
+- **LSP hover, go-to-definition, find-references on
+  declaration sites**: with the parser recording `name_pos`, the
+  three cursor-driven LSP features now fire on declarations,
+  not just references. Hovering on `foo` in `fun foo(name)`
+  shows the function signature; hovering on `name` in the same
+  declaration shows `name: T` with the *parameter* label;
+  hovering on a struct field, sum variant, or trait method
+  signature shows the appropriate detail. Go-to-definition from
+  a declaration name is a no-op (lands on the name itself);
+  find-references from either side returns the same set, with
+  the declaration entry placed at the precise name column rather
+  than the start of the `fun` keyword. The mechanism is a small
+  `_DeclSite` collector + a `_resolve_decl_symbol` helper that
+  maps each declaration kind to the matching Symbol via
+  `global_symbols`, sum-type variant tables, struct-field tables,
+  trait method-sig tables, or a scan over the function body's
+  bindings for parameter sites.
+
 - **LSP code actions (Quick Fix for "did you mean" hints)**:
   `textDocument/codeAction` returns a "Replace with 'X'" Quick
   Fix for every diagnostic whose message ends in
