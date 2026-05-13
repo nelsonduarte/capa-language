@@ -11,6 +11,22 @@ breaking changes and the discipline is still being shaped.
 
 ### Added
 
+- **LSP document symbols**: `textDocument/documentSymbol`
+  returns the hierarchical outline of the module. Top-level
+  constants, structs (nesting their fields), sum types (nesting
+  their variants with payload types in the detail), traits and
+  capabilities (nesting their method signatures), top-level
+  functions (with `(params) -> Return` rendered as detail), and
+  impl blocks (with display names like `impl Greet for Foo` and
+  the methods nested under each) appear in source order.
+  Editors render this in the outline view, breadcrumb bar, and
+  workspace symbol search. The capa-side computation is exposed
+  as `compute_document_symbols(source, filename)` returning a
+  list of `DocSymbol` dataclasses; the LSP handler maps each to
+  the matching `lsp.SymbolKind` (`sum` -> `Enum`, `variant` ->
+  `EnumMember`, `capability` -> `Interface`, `impl` -> `Class`,
+  etc.).
+
 - **LSP find-references**: `textDocument/references` lists
   every other identifier in the file that resolves to the same
   symbol as the one under the cursor. Reuses the

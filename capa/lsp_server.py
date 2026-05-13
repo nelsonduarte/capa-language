@@ -15,9 +15,15 @@ A minimal Capa language server. v1 ships:
   of the same symbol in the file, optionally including the
   declaration itself (controlled by the LSP request's
   ``includeDeclaration`` flag).
+- ``textDocument/documentSymbol``: hierarchical outline of the
+  module: constants, types (structs and sum types) with their
+  fields and variants nested, traits and capabilities with their
+  method signatures nested, top-level functions, and impl blocks
+  with their methods nested. Powers the editor's outline view,
+  breadcrumbs, and symbol search.
 
-Completion, semantic tokens, and code actions remain on the
-roadmap.
+Completion, semantic tokens, rename, and code actions remain on
+the roadmap.
 
 Runtime entry points:
 
@@ -32,6 +38,7 @@ continue to work in a stock-Python environment.
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Optional
 
 from . import __version__ as _CAPA_VERSION
@@ -421,6 +428,189 @@ def compute_references(
 
 
 # ---------------------------------------------------------------
+# Document symbols (outline)
+# ---------------------------------------------------------------
+# The LSP DocumentSymbol shape is a tree of (name, kind, range,
+# children). We carry our own lightweight ``DocSymbol`` here so
+# that the pure-function core can be tested without ``pygls`` or
+# ``lsprotocol`` installed; the server handler converts each
+# DocSymbol into an ``lsp.DocumentSymbol`` at the boundary.
+
+
+# The ``kind`` field uses string tags that the handler maps to
+# LSP's ``SymbolKind`` enum. The tag set is deliberately small
+# and close to Capa's vocabulary, rather than overloading the
+# enum names.
+_LSP_KIND_TAGS = {
+    "constant", "function", "struct", "sum", "field", "variant",
+    "trait", "capability", "method", "impl",
+}
+
+
+@dataclass
+class DocSymbol:
+    name: str
+    detail: str
+    kind: str      # one of _LSP_KIND_TAGS
+    pos: Pos
+    children: list["DocSymbol"] = field(default_factory=list)
+
+
+def _fun_detail(fn: A.FunDecl) -> str:
+    """Render a Capa function signature for the outline detail
+    column, omitting ``self`` from impl methods. Type annotations
+    use the source text as captured by ``_ty_text`` where
+    available, falling back to a simple node name."""
+    parts: list[str] = []
+    for p in fn.params:
+        if p.name == "self":
+            continue
+        if p.type_expr is None:
+            parts.append(p.name)
+        else:
+            parts.append(f"{p.name}: {_type_expr_to_text(p.type_expr)}")
+    sig = "(" + ", ".join(parts) + ")"
+    if fn.return_type is not None:
+        sig += f" -> {_type_expr_to_text(fn.return_type)}"
+    return sig
+
+
+def _type_expr_to_text(t: A.TypeExpr) -> str:
+    """Best-effort, structural renderer of a TypeExpr to a single
+    line. Used only for the outline ``detail`` field, so a faithful
+    representation matters less than a readable one."""
+    if isinstance(t, A.TypeName):
+        if t.args:
+            inner = ", ".join(_type_expr_to_text(a) for a in t.args)
+            return f"{t.name}<{inner}>"
+        return t.name
+    if isinstance(t, A.FunType):
+        params = ", ".join(_type_expr_to_text(p) for p in t.param_types)
+        return f"Fun({params}) -> {_type_expr_to_text(t.return_type)}"
+    if isinstance(t, A.TupleType):
+        if not t.elements:
+            return "()"
+        if len(t.elements) == 1:
+            return f"({_type_expr_to_text(t.elements[0])},)"
+        return "(" + ", ".join(_type_expr_to_text(e) for e in t.elements) + ")"
+    if isinstance(t, A.UnitType):
+        return "()"
+    return "?"
+
+
+def compute_document_symbols(
+    source: str, filename: str,
+) -> Optional[list[DocSymbol]]:
+    """Walk a parsed module and return the outline as a list of
+    ``DocSymbol`` trees, one per top-level item.
+
+    Returns ``None`` only on lexer or parser failure (so the
+    editor can render a sensible empty outline rather than a
+    stale or guessed one). Items appear in source order.
+    """
+    try:
+        tokens = Lexer(source, filename=filename).lex()
+        module = Parser(tokens, source=source, filename=filename).parse_module()
+    except (LexerError, ParserError):
+        return None
+
+    out: list[DocSymbol] = []
+    for item in module.items:
+        sym = _item_to_doc_symbol(item)
+        if sym is not None:
+            out.append(sym)
+    return out
+
+
+def _item_to_doc_symbol(item: A.Item) -> Optional[DocSymbol]:
+    if isinstance(item, A.ConstDecl):
+        detail = _type_expr_to_text(item.type_expr)
+        return DocSymbol(
+            name=item.name, detail=detail, kind="constant", pos=item.pos,
+        )
+    if isinstance(item, A.TypeStruct):
+        children = [
+            DocSymbol(
+                name=f.name, detail=_type_expr_to_text(f.type_expr),
+                kind="field", pos=f.pos,
+            )
+            for f in item.fields
+        ]
+        return DocSymbol(
+            name=item.name, detail="struct", kind="struct", pos=item.pos,
+            children=children,
+        )
+    if isinstance(item, A.TypeSum):
+        children = []
+        for v in item.variants:
+            detail = (
+                f"({_type_expr_to_text(v.payload)})"
+                if v.payload is not None else ""
+            )
+            children.append(
+                DocSymbol(
+                    name=v.name, detail=detail,
+                    kind="variant", pos=v.pos,
+                )
+            )
+        return DocSymbol(
+            name=item.name, detail="sum", kind="sum", pos=item.pos,
+            children=children,
+        )
+    if isinstance(item, A.TraitDecl):
+        kind = "capability" if item.is_capability else "trait"
+        children = []
+        for m in item.methods:
+            params = ", ".join(
+                f"{p.name}: {_type_expr_to_text(p.type_expr)}"
+                if p.type_expr is not None and p.name != "self"
+                else p.name
+                for p in m.params
+            )
+            ret = (
+                f" -> {_type_expr_to_text(m.return_type)}"
+                if m.return_type is not None else ""
+            )
+            children.append(
+                DocSymbol(
+                    name=m.name,
+                    detail=f"({params}){ret}",
+                    kind="method", pos=m.pos,
+                )
+            )
+        return DocSymbol(
+            name=item.name, detail=kind, kind=kind, pos=item.pos,
+            children=children,
+        )
+    if isinstance(item, A.FunDecl):
+        return DocSymbol(
+            name=item.name, detail=_fun_detail(item),
+            kind="function", pos=item.pos,
+        )
+    if isinstance(item, A.ImplBlock):
+        # The displayed name encodes the trait/cap and target,
+        # mirroring how the source reads: ``impl SendEmail for SmtpMailer``.
+        if item.trait_name is not None:
+            display_name = f"impl {item.trait_name} for {item.type_name}"
+        else:
+            display_name = f"impl {item.type_name}"
+        children = [
+            DocSymbol(
+                name=m.name, detail=_fun_detail(m),
+                kind="method", pos=m.pos,
+            )
+            for m in item.methods
+        ]
+        return DocSymbol(
+            name=display_name, detail="", kind="impl", pos=item.pos,
+            children=children,
+        )
+    # Imports etc. are not surfaced in the outline (single-file
+    # projects today). Returning None drops them silently.
+    return None
+
+
+# ---------------------------------------------------------------
 # Server wiring
 # ---------------------------------------------------------------
 
@@ -532,6 +722,51 @@ def _build_server():
             uri=params.text_document.uri,
             range=lsp.Range(start=start, end=start),
         )
+
+    # Mapping from our string ``kind`` tags to LSP SymbolKind.
+    # Names not in LSP's enum collapse to a near neighbour: a
+    # Capa ``sum`` type maps to LSP ``Enum``, a ``capability`` to
+    # LSP ``Interface``, etc.
+    _to_lsp_kind = {
+        "constant":   lsp.SymbolKind.Constant,
+        "function":   lsp.SymbolKind.Function,
+        "struct":     lsp.SymbolKind.Struct,
+        "sum":        lsp.SymbolKind.Enum,
+        "field":      lsp.SymbolKind.Field,
+        "variant":    lsp.SymbolKind.EnumMember,
+        "trait":      lsp.SymbolKind.Interface,
+        "capability": lsp.SymbolKind.Interface,
+        "method":     lsp.SymbolKind.Method,
+        "impl":       lsp.SymbolKind.Class,
+    }
+
+    def _doc_to_lsp(sym) -> "lsp.DocumentSymbol":
+        # A zero-width range at the declaration position. Most
+        # editors are happy with this; a future parser change
+        # that records full spans would let us return a proper
+        # range here.
+        pos = lsp.Position(
+            line=sym.pos.line - 1, character=sym.pos.col - 1,
+        )
+        rng = lsp.Range(start=pos, end=pos)
+        return lsp.DocumentSymbol(
+            name=sym.name,
+            detail=sym.detail or None,
+            kind=_to_lsp_kind.get(sym.kind, lsp.SymbolKind.Variable),
+            range=rng,
+            selection_range=rng,
+            children=[_doc_to_lsp(c) for c in sym.children] or None,
+        )
+
+    @server.feature(lsp.TEXT_DOCUMENT_DOCUMENT_SYMBOL)
+    def document_symbol(
+        ls, params: "lsp.DocumentSymbolParams",
+    ) -> "Optional[list[lsp.DocumentSymbol]]":
+        doc = ls.workspace.get_text_document(params.text_document.uri)
+        syms = compute_document_symbols(doc.source, params.text_document.uri)
+        if syms is None:
+            return None
+        return [_doc_to_lsp(s) for s in syms]
 
     @server.feature(lsp.TEXT_DOCUMENT_REFERENCES)
     def references(

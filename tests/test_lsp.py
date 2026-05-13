@@ -370,5 +370,128 @@ class TestFindReferences(unittest.TestCase):
         self.assertIsNone(self.refs(src, "t.capa", 2, 9))
 
 
+@unittest.skipUnless(_HAVE_LSP, "requires `pygls` extra (pip install '.[lsp]')")
+class TestDocumentSymbols(unittest.TestCase):
+    """Document symbols build the outline view shown in the
+    editor's sidebar / breadcrumb. Top-level items appear in
+    source order; structs nest their fields, sum types nest
+    their variants, traits/capabilities nest their method
+    signatures, impl blocks nest their methods."""
+
+    def setUp(self):
+        from capa.lsp_server import compute_document_symbols
+        self.symbols = compute_document_symbols
+
+    def test_lex_or_parse_error_returns_none(self):
+        src = "fun main()\n    let = "
+        self.assertIsNone(self.symbols(src, "t.capa"))
+
+    def test_constant_appears_with_type_detail(self):
+        src = 'const VERSION: String = "1.0"\n'
+        syms = self.symbols(src, "t.capa")
+        self.assertEqual(len(syms), 1)
+        self.assertEqual(syms[0].name, "VERSION")
+        self.assertEqual(syms[0].kind, "constant")
+        self.assertIn("String", syms[0].detail)
+
+    def test_struct_lists_fields_as_children(self):
+        src = (
+            "type Point {\n"
+            "    x: Int,\n"
+            "    y: Int\n"
+            "}\n"
+        )
+        syms = self.symbols(src, "t.capa")
+        self.assertEqual(len(syms), 1)
+        self.assertEqual(syms[0].kind, "struct")
+        self.assertEqual([c.name for c in syms[0].children], ["x", "y"])
+        self.assertTrue(all(c.kind == "field" for c in syms[0].children))
+
+    def test_sum_lists_variants_as_children(self):
+        src = (
+            "type Color =\n"
+            "    Red\n"
+            "    Green\n"
+            "    Blue(Int)\n"
+        )
+        syms = self.symbols(src, "t.capa")
+        self.assertEqual(len(syms), 1)
+        self.assertEqual(syms[0].kind, "sum")
+        names = [c.name for c in syms[0].children]
+        self.assertEqual(names, ["Red", "Green", "Blue"])
+        # Variant with payload carries the payload type in its
+        # detail field for the outline tooltip.
+        blue = syms[0].children[2]
+        self.assertIn("Int", blue.detail)
+
+    def test_capability_kind_distinct_from_trait(self):
+        src = (
+            "capability SendEmail\n"
+            "    fun send(self, to: String) -> Bool\n"
+            "trait Greet\n"
+            "    fun hi(self) -> String\n"
+        )
+        syms = self.symbols(src, "t.capa")
+        kinds = {s.name: s.kind for s in syms}
+        self.assertEqual(kinds["SendEmail"], "capability")
+        self.assertEqual(kinds["Greet"], "trait")
+
+    def test_function_detail_renders_signature(self):
+        src = (
+            "fun add(x: Int, y: Int) -> Int\n"
+            "    return x + y\n"
+        )
+        syms = self.symbols(src, "t.capa")
+        self.assertEqual(syms[0].kind, "function")
+        self.assertEqual(syms[0].detail, "(x: Int, y: Int) -> Int")
+
+    def test_impl_block_nests_methods_and_omits_self_from_detail(self):
+        src = (
+            "type Point {\n"
+            "    x: Int,\n"
+            "    y: Int\n"
+            "}\n"
+            "impl Point\n"
+            "    fun translate(self, dx: Int) -> Point\n"
+            "        return Point { x: self.x + dx, y: self.y }\n"
+        )
+        syms = self.symbols(src, "t.capa")
+        impls = [s for s in syms if s.kind == "impl"]
+        self.assertEqual(len(impls), 1)
+        impl = impls[0]
+        self.assertEqual(impl.name, "impl Point")
+        self.assertEqual(len(impl.children), 1)
+        method = impl.children[0]
+        self.assertEqual(method.name, "translate")
+        # `self` must not appear in the detail signature.
+        self.assertNotIn("self", method.detail)
+        self.assertEqual(method.detail, "(dx: Int) -> Point")
+
+    def test_trait_impl_display_name_includes_trait(self):
+        src = (
+            "trait Greet\n"
+            "    fun hi(self) -> String\n"
+            "type Foo {\n"
+            "    n: Int\n"
+            "}\n"
+            "impl Greet for Foo\n"
+            "    fun hi(self) -> String\n"
+            '        return "hi"\n'
+        )
+        syms = self.symbols(src, "t.capa")
+        impl = next(s for s in syms if s.kind == "impl")
+        self.assertEqual(impl.name, "impl Greet for Foo")
+
+    def test_items_returned_in_source_order(self):
+        src = (
+            "const A: Int = 1\n"
+            "type T { f: Int }\n"
+            "fun g() -> Int\n"
+            "    return A\n"
+        )
+        syms = self.symbols(src, "t.capa")
+        self.assertEqual([s.name for s in syms], ["A", "T", "g"])
+
+
 if __name__ == "__main__":
     unittest.main()
