@@ -11,6 +11,17 @@ breaking changes and the discipline is still being shaped.
 
 ### Added
 
+- **`docs/positioning.md`** captures the honest case for the
+  language: what is and is not unique about Capa, which parts of
+  the design predate it (capability typing as an idea is decades
+  old), which adjacent languages and tools work in the same
+  intellectual space (Pony, Koka / Eff / OCaml 5 effect handlers,
+  Haskell with phantom types, Roc, the WebAssembly Component
+  Model with WIT), and what one-sentence claim Capa stands
+  behind when challenged with "you could do this in Python".
+  The page is intended for reviewers and contributors. Linked
+  from `docs/why.html` and `WHITEPAPER.md`.
+
 - **SBOM ↔ capability-policy audit, written in Capa**
   (`examples/sbom_capability_audit.capa`): the "auditable
   supply chain" pitch made concrete. End-to-end pipeline with

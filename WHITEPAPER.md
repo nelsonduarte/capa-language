@@ -32,3 +32,13 @@ requested by emailing the project author.
 
 Once the pre-print is up, this stub will be replaced with the DOI
 and a permanent link.
+
+## See also
+
+[`docs/positioning.md`](docs/positioning.md) is a short companion
+document that states honestly what is and is not unique about Capa:
+which parts of the design predate it, which adjacent languages
+(Pony, Koka, Roc, WebAssembly Component Model) work in the same
+intellectual space, and which one-sentence claim Capa stands behind
+when challenged with "you could do this in Python". The page is
+intended for reviewers and prospective contributors.
