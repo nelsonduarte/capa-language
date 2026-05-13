@@ -32,7 +32,10 @@ jobs:
           python-version: ${{ matrix.python }}
 
       - name: Install the package
-        run: pip install -e .
+        # The `.[test]` extra adds hypothesis (and pytest) for the
+        # property-based suite in tests/test_properties.py. The
+        # core compiler keeps no third-party runtime dependencies.
+        run: pip install -e .[test]
 
       - name: Run the test suite
         run: python -m unittest discover tests -v

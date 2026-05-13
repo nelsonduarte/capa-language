@@ -20,8 +20,17 @@ from __future__ import annotations
 
 import unittest
 
-import hypothesis.strategies as st
-from hypothesis import HealthCheck, given, settings
+try:
+    import hypothesis.strategies as st
+    from hypothesis import HealthCheck, given, settings
+except ImportError:  # pragma: no cover - exercised only without the extra
+    # When Hypothesis is not installed (e.g. someone running the suite
+    # without `pip install -e .[test]`), skip every test in this module
+    # rather than fail at import time. CI installs the extra; this
+    # branch protects the casual contributor.
+    raise unittest.SkipTest(
+        "hypothesis is not installed; install with `pip install -e .[test]`"
+    )
 
 from capa import Lexer, LexerError, Parser, format_source, is_formatted
 from capa.parser import ParserError
