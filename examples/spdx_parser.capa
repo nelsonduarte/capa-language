@@ -204,6 +204,39 @@ fun parse_spdx(json_text: String) -> Result<SpdxDocument, String>
         Err(msg) -> Err("JSON parse error: ${msg}")
         Ok(j) -> parse_document(j)
 
+// ---- validation: referential integrity ----
+//
+// An SPDX document is well-formed only if every Relationship's
+// spdxElementId and relatedSpdxElement points at an SPDXID that
+// the document actually defines. Dangling references are the
+// most common source of malformed SBOMs in the wild and the
+// signal a CRA auditor needs to flag a SBOM as untrustworthy.
+//
+// This validator runs after parsing and returns a List<String>
+// of human-readable violations (empty list = the document is
+// internally consistent). It is intentionally separate from the
+// parser so that a syntactically-valid-but-semantically-broken
+// SBOM still produces a typed AST that downstream consumers can
+// inspect: the user gets BOTH the structure and the list of
+// findings, instead of one or the other.
+
+fun collect_spdx_ids(doc: SpdxDocument) -> Set<String>
+    let ids: Set<String> = new_set()
+    ids.add(doc.spdx_id)
+    for p in doc.packages
+        ids.add(p.spdx_id)
+    return ids
+
+fun validate_spdx(doc: SpdxDocument) -> List<String>
+    let ids = collect_spdx_ids(doc)
+    let errors: List<String> = []
+    for r in doc.relationships
+        if not ids.contains(r.source)
+            errors.push("relationship source '${r.source}' is not a known SPDXID")
+        if not ids.contains(r.target)
+            errors.push("relationship target '${r.target}' is not a known SPDXID")
+    return errors
+
 // ---- demo ----
 
 fun main(stdio: Stdio)
@@ -235,3 +268,11 @@ fun main(stdio: Stdio)
             stdio.println("Relationships (${doc.relationships.length()}):")
             for r in doc.relationships
                 stdio.println("  - ${r.source} -[${r.kind}]-> ${r.target}")
+            stdio.println("")
+            let violations = validate_spdx(doc)
+            if violations.is_empty()
+                stdio.println("Validation: ok (referential integrity holds)")
+            else
+                stdio.println("Validation: ${violations.length()} issue(s)")
+                for v in violations
+                    stdio.println("  - ${v}")

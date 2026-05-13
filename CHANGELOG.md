@@ -11,6 +11,22 @@ breaking changes and the discipline is still being shaped.
 
 ### Added
 
+- **SBOM referential-integrity validators in both parsers**:
+  `validate_spdx(doc: SpdxDocument) -> List<String>` walks the
+  document, collects every defined `SPDXID`
+  (`SPDXRef-DOCUMENT` + every `Package.SPDXID`) into a
+  `Set<String>`, then checks that every `Relationship.source`
+  and `Relationship.target` points at a known one.
+  `validate_cyclonedx(doc: CdxDocument) -> List<String>` is
+  the symmetric counterpart for the CycloneDX dependency graph,
+  collecting `bom-ref` from `metadata.component` plus every
+  `components[i].bom-ref` and checking every `dependencies[i]
+  .ref` and `dependsOn[]` entry. Both validators return a
+  human-readable violation list, empty list = the document is
+  internally consistent. The two demos now print
+  "Validation: ok (referential integrity holds)" after the
+  summary, or a numbered list of violations.
+
 - **CycloneDX 1.5 JSON parser, written in Capa**
   (`examples/cyclonedx_parser.capa`): the SBOM-of-record
   companion to the SPDX parser. Reads CycloneDX 1.5 documents

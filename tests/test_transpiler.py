@@ -588,9 +588,10 @@ class TestTranspileExamples(unittest.TestCase):
 
     def test_spdx_parser(self):
         # Real-world SBOM parsing in Capa: reads an SPDX 2.3 JSON
-        # sample, builds typed Capa structs, prints a summary.
-        # Exercises ?-chaining on Result through deeply-nested
-        # JsonValue extraction.
+        # sample, builds typed Capa structs, prints a summary,
+        # then validates referential integrity. Exercises
+        # ?-chaining on Result through deeply-nested JsonValue
+        # extraction, plus a Set<String> sweep over relationships.
         rc, out, err = self._run_example("examples/spdx_parser.capa")
         self.assertEqual(rc, 0, err)
         self.assertIn("SPDX document: capa-demo-sbom", out)
@@ -599,12 +600,14 @@ class TestTranspileExamples(unittest.TestCase):
         self.assertIn("SHA1 = aaaabbbbcccc", out)
         self.assertIn("Relationships (1):", out)
         self.assertIn("DESCRIBES", out)
+        self.assertIn("Validation: ok", out)
 
     def test_cyclonedx_parser(self):
         # The other half of the SBOM-parsing pair: CycloneDX 1.5
         # JSON, also written in Capa. Verifies metadata, both
         # license shapes (`{license: {id: ...}}` and
-        # `{expression: ...}`), and the flat dependsOn graph.
+        # `{expression: ...}`), the flat dependsOn graph, and
+        # the bom-ref referential-integrity validator.
         rc, out, err = self._run_example("examples/cyclonedx_parser.capa")
         self.assertEqual(rc, 0, err)
         self.assertIn("CycloneDX 1.5 document", out)
@@ -618,6 +621,7 @@ class TestTranspileExamples(unittest.TestCase):
         # Dependency graph: chalk depends on lodash
         self.assertIn("pkg:npm/chalk@5.3.0", out)
         self.assertIn("-> pkg:npm/lodash@4.17.21", out)
+        self.assertIn("Validation: ok", out)
 
     def test_net_attenuation(self):
         rc, out, err = self._run_example("examples/net_attenuation.capa")

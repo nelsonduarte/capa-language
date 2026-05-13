@@ -311,6 +311,39 @@ fun parse_cyclonedx(json_text: String) -> Result<CdxDocument, String>
         Err(msg) -> Err("JSON parse error: ${msg}")
         Ok(j) -> parse_document(j)
 
+// ---- validation: referential integrity ----
+//
+// A CycloneDX document is well-formed only if every Dependency
+// edge (both the parent `ref` and every entry in `dependsOn`)
+// points at a bom-ref that the document actually defines. The
+// metadata.component bom-ref is also a valid target. Dangling
+// references are the most common failure mode in real-world
+// SBOMs and the thing a CRA auditor needs to flag.
+//
+// Mirrors `validate_spdx` in spdx_parser.capa: same role, same
+// shape of output (a List<String> of human-readable violations,
+// empty list = the document is internally consistent).
+
+fun collect_bom_refs(doc: CdxDocument) -> Set<String>
+    let refs: Set<String> = new_set()
+    if doc.metadata.main_component_ref != ""
+        refs.add(doc.metadata.main_component_ref)
+    for c in doc.components
+        if c.bom_ref != ""
+            refs.add(c.bom_ref)
+    return refs
+
+fun validate_cyclonedx(doc: CdxDocument) -> List<String>
+    let refs = collect_bom_refs(doc)
+    let errors: List<String> = []
+    for d in doc.dependencies
+        if not refs.contains(d.ref)
+            errors.push("dependency 'ref' '${d.ref}' is not a known bom-ref")
+        for child in d.depends_on
+            if not refs.contains(child)
+                errors.push("dependency target '${child}' is not a known bom-ref")
+    return errors
+
 // ---- demo ----
 
 fun main(stdio: Stdio)
@@ -354,3 +387,11 @@ fun main(stdio: Stdio)
                 stdio.println("  - ${d.ref}")
                 for child in d.depends_on
                     stdio.println("      -> ${child}")
+            stdio.println("")
+            let violations = validate_cyclonedx(doc)
+            if violations.is_empty()
+                stdio.println("Validation: ok (referential integrity holds)")
+            else
+                stdio.println("Validation: ${violations.length()} issue(s)")
+                for v in violations
+                    stdio.println("  - ${v}")
