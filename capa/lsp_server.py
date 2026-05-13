@@ -6,13 +6,14 @@ A minimal Capa language server. v1 ships:
   ``didChange`` / ``didSave``, computed by re-running the full
   lexer + parser + analyzer pipeline on the buffer.
 - ``textDocument/hover`` for identifiers: shows the symbol's
-  signature and inferred type, rendered as Markdown. Coverage
-  follows what the analyzer records in
-  ``AnalysisResult.bindings``: variables, parameters, function
-  names, constants, and capability bindings.
+  signature and inferred type, rendered as Markdown.
+- ``textDocument/definition`` for identifiers: jumps to the
+  position where the symbol was declared. Built-in symbols
+  (``Stdio``, ``Net``, ``Result``, etc.) cleanly return no
+  location because they have no source origin.
 
-Go-to-definition, completion, semantic tokens, and code actions
-remain on the roadmap.
+Completion, semantic tokens, and code actions remain on the
+roadmap.
 
 Runtime entry points:
 
@@ -304,6 +305,43 @@ def compute_hover(
     return _format_symbol_for_hover(sym, ident_ty), ident
 
 
+def compute_definition(
+    source: str, filename: str, line: int, col: int,
+) -> Optional[Pos]:
+    """Resolve the identifier at ``(line, col)`` to the source
+    position where its symbol is declared.
+
+    Returns ``None`` when:
+    - the cursor is not on a recognised identifier;
+    - the buffer has parse errors that block analysis;
+    - the symbol has no resolved binding (e.g. typo at the
+      cursor);
+    - the symbol is a built-in (its declared position is the
+      ``Pos(0, 0, 0)`` sentinel, which would jump the editor to
+      the top of a non-existent file).
+
+    Positions returned use Capa's 1-based convention; the caller
+    converts to LSP's 0-based form.
+    """
+    try:
+        tokens = Lexer(source, filename=filename).lex()
+        module = Parser(tokens, source=source, filename=filename).parse_module()
+    except (LexerError, ParserError):
+        return None
+
+    result = analyze(module, source=source, filename=filename)
+    ident = find_ident_at(collect_idents(module), line, col)
+    if ident is None:
+        return None
+    sym = result.bindings.get(id(ident))
+    if sym is None:
+        return None
+    # Filter out built-in symbols (declared with line=0, col=0).
+    if sym.pos.line == 0 and sym.pos.col == 0:
+        return None
+    return sym.pos
+
+
 # ---------------------------------------------------------------
 # Server wiring
 # ---------------------------------------------------------------
@@ -389,6 +427,32 @@ def _build_server():
                 kind=lsp.MarkupKind.Markdown, value=markdown,
             ),
             range=lsp.Range(start=start, end=end),
+        )
+
+    @server.feature(lsp.TEXT_DOCUMENT_DEFINITION)
+    def definition(
+        ls, params: "lsp.DefinitionParams",
+    ) -> "Optional[lsp.Location]":
+        doc = ls.workspace.get_text_document(params.text_document.uri)
+        line = params.position.line + 1
+        col = params.position.character + 1
+        target = compute_definition(
+            doc.source, params.text_document.uri, line, col,
+        )
+        if target is None:
+            return None
+        # Capa positions are 1-based, LSP is 0-based. The
+        # declaration position points at the start of the name;
+        # we report a zero-width range there because the parser
+        # does not record name lengths on declaration nodes. Most
+        # clients (VSCode, Helix, Neovim) jump to the start and
+        # ignore the end for navigation purposes.
+        start = lsp.Position(
+            line=target.line - 1, character=target.col - 1,
+        )
+        return lsp.Location(
+            uri=params.text_document.uri,
+            range=lsp.Range(start=start, end=start),
         )
 
     return server

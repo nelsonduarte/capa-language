@@ -11,6 +11,21 @@ breaking changes and the discipline is still being shaped.
 
 ### Added
 
+- **LSP go-to-definition**: `textDocument/definition` jumps
+  from any identifier reference to the position where the
+  declaring symbol lives. Functions resolve to the
+  `fun name(...)` line; parameters resolve to their slot in
+  the parameter list; `let`/`var` bindings resolve to their
+  introducing statement; variants resolve to the corresponding
+  variant declaration inside the sum type. Built-in symbols
+  (`Stdio`, `Net`, `Result`, the implicit `Option`, etc.) carry
+  the `Pos(0, 0)` sentinel and are filtered cleanly so the
+  editor never jumps to "line 0 of an unknown file". As with
+  hover, coverage is limited to identifier references; the
+  parser does not yet track end positions on declaration
+  nodes, so the jump target is the start of the declaration
+  line, which is what every mainstream editor expects.
+
 - **LSP hover**: `textDocument/hover` answers
   "what is this symbol?" for the identifier under the cursor.
   Functions render as a Capa-style signature

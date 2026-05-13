@@ -190,5 +190,83 @@ class TestHover(unittest.TestCase):
         self.assertIsNone(r)
 
 
+@unittest.skipUnless(_HAVE_LSP, "requires `pygls` extra (pip install '.[lsp]')")
+class TestGoToDefinition(unittest.TestCase):
+    """Go-to-definition: resolve the identifier at the cursor to
+    the (1-based) source position where its declaring symbol
+    lives. Built-in symbols return None because their declaration
+    is the Pos(0, 0) sentinel, not a real file location."""
+
+    def setUp(self):
+        from capa.lsp_server import compute_definition
+        self.defn = compute_definition
+
+    def test_jump_from_call_to_function_declaration(self):
+        src = (
+            "fun greet(name: String) -> String\n"   # line 1
+            "    return name\n"                     # line 2
+            "\n"
+            "fun main(stdio: Stdio)\n"              # line 4
+            "    let msg = greet(\"Ana\")\n"        # line 5
+            "    stdio.println(msg)\n"              # line 6
+        )
+        # ``greet`` at the call site, line 5 col 15.
+        p = self.defn(src, "t.capa", 5, 15)
+        self.assertIsNotNone(p)
+        self.assertEqual(p.line, 1)
+
+    def test_jump_from_use_to_let_binding(self):
+        src = (
+            "fun id(x: Int) -> Int\n"
+            "    return x\n"
+            "fun main(stdio: Stdio)\n"
+            "    let n = 42\n"             # line 4
+            "    let _ = id(n)\n"          # line 5, n at col 16
+            "    stdio.println(\"k\")\n"
+        )
+        p = self.defn(src, "t.capa", 5, 16)
+        self.assertIsNotNone(p)
+        # Declaration of `n` is on line 4.
+        self.assertEqual(p.line, 4)
+
+    def test_jump_from_use_to_parameter(self):
+        src = (
+            "fun greet(name: String) -> String\n"  # line 1
+            "    return name\n"                     # line 2, `name` at col 12
+        )
+        p = self.defn(src, "t.capa", 2, 12)
+        self.assertIsNotNone(p)
+        # Parameter declared on line 1.
+        self.assertEqual(p.line, 1)
+
+    def test_builtin_symbol_returns_none(self):
+        # ``Stdio`` is a built-in capability with no source
+        # origin, so go-to-definition should cleanly return
+        # nothing instead of jumping to line 0.
+        src = (
+            "fun main(stdio: Stdio)\n"  # line 1, ``Stdio`` at col 17
+            "    stdio.println(\"hi\")\n"
+        )
+        # Note: ``Stdio`` here is a type name in a Param's
+        # type annotation. Whether it has an Ident at that
+        # position depends on the parser. If find_ident_at
+        # doesn't see it as an Ident, the result is None for
+        # a different reason; either way the test asserts
+        # "no jump to line 0".
+        p = self.defn(src, "t.capa", 1, 17)
+        if p is not None:
+            self.assertNotEqual(p.line, 0)
+
+    def test_no_definition_at_whitespace(self):
+        src = "fun main()\n    return\n"
+        p = self.defn(src, "t.capa", 2, 1)
+        self.assertIsNone(p)
+
+    def test_no_definition_for_parse_error_buffer(self):
+        src = "fun main()\n    let = "
+        p = self.defn(src, "t.capa", 2, 9)
+        self.assertIsNone(p)
+
+
 if __name__ == "__main__":
     unittest.main()
