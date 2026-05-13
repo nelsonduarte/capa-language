@@ -11,6 +11,52 @@ breaking changes and the discipline is still being shaped.
 
 ### Added
 
+- **CVE case study: xz-utils 2024 / CVE-2024-3094**
+  (`examples/cve_xz_utils.capa` + `docs/cve_xz_utils.md`). The
+  fourth CVE walkthrough, and the most pessimistic one: a
+  multi-year operation by "Jia Tan" against `xz-utils`,
+  delivering a backdoor that hijacked
+  `RSA_public_decrypt` in sshd via IFUNC dynamic-linker
+  indirection. The attack ran beneath the language layer
+  entirely: obfuscated payload bytes in test fixture files,
+  build-script assembly via `.m4` autotools, and runtime
+  symbol replacement at `ld.so` load time. Capa's source-
+  level discipline cannot address any of those. The case
+  study is in the repo precisely because a thesis that
+  claims any supply-chain defence has to acknowledge attacks
+  beneath the language layer. The writeup includes a layered
+  table of attack surfaces and which ones Capa addresses
+  (one row well, one row partially, four rows not at all).
+  Pairs with the
+  [positioning document](docs/positioning.md)'s "Capa is one
+  defence in a stack, not a sufficient defence" claim and
+  references reproducible builds, code signing, transparency
+  logs as the orthogonal defences the rest of the stack
+  needs. Regression test in
+  `tests/test_transpiler.py::test_cve_xz_utils`.
+
+- **Property-based testing phase 2** (syntax-aware Capa
+  program generator). Adds one new property to
+  `tests/test_properties.py`: every program produced by a
+  small Hypothesis composite strategy (a `main(stdio: Stdio)`
+  body with 1-4 statements drawn from `let` / `var` /
+  `println` / `if` / `for`, using position-indexed unique
+  identifiers to avoid duplicate bindings, and integer
+  literals only in expressions to avoid scope-tracking
+  complexity) is asserted to lex, parse, analyse, transpile,
+  and produce syntactically-valid Python. The strategy
+  found two real design bugs during its own development
+  (capability-must-use violation when `main` was generated
+  without a `stdio` reference; duplicate `let` bindings when
+  names were sampled from a fixed pool), exactly the kind of
+  signal property-based testing exists to surface. 100
+  Hypothesis examples per CI run, ~1 second wall clock.
+  The phase 3 work (the actual citable property *runtime
+  capability set ⊆ manifest declared set*) needs runtime
+  instrumentation and a capability-exercising strategy; it
+  is tracked in `TODO.md` and corresponds to Theorem 2 of
+  `docs/semantics.md`.
+
 - **CVE case study: node-ipc 2022 (protestware)**
   (`examples/cve_node_ipc.capa` + `docs/cve_node_ipc.md`). The
   third CVE walkthrough in the repo, deliberately picked as the

@@ -1,0 +1,131 @@
+// cve_xz_utils.capa, the xz-utils / liblzma backdoor incident
+// (CVE-2024-3094), in Capa. The companion writeup is
+// docs/cve_xz_utils.md.
+//
+// In late March 2024, Andres Freund disclosed a backdoor in
+// `xz-utils` versions 5.6.0 and 5.6.1. The malicious code, when
+// the resulting `liblzma` was loaded by `sshd` on systemd-based
+// systems, hijacked the symbol resolution of `RSA_public_decrypt`
+// to bypass SSH authentication entirely. The compromise had been
+// engineered over roughly two years by an attacker ("Jia Tan")
+// who patiently earned co-maintainer status, then introduced the
+// payload through a combination of (a) obfuscated test files in
+// the source tree, (b) build-script logic that activated the
+// payload only in certain dpkg/rpm packaging environments, and
+// (c) ifunc indirection that swapped the function pointer at
+// dynamic-linker time.
+//
+// This case study is in the repo for the same reason as
+// `cve_node_ipc.capa`: to be **honest about where Capa partially
+// loses**, but the partial loss has a *different shape* from
+// node-ipc's. node-ipc's loss was "legitimate authority misused
+// by a rogue maintainer". xz's loss is "the attack ran at a
+// level beneath the language": at build time, at link time, in
+// the binary symbol table. The Capa-level signature of the
+// library does not enter the threat model the attacker was
+// exploiting.
+//
+// What Capa *would* have caught (the source-level layer):
+//   1. If the malicious code had needed to manifest as
+//      a Capa-level function with new capability declarations
+//      (e.g., suddenly Stdio, Net, Fs on a previously pure
+//      compression function), the signature change would have
+//      been loud, SBOM-visible, and trivially flagged.
+//
+// What Capa *would not* have caught (the layer the attack used):
+//   2. ifunc symbol-replacement at dynamic-linker time happens
+//      before any Capa-level runtime exists.
+//   3. Build-time payload activation in dpkg/rpm scripts is in
+//      a script language Capa does not run.
+//   4. The malicious .m4 / build-script files were committed to
+//      the source tree but compiled into the binary by build
+//      logic, not by Capa code.
+//
+// This is the most pessimistic case study in the repo. It is
+// included because a thesis that claims any defence against
+// "supply-chain attacks" without acknowledging xz cannot be
+// taken seriously.
+
+// ===============================================================
+// What an honest Capa-shaped compression API looks like.
+// ===============================================================
+//
+// xz is a compression library. Its legitimate role is bytes-in,
+// bytes-out. In Capa that surface is *pure*: no capabilities at
+// all. A function with this signature cannot reach the network,
+// touch the filesystem, or query the environment.
+
+fun compress(data: List<Int>, level: Int) -> List<Int>
+    // A stub. Real compression uses LZMA, the algorithmic detail
+    // is irrelevant to the case study. Note the signature: only
+    // data + a parameter, returning data. No Fs, no Net, no
+    // Env, no Unsafe.
+    let result: List<Int> = []
+    for b in data
+        result.push(b)
+    return result
+
+fun decompress(data: List<Int>) -> List<Int>
+    let result: List<Int> = []
+    for b in data
+        result.push(b)
+    return result
+
+// A function that authenticates an SSH connection-shaped record.
+// In real systemd-linked sshd this is where the backdoor fired:
+// `RSA_public_decrypt` was indirected through liblzma at
+// dynamic-link time. In Capa, the function would need explicit
+// authority for whatever side effect it performs. There is no
+// way to silently inject a side effect at the type level: the
+// signature is the contract.
+
+type AuthRequest {
+    user: String,
+    key: List<Int>
+}
+
+fun authenticate(req: AuthRequest, allowed_keys: List<List<Int>>) -> Bool
+    for k in allowed_keys
+        if same_key(req.key, k)
+            return true
+    return false
+
+fun same_key(a: List<Int>, b: List<Int>) -> Bool
+    if a.length() != b.length()
+        return false
+    var i = 0
+    while i < a.length()
+        if a[i] != b[i]
+            return false
+        i = i + 1
+    return true
+
+// ===============================================================
+// `main`, demonstrating the boundary.
+// ===============================================================
+fun main(stdio: Stdio)
+    // Source-level: a compression library has zero capabilities.
+    // It cannot exfiltrate, cannot read disk, cannot reach the
+    // network. The SBOM derived from `compress` and `decompress`
+    // shows that explicitly.
+    let original = [104, 101, 108, 108, 111]  // "hello"
+    let compressed = compress(original, 9)
+    let restored = decompress(compressed)
+    stdio.println("compressed ${original.length()} bytes -> ${compressed.length()} -> ${restored.length()}")
+
+    // Authentication: still pure. The same predicate that sshd's
+    // public-key check would express, but here it cannot be
+    // hijacked by a malicious library because Capa's signatures
+    // make the authority surface explicit.
+    let req = AuthRequest { user: "alice", key: [1, 2, 3] }
+    let allowed: List<List<Int>> = [[1, 2, 3], [9, 9, 9]]
+    let ok = authenticate(req, allowed)
+    stdio.println("authentication result for ${req.user}: ${ok}")
+
+    // The point of the case study: the *source-level* surface is
+    // sound. The xz attack ran beneath this surface, at build
+    // time and at dynamic-linker time. Capa's discipline does
+    // not extend to those layers; see docs/cve_xz_utils.md for
+    // the boundary discussion and what orthogonal defences
+    // (reproducible builds, transparency logs, library
+    // hardening) are needed to cover the gap.

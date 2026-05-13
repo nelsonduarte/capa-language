@@ -646,6 +646,21 @@ class TestTranspileExamples(unittest.TestCase):
         self.assertIn("DESCRIBES", out)
         self.assertIn("Validation: ok (refs resolve + acyclic)", out)
 
+    def test_cve_xz_utils(self):
+        # Fourth CVE walkthrough, deliberately chosen because it
+        # is the *most pessimistic* case: the actual xz-utils
+        # backdoor ran at build-script + dynamic-linker level,
+        # below the language layer entirely. Capa cannot catch
+        # IFUNC indirection or .m4 autotools payloads. The case
+        # study is in the repo precisely because a thesis that
+        # claims any supply-chain defence has to acknowledge
+        # this kind of attack. Companion writeup at
+        # docs/cve_xz_utils.md.
+        rc, out, err = self._run_example("examples/cve_xz_utils.capa")
+        self.assertEqual(rc, 0, err)
+        self.assertIn("compressed 5 bytes -> 5 -> 5", out)
+        self.assertIn("authentication result for alice: True", out)
+
     def test_cve_node_ipc(self):
         # The third CVE case study, deliberately picked because it
         # is where Capa partially LOSES: an IPC library legitimately

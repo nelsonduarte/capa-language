@@ -319,33 +319,59 @@ items here so they stay visible:
     rule does not help, attenuation in the caller can bound
     the blast radius, the audit on the SBOM can flag any
     later widening of the declared capability.
-  Three demos give the thesis a balanced experimental
-  section: two clean wins and one honest partial loss. Adding
-  more is mechanical; candidates for a fourth include
-  `xz-utils` 2024 (would partially win because Capa cannot
-  reason about build-system tampering but can about the
-  resulting symbol surface) and `torchtriton` 2022 (clean win,
-  same shape as eslint-scope).
+  - **xz-utils 2024 (CVE-2024-3094)**:
+    `examples/cve_xz_utils.capa` + `docs/cve_xz_utils.md`.
+    Multi-year sshd backdoor delivered via .m4 autotools +
+    binary test fixtures + IFUNC dynamic-linker indirection.
+    Capa's source-level discipline does not apply to any of
+    those layers. Deliberately included as the most
+    pessimistic case study: the thesis chapter has to
+    acknowledge attacks beneath the language layer.
+  Four demos give the thesis a balanced experimental section:
+  two clean wins (event-stream, eslint-scope) and two honest
+  partial losses (node-ipc legitimate-authority-abuse,
+  xz-utils below-the-language). The remaining slot is a clean
+  win in a different shape (recommend `torchtriton` 2022 for
+  PyTorch-ecosystem credential exfiltration). Adding it is
+  mechanical from the paired-file template.
 - [~] **Property-based testing with Hypothesis**. The most
-  citable suggestion in the review. **Phase 1 landed** in
-  `tests/test_properties.py`: six properties that hold over
-  arbitrary text inputs and do not need a Capa-grammar
-  generator. They cover formatter idempotence and fixpoint
-  convergence, lexer robustness (must terminate, must raise
-  only `LexerError`, must produce a token list ending in EOF
-  when it succeeds), and parser robustness (must raise only
-  `ParserError` on well-formed token streams). Each runs 200
-  Hypothesis examples per CI run. **Phase 2 pending**: a
-  syntax-aware strategy that produces parseable Capa programs
-  so we can fuzz the soundness claim *runtime capability set
-  ⊆ manifest declared set*. That is the citable property for
-  the thesis; phase 1 is the infrastructure that gets phase 2
-  off the ground without rewriting the test harness from
-  scratch.
+  citable suggestion in the review. **Phases 1 and 2 landed**
+  in `tests/test_properties.py`. Phase 1 (six properties on
+  arbitrary text) covers formatter idempotence and fixpoint,
+  lexer / parser robustness. Phase 2 (one property over a
+  syntax-aware strategy) generates syntactically valid Capa
+  programs of the shape *main with stdio + N stmts* where N
+  ∈ {0..4}, each stmt is a `let`/`var`/`println`/`if`/`for`
+  with position-indexed unique names, and asserts the full
+  pipeline (lex + parse + analyse + transpile + `ast.parse`
+  of the transpiled Python) succeeds end-to-end. The strategy
+  found two real strategy-design bugs during its own
+  development (capability-must-use rule firing on
+  `main(stdio: Stdio)` with no `stdio` reference; duplicate
+  bindings when names were sampled from a fixed pool), which
+  is the right kind of signal. **Phase 3 pending**: the
+  *citable* property the thesis needs is *runtime capability
+  set ⊆ manifest declared set*, which needs runtime
+  instrumentation in `capa.runtime` to log every capability
+  operation, plus a strategy that generates programs
+  exercising capabilities (not just Stdio). Tracking in
+  `docs/semantics.md` Theorem 2.
 - [ ] **`Range<Int>` as a distinct type from `List<Int>`**. The
-  for-loop transpiler hack is a stop-gap; the long-term fix is
-  a separate type with its own `Iterable` interface. Decoupled
-  from the urgent memory bug fix above.
+  for-loop transpiler fix is a stop-gap that closed the urgent
+  memory bug; the long-term fix is a separate type with its
+  own `Iterable` interface. **Deferred** after a scoping pass:
+  the existing test
+  `tests/test_analyzer.py::test_range_chains_with_list_methods`
+  asserts that `(0..10).filter(...)` works, which means today's
+  semantics is `Range ≡ List<Int>`. Splitting cleanly needs
+  (a) a `Range<T>` runtime type with its own method surface,
+  (b) a decision on whether `.map` / `.filter` / `.fold` on
+  Range materialise eagerly or lazily, (c) an `Iterable` trait
+  so Range and List can share a common dispatch surface for
+  `for`-loops, (d) migration of the existing tests / examples.
+  Each of those is a small piece; together they are a design
+  conversation that deserves a dedicated session, not a hasty
+  corner-cut. Tracking here so it does not get forgotten.
 - [x] **`docs/positioning.md`** with honest comparison vs Pony,
   Koka, Roc, WebAssembly Component Model. The reviewer cited
   it approvingly; already landed.
