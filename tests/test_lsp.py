@@ -493,5 +493,126 @@ class TestDocumentSymbols(unittest.TestCase):
         self.assertEqual([s.name for s in syms], ["A", "T", "g"])
 
 
+@unittest.skipUnless(_HAVE_LSP, "requires `pygls` extra (pip install '.[lsp]')")
+class TestCodeActions(unittest.TestCase):
+    """Code actions implement Quick Fixes for the analyzer's
+    ``did you mean 'X'?`` hints. The fix replaces the misspelled
+    token (located by scanning the diagnostic line, since
+    diagnostic columns can be approximate for some error families)
+    with the suggested spelling."""
+
+    def setUp(self):
+        from capa.lsp_server import compute_code_actions, compute_diagnostics
+        self.actions = compute_code_actions
+        self.diags = compute_diagnostics
+
+    def test_no_did_you_mean_returns_no_actions(self):
+        # An ordinary error with no suggestion gives no Quick Fix.
+        msg = "expected newline after impl header"
+        self.assertEqual(self.actions("fun main()\n", msg, 1), [])
+
+    def test_method_typo_replaces_with_suggestion(self):
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    let n = \"hi\".lenght()\n"
+            "    stdio.println(\"${n}\")\n"
+        )
+        diags = self.diags(src, "t.capa")
+        target = next(d for d in diags if "lenght" in d.message)
+        diag_line_1 = target.range.start.line + 1
+        actions = self.actions(src, target.message, diag_line_1)
+        self.assertEqual(len(actions), 1)
+        a = actions[0]
+        self.assertEqual(a.edit.new_text, "length")
+        # Column span covers exactly the typo.
+        self.assertEqual(a.edit.col_end - a.edit.col_start, len("lenght"))
+        # And the source at that span is indeed the typo.
+        line_text = src.split("\n")[a.edit.line - 1]
+        span = line_text[a.edit.col_start - 1 : a.edit.col_end - 1]
+        self.assertEqual(span, "lenght")
+
+    def test_type_typo_replaces_with_suggestion(self):
+        src = "fun id(x: Strng) -> Strng\n    return x\n"
+        diags = self.diags(src, "t.capa")
+        target = next(d for d in diags if "did you mean 'String'" in d.message)
+        actions = self.actions(src, target.message, target.range.start.line + 1)
+        self.assertGreaterEqual(len(actions), 1)
+        self.assertEqual(actions[0].edit.new_text, "String")
+
+    def test_undefined_name_typo_replaces_with_suggestion(self):
+        # Use the typo outside string interpolation: ``${...}``
+        # contents go through a side parse channel that does not
+        # carry positions in v1, so the diagnostic for typos
+        # inside interpolations points at line 1 col 1, which
+        # the code-action search cannot recover from.
+        src = (
+            "fun id(x: Int) -> Int\n"
+            "    return x\n"
+            "fun main(stdio: Stdio)\n"
+            "    let result = 42\n"
+            "    let _ = id(reslt)\n"
+            "    stdio.println(\"k\")\n"
+        )
+        diags = self.diags(src, "t.capa")
+        target = next(d for d in diags if "did you mean 'result'" in d.message)
+        actions = self.actions(src, target.message, target.range.start.line + 1)
+        self.assertEqual(len(actions), 1)
+        self.assertEqual(actions[0].edit.new_text, "result")
+
+    def test_struct_field_typo_replaces_with_suggestion(self):
+        src = (
+            "type Person {\n"
+            "    full_name: String\n"
+            "}\n"
+            "fun main(stdio: Stdio)\n"
+            "    let p = Person { full_name: \"A\" }\n"
+            "    stdio.println(p.full_naem)\n"
+        )
+        diags = self.diags(src, "t.capa")
+        target = next(
+            d for d in diags if "did you mean 'full_name'" in d.message
+        )
+        actions = self.actions(src, target.message, target.range.start.line + 1)
+        self.assertEqual(len(actions), 1)
+        self.assertEqual(actions[0].edit.new_text, "full_name")
+
+    def test_typo_search_uses_whole_word_match(self):
+        # If the typo happens to be a substring of another token on
+        # the same line, the whole-word match must skip the
+        # substring occurrence. Here ``in`` is a Capa keyword and
+        # also appears inside ``println``; the fix should target
+        # nothing on this line because ``in`` is not a typo here.
+        # Simulate a synthetic message claiming `in` is the typo.
+        src = "fun main(stdio: Stdio)\n    stdio.println(\"hi\")\n"
+        msg = "undefined name 'in'; did you mean 'is'?"
+        actions = self.actions(src, msg, 2)
+        # Either an action against a real ``in`` token (none here)
+        # or no action at all. We check that the action does NOT
+        # land inside ``println``.
+        for a in actions:
+            line_text = src.split("\n")[a.edit.line - 1]
+            span = line_text[a.edit.col_start - 1 : a.edit.col_end - 1]
+            self.assertEqual(span, "in")
+            # And the surrounding context is not ``println``.
+            before = line_text[a.edit.col_start - 2 : a.edit.col_start - 1]
+            after = line_text[a.edit.col_end - 1 : a.edit.col_end]
+            self.assertNotEqual(before, "l")  # not 'l' before, so not `lin`
+            self.assertNotEqual(after, "t")   # not 't' after, so not `int`
+
+    def test_invalid_line_number_returns_no_actions(self):
+        src = "fun main()\n    return\n"
+        msg = "undefined name 'x'; did you mean 'y'?"
+        self.assertEqual(self.actions(src, msg, 999), [])
+
+    def test_typo_not_on_line_returns_no_actions(self):
+        # The diagnostic claims a typo that is not present on the
+        # given line (perhaps because the user already started
+        # editing). The result must be empty, not a wrong-position
+        # edit.
+        src = "fun main(stdio: Stdio)\n    stdio.println(\"hi\")\n"
+        msg = "undefined name 'gone'; did you mean 'good'?"
+        self.assertEqual(self.actions(src, msg, 2), [])
+
+
 if __name__ == "__main__":
     unittest.main()

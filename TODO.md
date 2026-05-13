@@ -86,28 +86,30 @@ to public.
 
 ## Tooling that moves the adoption needle (P1-P2)
 
-- [~] **LSP server** (Python, `pygls>=2.0`). **v1 (diagnostics
-  + hover + go-to-definition + find-references + document
-  symbols) landed**: `python -m capa lsp` starts a stdio server
-  that re-runs the lexer + parser + analyzer on every didOpen /
-  didChange / didSave and publishes diagnostics; hovering on an
-  identifier returns its signature or `name: T`; go-to-definition
-  jumps from any identifier use to the declaring symbol;
-  find-references lists every reference to the same symbol;
-  documentSymbol returns the hierarchical outline (constants;
-  structs with fields; sums with variants; traits and
-  capabilities with method signatures; top-level functions; impl
-  blocks with methods). Coverage of cursor-driven features
-  (hover, definition, references) is limited to identifier
-  references in v1: declared names live as strings on
-  declaration nodes, not as Ident nodes, so the parser does not
-  track their positions. `pygls` is an optional dependency
+- [~] **LSP server** (Python, `pygls>=2.0`). **v1 landed**:
+  `python -m capa lsp` starts a stdio server that delivers
+  diagnostics (full pipeline on every didOpen / didChange /
+  didSave), hover (signature or `name: T` markdown),
+  go-to-definition (jump to declaring symbol), find-references
+  (all uses of the same symbol), documentSymbol (hierarchical
+  outline: constants, structs with fields, sums with variants,
+  traits/capabilities with method signatures, functions, impl
+  blocks with methods), and code actions (Quick Fix
+  "Replace with 'X'" for every `did you mean 'X'?` hint emitted
+  by the analyzer). Coverage of cursor-driven features (hover,
+  definition, references) is limited to identifier references in
+  v1: declared names live as strings on declaration nodes, not
+  as Ident nodes, so the parser does not track their positions.
+  Typos inside string interpolation (`${...}`) similarly lose
+  positions because the interpolation contents go through a
+  side parse channel. `pygls` is an optional dependency
   (`pip install -e '.[lsp]'`) so the rest of the compiler stays
   standard-library-only. README carries one-line config snippets
   for Helix and Neovim.
-  **Pending (v2)**: completion, semantic tokens, rename, code
-  actions for "did you mean" hints, hover/definition on
-  declaration sites (needs end-position tracking in the parser).
+  **Pending (v2)**: completion, semantic tokens, rename,
+  hover/definition on declaration sites (needs end-position
+  tracking in the parser), positional fidelity for `${...}`
+  contents.
 - [~] **`capa-fmt` (formatter)**, canonical, non-configurable
   (gofmt-style). **v1 (line-level) landed**: CLI flags `--fmt` and
   `--fmt-check` normalise line endings, indentation (tabs to 4

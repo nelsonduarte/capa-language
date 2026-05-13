@@ -21,9 +21,17 @@ A minimal Capa language server. v1 ships:
   method signatures nested, top-level functions, and impl blocks
   with their methods nested. Powers the editor's outline view,
   breadcrumbs, and symbol search.
+- ``textDocument/codeAction``: Quick Fixes that apply
+  ``did you mean 'X'?`` suggestions emitted by the analyzer.
+  For every diagnostic whose message ends in
+  ``; did you mean 'SUGGESTION'?``, the server returns a Quick
+  Fix that replaces the typo with the suggested name. The fix
+  range is computed from the source line (the diagnostic's
+  position is approximate for some error families, like
+  method/field typos, so we search the line for the misspelled
+  token).
 
-Completion, semantic tokens, rename, and code actions remain on
-the roadmap.
+Completion, semantic tokens, and rename remain on the roadmap.
 
 Runtime entry points:
 
@@ -38,6 +46,7 @@ continue to work in a stock-Python environment.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Optional
 
@@ -611,6 +620,107 @@ def _item_to_doc_symbol(item: A.Item) -> Optional[DocSymbol]:
 
 
 # ---------------------------------------------------------------
+# Code actions: Quick Fix for "did you mean 'X'?" hints
+# ---------------------------------------------------------------
+# Five analyzer error families append `; did you mean 'X'?` to
+# their message: undefined name, undefined type, no method on
+# type, no field on struct, unknown variant. For each such
+# diagnostic we want to offer a one-click Quick Fix that
+# replaces the misspelled token with the suggestion.
+#
+# The diagnostic's position is the start of the *construct* the
+# error belongs to (the receiver for a method call, the struct
+# literal head for a field, ...), not necessarily the start of
+# the misspelled token. We therefore extract the typo from the
+# message itself (it is always the quoted string immediately
+# preceding `; did you mean`) and search the source line for it.
+
+
+# Pattern matches both the typo and the suggestion in one go.
+# We use the last quoted string before `;` to find the typo,
+# anchored on the literal `did you mean` suffix.
+_DID_YOU_MEAN_RE = re.compile(
+    r"'([^']+)'\s*;\s*did you mean '([^']+)'\?"
+)
+
+
+@dataclass
+class CodeActionEdit:
+    """A single text replacement, in 1-based Capa coordinates.
+    The LSP handler converts to ``lsp.TextEdit`` at the
+    boundary."""
+    line: int
+    col_start: int
+    col_end: int
+    new_text: str
+
+
+@dataclass
+class CodeAction:
+    """A Quick Fix the server can offer for a diagnostic."""
+    title: str
+    edit: CodeActionEdit
+
+
+def _find_token_column(line_text: str, token: str) -> Optional[int]:
+    """Find the 1-based column where ``token`` appears on the
+    given source line, matching it as a whole word so a typo
+    like ``in`` does not pick up the ``in`` inside ``println``.
+
+    Returns ``None`` when the token cannot be located, which
+    happens when the source has been edited in the time between
+    the diagnostic being computed and the code action being
+    requested.
+    """
+    pattern = re.compile(r"\b" + re.escape(token) + r"\b")
+    match = pattern.search(line_text)
+    if match is None:
+        return None
+    return match.start() + 1  # convert to 1-based
+
+
+def compute_code_actions(
+    source: str, diagnostic_message: str, diagnostic_line: int,
+) -> list[CodeAction]:
+    """Return the Quick Fixes available for a single diagnostic.
+
+    The diagnostic is identified only by its message and the line
+    number it points at; we do not depend on the diagnostic's
+    column being the start of the typo, since the analyzer
+    sometimes emits errors against the enclosing construct
+    instead of the offending token.
+
+    Returns an empty list when the message has no
+    ``did you mean 'X'?`` suffix or the typo cannot be located
+    on the line.
+    """
+    match = _DID_YOU_MEAN_RE.search(diagnostic_message)
+    if match is None:
+        return []
+    typo, suggestion = match.group(1), match.group(2)
+
+    lines = source.split("\n")
+    if diagnostic_line < 1 or diagnostic_line > len(lines):
+        return []
+    line_text = lines[diagnostic_line - 1]
+    col = _find_token_column(line_text, typo)
+    if col is None:
+        return []
+
+    return [
+        CodeAction(
+            title=f"Replace with {suggestion!r}",
+            edit=CodeActionEdit(
+                line=diagnostic_line,
+                col_start=col,
+                col_end=col + len(typo),
+                new_text=suggestion,
+            ),
+        )
+    ]
+
+
+# ---------------------------------------------------------------
 # Server wiring
 # ---------------------------------------------------------------
 
@@ -767,6 +877,46 @@ def _build_server():
         if syms is None:
             return None
         return [_doc_to_lsp(s) for s in syms]
+
+    @server.feature(lsp.TEXT_DOCUMENT_CODE_ACTION)
+    def code_action(
+        ls, params: "lsp.CodeActionParams",
+    ) -> "Optional[list[lsp.CodeAction]]":
+        doc = ls.workspace.get_text_document(params.text_document.uri)
+        actions: list[lsp.CodeAction] = []
+        for diag in (params.context.diagnostics or []):
+            if not diag.message:
+                continue
+            # Diagnostic ranges are 0-based; our compute_code_actions
+            # speaks 1-based Capa coordinates.
+            diag_line_1 = diag.range.start.line + 1
+            for ca in compute_code_actions(doc.source, diag.message, diag_line_1):
+                edit = ca.edit
+                text_edit = lsp.TextEdit(
+                    range=lsp.Range(
+                        start=lsp.Position(
+                            line=edit.line - 1,
+                            character=edit.col_start - 1,
+                        ),
+                        end=lsp.Position(
+                            line=edit.line - 1,
+                            character=edit.col_end - 1,
+                        ),
+                    ),
+                    new_text=edit.new_text,
+                )
+                actions.append(
+                    lsp.CodeAction(
+                        title=ca.title,
+                        kind=lsp.CodeActionKind.QuickFix,
+                        diagnostics=[diag],
+                        edit=lsp.WorkspaceEdit(
+                            changes={params.text_document.uri: [text_edit]},
+                        ),
+                        is_preferred=True,
+                    )
+                )
+        return actions or None
 
     @server.feature(lsp.TEXT_DOCUMENT_REFERENCES)
     def references(

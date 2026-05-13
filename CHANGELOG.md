@@ -11,6 +11,22 @@ breaking changes and the discipline is still being shaped.
 
 ### Added
 
+- **LSP code actions (Quick Fix for "did you mean" hints)**:
+  `textDocument/codeAction` returns a "Replace with 'X'" Quick
+  Fix for every diagnostic whose message ends in
+  `; did you mean 'X'?` (the five analyzer error families that
+  carry the suggestion: undefined name, undefined type, no
+  method on type, no field on struct, unknown variant). The
+  replacement range is computed by scanning the source line for
+  the misspelled token (matched as a whole word, so a typo like
+  `in` does not pick up the `in` inside `println`); when the
+  token cannot be located on the line (e.g. the user is mid-edit,
+  or the diagnostic position is approximate as for typos inside
+  string interpolation), the action is skipped cleanly rather
+  than committing to a wrong span. Each action is marked
+  `isPreferred=True` so it can be applied with the editor's
+  default keyboard shortcut.
+
 - **LSP document symbols**: `textDocument/documentSymbol`
   returns the hierarchical outline of the module. Top-level
   constants, structs (nesting their fields), sum types (nesting
