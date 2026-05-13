@@ -88,6 +88,9 @@ def main() -> int:
     # the CLI can stay flag-based without complicating help output.
     if len(sys.argv) >= 2 and sys.argv[1] == "init":
         return _dispatch_init(sys.argv[2:])
+    if len(sys.argv) >= 2 and sys.argv[1] == "lsp":
+        from capa.lsp_server import serve
+        return serve()
 
     parser = argparse.ArgumentParser(
         description="Lexer, parser and analyzer for the Capa language",

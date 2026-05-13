@@ -9,6 +9,23 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+### Added
+
+- **Language server (LSP), v1 diagnostics-only**.
+  `python -m capa lsp` starts a stdio server that re-runs the
+  full lexer + parser + analyzer pipeline on every didOpen,
+  didChange, and didSave, and publishes the resulting errors as
+  `textDocument/publishDiagnostics`. Capa's 1-based line/col
+  positions are translated to LSP's 0-based positions; severities
+  default to Error; the diagnostic `source` field is `capa-lsp`.
+  The lexer and parser short-circuit on the first error
+  (consistent with the CLI); the analyzer surfaces every error it
+  finds in a single pass. `pygls>=2.0` is an optional
+  dependency (`pip install -e '.[lsp]'`) so the rest of the
+  compiler stays standard-library-only. README ships one-line
+  config snippets for Helix and Neovim. Hover, go-to-definition,
+  completion, and semantic tokens are on the roadmap.
+
 ### Changed
 
 - **"Did you mean?" hints on five common analyzer errors**:

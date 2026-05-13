@@ -86,10 +86,17 @@ to public.
 
 ## Tooling that moves the adoption needle (P1-P2)
 
-- [ ] **LSP server** (Python, `pygls`), diagnostics first, then
-  hover, then go-to-definition. The single biggest multiplier for
-  any new language. ⏱ 1-2 weeks for a useful subset. P1 after the
-  demo lands.
+- [~] **LSP server** (Python, `pygls>=2.0`). **v1 (diagnostics
+  only) landed**: `python -m capa lsp` starts a stdio server that
+  re-runs the lexer + parser + analyzer on every didOpen /
+  didChange / didSave and publishes diagnostics to the client.
+  Positions are translated from Capa's 1-based line/col to LSP's
+  0-based. `pygls` is an optional dependency (`pip install -e '.[lsp]'`)
+  so the rest of the compiler stays standard-library-only. README
+  carries one-line config snippets for Helix and Neovim.
+  **Pending (v2)**: hover (show type / capabilities), go-to-definition,
+  completion, semantic tokens, code actions for the new "did you mean"
+  hints.
 - [~] **`capa-fmt` (formatter)**, canonical, non-configurable
   (gofmt-style). **v1 (line-level) landed**: CLI flags `--fmt` and
   `--fmt-check` normalise line endings, indentation (tabs to 4

@@ -146,7 +146,50 @@ A VSCode extension providing syntax highlighting lives in
 [`vscode/`](vscode/). It is not on the Marketplace yet; install it
 manually with a symlink (`ln -s "$(pwd)/vscode" ~/.vscode/extensions/capa-language`
 on macOS/Linux, `New-Item -ItemType Junction ...` on Windows) and
-reload VSCode. A full LSP is on the roadmap.
+reload VSCode.
+
+### Language server (LSP)
+
+A diagnostics-only language server ships with the compiler. It
+runs the full lexer + parser + analyzer pipeline on each buffer
+change and publishes errors as LSP diagnostics, so any
+LSP-capable editor surfaces the same messages you would see from
+`capa --check`. Install the optional dependency and launch:
+
+```bash
+pip install 'pygls>=2.0'      # or: pip install -e '.[lsp]'
+python -m capa lsp            # speaks LSP over stdio
+```
+
+Editor configuration is one-line for most clients. For Helix
+(`languages.toml`):
+
+```toml
+[[language]]
+name = "capa"
+language-servers = ["capa"]
+file-types = ["capa"]
+
+[language-server.capa]
+command = "python"
+args = ["-m", "capa", "lsp"]
+```
+
+For Neovim with `nvim-lspconfig`:
+
+```lua
+require("lspconfig").configs.capa = {
+  default_config = {
+    cmd = { "python", "-m", "capa", "lsp" },
+    filetypes = { "capa" },
+    root_dir = require("lspconfig.util").root_pattern(".git", "."),
+  },
+}
+require("lspconfig").capa.setup({})
+```
+
+Hover, go-to-definition, completion, and semantic tokens are on
+the roadmap; v1 is diagnostics only.
 
 ### Website
 

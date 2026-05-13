@@ -25,6 +25,12 @@ classifiers = [
     "Topic :: Software Development :: Interpreters",
 ]
 
+[project.optional-dependencies]
+# Install with: `pip install -e .[lsp]`. Required only when running
+# the language server (`python -m capa lsp`); the rest of the
+# compiler stays dependency-free on the standard library.
+lsp = ["pygls>=2.0"]
+
 [project.scripts]
 capa = "capa.cli:main"
 
