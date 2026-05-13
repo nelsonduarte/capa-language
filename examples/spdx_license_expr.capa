@@ -1,0 +1,214 @@
+// SPDX license expression parser, written in Capa.
+//
+// SPDX 2.3 Annex D defines a small expression language used in
+// the `licenseDeclared` and `licenseConcluded` fields of every
+// Package. Tools that ingest SBOMs need to read these
+// expressions to answer "is package X under a license
+// compatible with my product's licensing policy?".
+//
+// This demo implements the grammar by recursive descent over a
+// flat token list:
+//
+//     expression  = or_expr
+//     or_expr     = and_expr ("OR"  and_expr)*    -- loosest
+//     and_expr    = with_expr ("AND" with_expr)*
+//     with_expr   = atom ("WITH" exception_id)?   -- tightest
+//     atom        = "(" expression ")" | license_id
+//
+// The AST is a sum type with payload structs; the renderer is
+// precedence-aware so the round-trip prints the original form
+// (modulo whitespace). Demonstrated on five canonical SPDX
+// expressions from real packages.
+//
+// What this shows for the thesis:
+//
+// - Capa parsing a structured input format other than its own
+//   source. A recursive-descent parser in 150 lines, with
+//   typed errors via Result<_, String>.
+// - Mutually recursive types (sum LicenseExpr <-> struct
+//   WithNode <-> List<LicenseExpr>) handled cleanly by Phase-1
+//   type registration.
+// - Round-trip rendering with precedence-aware parenthesisation
+//   on the same AST, also a few-line function thanks to the
+//   chain-list shape of AND / OR.
+
+type LicenseExpr =
+    LicenseId(String)
+    LicenseRef(String)
+    WithExc(WithNode)
+    AndAll(ChainNode)
+    OrAny(ChainNode)
+
+type WithNode {
+    base: LicenseExpr,
+    exception: String
+}
+
+type ChainNode {
+    operands: List<LicenseExpr>
+}
+
+type ParseResult {
+    expr: LicenseExpr,
+    next_pos: Int
+}
+
+// ---- tokenisation ----
+
+// Splits on whitespace after inserting spaces around parens, so
+// "MIT OR(Apache-2.0)" tokenises the same as "MIT OR ( Apache-2.0 )".
+fun tokenize(expr: String) -> List<String>
+    let padded = expr.replace("(", " ( ").replace(")", " ) ")
+    let raw = padded.split(" ")
+    let out: List<String> = []
+    for t in raw
+        if not t.is_empty()
+            out.push(t)
+    return out
+
+// ---- recursive-descent parser ----
+
+fun parse_or(tokens: List<String>, pos: Int) -> Result<ParseResult, String>
+    let first = parse_and(tokens, pos)?
+    let operands: List<LicenseExpr> = [first.expr]
+    var cur = first.next_pos
+    while cur < tokens.length() and tokens[cur] == "OR"
+        cur = cur + 1
+        let next = parse_and(tokens, cur)?
+        operands.push(next.expr)
+        cur = next.next_pos
+    if operands.length() == 1
+        return Ok(ParseResult { expr: first.expr, next_pos: cur })
+    return Ok(ParseResult { expr: OrAny(ChainNode { operands: operands }), next_pos: cur })
+
+fun parse_and(tokens: List<String>, pos: Int) -> Result<ParseResult, String>
+    let first = parse_with(tokens, pos)?
+    let operands: List<LicenseExpr> = [first.expr]
+    var cur = first.next_pos
+    while cur < tokens.length() and tokens[cur] == "AND"
+        cur = cur + 1
+        let next = parse_with(tokens, cur)?
+        operands.push(next.expr)
+        cur = next.next_pos
+    if operands.length() == 1
+        return Ok(ParseResult { expr: first.expr, next_pos: cur })
+    return Ok(ParseResult { expr: AndAll(ChainNode { operands: operands }), next_pos: cur })
+
+fun parse_with(tokens: List<String>, pos: Int) -> Result<ParseResult, String>
+    let base = parse_atom(tokens, pos)?
+    if base.next_pos < tokens.length() and tokens[base.next_pos] == "WITH"
+        let after_with = base.next_pos + 1
+        if after_with >= tokens.length()
+            return Err("expected exception identifier after 'WITH'")
+        let exc = tokens[after_with]
+        if exc == "AND" or exc == "OR" or exc == "WITH" or exc == "(" or exc == ")"
+            return Err("'${exc}' is not a valid exception identifier")
+        let node = WithNode { base: base.expr, exception: exc }
+        return Ok(ParseResult { expr: WithExc(node), next_pos: after_with + 1 })
+    return Ok(base)
+
+fun parse_atom(tokens: List<String>, pos: Int) -> Result<ParseResult, String>
+    if pos >= tokens.length()
+        return Err("unexpected end of expression")
+    let tok = tokens[pos]
+    if tok == "("
+        let inner = parse_or(tokens, pos + 1)?
+        if inner.next_pos >= tokens.length() or tokens[inner.next_pos] != ")"
+            return Err("missing ')' to match '(' at position ${pos}")
+        return Ok(ParseResult { expr: inner.expr, next_pos: inner.next_pos + 1 })
+    if tok == ")" or tok == "AND" or tok == "OR" or tok == "WITH"
+        return Err("'${tok}' is not a valid license identifier")
+    if tok.starts_with("LicenseRef-") or tok.starts_with("DocumentRef-")
+        return Ok(ParseResult { expr: LicenseRef(tok), next_pos: pos + 1 })
+    return Ok(ParseResult { expr: LicenseId(tok), next_pos: pos + 1 })
+
+fun parse_license(expr: String) -> Result<LicenseExpr, String>
+    let tokens = tokenize(expr)
+    if tokens.is_empty()
+        return Err("empty license expression")
+    let result = parse_or(tokens, 0)?
+    if result.next_pos != tokens.length()
+        return Err("unexpected token '${tokens[result.next_pos]}' at position ${result.next_pos}")
+    return Ok(result.expr)
+
+// ---- precedence-aware renderer ----
+//
+// min_prec encodes the lowest precedence level the surrounding
+// context will accept without parens:
+//   0 = OR-level (everything fits)
+//   1 = AND-level (OR needs parens)
+//   2 = WITH-level (OR and AND need parens)
+//   3 = atom-level (every compound needs parens)
+
+fun join_strings(xs: List<String>, sep: String) -> String
+    var result: String = ""
+    var first = true
+    for x in xs
+        if first
+            result = x
+            first = false
+        else
+            result = "${result}${sep}${x}"
+    return result
+
+fun render_with_prec(e: LicenseExpr, min_prec: Int) -> String
+    match e
+        LicenseId(s) ->
+            return s
+        LicenseRef(s) ->
+            return s
+        WithExc(node) ->
+            let body = "${render_with_prec(node.base, 3)} WITH ${node.exception}"
+            if min_prec > 2
+                return "(${body})"
+            return body
+        AndAll(node) ->
+            let parts: List<String> = []
+            for op in node.operands
+                parts.push(render_with_prec(op, 2))
+            let body = join_strings(parts, " AND ")
+            if min_prec > 1
+                return "(${body})"
+            return body
+        OrAny(node) ->
+            let parts: List<String> = []
+            for op in node.operands
+                parts.push(render_with_prec(op, 1))
+            let body = join_strings(parts, " OR ")
+            if min_prec > 0
+                return "(${body})"
+            return body
+    return "?"
+
+fun render(e: LicenseExpr) -> String
+    return render_with_prec(e, 0)
+
+// ---- demo ----
+
+fun try_parse(stdio: Stdio, expr: String)
+    stdio.println("input:    ${expr}")
+    match parse_license(expr)
+        Err(msg) ->
+            stdio.println("  ERROR:  ${msg}")
+        Ok(ast) ->
+            stdio.println("  parsed: ${render(ast)}")
+    stdio.println("")
+
+fun main(stdio: Stdio)
+    // Canonical SPDX expressions taken from real-world packages.
+    try_parse(stdio, "MIT")
+    try_parse(stdio, "Apache-2.0 WITH Classpath-exception-2.0")
+    try_parse(stdio, "MIT OR Apache-2.0")
+    try_parse(stdio, "MIT AND BSD-3-Clause AND ISC")
+    try_parse(stdio, "(GPL-2.0-only WITH Classpath-exception-2.0) OR Apache-2.0")
+    // Parens here are required: OR has lower precedence than AND, so
+    // dropping them would mean a different expression. The renderer
+    // should keep them.
+    try_parse(stdio, "(MIT OR Apache-2.0) AND GPL-3.0-only")
+    try_parse(stdio, "LicenseRef-MyCustomLicense")
+
+    // Negative cases: the parser surfaces structured errors so a
+    // tool can flag malformed licence strings instead of guessing.
+    try_parse(stdio, "MIT OR")
+    try_parse(stdio, "(MIT")
+    try_parse(stdio, "AND MIT")

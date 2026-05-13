@@ -279,11 +279,18 @@ Capa as artefact in the SBOM Governance thesis:
   via three-colour DFS that returns `Some(witness)` for an
   arbitrary node in a cycle or `None` for a DAG. Returns a
   human-readable violation list, empty list = the document is
-  internally consistent. **Pending**: optional SPDX fields
-  (annotations, snippets, has-extracted-licensing-info), the
-  tag-value alternative serialisation, and the thesis-chapter
-  writeup that frames this as the "representation +
-  validation" piece.
+  internally consistent. **License-expression parser landed
+  separately** at `examples/spdx_license_expr.capa`: a
+  recursive-descent parser for the SPDX 2.3 Annex D grammar
+  (`MIT OR (Apache-2.0 AND BSD-3-Clause WITH Classpath-
+  exception-2.0)`), with a typed LicenseExpr AST (sum +
+  mutually recursive struct payloads), structured Result errors
+  on malformed input, and a precedence-aware renderer that
+  round-trips (drops redundant parens, keeps load-bearing
+  ones). **Pending**: optional SPDX fields (annotations,
+  snippets, has-extracted-licensing-info), the tag-value
+  alternative serialisation, and the thesis-chapter writeup
+  that frames this as the "representation + validation" piece.
   Found and fixed a real analyzer bug along the way: `?` was
   returning `TyUnknown` instead of unwrapping `Result<T, E>` /
   `Option<T>` to `T`, which blocked type-aware method dispatch

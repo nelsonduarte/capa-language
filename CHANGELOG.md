@@ -11,6 +11,25 @@ breaking changes and the discipline is still being shaped.
 
 ### Added
 
+- **SPDX license-expression parser, written in Capa**
+  (`examples/spdx_license_expr.capa`): a recursive-descent
+  parser for the SPDX 2.3 Annex D grammar used in every
+  `licenseDeclared` / `licenseConcluded` field of every Package
+  in an SBOM. Handles the three precedence levels (`OR` <
+  `AND` < `WITH`), parenthesised sub-expressions, and the
+  `LicenseRef-...` / `DocumentRef-...` identifier shapes.
+  The AST is a sum type (`LicenseId` / `LicenseRef` /
+  `WithExc` / `AndAll` / `OrAny`) with mutually recursive
+  struct payloads, and a precedence-aware renderer round-trips
+  the AST back to source: redundant parens are dropped (e.g.
+  `(GPL-2.0-only WITH X) OR Apache-2.0` -> `GPL-2.0-only WITH
+  X OR Apache-2.0` because WITH binds tighter than OR), but
+  load-bearing parens are preserved (`(MIT OR Apache-2.0) AND
+  GPL-3.0-only` stays as-is because OR is lower than AND).
+  Malformed input surfaces as a structured `Result<_, String>`
+  error with positional context. Regression test in
+  `tests/test_transpiler.py::test_spdx_license_expr`.
+
 - **SBOM validation in both parsers, referential integrity +
   cycle detection**:
   `validate_spdx(doc: SpdxDocument) -> List<String>` walks the

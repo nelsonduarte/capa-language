@@ -602,6 +602,29 @@ class TestTranspileExamples(unittest.TestCase):
         self.assertIn("DESCRIBES", out)
         self.assertIn("Validation: ok (refs resolve + acyclic)", out)
 
+    def test_spdx_license_expr(self):
+        # SPDX 2.3 Annex D license-expression parser, recursive
+        # descent over a tokenised input. Verifies precedence
+        # handling on both axes: redundant parens dropped on
+        # round-trip, load-bearing parens preserved.
+        rc, out, err = self._run_example("examples/spdx_license_expr.capa")
+        self.assertEqual(rc, 0, err)
+        # Simple ident round-trips.
+        self.assertIn("input:    MIT\n  parsed: MIT", out)
+        # WITH binds tighter than OR; redundant parens removed.
+        self.assertIn(
+            "parsed: GPL-2.0-only WITH Classpath-exception-2.0 OR Apache-2.0",
+            out,
+        )
+        # OR has lower precedence than AND; parens MUST survive.
+        self.assertIn("parsed: (MIT OR Apache-2.0) AND GPL-3.0-only", out)
+        # Custom licence references.
+        self.assertIn("parsed: LicenseRef-MyCustomLicense", out)
+        # Error paths surface structured messages.
+        self.assertIn("ERROR:  unexpected end of expression", out)
+        self.assertIn("ERROR:  missing ')'", out)
+        self.assertIn("ERROR:  'AND' is not a valid license identifier", out)
+
     def test_cyclonedx_parser(self):
         # The other half of the SBOM-parsing pair: CycloneDX 1.5
         # JSON, also written in Capa. Verifies metadata, both
