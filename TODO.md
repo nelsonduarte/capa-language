@@ -195,10 +195,17 @@ to public.
 
 ## Code-quality maintenance (P2)
 
-- [ ] **Split `analyzer.py` (2800+ lines)** into
-  `analyzer/discipline.py`, `analyzer/inference.py`,
-  `analyzer/dispatch.py`, etc. Currently navigable but starting to
-  feel large.
+- [~] **Split `analyzer.py`**. Two contained extractions landed:
+  the 600-line built-in registration moved to a declarative table
+  in `capa/builtins.py`, and the Levenshtein-based "did you mean"
+  matcher moved to `capa/_suggest.py` (the analyzer just collects
+  the haystack and forwards). `analyzer.py` is now 2738 lines,
+  down from 3300+. The cleaner full split (state base class +
+  typing / discipline / dispatch mixins, in a `capa/analyzer/`
+  package mirroring the `capa/lsp/` shape) is queued for v2: the
+  `Analyzer` class has heavy cross-method state sharing and the
+  mixin split needs surgical work that does not fit in a single
+  commit without taking on real risk.
 - [~] **Error-message audit**. First pass landed: the five most
   common typo-shaped errors (`undefined name`, `undefined type`,
   `type X has no method Y`, `struct S has no field F`,

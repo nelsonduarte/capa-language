@@ -348,83 +348,9 @@ class Analyzer:
     # ----------------------------------------------------------
     # "Did you mean?" suggestions
     # ----------------------------------------------------------
-
-    @staticmethod
-    def _edit_distance(a: str, b: str) -> int:
-        """Levenshtein distance between ``a`` and ``b``.
-
-        Inlined to avoid a stdlib dependency that does not exist;
-        used only at error time, so the O(len(a) * len(b)) cost is
-        not on the hot path.
-        """
-        if a == b:
-            return 0
-        if not a:
-            return len(b)
-        if not b:
-            return len(a)
-        prev = list(range(len(b) + 1))
-        for i, ca in enumerate(a, 1):
-            curr = [i] + [0] * len(b)
-            for j, cb in enumerate(b, 1):
-                cost = 0 if ca == cb else 1
-                curr[j] = min(
-                    curr[j - 1] + 1,        # insertion
-                    prev[j] + 1,            # deletion
-                    prev[j - 1] + cost,     # substitution
-                )
-            prev = curr
-        return prev[-1]
-
-    def _suggest(
-        self, needle: str, haystack: list[str],
-    ) -> Optional[str]:
-        """Return the closest candidate from ``haystack`` to
-        ``needle`` if it is plausibly a typo, otherwise ``None``.
-
-        Threshold scales with the length of ``needle``: distance 1
-        is enough for any name, distance 2 for names >= 4 chars,
-        distance 3 only for names >= 8 chars. The "did you mean"
-        hint is suppressed for very short needles (<= 2 chars)
-        because almost everything looks similar at that scale.
-        """
-        if len(needle) <= 2:
-            return None
-        # Score key: lower is better. Primary by edit distance
-        # (case-insensitive); ties broken by
-        #   (1) same first letter (case-sensitive): so ``Pint``
-        #       prefers ``Point`` over ``Int``,
-        #   (2) same first-letter case: so ``reslt`` prefers the
-        #       local ``result`` over the built-in ``Result``,
-        #   (3) longer candidate (more specific).
-        first_char = needle[:1] if needle else ""
-
-        def score(cand: str) -> tuple[int, int, int, int]:
-            d = self._edit_distance(needle.lower(), cand.lower())
-            same_letter = 0 if cand[:1].lower() == first_char.lower() else 1
-            same_case = 0 if cand[:1] == first_char else 1
-            return (d, same_letter, same_case, -len(cand))
-
-        best: tuple[tuple[int, int, int, int], str] | None = None
-        for cand in haystack:
-            if not cand or cand.startswith("_"):
-                continue
-            s = score(cand)
-            if best is None or s < best[0]:
-                best = (s, cand)
-        if best is None:
-            return None
-        d = best[0][0]
-        name = best[1]
-        if d == 0:
-            return None  # exact match makes no sense as a suggestion
-        if d == 1:
-            return name
-        if d == 2 and len(needle) >= 4:
-            return name
-        if d == 3 and len(needle) >= 8:
-            return name
-        return None
+    # The matching algorithm (Levenshtein + case-aware
+    # tie-breaking) lives in :mod:`capa._suggest`; the methods
+    # here only collect the haystack from the current scope.
 
     def _names_in_scope(self) -> list[str]:
         """Flatten the current scope chain into a list of names
@@ -470,13 +396,10 @@ class Analyzer:
     def _hint_did_you_mean(
         self, needle: str, haystack: list[str],
     ) -> str:
-        """Render a parenthesised ``did you mean 'X'?`` suffix, or
-        ``""`` when no plausible suggestion exists. The caller
-        concatenates this onto the base error message."""
-        suggestion = self._suggest(needle, haystack)
-        if suggestion is None:
-            return ""
-        return f"; did you mean {suggestion!r}?"
+        """Thin pass-through to :func:`capa._suggest.hint_did_you_mean`,
+        kept on the class so existing call sites don't change."""
+        from ._suggest import hint_did_you_mean
+        return hint_did_you_mean(needle, haystack)
 
     def _push_type_params(self, names: list[str]) -> None:
         self.type_param_stack.append(set(names))
