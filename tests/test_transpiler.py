@@ -600,7 +600,7 @@ class TestTranspileExamples(unittest.TestCase):
         self.assertIn("SHA1 = aaaabbbbcccc", out)
         self.assertIn("Relationships (1):", out)
         self.assertIn("DESCRIBES", out)
-        self.assertIn("Validation: ok", out)
+        self.assertIn("Validation: ok (refs resolve + acyclic)", out)
 
     def test_cyclonedx_parser(self):
         # The other half of the SBOM-parsing pair: CycloneDX 1.5
@@ -621,7 +621,7 @@ class TestTranspileExamples(unittest.TestCase):
         # Dependency graph: chalk depends on lodash
         self.assertIn("pkg:npm/chalk@5.3.0", out)
         self.assertIn("-> pkg:npm/lodash@4.17.21", out)
-        self.assertIn("Validation: ok", out)
+        self.assertIn("Validation: ok (refs resolve + acyclic)", out)
 
     def test_net_attenuation(self):
         rc, out, err = self._run_example("examples/net_attenuation.capa")

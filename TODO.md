@@ -272,15 +272,18 @@ Capa as artefact in the SBOM Governance thesis:
   matching on every `JsonValue` variant. Regression test in
   `tests/test_transpiler.py::test_spdx_parser`. **Validation
   pass added** (`validate_spdx(doc) -> List<String>`): checks
-  referential integrity, every `Relationship.source` and
-  `Relationship.target` must point at a known SPDXID
-  (`SPDXRef-DOCUMENT` plus every `Package.SPDXID`). Returns a
+  two invariants: (1) referential integrity, every
+  `Relationship.source` and `Relationship.target` must point at
+  a known SPDXID (`SPDXRef-DOCUMENT` plus every
+  `Package.SPDXID`); (2) the relationship graph is acyclic,
+  via three-colour DFS that returns `Some(witness)` for an
+  arbitrary node in a cycle or `None` for a DAG. Returns a
   human-readable violation list, empty list = the document is
   internally consistent. **Pending**: optional SPDX fields
   (annotations, snippets, has-extracted-licensing-info), the
-  tag-value alternative serialisation, cycle detection on the
-  Relationship graph, and the thesis-chapter writeup that
-  frames this as the "representation + validation" piece.
+  tag-value alternative serialisation, and the thesis-chapter
+  writeup that frames this as the "representation +
+  validation" piece.
   Found and fixed a real analyzer bug along the way: `?` was
   returning `TyUnknown` instead of unwrapping `Result<T, E>` /
   `Option<T>` to `T`, which blocked type-aware method dispatch
@@ -300,14 +303,15 @@ Capa as artefact in the SBOM Governance thesis:
   `tests/test_transpiler.py::test_cyclonedx_parser`.
   **Validation pass added**
   (`validate_cyclonedx(doc) -> List<String>`): mirrors the
-  SPDX validator, checks that every `Dependency.ref` and every
-  entry in `dependsOn[]` points at a known `bom-ref` (the
-  `metadata.component.bom-ref` plus every
-  `components[i].bom-ref`). **Pending**: vulnerabilities[] /
-  VEX, services[], evidence[], signatures, cycle detection on
-  the dependency graph, and the cross-format comparison
-  chapter that ties SPDX and CycloneDX into a single
-  "representation + validation" narrative for the thesis.
+  SPDX validator on both axes: referential integrity (every
+  `Dependency.ref` and every entry in `dependsOn[]` must point
+  at a known `bom-ref`, drawn from `metadata.component.bom-ref`
+  plus every `components[i].bom-ref`) and acyclicity (same
+  three-colour DFS as the SPDX side). **Pending**:
+  vulnerabilities[] / VEX, services[], evidence[], signatures,
+  and the cross-format comparison chapter that ties SPDX and
+  CycloneDX into a single "representation + validation"
+  narrative for the thesis.
 - [ ] **`capability Provenance` (user-defined)**, capability that
   represents the right to query/verify a piece of supply-chain
   metadata. Demonstrates user-defined caps in a real domain.

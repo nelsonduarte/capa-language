@@ -235,7 +235,82 @@ fun validate_spdx(doc: SpdxDocument) -> List<String>
             errors.push("relationship source '${r.source}' is not a known SPDXID")
         if not ids.contains(r.target)
             errors.push("relationship target '${r.target}' is not a known SPDXID")
+    let cycle = detect_spdx_cycle(doc)
+    match cycle
+        None ->
+            ()
+        Some(node) ->
+            errors.push("relationship graph contains a cycle through '${node}'")
     return errors
+
+// ---- validation: cycle detection ----
+//
+// A well-formed SPDX document's relationship graph is a DAG: a
+// supply-chain cycle ("A depends on B depends on A") is either a
+// data-modelling error or a sign of corrupted provenance. We
+// detect cycles with the classic three-colour DFS:
+//
+//   white: never visited (not in any set)
+//   gray:  currently being visited (in `in_progress`)
+//   black: fully visited (in `done`)
+//
+// Encountering a gray vertex means a back-edge, which means a
+// cycle. We return Some(node) for the first gray vertex we hit
+// (an arbitrary witness inside the cycle) and None when the
+// graph is acyclic.
+//
+// Treats every Relationship as a directed edge from
+// `spdxElementId` to `relatedSpdxElement`, regardless of type
+// (DEPENDS_ON, CONTAINS, DESCRIBES, ...). A future refinement
+// could classify cycles per relationship type; today, *any*
+// cycle in the graph is the auditor's signal.
+
+fun build_spdx_adj(doc: SpdxDocument) -> Map<String, List<String>>
+    let adj: Map<String, List<String>> = new_map()
+    for r in doc.relationships
+        let existing = match adj.get(r.source)
+            None -> []
+            Some(xs) -> xs
+        existing.push(r.target)
+        adj.set(r.source, existing)
+    return adj
+
+fun has_cycle_from(
+    adj: Map<String, List<String>>,
+    node: String,
+    in_progress: Set<String>,
+    done: Set<String>
+) -> Option<String>
+    if done.contains(node)
+        return None
+    if in_progress.contains(node)
+        return Some(node)
+    in_progress.add(node)
+    let children = match adj.get(node)
+        None -> []
+        Some(xs) -> xs
+    for c in children
+        match has_cycle_from(adj, c, in_progress, done)
+            None ->
+                ()
+            Some(witness) ->
+                return Some(witness)
+    in_progress.remove(node)
+    done.add(node)
+    return None
+
+fun detect_spdx_cycle(doc: SpdxDocument) -> Option<String>
+    let adj = build_spdx_adj(doc)
+    let in_progress: Set<String> = new_set()
+    let done: Set<String> = new_set()
+    let ids = collect_spdx_ids(doc)
+    for n in ids.to_list()
+        match has_cycle_from(adj, n, in_progress, done)
+            None ->
+                ()
+            Some(witness) ->
+                return Some(witness)
+    return None
 
 // ---- demo ----
 
@@ -271,7 +346,7 @@ fun main(stdio: Stdio)
             stdio.println("")
             let violations = validate_spdx(doc)
             if violations.is_empty()
-                stdio.println("Validation: ok (referential integrity holds)")
+                stdio.println("Validation: ok (refs resolve + acyclic)")
             else
                 stdio.println("Validation: ${violations.length()} issue(s)")
                 for v in violations

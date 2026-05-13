@@ -342,7 +342,71 @@ fun validate_cyclonedx(doc: CdxDocument) -> List<String>
         for child in d.depends_on
             if not refs.contains(child)
                 errors.push("dependency target '${child}' is not a known bom-ref")
+    match detect_cyclonedx_cycle(doc)
+        None ->
+            ()
+        Some(node) ->
+            errors.push("dependency graph contains a cycle through '${node}'")
     return errors
+
+// ---- validation: cycle detection ----
+//
+// The CycloneDX dependsOn[] graph must be a DAG: a cycle ("A
+// depends on B depends on A") is either a SBOM-generation bug
+// or a sign of corrupted dependency resolution. Same classic
+// three-colour DFS as the SPDX side: white = unvisited (not in
+// any set), gray = in_progress (on the DFS stack), black = done
+// (fully explored). A gray-edge encounter signals the cycle.
+// Returns Some(witness) with an arbitrary node from the cycle,
+// or None when the graph is acyclic.
+
+fun build_cdx_adj(doc: CdxDocument) -> Map<String, List<String>>
+    let adj: Map<String, List<String>> = new_map()
+    for d in doc.dependencies
+        let existing = match adj.get(d.ref)
+            None -> []
+            Some(xs) -> xs
+        for child in d.depends_on
+            existing.push(child)
+        adj.set(d.ref, existing)
+    return adj
+
+fun has_cycle_from(
+    adj: Map<String, List<String>>,
+    node: String,
+    in_progress: Set<String>,
+    done: Set<String>
+) -> Option<String>
+    if done.contains(node)
+        return None
+    if in_progress.contains(node)
+        return Some(node)
+    in_progress.add(node)
+    let children = match adj.get(node)
+        None -> []
+        Some(xs) -> xs
+    for c in children
+        match has_cycle_from(adj, c, in_progress, done)
+            None ->
+                ()
+            Some(witness) ->
+                return Some(witness)
+    in_progress.remove(node)
+    done.add(node)
+    return None
+
+fun detect_cyclonedx_cycle(doc: CdxDocument) -> Option<String>
+    let adj = build_cdx_adj(doc)
+    let in_progress: Set<String> = new_set()
+    let done: Set<String> = new_set()
+    let refs = collect_bom_refs(doc)
+    for n in refs.to_list()
+        match has_cycle_from(adj, n, in_progress, done)
+            None ->
+                ()
+            Some(witness) ->
+                return Some(witness)
+    return None
 
 // ---- demo ----
 
@@ -390,7 +454,7 @@ fun main(stdio: Stdio)
             stdio.println("")
             let violations = validate_cyclonedx(doc)
             if violations.is_empty()
-                stdio.println("Validation: ok (referential integrity holds)")
+                stdio.println("Validation: ok (refs resolve + acyclic)")
             else
                 stdio.println("Validation: ${violations.length()} issue(s)")
                 for v in violations
