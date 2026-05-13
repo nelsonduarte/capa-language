@@ -11,6 +11,60 @@ breaking changes and the discipline is still being shaped.
 
 ### Added
 
+- **SPDX 2.3 JSON parser, written in Capa**
+  (`examples/spdx_parser.capa`): the first real-world SBOM demo
+  written in the language. Parses the core SPDX 2.3 fields
+  (`spdxVersion`, `dataLicense`, document metadata, `packages`
+  with `versionInfo` / `licenseConcluded` / `checksums`, and
+  `relationships`) into typed Capa structs
+  (`SpdxDocument`, `Package`, `Checksum`, `Relationship`,
+  `CreationInfo`). Demonstrates: a user-defined
+  `capability SbomReader` marking the trust boundary for any
+  function that touches an SBOM, pattern matching on every
+  `JsonValue` variant, and `?`-chaining on `Result` so each
+  parser function reads top-down without manual match-on-error.
+  Optional-field helpers (`string_field_or`, `bool_field_or`)
+  cover SPDX's "field may be omitted, fall back to a default"
+  semantics. Regression test in
+  `tests/test_transpiler.py::test_spdx_parser`.
+
+- **Arity errors include the function signature**: the
+  analyzer's `call to 'foo': expected 2 arguments, got 3` now
+  appends `(signature: fun(Int, Int) -> Int)` so the reader
+  sees the parameter types alongside the count. Applies to both
+  free-function and method calls, on both the positional and
+  named-argument paths.
+
+- **Top-level keyword-typo hints**: writing `def foo()`,
+  `class Foo`, `function bar()`, `func baz()`, `fn quux()`,
+  `interface I`, `enum E`, `struct S`, or a bare `let` at the
+  top level now produces a targeted parser error pointing at
+  the Capa equivalent (`fun`, `type`, `trait`, `type Name =
+  ...`, `const`). The most common newcomer-from-Python or
+  -from-Rust typos no longer produce the generic "expected
+  top-level declaration".
+
+- **Built-in capability method typos are now caught**: calling
+  a method that does not exist on one of the built-in
+  capabilities (`Stdio`, `Fs`, `Env`, `Net`, `Clock`, `Random`,
+  `Unsafe`) was previously silently accepted and returned
+  `TyUnknown`. The analyzer now raises a `capability 'Stdio'
+  has no method 'prntln'; did you mean 'println'?` with the
+  same Levenshtein hint already used for type-method typos.
+  User-defined capabilities are unchanged (their method tables
+  may be intentionally partial).
+
+- **Formatter intra-line spacing pass (v2)**: outside string
+  literals, char literals, and `//` comments, runs of two or
+  more spaces in code collapse to a single space, and a
+  missing space after `,` is inserted. The pass uses a
+  character-by-character state machine, so escaped quotes
+  inside literals are handled correctly and trailing commas
+  before `)` / `]` / `}` are preserved. Expression re-emission
+  from the AST (operator spacing around binary operators,
+  brace placement) is still deferred to a future v3 pass that
+  needs a `//` comment-preservation design first.
+
 - **One-line install scripts** at [deploy/install.sh](deploy/install.sh)
   (Linux / macOS Apple Silicon) and
   [deploy/install.ps1](deploy/install.ps1) (Windows PowerShell).
@@ -227,6 +281,37 @@ breaking changes and the discipline is still being shaped.
   config snippets for Helix and Neovim.
 
 ### Changed
+
+- **`?` operator now propagates the inner type**: previously the
+  analyzer typed every `expr?` as `TyUnknown`, which silently
+  defeated type-aware method dispatch on anything downstream of
+  a `?`. The most visible symptom was `Map.get(...)` failing to
+  lower into the `Some(m[k]) if k in m else None_` ternary when
+  `m` was the result of a `Result`-returning helper, producing a
+  runtime `UnboundLocalError` inside the transpiled match-as-
+  expression. Now `expr?` unwraps `Result<T, E>` / `Option<T>`
+  to `T`; other types (and `TyUnknown` inputs) still degrade to
+  `TyUnknown`. Fix also exposed a long-standing test-harness
+  hole: `tests/test_transpiler.py::transpile_only` was running
+  the lexer + parser without the analyzer, so the transpiler
+  saw an empty types map and the same dispatch path silently
+  degraded under test. The helper now calls `analyze()` before
+  `transpile()`.
+
+- **Internal: every compiler file over ~700 lines is now a
+  package**. Following the analyzer split, the same mixin /
+  per-topic-module pattern was applied to the parser
+  (5 mixins), transpiler (4 mixins), runtime (6 topic modules:
+  Result/Option, capabilities, py-interop, list, conversion,
+  JSON), manifest (5 topic modules), docgen (4 topic modules),
+  capa_ast (6 per-category modules), and lexer (4 mixins). Each
+  package's `__init__.py` is either a thin re-export or a small
+  composition orchestrator. `cli.py` and `lsp/server.py` were
+  evaluated and kept whole because their structure is sequential
+  pipeline glue (CLI) or pygls-registration closures (LSP),
+  neither of which has the seams that justify a split. No
+  user-visible behaviour change, but the surface for future
+  contributors is dramatically smaller per concern.
 
 - **"Did you mean?" hints on five common analyzer errors**:
   `undefined name`, `undefined type`, `type X has no method Y`,

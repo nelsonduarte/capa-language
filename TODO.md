@@ -151,10 +151,16 @@ to public.
   whitespace, blank-line clusters (collapse to one), and the final
   newline. Block-comment interiors (`/* ... */` and `/** ... */`)
   are preserved verbatim so Javadoc-style `*` continuation lines
-  survive. Idempotent by construction. **Pending (v2)**: intra-line
-  canonicalisation (operator spacing, brace placement, expression
-  re-emission from the AST) and `//` comment preservation through
-  the future AST round-trip.
+  survive. Idempotent by construction. **v2 intra-line pass also
+  landed**: a character-by-character walk over each non-block
+  line collapses runs of two or more spaces in code to a single
+  space, and inserts a missing space after `,`. Strings, char
+  literals, and `//` comments are tracked and skipped; trailing
+  commas before `)`/`]`/`}` are preserved. **Pending (v3)**:
+  expression re-emission from the AST (operator spacing around
+  binary ops, brace placement) and `//` comment preservation
+  through the AST round-trip. v3 needs a comment-preservation
+  design before any AST round-trip is safe.
 - [ ] **Package manager**, only meaningful once there's a module
   system. P3
 - [ ] **REPL**, deleted earlier. Reimplement when language is
@@ -195,11 +201,18 @@ to public.
 
 ## Code-quality maintenance (P2)
 
-- [x] **Split `analyzer.py`** into a `capa/analyzer/` package
-  with one mixin per responsibility. Built-in registration
-  moved to a declarative table in `capa/builtins.py` (313 lines);
-  Levenshtein matcher moved to `capa/_suggest.py` (101 lines);
-  the analyzer class itself was split into eight mixins:
+- [x] **Split every >700-line compiler file into a package**.
+  Following the analyzer split, the same pattern was applied to
+  the parser, transpiler, runtime, manifest, docgen, capa_ast,
+  and lexer. All large files now live in `capa/<name>/__init__.py`
+  with per-topic submodules; `__init__.py` is either a thin
+  re-export (runtime, manifest, docgen, capa_ast) or hosts a
+  ``ClassName(MixinA, MixinB, ...)`` composition (analyzer,
+  parser, transpiler, lexer). `cli.py` (396 lines) and
+  `lsp/server.py` (420 lines) were evaluated and kept whole:
+  the first is sequential pipeline glue, the second is a pygls
+  registration block where every handler is a closure. The
+  analyzer's own split is documented below for reference:
   - `_typing.py` (92 lines): TyVar generation + substitution.
   - `_discipline.py` (252 lines): capability discipline
     (aliasing, no-capability, no-builtin-capability,
@@ -216,25 +229,29 @@ to public.
     + type resolution + signature inference.
   - `_expressions.py` (492 lines): lambda / match / if-expr +
     the per-shape expression checkers.
-  
-  ``capa/analyzer/__init__.py`` is now **423 lines** (down from
+
+  ``capa/analyzer/__init__.py`` is **423 lines** (down from
   3300+, an 87% reduction), and hosts only the Analyzer
   composition, the state types (Symbol, Scope, AnalysisResult,
   AnalysisError, SymbolKind), `__init__`, the public `analyze()`
   function, the small bookkeeping helpers (`_err`, scope and
   type-param push/pop, suggestion haystack collectors), and the
   shared `_signatures_match` helper.
-- [~] **Error-message audit**. First pass landed: the five most
-  common typo-shaped errors (`undefined name`, `undefined type`,
-  `type X has no method Y`, `struct S has no field F`,
-  `unknown variant V`) now carry a `did you mean 'X'?` suffix when
-  the analyzer can find a close candidate in scope. Levenshtein
-  with case-aware tie-breaking; suppressed for needles `<=` 2
-  characters. Variant suggestions are scoped to the scrutinee's
-  sum type when known. **Pending**: arity-mismatch hints
-  (`expected 2 arguments, got 3` could surface the function
-  signature), capability-mismatch suggestions, and a pass over
-  parser messages.
+- [x] **Error-message audit (second pass)**. The five typo-shaped
+  hints from the first pass (`did you mean 'X'?` on undefined
+  names, types, methods, fields, variants) are now complemented by
+  three more:
+  - **Arity errors include the signature**: `"call to 'add':
+    expected 2 arguments, got 3 (signature: fun(Int, Int) ->
+    Int)"`. Same shape for method calls.
+  - **Built-in capability method typos are caught**:
+    `stdio.prntln(...)` no longer passes silently; it raises
+    `"capability 'Stdio' has no method 'prntln'; did you mean
+    'println'?"` with the standard Levenshtein hint.
+  - **Top-level keyword typos detected**: `def`/`function`/`func`
+    /`fn` → suggest `fun`; `class`/`struct` → suggest `type`;
+    `interface` → suggest `trait`; `enum` → suggest `type Name
+    = ...`; bare `let` at top level → suggest `const`.
 - [ ] **Analyzer performance**, no benchmarks. Only worth attacking
   if someone reports slowness.
 - [ ] **Test-coverage review**, `coverage.py` run + identify which
@@ -246,9 +263,22 @@ to public.
 
 Capa as artefact in the SBOM Governance thesis:
 
-- [ ] **SPDX 2.3 parser in Capa**, proves Capa can mex with the
-  real SBOM format. Becomes a thesis chapter on representation.
-  ⏱ 1 week
+- [~] **SPDX 2.3 parser in Capa**, proves Capa can mex with the
+  real SBOM format. **Demo landed** at
+  `examples/spdx_parser.capa`: parses the core SPDX 2.3 fields
+  (document metadata, packages, file checksums, relationships)
+  into typed Capa structs, with `capability SbomReader` marking
+  the trust boundary, full `?`-chaining on `Result`, and pattern
+  matching on every `JsonValue` variant. Regression test in
+  `tests/test_transpiler.py::test_spdx_parser`. **Pending**:
+  optional SPDX fields (annotations, snippets, has-extracted-
+  licensing-info), the tag-value alternative serialisation,
+  and the thesis-chapter writeup that frames this as the
+  "representation" piece. Found and fixed a real analyzer bug
+  along the way: `?` was returning `TyUnknown` instead of
+  unwrapping `Result<T, E>` / `Option<T>` to `T`, which blocked
+  type-aware method dispatch (e.g. `Map.get` lowering) on any
+  expression downstream of a `?`.
 - [ ] **CycloneDX 1.5 parser in Capa**, same story.
 - [ ] **`capability Provenance` (user-defined)**, capability that
   represents the right to query/verify a piece of supply-chain
