@@ -11,6 +11,26 @@ breaking changes and the discipline is still being shaped.
 
 ### Added
 
+- **CVE case study: eslint-scope 2018**
+  (`examples/cve_eslint_scope.capa` +
+  `docs/cve_eslint_scope.md`). A miniature scope analyser whose
+  signature `(List<Decl>) -> List<Binding>` precludes the
+  `Fs`-read + `Net`-POST behaviour that the malicious
+  `eslint-scope@3.7.2` carried on 12 July 2018. The companion
+  writeup walks through the attack (read `~/.npmrc`, exfiltrate
+  the `_authToken` to a Pastebin drop, overwrite the malicious
+  code with the legitimate version), the analyzer rejection of
+  the transliterated attack, the role of `Fs.restrict_to` as
+  defence in depth, and the honest limits (capability holder
+  with bad intent, the `Unsafe` boundary, Capa is not a
+  sandbox). The second CVE case study in the repo; the
+  first was the event-stream walkthrough. Both follow the same
+  paired-file pattern so a third is mechanical to add. The
+  CRA-aligned policy story for an auditor reading the
+  resulting SBOM is in
+  `examples/sbom_capability_audit.capa`. Regression test in
+  `tests/test_transpiler.py::test_cve_eslint_scope`.
+
 - **Property-based test scaffolding** with Hypothesis, in
   `tests/test_properties.py`. Six initial properties that
   exercise the lexer, parser, and formatter over arbitrary

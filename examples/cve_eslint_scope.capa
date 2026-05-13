@@ -1,0 +1,106 @@
+// cve_eslint_scope.capa, the eslint-scope npm credential-theft
+// incident, in Capa. The companion writeup is
+// docs/cve_eslint_scope.md.
+//
+// On 12 July 2018, the maintainer's npm credentials for
+// `eslint-scope` were compromised. The attacker published
+// `eslint-scope@3.7.2`, a tampered version whose bundled code,
+// on import, read the user's `~/.npmrc`, exfiltrated the
+// `_authToken` to an attacker-controlled drop, and then
+// overwrote its own code with the legitimate version to hide
+// the evidence. The stolen tokens were then used to attempt
+// further package compromises across the npm ecosystem.
+//
+// `eslint-scope` is, legitimately, a *pure analysis library*:
+// given a JavaScript AST it returns a description of which
+// names are bound in which lexical scopes. It needs no
+// filesystem access, no network, no environment, no shell.
+// The compromise relied entirely on the language's ambient
+// authority, the malicious code could read disk and reach
+// the network because every Node.js function can.
+//
+// In Capa the same library, expressed honestly, cannot mount
+// the attack. Its function signatures advertise data-in /
+// data-out and *do not declare* `Fs` or `Net`. The body cannot
+// reach for either; they are not in scope. The class of attack
+// is structurally ruled out at compile time.
+
+// ===============================================================
+// What a Capa version of eslint-scope's API actually looks like.
+// ===============================================================
+//
+// A miniature scope analyser: takes a sequence of declarations,
+// returns a list of bindings with their declaring scope index.
+// Real eslint-scope is hundreds of lines; the shape of the API
+// surface is what matters here. Look at the signatures.
+
+type DeclKind =
+    DeclLet
+    DeclVar
+    DeclConst
+
+type Decl {
+    name: String,
+    kind: DeclKind
+}
+
+type Scope {
+    parent: Int,            // -1 for the root scope
+    decls: List<Decl>
+}
+
+type Binding {
+    name: String,
+    scope_index: Int,
+    kind: DeclKind
+}
+
+// Append a declaration to the innermost scope. Pure data shuffling.
+fun bind(scopes: List<Scope>, scope_idx: Int, d: Decl) -> Unit
+    var i = 0
+    for s in scopes
+        if i == scope_idx
+            s.decls.push(d)
+        i = i + 1
+
+// Resolve every declaration in the program to a typed Binding.
+// Note the signature: `(List<Decl>) -> List<Binding>`. No Fs, no
+// Net, no Env. The analyzer cannot reach for any of those, and
+// even if it tried, the type checker would reject the program.
+fun analyse_scopes(program: List<Decl>) -> List<Binding>
+    let scopes: List<Scope> = [Scope { parent: 0 - 1, decls: [] }]
+    let bindings: List<Binding> = []
+    for d in program
+        bind(scopes, 0, d)
+        bindings.push(Binding {
+            name: d.name,
+            scope_index: 0,
+            kind: d.kind
+        })
+    return bindings
+
+// Format a binding for human consumption. Pure.
+fun describe(b: Binding) -> String
+    let kind_str = match b.kind
+        DeclLet -> "let"
+        DeclVar -> "var"
+        DeclConst -> "const"
+    return "${kind_str} ${b.name} in scope #${b.scope_index}"
+
+// ===============================================================
+// `main`, the only function with capabilities in scope.
+// ===============================================================
+//
+// `main` holds `Stdio` (for the demo's prints) and nothing else.
+// The analyser receives only data; it has no path to ambient
+// authority even if the analyser's code were malicious.
+fun main(stdio: Stdio)
+    let program: List<Decl> = [
+        Decl { name: "x", kind: DeclLet },
+        Decl { name: "API_URL", kind: DeclConst },
+        Decl { name: "config", kind: DeclVar }
+    ]
+    let bindings = analyse_scopes(program)
+    stdio.println("scope analysis produced ${bindings.length()} bindings:")
+    for b in bindings
+        stdio.println("  - ${describe(b)}")

@@ -288,12 +288,23 @@ items here so they stay visible:
   set, monotonic except under `consume`. Targets two theorems
   (Capability Soundness, Manifest Completeness). Non-negotiable
   before submitting to PLAS / EuroS&P / ESORICS.
-- [ ] **3-5 CVE case studies** mapped to Capa typing rules.
-  Pick real supply-chain incidents (`event-stream` 2018,
-  `ua-parser-js` 2021, `colors`/`faker` 2022, `xz-utils` 2024,
-  `eslint-scope` 2018), write each as an `examples/cve_*.capa`
-  showing which typing rule rejects it. Each is half a day to
-  a day of work, not the "afternoon" the reviewer estimated.
+- [~] **3-5 CVE case studies** mapped to Capa typing rules.
+  Each is a paired `examples/cve_*.capa` (safe library) +
+  `docs/cve_*.md` (walkthrough showing the attack pattern,
+  what an attacker would transliterate into Capa, and the
+  exact analyzer rejection). Two landed so far:
+  - **event-stream 2018**:
+    `examples/demo_event_stream.capa` +
+    `docs/demo-event-stream.md`. Bitcoin-wallet exfiltration via
+    a tampered dependency.
+  - **eslint-scope 2018**:
+    `examples/cve_eslint_scope.capa` +
+    `docs/cve_eslint_scope.md`. npm credential theft via
+    reading `~/.npmrc` and POSTing to a Pastebin drop.
+  Pending: a third one of a different shape (recommend
+  `ua-parser-js` 2021 for cryptominer-drop, or `node-ipc` 2022
+  for the geofenced-wipe shape where Capa partially loses, to
+  keep the writeups honest).
 - [~] **Property-based testing with Hypothesis**. The most
   citable suggestion in the review. **Phase 1 landed** in
   `tests/test_properties.py`: six properties that hold over

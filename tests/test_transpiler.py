@@ -646,6 +646,18 @@ class TestTranspileExamples(unittest.TestCase):
         self.assertIn("DESCRIBES", out)
         self.assertIn("Validation: ok (refs resolve + acyclic)", out)
 
+    def test_cve_eslint_scope(self):
+        # The eslint-scope credential-theft case study: a pure AST
+        # scope analyser whose signature precludes the malicious
+        # behaviour (Fs + Net) that the real eslint-scope@3.7.2
+        # carried. Companion writeup at docs/cve_eslint_scope.md.
+        rc, out, err = self._run_example("examples/cve_eslint_scope.capa")
+        self.assertEqual(rc, 0, err)
+        self.assertIn("scope analysis produced 3 bindings:", out)
+        self.assertIn("let x in scope #0", out)
+        self.assertIn("const API_URL in scope #0", out)
+        self.assertIn("var config in scope #0", out)
+
     def test_sbom_capability_audit(self):
         # The headline "auditable supply chain" demo: a Capa
         # program reads a CycloneDX SBOM (the shape `capa
