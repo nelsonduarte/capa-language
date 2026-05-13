@@ -123,8 +123,17 @@ to public.
   function-scope params/locals visible at the cursor. Mid-edit
   buffers that fail to parse fall back to just the floor, so the
   suggestion list never goes dark on a half-typed line.
-  **Pending (v2)**: method/field completion after `.`, semantic
-  tokens, positional fidelity for `${...}` contents.
+  Type-aware completion after `.` also landed: when the cursor
+  sits in a `receiver.<here>` context, the analyzer's known
+  methods for the receiver's type are offered (with their full
+  TyFun signature in the detail column). Built-in types and
+  capabilities (String, List, Map, Set, Stdio, Net, Fs, Env,
+  Clock, Random, Option, Result, JsonValue) plus user-defined
+  struct / sum methods all work. Mid-edit buffers (a bare
+  trailing `.`) are handled by re-parsing with a synthetic
+  placeholder identifier injected at the cursor.
+  **Pending (v2)**: semantic tokens, positional fidelity for
+  `${...}` contents.
 - [~] **`capa-fmt` (formatter)**, canonical, non-configurable
   (gofmt-style). **v1 (line-level) landed**: CLI flags `--fmt` and
   `--fmt-check` normalise line endings, indentation (tabs to 4

@@ -71,7 +71,7 @@ from .errors import LexerError
 from .lexer import Lexer
 from .parser import Parser, ParserError
 from .tokens import KEYWORDS, Pos
-from .typesys import Ty, TyFun, ty_str
+from .typesys import Ty, TyFun, TyName, ty_str
 
 if TYPE_CHECKING:  # only for type hints; runtime import is lazy
     from lsprotocol import types as lsp
@@ -1305,15 +1305,177 @@ def _fundecl_contains_line(fn: A.FunDecl, line: int) -> bool:
     return line <= last_line + 10
 
 
+def _scan_dot_context(
+    source: str, line: int, col: int,
+) -> Optional[tuple[int, int]]:
+    """If the cursor sits in a ``<receiver>.<partial><cursor>``
+    shape, return the (1-based) source position of the ``.``.
+    Returns ``None`` otherwise. The receiver itself can be any
+    expression (an identifier, a string literal, a parenthesised
+    sub-expression, ...): the AST resolves it later.
+    """
+    lines = source.split("\n")
+    if line < 1 or line > len(lines):
+        return None
+    text = lines[line - 1]
+    idx = min(col - 1, len(text))
+
+    # Skip the partial method name under the cursor.
+    while idx > 0 and (text[idx - 1].isalnum() or text[idx - 1] == "_"):
+        idx -= 1
+
+    # The previous char must be a dot.
+    if idx == 0 or text[idx - 1] != ".":
+        return None
+    return line, idx  # 1-based: ``text[idx - 1]`` is the dot
+
+
+_PLACEHOLDER = "__CAPA_COMPL__"
+
+
+def _parse_with_method_placeholder(
+    source: str, filename: str, line: int, col: int,
+) -> Optional[tuple[A.Module, AnalysisResult]]:
+    """Try parsing the buffer twice: as-is first, and on failure
+    with a synthetic identifier inserted at the cursor so a
+    trailing ``stdio.`` still produces a FieldAccess in the AST.
+
+    Returns the parsed module and analysis result on success, or
+    ``None`` if both attempts fail (we then give up on smart
+    completion and fall back to the keyword + built-in floor).
+    """
+    # Attempt 1: the buffer as-is.
+    try:
+        tokens = Lexer(source, filename=filename).lex()
+        module = Parser(tokens, source=source, filename=filename).parse_module()
+        result = analyze(module, source=source, filename=filename)
+        return module, result
+    except (LexerError, ParserError):
+        pass
+
+    # Attempt 2: inject the placeholder. The new buffer should
+    # parse iff the only failure was the trailing ``.<eof>``-shape
+    # at the cursor.
+    lines = source.split("\n")
+    if line < 1 or line > len(lines):
+        return None
+    target = lines[line - 1]
+    idx = min(col - 1, len(target))
+    patched_line = target[:idx] + _PLACEHOLDER + target[idx:]
+    patched_lines = list(lines)
+    patched_lines[line - 1] = patched_line
+    patched = "\n".join(patched_lines)
+
+    try:
+        tokens = Lexer(patched, filename=filename).lex()
+        module = Parser(tokens, source=patched, filename=filename).parse_module()
+        result = analyze(module, source=patched, filename=filename)
+        return module, result
+    except (LexerError, ParserError):
+        return None
+
+
+def _resolve_receiver_type(
+    module: A.Module, result: AnalysisResult,
+    dot_line: int, dot_col: int,
+) -> Optional[Symbol]:
+    """Find the type Symbol whose methods should be offered for
+    the FieldAccess / MethodCall whose dot sits at
+    ``(dot_line, dot_col)`` (both 1-based).
+
+    The placeholder-parse pass should have produced an AST node
+    that covers this dot. We walk the module looking for a
+    FieldAccess or MethodCall whose receiver is the expression
+    immediately preceding ``(dot_line, dot_col)``. The receiver's
+    type comes from ``result.types``; the resulting TyName looks
+    up the type Symbol in ``global_symbols``.
+    """
+    best: Optional[A.Expr] = None  # the receiver
+
+    def consider(node: A.Expr, receiver: A.Expr) -> None:
+        nonlocal best
+        # The dot in ``recv.name`` sits AFTER the receiver. The
+        # node's pos points at the receiver's start; we want the
+        # one whose receiver end aligns with dot_col on dot_line.
+        # We do not track end positions, so an approximation:
+        # pick the FieldAccess/MethodCall whose pos is at or
+        # before the dot AND on the same line. The deepest match
+        # (latest in walk order) wins.
+        if node.pos.line != dot_line:
+            return
+        if node.pos.col > dot_col:
+            return
+        best_local = receiver
+        nonlocal best
+        best = best_local
+
+    for n in _walk(module):
+        if isinstance(n, A.FieldAccess):
+            consider(n, n.receiver)
+        elif isinstance(n, A.MethodCall):
+            consider(n, n.receiver)
+
+    if best is None:
+        return None
+    ty = result.types.get(id(best))
+    if isinstance(ty, TyName):
+        sym = result.global_symbols.get(ty.name)
+        if sym is not None and sym.methods:
+            return sym
+    return None
+
+
+def _method_completions(method_sym: Symbol) -> list[Completion]:
+    """Render a type's registered methods as Completion entries.
+    The detail column carries the method's TyFun signature so
+    editors show ``length() -> Int`` next to the name."""
+    out: list[Completion] = []
+    for mname, m in method_sym.methods.items():
+        if mname.startswith("_"):
+            continue
+        detail = ""
+        if isinstance(m.ty, TyFun):
+            param_names = m.param_names or [
+                f"arg{i + 1}" for i in range(len(m.ty.params))
+            ]
+            params = ", ".join(
+                f"{pn}: {ty_str(pt)}"
+                for pn, pt in zip(param_names, m.ty.params)
+            )
+            detail = f"({params}) -> {ty_str(m.ty.ret)}"
+        out.append(Completion(label=mname, kind="function", detail=detail))
+    return out
+
+
 def compute_completions(
     source: str, filename: str, line: int, col: int,
 ) -> list[Completion]:
     """Return the completion list at the cursor position.
 
-    Always includes keywords and built-ins. When the buffer
-    parses cleanly, top-level names and (approximate) locals are
-    appended.
+    Two paths:
+
+    * **Method context** (``receiver.<cursor>``): we resolve the
+      receiver's type and return only its methods, with no floor
+      noise. Mid-edit buffers are handled by re-parsing with a
+      synthetic placeholder injected at the cursor.
+    * **General context** (anywhere else): keywords + built-ins,
+      plus, when the buffer parses cleanly, top-level names and
+      approximate locals.
     """
+    # Detect method-context first; if we hit a dot, we never want
+    # to mix in keyword/builtin noise.
+    dot = _scan_dot_context(source, line, col)
+    if dot is not None:
+        dot_line, dot_col = dot
+        parsed = _parse_with_method_placeholder(source, filename, line, col)
+        if parsed is None:
+            return []
+        module, result = parsed
+        sym = _resolve_receiver_type(module, result, dot_line, dot_col)
+        if sym is None:
+            return []
+        return _method_completions(sym)
+
     completions = _floor_completions()
     try:
         tokens = Lexer(source, filename=filename).lex()

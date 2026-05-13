@@ -32,6 +32,26 @@ breaking changes and the discipline is still being shaped.
   Used by the installer scripts to verify a successful download
   but generally useful for "what am I running?".
 
+- **LSP type-aware method completion after `.`**: when the
+  cursor sits in a `receiver.<here>` context, the completion
+  list narrows to the methods of the receiver's type, with the
+  method's `TyFun` signature rendered in the detail column.
+  Built-in types (`String`, `List`, `Map`, `Set`, `Option`,
+  `Result`, `JsonValue`) and built-in capabilities (`Stdio`,
+  `Net`, `Fs`, `Env`, `Clock`, `Random`) are covered, as are
+  user-defined struct and sum types with methods declared via
+  `impl`. The receiver may be any expression: an identifier, a
+  string literal, a parenthesised sub-expression. Mid-edit
+  buffers (a bare trailing `.`) are handled with a
+  parse-with-placeholder retry: the source is re-parsed with a
+  synthetic identifier inserted at the cursor, which makes the
+  surrounding `FieldAccess` / `MethodCall` valid in the AST so
+  the receiver's type can be resolved. Methods whose names
+  start with `_` are filtered (internal-by-convention).
+  Unresolvable receivers return no completions (the dot-trigger
+  path never falls back to keywords / built-ins, which would
+  be misleading).
+
 - **LSP completion** (`textDocument/completion`): suggests
   Capa identifiers at the cursor. v1 is a two-layer answer.
   The **floor** is always present and is computed without

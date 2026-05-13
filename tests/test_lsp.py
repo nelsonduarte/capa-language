@@ -1082,5 +1082,136 @@ class TestCompletion(unittest.TestCase):
         self.assertEqual(len(labels_list), len(set(labels_list)))
 
 
+@unittest.skipUnless(_HAVE_LSP, "requires `pygls` extra (pip install '.[lsp]')")
+class TestMethodCompletion(unittest.TestCase):
+    """When the cursor sits in a ``receiver.<here>`` context, the
+    completion list narrows to the methods of the receiver's
+    type. No keyword / built-in floor is mixed in: the user is
+    asking for members, not free names. Mid-edit buffers
+    (``stdio.<eof>``) are handled by re-parsing with a synthetic
+    placeholder identifier injected at the cursor."""
+
+    def setUp(self):
+        from capa.lsp_server import compute_completions
+        self.complete = compute_completions
+
+    def _labels(self, completions) -> set[str]:
+        return {c.label for c in completions}
+
+    def test_trailing_dot_after_capability_offers_its_methods(self):
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    stdio.\n"
+        )
+        c = self.complete(src, "t.capa", 2, 11)
+        labels = self._labels(c)
+        # Stdio methods registered by the analyzer.
+        for m in ("print", "println", "eprintln", "read_line"):
+            self.assertIn(m, labels)
+        # And no keyword noise.
+        self.assertNotIn("fun", labels)
+        self.assertNotIn("let", labels)
+
+    def test_partial_method_name_still_offers_full_set(self):
+        # LSP clients fuzzy-rank by the user's partial input;
+        # the server must return the full list, not the filtered
+        # one.
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    stdio.pr\n"
+        )
+        c = self.complete(src, "t.capa", 2, 13)
+        labels = self._labels(c)
+        self.assertIn("print", labels)
+        self.assertIn("println", labels)
+        # ``read_line`` does not start with ``pr`` but must
+        # still appear so the client's ranker can decide.
+        self.assertIn("read_line", labels)
+
+    def test_string_literal_receiver(self):
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    let n = \"hi\".\n"
+            "    stdio.println(\"k\")\n"
+        )
+        c = self.complete(src, "t.capa", 2, 18)
+        labels = self._labels(c)
+        for m in ("length", "contains", "starts_with", "to_upper",
+                  "trim", "split", "replace", "is_empty"):
+            self.assertIn(m, labels)
+
+    def test_list_local_receiver(self):
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    let xs = [1, 2, 3]\n"
+            "    let y = xs.\n"
+            "    stdio.println(\"k\")\n"
+        )
+        c = self.complete(src, "t.capa", 3, 16)
+        labels = self._labels(c)
+        for m in ("length", "push", "map", "filter", "fold", "first"):
+            self.assertIn(m, labels)
+
+    def test_method_completion_signature_in_detail(self):
+        src = "fun main(stdio: Stdio)\n    stdio.\n"
+        c = self.complete(src, "t.capa", 2, 11)
+        println = next(x for x in c if x.label == "println")
+        # The detail column shows the method's TyFun.
+        self.assertIn("String", println.detail)
+        self.assertIn("()", println.detail)
+
+    def test_user_defined_struct_methods_offered(self):
+        src = (
+            "type Counter {\n"
+            "    n: Int\n"
+            "}\n"
+            "impl Counter\n"
+            "    fun value(self) -> Int\n"
+            "        return self.n\n"
+            "    fun bump(self) -> Counter\n"
+            "        return Counter { n: self.n + 1 }\n"
+            "fun main(stdio: Stdio)\n"
+            "    let c = Counter { n: 0 }\n"
+            "    let _ = c.\n"
+            "    stdio.println(\"k\")\n"
+        )
+        c = self.complete(src, "t.capa", 11, 15)
+        labels = self._labels(c)
+        self.assertIn("value", labels)
+        self.assertIn("bump", labels)
+
+    def test_underscore_methods_filtered(self):
+        # Methods that start with `_` should not appear in
+        # completion (internal-by-convention).
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    stdio.\n"
+        )
+        c = self.complete(src, "t.capa", 2, 11)
+        for x in c:
+            self.assertFalse(
+                x.label.startswith("_"),
+                f"{x.label!r} should not appear in method completion",
+            )
+
+    def test_unresolved_receiver_returns_empty(self):
+        # ``foo.`` where ``foo`` is not in scope: no methods to
+        # offer. Empty list rather than a noisy fallback.
+        src = "fun main(stdio: Stdio)\n    foo.\n"
+        c = self.complete(src, "t.capa", 2, 9)
+        self.assertEqual(c, [])
+
+    def test_method_context_does_not_include_keywords(self):
+        # The dot-trigger path returns ONLY methods, never the
+        # keyword/builtin floor (which would be misleading).
+        src = "fun main(stdio: Stdio)\n    stdio.\n"
+        c = self.complete(src, "t.capa", 2, 11)
+        for x in c:
+            self.assertEqual(
+                x.kind, "function",
+                f"unexpected kind={x.kind!r} for {x.label!r}",
+            )
+
+
 if __name__ == "__main__":
     unittest.main()
