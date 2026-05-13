@@ -20,7 +20,21 @@ Expected output: `Hello, world!`
 
 ## 3. Two ways to start
 
-### Path A, A `.capa` file
+### Path A, scaffold a project
+
+The fastest way to get a working starter:
+
+```bash
+python -m capa init my-project
+cd my-project
+python -m capa --run main.capa
+```
+
+`capa init` creates four files: `main.capa` (a runnable starter
+that uses `Stdio`, so the capability discipline shows up on
+line one), `README.md`, `.gitignore`, and `.capa-version`.
+
+### Path B, A `.capa` file by hand
 
 Create `my_first.capa`:
 
@@ -38,7 +52,7 @@ Run it:
 python -m capa --run my_first.capa
 ```
 
-### Path B, Tutorial
+### Path C, Tutorial
 
 For a progressive 10-chapter introduction to the language, open
 `docs/tutorial.md`.
@@ -46,16 +60,23 @@ For a progressive 10-chapter introduction to the language, open
 > An interactive REPL is planned for a future version. For now,
 > `.capa` files are the only execution mode.
 
-## 4. CLI flags
+## 4. CLI
 
-| Flag | What it does |
+| Command | What it does |
 |---|---|
-| `--run file.capa` | Compile and execute |
-| `--check file.capa` | Type-check only (do not run) |
-| `--transpile file.capa` | Print the generated Python code |
-| `--parse file.capa` | Print the AST (for debugging) |
-| `--no-color` | Disable ANSI colors in the output |
-| `--stdin` | Read from stdin instead of a file |
+| `python -m capa init [name]` | Scaffold a new project (subcommand). |
+| `python -m capa --run file.capa` | Compile and execute. |
+| `python -m capa --check file.capa` | Type-check only (do not run). |
+| `python -m capa --transpile file.capa` | Print the generated Python code. |
+| `python -m capa --parse file.capa` | Print the AST (for debugging). |
+| `python -m capa --fmt file.capa` | Rewrite the file in canonical Capa style (line-level). |
+| `python -m capa --fmt-check file.capa` | Verify canonical style without rewriting. |
+| `python -m capa --doc file.capa` | Emit a self-contained HTML doc page from `///` and `/** */` doc comments. |
+| `python -m capa --manifest file.capa` | Emit a JSON capability manifest. |
+| `python -m capa --cyclonedx file.capa` | Emit a CycloneDX 1.5 SBOM with the manifest embedded. |
+| `python -m capa lsp` | Start the language server on stdio (requires `pip install -e '.[lsp]'`). |
+| `--no-color` | Disable ANSI colors in the output. |
+| `--stdin` | Read from stdin instead of a file. |
 
 ## 5. Minimum program structure
 
@@ -98,10 +119,11 @@ Output:
 - **`docs/tutorial.md`**, guided 10-chapter tutorial
 - **`docs/reference.md`**, full language specification
 - **`docs/stdlib.md`**, standard library reference
-- **`examples/`**, 18 real programs to inspect (`hello`, `tasks`,
+- **`examples/`**, 25 real programs to inspect (`hello`, `tasks`,
   `grades`, `generics`, `closures`, `io`, `patterns`, `interactive`,
-  `json`, `python_interop`, and the `stdlib_*` files that show each
-  API)
+  `json`, `python_interop`, `documented_demo`, `demo_event_stream`,
+  the `*_attenuation` files for each capability, the `stdlib_*`
+  files for each builtin API, and a few more)
 
 ## 8. When something goes wrong
 

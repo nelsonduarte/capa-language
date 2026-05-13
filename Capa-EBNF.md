@@ -126,7 +126,7 @@ block_comment_content = block_comment      (* nesting allowed *)
                       | any_char_except_block_delimiter
 ```
 
-Comments are consumed by the lexer and never reach the parser. Exception: documentation comments (which start with `///` for a line or `/**` for a block) are preserved to be associated with the immediately following declaration and used by `capa-doc`.
+Comments are consumed by the lexer and never reach the parser. Exception: documentation comments (which start with `///` for a line or `/**` for a block) are preserved to be associated with the immediately following declaration and consumed by the documentation generator (`capa --doc`).
 
 ### 3.3 Identifiers
 

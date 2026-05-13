@@ -2,7 +2,7 @@
 
 Syntax highlighting for the [Capa programming language](https://github.com/nelsonduarte/capa), a capability-centric language with a pythonic surface, built around the idea that the authorities a function holds (network, filesystem, environment, ...) must be visible in its signature.
 
-This extension provides TextMate-based highlighting only. A full language server (diagnostics, hover, go-to-definition) is on the roadmap but not yet shipped.
+This extension provides TextMate-based highlighting. A capability-aware language server has shipped separately (`python -m capa lsp`); you can wire it up with any generic LSP client extension for VSCode (search the Marketplace for "Generic LSP" or similar) pointed at `python -m capa lsp`. A first-party VSCode extension that bundles the LSP client is on the roadmap.
 
 ## What it highlights
 
@@ -48,7 +48,7 @@ code --install-extension capa-language-0.5.0.vsix
 
 ## What's not in this extension yet
 
-- **Language server** (LSP): no diagnostics, no hover, no go-to-definition, no autocomplete based on the analyzer. Run `python -m capa --check file.capa` in a terminal for type errors until the LSP lands.
+- **Bundled LSP client**: the LSP server itself (`python -m capa lsp`) is shipped and delivers diagnostics, hover, go-to-definition, find-references, document symbols, and Quick Fixes. This extension does not yet auto-launch it; you currently wire it up through a generic LSP client extension or in a fork that adds the `vscode-languageclient` dependency. A first-party bundled client is queued.
 - **Snippets** for `fun main(stdio: Stdio)` etc.: would be a small follow-up.
 - **Better indentation rules**: Capa is indent-sensitive, but the auto-indent heuristics here are minimal. Use Tab and Shift-Tab explicitly.
 

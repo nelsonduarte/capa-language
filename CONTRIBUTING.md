@@ -83,8 +83,14 @@ project; the grammar is small.
 - **Examples** in `examples/` that exercise an idiom not already
   covered. Real-world miniatures (a small parser, a small networking
   client) are more useful than synthetic demonstrations.
-- **Tooling**: language server, formatter, and `capa init` are
-  prioritised on the [roadmap](docs/roadmap.html). Discuss in an
+- **Tooling polish**: the language server (`python -m capa lsp`),
+  formatter (`capa --fmt`), and project scaffolder (`capa init`)
+  have v1 implementations. The next pieces queued on the
+  [roadmap](docs/roadmap.html) are LSP completion / semantic
+  tokens / rename, `capa-fmt` v2 (intra-line operator spacing
+  with comment preservation), and editor extensions that ship
+  the LSP client out of the box (a VSCode extension that does
+  more than syntax highlighting, a Zed extension). Discuss in an
   issue before starting.
 
 ## What does not currently fit
@@ -125,9 +131,15 @@ project; the grammar is small.
 
 ## Coding style
 
-- The project does not run an autoformatter today (`capa-fmt` is on
-  the roadmap). Match the style of the surrounding code: PEP 8 with
-  exceptions for long descriptive identifiers.
+- The `.capa` source under `examples/` is kept in canonical form
+  by `capa --fmt`. Run `capa --fmt-check` before submitting if
+  you touched any examples, and fix the offenders with
+  `capa --fmt`. The formatter is line-level only in v1; please
+  do not bikeshed intra-line operator spacing in reviews until
+  the v2 AST-walking formatter lands.
+- For Python code in `capa/`, the project does not run an
+  autoformatter. Match the style of the surrounding code: PEP 8
+  with exceptions for long descriptive identifiers.
 - No emoji in code or comments.
 - Comments only when the *why* is non-obvious. The codebase favours
   well-named identifiers over restating what code does.
