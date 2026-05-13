@@ -333,5 +333,104 @@ class TestSyntaxAwarePipeline(unittest.TestCase):
             )
 
 
+# ===========================================================
+# Phase 3: runtime <= manifest soundness
+# ===========================================================
+#
+# The citable property the external review asks for: every
+# capability class that the runtime exercises must also appear
+# in the manifest the analyser emits. Theorem 2 of
+# docs/semantics.md in static form; this is the dynamic
+# counterpart, fuzzed.
+#
+# The instrumentation lives in `capa.runtime._trace`: when
+# enabled it wraps every public method on every built-in
+# capability class so each call appends `(class_name,
+# method_name)` to a module-level list. The test clears the
+# trace, transpiles a generated program, execs it in-process,
+# reads the trace, and compares it to the manifest derived
+# from the same AST.
+#
+# This is phase 3 minimal: the strategy here generates only
+# Stdio-using programs (the same shape as phase 2), so the
+# property is trivially `{"Stdio"} ⊆ {"Stdio"}`. The scaffold
+# matters more than the case. Phase 3.5 will extend the
+# strategy to thread Net / Fs / Env capabilities through main
+# and exercise them, making the inclusion non-trivial.
+
+
+from capa.manifest import build_manifest
+from capa.runtime import _trace
+
+
+class TestRuntimeSubsetOfManifest(unittest.TestCase):
+    """For every generated program, the set of capability classes
+    observed at runtime is a subset of the set of capability
+    classes declared in the manifest emitted by the analyser.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        _trace.enable()
+
+    def _manifest_classes(self, module) -> set[str]:
+        """Compute the union of `declared_capabilities` across every
+        function in the manifest. Each entry's class name is a
+        Capa type expression rendered as text; for the demo
+        strategy these are always single names like 'Stdio'."""
+        m = build_manifest(module)
+        result: set[str] = set()
+        for fn in m["functions"]:
+            for cap in fn["declared_capabilities"]:
+                result.add(cap)
+        return result
+
+    @given(_program())
+    @settings(
+        max_examples=50,
+        deadline=5000,
+        suppress_health_check=[HealthCheck.too_slow],
+    )
+    def test_runtime_classes_subset_of_manifest_classes(self, source):
+        from capa import analyze
+        from capa.transpiler import _PRELUDE  # noqa: F401 - validates import shape
+
+        tokens = Lexer(source).lex()
+        module = Parser(tokens, source=source).parse_module()
+        result = analyze(module, source=source)
+        if not result.ok:
+            return  # the strategy may produce edge cases the analyser rejects; soundness still holds vacuously
+
+        manifest_classes = self._manifest_classes(module)
+
+        # exec the transpiled program in a controlled-globals
+        # environment so we can read the trace afterwards. The
+        # transpiler emits `from capa.runtime import *` at the
+        # top, then defines functions, then the
+        # `if __name__ == "__main__":` bootstrap that calls
+        # main() with capability instances. Running with
+        # __name__ = "__main__" triggers that bootstrap.
+        from capa import transpile
+        code = transpile(module, types=result.types)
+
+        _trace.clear()
+        run_globals: dict = {"__name__": "__main__"}
+        try:
+            exec(compile(code, "<test>", "exec"), run_globals)
+        except SystemExit:
+            pass
+
+        runtime_classes = _trace.classes_used()
+
+        self.assertTrue(
+            runtime_classes.issubset(manifest_classes),
+            msg=(
+                f"runtime classes {runtime_classes} not subset of "
+                f"manifest classes {manifest_classes} for program:\n"
+                f"{textwrap.indent(source, '    ')}"
+            ),
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

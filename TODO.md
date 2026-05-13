@@ -347,27 +347,38 @@ items here so they stay visible:
   language attacks). The breakdown is summarised in
   `docs/cve_torchtriton.md` § "The five-case-study summary".
 - [~] **Property-based testing with Hypothesis**. The most
-  citable suggestion in the review. **Phases 1 and 2 landed**
-  in `tests/test_properties.py`. Phase 1 (six properties on
-  arbitrary text) covers formatter idempotence and fixpoint,
-  lexer / parser robustness. Phase 2 (one property over a
-  syntax-aware strategy) generates syntactically valid Capa
-  programs of the shape *main with stdio + N stmts* where N
-  ∈ {0..4}, each stmt is a `let`/`var`/`println`/`if`/`for`
-  with position-indexed unique names, and asserts the full
-  pipeline (lex + parse + analyse + transpile + `ast.parse`
-  of the transpiled Python) succeeds end-to-end. The strategy
-  found two real strategy-design bugs during its own
-  development (capability-must-use rule firing on
-  `main(stdio: Stdio)` with no `stdio` reference; duplicate
-  bindings when names were sampled from a fixed pool), which
-  is the right kind of signal. **Phase 3 pending**: the
-  *citable* property the thesis needs is *runtime capability
-  set ⊆ manifest declared set*, which needs runtime
-  instrumentation in `capa.runtime` to log every capability
-  operation, plus a strategy that generates programs
-  exercising capabilities (not just Stdio). Tracking in
-  `docs/semantics.md` Theorem 2.
+  citable suggestion in the review. **Phases 1, 2 and 3
+  (minimal) landed** in `tests/test_properties.py`.
+  - Phase 1: six properties on arbitrary text (formatter
+    idempotence and fixpoint, lexer / parser robustness).
+  - Phase 2: a syntax-aware strategy generates valid Capa
+    programs of the shape *main with stdio + N stmts*
+    (N ∈ {0..4}, each stmt a `let`/`var`/`println`/`if`/
+    `for` with position-indexed unique names) and asserts
+    the full pipeline (lex + parse + analyse + transpile +
+    `ast.parse` of the transpiled Python) succeeds. The
+    strategy itself surfaced two real bugs during its own
+    development (capability-must-use violation on a
+    `stdio`-less body; duplicate `let` bindings from a
+    fixed identifier pool).
+  - Phase 3 (minimal): the *citable* property in dynamic
+    form. `capa.runtime._trace` wraps the public methods of
+    every built-in capability class on first opt-in (the
+    `enable()` call) so each method invocation appends
+    `(class_name, op_name)` to a module-level list. The
+    test transpiles a generated program, execs it in-process
+    with `__name__ == "__main__"`, reads the trace, and
+    asserts `runtime_classes ⊆ manifest_classes`. The
+    strategy in phase 2 only uses Stdio, so the assertion
+    is trivially `{Stdio} ⊆ {Stdio}`; the *scaffold* is
+    what matters and now exists.
+  **Phase 3.5 pending**: extend the strategy to thread
+  `Net` / `Fs` / `Env` capabilities through `main` and
+  exercise them with `net.allows(host)`, `fs.exists(path)`,
+  `env.get(name)` style calls so the inclusion is
+  non-trivial. With instrumented mock backends so the
+  property test does not actually touch the network or
+  filesystem.
 - [ ] **`Range<Int>` as a distinct type from `List<Int>`**. The
   for-loop transpiler fix is a stop-gap that closed the urgent
   memory bug; the long-term fix is a separate type with its

@@ -57,6 +57,24 @@ breaking changes and the discipline is still being shaped.
   needs. Regression test in
   `tests/test_transpiler.py::test_cve_xz_utils`.
 
+- **Property-based testing phase 3 (minimal)**: the dynamic
+  counterpart of Theorem 2 from `docs/semantics.md`. New
+  module `capa/runtime/_trace.py` provides an opt-in
+  instrumentation that wraps every public method on every
+  built-in capability class so each call appends
+  `(class_name, op_name)` to a module-level list. The new
+  `TestRuntimeSubsetOfManifest` test class in
+  `tests/test_properties.py` runs a generated program with
+  the trace enabled, then asserts that the set of capability
+  classes observed at runtime is a subset of the set
+  declared in the manifest emitted from the AST. Phase 3.5
+  (still pending) extends the strategy to thread
+  Net / Fs / Env through `main` and exercise them so the
+  inclusion is non-trivial; today the strategy only uses
+  Stdio so the property is `{Stdio} ⊆ {Stdio}`. The
+  *scaffold* is the point: the citable property has a place
+  to live and a path to broader coverage.
+
 - **Property-based testing phase 2** (syntax-aware Capa
   program generator). Adds one new property to
   `tests/test_properties.py`: every program produced by a
