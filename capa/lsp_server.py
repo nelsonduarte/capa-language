@@ -43,9 +43,14 @@ A minimal Capa language server. v1 ships:
   `None`, `Ok`, `Err`), and every name declared at module
   level. Mid-edit buffers that fail to parse fall back to just
   keywords and built-ins (so the suggestion list never goes
-  dark on a half-typed line).
-
-Semantic tokens remain on the roadmap.
+  dark on a half-typed line). After a ``.`` the list narrows
+  to methods of the receiver's type (with full signatures).
+- ``textDocument/semanticTokens/full``: type-aware highlighting
+  beyond what the TextMate grammar can do. Functions,
+  parameters, variables, capabilities (with a ``defaultLibrary``
+  modifier on the built-ins like ``Stdio``), types, sum-type
+  variants, and constants are coloured distinctly. Both
+  reference and declaration sites are tagged.
 
 Runtime entry points:
 
@@ -1496,6 +1501,266 @@ def compute_completions(
 
 
 # ---------------------------------------------------------------
+# Semantic tokens
+# ---------------------------------------------------------------
+# LSP semantic tokens deliver type-aware highlighting on top of
+# what a static TextMate grammar can do. The protocol uses a
+# server-defined legend (an ordered list of token types and
+# modifiers) and a single flat array of five-integer tuples per
+# token, with deltas relative to the previous token's position.
+#
+# Our legend is small and Capa-flavoured: we want capabilities
+# coloured distinctly from regular types (the whole point of the
+# language is that capabilities are special), and we want
+# built-in capabilities marked so editor themes can render them
+# with a different intensity than user-defined ones.
+
+
+_SEM_TOKEN_TYPES: list[str] = [
+    "function",     # 0
+    "parameter",    # 1
+    "variable",     # 2
+    "interface",    # 3  (LSP-standard name we use for "capability")
+    "type",         # 4  (structs, sums, traits)
+    "enumMember",   # 5  (sum-type variants)
+    "property",     # 6  (struct fields)
+]
+
+_SEM_TOKEN_MODIFIERS: list[str] = [
+    "defaultLibrary",   # bit 0: built-ins (Stdio, Some, ...)
+    "declaration",      # bit 1: this token is the declaration site
+    "readonly",         # bit 2: let bindings, constants
+]
+
+
+def _sem_modifiers_bitmask(modifiers: set[str]) -> int:
+    """Encode a set of modifier names as a bitmask using
+    ``_SEM_TOKEN_MODIFIERS`` indices."""
+    out = 0
+    for m in modifiers:
+        if m in _SEM_TOKEN_MODIFIERS:
+            out |= 1 << _SEM_TOKEN_MODIFIERS.index(m)
+    return out
+
+
+@dataclass(frozen=True)
+class _SemToken:
+    """One semantic-token entry in 1-based absolute coordinates.
+    The handler converts to the LSP 0-based relative encoding
+    before sending."""
+    line: int
+    col: int
+    length: int
+    type_index: int
+    modifiers_mask: int
+
+
+def _symbol_to_sem_token_type(sym: Symbol) -> Optional[tuple[int, set[str]]]:
+    """Map a Capa Symbol to a semantic-tokens (type_index,
+    modifier_set) pair. Returns ``None`` when the symbol does not
+    map to a known token type (built-in keyword-flavoured names
+    end up here)."""
+    is_builtin = sym.pos.line == 0 and sym.pos.col == 0
+    mods: set[str] = set()
+    if is_builtin:
+        mods.add("defaultLibrary")
+    if sym.kind == SymbolKind.FUNCTION:
+        return _SEM_TOKEN_TYPES.index("function"), mods
+    if sym.kind == SymbolKind.PARAM:
+        return _SEM_TOKEN_TYPES.index("parameter"), mods
+    if sym.kind == SymbolKind.LOCAL:
+        mods.add("readonly")
+        return _SEM_TOKEN_TYPES.index("variable"), mods
+    if sym.kind == SymbolKind.LOCAL_VAR:
+        return _SEM_TOKEN_TYPES.index("variable"), mods
+    if sym.kind == SymbolKind.CONSTANT:
+        mods.add("readonly")
+        return _SEM_TOKEN_TYPES.index("variable"), mods
+    if sym.kind == SymbolKind.CAPABILITY:
+        return _SEM_TOKEN_TYPES.index("interface"), mods
+    if sym.kind in (SymbolKind.TYPE_STRUCT, SymbolKind.TYPE_SUM,
+                    SymbolKind.TRAIT):
+        return _SEM_TOKEN_TYPES.index("type"), mods
+    if sym.kind == SymbolKind.VARIANT:
+        return _SEM_TOKEN_TYPES.index("enumMember"), mods
+    return None
+
+
+def _decl_site_to_sem_token_type(
+    site: _DeclSite, result: AnalysisResult, module: A.Module,
+) -> Optional[tuple[int, set[str]]]:
+    """Tag a declaration site. Fields get the ``property`` type
+    (no Symbol for them); the rest defer to
+    ``_symbol_to_sem_token_type`` with a ``declaration`` modifier
+    layered on top."""
+    mods = {"declaration"}
+    if site.decl_kind == "field":
+        return _SEM_TOKEN_TYPES.index("property"), mods
+    sym = _resolve_decl_symbol(site, result, module)
+    if sym is None:
+        return None
+    pair = _symbol_to_sem_token_type(sym)
+    if pair is None:
+        return None
+    type_index, sym_mods = pair
+    return type_index, sym_mods | mods
+
+
+def compute_semantic_tokens(
+    source: str, filename: str,
+) -> tuple[list[str], list[str], list[int]]:
+    """Compute the LSP semantic-tokens response for the buffer.
+
+    Returns a triple ``(token_types, token_modifiers, data)``:
+
+    * ``token_types`` is the legend's type list, in the order the
+      server will reference them by index;
+    * ``token_modifiers`` is the legend's modifier list;
+    * ``data`` is the flat relative-encoded array
+      (groups of five ints: deltaLine, deltaStart, length,
+      tokenType, tokenModifiers). LSP positions are 0-based.
+
+    A buffer that fails to lex/parse returns an empty ``data``
+    array. The legend is always the same so the client can
+    register it once at server initialisation.
+    """
+    try:
+        tokens = Lexer(source, filename=filename).lex()
+        module = Parser(tokens, source=source, filename=filename).parse_module()
+    except (LexerError, ParserError):
+        return _SEM_TOKEN_TYPES, _SEM_TOKEN_MODIFIERS, []
+    result = analyze(module, source=source, filename=filename)
+
+    sem_tokens: list[_SemToken] = []
+
+    # Reference idents.
+    for ident in collect_idents(module):
+        sym = result.bindings.get(id(ident))
+        if sym is None:
+            continue
+        pair = _symbol_to_sem_token_type(sym)
+        if pair is None:
+            continue
+        type_index, mods = pair
+        sem_tokens.append(
+            _SemToken(
+                line=ident.pos.line,
+                col=ident.pos.col,
+                length=len(ident.name),
+                type_index=type_index,
+                modifiers_mask=_sem_modifiers_bitmask(mods),
+            )
+        )
+
+    # Declaration sites.
+    for site in collect_decl_sites(module):
+        pair = _decl_site_to_sem_token_type(site, result, module)
+        if pair is None:
+            continue
+        type_index, mods = pair
+        sem_tokens.append(
+            _SemToken(
+                line=site.ident.pos.line,
+                col=site.ident.pos.col,
+                length=len(site.ident.name),
+                type_index=type_index,
+                modifiers_mask=_sem_modifiers_bitmask(mods),
+            )
+        )
+
+    # TypeName references inside type annotations (parameter
+    # types, return types, struct field types, ...). These are
+    # not Ident nodes, so the analyzer does not file them in
+    # ``bindings``; we resolve them by name in ``global_symbols``.
+    for n in _walk(module):
+        if not isinstance(n, A.TypeName):
+            continue
+        sym = result.global_symbols.get(n.name)
+        if sym is None:
+            continue
+        pair = _symbol_to_sem_token_type(sym)
+        if pair is None:
+            continue
+        type_index, mods = pair
+        sem_tokens.append(
+            _SemToken(
+                line=n.pos.line,
+                col=n.pos.col,
+                length=len(n.name),
+                type_index=type_index,
+                modifiers_mask=_sem_modifiers_bitmask(mods),
+            )
+        )
+
+    # let / var bindings inside function bodies. ``let`` is a
+    # readonly variable, ``var`` is mutable. Only the simple
+    # ``let name = ...`` shape produces a tagged identifier here
+    # (destructuring patterns each get their own IdentPat which
+    # we pick up by walking the pattern subtree).
+    var_idx = _SEM_TOKEN_TYPES.index("variable")
+    for n in _walk(module):
+        if isinstance(n, A.LetStmt):
+            for pat in _walk(n.pattern):
+                if isinstance(pat, A.IdentPat):
+                    sem_tokens.append(
+                        _SemToken(
+                            line=pat.pos.line,
+                            col=pat.pos.col,
+                            length=len(pat.name),
+                            type_index=var_idx,
+                            modifiers_mask=_sem_modifiers_bitmask(
+                                {"readonly", "declaration"}
+                            ),
+                        )
+                    )
+        elif isinstance(n, A.VarStmt) and n.name_pos is not None:
+            sem_tokens.append(
+                _SemToken(
+                    line=n.name_pos.line,
+                    col=n.name_pos.col,
+                    length=len(n.name),
+                    type_index=var_idx,
+                    modifiers_mask=_sem_modifiers_bitmask(
+                        {"declaration"}
+                    ),
+                )
+            )
+
+    # Sort by (line, col) for the relative encoding. Tokens at
+    # the same position can in principle appear twice (a
+    # reference Ident and a decl site with overlapping coverage);
+    # drop duplicates keeping the first occurrence.
+    sem_tokens.sort(key=lambda t: (t.line, t.col))
+    seen: set[tuple[int, int]] = set()
+    deduped: list[_SemToken] = []
+    for t in sem_tokens:
+        if (t.line, t.col) in seen:
+            continue
+        seen.add((t.line, t.col))
+        deduped.append(t)
+
+    data: list[int] = []
+    prev_line_0 = 0
+    prev_col_0 = 0
+    for t in deduped:
+        line_0 = t.line - 1
+        col_0 = t.col - 1
+        if line_0 == prev_line_0:
+            delta_line = 0
+            delta_start = col_0 - prev_col_0
+        else:
+            delta_line = line_0 - prev_line_0
+            delta_start = col_0
+        data.extend([
+            delta_line, delta_start, t.length,
+            t.type_index, t.modifiers_mask,
+        ])
+        prev_line_0 = line_0
+        prev_col_0 = col_0
+    return _SEM_TOKEN_TYPES, _SEM_TOKEN_MODIFIERS, data
+
+
+# ---------------------------------------------------------------
 # Server wiring
 # ---------------------------------------------------------------
 
@@ -1692,6 +1957,28 @@ def _build_server():
                     )
                 )
         return actions or None
+
+    # Register the semantic-tokens legend at server construction
+    # time so the client can record it on initialise.
+    _sem_legend = lsp.SemanticTokensLegend(
+        token_types=_SEM_TOKEN_TYPES,
+        token_modifiers=_SEM_TOKEN_MODIFIERS,
+    )
+
+    @server.feature(
+        lsp.TEXT_DOCUMENT_SEMANTIC_TOKENS_FULL,
+        lsp.SemanticTokensRegistrationOptions(
+            legend=_sem_legend, full=True, range=False,
+        ),
+    )
+    def semantic_tokens_full(
+        ls, params: "lsp.SemanticTokensParams",
+    ) -> "Optional[lsp.SemanticTokens]":
+        doc = ls.workspace.get_text_document(params.text_document.uri)
+        _types, _mods, data = compute_semantic_tokens(
+            doc.source, params.text_document.uri,
+        )
+        return lsp.SemanticTokens(data=data)
 
     _to_completion_kind = {
         "keyword":    lsp.CompletionItemKind.Keyword,

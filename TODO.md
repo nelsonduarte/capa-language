@@ -132,8 +132,18 @@ to public.
   struct / sum methods all work. Mid-edit buffers (a bare
   trailing `.`) are handled by re-parsing with a synthetic
   placeholder identifier injected at the cursor.
-  **Pending (v2)**: semantic tokens, positional fidelity for
-  `${...}` contents.
+  Semantic tokens (`textDocument/semanticTokens/full`) deliver
+  type-aware highlighting beyond what the TextMate grammar can do.
+  The legend distinguishes function, parameter, variable
+  (with `readonly` modifier for `let` bindings and constants),
+  interface (Capa's capabilities, with `defaultLibrary` modifier
+  on the built-ins), type (struct / sum / trait), enumMember
+  (sum-type variants), and property (struct fields). Both
+  reference and declaration sites are tagged; type-annotation
+  references inside parameter / return / field types resolve
+  against the global scope so `String`, `Stdio`, etc. get
+  coloured wherever they appear.
+  **Pending (v2)**: positional fidelity for `${...}` contents.
 - [~] **`capa-fmt` (formatter)**, canonical, non-configurable
   (gofmt-style). **v1 (line-level) landed**: CLI flags `--fmt` and
   `--fmt-check` normalise line endings, indentation (tabs to 4

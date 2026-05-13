@@ -1213,5 +1213,246 @@ class TestMethodCompletion(unittest.TestCase):
             )
 
 
+@unittest.skipUnless(_HAVE_LSP, "requires `pygls` extra (pip install '.[lsp]')")
+class TestSemanticTokens(unittest.TestCase):
+    """Semantic tokens deliver type-aware highlighting. The
+    server returns a flat array of (deltaLine, deltaStart,
+    length, tokenType, tokenModifiers) tuples relative to the
+    previous token, plus the legend for the type and modifier
+    indices. Helpers in this class decode the relative array
+    back into absolute positions for readable assertions."""
+
+    def setUp(self):
+        from capa.lsp_server import compute_semantic_tokens
+        self.compute = compute_semantic_tokens
+
+    def _decode(self, types, mods, data):
+        """Decode the relative-encoded array into a list of dicts
+        with absolute 0-based positions and named type/modifier
+        strings."""
+        out = []
+        cur_line = 0
+        cur_col = 0
+        for i in range(0, len(data), 5):
+            dl, dc, length, ti, mm = data[i:i + 5]
+            if dl == 0:
+                cur_col += dc
+            else:
+                cur_line += dl
+                cur_col = dc
+            mod_names = {
+                mods[b] for b in range(len(mods)) if mm & (1 << b)
+            }
+            out.append({
+                "line": cur_line,
+                "col": cur_col,
+                "length": length,
+                "type": types[ti],
+                "mods": mod_names,
+            })
+        return out
+
+    def test_legend_is_stable(self):
+        # The legend is part of the protocol contract: clients
+        # register it once at initialise time and reference token
+        # types by index thereafter.
+        types, mods, _ = self.compute(
+            "fun main()\n    return\n", "t.capa",
+        )
+        self.assertEqual(
+            types,
+            ["function", "parameter", "variable",
+             "interface", "type", "enumMember", "property"],
+        )
+        self.assertEqual(
+            mods, ["defaultLibrary", "declaration", "readonly"],
+        )
+
+    def test_lex_or_parse_error_returns_empty_data(self):
+        # The legend is always returned (clients want to register
+        # it regardless), but the data array is empty.
+        types, mods, data = self.compute(
+            "fun main()\n    let = ", "t.capa",
+        )
+        self.assertEqual(data, [])
+
+    def test_function_declaration_is_tagged_as_function(self):
+        src = "fun greet(name: String) -> String\n    return name\n"
+        types, mods, data = self.compute(src, "t.capa")
+        decoded = self._decode(types, mods, data)
+        greet = next(d for d in decoded if d["line"] == 0 and d["col"] == 4)
+        self.assertEqual(greet["type"], "function")
+        self.assertIn("declaration", greet["mods"])
+        self.assertEqual(greet["length"], 5)
+
+    def test_parameter_declaration_and_use_are_tagged_as_parameter(self):
+        src = "fun greet(name: String) -> String\n    return name\n"
+        types, mods, data = self.compute(src, "t.capa")
+        decoded = self._decode(types, mods, data)
+        # Param decl: line 0 col 10
+        param_decl = next(
+            d for d in decoded if d["line"] == 0 and d["col"] == 10
+        )
+        self.assertEqual(param_decl["type"], "parameter")
+        self.assertIn("declaration", param_decl["mods"])
+        # Param use: line 1 col 11
+        param_use = next(
+            d for d in decoded if d["line"] == 1 and d["col"] == 11
+        )
+        self.assertEqual(param_use["type"], "parameter")
+        self.assertNotIn("declaration", param_use["mods"])
+
+    def test_builtin_capability_is_interface_with_defaultLibrary(self):
+        src = "fun main(stdio: Stdio)\n    stdio.println(\"k\")\n"
+        types, mods, data = self.compute(src, "t.capa")
+        decoded = self._decode(types, mods, data)
+        # The `Stdio` type-annotation token sits at line 0 col 16.
+        stdio_anno = next(
+            d for d in decoded if d["line"] == 0 and d["col"] == 16
+        )
+        self.assertEqual(stdio_anno["type"], "interface")
+        self.assertIn("defaultLibrary", stdio_anno["mods"])
+
+    def test_user_capability_is_interface_without_defaultLibrary(self):
+        src = (
+            "capability SendEmail\n"
+            "    fun send(self, to: String) -> Bool\n"
+            "fun deliver(s: SendEmail)\n"
+            "    return\n"
+        )
+        types, mods, data = self.compute(src, "t.capa")
+        decoded = self._decode(types, mods, data)
+        # The use of `SendEmail` as a parameter type annotation is
+        # on line 2 col 15.
+        use = next(
+            d for d in decoded
+            if d["line"] == 2 and d["col"] == 15 and d["length"] == 9
+        )
+        self.assertEqual(use["type"], "interface")
+        self.assertNotIn("defaultLibrary", use["mods"])
+        # And the declaration site is also tagged interface +
+        # declaration.
+        decl = next(
+            d for d in decoded if d["line"] == 0 and d["col"] == 11
+        )
+        self.assertEqual(decl["type"], "interface")
+        self.assertIn("declaration", decl["mods"])
+
+    def test_let_binding_is_variable_readonly(self):
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    let count = 42\n"
+            "    stdio.println(\"k\")\n"
+        )
+        types, mods, data = self.compute(src, "t.capa")
+        decoded = self._decode(types, mods, data)
+        let_token = next(
+            d for d in decoded if d["line"] == 1 and d["col"] == 8
+        )
+        self.assertEqual(let_token["type"], "variable")
+        self.assertIn("readonly", let_token["mods"])
+        self.assertIn("declaration", let_token["mods"])
+
+    def test_var_binding_is_variable_not_readonly(self):
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    var count = 0\n"
+            "    stdio.println(\"k\")\n"
+        )
+        types, mods, data = self.compute(src, "t.capa")
+        decoded = self._decode(types, mods, data)
+        var_token = next(
+            d for d in decoded if d["line"] == 1 and d["col"] == 8
+        )
+        self.assertEqual(var_token["type"], "variable")
+        self.assertNotIn("readonly", var_token["mods"])
+
+    def test_constant_is_variable_readonly_declaration(self):
+        src = "const VERSION: String = \"1.0\"\n"
+        types, mods, data = self.compute(src, "t.capa")
+        decoded = self._decode(types, mods, data)
+        version = next(
+            d for d in decoded if d["line"] == 0 and d["col"] == 6
+        )
+        self.assertEqual(version["type"], "variable")
+        self.assertIn("readonly", version["mods"])
+        self.assertIn("declaration", version["mods"])
+
+    def test_struct_declaration_is_type(self):
+        src = (
+            "type Point {\n"
+            "    x: Int,\n"
+            "    y: Int\n"
+            "}\n"
+        )
+        types, mods, data = self.compute(src, "t.capa")
+        decoded = self._decode(types, mods, data)
+        point = next(
+            d for d in decoded if d["line"] == 0 and d["col"] == 5
+        )
+        self.assertEqual(point["type"], "type")
+        self.assertIn("declaration", point["mods"])
+
+    def test_struct_field_is_property(self):
+        src = (
+            "type Point {\n"
+            "    x: Int,\n"
+            "    y: Int\n"
+            "}\n"
+        )
+        types, mods, data = self.compute(src, "t.capa")
+        decoded = self._decode(types, mods, data)
+        x = next(d for d in decoded if d["line"] == 1 and d["col"] == 4)
+        self.assertEqual(x["type"], "property")
+        self.assertIn("declaration", x["mods"])
+
+    def test_variant_is_enumMember(self):
+        src = (
+            "type Color =\n"
+            "    Red\n"
+            "    Green\n"
+            "    Blue\n"
+        )
+        types, mods, data = self.compute(src, "t.capa")
+        decoded = self._decode(types, mods, data)
+        red = next(d for d in decoded if d["line"] == 1 and d["col"] == 4)
+        self.assertEqual(red["type"], "enumMember")
+        self.assertIn("declaration", red["mods"])
+
+    def test_data_is_relative_encoded(self):
+        # Same line: deltaLine should be 0, deltaStart should be
+        # relative to the previous token's column.
+        src = "fun add(x: Int, y: Int) -> Int\n    return x + y\n"
+        types, mods, data = self.compute(src, "t.capa")
+        # Two tokens on line 0 (add at col 4 and x at col 8).
+        # First entry's deltaLine should be 0 (or whatever the
+        # absolute first line is); subsequent ones on the same
+        # line should have deltaLine=0 with the right deltaStart.
+        for i in range(0, len(data), 5):
+            dl, dc, *_ = data[i:i + 5]
+            # delta values are always non-negative.
+            self.assertGreaterEqual(dl, 0)
+            self.assertGreaterEqual(dc, 0)
+
+    def test_no_duplicate_position_tokens(self):
+        # When a position would otherwise be tagged twice (e.g.
+        # the reference-collector and the decl-collector both
+        # pick up the same Ident), the encoder keeps one token,
+        # not two.
+        src = (
+            "fun greet(name: String) -> String\n"
+            "    return name\n"
+            "fun main(stdio: Stdio)\n"
+            "    let _ = greet(\"Ana\")\n"
+        )
+        types, mods, data = self.compute(src, "t.capa")
+        decoded = self._decode(types, mods, data)
+        seen = set()
+        for d in decoded:
+            key = (d["line"], d["col"])
+            self.assertNotIn(key, seen)
+            seen.add(key)
+
+
 if __name__ == "__main__":
     unittest.main()

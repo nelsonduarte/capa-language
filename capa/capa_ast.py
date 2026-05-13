@@ -247,6 +247,7 @@ class VarStmt(Stmt):
     name: str
     type_expr: Optional[TypeExpr] = None
     value: Expr
+    name_pos: Optional[Pos] = None
 
 
 @dataclass(kw_only=True)

@@ -32,6 +32,28 @@ breaking changes and the discipline is still being shaped.
   Used by the installer scripts to verify a successful download
   but generally useful for "what am I running?".
 
+- **LSP semantic tokens** (`textDocument/semanticTokens/full`):
+  type-aware highlighting beyond what a TextMate grammar can
+  deliver. The legend uses seven LSP-standard token types
+  (`function`, `parameter`, `variable`, `interface`, `type`,
+  `enumMember`, `property`) and three modifiers
+  (`defaultLibrary` for built-ins, `declaration` for sites that
+  introduce a name, `readonly` for `let` bindings and
+  constants). Capabilities use `interface`; the built-ins
+  (`Stdio`, `Net`, `Fs`, `Env`, `Clock`, `Random`) get the
+  `defaultLibrary` modifier so themes can render them with a
+  different intensity than user-defined ones. Coverage spans
+  reference identifiers (via `result.bindings`), declaration
+  sites (via the `name_pos` parser change), `TypeName`
+  references inside type annotations (resolved by name in
+  `result.global_symbols`), `let` / `var` bindings (with
+  `var` getting a new `name_pos` field on the AST), and
+  struct fields / sum variants / trait methods at their
+  declaration positions. Tokens are sorted by source position
+  and relative-encoded into the standard
+  `[deltaLine, deltaStart, length, tokenType, tokenModifiers]`
+  quintuples expected by the LSP protocol.
+
 - **LSP type-aware method completion after `.`**: when the
   cursor sits in a `receiver.<here>` context, the completion
   list narrows to the methods of the receiver's type, with the

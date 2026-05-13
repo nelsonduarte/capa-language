@@ -332,6 +332,10 @@ $ capa lsp                         # speaks LSP over stdio</code></pre>
                 <td><code>completion</code></td>
                 <td>Suggests keywords, built-in types / capabilities / variants / functions, module-level names with their signatures or declared types, and the function-scope locals visible at the cursor. After a <code>.</code>, the list narrows to the methods of the receiver's type (with full signatures) for both built-in types and user-defined ones. Half-typed buffers that fail to parse fall back to the keyword + built-in floor for general context, and to a placeholder-retry parse for method context, so the suggestion list never goes dark.</td>
             </tr>
+            <tr>
+                <td><code>semanticTokens/full</code></td>
+                <td>Type-aware highlighting. Functions, parameters, variables (with <code>readonly</code> for <code>let</code> and constants), capabilities (<code>defaultLibrary</code> on the built-ins), types, sum variants, and struct fields are coloured distinctly. Editors that support semantic tokens layer this on top of the TextMate grammar.</td>
+            </tr>
         </tbody>
     </table>
 
@@ -361,7 +365,7 @@ require("lspconfig").capa.setup({})</code></pre>
 
     <p>If <code>capa</code> is not on your <code>PATH</code>, swap <code>command = "capa"</code> / <code>cmd = { "capa", ... }</code> for the explicit <code>command = "python", args = ["-m", "capa", "lsp"]</code> form (and the matching Neovim version).</p>
 
-    <p>Semantic tokens and positional fidelity inside string interpolation (<code>${...}</code>) are tracked for v2.</p>
+    <p>Positional fidelity inside string interpolation (<code>${...}</code>) is the last remaining LSP polish item.</p>
 </section>
 
 <!-- =====================================================

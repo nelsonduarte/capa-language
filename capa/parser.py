@@ -837,14 +837,17 @@ class Parser:
     def _parse_var_stmt(self) -> A.VarStmt:
         start = self._peek().start
         self._expect(T.KW_VAR, "expected 'var'")
-        name = self._expect(T.IDENT, "expected variable name").text
+        name_tok = self._expect(T.IDENT, "expected variable name")
         type_expr: Optional[A.TypeExpr] = None
         if self._match(T.COLON):
             type_expr = self._parse_type()
         self._expect(T.EQ, "expected '=' in var declaration")
         value = self._parse_expr()
         self._expect_eos("after var declaration")
-        return A.VarStmt(pos=start, name=name, type_expr=type_expr, value=value)
+        return A.VarStmt(
+            pos=start, name=name_tok.text, name_pos=name_tok.start,
+            type_expr=type_expr, value=value,
+        )
 
     def _parse_if_stmt(self) -> A.IfStmt:
         start = self._peek().start
