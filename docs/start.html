@@ -184,7 +184,7 @@ Hello from Capa!</code></pre>
 
     <p>Run it:</p>
 
-<pre><code>$ python -m capa --run hello.capa
+<pre><code>$ capa --run hello.capa
 Hello, Capa!</code></pre>
 
     <p>The <code>stdio: Stdio</code> parameter is the language asking explicitly for the right to write to standard output. The runtime hands one to <code>main</code>, and <code>main</code> can hand it further down, or not. This is the whole language in one line.</p>
@@ -248,16 +248,20 @@ Hello, Capa!</code></pre>
 
     <p>Common invocations:</p>
 
-<pre><code>$ python -m capa --check examples/io.capa
+<pre><code>$ capa --check examples/io.capa
 OK
 
-$ python -m capa --run examples/grades.capa
+$ capa --run examples/grades.capa
 === Roster ===
   Ana: 17.5 (Excellent)
   Bruno: 13.0 (Pass)
   ...
 
-$ python -m capa --transpile examples/hello.capa | head -20</code></pre>
+$ capa --transpile examples/hello.capa | head -20</code></pre>
+
+    <p class="callout-note">
+        Every invocation above also works as <code>python -m capa &lt;args&gt;</code> if the <code>capa</code> command is not on your <code>PATH</code> (e.g. you cloned the repo but did not <code>pip install -e .</code>).
+    </p>
 </section>
 
 <!-- =====================================================
@@ -271,7 +275,7 @@ $ python -m capa --transpile examples/hello.capa | head -20</code></pre>
     <p>Install the optional dependency and launch:</p>
 
 <pre><code>$ pip install -e '.[lsp]'          # adds pygls&gt;=2.0
-$ python -m capa lsp               # speaks LSP over stdio</code></pre>
+$ capa lsp                         # speaks LSP over stdio</code></pre>
 
     <p>The v1 server delivers six features. None are configurable; the server runs the same lexer / parser / analyzer the CLI runs.</p>
 
@@ -321,21 +325,23 @@ language-servers = ["capa"]
 file-types = ["capa"]
 
 [language-server.capa]
-command = "python"
-args = ["-m", "capa", "lsp"]</code></pre>
+command = "capa"
+args = ["lsp"]</code></pre>
 
     <p>For <strong>Neovim</strong> with <code>nvim-lspconfig</code>:</p>
 
 <pre><code>require("lspconfig").configs.capa = {
   default_config = {
-    cmd = { "python", "-m", "capa", "lsp" },
+    cmd = { "capa", "lsp" },
     filetypes = { "capa" },
     root_dir = require("lspconfig.util").root_pattern(".git", "."),
   },
 }
 require("lspconfig").capa.setup({})</code></pre>
 
-    <p>Completion, semantic tokens, and rename are tracked for v2.</p>
+    <p>If <code>capa</code> is not on your <code>PATH</code>, swap <code>command = "capa"</code> / <code>cmd = { "capa", ... }</code> for the explicit <code>command = "python", args = ["-m", "capa", "lsp"]</code> form (and the matching Neovim version).</p>
+
+    <p>Completion and semantic tokens are tracked for v2.</p>
 </section>
 
 <!-- =====================================================

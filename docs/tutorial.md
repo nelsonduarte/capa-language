@@ -3,8 +3,8 @@
 This tutorial introduces the Capa language progressively, starting from
 "hello world" and building up to advanced features such as capabilities,
 generics, and pattern matching. Each section is self-contained; the
-snippets can be saved into a `.capa` file and run with
-`python -m capa --run`.
+snippets can be saved into a `.capa` file and run with `capa --run`
+(or `python -m capa --run` if the `capa` command is not on your `PATH`).
 
 ---
 
@@ -24,7 +24,7 @@ fun main(stdio: Stdio)
 Save it as `hello.capa` and run:
 
 ```bash
-python -m capa --run hello.capa
+capa --run hello.capa
 ```
 
 The difference between Capa and "traditional" languages is this: `stdio`

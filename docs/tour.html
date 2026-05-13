@@ -62,7 +62,7 @@
 
     <p>Run it:</p>
 
-<pre><code>$ python -m capa --run hello.capa
+<pre><code>$ capa --run hello.capa
 Hello, world!</code></pre>
 </section>
 
@@ -392,7 +392,7 @@ stdio.<span class="fn-call">println</span>(<span class="str">"hi, ${who}! mask=$
 
     <p>The <code>--manifest</code> flag of the compiler emits a JSON description of the program: per function, the declared capabilities, the attached attributes, and whether the function crosses the <code>Unsafe</code> boundary; per module, the user-defined capabilities and their implementors, plus a summary count. This is the artefact an EU Cyber Resilience Act auditor wants, evidence of the program's authority graph that does not require running it.</p>
 
-<pre><code>$ python -m capa --manifest verify.capa
+<pre><code>$ capa --manifest verify.capa
 {
   "schema_version": 1,
   "functions": [

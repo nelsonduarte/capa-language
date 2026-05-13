@@ -83,7 +83,7 @@ project; the grammar is small.
 - **Examples** in `examples/` that exercise an idiom not already
   covered. Real-world miniatures (a small parser, a small networking
   client) are more useful than synthetic demonstrations.
-- **Tooling polish**: the language server (`python -m capa lsp`),
+- **Tooling polish**: the language server (`capa lsp`),
   formatter (`capa --fmt`), and project scaffolder (`capa init`)
   have v1 implementations. The next pieces queued on the
   [roadmap](docs/roadmap.html) are LSP completion / semantic

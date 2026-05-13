@@ -18,7 +18,7 @@ Python.
 > prevents that class of attack.
 
 ```bash
-$ python -m capa --run examples/grades.capa
+$ capa --run examples/grades.capa
 === Roster ===
   Ana: 17.5 (Excellent)
   Bruno: 13.0 (Pass)
@@ -129,8 +129,13 @@ sha256sum -c capa-linux-x86_64.sha256
 From the project root (`Capa/`):
 
 ```bash
-pip install -e .          # or just use `python -m capa` directly
+pip install -e .
 ```
+
+This puts a `capa` command on your `PATH`. Without the install
+you can still invoke the compiler in place as
+`python -m capa <args>` from the repo root; both forms accept
+the same flags and subcommands.
 
 To build a binary yourself:
 
@@ -154,8 +159,8 @@ A language server ships with the compiler. Install the optional
 dependency and launch:
 
 ```bash
-pip install 'pygls>=2.0'      # or: pip install -e '.[lsp]'
-python -m capa lsp            # speaks LSP over stdio
+pip install -e '.[lsp]'       # adds pygls>=2.0
+capa lsp                      # speaks LSP over stdio
 ```
 
 The v1 server delivers:
@@ -196,8 +201,8 @@ language-servers = ["capa"]
 file-types = ["capa"]
 
 [language-server.capa]
-command = "python"
-args = ["-m", "capa", "lsp"]
+command = "capa"
+args = ["lsp"]
 ```
 
 For Neovim with `nvim-lspconfig`:
@@ -205,7 +210,7 @@ For Neovim with `nvim-lspconfig`:
 ```lua
 require("lspconfig").configs.capa = {
   default_config = {
-    cmd = { "python", "-m", "capa", "lsp" },
+    cmd = { "capa", "lsp" },
     filetypes = { "capa" },
     root_dir = require("lspconfig.util").root_pattern(".git", "."),
   },
@@ -213,7 +218,9 @@ require("lspconfig").configs.capa = {
 require("lspconfig").capa.setup({})
 ```
 
-Completion, semantic tokens, and rename are queued for v2.
+(If `capa` is not on your `PATH`, substitute `python -m capa`.)
+
+Completion and semantic tokens are queued for v2.
 
 ### Website
 
@@ -234,29 +241,42 @@ directory it will be the public-facing site for the project.
 
 ```bash
 # Tokenize
-python -m capa examples/hello.capa
+capa examples/hello.capa
 
 # Parse (AST)
-python -m capa --parse examples/tasks.capa
+capa --parse examples/tasks.capa
 
 # Analyze (lex + parse + semantic check)
-python -m capa --check examples/io.capa
+capa --check examples/io.capa
 
 # Transpile to Python (prints to stdout)
-python -m capa --transpile examples/grades.capa
+capa --transpile examples/grades.capa
 
 # Run the Capa program (transpile + execute)
-python -m capa --run examples/grades.capa
+capa --run examples/grades.capa
+
+# Scaffold a new project
+capa init my-project
+
+# Format the file in place (line-level, idempotent)
+capa --fmt main.capa
 
 # Emit a JSON capability manifest (per-function caps + attributes)
-python -m capa --manifest examples/manifest_demo.capa
+capa --manifest examples/manifest_demo.capa
 
 # Emit a CycloneDX 1.5 SBOM with capability metadata embedded as properties
-python -m capa --cyclonedx examples/manifest_demo.capa
+capa --cyclonedx examples/manifest_demo.capa
 
 # Emit a self-contained HTML doc page built from /// doc comments
-python -m capa --doc examples/documented_demo.capa > demo.html
+capa --doc examples/documented_demo.capa > demo.html
+
+# Start the language server (stdio)
+capa lsp
 ```
+
+The `capa` command is installed by `pip install -e .` and by the
+PyInstaller binary releases. If neither is available, substitute
+`python -m capa` for every invocation above.
 
 ## Programmatic use
 

@@ -8,12 +8,18 @@ A 5-minute guide to writing your first Capa program.
 - Nothing else to install, Capa transpiles to Python and the package
   bundles everything
 
+The `capa` command is on your `PATH` after `pip install -e .` from
+the repository root, or directly when you use one of the
+[pre-built binaries](https://github.com/nelsonduarte/capa/releases/latest).
+The examples below use `capa <args>`; if neither path is set up,
+substitute `python -m capa <args>` (they accept the same flags).
+
 ## 2. Verify it works
 
 From the project root:
 
 ```bash
-python -m capa --run examples/hello.capa
+capa --run examples/hello.capa
 ```
 
 Expected output: `Hello, world!`
@@ -25,9 +31,9 @@ Expected output: `Hello, world!`
 The fastest way to get a working starter:
 
 ```bash
-python -m capa init my-project
+capa init my-project
 cd my-project
-python -m capa --run main.capa
+capa --run main.capa
 ```
 
 `capa init` creates four files: `main.capa` (a runnable starter
@@ -49,7 +55,7 @@ fun main(stdio: Stdio)
 Run it:
 
 ```bash
-python -m capa --run my_first.capa
+capa --run my_first.capa
 ```
 
 ### Path C, Tutorial
@@ -64,19 +70,22 @@ For a progressive 10-chapter introduction to the language, open
 
 | Command | What it does |
 |---|---|
-| `python -m capa init [name]` | Scaffold a new project (subcommand). |
-| `python -m capa --run file.capa` | Compile and execute. |
-| `python -m capa --check file.capa` | Type-check only (do not run). |
-| `python -m capa --transpile file.capa` | Print the generated Python code. |
-| `python -m capa --parse file.capa` | Print the AST (for debugging). |
-| `python -m capa --fmt file.capa` | Rewrite the file in canonical Capa style (line-level). |
-| `python -m capa --fmt-check file.capa` | Verify canonical style without rewriting. |
-| `python -m capa --doc file.capa` | Emit a self-contained HTML doc page from `///` and `/** */` doc comments. |
-| `python -m capa --manifest file.capa` | Emit a JSON capability manifest. |
-| `python -m capa --cyclonedx file.capa` | Emit a CycloneDX 1.5 SBOM with the manifest embedded. |
-| `python -m capa lsp` | Start the language server on stdio (requires `pip install -e '.[lsp]'`). |
+| `capa init [name]` | Scaffold a new project (subcommand). |
+| `capa --run file.capa` | Compile and execute. |
+| `capa --check file.capa` | Type-check only (do not run). |
+| `capa --transpile file.capa` | Print the generated Python code. |
+| `capa --parse file.capa` | Print the AST (for debugging). |
+| `capa --fmt file.capa` | Rewrite the file in canonical Capa style (line-level). |
+| `capa --fmt-check file.capa` | Verify canonical style without rewriting. |
+| `capa --doc file.capa` | Emit a self-contained HTML doc page from `///` and `/** */` doc comments. |
+| `capa --manifest file.capa` | Emit a JSON capability manifest. |
+| `capa --cyclonedx file.capa` | Emit a CycloneDX 1.5 SBOM with the manifest embedded. |
+| `capa lsp` | Start the language server on stdio (requires `pip install -e '.[lsp]'`). |
 | `--no-color` | Disable ANSI colors in the output. |
 | `--stdin` | Read from stdin instead of a file. |
+
+Every command above also works as `python -m capa <args>` if the
+`capa` shim is not on your `PATH`.
 
 ## 5. Minimum program structure
 

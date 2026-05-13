@@ -92,7 +92,7 @@ fun flat_map(lines: List<String>, f: Fun(String) -> List<String>) -> List<String
 Run it:
 
 ```bash
-$ python -m capa --run examples/demo_event_stream.capa
+$ capa --run examples/demo_event_stream.capa
 flat_map produced 9 words from 2 lines
 first word: Some(the)
 last word:  Some(dog)
@@ -228,7 +228,7 @@ To be honest about the limits:
 
 ```bash
 # The safe version (compiles and runs):
-python -m capa --run examples/demo_event_stream.capa
+capa --run examples/demo_event_stream.capa
 
 # The attack version (rejected by the analyzer): copy the malicious
 # `flat_map` from above into a file, run --check, observe the errors.

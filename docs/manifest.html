@@ -86,7 +86,7 @@
 
     <p>Run it through the compiler with the new flag:</p>
 
-<pre><code>$ python -m capa --manifest verify.capa</code></pre>
+<pre><code>$ capa --manifest verify.capa</code></pre>
 
     <p>You get, on stdout:</p>
 
@@ -276,9 +276,9 @@
     <p>Three natural integration points:</p>
 
     <ol>
-        <li><strong>CI gate.</strong> Run <code>python -m capa --manifest src/*.capa</code> in CI, diff the output against a baseline, and fail the build if a function unexpectedly gains a capability or crosses the <code>Unsafe</code> boundary. The capability surface of a library becomes a tracked artefact.</li>
+        <li><strong>CI gate.</strong> Run <code>capa --manifest src/*.capa</code> in CI, diff the output against a baseline, and fail the build if a function unexpectedly gains a capability or crosses the <code>Unsafe</code> boundary. The capability surface of a library becomes a tracked artefact.</li>
         <li><strong>Audit evidence.</strong> Generate the manifest at release time and ship it alongside the binary. An auditor can verify the claims without re-running the compiler.</li>
-        <li><strong>SBOM enrichment via CycloneDX 1.5.</strong> Capa also emits the manifest wrapped in a valid CycloneDX 1.5 SBOM (<code>python -m capa --cyclonedx file.capa</code>). The capability metadata is embedded as standard <code>properties[]</code> entries under the <code>capa:*</code> namespace, so Dependency-Track, OSV-Scanner, syft, and any other CycloneDX-aware tool can ingest the document and surface the information without having to know anything about Capa. See the section below.</li>
+        <li><strong>SBOM enrichment via CycloneDX 1.5.</strong> Capa also emits the manifest wrapped in a valid CycloneDX 1.5 SBOM (<code>capa --cyclonedx file.capa</code>). The capability metadata is embedded as standard <code>properties[]</code> entries under the <code>capa:*</code> namespace, so Dependency-Track, OSV-Scanner, syft, and any other CycloneDX-aware tool can ingest the document and surface the information without having to know anything about Capa. See the section below.</li>
     </ol>
 
     <div class="callout">
@@ -292,7 +292,7 @@
 <section>
     <h2>Human-readable counterpart: <code>--doc</code></h2>
 
-    <p>The manifest is for machines (CI gates, SBOM tools, audit pipelines). The same source carries enough information to produce a human-readable artefact too. <code>python -m capa --doc file.capa</code> emits a self-contained HTML page documenting every function, type, and user-defined capability, using:</p>
+    <p>The manifest is for machines (CI gates, SBOM tools, audit pipelines). The same source carries enough information to produce a human-readable artefact too. <code>capa --doc file.capa</code> emits a self-contained HTML page documenting every function, type, and user-defined capability, using:</p>
 
     <ul>
         <li><strong>Doc comments</strong> (<code>///</code> line and <code>/** */</code> block) attached to declarations. A small subset of markdown (paragraphs and inline <code>code</code> spans) is rendered; HTML special characters are always escaped.</li>
@@ -326,7 +326,7 @@
 
     <p>The <code>--manifest</code> flag emits Capa's native JSON shape, compact, opinionated, and easy to consume from a Capa-aware tool. For interoperability with the broader supply-chain tooling ecosystem, Capa also emits a <strong>CycloneDX 1.5 SBOM</strong> with the same information embedded:</p>
 
-<pre><code>$ python -m capa --cyclonedx verify.capa</code></pre>
+<pre><code>$ capa --cyclonedx verify.capa</code></pre>
 
     <p>The resulting document is a valid CycloneDX 1.5 BOM and validates against the published schema. Each function and each user-defined capability becomes a <code>library</code> sub-component with a deterministic <code>bom-ref</code>. Per-function metadata (declared capabilities, attributes, <code>Unsafe</code> crossings, position) is flattened into the standard <code>properties[]</code> array under the <code>capa:*</code> namespace.</p>
 
