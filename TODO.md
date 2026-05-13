@@ -195,17 +195,32 @@ to public.
 
 ## Code-quality maintenance (P2)
 
-- [~] **Split `analyzer.py`**. Two contained extractions landed:
-  the 600-line built-in registration moved to a declarative table
-  in `capa/builtins.py`, and the Levenshtein-based "did you mean"
-  matcher moved to `capa/_suggest.py` (the analyzer just collects
-  the haystack and forwards). `analyzer.py` is now 2738 lines,
-  down from 3300+. The cleaner full split (state base class +
-  typing / discipline / dispatch mixins, in a `capa/analyzer/`
-  package mirroring the `capa/lsp/` shape) is queued for v2: the
-  `Analyzer` class has heavy cross-method state sharing and the
-  mixin split needs surgical work that does not fit in a single
-  commit without taking on real risk.
+- [x] **Split `analyzer.py`** into a `capa/analyzer/` package.
+  Built-in registration moved to a declarative table in
+  `capa/builtins.py` (313 lines); Levenshtein matcher moved to
+  `capa/_suggest.py` (101 lines); the analyzer class itself was
+  split into four mixins:
+  - `_typing.py` (92 lines): `_fresh_ty_var`, `_resolve_ty`,
+    `_commit_fresh_substitutions`, `_apply_mapping`.
+  - `_discipline.py` (252 lines): the capability-discipline
+    methods (aliasing, no-capability, no-builtin-capability,
+    use-after-consume, self-substitution, impls-aware
+    compatibility).
+  - `_dispatch.py` (365 lines): `_resolve_named_args`,
+    `_check_call`, `_check_call_with_inference`,
+    `_check_method_call`, `_check_method_dispatch`.
+  - `_patterns.py` (329 lines): `_bind_pattern`,
+    `_pattern_has_binding`, `_pattern_is_catchall`,
+    `_flatten_or_pat`, `_check_match_exhaustiveness`.
+  
+  ``capa/analyzer/__init__.py`` is now 1751 lines (down from
+  3300+, almost half) and hosts the `Analyzer` composition, the
+  state types (Symbol, Scope, AnalysisResult, ...), `__init__`
+  and the public `analyze()` function, plus the
+  declaration-walk / item-checking / statement-checking /
+  expression-checking methods that have not been carved out
+  yet (those four families are reasonable next targets if the
+  remaining size still feels heavy).
 - [~] **Error-message audit**. First pass landed: the five most
   common typo-shaped errors (`undefined name`, `undefined type`,
   `type X has no method Y`, `struct S has no field F`,
