@@ -11,6 +11,19 @@ breaking changes and the discipline is still being shaped.
 
 ### Added
 
+- **LSP hover**: `textDocument/hover` answers
+  "what is this symbol?" for the identifier under the cursor.
+  Functions render as a Capa-style signature
+  (`fun greet(name: String, age: Int) -> String`); parameters,
+  bindings, and constants render as `name: T` plus a kind label;
+  variants show the owning sum type; user-defined capabilities
+  show the `capability X` head. The hover range covers the
+  identifier so editors highlight the exact span. Coverage is
+  limited to identifier references in v1 (declaration sites
+  store names as strings, not Ident nodes, so they are skipped
+  cleanly rather than guessed at). A buffer with parse errors
+  returns no hover but never raises.
+
 - **Language server (LSP), v1 diagnostics-only**.
   `python -m capa lsp` starts a stdio server that re-runs the
   full lexer + parser + analyzer pipeline on every didOpen,
@@ -23,8 +36,7 @@ breaking changes and the discipline is still being shaped.
   finds in a single pass. `pygls>=2.0` is an optional
   dependency (`pip install -e '.[lsp]'`) so the rest of the
   compiler stays standard-library-only. README ships one-line
-  config snippets for Helix and Neovim. Hover, go-to-definition,
-  completion, and semantic tokens are on the roadmap.
+  config snippets for Helix and Neovim.
 
 ### Changed
 

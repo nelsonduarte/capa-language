@@ -111,5 +111,84 @@ class TestComputeDiagnostics(unittest.TestCase):
         )
 
 
+@unittest.skipUnless(_HAVE_LSP, "requires `pygls` extra (pip install '.[lsp]')")
+class TestHover(unittest.TestCase):
+    """Hover answers ``what is this symbol?`` for identifiers
+    under the cursor. Coverage is intentionally limited to ``Ident``
+    nodes in v1: hovering on a declaration site (the ``foo`` in
+    ``fun foo(...)``) does not fire because the parser stores
+    declared names as strings, not as Ident nodes. Hovering on
+    a *reference* to ``foo`` (a call site, a use in an
+    expression) does fire."""
+
+    def setUp(self):
+        from capa.lsp_server import compute_hover
+        self.hover = compute_hover
+
+    def test_hover_on_function_call_shows_signature(self):
+        src = (
+            "fun greet(name: String, age: Int) -> String\n"
+            "    return name\n"
+            "fun main(stdio: Stdio)\n"
+            "    let msg = greet(\"Ana\", 30)\n"
+            "    stdio.println(msg)\n"
+        )
+        # ``greet`` at the call site, line 4 col 15.
+        r = self.hover(src, "t.capa", 4, 15)
+        self.assertIsNotNone(r)
+        md, ident = r
+        self.assertIn("fun greet(name: String, age: Int) -> String", md)
+        self.assertEqual(ident.name, "greet")
+
+    def test_hover_on_parameter_use_shows_type(self):
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"hi\")\n"
+        )
+        # ``stdio`` on line 2, col 5.
+        r = self.hover(src, "t.capa", 2, 5)
+        self.assertIsNotNone(r)
+        md, _ = r
+        self.assertIn("stdio: Stdio", md)
+        self.assertIn("*parameter*", md)
+
+    def test_hover_on_let_binding_use_shows_type(self):
+        # Use the binding outside an interpolation, since string
+        # interpolation expressions go through a side channel that
+        # does not preserve positions in v1.
+        src = (
+            "fun id(x: Int) -> Int\n"
+            "    return x\n"
+            "fun main(stdio: Stdio)\n"
+            "    let n = 42\n"
+            "    let _ = id(n)\n"
+            "    stdio.println(\"done\")\n"
+        )
+        # ``n`` on line 5, col 16 (inside the call id(n)).
+        r = self.hover(src, "t.capa", 5, 16)
+        self.assertIsNotNone(r)
+        md, _ = r
+        self.assertIn("n: Int", md)
+        self.assertIn("*binding*", md)
+
+    def test_hover_in_whitespace_returns_none(self):
+        src = "fun main()\n    return\n"
+        # Column 1 of an empty-ish line is whitespace.
+        r = self.hover(src, "t.capa", 2, 1)
+        self.assertIsNone(r)
+
+    def test_hover_on_unknown_position_returns_none(self):
+        src = "fun main(stdio: Stdio)\n    stdio.println(\"hi\")\n"
+        # Far past end of file.
+        r = self.hover(src, "t.capa", 999, 1)
+        self.assertIsNone(r)
+
+    def test_hover_with_parse_error_does_not_crash(self):
+        # An incomplete buffer should yield None, never raise.
+        src = "fun main()\n    let = "
+        r = self.hover(src, "t.capa", 2, 9)
+        self.assertIsNone(r)
+
+
 if __name__ == "__main__":
     unittest.main()

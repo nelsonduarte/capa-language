@@ -1,19 +1,18 @@
 """capa/lsp_server.py, Language Server Protocol implementation.
 
-A minimal Capa language server (LSP), v1: **diagnostics only**.
-On every ``didOpen`` / ``didChange`` / ``didSave``, the server
-re-runs the full lexer + parser + analyzer pipeline on the
-buffer's current contents and publishes the resulting errors as
-``textDocument/publishDiagnostics`` events. Each diagnostic
-carries the same source-aligned position the CLI prints, so
-editors can underline the offending range and surface the
-message in their UI.
+A minimal Capa language server. v1 ships:
 
-Hover, go-to-definition, completion, semantic tokens, and other
-LSP capabilities are deliberately deferred: the goal of v1 is to
-give users of any LSP-capable editor (VSCode, Neovim, Helix,
-Emacs, JetBrains) the same diagnostics they would see by running
-``capa --check``, with no roundtrip to the terminal.
+- ``textDocument/publishDiagnostics`` on every ``didOpen`` /
+  ``didChange`` / ``didSave``, computed by re-running the full
+  lexer + parser + analyzer pipeline on the buffer.
+- ``textDocument/hover`` for identifiers: shows the symbol's
+  signature and inferred type, rendered as Markdown. Coverage
+  follows what the analyzer records in
+  ``AnalysisResult.bindings``: variables, parameters, function
+  names, constants, and capability bindings.
+
+Go-to-definition, completion, semantic tokens, and code actions
+remain on the roadmap.
 
 Runtime entry points:
 
@@ -28,14 +27,16 @@ continue to work in a stock-Python environment.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 
 from . import __version__ as _CAPA_VERSION
-from .analyzer import analyze
+from . import capa_ast as A
+from .analyzer import AnalysisResult, Symbol, SymbolKind, analyze
 from .errors import LexerError
 from .lexer import Lexer
 from .parser import Parser, ParserError
 from .tokens import Pos
+from .typesys import Ty, TyFun, ty_str
 
 if TYPE_CHECKING:  # only for type hints; runtime import is lazy
     from lsprotocol import types as lsp
@@ -141,6 +142,169 @@ def compute_diagnostics(source: str, filename: str) -> "list[lsp.Diagnostic]":
 
 
 # ---------------------------------------------------------------
+# Hover support
+# ---------------------------------------------------------------
+# Hover answers ``what is this symbol?`` for the identifier under
+# the cursor. We compute it by:
+#
+#   1. Re-running the pipeline (cheap; analyse is sub-100ms on
+#      every example file in the repo).
+#   2. Walking the parsed Module to collect ``Ident`` nodes with
+#      their source span (line + col_start..col_end).
+#   3. Picking the one whose span covers the cursor position.
+#   4. Looking up that Ident in ``AnalysisResult.bindings`` to
+#      reach the Symbol, then formatting the Symbol's kind and
+#      type as Markdown.
+#
+# Coverage is intentionally limited to ``Ident`` nodes in v1; the
+# parser does not record end positions for non-leaf expressions,
+# so hovering on, say, the middle of a struct literal would need
+# more bookkeeping than the value justifies right now.
+
+
+def _walk(node) -> "list":
+    """Yield every AST node reachable from ``node`` via dataclass
+    fields. Order is deterministic; not breadth-first vs
+    depth-first matters less than reaching everything."""
+    if isinstance(node, A.Node):
+        yield node
+        for f in node.__dataclass_fields__.values():
+            yield from _walk(getattr(node, f.name))
+    elif isinstance(node, (list, tuple)):
+        for x in node:
+            yield from _walk(x)
+    # Strings, ints, None, etc. are leaves and not interesting.
+
+
+def collect_idents(module: A.Module) -> list[A.Ident]:
+    """All ``Ident`` nodes in the module, in walk order."""
+    return [n for n in _walk(module) if isinstance(n, A.Ident)]
+
+
+def find_ident_at(
+    idents: list[A.Ident], line: int, col: int,
+) -> Optional[A.Ident]:
+    """Return the ``Ident`` whose source span covers the (1-based)
+    cursor position, if any. ``line`` and ``col`` are 1-based to
+    match Capa's internal Pos convention; the LSP server converts
+    the 0-based wire values before calling this function.
+
+    Identifiers cannot overlap, so on a match the first hit is
+    the right answer.
+    """
+    for ident in idents:
+        if ident.pos.line != line:
+            continue
+        col_start = ident.pos.col
+        col_end = col_start + len(ident.name)
+        if col_start <= col < col_end:
+            return ident
+    return None
+
+
+def _format_symbol_for_hover(
+    sym: Symbol, ident_ty: Optional[Ty],
+) -> str:
+    """Render a Capa Symbol as the Markdown body of a hover
+    response. Falls back to a generic ``name: T`` shape when the
+    Symbol kind has no specialised rendering.
+
+    ``ident_ty`` is the inferred type recorded for the Ident
+    itself (from ``AnalysisResult.types``); it can be more
+    specific than ``sym.ty`` when type inference filled in a
+    generic. When available, prefer it for the display.
+    """
+    name = sym.name
+    if sym.kind == SymbolKind.FUNCTION and isinstance(sym.ty, TyFun):
+        # Render as a Capa-style signature, parameter names when
+        # known, types from the TyFun.
+        param_names = sym.param_names or [
+            f"arg{i + 1}" for i in range(len(sym.ty.params))
+        ]
+        params = ", ".join(
+            f"{pn}: {ty_str(pt)}"
+            for pn, pt in zip(param_names, sym.ty.params)
+        )
+        return f"```capa\nfun {name}({params}) -> {ty_str(sym.ty.ret)}\n```"
+    if sym.kind == SymbolKind.PARAM:
+        ty = ident_ty if ident_ty is not None else sym.ty
+        if ty is not None:
+            return (
+                f"```capa\n{name}: {ty_str(ty)}\n```"
+                f"\n\n*parameter*"
+            )
+        return f"`{name}` (parameter)"
+    if sym.kind in (SymbolKind.LOCAL_VAR, SymbolKind.LOCAL):
+        ty = ident_ty if ident_ty is not None else sym.ty
+        kind_label = (
+            "mutable variable" if sym.kind == SymbolKind.LOCAL_VAR
+            else "binding"
+        )
+        if ty is not None:
+            return (
+                f"```capa\n{name}: {ty_str(ty)}\n```"
+                f"\n\n*{kind_label}*"
+            )
+        return f"`{name}` ({kind_label})"
+    if sym.kind == SymbolKind.CONSTANT:
+        ty = sym.ty
+        head = "const " + name
+        if ty is not None:
+            head += f": {ty_str(ty)}"
+        return f"```capa\n{head}\n```\n\n*constant*"
+    if sym.kind == SymbolKind.VARIANT:
+        owner = sym.variant_owner.name if sym.variant_owner else "?"
+        head = name
+        if sym.variant_payload_ty is not None:
+            head += f"({ty_str(sym.variant_payload_ty)})"
+        return (
+            f"```capa\n{head}\n```"
+            f"\n\n*variant of `{owner}`*"
+        )
+    if sym.kind == SymbolKind.CAPABILITY:
+        return (
+            f"```capa\ncapability {name}\n```"
+            f"\n\n*user-defined capability*"
+        )
+    if sym.kind in (SymbolKind.TYPE_STRUCT, SymbolKind.TYPE_SUM):
+        kind = "struct" if sym.kind == SymbolKind.TYPE_STRUCT else "sum type"
+        return f"```capa\ntype {name}\n```\n\n*{kind}*"
+    # Fallback.
+    if sym.ty is not None:
+        return f"```capa\n{name}: {ty_str(sym.ty)}\n```"
+    return f"`{name}`"
+
+
+def compute_hover(
+    source: str, filename: str, line: int, col: int,
+) -> Optional[tuple[str, A.Ident]]:
+    """Compute the hover content (Markdown) and the source range
+    to highlight when the cursor sits at the 1-based
+    ``(line, col)`` position. Returns ``None`` when the position
+    is not inside a recognised identifier or the analyzer has no
+    binding to report (the file may have parse errors).
+
+    The returned tuple is ``(markdown, ident)``: the ident is
+    surfaced so the caller can build an LSP range from its span.
+    """
+    try:
+        tokens = Lexer(source, filename=filename).lex()
+        module = Parser(tokens, source=source, filename=filename).parse_module()
+    except (LexerError, ParserError):
+        return None
+
+    result = analyze(module, source=source, filename=filename)
+    ident = find_ident_at(collect_idents(module), line, col)
+    if ident is None:
+        return None
+    sym = result.bindings.get(id(ident))
+    if sym is None:
+        return None
+    ident_ty = result.types.get(id(ident))
+    return _format_symbol_for_hover(sym, ident_ty), ident
+
+
+# ---------------------------------------------------------------
 # Server wiring
 # ---------------------------------------------------------------
 
@@ -199,6 +363,32 @@ def _build_server():
             lsp.PublishDiagnosticsParams(
                 uri=params.text_document.uri, diagnostics=[],
             )
+        )
+
+    @server.feature(lsp.TEXT_DOCUMENT_HOVER)
+    def hover(
+        ls, params: "lsp.HoverParams",
+    ) -> "Optional[lsp.Hover]":
+        doc = ls.workspace.get_text_document(params.text_document.uri)
+        # LSP positions are 0-based; Capa positions are 1-based.
+        line = params.position.line + 1
+        col = params.position.character + 1
+        result = compute_hover(doc.source, params.text_document.uri, line, col)
+        if result is None:
+            return None
+        markdown, ident = result
+        start = lsp.Position(
+            line=ident.pos.line - 1, character=ident.pos.col - 1,
+        )
+        end = lsp.Position(
+            line=ident.pos.line - 1,
+            character=ident.pos.col - 1 + len(ident.name),
+        )
+        return lsp.Hover(
+            contents=lsp.MarkupContent(
+                kind=lsp.MarkupKind.Markdown, value=markdown,
+            ),
+            range=lsp.Range(start=start, end=end),
         )
 
     return server
