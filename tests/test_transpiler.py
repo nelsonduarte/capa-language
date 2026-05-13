@@ -387,6 +387,50 @@ class TestRangeExpressions(unittest.TestCase):
         self.assertEqual(rc, 0, err)
         self.assertEqual(out, "5\n20\n")  # 5 evens (0,2,4,6,8), sum 20
 
+    def test_for_range_is_lazy(self):
+        # The naive lowering of `for x in a..b` was
+        # `for x in CapaList(range(a, b))`, which materialises the
+        # full list (28 bytes per int on CPython). For large ranges
+        # this allocated gigabytes. The transpiler now special-cases
+        # the RangeExpr-iterator form to emit `for x in range(a, b)`
+        # directly. This test asserts that property at the emitted
+        # text level.
+        code = transpile_only(
+            'fun main(stdio: Stdio)\n'
+            '    var total: Int = 0\n'
+            '    for i in 0..1000\n'
+            '        total = total + i\n'
+            '    stdio.println("${total}")\n'
+        )
+        # The lazy form is `for i in range(0, 1000):` with no
+        # `CapaList(` wrapper around it.
+        self.assertIn("for i in range(0, 1000):", code)
+        self.assertNotIn("for i in CapaList(range", code)
+
+    def test_for_inclusive_range_is_lazy(self):
+        code = transpile_only(
+            'fun main(stdio: Stdio)\n'
+            '    var total: Int = 0\n'
+            '    for i in 1..=5\n'
+            '        total = total + i\n'
+            '    stdio.println("${total}")\n'
+        )
+        self.assertIn("for i in range(1, (5) + 1):", code)
+        self.assertNotIn("for i in CapaList(range", code)
+
+    def test_bound_range_still_materialises(self):
+        # Binding a range to a name still materialises it (so
+        # subsequent List-method calls like `.map`, `.length()`
+        # keep working). Only the direct `for x in a..b` form is
+        # lowered lazily.
+        code = transpile_only(
+            'fun main(stdio: Stdio)\n'
+            '    let xs = 0..5\n'
+            '    for i in xs\n'
+            '        stdio.println("${i}")\n'
+        )
+        self.assertIn("xs = CapaList(range(0, 5))", code)
+
 
 class TestInlineMatch(unittest.TestCase):
     """Inline match form: ``match scrutinee { p -> e, p -> e, ... }``.

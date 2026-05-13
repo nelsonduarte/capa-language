@@ -382,6 +382,35 @@ breaking changes and the discipline is still being shaped.
 
 ### Changed
 
+- **`for x in a..b` no longer materialises the full range**.
+  The naive lowering was `for x in CapaList(range(a, b)):`,
+  which forced Python's `list.__init__` to walk the range
+  eagerly (~28 bytes per integer on CPython). `for x in
+  0..10_000_000` therefore allocated ~270 MB before doing any
+  work. The transpiler now special-cases `ForStmt(iter=
+  RangeExpr)` and emits `for x in range(start, stop):`
+  directly. The inclusive form `0..=n` lowers to
+  `range(0, (n) + 1)`. Bound ranges (`let xs = 0..n; for x in
+  xs`) still materialise into a `CapaList` so subsequent
+  `List<T>` method calls (`.map`, `.length()`, `.filter`)
+  continue to work. Found by an external whitepaper review
+  that flagged the memory cost as a blocker for the future
+  native backend; the long-term fix (a `Range<Int>` type
+  distinct from `List<Int>`) is still pending, but the
+  for-iteration case is no longer a footgun.
+
+- **README correction on capability-method typing**. A stale
+  paragraph in `README.md` claimed that "capabilities (`Stdio`,
+  `Fs`, etc.) have no impls in Capa code, their methods are
+  still typed as `TyUnknown` and resolved at runtime against
+  the Python runtime implementation." This was true at one
+  point but is no longer: every built-in capability method is
+  declared in `capa/builtins.py` as a closed table, the
+  analyzer dispatches against that table, and unknown methods
+  on a built-in capability are rejected with a "did you mean"
+  hint rather than typed as `TyUnknown`. Updated the paragraph
+  to match reality.
+
 - **WhitePaper held back from the public repo until the
   thesis pre-print is published**. The full design rationale
   document (`Capa-WhitePaper.md`) underpins a PhD thesis on

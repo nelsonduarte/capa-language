@@ -256,6 +256,77 @@ to public.
   if someone reports slowness.
 - [ ] **Test-coverage review**, `coverage.py` run + identify which
   parts of the analyzer are under-tested.
+- [x] **`for x in a..b` was materialising the full range** as a
+  `CapaList(range(a, b))`, allocating ~28 bytes per integer in
+  CPython. For large ranges this was gigabytes. The transpiler
+  now special-cases `ForStmt(iter=RangeExpr)` to emit
+  `for x in range(start, stop)` directly. Bound ranges
+  (`let xs = 0..n`) still materialise to keep the
+  `List<T>` method surface (`.map`, `.length()`, etc.) working;
+  only the direct for-iteration form is lazy. Found by the
+  external whitepaper review (analise_capa/capa-revisao-critica.md
+  §2.3); same review also notes that the proper long-term fix
+  is a `Range<Int>` type distinct from `List<Int>` (still
+  pending; the for-loop hack closes the urgent memory bug for
+  v1).
+
+---
+
+## External review action items (P1, from analise_capa, 2026-05-13)
+
+A friend-of-the-project review of the whitepaper, EBNF, and
+analyzer arrived as two markdown documents kept locally next to
+the repo (not checked in: they cite the WhitePaper which itself
+is held back, see `WHITEPAPER.md`). Capturing the actionable
+items here so they stay visible:
+
+- [ ] **Small-step operational semantics + soundness theorem**.
+  Without a small formal calculus showing that capability layers
+  (structural, flow, linear) are sound, the whitepaper is a
+  design doc, not a research contribution. Recommended shape:
+  configurations `<E, σ, K>` where `K` is the consumed-capability
+  set, monotonic except under `consume`. Targets two theorems
+  (Capability Soundness, Manifest Completeness). Non-negotiable
+  before submitting to PLAS / EuroS&P / ESORICS.
+- [ ] **3-5 CVE case studies** mapped to Capa typing rules.
+  Pick real supply-chain incidents (`event-stream` 2018,
+  `ua-parser-js` 2021, `colors`/`faker` 2022, `xz-utils` 2024,
+  `eslint-scope` 2018), write each as an `examples/cve_*.capa`
+  showing which typing rule rejects it. Each is half a day to
+  a day of work, not the "afternoon" the reviewer estimated.
+- [ ] **Property-based testing with Hypothesis**. The most
+  citable suggestion in the review. Generate Capa programs from
+  the EBNF, fuzz the property "runtime capability set ⊆
+  manifest set". Apanha bugs que casos manuais não apanham.
+- [ ] **`Range<Int>` as a distinct type from `List<Int>`**. The
+  for-loop transpiler hack is a stop-gap; the long-term fix is
+  a separate type with its own `Iterable` interface. Decoupled
+  from the urgent memory bug fix above.
+- [x] **`docs/positioning.md`** with honest comparison vs Pony,
+  Koka, Roc, WebAssembly Component Model. The reviewer cited
+  it approvingly; already landed.
+- [ ] **Ineligibility proofs as SBOM enrichment**. The reviewer
+  identified this as the most original idea in their second
+  document (the IR design): the SBOM declares not just what a
+  function *can* touch but what it is *provably incapable* of
+  touching. The antithesis of npm's permission manifest. Real
+  thesis contribution; worth a chapter of its own. Needs a
+  closed-world story (no `Unsafe`, no dynamic dispatch) so the
+  proof has teeth.
+- [ ] **IR with capability annotations + monomorphisation**. The
+  second review document proposes an ANF + basic-blocks + CFG
+  IR with block parameters (MLIR / Swift SIL shape). The right
+  long-term move for a native backend, but the thesis defends
+  on the soundness theorem and the demos already in place, not
+  on the IR. Deferred until after thesis submission.
+
+The reviewer's six-month sequence puts IR redesign in September
+and a native backend by December; that ordering trades thesis-
+critical work (formalisation + case studies) for infrastructure
+that the thesis does not need. My counter-sequence:
+formalisation → CVE case studies → Hypothesis tests →
+`Range<Int>` type → workshop paper submission → defer IR /
+native backend until after submission.
 
 ---
 

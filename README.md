@@ -799,9 +799,14 @@ only honest way to test a transpiler.
   * `Self` in the return type is resolved to the receiver's type
   * Additional inference applies to the method's type params
 
-  Exception: capabilities (`Stdio`, `Fs`, etc.) have no impls in Capa
-  code, their methods are still typed as `TyUnknown` and resolved at
-  runtime against the Python runtime implementation.
+  Built-in capabilities (`Stdio`, `Fs`, `Env`, `Net`, `Clock`,
+  `Random`, `Unsafe`) have no `impl` block in Capa source. Their
+  method surfaces are declared in `capa/builtins.py` as a closed
+  table that the analyzer consults during dispatch. Unknown
+  methods on a built-in capability are rejected with a "did you
+  mean" hint instead of silently typing as `TyUnknown`; the
+  runtime resolves the registered names against the Python
+  implementation in `capa/runtime/_capabilities.py`.
 
 - **Match exhaustiveness** for sum types and `Bool`:
   * **Sum types**: every variant must be covered by some arm without

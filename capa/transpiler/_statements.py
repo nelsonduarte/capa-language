@@ -148,8 +148,22 @@ class _StatementsMixin:
 
     def _emit_for(self, s: A.ForStmt) -> None:
         target = self._emit_pattern_lvalue(s.pattern)
-        iter_code = self._emit_expr(s.iter)
-        self.em.write(f"for {target} in {iter_code}:")
+        # Special case: `for x in a..b` and `for x in a..=b` iterate
+        # over Python's lazy `range()` directly, without materialising
+        # a CapaList. A bare RangeExpr in this position is the common
+        # case (`for i in 0..1_000_000`) and previously allocated the
+        # full list (28 bytes per int in CPython, gigabytes for large
+        # ranges). Bound ranges (`let xs = 0..n; for x in xs`) still
+        # materialise via the standard `_emit_expr(RangeExpr)` path
+        # because the user asked for the list by binding it.
+        if isinstance(s.iter, A.RangeExpr):
+            start = self._emit_expr(s.iter.start)
+            end = self._emit_expr(s.iter.end)
+            stop = f"({end}) + 1" if s.iter.inclusive else end
+            self.em.write(f"for {target} in range({start}, {stop}):")
+        else:
+            iter_code = self._emit_expr(s.iter)
+            self.em.write(f"for {target} in {iter_code}:")
         self.em.indent()
         self._emit_block_body(s.body)
         self.em.dedent()
