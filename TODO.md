@@ -325,22 +325,27 @@ Capa as artefact in the SBOM Governance thesis:
 - [~] **Example linking SBOM ↔ capabilities**: the headline
   "auditable supply chain" pitch made concrete. **Demo landed**
   at `examples/sbom_capability_audit.capa`: a Capa program reads
-  a CycloneDX SBOM in the shape `capa --cyclonedx` emits,
-  extracts each function's declared capabilities from the
-  `capa:declared_capability` properties, and checks them against
-  an inline allow-list policy. Reports per-function summary plus
-  a list of violations. The novel part vs npm/PyPI/cargo SBOM
-  tooling: in Capa both sides of the comparison are static (the
-  type system makes the declared set rigorous; the audit is a
-  syntactic comparison of two finite lists), so a diff between
-  SBOM and policy is unambiguous and travels with the build
-  artefact. Regression test in
+  both a CycloneDX SBOM and a JSON policy file via the `Fs`
+  capability (attenuated to `examples/data/` via
+  `Fs.restrict_to` before either file is touched), extracts
+  each function's declared capabilities from the
+  `capa:declared_capability` properties in the SBOM, and checks
+  them against the per-function allow-list policy. Reports a
+  per-function summary plus a list of violations. The novel
+  part vs npm/PyPI/cargo SBOM tooling: in Capa both sides of
+  the comparison are static (the type system makes the
+  declared set rigorous; the audit is a syntactic comparison
+  of two finite lists), so a diff between SBOM and policy is
+  unambiguous and travels with the build artefact. Sample
+  data at `examples/data/demo-sbom.json` +
+  `examples/data/demo-policy.json` (the policy deliberately
+  omits one function so the audit fires). Regression test in
   `tests/test_transpiler.py::test_sbom_capability_audit`.
-  **Pending**: read SBOM + policy from `Fs` instead of inline,
-  support shared cross-function policies (e.g. "no Net anywhere
-  except in the `net::` namespace"), and the thesis-chapter
-  writeup that bridges Representation (the four parsers) and
-  Validation (the audit) into the CRA-aligned pitch.
+  **Pending**: support structural cross-function policies
+  (e.g. "no Net anywhere except inside an impl of trait
+  NetClient"), and the thesis-chapter writeup that bridges
+  Representation (the four parsers) and Validation (the
+  audit) into the CRA-aligned pitch.
 
 These are not Capa-the-language work; they're Capa-as-research-vehicle
 work. Pick them up alongside the thesis chapters they unlock.

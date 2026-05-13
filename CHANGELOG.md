@@ -13,20 +13,40 @@ breaking changes and the discipline is still being shaped.
 
 - **SBOM ↔ capability-policy audit, written in Capa**
   (`examples/sbom_capability_audit.capa`): the "auditable
-  supply chain" pitch made concrete. Reads a CycloneDX SBOM in
-  the shape `capa --cyclonedx` emits, extracts each function's
+  supply chain" pitch made concrete. End-to-end pipeline with
+  real file IO: reads both a CycloneDX SBOM and a JSON policy
+  file via the `Fs` capability (attenuated to
+  `examples/data/` via `Fs.restrict_to` before either file is
+  opened, so the auditor cannot exfiltrate anything outside
+  its declared input directory), extracts each function's
   declared capabilities from the `capa:declared_capability`
-  property entries, then checks every function against an
-  inline allow-list policy (`Map<String, List<String>>` from
-  function name to allowed capability types). Reports a
-  per-function summary plus a numbered list of violations. The
-  novel part vs npm / PyPI / cargo SBOM tooling: both sides of
-  the comparison are static. Capa's type system makes the
-  declared set rigorous, and the audit is a syntactic
-  comparison of two finite lists. A diff between SBOM and
-  policy is unambiguous, and it travels with the build
-  artefact. Regression test in
+  properties, and checks them against the per-function
+  allow-list. Reports a per-function summary plus a numbered
+  list of violations. The novel part vs npm / PyPI / cargo
+  SBOM tooling: both sides of the comparison are static.
+  Capa's type system makes the declared set rigorous, and the
+  audit is a syntactic comparison of two finite lists. A diff
+  between SBOM and policy is unambiguous, and it travels with
+  the build artefact. Sample data at
+  `examples/data/demo-sbom.json` +
+  `examples/data/demo-policy.json` (the policy deliberately
+  omits one function so the audit fires on a single run).
+  Regression test in
   `tests/test_transpiler.py::test_sbom_capability_audit`.
+
+- **Missing capability-attenuator methods registered in the
+  builtins table**: `Fs.restrict_to`, `Fs.allows`,
+  `Env.restrict_to_keys`, `Env.allows`,
+  `Clock.restrict_to_after`, `Clock.allows`, and
+  `Random.with_seed` are runtime methods on the
+  corresponding capability classes but were not listed in
+  `capa/builtins.py`. Before the recent capability-method
+  strictness change they slipped through as TyUnknown; that
+  change exposed the gap. All five attenuators are now
+  type-checked properly, including the return type narrowing
+  (`Fs.restrict_to(p) -> Fs`, `Env.restrict_to_keys(ks) -> Env`,
+  `Clock.restrict_to_after(t) -> Clock`,
+  `Random.with_seed(seed) -> Random`).
 
 - **SPDX license-expression parser, written in Capa**
   (`examples/spdx_license_expr.capa`): a recursive-descent

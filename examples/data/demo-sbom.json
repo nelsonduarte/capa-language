@@ -1,0 +1,56 @@
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.5",
+  "version": 1,
+  "metadata": {
+    "component": {
+      "bom-ref": "capa:program:demo",
+      "type": "application",
+      "name": "demo.capa"
+    }
+  },
+  "components": [
+    {
+      "type": "library",
+      "name": "main",
+      "properties": [
+        { "name": "capa:kind", "value": "function" },
+        { "name": "capa:declared_capability", "value": "Stdio" },
+        { "name": "capa:declared_capability", "value": "Net" },
+        { "name": "capa:declared_capability", "value": "Fs" }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "log_event",
+      "properties": [
+        { "name": "capa:kind", "value": "function" },
+        { "name": "capa:declared_capability", "value": "Stdio" }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "fetch_user",
+      "properties": [
+        { "name": "capa:kind", "value": "function" },
+        { "name": "capa:declared_capability", "value": "Net" }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "save_report",
+      "properties": [
+        { "name": "capa:kind", "value": "function" },
+        { "name": "capa:declared_capability", "value": "Fs" }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "notify_remote",
+      "properties": [
+        { "name": "capa:kind", "value": "function" },
+        { "name": "capa:declared_capability", "value": "Net" }
+      ]
+    }
+  ]
+}

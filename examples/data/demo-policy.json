@@ -1,0 +1,8 @@
+{
+  "rules": {
+    "main": ["Stdio", "Net", "Fs"],
+    "log_event": ["Stdio"],
+    "fetch_user": ["Net"],
+    "save_report": ["Fs"]
+  }
+}
