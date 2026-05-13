@@ -1,9 +1,11 @@
 """Tests for capa.formatter, the canonical-style formatter.
 
-The v1 formatter operates at the line level: trailing whitespace,
-indentation, blank-line clusters, line-ending normalisation, and the
-final newline. It does **not** rewrite expressions or operator
-spacing; those tests should not exist yet.
+The formatter operates at the line level (trailing whitespace,
+indentation, blank-line clusters, line-ending normalisation, final
+newline) plus a small intra-line pass: collapse runs of spaces in
+code, insert a space after a comma. Expression-level rewrites
+(operator spacing around binary operators, brace placement, etc.)
+are still deferred to the future AST-round-trip pass.
 """
 
 import unittest
@@ -157,6 +159,49 @@ class TestIsFormatted(unittest.TestCase):
 
     def test_missing_final_newline_is_not_formatted(self):
         self.assertFalse(is_formatted("x"))
+
+
+class TestIntraLineSpacing(unittest.TestCase):
+    def test_multiple_spaces_collapse(self):
+        self.assertEqual(
+            format_source("let x  =  1 +  2\n"),
+            "let x = 1 + 2\n",
+        )
+
+    def test_space_inserted_after_comma(self):
+        self.assertEqual(
+            format_source("f(1,2,3)\n"),
+            "f(1, 2, 3)\n",
+        )
+
+    def test_spacing_skipped_inside_string(self):
+        # The triple space inside "..." must survive untouched.
+        src = 'let s = "a   b"\n'
+        self.assertEqual(format_source(src), src)
+
+    def test_spacing_skipped_inside_char(self):
+        src = "let c = ' '\n"
+        self.assertEqual(format_source(src), src)
+
+    def test_spacing_skipped_in_line_comment(self):
+        # Everything after `//` is preserved character-for-character.
+        # The double space BEFORE the `//` is still code, so it
+        # collapses to a single space; the comment body is untouched.
+        src = "let x = 1  // why    not?\n"
+        self.assertEqual(format_source(src), "let x = 1 // why    not?\n")
+
+    def test_comma_before_closing_paren_left_alone(self):
+        # A trailing comma followed by ``)`` must NOT get a space inserted.
+        self.assertEqual(
+            format_source("f(1,)\n"),
+            "f(1,)\n",
+        )
+
+    def test_idempotent(self):
+        src = "fun add(a,b: Int) -> Int\n    return a  +  b\n"
+        once = format_source(src)
+        twice = format_source(once)
+        self.assertEqual(once, twice)
 
 
 if __name__ == "__main__":

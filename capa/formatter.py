@@ -1,8 +1,9 @@
-"""capa/formatter.py, canonical-style formatter (v1, line-level).
+"""capa/formatter.py, canonical-style formatter.
 
 The Capa formatter is a single non-configurable style, in the spirit
-of ``gofmt``. Version 1 operates at the **line level**: it inspects
-each source line and re-emits it after the following normalisations:
+of ``gofmt``. It operates at the **line level**, with a conservative
+intra-line pass for clear-cut spacing rules. The following
+normalisations are applied, in order:
 
 - **Line endings**: ``\\r\\n`` and ``\\r`` are converted to ``\\n``.
 - **Indentation**: leading tab characters are forbidden at the start of
@@ -17,14 +18,19 @@ each source line and re-emits it after the following normalisations:
   a single blank line. (A single blank line is preserved because Capa
   uses it as a paragraph separator between top-level declarations.)
 - **Final newline**: the output always ends with exactly one ``\\n``.
+- **Intra-line spacing**: outside string literals, char literals, and
+  ``//`` comments, runs of two or more spaces collapse to a single
+  space, and a missing space after a comma is inserted. These two
+  rules cover the most common formatting drift without needing the
+  AST.
 
-Intra-line canonicalisation (operator spacing, brace placement, etc.)
-is **not** part of v1. Re-emitting expressions from the AST would
-require a full pretty-printer and a story for non-doc comment
-preservation; both are deferred until the formatter has earned its
-keep at the whitespace level. The current behaviour is therefore
-*safe by design*: it never rewrites code, only its whitespace
-envelope, so it cannot introduce semantic changes.
+Full intra-line canonicalisation (operator spacing around binary
+operators, brace placement, expression re-emission from the AST)
+is **not** part of this version. Re-emitting expressions from the
+AST requires a full pretty-printer and a story for ``//`` comment
+preservation; both are deferred. The current behaviour is therefore
+*safe by design*: it never rewrites code structure, only its
+whitespace envelope, so it cannot introduce semantic changes.
 
 Public entry points:
 
@@ -64,6 +70,98 @@ def _normalise_indent(line: str) -> str:
     # Snap to a multiple of four (floor).
     cols -= cols % 4
     return " " * cols + line[i:]
+
+
+def _normalise_intra_line(line: str) -> str:
+    """Apply safe intra-line spacing rules to the *body* of ``line``
+    (i.e. the part after the leading indent). The leading indent is
+    preserved exactly; the body is walked character by character with a
+    small state machine that tracks string / char-literal / line-comment
+    context, so the rules never touch text inside those.
+
+    Rules applied to code (everywhere else):
+
+    - runs of two or more spaces collapse to a single space;
+    - a missing space after a ``,`` is inserted.
+
+    Anything more aggressive (operator spacing, brace placement, etc.)
+    is deferred to the future AST-round-trip formatter, because doing
+    it correctly requires preserving ``//`` comments and disambiguating
+    unary from binary uses of ``-`` / ``*``.
+    """
+    # Split off the leading indent so we never touch it.
+    i = 0
+    while i < len(line) and line[i] == " ":
+        i += 1
+    indent = line[:i]
+    body = line[i:]
+
+    out: list[str] = []
+    in_string = False        # inside "..."
+    in_char = False          # inside '...'
+    string_quote = ""        # opening quote of the active literal
+    in_line_comment = False
+    j = 0
+    while j < len(body):
+        c = body[j]
+        if in_line_comment:
+            # Comments are preserved verbatim until end of line.
+            out.append(c)
+            j += 1
+            continue
+        if in_string or in_char:
+            out.append(c)
+            # Backslash escapes consume the next char without state
+            # change (raw strings ``r"..."`` don't process escapes,
+            # but for spacing purposes that distinction doesn't matter).
+            if c == "\\" and j + 1 < len(body):
+                out.append(body[j + 1])
+                j += 2
+                continue
+            if c == string_quote:
+                in_string = False
+                in_char = False
+                string_quote = ""
+            j += 1
+            continue
+        # Outside any literal or comment.
+        if c == '"':
+            in_string = True
+            string_quote = '"'
+            out.append(c)
+            j += 1
+            continue
+        if c == "'":
+            in_char = True
+            string_quote = "'"
+            out.append(c)
+            j += 1
+            continue
+        if c == "/" and j + 1 < len(body) and body[j + 1] == "/":
+            in_line_comment = True
+            out.append(c)
+            j += 1
+            continue
+        if c == " ":
+            # Collapse runs of two or more spaces in code into one.
+            if out and out[-1] == " ":
+                j += 1
+                continue
+            out.append(c)
+            j += 1
+            continue
+        if c == "," and j + 1 < len(body) and body[j + 1] not in (" ", ","):
+            # Insert a single space after the comma unless the next
+            # token is a closing delimiter; we leave ``,)`` and
+            # similar trailing-comma forms alone.
+            if body[j + 1] not in (")", "]", "}", "\n"):
+                out.append(",")
+                out.append(" ")
+                j += 1
+                continue
+        out.append(c)
+        j += 1
+    return indent + "".join(out)
 
 
 def format_source(text: str) -> str:
@@ -127,7 +225,7 @@ def format_source(text: str) -> str:
             # Continuation line of a block comment: preserve as-is.
             out_lines.append(line)
         else:
-            out_lines.append(_normalise_indent(line))
+            out_lines.append(_normalise_intra_line(_normalise_indent(line)))
         prev_blank = False
 
     # Drop trailing blank lines, then ensure exactly one final newline.
