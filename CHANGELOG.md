@@ -11,6 +11,27 @@ breaking changes and the discipline is still being shaped.
 
 ### Added
 
+- **One-line install scripts** at [deploy/install.sh](deploy/install.sh)
+  (Linux / macOS Apple Silicon) and
+  [deploy/install.ps1](deploy/install.ps1) (Windows PowerShell).
+  Both download the latest pre-built binary, drop it in
+  `~/.local/bin/capa` (or `%LOCALAPPDATA%\capa\capa.exe` on
+  Windows), and, on Windows, add that directory to the user
+  PATH via `[Environment]::SetEnvironmentVariable("Path", ..., "User")`
+  so no admin rights are needed. On Unix the script tells the
+  user to add the directory to `PATH` themselves (we do not
+  modify shell rc files automatically: too many shells, too
+  many opinions). Idempotent on rerun. The bash script also
+  strips the macOS Gatekeeper quarantine attribute so the
+  binary runs without a Settings detour. README and
+  `docs/start.html` lead with the one-liners; the manual
+  download path remains documented for users who want to
+  verify the asset themselves.
+
+- **`capa --version`**: prints the compiler version and exits.
+  Used by the installer scripts to verify a successful download
+  but generally useful for "what am I running?".
+
 - **LSP completion** (`textDocument/completion`): suggests
   Capa identifiers at the cursor. v1 is a two-layer answer.
   The **floor** is always present and is computed without

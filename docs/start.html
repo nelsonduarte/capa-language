@@ -54,14 +54,35 @@
 <section>
     <h2>Install</h2>
 
-    <p>Two paths. <strong>Pre-built binary</strong> if you just want to run Capa programs; <strong>from source</strong> if you intend to contribute, hack on the compiler, or want the test suite locally.</p>
+    <p>Three paths. The <strong>one-line installer</strong> if you just want <code>capa</code> on your PATH with no fuss; the <strong>manual binary download</strong> if you prefer to verify the asset yourself; <strong>from source</strong> if you intend to contribute or want the test suite locally.</p>
 </section>
 
 <!-- =====================================================
-     Binary install
+     One-line installer
 ===================================================== -->
 <section>
-    <h2>Option A: pre-built binary (no Python required)</h2>
+    <h2>Option A: one-line installer (recommended)</h2>
+
+    <p>The installer downloads the latest pre-built binary, drops it in <code>~/.local/bin/capa</code> (Linux / macOS) or <code>%LOCALAPPDATA%\capa\capa.exe</code> (Windows), and adds that directory to your user <code>PATH</code>. Open a new shell afterwards and <code>capa --version</code> should answer.</p>
+
+<pre><code><span class="comment"># Linux / macOS Apple Silicon</span>
+$ curl -fsSL https://raw.githubusercontent.com/nelsonduarte/capa/main/deploy/install.sh | bash</code></pre>
+
+<pre><code><span class="comment"># Windows (PowerShell)</span>
+PS&gt; irm https://raw.githubusercontent.com/nelsonduarte/capa/main/deploy/install.ps1 | iex</code></pre>
+
+    <p>Override the install location with the <code>INSTALL_DIR</code> (bash) or <code>CAPA_INSTALL_DIR</code> (PowerShell) environment variable. The installer is idempotent: rerun it to upgrade to the latest release.</p>
+
+    <div class="callout">
+        <p><strong>What the installer does.</strong> It is a small, readable script: pick the right asset for your OS and arch, <code>curl</code> / <code>Invoke-WebRequest</code> it, <code>chmod +x</code>, strip macOS Gatekeeper quarantine on Darwin, and (on Windows) prepend the install directory to the user PATH via <code>[Environment]::SetEnvironmentVariable</code>. No admin rights required; no system-wide changes; remove <code>~/.local/bin/capa</code> or the PATH entry to uninstall.</p>
+    </div>
+</section>
+
+<!-- =====================================================
+     Manual binary
+===================================================== -->
+<section>
+    <h2>Option B: manual binary download</h2>
 
     <p>Each tagged release publishes a standalone binary built with PyInstaller that bundles the Capa compiler and a Python interpreter into one file. Download, run. No <code>pip install</code>, no Python required, no toolchain on the host.</p>
 
@@ -137,7 +158,7 @@ True</code></pre>
      Source install
 ===================================================== -->
 <section>
-    <h2>Option B: from source</h2>
+    <h2>Option C: from source</h2>
 
     <p>Requirements: <strong>Python 3.10 or newer</strong>, <strong>git</strong>. Tested on 3.10, 3.12, and 3.14 across Linux, macOS, and Windows. Zero runtime dependencies outside the standard library.</p>
 

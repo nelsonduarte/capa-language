@@ -95,6 +95,12 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description="Lexer, parser and analyzer for the Capa language",
     )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"capa {_CAPA_VERSION}",
+        help="print the Capa compiler version and exit",
+    )
     parser.add_argument("file", nargs="?", help=".capa file to process")
     parser.add_argument(
         "--stdin",

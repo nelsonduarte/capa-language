@@ -94,9 +94,34 @@ package is invoked via `python -m capa`.
 
 ## Installation
 
-### Pre-built binary (no Python required)
+### One-line install (recommended)
 
-Download the binary for your platform from the
+The installer downloads the pre-built binary, drops it in
+`~/.local/bin/capa` (or `%LOCALAPPDATA%\capa\capa.exe` on Windows),
+and adds that directory to your user `PATH`. No Python install
+required; the binary bundles its own interpreter.
+
+```bash
+# Linux / macOS Apple Silicon
+curl -fsSL https://raw.githubusercontent.com/nelsonduarte/capa/main/deploy/install.sh | bash
+```
+
+```powershell
+# Windows (PowerShell)
+irm https://raw.githubusercontent.com/nelsonduarte/capa/main/deploy/install.ps1 | iex
+```
+
+Open a new shell and `capa --version` should print the installed
+version. From there, `capa init my-project` works from any
+directory.
+
+Override the install location with the `INSTALL_DIR` (bash) or
+`CAPA_INSTALL_DIR` (PowerShell) environment variable.
+
+### Manual binary download
+
+If you prefer to install by hand, grab the asset for your
+platform from the
 [latest release](https://github.com/nelsonduarte/capa/releases/latest):
 
 | Platform | File |
@@ -105,20 +130,11 @@ Download the binary for your platform from the
 | macOS Apple Silicon (M1 and later) | `capa-macos-arm64` |
 | Windows x86_64 | `capa-windows-x86_64.exe` |
 
-Intel Macs are not shipped as a pre-built binary; install from source
-(see below).
+Intel Macs are not shipped as a pre-built binary; install from
+source (see below).
 
-```bash
-# Linux / macOS
-curl -L https://github.com/nelsonduarte/capa/releases/latest/download/capa-linux-x86_64 -o capa
-chmod +x capa
-./capa --run hello.capa
-```
-
-The binary bundles a Python interpreter and the Capa runtime via
-PyInstaller, so end users do not need Python installed. Each release
-also ships a `.sha256` checksum file alongside each binary; verify
-the download before running:
+Each release also ships a `.sha256` checksum file alongside each
+binary; verify the download before running:
 
 ```bash
 sha256sum -c capa-linux-x86_64.sha256
