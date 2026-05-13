@@ -11,6 +11,17 @@ breaking changes and the discipline is still being shaped.
 
 ### Added
 
+- **LSP find-references**: `textDocument/references` lists
+  every other identifier in the file that resolves to the same
+  symbol as the one under the cursor. Reuses the
+  `collect_idents` + `AnalysisResult.bindings` machinery from
+  hover and go-to-definition; results are ordered by source
+  position. The `includeDeclaration` flag from the LSP request
+  is honoured: when true and the symbol has a real source
+  origin, a location for the declaration line is added; built-in
+  symbols are still filtered (they have no file location to
+  point at).
+
 - **LSP go-to-definition**: `textDocument/definition` jumps
   from any identifier reference to the position where the
   declaring symbol lives. Functions resolve to the

@@ -11,6 +11,10 @@ A minimal Capa language server. v1 ships:
   position where the symbol was declared. Built-in symbols
   (``Stdio``, ``Net``, ``Result``, etc.) cleanly return no
   location because they have no source origin.
+- ``textDocument/references`` for identifiers: lists every use
+  of the same symbol in the file, optionally including the
+  declaration itself (controlled by the LSP request's
+  ``includeDeclaration`` flag).
 
 Completion, semantic tokens, and code actions remain on the
 roadmap.
@@ -342,6 +346,80 @@ def compute_definition(
     return sym.pos
 
 
+def compute_references(
+    source: str, filename: str, line: int, col: int,
+    *,
+    include_declaration: bool = True,
+) -> Optional[list[A.Ident]]:
+    """Resolve the identifier at ``(line, col)`` and return every
+    other identifier in the module that resolves to the same
+    symbol.
+
+    The result is a list of ``Ident`` AST nodes whose ``pos`` and
+    ``name`` the caller uses to build LSP ranges. The list is
+    ordered by source position (line, then column).
+
+    ``include_declaration`` controls whether a synthetic
+    declaration "reference" is added. When ``True``, and the
+    declaring symbol has a real source position (not a built-in
+    sentinel), the declaration line is included at the symbol's
+    pos. The parser does not record name spans on declaration
+    nodes, so the synthetic entry uses the symbol's name length
+    (a close-enough approximation for editors that highlight or
+    jump to the entry).
+
+    Returns ``None`` when the cursor is not on an identifier or
+    has no resolved binding.
+    """
+    try:
+        tokens = Lexer(source, filename=filename).lex()
+        module = Parser(tokens, source=source, filename=filename).parse_module()
+    except (LexerError, ParserError):
+        return None
+
+    result = analyze(module, source=source, filename=filename)
+    idents = collect_idents(module)
+    pivot = find_ident_at(idents, line, col)
+    if pivot is None:
+        return None
+    target_sym = result.bindings.get(id(pivot))
+    if target_sym is None:
+        return None
+
+    # Every Ident whose binding points at the same Symbol object.
+    # Symbol identity (Python ``is``) is the natural notion: the
+    # analyzer creates a single Symbol per declaration and reuses
+    # it for every reference, so an identity check matches all
+    # uses (including the pivot itself, which we keep so editors
+    # can render the active reference highlighted).
+    refs: list[A.Ident] = [
+        ident for ident in idents
+        if result.bindings.get(id(ident)) is target_sym
+    ]
+
+    if include_declaration and not (
+        target_sym.pos.line == 0 and target_sym.pos.col == 0
+    ):
+        # Synthesise an Ident-shaped entry at the declaration
+        # position so the caller can render a Location for it.
+        # We do not add it if a reference at that exact position
+        # already exists (which happens when the parser
+        # represented the declaration name as an Ident, rare in
+        # v1 but worth defending against).
+        already_there = any(
+            r.pos.line == target_sym.pos.line
+            and r.pos.col == target_sym.pos.col
+            for r in refs
+        )
+        if not already_there:
+            refs.append(
+                A.Ident(pos=target_sym.pos, name=target_sym.name)
+            )
+
+    refs.sort(key=lambda i: (i.pos.line, i.pos.col))
+    return refs
+
+
 # ---------------------------------------------------------------
 # Server wiring
 # ---------------------------------------------------------------
@@ -454,6 +532,40 @@ def _build_server():
             uri=params.text_document.uri,
             range=lsp.Range(start=start, end=start),
         )
+
+    @server.feature(lsp.TEXT_DOCUMENT_REFERENCES)
+    def references(
+        ls, params: "lsp.ReferenceParams",
+    ) -> "Optional[list[lsp.Location]]":
+        doc = ls.workspace.get_text_document(params.text_document.uri)
+        line = params.position.line + 1
+        col = params.position.character + 1
+        include_decl = (
+            params.context.include_declaration
+            if params.context is not None else True
+        )
+        idents = compute_references(
+            doc.source, params.text_document.uri, line, col,
+            include_declaration=include_decl,
+        )
+        if idents is None:
+            return None
+        locations: list[lsp.Location] = []
+        for ident in idents:
+            start = lsp.Position(
+                line=ident.pos.line - 1, character=ident.pos.col - 1,
+            )
+            end = lsp.Position(
+                line=ident.pos.line - 1,
+                character=ident.pos.col - 1 + len(ident.name),
+            )
+            locations.append(
+                lsp.Location(
+                    uri=params.text_document.uri,
+                    range=lsp.Range(start=start, end=end),
+                )
+            )
+        return locations
 
     return server
 

@@ -268,5 +268,107 @@ class TestGoToDefinition(unittest.TestCase):
         self.assertIsNone(p)
 
 
+@unittest.skipUnless(_HAVE_LSP, "requires `pygls` extra (pip install '.[lsp]')")
+class TestFindReferences(unittest.TestCase):
+    """Find-references: given an identifier under the cursor,
+    list every other identifier in the file that resolves to the
+    same symbol. Built on top of the same collect_idents +
+    AnalysisResult.bindings machinery as hover and
+    go-to-definition."""
+
+    def setUp(self):
+        from capa.lsp_server import compute_references
+        self.refs = compute_references
+
+    def test_function_references_include_declaration_and_call_sites(self):
+        src = (
+            "fun greet(name: String) -> String\n"   # line 1 (decl)
+            "    return name\n"                     # line 2
+            "fun main(stdio: Stdio)\n"
+            "    let a = greet(\"Ana\")\n"          # line 4 (call 1)
+            "    let b = greet(\"Bea\")\n"          # line 5 (call 2)
+            "    stdio.println(\"${a}-${b}\")\n"
+        )
+        # Pivot on the first call site, line 4 col 13.
+        refs = self.refs(src, "t.capa", 4, 13)
+        self.assertIsNotNone(refs)
+        lines = sorted(r.pos.line for r in refs)
+        # Three positions: declaration on line 1, two calls.
+        self.assertEqual(lines, [1, 4, 5])
+
+    def test_exclude_declaration_when_requested(self):
+        src = (
+            "fun greet() -> Int\n"
+            "    return 0\n"
+            "fun main(stdio: Stdio)\n"
+            "    let _ = greet()\n"
+            "    stdio.println(\"hi\")\n"
+        )
+        refs = self.refs(
+            src, "t.capa", 4, 13, include_declaration=False,
+        )
+        self.assertIsNotNone(refs)
+        # Only the single call site remains.
+        self.assertEqual(len(refs), 1)
+        self.assertEqual(refs[0].pos.line, 4)
+
+    def test_parameter_references_collect_all_uses(self):
+        src = (
+            "fun add(x: Int, y: Int) -> Int\n"
+            "    let s = x + y\n"
+            "    return s + x\n"
+        )
+        # Pivot on `x` at line 2 col 13 (the use in the let).
+        refs = self.refs(src, "t.capa", 2, 13)
+        self.assertIsNotNone(refs)
+        names = {r.name for r in refs}
+        self.assertEqual(names, {"x"})
+        # Declaration (line 1) + two uses (line 2 col 13, line 3 col 16).
+        self.assertEqual(len(refs), 3)
+
+    def test_pivot_on_declaration_position_is_idempotent(self):
+        # Pivoting on the declaration site itself: the parser
+        # does not represent `foo` in `fun foo(...)` as an
+        # Ident, so the result is None for that exact cursor.
+        # Pivoting on any *use* must still find the same set.
+        src = (
+            "fun foo() -> Int\n"
+            "    return 0\n"
+            "fun main(stdio: Stdio)\n"
+            "    let _ = foo()\n"
+            "    stdio.println(\"hi\")\n"
+        )
+        # Pivot on call site.
+        refs_a = self.refs(src, "t.capa", 4, 13)
+        # Same call site, again.
+        refs_b = self.refs(src, "t.capa", 4, 13)
+        self.assertEqual(
+            [(r.pos.line, r.pos.col) for r in refs_a],
+            [(r.pos.line, r.pos.col) for r in refs_b],
+        )
+
+    def test_references_sorted_by_source_position(self):
+        src = (
+            "fun greet() -> Int\n"   # line 1
+            "    return 0\n"
+            "fun main(stdio: Stdio)\n"
+            "    let _ = greet()\n"  # line 4
+            "    let _ = greet()\n"  # line 5
+            "    let _ = greet()\n"  # line 6
+            "    stdio.println(\"hi\")\n"
+        )
+        refs = self.refs(src, "t.capa", 4, 13)
+        lines = [r.pos.line for r in refs]
+        self.assertEqual(lines, sorted(lines))
+
+    def test_no_references_at_whitespace(self):
+        src = "fun main()\n    return\n"
+        self.assertIsNone(self.refs(src, "t.capa", 2, 1))
+
+    def test_no_references_for_parse_error_buffer(self):
+        src = "fun main()\n    let = "
+        self.assertIsNone(self.refs(src, "t.capa", 2, 9))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -87,25 +87,26 @@ to public.
 ## Tooling that moves the adoption needle (P1-P2)
 
 - [~] **LSP server** (Python, `pygls>=2.0`). **v1 (diagnostics
-  + hover + go-to-definition) landed**: `python -m capa lsp`
-  starts a stdio server that re-runs the lexer + parser +
-  analyzer on every didOpen / didChange / didSave and publishes
-  diagnostics; hovering on an identifier returns its signature
-  (functions) or `name: T` plus a kind label (parameters,
-  bindings, constants, variants, capabilities, types); a
-  go-to-definition request jumps from any identifier use to the
-  source position of its declaring symbol (built-ins return no
-  location). Coverage is limited to identifier references in v1:
-  declared names live as strings on declaration nodes, not as
-  Ident nodes, so the parser does not track their positions;
-  hovering on `foo` in `fun foo(...)` does not fire, hovering on
-  `foo(1, 2)` does. `pygls` is an optional dependency
+  + hover + go-to-definition + find-references) landed**:
+  `python -m capa lsp` starts a stdio server that re-runs the
+  lexer + parser + analyzer on every didOpen / didChange /
+  didSave and publishes diagnostics; hovering on an identifier
+  returns its signature or `name: T`; a go-to-definition request
+  jumps from any identifier use to the source position of its
+  declaring symbol (built-ins return no location);
+  find-references lists every other identifier in the file that
+  resolves to the same symbol, with optional inclusion of the
+  declaration line. Coverage is limited to identifier references
+  in v1: declared names live as strings on declaration nodes,
+  not as Ident nodes, so the parser does not track their
+  positions. `pygls` is an optional dependency
   (`pip install -e '.[lsp]'`) so the rest of the compiler stays
   standard-library-only. README carries one-line config snippets
   for Helix and Neovim.
-  **Pending (v2)**: find-references, completion, semantic tokens,
-  code actions for "did you mean" hints, hover on declaration
-  sites (needs end-position tracking in the parser).
+  **Pending (v2)**: completion, semantic tokens, document
+  symbols (outline view), rename, code actions for "did you mean"
+  hints, hover on declaration sites (needs end-position tracking
+  in the parser).
 - [~] **`capa-fmt` (formatter)**, canonical, non-configurable
   (gofmt-style). **v1 (line-level) landed**: CLI flags `--fmt` and
   `--fmt-check` normalise line endings, indentation (tabs to 4
