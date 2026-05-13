@@ -132,10 +132,20 @@ From the project root (`Capa/`):
 pip install -e .
 ```
 
-This puts a `capa` command on your `PATH`. Without the install
-you can still invoke the compiler in place as
-`python -m capa <args>` from the repo root; both forms accept
-the same flags and subcommands.
+This is the recommended source install. It puts a `capa` command
+on your `PATH` *and* registers the package with the Python
+import system, so both `capa <args>` and `python -m capa <args>`
+work from **any directory**.
+
+> **Without `pip install -e .`**, `python -m capa <args>` only
+> works while your current directory is the repo root (Python
+> resolves `capa` by walking the cwd-relative `capa/` folder).
+> Running `python -m capa init my-project` from, say, your
+> Desktop will fail with `No module named capa`. The fix is the
+> install above, or use one of the [pre-built
+> binaries](https://github.com/nelsonduarte/capa/releases/latest)
+> which ship `capa` as a standalone executable with no Python
+> install required.
 
 To build a binary yourself:
 

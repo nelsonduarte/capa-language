@@ -4,15 +4,42 @@ A 5-minute guide to writing your first Capa program.
 
 ## 1. Prerequisites
 
-- Python 3.10 or later (`python3 --version` to check)
-- Nothing else to install, Capa transpiles to Python and the package
-  bundles everything
+You need **either** a Python 3.10+ install **or** one of the
+pre-built binaries. Pick one of the three paths:
 
-The `capa` command is on your `PATH` after `pip install -e .` from
-the repository root, or directly when you use one of the
-[pre-built binaries](https://github.com/nelsonduarte/capa/releases/latest).
-The examples below use `capa <args>`; if neither path is set up,
-substitute `python -m capa <args>` (they accept the same flags).
+### Path 1, pre-built binary (no Python required)
+
+Download `capa-linux-x86_64`, `capa-macos-arm64`, or
+`capa-windows-x86_64.exe` from the [latest
+release](https://github.com/nelsonduarte/capa/releases/latest)
+and put it on your `PATH`. The binary bundles Python and the
+runtime; nothing else to install. After that, `capa <args>`
+works from any directory.
+
+### Path 2, install the source package
+
+Clone the repository, then from the project root:
+
+```bash
+pip install -e .
+```
+
+This puts a `capa` command on your `PATH` *and* registers the
+package with the Python import system, so both `capa <args>`
+and `python -m capa <args>` work from any directory.
+
+### Path 3, run in place (no install)
+
+You can also run `python -m capa <args>` directly, but **only**
+while your current directory is the repository root. Python
+resolves `capa` by walking the cwd-relative `capa/` folder.
+From any other directory you get `No module named capa`. Use
+Path 1 or Path 2 if you want to scaffold projects on your
+Desktop, in `~/code/`, etc.
+
+The examples below assume `capa` is on your `PATH` (Path 1 or
+Path 2). Substitute `python -m capa` if you went with Path 3
+and are running them from the repo root.
 
 ## 2. Verify it works
 

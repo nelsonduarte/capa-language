@@ -906,5 +906,181 @@ class TestRename(unittest.TestCase):
         self.assertEqual(r.edits, [])
 
 
+@unittest.skipUnless(_HAVE_LSP, "requires `pygls` extra (pip install '.[lsp]')")
+class TestCompletion(unittest.TestCase):
+    """Completion v1 is a floor (keywords + built-in types,
+    capabilities, variants, functions) plus, when the buffer
+    parses, the module-level names and approximate locals at
+    the cursor."""
+
+    def setUp(self):
+        from capa.lsp_server import compute_completions
+        self.complete = compute_completions
+
+    def _labels(self, completions) -> set[str]:
+        return {c.label for c in completions}
+
+    def test_floor_always_includes_core_keywords(self):
+        # Even with a totally empty buffer, the keyword floor
+        # should be there.
+        c = self.complete("", "t.capa", 1, 1)
+        labels = self._labels(c)
+        for kw in ("fun", "type", "trait", "impl", "let", "var",
+                   "if", "match", "return", "true", "false"):
+            self.assertIn(kw, labels)
+
+    def test_floor_includes_builtin_capabilities(self):
+        c = self.complete("", "t.capa", 1, 1)
+        labels = self._labels(c)
+        for cap in ("Stdio", "Fs", "Net", "Env", "Clock", "Random", "Unsafe"):
+            self.assertIn(cap, labels)
+
+    def test_floor_includes_builtin_types(self):
+        c = self.complete("", "t.capa", 1, 1)
+        labels = self._labels(c)
+        for ty in ("Int", "Float", "Bool", "String", "Char", "Unit",
+                   "List", "Option", "Result", "Map", "Set"):
+            self.assertIn(ty, labels)
+
+    def test_floor_includes_common_variants(self):
+        c = self.complete("", "t.capa", 1, 1)
+        labels = self._labels(c)
+        for v in ("Some", "None", "Ok", "Err"):
+            self.assertIn(v, labels)
+
+    def test_broken_buffer_falls_back_to_floor(self):
+        # A buffer that fails to parse must still get the floor
+        # (otherwise the completion list goes dark on every
+        # half-typed line).
+        c = self.complete("fun main()\n    let x = ", "t.capa", 2, 14)
+        labels = self._labels(c)
+        # The floor is intact.
+        self.assertIn("fun", labels)
+        self.assertIn("Stdio", labels)
+        self.assertIn("Some", labels)
+
+    def test_module_level_names_appear_when_parsed(self):
+        src = (
+            "const VERSION: String = \"1.0\"\n"
+            "fun greet(name: String) -> String\n"
+            "    return name\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"hi\")\n"
+        )
+        c = self.complete(src, "t.capa", 5, 5)
+        labels = self._labels(c)
+        self.assertIn("VERSION", labels)
+        self.assertIn("greet", labels)
+        self.assertIn("main", labels)
+
+    def test_function_signature_in_detail(self):
+        src = (
+            "fun greet(name: String) -> String\n"
+            "    return name\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"hi\")\n"
+        )
+        c = self.complete(src, "t.capa", 4, 5)
+        item = next(x for x in c if x.label == "greet")
+        self.assertEqual(item.kind, "function")
+        self.assertIn("name: String", item.detail)
+        self.assertIn("-> String", item.detail)
+
+    def test_struct_type_marked_as_struct(self):
+        src = (
+            "type Point {\n"
+            "    x: Int,\n"
+            "    y: Int\n"
+            "}\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"hi\")\n"
+        )
+        c = self.complete(src, "t.capa", 6, 5)
+        item = next(x for x in c if x.label == "Point")
+        self.assertEqual(item.kind, "type")
+        self.assertEqual(item.detail, "struct")
+
+    def test_sum_type_and_variants_both_surfaced(self):
+        src = (
+            "type Color =\n"
+            "    Red\n"
+            "    Green\n"
+            "    Blue\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"hi\")\n"
+        )
+        c = self.complete(src, "t.capa", 6, 5)
+        labels = self._labels(c)
+        self.assertIn("Color", labels)
+        # Variants are surfaced individually so users do not have
+        # to spell the owning type.
+        self.assertIn("Red", labels)
+        self.assertIn("Green", labels)
+        self.assertIn("Blue", labels)
+        red = next(x for x in c if x.label == "Red")
+        self.assertEqual(red.kind, "variant")
+        self.assertIn("Color", red.detail)
+
+    def test_user_capability_distinguished_from_builtin(self):
+        src = (
+            "capability SendEmail\n"
+            "    fun send(self, to: String) -> Bool\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"hi\")\n"
+        )
+        c = self.complete(src, "t.capa", 4, 5)
+        item = next(x for x in c if x.label == "SendEmail")
+        self.assertEqual(item.kind, "capability")
+        self.assertIn("user-defined", item.detail)
+
+    def test_local_let_binding_appears_with_inferred_type(self):
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    let count = 42\n"
+            "    let name = \"hi\"\n"
+            "    stdio.println(name)\n"
+        )
+        c = self.complete(src, "t.capa", 4, 5)
+        labels = self._labels(c)
+        self.assertIn("count", labels)
+        self.assertIn("name", labels)
+        count = next(x for x in c if x.label == "count")
+        self.assertEqual(count.kind, "value")
+        self.assertEqual(count.detail, "Int")
+
+    def test_parameter_visible_in_function_body(self):
+        src = (
+            "fun greet(name: String) -> String\n"
+            "    return name\n"
+        )
+        c = self.complete(src, "t.capa", 2, 5)
+        labels = self._labels(c)
+        self.assertIn("name", labels)
+
+    def test_underscore_prefixed_params_filtered_out(self):
+        # Capa convention: ``_name`` silences unused-capability
+        # checks. Such parameters should not pollute completion.
+        src = (
+            "fun main(_stdio: Stdio, x: Int) -> Int\n"
+            "    return x\n"
+        )
+        c = self.complete(src, "t.capa", 2, 5)
+        labels = self._labels(c)
+        self.assertNotIn("_stdio", labels)
+        self.assertIn("x", labels)
+
+    def test_no_duplicate_labels(self):
+        # When a user binding collides with a built-in name, the
+        # de-dup pass keeps one entry per label.
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    let Int = 5\n"   # shadows the built-in type name
+            "    stdio.println(\"hi\")\n"
+        )
+        c = self.complete(src, "t.capa", 3, 5)
+        labels_list = [x.label for x in c]
+        self.assertEqual(len(labels_list), len(set(labels_list)))
+
+
 if __name__ == "__main__":
     unittest.main()

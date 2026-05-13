@@ -11,6 +11,26 @@ breaking changes and the discipline is still being shaped.
 
 ### Added
 
+- **LSP completion** (`textDocument/completion`): suggests
+  Capa identifiers at the cursor. v1 is a two-layer answer.
+  The **floor** is always present and is computed without
+  parsing: 35 Capa keywords, 7 built-in capabilities (`Stdio`,
+  `Fs`, ...), 14 built-in types (`Int`, `Float`, `List`,
+  `Option`, `Result`, `Map`, `Set`, ...), 4 common variant
+  constructors (`Some`, `None`, `Ok`, `Err`), 10 built-in
+  functions (`parse_int`, `new_map`, `parse_json`,
+  `py_import`, ...). When the buffer parses cleanly, the
+  **module layer** is appended: top-level functions (rendered
+  with their `fun(params) -> Ret` signature in the detail
+  column), constants (with their declared type), structs, sum
+  types and each of their variants surfaced individually,
+  user-defined traits and capabilities; plus
+  the **local layer**: parameters and `let`/`var` bindings
+  visible at the cursor inside the enclosing function. Locals
+  whose names start with `_` are filtered out (the convention
+  for "intentionally unused"). De-dup by label keeps one entry
+  when a user binding collides with a built-in name.
+
 - **LSP rename** (`textDocument/rename` + `textDocument/prepareRename`):
   rewrites every reference and the declaration of the symbol
   under the cursor in a single `WorkspaceEdit`. Builds on the

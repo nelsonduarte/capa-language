@@ -147,17 +147,12 @@ True</code></pre>
 $ cd capa
 $ pip install -e .</code></pre>
 
-    <p>That's it. You can verify the install by running the test suite (536 tests, takes ~15 seconds):</p>
+    <p>That's it. You can verify the install by running the test suite (~700 tests, under 10 seconds):</p>
 
-<pre><code>$ python -m unittest discover tests
-............................................................
-----------------------------------------------------------------------
-Ran 536 tests in 14.2s
-
-OK</code></pre>
+<pre><code>$ python -m unittest discover tests</code></pre>
 
     <div class="callout">
-        <p><strong>Note.</strong> You can skip <code>pip install -e .</code> entirely and invoke the compiler with <code>python -m capa</code> from the repository root. The pip install just adds a <code>capa</code> command on your <code>PATH</code> as a convenience.</p>
+        <p><strong>Why <code>pip install -e .</code> matters.</strong> The editable install registers the <code>capa</code> package with Python's import system <em>and</em> adds a <code>capa</code> command on your <code>PATH</code>. After it, both <code>capa &lt;args&gt;</code> and <code>python -m capa &lt;args&gt;</code> work from any directory. Without it, <code>python -m capa</code> only resolves while your current directory is the repo root (Python walks the cwd-relative <code>capa/</code> folder). Running <code>python -m capa init my-project</code> from your Desktop in that case fails with <code>No module named capa</code>. The fix is the install above, or the binary path.</p>
     </div>
 </section>
 
@@ -312,6 +307,10 @@ $ capa lsp                         # speaks LSP over stdio</code></pre>
                 <td><code>rename</code> / <code>prepareRename</code></td>
                 <td>Renames the symbol under the cursor by rewriting every reference and the declaration in one workspace edit. New name validated as a Capa identifier (rejects reserved keywords); built-ins refuse rename cleanly.</td>
             </tr>
+            <tr>
+                <td><code>completion</code></td>
+                <td>Suggests keywords, built-in types / capabilities / variants / functions, module-level names with their signatures or declared types, and the function-scope locals visible at the cursor. Half-typed buffers that fail to parse fall back to the keyword + built-in floor so the suggestion list never goes dark.</td>
+            </tr>
         </tbody>
     </table>
 
@@ -341,7 +340,7 @@ require("lspconfig").capa.setup({})</code></pre>
 
     <p>If <code>capa</code> is not on your <code>PATH</code>, swap <code>command = "capa"</code> / <code>cmd = { "capa", ... }</code> for the explicit <code>command = "python", args = ["-m", "capa", "lsp"]</code> form (and the matching Neovim version).</p>
 
-    <p>Completion and semantic tokens are tracked for v2.</p>
+    <p>Semantic tokens and type-aware method/field completion after <code>.</code> are tracked for v2.</p>
 </section>
 
 <!-- =====================================================

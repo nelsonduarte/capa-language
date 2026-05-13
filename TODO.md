@@ -115,9 +115,16 @@ to public.
   validates the new name against the lexer's IDENT shape (and
   rejects reserved keywords), then rewrites every reference and
   the declaration. Built-in symbols (`Stdio`, `Net`, `Result`,
-  ...) refuse rename cleanly.
-  **Pending (v2)**: completion, semantic tokens, positional
-  fidelity for `${...}` contents.
+  ...) refuse rename cleanly. Completion
+  (`textDocument/completion`) offers a floor of keywords + built-in
+  types/capabilities/variants/functions, plus module-level names
+  (functions with signatures, constants with types, sum types and
+  their variants, user-defined traits and capabilities) and the
+  function-scope params/locals visible at the cursor. Mid-edit
+  buffers that fail to parse fall back to just the floor, so the
+  suggestion list never goes dark on a half-typed line.
+  **Pending (v2)**: method/field completion after `.`, semantic
+  tokens, positional fidelity for `${...}` contents.
 - [~] **`capa-fmt` (formatter)**, canonical, non-configurable
   (gofmt-style). **v1 (line-level) landed**: CLI flags `--fmt` and
   `--fmt-check` normalise line endings, indentation (tabs to 4

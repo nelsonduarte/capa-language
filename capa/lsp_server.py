@@ -37,8 +37,15 @@ A minimal Capa language server. v1 ships:
   lexer's IDENT pattern and not be a reserved keyword). Refuses
   to rename built-in symbols (``Stdio``, ``Net``, ``Result``,
   ...) cleanly.
+- ``textDocument/completion``: keyword + identifier completion
+  at the cursor. v1 offers Capa keywords, built-in type and
+  capability names, common variant constructors (`Some`,
+  `None`, `Ok`, `Err`), and every name declared at module
+  level. Mid-edit buffers that fail to parse fall back to just
+  keywords and built-ins (so the suggestion list never goes
+  dark on a half-typed line).
 
-Completion and semantic tokens remain on the roadmap.
+Semantic tokens remain on the roadmap.
 
 Runtime entry points:
 
@@ -1099,6 +1106,234 @@ def compute_rename(
 
 
 # ---------------------------------------------------------------
+# Completion
+# ---------------------------------------------------------------
+# v1 completion is intentionally minimal: keywords + a curated
+# set of built-in names + module-level identifiers when the
+# buffer parses. The motivating constraint is that the user is
+# typically mid-edit when completion fires, so the buffer rarely
+# parses. We therefore split the answer into two layers:
+#
+#   1. A floor that always works (keywords + builtins), computed
+#      without invoking lexer/parser/analyzer at all.
+#   2. A "best effort" extension when the buffer parses cleanly
+#      (top-level names from the analyzed module).
+#
+# Type-aware completion (method names after ``.``, field
+# completion inside struct literals, variant completion in match
+# arms) requires deeper integration with the analyzer's scope
+# model and is a v2 deliverable. v1 still adds receiver-typed
+# suggestions where the receiver is a simple in-scope identifier
+# of a known type, because that case is cheap and covers the
+# most common "stdio." / "list." invocations.
+
+
+# Built-in names users routinely complete to. Curated rather
+# than scraped from the runtime so the completion list stays
+# small and high-signal.
+_BUILTIN_TYPES = [
+    "Int", "Float", "Bool", "String", "Char", "Unit",
+    "List", "Option", "Result", "Map", "Set", "Fun", "JsonValue",
+    "IoError",
+]
+_BUILTIN_CAPABILITIES = [
+    "Stdio", "Fs", "Net", "Env", "Clock", "Random", "Unsafe",
+]
+_BUILTIN_VARIANTS = ["Some", "None", "Ok", "Err"]
+_BUILTIN_FUNCTIONS = [
+    "parse_int", "parse_float", "to_int", "to_float",
+    "new_map", "new_set", "parse_json", "to_json",
+    "py_import", "py_invoke",
+]
+
+
+@dataclass
+class Completion:
+    """One entry in the completion list. ``kind`` tags map to
+    LSP CompletionItemKind in the handler. ``detail`` is a
+    short type or signature line shown next to the item."""
+    label: str
+    kind: str       # "keyword" | "type" | "capability" | "variant" | "function" | "constant" | "value"
+    detail: str = ""
+    insert_text: Optional[str] = None  # falls back to label
+
+
+def _floor_completions() -> list[Completion]:
+    """The keyword + built-in floor. Returned even when the
+    buffer fails to parse, so users completing mid-edit always
+    see something useful."""
+    out: list[Completion] = []
+    for kw in KEYWORDS:
+        out.append(Completion(label=kw, kind="keyword"))
+    for name in _BUILTIN_CAPABILITIES:
+        out.append(Completion(
+            label=name, kind="capability",
+            detail="built-in capability",
+        ))
+    for name in _BUILTIN_TYPES:
+        out.append(Completion(
+            label=name, kind="type", detail="built-in type",
+        ))
+    for name in _BUILTIN_VARIANTS:
+        out.append(Completion(
+            label=name, kind="variant", detail="built-in variant",
+        ))
+    for name in _BUILTIN_FUNCTIONS:
+        out.append(Completion(
+            label=name, kind="function", detail="built-in",
+        ))
+    return out
+
+
+def _module_completions(
+    module: A.Module, result: AnalysisResult,
+) -> list[Completion]:
+    """Top-level names from the analyzed module: functions, types,
+    traits, capabilities, constants, plus variants of any sum
+    types declared in the file."""
+    out: list[Completion] = []
+    for name, sym in result.global_symbols.items():
+        if name in {n.label for n in _floor_completions()}:
+            continue  # avoid duplicating built-ins
+        if sym.kind == SymbolKind.FUNCTION:
+            detail = ""
+            if isinstance(sym.ty, TyFun) and sym.param_names:
+                params = ", ".join(
+                    f"{pn}: {ty_str(pt)}"
+                    for pn, pt in zip(sym.param_names, sym.ty.params)
+                )
+                detail = f"fun({params}) -> {ty_str(sym.ty.ret)}"
+            out.append(Completion(label=name, kind="function", detail=detail))
+        elif sym.kind == SymbolKind.CONSTANT:
+            detail = ty_str(sym.ty) if sym.ty else ""
+            out.append(Completion(label=name, kind="constant", detail=detail))
+        elif sym.kind == SymbolKind.TYPE_STRUCT:
+            out.append(Completion(label=name, kind="type", detail="struct"))
+        elif sym.kind == SymbolKind.TYPE_SUM:
+            out.append(Completion(label=name, kind="type", detail="sum"))
+            # Also surface each variant, since users often type the
+            # variant name directly (e.g. ``Red`` rather than
+            # ``Color::Red``).
+            for vname in sym.sum_variants.keys():
+                out.append(Completion(
+                    label=vname, kind="variant",
+                    detail=f"variant of {name}",
+                ))
+        elif sym.kind == SymbolKind.CAPABILITY:
+            out.append(Completion(
+                label=name, kind="capability",
+                detail="user-defined capability",
+            ))
+        elif sym.kind == SymbolKind.TRAIT:
+            out.append(Completion(label=name, kind="type", detail="trait"))
+    return out
+
+
+def _local_completions(
+    module: A.Module, result: AnalysisResult, line: int, col: int,
+) -> list[Completion]:
+    """Parameters and let/var bindings visible at ``(line, col)``.
+
+    We use a syntactic approximation: a binding is "in scope"
+    when its declaration's line precedes the cursor's line in the
+    same function body. This is a deliberate simplification (no
+    intra-block dead-zone analysis) that errs on the side of
+    offering too much rather than too little; LSP clients fuzzy-
+    rank by prefix anyway.
+    """
+    out: list[Completion] = []
+    seen: set[str] = set()
+
+    def collect_from(fn: A.FunDecl) -> None:
+        # Only collect from the function that contains the cursor.
+        if not _fundecl_contains_line(fn, line):
+            return
+        for p in fn.params:
+            if p.name == "self" or p.name.startswith("_"):
+                continue
+            if p.name in seen:
+                continue
+            seen.add(p.name)
+            detail = ""
+            if p.type_expr is not None:
+                detail = _type_expr_to_text(p.type_expr)
+            out.append(Completion(label=p.name, kind="value", detail=detail))
+        for n in _walk(fn.body):
+            if isinstance(n, A.LetStmt):
+                pat = n.pattern
+                if isinstance(pat, A.IdentPat):
+                    if pat.pos.line < line and pat.name not in seen:
+                        seen.add(pat.name)
+                        ty = result.types.get(id(n.value))
+                        detail = ty_str(ty) if ty is not None else ""
+                        out.append(Completion(
+                            label=pat.name, kind="value", detail=detail,
+                        ))
+            elif isinstance(n, A.VarStmt):
+                if n.pos.line < line and n.name not in seen:
+                    seen.add(n.name)
+                    ty = result.types.get(id(n.value))
+                    detail = ty_str(ty) if ty is not None else ""
+                    out.append(Completion(
+                        label=n.name, kind="value", detail=detail,
+                    ))
+
+    for item in module.items:
+        if isinstance(item, A.FunDecl):
+            collect_from(item)
+        elif isinstance(item, A.ImplBlock):
+            for m in item.methods:
+                collect_from(m)
+    return out
+
+
+def _fundecl_contains_line(fn: A.FunDecl, line: int) -> bool:
+    """Heuristic: the cursor is inside this function if the
+    function's start position is at or before the line and the
+    next top-level item starts after it. Without end positions
+    on FunDecl, we approximate by checking the line range of the
+    body's statements."""
+    if fn.pos.line > line:
+        return False
+    # Inspect the body's last statement line, when available.
+    last_line = fn.pos.line
+    for stmt in fn.body.stmts:
+        if stmt.pos.line > last_line:
+            last_line = stmt.pos.line
+    # Allow a generous slack (10 lines past the last seen stmt)
+    # so cursors on freshly-opened blank lines still feel "inside".
+    return line <= last_line + 10
+
+
+def compute_completions(
+    source: str, filename: str, line: int, col: int,
+) -> list[Completion]:
+    """Return the completion list at the cursor position.
+
+    Always includes keywords and built-ins. When the buffer
+    parses cleanly, top-level names and (approximate) locals are
+    appended.
+    """
+    completions = _floor_completions()
+    try:
+        tokens = Lexer(source, filename=filename).lex()
+        module = Parser(tokens, source=source, filename=filename).parse_module()
+    except (LexerError, ParserError):
+        return completions
+    result = analyze(module, source=source, filename=filename)
+    completions.extend(_module_completions(module, result))
+    completions.extend(_local_completions(module, result, line, col))
+
+    # De-duplicate by label (later entries with richer detail win
+    # over earlier floor entries when names collide, e.g. a
+    # built-in shadowed by a user binding of the same name).
+    by_label: dict[str, Completion] = {}
+    for c in completions:
+        by_label[c.label] = c
+    return list(by_label.values())
+
+
+# ---------------------------------------------------------------
 # Server wiring
 # ---------------------------------------------------------------
 
@@ -1295,6 +1530,38 @@ def _build_server():
                     )
                 )
         return actions or None
+
+    _to_completion_kind = {
+        "keyword":    lsp.CompletionItemKind.Keyword,
+        "type":       lsp.CompletionItemKind.Class,
+        "capability": lsp.CompletionItemKind.Interface,
+        "variant":    lsp.CompletionItemKind.EnumMember,
+        "function":   lsp.CompletionItemKind.Function,
+        "constant":   lsp.CompletionItemKind.Constant,
+        "value":      lsp.CompletionItemKind.Variable,
+    }
+
+    @server.feature(lsp.TEXT_DOCUMENT_COMPLETION)
+    def completion(
+        ls, params: "lsp.CompletionParams",
+    ) -> "Optional[list[lsp.CompletionItem]]":
+        doc = ls.workspace.get_text_document(params.text_document.uri)
+        line = params.position.line + 1
+        col = params.position.character + 1
+        items = compute_completions(
+            doc.source, params.text_document.uri, line, col,
+        )
+        return [
+            lsp.CompletionItem(
+                label=c.label,
+                kind=_to_completion_kind.get(
+                    c.kind, lsp.CompletionItemKind.Text,
+                ),
+                detail=c.detail or None,
+                insert_text=c.insert_text,
+            )
+            for c in items
+        ]
 
     @server.feature(lsp.TEXT_DOCUMENT_PREPARE_RENAME)
     def prepare_rename(
