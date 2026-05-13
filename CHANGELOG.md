@@ -11,6 +11,23 @@ breaking changes and the discipline is still being shaped.
 
 ### Added
 
+- **Property-based test scaffolding** with Hypothesis, in
+  `tests/test_properties.py`. Six initial properties that
+  exercise the lexer, parser, and formatter over arbitrary
+  printable text (~200 examples per property per CI run):
+  formatter idempotence (`format(format(s)) == format(s)`),
+  formatter fixpoint convergence in one step, formatter
+  output satisfies `is_formatted`, lexer terminates on every
+  input with either a valid token list or a `LexerError`,
+  same for the parser on well-formed token streams. The
+  invariants are conservative on purpose, they hold over the
+  entire input space, so they make a stable CI floor without
+  needing a Capa-grammar generator. The richer
+  "runtime capability set ⊆ manifest declared set" property
+  needs a syntax-aware program generator and is phase 2.
+  Hypothesis is now an optional dev dependency
+  (`pip install -e .[test]`).
+
 - **`docs/positioning.md`** captures the honest case for the
   language: what is and is not unique about Capa, which parts of
   the design predate it (capability typing as an idea is decades

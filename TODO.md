@@ -294,10 +294,22 @@ items here so they stay visible:
   `eslint-scope` 2018), write each as an `examples/cve_*.capa`
   showing which typing rule rejects it. Each is half a day to
   a day of work, not the "afternoon" the reviewer estimated.
-- [ ] **Property-based testing with Hypothesis**. The most
-  citable suggestion in the review. Generate Capa programs from
-  the EBNF, fuzz the property "runtime capability set ⊆
-  manifest set". Apanha bugs que casos manuais não apanham.
+- [~] **Property-based testing with Hypothesis**. The most
+  citable suggestion in the review. **Phase 1 landed** in
+  `tests/test_properties.py`: six properties that hold over
+  arbitrary text inputs and do not need a Capa-grammar
+  generator. They cover formatter idempotence and fixpoint
+  convergence, lexer robustness (must terminate, must raise
+  only `LexerError`, must produce a token list ending in EOF
+  when it succeeds), and parser robustness (must raise only
+  `ParserError` on well-formed token streams). Each runs 200
+  Hypothesis examples per CI run. **Phase 2 pending**: a
+  syntax-aware strategy that produces parseable Capa programs
+  so we can fuzz the soundness claim *runtime capability set
+  ⊆ manifest declared set*. That is the citable property for
+  the thesis; phase 1 is the infrastructure that gets phase 2
+  off the ground without rewriting the test harness from
+  scratch.
 - [ ] **`Range<Int>` as a distinct type from `List<Int>`**. The
   for-loop transpiler hack is a stop-gap; the long-term fix is
   a separate type with its own `Iterable` interface. Decoupled

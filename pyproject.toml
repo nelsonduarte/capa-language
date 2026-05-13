@@ -30,6 +30,11 @@ classifiers = [
 # the language server (`python -m capa lsp`); the rest of the
 # compiler stays dependency-free on the standard library.
 lsp = ["pygls>=2.0"]
+# Install with: `pip install -e .[test]`. Adds the libraries needed
+# to run the full test suite, including the property-based tests in
+# `tests/test_properties.py` that fuzz the lexer / parser /
+# formatter with Hypothesis.
+test = ["pytest>=7", "hypothesis>=6"]
 
 [project.scripts]
 capa = "capa.cli:main"
