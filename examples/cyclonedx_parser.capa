@@ -1,0 +1,356 @@
+// CycloneDX 1.5 JSON parser, the SBOM-of-record companion to
+// examples/spdx_parser.capa. Together they show that Capa can
+// mex with both ISO-blessed SBOM formats (SPDX 2.3 / ISO/IEC
+// 5962:2021) and the OWASP-stewarded CycloneDX 1.5 used by
+// Dependency-Track, OSV-Scanner, syft, and the Capa compiler's
+// own --cyclonedx output.
+//
+// What this demo shows:
+//
+// - The same patterns as the SPDX parser (typed Capa structs,
+//   ?-chaining on Result, pattern matching on JsonValue), now
+//   applied to a different JSON shape. The SBOM-reading helper
+//   set (`field`, `optional_field`, `as_*_or_err`,
+//   `string_field_or`, `bool_field_or`) is shared in spirit but
+//   re-defined locally so each example stays self-contained.
+// - The same `capability SbomReader` boundary, demonstrating
+//   that one capability can serve every supply-chain format.
+// - The CycloneDX-specific shape: a top-level `components[]`
+//   array (vs SPDX's `packages[]`), a flat `dependencies[]`
+//   array of (ref, dependsOn[]) edges (vs SPDX's typed
+//   `relationships[]`), and component hashes as
+//   `{alg, content}` pairs (vs SPDX's `{algorithm,
+//   checksumValue}`).
+//
+// Scope limits: metadata + components + dependencies. Out of
+// scope: vulnerabilities[] / VEX, the `services[]` and
+// `compositions[]` arrays, externalReferences[], evidence[],
+// signatures. Extending is mechanical.
+
+capability SbomReader
+    fun read(self, source: String) -> Result<String, String>
+
+type CdxHash {
+    algorithm: String,
+    content: String
+}
+
+type CdxLicense {
+    id: String,
+    name: String,
+    expression: String
+}
+
+type CdxComponent {
+    bom_ref: String,
+    kind: String,
+    name: String,
+    version: String,
+    purl: String,
+    hashes: List<CdxHash>,
+    licenses: List<CdxLicense>
+}
+
+type CdxDependency {
+    ref: String,
+    depends_on: List<String>
+}
+
+type CdxMetadata {
+    timestamp: String,
+    tool_names: List<String>,
+    main_component_ref: String,
+    main_component_name: String
+}
+
+type CdxDocument {
+    bom_format: String,
+    spec_version: String,
+    serial_number: String,
+    version: Int,
+    metadata: CdxMetadata,
+    components: List<CdxComponent>,
+    dependencies: List<CdxDependency>
+}
+
+// ---- typed-extraction helpers ----
+
+fun as_object_or_err(j: JsonValue, context: String) -> Result<Map<String, JsonValue>, String>
+    return match j.as_object()
+        None -> Err("expected object for ${context}")
+        Some(m) -> Ok(m)
+
+fun as_array_or_err(j: JsonValue, context: String) -> Result<List<JsonValue>, String>
+    return match j.as_array()
+        None -> Err("expected array for ${context}")
+        Some(xs) -> Ok(xs)
+
+fun as_string_or_err(j: JsonValue, context: String) -> Result<String, String>
+    return match j.as_string()
+        None -> Err("expected string for ${context}")
+        Some(s) -> Ok(s)
+
+fun as_num_or_err(j: JsonValue, context: String) -> Result<Float, String>
+    return match j.as_num()
+        None -> Err("expected number for ${context}")
+        Some(n) -> Ok(n)
+
+fun field(j: JsonValue, name: String) -> Result<JsonValue, String>
+    let obj = as_object_or_err(j, "lookup '${name}'")?
+    return match obj.get(name)
+        None -> Err("missing required field '${name}'")
+        Some(v) -> Ok(v)
+
+fun optional_field(j: JsonValue, name: String) -> Option<JsonValue>
+    return match j.as_object()
+        None -> None
+        Some(m) -> m.get(name)
+
+fun string_field_or(j: JsonValue, name: String, fallback: String) -> String
+    return match optional_field(j, name)
+        None -> fallback
+        Some(v) -> match v.as_string()
+            None -> fallback
+            Some(s) -> s
+
+// ---- per-record parsers ----
+
+fun parse_hash(j: JsonValue) -> Result<CdxHash, String>
+    return Ok(CdxHash {
+        algorithm: as_string_or_err(field(j, "alg")?, "Hash.alg")?,
+        content: as_string_or_err(field(j, "content")?, "Hash.content")?
+    })
+
+fun parse_hashes(j: JsonValue) -> Result<List<CdxHash>, String>
+    let xs = as_array_or_err(j, "Component.hashes")?
+    let result: List<CdxHash> = []
+    for x in xs
+        result.push(parse_hash(x)?)
+    return Ok(result)
+
+// CycloneDX licenses are an OR-list of {license: {id|name}} or
+// {expression: <SPDX-expression>}. We flatten each entry into
+// the same CdxLicense shape; unused fields stay as empty strings.
+fun parse_license_entry(j: JsonValue) -> Result<CdxLicense, String>
+    let obj = as_object_or_err(j, "licenses[i]")?
+    match obj.get("expression")
+        Some(v) ->
+            let expr = as_string_or_err(v, "licenses[i].expression")?
+            return Ok(CdxLicense { id: "", name: "", expression: expr })
+        None ->
+            ()
+    let inner = obj.get("license")
+    match inner
+        None ->
+            return Err("license entry must have 'license' or 'expression'")
+        Some(lv) ->
+            let lic_obj = as_object_or_err(lv, "licenses[i].license")?
+            let id = match lic_obj.get("id")
+                None -> ""
+                Some(v) -> match v.as_string()
+                    None -> ""
+                    Some(s) -> s
+            let name = match lic_obj.get("name")
+                None -> ""
+                Some(v) -> match v.as_string()
+                    None -> ""
+                    Some(s) -> s
+            return Ok(CdxLicense { id: id, name: name, expression: "" })
+
+fun parse_licenses(j: JsonValue) -> Result<List<CdxLicense>, String>
+    let xs = as_array_or_err(j, "Component.licenses")?
+    let result: List<CdxLicense> = []
+    for x in xs
+        result.push(parse_license_entry(x)?)
+    return Ok(result)
+
+fun parse_component(j: JsonValue) -> Result<CdxComponent, String>
+    let hashes: List<CdxHash> = []
+    match optional_field(j, "hashes")
+        None ->
+            ()
+        Some(v) ->
+            let parsed = parse_hashes(v)?
+            for h in parsed
+                hashes.push(h)
+
+    let licenses: List<CdxLicense> = []
+    match optional_field(j, "licenses")
+        None ->
+            ()
+        Some(v) ->
+            let parsed = parse_licenses(v)?
+            for l in parsed
+                licenses.push(l)
+
+    return Ok(CdxComponent {
+        bom_ref: string_field_or(j, "bom-ref", ""),
+        kind: as_string_or_err(field(j, "type")?, "Component.type")?,
+        name: as_string_or_err(field(j, "name")?, "Component.name")?,
+        version: string_field_or(j, "version", ""),
+        purl: string_field_or(j, "purl", ""),
+        hashes: hashes,
+        licenses: licenses
+    })
+
+fun parse_dependency(j: JsonValue) -> Result<CdxDependency, String>
+    let ref = as_string_or_err(field(j, "ref")?, "Dependency.ref")?
+    let depends: List<String> = []
+    match optional_field(j, "dependsOn")
+        None ->
+            ()
+        Some(v) ->
+            let xs = as_array_or_err(v, "Dependency.dependsOn")?
+            for x in xs
+                depends.push(as_string_or_err(x, "Dependency.dependsOn[i]")?)
+    return Ok(CdxDependency { ref: ref, depends_on: depends })
+
+fun extract_tool_names(tools_j: JsonValue) -> Result<List<String>, String>
+    // CycloneDX 1.5 supports both the modern `tools.components[]`
+    // shape (each entry a Component object) and the legacy flat
+    // `tools[]` array. We handle both.
+    let names: List<String> = []
+    match tools_j.as_object()
+        Some(tobj) ->
+            match tobj.get("components")
+                Some(comps) ->
+                    let xs = as_array_or_err(comps, "metadata.tools.components")?
+                    for x in xs
+                        names.push(string_field_or(x, "name", ""))
+                None ->
+                    ()
+        None ->
+            match tools_j.as_array()
+                Some(xs) ->
+                    for x in xs
+                        names.push(string_field_or(x, "name", ""))
+                None ->
+                    ()
+    return Ok(names)
+
+fun parse_metadata(j: JsonValue) -> Result<CdxMetadata, String>
+    // metadata is itself an optional top-level field; if absent
+    // we return empty defaults for every nested field. If present
+    // we extract its sub-fields one by one. Avoiding a JNull
+    // placeholder keeps the type discipline clean.
+    let ts = ""
+    let tool_names: List<String> = []
+    let main_ref = ""
+    let main_name = ""
+
+    match optional_field(j, "metadata")
+        None ->
+            return Ok(CdxMetadata {
+                timestamp: ts,
+                tool_names: tool_names,
+                main_component_ref: main_ref,
+                main_component_name: main_name
+            })
+        Some(md) ->
+            let ts2 = string_field_or(md, "timestamp", "")
+            match optional_field(md, "tools")
+                None ->
+                    ()
+                Some(tj) ->
+                    let parsed = extract_tool_names(tj)?
+                    for n in parsed
+                        tool_names.push(n)
+            let ref2 = match optional_field(md, "component")
+                None -> ""
+                Some(c) -> string_field_or(c, "bom-ref", "")
+            let name2 = match optional_field(md, "component")
+                None -> ""
+                Some(c) -> string_field_or(c, "name", "")
+            return Ok(CdxMetadata {
+                timestamp: ts2,
+                tool_names: tool_names,
+                main_component_ref: ref2,
+                main_component_name: name2
+            })
+
+fun parse_document(j: JsonValue) -> Result<CdxDocument, String>
+    let bom_format = as_string_or_err(field(j, "bomFormat")?, "bomFormat")?
+    if bom_format != "CycloneDX"
+        return Err("expected bomFormat 'CycloneDX', got '${bom_format}'")
+    let spec_version = as_string_or_err(field(j, "specVersion")?, "specVersion")?
+    let serial = string_field_or(j, "serialNumber", "")
+    let version_num = as_num_or_err(field(j, "version")?, "version")?
+
+    let components: List<CdxComponent> = []
+    match optional_field(j, "components")
+        None ->
+            ()
+        Some(v) ->
+            let xs = as_array_or_err(v, "components")?
+            for x in xs
+                components.push(parse_component(x)?)
+
+    let dependencies: List<CdxDependency> = []
+    match optional_field(j, "dependencies")
+        None ->
+            ()
+        Some(v) ->
+            let xs = as_array_or_err(v, "dependencies")?
+            for x in xs
+                dependencies.push(parse_dependency(x)?)
+
+    let metadata = parse_metadata(j)?
+
+    return Ok(CdxDocument {
+        bom_format: bom_format,
+        spec_version: spec_version,
+        serial_number: serial,
+        version: to_int(version_num),
+        metadata: metadata,
+        components: components,
+        dependencies: dependencies
+    })
+
+fun parse_cyclonedx(json_text: String) -> Result<CdxDocument, String>
+    return match parse_json(json_text)
+        Err(msg) -> Err("JSON parse error: ${msg}")
+        Ok(j) -> parse_document(j)
+
+// ---- demo ----
+
+fun main(stdio: Stdio)
+    // A trimmed CycloneDX 1.5 document: one program component, two
+    // dependency components (a lib + a transitive lib), and a
+    // small dependency graph linking them. Mirrors the kind of
+    // SBOM the Capa compiler itself emits via --cyclonedx.
+    let sample = "{\"bomFormat\": \"CycloneDX\", \"specVersion\": \"1.5\", \"serialNumber\": \"urn:uuid:11111111-2222-3333-4444-555555555555\", \"version\": 1, \"metadata\": {\"timestamp\": \"2026-05-13T10:00:00Z\", \"tools\": {\"components\": [{\"type\": \"application\", \"name\": \"capa\", \"version\": \"0.6.0-alpha\"}]}, \"component\": {\"bom-ref\": \"capa:program:demo\", \"type\": \"application\", \"name\": \"demo\", \"version\": \"1.0.0\"}}, \"components\": [{\"bom-ref\": \"pkg:npm/lodash@4.17.21\", \"type\": \"library\", \"name\": \"lodash\", \"version\": \"4.17.21\", \"purl\": \"pkg:npm/lodash@4.17.21\", \"hashes\": [{\"alg\": \"SHA-256\", \"content\": \"aaaabbbbccccddddeeeeffff0011223344556677889900aabbccddeeff001122\"}], \"licenses\": [{\"license\": {\"id\": \"MIT\"}}]}, {\"bom-ref\": \"pkg:npm/chalk@5.3.0\", \"type\": \"library\", \"name\": \"chalk\", \"version\": \"5.3.0\", \"purl\": \"pkg:npm/chalk@5.3.0\", \"licenses\": [{\"expression\": \"MIT OR Apache-2.0\"}]}], \"dependencies\": [{\"ref\": \"capa:program:demo\", \"dependsOn\": [\"pkg:npm/lodash@4.17.21\", \"pkg:npm/chalk@5.3.0\"]}, {\"ref\": \"pkg:npm/chalk@5.3.0\", \"dependsOn\": [\"pkg:npm/lodash@4.17.21\"]}]}"
+
+    match parse_cyclonedx(sample)
+        Err(msg) ->
+            stdio.eprintln("CycloneDX parse failed: ${msg}")
+        Ok(doc) ->
+            stdio.println("CycloneDX ${doc.spec_version} document")
+            stdio.println("  serial:    ${doc.serial_number}")
+            stdio.println("  version:   ${doc.version}")
+            stdio.println("  generated: ${doc.metadata.timestamp}")
+            stdio.println("  tools:     ${doc.metadata.tool_names.length()} entries")
+            for t in doc.metadata.tool_names
+                stdio.println("    - ${t}")
+            stdio.println("  product:   ${doc.metadata.main_component_name} (${doc.metadata.main_component_ref})")
+            stdio.println("")
+            stdio.println("Components (${doc.components.length()}):")
+            for c in doc.components
+                stdio.println("  - [${c.kind}] ${c.name} ${c.version}")
+                stdio.println("      bom-ref: ${c.bom_ref}")
+                if c.purl != ""
+                    stdio.println("      purl:    ${c.purl}")
+                for h in c.hashes
+                    stdio.println("      ${h.algorithm} = ${h.content}")
+                for l in c.licenses
+                    if l.expression != ""
+                        stdio.println("      license: ${l.expression} (expression)")
+                    if l.id != ""
+                        stdio.println("      license: ${l.id} (SPDX id)")
+                    if l.name != ""
+                        stdio.println("      license: ${l.name} (name)")
+            stdio.println("")
+            stdio.println("Dependency edges (${doc.dependencies.length()}):")
+            for d in doc.dependencies
+                stdio.println("  - ${d.ref}")
+                for child in d.depends_on
+                    stdio.println("      -> ${child}")

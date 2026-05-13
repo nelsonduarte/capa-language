@@ -600,6 +600,25 @@ class TestTranspileExamples(unittest.TestCase):
         self.assertIn("Relationships (1):", out)
         self.assertIn("DESCRIBES", out)
 
+    def test_cyclonedx_parser(self):
+        # The other half of the SBOM-parsing pair: CycloneDX 1.5
+        # JSON, also written in Capa. Verifies metadata, both
+        # license shapes (`{license: {id: ...}}` and
+        # `{expression: ...}`), and the flat dependsOn graph.
+        rc, out, err = self._run_example("examples/cyclonedx_parser.capa")
+        self.assertEqual(rc, 0, err)
+        self.assertIn("CycloneDX 1.5 document", out)
+        self.assertIn("Components (2):", out)
+        self.assertIn("lodash 4.17.21", out)
+        self.assertIn("chalk 5.3.0", out)
+        # SPDX-id license shape (lodash)
+        self.assertIn("license: MIT (SPDX id)", out)
+        # SPDX-expression license shape (chalk)
+        self.assertIn("license: MIT OR Apache-2.0 (expression)", out)
+        # Dependency graph: chalk depends on lodash
+        self.assertIn("pkg:npm/chalk@5.3.0", out)
+        self.assertIn("-> pkg:npm/lodash@4.17.21", out)
+
     def test_net_attenuation(self):
         rc, out, err = self._run_example("examples/net_attenuation.capa")
         self.assertEqual(rc, 0, err)

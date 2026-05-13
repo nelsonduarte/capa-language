@@ -279,7 +279,22 @@ Capa as artefact in the SBOM Governance thesis:
   unwrapping `Result<T, E>` / `Option<T>` to `T`, which blocked
   type-aware method dispatch (e.g. `Map.get` lowering) on any
   expression downstream of a `?`.
-- [ ] **CycloneDX 1.5 parser in Capa**, same story.
+- [~] **CycloneDX 1.5 parser in Capa**, same story. **Demo
+  landed** at `examples/cyclonedx_parser.capa`: parses the
+  CycloneDX 1.5 JSON shape (metadata with tools and main
+  component, components[] with hashes and licenses,
+  dependencies[] as a flat (ref, dependsOn[]) graph) into typed
+  Capa structs (`CdxDocument`, `CdxComponent`, `CdxHash`,
+  `CdxLicense`, `CdxDependency`, `CdxMetadata`). Handles both
+  license shapes — `{license: {id|name}}` and `{expression:
+  <SPDX-license-expression>}` — plus both `tools[]` shapes
+  (modern `tools.components[]` and legacy flat array).
+  Regression test in
+  `tests/test_transpiler.py::test_cyclonedx_parser`.
+  **Pending**: vulnerabilities[] / VEX, services[], evidence[],
+  signatures, and the cross-format comparison chapter that ties
+  SPDX and CycloneDX into a single "representation" narrative
+  for the thesis.
 - [ ] **`capability Provenance` (user-defined)**, capability that
   represents the right to query/verify a piece of supply-chain
   metadata. Demonstrates user-defined caps in a real domain.

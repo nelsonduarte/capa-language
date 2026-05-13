@@ -11,6 +11,21 @@ breaking changes and the discipline is still being shaped.
 
 ### Added
 
+- **CycloneDX 1.5 JSON parser, written in Capa**
+  (`examples/cyclonedx_parser.capa`): the SBOM-of-record
+  companion to the SPDX parser. Reads CycloneDX 1.5 documents
+  (the format Dependency-Track, OSV-Scanner, syft, and the Capa
+  compiler's own `--cyclonedx` output emit) and builds typed
+  Capa structs: `CdxDocument`, `CdxComponent`, `CdxHash`,
+  `CdxLicense`, `CdxDependency`, `CdxMetadata`. Handles both
+  CycloneDX license shapes — `{license: {id|name}}` (a single
+  SPDX identifier or a human-readable name) and `{expression:
+  ...}` (a full SPDX-license-expression like `MIT OR
+  Apache-2.0`) — plus the dual `metadata.tools` representation
+  (modern `tools.components[]` and the legacy flat
+  `tools[]` array). Regression test in
+  `tests/test_transpiler.py::test_cyclonedx_parser`.
+
 - **SPDX 2.3 JSON parser, written in Capa**
   (`examples/spdx_parser.capa`): the first real-world SBOM demo
   written in the language. Parses the core SPDX 2.3 fields
