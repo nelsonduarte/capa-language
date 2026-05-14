@@ -378,12 +378,22 @@ items here so they stay visible:
     `{Stdio, Net, Fs} ⊆ {Stdio, Net, Fs}`. The probes are
     pure queries with no filesystem or network side effects,
     so the property test stays self-contained.
-  **Phase 3.6 pending**: bodies that go beyond a single
-  probe per capability (chained restrict_to attenuations,
-  capability passing through helper functions, attenuated
-  capability re-used after consumption). Each adds shape to
-  the trace and gives Hypothesis a richer search space for
-  whatever soundness regression we want to lay tripwires for.
+  **Phase 3.6 landed**: a second multi-cap strategy
+  `_program_with_caps_advanced` picks per capability between
+  `plain` (the 3.5 shape), `attenuated` (bind
+  `let a = c.restrict_to(...)` first, probe the attenuated
+  value), and `via_helper` (emit a separate
+  `fun use_{cap}(c: Cap) -> Bool` and call it from main, so
+  the capability value crosses a function boundary). Programs
+  in the wild mix all three flavours across the declared
+  capabilities. Each flavour preserves
+  `runtime_classes ⊆ manifest_classes` by construction; the
+  test catches regressions where an analyser or transpiler
+  change ever lets a method call leak a class that is not in
+  the function's signature.
+  **Phase 3.7 pending**: `consume`-typed parameter flows
+  through the strategy. Until then the linear layer is
+  fuzzed only via the structural / flow layers' coverage.
 - [x] **`Range<Int>` as a distinct type from `List<Int>`**.
   Done. `0..n` and `0..=n` now type as `Range<Int>`, a
   separate parametric type registered in `capa/builtins.py`.

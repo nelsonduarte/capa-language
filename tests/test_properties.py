@@ -301,6 +301,20 @@ _CAP_PROBES: dict[str, str] = {
     "Random": '{var}.float_unit()',
 }
 
+# Per-capability attenuation expression. Each one calls the
+# class's narrowing operation with a plausible argument so the
+# attenuated capability still passes its probe. The runtime
+# trace records the ``restrict_to`` / ``with_seed`` call
+# alongside the subsequent probe; the property holds because
+# both are operations on the same capability class.
+_CAP_ATTEN: dict[str, str] = {
+    "Fs":     '{var}.restrict_to("/tmp/")',
+    "Net":    '{var}.restrict_to("example.com")',
+    "Env":    '{var}.restrict_to_keys(["PATH"])',
+    "Clock":  '{var}.restrict_to_after(0.0)',
+    "Random": '{var}.with_seed(42)',
+}
+
 
 @st.composite
 def _program_with_caps(draw):
@@ -333,6 +347,79 @@ def _program_with_caps(draw):
         probe = _CAP_PROBES[cap].format(var=var)
         lines.append(f"    let v{i} = {probe}")
     return "\n".join(lines) + "\n"
+
+
+@st.composite
+def _program_with_caps_advanced(draw):
+    """A richer version of ``_program_with_caps`` that, for each
+    declared capability, picks one of three call shapes:
+
+      - ``plain``: probe the capability directly in main.
+      - ``attenuated``: bind an attenuated form of the capability
+        first (e.g. ``let af = fs.restrict_to("/tmp/")``), then
+        probe the attenuated value. Exercises Capa's
+        attenuation chain plus the analyser's "first-class
+        capability attenuation" rule.
+      - ``via_helper``: emit a helper function
+        ``fun use_{cap}(c: Cap) -> Bool`` that probes the cap
+        in its own body, and call it from main. Exercises the
+        analyser's flow-tracking for capability values across
+        call boundaries plus the manifest's per-function
+        rollup (both main and use_{cap} declare the
+        capability, so the manifest set is unchanged).
+
+    All three flavours keep the soundness property
+    ``runtime_classes ⊆ manifest_classes`` true by
+    construction; the test exists to catch regressions, not to
+    discover the property.
+    """
+    cap_set = draw(st.sets(
+        st.sampled_from(list(_CAP_PROBES.keys())),
+        min_size=0,
+        max_size=3,
+    ))
+    cap_flavors = {}
+    for cap in sorted(cap_set):
+        cap_flavors[cap] = draw(
+            st.sampled_from(["plain", "attenuated", "via_helper"])
+        )
+
+    helpers: list[str] = []
+    for cap, flavor in cap_flavors.items():
+        if flavor == "via_helper":
+            var = cap.lower()
+            probe = _CAP_PROBES[cap].format(var=var)
+            helpers.append(
+                f"fun use_{var}({var}: {cap}) -> Bool\n"
+                f"    let _r = {probe}\n"
+                f"    return true\n"
+            )
+
+    params = ["stdio: Stdio"]
+    bindings = []
+    for cap in sorted(cap_set):
+        var = cap.lower()
+        params.append(f"{var}: {cap}")
+        bindings.append((cap, var, cap_flavors[cap]))
+
+    body_lines = [
+        f"fun main({', '.join(params)})",
+        '    stdio.println("start")',
+    ]
+    for i, (cap, var, flavor) in enumerate(bindings):
+        if flavor == "plain":
+            probe = _CAP_PROBES[cap].format(var=var)
+            body_lines.append(f"    let v{i} = {probe}")
+        elif flavor == "attenuated":
+            attn = _CAP_ATTEN[cap].format(var=var)
+            attn_var = f"a{i}"
+            body_lines.append(f"    let {attn_var} = {attn}")
+            probe = _CAP_PROBES[cap].format(var=attn_var)
+            body_lines.append(f"    let v{i} = {probe}")
+        elif flavor == "via_helper":
+            body_lines.append(f"    let v{i} = use_{var}({var})")
+
+    return "\n".join(helpers + body_lines) + "\n"
 
 
 class TestSyntaxAwarePipeline(unittest.TestCase):
@@ -487,6 +574,57 @@ class TestRuntimeSubsetOfManifest(unittest.TestCase):
                 f"runtime classes {runtime_classes} not subset of "
                 f"manifest classes {manifest_classes} for program:\n"
                 f"{textwrap.indent(source, '    ')}"
+            ),
+        )
+
+    @given(_program_with_caps_advanced())
+    @settings(
+        max_examples=50,
+        deadline=8000,
+        suppress_health_check=[HealthCheck.too_slow],
+    )
+    def test_runtime_subset_with_attenuation_and_helpers(self, source):
+        """Phase 3.6: the advanced strategy picks per capability
+        between a plain probe, an attenuated probe
+        (``let a = c.restrict_to(...); a.probe()``), or a probe
+        routed through a helper function that itself declares
+        the capability. All three flavours preserve the
+        soundness invariant
+        ``runtime_classes ⊆ manifest_classes``; the test exists
+        to catch regressions, particularly any analyser or
+        transpiler change that lets a method call leak a class
+        that is not in the function's signature."""
+        from capa import analyze, transpile
+
+        tokens = Lexer(source).lex()
+        module = Parser(tokens, source=source).parse_module()
+        result = analyze(module, source=source)
+        if not result.ok:
+            self.fail(
+                f"analyser rejected an advanced-strategy program:\n"
+                f"{textwrap.indent(source, '    ')}\n"
+                f"errors: {[e.format() for e in result.errors]}"
+            )
+
+        manifest_classes = self._manifest_classes(module)
+        code = transpile(module, types=result.types)
+
+        _trace.clear()
+        run_globals: dict = {"__name__": "__main__"}
+        try:
+            exec(compile(code, "<test>", "exec"), run_globals)
+        except SystemExit:
+            pass
+
+        runtime_classes = _trace.classes_used()
+
+        self.assertTrue(
+            runtime_classes.issubset(manifest_classes),
+            msg=(
+                f"runtime classes {runtime_classes} not subset of "
+                f"manifest classes {manifest_classes} for program:\n"
+                f"{textwrap.indent(source, '    ')}\n"
+                f"trace:\n{_trace.get()!r}"
             ),
         )
 

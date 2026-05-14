@@ -57,6 +57,29 @@ breaking changes and the discipline is still being shaped.
   needs. Regression test in
   `tests/test_transpiler.py::test_cve_xz_utils`.
 
+- **Property-based testing phase 3.6**: a second multi-cap
+  strategy `_program_with_caps_advanced` picks per
+  capability between three call shapes, deepening the fuzz
+  coverage of the soundness property. The flavours are:
+  - **plain**: probe the cap directly in main (the 3.5 shape).
+  - **attenuated**: bind `let a = c.restrict_to(...)` first
+    and probe the attenuated value. Exercises the analyser's
+    "first-class attenuation" rule.
+  - **via_helper**: emit a separate
+    `fun use_{cap}(c: Cap) -> Bool` that probes the cap in
+    its own body, and call it from main. Exercises the
+    analyser's flow-tracking for capability values across
+    call boundaries plus the manifest's per-function rollup
+    (both main and use_{cap} declare the capability).
+  Programs in the wild mix all three across the declared
+  capabilities. New test method
+  `test_runtime_subset_with_attenuation_and_helpers` runs 50
+  Hypothesis examples per CI run. All three flavours preserve
+  `runtime_classes ⊆ manifest_classes` by construction; the
+  test catches regressions where an analyser or transpiler
+  change ever lets a method call leak a class that is not
+  in the function's signature.
+
 - **Property-based testing phase 3.5**: the
   `runtime_caps ⊆ manifest_caps` property is now exercised on
   *non-trivial* inclusions. A new Hypothesis strategy
