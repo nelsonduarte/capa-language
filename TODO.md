@@ -27,9 +27,13 @@ sequence below strengthens exactly that axis.
   `sbom_capability_audit.capa` (which compares ONE SBOM
   against a written policy). First piece of Tier 1, landed
   2026-05-15.
-- [ ] **SPDX 2.3 emission**. Already parse; need to emit.
-  Doubles SBOM-format coverage (Linux Foundation alignment).
-  ~1 week.
+- [x] **SPDX 2.3 emission** (`capa --spdx file.capa`).
+  Companion to `--cyclonedx`; emits SPDX 2.3 JSON with
+  per-function capability metadata via standard
+  `annotations[]`. SPDX IDs sanitised to spec
+  (`SPDXRef-[A-Za-z0-9.-]+`). Implementation at
+  `capa/manifest/_spdx.py`; 11 tests at
+  `tests/test_attributes.py::TestSPDX`. Landed 2026-05-15.
 - [ ] **VEX integration** (CycloneDX VEX format).
   Per-function exploitability claims. Genuinely novel: no
   other language emits VEX at function granularity. ~2-3

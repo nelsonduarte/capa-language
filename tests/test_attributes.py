@@ -15,7 +15,7 @@ import unittest
 
 from capa import Lexer, Parser, ParserError, analyze
 from capa import ast as A
-from capa.manifest import build_manifest, build_cyclonedx
+from capa.manifest import build_manifest, build_cyclonedx, build_spdx
 
 
 def parse(source: str) -> A.Module:
@@ -590,6 +590,167 @@ class TestCallExtraction(unittest.TestCase):
         )
         arg = calls[0]["args"][0]
         self.assertTrue(arg.endswith("..."), f"arg was: {arg!r}")
+
+
+# =============================================================
+# SPDX 2.3 wrapper
+# =============================================================
+
+def spdx_of(source: str, filename: str = "test.capa", **kw) -> dict:
+    tokens = Lexer(source).lex()
+    module = Parser(tokens, source=source).parse_module()
+    return build_spdx(
+        module,
+        filename=filename,
+        timestamp="2026-05-12T00:00:00Z",
+        **kw,
+    )
+
+
+def _annot_comments(pkg: dict) -> list[str]:
+    return [a["comment"] for a in pkg.get("annotations", [])]
+
+
+def _pkg_by_name(spdx: dict, name: str) -> dict:
+    for pkg in spdx["packages"]:
+        if pkg["name"] == name:
+            return pkg
+    raise AssertionError(f"no SPDX package named {name!r}")
+
+
+class TestSPDX(unittest.TestCase):
+    def test_top_level_envelope(self):
+        spdx = spdx_of(
+            'fun main(stdio: Stdio)\n'
+            '    stdio.println("hi")\n'
+        )
+        self.assertEqual(spdx["spdxVersion"], "SPDX-2.3")
+        self.assertEqual(spdx["dataLicense"], "CC0-1.0")
+        self.assertEqual(spdx["SPDXID"], "SPDXRef-DOCUMENT")
+        self.assertEqual(spdx["creationInfo"]["created"], "2026-05-12T00:00:00Z")
+        self.assertTrue(
+            spdx["documentNamespace"].startswith("https://capa-lang.org/spdx/"),
+            spdx["documentNamespace"],
+        )
+
+    def test_creator_records_capa_tool(self):
+        spdx = spdx_of('fun f()\n    return\n')
+        creators = spdx["creationInfo"]["creators"]
+        self.assertEqual(len(creators), 1)
+        self.assertTrue(creators[0].startswith("Tool: capa-"), creators[0])
+
+    def test_program_package_described(self):
+        spdx = spdx_of('fun f()\n    return\n', filename="demo.capa")
+        pkg = _pkg_by_name(spdx, "demo.capa")
+        self.assertEqual(pkg["downloadLocation"], "NOASSERTION")
+        self.assertFalse(pkg["filesAnalyzed"])
+        describes = next(
+            r for r in spdx["relationships"]
+            if r["relationshipType"] == "DESCRIBES"
+        )
+        self.assertEqual(describes["relatedSpdxElement"], pkg["SPDXID"])
+
+    def test_function_becomes_package(self):
+        spdx = spdx_of(
+            'fun fetch_user(net: Net) -> Bool\n'
+            '    return net.allows("api.example.com")\n',
+            filename="api.capa",
+        )
+        pkg = _pkg_by_name(spdx, "fetch_user")
+        self.assertEqual(pkg["downloadLocation"], "NOASSERTION")
+        self.assertFalse(pkg["filesAnalyzed"])
+        self.assertTrue(pkg["SPDXID"].startswith("SPDXRef-Fn-"), pkg["SPDXID"])
+
+    def test_function_annotations_include_capabilities(self):
+        spdx = spdx_of(
+            'fun fetch_user(net: Net) -> Bool\n'
+            '    return net.allows("api.example.com")\n',
+        )
+        pkg = _pkg_by_name(spdx, "fetch_user")
+        comments = _annot_comments(pkg)
+        self.assertIn("capa:kind=function", comments)
+        self.assertIn("capa:declared_capability=Net", comments)
+        self.assertIn("capa:has_unsafe=false", comments)
+
+    def test_program_contains_function_relationship(self):
+        spdx = spdx_of(
+            'fun helper()\n    return\n',
+            filename="demo.capa",
+        )
+        helper_pkg = _pkg_by_name(spdx, "helper")
+        program_pkg = _pkg_by_name(spdx, "demo.capa")
+        edge = next(
+            (r for r in spdx["relationships"]
+             if r["spdxElementId"] == program_pkg["SPDXID"]
+             and r["relationshipType"] == "CONTAINS"
+             and r["relatedSpdxElement"] == helper_pkg["SPDXID"]),
+            None,
+        )
+        self.assertIsNotNone(edge, "expected CONTAINS edge from program to helper")
+
+    def test_function_to_function_call_becomes_depends_on(self):
+        spdx = spdx_of(
+            'fun helper(x: Int) -> Int\n'
+            '    return x * 2\n'
+            'fun main()\n'
+            '    let n = helper(21)\n',
+        )
+        main_pkg = _pkg_by_name(spdx, "main")
+        helper_pkg = _pkg_by_name(spdx, "helper")
+        edge = next(
+            (r for r in spdx["relationships"]
+             if r["spdxElementId"] == main_pkg["SPDXID"]
+             and r["relationshipType"] == "DEPENDS_ON"
+             and r["relatedSpdxElement"] == helper_pkg["SPDXID"]),
+            None,
+        )
+        self.assertIsNotNone(edge, "expected DEPENDS_ON edge from main to helper")
+
+    def test_namespace_deterministic_per_filename(self):
+        # Same filename -> same documentNamespace across runs, which is
+        # what the SPDX-diff workflow depends on.
+        a = spdx_of('fun f()\n    return\n', filename="x.capa")
+        b = spdx_of('fun g()\n    return\n', filename="x.capa")
+        self.assertEqual(a["documentNamespace"], b["documentNamespace"])
+
+    def test_namespace_differs_per_filename(self):
+        a = spdx_of('fun f()\n    return\n', filename="one.capa")
+        b = spdx_of('fun f()\n    return\n', filename="two.capa")
+        self.assertNotEqual(a["documentNamespace"], b["documentNamespace"])
+
+    def test_spdxids_are_syntactically_valid(self):
+        # SPDXRef-[a-zA-Z0-9.-]+ per the spec. Function names with
+        # colons or slashes must be sanitised; this test enforces it.
+        import re
+        spdx = spdx_of(
+            'type Foo {}\n'
+            'impl Foo\n'
+            '    fun bar(self) -> Int\n'
+            '        return 1\n',
+            filename="weird::name.capa",
+        )
+        pattern = re.compile(r"^SPDXRef-[A-Za-z0-9.\-]+$")
+        for pkg in spdx["packages"]:
+            self.assertTrue(
+                pattern.match(pkg["SPDXID"]),
+                f"invalid SPDXID: {pkg['SPDXID']!r}",
+            )
+
+    def test_user_defined_capability_becomes_package(self):
+        spdx = spdx_of(
+            'capability SendEmail\n'
+            '    fun send(self, to: String) -> Bool\n'
+            'type SmtpMailer {}\n'
+            'impl SendEmail for SmtpMailer\n'
+            '    fun send(self, to: String) -> Bool\n'
+            '        return true\n',
+            filename="mailer.capa",
+        )
+        pkg = _pkg_by_name(spdx, "SendEmail")
+        comments = _annot_comments(pkg)
+        self.assertIn("capa:kind=capability", comments)
+        self.assertIn("capa:capability:method=send", comments)
+        self.assertIn("capa:capability:implementor=SmtpMailer", comments)
 
 
 if __name__ == "__main__":

@@ -45,7 +45,7 @@
 
 <div class="page-heading">
     <h1>Roadmap</h1>
-    <p>An honest inventory of what works, what is coming, and what is explicitly out of scope. Capa is in <strong>v0.6.0-alpha</strong>: the compiler runs, 748 tests pass on three operating systems, the discipline is implemented end-to-end, the capability manifest and CycloneDX SBOM are emitted directly by the compiler, a runtime-overhead benchmark suite measures the transpiled output against hand-Python baselines, and the language is still missing several things a v1 would need.</p>
+    <p>An honest inventory of what works, what is coming, and what is explicitly out of scope. Capa is in <strong>v0.6.0-alpha</strong>: the compiler runs, 759 tests pass on three operating systems, the discipline is implemented end-to-end, the capability manifest and CycloneDX SBOM are emitted directly by the compiler, a runtime-overhead benchmark suite measures the transpiled output against hand-Python baselines, and the language is still missing several things a v1 would need.</p>
 </div>
 
 <!-- =====================================================
@@ -281,10 +281,10 @@
             </div>
         </li>
         <li>
-            <span class="tag future">P1</span>
+            <span class="tag done">DONE</span>
             <div class="item-body">
                 <strong>SPDX 2.3 emission</strong>
-                <p>Capa already parses SPDX; emitting doubles SBOM-format coverage and aligns with the Linux Foundation ecosystem. ~1 week.</p>
+                <p><code>capa --spdx file.capa</code>. Companion to <code>--cyclonedx</code>; emits SPDX 2.3 JSON with per-function capability metadata via standard <code>annotations[]</code>. Linux Foundation ecosystem and OpenChain-conformant pipelines now have a first-class entry point.</p>
             </div>
         </li>
         <li>

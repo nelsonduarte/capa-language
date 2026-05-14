@@ -57,7 +57,7 @@ Capa/
 │   ├── docgen/                 # HTML doc generator from /// doc-comments
 │   ├── lsp/                    # Language Server Protocol implementation
 │   └── runtime/                # Result, Option, Stdio, Fs, ..., Unsafe, py_import
-├── tests/                      # 748 unit, end-to-end, and property tests
+├── tests/                      # 759 unit, end-to-end, and property tests
 │   ├── test_lexer.py
 │   ├── test_parser.py
 │   ├── test_analyzer.py
@@ -368,7 +368,7 @@ else:
 python -m unittest discover tests
 ```
 
-**748 tests** spanning the lexer, parser, analyzer, transpiler, LSP,
+**759 tests** spanning the lexer, parser, analyzer, transpiler, LSP,
 formatter, attribute-schema validation, and Hypothesis-driven property
 tests. The transpiler suite actually *executes* the generated Python
 and checks stdout, the only honest way to test a transpiler. The
@@ -917,9 +917,11 @@ tools. The next milestones strengthen exactly that axis.
    Compares two CycloneDX SBOMs and reports per-function
    capability widenings, narrowings, additions, removals.
 
-2. **SPDX 2.3 emission**. Capa already parses SPDX; emitting
-   doubles the SBOM-format coverage and aligns with the
-   Linux Foundation ecosystem.
+2. **SPDX 2.3 emission** (DONE,
+   `capa --spdx file.capa`). Capa now emits SPDX 2.3 alongside
+   CycloneDX 1.5; per-function capability metadata travels via
+   SPDX `annotations[]`. Linux Foundation alignment, OpenChain-
+   compatible.
 
 3. **VEX integration** (CycloneDX VEX format). Per-function
    exploitability claims. No other language emits VEX at

@@ -30,18 +30,24 @@ The package is split internally:
   record assembly.
 - :mod:`._cyclonedx` - CycloneDX 1.5 SBOM wrapper around the
   internal manifest (``build_cyclonedx``).
+- :mod:`._spdx` - SPDX 2.3 SBOM wrapper around the internal
+  manifest (``build_spdx``); the Linux Foundation companion to
+  the OWASP-flavoured CycloneDX output.
 """
 
 from __future__ import annotations
 
 from ._cyclonedx import CYCLONEDX_SPEC_VERSION, build_cyclonedx
 from ._funrec import SCHEMA_VERSION, build_manifest
+from ._spdx import SPDX_SPEC_VERSION, build_spdx
 from ._strings import _ty_text
 
 
 __all__ = [
     "SCHEMA_VERSION",
     "CYCLONEDX_SPEC_VERSION",
+    "SPDX_SPEC_VERSION",
     "build_manifest",
     "build_cyclonedx",
+    "build_spdx",
 ]

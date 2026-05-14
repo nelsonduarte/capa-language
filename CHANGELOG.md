@@ -11,6 +11,23 @@ breaking changes and the discipline is still being shaped.
 
 ### Added
 
+- **SPDX 2.3 SBOM emission** (`capa --spdx file.capa`,
+  `capa.manifest.build_spdx`). Companion to the existing
+  `--cyclonedx` flag: same per-function capability metadata,
+  emitted in SPDX 2.3 JSON for tools and pipelines that prefer
+  the Linux Foundation ecosystem (OpenChain-conformant
+  pipelines, license-compliance tooling). Per-function
+  metadata travels via standard SPDX `annotations[]` with a
+  `capa:<key>=<value>` payload in the `comment` field;
+  capability membership and intra-module calls become explicit
+  `DEPENDS_ON` relationships. SPDX IDs are sanitised to match
+  the spec's `SPDXRef-[A-Za-z0-9.-]+` constraint (e.g. `Foo::bar`
+  becomes `SPDXRef-Fn-file.capa-Foo-bar`). The Linux Foundation
+  side of the Tier 1 multi-format SBOM coverage. Second piece
+  of the Tier 1 governance-stack work. 11 new regression tests
+  in `tests/test_attributes.py::TestSPDX`. Full suite: 759
+  passed.
+
 - **SBOM diff tool** (`examples/sbom_diff.capa` +
   `examples/data/demo-sbom-v2.json`). A Capa program that
   consumes two CycloneDX 1.5 SBOMs emitted by `capa
