@@ -54,7 +54,7 @@
 <section>
     <h2>Where we are today</h2>
 
-    <p>Capa is a working alpha. It compiles, type-checks, transpiles to Python, and runs. Every example in this site, in <a href="https://github.com/nelsonduarte/capa/tree/main/examples">the examples directory</a>, and in the white paper is executable. The boundary between what is real and what is roadmap is sharp:</p>
+    <p>Capa is a working alpha. It compiles, type-checks, transpiles to Python, and runs. Every example in this site and in <a href="https://github.com/nelsonduarte/capa/tree/main/examples">the examples directory</a> is executable. The boundary between what is real and what is roadmap is sharp:</p>
 
     <div class="status-grid">
         <div class="status-yes">
@@ -142,7 +142,7 @@
 <section>
     <h2>The road ahead</h2>
 
-    <h3>White-paper promises still open</h3>
+    <h3>Design promises still open</h3>
     <ul class="milestone-list">
         <li>
             <span class="tag current">P1</span>
@@ -162,7 +162,7 @@
             <span class="tag future">P3</span>
             <div class="item-body">
                 <strong>Refinement types</strong>
-                <p>Marked as future in the white paper, a way to express, in the type system, properties like "this string is non-empty" or "this list is sorted". Research-grade; not in scope for a 1.0.</p>
+                <p>Marked as future in the design notes, a way to express, in the type system, properties like "this string is non-empty" or "this list is sorted". Research-grade; not in scope for a 1.0.</p>
             </div>
         </li>
     </ul>
@@ -320,7 +320,7 @@
     <p>For honesty and scope control:</p>
 
     <ul>
-        <li><strong>LLVM backend.</strong> Was Phase 4 of the original white-paper roadmap. Far future; not a priority while Python is a perfectly serviceable target.</li>
+        <li><strong>LLVM backend.</strong> Was Phase 4 of the original design roadmap. Far future; not a priority while Python is a perfectly serviceable target.</li>
         <li><strong>Self-hosting.</strong> Was Phase 5. Very far future. The compiler is unlikely to be rewritten in Capa before there is a working Capa community.</li>
         <li><strong>Full async / await.</strong> Reserved keywords exist; no implementation. Async semantics that interact correctly with capabilities is a real research question and a large lift.</li>
         <li><strong>Tail-call optimisation.</strong> The transpiler emits regular Python calls; recursion is bounded by the CPython stack.</li>
@@ -364,7 +364,7 @@
         <div>
             <h4>Specification</h4>
             <ul>
-                <li><a href="https://github.com/nelsonduarte/capa/blob/main/WHITEPAPER.md">White paper</a></li>
+                <li><a href="https://github.com/nelsonduarte/capa/blob/main/docs/positioning.md">Positioning</a></li>
                 <li><a href="https://github.com/nelsonduarte/capa/blob/main/Capa-EBNF.md">EBNF grammar</a></li>
                 <li><a href="https://github.com/nelsonduarte/capa/blob/main/docs/demo-event-stream.md">Event-stream demo</a></li>
             </ul>
