@@ -667,6 +667,22 @@ class TestTranspileExamples(unittest.TestCase):
         self.assertIn("launch plan: grid=8 block=128 args=4", out)
         self.assertIn("launch plan: grid=16 block=64 args=2", out)
 
+    def test_cve_ua_parser_js(self):
+        # Sixth CVE walkthrough: the ua-parser-js npm account
+        # hijack of October 2021. Same attack mechanism as
+        # eslint-scope (compromised maintainer credentials) but
+        # different payload (cryptominer + DanaBot RAT vs npm
+        # token exfiltration). In the repo specifically to make
+        # the payload-independence point: Capa's rejection is
+        # structurally identical regardless of what the attacker
+        # intended to do with the ambient authority.
+        rc, out, err = self._run_example("examples/cve_ua_parser_js.capa")
+        self.assertEqual(rc, 0, err)
+        self.assertIn("ua-parsed: Chrome on Linux (desktop)", out)
+        self.assertIn("ua-parsed: Safari on macOS (desktop)", out)
+        self.assertIn("ua-parsed: Firefox on Windows (desktop)", out)
+        self.assertIn("ua-parsed: Chrome on Linux (mobile)", out)
+
     def test_cve_xz_utils(self):
         # Fourth CVE walkthrough, deliberately chosen because it
         # is the *most pessimistic* case: the actual xz-utils

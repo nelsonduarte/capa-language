@@ -300,7 +300,7 @@ items here so they stay visible:
   Each is a paired `examples/cve_*.capa` (safe library) +
   `docs/cve_*.md` (walkthrough showing the attack pattern,
   what an attacker would transliterate into Capa, and the
-  exact analyzer rejection). Three landed so far:
+  exact analyzer rejection). Six landed so far:
   - **event-stream 2018**:
     `examples/demo_event_stream.capa` +
     `docs/demo-event-stream.md`. Bitcoin-wallet exfiltration via
@@ -338,14 +338,27 @@ items here so they stay visible:
     is loud at the SBOM level. Third clean win, different
     ecosystem (Python / PyPI) than event-stream and
     eslint-scope (both npm).
-  Five demos now give the thesis a balanced experimental
-  section: three clean wins (event-stream, eslint-scope,
-  torchtriton) covering different ecosystems and attack
-  shapes (malicious-dependency, credential-theft,
-  typosquat); two honest partial losses (node-ipc for
-  legitimate-authority-abuse, xz-utils for below-the-
-  language attacks). The breakdown is summarised in
-  `docs/cve_torchtriton.md` § "The five-case-study summary".
+  - **ua-parser-js 2021 (npm account hijack)**:
+    `examples/cve_ua_parser_js.capa` +
+    `docs/cve_ua_parser_js.md`. Maintainer's npm account
+    compromised; three malicious versions shipped a
+    `preinstall` script that dropped an XMRig cryptominer on
+    Linux and additionally DanaBot (a credential-stealing
+    RAT) on Windows. Same attack mechanism as eslint-scope
+    but wildly different payload, and Capa's response is
+    structurally identical. The case study is in the repo
+    specifically to make the **payload-independence** point;
+    `ua-parser-js` also has the cleanest possible signature
+    of any of the studies (`(String) -> UserAgent`).
+  Six demos now give the thesis a balanced experimental
+  section: four clean wins (event-stream, eslint-scope,
+  ua-parser-js, torchtriton) across npm and PyPI and four
+  different payloads (malicious-dependency, credential-
+  theft, cryptominer+RAT, kernel exfil); two honest partial
+  losses (node-ipc for legitimate-authority-abuse, xz-utils
+  for below-the-language attacks). The breakdown is
+  summarised in `docs/cve_ua_parser_js.md` § "The
+  six-case-study summary".
 - [~] **Property-based testing with Hypothesis**. The most
   citable suggestion in the review. **Phases 1, 2 and 3
   (minimal) landed** in `tests/test_properties.py`.

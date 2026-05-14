@@ -373,14 +373,15 @@
             <p>
                 It eliminates a specific class: attacks that depend
                 on a dependency doing something its API never
-                claimed. Five case studies in the repo walk through
-                concrete CVEs, three where Capa wins structurally
+                claimed. Six case studies in the repo walk through
+                concrete CVEs, four where Capa wins structurally
                 and two where it partially loses (with the writeups
                 explaining why; honesty matters here):
             </p>
             <ul class="faq-list">
                 <li><a href="https://github.com/nelsonduarte/capa/blob/main/docs/demo-event-stream.md">event-stream 2018</a> (npm, cryptocurrency exfiltration) &mdash; Capa rejects at compile time.</li>
                 <li><a href="https://github.com/nelsonduarte/capa/blob/main/docs/cve_eslint_scope.md">eslint-scope 2018</a> (npm credential theft via <code>~/.npmrc</code>) &mdash; rejected.</li>
+                <li><a href="https://github.com/nelsonduarte/capa/blob/main/docs/cve_ua_parser_js.md">ua-parser-js 2021</a> (npm account hijack; cryptominer + DanaBot RAT) &mdash; rejected.</li>
                 <li><a href="https://github.com/nelsonduarte/capa/blob/main/docs/cve_torchtriton.md">torchtriton 2022</a> (PyPI typosquat, SSH-key exfiltration) &mdash; rejected.</li>
                 <li><a href="https://github.com/nelsonduarte/capa/blob/main/docs/cve_node_ipc.md">node-ipc 2022</a> (protestware; legitimate authority misused) &mdash; partial: attenuation reduces blast radius, the SBOM audit catches policy violations.</li>
                 <li><a href="https://github.com/nelsonduarte/capa/blob/main/docs/cve_xz_utils.md">xz-utils 2024</a> (CVE-2024-3094; build-system + dynamic-linker attack beneath the language layer) &mdash; partial: orthogonal defences (reproducible builds, code signing) are needed.</li>
@@ -508,6 +509,7 @@
             <ul>
                 <li><a href="https://github.com/nelsonduarte/capa/blob/main/docs/demo-event-stream.md">event-stream (2018)</a></li>
                 <li><a href="https://github.com/nelsonduarte/capa/blob/main/docs/cve_eslint_scope.md">eslint-scope (2018)</a></li>
+                <li><a href="https://github.com/nelsonduarte/capa/blob/main/docs/cve_ua_parser_js.md">ua-parser-js (2021)</a></li>
                 <li><a href="https://github.com/nelsonduarte/capa/blob/main/docs/cve_torchtriton.md">torchtriton (2022)</a></li>
                 <li><a href="https://github.com/nelsonduarte/capa/blob/main/docs/cve_node_ipc.md">node-ipc (2022)</a></li>
                 <li><a href="https://github.com/nelsonduarte/capa/blob/main/docs/cve_xz_utils.md">xz-utils (2024)</a></li>

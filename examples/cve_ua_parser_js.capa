@@ -1,0 +1,134 @@
+// cve_ua_parser_js.capa, the ua-parser-js npm account-hijack
+// incident, in Capa. The companion writeup is
+// docs/cve_ua_parser_js.md.
+//
+// On 22 October 2021, the maintainer's npm credentials for
+// `ua-parser-js` were compromised. The attacker published three
+// malicious versions (0.7.29, 0.8.0, 1.0.0) whose `preinstall`
+// hook executed a shell script that, on Linux, downloaded an
+// XMRig-based cryptominer; on Windows, dropped both the
+// cryptominer and DanaBot, a credential-stealing RAT. The
+// package had roughly 7-8 million weekly downloads at the time;
+// CISA issued a same-day advisory.
+//
+// `ua-parser-js` is, legitimately, a *pure string parser*: it
+// takes a User-Agent header and returns a struct describing the
+// browser, the OS, and the device. It needs no filesystem, no
+// network, no shell, no environment. The compromise relied
+// entirely on npm `preinstall` scripts inheriting the host's
+// ambient authority.
+//
+// This is the sixth CVE case study in the repo and the fourth
+// **clean win**. The interesting angle, separate from the
+// existing four wins, is that ua-parser-js has the *cleanest*
+// possible signature of any of them: String -> UserAgent. The
+// payload was wildly different from eslint-scope (cryptominer +
+// RAT vs credential theft), but Capa's response is identical.
+// **Structural protection is payload-independent**: every byte
+// of the malicious behaviour required capabilities that the
+// declared API surface did not request, so the *shape* of the
+// rejection is the same regardless of what the attacker
+// intended to do.
+
+// ===============================================================
+// What a Capa version of ua-parser-js's API looks like.
+// ===============================================================
+//
+// A miniature UA parser: input is a User-Agent string, output is
+// a structured triple. No tables, no regex engine; just enough
+// shape to make the point. The signature is the contract.
+
+type Browser =
+    BrowserChrome
+    BrowserFirefox
+    BrowserSafari
+    BrowserUnknown
+
+type OS =
+    OSLinux
+    OSMac
+    OSWindows
+    OSOther
+
+type DeviceKind =
+    DeviceDesktop
+    DeviceMobile
+    DeviceTablet
+    DeviceUnknown
+
+type UserAgent {
+    browser: Browser,
+    os: OS,
+    device: DeviceKind
+}
+
+// Detection helpers, each a pure substring match.
+fun detect_browser(ua: String) -> Browser
+    if ua.contains("Chrome")
+        return BrowserChrome
+    if ua.contains("Firefox")
+        return BrowserFirefox
+    if ua.contains("Safari")
+        return BrowserSafari
+    return BrowserUnknown
+
+fun detect_os(ua: String) -> OS
+    if ua.contains("Linux")
+        return OSLinux
+    if ua.contains("Mac OS")
+        return OSMac
+    if ua.contains("Windows")
+        return OSWindows
+    return OSOther
+
+fun detect_device(ua: String) -> DeviceKind
+    if ua.contains("Mobile")
+        return DeviceMobile
+    if ua.contains("Tablet")
+        return DeviceTablet
+    return DeviceDesktop
+
+// The actual entry point. Note the signature: String in,
+// UserAgent out. No Fs, no Net, no Env, no Stdio, no Unsafe.
+// Anything the malicious ua-parser-js wanted to do (download a
+// cryptominer, drop a credential stealer, register a Windows
+// startup persistence key) requires authority this function
+// has not been granted.
+fun parse_user_agent(ua: String) -> UserAgent
+    return UserAgent {
+        browser: detect_browser(ua),
+        os: detect_os(ua),
+        device: detect_device(ua)
+    }
+
+fun describe(u: UserAgent) -> String
+    let b = match u.browser
+        BrowserChrome -> "Chrome"
+        BrowserFirefox -> "Firefox"
+        BrowserSafari -> "Safari"
+        BrowserUnknown -> "Unknown"
+    let o = match u.os
+        OSLinux -> "Linux"
+        OSMac -> "macOS"
+        OSWindows -> "Windows"
+        OSOther -> "Other"
+    let d = match u.device
+        DeviceDesktop -> "desktop"
+        DeviceMobile -> "mobile"
+        DeviceTablet -> "tablet"
+        DeviceUnknown -> "unknown"
+    return "${b} on ${o} (${d})"
+
+// ===============================================================
+// `main`, holding Stdio only for the demo.
+// ===============================================================
+fun main(stdio: Stdio)
+    let samples: List<String> = [
+        "Mozilla/5.0 (X11; Linux x86_64) Chrome/120.0",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS) Safari/17.0",
+        "Mozilla/5.0 (Windows NT 10.0) Firefox/121.0",
+        "Mozilla/5.0 (Linux; Android 13; Mobile) Chrome/120.0"
+    ]
+    for ua in samples
+        let parsed = parse_user_agent(ua)
+        stdio.println("ua-parsed: ${describe(parsed)}")

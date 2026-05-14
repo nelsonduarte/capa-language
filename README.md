@@ -79,6 +79,7 @@ Capa/
 │   ├── python_interop.capa     # Python boundary under Unsafe
 │   ├── demo_event_stream.capa  # CVE case study: event-stream 2018
 │   ├── cve_eslint_scope.capa   # CVE case study: eslint-scope 2018
+│   ├── cve_ua_parser_js.capa   # CVE case study: ua-parser-js 2021
 │   ├── cve_torchtriton.capa    # CVE case study: torchtriton 2022
 │   ├── cve_node_ipc.capa       # CVE partial-loss: node-ipc 2022
 │   ├── cve_xz_utils.capa       # CVE partial-loss: xz-utils 2024
@@ -94,6 +95,7 @@ Capa/
 │   ├── semantics.md            # λ_cap calculus sketch + soundness theorems
 │   ├── demo-event-stream.md    # case study walkthrough
 │   ├── cve_eslint_scope.md     # case study walkthrough
+│   ├── cve_ua_parser_js.md     # case study walkthrough
 │   ├── cve_torchtriton.md      # case study walkthrough
 │   ├── cve_node_ipc.md         # case study walkthrough (partial loss)
 │   └── cve_xz_utils.md         # case study walkthrough (partial loss)
@@ -903,18 +905,12 @@ publication arc (full list and prioritisation in
    Theorem 1 (Capability Soundness) is the workshop-paper budget
    item; the path is described in section 8 of that document.
 
-2. **Phase 3.7 of property-based testing**: extend the Hypothesis
-   strategy in [`tests/test_properties.py`](tests/test_properties.py)
-   to thread `consume`-typed parameters through helper functions
-   so the linear layer of the capability discipline gets direct
-   fuzz coverage.
-
-3. **More CVE case studies.** Five have landed (see
+2. **More CVE case studies.** Six have landed (see
    [`docs/positioning.md`](docs/positioning.md) for the breakdown).
    Each new one is a paired `examples/cve_*.capa` +
    `docs/cve_*.md` and is mechanical from the established template.
 
-4. **Native backend (LLVM or Cranelift).** Capa is a transpiler to
+3. **Native backend (LLVM or Cranelift).** Capa is a transpiler to
    Python today. The native backend is the long-term answer to the
    reviewer-of-the-future who asks "what does this look like off
    the Python runtime?". The proper IR design lives next to a
@@ -922,4 +918,4 @@ publication arc (full list and prioritisation in
    transpile-to-Python path is sufficient for every other goal
    in this list.
 
-5. **Interactive REPL** or watch mode for quick experimentation.
+4. **Interactive REPL** or watch mode for quick experimentation.

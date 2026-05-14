@@ -11,6 +11,31 @@ breaking changes and the discipline is still being shaped.
 
 ### Added
 
+- **CVE case study: ua-parser-js 2021 (npm account hijack,
+  cryptominer + RAT)** (`examples/cve_ua_parser_js.capa` +
+  `docs/cve_ua_parser_js.md`). The sixth CVE walkthrough and
+  the fourth clean win. On 22 Oct 2021 the maintainer's npm
+  account for `ua-parser-js` (about 7-8M weekly downloads) was
+  compromised; three malicious versions shipped a `preinstall`
+  script that, on Linux, downloaded an XMRig-based
+  cryptominer, and on Windows additionally dropped DanaBot, a
+  credential-stealing RAT. The case study is in the repo
+  specifically to make the **payload-independence** point:
+  same attack mechanism as eslint-scope 2018 (account
+  hijack), wildly different payload (cryptominer + RAT vs
+  npm token theft), and Capa's response is structurally
+  identical. `ua-parser-js` also has the *cleanest* possible
+  signature of any of the case studies (`(String) ->
+  UserAgent`), so the "the declared signature should mention
+  `Fs` if the function reads files" argument is at its most
+  rhetorically forceful here. Regression test in
+  `tests/test_transpiler.py::test_cve_ua_parser_js`. With
+  this sixth study the experimental section now covers four
+  clean wins (event-stream, eslint-scope, ua-parser-js,
+  torchtriton) and two honest partial losses (node-ipc,
+  xz-utils) across two ecosystems (npm, PyPI) and seven
+  years (2018-2024).
+
 - **CVE case study: torchtriton 2022 (PyPI typosquat)**
   (`examples/cve_torchtriton.capa` +
   `docs/cve_torchtriton.md`). The fifth CVE walkthrough and
