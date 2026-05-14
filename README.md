@@ -89,6 +89,7 @@ Capa/
 │   ├── cyclonedx_parser.capa   # CycloneDX 1.5 JSON parser, in Capa
 │   ├── spdx_license_expr.capa  # SPDX Annex D license-expression parser
 │   ├── sbom_capability_audit.capa # SBOM ↔ policy audit pipeline
+│   ├── sbom_diff.capa          # SBOM v1 ↔ v2 capability-change report
 │   └── data/                   # sample SBOM + policy for the audit demo
 ├── docs/                       # public website + design writeups
 │   ├── index.html, tour.html, start.html, why.html

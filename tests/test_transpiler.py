@@ -667,6 +667,22 @@ class TestTranspileExamples(unittest.TestCase):
         self.assertIn("launch plan: grid=8 block=128 args=4", out)
         self.assertIn("launch plan: grid=16 block=64 args=2", out)
 
+    def test_sbom_diff(self):
+        # Reads two CycloneDX SBOMs (demo-sbom.json + demo-sbom-v2.json)
+        # and reports capability-level changes per function: additions,
+        # removals, widenings (alert), narrowings (improvement). The
+        # auditor-facing piece of the compiler-as-evidence-producer
+        # story.
+        rc, out, err = self._run_example("examples/sbom_diff.capa")
+        self.assertEqual(rc, 0, err)
+        self.assertIn("Added functions (1):", out)
+        self.assertIn("+ compute_hash", out)
+        self.assertIn("Removed functions (1):", out)
+        self.assertIn("- notify_remote", out)
+        self.assertIn("log_event widened: +[Net]", out)
+        self.assertIn("save_report narrowed: -[Fs]", out)
+        self.assertIn("Unchanged: 2", out)
+
     def test_empirical_config(self):
         # Empirical micro-validation paired with the naive Python
         # version at examples/empirical_config_naive.py. The Capa

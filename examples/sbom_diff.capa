@@ -1,0 +1,279 @@
+// SBOM diff: compare two CycloneDX 1.5 capability-aware SBOMs
+// emitted by `capa --cyclonedx` and produce a structured report
+// of what changed per function. The auditor-facing tool the
+// "compiler-as-evidence-producer" pitch needs: between any two
+// releases, a single command tells you which functions widened
+// their authority surface, which narrowed it, which appeared,
+// and which disappeared.
+//
+// This is a Capa program operating on CycloneDX JSON; it eats
+// its own dogfood (the analyzer + audit pipeline both depend on
+// the same per-function declared_capability properties).
+//
+// Companion file: examples/sbom_capability_audit.capa, which
+// compares ONE sbom against a written policy. This one
+// compares TWO sboms against each other.
+//
+// Run with:
+//
+//   capa --run examples/sbom_diff.capa
+//
+// Sample data: examples/data/demo-sbom.json (v1) +
+// examples/data/demo-sbom-v2.json (v2). The v2 was synthesised
+// to show a realistic mix of changes:
+//
+//   - log_event widened from [Stdio] to [Stdio, Net]
+//   - save_report narrowed from [Fs] to []
+//   - notify_remote removed
+//   - compute_hash added
+
+type DeclaredFn {
+    name: String,
+    declared_capabilities: List<String>
+}
+
+type SbomSummary {
+    program_name: String,
+    components: List<DeclaredFn>
+}
+
+type CapDelta {
+    fn_name: String,
+    added_caps: List<String>,
+    removed_caps: List<String>
+}
+
+type DiffReport {
+    program_name_a: String,
+    program_name_b: String,
+    added_fns: List<DeclaredFn>,
+    removed_fns: List<DeclaredFn>,
+    changed_fns: List<CapDelta>,
+    unchanged_count: Int
+}
+
+// ===============================================================
+// JSON typed-extraction helpers. Mirror sbom_capability_audit.
+// ===============================================================
+fun as_object_or_err(j: JsonValue, context: String) -> Result<Map<String, JsonValue>, String>
+    return match j.as_object()
+        None -> Err("expected object for ${context}")
+        Some(m) -> Ok(m)
+
+fun as_array_or_err(j: JsonValue, context: String) -> Result<List<JsonValue>, String>
+    return match j.as_array()
+        None -> Err("expected array for ${context}")
+        Some(xs) -> Ok(xs)
+
+fun as_string_or_err(j: JsonValue, context: String) -> Result<String, String>
+    return match j.as_string()
+        None -> Err("expected string for ${context}")
+        Some(s) -> Ok(s)
+
+fun field(j: JsonValue, name: String) -> Result<JsonValue, String>
+    let obj = as_object_or_err(j, "lookup '${name}'")?
+    return match obj.get(name)
+        None -> Err("missing required field '${name}'")
+        Some(v) -> Ok(v)
+
+fun optional_field(j: JsonValue, name: String) -> Option<JsonValue>
+    return match j.as_object()
+        None -> None
+        Some(m) -> m.get(name)
+
+fun string_field_or(j: JsonValue, name: String, fallback: String) -> String
+    return match optional_field(j, name)
+        None -> fallback
+        Some(v) -> match v.as_string()
+            None -> fallback
+            Some(s) -> s
+
+fun read_string(fs: Fs, path: String) -> Result<String, String>
+    return match fs.read(path)
+        Err(e) -> Err("read ${path}: ${e}")
+        Ok(s) -> Ok(s)
+
+// ===============================================================
+// CycloneDX property scanning, focused on the per-function
+// capability declarations Capa emits.
+// ===============================================================
+fun extract_first_property(props: List<JsonValue>, name: String) -> Result<Option<String>, String>
+    for p in props
+        let pname = as_string_or_err(field(p, "name")?, "property.name")?
+        if pname == name
+            let pval = as_string_or_err(field(p, "value")?, "property.value")?
+            return Ok(Some(pval))
+    return Ok(None)
+
+fun extract_all_properties(props: List<JsonValue>, name: String) -> Result<List<String>, String>
+    let out: List<String> = []
+    for p in props
+        let pname = as_string_or_err(field(p, "name")?, "property.name")?
+        if pname == name
+            let pval = as_string_or_err(field(p, "value")?, "property.value")?
+            out.push(pval)
+    return Ok(out)
+
+fun parse_component_as_fn(j: JsonValue) -> Result<Option<DeclaredFn>, String>
+    let props = match optional_field(j, "properties")
+        None -> []
+        Some(v) -> as_array_or_err(v, "component.properties")?
+    let kind = extract_first_property(props, "capa:kind")?
+    let is_fn = match kind
+        None -> false
+        Some(s) -> s == "function"
+    if not is_fn
+        return Ok(None)
+    let name = string_field_or(j, "name", "<anonymous>")
+    let caps = extract_all_properties(props, "capa:declared_capability")?
+    return Ok(Some(DeclaredFn { name: name, declared_capabilities: caps }))
+
+fun parse_sbom_summary(json_text: String) -> Result<SbomSummary, String>
+    let doc = parse_json(json_text)?
+    let bom_format = string_field_or(doc, "bomFormat", "")
+    if bom_format != "CycloneDX"
+        return Err("expected bomFormat 'CycloneDX', got '${bom_format}'")
+    let program_name = match optional_field(doc, "metadata")
+        None -> "<unknown>"
+        Some(md) -> match optional_field(md, "component")
+            None -> "<unknown>"
+            Some(c) -> string_field_or(c, "name", "<unknown>")
+    let components: List<DeclaredFn> = []
+    match optional_field(doc, "components")
+        None ->
+            ()
+        Some(v) ->
+            let xs = as_array_or_err(v, "components")?
+            for x in xs
+                match parse_component_as_fn(x)?
+                    None ->
+                        ()
+                    Some(fn_record) ->
+                        components.push(fn_record)
+    return Ok(SbomSummary { program_name: program_name, components: components })
+
+// ===============================================================
+// Diff machinery. Pure functions over SbomSummary.
+// ===============================================================
+fun find_fn(fns: List<DeclaredFn>, name: String) -> Option<DeclaredFn>
+    for fn_record in fns
+        if fn_record.name == name
+            return Some(fn_record)
+    return None
+
+fun contains(xs: List<String>, target: String) -> Bool
+    for x in xs
+        if x == target
+            return true
+    return false
+
+fun set_difference(a: List<String>, b: List<String>) -> List<String>
+    let result: List<String> = []
+    for x in a
+        if not contains(b, x)
+            result.push(x)
+    return result
+
+fun compute_delta(before: DeclaredFn, after: DeclaredFn) -> Option<CapDelta>
+    let added = set_difference(after.declared_capabilities, before.declared_capabilities)
+    let removed = set_difference(before.declared_capabilities, after.declared_capabilities)
+    if added.length() == 0 and removed.length() == 0
+        return None
+    return Some(CapDelta {
+        fn_name: before.name,
+        added_caps: added,
+        removed_caps: removed
+    })
+
+fun diff_sboms(a: SbomSummary, b: SbomSummary) -> DiffReport
+    let added: List<DeclaredFn> = []
+    let removed: List<DeclaredFn> = []
+    let changed: List<CapDelta> = []
+    var unchanged = 0
+    for after_fn in b.components
+        match find_fn(a.components, after_fn.name)
+            None ->
+                added.push(after_fn)
+            Some(before_fn) ->
+                match compute_delta(before_fn, after_fn)
+                    None ->
+                        unchanged = unchanged + 1
+                    Some(delta) ->
+                        changed.push(delta)
+    for before_fn in a.components
+        match find_fn(b.components, before_fn.name)
+            None ->
+                removed.push(before_fn)
+            Some(_) ->
+                ()
+    return DiffReport {
+        program_name_a: a.program_name,
+        program_name_b: b.program_name,
+        added_fns: added,
+        removed_fns: removed,
+        changed_fns: changed,
+        unchanged_count: unchanged
+    }
+
+// ===============================================================
+// Rendering. Stdio-side only; the diff itself is a pure value.
+// ===============================================================
+fun render_caps(xs: List<String>) -> String
+    if xs.length() == 0
+        return "[]"
+    var s = "["
+    var first = true
+    for c in xs
+        if first
+            s = "${s}${c}"
+            first = false
+        else
+            s = "${s}, ${c}"
+    return "${s}]"
+
+fun print_report(stdio: Stdio, r: DiffReport) -> Unit
+    stdio.println("SBOM diff: ${r.program_name_a} -> ${r.program_name_b}")
+    stdio.println("")
+    if r.added_fns.length() > 0
+        stdio.println("Added functions (${r.added_fns.length()}):")
+        for fn_record in r.added_fns
+            stdio.println("  + ${fn_record.name} ${render_caps(fn_record.declared_capabilities)}")
+        stdio.println("")
+    if r.removed_fns.length() > 0
+        stdio.println("Removed functions (${r.removed_fns.length()}):")
+        for fn_record in r.removed_fns
+            stdio.println("  - ${fn_record.name} ${render_caps(fn_record.declared_capabilities)}")
+        stdio.println("")
+    if r.changed_fns.length() > 0
+        stdio.println("Capability changes (${r.changed_fns.length()}):")
+        for d in r.changed_fns
+            if d.added_caps.length() > 0
+                stdio.println("  ! ${d.fn_name} widened: +${render_caps(d.added_caps)}")
+            if d.removed_caps.length() > 0
+                stdio.println("  ~ ${d.fn_name} narrowed: -${render_caps(d.removed_caps)}")
+        stdio.println("")
+    stdio.println("Unchanged: ${r.unchanged_count}")
+
+// ===============================================================
+// Entry point. Reads two SBOMs from the same data directory via
+// an Fs handle attenuated to that directory; everything else is
+// pure.
+// ===============================================================
+fun load_sbom(fs: Fs, path: String) -> Result<SbomSummary, String>
+    let text = read_string(fs, path)?
+    return parse_sbom_summary(text)
+
+fun main(stdio: Stdio, fs: Fs)
+    let fs_data = fs.restrict_to("examples/data/")
+    let v1_result = load_sbom(fs_data, "examples/data/demo-sbom.json")
+    let v2_result = load_sbom(fs_data, "examples/data/demo-sbom-v2.json")
+    match v1_result
+        Err(e) ->
+            stdio.println("error loading v1: ${e}")
+        Ok(v1) ->
+            match v2_result
+                Err(e) ->
+                    stdio.println("error loading v2: ${e}")
+                Ok(v2) ->
+                    let report = diff_sboms(v1, v2)
+                    print_report(stdio, report)

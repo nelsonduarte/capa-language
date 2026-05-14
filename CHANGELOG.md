@@ -9,6 +9,23 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+### Added
+
+- **SBOM diff tool** (`examples/sbom_diff.capa` +
+  `examples/data/demo-sbom-v2.json`). A Capa program that
+  consumes two CycloneDX 1.5 SBOMs emitted by `capa
+  --cyclonedx` and produces a structured per-function diff:
+  added/removed functions, **capability widenings** (alert),
+  **capability narrowings** (improvement), and a count of
+  unchanged components. Eats its own dogfood: the analyzer
+  + audit pipeline + diff tool all consume the same per-
+  function `capa:declared_capability` properties. First piece
+  of the Tier 1 governance-stack work that complements the
+  existing audit pipeline (`sbom_capability_audit.capa`,
+  which compares ONE SBOM against a policy; the diff tool
+  compares TWO SBOMs against each other). Regression test
+  in `tests/test_transpiler.py::test_sbom_diff`.
+
 ## [0.6.0-alpha], 2026-05-14
 
 The fifth tagged release. **Thesis-aligned focus**: the release
