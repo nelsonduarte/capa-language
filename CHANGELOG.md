@@ -9,6 +9,71 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+## [0.6.0-alpha], 2026-05-14
+
+The fifth tagged release. **Thesis-aligned focus**: the release
+exists to give the PhD chapter on SBOM Governance under CRA a
+coherent set of artefacts that a reviewer can cite and
+reproduce.
+
+What lands in this version:
+
+- **Six CVE case studies** (event-stream 2018, eslint-scope
+  2018, ua-parser-js 2021, torchtriton 2022, node-ipc 2022,
+  xz-utils 2024), each as a paired `examples/cve_*.capa` +
+  `docs/cve_*.md`. Four clean wins covering different
+  ecosystems (npm, PyPI) and payloads (malicious dependency,
+  credential theft, cryptominer + RAT, kernel exfil); two
+  honest partial losses (legitimate-authority abuse,
+  below-the-language attacks). The thesis experimental section
+  has its empirical floor.
+
+- **Runtime-overhead benchmark suite** (`benchmarks/`): three
+  paired Capa + hand-Python workloads timed in-process via
+  `timeit.repeat`. Headline ratios on CPython 3.14: 1.00x for
+  pure compute, 1.20x for list-heavy, 1.45x for
+  string-heavy. The thesis chapter on practical overhead can
+  cite numbers instead of hand-waving.
+
+- **Article-by-article CRA mapping** (`docs/cra.md`): a focused
+  thesis-grade document mapping Capa's machinery onto
+  Regulation (EU) 2024/2847. Annex I Part I + Part II
+  requirements classified as direct, indirect, partial, or out
+  of scope, with explicit narrative on which obligations Capa
+  addresses and which remain organisational.
+
+- **Empirical micro-validation** (`docs/empirical_micro.md` +
+  `examples/empirical_config*.{capa,py}`): the smallest
+  reproducible side-by-side of Python vs Capa for a real-world
+  pattern (microservice config loader). Demonstrates that the
+  capability-aware SBOM is a strict information gain over a
+  PURL-only SBOM.
+
+- **`Range<T>` is now a distinct lazy type from `List<T>`**.
+  `0..n` no longer materialises into a CapaList; the iterator
+  is lazy. Closes the long-standing performance issue around
+  large ranges.
+
+- **Property-based testing extended through phase 3.7**: the
+  Hypothesis strategy now generates valid Capa programs with
+  four capability flavours (plain, attenuated, via_helper,
+  consumed), giving the linear layer direct fuzz coverage.
+
+- **`docs/semantics.md`**: a λ_cap calculus sketch + two
+  soundness theorems (Capability Soundness, Manifest
+  Completeness). Referee-tractable formal anchor for the
+  thesis; the mechanisation in Agda or Coq is the
+  workshop-paper budget item that follows.
+
+- **`docs/positioning.md`**: honest comparison vs Pony, Koka,
+  Roc, and the Wasm Component Model. Articulates where Capa
+  sits in the landscape and what it does *not* claim.
+
+Test count: **747** (from 536 at v0.5.0-alpha), across
+end-to-end transpiler, lexer, parser, analyzer, formatter,
+LSP, attributes, docs, init-project, and Hypothesis property
+suites.
+
 ### Added
 
 - **Empirical micro-validation: SBOM diff Python vs Capa**

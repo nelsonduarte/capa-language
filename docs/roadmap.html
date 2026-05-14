@@ -45,7 +45,7 @@
 
 <div class="page-heading">
     <h1>Roadmap</h1>
-    <p>An honest inventory of what works, what is coming, and what is explicitly out of scope. Capa is in <strong>v0.5.0-alpha</strong>: the compiler runs, 536 tests pass on three operating systems, the discipline is implemented end-to-end, the capability manifest and CycloneDX SBOM are emitted directly by the compiler, and the language is still missing several things a v1 would need.</p>
+    <p>An honest inventory of what works, what is coming, and what is explicitly out of scope. Capa is in <strong>v0.6.0-alpha</strong>: the compiler runs, 747 tests pass on three operating systems, the discipline is implemented end-to-end, the capability manifest and CycloneDX SBOM are emitted directly by the compiler, a runtime-overhead benchmark suite measures the transpiled output against hand-Python baselines, and the language is still missing several things a v1 would need.</p>
 </div>
 
 <!-- =====================================================
@@ -180,14 +180,14 @@
             <span class="tag done">DONE</span>
             <div class="item-body">
                 <strong>Raw strings (<code>r"..."</code>)</strong>
-                <p>No escape processing and no <code>${}</code> interpolation: every character up to the next <code>"</code> is taken literally. Useful for Windows paths and regular-expression patterns. Landed post-v0.5.0-alpha.</p>
+                <p>No escape processing and no <code>${}</code> interpolation: every character up to the next <code>"</code> is taken literally. Useful for Windows paths and regular-expression patterns. Landed in v0.6.0-alpha.</p>
             </div>
         </li>
         <li>
             <span class="tag done">DONE</span>
             <div class="item-body">
                 <strong>Named arguments (<code>f(name: "Ana", age: 30)</code>)</strong>
-                <p>Parser accepts an optional <code>IDENT ":"</code> prefix on each call argument; the analyzer reorders to parameter order before type checking and rejects positional-after-named, unknown names, duplicates, and arity mismatches. Built-in methods on <code>String</code>, <code>Map</code>, <code>Set</code>, and capabilities reject named arguments because their parameter names are not tracked. Landed post-v0.5.0-alpha.</p>
+                <p>Parser accepts an optional <code>IDENT ":"</code> prefix on each call argument; the analyzer reorders to parameter order before type checking and rejects positional-after-named, unknown names, duplicates, and arity mismatches. Built-in methods on <code>String</code>, <code>Map</code>, <code>Set</code>, and capabilities reject named arguments because their parameter names are not tracked. Landed in v0.6.0-alpha.</p>
             </div>
         </li>
     </ul>
@@ -344,7 +344,7 @@
             </ul>
         </div>
     </div>
-    <p class="colophon">Built by Nelson Duarte · v0.5.0-alpha · MIT-licensed</p>
+    <p class="colophon">Built by Nelson Duarte · v0.6.0-alpha · MIT-licensed</p>
 </footer>
 
 </body>
