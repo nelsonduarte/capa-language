@@ -15,7 +15,10 @@ import unittest
 
 from capa import Lexer, Parser, ParserError, analyze
 from capa import ast as A
-from capa.manifest import build_manifest, build_cyclonedx, build_spdx
+from capa.manifest import (
+    build_manifest, build_cyclonedx, build_spdx,
+    build_vex_document, build_vex_entries,
+)
 
 
 def parse(source: str) -> A.Module:
@@ -751,6 +754,137 @@ class TestSPDX(unittest.TestCase):
         self.assertIn("capa:kind=capability", comments)
         self.assertIn("capa:capability:method=send", comments)
         self.assertIn("capa:capability:implementor=SmtpMailer", comments)
+
+
+# =============================================================
+# VEX (CycloneDX vulnerabilities) emission
+# =============================================================
+
+def vex_entries_of(source: str, filename: str = "test.capa") -> list[dict]:
+    tokens = Lexer(source).lex()
+    module = Parser(tokens, source=source).parse_module()
+    return build_vex_entries(
+        module,
+        filename=filename,
+        timestamp="2026-05-12T00:00:00Z",
+    )
+
+
+def vex_doc_of(source: str, filename: str = "test.capa") -> dict:
+    tokens = Lexer(source).lex()
+    module = Parser(tokens, source=source).parse_module()
+    return build_vex_document(
+        module,
+        filename=filename,
+        timestamp="2026-05-12T00:00:00Z",
+    )
+
+
+class TestVEX(unittest.TestCase):
+    def test_no_vex_attributes_yields_empty(self):
+        entries = vex_entries_of(
+            'fun main(stdio: Stdio)\n'
+            '    stdio.println("hi")\n'
+        )
+        self.assertEqual(entries, [])
+
+    def test_single_vex_attribute(self):
+        entries = vex_entries_of(
+            '@vex(\n'
+            '    cve: "CVE-2024-12345",\n'
+            '    status: "not_affected",\n'
+            '    justification: "code_not_reachable",\n'
+            '    detail: "no Net"\n'
+            ')\n'
+            'fun parse(s: String) -> String\n'
+            '    return s\n'
+        )
+        self.assertEqual(len(entries), 1)
+        e = entries[0]
+        self.assertEqual(e["id"], "CVE-2024-12345")
+        self.assertEqual(e["analysis"]["state"], "not_affected")
+        self.assertEqual(e["analysis"]["justification"], "code_not_reachable")
+        self.assertEqual(e["analysis"]["detail"], "no Net")
+        self.assertEqual(len(e["affects"]), 1)
+        self.assertTrue(e["affects"][0]["ref"].endswith(":parse"))
+
+    def test_vex_affects_ref_matches_cyclonedx_fn_ref(self):
+        entries = vex_entries_of(
+            '@vex(cve: "CVE-X", status: "not_affected", justification: "code_not_reachable")\n'
+            'fun foo(s: String) -> String\n'
+            '    return s\n',
+            filename="demo.capa",
+        )
+        self.assertEqual(entries[0]["affects"][0]["ref"], "capa:fn:demo.capa:foo")
+
+    def test_multiple_vex_on_different_functions(self):
+        entries = vex_entries_of(
+            '@vex(cve: "CVE-A", status: "not_affected", justification: "code_not_reachable")\n'
+            'fun pure_a(s: String) -> String\n    return s\n'
+            '@vex(cve: "CVE-B", status: "in_triage")\n'
+            'fun pure_b(s: String) -> String\n    return s\n'
+        )
+        self.assertEqual(len(entries), 2)
+        cves = sorted(e["id"] for e in entries)
+        self.assertEqual(cves, ["CVE-A", "CVE-B"])
+
+    def test_vex_default_state_when_status_missing(self):
+        # @vex without status -> default to in_triage rather than
+        # silently dropping the entry.
+        entries = vex_entries_of(
+            '@vex(cve: "CVE-X")\n'
+            'fun foo(s: String) -> String\n'
+            '    return s\n'
+        )
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["analysis"]["state"], "in_triage")
+
+    def test_vex_embedded_in_cyclonedx(self):
+        # When @vex is present, build_cyclonedx must include the
+        # vulnerabilities[] array.
+        sbom = cyclonedx_of(
+            '@vex(cve: "CVE-1", status: "not_affected", justification: "code_not_reachable")\n'
+            'fun pure_fn(s: String) -> String\n'
+            '    return s\n'
+        )
+        self.assertIn("vulnerabilities", sbom)
+        self.assertEqual(len(sbom["vulnerabilities"]), 1)
+        self.assertEqual(sbom["vulnerabilities"][0]["id"], "CVE-1")
+
+    def test_cyclonedx_omits_vulnerabilities_array_when_no_vex(self):
+        # No @vex -> no vulnerabilities key (clean output).
+        sbom = cyclonedx_of(
+            'fun pure_fn(s: String) -> String\n'
+            '    return s\n'
+        )
+        self.assertNotIn("vulnerabilities", sbom)
+
+    def test_vex_doc_envelope(self):
+        doc = vex_doc_of(
+            '@vex(cve: "CVE-X", status: "not_affected", justification: "code_not_reachable")\n'
+            'fun foo(s: String) -> String\n'
+            '    return s\n'
+        )
+        self.assertEqual(doc["bomFormat"], "CycloneDX")
+        self.assertEqual(doc["specVersion"], "1.5")
+        self.assertIn("vulnerabilities", doc)
+        self.assertEqual(len(doc["vulnerabilities"]), 1)
+
+    def test_vex_attribute_rejected_with_unknown_key(self):
+        # The analyzer's attribute schema is strict on keys. An
+        # unknown key inside @vex should be rejected.
+        from capa.analyzer import analyze
+        source = (
+            '@vex(cve: "X", status: "not_affected", bogus: "no")\n'
+            'fun foo(s: String) -> String\n'
+            '    return s\n'
+        )
+        tokens = Lexer(source).lex()
+        module = Parser(tokens, source=source).parse_module()
+        result = analyze(module, source=source)
+        self.assertFalse(result.ok)
+        msgs = " ".join(e.format() for e in result.errors)
+        self.assertIn("bogus", msgs)
 
 
 if __name__ == "__main__":

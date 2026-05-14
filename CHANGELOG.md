@@ -11,6 +11,37 @@ breaking changes and the discipline is still being shaped.
 
 ### Added
 
+- **VEX (CycloneDX vulnerabilities) emission with per-function
+  granularity** (`@vex` attribute, `capa --vex file.capa`,
+  embedded in `--cyclonedx`). The genuinely novel piece of the
+  Tier 1 governance-stack work. Standard VEX (CycloneDX VEX,
+  CSAF VEX) operates at package level: "openssl 3.0.7 has
+  CVE-X; our product is/isn't affected because reason Z". Capa
+  refines that to per-FUNCTION granularity: "in function
+  `parse_user_agent`, CVE-X is `not_affected` because the
+  function declares no `Net` and the exploit's network sink
+  cannot be reached from this entry point". The capability
+  discipline gives the claim a machine-verifiable basis: any
+  later edit that adds `Net` to that function would invalidate
+  the VEX assertion and the diff would be loud in code review.
+  Implementation:
+  - New `@vex(cve, status, justification, detail)` attribute,
+    validated by the analyzer's schema (unknown keys rejected).
+  - `capa.manifest._vex` emits CycloneDX vulnerability entries
+    from the parsed attributes; each entry's `affects[]` points
+    at the specific function's bom-ref.
+  - `--cyclonedx` now includes a top-level `vulnerabilities[]`
+    array when any `@vex` is present.
+  - `--vex` produces a standalone CycloneDX VEX-only document
+    for consumers that prefer that workflow (CSAF-style).
+  - Example: `examples/vex_demo.capa` with three @vex
+    declarations showing not_affected (with justification),
+    in_triage (no justification yet), and a different CVE on a
+    different function.
+  - Tests: 10 in `tests/test_attributes.py::TestVEX` + a smoke
+    test in `tests/test_transpiler.py::test_vex_demo`.
+  Full suite: 769 passed (was 759).
+
 - **SPDX 2.3 SBOM emission** (`capa --spdx file.capa`,
   `capa.manifest.build_spdx`). Companion to the existing
   `--cyclonedx` flag: same per-function capability metadata,

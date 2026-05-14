@@ -34,6 +34,7 @@ from typing import Any, Optional
 from .. import capa_ast as A
 
 from ._funrec import build_manifest
+from ._vex import build_vex_entries
 
 
 # Target CycloneDX specification. 1.5 is widely supported by SBOM
@@ -236,7 +237,18 @@ def build_cyclonedx(
             "dependsOn": program_depends_on,
         })
 
-    return {
+    # ----- VEX vulnerabilities[] (CycloneDX 1.4+) -----
+    # Walk @vex attributes and emit per-function vulnerability
+    # entries. Per-function granularity is the novel piece; no other
+    # language emits VEX scoped to individual functions today.
+    vulnerabilities = build_vex_entries(
+        module,
+        filename=filename,
+        capa_version=capa_version,
+        timestamp=timestamp,
+    )
+
+    document: dict[str, Any] = {
         "bomFormat": "CycloneDX",
         "specVersion": CYCLONEDX_SPEC_VERSION,
         "serialNumber": serial_number,
@@ -245,6 +257,9 @@ def build_cyclonedx(
         "components": components,
         "dependencies": dependencies,
     }
+    if vulnerabilities:
+        document["vulnerabilities"] = vulnerabilities
+    return document
 
 
 def _flat_param(p: dict[str, Any]) -> str:

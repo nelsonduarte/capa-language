@@ -298,8 +298,8 @@ Hello, Capa!</code></pre>
                 <td>Emit a self-contained HTML page documenting the file, built from <code>///</code> and <code>/** */</code> doc comments.</td>
             </tr>
             <tr>
-                <td><code>--manifest</code> / <code>--cyclonedx</code> / <code>--spdx</code></td>
-                <td>Emit a JSON capability manifest, a CycloneDX 1.5 SBOM, or an SPDX 2.3 SBOM. All three carry the per-function capability metadata; CycloneDX and SPDX wrap it in the two industry-standard SBOM envelopes.</td>
+                <td><code>--manifest</code> / <code>--cyclonedx</code> / <code>--spdx</code> / <code>--vex</code></td>
+                <td>Emit a JSON capability manifest, a CycloneDX 1.5 SBOM, an SPDX 2.3 SBOM, or a CycloneDX VEX document. The first three carry per-function capability metadata; VEX adds per-function exploitability claims from <code>@vex(cve, status, justification, detail)</code> attributes.</td>
             </tr>
             <tr>
                 <td><code>lsp</code></td>

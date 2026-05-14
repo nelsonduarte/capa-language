@@ -41,6 +41,7 @@ class _ItemsMixin:
         "security":   {"cve", "cwe", "severity", "fixed_in", "description"},
         "deprecated": {"reason", "since", "use", "removed_in"},
         "audited":    {"date", "by", "scope", "notes"},
+        "vex":        {"cve", "status", "justification", "detail"},
     }
 
     def _check_item(self, item: A.Item) -> None:

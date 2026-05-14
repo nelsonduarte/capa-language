@@ -34,10 +34,14 @@ sequence below strengthens exactly that axis.
   (`SPDXRef-[A-Za-z0-9.-]+`). Implementation at
   `capa/manifest/_spdx.py`; 11 tests at
   `tests/test_attributes.py::TestSPDX`. Landed 2026-05-15.
-- [ ] **VEX integration** (CycloneDX VEX format).
-  Per-function exploitability claims. Genuinely novel: no
-  other language emits VEX at function granularity. ~2-3
-  weeks.
+- [x] **VEX integration** (CycloneDX VEX format, embedded in
+  `--cyclonedx` and standalone via `--vex`). Per-function
+  exploitability claims via `@vex(cve, status, justification,
+  detail)` attribute. Genuinely novel: no other language emits
+  VEX at function granularity. Implementation at
+  `capa/manifest/_vex.py`; example at `examples/vex_demo.capa`;
+  10 tests at `tests/test_attributes.py::TestVEX`. Landed
+  2026-05-15.
 - [ ] **SLSA Build L1 provenance attestation** at compile
   time. Closes the "where did this SBOM come from?"
   question. ~1 week.

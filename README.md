@@ -57,7 +57,7 @@ Capa/
 │   ├── docgen/                 # HTML doc generator from /// doc-comments
 │   ├── lsp/                    # Language Server Protocol implementation
 │   └── runtime/                # Result, Option, Stdio, Fs, ..., Unsafe, py_import
-├── tests/                      # 759 unit, end-to-end, and property tests
+├── tests/                      # 769 unit, end-to-end, and property tests
 │   ├── test_lexer.py
 │   ├── test_parser.py
 │   ├── test_analyzer.py
@@ -85,6 +85,7 @@ Capa/
 │   ├── cve_xz_utils.capa       # CVE partial-loss: xz-utils 2024
 │   ├── empirical_config.capa   # SBOM diff micro-validation (Capa side)
 │   ├── empirical_config_naive.py # SBOM diff micro-validation (Python side)
+│   ├── vex_demo.capa           # @vex per-function exploitability claims
 │   ├── spdx_parser.capa        # SPDX 2.3 JSON parser, in Capa
 │   ├── cyclonedx_parser.capa   # CycloneDX 1.5 JSON parser, in Capa
 │   ├── spdx_license_expr.capa  # SPDX Annex D license-expression parser
@@ -368,7 +369,7 @@ else:
 python -m unittest discover tests
 ```
 
-**759 tests** spanning the lexer, parser, analyzer, transpiler, LSP,
+**769 tests** spanning the lexer, parser, analyzer, transpiler, LSP,
 formatter, attribute-schema validation, and Hypothesis-driven property
 tests. The transpiler suite actually *executes* the generated Python
 and checks stdout, the only honest way to test a transpiler. The
@@ -923,9 +924,12 @@ tools. The next milestones strengthen exactly that axis.
    SPDX `annotations[]`. Linux Foundation alignment, OpenChain-
    compatible.
 
-3. **VEX integration** (CycloneDX VEX format). Per-function
-   exploitability claims. No other language emits VEX at
-   function granularity; this is the genuinely novel piece.
+3. **VEX integration** (DONE, `capa --vex file.capa`).
+   Per-function exploitability claims via `@vex(cve, status,
+   justification, detail)` attribute on functions. No other
+   language emits VEX at function granularity; this is the
+   genuinely novel piece. Embedded in `--cyclonedx` and
+   available standalone via `--vex`.
 
 4. **SLSA Build L1 provenance** at compile time. Closes the
    "where did this SBOM come from?" question.

@@ -41,6 +41,7 @@ from ._cyclonedx import CYCLONEDX_SPEC_VERSION, build_cyclonedx
 from ._funrec import SCHEMA_VERSION, build_manifest
 from ._spdx import SPDX_SPEC_VERSION, build_spdx
 from ._strings import _ty_text
+from ._vex import build_vex_document, build_vex_entries
 
 
 __all__ = [
@@ -50,4 +51,6 @@ __all__ = [
     "build_manifest",
     "build_cyclonedx",
     "build_spdx",
+    "build_vex_document",
+    "build_vex_entries",
 ]

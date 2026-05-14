@@ -1,0 +1,79 @@
+// vex_demo.capa, demonstrating per-function VEX claims.
+//
+// VEX (Vulnerability Exploitability eXchange) declarations say
+// "this CVE exists somewhere, but for our usage it is / is not
+// exploitable, and here is why". The standard format (CycloneDX
+// VEX, CSAF VEX) is per-package: "openssl 3.0.7 has CVE-X, and
+// our product is not affected because we do not call the
+// vulnerable function".
+//
+// Capa refines that to per-FUNCTION granularity: "in function
+// `parse_user_agent`, CVE-X is not exploitable because the
+// function does not declare Net, and the exploit's network sink
+// cannot be reached from this entry point". The capability
+// discipline gives the claim a machine-verifiable basis: the
+// type system already enforces that `parse_user_agent` cannot
+// reach `Net`, and so the VEX assertion is grounded in a
+// soundness property, not in human attestation.
+//
+// To extract the VEX side of this file:
+//
+//   capa --vex examples/vex_demo.capa
+//
+// To see it embedded in the full SBOM:
+//
+//   capa --cyclonedx examples/vex_demo.capa
+//
+// Each @vex annotation produces one CycloneDX vulnerability entry
+// whose `affects[]` ref points at the specific function's bom-ref.
+
+// Pure substring extraction. The CVE in question (a hypothetical
+// network-side exploit) cannot be triggered here because the
+// signature does not request Net. The VEX claim is grounded in
+// the analyser: any later edit that adds Net to this function
+// would invalidate the @vex assertion and a code reviewer would
+// see the diff loud.
+@vex(
+    cve: "CVE-2024-99001",
+    status: "not_affected",
+    justification: "code_not_reachable",
+    detail: "parse_user_agent declares no Net capability; the network-side exploit chain cannot be reached from this entry point. Statically enforced by the capability discipline."
+)
+fun parse_user_agent(ua: String) -> String
+    if ua.contains("Chrome")
+        return "Chrome"
+    if ua.contains("Firefox")
+        return "Firefox"
+    return "Unknown"
+
+// A function that DOES declare Net. The same CVE is genuinely
+// reachable here, so the claim is different: under triage. A
+// human reviewer is asked to assess and either ship a patch or
+// upgrade the status to `not_affected` with a specific
+// justification.
+@vex(
+    cve: "CVE-2024-99001",
+    status: "in_triage",
+    detail: "fetch_remote_user_agent uses Net to call a third-party UA-classification service; affected codepath, assessment pending."
+)
+fun fetch_remote_user_agent(net: Net, url: String) -> Result<String, IoError>
+    return net.get(url)
+
+// Multiple @vex claims on different functions for different
+// CVEs. The two declarations below assert that two distinct
+// vulnerabilities are equally not-applicable here, each with
+// its own justification.
+@vex(
+    cve: "CVE-2024-99002",
+    status: "not_affected",
+    justification: "code_not_present",
+    detail: "render_html does not use any HTML templating engine; the templating-engine vulnerability is moot."
+)
+fun render_html(parsed: String) -> String
+    return "<p>" + parsed + "</p>"
+
+fun main(stdio: Stdio)
+    let parsed = parse_user_agent("Mozilla/5.0 (X11; Linux) Chrome/120.0")
+    stdio.println("parsed UA: " + parsed)
+    let html = render_html(parsed)
+    stdio.println("rendered: " + html)

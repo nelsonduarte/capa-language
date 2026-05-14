@@ -45,7 +45,7 @@
 
 <div class="page-heading">
     <h1>Roadmap</h1>
-    <p>An honest inventory of what works, what is coming, and what is explicitly out of scope. Capa is in <strong>v0.6.0-alpha</strong>: the compiler runs, 759 tests pass on three operating systems, the discipline is implemented end-to-end, the capability manifest and CycloneDX SBOM are emitted directly by the compiler, a runtime-overhead benchmark suite measures the transpiled output against hand-Python baselines, and the language is still missing several things a v1 would need.</p>
+    <p>An honest inventory of what works, what is coming, and what is explicitly out of scope. Capa is in <strong>v0.6.0-alpha</strong>: the compiler runs, 769 tests pass on three operating systems, the discipline is implemented end-to-end, the capability manifest and CycloneDX SBOM are emitted directly by the compiler, a runtime-overhead benchmark suite measures the transpiled output against hand-Python baselines, and the language is still missing several things a v1 would need.</p>
 </div>
 
 <!-- =====================================================
@@ -288,10 +288,10 @@
             </div>
         </li>
         <li>
-            <span class="tag future">P1</span>
+            <span class="tag done">DONE</span>
             <div class="item-body">
                 <strong>VEX integration (CycloneDX VEX format)</strong>
-                <p>Per-function exploitability claims. No other language emits VEX at function granularity; this is the genuinely novel piece of the Tier 1 plan. ~2-3 weeks.</p>
+                <p>Per-function exploitability claims via <code>@vex(cve, status, justification, detail)</code> attribute on functions. Each <code>@vex</code> emits one CycloneDX vulnerability entry whose <code>affects[]</code> ref points at the specific function's <code>bom-ref</code>. Available embedded in <code>--cyclonedx</code> and standalone via <code>--vex</code>. No other language emits VEX at function granularity; this is the genuinely novel piece of the Tier 1 plan.</p>
             </div>
         </li>
         <li>

@@ -667,6 +667,17 @@ class TestTranspileExamples(unittest.TestCase):
         self.assertIn("launch plan: grid=8 block=128 args=4", out)
         self.assertIn("launch plan: grid=16 block=64 args=2", out)
 
+    def test_vex_demo(self):
+        # End-to-end smoke test of the VEX example: compiles, runs,
+        # and prints both UA-parser and HTML-rendering output. The
+        # VEX-specific assertions live in tests/test_attributes.py
+        # under TestVEX; this just makes sure the example file does
+        # not regress at the build / run level.
+        rc, out, err = self._run_example("examples/vex_demo.capa")
+        self.assertEqual(rc, 0, err)
+        self.assertIn("parsed UA: Chrome", out)
+        self.assertIn("rendered:", out)
+
     def test_sbom_diff(self):
         # Reads two CycloneDX SBOMs (demo-sbom.json + demo-sbom-v2.json)
         # and reports capability-level changes per function: additions,
