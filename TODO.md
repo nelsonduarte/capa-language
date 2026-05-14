@@ -378,22 +378,26 @@ items here so they stay visible:
     `{Stdio, Net, Fs} ⊆ {Stdio, Net, Fs}`. The probes are
     pure queries with no filesystem or network side effects,
     so the property test stays self-contained.
-  **Phase 3.6 landed**: a second multi-cap strategy
-  `_program_with_caps_advanced` picks per capability between
-  `plain` (the 3.5 shape), `attenuated` (bind
-  `let a = c.restrict_to(...)` first, probe the attenuated
-  value), and `via_helper` (emit a separate
-  `fun use_{cap}(c: Cap) -> Bool` and call it from main, so
-  the capability value crosses a function boundary). Programs
-  in the wild mix all three flavours across the declared
-  capabilities. Each flavour preserves
+  **Phases 3.6 and 3.7 landed**. The multi-cap strategy
+  `_program_with_caps_advanced` picks per capability among
+  four call shapes:
+    - `plain` (the 3.5 shape, probe directly in main),
+    - `attenuated` (`let a = c.restrict_to(...); a.probe()`),
+    - `via_helper` (emit `fun use_X(x: Cap) -> Bool`, call from
+      main, capability value crosses a function boundary),
+    - `consumed` (emit `fun take_X(consume x: Cap) -> Bool`,
+      call from main, capability is consumed and cannot be
+      used afterwards).
+  Programs in the wild mix all four flavours across the
+  declared capabilities. Each flavour preserves
   `runtime_classes ⊆ manifest_classes` by construction; the
   test catches regressions where an analyser or transpiler
-  change ever lets a method call leak a class that is not in
-  the function's signature.
-  **Phase 3.7 pending**: `consume`-typed parameter flows
-  through the strategy. Until then the linear layer is
-  fuzzed only via the structural / flow layers' coverage.
+  change ever lets a method call leak a class not in the
+  function's signature, OR a use-after-consume slips through
+  the linear-layer bookkeeping. The property-testing arc of
+  the external whitepaper review is now closed; the citable
+  thesis property is asserted on every generated program
+  across the four capability-flow shapes.
 - [x] **`Range<Int>` as a distinct type from `List<Int>`**.
   Done. `0..n` and `0..=n` now type as `Range<Int>`, a
   separate parametric type registered in `capa/builtins.py`.

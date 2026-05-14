@@ -57,28 +57,34 @@ breaking changes and the discipline is still being shaped.
   needs. Regression test in
   `tests/test_transpiler.py::test_cve_xz_utils`.
 
-- **Property-based testing phase 3.6**: a second multi-cap
-  strategy `_program_with_caps_advanced` picks per
-  capability between three call shapes, deepening the fuzz
-  coverage of the soundness property. The flavours are:
-  - **plain**: probe the cap directly in main (the 3.5 shape).
-  - **attenuated**: bind `let a = c.restrict_to(...)` first
-    and probe the attenuated value. Exercises the analyser's
-    "first-class attenuation" rule.
-  - **via_helper**: emit a separate
-    `fun use_{cap}(c: Cap) -> Bool` that probes the cap in
-    its own body, and call it from main. Exercises the
-    analyser's flow-tracking for capability values across
-    call boundaries plus the manifest's per-function rollup
-    (both main and use_{cap} declare the capability).
-  Programs in the wild mix all three across the declared
-  capabilities. New test method
-  `test_runtime_subset_with_attenuation_and_helpers` runs 50
-  Hypothesis examples per CI run. All three flavours preserve
+- **Property-based testing phase 3.7**: the multi-cap
+  strategy `_program_with_caps_advanced` now also samples a
+  ``consumed`` flavour. The strategy emits a helper
+  ``fun take_{cap}(consume {var}: {Cap}) -> Bool`` that
+  takes the capability with the ``consume`` qualifier (so
+  the caller cannot use it afterwards), probes it inside
+  the helper, and returns. Main calls ``take_{cap}({var})``
+  exactly once per consumed capability, satisfying the
+  use-after-consume rule by construction (the call is the
+  last action on that capability in main's body).
+
+  Programs in the wild now mix four flavours: ``plain``
+  (3.5), ``attenuated``, ``via_helper`` (3.6),
+  ``consumed`` (3.7). The renamed test method
+  `test_runtime_subset_under_advanced_flavours` runs 50
+  Hypothesis examples per CI run; sampling typically
+  produces programs that mix all four flavours across the
+  declared capabilities. All four preserve
   `runtime_classes ⊆ manifest_classes` by construction; the
-  test catches regressions where an analyser or transpiler
-  change ever lets a method call leak a class that is not
-  in the function's signature.
+  test now also catches use-after-consume regressions in
+  the analyser's linear layer alongside the structural and
+  flow-layer regressions covered by the earlier phases.
+  The property-testing arc of the external whitepaper
+  review is now closed.
+
+- **Property-based testing phase 3.6**: introduced the
+  three-flavour advanced strategy (plain / attenuated /
+  via_helper) that phase 3.7 extends. See the entry above.
 
 - **Property-based testing phase 3.5**: the
   `runtime_caps ⊆ manifest_caps` property is now exercised on

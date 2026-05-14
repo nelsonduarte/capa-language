@@ -352,7 +352,7 @@ def _program_with_caps(draw):
 @st.composite
 def _program_with_caps_advanced(draw):
     """A richer version of ``_program_with_caps`` that, for each
-    declared capability, picks one of three call shapes:
+    declared capability, picks one of four call shapes:
 
       - ``plain``: probe the capability directly in main.
       - ``attenuated``: bind an attenuated form of the capability
@@ -367,8 +367,16 @@ def _program_with_caps_advanced(draw):
         call boundaries plus the manifest's per-function
         rollup (both main and use_{cap} declare the
         capability, so the manifest set is unchanged).
+      - ``consumed``: like ``via_helper`` but the helper takes
+        the capability with ``consume`` qualifier. The
+        analyser's linear layer then forbids any further use
+        of the capability after the call; the strategy puts
+        the consumed call at the END of main's body so this
+        constraint is satisfied by construction. Exercises
+        the consume / use-after-consume rule on every fuzz
+        example that picks this flavour.
 
-    All three flavours keep the soundness property
+    All four flavours keep the soundness property
     ``runtime_classes ⊆ manifest_classes`` true by
     construction; the test exists to catch regressions, not to
     discover the property.
@@ -381,16 +389,24 @@ def _program_with_caps_advanced(draw):
     cap_flavors = {}
     for cap in sorted(cap_set):
         cap_flavors[cap] = draw(
-            st.sampled_from(["plain", "attenuated", "via_helper"])
+            st.sampled_from(
+                ["plain", "attenuated", "via_helper", "consumed"]
+            )
         )
 
     helpers: list[str] = []
     for cap, flavor in cap_flavors.items():
+        var = cap.lower()
+        probe = _CAP_PROBES[cap].format(var=var)
         if flavor == "via_helper":
-            var = cap.lower()
-            probe = _CAP_PROBES[cap].format(var=var)
             helpers.append(
                 f"fun use_{var}({var}: {cap}) -> Bool\n"
+                f"    let _r = {probe}\n"
+                f"    return true\n"
+            )
+        elif flavor == "consumed":
+            helpers.append(
+                f"fun take_{var}(consume {var}: {cap}) -> Bool\n"
                 f"    let _r = {probe}\n"
                 f"    return true\n"
             )
@@ -418,6 +434,8 @@ def _program_with_caps_advanced(draw):
             body_lines.append(f"    let v{i} = {probe}")
         elif flavor == "via_helper":
             body_lines.append(f"    let v{i} = use_{var}({var})")
+        elif flavor == "consumed":
+            body_lines.append(f"    let v{i} = take_{var}({var})")
 
     return "\n".join(helpers + body_lines) + "\n"
 
@@ -583,17 +601,26 @@ class TestRuntimeSubsetOfManifest(unittest.TestCase):
         deadline=8000,
         suppress_health_check=[HealthCheck.too_slow],
     )
-    def test_runtime_subset_with_attenuation_and_helpers(self, source):
-        """Phase 3.6: the advanced strategy picks per capability
-        between a plain probe, an attenuated probe
-        (``let a = c.restrict_to(...); a.probe()``), or a probe
-        routed through a helper function that itself declares
-        the capability. All three flavours preserve the
-        soundness invariant
-        ``runtime_classes ⊆ manifest_classes``; the test exists
-        to catch regressions, particularly any analyser or
+    def test_runtime_subset_under_advanced_flavours(self, source):
+        """Phase 3.6 / 3.7: the advanced strategy picks per
+        capability among four call shapes:
+
+          - plain probe in main,
+          - attenuated probe (``let a = c.restrict_to(...);
+            a.probe()``),
+          - probe routed through a helper that itself declares
+            the capability (``fun use_X(x: Cap) -> Bool``),
+          - probe routed through a helper that ``consume``s
+            the capability (``fun take_X(consume x: Cap) -> Bool``),
+            forbidding any further use of the cap after.
+
+        All four flavours preserve the soundness invariant
+        ``runtime_classes ⊆ manifest_classes``; the test
+        catches regressions, particularly any analyser or
         transpiler change that lets a method call leak a class
-        that is not in the function's signature."""
+        not in the function's signature, or any drift in the
+        linear-layer bookkeeping that silently allows a
+        use-after-consume."""
         from capa import analyze, transpile
 
         tokens = Lexer(source).lex()
