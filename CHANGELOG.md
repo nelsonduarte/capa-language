@@ -11,6 +11,25 @@ breaking changes and the discipline is still being shaped.
 
 ### Added
 
+- **CRA article-by-article mapping** (`docs/cra.md`). A
+  focused thesis-grade document that maps Capa's machinery
+  onto the specific articles and annex items of Regulation
+  (EU) 2024/2847 (the Cyber Resilience Act). Includes a
+  detailed Annex I table (Part I essential cybersecurity
+  requirements + Part II vulnerability handling) classifying
+  each requirement as **direct**, **indirect**, **partial**,
+  or **out of scope** for Capa. The novel-contribution
+  section frames the capability-aware SBOM as a strict
+  superset of NTIA / CRA minimum SBOM elements (versions and
+  PURLs tell you what is in the box; the capability manifest
+  tells you what the box can do). The closing section is
+  honest about what Capa does *not* solve under CRA
+  (vulnerability disclosure, update distribution, incident
+  notification, crypto correctness, DoS, hardware-side
+  attacks, below-language attacks like xz-utils 2024). The
+  thesis chapter on SBOM Governance under CRA can cite this
+  document as the technical artefact it argues for.
+
 - **Runtime-overhead benchmark suite** (`benchmarks/`): a small
   set of paired Capa + hand-Python workloads timed in-process
   with `timeit.repeat`. Three workloads cover three regimes

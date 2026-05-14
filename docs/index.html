@@ -401,27 +401,34 @@
             <p>
                 Capa is a tool, not a product, and compliance is at
                 the product level. What Capa does is make the
-                evidence trivial: every function's declared
+                technical evidence trivial: every function's declared
                 authority, attached audit metadata, and effective
                 attenuation chain are emitted directly by the
                 compiler as JSON (<code>--manifest</code>),
                 CycloneDX 1.5 SBOM (<code>--cyclonedx</code>), and
-                HTML (<code>--doc</code>). The
-                <a href="manifest.html">Manifest page</a> maps each
-                CRA obligation to the manifest field that documents
-                it.
+                HTML (<code>--doc</code>). An article-by-article
+                mapping of Capa's machinery onto Regulation (EU)
+                2024/2847 (the Cyber Resilience Act), with explicit
+                callouts for which obligations Capa addresses and
+                which remain organisational, lives in the
+                <a href="https://github.com/nelsonduarte/capa/blob/main/docs/cra.md">CRA mapping document</a>.
             </p>
         </details>
         <details>
             <summary>What about performance?</summary>
             <p>
-                Currently Capa programs run as transpiled Python on
-                CPython, so the runtime characteristics are
-                Python's. The capability checks add no runtime
-                overhead; they are entirely compile-time, except for
-                runtime gating on attenuated capabilities (e.g.
-                <code>Fs.read</code> checking the path prefix before
-                opening). A native backend is not in the v1 scope.
+                Capa programs run as transpiled Python on CPython,
+                so the runtime characteristics are Python's. The
+                capability checks add no runtime overhead; they are
+                entirely compile-time, except for runtime gating on
+                attenuated capabilities (e.g. <code>Fs.read</code>
+                checking the path prefix before opening). The
+                <a href="https://github.com/nelsonduarte/capa/blob/main/benchmarks/README.md">benchmarks suite</a>
+                measures the transpiled output against hand-Python
+                baselines: typical ratios are 1.00x for pure compute,
+                1.20x for list-heavy workloads, and 1.45x for
+                string-heavy ones. A native backend is not in the v1
+                scope.
             </p>
         </details>
         <details>
@@ -502,6 +509,8 @@
                 <li><a href="https://github.com/nelsonduarte/capa/blob/main/Capa-EBNF.md">EBNF grammar</a></li>
                 <li><a href="https://github.com/nelsonduarte/capa/blob/main/docs/semantics.md">&lambda;<sub>cap</sub> calculus &amp; soundness</a></li>
                 <li><a href="https://github.com/nelsonduarte/capa/blob/main/docs/positioning.md">Positioning vs related work</a></li>
+                <li><a href="https://github.com/nelsonduarte/capa/blob/main/docs/cra.md">EU Cyber Resilience Act mapping</a></li>
+                <li><a href="https://github.com/nelsonduarte/capa/blob/main/benchmarks/README.md">Benchmarks &amp; overhead</a></li>
             </ul>
         </div>
         <div>

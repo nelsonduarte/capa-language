@@ -93,6 +93,7 @@ Capa/
 │   ├── manifest.html, reference.html, stdlib.html, roadmap.html
 │   ├── positioning.md          # honest comparison vs Pony, Koka, Roc, Wasm-CM
 │   ├── semantics.md            # λ_cap calculus sketch + soundness theorems
+│   ├── cra.md                  # Cyber Resilience Act article-by-article mapping
 │   ├── demo-event-stream.md    # case study walkthrough
 │   ├── cve_eslint_scope.md     # case study walkthrough
 │   ├── cve_ua_parser_js.md     # case study walkthrough
