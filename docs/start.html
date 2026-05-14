@@ -63,7 +63,7 @@
 <section>
     <h2>Option A: one-line installer (recommended)</h2>
 
-    <p>The installer downloads the latest pre-built binary, drops it in <code>~/.local/bin/capa</code> (Linux / macOS) or <code>%LOCALAPPDATA%\capa\capa.exe</code> (Windows), and adds that directory to your user <code>PATH</code>. Open a new shell afterwards and <code>capa --version</code> should answer.</p>
+    <p>The installer downloads the latest pre-built binary and drops it in <code>~/.local/bin/capa</code> (Linux / macOS) or <code>%LOCALAPPDATA%\capa\capa.exe</code> (Windows). Open a new shell afterwards and <code>capa --version</code> should answer.</p>
 
 <pre><code><span class="comment"># Linux / macOS Apple Silicon</span>
 $ curl -fsSL https://raw.githubusercontent.com/nelsonduarte/capa/main/deploy/install.sh | bash</code></pre>
@@ -76,6 +76,22 @@ PS&gt; irm https://raw.githubusercontent.com/nelsonduarte/capa/main/deploy/insta
     <div class="callout">
         <p><strong>What the installer does.</strong> It is a small, readable script: pick the right asset for your OS and arch, <code>curl</code> / <code>Invoke-WebRequest</code> it, <code>chmod +x</code>, strip macOS Gatekeeper quarantine on Darwin, and (on Windows) prepend the install directory to the user PATH via <code>[Environment]::SetEnvironmentVariable</code>. No admin rights required; no system-wide changes; remove <code>~/.local/bin/capa</code> or the PATH entry to uninstall.</p>
     </div>
+
+    <div class="callout">
+        <p><strong>PATH on Linux / macOS.</strong> The Linux and macOS installers do <em>not</em> touch <code>~/.bashrc</code> or <code>~/.zshrc</code> (deliberately conservative; some users have strong opinions about their shell config). If <code>~/.local/bin</code> is already on your <code>PATH</code> the installer says so and you are done. If it is not, the installer prints the exact one-liner to add to your shell rc. Default shell rc by OS:</p>
+        <ul>
+            <li><strong>Ubuntu / Debian (bash)</strong>: a fresh login shell already picks up <code>~/.local/bin</code> via the default <code>~/.profile</code>; an existing interactive terminal needs the line added to <code>~/.bashrc</code>.</li>
+            <li><strong>macOS (zsh, default since Catalina)</strong>: add the line to <code>~/.zshrc</code>.</li>
+            <li><strong>Fedora / Arch / others</strong>: <code>~/.bashrc</code> for bash, <code>~/.zshrc</code> for zsh, <code>~/.config/fish/config.fish</code> for fish.</li>
+        </ul>
+<pre><code><span class="comment"># bash</span>
+$ echo 'export PATH="$HOME/.local/bin:$PATH"' &gt;&gt; ~/.bashrc
+$ source ~/.bashrc
+
+<span class="comment"># zsh (macOS default, modern Linux)</span>
+$ echo 'export PATH="$HOME/.local/bin:$PATH"' &gt;&gt; ~/.zshrc
+$ source ~/.zshrc</code></pre>
+    </div>
 </section>
 
 <!-- =====================================================
@@ -85,6 +101,10 @@ PS&gt; irm https://raw.githubusercontent.com/nelsonduarte/capa/main/deploy/insta
     <h2>Option B: manual binary download</h2>
 
     <p>Each tagged release publishes a standalone binary built with PyInstaller that bundles the Capa compiler and a Python interpreter into one file. Download, run. No <code>pip install</code>, no Python required, no toolchain on the host.</p>
+
+    <div class="callout">
+        <p><strong>Linux: the binary is a CLI tool, not a desktop app.</strong> If you download <code>capa-linux-x86_64</code> through a browser and double-click it in GNOME Files / Nautilus, you will see <em>"No application installed for Executable files"</em>. That is normal: graphical file managers on Linux do not launch unknown executables for security reasons, and <code>capa</code> is a terminal program anyway. Open a terminal in the download folder, <code>chmod +x capa-linux-x86_64</code>, and run it as shown below.</p>
+    </div>
 
     <p>Pick your platform:</p>
 
@@ -97,6 +117,15 @@ PS&gt; irm https://raw.githubusercontent.com/nelsonduarte/capa/main/deploy/insta
    https://github.com/nelsonduarte/capa/releases/latest/download/capa-linux-x86_64
 $ chmod +x capa
 $ ./capa --run hello.capa</code></pre>
+            <p class="download-note">
+                To run <code>capa</code> from any directory, move it
+                to <code>~/.local/bin</code> and ensure that
+                directory is on your <code>PATH</code> (see the
+                PATH callout under Option A above):
+            </p>
+<pre><code>$ mkdir -p ~/.local/bin
+$ mv capa ~/.local/bin/
+$ capa --version</code></pre>
         </div>
 
         <div class="download-card">
@@ -108,6 +137,23 @@ $ ./capa --run hello.capa</code></pre>
 $ chmod +x capa
 $ xattr -d com.apple.quarantine capa   # bypass Gatekeeper
 $ ./capa --run hello.capa</code></pre>
+            <p class="download-note">
+                Without the <code>xattr</code> step, double-clicking
+                in Finder triggers Gatekeeper's <em>"capa cannot be
+                opened because the developer cannot be verified"</em>
+                dialog. The download is unsigned by design (no Apple
+                Developer ID); the quarantine attribute is set by
+                the browser, not the binary itself.
+            </p>
+            <p class="download-note">
+                To run <code>capa</code> from any directory, move it
+                to <code>~/.local/bin</code> and ensure that
+                directory is on your <code>PATH</code> (see the
+                PATH callout under Option A above):
+            </p>
+<pre><code>$ mkdir -p ~/.local/bin
+$ mv capa ~/.local/bin/
+$ capa --version</code></pre>
             <p class="download-note">
                 Intel Macs are not shipped as a pre-built binary;
                 install from source (clone the repository, run
