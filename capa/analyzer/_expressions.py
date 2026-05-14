@@ -264,10 +264,14 @@ class _ExpressionsMixin:
 
     def _check_range(self, e: A.RangeExpr) -> Ty:
         """Range expressions ``a..b`` / ``a..=b`` evaluate to a
-        ``List<Int>`` in v1. Both endpoints must be ``Int``;
-        Float ranges are deliberately excluded because precision
-        around the endpoint is awkward. The transpiler
-        materialises the list so all ``List<T>`` methods apply.
+        ``Range<Int>``. Both endpoints must be ``Int``; Float
+        ranges are deliberately excluded because precision
+        around the endpoint is awkward. ``Range<T>`` is a
+        distinct type from ``List<T>`` with a minimal query API
+        (``length``, ``contains``, ``is_empty``, ``to_list``);
+        the user calls ``.to_list()`` explicitly when they want
+        the full ``List<T>`` method surface. ``for`` loops
+        consume ``Range<T>`` directly without materialising.
         """
         start_ty = self._check_expr(e.start)
         end_ty = self._check_expr(e.end)
@@ -284,7 +288,7 @@ class _ExpressionsMixin:
                 f"right side has type {ty_str(end_ty)}",
                 e.end.pos,
             )
-        return TyName("List", (TyInt,))
+        return TyName("Range", (TyInt,))
 
     def _check_ident(self, e: A.Ident) -> Ty:
         from . import SymbolKind

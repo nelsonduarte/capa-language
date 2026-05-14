@@ -384,22 +384,27 @@ items here so they stay visible:
   capability re-used after consumption). Each adds shape to
   the trace and gives Hypothesis a richer search space for
   whatever soundness regression we want to lay tripwires for.
-- [ ] **`Range<Int>` as a distinct type from `List<Int>`**. The
-  for-loop transpiler fix is a stop-gap that closed the urgent
-  memory bug; the long-term fix is a separate type with its
-  own `Iterable` interface. **Deferred** after a scoping pass:
-  the existing test
-  `tests/test_analyzer.py::test_range_chains_with_list_methods`
-  asserts that `(0..10).filter(...)` works, which means today's
-  semantics is `Range ≡ List<Int>`. Splitting cleanly needs
-  (a) a `Range<T>` runtime type with its own method surface,
-  (b) a decision on whether `.map` / `.filter` / `.fold` on
-  Range materialise eagerly or lazily, (c) an `Iterable` trait
-  so Range and List can share a common dispatch surface for
-  `for`-loops, (d) migration of the existing tests / examples.
-  Each of those is a small piece; together they are a design
-  conversation that deserves a dedicated session, not a hasty
-  corner-cut. Tracking here so it does not get forgotten.
+- [x] **`Range<Int>` as a distinct type from `List<Int>`**.
+  Done. `0..n` and `0..=n` now type as `Range<Int>`, a
+  separate parametric type registered in `capa/builtins.py`.
+  Method surface: `length`, `contains`, `is_empty`, `to_list`
+  (the four pure queries plus explicit materialisation; the
+  full `List<T>` API is reached via `.to_list().filter(...)`
+  rather than implicitly available on Range). Runtime class
+  `CapaRange` in `capa/runtime/_list.py` wraps Python's
+  `range` and exposes `__iter__` so bound ranges iterate
+  lazily; the direct `for x in a..b` form keeps its fast
+  path emitting bare `for x in range(...)` with no wrapper.
+  Verified: `CapaRange(0, 1_000_000_000)` constructs in 2µs
+  with no allocation; the old `CapaList(range(0, 1B))` would
+  allocate ~28 GB. Five existing tests migrated to the new
+  shape (`.to_list()` for List-API calls, `Range<Int>`
+  instead of `List<Int>` in type assertions). One new test
+  asserts that direct `.filter` on a Range is now a typed
+  rejection rather than silently working. No `Iterable` trait
+  yet; the analyzer enumerates `List` and `Range` as the two
+  iterables in `_check_for`. The trait consolidation can come
+  if a third iterable shows up.
 - [x] **`docs/positioning.md`** with honest comparison vs Pony,
   Koka, Roc, WebAssembly Component Model. The reviewer cited
   it approvingly; already landed.

@@ -1908,9 +1908,11 @@ class TestParseFunctions(unittest.TestCase):
 
 class TestRangeExpressions(unittest.TestCase):
     """Range expressions: `a..b` (exclusive) and `a..=b` (inclusive).
-    Endpoints must be Int; the result has type List<Int> (materialised)."""
+    Endpoints must be Int; the result has type Range<Int> (a lazy
+    iterable distinct from List<Int>; ``to_list()`` materialises
+    when the full List method surface is needed)."""
 
-    def test_exclusive_range_is_list_int(self):
+    def test_exclusive_range_is_range_int(self):
         from capa import Lexer, Parser, analyze, ty_str
         src = (
             "fun main(stdio: Stdio)\n"
@@ -1923,10 +1925,10 @@ class TestRangeExpressions(unittest.TestCase):
         self.assertTrue(result.ok, result.errors)
         let_xs = module.items[0].body.stmts[0]
         self.assertEqual(
-            ty_str(result.types[id(let_xs.value)]), "List<Int>"
+            ty_str(result.types[id(let_xs.value)]), "Range<Int>"
         )
 
-    def test_inclusive_range_is_list_int(self):
+    def test_inclusive_range_is_range_int(self):
         from capa import Lexer, Parser, analyze, ty_str
         src = (
             "fun main(stdio: Stdio)\n"
@@ -1939,7 +1941,7 @@ class TestRangeExpressions(unittest.TestCase):
         self.assertTrue(result.ok, result.errors)
         let_xs = module.items[0].body.stmts[0]
         self.assertEqual(
-            ty_str(result.types[id(let_xs.value)]), "List<Int>"
+            ty_str(result.types[id(let_xs.value)]), "Range<Int>"
         )
 
     def test_range_with_arithmetic_endpoints(self):
@@ -1973,14 +1975,31 @@ class TestRangeExpressions(unittest.TestCase):
             msgs,
         )
 
-    def test_range_chains_with_list_methods(self):
-        # `(0..10).filter(...)`, range value supports the full List API.
+    def test_range_to_list_chains_with_list_methods(self):
+        # Range's API surface is intentionally minimal (length,
+        # contains, is_empty, to_list). Users that want the full
+        # List API call `.to_list()` first; the materialisation
+        # is then explicit in the source rather than hidden.
         r = check(
+            "fun main(stdio: Stdio)\n"
+            "    let evens = (0..10).to_list().filter(fun (x: Int) -> Bool => x % 2 == 0)\n"
+            "    stdio.println(\"${evens.length()}\")\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+    def test_range_filter_directly_rejected(self):
+        # Direct .filter on a Range is now a type error; the
+        # discipline forces the user to opt into materialisation
+        # via `.to_list()`.
+        msgs = errors_of(
             "fun main(stdio: Stdio)\n"
             "    let evens = (0..10).filter(fun (x: Int) -> Bool => x % 2 == 0)\n"
             "    stdio.println(\"${evens.length()}\")\n"
         )
-        self.assertTrue(r.ok, r.errors)
+        self.assertTrue(
+            any("type 'Range' has no method 'filter'" in m for m in msgs),
+            msgs,
+        )
 
 
 class TestNumericConversions(unittest.TestCase):

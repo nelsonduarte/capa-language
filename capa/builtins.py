@@ -44,6 +44,7 @@ BUILTIN_POS = Pos(line=0, col=0, offset=0)
 # the other types that ship method lists below.
 PARAMETRIC_TYPES: tuple[tuple[str, list[str]], ...] = (
     ("List",    ["T"]),
+    ("Range",   ["T"]),
     ("Option",  ["T"]),
     ("Result",  ["T", "E"]),
     ("Map",     ["K", "V"]),
@@ -99,6 +100,20 @@ METHODS: dict[str, list[tuple[str, TyFun, list[str]]]] = {
         ("first",    fun(opt(T)),                                                  []),
         ("last",     fun(opt(T)),                                                  []),
         ("get",      fun(TyInt, opt(T)),                                           []),
+    ],
+    "Range": [
+        # Range<T> is a lazy iterable produced by `a..b` and `a..=b`.
+        # Its method surface is intentionally minimal: ``length`` and
+        # ``contains`` answer queries against the bounds without
+        # materialising the elements, ``to_list`` materialises into a
+        # ``List<T>`` when the full List API is actually needed.
+        # Range values are first-class iterables in ``for`` loops; the
+        # for-loop emitter consumes them directly without going through
+        # ``to_list``.
+        ("length",   fun(TyInt),                                                   []),
+        ("contains", fun(T, TyBool),                                               []),
+        ("to_list",  fun(lst(T)),                                                  []),
+        ("is_empty", fun(TyBool),                                                  []),
     ],
     "String": [
         ("length",      fun(TyInt),                                                []),

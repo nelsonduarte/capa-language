@@ -54,3 +54,43 @@ class CapaList(list):
         if 0 <= i < len(self):
             return Some(self[i])
         return None_
+
+
+class CapaRange:
+    """A lazy integer range. Backs the Capa ``Range<T>`` built-in
+    type produced by the ``a..b`` and ``a..=b`` syntactic forms.
+
+    The legitimate operations on a range are bounded queries
+    (``length``, ``contains``) and explicit materialisation
+    (``to_list``). ``filter`` / ``map`` / ``fold`` are not on the
+    Range surface; users that need them call ``.to_list()``
+    first so the choice to allocate is explicit. The Python
+    ``__iter__`` is implemented so a Capa ``for x in range_val``
+    iterates lazily, matching what the transpiler emits for the
+    direct ``for x in a..b`` form (which bypasses CapaRange
+    entirely and uses Python's ``range`` straight).
+    """
+
+    __slots__ = ("_range",)
+
+    def __init__(self, start, stop):
+        self._range = range(start, stop)
+
+    def length(self):
+        return len(self._range)
+
+    def contains(self, x):
+        return x in self._range
+
+    def is_empty(self):
+        return len(self._range) == 0
+
+    def to_list(self):
+        return CapaList(self._range)
+
+    def __iter__(self):
+        return iter(self._range)
+
+    def __repr__(self):
+        r = self._range
+        return f"CapaRange({r.start}, {r.stop})"

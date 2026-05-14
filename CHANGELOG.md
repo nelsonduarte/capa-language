@@ -567,6 +567,28 @@ breaking changes and the discipline is still being shaped.
 
 ### Changed
 
+- **`Range<T>` is now a distinct type from `List<T>`**. The
+  `a..b` and `a..=b` expressions previously typed as
+  `List<Int>` and lowered to `CapaList(range(...))`, which
+  materialised the full range eagerly (~28 bytes per int
+  on CPython, gigabytes for large ranges). Range is now its
+  own parametric type registered in `capa/builtins.py` with
+  a minimal method surface: `length()`, `contains(T)`,
+  `is_empty()`, `to_list()`. The full `List<T>` API
+  (`filter`, `fold`, `map`, ...) is reached via explicit
+  materialisation: `.to_list().filter(...)`. The runtime
+  class `CapaRange` in `capa.runtime._list` wraps Python's
+  `range` and implements `__iter__` so bound ranges iterate
+  lazily; `CapaRange(0, 1_000_000_000)` constructs in 2µs
+  with no allocation. The direct `for x in a..b` form keeps
+  its fast path, emitting bare `for x in range(...)` with
+  no wrapper around it. Five existing tests migrated to the
+  new shape; one new test asserts that calling `.filter`
+  directly on a `Range` is now a typed rejection rather
+  than silently working. Resolves the deferred follow-up
+  to the for-loop materialisation fix from the external
+  whitepaper review.
+
 - **`for x in a..b` no longer materialises the full range**.
   The naive lowering was `for x in CapaList(range(a, b)):`,
   which forced Python's `list.__init__` to walk the range

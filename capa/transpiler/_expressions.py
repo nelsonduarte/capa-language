@@ -99,12 +99,17 @@ class _ExpressionsMixin:
         if isinstance(e, A.RangeExpr):
             start = self._emit_expr(e.start)
             end = self._emit_expr(e.end)
-            # `a..=b` is inclusive; Python's range stops one before the
-            # second argument, so we add 1. Wrap the result in CapaList
-            # so all List methods (length, map, filter, fold, ...)
-            # transparently apply.
+            # ``a..=b`` is inclusive; Python's range stops one before
+            # the second argument, so we add 1. The Capa source type
+            # is ``Range<Int>`` (distinct from ``List<Int>``), so we
+            # emit a lazy ``CapaRange`` wrapper rather than
+            # materialising. A bound range that is later iterated
+            # over goes through ``CapaRange.__iter__``; the
+            # for-loop fast path in ``_emit_for`` bypasses
+            # ``CapaRange`` entirely and emits a bare Python
+            # ``range(...)``.
             stop = f"({end}) + 1" if e.inclusive else end
-            return f"CapaList(range({start}, {stop}))"
+            return f"CapaRange({start}, {stop})"
         raise TranspilerError(f"unsupported expression: {type(e).__name__}")
 
     def _emit_lambda(self, e: A.LambdaExpr) -> str:

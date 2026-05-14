@@ -376,10 +376,13 @@ class TestRangeExpressions(unittest.TestCase):
         self.assertEqual(rc, 0, err)
         self.assertEqual(out, "10\n11\n")
 
-    def test_range_in_pipeline(self):
+    def test_range_to_list_in_pipeline(self):
+        # The List-API surface (filter, fold, map) on a range now
+        # requires explicit materialisation via `.to_list()`.
         rc, out, err = run_capa(
             'fun main(stdio: Stdio)\n'
-            '    let evens = (0..10).filter(fun (x: Int) -> Bool => x % 2 == 0)\n'
+            '    let xs = (0..10).to_list()\n'
+            '    let evens = xs.filter(fun (x: Int) -> Bool => x % 2 == 0)\n'
             '    let total = evens.fold(0, fun (a: Int, x: Int) -> Int => a + x)\n'
             '    stdio.println("${evens.length()}")\n'
             '    stdio.println("${total}")\n'
@@ -418,18 +421,22 @@ class TestRangeExpressions(unittest.TestCase):
         self.assertIn("for i in range(1, (5) + 1):", code)
         self.assertNotIn("for i in CapaList(range", code)
 
-    def test_bound_range_still_materialises(self):
-        # Binding a range to a name still materialises it (so
-        # subsequent List-method calls like `.map`, `.length()`
-        # keep working). Only the direct `for x in a..b` form is
-        # lowered lazily.
+    def test_bound_range_is_capa_range(self):
+        # Binding a range to a name now produces a CapaRange
+        # (lazy iterable) rather than a materialised CapaList.
+        # The for-loop iteration goes through CapaRange.__iter__
+        # which delegates to Python's range, so no allocation
+        # happens for the iteration either. The direct
+        # `for x in a..b` form remains lazy via the fast path
+        # in _emit_for.
         code = transpile_only(
             'fun main(stdio: Stdio)\n'
             '    let xs = 0..5\n'
             '    for i in xs\n'
             '        stdio.println("${i}")\n'
         )
-        self.assertIn("xs = CapaList(range(0, 5))", code)
+        self.assertIn("xs = CapaRange(0, 5)", code)
+        self.assertNotIn("xs = CapaList(range", code)
 
 
 class TestInlineMatch(unittest.TestCase):

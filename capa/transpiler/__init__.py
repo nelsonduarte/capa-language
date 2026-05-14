@@ -77,7 +77,7 @@ from dataclasses import dataclass, field
 from capa.runtime import (
     Ok, Err, Result, Some, None_, Option, IoError,
     Stdio, Fs, Env, Clock, Random, Net, Proc, Db, Unsafe,
-    CapaList, _NoneType,
+    CapaList, CapaRange, _NoneType,
     parse_int, parse_float,
     to_float, to_int,
     py_import, py_invoke,

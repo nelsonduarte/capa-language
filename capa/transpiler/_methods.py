@@ -41,6 +41,8 @@ class _MethodsMixin:
                 return self._emit_map_method(e.method, recv, args_code)
             if recv_ty.name == "Set":
                 return self._emit_set_method(e.method, recv, args_code)
+            if recv_ty.name == "Range":
+                return self._emit_range_method(e.method, recv, args_code)
 
         # User-defined methods: respect named arguments.
         args = self._emit_call_arg_list(e.args, e.arg_names)
@@ -124,4 +126,28 @@ class _MethodsMixin:
             return f"CapaList({recv})"
         if method == "is_empty":
             return f"(len({recv}) == 0)"
+        return f"{recv}.{_safe_ident(method)}({', '.join(args)})"
+
+    def _emit_range_method(
+        self, method: str, recv: str, args: list[str],
+    ) -> str:
+        """Maps a Capa ``Range<T>`` method to a Python construct.
+
+        Range is the lazy iterable produced by ``a..b`` and
+        ``a..=b``. The runtime class is ``CapaRange``, a thin
+        wrapper around Python's ``range``. ``length`` /
+        ``contains`` / ``is_empty`` are answered by the wrapped
+        range without materialising; ``to_list`` produces a
+        fresh ``CapaList`` and is the user's explicit opt-in
+        for the full ``List<T>`` method surface.
+        """
+        from . import _safe_ident
+        if method == "length":
+            return f"{recv}.length()"
+        if method == "contains":
+            return f"{recv}.contains({args[0]})"
+        if method == "is_empty":
+            return f"{recv}.is_empty()"
+        if method == "to_list":
+            return f"{recv}.to_list()"
         return f"{recv}.{_safe_ident(method)}({', '.join(args)})"

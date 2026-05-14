@@ -70,7 +70,7 @@ from ._json import (
     parse_json,
     to_json,
 )
-from ._list import CapaList
+from ._list import CapaList, CapaRange
 from ._pyinterop import _require_unsafe, py_import, py_invoke
 from ._result import (
     Err,

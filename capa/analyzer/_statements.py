@@ -229,9 +229,14 @@ class _StatementsMixin:
     def _check_for(self, s: A.ForStmt) -> None:
         iter_ty = self._check_expr(s.iter)
         elem_ty: Ty = TyUnknown
+        # ``List<T>`` and ``Range<T>`` are the two built-in
+        # iterables today; both expose their element type as the
+        # single type argument. A future ``Iterable`` trait would
+        # consolidate this dispatch, but the two-case enumeration
+        # is sound until the trait lands.
         if (
             isinstance(iter_ty, TyName)
-            and iter_ty.name == "List" and iter_ty.args
+            and iter_ty.name in ("List", "Range") and iter_ty.args
         ):
             elem_ty = iter_ty.args[0]
 
