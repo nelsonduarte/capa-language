@@ -37,45 +37,74 @@ Statistics:
 
 ```
 Capa/
-├── capa/                  # Python package implementing the compiler
-│   ├── __init__.py        # public package exports
-│   ├── __main__.py        # enables `python -m capa ...`
-│   ├── cli.py             # command-line utility
-│   ├── tokens.py          # TokenKind, Token, Pos, KEYWORDS
-│   ├── errors.py          # LexerError with pedagogical formatting
-│   ├── lexer.py           # the lexer implementation
-│   ├── capa_ast.py        # AST nodes + dump pretty-printer
-│   ├── parser.py          # recursive-descent parser
-│   ├── typesys.py         # internal type representation
-│   ├── analyzer.py        # name resolution + type checking + capabilities
-│   ├── transpiler.py      # codegen for Python 3.10+
-│   └── runtime/
-│       └── __init__.py    # Result, Option, Stdio, Fs, ..., Unsafe, py_import
-├── tests/                 # 536 unit + end-to-end tests
+├── capa/                       # Python package implementing the compiler
+│   ├── __init__.py             # public package exports
+│   ├── __main__.py             # enables `python -m capa ...`
+│   ├── cli.py                  # command-line utility
+│   ├── tokens.py               # TokenKind, Token, Pos, KEYWORDS
+│   ├── errors.py               # LexerError with pedagogical formatting
+│   ├── typesys.py              # internal type representation
+│   ├── builtins.py             # declarative table of built-in types + methods
+│   ├── _suggest.py             # Levenshtein matcher for "did you mean" hints
+│   ├── formatter.py            # canonical-style formatter (capa-fmt)
+│   ├── init_project.py         # `capa init` project scaffolding
+│   ├── lexer/                  # mixin-composed lexer (significant-indentation)
+│   ├── parser/                 # recursive-descent parser, split by item kind
+│   ├── capa_ast/               # AST node definitions, split by category
+│   ├── analyzer/               # name resolution + type check + capability disc.
+│   ├── transpiler/             # codegen for Python 3.10+, split by AST kind
+│   ├── manifest/               # capability manifest + CycloneDX SBOM emitter
+│   ├── docgen/                 # HTML doc generator from /// doc-comments
+│   ├── lsp/                    # Language Server Protocol implementation
+│   └── runtime/                # Result, Option, Stdio, Fs, ..., Unsafe, py_import
+├── tests/                      # 745+ unit, end-to-end, and property tests
 │   ├── test_lexer.py
 │   ├── test_parser.py
 │   ├── test_analyzer.py
-│   └── test_transpiler.py # transpile and execute Capa programs
-├── examples/              # 21 .capa files demonstrating the language
-│   ├── hello.capa         # hello world
-│   ├── basics.capa        # several constructs
-│   ├── tasks.capa         # canonical EBNF example
-│   ├── grades.capa        # non-trivial program (~110 lines)
-│   ├── io.capa            # exercises Result and the ? operator
-│   ├── demo_event_stream.capa # supply-chain attack walkthrough (see docs/)
-│   ├── net_attenuation.capa  # capability attenuation (WhitePaper §4.3)
-│   ├── user_capabilities.capa # user-defined capabilities (WhitePaper §4.6)
-│   ├── python_interop.capa# Python boundary under the Unsafe capability
-│   └── errors.capa        # test fixture with semantic errors
-├── docs/                  # tutorial, reference, stdlib, getting-started
-├── Capa-EBNF.md           # formal grammar of the language
-├── WHITEPAPER.md     # technical rationale + roadmap
-├── pyproject.toml         # package metadata
-├── LICENSE                # MIT
+│   ├── test_transpiler.py      # transpile and execute Capa programs
+│   ├── test_lsp.py             # language-server features
+│   ├── test_formatter.py
+│   ├── test_attributes.py
+│   ├── test_docs.py
+│   └── test_properties.py      # Hypothesis-based property tests
+├── examples/                   # .capa files demonstrating the language
+│   ├── hello.capa              # hello world
+│   ├── basics.capa             # several constructs
+│   ├── tasks.capa, grades.capa # non-trivial programs
+│   ├── io.capa                 # Result and the ? operator
+│   ├── net_attenuation.capa    # capability attenuation
+│   ├── fs_env_attenuation.capa # Fs / Env narrowing
+│   ├── clock_attenuation.capa  # Clock not-before
+│   ├── user_capabilities.capa  # user-defined capabilities
+│   ├── python_interop.capa     # Python boundary under Unsafe
+│   ├── demo_event_stream.capa  # CVE case study: event-stream 2018
+│   ├── cve_eslint_scope.capa   # CVE case study: eslint-scope 2018
+│   ├── cve_torchtriton.capa    # CVE case study: torchtriton 2022
+│   ├── cve_node_ipc.capa       # CVE partial-loss: node-ipc 2022
+│   ├── cve_xz_utils.capa       # CVE partial-loss: xz-utils 2024
+│   ├── spdx_parser.capa        # SPDX 2.3 JSON parser, in Capa
+│   ├── cyclonedx_parser.capa   # CycloneDX 1.5 JSON parser, in Capa
+│   ├── spdx_license_expr.capa  # SPDX Annex D license-expression parser
+│   ├── sbom_capability_audit.capa # SBOM ↔ policy audit pipeline
+│   └── data/                   # sample SBOM + policy for the audit demo
+├── docs/                       # public website + thesis-aligned writeups
+│   ├── index.html, tour.html, start.html, why.html
+│   ├── manifest.html, reference.html, stdlib.html, roadmap.html
+│   ├── positioning.md          # honest comparison vs Pony, Koka, Roc, Wasm-CM
+│   ├── semantics.md            # λ_cap calculus sketch + soundness theorems
+│   ├── demo-event-stream.md    # case study walkthrough
+│   ├── cve_eslint_scope.md     # case study walkthrough
+│   ├── cve_torchtriton.md      # case study walkthrough
+│   ├── cve_node_ipc.md         # case study walkthrough (partial loss)
+│   └── cve_xz_utils.md         # case study walkthrough (partial loss)
+├── Capa-EBNF.md                # formal grammar of the language
+├── WHITEPAPER.md               # stub; full whitepaper held until thesis pre-print
+├── pyproject.toml              # package metadata + optional [test] / [lsp] extras
+├── LICENSE                     # MIT
 └── README.md
 ```
 
-**Note on module names:** `capa_ast.py` (instead of `ast.py`) and
+**Note on module names:** `capa_ast/` (instead of `ast/`) and
 `typesys.py` (instead of `types.py`) avoid colliding with Python stdlib
 modules, collisions that cause subtle circular-import errors when the
 package is invoked via `python -m capa`.
@@ -328,9 +357,15 @@ else:
 python -m unittest discover tests
 ```
 
-**536 tests** (lexer + parser + analyzer + transpiler). The transpiler
-suite actually *executes* the generated Python and checks stdout, the
-only honest way to test a transpiler.
+**745+ tests** spanning the lexer, parser, analyzer, transpiler, LSP,
+formatter, attribute-schema validation, and Hypothesis-driven property
+tests. The transpiler suite actually *executes* the generated Python
+and checks stdout, the only honest way to test a transpiler. The
+property suite (`tests/test_properties.py`) fuzzes the full pipeline
+with arbitrary text inputs, syntax-aware Capa programs, and the
+soundness invariant `runtime_capability_set ⊆ manifest_declared_set`
+on programs that thread `Fs` / `Net` / `Env` / `Clock` / `Random`
+through `main`. Install Hypothesis with `pip install -e .[test]`.
 
 ## Capa → Python mapping
 
@@ -858,13 +893,33 @@ running real code is the harshest test of a design.
 
 ## What's next
 
-In decreasing order of impact:
+In decreasing order of impact for the upcoming thesis-aligned
+publication arc (full list and prioritisation in
+[`TODO.md`](TODO.md)):
 
-1. **Interactive REPL** or watch mode for quick experimentation.
-2. **Match-as-expression in one line** with inline syntax (e.g.,
-   `{ }` delimiters à la Rust).
-3. **More aggressive cross-statement inference**: combine with
-   `let xs = []` followed by iteration over a concrete type.
-4. **Complete documentation** (language reference, tutorial,
-   examples).
-5. Phase 4 of the original roadmap: native LLVM backend.
+1. **Mechanise the soundness theorem of `λ_cap` in Agda or Coq.**
+   The calculus sketch and proof outline live in
+   [`docs/semantics.md`](docs/semantics.md). Machine-checking
+   Theorem 1 (Capability Soundness) is the workshop-paper budget
+   item; the path is described in section 8 of that document.
+
+2. **Phase 3.7 of property-based testing**: extend the Hypothesis
+   strategy in [`tests/test_properties.py`](tests/test_properties.py)
+   to thread `consume`-typed parameters through helper functions
+   so the linear layer of the capability discipline gets direct
+   fuzz coverage.
+
+3. **More CVE case studies.** Five have landed (see
+   [`docs/positioning.md`](docs/positioning.md) for the breakdown).
+   Each new one is a paired `examples/cve_*.capa` +
+   `docs/cve_*.md` and is mechanical from the established template.
+
+4. **Native backend (LLVM or Cranelift).** Capa is a transpiler to
+   Python today. The native backend is the long-term answer to the
+   reviewer-of-the-future who asks "what does this look like off
+   the Python runtime?". The proper IR design lives next to a
+   future thesis chapter on representation; for now the existing
+   transpile-to-Python path is sufficient for every other goal
+   in this list.
+
+5. **Interactive REPL** or watch mode for quick experimentation.
