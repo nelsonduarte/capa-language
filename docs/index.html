@@ -293,6 +293,13 @@
         prevents memory errors, the other prevents effect errors. A
         future language could combine both.
     </p>
+    <p class="lead-prose-narrow compare-note">
+        For the longer, reviewer-facing version of this comparison,
+        including Pony, Koka, Roc, and the WebAssembly Component
+        Model, and a statement of what is and is not unique about
+        Capa, see
+        <a href="https://github.com/nelsonduarte/capa/blob/main/docs/positioning.md">docs/positioning.md</a>.
+    </p>
 </section>
 
 <!-- =====================================================
@@ -305,7 +312,7 @@
             <summary>Is Capa production-ready?</summary>
             <p>
                 No. v0.5.0-alpha means the compiler runs, the
-                discipline is implemented end-to-end, 660+ tests
+                discipline is implemented end-to-end, 745+ tests
                 pass on three operating systems and three Python
                 versions, and the artefacts the language emits
                 (manifest, CycloneDX, HTML docs, LSP diagnostics
@@ -366,15 +373,26 @@
             <p>
                 It eliminates a specific class: attacks that depend
                 on a dependency doing something its API never
-                claimed. The 2018 event-stream incident exfiltrated
-                cryptocurrency wallets from a function nominally
-                limited to stream transformations; the
-                <a href="https://github.com/nelsonduarte/capa/blob/main/docs/demo-event-stream.md">walkthrough page</a>
-                shows the Capa version where the analyser rejects
-                the attack at compile time. Capa does not prevent a
-                dependency that legitimately needs <code>Net</code>
-                from then misusing it; capability attenuation
-                narrows that risk further but does not eliminate it.
+                claimed. Five case studies in the repo walk through
+                concrete CVEs, three where Capa wins structurally
+                and two where it partially loses (with the writeups
+                explaining why; honesty matters here):
+            </p>
+            <ul class="faq-list">
+                <li><a href="https://github.com/nelsonduarte/capa/blob/main/docs/demo-event-stream.md">event-stream 2018</a> (npm, cryptocurrency exfiltration) &mdash; Capa rejects at compile time.</li>
+                <li><a href="https://github.com/nelsonduarte/capa/blob/main/docs/cve_eslint_scope.md">eslint-scope 2018</a> (npm credential theft via <code>~/.npmrc</code>) &mdash; rejected.</li>
+                <li><a href="https://github.com/nelsonduarte/capa/blob/main/docs/cve_torchtriton.md">torchtriton 2022</a> (PyPI typosquat, SSH-key exfiltration) &mdash; rejected.</li>
+                <li><a href="https://github.com/nelsonduarte/capa/blob/main/docs/cve_node_ipc.md">node-ipc 2022</a> (protestware; legitimate authority misused) &mdash; partial: attenuation reduces blast radius, the SBOM audit catches policy violations.</li>
+                <li><a href="https://github.com/nelsonduarte/capa/blob/main/docs/cve_xz_utils.md">xz-utils 2024</a> (CVE-2024-3094; build-system + dynamic-linker attack beneath the language layer) &mdash; partial: orthogonal defences (reproducible builds, code signing) are needed.</li>
+            </ul>
+            <p>
+                Capa addresses the source-code-authority row of the
+                supply-chain attack stack. Maintainer takeover,
+                build-system tampering, and dynamic-linker
+                indirection live below the language layer and need
+                orthogonal defences. The
+                <a href="https://github.com/nelsonduarte/capa/blob/main/docs/positioning.md">positioning document</a>
+                states the boundary precisely.
             </p>
         </details>
         <details>
@@ -406,6 +424,30 @@
             </p>
         </details>
         <details>
+            <summary>Is there a formal soundness proof?</summary>
+            <p>
+                A working sketch lives at
+                <a href="https://github.com/nelsonduarte/capa/blob/main/docs/semantics.md">docs/semantics.md</a>:
+                a minimal lambda calculus <em>λ<sub>cap</sub></em>
+                with syntax, typing rules, and small-step
+                operational semantics that capture the capability
+                discipline; two soundness theorems
+                (<em>Capability Soundness</em>: every runtime
+                capability invocation has a class drawn from the
+                initial environment; <em>Manifest Completeness</em>:
+                the emitted manifest is an upper bound on the
+                dynamic capability surface); and proof sketches for
+                each. The proofs are not machine-checked yet;
+                mechanising Theorem 1 in Agda or Coq is the
+                workshop-paper budget item. The
+                <a href="https://github.com/nelsonduarte/capa/blob/main/tests/test_properties.py">property-based test suite</a>
+                asserts the dynamic counterpart of Theorem 1 on
+                every generated program: ~150 Hypothesis examples
+                per CI run, across four capability-flow shapes
+                (plain, attenuated, via-helper, consume).
+            </p>
+        </details>
+        <details>
             <summary>Is the language stable?</summary>
             <p>
                 No. Pre-1.0 minor-version bumps may introduce
@@ -421,7 +463,7 @@
 
 <section class="section-centered">
     <h2>Where to go next</h2>
-    <p class="lead-prose-narrow">Capa is in alpha. The compiler runs, 660+ tests pass on three operating systems, the three pillars of the discipline are implemented, and the day-to-day tooling is in place (formatter, scaffolder, language server with diagnostics, hover, go-to-definition, find-references, outline, Quick Fixes). There is still no module system and no native backend.</p>
+    <p class="lead-prose-narrow">Capa is in alpha. The compiler runs, 745+ tests pass on three operating systems, the three pillars of the discipline are implemented, and the day-to-day tooling is in place (formatter, scaffolder, language server with diagnostics, hover, go-to-definition, find-references, outline, Quick Fixes). There is still no module system and no native backend.</p>
     <div class="cta">
         <a href="why.html" class="btn primary">Understand the why</a>
         <a href="tour.html" class="btn">Tour the language</a>
@@ -457,7 +499,18 @@
             <ul>
                 <li><a href="https://github.com/nelsonduarte/capa/blob/main/WHITEPAPER.md">White paper</a></li>
                 <li><a href="https://github.com/nelsonduarte/capa/blob/main/Capa-EBNF.md">EBNF grammar</a></li>
-                <li><a href="https://github.com/nelsonduarte/capa/blob/main/docs/demo-event-stream.md">Event-stream demo</a></li>
+                <li><a href="https://github.com/nelsonduarte/capa/blob/main/docs/semantics.md">&lambda;<sub>cap</sub> calculus &amp; soundness</a></li>
+                <li><a href="https://github.com/nelsonduarte/capa/blob/main/docs/positioning.md">Positioning vs related work</a></li>
+            </ul>
+        </div>
+        <div>
+            <h4>Case studies</h4>
+            <ul>
+                <li><a href="https://github.com/nelsonduarte/capa/blob/main/docs/demo-event-stream.md">event-stream (2018)</a></li>
+                <li><a href="https://github.com/nelsonduarte/capa/blob/main/docs/cve_eslint_scope.md">eslint-scope (2018)</a></li>
+                <li><a href="https://github.com/nelsonduarte/capa/blob/main/docs/cve_torchtriton.md">torchtriton (2022)</a></li>
+                <li><a href="https://github.com/nelsonduarte/capa/blob/main/docs/cve_node_ipc.md">node-ipc (2022)</a></li>
+                <li><a href="https://github.com/nelsonduarte/capa/blob/main/docs/cve_xz_utils.md">xz-utils (2024)</a></li>
             </ul>
         </div>
         <div>
