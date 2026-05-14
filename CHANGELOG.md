@@ -11,6 +11,21 @@ breaking changes and the discipline is still being shaped.
 
 ### Added
 
+- **Runtime-overhead benchmark suite** (`benchmarks/`): a small
+  set of paired Capa + hand-Python workloads timed in-process
+  with `timeit.repeat`. Three workloads cover three regimes
+  (pure compute via `fib(25)`, list-heavy via a 1000-element
+  scope analyser, string-heavy via 1000-string user-agent
+  parsing). Each `.capa` has a matching `_baseline.py` with
+  the same algorithm in idiomatic Python; the runner transpiles
+  the Capa once, imports both as modules, and reports
+  mean/stdev plus the ratio. Headline numbers on CPython 3.14:
+  **1.00x for pure compute, 1.20x for list-heavy, 1.45x for
+  string-heavy**. The thesis chapter on practical overhead can
+  now cite numbers instead of hand-waving. Methodology and a
+  detailed breakdown of what is and is not measured live in
+  `benchmarks/README.md`.
+
 - **CVE case study: ua-parser-js 2021 (npm account hijack,
   cryptominer + RAT)** (`examples/cve_ua_parser_js.capa` +
   `docs/cve_ua_parser_js.md`). The sixth CVE walkthrough and

@@ -253,7 +253,16 @@ to public.
     `interface` → suggest `trait`; `enum` → suggest `type Name
     = ...`; bare `let` at top level → suggest `const`.
 - [ ] **Analyzer performance**, no benchmarks. Only worth attacking
-  if someone reports slowness.
+  if someone reports slowness. (Runtime-side overhead is covered
+  by `benchmarks/`; this row is about lex+parse+analyze+transpile
+  wallclock, which is fast enough to not need measurement yet.)
+- [x] **Runtime-overhead benchmark suite**, `benchmarks/`. Three
+  paired workloads (Capa + hand-Python baseline) covering pure
+  compute, list-heavy, and string-heavy regimes. Numbers stable
+  across runs: ~1.00x / 1.20x / 1.45x. Methodology and headline
+  table in `benchmarks/README.md`. Closes the "is Capa
+  practical at the source level?" question for the thesis
+  chapter on overhead.
 - [ ] **Test-coverage review**, `coverage.py` run + identify which
   parts of the analyzer are under-tested.
 - [x] **`for x in a..b` was materialising the full range** as a

@@ -1,0 +1,79 @@
+// String-heavy benchmark: parse a batch of user-agent strings
+// in the ua-parser-js shape (see examples/cve_ua_parser_js.capa).
+// The interesting dimension is String method-dispatch overhead:
+// `.contains` on Capa's String goes through a small wrapper layer
+// against Python's native `in` operator.
+
+type Browser =
+    BrowserChrome
+    BrowserFirefox
+    BrowserSafari
+    BrowserUnknown
+
+type OS =
+    OSLinux
+    OSMac
+    OSWindows
+    OSOther
+
+type UserAgent {
+    browser: Browser,
+    os: OS
+}
+
+fun detect_browser(ua: String) -> Browser
+    if ua.contains("Chrome")
+        return BrowserChrome
+    if ua.contains("Firefox")
+        return BrowserFirefox
+    if ua.contains("Safari")
+        return BrowserSafari
+    return BrowserUnknown
+
+fun detect_os(ua: String) -> OS
+    if ua.contains("Linux")
+        return OSLinux
+    if ua.contains("Mac OS")
+        return OSMac
+    if ua.contains("Windows")
+        return OSWindows
+    return OSOther
+
+fun parse_user_agent(ua: String) -> UserAgent
+    return UserAgent {
+        browser: detect_browser(ua),
+        os: detect_os(ua)
+    }
+
+fun build_samples(n: Int) -> List<String>
+    let t0 = "Mozilla/5.0 (X11; Linux x86_64) Chrome/120.0"
+    let t1 = "Mozilla/5.0 (Macintosh; Intel Mac OS) Safari/17.0"
+    let t2 = "Mozilla/5.0 (Windows NT 10.0) Firefox/121.0"
+    let t3 = "Mozilla/5.0 (Linux; Android 13) Chrome/120.0"
+    let out: List<String> = []
+    var i = 0
+    while i < n
+        let s = match i % 4
+            0 -> t0
+            1 -> t1
+            2 -> t2
+            _ -> t3
+        out.push(s)
+        i = i + 1
+    return out
+
+fun parse_all(samples: List<String>) -> Int
+    var matched = 0
+    for ua in samples
+        let parsed = parse_user_agent(ua)
+        let is_known = match parsed.browser
+            BrowserUnknown -> false
+            _ -> true
+        if is_known
+            matched = matched + 1
+    return matched
+
+fun main(stdio: Stdio)
+    let samples = build_samples(1000)
+    let matched = parse_all(samples)
+    stdio.println("matched ${matched} known browsers")

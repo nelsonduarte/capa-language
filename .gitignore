@@ -45,6 +45,10 @@ desktop.ini
 debug_out.bin
 /tmp/
 
+# Benchmark scratch (transpiled .py written next to each .capa
+# by benchmarks/runner.py; regenerated on every run).
+benchmarks/*.bench.py
+
 # WhitePaper held back until thesis pre-print is published.
 # A working copy can live next to the repo (or in capa/private/);
 # the published version will live at a DOI referenced from

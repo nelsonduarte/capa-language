@@ -1,0 +1,51 @@
+// List-heavy benchmark: a scope analyser in the eslint-scope
+// shape (see examples/cve_eslint_scope.capa). Takes a list of
+// declarations and produces a list of bindings. The interesting
+// dimension is CapaList overhead: every `for` over a List, every
+// `push`, and the implicit length-tracking are wrapper calls on
+// CapaList instead of native Python list operations.
+
+type DeclKind =
+    DeclLet
+    DeclVar
+    DeclConst
+
+type Decl {
+    name: String,
+    kind: DeclKind
+}
+
+type Binding {
+    name: String,
+    scope_index: Int,
+    kind: DeclKind
+}
+
+fun build_decls(n: Int) -> List<Decl>
+    let result: List<Decl> = []
+    var i = 0
+    while i < n
+        let kind = match i % 3
+            0 -> DeclLet
+            1 -> DeclVar
+            _ -> DeclConst
+        result.push(Decl { name: "v${i}", kind: kind })
+        i = i + 1
+    return result
+
+fun analyse_scopes(program: List<Decl>) -> List<Binding>
+    let bindings: List<Binding> = []
+    var idx = 0
+    for d in program
+        bindings.push(Binding {
+            name: d.name,
+            scope_index: idx % 5,
+            kind: d.kind
+        })
+        idx = idx + 1
+    return bindings
+
+fun main(stdio: Stdio)
+    let decls = build_decls(1000)
+    let bindings = analyse_scopes(decls)
+    stdio.println("produced ${bindings.length()} bindings")

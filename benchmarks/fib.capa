@@ -1,0 +1,15 @@
+// Pure-compute benchmark: naive recursive Fibonacci. Measures
+// function-call overhead, which is where Capa's _capa_wrap
+// decorator (used for any function that touches `?`) would
+// dominate. `fib` itself does not use `?`, so the decorator is
+// not applied: this measures the raw transpiled function-call
+// path against hand Python.
+
+fun fib(n: Int) -> Int
+    if n < 2
+        return n
+    return fib(n - 1) + fib(n - 2)
+
+fun main(stdio: Stdio)
+    let r = fib(25)
+    stdio.println("fib(25) = ${r}")

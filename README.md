@@ -99,6 +99,10 @@ Capa/
 │   ├── cve_torchtriton.md      # case study walkthrough
 │   ├── cve_node_ipc.md         # case study walkthrough (partial loss)
 │   └── cve_xz_utils.md         # case study walkthrough (partial loss)
+├── benchmarks/                 # runtime-overhead suite: Capa vs hand-Python
+│   ├── runner.py               # in-process timeit-based runner
+│   ├── *.capa + *_baseline.py  # paired workloads (fib, scope, ua_parse)
+│   └── README.md               # methodology + headline numbers
 ├── Capa-EBNF.md                # formal grammar of the language
 ├── WHITEPAPER.md               # stub; full whitepaper held until thesis pre-print
 ├── pyproject.toml              # package metadata + optional [test] / [lsp] extras
