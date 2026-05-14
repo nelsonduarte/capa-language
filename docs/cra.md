@@ -119,6 +119,13 @@ number and dependency tree are unchanged. The audit pipeline
 in [`examples/sbom_capability_audit.capa`](../examples/sbom_capability_audit.capa)
 implements this comparison end-to-end.
 
+A small, fully reproducible side-by-side of a real-world
+pattern (microservice config loading) in Python vs Capa,
+including the SBOM diff, is in
+[`docs/empirical_micro.md`](empirical_micro.md). That is the
+smallest demonstration of the *information-gain* claim made
+in this section.
+
 ---
 
 ## What this looks like in practice

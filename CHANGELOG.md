@@ -11,6 +11,27 @@ breaking changes and the discipline is still being shaped.
 
 ### Added
 
+- **Empirical micro-validation: SBOM diff Python vs Capa**
+  (`examples/empirical_config.capa` +
+  `examples/empirical_config_naive.py` +
+  `docs/empirical_micro.md`). A small, fully reproducible
+  comparison of a real-world pattern (microservice config
+  loader: disk + environment + remote-flag overrides) in two
+  forms. The naive Python version has one
+  `load_config(path) -> dict` function conflating three
+  capabilities; the Capa version splits the same logic into
+  five functions whose signatures declare exactly what each
+  needs. The CycloneDX SBOM emitted by `capa --cyclonedx`
+  shows per-function declared capabilities (3 pure, 3
+  single-capability, 1 composer with `Fs + Env + Net`, 1 main
+  with `Stdio`); a PURL-only SBOM for the Python equivalent
+  cannot say any of this. The pair is the smallest reproducible
+  artefact for the empirical claim in the thesis that
+  capability-aware SBOMs are a *strict information gain* over
+  PURL-only SBOMs. Closes the "show, don't tell" gap left by
+  `docs/cra.md`. Regression test in
+  `tests/test_transpiler.py::test_empirical_config`.
+
 - **CRA article-by-article mapping** (`docs/cra.md`). A
   focused thesis-grade document that maps Capa's machinery
   onto the specific articles and annex items of Regulation

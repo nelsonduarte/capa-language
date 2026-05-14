@@ -1,0 +1,150 @@
+// The same config-loader pattern as
+// `examples/empirical_config_naive.py`, expressed in Capa. The
+// comparison is the empirical contribution of the thesis: a
+// real-world pattern (microservice config loading) where the
+// Python signature hides three capabilities behind one
+// `load_config(path) -> dict` call. The Capa version cannot
+// hide them; they appear in the parameter list of any function
+// that uses them.
+//
+// What this file demonstrates:
+//
+// - `parse_config_text`: pure JSON parsing. Zero capabilities.
+// - `load_local_config`: file-based load. Declares only `Fs`.
+// - `apply_env_overrides`: environment overlay. Declares only `Env`.
+// - `fetch_remote_overrides`: remote patch. Declares only `Net`.
+// - `load_full_config`: composes all three. The signature
+//   honestly carries `Fs`, `Env`, AND `Net`. A reviewer reading
+//   only the signature can see the full authority surface.
+//
+// Run with:
+//
+//   capa --cyclonedx examples/empirical_config.capa
+//
+// to get the CycloneDX 1.5 SBOM with per-function
+// `capa:declared_capability` properties. The walkthrough is in
+// `docs/empirical_micro.md`.
+
+type ConfigField {
+    key: String,
+    value: String
+}
+
+type Config {
+    fields: List<ConfigField>
+}
+
+// ===============================================================
+// Pure: parse a config text into a Config struct. Zero
+// capabilities. Same role as `json.load` does inside the naive
+// Python version, but the signature here says explicitly that
+// the function does nothing else.
+// ===============================================================
+fun parse_config_text(text: String) -> Config
+    // Real implementation would parse JSON; for the demo a single
+    // synthetic field is enough to make the signature point.
+    return Config {
+        fields: [
+            ConfigField { key: "source", value: text }
+        ]
+    }
+
+fun has_field(c: Config, k: String) -> Bool
+    for f in c.fields
+        if f.key == k
+            return true
+    return false
+
+fun set_field(c: Config, k: String, v: String) -> Config
+    let updated: List<ConfigField> = []
+    var replaced = false
+    for f in c.fields
+        if f.key == k
+            updated.push(ConfigField { key: k, value: v })
+            replaced = true
+        else
+            updated.push(f)
+    if not replaced
+        updated.push(ConfigField { key: k, value: v })
+    return Config { fields: updated }
+
+// ===============================================================
+// Fs-only: read the config file. Signature carries `Fs`,
+// nothing else. A reviewer who sees this function in a code
+// review knows immediately that the disk is the only thing
+// touched.
+// ===============================================================
+fun load_local_config(fs: Fs, path: String) -> Result<Config, IoError>
+    let text = fs.read(path)?
+    return Ok(parse_config_text(text))
+
+// ===============================================================
+// Env-only: overlay environment-variable overrides. Signature
+// carries `Env`, nothing else. The pattern here is the same as
+// the Python naive version's APP_-prefix scan, but in a
+// declared-authority idiom: a caller that does not want
+// arbitrary env-var reads can pass an attenuated `Env`.
+// ===============================================================
+fun apply_env_overrides(env: Env, c: Config) -> Config
+    // For the demo we sample one well-known field; a real
+    // implementation would iterate. The signature point is
+    // independent of the iteration shape.
+    var current = c
+    let app_name_opt = env.get("APP_NAME")
+    match app_name_opt
+        Some(v) ->
+            current = set_field(current, "name", v)
+        None ->
+            ()
+    let app_port_opt = env.get("APP_PORT")
+    match app_port_opt
+        Some(v) ->
+            current = set_field(current, "port", v)
+        None ->
+            ()
+    return current
+
+// ===============================================================
+// Net-only: fetch a remote feature-flag patch. Signature
+// carries `Net`, nothing else. A function that only declares
+// Net cannot read the disk, read the environment, or call
+// `Unsafe`; the type checker forbids it.
+// ===============================================================
+fun fetch_remote_overrides(net: Net, url: String) -> Result<Config, IoError>
+    let body = net.get(url)?
+    return Ok(parse_config_text(body))
+
+// ===============================================================
+// The composition point. The signature honestly carries the
+// full authority surface: `Fs`, `Env`, AND `Net`. There is no
+// way to hide one of these inside the body; the type checker
+// would reject any attempt to call `apply_env_overrides`
+// without holding an `Env`, etc.
+// ===============================================================
+fun load_full_config(
+    fs: Fs,
+    env: Env,
+    net: Net,
+    local_path: String,
+    remote_url: String
+) -> Result<Config, IoError>
+    let local = load_local_config(fs, local_path)?
+    let overlaid = apply_env_overrides(env, local)
+    if has_field(overlaid, "flags_url")
+        let patch = fetch_remote_overrides(net, remote_url)?
+        // Merge: for the demo, we just take the patch wholesale.
+        return Ok(patch)
+    return Ok(overlaid)
+
+// ===============================================================
+// `main`, the only function with the full authority surface in
+// scope. Holds `Stdio` for the demo plus a pretend usage that
+// would be the real entry point.
+// ===============================================================
+fun main(stdio: Stdio)
+    let demo = parse_config_text("{\"name\":\"demo\",\"port\":\"8080\"}")
+    let with_name = set_field(demo, "name", "capa-demo")
+    let has_port = has_field(with_name, "port")
+    stdio.println("config has 'port' field: ${has_port}")
+    for f in with_name.fields
+        stdio.println("  ${f.key} = ${f.value}")

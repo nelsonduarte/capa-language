@@ -667,6 +667,17 @@ class TestTranspileExamples(unittest.TestCase):
         self.assertIn("launch plan: grid=8 block=128 args=4", out)
         self.assertIn("launch plan: grid=16 block=64 args=2", out)
 
+    def test_empirical_config(self):
+        # Empirical micro-validation paired with the naive Python
+        # version at examples/empirical_config_naive.py. The Capa
+        # side splits the same logic into 8 functions (3 pure, 3
+        # single-capability, 1 composer, 1 main) whose declared
+        # capabilities flow through to the CycloneDX SBOM. Companion
+        # writeup at docs/empirical_micro.md.
+        rc, out, err = self._run_example("examples/empirical_config.capa")
+        self.assertEqual(rc, 0, err)
+        self.assertIn("name = capa-demo", out)
+
     def test_cve_ua_parser_js(self):
         # Sixth CVE walkthrough: the ua-parser-js npm account
         # hijack of October 2021. Same attack mechanism as

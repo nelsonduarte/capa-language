@@ -83,6 +83,8 @@ Capa/
 │   ├── cve_torchtriton.capa    # CVE case study: torchtriton 2022
 │   ├── cve_node_ipc.capa       # CVE partial-loss: node-ipc 2022
 │   ├── cve_xz_utils.capa       # CVE partial-loss: xz-utils 2024
+│   ├── empirical_config.capa   # SBOM diff micro-validation (Capa side)
+│   ├── empirical_config_naive.py # SBOM diff micro-validation (Python side)
 │   ├── spdx_parser.capa        # SPDX 2.3 JSON parser, in Capa
 │   ├── cyclonedx_parser.capa   # CycloneDX 1.5 JSON parser, in Capa
 │   ├── spdx_license_expr.capa  # SPDX Annex D license-expression parser
@@ -94,6 +96,7 @@ Capa/
 │   ├── positioning.md          # honest comparison vs Pony, Koka, Roc, Wasm-CM
 │   ├── semantics.md            # λ_cap calculus sketch + soundness theorems
 │   ├── cra.md                  # Cyber Resilience Act article-by-article mapping
+│   ├── empirical_micro.md      # SBOM diff Python vs Capa, fully reproducible
 │   ├── demo-event-stream.md    # case study walkthrough
 │   ├── cve_eslint_scope.md     # case study walkthrough
 │   ├── cve_ua_parser_js.md     # case study walkthrough
