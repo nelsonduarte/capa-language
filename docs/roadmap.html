@@ -45,7 +45,7 @@
 
 <div class="page-heading">
     <h1>Roadmap</h1>
-    <p>An honest inventory of what works, what is coming, and what is explicitly out of scope. Capa is in <strong>v0.6.0-alpha</strong>: the compiler runs, 747 tests pass on three operating systems, the discipline is implemented end-to-end, the capability manifest and CycloneDX SBOM are emitted directly by the compiler, a runtime-overhead benchmark suite measures the transpiled output against hand-Python baselines, and the language is still missing several things a v1 would need.</p>
+    <p>An honest inventory of what works, what is coming, and what is explicitly out of scope. Capa is in <strong>v0.6.0-alpha</strong>: the compiler runs, 748 tests pass on three operating systems, the discipline is implemented end-to-end, the capability manifest and CycloneDX SBOM are emitted directly by the compiler, a runtime-overhead benchmark suite measures the transpiled output against hand-Python baselines, and the language is still missing several things a v1 would need.</p>
 </div>
 
 <!-- =====================================================
@@ -243,34 +243,69 @@
     </ul>
 
     <h3>SBOM and supply-chain work</h3>
-    <p>Capa programs that interoperate with the standard SBOM formats and policy machinery. Not language work, but applications written in the language.</p>
+    <p>Capa's positioning: a capability-typed language whose distinctive contribution is the integration between the type system and the supply-chain governance stack. The compiler natively emits the artefacts that other capability languages leave to external tools. The roadmap below strengthens exactly that axis.</p>
     <ul class="milestone-list">
         <li>
-            <span class="tag future">P1</span>
+            <span class="tag done">DONE</span>
             <div class="item-body">
                 <strong>SPDX 2.3 parser written in Capa</strong>
-                <p>Proves Capa can interoperate with the real SBOM format. ~1 week.</p>
+                <p><code>examples/spdx_parser.capa</code>. Reads an SPDX 2.3 JSON document, builds typed Capa structs, validates referential integrity.</p>
             </div>
         </li>
         <li>
-            <span class="tag future">P1</span>
+            <span class="tag done">DONE</span>
             <div class="item-body">
                 <strong>CycloneDX 1.5 parser written in Capa</strong>
-                <p>Same story for the second mainstream SBOM format.</p>
+                <p><code>examples/cyclonedx_parser.capa</code>. The full-format companion to the audit pipeline.</p>
+            </div>
+        </li>
+        <li>
+            <span class="tag done">DONE</span>
+            <div class="item-body">
+                <strong>SBOM and capability audit pipeline</strong>
+                <p><code>examples/sbom_capability_audit.capa</code>. Reads a CycloneDX SBOM plus a JSON policy and flags any function whose declared capabilities exceed the policy's allowance.</p>
+            </div>
+        </li>
+        <li>
+            <span class="tag done">DONE</span>
+            <div class="item-body">
+                <strong>SBOM diff tool</strong>
+                <p><code>examples/sbom_diff.capa</code>. Compares two CycloneDX SBOMs and reports per-function widenings (alert), narrowings (improvement), additions, removals. The auditor-facing piece: between any two releases, one command tells you what changed in the authority surface.</p>
+            </div>
+        </li>
+        <li>
+            <span class="tag done">DONE</span>
+            <div class="item-body">
+                <strong>CRA article-by-article mapping</strong>
+                <p><code>docs/cra.md</code>. Maps Capa's machinery onto Regulation (EU) 2024/2847 with each Annex I requirement classified as direct, indirect, partial, or out of scope.</p>
             </div>
         </li>
         <li>
             <span class="tag future">P1</span>
             <div class="item-body">
-                <strong>User-defined <code>capability Provenance</code></strong>
-                <p>A capability representing the right to query / verify a piece of supply-chain metadata. Demonstrates user-defined caps in a concrete domain.</p>
+                <strong>SPDX 2.3 emission</strong>
+                <p>Capa already parses SPDX; emitting doubles SBOM-format coverage and aligns with the Linux Foundation ecosystem. ~1 week.</p>
             </div>
         </li>
         <li>
             <span class="tag future">P1</span>
             <div class="item-body">
-                <strong>SBOM ↔ capability linking</strong>
-                <p>A Capa program that reads an npm package's SBOM and checks whether the declared capabilities of its dependencies match what static analysis of their source code says they actually need. The "auditable supply chain" pitch, made concrete.</p>
+                <strong>VEX integration (CycloneDX VEX format)</strong>
+                <p>Per-function exploitability claims. No other language emits VEX at function granularity; this is the genuinely novel piece of the Tier 1 plan. ~2-3 weeks.</p>
+            </div>
+        </li>
+        <li>
+            <span class="tag future">P1</span>
+            <div class="item-body">
+                <strong>SLSA Build L1 provenance attestation</strong>
+                <p>Attestation emitted at compile time alongside the SBOM. Closes the "where did this SBOM come from?" question with an industry-standard format. ~1 week.</p>
+            </div>
+        </li>
+        <li>
+            <span class="tag future">P1</span>
+            <div class="item-body">
+                <strong>Consolidated regulatory mapping</strong>
+                <p><code>docs/regulatory.md</code>: comparative table covering CRA, NIS2, DORA (cybersecurity articles only), NIST SSDF (SP 800-218), OWASP SCVS. Keeps <code>docs/cra.md</code> as the CRA deep-dive; the new doc is the multi-jurisdiction view. ~25-35h.</p>
             </div>
         </li>
     </ul>

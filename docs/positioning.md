@@ -115,6 +115,13 @@ adjacencies:
   verify, deterministically, that the SBOM was produced from the
   source by running `capa --cyclonedx` themselves. No additional
   analyser, no calibration, no false positives.
+- **Diff-comparable SBOMs across releases**: the SBOM diff tool
+  ([`examples/sbom_diff.capa`](../examples/sbom_diff.capa))
+  reports per-function capability widenings and narrowings
+  between two SBOMs. Because granularity is per-function, the
+  diff catches authority changes that PURL-level SBOM diffs
+  cannot see (a dependency widening internally without bumping
+  its version).
 
 ## What Capa cannot claim
 
@@ -123,9 +130,12 @@ adjacencies:
 - **Production readiness**: Capa is pre-1.0 alpha; the runtime
   performance is Python's; there is no native backend yet.
 - **Language ecosystem maturity**: Capa has a CLI, an LSP, a
-  formatter, an SBOM emitter, demos, and a small standard library.
-  It does not have a package manager, a debugger story beyond
-  Python's, third-party libraries, or industrial adopters.
+  formatter, an SBOM emitter, an SBOM diff tool, a runtime-
+  overhead benchmark suite, a CRA article-by-article mapping,
+  six CVE case studies, an empirical SBOM-diff
+  micro-validation, and a small standard library. It does not
+  have a package manager, a debugger story beyond Python's,
+  third-party libraries, or industrial adopters.
 - **A monopoly on the auditable supply chain pitch**: WebAssembly
   Component Model is genuinely competing for the same role at the
   module granularity, and it has a much larger ecosystem.

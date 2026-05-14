@@ -57,7 +57,7 @@ Capa/
 │   ├── docgen/                 # HTML doc generator from /// doc-comments
 │   ├── lsp/                    # Language Server Protocol implementation
 │   └── runtime/                # Result, Option, Stdio, Fs, ..., Unsafe, py_import
-├── tests/                      # 745+ unit, end-to-end, and property tests
+├── tests/                      # 748 unit, end-to-end, and property tests
 │   ├── test_lexer.py
 │   ├── test_parser.py
 │   ├── test_analyzer.py
@@ -368,7 +368,7 @@ else:
 python -m unittest discover tests
 ```
 
-**745+ tests** spanning the lexer, parser, analyzer, transpiler, LSP,
+**748 tests** spanning the lexer, parser, analyzer, transpiler, LSP,
 formatter, attribute-schema validation, and Hypothesis-driven property
 tests. The transpiler suite actually *executes* the generated Python
 and checks stdout, the only honest way to test a transpiler. The
@@ -904,25 +904,44 @@ running real code is the harshest test of a design.
 
 ## What's next
 
-In rough order of impact (full list and prioritisation in
-[`TODO.md`](TODO.md)):
+Capa's distinctive contribution is the integration between the
+capability type system and the supply-chain governance stack:
+the compiler natively emits artefacts (manifest, CycloneDX,
+HTML doc) that other capability languages leave to external
+tools. The next milestones strengthen exactly that axis.
 
-1. **Mechanise the soundness theorem of `λ_cap` in Agda or Coq.**
-   The calculus sketch and proof outline live in
-   [`docs/semantics.md`](docs/semantics.md). Machine-checking
-   Theorem 1 (Capability Soundness) is a workshop-paper-sized
-   piece of work; the path is described in section 8 of that
-   document.
+**Tier 1, technical artefacts (in progress):**
 
-2. **More CVE case studies.** Six have landed (see
-   [`docs/positioning.md`](docs/positioning.md) for the breakdown).
-   Each new one is a paired `examples/cve_*.capa` +
-   `docs/cve_*.md` and is mechanical from the established template.
+1. **SBOM diff tool** (DONE,
+   [`examples/sbom_diff.capa`](examples/sbom_diff.capa)).
+   Compares two CycloneDX SBOMs and reports per-function
+   capability widenings, narrowings, additions, removals.
 
-3. **Native backend (LLVM or Cranelift).** Capa is a transpiler to
-   Python today. The native backend is the long-term answer to
-   "what does this look like off the Python runtime?"; for now
-   the existing transpile-to-Python path is sufficient for every
-   other goal in this list.
+2. **SPDX 2.3 emission**. Capa already parses SPDX; emitting
+   doubles the SBOM-format coverage and aligns with the
+   Linux Foundation ecosystem.
 
-4. **Interactive REPL** or watch mode for quick experimentation.
+3. **VEX integration** (CycloneDX VEX format). Per-function
+   exploitability claims. No other language emits VEX at
+   function granularity; this is the genuinely novel piece.
+
+4. **SLSA Build L1 provenance** at compile time. Closes the
+   "where did this SBOM come from?" question.
+
+**Tier 2, regulatory mapping:**
+
+5. **Consolidated `docs/regulatory.md`** covering CRA, NIS2,
+   DORA (cybersecurity articles only), NIST SSDF, and OWASP
+   SCVS. Extends the existing CRA article-by-article mapping
+   in [`docs/cra.md`](docs/cra.md) to a multi-jurisdiction
+   table.
+
+**Maybe, not committed:**
+
+6. **Mechanise the soundness theorem of `λ_cap` in Agda or
+   Coq.** The calculus sketch and proof outline live in
+   [`docs/semantics.md`](docs/semantics.md). Workshop-paper-
+   sized.
+
+7. **Native backend (LLVM or Cranelift).** Long-term, not in
+   the v1 budget.

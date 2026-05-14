@@ -9,7 +9,59 @@ impact within the next 1-2 milestones · **P2** = nice to have ·
 
 ---
 
-## Current focus
+## Current focus (May - October 2026, pre-PhD runway)
+
+Plan-closed development at 8h/week, scoped to ~175h total. The
+positioning Capa stands behind: *"a capability-typed language
+whose distinctive contribution is the integration between the
+type system and the supply-chain governance stack"*. The
+sequence below strengthens exactly that axis.
+
+**Tier 1, technical artefacts:**
+
+- [x] **SBOM diff tool**
+  ([`examples/sbom_diff.capa`](examples/sbom_diff.capa)).
+  Consumes two CycloneDX SBOMs and reports per-function
+  capability widenings (alert), narrowings (improvement),
+  additions, removals. Companion to the
+  `sbom_capability_audit.capa` (which compares ONE SBOM
+  against a written policy). First piece of Tier 1, landed
+  2026-05-15.
+- [ ] **SPDX 2.3 emission**. Already parse; need to emit.
+  Doubles SBOM-format coverage (Linux Foundation alignment).
+  ~1 week.
+- [ ] **VEX integration** (CycloneDX VEX format).
+  Per-function exploitability claims. Genuinely novel: no
+  other language emits VEX at function granularity. ~2-3
+  weeks.
+- [ ] **SLSA Build L1 provenance attestation** at compile
+  time. Closes the "where did this SBOM come from?"
+  question. ~1 week.
+
+**Tier 2, consolidated regulatory mapping:**
+
+- [ ] **`docs/regulatory.md`**: single comparative table
+  covering **CRA + NIS2 + DORA** (cybersecurity articles
+  only: Art. 6, 8, 9-15, 17-23, 28-30, **not** broader
+  operational resilience) + **NIST SSDF (SP 800-218)** +
+  **OWASP SCVS**. Keep existing `docs/cra.md` as deep-dive;
+  new doc is the comparative view. **Explicitly excluded**:
+  ISO 27001, SOC 2, PCI DSS, HIPAA (organisational not
+  technical); EO 14028 (subsumed by SSDF); AI Act, GDPR
+  (tangential); SWID (dying). ~25-35h.
+
+**Tier 3, polish:**
+
+- [ ] 1 workshop paper draft based on Tier 1 + Tier 2.
+  Target venues: SPLASH-E, PLAS, EuroS&P workshops, NDSS
+  workshops. ~30-40h.
+
+When Tier 1 + Tier 2 + paper are done, **stop**. Excess time
+goes to PhD preparation, not to Tier 4 expansions.
+
+---
+
+## Historical bridge work, v0.2 alpha (DONE)
 
 Bridge from "working alpha" to "shareable v0.2 alpha". Three pieces:
 
@@ -513,8 +565,8 @@ Capa as artefact in the SBOM Governance thesis:
   dependencies[] as a flat (ref, dependsOn[]) graph) into typed
   Capa structs (`CdxDocument`, `CdxComponent`, `CdxHash`,
   `CdxLicense`, `CdxDependency`, `CdxMetadata`). Handles both
-  license shapes — `{license: {id|name}}` and `{expression:
-  <SPDX-license-expression>}` — plus both `tools[]` shapes
+  license shapes (`{license: {id|name}}` and `{expression:
+  <SPDX-license-expression>}`) plus both `tools[]` shapes
   (modern `tools.components[]` and legacy flat array).
   Regression test in
   `tests/test_transpiler.py::test_cyclonedx_parser`.
