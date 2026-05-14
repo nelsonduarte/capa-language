@@ -9,9 +9,10 @@ program a human would have written by hand?
 
 > The CRA-driven case for capability-typed source is the
 > *integrity* argument (the SBOM honestly describes what the
-> code does). A thesis chapter on that argument can't dodge the
-> performance question. These benchmarks exist so that question
-> has a numbers-backed answer rather than a hand-wave.
+> code does). Any serious version of that argument has to
+> answer the performance question. These benchmarks exist so
+> that question has a numbers-backed answer rather than a
+> hand-wave.
 
 ## How to run
 
@@ -93,10 +94,10 @@ individual runs vary by 5-10% but the **ratios are stable**.
   matching itself goes through Python's `in` operator on both
   sides; that part is at parity.
 
-The overall picture for the thesis: **single-digit overhead
-percentages on the pure compute path, low-double-digit on
-list-heavy paths, mid-double-digit on workloads that combine
-list + string + struct construction**. Nothing pathological;
+The overall picture: **single-digit overhead percentages on
+the pure compute path, low-double-digit on list-heavy paths,
+mid-double-digit on workloads that combine list + string +
+struct construction**. Nothing pathological;
 nothing close to "an order of magnitude". A reader asking "is
 Capa practical at the source-level?" gets a numerical answer
 with the same shape as "yes".

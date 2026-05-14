@@ -90,7 +90,7 @@ Capa/
 │   ├── spdx_license_expr.capa  # SPDX Annex D license-expression parser
 │   ├── sbom_capability_audit.capa # SBOM ↔ policy audit pipeline
 │   └── data/                   # sample SBOM + policy for the audit demo
-├── docs/                       # public website + thesis-aligned writeups
+├── docs/                       # public website + design writeups
 │   ├── index.html, tour.html, start.html, why.html
 │   ├── manifest.html, reference.html, stdlib.html, roadmap.html
 │   ├── positioning.md          # honest comparison vs Pony, Koka, Roc, Wasm-CM
@@ -108,7 +108,7 @@ Capa/
 │   ├── *.capa + *_baseline.py  # paired workloads (fib, scope, ua_parse)
 │   └── README.md               # methodology + headline numbers
 ├── Capa-EBNF.md                # formal grammar of the language
-├── WHITEPAPER.md               # stub; full whitepaper held until thesis pre-print
+├── WHITEPAPER.md               # stub; full whitepaper not yet written
 ├── pyproject.toml              # package metadata + optional [test] / [lsp] extras
 ├── LICENSE                     # MIT
 └── README.md
@@ -903,15 +903,15 @@ running real code is the harshest test of a design.
 
 ## What's next
 
-In decreasing order of impact for the upcoming thesis-aligned
-publication arc (full list and prioritisation in
+In rough order of impact (full list and prioritisation in
 [`TODO.md`](TODO.md)):
 
 1. **Mechanise the soundness theorem of `λ_cap` in Agda or Coq.**
    The calculus sketch and proof outline live in
    [`docs/semantics.md`](docs/semantics.md). Machine-checking
-   Theorem 1 (Capability Soundness) is the workshop-paper budget
-   item; the path is described in section 8 of that document.
+   Theorem 1 (Capability Soundness) is a workshop-paper-sized
+   piece of work; the path is described in section 8 of that
+   document.
 
 2. **More CVE case studies.** Six have landed (see
    [`docs/positioning.md`](docs/positioning.md) for the breakdown).
@@ -919,11 +919,9 @@ publication arc (full list and prioritisation in
    `docs/cve_*.md` and is mechanical from the established template.
 
 3. **Native backend (LLVM or Cranelift).** Capa is a transpiler to
-   Python today. The native backend is the long-term answer to the
-   reviewer-of-the-future who asks "what does this look like off
-   the Python runtime?". The proper IR design lives next to a
-   future thesis chapter on representation; for now the existing
-   transpile-to-Python path is sufficient for every other goal
-   in this list.
+   Python today. The native backend is the long-term answer to
+   "what does this look like off the Python runtime?"; for now
+   the existing transpile-to-Python path is sufficient for every
+   other goal in this list.
 
 4. **Interactive REPL** or watch mode for quick experimentation.

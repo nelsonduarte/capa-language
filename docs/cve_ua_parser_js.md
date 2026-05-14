@@ -284,7 +284,7 @@ torchtriton, ua-parser-js) and **two partial losses**
 | node-ipc       | 2022 | legitimate-authority abuse         | partial (attenuation)  |
 | xz-utils       | 2024 | below-language build attack        | partial (orthogonal)   |
 
-A thesis-grade experimental section needs both kinds. The wins
+A balanced experimental section needs both kinds. The wins
 establish that Capa addresses real attacks across multiple
 years, ecosystems (npm, PyPI), and payloads (data theft,
 cryptominers, RATs, kernel exfil). The partial losses

@@ -7,7 +7,7 @@ into a fresh namespace, and times the relevant function via
 
 Reports mean and stdev of best-of-3 runs of N iterations each,
 plus the ratio (capa_mean / baseline_mean) as the headline
-overhead figure. The ratio is what a thesis chapter on Capa's
+overhead figure. The ratio is what anyone arguing for Capa's
 practical overhead actually wants to cite.
 
 Run with:

@@ -266,9 +266,9 @@ The breakdown by attack shape:
 | node-ipc     | legitimate-authority abuse     | partial (attenuation) |
 | xz-utils     | below-language build attack    | partial (orthogonal defences) |
 
-A thesis-grade experimental section needs both kinds. The
-wins establish that Capa addresses real attacks; the partial
-losses establish that the claim is calibrated.
+A balanced experimental section needs both kinds. The wins
+establish that Capa addresses real attacks; the partial losses
+establish that the claim is calibrated.
 
 ---
 

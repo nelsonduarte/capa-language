@@ -42,7 +42,7 @@
 //      logic, not by Capa code.
 //
 // This is the most pessimistic case study in the repo. It is
-// included because a thesis that claims any defence against
+// included because any claim of defence against
 // "supply-chain attacks" without acknowledging xz cannot be
 // taken seriously.
 

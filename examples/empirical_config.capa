@@ -1,11 +1,10 @@
 // The same config-loader pattern as
-// `examples/empirical_config_naive.py`, expressed in Capa. The
-// comparison is the empirical contribution of the thesis: a
-// real-world pattern (microservice config loading) where the
-// Python signature hides three capabilities behind one
-// `load_config(path) -> dict` call. The Capa version cannot
-// hide them; they appear in the parameter list of any function
-// that uses them.
+// `examples/empirical_config_naive.py`, expressed in Capa.
+// The comparison demonstrates a real-world pattern
+// (microservice config loading) where the Python signature
+// hides three capabilities behind one `load_config(path) ->
+// dict` call. The Capa version cannot hide them; they appear
+// in the parameter list of any function that uses them.
 //
 // What this file demonstrates:
 //

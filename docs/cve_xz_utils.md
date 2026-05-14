@@ -206,7 +206,7 @@ Honestly, the bulk of what xz did:
 
 ---
 
-## The thesis lesson
+## The honest lesson
 
 There is a stack of supply-chain attack layers:
 
@@ -223,13 +223,13 @@ There is a stack of supply-chain attack layers:
 Capa addresses **one row** of this table well, and **one row**
 partially. The xz operation chose every other row.
 
-A defensible thesis acknowledges this explicitly. The Capa
+A defensible position acknowledges this explicitly. The Capa
 contribution is *one defence in a stack*, not a sufficient
 defence. The honest claim in
 [positioning.md](positioning.md) is "Capa narrows the
 authority graph, it does not eliminate trust"; xz is the
-sharpest illustration that "the authority graph" is only one of
-several attack surfaces.
+sharpest illustration that "the authority graph" is only one
+of several attack surfaces.
 
 For the **EU Cyber Resilience Act** (in force December 2027),
 this matters because the CRA requires manufacturers to address

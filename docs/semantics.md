@@ -1,16 +1,15 @@
 # λ_cap: a small-step calculus for Capa's capability discipline
 
-> **Status: sketch.** This document is the working draft of the
-> formal core that the future thesis will expand on. It states
-> the syntax, typing rules, and small-step semantics of a
-> minimal lambda calculus *λ_cap* that captures Capa's three
-> layers of capability discipline, and the two soundness
-> theorems the discipline is intended to prove. The proofs are
-> sketched, not completed.
+> **Status: sketch.** This document is the working draft of
+> the formal core. It states the syntax, typing rules, and
+> small-step semantics of a minimal lambda calculus *λ_cap*
+> that captures Capa's three layers of capability discipline,
+> and the two soundness theorems the discipline is intended
+> to prove. The proofs are sketched, not completed.
 >
-> Audience: reviewers who want to know there is a path from the
-> design-document level to a referee-defensible formalisation,
-> and the PhD writeup that will eventually consume this material.
+> Audience: reviewers who want to know there is a path from
+> the design-document level to a referee-defensible
+> formalisation.
 
 ---
 
@@ -310,17 +309,17 @@ deliberately leaves four things for the full writeup:
    way is to type them as `Unsafe → (Args → Result)` and
    *not* model their bodies; the soundness theorem is then
    stated relative to "everything except behaviour past an
-   `Unsafe` invocation". The thesis chapter will say this
+   `Unsafe` invocation". The full writeup will state this
    precisely.
 
 4. **The translation from full Capa to λ_cap**. The mapping is
    conservative: data-shape machinery (structs, sums, traits)
    compiles to ordinary terms; the capability surface
-   compiles to the rules above. The full thesis chapter
-   contains the translation lemma plus the simulation theorem
-   that says "if full-Capa typing accepts `e`, then λ_cap
-   typing accepts its translation, and the small-step
-   reductions agree on the trace".
+   compiles to the rules above. The full writeup contains the
+   translation lemma plus the simulation theorem that says
+   "if full-Capa typing accepts `e`, then λ_cap typing
+   accepts its translation, and the small-step reductions
+   agree on the trace".
 
 ---
 
@@ -336,8 +335,8 @@ Two things:
 
 - A **mechanically-checkable next step**. The reduction rules
   here are small enough to mechanise in Agda or Coq. A
-  thesis-grade proof would mechanise Theorem 1 and use it as
-  the load-bearing artefact in the
+  serious proof would mechanise Theorem 1 and use it as the
+  load-bearing artefact in the
   [positioning document](positioning.md)'s claim that "the
   type system is sound, not just convenient".
 
@@ -368,5 +367,5 @@ is the workshop-paper budget.
   module rather than function granularity; the comparison
   belongs in the related-work section of the paper.
 
-(Full references list to be assembled at thesis-writeup time.
-This is a sketch.)
+(Full references list to be assembled when this document
+graduates from sketch to publishable writeup.)

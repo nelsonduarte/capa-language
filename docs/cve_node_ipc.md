@@ -207,7 +207,7 @@ builds, transparency logs, multi-maintainer review.
 
 ---
 
-## The thesis lesson
+## The honest lesson
 
 The honest version of the Capa claim is:
 
@@ -223,9 +223,10 @@ typosquats) is structurally impossible. The second class
 (node-ipc, xz-utils where the malicious code mimics legitimate
 authority) is mitigated, not solved.
 
-A defensible thesis acknowledges both. Capa raises the bar; the
-height to which it raises the bar is the thesis contribution; the
-ceiling above which it does not reach is the honest scope limit.
+A defensible position acknowledges both. Capa raises the bar;
+the height to which it raises the bar is the contribution; the
+ceiling above which it does not reach is the honest scope
+limit.
 
 ---
 

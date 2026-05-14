@@ -20,7 +20,7 @@
 // (modulo whitespace). Demonstrated on five canonical SPDX
 // expressions from real packages.
 //
-// What this shows for the thesis:
+// What this example shows:
 //
 // - Capa parsing a structured input format other than its own
 //   source. A recursive-descent parser in 150 lines, with

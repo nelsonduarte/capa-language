@@ -12,8 +12,8 @@ remote-flag overrides) in two forms:
   the Capa equivalent: the same logic, split into functions
   whose signatures declare exactly the capabilities they need.
 
-The pair is the smallest possible artefact for the empirical
-claim in the thesis: **the capability-aware SBOM is a strict
+The pair is the smallest reproducible artefact for the
+information-gain claim: **the capability-aware SBOM is a strict
 information gain over a PURL-only SBOM**. The naive Python
 version is real-world-shaped (any number of microservices have
 exactly this loader pattern); the Capa version is what the
@@ -159,8 +159,8 @@ python -m capa --cyclonedx examples/empirical_config.capa
 ```
 
 The Capa side runs in 50 ms; the SBOM emits in another 50 ms.
-A thesis chapter that cites this comparison can do so with one
-artefact, one command, one reproducible diff.
+Anyone citing this comparison can do so with one artefact, one
+command, one reproducible diff.
 
 ---
 
@@ -172,8 +172,7 @@ Three honest scoping notes:
    mechanism. A real empirical study would transliterate
    multiple real-world libraries (preferably ones with known
    capability creep across versions) and report quantitative
-   results. That is on the thesis backlog; this is the
-   micro-validation.
+   results. That is future work; this is the micro-validation.
 
 2. **The Capa version is hand-written.** The transliteration
    is not automatic. Future work on a Python-to-Capa
@@ -195,8 +194,7 @@ Three honest scoping notes:
 ## Pointer
 
 This document is referenced from the headline contribution
-table in [`docs/cra.md`](cra.md) and the experimental section
-of the thesis. The companion benchmark suite
-([`benchmarks/README.md`](../benchmarks/README.md)) provides
-the *performance* side of the practicality claim; this
-document provides the *information-gain* side.
+table in [`docs/cra.md`](cra.md). The companion benchmark
+suite ([`benchmarks/README.md`](../benchmarks/README.md))
+provides the *performance* side of the practicality claim;
+this document provides the *information-gain* side.

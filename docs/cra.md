@@ -2,10 +2,8 @@
 
 A focused mapping of Capa's machinery onto the specific
 articles and annex items of Regulation (EU) 2024/2847, the
-[Cyber Resilience Act][cra-text] (CRA). Written for the
-thesis chapter on SBOM Governance under CRA; included in the
-repo so the technical claims are reviewable against the
-artefact.
+[Cyber Resilience Act][cra-text] (CRA). Included in the repo
+so the technical claims are reviewable against the artefact.
 
 > The CRA's core ask, in plain language: products with digital
 > elements placed on the EU market must be *secure by design*,
@@ -168,8 +166,7 @@ already requires.
 
 ## What Capa does *not* solve under CRA
 
-Listed plainly, because the thesis chapter has to be honest
-about scope:
+Listed plainly, so the scope is honest:
 
 - **Vulnerability disclosure (Article 13, Annex I Part II
   (4)-(7)).** Organisational: dedicated channels, CSIRT
@@ -225,10 +222,10 @@ satisfied. It does not displace conformity assessment,
 vulnerability disclosure, security-update distribution, or
 incident notification.
 
-The thesis chapter on SBOM Governance under CRA can cite this
-mapping as the *technical artefact* the chapter argues for,
-and the [positioning document](positioning.md) as the
-honest description of where the contribution sits in the
+Anyone arguing that capability-typed source belongs in the
+CRA-aligned toolbox can cite this mapping as the technical
+artefact, and the [positioning document](positioning.md) as
+the honest description of where the contribution sits in the
 broader landscape of supply-chain defences.
 
 ---
