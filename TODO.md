@@ -368,17 +368,22 @@ items here so they stay visible:
     `(class_name, op_name)` to a module-level list. The
     test transpiles a generated program, execs it in-process
     with `__name__ == "__main__"`, reads the trace, and
-    asserts `runtime_classes ⊆ manifest_classes`. The
-    strategy in phase 2 only uses Stdio, so the assertion
-    is trivially `{Stdio} ⊆ {Stdio}`; the *scaffold* is
-    what matters and now exists.
-  **Phase 3.5 pending**: extend the strategy to thread
-  `Net` / `Fs` / `Env` capabilities through `main` and
-  exercise them with `net.allows(host)`, `fs.exists(path)`,
-  `env.get(name)` style calls so the inclusion is
-  non-trivial. With instrumented mock backends so the
-  property test does not actually touch the network or
-  filesystem.
+    asserts `runtime_classes ⊆ manifest_classes`.
+  - Phase 3.5: a second strategy ``_program_with_caps``
+    threads a random subset of `{Fs, Net, Env, Clock, Random}`
+    through `main` and exercises each declared capability
+    with a read-only probe (`Fs.allows`, `Net.allows`,
+    `Env.allows`, `Clock.now_secs`, `Random.float_unit`). The
+    test exercises non-trivial inclusions like
+    `{Stdio, Net, Fs} ⊆ {Stdio, Net, Fs}`. The probes are
+    pure queries with no filesystem or network side effects,
+    so the property test stays self-contained.
+  **Phase 3.6 pending**: bodies that go beyond a single
+  probe per capability (chained restrict_to attenuations,
+  capability passing through helper functions, attenuated
+  capability re-used after consumption). Each adds shape to
+  the trace and gives Hypothesis a richer search space for
+  whatever soundness regression we want to lay tripwires for.
 - [ ] **`Range<Int>` as a distinct type from `List<Int>`**. The
   for-loop transpiler fix is a stop-gap that closed the urgent
   memory bug; the long-term fix is a separate type with its

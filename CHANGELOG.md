@@ -57,6 +57,24 @@ breaking changes and the discipline is still being shaped.
   needs. Regression test in
   `tests/test_transpiler.py::test_cve_xz_utils`.
 
+- **Property-based testing phase 3.5**: the
+  `runtime_caps ⊆ manifest_caps` property is now exercised on
+  *non-trivial* inclusions. A new Hypothesis strategy
+  `_program_with_caps` threads a random subset of
+  `{Fs, Net, Env, Clock, Random}` through `main`'s parameter
+  list (alongside the mandatory `Stdio`) and emits one
+  read-only probe per declared capability so each is exercised
+  at least once. The probes are
+  `Fs.allows`, `Net.allows`, `Env.allows`, `Clock.now_secs`,
+  `Random.float_unit`, each a pure query with no real
+  filesystem or network side effect, so the test stays
+  self-contained. New test method
+  `TestRuntimeSubsetOfManifest.test_runtime_classes_subset_with_multiple_caps`
+  runs 50 examples per CI run; sampling typically produces
+  10 to 15 distinct main-signature shapes per run. With this
+  the citable thesis property has actual fuzz coverage, not
+  just a scaffold.
+
 - **Property-based testing phase 3 (minimal)**: the dynamic
   counterpart of Theorem 2 from `docs/semantics.md`. New
   module `capa/runtime/_trace.py` provides an opt-in
