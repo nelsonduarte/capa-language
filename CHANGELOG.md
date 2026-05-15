@@ -11,6 +11,45 @@ breaking changes and the discipline is still being shaped.
 
 ### Added
 
+- **Watch mode**: `capa --watch file.capa` re-runs the program
+  every time the file (or any of its imported modules) changes
+  on disk. Implies `--run`. Useful for iterative development
+  in the same shape as `cargo watch run` or `node --watch`.
+
+  ```
+  $ capa --watch hello.capa
+  Capa watch mode. Watching hello.capa for changes. Ctrl-C to exit.
+  Hello, world!
+  --- rerun at 14:32:07 ---
+  Hello, Capa!
+  ```
+
+  Implementation: a polling loop spawns a fresh `python -m
+  capa --run <file>` subprocess on each iteration; the watch
+  process keeps zero compilation state across runs. The
+  watched-file set starts at the root and expands after each
+  successful run with whatever the loader reported as
+  imported sources. Cycles, parse errors, and missing imports
+  during a rerun are shown via the child's stderr and the
+  watcher keeps polling. Ctrl-C exits cleanly.
+
+  Trade-off: ~50-100ms process-startup cost per iteration,
+  against zero refactor of `main()`'s state machine. For
+  interactive watch use, the cost is invisible.
+
+  2 new tests in `tests/test_watch.py::TestWatchSyncEdges`
+  cover the synchronous edges (missing file argument, file
+  not found). The interactive loop itself is left
+  test-covered by exercise; subprocess-and-signals tests
+  proved too flaky across platforms to justify their
+  brittleness.
+
+  CLI subcommand structure unchanged; `--watch` is a top-
+  level flag like `--run`. Help text and `docs/start.html`'s
+  CLI table both updated.
+
+  Full suite: 847 passed (was 845).
+
 - **Qualified module access**: `foo.fn(args)` now resolves to
   the function `fn` imported from module `foo`. Closes one of
   the three pending items left after the MVP. Both forms

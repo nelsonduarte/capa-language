@@ -63,6 +63,11 @@ while writing real Capa programs.
   as a single-line match arm body (`_ -> sum = sum + x`).
   Landed 2026-05-15. 8 new tests.
 
+- [x] **Watch mode** (`capa --watch file.capa`): re-runs the
+  program when the file or any imported module changes on
+  disk. Polling loop + per-iteration subprocess to keep zero
+  state between runs. Landed 2026-05-15. 2 new tests.
+
 - [x] **Option / Result combinator gaps**: `Option.filter`,
   `Option.or_else`, `Result.or_else`, `Result.ok`,
   `Result.err`. Closes the gap with standard Rust/Swift/OCaml

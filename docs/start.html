@@ -302,6 +302,10 @@ Hello, Capa!</code></pre>
                 <td>Emit a JSON capability manifest, a CycloneDX 1.5 SBOM, an SPDX 2.3 SBOM, a CycloneDX VEX document, or a SLSA Build L1 provenance attestation. The five together form the supply-chain governance triangle: SBOM (what is in the box, with per-function capabilities), VEX (per-function exploitability claims), and provenance (in-toto attestation of the build).</td>
             </tr>
             <tr>
+                <td><code>--watch</code></td>
+                <td>Re-run the program every time it (or any of its imported modules) changes on disk. Implies <code>--run</code>. Ctrl-C to exit. Pairs well with the language tour for iterative experimentation.</td>
+            </tr>
+            <tr>
                 <td><code>lsp</code></td>
                 <td>Start the language server on stdio (subcommand, requires <code>pip install -e '.[lsp]'</code>). See the next section for editor configuration.</td>
             </tr>

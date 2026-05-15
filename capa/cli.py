@@ -13,6 +13,8 @@ the lexer processes the file without errors.
 """
 
 import argparse
+import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -134,6 +136,14 @@ def main() -> int:
         help="transpile and execute the program (calls main with capabilities)",
     )
     parser.add_argument(
+        "--watch",
+        action="store_true",
+        help=(
+            "re-run the program every time it (or any of its imported "
+            "modules) changes on disk. Implies --run. Ctrl-C to exit."
+        ),
+    )
+    parser.add_argument(
         "--manifest",
         action="store_true",
         help=(
@@ -223,6 +233,21 @@ def main() -> int:
         help="omit layout tokens (NEWLINE/INDENT/DEDENT/EOF) in the output",
     )
     args = parser.parse_args()
+
+    # --watch wraps the regular --run flow in a re-run-on-change
+    # loop. Implemented as an outer process that spawns a fresh
+    # `capa --run <file>` subprocess on each iteration; the watch
+    # loop just polls mtimes. Trade-off: ~50-100ms process startup
+    # per iteration, against zero refactor of main()'s state
+    # machine.
+    if args.watch:
+        if not args.file:
+            print(
+                "capa: --watch requires a file argument",
+                file=sys.stderr,
+            )
+            return 2
+        return _run_watch_loop(args.file)
 
     if args.stdin:
         source = sys.stdin.read()
@@ -468,6 +493,108 @@ def main() -> int:
             print(f"{pos}  {kind_name:<14}  {text_repr}{value_repr}")
 
     return 0
+
+
+def _run_watch_loop(filename: str) -> int:
+    """Re-run ``capa --run <filename>`` whenever the target file or
+    any of its imported modules changes on disk.
+
+    Strategy: spawn a fresh ``python -m capa --run <file>``
+    subprocess on each iteration so the watch process keeps zero
+    compilation state across runs. The set of watched files
+    starts at the root and expands after each successful run with
+    whatever the loader reported as imported sources.
+
+    Ctrl-C exits cleanly (returning 0). A compile error during
+    a rerun is shown via the subprocess's own stderr; the
+    watcher keeps polling.
+    """
+    import time
+    from datetime import datetime
+    from pathlib import Path
+
+    target = Path(filename)
+    if not target.exists():
+        print(f"capa: --watch: file not found: {filename}", file=sys.stderr)
+        return 2
+
+    print(
+        f"Capa watch mode. Watching {filename} for changes. "
+        f"Ctrl-C to exit.",
+        flush=True,
+    )
+
+    watched: dict[str, float] = {}
+
+    def _mtime(p: str) -> float:
+        try:
+            return os.stat(p).st_mtime
+        except OSError:
+            return 0.0
+
+    watched[str(target.resolve())] = _mtime(str(target))
+
+    def _expand_watched_after_run() -> None:
+        # After a successful run, ask the loader which files it
+        # touched and add their mtimes to the watch set. Compile
+        # errors don't update the set (the previous set stays
+        # in place).
+        try:
+            from capa.loader import ModuleLoader
+            source = target.read_text(encoding="utf-8")
+            loader = ModuleLoader()
+            linked = loader.load_root(source, str(target))
+            for f in linked.sources.keys():
+                f_abs = str(Path(f).resolve())
+                if f_abs not in watched:
+                    watched[f_abs] = _mtime(f_abs)
+        except Exception:
+            # Any failure here: parse error in the file, missing
+            # import, etc. Keep watching what we already had.
+            pass
+
+    def _do_run(separator: bool) -> None:
+        if separator:
+            # ANSI clear-screen + home; falls back to plain new-
+            # lines on terminals that ignore ANSI.
+            sys.stdout.write("\x1b[2J\x1b[H")
+            sys.stdout.write(
+                f"--- rerun at {datetime.now().strftime('%H:%M:%S')} ---\n"
+            )
+            sys.stdout.flush()
+        try:
+            subprocess.run(
+                [sys.executable, "-m", "capa", "--run", str(target)],
+            )
+        except KeyboardInterrupt:
+            # Ctrl-C during the child's run: re-raise so the
+            # watcher exits cleanly.
+            raise
+
+    # First run is unconditional.
+    try:
+        _do_run(separator=False)
+    except KeyboardInterrupt:
+        print()
+        return 0
+    _expand_watched_after_run()
+
+    # Poll loop.
+    try:
+        while True:
+            time.sleep(0.2)
+            changed_any = False
+            for f in list(watched.keys()):
+                m = _mtime(f)
+                if m != watched[f]:
+                    watched[f] = m
+                    changed_any = True
+            if changed_any:
+                _do_run(separator=True)
+                _expand_watched_after_run()
+    except KeyboardInterrupt:
+        print()
+        return 0
 
 
 if __name__ == "__main__":
