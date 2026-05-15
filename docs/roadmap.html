@@ -315,14 +315,32 @@
      NOT planned
 ===================================================== -->
 <section>
-    <h2>Explicitly <em>not</em> planned for v1</h2>
+    <h2>Known limitations</h2>
 
-    <p>For honesty and scope control:</p>
+    <p>Capa is in alpha. Things a real adopter should know are not yet there:</p>
+
+    <ul class="limitations-list">
+        <li>
+            <strong>No module system.</strong> The <code>import</code> keyword is parsed but the analyzer rejects it. Programs are single-file in practice. Designing a Capa-native module system that preserves the capability discipline across file boundaries is real work and has not been started. <em>Status: pending (P3).</em>
+        </li>
+        <li>
+            <strong>No package manager or registry.</strong> There is no <code>capa add &lt;dep&gt;</code> and no <code>capalang.org/registry</code>. Library reuse means copying source between projects. <em>Status: pending; only meaningful after a module system exists (P3).</em>
+        </li>
+        <li>
+            <strong>Python backend only.</strong> Capa transpiles to Python and runs on CPython. There is no LLVM, Cranelift, or any native backend. Performance is Python's plus the overhead measured in <a href="https://github.com/nelsonduarte/capa/blob/main/benchmarks/README.md">the benchmark suite</a> (1.00x to 1.45x against hand-Python). <em>Status: far future; not in v1 scope.</em>
+        </li>
+        <li>
+            <strong>No async / await.</strong> The keywords are reserved by the lexer; the parser rejects them. Async semantics that interact correctly with capability discipline is a research question on its own. <em>Status: explicitly not in v1.</em>
+        </li>
+        <li>
+            <strong>No REPL.</strong> A previous prototype was removed; reimplementation is deferred until the language is stable and there is demonstrated demand. Watch-mode (<code>capa --run</code> on file change) is similarly deferred. <em>Status: pending (P2).</em>
+        </li>
+    </ul>
+
+    <p>Additionally, the following are explicitly not in v1:</p>
 
     <ul>
-        <li><strong>LLVM backend.</strong> Was Phase 4 of the original design roadmap. Far future; not a priority while Python is a perfectly serviceable target.</li>
-        <li><strong>Self-hosting.</strong> Was Phase 5. Very far future. The compiler is unlikely to be rewritten in Capa before there is a working Capa community.</li>
-        <li><strong>Full async / await.</strong> Reserved keywords exist; no implementation. Async semantics that interact correctly with capabilities is a real research question and a large lift.</li>
+        <li><strong>Self-hosting.</strong> Was Phase 5 of the original design roadmap. Very far future. The compiler is unlikely to be rewritten in Capa before there is a working Capa community.</li>
         <li><strong>Tail-call optimisation.</strong> The transpiler emits regular Python calls; recursion is bounded by the CPython stack.</li>
         <li><strong>Garbage collection beyond CPython's.</strong> Capa inherits whatever the Python runtime gives it.</li>
         <li><strong>Custom syntax extensions / macros.</strong> Capa is a fixed grammar by design. The discipline depends on the analyzer being able to read every program completely.</li>

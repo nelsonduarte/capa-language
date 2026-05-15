@@ -9,6 +9,35 @@ impact within the next 1-2 milestones · **P2** = nice to have ·
 
 ---
 
+## Known limitations (visible to adopters)
+
+What an adopter should know is not yet there. The full reasoning
+per item is scattered through the rest of this file; this section
+is the consolidated honest list.
+
+- **No module system.** `import` is parsed but the analyzer
+  rejects it. Programs are single-file in practice. (P3, line
+  196.)
+- **No package manager or registry.** No way to share or
+  reuse Capa libraries beyond copying source. Waits on the
+  module system. (P3, line 308.)
+- **No native backend.** Capa transpiles to Python; runtime
+  is CPython. The benchmark suite measures 1.00x to 1.45x
+  overhead vs hand-Python. (Far future; "not in v1" at line
+  744.)
+- **No async / await.** Keywords are reserved; no
+  implementation. Capability-aware async is a research
+  question on its own. ("Not in v1" at line 746.)
+- **No REPL.** A prototype was deleted; reimplementation
+  deferred until the language is stable and demand exists.
+  (P2, line 310.)
+
+Surfacing this list in `docs/roadmap.html` so adopters see it
+before adopting. The detail-level entries below stay as the
+source of truth.
+
+---
+
 ## Language development
 
 Small focused additions, prioritised by friction encountered
