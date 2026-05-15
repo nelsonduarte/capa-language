@@ -60,6 +60,27 @@ def color_for(kind: TokenKind) -> str:
     return C.YELLOW
 
 
+def _capa_search_paths() -> list[Path]:
+    """Return additional module-search roots from the ``CAPA_PATH``
+    environment variable. Entries are separated by ``os.pathsep``
+    (``;`` on Windows, ``:`` elsewhere). Empty entries and
+    non-existent directories are silently skipped, so a typo in
+    ``CAPA_PATH`` does not turn into a noisy error on every run.
+    """
+    raw = os.environ.get("CAPA_PATH", "")
+    if not raw:
+        return []
+    out: list[Path] = []
+    for entry in raw.split(os.pathsep):
+        entry = entry.strip()
+        if not entry:
+            continue
+        p = Path(entry).expanduser()
+        if p.is_dir():
+            out.append(p)
+    return out
+
+
 def _dispatch_init(argv: list[str]) -> int:
     """Handle ``python -m capa init [name]``.
 
@@ -324,7 +345,9 @@ def main() -> int:
                 # modules become extra Items in the linked AST.
                 from capa.loader import ModuleLoader, LoaderError
                 try:
-                    loader = ModuleLoader()
+                    loader = ModuleLoader(
+                        search_paths=_capa_search_paths(),
+                    )
                     linked = loader.load_root(source, filename)
                     module = linked.module
                 except LoaderError as le:
@@ -542,7 +565,7 @@ def _run_watch_loop(filename: str) -> int:
         try:
             from capa.loader import ModuleLoader
             source = target.read_text(encoding="utf-8")
-            loader = ModuleLoader()
+            loader = ModuleLoader(search_paths=_capa_search_paths())
             linked = loader.load_root(source, str(target))
             for f in linked.sources.keys():
                 f_abs = str(Path(f).resolve())

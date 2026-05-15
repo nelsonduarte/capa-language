@@ -352,6 +352,163 @@ class TestQualifiedModuleAccess(_TempDirMixin, unittest.TestCase):
         self.assertEqual(linked.module_exports["util"], {"a", "b", "T"})
 
 
+class TestSearchPathResolution(_TempDirMixin, unittest.TestCase):
+    """``ModuleLoader(search_paths=[...])`` resolves imports that
+    do not exist relative to the importer. Used by the CLI to honor
+    the ``CAPA_PATH`` env var for stdlib-style modules.
+    """
+
+    def test_module_found_via_search_path(self):
+        # Module lives in a separate "lib" tree, not next to root.
+        lib_dir = self._tmp / "lib"
+        lib_dir.mkdir(parents=True, exist_ok=True)
+        (lib_dir / "stdthing.capa").write_text(
+            "fun answer() -> Int\n    return 42\n",
+            encoding="utf-8",
+        )
+        root = self._write(
+            "proj/root.capa",
+            "import stdthing\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"${answer()}\")\n"
+        )
+        loader = ModuleLoader(search_paths=[lib_dir])
+        linked = loader.load_root(root.read_text(), str(root))
+        names = {
+            item.name for item in linked.module.items
+            if isinstance(item, A.FunDecl)
+        }
+        self.assertIn("answer", names)
+        self.assertIn("main", names)
+
+    def test_importer_local_shadows_search_path(self):
+        # Same module name in both places. Proximity wins.
+        lib_dir = self._tmp / "lib"
+        lib_dir.mkdir(parents=True, exist_ok=True)
+        (lib_dir / "util.capa").write_text(
+            "fun who() -> String\n    return \"lib\"\n",
+            encoding="utf-8",
+        )
+        self._write(
+            "proj/util.capa",
+            "fun who() -> String\n    return \"local\"\n"
+        )
+        root = self._write(
+            "proj/root.capa",
+            "import util\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(who())\n"
+        )
+        loader = ModuleLoader(search_paths=[lib_dir])
+        linked = loader.load_root(root.read_text(), str(root))
+        # The local util.capa's `who` should be the one that linked.
+        # We verify by transpiling + running and checking stdout.
+        result = subprocess.run(
+            [sys.executable, "-m", "capa", "--run", str(root)],
+            capture_output=True, text=True, encoding="utf-8",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "local\n")
+
+    def test_missing_import_lists_tried_paths(self):
+        lib_a = self._tmp / "libA"
+        lib_b = self._tmp / "libB"
+        lib_a.mkdir()
+        lib_b.mkdir()
+        root = self._write(
+            "root.capa",
+            "import ghost\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"hi\")\n"
+        )
+        loader = ModuleLoader(search_paths=[lib_a, lib_b])
+        with self.assertRaises(LoaderError) as ctx:
+            loader.load_root(root.read_text(), str(root))
+        msg = ctx.exception.message
+        self.assertIn("cannot resolve", msg)
+        self.assertIn("ghost", msg)
+        # Both search paths should appear in the diagnostic.
+        self.assertIn("libA", msg)
+        self.assertIn("libB", msg)
+
+    def test_cli_honors_capa_path_env(self):
+        # End-to-end: CAPA_PATH env var lets `capa --run` resolve an
+        # import that is not next to the source file.
+        lib_dir = self._tmp / "lib"
+        lib_dir.mkdir(parents=True, exist_ok=True)
+        (lib_dir / "greeter.capa").write_text(
+            "fun hello() -> String\n    return \"from stdlib\"\n",
+            encoding="utf-8",
+        )
+        root = self._write(
+            "proj/root.capa",
+            "import greeter\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(hello())\n"
+        )
+        import os as _os
+        env = dict(_os.environ)
+        env["CAPA_PATH"] = str(lib_dir)
+        result = subprocess.run(
+            [sys.executable, "-m", "capa", "--run", str(root)],
+            capture_output=True, text=True, encoding="utf-8",
+            env=env,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "from stdlib\n")
+
+    def test_cli_capa_path_multiple_entries(self):
+        # CAPA_PATH supports os.pathsep-separated entries; the
+        # second one is the one that holds the module.
+        lib_a = self._tmp / "lib_a"
+        lib_b = self._tmp / "lib_b"
+        lib_a.mkdir()
+        lib_b.mkdir()
+        (lib_b / "deep.capa").write_text(
+            "fun deep_val() -> Int\n    return 11\n",
+            encoding="utf-8",
+        )
+        root = self._write(
+            "proj/root.capa",
+            "import deep\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"${deep_val()}\")\n"
+        )
+        import os as _os
+        env = dict(_os.environ)
+        env["CAPA_PATH"] = _os.pathsep.join([str(lib_a), str(lib_b)])
+        result = subprocess.run(
+            [sys.executable, "-m", "capa", "--run", str(root)],
+            capture_output=True, text=True, encoding="utf-8",
+            env=env,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "11\n")
+
+    def test_cli_empty_capa_path_is_silent(self):
+        # An empty / missing CAPA_PATH must not change behavior.
+        self._write(
+            "util.capa",
+            "fun ok() -> Int\n    return 1\n",
+        )
+        root = self._write(
+            "root.capa",
+            "import util\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"${ok()}\")\n"
+        )
+        import os as _os
+        env = dict(_os.environ)
+        env.pop("CAPA_PATH", None)
+        result = subprocess.run(
+            [sys.executable, "-m", "capa", "--run", str(root)],
+            capture_output=True, text=True, encoding="utf-8",
+            env=env,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "1\n")
+
+
 class TestModuleSystemEndToEnd(_TempDirMixin, unittest.TestCase):
     """End-to-end: capa --run with an imported file produces the
     expected output and exit code 0.

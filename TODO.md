@@ -16,12 +16,13 @@ per item is scattered through the rest of this file; this section
 is the consolidated honest list.
 
 - **Module system.** `import foo.bar` resolves to
-  `<importer-dir>/foo/bar.capa`. Qualified access
+  `<importer-dir>/foo/bar.capa` first, then to each entry of
+  the `CAPA_PATH` env var (proximity wins). Qualified access
   (`foo.fn()`, `import foo as F; F.fn()`), transitive
   imports, cycle detection, name conflicts, and per-file
   error-snippet rendering all work. Top-level declarations
   also merge unqualified for ergonomics. **Pending**: `pub`
-  enforcement, stdlib paths. (P2, line 196.)
+  enforcement. (P2, line 196.)
 - **No package manager or registry.** No way to share or
   reuse Capa libraries beyond copying source. Waits on the
   module system. (P3, line 308.)
@@ -67,6 +68,15 @@ while writing real Capa programs.
   program when the file or any imported module changes on
   disk. Polling loop + per-iteration subprocess to keep zero
   state between runs. Landed 2026-05-15. 2 new tests.
+
+- [x] **Stdlib paths via `CAPA_PATH`**. `ModuleLoader` now
+  takes a `search_paths: list[Path]`; resolution tries
+  importer-relative first (proximity wins) and then each
+  search root in order. CLI reads `CAPA_PATH` from the
+  environment, splits on `os.pathsep`, and passes the
+  existing directories through to the loader. Missing-import
+  diagnostics now list every path that was tried. Landed
+  2026-05-15. 6 new tests at `tests/test_loader.py`.
 
 - [x] **Option / Result combinator gaps**: `Option.filter`,
   `Option.or_else`, `Result.or_else`, `Result.ok`,
@@ -241,16 +251,17 @@ to public.
 - [ ] **Visibility (`pub`)**, KW_PUB is parsed but not enforced.
   Waits on the qualified-access milestone. P2
 - [~] **Capa module system**. `import foo.bar` resolves to
-  `<importer-dir>/foo/bar.capa`. Both unqualified (`fn()`)
-  and qualified (`foo.fn()`, `import foo as F; F.fn()`)
-  access work. Transitive imports, cycle detection, name
-  conflicts, per-file error-snippet rendering all in.
-  Implementation at `capa/loader.py` + `capa/cli.py`
-  integration; 16 tests at `tests/test_loader.py`.
-  **Pending for the full module system**: (a) `pub`
-  visibility enforcement (KW_PUB already parses; needs
-  analyzer support), (b) stdlib paths resolved from a
-  configured root. P2.
+  `<importer-dir>/foo/bar.capa` (proximity), then to each
+  entry of the `CAPA_PATH` env var (`os.pathsep`-separated).
+  Both unqualified (`fn()`) and qualified (`foo.fn()`,
+  `import foo as F; F.fn()`) access work. Transitive
+  imports, cycle detection, name conflicts, per-file
+  error-snippet rendering, and search-path resolution all
+  in. Implementation at `capa/loader.py` + `capa/cli.py`
+  integration; 22 tests at `tests/test_loader.py`.
+  **Pending for the full module system**: `pub` visibility
+  enforcement (KW_PUB already parses; needs analyzer
+  support). P2.
 - [ ] **Refinement types**, explicitly future in the WhitePaper. P3
 
 ---

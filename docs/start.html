@@ -328,6 +328,17 @@ $ capa --transpile examples/hello.capa | head -20</code></pre>
     <p class="callout-note">
         Every invocation above also works as <code>python -m capa &lt;args&gt;</code> if the <code>capa</code> command is not on your <code>PATH</code> (e.g. you cloned the repo but did not <code>pip install -e .</code>).
     </p>
+
+    <h3>Module search paths</h3>
+
+    <p>The loader resolves <code>import foo.bar</code> against the importing file's directory first. To pull in modules that live elsewhere on disk (stdlib-style libraries, shared internal modules), set <code>CAPA_PATH</code> to one or more additional roots separated by your platform's path separator (<code>;</code> on Windows, <code>:</code> elsewhere). The importer-relative path always wins when the same module name exists in both places, so the env var never silently shadows a project-local file.</p>
+
+<pre><code>$ export CAPA_PATH=/usr/local/share/capa:./libs
+$ capa --run app.capa
+# 'import greeter' first tries ./greeter.capa, then
+# ./libs/greeter.capa, then /usr/local/share/capa/greeter.capa.</code></pre>
+
+    <p>If no candidate exists, the diagnostic lists every path that was tried so the right next step (install the dependency, fix the import, adjust <code>CAPA_PATH</code>) is obvious.</p>
 </section>
 
 <!-- =====================================================

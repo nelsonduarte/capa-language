@@ -21,12 +21,21 @@ This is the **MVP** module system:
 
 What this MVP does **not** do:
 
-- Per-module namespacing or qualified access (no ``foo.bar.fn``).
 - ``pub`` visibility enforcement (every top-level item is exported).
-- Stdlib path resolution (only relative paths from importer dir).
 - Cross-file error messages with the imported file's source
   snippet rendered (positions are correct; snippet may be from
   the wrong file). Acceptable for v1, a v2 fix.
+
+Resolution order for ``import foo.bar``:
+
+1. ``<importer-dir>/foo/bar.capa`` (proximity wins, same as the
+   first MVP).
+2. ``<root>/foo/bar.capa`` for each ``root`` in the configured
+   ``search_paths`` (typically passed by the CLI after reading the
+   ``CAPA_PATH`` environment variable).
+
+The first existing candidate is returned. If none match, the
+LoaderError lists every path that was tried.
 """
 
 from __future__ import annotations
@@ -94,7 +103,10 @@ class ModuleLoader:
     file from two places does the I/O + parsing exactly once.
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        search_paths: Optional[list[Path]] = None,
+    ) -> None:
         self._cache: dict[Path, A.Module] = {}
         self._sources: dict[Path, str] = {}
         self._loading: list[Path] = []  # stack for cycle detection
@@ -103,6 +115,11 @@ class ModuleLoader:
         # Powers the post-link "qualified call" rewrite (foo.fn()
         # -> fn() when foo is a registered alias).
         self._module_exports: dict[str, set[str]] = {}
+        # Additional directories searched (in order) after the
+        # importer-relative path fails to resolve. Typically the
+        # CLI populates this from the ``CAPA_PATH`` env var so
+        # stdlib-style modules can live outside the project tree.
+        self._search_paths: list[Path] = list(search_paths or [])
 
     # -------- public entry points --------
 
@@ -161,10 +178,23 @@ class ModuleLoader:
 
     # -------- internals --------
 
-    def _resolve(self, path_parts: list[str], from_dir: Path) -> Path:
-        """Resolve ``import foo.bar`` to ``<from_dir>/foo/bar.capa``."""
+    def _candidate_paths(
+        self, path_parts: list[str], from_dir: Path,
+    ) -> list[Path]:
+        """Every path the loader will try to resolve ``import
+        foo.bar`` to, in priority order. Importer-relative comes
+        first so a project-local module always shadows one of the
+        same name on the search path.
+        """
         rel = Path(*path_parts).with_suffix(".capa")
-        return (from_dir / rel).resolve()
+        return [from_dir / rel] + [root / rel for root in self._search_paths]
+
+    def _resolve(self, path_parts: list[str], from_dir: Path) -> Optional[Path]:
+        """Return the first existing candidate path, or ``None``."""
+        for c in self._candidate_paths(path_parts, from_dir):
+            if c.exists():
+                return c.resolve()
+        return None
 
     def _link(
         self,
@@ -228,6 +258,19 @@ class ModuleLoader:
     ) -> None:
         target = self._resolve(imp.path, module_dir)
 
+        if target is None:
+            # No candidate matched. Report every path that was
+            # tried so the user can tell whether they need to
+            # adjust CAPA_PATH or the import statement itself.
+            joined = ".".join(imp.path)
+            tried = self._candidate_paths(imp.path, module_dir)
+            tried_msg = "; ".join(str(p) for p in tried)
+            raise LoaderError(
+                f"cannot resolve 'import {joined}': tried {tried_msg}",
+                pos=imp.pos,
+                filename=str(module_path),
+            )
+
         if target in seen_paths:
             # Already linked: this is the multi-import deduplication
             # path. No work to do.
@@ -237,15 +280,6 @@ class ModuleLoader:
             cycle = " -> ".join(str(p) for p in self._loading) + f" -> {target}"
             raise LoaderError(
                 f"cyclic import: {cycle}",
-                pos=imp.pos,
-                filename=str(module_path),
-            )
-
-        if not target.exists():
-            joined = ".".join(imp.path)
-            raise LoaderError(
-                f"cannot resolve 'import {joined}': "
-                f"expected file at {target}",
                 pos=imp.pos,
                 filename=str(module_path),
             )

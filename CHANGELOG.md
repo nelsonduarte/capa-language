@@ -11,6 +11,39 @@ breaking changes and the discipline is still being shaped.
 
 ### Added
 
+- **Stdlib paths via `CAPA_PATH`**: the module loader now
+  accepts a configurable list of search roots. After failing to
+  find an import relative to the importer's directory, it tries
+  each entry in turn; proximity wins so a project-local module
+  always shadows one of the same name on the search path.
+
+  ```sh
+  $ export CAPA_PATH=/usr/local/share/capa:./libs
+  $ capa --run app.capa     # 'import greeter' now resolves to
+                            # ./libs/greeter.capa (or /usr/local/...)
+                            # if no greeter.capa sits next to app.capa
+  ```
+
+  Entries are separated by `os.pathsep` (`;` on Windows, `:`
+  elsewhere). Empty entries and non-existent directories are
+  silently skipped, so a stale `CAPA_PATH` does not turn into
+  a noisy error on every run. Missing-import diagnostics now
+  list every path that was tried, so it is obvious whether
+  the fix is to install the dependency, adjust `CAPA_PATH`,
+  or correct the import statement itself.
+
+  No bundled stdlib ships yet; this is the resolution
+  mechanism that future stdlib modules will hang off of.
+
+  Implementation: `ModuleLoader(search_paths=[...])` accepts
+  the search roots; the CLI reads `CAPA_PATH` and passes the
+  existing directories to the loader (both in the regular
+  run/check path and inside the watch loop's mtime-expansion
+  pass). 6 new tests in
+  `tests/test_loader.py::TestSearchPathResolution`.
+
+  Full suite: 853 passed (was 847).
+
 - **Watch mode**: `capa --watch file.capa` re-runs the program
   every time the file (or any of its imported modules) changes
   on disk. Implies `--run`. Useful for iterative development
