@@ -1,18 +1,18 @@
 # Capa: Capability-Typed Source as a Foundation for Software Supply-Chain Governance
 
-**Working draft v1, 2026-05-15.** Target venue: PLAS (Programming
+**Working draft, 2026-05-15.** Target venue: PLAS (Programming
 Languages and Analysis for Security) workshop, or similar
 security-and-PL workshops at S&P / NDSS / EuroS&P. Workshop
 length, 6 to 8 pages in the standard ACM SIG format.
 
 **Author**: Nelson Duarte, ISLA Santarém / Independent.
 
-> This is a working draft, not a submission. Sections marked
-> with > status notes describe what still needs work. The
-> repository it documents is publicly available at
-> `https://github.com/nelsonduarte/capa`; all empirical artefacts
-> (CVE case studies, benchmarks, SBOM diff, regulatory mapping)
-> are reproducible from a single tagged release.
+> This is a working draft, not a submission. The repository
+> it documents is publicly available at
+> `https://github.com/nelsonduarte/capa`; all empirical
+> artefacts (CVE case studies, benchmarks, SBOM diff,
+> regulatory mapping) are reproducible from a single tagged
+> release.
 
 ---
 
@@ -21,8 +21,8 @@ length, 6 to 8 pages in the standard ACM SIG format.
 Software supply-chain attacks have escalated from incident to
 systemic risk: event-stream 2018, eslint-scope 2018,
 ua-parser-js 2021, torchtriton 2022, node-ipc 2022, and
-xz-utils 2024 collectively compromised millions of installs in
-a six-year window. Regulators have responded with mandatory
+xz-utils 2024 collectively affected millions of weekly installs
+in a six-year window. Regulators have responded with mandatory
 machine-readable Software Bill of Materials (SBOM) requirements
 under the EU Cyber Resilience Act, NIS2, DORA, and the US NIST
 Secure Software Development Framework. The SBOM, however,
@@ -33,19 +33,16 @@ compiler emits the full supply-chain governance artefact set
 (CycloneDX 1.5 SBOM, SPDX 2.3 SBOM, CycloneDX VEX, SLSA Build
 L1 provenance) at *per-function* granularity, grounded in the
 type system rather than in a separate static analyser. We
-report on six CVE case studies the discipline structurally
-rejects, a runtime-overhead benchmark suite (1.00x to 1.45x
-versus hand-Python on representative workloads), an empirical
-SBOM-diff micro-validation against an idiomatic Python
-implementation of the same workload, and a multi-jurisdiction
-mapping to five regulatory frameworks. The artefact is open
-source under the MIT licence.
+report on six CVE case studies (four structurally rejected,
+two partial losses), a runtime-overhead benchmark suite (1.00x
+to 1.45x versus hand-Python), an SBOM-diff micro-validation
+against an idiomatic Python implementation of the same workload,
+and a multi-jurisdiction mapping to five regulatory frameworks.
+The artefact is open source under the MIT licence.
 
 ---
 
 ## 1. Introduction
-
-> **Status**: complete first draft. Will tighten on revision.
 
 Most modern programming languages were designed in an era when
 **ambient authority** was a convenience. A function in Python,
@@ -115,29 +112,26 @@ regulatory artefacts the next decade will demand.
 
 We make four concrete claims:
 
-1. **The integration is technically feasible.** Section 5
+1. **The integration is technically feasible.** Section 4
    describes the implementation, a transpile-to-Python compiler
    in ~12k lines of hand-written Python.
 
-2. **The runtime overhead is acceptable.** Section 6.2 reports
+2. **The runtime overhead is acceptable.** Section 5.2 reports
    1.00x to 1.45x against hand-Python on representative
    workloads.
 
 3. **The structural discipline catches real attacks.** Section
-   6.1 transliterates six CVEs from the 2018-2024 window; four
-   are structurally rejected, two are partial losses that we
-   report honestly.
+   5.1 transliterates six CVEs from the 2018-2024 window; four
+   are structurally rejected, two are partial losses, reported
+   explicitly so the empirical claim is calibrated.
 
-4. **The artefact set maps to live regulation.** Section 7
+4. **The artefact set maps to live regulation.** Section 6
    maps each output to specific clauses of five frameworks
    (CRA, NIS2, DORA, NIST SSDF, OWASP SCVS).
 
 ---
 
 ## 2. Background and Related Work
-
-> **Status**: complete first draft. May need tightening for
-> length.
 
 ### 2.1. Capability typing in programming languages
 
@@ -177,9 +171,12 @@ provides per-module capability declarations as a runtime
 contract, the most credible production-aimed contender for the
 auditable-supply-chain pitch.
 
-None of these systems emit a CRA-aligned SBOM as a first-class
-compiler output. None emits VEX at function granularity. None
-maps explicitly to CRA / NIS2 / DORA / SSDF / SCVS.
+To the best of our knowledge, none of these systems emits a
+CRA-aligned SBOM as a first-class compiler output, none emits
+VEX at function granularity, and none maps explicitly to CRA /
+NIS2 / DORA / SSDF / SCVS in its documentation. Capa's
+contribution is this integration, not the underlying type
+discipline.
 
 ### 2.2. SBOM, VEX, and provenance formats
 
@@ -187,14 +184,14 @@ maps explicitly to CRA / NIS2 / DORA / SSDF / SCVS.
 are the two industry-adopted SBOM formats. **CycloneDX VEX**
 (integrated since 1.4) and **CSAF VEX** (OASIS, separate
 document) provide the schema for per-component exploitability
-claims. **SLSA Provenance v1.0** (CNCF, [slsa.dev]) and the
-**in-toto attestation** framework provide the build-time
-provenance schema; **Sigstore / cosign** provide the signing
-infrastructure that lifts SLSA L1 to L2 and beyond. The
-**OWASP Software Component Verification Standard** codifies a
-vendor-neutral graded checklist across six domains (Inventory,
-SBOM, Build Environment, Package Management, Component
-Analysis, Pedigree and Provenance).
+claims. **SLSA Provenance v1.0** and the **in-toto attestation**
+framework provide the build-time provenance schema;
+**Sigstore / cosign** provide the signing infrastructure that
+lifts SLSA L1 to L2 and beyond. The **OWASP Software Component
+Verification Standard** codifies a vendor-neutral graded
+checklist across six domains (Inventory, SBOM, Build
+Environment, Package Management, Component Analysis, Pedigree
+and Provenance).
 
 Tooling consuming these formats (Dependency-Track, Anchore,
 syft, grype, slsa-verifier) operates at *package* granularity.
@@ -220,14 +217,11 @@ The regulatory landscape Capa is built to serve:
   secure development; cited by Executive Order 14028.
 - **OWASP SCVS**, vendor-neutral, three verification levels.
 
-We map Capa's artefacts onto each in Section 7.
+We map Capa's artefacts onto each in Section 6.
 
 ---
 
 ## 3. The Capa Discipline
-
-> **Status**: complete first draft. Tightens with code excerpts
-> in the camera-ready version.
 
 Capa's capability discipline operates at three layers:
 
@@ -301,9 +295,6 @@ work.
 
 ## 4. Implementation
 
-> **Status**: complete first draft. May extend with
-> architecture diagram in revision.
-
 Capa is a hand-written transpiler in ~12k lines of Python 3.10+,
 split into eight subpackages (lexer, parser, analyzer,
 transpiler, runtime, manifest, docgen, capa_ast, lsp). It
@@ -350,9 +341,9 @@ Key implementation choices:
 
 ## 5. Empirical Evaluation
 
-> **Status**: complete first draft. The numbers and examples
-> are taken from artefacts already in the repository; nothing
-> here is synthetic.
+The numbers and examples in this section are taken from
+artefacts in the repository; nothing here is synthetic.
+Appendix A lists the exact commands to reproduce each claim.
 
 ### 5.1. CVE case studies
 
@@ -405,10 +396,10 @@ overhead from `CapaList`'s method-dispatch wrapping;
 string-plus-struct paths add ~45 % overhead from `match`-on-
 enum lowering plus dataclass construction. Closing these gaps
 is mechanical (specialise on the type) but has not yet been
-prioritised. The headline claim, **single-digit overhead on
+prioritised. The headline claim is **single-digit overhead on
 pure compute, low-double-digit on list-heavy, mid-double-digit
-on combined workloads**, is the kind of overhead a regulated
-industry can absorb in exchange for the artefact set.
+on combined workloads**. Nothing pathological, nothing close to
+an order of magnitude, no surprises at the runtime layer.
 
 ### 5.3. SBOM diff: information gain over PURL-only
 
@@ -443,13 +434,10 @@ information gain**.
 
 ## 6. Regulatory Mapping
 
-> **Status**: complete first draft. Long-form per-framework
-> sections are in `docs/regulatory.md` and `docs/cra.md`; the
-> table below is the paper-length distillation.
-
-Capa's artefact set maps to five frameworks. The header rows
-are the artefacts; the body rows are which clause each
-framework's text addresses.
+Long-form per-framework sections are in the companion documents
+`docs/regulatory.md` and `docs/cra.md`; the table below is the
+paper-length distillation. The header rows are the artefacts;
+the body rows are which clause each framework's text addresses.
 
 | Capa output | CRA Annex I | NIS2 Art. 21 | DORA | NIST SSDF | OWASP SCVS |
 |---|---|---|---|---|---|
@@ -468,8 +456,6 @@ first-class output.
 ---
 
 ## 7. Discussion and Limitations
-
-> **Status**: complete first draft. Honest scope statement.
 
 Capa is not a silver bullet. The honest limits:
 
@@ -517,8 +503,6 @@ Capa is not a silver bullet. The honest limits:
 
 ## 8. Conclusion and Future Work
 
-> **Status**: complete first draft.
-
 We have presented **Capa**, a capability-typed programming
 language whose compiler natively emits the full supply-chain
 governance artefact set (manifest, CycloneDX, SPDX, VEX, SLSA
@@ -554,9 +538,8 @@ empirical artefacts in this paper are available at
 
 ## References
 
-> **Status**: list of canonical sources to be expanded into
-> formal citations in the camera-ready version. The links are
-> stable; the bibliographic record needs polishing.
+References below are a working list. Bibliographic records will
+be polished for camera-ready submission; the URLs are stable.
 
 - Dennis, J. B., and Van Horn, E. C. *Programming Semantics for
   Multiprogrammed Computations*. CACM 9(3), 1966.
