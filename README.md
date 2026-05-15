@@ -98,6 +98,7 @@ Capa/
 │   ├── positioning.md          # honest comparison vs Pony, Koka, Roc, Wasm-CM
 │   ├── semantics.md            # λ_cap calculus sketch + soundness theorems
 │   ├── cra.md                  # Cyber Resilience Act article-by-article mapping
+│   ├── regulatory.md           # Multi-jurisdiction comparative (CRA+NIS2+DORA+SSDF+SCVS)
 │   ├── empirical_micro.md      # SBOM diff Python vs Capa, fully reproducible
 │   ├── demo-event-stream.md    # case study walkthrough
 │   ├── cve_eslint_scope.md     # case study walkthrough
@@ -939,11 +940,12 @@ tools. The next milestones strengthen exactly that axis.
 
 **Tier 2, regulatory mapping:**
 
-5. **Consolidated `docs/regulatory.md`** covering CRA, NIS2,
-   DORA (cybersecurity articles only), NIST SSDF, and OWASP
-   SCVS. Extends the existing CRA article-by-article mapping
-   in [`docs/cra.md`](docs/cra.md) to a multi-jurisdiction
-   table.
+5. **Consolidated `docs/regulatory.md`** (DONE,
+   [`docs/regulatory.md`](docs/regulatory.md)). Multi-
+   jurisdiction comparative table covering CRA, NIS2, DORA
+   (cybersecurity articles only), NIST SSDF, and OWASP SCVS.
+   Extends the existing CRA article-by-article mapping in
+   [`docs/cra.md`](docs/cra.md). **Tier 2 complete.**
 
 **Maybe, not committed:**
 

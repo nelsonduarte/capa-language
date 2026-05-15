@@ -11,6 +11,35 @@ breaking changes and the discipline is still being shaped.
 
 ### Added
 
+- **Consolidated regulatory mapping** (`docs/regulatory.md`).
+  Final piece of the Tier 2 plan: a multi-jurisdiction
+  comparative document covering five frameworks in one table.
+  Rows are the eight Capa artefacts (manifest, CycloneDX SBOM,
+  SPDX SBOM, VEX, SLSA provenance, audit pipeline, SBOM diff,
+  soundness sketch); columns are CRA + NIS2 + DORA
+  (cybersecurity articles only) + NIST SSDF + OWASP SCVS. Each
+  cell classifies the fit as direct, indirect, partial, or out
+  of scope. Per-framework deeper section then explains what
+  Capa contributes specifically and what stays organisational.
+
+  Frameworks **deliberately excluded** with reasoning: ISO
+  27001, SOC 2, PCI DSS, HIPAA (management/audit, Capa does
+  not deliver compliance); US EO 14028 (subsumed by SSDF); AI
+  Act, GDPR (tangential to supply-chain governance); SWID
+  (dying format); the business-continuity side of DORA (not
+  technical).
+
+  Existing `docs/cra.md` remains as the CRA article-by-
+  article deep-dive; both documents cross-reference. Surfaced
+  in the README directory tree and the site footer's
+  Specification section.
+
+  **Tier 2 of the governance-stack roadmap complete.** The
+  supply-chain governance stack now has both the technical
+  artefacts (Tier 1: SBOM + SPDX + VEX + SLSA + diff + audit)
+  and the regulatory positioning (Tier 2: CRA deep-dive +
+  multi-jurisdiction comparative) shipped.
+
 - **SLSA Build L1 provenance attestation** (`capa --provenance
   file.capa`, `capa.manifest.build_provenance`). Final piece of
   the Tier 1 governance-stack work. Emits an `in-toto Statement

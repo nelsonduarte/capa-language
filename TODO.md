@@ -53,15 +53,16 @@ sequence below strengthens exactly that axis.
 
 **Tier 2, consolidated regulatory mapping:**
 
-- [ ] **`docs/regulatory.md`**: single comparative table
-  covering **CRA + NIS2 + DORA** (cybersecurity articles
-  only: Art. 6, 8, 9-15, 17-23, 28-30, **not** broader
-  operational resilience) + **NIST SSDF (SP 800-218)** +
-  **OWASP SCVS**. Keep existing `docs/cra.md` as deep-dive;
-  new doc is the comparative view. **Explicitly excluded**:
-  ISO 27001, SOC 2, PCI DSS, HIPAA (organisational not
-  technical); EO 14028 (subsumed by SSDF); AI Act, GDPR
-  (tangential); SWID (dying). ~25-35h.
+- [x] **`docs/regulatory.md`**: multi-jurisdiction comparative
+  table covering **CRA + NIS2 + DORA** (cybersecurity articles
+  only) + **NIST SSDF (SP 800-218)** + **OWASP SCVS**. Headline
+  matrix: 8 Capa artefacts vs 5 frameworks with four-level
+  classification (direct / indirect / partial / out of scope).
+  Per-framework section for each, brief and honest about scope.
+  `docs/cra.md` stays as the CRA deep-dive; this is the
+  comparative view. **Excluded**: ISO 27001, SOC 2, PCI DSS,
+  HIPAA, EO 14028, AI Act, GDPR, SWID. Landed 2026-05-15.
+  **Tier 2 complete.**
 
 **Tier 3, polish:**
 

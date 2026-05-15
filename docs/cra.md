@@ -5,6 +5,11 @@ articles and annex items of Regulation (EU) 2024/2847, the
 [Cyber Resilience Act][cra-text] (CRA). Included in the repo
 so the technical claims are reviewable against the artefact.
 
+> For the multi-jurisdiction comparative view (CRA + NIS2 +
+> DORA + NIST SSDF + OWASP SCVS), see
+> [`docs/regulatory.md`](regulatory.md). This document is the
+> CRA deep-dive that table references.
+
 > The CRA's core ask, in plain language: products with digital
 > elements placed on the EU market must be *secure by design*,
 > ship *transparent dependency information*, and have
