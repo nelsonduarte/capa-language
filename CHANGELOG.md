@@ -11,6 +11,39 @@ breaking changes and the discipline is still being shaped.
 
 ### Added
 
+- **SLSA Build L1 provenance attestation** (`capa --provenance
+  file.capa`, `capa.manifest.build_provenance`). Final piece of
+  the Tier 1 governance-stack work. Emits an `in-toto Statement
+  v1` envelope carrying a `SLSA Provenance v1.0` predicate;
+  consumable by any SLSA-aware verifier (slsa-verifier, in-toto
+  attest, cosign verify-blob). Closes the "where did this SBOM
+  come from?" question with an industry-standard format and
+  makes the SBOM/VEX/provenance triangle complete.
+
+  Subject is the SHA-256 of the source .capa file. Build
+  details fix the build type to
+  `https://capa-lang.org/build/transpile-to-python/v1`, with
+  the source filename as an external parameter and the Capa
+  version + Python target (`python>=3.10`) as internal
+  parameters. The invocation ID is deterministic per
+  source+filename so reproducible builds get matching IDs.
+
+  L1 scope: provenance is generated and distributed. Signing
+  (which lifts to L2) is left to external tooling (cosign,
+  sigstore) so Capa stays independent of any specific signing
+  service.
+
+  Implementation at `capa/manifest/_provenance.py`; 7 new
+  regression tests in `tests/test_attributes.py::TestProvenance`
+  covering envelope, subject digest, build/run details,
+  deterministic invocation ID, and digest sensitivity to source
+  changes. Full suite: 776 passed (was 769).
+
+  **Tier 1 of the governance-stack roadmap complete**: SBOM
+  diff, SPDX 2.3 emission, VEX integration, and SLSA L1
+  provenance all landed. The next piece (Tier 2) is the
+  consolidated `docs/regulatory.md`.
+
 - **VEX (CycloneDX vulnerabilities) emission with per-function
   granularity** (`@vex` attribute, `capa --vex file.capa`,
   embedded in `--cyclonedx`). The genuinely novel piece of the

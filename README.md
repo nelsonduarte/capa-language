@@ -57,7 +57,7 @@ Capa/
 │   ├── docgen/                 # HTML doc generator from /// doc-comments
 │   ├── lsp/                    # Language Server Protocol implementation
 │   └── runtime/                # Result, Option, Stdio, Fs, ..., Unsafe, py_import
-├── tests/                      # 769 unit, end-to-end, and property tests
+├── tests/                      # 776 unit, end-to-end, and property tests
 │   ├── test_lexer.py
 │   ├── test_parser.py
 │   ├── test_analyzer.py
@@ -931,8 +931,11 @@ tools. The next milestones strengthen exactly that axis.
    genuinely novel piece. Embedded in `--cyclonedx` and
    available standalone via `--vex`.
 
-4. **SLSA Build L1 provenance** at compile time. Closes the
-   "where did this SBOM come from?" question.
+4. **SLSA Build L1 provenance** (DONE,
+   `capa --provenance file.capa`). In-toto Statement v1 with a
+   SLSA Provenance v1.0 predicate, subject = SHA-256 of the
+   source. Closes the "where did this SBOM come from?" question
+   with an industry-standard format. **Tier 1 complete.**
 
 **Tier 2, regulatory mapping:**
 

@@ -20,7 +20,10 @@ from capa import (
     Lexer, LexerError, Parser, TokenKind, analyze, ast_dump, transpile,
 )
 from capa import __version__ as _CAPA_VERSION
-from capa.manifest import build_manifest, build_cyclonedx, build_spdx, build_vex_document
+from capa.manifest import (
+    build_manifest, build_cyclonedx, build_spdx,
+    build_vex_document, build_provenance,
+)
 from capa.docgen import build_html as build_doc_html
 from capa.formatter import format_source, is_formatted
 from capa.init_project import init_project
@@ -167,6 +170,17 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--provenance",
+        action="store_true",
+        help=(
+            "emit a SLSA Build L1 provenance attestation: an "
+            "in-toto Statement v1 with a SLSA Provenance v1.0 "
+            "predicate, subject = SHA-256 of the source .capa "
+            "file. Consumable by SLSA-aware verifiers "
+            "(slsa-verifier, in-toto attest, cosign verify-blob)."
+        ),
+    )
+    parser.add_argument(
         "--doc",
         action="store_true",
         help=(
@@ -277,6 +291,7 @@ def main() -> int:
         or args.cyclonedx
         or args.spdx
         or args.vex
+        or args.provenance
         or args.doc
     ):
         try:
@@ -291,7 +306,7 @@ def main() -> int:
             return 1
 
     result = None
-    if args.check or args.run or args.manifest or args.cyclonedx or args.spdx or args.vex or args.doc:
+    if args.check or args.run or args.manifest or args.cyclonedx or args.spdx or args.vex or args.provenance or args.doc:
         # Semantic analysis is required before running.
         result = analyze(module, source=source, filename=filename)
         if not result.ok:
@@ -327,6 +342,11 @@ def main() -> int:
         if args.vex:
             import json
             doc = build_vex_document(module, filename=filename)
+            print(json.dumps(doc, indent=2))
+            return 0
+        if args.provenance:
+            import json
+            doc = build_provenance(source, filename=filename)
             print(json.dumps(doc, indent=2))
             return 0
         if args.doc:

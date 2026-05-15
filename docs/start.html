@@ -298,8 +298,8 @@ Hello, Capa!</code></pre>
                 <td>Emit a self-contained HTML page documenting the file, built from <code>///</code> and <code>/** */</code> doc comments.</td>
             </tr>
             <tr>
-                <td><code>--manifest</code> / <code>--cyclonedx</code> / <code>--spdx</code> / <code>--vex</code></td>
-                <td>Emit a JSON capability manifest, a CycloneDX 1.5 SBOM, an SPDX 2.3 SBOM, or a CycloneDX VEX document. The first three carry per-function capability metadata; VEX adds per-function exploitability claims from <code>@vex(cve, status, justification, detail)</code> attributes.</td>
+                <td><code>--manifest</code> / <code>--cyclonedx</code> / <code>--spdx</code> / <code>--vex</code> / <code>--provenance</code></td>
+                <td>Emit a JSON capability manifest, a CycloneDX 1.5 SBOM, an SPDX 2.3 SBOM, a CycloneDX VEX document, or a SLSA Build L1 provenance attestation. The five together form the supply-chain governance triangle: SBOM (what is in the box, with per-function capabilities), VEX (per-function exploitability claims), and provenance (in-toto attestation of the build).</td>
             </tr>
             <tr>
                 <td><code>lsp</code></td>

@@ -42,9 +42,14 @@ sequence below strengthens exactly that axis.
   `capa/manifest/_vex.py`; example at `examples/vex_demo.capa`;
   10 tests at `tests/test_attributes.py::TestVEX`. Landed
   2026-05-15.
-- [ ] **SLSA Build L1 provenance attestation** at compile
-  time. Closes the "where did this SBOM come from?"
-  question. ~1 week.
+- [x] **SLSA Build L1 provenance attestation** (`capa
+  --provenance file.capa`). In-toto Statement v1 with SLSA
+  Provenance v1.0 predicate; subject = SHA-256 of the source
+  .capa file. L1 scope: generated and distributed, not signed
+  (signing is L2+, left to external tooling). Implementation
+  at `capa/manifest/_provenance.py`; 7 tests at
+  `tests/test_attributes.py::TestProvenance`. Landed
+  2026-05-15. **Tier 1 complete.**
 
 **Tier 2, consolidated regulatory mapping:**
 

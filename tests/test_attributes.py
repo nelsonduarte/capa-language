@@ -18,6 +18,7 @@ from capa import ast as A
 from capa.manifest import (
     build_manifest, build_cyclonedx, build_spdx,
     build_vex_document, build_vex_entries,
+    build_provenance,
 )
 
 
@@ -885,6 +886,83 @@ class TestVEX(unittest.TestCase):
         self.assertFalse(result.ok)
         msgs = " ".join(e.format() for e in result.errors)
         self.assertIn("bogus", msgs)
+
+
+# =============================================================
+# SLSA Build L1 provenance attestation
+# =============================================================
+
+def provenance_of(source: str, filename: str = "test.capa") -> dict:
+    return build_provenance(
+        source,
+        filename=filename,
+        started_on="2026-05-12T00:00:00Z",
+        finished_on="2026-05-12T00:00:01Z",
+    )
+
+
+class TestProvenance(unittest.TestCase):
+    def test_intoto_statement_envelope(self):
+        att = provenance_of('fun main()\n    return\n')
+        self.assertEqual(att["_type"], "https://in-toto.io/Statement/v1")
+        self.assertEqual(att["predicateType"], "https://slsa.dev/provenance/v1")
+
+    def test_subject_carries_source_digest(self):
+        src = 'fun main()\n    return\n'
+        att = provenance_of(src, filename="demo.capa")
+        self.assertEqual(len(att["subject"]), 1)
+        subj = att["subject"][0]
+        self.assertEqual(subj["name"], "demo.capa")
+        import hashlib
+        expected = hashlib.sha256(src.encode("utf-8")).hexdigest()
+        self.assertEqual(subj["digest"]["sha256"], expected)
+
+    def test_build_definition_fields(self):
+        att = provenance_of('fun f()\n    return\n', filename="demo.capa")
+        bdef = att["predicate"]["buildDefinition"]
+        self.assertEqual(
+            bdef["buildType"],
+            "https://capa-lang.org/build/transpile-to-python/v1",
+        )
+        self.assertEqual(bdef["externalParameters"]["source"], "demo.capa")
+        self.assertIn("capaVersion", bdef["internalParameters"])
+        self.assertEqual(bdef["internalParameters"]["target"], "python>=3.10")
+
+    def test_run_details_fields(self):
+        att = provenance_of('fun f()\n    return\n')
+        run = att["predicate"]["runDetails"]
+        self.assertEqual(run["builder"]["id"], "https://capa-lang.org/cli")
+        self.assertEqual(run["metadata"]["startedOn"], "2026-05-12T00:00:00Z")
+        self.assertEqual(run["metadata"]["finishedOn"], "2026-05-12T00:00:01Z")
+        self.assertIn("invocationId", run["metadata"])
+
+    def test_invocation_id_deterministic_per_source(self):
+        # Same source + same filename -> same invocationId.
+        # Friendly to attestation diffing and reproducible builds.
+        a = provenance_of('fun f()\n    return\n', filename="x.capa")
+        b = provenance_of('fun f()\n    return\n', filename="x.capa")
+        self.assertEqual(
+            a["predicate"]["runDetails"]["metadata"]["invocationId"],
+            b["predicate"]["runDetails"]["metadata"]["invocationId"],
+        )
+
+    def test_invocation_id_changes_when_source_changes(self):
+        a = provenance_of('fun f()\n    return\n', filename="x.capa")
+        b = provenance_of('fun g()\n    return\n', filename="x.capa")
+        self.assertNotEqual(
+            a["predicate"]["runDetails"]["metadata"]["invocationId"],
+            b["predicate"]["runDetails"]["metadata"]["invocationId"],
+        )
+
+    def test_subject_digest_changes_when_source_changes(self):
+        # The whole point of attestation: the digest must change
+        # when the source does.
+        a = provenance_of('fun f()\n    return\n')
+        b = provenance_of('fun g()\n    return\n')
+        self.assertNotEqual(
+            a["subject"][0]["digest"]["sha256"],
+            b["subject"][0]["digest"]["sha256"],
+        )
 
 
 if __name__ == "__main__":
