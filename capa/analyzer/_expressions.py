@@ -136,9 +136,17 @@ class _ExpressionsMixin:
         compatible. Flow analysis snapshots ``_consumed`` before
         each arm and takes the conservative union after.
         Exhaustiveness is checked when the scrutinee has a sum
-        type."""
+        type.
+
+        Arms whose body diverges (ends in ``return``, ``break``,
+        ``continue``) do not contribute to the match's result
+        type: the divergent control flow leaves the match
+        without producing a value, so unification against other
+        arms is unsound. ``arm_types`` carries ``None`` for
+        divergent arms and the actual type otherwise.
+        """
         scrutinee_ty = self._check_expr(s.scrutinee)
-        arm_types: list[Ty] = []
+        arm_types: list[Ty | None] = []
         before = set(self._consumed)
         branch_results: list[set[str]] = []
 
@@ -156,7 +164,10 @@ class _ExpressionsMixin:
             if isinstance(arm.body, A.Block):
                 for stmt in arm.body.stmts:
                     self._check_stmt(stmt)
-                arm_types.append(TyUnit)
+                if _block_diverges(arm.body):
+                    arm_types.append(None)
+                else:
+                    arm_types.append(TyUnit)
             else:
                 arm_types.append(self._check_expr(arm.body))
             self._pop_scope()
@@ -169,14 +180,19 @@ class _ExpressionsMixin:
 
         self._check_match_exhaustiveness(s, scrutinee_ty)
 
-        # Pick the first concrete (non-TyUnknown) arm type as
-        # the reference and check the others against it.
+        # Pick the first concrete (non-None, non-TyUnknown) arm
+        # type as the reference and check the other non-divergent
+        # arms against it. Divergent arms (``None``) skip unification.
         ref_ty: Ty = TyUnknown
         for t in arm_types:
+            if t is None:
+                continue
             if not isinstance(t, type(TyUnknown)) and t != TyUnknown:
                 ref_ty = t
                 break
         for i, t in enumerate(arm_types):
+            if t is None:
+                continue
             if not compatible(ref_ty, t):
                 self._err(
                     f"match arm {i + 1} has type {ty_str(t)}, "
@@ -503,3 +519,16 @@ class _ExpressionsMixin:
                     el.pos,
                 )
         return TyName("List", (first_ty,))
+
+
+
+def _block_diverges(block: "A.Block") -> bool:
+    """True if the block's last statement is divergent (``return``,
+    ``break``, or ``continue``). Used by the match-arm checker to
+    treat divergent block-bodied arms as not contributing to the
+    match's result type.
+    """
+    if not block.stmts:
+        return False
+    last = block.stmts[-1]
+    return isinstance(last, (A.ReturnStmt, A.BreakStmt, A.ContinueStmt))

@@ -11,6 +11,36 @@ breaking changes and the discipline is still being shaped.
 
 ### Added
 
+- **Divergent statements (`return`, `break`, `continue`)
+  allowed in single-line match arms**. Previously only the
+  multi-line indented arm form accepted divergent statements:
+
+  ```capa
+  let v = match r
+      Err(_) ->
+          return 0 - 1            # was the only way
+      Ok(v) -> v
+  ```
+
+  The single-line form `Err(_) -> return 0 - 1` parsed as an
+  expression and rejected `return` as not-an-expression. Now
+  both forms work; the parser promotes a single-line divergent
+  statement to a one-statement block, and the analyzer treats
+  blocks ending in `return` / `break` / `continue` as
+  divergent (their type does not constrain the match's
+  result-type unification).
+
+  Surfaced as friction while writing the design-pattern CVE
+  case studies; the multi-line workaround was readable but
+  verbose. Parser change at
+  `capa/parser/_statements.py::_parse_match_arm`; analyzer
+  change at
+  `capa/analyzer/_expressions.py::_check_match_expr` plus a
+  new `_block_diverges` helper. 5 new regression tests in
+  `tests/test_transpiler.py::TestMatchArmDivergent` covering
+  return / break / continue / multi-line regression / all-
+  arms-divergent. Full suite: 797 passed (was 792).
+
 - **Three new String stdlib methods**: `char_at(i: Int) ->
   Option<String>`, `substring(start: Int, end: Int) ->
   String`, `index_of(needle: String) -> Option<Int>`. Fills

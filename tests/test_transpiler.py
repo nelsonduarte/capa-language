@@ -506,6 +506,95 @@ class TestRangeExpressions(unittest.TestCase):
         self.assertNotIn("xs = CapaList(range", code)
 
 
+class TestMatchArmDivergent(unittest.TestCase):
+    """Single-line match arms can be a divergent statement (``return``,
+    ``break``, ``continue``) instead of an expression. Divergent arms
+    do not contribute to the match's result type; other arms are
+    free to produce any value type.
+    """
+
+    def test_return_in_single_line_arm(self):
+        rc, out, err = run_capa(
+            'fun unwrap_or_negative(r: Result<Int, String>) -> Int\n'
+            '    let n = match r\n'
+            '        Err(_) -> return 0 - 1\n'
+            '        Ok(v) -> v\n'
+            '    return n + 100\n'
+            'fun main(stdio: Stdio)\n'
+            '    let a: Result<Int, String> = Ok(5)\n'
+            '    let b: Result<Int, String> = Err("oops")\n'
+            '    stdio.println("${unwrap_or_negative(a)}")\n'
+            '    stdio.println("${unwrap_or_negative(b)}")\n'
+        )
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out, "105\n-1\n")
+
+    def test_break_in_single_line_arm(self):
+        rc, out, err = run_capa(
+            'fun find_zero(xs: List<Int>) -> Int\n'
+            '    var idx = 0\n'
+            '    for x in xs\n'
+            '        let _ = match x\n'
+            '            0 -> break\n'
+            '            _ -> false\n'
+            '        idx = idx + 1\n'
+            '    return idx\n'
+            'fun main(stdio: Stdio)\n'
+            '    stdio.println("${find_zero([3, 5, 0, 7])}")\n'
+        )
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out, "2\n")
+
+    def test_continue_in_single_line_arm(self):
+        rc, out, err = run_capa(
+            'fun sum_skipping_zero(xs: List<Int>) -> Int\n'
+            '    var s = 0\n'
+            '    for x in xs\n'
+            '        let _ = match x\n'
+            '            0 -> continue\n'
+            '            _ -> false\n'
+            '        s = s + x\n'
+            '    return s\n'
+            'fun main(stdio: Stdio)\n'
+            '    stdio.println("${sum_skipping_zero([1, 0, 2, 0, 3])}")\n'
+        )
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out, "6\n")
+
+    def test_multi_line_arm_with_return_still_works(self):
+        # Regression: the old multi-line form must keep working.
+        rc, out, err = run_capa(
+            'fun unwrap_or_die(r: Option<Int>) -> Int\n'
+            '    let v = match r\n'
+            '        None ->\n'
+            '            return 0 - 999\n'
+            '        Some(v) -> v\n'
+            '    return v + 1\n'
+            'fun main(stdio: Stdio)\n'
+            '    stdio.println("${unwrap_or_die(Some(10))}")\n'
+            '    stdio.println("${unwrap_or_die(None)}")\n'
+        )
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out, "11\n-999\n")
+
+    def test_all_divergent_arms_is_accepted(self):
+        # A match where every arm diverges should still type-check;
+        # the overall match expression has TyUnknown (which we
+        # accept rather than forcing a Never type).
+        rc, out, err = run_capa(
+            'fun classify(x: Int) -> Int\n'
+            '    let _ = match x\n'
+            '        0 -> return 0\n'
+            '        _ -> return 1\n'
+            '    return 0 - 1\n'
+            'fun main(stdio: Stdio)\n'
+            '    stdio.println("${classify(0)}")\n'
+            '    stdio.println("${classify(7)}")\n'
+        )
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out, "0\n1\n")
+
+
 class TestInlineMatch(unittest.TestCase):
     """Inline match form: ``match scrutinee { p -> e, p -> e, ... }``.
 

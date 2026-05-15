@@ -21,6 +21,13 @@ while writing real Capa programs.
   in this session. `capa/builtins.py` +
   `capa/transpiler/_methods.py` + 12 new tests.
 
+- [x] **Divergent statements in single-line match arms**.
+  `return`, `break`, `continue` now work in the single-line
+  `pat -> stmt` form; previously required multi-line block
+  bodies. Parser change + analyzer change to skip divergent
+  arms during arm-type unification. Landed 2026-05-15. 5 new
+  tests.
+
 ---
 
 ## Current focus (May - October 2026, pre-PhD runway)

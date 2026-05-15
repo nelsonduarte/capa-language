@@ -291,10 +291,30 @@ class _StatementsMixin:
         if self._match(T.KW_IF):
             guard = self._parse_expr()
         self._expect(T.ARROW, "expected '->' in match arm")
-        # Body: can be a single expression (terminated by NEWLINE), or an
-        # indented block (NEWLINE INDENT stmts DEDENT).
+        # Body: an indented block (NEWLINE INDENT stmts DEDENT), a
+        # single divergent statement (return / break / continue,
+        # promoted to a one-statement block so the analyzer treats
+        # the arm as divergent and its type does not constrain the
+        # match's result type), or a single expression terminated
+        # by NEWLINE.
         if self._check(T.NEWLINE):
             body: A.Block | A.Expr = self._parse_block()
+        elif self._check(T.KW_RETURN):
+            stmt_start = self._peek().start
+            ret_stmt = self._parse_return_stmt()
+            body = A.Block(pos=stmt_start, stmts=[ret_stmt])
+        elif self._check(T.KW_BREAK):
+            stmt_start = self._advance().start
+            self._expect_eos("after 'break' in match arm")
+            body = A.Block(
+                pos=stmt_start, stmts=[A.BreakStmt(pos=stmt_start)]
+            )
+        elif self._check(T.KW_CONTINUE):
+            stmt_start = self._advance().start
+            self._expect_eos("after 'continue' in match arm")
+            body = A.Block(
+                pos=stmt_start, stmts=[A.ContinueStmt(pos=stmt_start)]
+            )
         else:
             body = self._parse_expr()
             self._expect_eos("after match arm body")
