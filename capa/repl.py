@@ -176,6 +176,23 @@ def _is_bare_expression(line: str) -> bool:
     return True
 
 
+def _starts_block_statement(line: str) -> bool:
+    """A statement that opens an indented body (``if``, ``for``,
+    ``while``, ``match``). When the REPL sees one of these on a
+    fresh input it switches to a continuation prompt so the user
+    can type the indented body and any ``else`` / ``elif`` arms.
+
+    ``let`` and ``var`` that bind to a multi-line ``match`` or
+    ``if`` expression are not detected here; users can either fit
+    them on one logical line or wrap them in a top-level function.
+    """
+    stripped = line.lstrip()
+    for kw in ("if ", "for ", "while ", "match "):
+        if stripped.startswith(kw):
+            return True
+    return False
+
+
 def _is_unit_typed_call(line: str) -> bool:
     """Heuristic: lines that look like Unit-typed expression
     statements should NOT be wrapped with ``stdio.println("${...}")``
@@ -324,6 +341,30 @@ def serve(prompt: str = "capa> ") -> int:
                 continue
             candidate_top = state.top_lines + ["\n".join(collected)]
             candidate_main = state.main_lines
+        elif _starts_block_statement(line):
+            # A statement that opens an indented body (``if``,
+            # ``for``, ``while``, ``match``). Gather continuation
+            # lines until a blank line terminates the block; each
+            # collected line gets the REPL's one-indent prefix so
+            # it lands inside the synthesised ``main`` body.
+            collected = [line]
+            while True:
+                try:
+                    cont = input("... ")
+                except EOFError:
+                    break
+                except KeyboardInterrupt:
+                    print()
+                    collected = None
+                    break
+                if cont.strip() == "":
+                    break
+                collected.append(cont)
+            if collected is None:
+                continue
+            rendered_lines = ["    " + ln.lstrip("\r\n") for ln in collected]
+            candidate_top = state.top_lines
+            candidate_main = state.main_lines + rendered_lines
         else:
             # Statement or expression. Bare expressions get
             # auto-wrapped with ``stdio.println("${...}")`` so the

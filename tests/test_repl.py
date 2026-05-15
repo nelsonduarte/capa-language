@@ -97,6 +97,21 @@ class TestReplHelpers(unittest.TestCase):
         for line in ("1 + 2", "foo(3)", "x * 2"):
             self.assertFalse(_is_unit_typed_call(line))
 
+    def test_starts_block_statement_detection(self):
+        from capa.repl import _starts_block_statement
+        for line in ("if x > 0", "for i in 1..4",
+                     "while cond", "match x"):
+            self.assertTrue(
+                _starts_block_statement(line),
+                f"expected block start: {line!r}",
+            )
+        for line in ("let x = 1", "x + 1", "stdio.println(\"hi\")",
+                     "return 0", "if_function()"):
+            self.assertFalse(
+                _starts_block_statement(line),
+                f"expected non-block: {line!r}",
+            )
+
     def test_repl_state_assemble_with_no_body(self):
         s = _ReplState()
         program = s.assemble()
@@ -218,6 +233,47 @@ class TestReplEndToEnd(unittest.TestCase):
         # We don't assert the exact value (it depends on the wall
         # clock); just that the REPL printed something numeric.
         self.assertRegex(result.stdout, r"\d")
+
+    def test_multiline_if_block(self):
+        # if/else statement spanning four lines + blank terminator.
+        script = (
+            "let x = 5\n"
+            "if x > 0\n"
+            "    stdio.println(\"positive\")\n"
+            "else\n"
+            "    stdio.println(\"non-positive\")\n"
+            "\n"
+            ".exit\n"
+        )
+        result = self._run(script)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("positive", result.stdout)
+        self.assertNotIn("non-positive", result.stdout)
+
+    def test_multiline_for_block(self):
+        script = (
+            "for i in 1..4\n"
+            "    stdio.println(\"hit\")\n"
+            "\n"
+            ".exit\n"
+        )
+        result = self._run(script)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        # Loop ran three times.
+        self.assertEqual(result.stdout.count("hit"), 3)
+
+    def test_multiline_while_block(self):
+        script = (
+            "var n = 0\n"
+            "while n < 3\n"
+            "    stdio.println(\"tick\")\n"
+            "    n = n + 1\n"
+            "\n"
+            ".exit\n"
+        )
+        result = self._run(script)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.count("tick"), 3)
 
     def test_random_is_pre_bound(self):
         # ``random.float_unit()`` is a pure read; pre-binding should

@@ -11,6 +11,37 @@ breaking changes and the discipline is still being shaped.
 
 ### Added
 
+- **REPL: multi-line block continuation**: `if`, `for`, `while`,
+  and `match` statements at the prompt now switch to a
+  continuation prompt that gathers the indented body and any
+  `else` / `elif` arms, terminating on a blank line.
+
+  ```
+  capa> let x = 5
+  capa> if x > 0
+  ...       stdio.println("positive")
+  ...   else
+  ...       stdio.println("non-positive")
+  ...
+  positive
+  capa>
+  ```
+
+  Previously, only top-level forms (`fun`, `type`, etc.) got
+  the continuation prompt; statement-level blocks were not
+  reachable interactively because the parser could not see a
+  full block in a single one-line input.
+
+  Mechanism: a small `_starts_block_statement(line)` heuristic
+  in `capa/repl.py` recognises the four block-opening keywords;
+  the REPL loop then re-uses the existing top-form continuation
+  pattern (`input("... ")` until blank line) and feeds the
+  gathered lines into `main_lines` with one extra indent each.
+
+  4 new tests at `tests/test_repl.py` cover the heuristic plus
+  end-to-end `if`/`for`/`while` blocks. Full suite: 871 passed
+  (was 867).
+
 - **REPL pre-binds every standard capability**: `capa repl` now
   ships `stdio`, `fs`, `net`, `env`, `clock`, and `random` in
   scope at the prompt, all under their conventional lowercase
