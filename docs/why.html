@@ -59,7 +59,7 @@
     <p>This is called <strong>ambient authority</strong>. The authority is in the surrounding environment (the process, the runtime), not in the values the function holds. A function does not need to ask for a network handle to make a network request; the network is just there.</p>
 
     <div class="callout">
-        <p>For decades, ambient authority was treated as a convenience, not a hazard. Now, with supply-chain attacks accelerating year over year and the EU Cyber Resilience Act mandating evidence of behavioural control by December 2027, the convenience has become a liability that no major language was designed to address.</p>
+        <p>For decades, ambient authority was treated as a convenience, not a hazard. The cost shows up the moment a dependency does something its public API never claimed: the language has no way to tell, and no way to refuse. Capa's premise is that this gap belongs in the type system, not in policy scanners.</p>
     </div>
 </section>
 
@@ -204,12 +204,12 @@ error: undefined name 'env'
 </section>
 
 <!-- =====================================================
-     The governance-stack integration
+     What the discipline emits, as a side effect
 ===================================================== -->
 <section>
-    <h2>The type system feeds the governance stack</h2>
+    <h2>Where the type system can take you next</h2>
 
-    <p>The distinctive contribution of Capa is not the capability discipline alone, dialects of that idea exist in Pony, Koka, the WebAssembly Component Model, and elsewhere. It is the <em>integration</em> between the type system and the supply-chain governance artefacts that downstream regulation (CRA, NIS2, DORA, NIST SSDF, OWASP SCVS) actually asks for. The same compiler that rejects ambient authority at compile time emits the full audit artefact set from one source:</p>
+    <p>Capa is a capability-typed language; dialects of that idea exist in Pony, Koka, the WebAssembly Component Model, and elsewhere. What Capa adds on top is that, because the authority graph already lives in the type system, the compiler can emit standard supply-chain artefacts from source without an external scanner having to approximate the same information from binaries or heuristics. The same compile that rejects ambient authority can also produce, in one pass:</p>
 
     <ul>
         <li><strong><code>--manifest</code></strong>, Capa-native JSON describing per-function authority, attached metadata, and the call graph.</li>
@@ -219,7 +219,7 @@ error: undefined name 'env'
         <li><strong><code>--provenance</code></strong>, a SLSA Build L1 provenance attestation (in-toto Statement v1 + SLSA Provenance v1.0 predicate) binding the artefact to the SHA-256 of its source.</li>
     </ul>
 
-    <p>No other mainstream language carries the authority graph in its type system, so no other mainstream compiler can <em>emit</em> these documents from source. They are usually stitched together by external scanners that approximate the same information at much lower confidence. Capa surfaces it as a stable, schema-versioned export. For the mapping across CRA, NIS2, DORA, NIST SSDF, and OWASP SCVS, see <a href="https://github.com/nelsonduarte/capa/blob/main/docs/regulatory.md"><code>docs/regulatory.md</code></a>.</p>
+    <p>The same content shows up downstream in whatever process needs it: dependency review, audit, regulator-facing evidence under CRA / NIS2 / DORA / NIST SSDF / OWASP SCVS. The mapping across those frameworks lives at <a href="https://github.com/nelsonduarte/capa/blob/main/docs/regulatory.md"><code>docs/regulatory.md</code></a>. Capa's contribution at the language layer is the discipline itself; the emitters are a consequence of having the information in the right place.</p>
 </section>
 
 <!-- =====================================================

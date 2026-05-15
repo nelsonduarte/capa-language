@@ -914,11 +914,14 @@ running real code is the harshest test of a design.
 
 ## What's next
 
-Capa's distinctive contribution is the integration between the
-capability type system and the supply-chain governance stack:
-the compiler natively emits artefacts (manifest, CycloneDX,
-HTML doc) that other capability languages leave to external
-tools. The next milestones strengthen exactly that axis.
+Capa is a capability-typed language: every function declares
+the authorities it holds, the analyzer enforces that statically,
+and attenuation is monotonic by construction. Beyond what other
+capability languages (Pony, Koka, the WebAssembly Component
+Model) offer, the compiler can also emit standard supply-chain
+artefacts directly from capability signatures, with no external
+scanner approximating the same information. The next milestones
+keep building both fronts:
 
 **Tier 1, technical artefacts (in progress):**
 
