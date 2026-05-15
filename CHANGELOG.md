@@ -11,6 +11,27 @@ breaking changes and the discipline is still being shaped.
 
 ### Added
 
+- **CVE case study (design-pattern class): Jinja2 SSTI**
+  (`examples/cve_jinja2_ssti.capa` +
+  `docs/cve_jinja2_ssti.md`). Second library in the
+  empirical-at-scale arc, after PyYAML. Server-side template
+  injection (SSTI): template engines that allow attribute
+  traversal and method calls in the substitution language
+  expose arbitrary code execution. The bug class is endemic
+  (Jinja2, Mako, Velocity, Freemarker, Smarty, Twig, ERB,
+  Handlebars). Capa's template engine has signature `(String,
+  Map<String, String>) -> Result<String, RenderError>`, and
+  the substitution parser refuses to accept any expression
+  containing `.` or `(`. Strictly stronger than Jinja2's
+  SandboxedEnvironment: the security boundary is *syntactic*
+  (parser-level allow-list) rather than *semantic* (Python
+  attribute deny-list), so escape chains cannot apply. The
+  writeup includes a comparison table and generalises the
+  argument to SQL parameter binding, HTML/CSS escaping, and
+  JSON Path / GraphQL field selection. Regression test in
+  `tests/test_transpiler.py::test_cve_jinja2_ssti`. Full
+  suite: 778 passed.
+
 - **Provenance signing workflow (Capa SLSA L1 to L2)**:
   `deploy/sign-provenance.sh` + `docs/provenance-signing.md`.
   Capa's `--provenance` flag emits a SLSA Build L1 attestation;

@@ -705,6 +705,21 @@ class TestTranspileExamples(unittest.TestCase):
         self.assertEqual(rc, 0, err)
         self.assertIn("name = capa-demo", out)
 
+    def test_cve_jinja2_ssti(self):
+        # Eighth CVE walkthrough, second of the design-pattern
+        # (vs supply-chain delivery) class: Jinja2 SSTI (server-
+        # side template injection). The Capa version's template
+        # engine has a render signature with no Unsafe, and the
+        # substitution parser refuses to accept attribute
+        # traversal or method calls. Companion writeup at
+        # docs/cve_jinja2_ssti.md.
+        rc, out, err = self._run_example("examples/cve_jinja2_ssti.capa")
+        self.assertEqual(rc, 0, err)
+        self.assertIn("safe: Welcome, alice", out)
+        self.assertIn("ssti attempt rejected:", out)
+        self.assertIn("method-call attempt rejected:", out)
+        self.assertIn("unknown name handled:", out)
+
     def test_cve_pyyaml(self):
         # Seventh CVE walkthrough, first of the design-pattern
         # (vs supply-chain delivery) class: PyYAML CVE-2017-18342
