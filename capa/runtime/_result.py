@@ -47,6 +47,15 @@ class Ok(Generic[T]):
     def and_then(self, f):
         return f(self.value)
 
+    def or_else(self, f):
+        return self
+
+    def ok(self):
+        return Some(self.value)
+
+    def err(self):
+        return None_
+
 
 @dataclass(frozen=True)
 class Err(Generic[E]):
@@ -75,6 +84,15 @@ class Err(Generic[E]):
 
     def and_then(self, f):
         return self
+
+    def or_else(self, f):
+        return f(self.error)
+
+    def ok(self):
+        return None_
+
+    def err(self):
+        return Some(self.error)
 
 
 # Type alias for annotations.
@@ -109,6 +127,12 @@ class Some(Generic[T]):
     def ok_or(self, err):
         return Ok(self.value)
 
+    def or_else(self, f):
+        return self
+
+    def filter(self, p):
+        return self if p(self.value) else None_
+
 
 @dataclass(frozen=True)
 class _NoneType:
@@ -137,6 +161,12 @@ class _NoneType:
 
     def ok_or(self, err):
         return Err(err)
+
+    def or_else(self, f):
+        return f()
+
+    def filter(self, p):
+        return self
 
 
 # Singleton, in Capa, ``None`` is the variant. In Python, we add a suffix

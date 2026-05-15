@@ -21,6 +21,11 @@ while writing real Capa programs.
   in this session. `capa/builtins.py` +
   `capa/transpiler/_methods.py` + 12 new tests.
 
+- [x] **Option / Result combinator gaps**: `Option.filter`,
+  `Option.or_else`, `Result.or_else`, `Result.ok`,
+  `Result.err`. Closes the gap with standard Rust/Swift/OCaml
+  Option/Result APIs. Landed 2026-05-15. 6 new tests.
+
 - [x] **Divergent statements in single-line match arms**.
   `return`, `break`, `continue` now work in the single-line
   `pat -> stmt` form; previously required multi-line block

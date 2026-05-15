@@ -2648,6 +2648,105 @@ class TestFunctionalCombinators(unittest.TestCase):
             "Result<String, Int>",
         )
 
+    def test_option_filter_returns_option_t(self):
+        from capa import Lexer, Parser, analyze, ty_str
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    let o: Option<Int> = Some(7)\n"
+            "    let f = o.filter(fun (x: Int) -> Bool => x > 5)\n"
+            "    stdio.println(\"x\")\n"
+        )
+        tokens = Lexer(src).lex()
+        module = Parser(tokens, source=src).parse_module()
+        result = analyze(module, source=src)
+        self.assertTrue(result.ok, result.errors)
+        let_f = module.items[0].body.stmts[1]
+        self.assertEqual(
+            ty_str(result.types[id(let_f.value)]),
+            "Option<Int>",
+        )
+
+    def test_option_filter_rejects_non_bool_predicate(self):
+        msgs = errors_of(
+            "fun main(stdio: Stdio)\n"
+            "    let o: Option<Int> = Some(7)\n"
+            "    let f = o.filter(fun (x: Int) -> Int => x + 1)\n"
+        )
+        self.assertTrue(any("Bool" in m for m in msgs), msgs)
+
+    def test_option_or_else_returns_option_t(self):
+        from capa import Lexer, Parser, analyze, ty_str
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    let o: Option<Int> = None\n"
+            "    let r = o.or_else(fun () -> Option<Int> => Some(42))\n"
+            "    stdio.println(\"x\")\n"
+        )
+        tokens = Lexer(src).lex()
+        module = Parser(tokens, source=src).parse_module()
+        result = analyze(module, source=src)
+        self.assertTrue(result.ok, result.errors)
+        let_r = module.items[0].body.stmts[1]
+        self.assertEqual(
+            ty_str(result.types[id(let_r.value)]),
+            "Option<Int>",
+        )
+
+    def test_result_or_else_can_change_error_type(self):
+        from capa import Lexer, Parser, analyze, ty_str
+        src = (
+            "fun main(stdio: Stdio, fs: Fs)\n"
+            "    let r = fs.read(\"/tmp/x\").or_else(\n"
+            "        fun (e: IoError) -> Result<String, Int> => Err(1)\n"
+            "    )\n"
+            "    stdio.println(\"x\")\n"
+        )
+        tokens = Lexer(src).lex()
+        module = Parser(tokens, source=src).parse_module()
+        result = analyze(module, source=src)
+        self.assertTrue(result.ok, result.errors)
+        let_r = module.items[0].body.stmts[0]
+        self.assertEqual(
+            ty_str(result.types[id(let_r.value)]),
+            "Result<String, Int>",
+        )
+
+    def test_result_ok_to_option(self):
+        from capa import Lexer, Parser, analyze, ty_str
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    let r: Result<Int, String> = Ok(7)\n"
+            "    let o = r.ok()\n"
+            "    stdio.println(\"x\")\n"
+        )
+        tokens = Lexer(src).lex()
+        module = Parser(tokens, source=src).parse_module()
+        result = analyze(module, source=src)
+        self.assertTrue(result.ok, result.errors)
+        let_o = module.items[0].body.stmts[1]
+        self.assertEqual(
+            ty_str(result.types[id(let_o.value)]),
+            "Option<Int>",
+        )
+
+    def test_result_err_to_option(self):
+        from capa import Lexer, Parser, analyze, ty_str
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    let r: Result<Int, String> = Err(\"boom\")\n"
+            "    let o = r.err()\n"
+            "    stdio.println(\"x\")\n"
+        )
+        tokens = Lexer(src).lex()
+        module = Parser(tokens, source=src).parse_module()
+        result = analyze(module, source=src)
+        self.assertTrue(result.ok, result.errors)
+        let_o = module.items[0].body.stmts[1]
+        self.assertEqual(
+            ty_str(result.types[id(let_o.value)]),
+            "Option<String>",
+        )
+
 
 class TestCollectionHelpers(unittest.TestCase):
     """is_empty/first/last/get on List, is_empty on String/Map/Set."""

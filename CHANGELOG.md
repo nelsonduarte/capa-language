@@ -11,6 +11,29 @@ breaking changes and the discipline is still being shaped.
 
 ### Added
 
+- **Five new Option / Result methods**: `Option.filter`,
+  `Option.or_else`, `Result.or_else`, `Result.ok`,
+  `Result.err`. The Option/Result surface now mirrors the
+  standard Rust/Swift/OCaml API more completely:
+
+  | Method | Signature | Behaviour |
+  |---|---|---|
+  | `Option.filter` | `(T -> Bool) -> Option<T>` | `Some(x)` if predicate passes, else `None` |
+  | `Option.or_else` | `(() -> Option<T>) -> Option<T>` | Lazy fallback when `None` |
+  | `Result.or_else` | `(E -> Result<T, F>) -> Result<T, F>` | Lazy error recovery, can change `E` to `F` |
+  | `Result.ok` | `() -> Option<T>` | `Some(v)` if `Ok(v)`, else `None` |
+  | `Result.err` | `() -> Option<E>` | `Some(e)` if `Err(e)`, else `None` |
+
+  Implementations on `Some`, `_NoneType`, `Ok`, `Err` in
+  `capa/runtime/_result.py`; registrations in
+  `capa/builtins.py`. The transpiler's fall-through emission
+  for Option/Result methods already covers these (no
+  per-method lowering needed). 6 new analyzer tests in
+  `tests/test_analyzer.py::TestFunctionalCombinators`
+  covering type checking + a rejected non-Bool predicate +
+  error-type-change via `Result.or_else`. Stdlib reference
+  page updated. Full suite: 803 passed (was 797).
+
 - **Divergent statements (`return`, `break`, `continue`)
   allowed in single-line match arms**. Previously only the
   multi-line indented arm form accepted divergent statements:

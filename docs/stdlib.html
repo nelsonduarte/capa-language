@@ -188,6 +188,8 @@ match m.get("a")
 <tr><td><code>map&lt;U&gt;(f: Fun(T) -&gt; U)</code></td><td><code>Option&lt;U&gt;</code></td><td>Transform if <code>Some</code></td></tr>
 <tr><td><code>and_then&lt;U&gt;(f: Fun(T) -&gt; Option&lt;U&gt;)</code></td><td><code>Option&lt;U&gt;</code></td><td>Monadic bind</td></tr>
 <tr><td><code>ok_or&lt;E&gt;(err: E)</code></td><td><code>Result&lt;T, E&gt;</code></td><td>Convert to a <code>Result</code></td></tr>
+<tr><td><code>filter(p: Fun(T) -&gt; Bool)</code></td><td><code>Option&lt;T&gt;</code></td><td><code>Some(x)</code> if <code>p(x)</code>, else <code>None</code></td></tr>
+<tr><td><code>or_else(f: Fun() -&gt; Option&lt;T&gt;)</code></td><td><code>Option&lt;T&gt;</code></td><td>Self if <code>Some</code>, else <code>f()</code></td></tr>
 </tbody>
 </table>
 </section>
@@ -207,6 +209,9 @@ match m.get("a")
 <tr><td><code>map&lt;U&gt;(f: Fun(T) -&gt; U)</code></td><td><code>Result&lt;U, E&gt;</code></td><td>Transform the success value</td></tr>
 <tr><td><code>and_then&lt;U&gt;(f: Fun(T) -&gt; Result&lt;U, E&gt;)</code></td><td><code>Result&lt;U, E&gt;</code></td><td>Monadic bind</td></tr>
 <tr><td><code>map_err&lt;F&gt;(f: Fun(E) -&gt; F)</code></td><td><code>Result&lt;T, F&gt;</code></td><td>Transform only the error</td></tr>
+<tr><td><code>or_else&lt;F&gt;(f: Fun(E) -&gt; Result&lt;T, F&gt;)</code></td><td><code>Result&lt;T, F&gt;</code></td><td>Self if <code>Ok</code>, else <code>f(error)</code></td></tr>
+<tr><td><code>ok()</code></td><td><code>Option&lt;T&gt;</code></td><td><code>Some(v)</code> if <code>Ok(v)</code>, else <code>None</code></td></tr>
+<tr><td><code>err()</code></td><td><code>Option&lt;E&gt;</code></td><td><code>Some(e)</code> if <code>Err(e)</code>, else <code>None</code></td></tr>
 </tbody>
 </table>
 <p>The <code>?</code> operator automatically propagates <code>Err</code> in functions that return <code>Result</code>:</p>

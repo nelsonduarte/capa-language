@@ -154,6 +154,8 @@ METHODS: dict[str, list[tuple[str, TyFun, list[str]]]] = {
         ("map",       fun(fun(T, U), opt(U)),                                      ["U"]),
         ("and_then",  fun(fun(T, opt(U)), opt(U)),                                 ["U"]),
         ("ok_or",     fun(E, res(T, E)),                                           ["E"]),
+        ("or_else",   fun(fun(opt(T)), opt(T)),                                    []),
+        ("filter",    fun(fun(T, TyBool), opt(T)),                                 []),
     ],
     "Result": [
         ("is_ok",     fun(TyBool),                                                 []),
@@ -162,6 +164,9 @@ METHODS: dict[str, list[tuple[str, TyFun, list[str]]]] = {
         ("map",       fun(fun(T, U), res(U, E)),                                   ["U"]),
         ("and_then",  fun(fun(T, res(U, E)), res(U, E)),                           ["U"]),
         ("map_err",   fun(fun(E, F), res(T, F)),                                   ["F"]),
+        ("or_else",   fun(fun(E, res(T, F)), res(T, F)),                           ["F"]),
+        ("ok",        fun(opt(T)),                                                 []),
+        ("err",       fun(opt(E)),                                                 []),
     ],
     "Stdio": [
         ("print",     fun(TyString, TyUnit),                                       []),
