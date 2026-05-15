@@ -16,7 +16,7 @@ class TestInitProject(unittest.TestCase):
     def test_creates_all_expected_files_in_new_dir(self):
         root = self._tmpdir()
         target = root / "my-proj"
-        rc = init_project(target, capa_version="0.6.0")
+        rc = init_project(target, capa_version="0.7.0")
         self.assertEqual(rc, 0)
         self.assertTrue((target / "main.capa").is_file())
         self.assertTrue((target / "README.md").is_file())
@@ -26,7 +26,7 @@ class TestInitProject(unittest.TestCase):
     def test_main_capa_uses_project_name(self):
         root = self._tmpdir()
         target = root / "cool-thing"
-        init_project(target, capa_version="0.6.0")
+        init_project(target, capa_version="0.7.0")
         body = (target / "main.capa").read_text(encoding="utf-8")
         self.assertIn("cool-thing", body)
         # The starter must declare fun main with a Stdio parameter,
@@ -41,7 +41,7 @@ class TestInitProject(unittest.TestCase):
         from capa import Lexer, Parser, analyze
         root = self._tmpdir()
         target = root / "p"
-        init_project(target, capa_version="0.6.0")
+        init_project(target, capa_version="0.7.0")
         source = (target / "main.capa").read_text(encoding="utf-8")
         tokens = Lexer(source, filename="main.capa").lex()
         module = Parser(tokens, source=source, filename="main.capa").parse_module()
@@ -54,7 +54,7 @@ class TestInitProject(unittest.TestCase):
         from capa import is_formatted
         root = self._tmpdir()
         target = root / "p"
-        init_project(target, capa_version="0.6.0")
+        init_project(target, capa_version="0.7.0")
         source = (target / "main.capa").read_text(encoding="utf-8")
         self.assertTrue(is_formatted(source))
 
@@ -69,7 +69,7 @@ class TestInitProject(unittest.TestCase):
         root = self._tmpdir()
         target = root / "blank"
         target.mkdir()
-        rc = init_project(target, capa_version="0.6.0")
+        rc = init_project(target, capa_version="0.7.0")
         self.assertEqual(rc, 0)
         self.assertTrue((target / "main.capa").is_file())
 
@@ -78,7 +78,7 @@ class TestInitProject(unittest.TestCase):
         target = root / "occupied"
         target.mkdir()
         (target / "existing.txt").write_text("hands off", encoding="utf-8")
-        rc = init_project(target, capa_version="0.6.0")
+        rc = init_project(target, capa_version="0.7.0")
         self.assertNotEqual(rc, 0)
         # Existing file must be untouched.
         self.assertEqual(
@@ -92,21 +92,21 @@ class TestInitProject(unittest.TestCase):
         root = self._tmpdir()
         target = root / "a-file"
         target.write_text("not a directory", encoding="utf-8")
-        rc = init_project(target, capa_version="0.6.0")
+        rc = init_project(target, capa_version="0.7.0")
         self.assertNotEqual(rc, 0)
 
     def test_parent_does_not_exist_is_rejected(self):
         root = self._tmpdir()
         target = root / "nope" / "nested"
         # Parent ``root/nope`` does not exist.
-        rc = init_project(target, capa_version="0.6.0")
+        rc = init_project(target, capa_version="0.7.0")
         self.assertNotEqual(rc, 0)
         self.assertFalse(target.exists())
 
     def test_gitignore_covers_pyc_and_editor_cruft(self):
         root = self._tmpdir()
         target = root / "p"
-        init_project(target, capa_version="0.6.0")
+        init_project(target, capa_version="0.7.0")
         body = (target / ".gitignore").read_text(encoding="utf-8")
         # A few representative entries; the test should not pin the
         # exact format, just the intent of what is covered.

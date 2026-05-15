@@ -335,7 +335,7 @@ analyser's heuristics.
   revisions. The mapping reflects the state of the five
   frameworks as of mid-2026.
 
-- **Capa is alpha.** v0.6.0 is suitable for proofs of concept
+- **Capa is alpha.** v0.7.0 is suitable for proofs of concept
   and personal projects, not for production deployments in
   any regulated industry. The artefact outputs are stable
   enough to integrate into compliance pipelines; the language

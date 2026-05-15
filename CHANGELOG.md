@@ -9,6 +9,54 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+## [0.7.0-alpha], 2026-05-15
+
+The sixth tagged release. **Focus: closing the supply-chain
+governance stack.** The compiler now natively emits all four of
+the standard governance artefacts (SBOM, VEX, provenance, audit)
+at per-function granularity, and a multi-jurisdiction
+comparative document maps each artefact onto five frameworks
+(CRA, NIS2, DORA, NIST SSDF, OWASP SCVS).
+
+The shipped artefact triangle, all from one source:
+
+- **CycloneDX 1.5 SBOM** (`--cyclonedx`): pre-existing, now
+  includes a top-level `vulnerabilities[]` array when any
+  `@vex` is present.
+- **SPDX 2.3 SBOM** (`--spdx`, new): Linux Foundation companion,
+  same per-function metadata via SPDX `annotations[]`.
+- **CycloneDX VEX** (`--vex`, new): per-function exploitability
+  claims from a new `@vex(cve, status, justification, detail)`
+  attribute. Genuinely novel: no other language emits VEX at
+  function granularity.
+- **SLSA Build L1 provenance** (`--provenance`, new): in-toto
+  Statement v1 + SLSA Provenance v1.0 predicate, source
+  SHA-256, deterministic invocation ID.
+
+Plus two new auditor-facing programs in Capa:
+
+- **SBOM diff tool** (`examples/sbom_diff.capa`): consumes two
+  CycloneDX SBOMs and reports per-function capability
+  widenings, narrowings, additions, removals. The alarm bell
+  for supplier widening that PURL-only diffs cannot raise.
+- **VEX demo** (`examples/vex_demo.capa`): paired with the
+  `@vex` attribute, illustrates three flavours of per-function
+  exploitability claim.
+
+Plus a consolidated regulatory mapping:
+
+- **`docs/regulatory.md`**: 8-by-5 comparative table (Capa
+  artefacts vs CRA/NIS2/DORA/NIST SSDF/OWASP SCVS), with each
+  cell classified as direct/indirect/partial/out-of-scope, and
+  a per-framework section explaining what Capa contributes and
+  what stays organisational. `docs/cra.md` remains as the CRA
+  article-by-article deep-dive; the two cross-reference.
+
+Test count: **776** (from 748 at v0.6.0-alpha), across
+end-to-end transpiler, lexer, parser, analyzer, formatter,
+LSP, attributes (now including 10 VEX + 7 provenance + 11
+SPDX), docs, init-project, and Hypothesis property suites.
+
 ### Added
 
 - **Consolidated regulatory mapping** (`docs/regulatory.md`).
