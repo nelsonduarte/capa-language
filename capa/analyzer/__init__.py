@@ -228,6 +228,7 @@ class Analyzer(
         source: str = "",
         filename: str = "<input>",
         sources: Optional[dict[str, str]] = None,
+        module_privates: Optional[dict[str, set[str]]] = None,
     ):
         self.source = source
         self.filename = filename
@@ -237,6 +238,13 @@ class Analyzer(
         # module render with the imported file's snippet, not the
         # root file's. Empty dict for the single-file path.
         self.sources: dict[str, str] = sources or {}
+        # alias -> set of *private* names declared in that import's
+        # target. Consulted when an "undefined name" lookup would
+        # otherwise fall back to a typo hint: if the missing name
+        # matches a private here, we surface the specialised
+        # "private to module 'X'; mark it 'pub' to expose"
+        # diagnostic instead.
+        self.module_privates: dict[str, set[str]] = module_privates or {}
         self.global_scope = Scope()
         self.scope = self.global_scope
         self.errors: list[AnalysisError] = []
@@ -372,9 +380,44 @@ class Analyzer(
         self, needle: str, haystack: list[str],
     ) -> str:
         """Thin pass-through to :func:`capa._suggest.hint_did_you_mean`,
-        kept on the class so existing call sites don't change."""
+        kept on the class so existing call sites don't change.
+
+        If the missing name is recorded as private to some imported
+        module, that takes priority and we surface a "private to
+        module 'X'" hint instead of the typo guess. The pub-vs-typo
+        choice is a one-or-the-other call: if the user reached for
+        a real declared name and got told it doesn't exist, the
+        privacy reason is more actionable than any "did you mean".
+        """
+        priv_hint = self._hint_private_to_module(needle)
+        if priv_hint:
+            return priv_hint
         from .._suggest import hint_did_you_mean
         return hint_did_you_mean(needle, haystack)
+
+    def _hint_private_to_module(self, name: str) -> str:
+        """If ``name`` matches an entry in ``module_privates`` for
+        any imported alias, return a hint suffix that points at the
+        right module(s); otherwise return ``""``.
+        """
+        if not self.module_privates:
+            return ""
+        hits = [
+            alias for alias, names in self.module_privates.items()
+            if name in names
+        ]
+        if not hits:
+            return ""
+        if len(hits) == 1:
+            return (
+                f" (private to module {hits[0]!r}; "
+                f"mark it 'pub' to expose)"
+            )
+        joined = ", ".join(repr(a) for a in sorted(hits))
+        return (
+            f" (private to modules {joined}; "
+            f"mark it 'pub' in the right one to expose)"
+        )
 
     def _push_type_params(self, names: list[str]) -> None:
         self.type_param_stack.append(set(names))
@@ -440,6 +483,7 @@ def analyze(
     source: str = "",
     filename: str = "<input>",
     sources: Optional[dict[str, str]] = None,
+    module_privates: Optional[dict[str, set[str]]] = None,
 ) -> AnalysisResult:
     """Analyze a Module and return the result.
 
@@ -447,7 +491,14 @@ def analyze(
     the loader-linked path so errors in imported modules render
     with the right source snippet. Single-file callers can leave
     it at its default.
+
+    ``module_privates``: optional per-import-alias map of private
+    top-level names contributed by each import. When set, an
+    unresolved reference whose name appears in any of these sets
+    produces a specialised "private to module 'X'" diagnostic
+    instead of the generic "did you mean" hint.
     """
     return Analyzer(
         source=source, filename=filename, sources=sources,
+        module_privates=module_privates,
     ).analyze(module)

@@ -710,6 +710,110 @@ class TestPubVisibility(_TempDirMixin, unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
 
 
+class TestPrivateDiagnostic(_TempDirMixin, unittest.TestCase):
+    """When a reference fails to resolve and the missing name is
+    a private item of an imported module, the diagnostic should
+    say so and suggest ``pub`` instead of a generic typo hint.
+    """
+
+    def test_private_function_diagnostic_mentions_module(self):
+        self._write(
+            "util.capa",
+            "fun helper(x: Int) -> Int\n"
+            "    return x + 1\n"
+        )
+        root = self._write(
+            "root.capa",
+            "import util\n"
+            "fun main(stdio: Stdio)\n"
+            "    let n = helper(3)\n"
+            "    stdio.println(\"hi\")\n"
+        )
+        result = subprocess.run(
+            [sys.executable, "-m", "capa", "--check", str(root)],
+            capture_output=True, text=True, encoding="utf-8",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("private to module 'util'", result.stderr)
+        self.assertIn("'pub'", result.stderr)
+
+    def test_private_type_diagnostic_mentions_module(self):
+        self._write(
+            "util.capa",
+            "type Box { v: Int }\n"
+            "pub fun make() -> Int\n"
+            "    let b = Box { v: 7 }\n"
+            "    return b.v\n"
+        )
+        root = self._write(
+            "root.capa",
+            "import util\n"
+            "fun main(stdio: Stdio)\n"
+            "    let b: Box = Box { v: 1 }\n"
+            "    stdio.println(\"hi\")\n"
+        )
+        result = subprocess.run(
+            [sys.executable, "-m", "capa", "--check", str(root)],
+            capture_output=True, text=True, encoding="utf-8",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("private to module 'util'", result.stderr)
+
+    def test_typo_hint_still_works_for_truly_unknown_names(self):
+        # Regression: when the missing name is not a private of any
+        # imported module, the typo hint must keep working.
+        self._write(
+            "util.capa",
+            "pub fun greet(name: String) -> String\n"
+            "    return \"Hi, \" + name\n"
+        )
+        root = self._write(
+            "root.capa",
+            "import util\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(grett(\"x\"))\n"  # typo: grett vs greet
+        )
+        result = subprocess.run(
+            [sys.executable, "-m", "capa", "--check", str(root)],
+            capture_output=True, text=True, encoding="utf-8",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        # Should suggest 'greet' (typo hint), not "private to module".
+        self.assertIn("did you mean", result.stderr.lower())
+        self.assertIn("greet", result.stderr)
+        self.assertNotIn("private to module", result.stderr)
+
+    def test_private_in_two_modules_lists_both(self):
+        # Two imported modules each declare a private ``helper``.
+        # The importer's failed lookup should mention both.
+        self._write(
+            "a.capa",
+            "fun helper() -> Int\n    return 1\n"
+            "pub fun a_pub() -> Int\n    return helper()\n"
+        )
+        self._write(
+            "b.capa",
+            "fun helper() -> Int\n    return 2\n"
+            "pub fun b_pub() -> Int\n    return helper()\n"
+        )
+        root = self._write(
+            "root.capa",
+            "import a\n"
+            "import b\n"
+            "fun main(stdio: Stdio)\n"
+            "    let n = helper()\n"
+            "    stdio.println(\"hi\")\n"
+        )
+        result = subprocess.run(
+            [sys.executable, "-m", "capa", "--check", str(root)],
+            capture_output=True, text=True, encoding="utf-8",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("private to modules", result.stderr)
+        self.assertIn("'a'", result.stderr)
+        self.assertIn("'b'", result.stderr)
+
+
 class TestModuleSystemEndToEnd(_TempDirMixin, unittest.TestCase):
     """End-to-end: capa --run with an imported file produces the
     expected output and exit code 0.

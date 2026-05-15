@@ -100,8 +100,14 @@ class LinkedModule:
     # contributes. Populated by the linker as each Import is
     # processed. Used by the post-link rewrite pass that turns
     # ``mod.fn(args)`` into ``fn(args)`` when ``mod`` is a known
-    # import alias.
+    # import alias. Only ``pub`` items appear here.
     module_exports: dict[str, set[str]] = field(default_factory=dict)
+    # Per-import-alias map of *private* names (original, unmangled).
+    # Consulted by the analyzer when an "undefined name" lookup
+    # would otherwise produce only a typo hint: a name that matches
+    # an entry here yields a "private to module 'X'; mark it 'pub'
+    # to expose" diagnostic instead.
+    module_privates: dict[str, set[str]] = field(default_factory=dict)
 
 
 class ModuleLoader:
@@ -134,6 +140,11 @@ class ModuleLoader:
         # ``_mangle_private_items`` to keep private items from
         # two different modules out of one another's way.
         self._mangle_counter: int = 0
+        # alias -> set of *private* top-level names (original,
+        # unmangled). Used by the analyzer for the specialised
+        # "private to module X" diagnostic; never consulted by
+        # the qualified-call rewriter (privates must not rewrite).
+        self._module_privates: dict[str, set[str]] = {}
 
     # -------- public entry points --------
 
@@ -188,6 +199,7 @@ class ModuleLoader:
             module=merged,
             sources=sources,
             module_exports=dict(self._module_exports),
+            module_privates=dict(self._module_privates),
         )
 
     # -------- internals --------
@@ -323,9 +335,12 @@ class ModuleLoader:
         # those names that occur inside this module's own items. The
         # root module is never mangled (callers in the root see one
         # another regardless of ``pub``); only imported modules are.
+        # The rename map's keys are the original (unmangled) private
+        # names; we hold on to them so the analyzer can produce the
+        # "private to module" diagnostic.
         self._mangle_counter += 1
         prefix = f"_capa_m{self._mangle_counter}"
-        _mangle_private_items(imported, prefix)
+        private_rename = _mangle_private_items(imported, prefix)
 
         self._loading.append(target)
         self._cache[target] = imported
@@ -369,6 +384,11 @@ class ModuleLoader:
                 filename=str(module_path),
             )
         self._module_exports[alias] = direct_names
+        # Track which names this import contributed *privately*, so
+        # the analyzer can specialise "undefined name" diagnostics
+        # when the user reached for a private item.
+        existing_privates = self._module_privates.get(alias, set())
+        self._module_privates[alias] = existing_privates | set(private_rename.keys())
 
 
 def _item_name(item: A.Item) -> Optional[str]:

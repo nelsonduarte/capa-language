@@ -61,6 +61,14 @@ while writing real Capa programs.
   disk. Polling loop + per-iteration subprocess to keep zero
   state between runs. Landed 2026-05-15. 2 new tests.
 
+- [x] **Specialised "private to module" diagnostic**. When an
+  unresolved name (or type) matches a private of some imported
+  module, the analyzer's hint becomes `(private to module 'X';
+  mark it 'pub' to expose)` instead of the generic typo guess.
+  Multi-module collisions list every candidate. Landed
+  2026-05-15. 4 new tests at
+  `tests/test_loader.py::TestPrivateDiagnostic`.
+
 - [x] **`pub` visibility enforcement**. The `pub` keyword
   has parsed for ages without doing anything; it now blocks
   imported modules' private items from being reached by

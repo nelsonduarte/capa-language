@@ -378,9 +378,13 @@ def main() -> int:
         # pass it so errors in imported modules render with the
         # imported file's source snippet.
         sources_map = linked.sources if linked is not None else None
+        privates_map = (
+            linked.module_privates if linked is not None else None
+        )
         result = analyze(
             module, source=source, filename=filename,
             sources=sources_map,
+            module_privates=privates_map,
         )
         if not result.ok:
             for err in result.errors:

@@ -11,6 +11,36 @@ breaking changes and the discipline is still being shaped.
 
 ### Added
 
+- **Specialised diagnostic when reaching for a private item**:
+  the "undefined name" / "undefined type" hint now recognises
+  when the missing reference is a private item of an imported
+  module and points at the right fix.
+
+  ```
+  error: undefined name 'helper' (private to module 'util';
+                                  mark it 'pub' to expose)
+     3 |     let n = helper(3)
+                     ^
+  ```
+
+  When the same private name appears in two or more imports the
+  diagnostic lists them all so the user can pick. The typo
+  ("did you mean") hint still wins for names that are not
+  private in any import.
+
+  Mechanism: the loader hands the analyzer a per-alias map of
+  private names (alongside the existing per-alias map of public
+  names). The shared ``_hint_did_you_mean`` helper consults the
+  private map first and short-circuits the typo guess when it
+  finds a match. Both the `_check_ident` and `_check_type_name`
+  sites pick up the new hint without code changes at the call
+  sites.
+
+  4 new tests at
+  `tests/test_loader.py::TestPrivateDiagnostic`: function,
+  type, regression that typos still hint, and two-module
+  collision. Full suite: 865 passed (was 861).
+
 - **`pub` visibility enforcement**: the `pub` keyword has parsed
   on every top-level item for a long time without doing anything;
   it now actually blocks imported modules' private items from
