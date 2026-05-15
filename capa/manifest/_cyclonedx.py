@@ -179,6 +179,11 @@ def build_cyclonedx(
                 "name": "capa:declared_capability",
                 "value": cap_type,
             })
+        for cap_type in fn.get("provably_excluded_capabilities", []):
+            props.append({
+                "name": "capa:provably_excluded_capability",
+                "value": cap_type,
+            })
         for param in fn["params"]:
             props.append({
                 "name": "capa:param",

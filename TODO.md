@@ -700,15 +700,20 @@ items here so they stay visible:
 - [x] **`docs/positioning.md`** with honest comparison vs Pony,
   Koka, Roc, WebAssembly Component Model. The reviewer cited
   it approvingly; already landed.
-- [ ] **Ineligibility proofs as SBOM enrichment**. The reviewer
-  identified this as the most original idea in their second
-  document (the IR design): the SBOM declares not just what a
-  function *can* touch but what it is *provably incapable* of
-  touching. The antithesis of npm's permission manifest. A
-  publishable contribution on its own; worth its own writeup.
-  Needs a
-  closed-world story (no `Unsafe`, no dynamic dispatch) so the
-  proof has teeth.
+- [x] **Ineligibility proofs as SBOM enrichment**. Landed
+  2026-05-15. `provably_excluded_capabilities` is now a per-
+  function field on the manifest, embedded in both CycloneDX
+  (`capa:provably_excluded_capability` properties) and SPDX
+  (`provably_excluded_capability` annotations). Sound because
+  Capa's discipline makes the declared cap set an upper bound;
+  the proof is voided (empty list) when `Unsafe` is declared.
+  Implementation at `capa/manifest/_funrec.py`; 6 tests at
+  `tests/test_attributes.py::TestIneligibilityProofs`. Known
+  caveat: impl methods of capability traits don't list the
+  trait in `declared_capabilities`, so for them the exclusion
+  set may name a cap they actually exercise via `self`;
+  follow-up populates `declared_capabilities` from the impl's
+  `trait_name`.
 - [ ] **IR with capability annotations + monomorphisation**. The
   second review document proposes an ANF + basic-blocks + CFG
   IR with block parameters (MLIR / Swift SIL shape). The right

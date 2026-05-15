@@ -199,6 +199,10 @@ def build_spdx(
             annots.append(_annot(timestamp, "container", fn["container"]))
         for cap_type in fn["declared_capabilities"]:
             annots.append(_annot(timestamp, "declared_capability", cap_type))
+        for cap_type in fn.get("provably_excluded_capabilities", []):
+            annots.append(_annot(
+                timestamp, "provably_excluded_capability", cap_type,
+            ))
         for param in fn["params"]:
             annots.append(_annot(timestamp, "param", _flat_param(param)))
         for attr in fn["attributes"]:

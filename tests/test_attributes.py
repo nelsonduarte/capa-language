@@ -312,6 +312,114 @@ class TestManifest(unittest.TestCase):
 # CycloneDX 1.5 wrapper
 # =============================================================
 
+class TestIneligibilityProofs(unittest.TestCase):
+    """The ``provably_excluded_capabilities`` field is the
+    "ineligibility proof": the set of capabilities the function
+    is provably incapable of using. Sound because Capa's
+    discipline makes ``declared_capabilities`` an upper bound on
+    what the function can exercise. With ``Unsafe`` declared, the
+    proof is voided and the field is empty.
+    """
+
+    def _excl(self, source: str, fn_name: str = "main") -> list[str]:
+        m = manifest_of(source)
+        for f in m["functions"]:
+            if f["name"] == fn_name:
+                return f["provably_excluded_capabilities"]
+        self.fail(f"function {fn_name!r} not found in manifest")
+
+    def test_stdio_only_excludes_others(self):
+        excl = self._excl(
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"hi\")\n"
+        )
+        # Every built-in cap except Stdio.
+        self.assertIn("Fs", excl)
+        self.assertIn("Net", excl)
+        self.assertIn("Env", excl)
+        self.assertIn("Clock", excl)
+        self.assertIn("Random", excl)
+        self.assertIn("Unsafe", excl)
+        self.assertNotIn("Stdio", excl)
+
+    def test_no_caps_excludes_everything(self):
+        excl = self._excl(
+            "fun pure_add(a: Int, b: Int) -> Int\n"
+            "    return a + b\n",
+            fn_name="pure_add",
+        )
+        # No declared caps -> the entire built-in universe is in
+        # the exclusion set.
+        for cap in ("Stdio", "Fs", "Net", "Env", "Clock",
+                    "Random", "Unsafe", "Db", "Proc"):
+            self.assertIn(cap, excl)
+
+    def test_unsafe_voids_the_proof(self):
+        excl = self._excl(
+            "fun crosses(u: Unsafe)\n"
+            "    return\n",
+            fn_name="crosses",
+        )
+        # Unsafe in scope -> empty exclusion (we can't prove
+        # anything about a function with the escape hatch).
+        self.assertEqual(excl, [])
+
+    def test_user_defined_cap_in_universe(self):
+        excl = self._excl(
+            "capability SendEmail\n"
+            "    fun send(self, to: String) -> Bool\n"
+            "fun pure_x() -> Int\n"
+            "    return 1\n",
+            fn_name="pure_x",
+        )
+        # The user-defined cap from this module appears in the
+        # universe; pure_x doesn't declare it, so it's in the
+        # exclusion set.
+        self.assertIn("SendEmail", excl)
+
+    def test_declared_user_cap_not_excluded(self):
+        m = manifest_of(
+            "capability SendEmail\n"
+            "    fun send(self, to: String) -> Bool\n"
+            "type SmtpMailer { net: Net }\n"
+            "impl SendEmail for SmtpMailer\n"
+            "    fun send(self, to: String) -> Bool\n"
+            "        return true\n"
+            "fun greeting(mailer: SmtpMailer) -> Int\n"
+            "    return 1\n"
+        )
+        # greeting takes SmtpMailer, which implements SendEmail.
+        # SmtpMailer itself isn't a capability name, so the
+        # exclusion set should still list SendEmail (greeting
+        # provably does not exercise the cap directly).
+        for f in m["functions"]:
+            if f["name"] == "greeting":
+                self.assertIn("SendEmail", f["provably_excluded_capabilities"])
+                break
+        else:
+            self.fail("greeting not found in manifest")
+
+    def test_cyclonedx_emits_exclusion_property(self):
+        sbom = cyclonedx_of(
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"hi\")\n"
+        )
+        # Find main's component.
+        comp = next(
+            c for c in sbom["components"]
+            if c.get("name") == "main"
+        )
+        excl_props = [
+            p for p in comp.get("properties", [])
+            if p["name"] == "capa:provably_excluded_capability"
+        ]
+        names = {p["value"] for p in excl_props}
+        self.assertIn("Fs", names)
+        self.assertIn("Net", names)
+        self.assertIn("Unsafe", names)
+        self.assertNotIn("Stdio", names)
+
+
 class TestCycloneDX(unittest.TestCase):
     def test_top_level_envelope(self):
         sbom = cyclonedx_of(

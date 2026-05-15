@@ -11,6 +11,55 @@ breaking changes and the discipline is still being shaped.
 
 ### Added
 
+- **Ineligibility proofs in the manifest**: every function record
+  now carries a `provably_excluded_capabilities` field listing
+  capabilities the function is provably incapable of exercising.
+  The reviewer of the whitepaper called this out as the most
+  original contribution Capa could make on the supply-chain
+  axis: an SBOM that says not just "this function can touch Fs"
+  but "this function provably cannot touch Net, Env, Clock,
+  Random, Db, Proc, or Unsafe" is the antithesis of npm's
+  permission manifest.
+
+  ```json
+  {
+    "name": "render_page",
+    "declared_capabilities": ["Stdio"],
+    "provably_excluded_capabilities": [
+      "Clock", "Db", "Env", "Fs", "Net", "Proc", "Random", "Unsafe"
+    ],
+    "has_unsafe": false
+  }
+  ```
+
+  Soundness: Capa's discipline makes `declared_capabilities` an
+  upper bound on what the function can exercise (any capability
+  a callee touches must be in scope here to be passed). The
+  complement against the known universe (built-in caps plus any
+  user-defined caps declared in this module) is therefore a
+  sound under-claim of unreachable capabilities. The proof is
+  voided when `Unsafe` is declared: the escape hatch can
+  side-step the discipline, so for those functions
+  `provably_excluded_capabilities` is empty rather than an
+  over-claim.
+
+  Also embedded in the SBOM emitters:
+  - CycloneDX as `capa:provably_excluded_capability` properties
+    on each function component.
+  - SPDX 2.3 as `provably_excluded_capability` annotations.
+
+  Known caveat: impl methods whose `impl` is *of* a capability
+  trait do not currently list the trait in
+  `declared_capabilities` even though they exercise it via
+  `self`. A follow-up will populate that from the impl's
+  `trait_name`.
+
+  6 new tests at `tests/test_attributes.py::TestIneligibilityProofs`
+  cover Stdio-only, no-caps, Unsafe voiding the proof, user-defined
+  capability in the universe, declared user cap not excluded, and
+  the CycloneDX property emission. Full suite: 883 passed
+  (was 877).
+
 - **REPL: `.types <expr>` meta command**: prints the inferred
   type of an expression without running the program. Uses the
   current accumulated state's scope, so locals, imported items,

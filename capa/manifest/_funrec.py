@@ -126,6 +126,27 @@ def _fun_record(
         for p in fn.params
         if p.type_expr
     )
+
+    # Ineligibility proof: which capabilities this function
+    # provably *cannot* use. Sound because Capa's discipline makes
+    # ``declared_caps`` an upper bound on what the function can
+    # exercise (any cap a callee touches must be in scope here to
+    # be passed). The proof breaks if ``Unsafe`` is in scope (the
+    # escape hatch can side-step the discipline), so we report an
+    # empty list in that case rather than an over-claim.
+    #
+    # Known caveat: an impl method whose ``impl`` is *of* a
+    # capability trait does not show the trait in
+    # ``declared_capabilities`` even though it exercises that
+    # trait via ``self``. For such methods the exclusion may
+    # name a capability the method does in fact use through
+    # ``self``. Fix is a separate enhancement to populate
+    # ``declared_capabilities`` from the impl's trait_name.
+    if has_unsafe:
+        provably_excluded_caps: list[str] = []
+    else:
+        declared_set = set(declared_caps)
+        provably_excluded_caps = sorted(cap_names - declared_set)
     attrs = [
         {"name": a.name, "args": dict(a.args)}
         for a in fn.attributes
@@ -148,6 +169,7 @@ def _fun_record(
         "params": param_records,
         "return_type": _ty_text(fn.return_type) if fn.return_type else "()",
         "declared_capabilities": declared_caps,
+        "provably_excluded_capabilities": provably_excluded_caps,
         "has_unsafe": has_unsafe,
         "attributes": attrs,
         "calls": calls,
