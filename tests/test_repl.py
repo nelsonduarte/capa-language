@@ -100,9 +100,17 @@ class TestReplHelpers(unittest.TestCase):
     def test_repl_state_assemble_with_no_body(self):
         s = _ReplState()
         program = s.assemble()
-        self.assertIn("fun main(stdio: Stdio)", program)
-        # The synthesised first body line keeps stdio "used".
+        # Every standard capability is pre-bound in main's signature.
+        self.assertIn("fun main(stdio: Stdio", program)
+        for cap in ("fs: Fs", "net: Net", "env: Env",
+                    "clock: Clock", "random: Random"):
+            self.assertIn(cap, program)
+        # Each pre-bound cap has a silencer probe in the body so
+        # the analyzer's "declared but never used" check passes.
         self.assertIn('stdio.print("")', program)
+        for probe in ("fs.allows", "net.allows", "env.allows",
+                      "clock.now_secs", "random.float_unit"):
+            self.assertIn(probe, program)
 
     def test_repl_state_assemble_accumulates(self):
         s = _ReplState()
@@ -111,7 +119,7 @@ class TestReplHelpers(unittest.TestCase):
         s.main_lines.append('    stdio.println("${x}")')
         program = s.assemble()
         self.assertIn("fun double(n: Int)", program)
-        self.assertIn("fun main(stdio: Stdio)", program)
+        self.assertIn("fun main(stdio: Stdio", program)
         self.assertIn("let x = double(5)", program)
 
 
@@ -183,7 +191,7 @@ class TestReplEndToEnd(unittest.TestCase):
         script = "let x = 7\n.show\n.exit\n"
         result = self._run(script)
         self.assertEqual(result.returncode, 0)
-        self.assertIn("fun main(stdio: Stdio)", result.stdout)
+        self.assertIn("fun main(stdio: Stdio", result.stdout)
         self.assertIn("let x = 7", result.stdout)
 
     def test_help_lists_meta_commands(self):
@@ -199,6 +207,28 @@ class TestReplEndToEnd(unittest.TestCase):
         result = self._run(script)
         self.assertEqual(result.returncode, 0)
         self.assertIn("99", result.stdout)
+
+    def test_clock_is_pre_bound(self):
+        # ``clock`` is pre-bound; calling ``clock.now_secs()`` at
+        # the prompt should succeed and print a number.
+        script = "clock.now_secs()\n.exit\n"
+        result = self._run(script)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        # Output should contain at least one digit from the timestamp.
+        # We don't assert the exact value (it depends on the wall
+        # clock); just that the REPL printed something numeric.
+        self.assertRegex(result.stdout, r"\d")
+
+    def test_random_is_pre_bound(self):
+        # ``random.float_unit()`` is a pure read; pre-binding should
+        # make it accessible at the prompt. The auto-wrap path
+        # avoids the bare-expression-with-quotes corner that breaks
+        # `env.allows("...")` style probes, so we use this one.
+        script = "random.float_unit()\n.exit\n"
+        result = self._run(script)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        # Floats in [0, 1) print with a decimal point.
+        self.assertRegex(result.stdout, r"\d+\.\d+")
 
 
 if __name__ == "__main__":

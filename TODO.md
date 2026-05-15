@@ -26,11 +26,13 @@ is the consolidated honest list.
   implementation. Capability-aware async is a research
   question on its own. ("Not in v1" at line 746.)
 - **REPL: MVP only.** `capa repl` opens an interactive prompt
-  with `Stdio` pre-bound. Re-runs the assembled program on
-  each input with stdout-diffing. Meta commands `.exit`,
-  `.reset`, `.show`, `.help`. Pending: incremental analyzer
-  state, history, the other built-in capabilities. (P2, line
-  310.)
+  with every standard built-in capability pre-bound (`stdio`,
+  `fs`, `net`, `env`, `clock`, `random`; `Unsafe` is left out
+  on purpose). Re-runs the assembled program on each input
+  with stdout-diffing. Meta commands `.exit`, `.reset`,
+  `.show`, `.help`. Pending: incremental analyzer state,
+  history, multi-line continuation beyond top-level blocks.
+  (P2, line 310.)
 
 Surfacing this list in `docs/roadmap.html` so adopters see it
 before adopting. The detail-level entries below stay as the
@@ -398,17 +400,21 @@ to public.
 - [ ] **Package manager**, only meaningful once there's a module
   system. P3
 - [~] **REPL: MVP landed**. `capa repl` opens an interactive
-  prompt with `Stdio` in scope. Bare expressions are auto-
-  wrapped as `stdio.println("${...}")`, declarations are
-  accumulated, state survives via re-running the assembled
-  program with stdout-diffing. Meta commands: `.exit`,
-  `.reset`, `.show`, `.help`. Implementation at
-  `capa/repl.py`; 18 tests at `tests/test_repl.py`.
-  **Pending for the full REPL**: incremental analyzer state
-  (the MVP re-runs everything on each input), readline /
-  history, multi-line continuation beyond top-level blocks,
-  the other built-in capabilities (`Fs`, `Net`, `Env`, etc.)
-  pre-bound. P2.
+  prompt with every standard built-in capability pre-bound
+  under its conventional lowercase name (`stdio`, `fs`, `net`,
+  `env`, `clock`, `random`); `Unsafe` is intentionally left
+  out. Bare expressions are auto-wrapped as
+  `stdio.println("${...}")`, declarations are accumulated,
+  state survives via re-running the assembled program with
+  stdout-diffing. Each pre-bound cap gets a read-only probe in
+  the synthesised main's body so the analyzer's "declared but
+  never used" check passes regardless of which caps the user
+  touches. Meta commands: `.exit`, `.reset`, `.show`, `.help`.
+  Implementation at `capa/repl.py`; 20 tests at
+  `tests/test_repl.py`. **Pending for the full REPL**:
+  incremental analyzer state (the MVP re-runs everything on
+  each input), readline / history, multi-line continuation
+  beyond top-level blocks. P2.
 - [x] **`capa init`**, project scaffolding. `python -m capa init [name]`
   creates `main.capa` (a runnable, canonically-formatted starter that
   uses `Stdio` so the capability discipline shows up on line one),

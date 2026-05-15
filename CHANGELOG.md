@@ -11,6 +11,39 @@ breaking changes and the discipline is still being shaped.
 
 ### Added
 
+- **REPL pre-binds every standard capability**: `capa repl` now
+  ships `stdio`, `fs`, `net`, `env`, `clock`, and `random` in
+  scope at the prompt, all under their conventional lowercase
+  names. Previously only `stdio` was available and users had to
+  declare a wrapper function to reach for anything else.
+
+  ```
+  $ capa repl
+  Capa REPL. Type .help for commands, .exit to leave.
+  capa> clock.now_secs()
+  1715812345.123
+  capa> random.float_unit()
+  0.4827
+  ```
+
+  `Unsafe` is intentionally not pre-bound. The escape-hatch
+  pattern (declare a function that takes `Unsafe`, call it from
+  the prompt) is the same as in production code and stays the
+  way to opt in.
+
+  Mechanism: the synthesised main signature now lists every cap
+  as a parameter, and the body opens with one read-only probe per
+  cap (`fs.allows("/")`, `net.allows(...)`, etc.) so the
+  analyzer's "declared but never used" check passes regardless of
+  what the user has typed yet. The transpiler's main-bootstrap
+  already iterates `main`'s params and instantiates each
+  capability by name, so the run side picks up the new caps with
+  zero change there.
+
+  2 new tests at `tests/test_repl.py::TestReplEndToEnd` exercise
+  `clock` and `random` directly at the prompt. Full suite: 867
+  passed (was 865).
+
 - **Specialised diagnostic when reaching for a private item**:
   the "undefined name" / "undefined type" hint now recognises
   when the missing reference is a private item of an imported

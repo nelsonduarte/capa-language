@@ -30,13 +30,19 @@ Meta commands (start with a dot):
 - ``.show``: print the current accumulated program.
 - ``.help``: show this list.
 
+Pre-bound capabilities in the synthesised ``main``:
+
+- ``stdio: Stdio``, the printing surface.
+- ``fs: Fs``, ``net: Net``, ``env: Env``, ``clock: Clock``,
+  ``random: Random``: the rest of the built-in capabilities,
+  ready to be invoked directly from the REPL prompt.
+
+``Unsafe`` is deliberately not pre-bound; it has to be requested
+explicitly the same way it would be in production code (declare
+a function that takes ``Unsafe`` and call it from the REPL).
+
 Limitations:
 
-- Only ``Stdio`` is in scope in the synthesised ``main``. Other
-  capabilities (``Fs``, ``Net``, ``Env``, ``Clock``, ``Random``,
-  ``Unsafe``) would trigger the "declared but never used"
-  check; to use them, declare a function that takes them as
-  parameters and call it from the REPL.
 - Continuation / multi-line input is not supported in v1;
   declarations must fit on a single logical "line" (with
   indented blocks delimited by blank-line termination).
@@ -57,10 +63,29 @@ from .parser import Parser
 from .transpiler import transpile
 
 
-# Built-in capability that the synthesised main holds. Stdio is
-# the only one whose unused-but-declared analyser warning would
-# realistically not fire (the auto-print wrapper uses it).
-_REPL_MAIN_HEADER = "fun main(stdio: Stdio)"
+# Synthesised main's signature. Every standard built-in capability
+# is pre-bound under its conventional lowercase name so users can
+# call ``fs.allows(...)``, ``net.allows(...)``, ``clock.now_secs()``,
+# etc. directly at the prompt. ``Unsafe`` is left out: it is the
+# explicit escape hatch and should keep requiring intent.
+_REPL_MAIN_HEADER = (
+    "fun main(stdio: Stdio, fs: Fs, net: Net, env: Env, "
+    "clock: Clock, random: Random)"
+)
+
+# One probe per pre-bound capability so the analyzer's
+# "declared but never used" check passes even if the user has not
+# touched a given capability yet. The probes are pure-or-near-pure
+# read-only calls; their return values are discarded as expression
+# statements. They sit on the first body lines of every REPL run.
+_REPL_SILENCERS = [
+    'stdio.print("")',
+    'fs.allows("/")',
+    'net.allows("capa-repl-probe")',
+    'env.allows("CAPA_REPL_PROBE")',
+    'clock.now_secs()',
+    'random.float_unit()',
+]
 
 
 class _ReplState:
@@ -89,14 +114,14 @@ class _ReplState:
 
     def assemble(self) -> str:
         """Assemble the full Capa program from the accumulated
-        state. Always synthesises a ``main`` function with a
-        first-line ``stdio.print("")`` so the capability counts
-        as used (silencing the analyzer's "declared but never
-        used" check) without producing any visible output, then
-        any user-entered statements.
+        state. Always synthesises a ``main`` function whose body
+        starts with one read-only probe per pre-bound capability
+        (so the analyzer's "declared but never used" check passes
+        even before the user touches a given cap), then any
+        user-entered statements.
         """
         top = "\n".join(self.top_lines)
-        body_lines = ['    stdio.print("")'] + self.main_lines
+        body_lines = [f"    {s}" for s in _REPL_SILENCERS] + self.main_lines
         body = "\n".join(body_lines)
         program = (top + "\n\n" if top else "") + _REPL_MAIN_HEADER + "\n" + body + "\n"
         return program
@@ -236,9 +261,16 @@ Input shapes:
   let x = ...         statement (added to the synthesised main)
   x.method()          bare expression (auto-wrapped as println)
 
-Only Stdio is in scope as `stdio`. To use Fs / Net / Env / Clock /
-Random / Unsafe, declare a function that takes the capability and
-call it.
+Pre-bound capabilities in scope at the prompt:
+  stdio  Stdio    println / print / readln
+  fs     Fs       allows / read_to_string / write_string / ...
+  net    Net      allows / fetch
+  env    Env      allows / get
+  clock  Clock    now_secs / sleep_secs
+  random Random   float_unit / int_range / shuffle
+
+Unsafe is intentionally not pre-bound; declare a function that
+takes Unsafe and call it from the REPL when you really mean it.
 """
 
 
