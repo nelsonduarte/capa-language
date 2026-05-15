@@ -66,9 +66,20 @@ sequence below strengthens exactly that axis.
 
 **Tier 3, polish:**
 
-- [ ] 1 workshop paper draft based on Tier 1 + Tier 2.
-  Target venues: SPLASH-E, PLAS, EuroS&P workshops, NDSS
-  workshops. ~30-40h.
+- [~] 1 workshop paper **draft v1 landed** at
+  `docs/paper-draft.md`. ~5000 words, all sections written
+  (abstract, intro, related work, three-layer discipline,
+  implementation, six-CVE empirical, runtime overhead,
+  SBOM-diff information-gain, regulatory mapping, discussion,
+  conclusion, references, two appendices). Status: working
+  draft v1, all sections complete in first-pass form. Iterate
+  on revision; convert to LaTeX when targeting a specific
+  venue submission. Target venues: PLAS, EuroS&P workshops,
+  NDSS workshops. Original estimate 30-40h; first draft
+  landed in ~3h thanks to the existing companion docs
+  (semantics.md, positioning.md, cra.md, regulatory.md,
+  empirical_micro.md, benchmarks/README.md) carrying most of
+  the source material.
 
 When Tier 1 + Tier 2 + paper are done, **stop**. Excess time
 goes to PhD preparation, not to Tier 4 expansions.

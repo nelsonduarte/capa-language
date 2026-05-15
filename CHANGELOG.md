@@ -9,6 +9,20 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+### Added
+
+- **Workshop paper draft** (`docs/paper-draft.md`), ~5000
+  words, all sections written in first-pass form: abstract,
+  introduction, background and related work, three-layer
+  discipline, implementation, six-CVE empirical evaluation,
+  runtime overhead, SBOM-diff information-gain, regulatory
+  mapping, discussion and limitations, conclusion, references,
+  two appendices (reproduction + non-claims). Status: working
+  draft v1, ready for iteration; convert to LaTeX when
+  targeting a specific venue submission. Target venues: PLAS,
+  EuroS&P workshops, NDSS workshops. Closes the Tier 3
+  workshop-paper-draft item from the May-October plan.
+
 ## [0.7.0-alpha], 2026-05-15
 
 The sixth tagged release. **Focus: closing the supply-chain
