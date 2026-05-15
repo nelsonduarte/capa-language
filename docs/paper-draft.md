@@ -526,8 +526,13 @@ The immediate future work:
    the one micro-validation make a point; a quantitative
    study transliterating tens of real-world libraries and
    measuring the SBOM diff would test it.
-3. **Sign provenance attestations.** Capa emits SLSA L1; L2
-   requires signing, which is mechanical via cosign / Sigstore.
+3. **Sign provenance attestations.** Capa emits SLSA L1; the
+   end-to-end signing workflow (Capa + cosign in three modes:
+   keypair, Sigstore keyless, hosted build platform) is
+   documented at [`docs/provenance-signing.md`]. Formal SLSA
+   L2 still requires a hosted, tamper-resistant build
+   platform; the documentation walks through one such workflow
+   (GitHub Actions + `actions/attest-build-provenance`).
 4. **Native backend.** A Cranelift or LLVM target would close
    the "Python overhead" objection definitively; the IR design
    is open.

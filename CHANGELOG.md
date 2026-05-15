@@ -11,6 +11,23 @@ breaking changes and the discipline is still being shaped.
 
 ### Added
 
+- **Provenance signing workflow (Capa SLSA L1 to L2)**:
+  `deploy/sign-provenance.sh` + `docs/provenance-signing.md`.
+  Capa's `--provenance` flag emits a SLSA Build L1 attestation;
+  the new shell script and tutorial document the L1-to-L2 path
+  via cosign. Three signing modes covered: keypair-based
+  (offline / private), Sigstore keyless (public-chain), and
+  hosted-build-platform (GitHub Actions with
+  `actions/attest-build-provenance` for true SLSA L2). The
+  tutorial includes verification recipes for each mode and a
+  per-framework mapping showing what each gets you under CRA,
+  NIS2, DORA, NIST SSDF, and OWASP SCVS. Capa stays
+  independent of any specific signing service; the script is
+  example-driven, not bundled. Honest about scope: signing
+  alone does not formally lift L1 to L2 (L2 requires a hosted
+  build platform); Mode A is documented as "signed L1" rather
+  than overclaiming.
+
 - **CVE case study (design-pattern class): PyYAML
   `yaml.load()` arbitrary code execution** (CVE-2017-18342,
   `examples/cve_pyyaml.capa` + `docs/cve_pyyaml.md`). First of

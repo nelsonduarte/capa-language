@@ -66,6 +66,14 @@ sequence below strengthens exactly that axis.
 
 **Tier 3, polish:**
 
+- [x] **Provenance signing workflow (L1 -> L2)**:
+  `deploy/sign-provenance.sh` + `docs/provenance-signing.md`.
+  Three signing modes documented (keypair, Sigstore keyless,
+  hosted build platform); verification recipes; per-framework
+  mapping. Capa emits L1; signing is external (cosign /
+  Sigstore) so the language stays independent of any specific
+  signing service. Landed 2026-05-15.
+
 - [~] **Empirical study at scale: design-pattern CVEs**.
   First library landed: PyYAML CVE-2017-18342 at
   `examples/cve_pyyaml.capa` + `docs/cve_pyyaml.md`. Distinct

@@ -100,6 +100,7 @@ Capa/
 │   ├── semantics.md            # λ_cap calculus sketch + soundness theorems
 │   ├── cra.md                  # Cyber Resilience Act article-by-article mapping
 │   ├── regulatory.md           # Multi-jurisdiction comparative (CRA+NIS2+DORA+SSDF+SCVS)
+│   ├── provenance-signing.md   # Capa SLSA L1 -> L2 via cosign / Sigstore
 │   ├── paper-draft.md          # Workshop paper draft, v1
 │   ├── empirical_micro.md      # SBOM diff Python vs Capa, fully reproducible
 │   ├── demo-event-stream.md    # case study walkthrough
