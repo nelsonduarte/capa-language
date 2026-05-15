@@ -53,7 +53,7 @@
         <a href="start.html" class="btn">Get started</a>
         <a href="https://github.com/nelsonduarte/capa" class="btn">GitHub</a>
     </div>
-    <p class="status">v0.7.0-alpha · MIT · 776 tests · hand-written compiler in Python</p>
+    <p class="status">v0.8.0-beta · MIT · 887 tests · hand-written compiler in Python</p>
 </section>
 
 <!-- =====================================================
@@ -61,7 +61,7 @@
 ===================================================== -->
 <section class="release-banner-wrap">
     <div class="release-banner">
-        <span class="release-tag">v0.7.0-alpha</span>
+        <span class="release-tag">v0.8.0-beta</span>
         <span class="release-body">
             <strong>Released 2026-05-15.</strong>
             Module system completion (qualified access, stdlib
@@ -74,7 +74,7 @@
             SLSA L1 provenance) directly from capability
             signatures.
         </span>
-        <a class="release-link" href="https://github.com/nelsonduarte/capa/releases/tag/v0.7.0-alpha">Read the notes →</a>
+        <a class="release-link" href="https://github.com/nelsonduarte/capa/releases/tag/v0.8.0-beta">Read the notes →</a>
     </div>
 </section>
 
@@ -234,7 +234,7 @@
     <h2 class="section-centered">How Capa compares</h2>
     <p class="lead-prose">
         A short matrix of properties that matter for code-level
-        authority control. Honest on alpha status.
+        authority control. Honest on beta status.
     </p>
     <div class="compare-wrap">
         <table class="compare-table">
@@ -288,7 +288,7 @@
                     <td class="good">mature</td>
                     <td class="good">mature</td>
                     <td class="good">mature</td>
-                    <td class="bad">alpha</td>
+                    <td class="mid">beta</td>
                 </tr>
             </tbody>
         </table>
@@ -318,21 +318,29 @@
         <details>
             <summary>Is Capa production-ready?</summary>
             <p>
-                No. v0.7.0-alpha means the compiler runs, the
-                discipline is implemented end-to-end, 887+ tests
-                pass on three operating systems and three Python
-                versions, and the artefacts the language emits
-                (manifest, CycloneDX, HTML docs, LSP diagnostics
-                and hover) are real. The day-to-day tooling is in
-                place: a line-level formatter (<code>capa --fmt</code>),
-                a project scaffolder (<code>capa init</code>), and a
-                language server with diagnostics, hover, go-to-definition,
-                find-references, outline, and Quick Fixes. The
-                language surface can still change between minor
-                versions and there is no native backend yet, so
-                use Capa for prototypes, research, security demos,
-                or as a study substrate, not yet as a production
-                runtime.
+                Not yet, but the gap is hardening rather than
+                completeness. v0.8.0-beta means the compiler runs,
+                the discipline is implemented end-to-end, the
+                module system is feature-complete (qualified
+                access, transitive imports, <code>pub</code>
+                enforcement, search paths), and 887+ tests pass
+                on three operating systems and three Python
+                versions. The day-to-day tooling is in place:
+                line-level formatter, project scaffolder, watch
+                mode, REPL with every standard capability
+                pre-bound, and a language server with diagnostics,
+                hover, go-to-definition, find-references, outline,
+                rename, completion, and semantic tokens. The
+                artefacts the language emits (manifest, CycloneDX
+                1.5 SBOM, SPDX 2.3, VEX, SLSA L1 provenance,
+                per-function ineligibility proofs) are real and
+                schema-versioned. What remains pre-1.0: the
+                runtime is Python (no native backend yet), there
+                is no package manager, and surface syntax may
+                still shift in pre-1.0 minor bumps. Capa is fine
+                for prototypes, research, security demos, and
+                study substrate; production runtime is a v1
+                conversation.
             </p>
         </details>
         <details>
@@ -478,7 +486,7 @@
 
 <section class="section-centered">
     <h2>Where to go next</h2>
-    <p class="lead-prose-narrow">Capa is in alpha. The compiler runs, 887+ tests pass on three operating systems, the three pillars of the discipline are implemented, and the day-to-day tooling is in place (formatter, scaffolder, language server with diagnostics, hover, go-to-definition, find-references, outline, Quick Fixes). There is still no package manager and no native backend.</p>
+    <p class="lead-prose-narrow">Capa is in beta. The compiler runs, 887+ tests pass on three operating systems, the three pillars of the discipline are implemented, the module system is feature-complete, and the day-to-day tooling is in place (formatter, scaffolder, watch mode, REPL with every standard capability pre-bound, language server with diagnostics, hover, go-to-definition, find-references, outline, rename, completion, semantic tokens). What remains pre-1.0: a package manager, a native backend, and any pre-1.0 syntax shifts.</p>
     <div class="cta">
         <a href="why.html" class="btn primary">Understand the why</a>
         <a href="tour.html" class="btn">Tour the language</a>
@@ -543,7 +551,7 @@
             </ul>
         </div>
     </div>
-    <p class="colophon">Built by Nelson Duarte · v0.7.0-alpha · MIT-licensed</p>
+    <p class="colophon">Built by Nelson Duarte · v0.8.0-beta · MIT-licensed</p>
 </footer>
 
 </body>

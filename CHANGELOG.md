@@ -9,6 +9,20 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+## [0.8.0-beta], 2026-05-15
+
+This release graduates Capa from alpha to beta. The label
+change reflects the maturity of what is in the box rather than
+new feature work: the module system is feature-complete (with
+`pub` enforcement landing this cycle), the REPL is genuinely
+usable, the manifest gained a per-function ineligibility proof,
+and the public-facing voice (homepage, README, why.html) was
+rebalanced so the language reads as a capability-typed language
+first and a supply-chain artefact emitter second. What still
+keeps Capa pre-1.0 is ecosystem (no native backend, no package
+manager) and any pre-1.0 syntax shifts, not language
+completeness.
+
 ### Changed
 
 - **Long-form design / paper drafts are local-only**: removed
