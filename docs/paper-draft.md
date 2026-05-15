@@ -1,9 +1,9 @@
 # Capa: Capability-Typed Source as a Foundation for Software Supply-Chain Governance
 
-**Working draft, 2026-05-15.** Target venue: PLAS (Programming
-Languages and Analysis for Security) workshop, or similar
-security-and-PL workshops at S&P / NDSS / EuroS&P. Workshop
-length, 6 to 8 pages in the standard ACM SIG format.
+**Working draft v1.2, 2026-05-15.** Target venue: PLAS
+(Programming Languages and Analysis for Security) workshop, or
+similar security-and-PL workshops at S&P / NDSS / EuroS&P.
+Workshop length, 6 to 8 pages in the standard ACM SIG format.
 
 **Author**: Nelson Duarte, ISLA Santarém / Independent.
 
@@ -33,12 +33,16 @@ compiler emits the full supply-chain governance artefact set
 (CycloneDX 1.5 SBOM, SPDX 2.3 SBOM, CycloneDX VEX, SLSA Build
 L1 provenance) at *per-function* granularity, grounded in the
 type system rather than in a separate static analyser. We
-report on six CVE case studies (four structurally rejected,
-two partial losses), a runtime-overhead benchmark suite (1.00x
-to 1.45x versus hand-Python), an SBOM-diff micro-validation
-against an idiomatic Python implementation of the same workload,
-and a multi-jurisdiction mapping to five regulatory frameworks.
-The artefact is open source under the MIT licence.
+report on ten CVE case studies across two categories (six
+supply-chain delivery attacks: four structurally rejected,
+two partial losses; four design-pattern bug classes:
+deserialisation-as-codegen, template injection,
+parser-as-fetcher, gadget-chain unserialisation), a
+runtime-overhead benchmark suite (1.00x to 1.45x versus
+hand-Python), an SBOM-diff micro-validation against an
+idiomatic Python implementation of the same workload, and a
+multi-jurisdiction mapping to five regulatory frameworks. The
+artefact is open source under the MIT licence.
 
 ---
 
@@ -120,10 +124,14 @@ We make four concrete claims:
    1.00x to 1.45x against hand-Python on representative
    workloads.
 
-3. **The structural discipline catches real attacks.** Section
-   5.1 transliterates six CVEs from the 2018-2024 window; four
-   are structurally rejected, two are partial losses, reported
-   explicitly so the empirical claim is calibrated.
+3. **The structural discipline catches real attacks across
+   two categories.** Section 5.1 transliterates six
+   supply-chain CVEs from the 2018-2024 window (four
+   structurally rejected, two partial losses) and four
+   design-pattern CVEs covering the four canonical bug classes
+   in that family (deserialisation-as-codegen, template
+   injection, parser-as-fetcher, gadget-chain
+   unserialisation), all four structurally rejected.
 
 4. **The artefact set maps to live regulation.** Section 6
    maps each output to specific clauses of five frameworks
@@ -348,10 +356,13 @@ Appendix A lists the exact commands to reproduce each claim.
 
 ### 5.1. CVE case studies
 
-We transliterated six CVE-class supply-chain incidents from
-the 2018-2024 window into Capa. Each is paired in the
-repository as a runnable `examples/cve_*.capa` and an
-explanatory `docs/cve_*.md`. The verdict per case:
+We transliterated ten CVE-class incidents into Capa, across
+two categories. Each case study is paired in the repository as
+a runnable `examples/cve_*.capa` and an explanatory
+`docs/cve_*.md`.
+
+**Category A: supply-chain delivery attacks.** Malicious code
+reached the user through a trusted distribution channel.
 
 | Case study | Year | Mechanism | Capa verdict |
 |---|---|---|---|
@@ -366,16 +377,37 @@ explanatory `docs/cve_*.md`. The verdict per case:
 attacks across multiple years, ecosystems (npm + PyPI), and
 payloads (data theft, cryptominer + RAT, kernel exfiltration).
 The two partial losses are deliberately included so the
-empirical claim is calibrated: a defensible position
-acknowledges what the discipline cannot reach.
+empirical claim is calibrated.
 
-The structural rejection is uniform across the four wins. The
-attack's malicious behaviour required `Fs` or `Net` or
-`Unsafe`, the legitimate function's signature did not declare
-them, the analyzer rejects any attempt to use them. The diff
-between a legitimate and a malicious version of the same
-library is loud in code review, in pull-request review, and in
-the SBOM emitted by `--cyclonedx`.
+**Category B: design-pattern CVEs.** The legitimate library's
+own API offers a side-channel to arbitrary code execution or
+data exfiltration; the attacker just supplies input that
+exercises it.
+
+| Bug class | Library | Mechanism | Capa verdict |
+|---|---|---|---|
+| Deserialisation-as-codegen | PyYAML | format names a type to instantiate (CVE-2017-18342) | **rejected** |
+| Template injection | Jinja2 (SSTI) | substitution language allows attribute traversal | **rejected** |
+| Parser-as-fetcher | lxml | XML parser resolves file:// and http:// entities | **rejected** |
+| Gadget-chain unserialisation | pickle | decoder produces unbounded runtime types | **rejected** |
+
+The four entries here are the **four canonical bug classes**
+in this category; the choice covers the design space and is
+not a curated win-rate (additional libraries within each class
+would produce the same verdict by the same argument). The
+structural rule is uniform across the four:
+
+> The library's API surface declares more authority than its
+> nominal job description requires. If the type system enforces
+> the nominal job description, the extra authority cannot be
+> reached.
+
+Across both categories: the malicious behaviour requires
+`Fs`, `Net`, or `Unsafe`; the legitimate function's signature
+does not declare them; the analyzer rejects any attempt to use
+them. The diff between a legitimate and a malicious version
+of the same library is loud in code review, in PR diffs, and
+in the SBOM emitted by `--cyclonedx`.
 
 ### 5.2. Runtime overhead
 
@@ -512,30 +544,39 @@ not the type system in isolation, where four decades of prior
 art exist, but the **integration** between the type system and
 the regulatory-artefact stack the next decade will demand. We
 have demonstrated the discipline structurally rejects four out
-of six representative supply-chain CVEs, runs at 1.00x to
-1.45x overhead against hand-Python, and yields a strict
-information gain over PURL-only SBOMs.
+of six representative supply-chain CVEs and all four canonical
+design-pattern bug classes (deserialisation-as-codegen,
+template injection, parser-as-fetcher, gadget-chain
+unserialisation), runs at 1.00x to 1.45x overhead against
+hand-Python, and yields a strict information gain over
+PURL-only SBOMs.
 
 The immediate future work:
 
-1. **Mechanise Theorem 1 in Agda.** The Stage 0 skeleton at
-   [`proofs/`] declares the calculus and states the theorems
-   as `postulate`; replacing the postulates with PLFA-style
-   inductive proofs is the natural next stage.
-2. **Empirical study at scale.** The six CVE case studies and
-   the one micro-validation make a point; a quantitative
-   study transliterating tens of real-world libraries and
-   measuring the SBOM diff would test it.
-3. **Sign provenance attestations.** Capa emits SLSA L1; the
-   end-to-end signing workflow (Capa + cosign in three modes:
-   keypair, Sigstore keyless, hosted build platform) is
-   documented at [`docs/provenance-signing.md`]. Formal SLSA
-   L2 still requires a hosted, tamper-resistant build
-   platform; the documentation walks through one such workflow
-   (GitHub Actions + `actions/attest-build-provenance`).
+1. **Fill in the Agda mechanisation.** A Stage 0 skeleton at
+   [`proofs/`] declares the calculus and states the four
+   theorems (progress, preservation, capability soundness,
+   manifest completeness) as `postulate`. Stages 1-4 replace
+   each `postulate` with a PLFA-style inductive proof; total
+   estimated work is workshop-paper-sized.
+2. **Empirical study at scale.** Ten CVE case studies make a
+   structural point across two categories and four bug
+   classes; a *quantitative* study transliterating 10-20
+   real-world libraries and measuring the aggregate SBOM diff
+   against their hand-Python equivalents would test it
+   empirically.
+3. **Sign provenance attestations on hosted builds.** Capa
+   emits SLSA L1; the end-to-end signing workflow (Capa +
+   cosign in three modes: keypair, Sigstore keyless, hosted
+   build platform) is documented at
+   [`docs/provenance-signing.md`] with a runnable
+   [`deploy/sign-provenance.sh`]. Formal SLSA L2 still
+   requires a hosted, tamper-resistant build platform; the
+   documentation walks through one such workflow (GitHub
+   Actions + `actions/attest-build-provenance`).
 4. **Native backend.** A Cranelift or LLVM target would close
-   the "Python overhead" objection definitively; the IR design
-   is open.
+   the "Python overhead" objection definitively; the IR
+   design is open.
 
 The Capa source, test suite, regulatory mapping, and all
 empirical artefacts in this paper are available at
@@ -584,13 +625,19 @@ All numerical claims in this paper are reproducible from the
 repository. The relevant commands:
 
 ```bash
-# Six CVE case studies, runnable
+# Six supply-chain delivery CVE case studies, runnable
 capa --run examples/demo_event_stream.capa
 capa --run examples/cve_eslint_scope.capa
 capa --run examples/cve_ua_parser_js.capa
 capa --run examples/cve_torchtriton.capa
 capa --run examples/cve_node_ipc.capa
 capa --run examples/cve_xz_utils.capa
+
+# Four design-pattern CVE case studies, runnable
+capa --run examples/cve_pyyaml.capa          # deserialisation-as-codegen
+capa --run examples/cve_jinja2_ssti.capa     # template injection
+capa --run examples/cve_lxml_xxe.capa        # parser-as-fetcher
+capa --run examples/cve_pickle.capa          # gadget-chain unserialisation
 
 # Runtime overhead benchmarks
 python benchmarks/runner.py --iterations 30 --repeat 7 --markdown
@@ -618,7 +665,8 @@ Companion documents in the repository:
 - `docs/cra.md`: CRA article-by-article mapping
 - `docs/regulatory.md`: multi-jurisdiction comparative mapping
 - `docs/empirical_micro.md`: Python vs Capa SBOM diff walkthrough
-- `docs/cve_*.md`: the six CVE case studies
+- `docs/cve_*.md`: the ten CVE case studies (six supply-chain,
+  four design-pattern)
 - `benchmarks/README.md`: benchmark methodology
 
 ---
