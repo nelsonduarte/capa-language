@@ -30,7 +30,7 @@ while writing real Capa programs.
 
 ---
 
-## Current focus (May - October 2026, pre-PhD runway)
+## Current focus (May - October 2026)
 
 Plan-closed development at 8h/week, scoped to ~175h total. The
 positioning Capa stands behind: *"a capability-typed language
@@ -144,7 +144,7 @@ sequence below strengthens exactly that axis.
   the source material.
 
 When Tier 1 + Tier 2 + paper are done, **stop**. Excess time
-goes to PhD preparation, not to Tier 4 expansions.
+goes elsewhere, not to Tier 4 expansions on Capa.
 
 ---
 
@@ -400,8 +400,8 @@ to public.
   compute, list-heavy, and string-heavy regimes. Numbers stable
   across runs: ~1.00x / 1.20x / 1.45x. Methodology and headline
   table in `benchmarks/README.md`. Closes the "is Capa
-  practical at the source level?" question for the thesis
-  chapter on overhead.
+  practical at the source level?" question with numbers
+  instead of hand-waving.
 - [ ] **Test-coverage review**, `coverage.py` run + identify which
   parts of the analyzer are under-tested.
 - [x] **`for x in a..b` was materialising the full range** as a
@@ -441,9 +441,10 @@ items here so they stay visible:
   paper writeup are (a) the branch/loop discipline of the
   linear layer, (b) attenuation completeness, (c) the
   `Unsafe` boundary, (d) the translation lemma from full Capa
-  to λ_cap. **Pending**: mechanisation in Agda or Coq for
-  thesis-grade proof of Theorem 1; this is the workshop-paper
-  ticket the reviewer was pointing at.
+  to λ_cap. **Pending**: mechanisation in Agda or Coq for a
+  referee-checkable proof of Theorem 1; this is the
+  workshop-paper ticket the reviewer was pointing at. Stage 0
+  skeleton landed at `proofs/`.
 - [x] **3-5 CVE case studies** mapped to Capa typing rules.
   Each is a paired `examples/cve_*.capa` (safe library) +
   `docs/cve_*.md` (walkthrough showing the attack pattern,
@@ -473,8 +474,8 @@ items here so they stay visible:
     binary test fixtures + IFUNC dynamic-linker indirection.
     Capa's source-level discipline does not apply to any of
     those layers. Deliberately included as the most
-    pessimistic case study: the thesis chapter has to
-    acknowledge attacks beneath the language layer.
+    pessimistic case study: any claim of supply-chain defence
+    has to acknowledge attacks beneath the language layer.
   - **torchtriton 2022 (PyPI typosquat)**:
     `examples/cve_torchtriton.capa` +
     `docs/cve_torchtriton.md`. PyTorch nightly's
@@ -498,8 +499,8 @@ items here so they stay visible:
     specifically to make the **payload-independence** point;
     `ua-parser-js` also has the cleanest possible signature
     of any of the studies (`(String) -> UserAgent`).
-  Six demos now give the thesis a balanced experimental
-  section: four clean wins (event-stream, eslint-scope,
+  Six demos now give a balanced experimental panel: four
+  clean wins (event-stream, eslint-scope,
   ua-parser-js, torchtriton) across npm and PyPI and four
   different payloads (malicious-dependency, credential-
   theft, cryptominer+RAT, kernel exfil); two honest partial
@@ -557,7 +558,7 @@ items here so they stay visible:
   function's signature, OR a use-after-consume slips through
   the linear-layer bookkeeping. The property-testing arc of
   the external whitepaper review is now closed; the citable
-  thesis property is asserted on every generated program
+  soundness property is asserted on every generated program
   across the four capability-flow shapes.
 - [x] **`Range<Int>` as a distinct type from `List<Int>`**.
   Done. `0..n` and `0..=n` now type as `Range<Int>`, a
@@ -587,30 +588,33 @@ items here so they stay visible:
   identified this as the most original idea in their second
   document (the IR design): the SBOM declares not just what a
   function *can* touch but what it is *provably incapable* of
-  touching. The antithesis of npm's permission manifest. Real
-  thesis contribution; worth a chapter of its own. Needs a
+  touching. The antithesis of npm's permission manifest. A
+  publishable contribution on its own; worth its own writeup.
+  Needs a
   closed-world story (no `Unsafe`, no dynamic dispatch) so the
   proof has teeth.
 - [ ] **IR with capability annotations + monomorphisation**. The
   second review document proposes an ANF + basic-blocks + CFG
   IR with block parameters (MLIR / Swift SIL shape). The right
-  long-term move for a native backend, but the thesis defends
-  on the soundness theorem and the demos already in place, not
-  on the IR. Deferred until after thesis submission.
+  long-term move for a native backend, but the headline
+  contribution rests on the soundness theorem and the demos
+  already in place, not on the IR. Deferred.
 
 The reviewer's six-month sequence puts IR redesign in September
-and a native backend by December; that ordering trades thesis-
-critical work (formalisation + case studies) for infrastructure
-that the thesis does not need. My counter-sequence:
-formalisation → CVE case studies → Hypothesis tests →
-`Range<Int>` type → workshop paper submission → defer IR /
-native backend until after submission.
+and a native backend by December; that ordering trades the
+load-bearing work (formalisation + case studies) for
+infrastructure the headline argument does not need. My
+counter-sequence: formalisation → CVE case studies → Hypothesis
+tests → `Range<Int>` type → workshop paper draft → defer IR /
+native backend until after the workshop submission.
 
 ---
 
-## PhD-aligned work (P1, when it makes sense)
+## SBOM and supply-chain tooling (P1)
 
-Capa as artefact in the SBOM Governance thesis:
+Capa programs that interoperate with the standard SBOM
+formats and policy machinery. Applications written in the
+language, not language work.
 
 - [~] **SPDX 2.3 parser in Capa**, proves Capa can mex with the
   real SBOM format. **Demo landed** at
@@ -638,8 +642,8 @@ Capa as artefact in the SBOM Governance thesis:
   round-trips (drops redundant parens, keeps load-bearing
   ones). **Pending**: optional SPDX fields (annotations,
   snippets, has-extracted-licensing-info), the tag-value
-  alternative serialisation, and the thesis-chapter writeup
-  that frames this as the "representation + validation" piece.
+  alternative serialisation, and the writeup that frames
+  this as the "representation + validation" piece.
   Found and fixed a real analyzer bug along the way: `?` was
   returning `TyUnknown` instead of unwrapping `Result<T, E>` /
   `Option<T>` to `T`, which blocked type-aware method dispatch
@@ -665,9 +669,9 @@ Capa as artefact in the SBOM Governance thesis:
   plus every `components[i].bom-ref`) and acyclicity (same
   three-colour DFS as the SPDX side). **Pending**:
   vulnerabilities[] / VEX, services[], evidence[], signatures,
-  and the cross-format comparison chapter that ties SPDX and
+  and the cross-format comparison writeup that ties SPDX and
   CycloneDX into a single "representation + validation"
-  narrative for the thesis.
+  narrative.
 - [ ] **`capability Provenance` (user-defined)**, capability that
   represents the right to query/verify a piece of supply-chain
   metadata. Demonstrates user-defined caps in a real domain.
@@ -692,12 +696,12 @@ Capa as artefact in the SBOM Governance thesis:
   `tests/test_transpiler.py::test_sbom_capability_audit`.
   **Pending**: support structural cross-function policies
   (e.g. "no Net anywhere except inside an impl of trait
-  NetClient"), and the thesis-chapter writeup that bridges
-  Representation (the four parsers) and Validation (the
-  audit) into the CRA-aligned pitch.
+  NetClient"), and a writeup that bridges Representation
+  (the four parsers) and Validation (the audit) into the
+  CRA-aligned pitch.
 
-These are not Capa-the-language work; they're Capa-as-research-vehicle
-work. Pick them up alongside the thesis chapters they unlock.
+These are not Capa-the-language work; they're SBOM-tooling
+demos written in the language.
 
 ---
 
