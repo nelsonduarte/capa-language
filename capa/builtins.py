@@ -126,6 +126,9 @@ METHODS: dict[str, list[tuple[str, TyFun, list[str]]]] = {
         ("split",       fun(TyString, lst(TyString)),                              []),
         ("replace",     fun(TyString, TyString, TyString),                         []),
         ("is_empty",    fun(TyBool),                                               []),
+        ("char_at",     fun(TyInt, opt(TyString)),                                 []),
+        ("substring",   fun(TyInt, TyInt, TyString),                               []),
+        ("index_of",    fun(TyString, opt(TyInt)),                                 []),
     ],
     "Map": [
         ("length",       fun(TyInt),                                               []),

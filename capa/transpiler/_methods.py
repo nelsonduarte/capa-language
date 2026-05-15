@@ -73,6 +73,25 @@ class _MethodsMixin:
             return f"{recv}.replace({args[0]}, {args[1]})"
         if method == "is_empty":
             return f"({recv} == '')"
+        if method == "char_at":
+            # Option<String>: Some(s[i]) if 0 <= i < len(s) else None_.
+            return (
+                f"(Some({recv}[{args[0]}]) "
+                f"if 0 <= {args[0]} < len({recv}) else None_)"
+            )
+        if method == "substring":
+            # Python slice semantics: forgiving on out-of-range; the
+            # Capa surface mirrors that.
+            return f"{recv}[{args[0]}:{args[1]}]"
+        if method == "index_of":
+            # Option<Int>: Some(idx) if found, None_ otherwise. Hoist
+            # the .find() call into a one-shot lambda so it executes
+            # exactly once even when recv / args are complex
+            # expressions.
+            return (
+                f"(lambda _i: Some(_i) if _i >= 0 else None_)"
+                f"({recv}.find({args[0]}))"
+            )
         return f"{recv}.{_safe_ident(method)}({', '.join(args)})"
 
     def _emit_map_method(

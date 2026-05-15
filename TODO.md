@@ -9,6 +9,20 @@ impact within the next 1-2 milestones · **P2** = nice to have ·
 
 ---
 
+## Language development
+
+Small focused additions, prioritised by friction encountered
+while writing real Capa programs.
+
+- [x] **String stdlib gaps**: `char_at`, `substring`,
+  `index_of` (with the same `Option<T>`-on-failure convention
+  the existing List/Map methods use). Landed 2026-05-15;
+  surfaced while writing the design-pattern CVE case studies
+  in this session. `capa/builtins.py` +
+  `capa/transpiler/_methods.py` + 12 new tests.
+
+---
+
 ## Current focus (May - October 2026, pre-PhD runway)
 
 Plan-closed development at 8h/week, scoped to ~175h total. The

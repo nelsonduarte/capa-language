@@ -92,6 +92,9 @@
 <tr><td><code>ends_with(s: String)</code></td><td><code>Bool</code></td><td></td></tr>
 <tr><td><code>split(sep: String)</code></td><td><code>List&lt;String&gt;</code></td><td>Split by separator</td></tr>
 <tr><td><code>replace(old: String, new: String)</code></td><td><code>String</code></td><td>Replace every occurrence</td></tr>
+<tr><td><code>char_at(i: Int)</code></td><td><code>Option&lt;String&gt;</code></td><td>Character at index i; <code>None</code> if out of range</td></tr>
+<tr><td><code>substring(start: Int, end: Int)</code></td><td><code>String</code></td><td>Slice; out-of-range indices clamp to the string length</td></tr>
+<tr><td><code>index_of(needle: String)</code></td><td><code>Option&lt;Int&gt;</code></td><td>Position of first occurrence of <code>needle</code>; <code>None</code> if not found</td></tr>
 </tbody>
 </table>
 </section>

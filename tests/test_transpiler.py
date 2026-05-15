@@ -109,6 +109,73 @@ class TestTranspileBasic(unittest.TestCase):
         )
         self.assertEqual(out, "1\n2\n3\n")
 
+    def test_string_char_at_in_range(self):
+        rc, out, err = run_capa(
+            'fun main(stdio: Stdio)\n'
+            '    let s = "hello"\n'
+            '    let c = match s.char_at(1)\n'
+            '        None -> "?"\n'
+            '        Some(x) -> x\n'
+            '    stdio.println(c)\n'
+        )
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out, "e\n")
+
+    def test_string_char_at_out_of_range(self):
+        rc, out, err = run_capa(
+            'fun main(stdio: Stdio)\n'
+            '    let s = "ab"\n'
+            '    let c = match s.char_at(100)\n'
+            '        None -> "OOB"\n'
+            '        Some(x) -> x\n'
+            '    stdio.println(c)\n'
+        )
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out, "OOB\n")
+
+    def test_string_substring(self):
+        rc, out, err = run_capa(
+            'fun main(stdio: Stdio)\n'
+            '    let s = "hello world"\n'
+            '    stdio.println(s.substring(6, 11))\n'
+        )
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out, "world\n")
+
+    def test_string_substring_clamps(self):
+        # Python slice semantics: forgiving on OOB. We mirror that.
+        rc, out, err = run_capa(
+            'fun main(stdio: Stdio)\n'
+            '    let s = "hi"\n'
+            '    stdio.println(s.substring(0, 100))\n'
+        )
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out, "hi\n")
+
+    def test_string_index_of_found(self):
+        rc, out, err = run_capa(
+            'fun main(stdio: Stdio)\n'
+            '    let s = "hello world"\n'
+            '    let idx = match s.index_of("world")\n'
+            '        None -> 0 - 1\n'
+            '        Some(i) -> i\n'
+            '    stdio.println("${idx}")\n'
+        )
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out, "6\n")
+
+    def test_string_index_of_missing(self):
+        rc, out, err = run_capa(
+            'fun main(stdio: Stdio)\n'
+            '    let s = "hello"\n'
+            '    let idx = match s.index_of("xyz")\n'
+            '        None -> 0 - 1\n'
+            '        Some(i) -> i\n'
+            '    stdio.println("${idx}")\n'
+        )
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out, "-1\n")
+
     def test_string_interpolation(self):
         rc, out, _ = run_capa(
             'fun main(stdio: Stdio)\n'

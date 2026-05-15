@@ -57,7 +57,7 @@ Capa/
 │   ├── docgen/                 # HTML doc generator from /// doc-comments
 │   ├── lsp/                    # Language Server Protocol implementation
 │   └── runtime/                # Result, Option, Stdio, Fs, ..., Unsafe, py_import
-├── tests/                      # 780 unit, end-to-end, and property tests
+├── tests/                      # 792 unit, end-to-end, and property tests
 │   ├── test_lexer.py
 │   ├── test_parser.py
 │   ├── test_analyzer.py

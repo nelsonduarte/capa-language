@@ -11,6 +11,30 @@ breaking changes and the discipline is still being shaped.
 
 ### Added
 
+- **Three new String stdlib methods**: `char_at(i: Int) ->
+  Option<String>`, `substring(start: Int, end: Int) ->
+  String`, `index_of(needle: String) -> Option<Int>`. Fills
+  gaps that real Capa programs (the CVE case studies in this
+  release) had to work around with `split` + index
+  acrobatics. Lowerings:
+    - `char_at` returns `Some(s[i])` if `0 <= i < len(s)`
+      else `None_`. Mirrors `List.get`'s
+      `Option`-on-out-of-range convention.
+    - `substring` lowers to a plain Python slice; Python's
+      forgiving slice semantics carry through, so
+      out-of-range indices clamp.
+    - `index_of` lowers to `s.find(needle)` hoisted into a
+      one-shot lambda that converts `-1` into `None_` and
+      any non-negative result into `Some(i)`.
+  Builtin registry: `capa/builtins.py`. Transpiler lowering:
+  `capa/transpiler/_methods.py::_emit_string_method`. Tests:
+  6 in `tests/test_analyzer.py::TestStringBuiltinMethods`
+  (type-checking the three methods + their type errors) + 6
+  in `tests/test_transpiler.py::TestTranspileBasic` (runtime
+  smoke tests with in-range and out-of-range / found and
+  missing cases). Stdlib reference page updated. Full suite:
+  792 passed (was 780).
+
 - **CVE case study (design-pattern class): pickle / Java
   ObjectInputStream gadget chains**
   (`examples/cve_pickle.capa` + `docs/cve_pickle.md`). Fourth
