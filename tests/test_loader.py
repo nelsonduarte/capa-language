@@ -218,6 +218,54 @@ class TestModuleLoader(_TempDirMixin, unittest.TestCase):
         self.assertEqual(common_count, 1)
 
 
+class TestImportedFileErrorRendering(_TempDirMixin, unittest.TestCase):
+    """Errors that originate in an imported module should render
+    with the *imported* file's source snippet, not the root
+    file's. Position info is per-Pos via the filename field added
+    to Pos; the analyzer's _err looks up the right source from
+    the sources map passed by the CLI.
+    """
+
+    def test_error_in_imported_module_shows_imported_snippet(self):
+        # An obvious type error in the imported file.
+        self._write(
+            "util.capa",
+            "fun mul(n: Int) -> Int\n"
+            "    return n * \"oops\"\n"
+        )
+        root = self._write(
+            "root.capa",
+            "import util\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"${mul(3)}\")\n"
+        )
+        result = subprocess.run(
+            [sys.executable, "-m", "capa", "--check", str(root)],
+            capture_output=True, text=True, encoding="utf-8",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        # The snippet should be the imported file's line, not the
+        # root file's. The literal "oops" only appears in util.capa.
+        self.assertIn("oops", result.stderr)
+        # And the filename in the diagnostic should be util.capa.
+        self.assertIn("util.capa", result.stderr)
+
+    def test_error_in_root_module_still_shows_root_snippet(self):
+        # Regression: single-file errors must not regress.
+        root = self._write(
+            "root.capa",
+            "fun main(stdio: Stdio)\n"
+            "    let x = 1 + \"two\"\n"
+        )
+        result = subprocess.run(
+            [sys.executable, "-m", "capa", "--check", str(root)],
+            capture_output=True, text=True, encoding="utf-8",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("two", result.stderr)
+        self.assertIn("root.capa", result.stderr)
+
+
 class TestModuleSystemEndToEnd(_TempDirMixin, unittest.TestCase):
     """End-to-end: capa --run with an imported file produces the
     expected output and exit code 0.

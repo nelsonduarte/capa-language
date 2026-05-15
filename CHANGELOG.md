@@ -11,6 +11,39 @@ breaking changes and the discipline is still being shaped.
 
 ### Added
 
+- **Per-file error-snippet rendering for imported modules**.
+  Errors originating in an imported module now show the
+  imported file's source line, not the root file's. Closes
+  one of the deliberately-deferred items from the module-
+  system MVP.
+
+  Mechanism:
+    - `capa.tokens.Pos` gains a `filename: str = ""` field;
+      the lexer populates it from its own filename parameter
+      so every token (and downstream AST node) carries the
+      file it came from.
+    - The analyzer takes an optional `sources: dict[str, str]`
+      map (filename -> text); `_err` looks up the source for
+      the position's filename if the map is set, falling back
+      to the analyzer's primary `source` / `filename` for
+      single-file inputs and built-in positions.
+    - The CLI passes `linked.sources` (already collected by
+      the loader) to `analyze()` whenever the loader was
+      invoked.
+
+  Before: an error in `utils.capa` rendered against
+  `main.capa`'s source, so the snippet was wrong (or empty
+  if line numbers were past the root file's length). Now the
+  snippet is from `utils.capa` and the filename in the
+  diagnostic header points at the right file.
+
+  No new public API; existing callers of `analyze(module,
+  source, filename)` keep working unchanged. Two new tests in
+  `tests/test_loader.py::TestImportedFileErrorRendering`
+  covering the imported-file case + a regression that
+  single-file errors still render correctly. Full suite: 841
+  passed (was 839).
+
 - **REPL MVP** (`capa repl`). Closes the second of the five
   long-standing known limitations called out in the previous
   release.

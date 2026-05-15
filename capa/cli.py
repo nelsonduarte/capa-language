@@ -289,6 +289,7 @@ def main() -> int:
         args.check or args.run or args.manifest or args.cyclonedx
         or args.spdx or args.vex or args.provenance or args.doc
     )
+    linked = None
     if args.parse or args.transpile or needs_analysis:
         try:
             if needs_analysis or args.transpile:
@@ -324,8 +325,15 @@ def main() -> int:
 
     result = None
     if args.check or args.run or args.manifest or args.cyclonedx or args.spdx or args.vex or args.provenance or args.doc:
-        # Semantic analysis is required before running.
-        result = analyze(module, source=source, filename=filename)
+        # Semantic analysis is required before running. If the
+        # loader produced a sources map (multi-file program),
+        # pass it so errors in imported modules render with the
+        # imported file's source snippet.
+        sources_map = linked.sources if linked is not None else None
+        result = analyze(
+            module, source=source, filename=filename,
+            sources=sources_map,
+        )
         if not result.ok:
             for err in result.errors:
                 if use_color:

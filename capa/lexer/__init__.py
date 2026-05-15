@@ -136,7 +136,7 @@ class Lexer(
         return self.source[i]
 
     def _pos(self) -> Pos:
-        return Pos(self.line, self.col, self.offset)
+        return Pos(self.line, self.col, self.offset, self.filename)
 
     def _advance(self) -> str:
         c = self.source[self.offset]

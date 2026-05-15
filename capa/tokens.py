@@ -182,10 +182,18 @@ class Pos:
 
     line and col are 1-indexed (universal convention in error messages);
     offset is 0-indexed (convenient for source slicing).
+
+    ``filename`` is set by the lexer; AST nodes inherit it via their
+    tokens. The error renderer uses it to pick the right source when
+    rendering snippets for errors that originate in an imported
+    module (the analyzer is given a ``sources`` map by the CLI).
+    Empty string is the default for synthetic positions (built-ins,
+    fallbacks).
     """
     line: int
     col: int
     offset: int
+    filename: str = ""
 
     def __str__(self) -> str:
         return f"{self.line}:{self.col}"

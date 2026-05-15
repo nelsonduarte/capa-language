@@ -223,9 +223,20 @@ class Analyzer(
                 print(err.format())
     """
 
-    def __init__(self, source: str = "", filename: str = "<input>"):
+    def __init__(
+        self,
+        source: str = "",
+        filename: str = "<input>",
+        sources: Optional[dict[str, str]] = None,
+    ):
         self.source = source
         self.filename = filename
+        # Per-file source map for the loader-linked case. When set,
+        # _err looks up the source string for the position's
+        # filename here so errors that originate in an imported
+        # module render with the imported file's snippet, not the
+        # root file's. Empty dict for the single-file path.
+        self.sources: dict[str, str] = sources or {}
         self.global_scope = Scope()
         self.scope = self.global_scope
         self.errors: list[AnalysisError] = []
@@ -287,10 +298,20 @@ class Analyzer(
 
     def _err(self, message: str, pos: Pos) -> None:
         """Record an error without raising an exception. The analyzer
-        keeps checking to find as many errors as possible in a single run."""
-        self.errors.append(
-            AnalysisError(message, pos, self.source, self.filename)
-        )
+        keeps checking to find as many errors as possible in a single run.
+
+        When the analyzer was created with a ``sources`` map and the
+        position carries a non-empty ``filename``, the source string
+        for that filename is looked up so the rendered snippet comes
+        from the right file (matters for imports). Falls back to
+        ``self.source`` / ``self.filename`` otherwise.
+        """
+        src = self.source
+        fname = self.filename
+        if pos.filename and pos.filename in self.sources:
+            src = self.sources[pos.filename]
+            fname = pos.filename
+        self.errors.append(AnalysisError(message, pos, src, fname))
 
     def _push_scope(self) -> None:
         self.scope = Scope(parent=self.scope)
@@ -418,6 +439,15 @@ def analyze(
     module: A.Module,
     source: str = "",
     filename: str = "<input>",
+    sources: Optional[dict[str, str]] = None,
 ) -> AnalysisResult:
-    """Analyze a Module and return the result."""
-    return Analyzer(source=source, filename=filename).analyze(module)
+    """Analyze a Module and return the result.
+
+    ``sources``: optional per-file map (filename -> text) used by
+    the loader-linked path so errors in imported modules render
+    with the right source snippet. Single-file callers can leave
+    it at its default.
+    """
+    return Analyzer(
+        source=source, filename=filename, sources=sources,
+    ).analyze(module)

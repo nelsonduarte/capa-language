@@ -17,10 +17,10 @@ is the consolidated honest list.
 
 - **Module system: MVP only.** `import foo.bar` resolves to
   `<importer-dir>/foo/bar.capa` and merges declarations
-  unqualified. Transitive imports, cycle detection, and name-
-  conflict detection work. **Not yet**: `pub` enforcement,
-  qualified access (`foo.bar.fn()`), stdlib paths,
-  per-module error-source rendering. (P2, line 196.)
+  unqualified. Transitive imports, cycle detection, name-
+  conflict detection, and per-file error-snippet rendering
+  all work. **Not yet**: `pub` enforcement, qualified access
+  (`foo.bar.fn()`), stdlib paths. (P2, line 196.)
 - **No package manager or registry.** No way to share or
   reuse Capa libraries beyond copying source. Waits on the
   module system. (P3, line 308.)
@@ -237,13 +237,13 @@ to public.
 - [~] **Capa module system: MVP**. `import foo.bar` resolves
   to `<importer-dir>/foo/bar.capa` and merges items
   unqualified. Transitive imports, cycle detection, name
-  conflicts all in. Implementation at `capa/loader.py` +
-  `capa/cli.py` integration; 10 tests at
-  `tests/test_loader.py`. **Pending for the full
-  module system**: (a) qualified access (`bar.fn(...)`),
-  (b) `pub` visibility enforcement, (c) stdlib paths
-  resolved from a configured root, (d) per-file error-snippet
-  rendering for errors in imported modules. P2 (was P3).
+  conflicts, and per-file error-snippet rendering all in.
+  Implementation at `capa/loader.py` + `capa/cli.py`
+  integration; 12 tests at `tests/test_loader.py`.
+  **Pending for the full module system**: (a) qualified
+  access (`bar.fn(...)`), (b) `pub` visibility enforcement,
+  (c) stdlib paths resolved from a configured root. P2 (was
+  P3).
 - [ ] **Refinement types**, explicitly future in the WhitePaper. P3
 
 ---
