@@ -75,8 +75,8 @@ sequence below strengthens exactly that axis.
   signing service. Landed 2026-05-15.
 
 - [~] **Empirical study at scale: design-pattern CVEs**.
-  Three libraries landed so far, covering three distinct
-  bug classes:
+  Four libraries landed, covering the four canonical bug
+  classes in this category:
     - PyYAML CVE-2017-18342 (deserialisation-as-codegen) at
       `examples/cve_pyyaml.capa` + `docs/cve_pyyaml.md`.
     - Jinja2 SSTI (template-injection-via-attribute-traversal)
@@ -84,12 +84,15 @@ sequence below strengthens exactly that axis.
       `docs/cve_jinja2_ssti.md`.
     - lxml XXE (parser-as-fetcher) at
       `examples/cve_lxml_xxe.capa` + `docs/cve_lxml_xxe.md`.
-  Distinct category from the six supply-chain delivery CVEs
-  already in the repo. Next candidate: Python pickle
-  (deserialisation-as-gadget-chain) to complete the four
-  canonical bug classes. After that, scale to ~10-20 libraries
-  for the quantitative empirical study planned in
-  `docs/paper-draft.md` future-work item 2.
+    - pickle / ObjectInputStream (gadget-chain
+      unserialisation) at `examples/cve_pickle.capa` +
+      `docs/cve_pickle.md`.
+  Bug-class taxonomy now structurally complete. Next step is
+  the **quantitative empirical study** referenced in
+  `docs/paper-draft.md` future-work item 2: transliterate
+  10-20 real-world libraries, measure the SBOM-diff against
+  their hand-Python equivalents, and report aggregate
+  numbers. Substantial work; multi-session arc on its own.
 
 - [~] **Mechanisation skeleton in Agda** at `proofs/`.
   Stage 0 landed: syntax of λ_cap (types, terms, typing,

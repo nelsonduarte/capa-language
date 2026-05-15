@@ -11,6 +11,31 @@ breaking changes and the discipline is still being shaped.
 
 ### Added
 
+- **CVE case study (design-pattern class): pickle / Java
+  ObjectInputStream gadget chains**
+  (`examples/cve_pickle.capa` + `docs/cve_pickle.md`). Fourth
+  library in the empirical-at-scale arc, completing coverage
+  of the four canonical design-pattern bug classes:
+  deserialisation-as-codegen (PyYAML), template injection
+  (Jinja2), parser-as-fetcher (lxml XXE), and now
+  **gadget-chain unserialisation** (pickle, ObjectInputStream,
+  BinaryFormatter, Marshal.load, unserialize). The shared
+  problem: a deserialiser that produces unbounded runtime
+  types (Python object, Java Object, .NET object) must by
+  construction have a mechanism to construct any type, and
+  that mechanism is indistinguishable from "interpret the
+  input as code". Microsoft deprecated `BinaryFormatter` in
+  .NET 5 explicitly because the class is *unfixable*. The
+  Capa argument: `decode: (String) -> Result<JsonValue,
+  DecodeError>` returns a closed algebraic type; the decoder
+  cannot produce a `subprocess.Popen` because there is no
+  place in the type to put one. With this fourth study the
+  arc has covered the four canonical bug classes; subsequent
+  case studies are additional data points within the four,
+  not new classes. Regression test in
+  `tests/test_transpiler.py::test_cve_pickle`. Full suite:
+  780 passed.
+
 - **CVE case study (design-pattern class): XXE (XML external
   entity)** (`examples/cve_lxml_xxe.capa` +
   `docs/cve_lxml_xxe.md`). Third library in the empirical-at-

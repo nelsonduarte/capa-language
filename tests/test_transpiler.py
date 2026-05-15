@@ -705,6 +705,21 @@ class TestTranspileExamples(unittest.TestCase):
         self.assertEqual(rc, 0, err)
         self.assertIn("name = capa-demo", out)
 
+    def test_cve_pickle(self):
+        # Tenth CVE walkthrough, fourth of the design-pattern
+        # (vs supply-chain delivery) class: pickle / Java
+        # ObjectInputStream gadget-chain unserialisation. The
+        # Capa decode signature returns a closed algebraic type
+        # (JsonValue or a typed struct), so there is no place to
+        # construct arbitrary runtime types. Completes the four
+        # canonical design-pattern bug classes. Companion writeup
+        # at docs/cve_pickle.md.
+        rc, out, err = self._run_example("examples/cve_pickle.capa")
+        self.assertEqual(rc, 0, err)
+        self.assertIn("safe: name=alice age=30", out)
+        self.assertIn("gadget input parsed safely:", out)
+        self.assertIn("typed error:", out)
+
     def test_cve_lxml_xxe(self):
         # Ninth CVE walkthrough, third of the design-pattern
         # (vs supply-chain delivery) class: XML external entity

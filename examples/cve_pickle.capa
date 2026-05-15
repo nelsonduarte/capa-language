@@ -1,0 +1,146 @@
+// cve_pickle.capa, the Python pickle / Java ObjectInputStream
+// gadget-chain bug class, in Capa. Companion writeup at
+// docs/cve_pickle.md.
+//
+// pickle is the canonical example of "deserialisation as
+// arbitrary code execution via gadget chains". The pickle
+// format is a stack-machine bytecode: opcodes that build
+// Python objects, look up attributes, call functions, push and
+// pop values. Decoding a pickle stream is equivalent to
+// executing it.
+//
+// The bug class is distinct from PyYAML's, which is
+// deserialisation-as-constructor-invocation (the format
+// directly names a Python class to instantiate). pickle's
+// gadget chains are subtler: the attacker composes existing,
+// individually-benign Python objects' __reduce__ methods to
+// reach arbitrary code. Every Python package the victim has
+// installed is a potential gadget source.
+//
+// The equivalent vulnerability exists in:
+//
+//   - Java's ObjectInputStream (Apache Commons Collections,
+//     CVE-2015-4852 family, ~10 years of CVEs)
+//   - .NET's BinaryFormatter (deprecated in .NET 5 because
+//     unfixable)
+//   - Ruby Marshal.load
+//   - PHP unserialize (POP chain CVEs across many frameworks)
+//   - Node.js node-serialize, serialize-javascript
+//
+// The shared structural problem: a deserialiser that can
+// construct *any* runtime type can be steered, by composition
+// of __reduce__-like hooks, into executing arbitrary code.
+// "Allow-list of safe types" fixes (Python's
+// pickle.find_class restriction) are routinely bypassed via
+// types in the allow-list whose __reduce__ method itself
+// reaches further.
+//
+// The Capa argument: a deserialiser that produces a *fixed
+// algebraic type* (JsonValue, a typed struct, etc.) cannot
+// construct types not in that algebraic type, regardless of
+// what the input bytes say. The format is data; the runtime
+// type is the algebraic type the signature names.
+//
+// Fourth library in the design-pattern CVE arc, after PyYAML
+// (deserialisation-as-codegen), Jinja2 SSTI (template
+// injection), and lxml XXE (parser-as-fetcher). With this
+// fourth case study the arc has covered the four canonical
+// bug classes in the design-pattern category.
+
+type DecodeError {
+    position: Int,
+    message: String
+}
+
+// A typed result for the decoded value. We use Capa's
+// JsonValue as the universe of decodable types: numbers,
+// strings, booleans, arrays, objects, null. There is no
+// "and also an arbitrary Python class" variant, because the
+// type system does not permit one.
+//
+// CRITICAL: even if the input bytes encoded a pickle gadget
+// chain like
+//   c__builtin__\neval\n(S'os.system("whoami")'\ntR.
+// the decoder CANNOT execute any code. The signature
+// (String) -> Result<JsonValue, DecodeError> names no Unsafe.
+// There is no path from the input to method invocation on
+// arbitrary types.
+
+// Decode a serialisation envelope into a typed value. We
+// model a simple length-prefixed JSON-like format for the
+// demo; the structural argument is the same for any binary
+// format whose decoder produces an algebraic type.
+fun decode(input: String) -> Result<JsonValue, DecodeError>
+    // The bytes-to-typed-tree pipeline. The implementation
+    // here delegates to JSON parsing for the demo; a
+    // production version would handle whatever wire format.
+    // What matters is that the OUTPUT type is JsonValue, not
+    // an unconstrained "any runtime object".
+    return match parse_json(input)
+        Err(e) -> Err(DecodeError { position: 0, message: e })
+        Ok(v) -> Ok(v)
+
+// A typed consumer: extract a known-shape User record. The
+// caller specifies the shape; values that do not fit are
+// rejected as typed errors, not silently coerced or
+// instantiated as something else.
+type User {
+    name: String,
+    age: Int
+}
+
+fun field_or_err(obj: Map<String, JsonValue>, name: String) -> Result<JsonValue, DecodeError>
+    return match obj.get(name)
+        None -> Err(DecodeError { position: 0, message: "missing field '" + name + "'" })
+        Some(v) -> Ok(v)
+
+fun as_string_or_err(v: JsonValue, context: String) -> Result<String, DecodeError>
+    return match v.as_string()
+        None -> Err(DecodeError { position: 0, message: context + " is not a string" })
+        Some(s) -> Ok(s)
+
+fun as_number_or_err(v: JsonValue, context: String) -> Result<Int, DecodeError>
+    return match v.as_num()
+        None -> Err(DecodeError { position: 0, message: context + " is not a number" })
+        Some(n) -> Ok(to_int(n))
+
+fun as_object_or_err(v: JsonValue) -> Result<Map<String, JsonValue>, DecodeError>
+    return match v.as_object()
+        None -> Err(DecodeError { position: 0, message: "expected object at top level" })
+        Some(m) -> Ok(m)
+
+fun decode_user(input: String) -> Result<User, DecodeError>
+    let v = decode(input)?
+    let obj = as_object_or_err(v)?
+    let name = as_string_or_err(field_or_err(obj, "name")?, "'name'")?
+    let age = as_number_or_err(field_or_err(obj, "age")?, "'age'")?
+    return Ok(User { name: name, age: age })
+
+// ===============================================================
+// `main` for the demo. Holds Stdio only.
+// ===============================================================
+fun main(stdio: Stdio)
+    // A benign serialised User.
+    let safe_input = "{\"name\":\"alice\",\"age\":30}"
+    match decode_user(safe_input)
+        Err(e) -> stdio.println("decode error: ${e.message}")
+        Ok(u) -> stdio.println("safe: name=${u.name} age=${u.age}")
+
+    // A pickle-style gadget-chain payload, conceptually:
+    // {"__reduce__": ["os.system", "whoami"]}. In Capa this
+    // is just data; no callable is invoked, no module is
+    // imported, the field stays a value.
+    let gadget_input = "{\"name\":\"bob\",\"age\":25,\"__reduce__\":[\"os.system\",\"whoami\"]}"
+    match decode_user(gadget_input)
+        Err(e) -> stdio.println("gadget input rejected: ${e.message}")
+        Ok(u) -> stdio.println("gadget input parsed safely: name=${u.name} age=${u.age}")
+        // The __reduce__ field is ignored by decode_user
+        // because it is not in the User shape. The decoder
+        // could not have invoked it anyway.
+
+    // A malformed input: type mismatch in a known field. Typed
+    // rejection, not silent coercion.
+    let typed_error_input = "{\"name\":\"carol\",\"age\":\"not-a-number\"}"
+    match decode_user(typed_error_input)
+        Err(e) -> stdio.println("typed error: ${e.message}")
+        Ok(_) -> stdio.println("SHOULD have rejected")
