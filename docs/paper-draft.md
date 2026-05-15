@@ -287,9 +287,10 @@ The three layers compose into a calculus we sketch as
   well-typed program *can* exercise; no false negatives, no
   false positives.
 
-Proof sketches are in `docs/semantics.md` § 6 and § 7. The
-mechanisation in Agda or Coq is workshop-paper-sized future
-work.
+Proof sketches are in `docs/semantics.md` § 6 and § 7. A
+Stage 0 mechanisation skeleton in Agda (syntax + theorem
+statements as `postulate`) lives in [`proofs/`]; filling in
+the actual proofs is the workshop-paper-sized continuation.
 
 ---
 
@@ -517,9 +518,10 @@ information gain over PURL-only SBOMs.
 
 The immediate future work:
 
-1. **Mechanise Theorem 1 in Agda or Coq.** The proof sketch
-   in `docs/semantics.md` is tractable; a mechanised version
-   would close the soundness claim.
+1. **Mechanise Theorem 1 in Agda.** The Stage 0 skeleton at
+   [`proofs/`] declares the calculus and states the theorems
+   as `postulate`; replacing the postulates with PLFA-style
+   inductive proofs is the natural next stage.
 2. **Empirical study at scale.** The six CVE case studies and
    the one micro-validation make a point; a quantitative
    study transliterating tens of real-world libraries and

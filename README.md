@@ -107,6 +107,10 @@ Capa/
 │   ├── cve_torchtriton.md      # case study walkthrough
 │   ├── cve_node_ipc.md         # case study walkthrough (partial loss)
 │   └── cve_xz_utils.md         # case study walkthrough (partial loss)
+├── proofs/                     # Agda mechanisation skeleton (lambda_cap)
+│   ├── README.md               # status, plan, how to typecheck
+│   ├── CapaSyntax.agda         # syntax + typing + reduction
+│   └── CapaSoundness.agda      # theorem statements as postulates
 ├── benchmarks/                 # runtime-overhead suite: Capa vs hand-Python
 │   ├── runner.py               # in-process timeit-based runner
 │   ├── *.capa + *_baseline.py  # paired workloads (fib, scope, ua_parse)
@@ -950,10 +954,13 @@ tools. The next milestones strengthen exactly that axis.
 
 **Maybe, not committed:**
 
-6. **Mechanise the soundness theorem of `λ_cap` in Agda or
-   Coq.** The calculus sketch and proof outline live in
-   [`docs/semantics.md`](docs/semantics.md). Workshop-paper-
-   sized.
+6. **Mechanise the soundness theorem of `λ_cap` in Agda.** The
+   calculus sketch and proof outline live in
+   [`docs/semantics.md`](docs/semantics.md); a Stage 0
+   skeleton (syntax + theorem statements as postulates) lives
+   in [`proofs/`](proofs/). Filling in Stages 1-4 (Progress,
+   Preservation, Capability Soundness, Manifest Completeness)
+   is the workshop-paper-sized continuation.
 
 7. **Native backend (LLVM or Cranelift).** Long-term, not in
    the v1 budget.

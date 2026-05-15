@@ -11,6 +11,22 @@ breaking changes and the discipline is still being shaped.
 
 ### Added
 
+- **Agda mechanisation skeleton** (`proofs/CapaSyntax.agda`,
+  `proofs/CapaSoundness.agda`, `proofs/README.md`). Stage 0 of
+  the mechanisation plan described in `docs/semantics.md` § 8.
+  States the syntax of λ_cap (types, terms, typing relation,
+  small-step reduction, values), then declares four theorems as
+  `postulate`: Progress, Preservation, Capability Soundness
+  (corollary), Manifest Completeness. The `proofs/README.md`
+  documents the staged mechanisation plan (Stages 1-4),
+  preferred prover choice (Agda, following PLFA conventions),
+  and a status badge tracking which stage is landed. Honestly
+  marked as "skeleton, not yet typechecked"; install Agda
+  >= 2.6.4 to verify the structure. The artefact is what a
+  workshop-paper reviewer expects to see as evidence of intent
+  to mechanise; replacing the postulates with proofs is
+  workshop-paper-sized future work.
+
 - **Workshop paper draft** (`docs/paper-draft.md`), ~5000
   words, all sections written in first-pass form: abstract,
   introduction, background and related work, three-layer

@@ -338,10 +338,15 @@ Two things:
   serious proof would mechanise Theorem 1 and use it as the
   load-bearing artefact in the
   [positioning document](positioning.md)'s claim that "the
-  type system is sound, not just convenient".
+  type system is sound, not just convenient". A Stage 0
+  skeleton in Agda (syntax + theorem statements as
+  `postulate`) lives at [`proofs/`](../proofs/); the
+  staged plan to fill in the proofs is documented in
+  `proofs/README.md`.
 
 The path from here to "PLAS or EuroS&P submission" is:
-(a) mechanise the calculus and Theorem 1 in Agda;
+(a) fill in the `postulate` declarations at `proofs/CapaSoundness.agda`
+to mechanise the calculus and Theorem 1 in Agda;
 (b) re-state Theorem 2 as a property over the manifest emitter
 in `capa/manifest/__init__.py`;
 (c) write the translation lemma from full Capa to λ_cap;

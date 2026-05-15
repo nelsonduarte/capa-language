@@ -66,6 +66,19 @@ sequence below strengthens exactly that axis.
 
 **Tier 3, polish:**
 
+- [~] **Mechanisation skeleton in Agda** at `proofs/`.
+  Stage 0 landed: syntax of λ_cap (types, terms, typing,
+  reduction) in `CapaSyntax.agda`; four theorem statements as
+  `postulate` in `CapaSoundness.agda`; staged plan and status
+  badge in `proofs/README.md`. Stages 1-4 (Progress,
+  Preservation, Capability Soundness, Manifest Completeness)
+  are workshop-paper-sized future work; the skeleton is what
+  a reviewer expects to see as evidence of mechanisation
+  intent. Honestly marked as not-yet-typechecked because Agda
+  is not installed on the dev machine.
+
+
+
 - [~] 1 workshop paper **draft v1 landed** at
   `docs/paper-draft.md`. ~5000 words, all sections written
   (abstract, intro, related work, three-layer discipline,
