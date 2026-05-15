@@ -1,4 +1,4 @@
-// user_capabilities.capa, user-defined capabilities (WhitePaper §4.6).
+// user_capabilities.capa, user-defined capabilities.
 //
 // `capability SendEmail` declares a new capability type. Any code that
 // receives a `SendEmail` can call `send` on it, and no code that does

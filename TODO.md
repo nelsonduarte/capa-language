@@ -189,11 +189,10 @@ sequence below strengthens exactly that axis.
       unserialisation) at `examples/cve_pickle.capa` +
       `docs/cve_pickle.md`.
   Bug-class taxonomy now structurally complete. Next step is
-  the **quantitative empirical study** referenced in
-  `docs/paper-draft.md` future-work item 2: transliterate
-  10-20 real-world libraries, measure the SBOM-diff against
-  their hand-Python equivalents, and report aggregate
-  numbers. Substantial work; multi-session arc on its own.
+  the **quantitative empirical study**: transliterate 10-20
+  real-world libraries, measure the SBOM-diff against their
+  hand-Python equivalents, and report aggregate numbers.
+  Substantial work; multi-session arc on its own.
 
 - [~] **Mechanisation skeleton in Agda** at `proofs/`.
   Stage 0 landed: syntax of λ_cap (types, terms, typing,
@@ -208,8 +207,9 @@ sequence below strengthens exactly that axis.
 
 
 
-- [~] 1 workshop paper **draft v1 landed** at
-  `docs/paper-draft.md`. ~5000 words, all sections written
+- [~] 1 workshop paper **draft v1 landed**, kept local only
+  (the paper track is private until / unless it becomes a
+  venue submission). ~5000 words, all sections written
   (abstract, intro, related work, three-layer discipline,
   implementation, six-CVE empirical, runtime overhead,
   SBOM-diff information-gain, regulatory mapping, discussion,
@@ -217,11 +217,10 @@ sequence below strengthens exactly that axis.
   draft v1, all sections complete in first-pass form. Iterate
   on revision; convert to LaTeX when targeting a specific
   venue submission. Target venues: PLAS, EuroS&P workshops,
-  NDSS workshops. Original estimate 30-40h; first draft
-  landed in ~3h thanks to the existing companion docs
-  (semantics.md, positioning.md, cra.md, regulatory.md,
-  empirical_micro.md, benchmarks/README.md) carrying most of
-  the source material.
+  NDSS workshops. The companion public docs that fed it
+  (`docs/semantics.md`, `docs/positioning.md`, `docs/cra.md`,
+  `docs/regulatory.md`, `docs/empirical_micro.md`,
+  `benchmarks/README.md`) stay in the repo.
 
 When Tier 1 + Tier 2 + paper are done, **stop**. Excess time
 goes elsewhere, not to Tier 4 expansions on Capa.
@@ -257,7 +256,7 @@ to public.
 
 ---
 
-## WhitePaper promises still open (P1)
+## Pending design items (P1)
 
 - [x] **Atenuação genérica**: every built-in capability has an
   attenuator. `Net.restrict_to(host)`, `Fs.restrict_to(prefix)`,
@@ -290,7 +289,7 @@ to public.
   Implementation at `capa/loader.py` + `capa/cli.py`
   integration; 30 tests at `tests/test_loader.py`. **No
   follow-ups pending.**
-- [ ] **Refinement types**, explicitly future in the WhitePaper. P3
+- [ ] **Refinement types**, parked as explicitly future. P3
 
 ---
 
@@ -527,9 +526,9 @@ to public.
   `for x in range(start, stop)` directly. Bound ranges
   (`let xs = 0..n`) still materialise to keep the
   `List<T>` method surface (`.map`, `.length()`, etc.) working;
-  only the direct for-iteration form is lazy. Found by the
-  external whitepaper review (analise_capa/capa-revisao-critica.md
-  §2.3); same review also notes that the proper long-term fix
+  only the direct for-iteration form is lazy. Found by an
+  external review (analise_capa/capa-revisao-critica.md §2.3);
+  same review also notes that the proper long-term fix
   is a `Range<Int>` type distinct from `List<Int>` (still
   pending; the for-loop hack closes the urgent memory bug for
   v1).
@@ -538,11 +537,10 @@ to public.
 
 ## External review action items (P1, from analise_capa, 2026-05-13)
 
-A friend-of-the-project review of the whitepaper, EBNF, and
-analyzer arrived as two markdown documents kept locally next to
-the repo (not checked in: they cite the WhitePaper which itself
-is held back, see `WHITEPAPER.md`). Capturing the actionable
-items here so they stay visible:
+A friend-of-the-project review of Capa's design, EBNF, and
+analyzer arrived as two markdown documents kept locally next
+to the repo (not checked in). Capturing the actionable items
+here so they stay visible:
 
 - [~] **Small-step operational semantics + soundness theorem**.
   **Sketch landed** at `docs/semantics.md`. Defines λ_cap (a
@@ -673,7 +671,7 @@ items here so they stay visible:
   change ever lets a method call leak a class not in the
   function's signature, OR a use-after-consume slips through
   the linear-layer bookkeeping. The property-testing arc of
-  the external whitepaper review is now closed; the citable
+  the external review is now closed; the citable
   soundness property is asserted on every generated program
   across the four capability-flow shapes.
 - [x] **`Range<Int>` as a distinct type from `List<Int>`**.
@@ -858,8 +856,8 @@ demos written in the language.
 
 For honesty / scope control:
 
-- LLVM backend (Phase 4 of original WhitePaper roadmap; far future)
-- Self-hosting (Phase 5; very far future)
+- LLVM backend (far future)
+- Self-hosting (very far future)
 - Full async/await (reserved keywords, no implementation)
 - Tail-call optimisation
 - Garbage collection beyond what CPython provides

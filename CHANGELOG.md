@@ -9,6 +9,49 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+### Changed
+
+- **Long-form design / paper drafts are local-only**: removed
+  the `WHITEPAPER.md` stub (placeholder pointing at a document
+  that was never going to be written publicly) and untracked
+  `docs/paper-draft.md` (the workshop paper draft). Both stay
+  on disk; the `.gitignore` now lists `docs/paper-draft.md`
+  alongside the pre-existing `Capa-WhitePaper.md` so a local
+  copy is the canonical location. The paper track is private
+  until / unless it becomes a venue submission; the design
+  rationale that fed it stays public in
+  `docs/semantics.md`, `docs/positioning.md`, `docs/cra.md`,
+  `docs/regulatory.md`, `docs/empirical_micro.md`, and the
+  `benchmarks/README.md`.
+
+  Knock-on cleanups so the public surface no longer points at
+  the removed files:
+  - `README.md`: dropped the `WHITEPAPER.md` and
+    `docs/paper-draft.md` entries from the file-tree and the
+    "User-defined capabilities (WhitePaper §4.6)" prose.
+  - `CONTRIBUTING.md`: replaced the `WHITEPAPER.md` "internals"
+    pointer with concrete pointers to `docs/semantics.md`,
+    `docs/positioning.md`, and `Capa-EBNF.md`.
+  - `.github/PULL_REQUEST_TEMPLATE.md` and
+    `.github/ISSUE_TEMPLATE/feature_request.yml`: dropped the
+    `WHITEPAPER.md` link; the issue template now points at
+    `docs/positioning.md` instead.
+  - Source comments / docstrings: removed the stale
+    `WhitePaper §4.3` / `§4.6` forward-references in
+    `capa/analyzer/_discipline.py`,
+    `capa/analyzer/_declarations.py`, `capa/parser/_items.py`,
+    `capa/runtime/_capabilities.py`,
+    `examples/net_attenuation.capa`,
+    `examples/user_capabilities.capa`, and `Capa-EBNF.md`. The
+    comments still describe what they describe; they just no
+    longer cite a private document.
+  - `TODO.md`: renamed "WhitePaper promises still open" to
+    "Pending design items", updated the paper-draft entry to
+    reflect its local-only status, removed remaining
+    "whitepaper" mentions in prose.
+
+  No behavioural change. Full suite: 887 passed.
+
 ### Fixed
 
 - **Impl methods of capability traits now declare their trait**:

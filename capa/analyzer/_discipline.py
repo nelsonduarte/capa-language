@@ -181,11 +181,10 @@ class _DisciplineMixin:
         capability (a Symbol whose kind is CAPABILITY but whose
         name is not in the built-in set). User-defined caps are
         subject to most of the same rules as built-ins, with two
-        relaxations to support WhitePaper §4.6: they can be the
-        return type of a regular function (factories produce
-        fresh instances), and they can wrap built-in capabilities
-        as struct fields when the struct implements a
-        user-defined cap."""
+        relaxations: they can be the return type of a regular
+        function (factories produce fresh instances), and they
+        can wrap built-in capabilities as struct fields when the
+        struct implements a user-defined cap."""
         if name in CAPABILITY_NAMES:
             return False
         from . import SymbolKind

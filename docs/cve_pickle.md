@@ -278,7 +278,6 @@ capa --cyclonedx examples/cve_pickle.capa | grep -B1 has_unsafe | head -10
 This is the fourth library in the empirical-at-scale arc,
 completing coverage of the four canonical design-pattern bug
 classes. The arc's structural argument is now built; the
-quantitative empirical study (transliterating ~10-20 real-
-world libraries and measuring the SBOM diff) referenced in
-[`docs/paper-draft.md`](paper-draft.md) future-work item 2 can
-proceed from this base.
+quantitative empirical study (transliterating ~10-20
+real-world libraries and measuring the SBOM diff) is the
+natural follow-up from this base.

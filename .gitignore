@@ -49,7 +49,8 @@ debug_out.bin
 # by benchmarks/runner.py; regenerated on every run).
 benchmarks/*.bench.py
 
-# WhitePaper is not in the repo yet. A working copy can live
-# next to the repo (or in capa/private/); the published
-# version, when written, will be referenced from WHITEPAPER.md.
+# Long-form design / paper drafts are kept locally only. Capa is
+# a personal project; the paper track is private until (and if) it
+# turns into a venue submission.
 Capa-WhitePaper.md
+docs/paper-draft.md

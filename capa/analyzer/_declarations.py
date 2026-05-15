@@ -121,7 +121,8 @@ class _DeclarationsMixin:
         # Intermediate sub-pass: identify structs that implement
         # a user-defined capability. They are exempt from the
         # "no capability as struct field" rule so they can
-        # encapsulate built-in caps (the WhitePaper §4.6 pattern).
+        # encapsulate built-in caps (the user-defined-cap
+        # implementor pattern).
         self._cap_bearing_structs: set[str] = set()
         for item in module.items:
             if not isinstance(item, A.ImplBlock):

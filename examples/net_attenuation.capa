@@ -1,5 +1,5 @@
-// net_attenuation.capa, first-class capability attenuation, the
-// pillar feature from WhitePaper §4.3.
+// net_attenuation.capa, first-class capability attenuation:
+// the flow-layer pillar of the discipline.
 //
 // `main` receives a Net with full authority. We then narrow it to a
 // single host and propagate the narrowed cap to a helper. The helper

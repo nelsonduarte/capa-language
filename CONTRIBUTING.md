@@ -66,10 +66,14 @@ The CLI (`capa/cli.py`) wires the four stages together. Tests live in
 `tests/`, one file per stage plus end-to-end tests that transpile and
 run programs.
 
-The internals are documented in [`WHITEPAPER.md`](WHITEPAPER.md)
-(rationale and design decisions) and [`Capa-EBNF.md`](Capa-EBNF.md)
-(formal grammar). Reading both is the fastest way to understand the
-project; the grammar is small.
+The design rationale lives across a few short documents:
+[`docs/semantics.md`](docs/semantics.md) (a working sketch of the
+formal core: λ_cap, typing rules, two soundness theorems with
+proof sketches), [`docs/positioning.md`](docs/positioning.md) (an
+honest comparison against Pony, Koka, Roc, and the WebAssembly
+Component Model), and [`Capa-EBNF.md`](Capa-EBNF.md) (the formal
+grammar). Reading them together is the fastest way to understand
+the project; each is intentionally compact.
 
 ## What kinds of contributions help most
 

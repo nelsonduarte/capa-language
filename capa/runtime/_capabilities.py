@@ -284,8 +284,8 @@ class Net:
     fresh capability supplied by ``main``) or a frozen set of allowed
     host names. ``restrict_to`` returns a new ``Net`` whose authority
     is the *intersection* of the current restrictions with the newly
-    requested one, attenuation is monotonic by construction (WhitePaper
-    R4: restrictions can only narrow, never widen).
+    requested one: attenuation is monotonic by construction
+    (restrictions can only narrow, never widen).
 
     The actual HTTP transport uses ``urllib.request`` from the Python
     stdlib. Restriction is enforced *before* any system call, so a

@@ -356,7 +356,7 @@ class _ItemsMixin:
         """A user-defined capability. Syntactically identical to a trait;
         semantically, the analyzer treats the declared name as a
         capability and subjects it (and types that implement it) to the
-        capability discipline. See WhitePaper §4.6.
+        capability discipline.
         """
         return self._parse_trait_or_capability(
             is_pub, is_capability=True, doc=doc,

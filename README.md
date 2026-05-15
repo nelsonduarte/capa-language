@@ -104,7 +104,6 @@ Capa/
 │   ├── cra.md                  # Cyber Resilience Act article-by-article mapping
 │   ├── regulatory.md           # Multi-jurisdiction comparative (CRA+NIS2+DORA+SSDF+SCVS)
 │   ├── provenance-signing.md   # Capa SLSA L1 -> L2 via cosign / Sigstore
-│   ├── paper-draft.md          # Workshop paper draft, v1
 │   ├── empirical_micro.md      # SBOM diff Python vs Capa, fully reproducible
 │   ├── demo-event-stream.md    # case study walkthrough
 │   ├── cve_eslint_scope.md     # case study walkthrough
@@ -121,7 +120,6 @@ Capa/
 │   ├── *.capa + *_baseline.py  # paired workloads (fib, scope, ua_parse)
 │   └── README.md               # methodology + headline numbers
 ├── Capa-EBNF.md                # formal grammar of the language
-├── WHITEPAPER.md               # stub; full whitepaper not yet written
 ├── pyproject.toml              # package metadata + optional [test] / [lsp] extras
 ├── LICENSE                     # MIT
 └── README.md
@@ -658,8 +656,8 @@ through `main`. Install Hypothesis with `pip install -e .[test]`.
   fires *before* any system call, so a blocked host never touches
   the network. See `examples/net_attenuation.capa`.
 
-- **User-defined capabilities** (`capability X { ... }`, WhitePaper
-  §4.6). Libraries can declare their own capabilities, `SendEmail`,
+- **User-defined capabilities** (`capability X { ... }`).
+  Libraries can declare their own capabilities, `SendEmail`,
   `QueryDB`, `PublishMessage`, and types that implement them are
   treated as capabilities by the discipline (no aliasing, no
   storing in plain locals, no leaking through generic args). The
