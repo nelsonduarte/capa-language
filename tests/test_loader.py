@@ -266,6 +266,92 @@ class TestImportedFileErrorRendering(_TempDirMixin, unittest.TestCase):
         self.assertIn("root.capa", result.stderr)
 
 
+class TestQualifiedModuleAccess(_TempDirMixin, unittest.TestCase):
+    """``foo.fn(args)`` resolves to the ``fn`` imported from
+    ``foo`` (rewritten by the loader's post-link pass to a plain
+    direct call). The unqualified form remains available.
+    """
+
+    def test_qualified_call_resolves(self):
+        self._write(
+            "util.capa",
+            "fun greet(name: String) -> String\n"
+            "    return \"Hello, \" + name\n"
+        )
+        root = self._write(
+            "root.capa",
+            "import util\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(util.greet(\"Capa\"))\n"
+        )
+        result = subprocess.run(
+            [sys.executable, "-m", "capa", "--run", str(root)],
+            capture_output=True, text=True, encoding="utf-8",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "Hello, Capa\n")
+
+    def test_unqualified_call_still_works(self):
+        # Regression: the MVP unqualified form must keep working
+        # alongside the new qualified one.
+        self._write(
+            "util.capa",
+            "fun greet(name: String) -> String\n"
+            "    return \"Hello, \" + name\n"
+        )
+        root = self._write(
+            "root.capa",
+            "import util\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(greet(\"Capa\"))\n"
+        )
+        result = subprocess.run(
+            [sys.executable, "-m", "capa", "--run", str(root)],
+            capture_output=True, text=True, encoding="utf-8",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "Hello, Capa\n")
+
+    def test_alias_qualified_call(self):
+        self._write(
+            "util.capa",
+            "fun greet(name: String) -> String\n"
+            "    return \"Hi, \" + name\n"
+        )
+        root = self._write(
+            "root.capa",
+            "import util as U\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(U.greet(\"alias\"))\n"
+        )
+        result = subprocess.run(
+            [sys.executable, "-m", "capa", "--run", str(root)],
+            capture_output=True, text=True, encoding="utf-8",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "Hi, alias\n")
+
+    def test_module_exports_populated(self):
+        # Unit test of the LinkedModule.module_exports map shape.
+        self._write(
+            "util.capa",
+            "fun a() -> Int\n    return 1\n"
+            "fun b() -> Int\n    return 2\n"
+            "type T { v: Int }\n"
+        )
+        root = self._write(
+            "root.capa",
+            "import util\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"hi\")\n"
+        )
+        from capa.loader import ModuleLoader
+        loader = ModuleLoader()
+        linked = loader.load_root(root.read_text(), str(root))
+        self.assertIn("util", linked.module_exports)
+        self.assertEqual(linked.module_exports["util"], {"a", "b", "T"})
+
+
 class TestModuleSystemEndToEnd(_TempDirMixin, unittest.TestCase):
     """End-to-end: capa --run with an imported file produces the
     expected output and exit code 0.

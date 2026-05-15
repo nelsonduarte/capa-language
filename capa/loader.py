@@ -78,6 +78,12 @@ class LinkedModule:
     """
     module: A.Module
     sources: dict[str, str] = field(default_factory=dict)
+    # Per-import-alias map: alias name -> set of top-level names it
+    # contributes. Populated by the linker as each Import is
+    # processed. Used by the post-link rewrite pass that turns
+    # ``mod.fn(args)`` into ``fn(args)`` when ``mod`` is a known
+    # import alias.
+    module_exports: dict[str, set[str]] = field(default_factory=dict)
 
 
 class ModuleLoader:
@@ -92,6 +98,11 @@ class ModuleLoader:
         self._cache: dict[Path, A.Module] = {}
         self._sources: dict[Path, str] = {}
         self._loading: list[Path] = []  # stack for cycle detection
+        # alias -> set of top-level names declared in that import's
+        # target file. Populated as each Import is processed.
+        # Powers the post-link "qualified call" rewrite (foo.fn()
+        # -> fn() when foo is a registered alias).
+        self._module_exports: dict[str, set[str]] = {}
 
     # -------- public entry points --------
 
@@ -133,8 +144,20 @@ class ModuleLoader:
         )
 
         merged = A.Module(pos=root_module.pos, items=flat_items)
+        # Post-link rewrite: `mod.fn(args)` becomes `fn(args)`
+        # when `mod` is a known import alias and `fn` is one of
+        # that module's directly-declared names. The merged AST
+        # already has every function at top level (unqualified);
+        # we are only removing the intermediate receiver lookup
+        # so the analyzer + transpiler see a plain function call.
+        if self._module_exports:
+            _rewrite_qualified_calls(merged, self._module_exports)
         sources = {str(p): src for p, src in self._sources.items()}
-        return LinkedModule(module=merged, sources=sources)
+        return LinkedModule(
+            module=merged,
+            sources=sources,
+            module_exports=dict(self._module_exports),
+        )
 
     # -------- internals --------
 
@@ -259,6 +282,30 @@ class ModuleLoader:
             self._loading.pop()
         seen_paths.add(target)
 
+        # Record the import's alias + the set of names it
+        # directly contributes (not transitive). Default alias is
+        # the last segment of the dotted path; ``as`` overrides.
+        alias = imp.alias or imp.path[-1]
+        direct_names: set[str] = set()
+        for it in imported.items:
+            if isinstance(it, A.Import):
+                continue
+            name = _item_name(it)
+            if name is not None:
+                direct_names.add(name)
+        # Two imports with the same alias would clash on the
+        # rewrite side; the user wrote two `import foo` (or
+        # `import a as F` and `import b as F`). Detect early and
+        # report instead of silently overwriting.
+        if alias in self._module_exports and self._module_exports[alias] != direct_names:
+            raise LoaderError(
+                f"two imports share the alias '{alias}'; "
+                f"use 'import ... as <name>' to disambiguate",
+                pos=imp.pos,
+                filename=str(module_path),
+            )
+        self._module_exports[alias] = direct_names
+
 
 def _item_name(item: A.Item) -> Optional[str]:
     """The top-level name of an item (for conflict detection).
@@ -280,3 +327,190 @@ def _item_name(item: A.Item) -> Optional[str]:
         # ``is_capability=True``; the name is taken the same way.
         return item.name
     return None
+
+
+def _rewrite_qualified_calls(
+    module: "A.Module",
+    module_exports: dict[str, set[str]],
+) -> None:
+    """Walk ``module`` in place and rewrite every ``MethodCall``
+    whose receiver is ``Ident(alias)`` (where ``alias`` is a
+    registered import) and whose method is one of the directly-
+    declared names of that import. The rewrite replaces the
+    MethodCall node's contents with a ``Call`` to ``Ident(method)``,
+    keeping the same arguments.
+
+    Why this approach: the loader already merges imported items
+    at the top of the linked module, so every imported function
+    is in the global scope under its bare name. Rewriting the
+    receiver away means the analyzer and transpiler do not need
+    to know about modules at all; they just see a regular
+    function call.
+
+    Implementation: we cannot replace AST nodes wholesale because
+    parent nodes hold strong references. Instead we mutate the
+    existing ``MethodCall`` into a shape that the existing
+    pipeline already handles, by changing it to a ``Call`` of an
+    ``Ident``. Since the class has different fields we substitute
+    the parent's slot.
+    """
+    rewriter = _Rewriter(module_exports)
+    rewriter.visit_module(module)
+
+
+class _Rewriter:
+    """Single-purpose AST mutator: replace
+    ``MethodCall(Ident(alias), method, args)`` with
+    ``Call(Ident(method), args)`` when ``alias`` is a registered
+    import. The walker is exhaustive across statement and
+    expression node types Capa currently has; new node types
+    added later need a clause here to keep the rewrite working
+    inside them.
+    """
+
+    def __init__(self, module_exports: dict[str, set[str]]) -> None:
+        self.module_exports = module_exports
+
+    def visit_module(self, m: A.Module) -> None:
+        for item in m.items:
+            self.visit_item(item)
+
+    def visit_item(self, item: A.Item) -> None:
+        if isinstance(item, A.FunDecl):
+            if item.body is not None:
+                self.visit_block(item.body)
+        elif isinstance(item, A.ConstDecl):
+            item.value = self.visit_expr(item.value)
+        elif isinstance(item, A.ImplBlock):
+            for method in item.methods:
+                if method.body is not None:
+                    self.visit_block(method.body)
+        # Other items (TypeStruct, TypeSum, TraitDecl, Import) have
+        # no expression-bearing slots to walk for this rewrite.
+
+    def visit_block(self, b: A.Block) -> None:
+        for stmt in b.stmts:
+            self.visit_stmt(stmt)
+
+    def visit_stmt(self, s: A.Stmt) -> None:
+        if isinstance(s, A.LetStmt):
+            s.value = self.visit_expr(s.value)
+        elif isinstance(s, A.VarStmt):
+            s.value = self.visit_expr(s.value)
+        elif isinstance(s, A.AssignStmt):
+            s.value = self.visit_expr(s.value)
+            s.target = self.visit_expr(s.target)
+        elif isinstance(s, A.ReturnStmt):
+            if s.value is not None:
+                s.value = self.visit_expr(s.value)
+        elif isinstance(s, A.ExprStmt):
+            s.expr = self.visit_expr(s.expr)
+        elif isinstance(s, A.IfStmt):
+            s.cond = self.visit_expr(s.cond)
+            self.visit_block(s.then_block)
+            for i, (cond, block) in enumerate(s.elif_arms):
+                new_cond = self.visit_expr(cond)
+                self.visit_block(block)
+                s.elif_arms[i] = (new_cond, block)
+            if s.else_block is not None:
+                self.visit_block(s.else_block)
+        elif isinstance(s, A.WhileStmt):
+            s.cond = self.visit_expr(s.cond)
+            self.visit_block(s.body)
+        elif isinstance(s, A.ForStmt):
+            s.iter = self.visit_expr(s.iter)
+            self.visit_block(s.body)
+        # BreakStmt / ContinueStmt have no expression slots.
+
+    def visit_expr(self, e: A.Expr) -> A.Expr:
+        # MethodCall is the one shape we actively rewrite. Every
+        # other expression shape is walked recursively (so a
+        # MethodCall nested inside another expression also gets
+        # picked up) and returned unchanged.
+        if isinstance(e, A.MethodCall):
+            # Recurse first into receiver and arguments to handle
+            # nested rewrites (e.g. ``foo.fn(bar.gn())``).
+            e.receiver = self.visit_expr(e.receiver)
+            e.args = [self.visit_expr(a) for a in e.args]
+            recv = e.receiver
+            if isinstance(recv, A.Ident):
+                exports = self.module_exports.get(recv.name)
+                if exports is not None and e.method in exports:
+                    # Rewrite in place: replace the MethodCall's
+                    # callee/args structure with a plain Call.
+                    return A.Call(
+                        pos=e.pos,
+                        callee=A.Ident(pos=recv.pos, name=e.method),
+                        type_args=e.type_args,
+                        args=e.args,
+                        arg_names=e.arg_names,
+                    )
+            return e
+        if isinstance(e, A.Call):
+            e.callee = self.visit_expr(e.callee)
+            e.args = [self.visit_expr(a) for a in e.args]
+            return e
+        if isinstance(e, A.BinOp):
+            e.left = self.visit_expr(e.left)
+            e.right = self.visit_expr(e.right)
+            return e
+        if isinstance(e, A.UnaryOp):
+            e.operand = self.visit_expr(e.operand)
+            return e
+        if isinstance(e, A.FieldAccess):
+            e.receiver = self.visit_expr(e.receiver)
+            return e
+        if isinstance(e, A.Index):
+            e.receiver = self.visit_expr(e.receiver)
+            e.index = self.visit_expr(e.index)
+            return e
+        if isinstance(e, A.Try):
+            e.expr = self.visit_expr(e.expr)
+            return e
+        if isinstance(e, A.StructLit):
+            # fields are list[tuple[str, Expr]]; replace in place
+            for i, (fname, fexpr) in enumerate(e.fields):
+                e.fields[i] = (fname, self.visit_expr(fexpr))
+            return e
+        if isinstance(e, A.ListLit):
+            e.elements = [self.visit_expr(x) for x in e.elements]
+            return e
+        if isinstance(e, A.TupleLit):
+            e.elements = [self.visit_expr(x) for x in e.elements]
+            return e
+        if isinstance(e, A.InterpolatedString):
+            new_parts: list = []
+            for p in e.parts:
+                if isinstance(p, A.Expr):
+                    new_parts.append(self.visit_expr(p))
+                else:
+                    new_parts.append(p)
+            e.parts = new_parts
+            return e
+        if isinstance(e, A.LambdaExpr):
+            if isinstance(e.body, A.Block):
+                self.visit_block(e.body)
+            else:
+                e.body = self.visit_expr(e.body)
+            return e
+        if isinstance(e, A.MatchExpr):
+            e.scrutinee = self.visit_expr(e.scrutinee)
+            for arm in e.arms:
+                if arm.guard is not None:
+                    arm.guard = self.visit_expr(arm.guard)
+                if isinstance(arm.body, A.Block):
+                    self.visit_block(arm.body)
+                else:
+                    arm.body = self.visit_expr(arm.body)
+            return e
+        if isinstance(e, A.IfExpr):
+            e.cond = self.visit_expr(e.cond)
+            e.then_expr = self.visit_expr(e.then_expr)
+            e.else_expr = self.visit_expr(e.else_expr)
+            return e
+        if isinstance(e, A.RangeExpr):
+            e.start = self.visit_expr(e.start)
+            e.end = self.visit_expr(e.end)
+            return e
+        # Leaf nodes (Ident, literals): return as-is.
+        return e

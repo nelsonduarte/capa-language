@@ -11,6 +11,47 @@ breaking changes and the discipline is still being shaped.
 
 ### Added
 
+- **Qualified module access**: `foo.fn(args)` now resolves to
+  the function `fn` imported from module `foo`. Closes one of
+  the three pending items left after the MVP. Both forms
+  work side by side:
+
+  ```capa
+  import util
+
+  fun main(stdio: Stdio)
+      stdio.println(util.greet("Capa"))   // qualified
+      stdio.println(greet("Capa"))        // unqualified still ok
+  ```
+
+  Aliasing via `as` works too:
+
+  ```capa
+  import util as U
+  ...
+      U.greet("alias")
+  ```
+
+  Mechanism: a post-link rewrite pass in
+  `capa.loader::_rewrite_qualified_calls` walks the merged
+  AST and replaces every `MethodCall(Ident(alias), method,
+  args)` with `Call(Ident(method), args)` when `alias` is a
+  registered import alias and `method` is one of that
+  module's directly-declared names. The analyzer and
+  transpiler do not need to know about modules; they only
+  see plain function calls. Two imports sharing the same
+  alias (without disambiguating `as`) raise a clear loader
+  error.
+
+  4 new tests in `tests/test_loader.py::TestQualifiedModuleAccess`
+  covering qualified call resolution, unqualified-still-works
+  regression, alias-qualified call, and a unit test of the
+  `LinkedModule.module_exports` map. Full suite: 845 passed
+  (was 841).
+
+  Now pending in the module-system follow-ups: only `pub`
+  enforcement and stdlib paths.
+
 - **Per-file error-snippet rendering for imported modules**.
   Errors originating in an imported module now show the
   imported file's source line, not the root file's. Closes
