@@ -57,7 +57,7 @@ Capa/
 │   ├── docgen/                 # HTML doc generator from /// doc-comments
 │   ├── lsp/                    # Language Server Protocol implementation
 │   └── runtime/                # Result, Option, Stdio, Fs, ..., Unsafe, py_import
-├── tests/                      # 776 unit, end-to-end, and property tests
+├── tests/                      # 777 unit, end-to-end, and property tests
 │   ├── test_lexer.py
 │   ├── test_parser.py
 │   ├── test_analyzer.py
@@ -83,6 +83,7 @@ Capa/
 │   ├── cve_torchtriton.capa    # CVE case study: torchtriton 2022
 │   ├── cve_node_ipc.capa       # CVE partial-loss: node-ipc 2022
 │   ├── cve_xz_utils.capa       # CVE partial-loss: xz-utils 2024
+│   ├── cve_pyyaml.capa         # CVE design-pattern: PyYAML yaml.load() (2017)
 │   ├── empirical_config.capa   # SBOM diff micro-validation (Capa side)
 │   ├── empirical_config_naive.py # SBOM diff micro-validation (Python side)
 │   ├── vex_demo.capa           # @vex per-function exploitability claims

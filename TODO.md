@@ -66,6 +66,16 @@ sequence below strengthens exactly that axis.
 
 **Tier 3, polish:**
 
+- [~] **Empirical study at scale: design-pattern CVEs**.
+  First library landed: PyYAML CVE-2017-18342 at
+  `examples/cve_pyyaml.capa` + `docs/cve_pyyaml.md`. Distinct
+  category from the six supply-chain delivery CVEs already in
+  the repo. Next candidates: Jinja2 SSTI (server-side template
+  injection), lxml XXE (XML external entity), Python pickle
+  deserialisation, Java ObjectInputStream gadget chains.
+  Multi-session arc; ~3-4 libraries to validate the method
+  before scaling.
+
 - [~] **Mechanisation skeleton in Agda** at `proofs/`.
   Stage 0 landed: syntax of λ_cap (types, terms, typing,
   reduction) in `CapaSyntax.agda`; four theorem statements as

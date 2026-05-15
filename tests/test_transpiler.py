@@ -705,6 +705,19 @@ class TestTranspileExamples(unittest.TestCase):
         self.assertEqual(rc, 0, err)
         self.assertIn("name = capa-demo", out)
 
+    def test_cve_pyyaml(self):
+        # Seventh CVE walkthrough, first of the design-pattern
+        # (vs supply-chain delivery) class: PyYAML CVE-2017-18342
+        # arbitrary code execution via yaml.load. The Capa version
+        # has a parse_structured signature with no Unsafe, so the
+        # bug class is ruled out structurally. Companion writeup
+        # at docs/cve_pyyaml.md.
+        rc, out, err = self._run_example("examples/cve_pyyaml.capa")
+        self.assertEqual(rc, 0, err)
+        self.assertIn("safe input:", out)
+        self.assertIn("malicious input parsed as data:", out)
+        self.assertIn("command field stays a String, never executed", out)
+
     def test_cve_ua_parser_js(self):
         # Sixth CVE walkthrough: the ua-parser-js npm account
         # hijack of October 2021. Same attack mechanism as

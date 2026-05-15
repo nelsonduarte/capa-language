@@ -1,0 +1,110 @@
+// cve_pyyaml.capa, the PyYAML `yaml.load()` arbitrary-code-execution
+// design pattern, in Capa. The companion writeup is
+// docs/cve_pyyaml.md.
+//
+// CVE-2017-18342 (and a long tail of related CVEs in the same
+// shape) cover the canonical "deserialisation library executes
+// arbitrary code" bug class. PyYAML's `yaml.load()` deserialises
+// any Python object the YAML document declares, including
+// `!!python/object/apply:os.system ["rm -rf /"]`. The fix is
+// `yaml.safe_load()` or `Loader=yaml.SafeLoader`, which restricts
+// the deserialisable type set to pure-data shapes (strings,
+// numbers, sequences, maps).
+//
+// The bug class is endemic across language ecosystems:
+// Python's `pickle.loads`, Java's `ObjectInputStream`, .NET's
+// `BinaryFormatter`, Ruby's `Marshal.load`, Node's `serialize-
+// javascript`, and others. The shared design pattern is "the
+// deserialiser is given enough authority to construct any
+// runtime object", which structurally requires the deserialiser
+// to be able to invoke constructors, which in turn is
+// indistinguishable from arbitrary code execution.
+//
+// This case study makes a different point from the existing
+// supply-chain CVEs in this repo. The previous six (event-
+// stream, eslint-scope, ua-parser-js, torchtriton, node-ipc,
+// xz-utils) are *delivery* attacks: malicious code delivered
+// through a trusted distribution channel. PyYAML's `yaml.load`
+// is a *design-pattern* vulnerability: the legitimate library's
+// own API offers a way to execute arbitrary code, and the
+// attacker just supplies an input that uses it.
+//
+// Capa structurally rejects this pattern because a function
+// with signature `(String) -> Result<JsonValue, ParseError>`
+// holds no capability that could construct arbitrary runtime
+// types or invoke arbitrary code. The deserialiser literally
+// cannot do what `yaml.load` does. The "safe" variant is the
+// only variant the type system permits.
+
+// ===============================================================
+// What a Capa-shaped YAML / structured-data parser looks like.
+// ===============================================================
+//
+// Capa ships a JSON parser (`parse_json` in stdlib) with the
+// signature shape this case study advocates. Below we wrap it
+// in a vocabulary that mirrors a YAML-like API to make the
+// comparison readable. The point is the SIGNATURE, not the
+// concrete syntax of the input format. The same signature
+// works for YAML, TOML, XML (without external entities), and
+// any other "structured data" format.
+
+type ParseError {
+    line: Int,
+    column: Int,
+    message: String
+}
+
+// The safe parser. Input: a String of source text. Output:
+// either a structured JsonValue tree (numbers, strings,
+// booleans, arrays, objects), or a structured ParseError.
+//
+// CRITICAL: the signature names no capability. The function
+// body cannot reach Fs, Net, Env, Unsafe, or any constructor
+// that would let it build an arbitrary runtime type. The type
+// system rules out `yaml.load`'s behaviour by construction.
+fun parse_structured(text: String) -> Result<JsonValue, ParseError>
+    // For the demo we delegate to Capa's JSON parser. The
+    // signature is what carries the safety claim; the actual
+    // tokeniser is unimportant.
+    return match parse_json(text)
+        Err(e) -> Err(ParseError { line: 0, column: 0, message: e })
+        Ok(v) -> Ok(v)
+
+// A simple consumer: count the entries in the top-level object.
+// Pure, no capabilities required.
+fun count_entries(value: JsonValue) -> Int
+    return match value.as_object()
+        None -> 0
+        Some(m) -> m.keys().length()
+
+// A representative summary for the demo. Still pure.
+fun describe(value: JsonValue) -> String
+    return match value.as_object()
+        None -> "not an object"
+        Some(_) -> "object with ${count_entries(value)} keys"
+
+// ===============================================================
+// `main` for the demo. Holds Stdio only.
+// ===============================================================
+fun main(stdio: Stdio)
+    // A benign input. Parses to an object.
+    let safe_input = "{\"name\":\"alice\",\"age\":30,\"role\":\"admin\"}"
+    match parse_structured(safe_input)
+        Err(e) ->
+            stdio.println("parse error at ${e.line}:${e.column}: ${e.message}")
+        Ok(v) ->
+            stdio.println("safe input: ${describe(v)}")
+
+    // An input that would, in a "load and instantiate" parser,
+    // be an attack vector (e.g. PyYAML's
+    // `!!python/object/apply:os.system ["whoami"]`). In Capa it
+    // is just data: either valid JSON-like structure, or a
+    // typed parse error. There is no path from text to runtime
+    // object construction; the parser literally cannot do it.
+    let suspicious_input = "{\"command\":\"!!python/object/apply:os.system [whoami]\"}"
+    match parse_structured(suspicious_input)
+        Err(e) ->
+            stdio.println("malicious input: parse error (${e.message})")
+        Ok(v) ->
+            stdio.println("malicious input parsed as data: ${describe(v)}")
+            stdio.println("  command field stays a String, never executed")

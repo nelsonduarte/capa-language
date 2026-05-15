@@ -11,6 +11,28 @@ breaking changes and the discipline is still being shaped.
 
 ### Added
 
+- **CVE case study (design-pattern class): PyYAML
+  `yaml.load()` arbitrary code execution** (CVE-2017-18342,
+  `examples/cve_pyyaml.capa` + `docs/cve_pyyaml.md`). First of
+  a new class of case study: design-pattern vulnerabilities,
+  where the legitimate library's API is the bug. PyYAML's
+  `yaml.load` deserialises arbitrary Python objects, including
+  `!!python/object/apply:os.system [...]`, executing code as
+  a side effect of "parsing". The bug class is endemic across
+  ecosystems: Python's `pickle.loads`, Java's
+  `ObjectInputStream`, .NET's `BinaryFormatter`, Ruby's
+  `Marshal.load`, Node's `serialize-javascript`. Capa
+  structurally rules out the class because `parse_structured:
+  (String) -> Result<JsonValue, ParseError>` declares no
+  `Unsafe` capability; the body cannot reach `py_invoke` and
+  therefore cannot construct arbitrary runtime objects. The
+  writeup notes this is *strictly stronger* than PyYAML's
+  `safe_load` mitigation (which is opt-in and routinely
+  misconfigured per Trail of Bits 2024 audit). Regression test
+  in `tests/test_transpiler.py::test_cve_pyyaml`. Distinct
+  category from the six supply-chain delivery CVEs already in
+  the repo. Full suite: 777 passed.
+
 - **Agda mechanisation skeleton** (`proofs/CapaSyntax.agda`,
   `proofs/CapaSoundness.agda`, `proofs/README.md`). Stage 0 of
   the mechanisation plan described in `docs/semantics.md` § 8.
