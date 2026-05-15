@@ -45,7 +45,7 @@
 
 <div class="page-heading">
     <h1>Roadmap</h1>
-    <p>An honest inventory of what works, what is coming, and what is explicitly out of scope. Capa is in <strong>v0.7.0-alpha</strong>: the compiler runs, 811 tests pass on three operating systems, the discipline is implemented end-to-end, the capability manifest, CycloneDX SBOM, SPDX SBOM, CycloneDX VEX, and SLSA L1 provenance are all emitted directly by the compiler, a runtime-overhead benchmark suite measures the transpiled output against hand-Python baselines, and the language is still missing several things a v1 would need.</p>
+    <p>An honest inventory of what works, what is coming, and what is explicitly out of scope. Capa is in <strong>v0.7.0-alpha</strong>: the compiler runs, 821 tests pass on three operating systems, the discipline is implemented end-to-end, the capability manifest, CycloneDX SBOM, SPDX SBOM, CycloneDX VEX, and SLSA L1 provenance are all emitted directly by the compiler, a runtime-overhead benchmark suite measures the transpiled output against hand-Python baselines, and the language is still missing several things a v1 would need.</p>
 </div>
 
 <!-- =====================================================
@@ -321,7 +321,7 @@
 
     <ul class="limitations-list">
         <li>
-            <strong>No module system.</strong> The <code>import</code> keyword is parsed but the analyzer rejects it. Programs are single-file in practice. Designing a Capa-native module system that preserves the capability discipline across file boundaries is real work and has not been started. <em>Status: pending (P3).</em>
+            <strong>Module system: MVP only.</strong> <code>import foo.bar</code> resolves to <code>&lt;importer-dir&gt;/foo/bar.capa</code> and merges every top-level declaration into the current scope (unqualified). Transitive imports work; cycles and name conflicts are detected and reported. Not yet there: <code>pub</code> visibility enforcement, qualified access (<code>foo.bar.fn()</code>), stdlib path resolution, or per-module error-source rendering. <em>Status: MVP landed; full module-system design (qualified access + visibility) is P2.</em>
         </li>
         <li>
             <strong>No package manager or registry.</strong> There is no <code>capa add &lt;dep&gt;</code> and no <code>capalang.org/registry</code>. Library reuse means copying source between projects. <em>Status: pending; only meaningful after a module system exists (P3).</em>

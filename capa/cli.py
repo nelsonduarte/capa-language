@@ -282,22 +282,36 @@ def main() -> int:
             print(e.format(), file=sys.stderr)
         return 1
 
-    if (
-        args.parse
-        or args.check
-        or args.transpile
-        or args.run
-        or args.manifest
-        or args.cyclonedx
-        or args.spdx
-        or args.vex
-        or args.provenance
-        or args.doc
-    ):
+    needs_analysis = (
+        args.check or args.run or args.manifest or args.cyclonedx
+        or args.spdx or args.vex or args.provenance or args.doc
+    )
+    if args.parse or args.transpile or needs_analysis:
         try:
-            module = Parser(
-                tokens, source=source, filename=filename
-            ).parse_module()
+            if needs_analysis or args.transpile:
+                # Resolve transitive imports before analysis. The
+                # loader does its own lex + parse of the root file
+                # so all source positions are consistent; imported
+                # modules become extra Items in the linked AST.
+                from capa.loader import ModuleLoader, LoaderError
+                try:
+                    loader = ModuleLoader()
+                    linked = loader.load_root(source, filename)
+                    module = linked.module
+                except LoaderError as le:
+                    msg = le.format()
+                    if use_color:
+                        print(f"{C.RED}{msg}{C.RESET}", file=sys.stderr)
+                    else:
+                        print(msg, file=sys.stderr)
+                    return 1
+            else:
+                # --parse-only: skip the linker so the inspected AST
+                # shows the root file's imports verbatim (useful
+                # for debugging the module system itself).
+                module = Parser(
+                    tokens, source=source, filename=filename,
+                ).parse_module()
         except LexerError as e:
             if use_color:
                 print(f"{C.RED}{e.format()}{C.RESET}", file=sys.stderr)

@@ -41,30 +41,15 @@ class _DeclarationsMixin:
 
         for item in module.items:
             if isinstance(item, A.Import):
-                # `import` is syntactically accepted (reserved for
-                # a future Capa module system) but semantically
-                # forbidden in v1: transpiling it to a Python
-                # ``import`` would punch a direct hole through
-                # the capability discipline. To cross the Python
-                # boundary use ``py_import(unsafe, ...)`` and
-                # ``py_invoke(unsafe, ...)``, both of which
-                # require the Unsafe capability.
-                full_path = ".".join(item.path)
-                self._err(
-                    f"'import {full_path}' is not allowed in Capa v1: "
-                    f"the module system is reserved for a future version, "
-                    f"and Python interop must cross the Unsafe boundary. "
-                    f"Use `py_import(unsafe, \"{full_path}\")` to import a "
-                    f"Python module (requires the Unsafe capability)",
-                    item.pos,
-                )
-                self._declare_global(
-                    Symbol(
-                        name=item.alias or item.path[-1],
-                        kind=SymbolKind.MODULE,
-                        pos=item.pos,
-                    )
-                )
+                # ``import`` is resolved by ``capa.loader.ModuleLoader``
+                # before the module reaches the analyzer: imported
+                # files are merged in-place and the original Import
+                # nodes are stripped. If we still see one here, the
+                # analyzer was called directly on a parsed (not
+                # linked) module; that path is fine for unit tests
+                # of the analyzer itself, but emit no error and no
+                # symbol so the analyzer just ignores the directive.
+                continue
             elif isinstance(item, A.ConstDecl):
                 # Type resolved in the next sub-pass once all
                 # top-level decls are registered.

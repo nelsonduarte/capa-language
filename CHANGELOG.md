@@ -11,6 +11,59 @@ breaking changes and the discipline is still being shaped.
 
 ### Added
 
+- **Module system MVP** (`capa/loader.py`, `import foo.bar` now
+  works end-to-end). Closes the single-file-only limitation
+  that has stood since v0.2.
+
+  **Semantics** (this iteration):
+    - `import foo.bar` resolves to
+      `<importer-dir>/foo/bar.capa`.
+    - All top-level declarations (`fun`, `type`, `trait`,
+      `capability`, `impl`, `const`) of the imported module
+      become accessible **unqualified** in the importing
+      module.
+    - Transitive imports are followed depth-first; each file
+      is loaded at most once (diamond-import deduplication).
+    - Cyclic imports raise a named-cycle error.
+    - Name conflicts (two imports defining the same top-level
+      name) are detected at link time with both source
+      locations.
+    - Missing target files produce a clear "cannot resolve"
+      diagnostic.
+
+  **Still pending** (P2 follow-ups, deliberately scoped out
+  of MVP):
+    - Qualified access (`bar.fn(...)`).
+    - `pub` visibility enforcement (`KW_PUB` already parses).
+    - Stdlib path resolution from a configured root.
+    - Per-file source-snippet rendering for errors that
+      originate in imported modules.
+
+  Implementation: `capa/loader.py::ModuleLoader.load_root`
+  parses the root file, walks Import nodes depth-first, and
+  produces a `LinkedModule` (flat AST + `sources` map). The
+  CLI invokes the loader instead of `Parser.parse_module`
+  whenever analysis is needed (`--check`, `--run`,
+  `--manifest`, `--cyclonedx`, `--spdx`, `--vex`,
+  `--provenance`, `--doc`, `--transpile`). The
+  parse-only path (`--parse`) still uses the raw parser so
+  the inspected AST shows imports verbatim.
+
+  10 new tests in `tests/test_loader.py` covering the no-
+  imports baseline, single import, transitive chain, dotted-
+  path resolution to subdirectory, cycle detection, name-
+  conflict reporting, missing-file reporting, diamond
+  deduplication, and two end-to-end runs via the CLI. The
+  prior `test_import_rejected` analyzer test was rewritten as
+  `test_import_silently_accepted_by_direct_analyzer` to
+  document the new "loader handles imports; analyzer ignores
+  unresolved Imports" contract. Full suite: 821 passed (was
+  811).
+
+  The "Known limitations" callouts in `docs/roadmap.html`
+  and `TODO.md` were updated to reflect MVP-landed + the
+  P2 follow-ups.
+
 - **More stdlib gaps closed**: `List.find`, `List.find_index`,
   `Map.pairs`, `JsonValue.as_number` (alias), `JsonValue.as_int`,
   and **assignment as a single-line match arm body**. All

@@ -145,23 +145,19 @@ class TestNameResolution(unittest.TestCase):
         )
         self.assertTrue(r.ok, r.errors)
 
-    def test_import_rejected(self):
-        # In v1, `import X` is syntactically accepted but semantically
-        # rejected: allowing it would punch a hole in the capability
-        # discipline. The error message points users to `py_import(...)`.
-        msgs = errors_of(
+    def test_import_silently_accepted_by_direct_analyzer(self):
+        # Import resolution happens in capa.loader.ModuleLoader,
+        # which the CLI invokes before analysis. When the analyzer
+        # is called directly (e.g. in this test), Import items are
+        # ignored: no error, no symbol. The loader's resolution
+        # and conflict-detection behaviour is covered by
+        # tests/test_loader.py.
+        r = check(
             "import json\n"
             "fun f() -> Int\n"
             "    return 0\n"
         )
-        self.assertTrue(
-            any("'import json' is not allowed" in m for m in msgs),
-            msgs,
-        )
-        self.assertTrue(
-            any("py_import" in m for m in msgs),
-            msgs,
-        )
+        self.assertTrue(r.ok, r.errors)
 
     def test_py_import_requires_unsafe(self):
         # A function that tries to cross the boundary without Unsafe in
