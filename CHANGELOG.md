@@ -11,6 +11,38 @@ breaking changes and the discipline is still being shaped.
 
 ### Added
 
+- **REPL: `.types <expr>` meta command**: prints the inferred
+  type of an expression without running the program. Uses the
+  current accumulated state's scope, so locals, imported items,
+  and pre-bound capabilities are all visible.
+
+  ```
+  capa> .types 1 + 2
+  : Int
+  capa> .types stdio
+  : Stdio
+  capa> .types [1, 2, 3]
+  : List<Int>
+  capa> let name = "Capa"
+  capa> .types name
+  : String
+  ```
+
+  Mechanism: the REPL appends the expression as a bare
+  expression statement (not a `let` binding, so capability
+  references like `stdio` still type-check — Capa's discipline
+  forbids binding caps to a `let`), runs the analyzer, and
+  reads back the type of the last main-body statement from
+  `result.types` keyed by node id. The transpiler / runtime are
+  not involved, so side effects do not fire: a `.types
+  stdio.println("MARKER")` prints `: ()` and the MARKER is not
+  emitted.
+
+  6 new tests at `tests/test_repl.py::TestReplEndToEnd`
+  exercise primitives, capabilities, current-scope locals,
+  the no-run guarantee, the empty-arg usage hint, and graceful
+  handling of compile errors. Full suite: 877 passed (was 871).
+
 - **REPL: multi-line block continuation**: `if`, `for`, `while`,
   and `match` statements at the prompt now switch to a
   continuation prompt that gathers the indented body and any

@@ -413,7 +413,10 @@ to public.
   touches. Multi-line blocks (`if` / `for` / `while` /
   `match`) get a continuation prompt that terminates on a
   blank line. Meta commands: `.exit`, `.reset`, `.show`,
-  `.help`. Implementation at `capa/repl.py`; 24 tests at
+  `.types <expr>` (prints the inferred type without running
+  the expression; the probe uses an ExprStmt rather than a
+  `let` so capability references type-check too), `.help`.
+  Implementation at `capa/repl.py`; 30 tests at
   `tests/test_repl.py`. **Pending for the full REPL**:
   incremental analyzer state (the MVP re-runs everything on
   each input), readline / history. P2.

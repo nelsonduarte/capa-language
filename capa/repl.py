@@ -57,10 +57,12 @@ import sys
 import tempfile
 from typing import Optional
 
+from . import capa_ast as A
 from .analyzer import analyze
 from .lexer import Lexer, LexerError
 from .parser import Parser
 from .transpiler import transpile
+from .typesys import ty_str
 
 
 # Synthesised main's signature. Every standard built-in capability
@@ -267,10 +269,72 @@ def _try_compile_and_run(source: str) -> tuple[bool, str, str]:
     return True, proc.stdout, ""
 
 
+def _typeof_expr(
+    expr_str: str, state: "_ReplState",
+) -> tuple[bool, str]:
+    """Return ``(ok, message)`` for the ``.types <expr>`` REPL
+    command. The expression is type-checked against the current
+    accumulated state by appending it as a bare expression
+    statement to main's body and reading the analyzer's inferred
+    type back from the typed-nodes map. The program is **not**
+    run, so the expression's side effects do not fire.
+
+    A bare expression statement (rather than a ``let`` binding) is
+    used so capability references like ``stdio`` still type-check;
+    Capa's discipline forbids binding capabilities to ``let``.
+    """
+    probe_line = f"    {expr_str}"
+    tentative = _ReplState()
+    tentative.top_lines = state.top_lines
+    tentative.main_lines = state.main_lines + [probe_line]
+    source = tentative.assemble()
+    try:
+        tokens = Lexer(source, filename="<repl>").lex()
+    except LexerError as e:
+        return False, e.format()
+    try:
+        module = Parser(
+            tokens, source=source, filename="<repl>",
+        ).parse_module()
+    except LexerError as e:
+        return False, e.format()
+    result = analyze(module, source=source, filename="<repl>")
+    if not result.ok:
+        return False, "\n".join(e.format() for e in result.errors)
+    probe_value = _find_probe_value(module)
+    if probe_value is None:
+        return False, "internal error: type-probe not found in AST"
+    ty = result.types.get(id(probe_value))
+    if ty is None:
+        return False, "internal error: type-probe expression was not typed"
+    return True, f": {ty_str(ty)}"
+
+
+def _find_probe_value(module: A.Module) -> "A.Expr | None":
+    """Return the expression of the last statement in synthesised
+    ``main``'s body; the ``.types`` probe is the last line we
+    append, so that statement's expression is the one whose type
+    we want. ``None`` only on internal-shape regressions.
+    """
+    for item in module.items:
+        if not isinstance(item, A.FunDecl) or item.name != "main":
+            continue
+        stmts = item.body.stmts
+        if not stmts:
+            return None
+        last = stmts[-1]
+        if isinstance(last, A.ExprStmt):
+            return last.expr
+        return None
+    return None
+
+
 _HELP_TEXT = """Capa REPL meta commands:
   .exit / .quit       leave the REPL
   .reset              clear all accumulated state
   .show               print the current accumulated program
+  .types <expr>       print the inferred type of <expr> without
+                      running it (uses the current state's scope)
   .help               this list
 
 Input shapes:
@@ -318,6 +382,20 @@ def serve(prompt: str = "capa> ") -> int:
             continue
         if stripped == ".help":
             print(_HELP_TEXT, end="")
+            continue
+        if stripped.startswith(".types"):
+            # Strip the command + any whitespace; what remains is
+            # the expression to type-check. The bare ``.types``
+            # form (no expression) prints a tiny usage hint.
+            expr = stripped[len(".types"):].lstrip()
+            if not expr:
+                print("usage: .types <expression>")
+                continue
+            ok, msg = _typeof_expr(expr, state)
+            if ok:
+                print(msg)
+            else:
+                sys.stderr.write(msg.rstrip() + "\n")
             continue
 
         # Bucket the input. Top-level forms (fun, type, etc.) can

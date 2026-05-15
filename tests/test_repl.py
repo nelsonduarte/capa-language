@@ -234,6 +234,52 @@ class TestReplEndToEnd(unittest.TestCase):
         # clock); just that the REPL printed something numeric.
         self.assertRegex(result.stdout, r"\d")
 
+    def test_types_command_primitive(self):
+        script = ".types 1 + 2\n.exit\n"
+        result = self._run(script)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(": Int", result.stdout)
+
+    def test_types_command_capability(self):
+        # `let _ = stdio` is illegal (capabilities can't be aliased
+        # to a let); .types uses an ExprStmt probe so capability
+        # references still type-check.
+        script = ".types stdio\n.exit\n"
+        result = self._run(script)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(": Stdio", result.stdout)
+
+    def test_types_command_uses_current_scope(self):
+        # A previous `let x = "hello"` puts x in scope; .types x
+        # should see it as String.
+        script = "let x = \"hello\"\n.types x\n.exit\n"
+        result = self._run(script)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(": String", result.stdout)
+
+    def test_types_command_no_run(self):
+        # The probe must NOT execute the expression. We type-check
+        # ``stdio.println("MARKER")`` and assert the literal does
+        # not appear in the REPL's stdout.
+        script = ".types stdio.println(\"MARKER\")\n.exit\n"
+        result = self._run(script)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("MARKER", result.stdout)
+
+    def test_types_command_usage_when_empty(self):
+        script = ".types\n.exit\n"
+        result = self._run(script)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("usage", result.stdout)
+
+    def test_types_command_compile_error(self):
+        # A typed expression that references an undefined name
+        # should produce an error rather than crashing the REPL.
+        script = ".types undefined_name\nlet y = 1\n.exit\n"
+        result = self._run(script)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("undefined", result.stderr)
+
     def test_multiline_if_block(self):
         # if/else statement spanning four lines + blank terminator.
         script = (
