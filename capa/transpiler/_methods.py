@@ -120,6 +120,8 @@ class _MethodsMixin:
             return f"CapaList({recv}.keys())"
         if method == "values":
             return f"CapaList({recv}.values())"
+        if method == "pairs":
+            return f"CapaList({recv}.items())"
         if method == "is_empty":
             return f"(len({recv}) == 0)"
         return f"{recv}.{_safe_ident(method)}({', '.join(args)})"

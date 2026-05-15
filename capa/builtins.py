@@ -29,7 +29,7 @@ from .tokens import Pos
 from .typesys import (
     CAPABILITY_NAMES, PRIMITIVE_NAMES,
     Ty, TyBool, TyFloat, TyFun, TyInt, TyName, TyString,
-    TyUnit, TyUnknown, TyVar,
+    TyTuple, TyUnit, TyUnknown, TyVar,
 )
 
 
@@ -90,16 +90,18 @@ _json_ty = TyName("JsonValue")
 
 METHODS: dict[str, list[tuple[str, TyFun, list[str]]]] = {
     "List": [
-        ("length",   fun(TyInt),                                                   []),
-        ("push",     fun(T, TyUnit),                                               []),
-        ("contains", fun(T, TyBool),                                               []),
-        ("map",      fun(fun(T, U), lst(U)),                                       ["U"]),
-        ("filter",   fun(fun(T, TyBool), lst(T)),                                  []),
-        ("fold",     fun(U, fun(U, T, U), U),                                      ["U"]),
-        ("is_empty", fun(TyBool),                                                  []),
-        ("first",    fun(opt(T)),                                                  []),
-        ("last",     fun(opt(T)),                                                  []),
-        ("get",      fun(TyInt, opt(T)),                                           []),
+        ("length",     fun(TyInt),                                                 []),
+        ("push",       fun(T, TyUnit),                                             []),
+        ("contains",   fun(T, TyBool),                                             []),
+        ("map",        fun(fun(T, U), lst(U)),                                     ["U"]),
+        ("filter",     fun(fun(T, TyBool), lst(T)),                                []),
+        ("fold",       fun(U, fun(U, T, U), U),                                    ["U"]),
+        ("is_empty",   fun(TyBool),                                                []),
+        ("first",      fun(opt(T)),                                                []),
+        ("last",       fun(opt(T)),                                                []),
+        ("get",        fun(TyInt, opt(T)),                                         []),
+        ("find",       fun(fun(T, TyBool), opt(T)),                                []),
+        ("find_index", fun(fun(T, TyBool), opt(TyInt)),                            []),
     ],
     "Range": [
         # Range<T> is a lazy iterable produced by `a..b` and `a..=b`.
@@ -137,6 +139,7 @@ METHODS: dict[str, list[tuple[str, TyFun, list[str]]]] = {
         ("contains_key", fun(K, TyBool),                                           []),
         ("keys",         fun(lst(K)),                                              []),
         ("values",       fun(lst(V)),                                              []),
+        ("pairs",        fun(lst(TyTuple((K, V)))),                                []),
         ("is_empty",     fun(TyBool),                                              []),
     ],
     "Set": [
@@ -208,6 +211,8 @@ METHODS: dict[str, list[tuple[str, TyFun, list[str]]]] = {
         ("is_null",   fun(TyBool),                                                 []),
         ("as_bool",   fun(opt(TyBool)),                                            []),
         ("as_num",    fun(opt(TyFloat)),                                           []),
+        ("as_number", fun(opt(TyFloat)),                                           []),
+        ("as_int",    fun(opt(TyInt)),                                             []),
         ("as_string", fun(opt(TyString)),                                          []),
         ("as_array",  fun(opt(lst(_json_ty))),                                     []),
         ("as_object", fun(opt(TyName("Map", (TyString, _json_ty)))),               []),

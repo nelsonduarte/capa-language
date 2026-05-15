@@ -16,7 +16,7 @@ import json as _stdlib_json
 from dataclasses import dataclass
 
 from ._list import CapaList
-from ._result import Err, None_, Ok, Some
+from ._result import Err, None_, Ok, Some, _NoneType
 
 
 class _JsonBase:
@@ -37,6 +37,27 @@ class _JsonBase:
         return None_
 
     def as_num(self):
+        return None_
+
+    def as_number(self):
+        # Alias for as_num. Capa's JsonValue API now exposes both
+        # the terse and the verbose form; both call through to the
+        # same Some(value) when this is a JNum.
+        return self.as_num()
+
+    def as_int(self):
+        # Best-effort integer projection. JSON has only one numeric
+        # type, mapped to float on the Capa side; as_int returns
+        # Some(int(value)) only when the float is integer-valued
+        # (1.0, -7.0) and None_ otherwise (3.14).
+        n_opt = self.as_num()
+        if isinstance(n_opt, _NoneType):
+            return None_
+        v = n_opt.value
+        if isinstance(v, float) and v.is_integer():
+            return Some(int(v))
+        if isinstance(v, int):
+            return Some(v)
         return None_
 
     def as_string(self):

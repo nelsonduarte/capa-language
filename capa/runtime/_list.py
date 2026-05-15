@@ -55,6 +55,20 @@ class CapaList(list):
             return Some(self[i])
         return None_
 
+    def find(self, p):
+        """First element matching the predicate, as ``Option<T>``."""
+        for x in self:
+            if p(x):
+                return Some(x)
+        return None_
+
+    def find_index(self, p):
+        """Index of first element matching the predicate, as ``Option<Int>``."""
+        for i, x in enumerate(self):
+            if p(x):
+                return Some(i)
+        return None_
+
 
 class CapaRange:
     """A lazy integer range. Backs the Capa ``Range<T>`` built-in

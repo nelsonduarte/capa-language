@@ -148,6 +148,7 @@ let evens = (0..10).filter(fun (x: Int) -&gt; Bool =&gt; x % 2 == 0)
 <tr><td><code>contains_key(k: K)</code></td><td><code>Bool</code></td><td></td></tr>
 <tr><td><code>keys()</code></td><td><code>List&lt;K&gt;</code></td><td></td></tr>
 <tr><td><code>values()</code></td><td><code>List&lt;V&gt;</code></td><td></td></tr>
+<tr><td><code>pairs()</code></td><td><code>List&lt;(K, V)&gt;</code></td><td>All entries as a list of <code>(key, value)</code> tuples; pairs cleanly with destructuring in a <code>for</code> loop</td></tr>
 </tbody>
 </table>
 <pre><code>let m: Map&lt;String, Int&gt; = new_map()

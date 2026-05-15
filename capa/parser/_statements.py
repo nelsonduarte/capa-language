@@ -316,8 +316,29 @@ class _StatementsMixin:
                 pos=stmt_start, stmts=[A.ContinueStmt(pos=stmt_start)]
             )
         else:
-            body = self._parse_expr()
-            self._expect_eos("after match arm body")
+            stmt_start = self._peek().start
+            expr = self._parse_expr()
+            if self._peek().kind in _ASSIGN_OPS:
+                # Single-line arm body is an assignment statement,
+                # not a plain expression. Promote to a one-statement
+                # block so the analyzer treats the arm as side-
+                # effectful with Unit result type.
+                op_tok = self._advance()
+                op = _ASSIGN_OPS[op_tok.kind]
+                value = self._parse_expr()
+                self._expect_eos(f"after assignment '{op}' in match arm")
+                if not isinstance(expr, (A.Ident, A.FieldAccess, A.Index)):
+                    raise self._error(
+                        "invalid assignment target in match arm "
+                        "(must be name, field, or index)",
+                        self.tokens[self.idx - 1] if self.idx > 0 else None,
+                    )
+                body = A.Block(pos=stmt_start, stmts=[
+                    A.AssignStmt(pos=stmt_start, target=expr, op=op, value=value),
+                ])
+            else:
+                self._expect_eos("after match arm body")
+                body = expr
         return A.MatchArm(pos=start, pattern=pattern, guard=guard, body=body)
 
     def _parse_return_stmt(self) -> A.ReturnStmt:

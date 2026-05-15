@@ -11,6 +11,40 @@ breaking changes and the discipline is still being shaped.
 
 ### Added
 
+- **More stdlib gaps closed**: `List.find`, `List.find_index`,
+  `Map.pairs`, `JsonValue.as_number` (alias), `JsonValue.as_int`,
+  and **assignment as a single-line match arm body**. All
+  surfaced as friction while writing the design-pattern CVE
+  case studies and Option/Result tests in this iteration.
+
+  - `List.find(p: T -> Bool) -> Option<T>`: first element
+    matching the predicate.
+  - `List.find_index(p: T -> Bool) -> Option<Int>`: index of
+    the same.
+  - `Map.pairs() -> List<(K, V)>`: every entry as a tuple,
+    composes cleanly with `for (k, v) in m.pairs()`.
+  - `JsonValue.as_number`: alias for `as_num` (both return
+    `Option<Float>`); covers users who reach for the longer
+    name.
+  - `JsonValue.as_int -> Option<Int>`: integer-valued
+    extraction; `Some(int(v))` when the underlying float is
+    integer-valued (1.0, -7.0), `None` otherwise (3.14).
+  - Assignment in single-line match arms:
+    `_ -> sum = sum + x` now compiles; previously required
+    the multi-line indented form. Parser change in
+    `_parse_match_arm` parallels the `return`/`break`/
+    `continue` fix shipped earlier in this iteration.
+
+  Registrations in `capa/builtins.py` (List + Map + JsonValue
+  rows); runtime implementations on `CapaList` (`find`,
+  `find_index`) and `_JsonBase` (`as_number`, `as_int`);
+  transpiler lowering for `Map.pairs -> dict.items()`. 8 new
+  regression tests in
+  `tests/test_transpiler.py::TestStdlibStringsListsMapsJson`
+  covering hit / miss / non-integer-float / pairs +
+  destructuring / assignment-in-arm. Stdlib reference page
+  updated. Full suite: 811 passed (was 803).
+
 - **Five new Option / Result methods**: `Option.filter`,
   `Option.or_else`, `Result.or_else`, `Result.ok`,
   `Result.err`. The Option/Result surface now mirrors the

@@ -595,6 +595,119 @@ class TestMatchArmDivergent(unittest.TestCase):
         self.assertEqual(out, "0\n1\n")
 
 
+class TestStdlibStringsListsMapsJson(unittest.TestCase):
+    """Round-trip tests for stdlib additions in this iteration.
+    Each method has a positive case and (where relevant) a
+    negative-bound or empty-input case.
+    """
+
+    def test_list_find_hit(self):
+        rc, out, err = run_capa(
+            'fun main(stdio: Stdio)\n'
+            '    let xs = [3, 1, 4, 1, 5, 9, 2]\n'
+            '    let r = match xs.find(fun (x: Int) -> Bool => x > 4)\n'
+            '        None -> 0 - 1\n'
+            '        Some(v) -> v\n'
+            '    stdio.println("${r}")\n'
+        )
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out, "5\n")
+
+    def test_list_find_miss(self):
+        rc, out, err = run_capa(
+            'fun main(stdio: Stdio)\n'
+            '    let xs = [1, 2, 3]\n'
+            '    let r = match xs.find(fun (x: Int) -> Bool => x > 100)\n'
+            '        None -> 0 - 1\n'
+            '        Some(v) -> v\n'
+            '    stdio.println("${r}")\n'
+        )
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out, "-1\n")
+
+    def test_list_find_index(self):
+        rc, out, err = run_capa(
+            'fun main(stdio: Stdio)\n'
+            '    let xs = ["a", "bb", "ccc", "dddd"]\n'
+            '    let r = match xs.find_index(fun (s: String) -> Bool => s.length() == 3)\n'
+            '        None -> 0 - 1\n'
+            '        Some(i) -> i\n'
+            '    stdio.println("${r}")\n'
+        )
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out, "2\n")
+
+    def test_map_pairs(self):
+        rc, out, err = run_capa(
+            'fun main(stdio: Stdio)\n'
+            '    let m: Map<String, Int> = new_map()\n'
+            '    m.set("a", 1)\n'
+            '    m.set("b", 2)\n'
+            '    for pair in m.pairs()\n'
+            '        let (k, v) = pair\n'
+            '        stdio.println("${k}=${v}")\n'
+        )
+        self.assertEqual(rc, 0, err)
+        # Map order is insertion-order in Python 3.7+
+        self.assertEqual(out, "a=1\nb=2\n")
+
+    def test_json_as_number_alias(self):
+        rc, out, err = run_capa(
+            'fun main(stdio: Stdio)\n'
+            '    let r = parse_json("42")\n'
+            '    match r\n'
+            '        Ok(v) ->\n'
+            '            let n = v.as_number().unwrap_or(0.0)\n'
+            '            stdio.println("${n}")\n'
+            '        Err(_) ->\n'
+            '            stdio.println("err")\n'
+        )
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out, "42.0\n")
+
+    def test_json_as_int_integer_value(self):
+        rc, out, err = run_capa(
+            'fun main(stdio: Stdio)\n'
+            '    let r = parse_json("42")\n'
+            '    match r\n'
+            '        Ok(v) ->\n'
+            '            let i = v.as_int().unwrap_or(0 - 1)\n'
+            '            stdio.println("${i}")\n'
+            '        Err(_) ->\n'
+            '            stdio.println("err")\n'
+        )
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out, "42\n")
+
+    def test_json_as_int_non_integer_returns_none(self):
+        rc, out, err = run_capa(
+            'fun main(stdio: Stdio)\n'
+            '    let r = parse_json("3.14")\n'
+            '    match r\n'
+            '        Ok(v) ->\n'
+            '            let i = v.as_int().unwrap_or(0 - 1)\n'
+            '            stdio.println("${i}")\n'
+            '        Err(_) ->\n'
+            '            stdio.println("err")\n'
+        )
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out, "-1\n")
+
+    def test_assignment_in_single_line_match_arm(self):
+        rc, out, err = run_capa(
+            'fun main(stdio: Stdio)\n'
+            '    let xs = [1, 0, 2, 0, 3]\n'
+            '    var sum = 0\n'
+            '    for x in xs\n'
+            '        let _ = match x\n'
+            '            0 -> continue\n'
+            '            _ -> sum = sum + x\n'
+            '    stdio.println("${sum}")\n'
+        )
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out, "6\n")
+
+
 class TestInlineMatch(unittest.TestCase):
     """Inline match form: ``match scrutinee { p -> e, p -> e, ... }``.
 
