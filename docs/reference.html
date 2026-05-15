@@ -58,8 +58,10 @@
 <li><a href="#caps">6. Capabilities</a></li>
 <li><a href="#imports">7. Imports</a></li>
 <li><a href="#main">8. The main program</a></li>
-<li><a href="#vs-python">9. Differences from Python</a></li>
-<li><a href="#limits">10. Known limitations</a></li>
+<li><a href="#attrs">9. Attributes</a></li>
+<li><a href="#cli">10. Compiler CLI</a></li>
+<li><a href="#vs-python">11. Differences from Python</a></li>
+<li><a href="#limits">12. Known limitations</a></li>
 </ul>
 </nav>
 
@@ -390,8 +392,42 @@ import "./local.capa" as utils       // local file with alias</code></pre>
 <p>If <code>main</code> returns <code>Result&lt;(), E&gt;</code>, an <code>Err</code> causes a non-zero exit code.</p>
 </section>
 
+<section id="attrs">
+<h2>9. Attributes</h2>
+<p>Functions can carry static, source-level metadata via attribute syntax. The analyzer rejects unknown names, unknown keys, and duplicates; the schema is fixed. v1 recognises four attributes:</p>
+<table class="ref-table">
+<thead><tr><th>Attribute</th><th>Keys</th><th>Role</th></tr></thead>
+<tbody>
+<tr><td><code>@security</code></td><td><code>cve</code>, <code>cwe</code>, <code>severity</code>, <code>fixed_in</code>, <code>description</code></td><td>Link a function to a known security history.</td></tr>
+<tr><td><code>@deprecated</code></td><td><code>reason</code>, <code>since</code>, <code>use</code>, <code>removed_in</code></td><td>Mark an API as superseded.</td></tr>
+<tr><td><code>@audited</code></td><td><code>date</code>, <code>by</code>, <code>scope</code>, <code>notes</code></td><td>Record a manual security audit.</td></tr>
+<tr><td><code>@vex</code></td><td><code>cve</code>, <code>status</code>, <code>justification</code>, <code>detail</code></td><td>Per-function CycloneDX VEX exploitability claim. Embeds in <code>--cyclonedx</code> output and surfaces in <code>--vex</code>.</td></tr>
+</tbody>
+</table>
+<p><code>@vex</code> <code>status</code> accepts the CycloneDX VEX vocabulary (<code>not_affected</code>, <code>exploitable</code>, <code>in_triage</code>, <code>resolved</code>, <code>false_positive</code>); <code>justification</code> accepts the CycloneDX justification vocabulary (<code>code_not_reachable</code>, <code>requires_configuration</code>, and so on). See the <a href="manifest.html">manifest page</a> for full output examples.</p>
+</section>
+
+<section id="cli">
+<h2>10. Compiler CLI</h2>
+<p>Flag-order reference. All flags take one or more <code>.capa</code> source files. Output goes to stdout unless noted.</p>
+<table class="ref-table">
+<thead><tr><th>Flag</th><th>Output</th></tr></thead>
+<tbody>
+<tr><td><code>--run</code></td><td>Transpile to Python and execute in-process.</td></tr>
+<tr><td><code>--compile</code></td><td>Transpile to Python; write <code>.py</code> next to the source.</td></tr>
+<tr><td><code>--doc</code></td><td>Self-contained HTML documentation: signatures, doc comments, attributes, per-function call lists.</td></tr>
+<tr><td><code>--manifest</code></td><td>Capa-native JSON manifest: per-function declared capabilities, attributes, <code>Unsafe</code> crossings, call sites, <code>args_flow</code>.</td></tr>
+<tr><td><code>--cyclonedx</code></td><td>CycloneDX 1.5 SBOM (JSON). Capability metadata embedded as <code>properties[]</code> under the <code>capa:*</code> namespace. When any function carries <code>@vex</code>, the VEX block is embedded under <code>vulnerabilities[]</code>.</td></tr>
+<tr><td><code>--spdx</code></td><td>SPDX 2.3 SBOM (JSON). Per-function capability metadata exposed via SPDX <code>annotations[]</code>.</td></tr>
+<tr><td><code>--vex</code></td><td>CycloneDX VEX (JSON). One <code>vulnerabilities[]</code> entry per <code>@vex</code> attribute, with <code>affects[]</code> pointing at the function's <code>bom-ref</code>.</td></tr>
+<tr><td><code>--provenance</code></td><td>SLSA Build L1 provenance attestation: in-toto Statement v1 envelope wrapping a SLSA Provenance v1.0 predicate, <code>subject</code> = SHA-256 of the source.</td></tr>
+</tbody>
+</table>
+<p>Full output examples and per-flag schemas on the <a href="manifest.html">manifest page</a>. The <code>examples/sbom_diff.capa</code> and <code>examples/vex_demo.capa</code> auditor programs demonstrate consumption.</p>
+</section>
+
 <section id="vs-python">
-<h2>9. Differences from Python</h2>
+<h2>11. Differences from Python</h2>
 <p>Capa transpiles to Python 3.10+, but the semantics differ:</p>
 <table class="ref-table">
 <thead><tr><th>Capa</th><th>Python</th></tr></thead>
@@ -408,7 +444,7 @@ import "./local.capa" as utils       // local file with alias</code></pre>
 </section>
 
 <section id="limits">
-<h2>10. Known limitations</h2>
+<h2>12. Known limitations</h2>
 <ul>
 <li>String literals do not support multi-line (use <code>\n</code> for line breaks)</li>
 <li>Nested string literals inside interpolation (<code>"x ${"inner"} y"</code>) are not supported</li>

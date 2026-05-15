@@ -204,6 +204,25 @@ error: undefined name 'env'
 </section>
 
 <!-- =====================================================
+     The governance-stack integration
+===================================================== -->
+<section>
+    <h2>The type system feeds the governance stack</h2>
+
+    <p>The distinctive contribution of Capa is not the capability discipline alone, dialects of that idea exist in Pony, Koka, the WebAssembly Component Model, and elsewhere. It is the <em>integration</em> between the type system and the supply-chain governance artefacts that downstream regulation (CRA, NIS2, DORA, NIST SSDF, OWASP SCVS) actually asks for. The same compiler that rejects ambient authority at compile time emits the full audit artefact set from one source:</p>
+
+    <ul>
+        <li><strong><code>--manifest</code></strong>, Capa-native JSON describing per-function authority, attached metadata, and the call graph.</li>
+        <li><strong><code>--cyclonedx</code></strong>, a valid CycloneDX 1.5 SBOM with capability metadata embedded as standard <code>properties[]</code>.</li>
+        <li><strong><code>--spdx</code></strong>, the SPDX 2.3 companion. Same content, different schema; pick whichever your downstream consumer standardises on.</li>
+        <li><strong><code>--vex</code></strong>, CycloneDX VEX with <em>per-function</em> exploitability claims driven by a new <code>@vex</code> attribute. "This CVE is in our SBOM, but this specific function is not_affected because the path is not reachable" becomes a machine-readable claim a regulator can ingest.</li>
+        <li><strong><code>--provenance</code></strong>, a SLSA Build L1 provenance attestation (in-toto Statement v1 + SLSA Provenance v1.0 predicate) binding the artefact to the SHA-256 of its source.</li>
+    </ul>
+
+    <p>No other mainstream language carries the authority graph in its type system, so no other mainstream compiler can <em>emit</em> these documents from source. They are usually stitched together by external scanners that approximate the same information at much lower confidence. Capa surfaces it as a stable, schema-versioned export. For the mapping across CRA, NIS2, DORA, NIST SSDF, and OWASP SCVS, see <a href="https://github.com/nelsonduarte/capa/blob/main/docs/regulatory.md"><code>docs/regulatory.md</code></a>.</p>
+</section>
+
+<!-- =====================================================
      What Capa does NOT solve
 ===================================================== -->
 <section>

@@ -377,7 +377,7 @@ stdio.<span class="fn-call">println</span>(<span class="str">"hi, ${who}! mask=$
 <section>
     <h2>Attributes and the capability manifest</h2>
 
-    <p>Functions can carry static, source-level metadata via attribute syntax that mirrors Python decorators or Rust attributes. v1 supports three: <code>@security</code> (link to a CVE or describe a known issue), <code>@deprecated</code>, and <code>@audited</code>. Each takes keyword-style string arguments validated against a fixed schema.</p>
+    <p>Functions can carry static, source-level metadata via attribute syntax that mirrors Python decorators or Rust attributes. v1 supports four: <code>@security</code> (link to a CVE or describe a known issue), <code>@deprecated</code>, <code>@audited</code>, and <code>@vex</code> (per-function CycloneDX VEX exploitability claim). Each takes keyword-style string arguments validated against a fixed schema.</p>
 
 <pre><code><span class="attr">@security</span>(
     cve: <span class="str">"CVE-2024-12345"</span>,
@@ -385,12 +385,17 @@ stdio.<span class="fn-call">println</span>(<span class="str">"hi, ${who}! mask=$
     fixed_in: <span class="str">"0.2.0"</span>
 )
 <span class="attr">@audited</span>(date: <span class="str">"2026-05-11"</span>, by: <span class="str">"Nelson Duarte"</span>)
+<span class="attr">@vex</span>(
+    cve: <span class="str">"CVE-2024-12345"</span>,
+    status: <span class="str">"not_affected"</span>,
+    justification: <span class="str">"code_not_reachable"</span>
+)
 <span class="kw-decl">fun</span> <span class="fn-name">verify_token</span>(token: <span class="ty-primitive">String</span>, expected: <span class="ty-primitive">String</span>) -&gt; <span class="ty-primitive">Bool</span>
     <span class="kw-ctrl">return</span> token == expected</code></pre>
 
     <p>The analyzer rejects unknown attribute names, unknown keys, and duplicates, so consumers can trust the schema.</p>
 
-    <p>The <code>--manifest</code> flag of the compiler emits a JSON description of the program: per function, the declared capabilities, the attached attributes, and whether the function crosses the <code>Unsafe</code> boundary; per module, the user-defined capabilities and their implementors, plus a summary count. This is the artefact an EU Cyber Resilience Act auditor wants, evidence of the program's authority graph that does not require running it.</p>
+    <p>The compiler emits five governance artefacts from this same source. <code>--manifest</code> writes Capa-native JSON; <code>--cyclonedx</code> writes a CycloneDX 1.5 SBOM; <code>--spdx</code> writes its SPDX 2.3 sibling; <code>--vex</code> writes a CycloneDX VEX document driven by the <code>@vex</code> attributes; <code>--provenance</code> writes a SLSA Build L1 attestation. Each is, per function, evidence of the program's authority graph that does not require running it, the artefact set an EU Cyber Resilience Act auditor wants.</p>
 
 <pre><code>$ capa --manifest verify.capa
 {
