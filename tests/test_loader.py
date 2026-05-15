@@ -56,7 +56,7 @@ class TestModuleLoader(_TempDirMixin, unittest.TestCase):
     def test_single_import_merges_items(self):
         self._write(
             "util.capa",
-            "fun helper(x: Int) -> Int\n"
+            "pub fun helper(x: Int) -> Int\n"
             "    return x + 1\n"
         )
         root = self._write(
@@ -83,13 +83,13 @@ class TestModuleLoader(_TempDirMixin, unittest.TestCase):
     def test_transitive_import(self):
         self._write(
             "leaf.capa",
-            "fun shout(s: String) -> String\n"
+            "pub fun shout(s: String) -> String\n"
             "    return s.to_upper()\n"
         )
         self._write(
             "mid.capa",
             "import leaf\n"
-            "fun wrap(s: String) -> String\n"
+            "pub fun wrap(s: String) -> String\n"
             "    return shout(s) + \"!\"\n"
         )
         root = self._write(
@@ -109,7 +109,7 @@ class TestModuleLoader(_TempDirMixin, unittest.TestCase):
     def test_dotted_path_resolves_to_subdir(self):
         self._write(
             "stuff/inner.capa",
-            "fun inner_fn() -> Int\n"
+            "pub fun inner_fn() -> Int\n"
             "    return 42\n"
         )
         root = self._write(
@@ -153,10 +153,10 @@ class TestModuleLoader(_TempDirMixin, unittest.TestCase):
 
     def test_name_conflict_is_reported(self):
         self._write(
-            "x.capa", "fun shared() -> Int\n    return 1\n",
+            "x.capa", "pub fun shared() -> Int\n    return 1\n",
         )
         self._write(
-            "y.capa", "fun shared() -> Int\n    return 2\n",
+            "y.capa", "pub fun shared() -> Int\n    return 2\n",
         )
         root = self._write(
             "root.capa",
@@ -190,17 +190,17 @@ class TestModuleLoader(_TempDirMixin, unittest.TestCase):
         # `shared` should appear in the linked module exactly once.
         self._write(
             "shared.capa",
-            "fun common() -> Int\n    return 7\n",
+            "pub fun common() -> Int\n    return 7\n",
         )
         self._write(
             "a.capa",
             "import shared\n"
-            "fun a_use() -> Int\n    return common()\n"
+            "pub fun a_use() -> Int\n    return common()\n"
         )
         self._write(
             "b.capa",
             "import shared\n"
-            "fun b_use() -> Int\n    return common()\n"
+            "pub fun b_use() -> Int\n    return common()\n"
         )
         root = self._write(
             "root.capa",
@@ -275,7 +275,7 @@ class TestQualifiedModuleAccess(_TempDirMixin, unittest.TestCase):
     def test_qualified_call_resolves(self):
         self._write(
             "util.capa",
-            "fun greet(name: String) -> String\n"
+            "pub fun greet(name: String) -> String\n"
             "    return \"Hello, \" + name\n"
         )
         root = self._write(
@@ -296,7 +296,7 @@ class TestQualifiedModuleAccess(_TempDirMixin, unittest.TestCase):
         # alongside the new qualified one.
         self._write(
             "util.capa",
-            "fun greet(name: String) -> String\n"
+            "pub fun greet(name: String) -> String\n"
             "    return \"Hello, \" + name\n"
         )
         root = self._write(
@@ -315,7 +315,7 @@ class TestQualifiedModuleAccess(_TempDirMixin, unittest.TestCase):
     def test_alias_qualified_call(self):
         self._write(
             "util.capa",
-            "fun greet(name: String) -> String\n"
+            "pub fun greet(name: String) -> String\n"
             "    return \"Hi, \" + name\n"
         )
         root = self._write(
@@ -333,11 +333,15 @@ class TestQualifiedModuleAccess(_TempDirMixin, unittest.TestCase):
 
     def test_module_exports_populated(self):
         # Unit test of the LinkedModule.module_exports map shape.
+        # Only pub items go into module_exports (the rewrite target
+        # for qualified calls); the private `b` and `Internal` must
+        # not leak.
         self._write(
             "util.capa",
-            "fun a() -> Int\n    return 1\n"
+            "pub fun a() -> Int\n    return 1\n"
             "fun b() -> Int\n    return 2\n"
-            "type T { v: Int }\n"
+            "pub type T { v: Int }\n"
+            "type Internal { v: Int }\n"
         )
         root = self._write(
             "root.capa",
@@ -349,7 +353,7 @@ class TestQualifiedModuleAccess(_TempDirMixin, unittest.TestCase):
         loader = ModuleLoader()
         linked = loader.load_root(root.read_text(), str(root))
         self.assertIn("util", linked.module_exports)
-        self.assertEqual(linked.module_exports["util"], {"a", "b", "T"})
+        self.assertEqual(linked.module_exports["util"], {"a", "T"})
 
 
 class TestSearchPathResolution(_TempDirMixin, unittest.TestCase):
@@ -363,7 +367,7 @@ class TestSearchPathResolution(_TempDirMixin, unittest.TestCase):
         lib_dir = self._tmp / "lib"
         lib_dir.mkdir(parents=True, exist_ok=True)
         (lib_dir / "stdthing.capa").write_text(
-            "fun answer() -> Int\n    return 42\n",
+            "pub fun answer() -> Int\n    return 42\n",
             encoding="utf-8",
         )
         root = self._write(
@@ -386,12 +390,12 @@ class TestSearchPathResolution(_TempDirMixin, unittest.TestCase):
         lib_dir = self._tmp / "lib"
         lib_dir.mkdir(parents=True, exist_ok=True)
         (lib_dir / "util.capa").write_text(
-            "fun who() -> String\n    return \"lib\"\n",
+            "pub fun who() -> String\n    return \"lib\"\n",
             encoding="utf-8",
         )
         self._write(
             "proj/util.capa",
-            "fun who() -> String\n    return \"local\"\n"
+            "pub fun who() -> String\n    return \"local\"\n"
         )
         root = self._write(
             "proj/root.capa",
@@ -437,7 +441,7 @@ class TestSearchPathResolution(_TempDirMixin, unittest.TestCase):
         lib_dir = self._tmp / "lib"
         lib_dir.mkdir(parents=True, exist_ok=True)
         (lib_dir / "greeter.capa").write_text(
-            "fun hello() -> String\n    return \"from stdlib\"\n",
+            "pub fun hello() -> String\n    return \"from stdlib\"\n",
             encoding="utf-8",
         )
         root = self._write(
@@ -465,7 +469,7 @@ class TestSearchPathResolution(_TempDirMixin, unittest.TestCase):
         lib_a.mkdir()
         lib_b.mkdir()
         (lib_b / "deep.capa").write_text(
-            "fun deep_val() -> Int\n    return 11\n",
+            "pub fun deep_val() -> Int\n    return 11\n",
             encoding="utf-8",
         )
         root = self._write(
@@ -489,7 +493,7 @@ class TestSearchPathResolution(_TempDirMixin, unittest.TestCase):
         # An empty / missing CAPA_PATH must not change behavior.
         self._write(
             "util.capa",
-            "fun ok() -> Int\n    return 1\n",
+            "pub fun ok() -> Int\n    return 1\n",
         )
         root = self._write(
             "root.capa",
@@ -509,6 +513,203 @@ class TestSearchPathResolution(_TempDirMixin, unittest.TestCase):
         self.assertEqual(result.stdout, "1\n")
 
 
+class TestPubVisibility(_TempDirMixin, unittest.TestCase):
+    """The loader enforces ``pub`` by name-mangling every private
+    top-level item of every imported module. Importers see only the
+    items that were marked ``pub``; private items keep working
+    inside their own file.
+    """
+
+    def test_private_function_blocked_from_importer(self):
+        # `helper` is private to util; the importer's unqualified
+        # call must not resolve.
+        self._write(
+            "util.capa",
+            "fun helper(x: Int) -> Int\n"
+            "    return x + 1\n"
+        )
+        root = self._write(
+            "root.capa",
+            "import util\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"${helper(3)}\")\n"
+        )
+        result = subprocess.run(
+            [sys.executable, "-m", "capa", "--check", str(root)],
+            capture_output=True, text=True, encoding="utf-8",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("helper", result.stderr)
+
+    def test_private_function_still_callable_inside_its_module(self):
+        # The pub function `outer` calls the private `helper` in
+        # the same module. After mangling, that internal call is
+        # rewritten to the mangled name and still resolves.
+        self._write(
+            "util.capa",
+            "fun helper(x: Int) -> Int\n"
+            "    return x + 1\n"
+            "pub fun outer(x: Int) -> Int\n"
+            "    return helper(x)\n"
+        )
+        root = self._write(
+            "root.capa",
+            "import util\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"${outer(3)}\")\n"
+        )
+        result = subprocess.run(
+            [sys.executable, "-m", "capa", "--run", str(root)],
+            capture_output=True, text=True, encoding="utf-8",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "4\n")
+
+    def test_private_type_still_usable_inside_its_module(self):
+        # A private struct used in a pub function's body. The body
+        # references the type by name (`Pair`); the reference is
+        # mangled at link time, the declaration also is, so the
+        # internal use still resolves.
+        self._write(
+            "util.capa",
+            "type Pair { x: Int, y: Int }\n"
+            "pub fun make(a: Int, b: Int) -> Int\n"
+            "    let p = Pair { x: a, y: b }\n"
+            "    return p.x + p.y\n"
+        )
+        root = self._write(
+            "root.capa",
+            "import util\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"${make(2, 3)}\")\n"
+        )
+        result = subprocess.run(
+            [sys.executable, "-m", "capa", "--run", str(root)],
+            capture_output=True, text=True, encoding="utf-8",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "5\n")
+
+    def test_private_qualified_call_blocked(self):
+        # `M.private_fn()` from outside the module must not rewrite
+        # to a direct call; module_exports only contains pub items.
+        self._write(
+            "util.capa",
+            "fun helper(x: Int) -> Int\n"
+            "    return x + 1\n"
+        )
+        root = self._write(
+            "root.capa",
+            "import util\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"${util.helper(3)}\")\n"
+        )
+        result = subprocess.run(
+            [sys.executable, "-m", "capa", "--check", str(root)],
+            capture_output=True, text=True, encoding="utf-8",
+        )
+        self.assertNotEqual(result.returncode, 0)
+
+    def test_same_private_name_in_two_modules_no_clash(self):
+        # Both modules define a private `helper`; both expose a
+        # pub function that uses it. Mangle prefixes differ so the
+        # privates do not collide at link time.
+        self._write(
+            "a.capa",
+            "fun helper() -> Int\n    return 1\n"
+            "pub fun from_a() -> Int\n    return helper()\n"
+        )
+        self._write(
+            "b.capa",
+            "fun helper() -> Int\n    return 2\n"
+            "pub fun from_b() -> Int\n    return helper()\n"
+        )
+        root = self._write(
+            "root.capa",
+            "import a\n"
+            "import b\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"${from_a() + from_b()}\")\n"
+        )
+        result = subprocess.run(
+            [sys.executable, "-m", "capa", "--run", str(root)],
+            capture_output=True, text=True, encoding="utf-8",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "3\n")
+
+    def test_pub_on_root_items_is_noop(self):
+        # The root module is not mangled. `pub` on root items is
+        # accepted but does not change anything observable.
+        root = self._write(
+            "root.capa",
+            "pub fun add(a: Int, b: Int) -> Int\n"
+            "    return a + b\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"${add(2, 3)}\")\n"
+        )
+        result = subprocess.run(
+            [sys.executable, "-m", "capa", "--run", str(root)],
+            capture_output=True, text=True, encoding="utf-8",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "5\n")
+
+    def test_private_const_blocked_from_importer(self):
+        self._write(
+            "util.capa",
+            "const SECRET: Int = 42\n"
+            "pub fun get() -> Int\n    return SECRET\n"
+        )
+        # Pub side works
+        root_ok = self._write(
+            "ok_root.capa",
+            "import util\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"${get()}\")\n"
+        )
+        result = subprocess.run(
+            [sys.executable, "-m", "capa", "--run", str(root_ok)],
+            capture_output=True, text=True, encoding="utf-8",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "42\n")
+        # Direct access blocked
+        root_bad = self._write(
+            "bad_root.capa",
+            "import util\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"${SECRET}\")\n"
+        )
+        result = subprocess.run(
+            [sys.executable, "-m", "capa", "--check", str(root_bad)],
+            capture_output=True, text=True, encoding="utf-8",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("SECRET", result.stderr)
+
+    def test_private_type_blocked_from_importer(self):
+        self._write(
+            "util.capa",
+            "type Box { v: Int }\n"
+            "pub fun make() -> Int\n"
+            "    let b = Box { v: 7 }\n"
+            "    return b.v\n"
+        )
+        root = self._write(
+            "root.capa",
+            "import util\n"
+            "fun main(stdio: Stdio)\n"
+            "    let b: Box = Box { v: 1 }\n"
+            "    stdio.println(\"${b.v}\")\n"
+        )
+        result = subprocess.run(
+            [sys.executable, "-m", "capa", "--check", str(root)],
+            capture_output=True, text=True, encoding="utf-8",
+        )
+        self.assertNotEqual(result.returncode, 0)
+
+
 class TestModuleSystemEndToEnd(_TempDirMixin, unittest.TestCase):
     """End-to-end: capa --run with an imported file produces the
     expected output and exit code 0.
@@ -517,7 +718,7 @@ class TestModuleSystemEndToEnd(_TempDirMixin, unittest.TestCase):
     def test_main_imports_util_and_runs(self):
         self._write(
             "util.capa",
-            "fun greet(name: String) -> String\n"
+            "pub fun greet(name: String) -> String\n"
             "    return \"Hello, \" + name\n"
         )
         root = self._write(

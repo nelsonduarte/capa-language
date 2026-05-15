@@ -339,6 +339,24 @@ $ capa --run app.capa
 # ./libs/greeter.capa, then /usr/local/share/capa/greeter.capa.</code></pre>
 
     <p>If no candidate exists, the diagnostic lists every path that was tried so the right next step (install the dependency, fix the import, adjust <code>CAPA_PATH</code>) is obvious.</p>
+
+    <h3>Visibility</h3>
+
+    <p>Top-level items are private by default. Mark a function, constant, type, trait, or capability with <code>pub</code> to expose it to importers; anything without <code>pub</code> stays callable only from inside the same file.</p>
+
+<pre><code><span class="kw-decl">// util.capa</span>
+<span class="kw-decl">fun</span> helper(x: Int) -&gt; Int          <span class="kw-decl">// private to util</span>
+    <span class="kw-flow">return</span> x + 1
+<span class="kw-decl">pub fun</span> outer(x: Int) -&gt; Int       <span class="kw-decl">// visible to importers</span>
+    <span class="kw-flow">return</span> helper(x)
+
+<span class="kw-decl">// main.capa</span>
+<span class="kw-decl">import</span> util
+<span class="kw-decl">fun</span> main(stdio: Stdio)
+    stdio.println(<span class="str">"${outer(3)}"</span>)   <span class="kw-decl">// works: 4</span>
+    stdio.println(<span class="str">"${helper(3)}"</span>)  <span class="kw-decl">// error: undefined name 'helper'</span></code></pre>
+
+    <p>The same rule applies to qualified access: <code>util.outer(...)</code> works because <code>outer</code> is public; <code>util.helper(...)</code> does not. <code>pub</code> on root-file items is accepted but has no effect (root callers see one another regardless).</p>
 </section>
 
 <!-- =====================================================

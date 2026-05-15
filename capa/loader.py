@@ -21,10 +21,19 @@ This is the **MVP** module system:
 
 What this MVP does **not** do:
 
-- ``pub`` visibility enforcement (every top-level item is exported).
 - Cross-file error messages with the imported file's source
   snippet rendered (positions are correct; snippet may be from
   the wrong file). Acceptable for v1, a v2 fix.
+
+Visibility (``pub``) is enforced by per-module name mangling
+during link. For each non-root imported module the loader picks
+a fresh prefix and renames every private item's declaration to
+``<prefix>__<name>``; references to those names inside the same
+module (Ident, TypeName, ImplBlock.trait_name / type_name,
+StructLit.type_name) are rewritten to match. Public items keep
+their original names. The importer's call to a private function
+hits a regular "undefined name" diagnostic because the original
+name is no longer in the merged scope.
 
 Resolution order for ``import foo.bar``:
 
@@ -120,6 +129,11 @@ class ModuleLoader:
         # CLI populates this from the ``CAPA_PATH`` env var so
         # stdlib-style modules can live outside the project tree.
         self._search_paths: list[Path] = list(search_paths or [])
+        # Monotonic counter that produces a unique mangle prefix
+        # for each non-root imported module. Used by
+        # ``_mangle_private_items`` to keep private items from
+        # two different modules out of one another's way.
+        self._mangle_counter: int = 0
 
     # -------- public entry points --------
 
@@ -304,6 +318,15 @@ class ModuleLoader:
             # imported file's path.
             raise
 
+        # Enforce ``pub`` visibility on this imported module: rename
+        # every private top-level item, and rewrite references to
+        # those names that occur inside this module's own items. The
+        # root module is never mangled (callers in the root see one
+        # another regardless of ``pub``); only imported modules are.
+        self._mangle_counter += 1
+        prefix = f"_capa_m{self._mangle_counter}"
+        _mangle_private_items(imported, prefix)
+
         self._loading.append(target)
         self._cache[target] = imported
         self._sources[target] = source
@@ -319,10 +342,17 @@ class ModuleLoader:
         # Record the import's alias + the set of names it
         # directly contributes (not transitive). Default alias is
         # the last segment of the dotted path; ``as`` overrides.
+        # Only ``pub`` items are recorded: the qualified-call
+        # rewriter uses this map to decide whether ``alias.fn()``
+        # should be rewritten to a direct ``fn()`` call, and
+        # private items must not be reachable via qualified
+        # access either.
         alias = imp.alias or imp.path[-1]
         direct_names: set[str] = set()
         for it in imported.items:
             if isinstance(it, A.Import):
+                continue
+            if not getattr(it, "is_pub", False):
                 continue
             name = _item_name(it)
             if name is not None:
@@ -548,3 +578,262 @@ class _Rewriter:
             return e
         # Leaf nodes (Ident, literals): return as-is.
         return e
+
+
+def _mangle_private_items(
+    module: "A.Module",
+    prefix: str,
+) -> dict[str, str]:
+    """In place: rename every private top-level item in ``module``
+    to ``<prefix>__<name>`` and rewrite every internal reference
+    (Ident, TypeName, ImplBlock.trait_name / type_name,
+    StructLit.type_name) to the new name. Returns the rename map
+    so callers can inspect or report on what changed.
+
+    Why this approach: the merged AST stays flat (the analyzer
+    sees a single global scope), but the importer's references to
+    a private name no longer find a matching declaration because
+    the declaration carries a mangled name now. The analyzer's
+    existing "undefined name" diagnostic fires, which is the
+    enforcement we want. Public items are not mangled, so
+    importers continue to call them by their declared names.
+
+    Items without an ``is_pub`` slot (impl blocks) are skipped at
+    the rename step; their inner contents are still walked so any
+    references they make to names that *did* get mangled get
+    rewritten too.
+    """
+    rename: dict[str, str] = {}
+    for item in module.items:
+        if isinstance(item, A.Import):
+            continue
+        if not hasattr(item, "is_pub"):
+            continue  # ImplBlock has no is_pub
+        if item.is_pub:
+            continue
+        name = _item_name(item)
+        if name is None:
+            continue
+        new_name = f"{prefix}__{name}"
+        rename[name] = new_name
+        # All five item types that carry ``is_pub`` also expose a
+        # ``name`` attribute. Updating it in place is the only
+        # change at the declaration site.
+        item.name = new_name
+    if rename:
+        _PrivateRenameWalker(rename).visit_module(module)
+    return rename
+
+
+class _PrivateRenameWalker:
+    """AST walker that rewrites every reference whose name is a
+    key in ``rename`` to the mapped name.
+
+    Scope of the rewrite is deliberately limited to names that
+    refer to *top-level items*:
+
+    - ``Ident.name`` (function / constant references; also the
+      receiver position of a method call before qualified rewrite).
+    - ``TypeName.name`` (named types in annotations).
+    - ``ImplBlock.trait_name`` / ``ImplBlock.type_name``.
+    - ``StructLit.type_name``.
+
+    Pattern bindings, parameter names, local variables, struct
+    field names, sum-type variant names, attribute names, and
+    method names on traits are *not* rewritten because they do
+    not denote top-level items.
+    """
+
+    def __init__(self, rename: dict[str, str]) -> None:
+        self.rename = rename
+
+    def _r(self, name: str) -> str:
+        return self.rename.get(name, name)
+
+    # ---- module / item ----
+
+    def visit_module(self, m: "A.Module") -> None:
+        for item in m.items:
+            self.visit_item(item)
+
+    def visit_item(self, item) -> None:
+        if isinstance(item, A.FunDecl):
+            self._visit_fun(item)
+        elif isinstance(item, A.ConstDecl):
+            self.visit_type(item.type_expr)
+            self.visit_expr(item.value)
+        elif isinstance(item, A.TypeStruct):
+            for f in item.fields:
+                self.visit_type(f.type_expr)
+        elif isinstance(item, A.TypeSum):
+            for v in item.variants:
+                if v.payload is not None:
+                    self.visit_type(v.payload)
+        elif isinstance(item, A.TraitDecl):
+            for ms in item.methods:
+                for p in ms.params:
+                    if p.type_expr is not None:
+                        self.visit_type(p.type_expr)
+                if ms.return_type is not None:
+                    self.visit_type(ms.return_type)
+        elif isinstance(item, A.ImplBlock):
+            if item.trait_name is not None:
+                item.trait_name = self._r(item.trait_name)
+            item.type_name = self._r(item.type_name)
+            for ta in item.type_args:
+                self.visit_type(ta)
+            for m in item.methods:
+                self._visit_fun(m)
+
+    def _visit_fun(self, fn: "A.FunDecl") -> None:
+        for p in fn.params:
+            if p.type_expr is not None:
+                self.visit_type(p.type_expr)
+        if fn.return_type is not None:
+            self.visit_type(fn.return_type)
+        if fn.body is not None:
+            self.visit_block(fn.body)
+
+    # ---- type expressions ----
+
+    def visit_type(self, t) -> None:
+        if isinstance(t, A.TypeName):
+            t.name = self._r(t.name)
+            for arg in t.args:
+                self.visit_type(arg)
+        elif isinstance(t, A.FunType):
+            for p in t.param_types:
+                self.visit_type(p)
+            self.visit_type(t.return_type)
+        elif isinstance(t, A.TupleType):
+            for e in t.elements:
+                self.visit_type(e)
+        # UnitType: nothing.
+
+    # ---- statements ----
+
+    def visit_block(self, b: "A.Block") -> None:
+        for s in b.stmts:
+            self.visit_stmt(s)
+
+    def visit_stmt(self, s) -> None:
+        if isinstance(s, A.LetStmt):
+            if s.type_expr is not None:
+                self.visit_type(s.type_expr)
+            self.visit_expr(s.value)
+        elif isinstance(s, A.VarStmt):
+            if s.type_expr is not None:
+                self.visit_type(s.type_expr)
+            self.visit_expr(s.value)
+        elif isinstance(s, A.AssignStmt):
+            self.visit_expr(s.value)
+            self.visit_expr(s.target)
+        elif isinstance(s, A.ReturnStmt):
+            if s.value is not None:
+                self.visit_expr(s.value)
+        elif isinstance(s, A.ExprStmt):
+            self.visit_expr(s.expr)
+        elif isinstance(s, A.IfStmt):
+            self.visit_expr(s.cond)
+            self.visit_block(s.then_block)
+            for cond, blk in s.elif_arms:
+                self.visit_expr(cond)
+                self.visit_block(blk)
+            if s.else_block is not None:
+                self.visit_block(s.else_block)
+        elif isinstance(s, A.WhileStmt):
+            self.visit_expr(s.cond)
+            self.visit_block(s.body)
+        elif isinstance(s, A.ForStmt):
+            self.visit_expr(s.iter)
+            self.visit_block(s.body)
+        # BreakStmt / ContinueStmt: nothing.
+
+    # ---- expressions ----
+
+    def visit_expr(self, e) -> None:
+        if isinstance(e, A.Ident):
+            e.name = self._r(e.name)
+            return
+        if isinstance(e, A.Call):
+            self.visit_expr(e.callee)
+            for ta in e.type_args:
+                self.visit_type(ta)
+            for a in e.args:
+                self.visit_expr(a)
+            return
+        if isinstance(e, A.MethodCall):
+            self.visit_expr(e.receiver)
+            for ta in e.type_args:
+                self.visit_type(ta)
+            for a in e.args:
+                self.visit_expr(a)
+            return
+        if isinstance(e, A.BinOp):
+            self.visit_expr(e.left)
+            self.visit_expr(e.right)
+            return
+        if isinstance(e, A.UnaryOp):
+            self.visit_expr(e.operand)
+            return
+        if isinstance(e, A.FieldAccess):
+            self.visit_expr(e.receiver)
+            return
+        if isinstance(e, A.Index):
+            self.visit_expr(e.receiver)
+            self.visit_expr(e.index)
+            return
+        if isinstance(e, A.Try):
+            self.visit_expr(e.expr)
+            return
+        if isinstance(e, A.StructLit):
+            e.type_name = self._r(e.type_name)
+            for ta in e.type_args:
+                self.visit_type(ta)
+            for _, fexpr in e.fields:
+                self.visit_expr(fexpr)
+            return
+        if isinstance(e, A.ListLit):
+            for x in e.elements:
+                self.visit_expr(x)
+            return
+        if isinstance(e, A.TupleLit):
+            for x in e.elements:
+                self.visit_expr(x)
+            return
+        if isinstance(e, A.InterpolatedString):
+            for p in e.parts:
+                if isinstance(p, A.Expr):
+                    self.visit_expr(p)
+            return
+        if isinstance(e, A.LambdaExpr):
+            for p in e.params:
+                if p.type_expr is not None:
+                    self.visit_type(p.type_expr)
+            if e.return_type is not None:
+                self.visit_type(e.return_type)
+            if isinstance(e.body, A.Block):
+                self.visit_block(e.body)
+            else:
+                self.visit_expr(e.body)
+            return
+        if isinstance(e, A.MatchExpr):
+            self.visit_expr(e.scrutinee)
+            for arm in e.arms:
+                if arm.guard is not None:
+                    self.visit_expr(arm.guard)
+                if isinstance(arm.body, A.Block):
+                    self.visit_block(arm.body)
+                else:
+                    self.visit_expr(arm.body)
+            return
+        if isinstance(e, A.IfExpr):
+            self.visit_expr(e.cond)
+            self.visit_expr(e.then_expr)
+            self.visit_expr(e.else_expr)
+            return
+        if isinstance(e, A.RangeExpr):
+            self.visit_expr(e.start)
+            self.visit_expr(e.end)
+            return
+        # Leaf nodes (literals, BoolLit, etc.): nothing.

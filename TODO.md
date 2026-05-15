@@ -15,14 +15,6 @@ What an adopter should know is not yet there. The full reasoning
 per item is scattered through the rest of this file; this section
 is the consolidated honest list.
 
-- **Module system.** `import foo.bar` resolves to
-  `<importer-dir>/foo/bar.capa` first, then to each entry of
-  the `CAPA_PATH` env var (proximity wins). Qualified access
-  (`foo.fn()`, `import foo as F; F.fn()`), transitive
-  imports, cycle detection, name conflicts, and per-file
-  error-snippet rendering all work. Top-level declarations
-  also merge unqualified for ergonomics. **Pending**: `pub`
-  enforcement. (P2, line 196.)
 - **No package manager or registry.** No way to share or
   reuse Capa libraries beyond copying source. Waits on the
   module system. (P3, line 308.)
@@ -68,6 +60,21 @@ while writing real Capa programs.
   program when the file or any imported module changes on
   disk. Polling loop + per-iteration subprocess to keep zero
   state between runs. Landed 2026-05-15. 2 new tests.
+
+- [x] **`pub` visibility enforcement**. The `pub` keyword
+  has parsed for ages without doing anything; it now blocks
+  imported modules' private items from being reached by
+  importers. Implementation: per-module name mangling in
+  the loader. Public items keep their declared names;
+  private items get renamed to `_capa_m<N>__<name>` along
+  with every internal reference to them (Ident, TypeName,
+  ImplBlock.trait_name / type_name, StructLit.type_name).
+  Importers' unqualified references no longer resolve; the
+  exports map used by the qualified-call rewriter is also
+  filtered to pub-only so `M.private()` is denied too.
+  Behavior change for any pre-existing multi-file Capa
+  code that did not put `pub` on imported items. Landed
+  2026-05-15. 8 new tests.
 
 - [x] **Stdlib paths via `CAPA_PATH`**. `ModuleLoader` now
   takes a `search_paths: list[Path]`; resolution tries
@@ -248,20 +255,30 @@ to public.
   narrow authority and are fail-closed on denied access; the
   last has no denied state but produces a deterministic sequence
   whose seed is visible in the manifest's data-flow tracker.
-- [ ] **Visibility (`pub`)**, KW_PUB is parsed but not enforced.
-  Waits on the qualified-access milestone. P2
-- [~] **Capa module system**. `import foo.bar` resolves to
-  `<importer-dir>/foo/bar.capa` (proximity), then to each
-  entry of the `CAPA_PATH` env var (`os.pathsep`-separated).
-  Both unqualified (`fn()`) and qualified (`foo.fn()`,
-  `import foo as F; F.fn()`) access work. Transitive
-  imports, cycle detection, name conflicts, per-file
-  error-snippet rendering, and search-path resolution all
-  in. Implementation at `capa/loader.py` + `capa/cli.py`
-  integration; 22 tests at `tests/test_loader.py`.
-  **Pending for the full module system**: `pub` visibility
-  enforcement (KW_PUB already parses; needs analyzer
-  support). P2.
+- [x] **Visibility (`pub`)**: enforced by the loader via
+  per-module name mangling. Every private top-level item in
+  an imported module is renamed to `_capa_m<N>__<name>` at
+  link time, along with every reference to it inside the
+  module's own items. The importer's references resolve
+  against the global flat scope and hit a regular
+  "undefined name" diagnostic for private items.
+  Qualified-call rewrites consult an exports map that only
+  contains pub items, so `M.private_fn()` is also denied.
+  Implementation at `capa/loader.py::_mangle_private_items`
+  + `_PrivateRenameWalker`; 8 tests at
+  `tests/test_loader.py::TestPubVisibility`. Landed
+  2026-05-15.
+- [x] **Capa module system**. Fully landed. `import foo.bar`
+  resolves to `<importer-dir>/foo/bar.capa` first (proximity
+  wins), then to each entry of `CAPA_PATH`
+  (`os.pathsep`-separated). Both unqualified (`fn()`) and
+  qualified (`foo.fn()`, `import foo as F; F.fn()`) access
+  work. Transitive imports, cycle detection, name
+  conflicts, per-file error-snippet rendering, search-path
+  resolution, and `pub` visibility enforcement all in.
+  Implementation at `capa/loader.py` + `capa/cli.py`
+  integration; 30 tests at `tests/test_loader.py`. **No
+  follow-ups pending.**
 - [ ] **Refinement types**, explicitly future in the WhitePaper. P3
 
 ---

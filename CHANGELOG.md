@@ -11,6 +11,60 @@ breaking changes and the discipline is still being shaped.
 
 ### Added
 
+- **`pub` visibility enforcement**: the `pub` keyword has parsed
+  on every top-level item for a long time without doing anything;
+  it now actually blocks imported modules' private items from
+  being reached by importers.
+
+  ```capa
+  // util.capa
+  fun helper(x: Int) -> Int          // private to util
+      return x + 1
+  pub fun outer(x: Int) -> Int       // visible to importers
+      return helper(x)
+
+  // main.capa
+  import util
+  fun main(stdio: Stdio)
+      stdio.println("${outer(3)}")   // works: 4
+      stdio.println("${helper(3)}")  // error: undefined name 'helper'
+  ```
+
+  Mechanism: per-module name mangling at link time. For each
+  non-root imported module the loader picks a unique prefix
+  (`_capa_m<N>`) and renames every private item's declaration to
+  `<prefix>__<name>`. References to the same names inside the
+  module's own items are rewritten to match: `Ident` references,
+  `TypeName` annotations, `StructLit.type_name`, and
+  `ImplBlock.trait_name` / `type_name`. Public items are not
+  renamed, so importers continue to call them by their declared
+  names. The qualified-call rewriter's exports map is also
+  filtered to pub-only, so `M.private_fn()` is denied too.
+
+  The analyzer is unchanged: it still sees a single flat global
+  scope. The importer's call to a private function hits the
+  regular "undefined name" diagnostic because the original name
+  is no longer in scope.
+
+  **Behavior change**: pre-existing multi-file Capa code that
+  imported modules without putting `pub` on the imported items
+  will now fail at the call site with "undefined name". Add
+  `pub` to anything an importer is expected to reach.
+
+  Implementation: `capa/loader.py::_mangle_private_items` +
+  `_PrivateRenameWalker`. 8 new tests at
+  `tests/test_loader.py::TestPubVisibility` cover: private
+  function blocked from importer; private function still
+  callable inside its module; private type usable internally;
+  private qualified call blocked; same private name in two
+  modules with no clash; `pub` on root items as no-op;
+  private const blocked from importer; private type blocked
+  from importer.
+
+  Closes the only follow-up left on the module-system axis.
+
+  Full suite: 861 passed (was 853).
+
 - **Stdlib paths via `CAPA_PATH`**: the module loader now
   accepts a configurable list of search roots. After failing to
   find an import relative to the importer's directory, it tries

@@ -45,7 +45,7 @@
 
 <div class="page-heading">
     <h1>Roadmap</h1>
-    <p>An honest inventory of what works, what is coming, and what is explicitly out of scope. Capa is in <strong>v0.7.0-alpha</strong>: the compiler runs, 853 tests pass on three operating systems, the discipline is implemented end-to-end, the capability manifest, CycloneDX SBOM, SPDX SBOM, CycloneDX VEX, and SLSA L1 provenance are all emitted directly by the compiler, a runtime-overhead benchmark suite measures the transpiled output against hand-Python baselines, and the language is still missing several things a v1 would need.</p>
+    <p>An honest inventory of what works, what is coming, and what is explicitly out of scope. Capa is in <strong>v0.7.0-alpha</strong>: the compiler runs, 861 tests pass on three operating systems, the discipline is implemented end-to-end, the capability manifest, CycloneDX SBOM, SPDX SBOM, CycloneDX VEX, and SLSA L1 provenance are all emitted directly by the compiler, a runtime-overhead benchmark suite measures the transpiled output against hand-Python baselines, and the language is still missing several things a v1 would need.</p>
 </div>
 
 <!-- =====================================================
@@ -320,9 +320,6 @@
     <p>Capa is in alpha. Things a real adopter should know are not yet there:</p>
 
     <ul class="limitations-list">
-        <li>
-            <strong>Module system.</strong> <code>import foo.bar</code> resolves first to <code>&lt;importer-dir&gt;/foo/bar.capa</code> and then to each entry of the <code>CAPA_PATH</code> environment variable (<code>os.pathsep</code>-separated); proximity wins. Transitive imports, cycles, name conflicts, per-file error-snippet rendering, qualified access (<code>foo.fn()</code> or <code>import foo as F; F.fn()</code>), and stdlib-style search paths all work. Top-level declarations are also merged unqualified, so both <code>foo.greet()</code> and <code>greet()</code> resolve. <em>Pending</em>: <code>pub</code> visibility enforcement. <em>Status: usable; the one remaining item is a P2 follow-up.</em>
-        </li>
         <li>
             <strong>No package manager or registry.</strong> There is no <code>capa add &lt;dep&gt;</code> and no <code>capalang.org/registry</code>. Library reuse means copying source between projects. <em>Status: pending; only meaningful after a module system exists (P3).</em>
         </li>
