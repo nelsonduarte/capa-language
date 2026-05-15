@@ -11,6 +11,24 @@ breaking changes and the discipline is still being shaped.
 
 ### Added
 
+- **CVE case study (design-pattern class): XXE (XML external
+  entity)** (`examples/cve_lxml_xxe.capa` +
+  `docs/cve_lxml_xxe.md`). Third library in the empirical-at-
+  scale arc, after PyYAML and Jinja2 SSTI. The lxml /
+  xml.etree / Java JAXP / .NET XmlReader / PHP libxml /
+  Ruby Nokogiri CVE family: XML parsers that by default
+  resolve external entity references, turning a "parser" into
+  an arbitrary-file-read and SSRF primitive. The Capa parser's
+  signature `(String) -> Result<XmlNode, ParseError>` has no
+  `Fs` and no `Net`, so resolution of `file://` or `http://`
+  entities is structurally impossible. The writeup generalises
+  the pattern as "parsers should parse, not fetch" and lists
+  other instances (YAML !include, JSON Schema $ref URLs, CSV
+  formula evaluation, Markdown !include extensions, config
+  loaders). Regression test in
+  `tests/test_transpiler.py::test_cve_lxml_xxe`. Full suite:
+  779 passed.
+
 - **CVE case study (design-pattern class): Jinja2 SSTI**
   (`examples/cve_jinja2_ssti.capa` +
   `docs/cve_jinja2_ssti.md`). Second library in the

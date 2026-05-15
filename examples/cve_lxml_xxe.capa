@@ -1,0 +1,160 @@
+// cve_lxml_xxe.capa, the XML external entity (XXE) bug class,
+// in Capa. Companion writeup at docs/cve_lxml_xxe.md.
+//
+// XXE is the bug class where an XML parser, by default, resolves
+// external entity references. A document like:
+//
+//   <?xml version="1.0"?>
+//   <!DOCTYPE root [
+//     <!ENTITY xxe SYSTEM "file:///etc/passwd">
+//   ]>
+//   <root>&xxe;</root>
+//
+// causes the parser to open `/etc/passwd` and include its
+// contents in the document at the `&xxe;` reference. Variants:
+//
+//   - file:// for arbitrary file read
+//   - http:// for SSRF (the parser fetches a URL the attacker chose)
+//   - parameter entities for blind extraction via DNS / out-of-band
+//
+// The bug class is endemic in XML libraries that default to
+// "feature-complete":
+//
+//   - Python lxml (CVE-2021-43818, CVE-2021-28957, CVE-2018-19787)
+//   - Python xml.etree (historically vulnerable; "expat" backend)
+//   - Java javax.xml.parsers (until disable_external_entities is set)
+//   - .NET XmlReader / XmlDocument (default-resolver behaviour)
+//   - PHP libxml (libxml_disable_entity_loader was needed)
+//   - Ruby Nokogiri (NONET option exists but is opt-in)
+//
+// The common pattern: a library "for parsing XML" has, in its
+// API surface, the ability to fetch files and URLs. The
+// attacker just supplies an input that exercises it.
+//
+// Capa's structural argument: an XML parser whose signature is
+// `(String) -> Result<XmlNode, ParseError>` cannot fetch
+// anything because it has no Fs and no Net capability. The
+// parser literally cannot resolve `file://` or `http://`
+// references; the parsed tree is whatever the text says, plus
+// any in-document entity definitions, and nothing else.
+//
+// Third library in the design-pattern CVE arc, after PyYAML and
+// Jinja2 SSTI.
+
+// ===============================================================
+// What a Capa-shaped XML parser API looks like.
+// ===============================================================
+//
+// For the demo we model a tiny XML-like document as a typed
+// tree. A production version would parse real XML; the
+// signature is what carries the security claim. The key
+// property is that XmlNode contains only text, attributes,
+// and children. It does NOT contain a "fetched URL" or "file
+// content" field, because there is no parser path that could
+// fill them.
+
+type XmlNode {
+    tag: String,
+    text: String,
+    children: List<XmlNode>
+}
+
+type ParseError {
+    position: Int,
+    message: String
+}
+
+// Parse a fragment. Pure: signature names no capability. The
+// implementation here is a tiny demo recogniser; a production
+// version would handle attributes, namespaces, comments, and
+// the rest of the XML 1.0 grammar. None of that needs Fs or
+// Net.
+//
+// CRITICAL: even if the input contains
+//   <!ENTITY xxe SYSTEM "file:///etc/passwd">
+// the parser CANNOT open /etc/passwd because it has no Fs.
+// The string "file:///etc/passwd" appears as a literal token
+// in the parse output (or is rejected, depending on the
+// implementation); it never becomes a filesystem read.
+fun parse_xml(source: String) -> Result<XmlNode, ParseError>
+    // Reject any DOCTYPE-with-ENTITY shape as a typed error so
+    // callers get a clear signal rather than silent ignoring.
+    // The production version would parse the DOCTYPE and
+    // either error or treat it as literal data; either way,
+    // entity resolution does not happen.
+    if source.contains("<!ENTITY") and source.contains("SYSTEM")
+        return Err(ParseError {
+            position: 0,
+            message: "external entity declarations are not resolved"
+        })
+    // Find the root tag for the demo: <tag>content</tag>.
+    if not source.contains("<")
+        return Err(ParseError {
+            position: 0,
+            message: "no element found"
+        })
+    let after_lt = source.split("<")
+    if after_lt.length() < 2
+        return Err(ParseError {
+            position: 0,
+            message: "no element found"
+        })
+    // Pick the first non-empty piece after a '<'. Tag name
+    // ends at the first '>' or whitespace; for the demo we
+    // require the simple <tag>text</tag> shape.
+    var first_chunk = ""
+    var idx = 0
+    for piece in after_lt
+        if idx == 1
+            first_chunk = piece
+        idx = idx + 1
+    let by_gt = first_chunk.split(">")
+    if by_gt.length() < 2
+        return Err(ParseError {
+            position: 0,
+            message: "unterminated tag"
+        })
+    let tag = match by_gt.first()
+        None -> ""
+        Some(s) -> s
+    var text_so_far = ""
+    var i = 0
+    for part in by_gt
+        if i == 1
+            text_so_far = part
+        i = i + 1
+    // Text ends at the closing </tag>. For the demo, just
+    // strip everything from the first '<' onwards.
+    let split_close = text_so_far.split("<")
+    let text = match split_close.first()
+        None -> ""
+        Some(s) -> s
+    return Ok(XmlNode {
+        tag: tag,
+        text: text,
+        children: []
+    })
+
+// ===============================================================
+// `main` for the demo. Holds Stdio only.
+// ===============================================================
+fun main(stdio: Stdio)
+    // A benign XML input.
+    let safe_input = "<user>alice</user>"
+    match parse_xml(safe_input)
+        Err(e) -> stdio.println("parse error: ${e.message}")
+        Ok(n) -> stdio.println("safe: tag=${n.tag} text=${n.text}")
+
+    // An XXE attack input. The Capa parser refuses external
+    // entities by typed error; even if it didn't, the function
+    // has no Fs / Net capability to resolve them.
+    let xxe_input = r"<?xml version='1.0'?><!DOCTYPE root [ <!ENTITY xxe SYSTEM 'file:///etc/passwd'> ]><root>&xxe;</root>"
+    match parse_xml(xxe_input)
+        Err(e) -> stdio.println("xxe attempt rejected: ${e.message}")
+        Ok(_) -> stdio.println("xxe SHOULD have been rejected, but was not")
+
+    // An SSRF-via-XXE variant. Same rejection: no resolution.
+    let ssrf_input = r"<?xml version='1.0'?><!DOCTYPE root [ <!ENTITY xxe SYSTEM 'http://169.254.169.254/latest/meta-data/'> ]><root>&xxe;</root>"
+    match parse_xml(ssrf_input)
+        Err(e) -> stdio.println("ssrf-via-xxe attempt rejected: ${e.message}")
+        Ok(_) -> stdio.println("ssrf SHOULD have been rejected, but was not")

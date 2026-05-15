@@ -57,7 +57,7 @@ Capa/
 │   ├── docgen/                 # HTML doc generator from /// doc-comments
 │   ├── lsp/                    # Language Server Protocol implementation
 │   └── runtime/                # Result, Option, Stdio, Fs, ..., Unsafe, py_import
-├── tests/                      # 778 unit, end-to-end, and property tests
+├── tests/                      # 779 unit, end-to-end, and property tests
 │   ├── test_lexer.py
 │   ├── test_parser.py
 │   ├── test_analyzer.py
@@ -85,6 +85,7 @@ Capa/
 │   ├── cve_xz_utils.capa       # CVE partial-loss: xz-utils 2024
 │   ├── cve_pyyaml.capa         # CVE design-pattern: PyYAML yaml.load() (2017)
 │   ├── cve_jinja2_ssti.capa    # CVE design-pattern: Jinja2 SSTI
+│   ├── cve_lxml_xxe.capa       # CVE design-pattern: XML external entity
 │   ├── empirical_config.capa   # SBOM diff micro-validation (Capa side)
 │   ├── empirical_config_naive.py # SBOM diff micro-validation (Python side)
 │   ├── vex_demo.capa           # @vex per-function exploitability claims

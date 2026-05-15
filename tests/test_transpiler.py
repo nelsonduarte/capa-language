@@ -705,6 +705,19 @@ class TestTranspileExamples(unittest.TestCase):
         self.assertEqual(rc, 0, err)
         self.assertIn("name = capa-demo", out)
 
+    def test_cve_lxml_xxe(self):
+        # Ninth CVE walkthrough, third of the design-pattern
+        # (vs supply-chain delivery) class: XML external entity
+        # (XXE), the lxml CVE family. The Capa parse_xml signature
+        # has no Fs and no Net, so resolution of file:// or
+        # http:// entities is structurally impossible. Companion
+        # writeup at docs/cve_lxml_xxe.md.
+        rc, out, err = self._run_example("examples/cve_lxml_xxe.capa")
+        self.assertEqual(rc, 0, err)
+        self.assertIn("safe: tag=user text=alice", out)
+        self.assertIn("xxe attempt rejected:", out)
+        self.assertIn("ssrf-via-xxe attempt rejected:", out)
+
     def test_cve_jinja2_ssti(self):
         # Eighth CVE walkthrough, second of the design-pattern
         # (vs supply-chain delivery) class: Jinja2 SSTI (server-
