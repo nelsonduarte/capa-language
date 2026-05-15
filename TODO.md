@@ -707,13 +707,14 @@ items here so they stay visible:
   (`provably_excluded_capability` annotations). Sound because
   Capa's discipline makes the declared cap set an upper bound;
   the proof is voided (empty list) when `Unsafe` is declared.
-  Implementation at `capa/manifest/_funrec.py`; 6 tests at
-  `tests/test_attributes.py::TestIneligibilityProofs`. Known
-  caveat: impl methods of capability traits don't list the
-  trait in `declared_capabilities`, so for them the exclusion
-  set may name a cap they actually exercise via `self`;
-  follow-up populates `declared_capabilities` from the impl's
-  `trait_name`.
+  Implementation at `capa/manifest/_funrec.py`; 10 tests at
+  `tests/test_attributes.py::TestIneligibilityProofs`. The
+  initial caveat about impl methods of capability traits is
+  closed: methods inside `impl Trait for Type` where `Trait`
+  is a capability now show the trait in
+  `declared_capabilities` (it is exercised via `self` even
+  without a parameter of that type), and the ineligibility
+  set correctly excludes the trait.
 - [ ] **IR with capability annotations + monomorphisation**. The
   second review document proposes an ANF + basic-blocks + CFG
   IR with block parameters (MLIR / Swift SIL shape). The right

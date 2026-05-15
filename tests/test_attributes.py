@@ -399,6 +399,83 @@ class TestIneligibilityProofs(unittest.TestCase):
         else:
             self.fail("greeting not found in manifest")
 
+    def test_impl_method_of_cap_trait_declares_trait(self):
+        # impl Logger for FsLogger: the `log` method exercises
+        # Logger via self even though no parameter has Logger's
+        # type. After the fix, declared_capabilities lists Logger
+        # and the exclusion set no longer falsely names Logger.
+        m = manifest_of(
+            "capability Logger\n"
+            "    fun log(self, msg: String) -> Unit\n"
+            "type FsLogger { _fs: Fs }\n"
+            "impl Logger for FsLogger\n"
+            "    fun log(self, msg: String) -> Unit\n"
+            "        return\n"
+        )
+        log_fn = next(
+            f for f in m["functions"]
+            if f["name"] == "log" and f["container"] == "FsLogger"
+        )
+        self.assertIn("Logger", log_fn["declared_capabilities"])
+        self.assertNotIn("Logger", log_fn["provably_excluded_capabilities"])
+
+    def test_impl_method_of_inherent_impl_unchanged(self):
+        # An inherent impl (not "of" a trait) has no implicit cap.
+        # The methods' declared_capabilities reflect only the
+        # parameter list, as before.
+        m = manifest_of(
+            "type Counter { v: Int }\n"
+            "impl Counter\n"
+            "    fun bump(self) -> Int\n"
+            "        return self.v + 1\n"
+        )
+        bump = next(
+            f for f in m["functions"]
+            if f["name"] == "bump" and f["container"] == "Counter"
+        )
+        self.assertEqual(bump["declared_capabilities"], [])
+        # Every built-in cap is in the exclusion (no Unsafe, no
+        # implicit cap).
+        for cap in ("Stdio", "Fs", "Net", "Unsafe"):
+            self.assertIn(cap, bump["provably_excluded_capabilities"])
+
+    def test_impl_method_of_non_cap_trait_unchanged(self):
+        # Plain trait (not a capability trait): implementing it
+        # does not exercise any capability through self.
+        m = manifest_of(
+            "trait Eq\n"
+            "    fun eq(self, other: Self) -> Bool\n"
+            "type Point { x: Int, y: Int }\n"
+            "impl Eq for Point\n"
+            "    fun eq(self, other: Self) -> Bool\n"
+            "        return true\n"
+        )
+        eq = next(
+            f for f in m["functions"]
+            if f["name"] == "eq" and f["container"] == "Point"
+        )
+        self.assertEqual(eq["declared_capabilities"], [])
+        self.assertNotIn("Eq", eq["declared_capabilities"])
+
+    def test_impl_of_builtin_cap_declares_builtin(self):
+        # impl Stdio for FooStdio: methods exercise Stdio via
+        # self, so Stdio shows up as declared on every method
+        # of the impl, just like for user-defined cap traits.
+        m = manifest_of(
+            "type FooStdio { v: Int }\n"
+            "impl Stdio for FooStdio\n"
+            "    fun println(self, msg: String) -> Unit\n"
+            "        return\n"
+        )
+        println = next(
+            f for f in m["functions"]
+            if f["name"] == "println" and f["container"] == "FooStdio"
+        )
+        self.assertIn("Stdio", println["declared_capabilities"])
+        self.assertNotIn(
+            "Stdio", println["provably_excluded_capabilities"],
+        )
+
     def test_cyclonedx_emits_exclusion_property(self):
         sbom = cyclonedx_of(
             "fun main(stdio: Stdio)\n"

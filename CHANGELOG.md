@@ -9,6 +9,38 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Impl methods of capability traits now declare their trait**:
+  a method inside `impl Trait for Type` where `Trait` is a
+  capability (built-in like `Stdio` or user-defined like
+  `Logger`) now lists the trait in
+  `declared_capabilities`. Previously the trait was missing
+  because no parameter carried its type, even though the method
+  exercises the capability via `self`.
+
+  This fixes a soundness gap in the ineligibility proof
+  introduced in the same release: the exclusion set for those
+  methods used to falsely name the trait, claiming the method
+  was provably incapable of using a capability it actually
+  implements. With the fix, the trait appears in
+  `declared_capabilities` for impl methods, and is therefore
+  correctly absent from `provably_excluded_capabilities`.
+
+  Inherent impls (`impl Type` with no `Trait for`) are unchanged.
+  Non-capability traits (e.g. plain `trait Eq`) are unchanged.
+  Only the case where the impl's trait is in the capability
+  universe propagates the trait through.
+
+  Implementation: `capa/manifest/_funrec.py::build_manifest`
+  passes an `implicit_cap` argument into `_fun_record` for impl
+  methods; `_fun_record` appends it to `declared_caps` before
+  computing the exclusion set. 4 new tests at
+  `tests/test_attributes.py::TestIneligibilityProofs`:
+  cap-trait impl, inherent impl unchanged, non-cap-trait impl
+  unchanged, built-in-cap impl. Full suite: 887 passed
+  (was 883).
+
 ### Added
 
 - **Ineligibility proofs in the manifest**: every function record

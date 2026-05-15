@@ -64,15 +64,32 @@ def build_manifest(
 
     # Build per-function records. Walks both top-level funs and
     # methods inside impl blocks (which are nested FunDecl nodes).
+    # For impl methods, when the impl is *of* a capability trait
+    # (e.g. ``impl Stdio for FooStdio``), the trait name is fed
+    # in as an implicit declared capability: the method
+    # exercises that capability through ``self`` even though no
+    # parameter has the trait's type. Without this, the
+    # ineligibility proof would falsely exclude the trait from
+    # the methods that actually implement it.
     functions: list[dict[str, Any]] = []
     for item in module.items:
         if isinstance(item, A.FunDecl):
-            functions.append(_fun_record(item, cap_names, filename, container=None))
+            functions.append(_fun_record(
+                item, cap_names, filename,
+                container=None, implicit_cap=None,
+            ))
         elif isinstance(item, A.ImplBlock):
+            implicit = (
+                item.trait_name
+                if item.trait_name is not None and item.trait_name in cap_names
+                else None
+            )
             for m in item.methods:
-                functions.append(
-                    _fun_record(m, cap_names, filename, container=item.type_name)
-                )
+                functions.append(_fun_record(
+                    m, cap_names, filename,
+                    container=item.type_name,
+                    implicit_cap=implicit,
+                ))
 
     summary = {
         "total_functions": len(functions),
@@ -103,6 +120,7 @@ def _fun_record(
     filename: str,
     *,
     container: Optional[str],
+    implicit_cap: Optional[str] = None,
 ) -> dict[str, Any]:
     param_records: list[dict[str, Any]] = []
     for p in fn.params:
@@ -121,27 +139,32 @@ def _fun_record(
     declared_caps = [
         p["type"] for p in param_records if p["is_capability"]
     ]
-    has_unsafe = any(
-        _root_type_name(p.type_expr) == "Unsafe"
-        for p in fn.params
-        if p.type_expr
+    # When this is an impl method whose impl is *of* a capability
+    # trait, the trait is exercised through ``self`` even though
+    # no parameter carries the trait's type. Surface it here so
+    # ``declared_capabilities`` is a complete upper bound on what
+    # the method can exercise; this also keeps the ineligibility
+    # proof below from falsely excluding the trait.
+    if implicit_cap is not None and implicit_cap not in declared_caps:
+        declared_caps.append(implicit_cap)
+    has_unsafe = (
+        any(
+            _root_type_name(p.type_expr) == "Unsafe"
+            for p in fn.params
+            if p.type_expr
+        )
+        or implicit_cap == "Unsafe"
     )
 
     # Ineligibility proof: which capabilities this function
     # provably *cannot* use. Sound because Capa's discipline makes
     # ``declared_caps`` an upper bound on what the function can
     # exercise (any cap a callee touches must be in scope here to
-    # be passed). The proof breaks if ``Unsafe`` is in scope (the
-    # escape hatch can side-step the discipline), so we report an
-    # empty list in that case rather than an over-claim.
-    #
-    # Known caveat: an impl method whose ``impl`` is *of* a
-    # capability trait does not show the trait in
-    # ``declared_capabilities`` even though it exercises that
-    # trait via ``self``. For such methods the exclusion may
-    # name a capability the method does in fact use through
-    # ``self``. Fix is a separate enhancement to populate
-    # ``declared_capabilities`` from the impl's trait_name.
+    # be passed; impl-method ``self`` is included via
+    # ``implicit_cap`` above). The proof breaks if ``Unsafe`` is
+    # in scope (the escape hatch can side-step the discipline),
+    # so we report an empty list in that case rather than an
+    # over-claim.
     if has_unsafe:
         provably_excluded_caps: list[str] = []
     else:
