@@ -4,16 +4,16 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Capa | a capability-centric programming language</title>
-    <meta name="description" content="Capa is a programming language where every function declares the authorities it holds. Built around capability-based security with a pythonic syntax, designed for the EU Cyber Resilience Act era.">
+    <meta name="description" content="Capa is a programming language with compile-time capability discipline: every function declares the authorities it holds. Pythonic syntax. Capabilities can be attenuated, narrowed, and reasoned about statically.">
     <meta property="og:title" content="Capa | a capability-centric programming language">
-    <meta property="og:description" content="Every function declares the authorities it holds. Built for the EU Cyber Resilience Act era.">
+    <meta property="og:description" content="Compile-time capability discipline: every function declares the authorities it holds.">
     <meta property="og:type" content="website">
     <meta property="og:url" content="https://capa-language.com/">
     <meta property="og:image" content="https://capa-language.com/capa_logo.png">
     <meta property="og:site_name" content="Capa">
     <meta name="twitter:card" content="summary_large_image">
     <meta name="twitter:title" content="Capa | a capability-centric programming language">
-    <meta name="twitter:description" content="Every function declares the authorities it holds. Built for the EU Cyber Resilience Act era.">
+    <meta name="twitter:description" content="Compile-time capability discipline: every function declares the authorities it holds.">
     <meta name="twitter:image" content="https://capa-language.com/capa_logo.png">
     <link rel="stylesheet" href="style.css">
     <link rel="icon" type="image/svg+xml" href="favicon.svg">
@@ -32,10 +32,10 @@
             <a href="index.html" class="current">Home</a>
             <a href="why.html">Why Capa</a>
             <a href="tour.html">Language tour</a>
-            <a href="manifest.html">Manifest</a>
             <a href="start.html">Get started</a>
             <a href="community.html">Community</a>
             <a href="roadmap.html">Roadmap</a>
+            <a href="manifest.html">Manifest</a>
             <a href="https://github.com/nelsonduarte/capa" class="github">GitHub</a>
         </div>
     </nav>
@@ -47,7 +47,7 @@
     <img class="hero-logo" src="capa_logo.svg" alt="" aria-hidden="true">
     <h1>Capa</h1>
     <p class="tagline">A programming language where every function declares <strong>what it is allowed to do</strong>.</p>
-    <p class="subtitle">Capability-based security with a pythonic syntax. Designed for the era of supply-chain attacks and the EU Cyber Resilience Act.</p>
+    <p class="subtitle">Compile-time discipline over what every function can touch: the network, the filesystem, the environment. Pythonic syntax. Auditability is a side effect, not the point.</p>
     <div class="cta">
         <a href="why.html" class="btn primary">Read the case</a>
         <a href="start.html" class="btn">Get started</a>
@@ -64,10 +64,15 @@
         <span class="release-tag">v0.7.0-alpha</span>
         <span class="release-body">
             <strong>Released 2026-05-15.</strong>
-            Governance-stack release: SBOM diff tool, SPDX 2.3
-            emission, per-function VEX, SLSA L1 provenance, and
-            a multi-jurisdiction regulatory mapping (CRA, NIS2,
-            DORA, NIST SSDF, OWASP SCVS).
+            Module system completion (qualified access, stdlib
+            paths, <code>pub</code> visibility enforcement),
+            REPL upgrades (every standard capability pre-bound,
+            multi-line blocks, <code>.types</code>), and
+            ineligibility proofs in the manifest. The compiler
+            also continues to emit standard supply-chain
+            artefacts (SBOM diff, SPDX 2.3, per-function VEX,
+            SLSA L1 provenance) directly from capability
+            signatures.
         </span>
         <a class="release-link" href="https://github.com/nelsonduarte/capa/releases/tag/v0.7.0-alpha">Read the notes →</a>
     </div>
@@ -190,13 +195,12 @@
             </p>
         </div>
         <div class="persona">
-            <h3>Teams preparing for the EU CRA</h3>
+            <h3>Engineers tired of ambient authority</h3>
             <p>
-                The Cyber Resilience Act, applicable December 2027,
-                requires machine-readable evidence of behavioural
-                control. Capa produces it directly from the
-                compiler: capability manifest, CycloneDX 1.5 SBOM,
-                HTML doc page.
+                Every supply-chain incident of the last decade has
+                the same shape: a dependency did something its API
+                never claimed. Capa is the language where that
+                claim is checked at compile time, not in production.
             </p>
         </div>
         <div class="persona">
@@ -211,12 +215,13 @@
             </p>
         </div>
         <div class="persona">
-            <h3>Engineers tired of ambient authority</h3>
+            <h3>Teams preparing for the EU CRA</h3>
             <p>
-                Every supply-chain incident of the last decade has
-                the same shape: a dependency did something its API
-                never claimed. Capa is the language where that
-                claim is checked at compile time, not in production.
+                The Cyber Resilience Act, applicable December 2027,
+                requires machine-readable evidence of behavioural
+                control. Capa produces it directly from the
+                compiler: capability manifest, CycloneDX 1.5 SBOM,
+                HTML doc page.
             </p>
         </div>
     </div>
@@ -228,8 +233,8 @@
 <section>
     <h2 class="section-centered">How Capa compares</h2>
     <p class="lead-prose">
-        A short matrix of properties that matter for supply-chain
-        security and CRA-style audit. Honest on alpha status.
+        A short matrix of properties that matter for code-level
+        authority control. Honest on alpha status.
     </p>
     <div class="compare-wrap">
         <table class="compare-table">
@@ -371,6 +376,58 @@
             </p>
         </details>
         <details>
+            <summary>Is there a formal soundness proof?</summary>
+            <p>
+                A working sketch lives at
+                <a href="https://github.com/nelsonduarte/capa/blob/main/docs/semantics.md">docs/semantics.md</a>:
+                a minimal lambda calculus <em>λ<sub>cap</sub></em>
+                with syntax, typing rules, and small-step
+                operational semantics that capture the capability
+                discipline; two soundness theorems
+                (<em>Capability Soundness</em>: every runtime
+                capability invocation has a class drawn from the
+                initial environment; <em>Manifest Completeness</em>:
+                the emitted manifest is an upper bound on the
+                dynamic capability surface); and proof sketches for
+                each. The proofs are not machine-checked yet;
+                mechanising Theorem 1 in Agda or Coq is the
+                next item on the formalisation track. The
+                <a href="https://github.com/nelsonduarte/capa/blob/main/tests/test_properties.py">property-based test suite</a>
+                asserts the dynamic counterpart of Theorem 1 on
+                every generated program: ~150 Hypothesis examples
+                per CI run, across four capability-flow shapes
+                (plain, attenuated, via-helper, consume).
+            </p>
+        </details>
+        <details>
+            <summary>What about performance?</summary>
+            <p>
+                Capa programs run as transpiled Python on CPython,
+                so the runtime characteristics are Python's. The
+                capability checks add no runtime overhead; they are
+                entirely compile-time, except for runtime gating on
+                attenuated capabilities (e.g. <code>Fs.read</code>
+                checking the path prefix before opening). The
+                <a href="https://github.com/nelsonduarte/capa/blob/main/benchmarks/README.md">benchmarks suite</a>
+                measures the transpiled output against hand-Python
+                baselines: typical ratios are 1.00x for pure compute,
+                1.20x for list-heavy workloads, and 1.45x for
+                string-heavy ones. A native backend is not in the v1
+                scope.
+            </p>
+        </details>
+        <details>
+            <summary>Is the language stable?</summary>
+            <p>
+                No. Pre-1.0 minor-version bumps may introduce
+                breaking changes. The capability discipline itself
+                (structural, flow, linear layers) is stable and
+                unlikely to change. Surface syntax, the manifest
+                schema, and the attribute catalogue may evolve.
+                The <code>CHANGELOG.md</code> tracks every change.
+            </p>
+        </details>
+        <details>
             <summary>Does Capa prevent supply-chain attacks?</summary>
             <p>
                 It eliminates a specific class: attacks that depend
@@ -414,58 +471,6 @@
                 callouts for which obligations Capa addresses and
                 which remain organisational, lives in the
                 <a href="https://github.com/nelsonduarte/capa/blob/main/docs/cra.md">CRA mapping document</a>.
-            </p>
-        </details>
-        <details>
-            <summary>What about performance?</summary>
-            <p>
-                Capa programs run as transpiled Python on CPython,
-                so the runtime characteristics are Python's. The
-                capability checks add no runtime overhead; they are
-                entirely compile-time, except for runtime gating on
-                attenuated capabilities (e.g. <code>Fs.read</code>
-                checking the path prefix before opening). The
-                <a href="https://github.com/nelsonduarte/capa/blob/main/benchmarks/README.md">benchmarks suite</a>
-                measures the transpiled output against hand-Python
-                baselines: typical ratios are 1.00x for pure compute,
-                1.20x for list-heavy workloads, and 1.45x for
-                string-heavy ones. A native backend is not in the v1
-                scope.
-            </p>
-        </details>
-        <details>
-            <summary>Is there a formal soundness proof?</summary>
-            <p>
-                A working sketch lives at
-                <a href="https://github.com/nelsonduarte/capa/blob/main/docs/semantics.md">docs/semantics.md</a>:
-                a minimal lambda calculus <em>λ<sub>cap</sub></em>
-                with syntax, typing rules, and small-step
-                operational semantics that capture the capability
-                discipline; two soundness theorems
-                (<em>Capability Soundness</em>: every runtime
-                capability invocation has a class drawn from the
-                initial environment; <em>Manifest Completeness</em>:
-                the emitted manifest is an upper bound on the
-                dynamic capability surface); and proof sketches for
-                each. The proofs are not machine-checked yet;
-                mechanising Theorem 1 in Agda or Coq is the
-                workshop-paper budget item. The
-                <a href="https://github.com/nelsonduarte/capa/blob/main/tests/test_properties.py">property-based test suite</a>
-                asserts the dynamic counterpart of Theorem 1 on
-                every generated program: ~150 Hypothesis examples
-                per CI run, across four capability-flow shapes
-                (plain, attenuated, via-helper, consume).
-            </p>
-        </details>
-        <details>
-            <summary>Is the language stable?</summary>
-            <p>
-                No. Pre-1.0 minor-version bumps may introduce
-                breaking changes. The capability discipline itself
-                (structural, flow, linear layers) is stable and
-                unlikely to change. Surface syntax, the manifest
-                schema, and the attribute catalogue may evolve.
-                The <code>CHANGELOG.md</code> tracks every change.
             </p>
         </details>
     </div>
