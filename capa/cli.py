@@ -94,6 +94,9 @@ def main() -> int:
     if len(sys.argv) >= 2 and sys.argv[1] == "lsp":
         from capa.lsp_server import serve
         return serve()
+    if len(sys.argv) >= 2 and sys.argv[1] == "repl":
+        from capa.repl import serve as repl_serve
+        return repl_serve()
 
     parser = argparse.ArgumentParser(
         description="Lexer, parser and analyzer for the Capa language",

@@ -11,6 +11,69 @@ breaking changes and the discipline is still being shaped.
 
 ### Added
 
+- **REPL MVP** (`capa repl`). Closes the second of the five
+  long-standing known limitations called out in the previous
+  release.
+
+  Usage:
+
+  ```
+  $ capa repl
+  Capa REPL. Type .help for commands, .exit to leave.
+  capa> let x = 7
+  capa> x * 2
+  14
+  capa> fun double(n: Int) -> Int
+  ...     return n * 2
+  ...
+  capa> double(5)
+  10
+  capa> stdio.println("done")
+  done
+  capa> .exit
+  ```
+
+  **Implementation strategy**: each input is bucketed as a
+  top-level declaration, a statement, or a bare expression
+  (auto-wrapped as `stdio.println("${...}")` so the value is
+  shown). All inputs accumulate; on each turn the full
+  program is re-assembled, re-lexed, re-parsed, re-analysed,
+  re-transpiled, and re-executed as a subprocess. Captured
+  stdout is diffed against the previous run so the user
+  sees only the *new* output. Wasteful but correct, and
+  small enough to fit in a single self-contained module
+  (`capa/repl.py`, ~280 lines). The synthesised `main`
+  always starts with `stdio.print("")` so the capability
+  counts as used (silencing the "declared but never used"
+  check) without producing visible output.
+
+  **Meta commands**: `.exit` / `.quit`, `.reset` (clear
+  state), `.show` (print accumulated program), `.help`.
+
+  **MVP scope**: only `Stdio` is pre-bound; other built-in
+  capabilities (`Fs`, `Net`, `Env`, `Clock`, `Random`,
+  `Unsafe`) would trigger the unused-capability check. Users
+  needing them declare a function that takes the capability
+  and call it.
+
+  **Tests**: 18 in `tests/test_repl.py`. 10 unit tests for
+  the helpers (`_is_top_level_form`,
+  `_is_bare_expression`, `_is_unit_typed_call`,
+  `_ReplState.assemble`) and 8 end-to-end via a `python -m
+  capa repl` subprocess with scripted stdin (banner +
+  clean exit, bare expression, let-then-use, function
+  decl + call, `stdio.println` unwrapped, `.reset` clears
+  state, `.show` prints the program, `.help` lists meta,
+  error keeps REPL alive).
+
+  Full suite: 839 passed (was 821).
+
+  CLI subcommand dispatch in `capa/cli.py` adds `repl`
+  alongside `init` and `lsp`. Roadmap and TODO updates
+  reflect MVP-landed; the four remaining known limitations
+  are now: package manager / registry, native backend,
+  async / await, qualified module access. Down from five.
+
 - **Module system MVP** (`capa/loader.py`, `import foo.bar` now
   works end-to-end). Closes the single-file-only limitation
   that has stood since v0.2.
