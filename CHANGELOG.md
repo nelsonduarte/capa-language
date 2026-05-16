@@ -9,6 +9,19 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+## [0.8.1-beta], 2026-05-16
+
+A polish release on top of v0.8.0-beta. Three concentrated
+arcs landed: the ``?`` operator gained an inline-hoist fast
+path (and now actually works on ``Option<T>``, a latent bug),
+the LSP became module-aware (no more false "undefined name"
+on imported functions, completion no longer leaks mangled
+private names), and a focused unit-test pass lifted
+``capa.runtime`` coverage from 56% to 85%. Public-facing
+framing (``tour.html``, ``start.html``, ``positioning.md``)
+was also brought in line with the language-first voice from
+the v0.8.0 homepage rebalance.
+
 ### Fixed
 
 - **LSP no longer shows false "undefined name" for imported

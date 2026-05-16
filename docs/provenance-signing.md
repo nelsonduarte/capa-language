@@ -59,7 +59,7 @@ The output is a single JSON document:
       "buildType": "https://capa-lang.org/build/transpile-to-python/v1",
       "externalParameters": { "source": "hello.capa" },
       "internalParameters": {
-        "capaVersion": "0.8.0",
+        "capaVersion": "0.8.1",
         "target": "python>=3.10"
       },
       "resolvedDependencies": []
@@ -67,7 +67,7 @@ The output is a single JSON document:
     "runDetails": {
       "builder": {
         "id": "https://capa-lang.org/cli",
-        "version": { "capa": "0.8.0" }
+        "version": { "capa": "0.8.1" }
       },
       "metadata": {
         "invocationId": "...",

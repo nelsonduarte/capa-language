@@ -53,7 +53,7 @@
         <a href="start.html" class="btn">Get started</a>
         <a href="https://github.com/nelsonduarte/capa" class="btn">GitHub</a>
     </div>
-    <p class="status">v0.8.0-beta · MIT · 887 tests · hand-written compiler in Python</p>
+    <p class="status">v0.8.1-beta · MIT · 938 tests · hand-written compiler in Python</p>
 </section>
 
 <!-- =====================================================
@@ -61,20 +61,19 @@
 ===================================================== -->
 <section class="release-banner-wrap">
     <div class="release-banner">
-        <span class="release-tag">v0.8.0-beta</span>
+        <span class="release-tag">v0.8.1-beta</span>
         <span class="release-body">
-            <strong>Released 2026-05-15.</strong>
-            Module system completion (qualified access, stdlib
-            paths, <code>pub</code> visibility enforcement),
-            REPL upgrades (every standard capability pre-bound,
-            multi-line blocks, <code>.types</code>), and
-            ineligibility proofs in the manifest. The compiler
-            also continues to emit standard supply-chain
-            artefacts (SBOM diff, SPDX 2.3, per-function VEX,
-            SLSA L1 provenance) directly from capability
-            signatures.
+            <strong>Released 2026-05-16.</strong>
+            <code>?</code> operator gains an inline-hoist fast
+            path (1.36x Ok, 8.91x Err) and now also works on
+            <code>Option&lt;T&gt;</code>. The LSP runs the module
+            loader so calls to imported functions stop showing
+            up as "undefined name" in the editor; completion
+            filters mangled private names. A focused unit-test
+            pass lifts <code>capa.runtime</code> coverage from
+            56% to 85%.
         </span>
-        <a class="release-link" href="https://github.com/nelsonduarte/capa/releases/tag/v0.8.0-beta">Read the notes →</a>
+        <a class="release-link" href="https://github.com/nelsonduarte/capa/releases/tag/v0.8.1-beta">Read the notes →</a>
     </div>
 </section>
 
@@ -319,11 +318,11 @@
             <summary>Is Capa production-ready?</summary>
             <p>
                 Not yet, but the gap is hardening rather than
-                completeness. v0.8.0-beta means the compiler runs,
+                completeness. v0.8.1-beta means the compiler runs,
                 the discipline is implemented end-to-end, the
                 module system is feature-complete (qualified
                 access, transitive imports, <code>pub</code>
-                enforcement, search paths), and 887+ tests pass
+                enforcement, search paths), and 938+ tests pass
                 on three operating systems and three Python
                 versions. The day-to-day tooling is in place:
                 line-level formatter, project scaffolder, watch
@@ -486,7 +485,7 @@
 
 <section class="section-centered">
     <h2>Where to go next</h2>
-    <p class="lead-prose-narrow">Capa is in beta. The compiler runs, 887+ tests pass on three operating systems, the three pillars of the discipline are implemented, the module system is feature-complete, and the day-to-day tooling is in place (formatter, scaffolder, watch mode, REPL with every standard capability pre-bound, language server with diagnostics, hover, go-to-definition, find-references, outline, rename, completion, semantic tokens). What remains pre-1.0: a package manager, a native backend, and any pre-1.0 syntax shifts.</p>
+    <p class="lead-prose-narrow">Capa is in beta. The compiler runs, 938+ tests pass on three operating systems, the three pillars of the discipline are implemented, the module system is feature-complete, and the day-to-day tooling is in place (formatter, scaffolder, watch mode, REPL with every standard capability pre-bound, language server with diagnostics, hover, go-to-definition, find-references, outline, rename, completion, semantic tokens). What remains pre-1.0: a package manager, a native backend, and any pre-1.0 syntax shifts.</p>
     <div class="cta">
         <a href="why.html" class="btn primary">Understand the why</a>
         <a href="tour.html" class="btn">Tour the language</a>
@@ -551,7 +550,7 @@
             </ul>
         </div>
     </div>
-    <p class="colophon">Built by Nelson Duarte · v0.8.0-beta · MIT-licensed</p>
+    <p class="colophon">Built by Nelson Duarte · v0.8.1-beta · MIT-licensed</p>
 </footer>
 
 </body>
