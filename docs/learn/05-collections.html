@@ -66,23 +66,23 @@
 
 <pre><code><span class="kw-decl">fun</span> <span class="fn-name">main</span>(stdio: <span class="cap">Stdio</span>)
     <span class="kw-storage">let</span> xs = [1, 2, 3, 4]
-    <span class="kw-storage">let</span> doubled = xs.<span class="fn-call">map</span>(|n: <span class="ty-primitive">Int</span>| n * 2)
+    <span class="kw-storage">let</span> doubled = xs.<span class="fn-call">map</span>(<span class="kw-decl">fun</span> (n: <span class="ty-primitive">Int</span>) -&gt; <span class="ty-primitive">Int</span> =&gt; n * 2)
     stdio.<span class="fn-call">println</span>(<span class="str">"${doubled}"</span>)     <span class="comment">// [2, 4, 6, 8]</span></code></pre>
 
     <p><code>filter</code> keeps elements for which a predicate returns <code>true</code>:</p>
 
-<pre><code><span class="kw-storage">let</span> evens = xs.<span class="fn-call">filter</span>(|n: <span class="ty-primitive">Int</span>| n % 2 == 0)   <span class="comment">// [2, 4]</span></code></pre>
+<pre><code><span class="kw-storage">let</span> evens = xs.<span class="fn-call">filter</span>(<span class="kw-decl">fun</span> (n: <span class="ty-primitive">Int</span>) -&gt; <span class="ty-primitive">Bool</span> =&gt; n % 2 == 0)   <span class="comment">// [2, 4]</span></code></pre>
 
     <p><code>fold</code> reduces the list to a single value, threading an accumulator:</p>
 
-<pre><code><span class="kw-storage">let</span> sum = xs.<span class="fn-call">fold</span>(0, |acc: <span class="ty-primitive">Int</span>, n: <span class="ty-primitive">Int</span>| acc + n)   <span class="comment">// 10</span></code></pre>
+<pre><code><span class="kw-storage">let</span> sum = xs.<span class="fn-call">fold</span>(0, <span class="kw-decl">fun</span> (acc: <span class="ty-primitive">Int</span>, n: <span class="ty-primitive">Int</span>) -&gt; <span class="ty-primitive">Int</span> =&gt; acc + n)   <span class="comment">// 10</span></code></pre>
 
     <p>The three compose naturally:</p>
 
 <pre><code><span class="kw-storage">let</span> sum_of_doubled_evens = xs
-    .<span class="fn-call">filter</span>(|n: <span class="ty-primitive">Int</span>| n % 2 == 0)
-    .<span class="fn-call">map</span>(|n: <span class="ty-primitive">Int</span>| n * 2)
-    .<span class="fn-call">fold</span>(0, |acc: <span class="ty-primitive">Int</span>, n: <span class="ty-primitive">Int</span>| acc + n)</code></pre>
+    .<span class="fn-call">filter</span>(<span class="kw-decl">fun</span> (n: <span class="ty-primitive">Int</span>) -&gt; <span class="ty-primitive">Bool</span> =&gt; n % 2 == 0)
+    .<span class="fn-call">map</span>(<span class="kw-decl">fun</span> (n: <span class="ty-primitive">Int</span>) -&gt; <span class="ty-primitive">Int</span> =&gt; n * 2)
+    .<span class="fn-call">fold</span>(0, <span class="kw-decl">fun</span> (acc: <span class="ty-primitive">Int</span>, n: <span class="ty-primitive">Int</span>) -&gt; <span class="ty-primitive">Int</span> =&gt; acc + n)</code></pre>
 
     <p>Two more worth knowing: <code>find</code> returns the first element matching a predicate as an <code>Option&lt;T&gt;</code>; <code>find_index</code> returns the index instead.</p>
 </section>

@@ -111,7 +111,7 @@ Passed: 2/3</code></pre>
     <span class="kw-ctrl">for</span> s <span class="kw-ctrl">in</span> students
         <span class="kw-storage">let</span> status = <span class="kw-ctrl">if</span> s.passed <span class="kw-ctrl">then</span> <span class="str">"Pass"</span> <span class="kw-ctrl">else</span> <span class="str">"Fail"</span>
         out = out + <span class="str">"${s.name}: ${s.average} (${status})\n"</span>
-    <span class="kw-storage">let</span> passed = students.<span class="fn-call">filter</span>(|s: <span class="ty-builtin">Student</span>| s.passed).<span class="fn-call">length</span>()
+    <span class="kw-storage">let</span> passed = students.<span class="fn-call">filter</span>(<span class="kw-decl">fun</span> (s: <span class="ty-builtin">Student</span>) -&gt; <span class="ty-primitive">Bool</span> =&gt; s.passed).<span class="fn-call">length</span>()
     out = out + <span class="str">"\nPassed: ${passed}/${students.length()}\n"</span>
     <span class="kw-ctrl">return</span> out</code></pre>
 

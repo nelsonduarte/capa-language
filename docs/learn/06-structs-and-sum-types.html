@@ -84,17 +84,17 @@
 <section>
     <h2>Sum types: one-of-these tagged variants</h2>
 
-    <p>A sum type lists a closed set of named variants. Each variant can optionally carry a payload:</p>
+    <p>A sum type lists a closed set of named variants. Each variant can optionally carry a single payload of any type, including a tuple when you want to carry more than one value:</p>
 
 <pre><code><span class="kw-decl">type</span> <span class="ty-builtin">Shape</span> =
     <span class="variant">Circle</span>(<span class="ty-primitive">Float</span>)
-    <span class="variant">Rectangle</span>(<span class="ty-primitive">Float</span>, <span class="ty-primitive">Float</span>)
+    <span class="variant">Rectangle</span>((<span class="ty-primitive">Float</span>, <span class="ty-primitive">Float</span>))
     <span class="variant">Square</span>(<span class="ty-primitive">Float</span>)</code></pre>
 
-    <p>Construct a value by naming the variant and passing its payload:</p>
+    <p>Construct a value by naming the variant and passing its payload. The outer parentheses are the variant call, the inner ones are the tuple literal:</p>
 
 <pre><code><span class="kw-storage">let</span> c = <span class="variant">Circle</span>(5.0)
-<span class="kw-storage">let</span> r = <span class="variant">Rectangle</span>(3.0, 4.0)</code></pre>
+<span class="kw-storage">let</span> r = <span class="variant">Rectangle</span>((3.0, 4.0))</code></pre>
 
     <p>A variant can also be payloadless:</p>
 
@@ -115,19 +115,19 @@
     <span class="kw-ctrl">match</span> shape
         <span class="variant">Circle</span>(r) -&gt;
             <span class="kw-ctrl">return</span> 3.14159 * r * r
-        <span class="variant">Rectangle</span>(w, h) -&gt;
+        <span class="variant">Rectangle</span>((w, h)) -&gt;
             <span class="kw-ctrl">return</span> w * h
         <span class="variant">Square</span>(side) -&gt;
             <span class="kw-ctrl">return</span> side * side</code></pre>
 
-    <p>The arms bind <code>r</code>, <code>w</code>, <code>h</code>, <code>side</code> to the corresponding payload of the matched variant. Inside that arm, those are normal local <code>Float</code> values.</p>
+    <p>The arms bind <code>r</code>, <code>(w, h)</code>, <code>side</code> to the payload of the matched variant. The <code>Rectangle</code> arm uses a tuple pattern to destructure the tuple payload into two names. Inside the arm, those are normal local <code>Float</code> values.</p>
 
     <p><code>match</code> on a sum is checked for <strong>exhaustiveness</strong>. If you forget a variant, the compiler refuses:</p>
 
 <pre><code><span class="kw-decl">fun</span> <span class="fn-name">area</span>(shape: <span class="ty-builtin">Shape</span>) -&gt; <span class="ty-primitive">Float</span>
     <span class="kw-ctrl">match</span> shape
         <span class="variant">Circle</span>(r) -&gt; <span class="kw-ctrl">return</span> 3.14159 * r * r
-        <span class="variant">Rectangle</span>(w, h) -&gt; <span class="kw-ctrl">return</span> w * h</code></pre>
+        <span class="variant">Rectangle</span>((w, h)) -&gt; <span class="kw-ctrl">return</span> w * h</code></pre>
 
 <pre><code>error: non-exhaustive match: missing variant 'Square'
    2 |     match shape
@@ -143,12 +143,12 @@
 
 <pre><code><span class="kw-decl">type</span> <span class="ty-builtin">Tree</span>&lt;T&gt; =
     <span class="variant">Leaf</span>
-    <span class="variant">Node</span>(T, <span class="ty-builtin">Tree</span>&lt;T&gt;, <span class="ty-builtin">Tree</span>&lt;T&gt;)</code></pre>
+    <span class="variant">Node</span>((T, <span class="ty-builtin">Tree</span>&lt;T&gt;, <span class="ty-builtin">Tree</span>&lt;T&gt;))</code></pre>
 
-    <p>A <code>Tree&lt;Int&gt;</code> is a tree of integers, a <code>Tree&lt;String&gt;</code> a tree of strings. The type parameter <code>T</code> is bound at use time.</p>
+    <p>A <code>Tree&lt;Int&gt;</code> is a tree of integers, a <code>Tree&lt;String&gt;</code> a tree of strings. The type parameter <code>T</code> is bound at use time. As before, the multi-value payload is a tuple.</p>
 
     <div class="callout">
-        <p><strong>Try this.</strong> Define a <code>type Triangle</code> sum with variants <code>Equilateral(Float)</code> (side length), <code>Right(Float, Float)</code> (legs), and <code>Scalene(Float, Float, Float)</code>. Write a function <code>area(t: Triangle) -&gt; Float</code> that handles all three.</p>
+        <p><strong>Try this.</strong> Define a <code>type Triangle</code> sum with variants <code>Equilateral(Float)</code> (side length), <code>Right((Float, Float))</code> (legs as a tuple), and <code>Scalene((Float, Float, Float))</code>. Write a function <code>area(t: Triangle) -&gt; Float</code> that handles all three.</p>
     </div>
 </section>
 

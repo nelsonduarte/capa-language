@@ -101,10 +101,10 @@
 <span class="kw-decl">fun</span> <span class="fn-name">main</span>(stdio: <span class="cap">Stdio</span>)
     stdio.<span class="fn-call">println</span>(<span class="str">"${apply_twice(inc, 10)}"</span>)   <span class="comment">// 12</span></code></pre>
 
-    <p>You can also write a function in-place as a lambda. Lambdas are introduced with <code>|param, ...| body</code>:</p>
+    <p>You can also write a function in-place as a lambda. The lambda is introduced with the same <code>fun</code> keyword, an explicit parameter list and return type, and a <code>=&gt;</code> separator before the body expression:</p>
 
 <pre><code><span class="kw-decl">fun</span> <span class="fn-name">main</span>(stdio: <span class="cap">Stdio</span>)
-    <span class="kw-storage">let</span> add = |a: <span class="ty-primitive">Int</span>, b: <span class="ty-primitive">Int</span>| a + b
+    <span class="kw-storage">let</span> add = <span class="kw-decl">fun</span> (a: <span class="ty-primitive">Int</span>, b: <span class="ty-primitive">Int</span>) -&gt; <span class="ty-primitive">Int</span> =&gt; a + b
     stdio.<span class="fn-call">println</span>(<span class="str">"${add(3, 4)}"</span>)         <span class="comment">// 7</span></code></pre>
 
     <p>Lambdas have one important limit: they cannot capture capabilities from the outer scope. This is part of the capability discipline (you cannot smuggle authority through a closure). We come back to this in chapter 8.</p>
