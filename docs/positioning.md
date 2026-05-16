@@ -6,12 +6,16 @@ language, with the marketing turned off.
 
 ## TL;DR
 
-The novelty of Capa is **not** the SBOM ↔ policy audit. That is a
-JSON-diff in any language. The novelty is **the epistemic basis of
-the SBOM's capability claims**: in Capa they are derived from the
-type system at compile time, by construction, and the compiler
-rejects programs that would let those claims be wrong. The audit
-pipeline is the visible payoff of that property.
+Capa is, first, a capability-typed language: every function
+declares the authorities it holds, the analyzer enforces it
+statically, attenuation is monotonic by construction. That alone
+is unremarkable, dialects of the idea exist in Pony, Koka, Roc,
+and the WebAssembly Component Model. What is genuinely novel is
+the *epistemic basis of any SBOM Capa emits*: capability claims
+are derived from the type system at compile time, by construction,
+and the compiler rejects programs that would let those claims be
+wrong. The audit pipeline is the visible payoff of that property,
+not the contribution itself.
 
 ## The trivial part
 
@@ -127,7 +131,7 @@ adjacencies:
 
 - **Novel theoretical mechanism**: capability typing as an idea
   predates Capa by decades. The mechanism is well understood.
-- **Production readiness**: Capa is pre-1.0 alpha; the runtime
+- **Production readiness**: Capa is pre-1.0 beta; the runtime
   performance is Python's; there is no native backend yet.
 - **Language ecosystem maturity**: Capa has a CLI, an LSP, a
   formatter, an SBOM emitter, an SBOM diff tool, a runtime-
@@ -142,12 +146,13 @@ adjacencies:
 
 ## The one-sentence thesis claim
 
-> The contribution of Capa is not the audit but the closure of the
-> *type → SBOM → audit* pipeline by construction: each step is
-> machine-verifiable, the SBOM granularity is per-function, and the
-> compiler rejects any program whose SBOM would be smaller than its
-> actual capability footprint.
+> Capa's contribution is a capability-typed language whose
+> discipline holds *by construction*, and whose type system can
+> therefore back machine-verifiable, per-function audit artefacts
+> with the property that the compiler rejects any program whose
+> SBOM would be smaller than its actual capability footprint.
 
 If a reviewer challenges Capa with "you could do the audit in
 Python", the right reply is "you could, but the SBOM you would be
 auditing would not have the property that justifies the audit".
+The language is the thing; the artefacts follow from it.

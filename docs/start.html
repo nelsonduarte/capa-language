@@ -299,7 +299,7 @@ Hello, Capa!</code></pre>
             </tr>
             <tr>
                 <td><code>--manifest</code> / <code>--cyclonedx</code> / <code>--spdx</code> / <code>--vex</code> / <code>--provenance</code></td>
-                <td>Emit a JSON capability manifest, a CycloneDX 1.5 SBOM, an SPDX 2.3 SBOM, a CycloneDX VEX document, or a SLSA Build L1 provenance attestation. The five together form the supply-chain governance triangle: SBOM (what is in the box, with per-function capabilities), VEX (per-function exploitability claims), and provenance (in-toto attestation of the build).</td>
+                <td>Emit the authority graph in five standard machine-readable formats: Capa-native JSON (<code>--manifest</code>), CycloneDX 1.5 SBOM, SPDX 2.3 SBOM, CycloneDX VEX (per-function exploitability claims), and SLSA Build L1 provenance attestation. All derived from capability signatures at compile time.</td>
             </tr>
             <tr>
                 <td><code>--watch</code></td>
