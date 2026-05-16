@@ -873,3 +873,125 @@ For honesty / scope control:
 - Tail-call optimisation
 - Garbage collection beyond what CPython provides
 - Custom syntax extensions / macros
+
+---
+
+## Future research directions (P3)
+
+Genuine extensions of Capa's discipline, parked as research-grade
+investments. None is on the May-October 2026 plan; each one is a
+multi-month arc of its own. Listed here so the design space is
+explicit and a future iteration knows where to look.
+
+- **Linear handles for resources**. Today's `consume` qualifier
+  is *affine*: a value can be passed at most once. A truly
+  *linear* extension would mean some values (file handles,
+  socket connections, transactions) **must** be consumed
+  exactly once before they go out of scope, with the analyzer
+  enforcing that at compile time. Rust does this via ownership
+  + `Drop`. Capa would need a "must-call" type-system marker
+  and a destructor-like mechanism. **ROI**: high; closes a
+  concrete bug class (resource leaks) that every program in
+  every language suffers from. Smallest of the three
+  extensions, most defensible value-add.
+
+- **Information Flow Control (IFC)**. Data labels (high/low,
+  secret/public) flow alongside capabilities. Capabilities
+  answer "who can call this?"; IFC answers "where can the data
+  flow?". A function that touches `Secret` data has its output
+  also `Secret` unless it explicitly declassifies. Prior art:
+  Jif, Flow Caml, FlowCrypt, LIO. **Cost**: large; the type
+  system needs a label algebra and noninterference proof.
+  **ROI**: highest of the three; addresses privacy leakage and
+  prompt-injection style attacks where capability discipline
+  alone is not enough. Honest framing required: classical IFC
+  failed adoption because it was too restrictive; modern
+  gradual / reactive IFC is the credible path.
+
+- **Quantitative capabilities**. A capability that carries a
+  budget instead of (or alongside) a fixed allow-list: "this
+  `Net` can make 100 requests, then fails", "this `Fs` can
+  write at most 1 MB cumulatively". Same shape as
+  `restrict_to` but on a numeric axis. Sound because the
+  budget lives in the value and is fail-closed when exhausted.
+  Prior art: rate-limited capabilities in Joe-E, effects with
+  bounded use in Eff. **ROI**: marginal; most rate-limiting
+  use cases are solved at the application level, not the
+  language. Worth listing for completeness.
+
+- **Typestate / session types**. A connection that must be
+  `Open` before `Send`, must `Close` to release. The type
+  carries the current state; methods are only callable in
+  states where they make sense. Prior art: Session Types
+  (Honda et al), Plaid, F* with state effects. **ROI**: real
+  for network and protocol code; concrete pain point even in
+  Rust.
+
+- **Constant-time markers for crypto**. A function-level
+  attribute or type-system marker that promises (and checks)
+  the function runs in constant time: no early returns based
+  on secret data, no branch on secret values, no
+  data-dependent memory access. Prior art: Vale, FaCT, Jasmin.
+  **ROI**: niche but high-value for the crypto subset; the
+  CVE case studies already include CWE-208 (timing attack)
+  examples that this would mechanically prevent.
+
+---
+
+## Strategic directions for adoption
+
+Not features. Strategic angles that would move Capa from
+"interesting language with a working compiler" to "language a
+real community uses". Honest reflection of where the gap is.
+
+- **LLM tool-use sandboxing as the 2026 angle**. Capability
+  discipline is structurally the right shape for sandboxing
+  LLM agents that can call tools (search the web, send email,
+  run code). The industry has no good solution; Capa has the
+  right primitives. A small demo library (`capability
+  LlmTool`, attenuated per-tool, embedded in the SBOM as the
+  declared authority surface) would be a more compelling
+  "killer use case" than any new type-system feature. Probably
+  the single highest-leverage thing to build next.
+
+- **Native backend (LLVM, Cranelift, or Wasm-CM)**. Already
+  noted as "not in v1", but listing here as the single biggest
+  adoption blocker. Python target is fine for prototyping;
+  production deployment of a capability-typed language requires
+  real performance. Wasm Component Model is the most credible
+  technical fit (already capability-based at the module
+  boundary; emitting Wasm + WIT from Capa is conceptually
+  straightforward).
+
+- **Async/await with capability-aware semantics**. Modern
+  applications are network-bound and concurrent. A language
+  without async is unappealing for the workloads where
+  capabilities are most valuable (servers, agents,
+  distributed systems). The hard part is the semantics:
+  capabilities cannot leak across `await` boundaries; an
+  attenuated cap must remain attenuated; cancellation must
+  not strand resources (intersects with linear handles
+  above).
+
+- **Migration path from Python**. Today's interop is one-way
+  via `Unsafe`. TypeScript and Kotlin won mainstream traction
+  because they had an incremental migration story from
+  JavaScript and Java. Capa-from-Python with a "gradual
+  hardening" mode (start with everything `Unsafe`, then narrow
+  function by function) would lower the entry barrier
+  significantly.
+
+- **Package manager + minimal registry**. Listed elsewhere as
+  P3 ecosystem work, repeated here because without it there is
+  no "install Capa, run a real program from a real library"
+  path. Chicken-and-egg: no registry means no libraries; no
+  libraries means no adoption.
+
+The honest order: an **LLM tool-use demo** is the smallest
+high-leverage move (days, not months) and would do more for
+adoption than any of the type-system extensions above. Native
+backend and async are large but necessary if Capa wants to be
+production-credible. The type-system research directions
+strengthen Capa as a *research artefact*; the strategic
+directions above are what move it from there to *adopted
+language*.
