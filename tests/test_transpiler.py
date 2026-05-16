@@ -1228,6 +1228,60 @@ class TestTranspileExamples(unittest.TestCase):
             self.assertIn(cap, loop["provably_excluded_capabilities"])
         self.assertFalse(loop["has_unsafe"])
 
+    def test_llm_anthropic_real_compiles_and_handles_missing_key(self):
+        # The real-API demo: cannot exercise the HTTP round-trip in
+        # CI (no Anthropic API key, would burn quota). We do verify
+        # the whole pipeline up to and including the helper round-
+        # trip: sys.path bootstrap, py_import of
+        # llm_anthropic_helper, py_invoke into chat(), JSON
+        # response parsing, and the Result-chain error propagation
+        # back to Capa. With ANTHROPIC_API_KEY empty the helper
+        # returns {"ok": false, "error": "ANTHROPIC_API_KEY is
+        # empty"} which the Capa side maps to Err(IoError).
+        import os
+        import subprocess
+        import sys
+        env = dict(os.environ)
+        env["ANTHROPIC_API_KEY"] = ""
+        r = subprocess.run(
+            [sys.executable, "-m", "capa", "--run",
+             "examples/llm_anthropic_real.capa"],
+            capture_output=True, text=True, encoding="utf-8",
+            env=env,
+        )
+        # The demo prints the user prompt to stdout, the error to
+        # stderr, then exits 0 (the agent function returns cleanly
+        # via the Err arm).
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("In one sentence: what is capability-based security?", r.stdout)
+        self.assertIn("ANTHROPIC_API_KEY is empty", r.stderr)
+
+    def test_llm_anthropic_real_manifest_run_chat_unsafe_free(self):
+        # The agent-equivalent function `run_chat` is Unsafe-free
+        # in the manifest, even though the program as a whole
+        # uses Unsafe (for the network call inside the
+        # AnthropicClient implementor). The capability discipline
+        # has contained the Unsafe to where it actually lives.
+        import json
+        import subprocess
+        import sys
+        r = subprocess.run(
+            [sys.executable, "-m", "capa", "--manifest",
+             "examples/llm_anthropic_real.capa"],
+            capture_output=True, text=True, encoding="utf-8",
+        )
+        self.assertEqual(r.returncode, 0, r.stderr)
+        m = json.loads(r.stdout)
+        run_chat = next(
+            f for f in m["functions"] if f["name"] == "run_chat"
+        )
+        # run_chat declares Stdio + LlmClient, no Unsafe.
+        self.assertIn("Stdio", run_chat["declared_capabilities"])
+        self.assertIn("LlmClient", run_chat["declared_capabilities"])
+        self.assertNotIn("Unsafe", run_chat["declared_capabilities"])
+        self.assertFalse(run_chat["has_unsafe"])
+        self.assertIn("Unsafe", run_chat["provably_excluded_capabilities"])
+
     def test_llm_tool_sandbox_manifest_excludes_runcode(self):
         # The headline audit claim: process_request provably
         # excludes RunCode. If this assertion ever fails it means

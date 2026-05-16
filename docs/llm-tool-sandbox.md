@@ -370,6 +370,61 @@ SendEmail)`. The fact that `make_anthropic_client` needed
 `Unsafe` is visible at the construction site, *not* at the
 agent's signature. The agent itself remains free of `Unsafe`.
 
+### A working real-API round-trip
+
+A complete, runnable demo of the real-API path is at
+[`examples/llm_anthropic_real.capa`](../examples/llm_anthropic_real.capa),
+paired with a tiny Python bridge at
+[`examples/llm_anthropic_helper.py`](../examples/llm_anthropic_helper.py).
+The bridge takes care of the HTTP+auth dance that Capa's
+built-in `Net` does not cover in v1; the Capa side does the rest
+through the same `LlmClient` capability shape.
+
+The demo is single-turn (no tool dispatch, just a chat
+round-trip) to keep the wire format minimal. Combining it with
+the multi-turn tool-dispatch loop from `llm_agent_runner.capa`
+is mechanical: swap `MockLlmClient` for `AnthropicClient`,
+extend the helper to handle the `tool_use` content-block shape,
+and the rest stays the same.
+
+To run the real demo, set your API key and run from the project
+root:
+
+```bash
+$ export ANTHROPIC_API_KEY=sk-ant-...
+$ capa --run examples/llm_anthropic_real.capa
+user: In one sentence: what is capability-based security?
+assistant: Capability-based security restricts a program's authority by
+giving each component only the specific permissions (capabilities) it needs,
+rather than relying on ambient privileges granted by the surrounding system.
+```
+
+Without the key the helper returns a structured error and the
+Capa side handles it gracefully through the regular `Result`
+chain (no Python exception leaks out). The error path is what
+the CI test exercises; the success path requires a live API
+key.
+
+The manifest still tells the audit story:
+
+```bash
+$ capa --manifest examples/llm_anthropic_real.capa | jq '.functions[] | select(.name=="run_chat")'
+{
+  "declared_capabilities": ["Stdio", "LlmClient"],
+  "provably_excluded_capabilities": [
+    "Clock", "Db", "Env", "Fs", "Net",
+    "Proc", "Random", "Unsafe"
+  ],
+  "has_unsafe": false
+}
+```
+
+The agent-equivalent function `run_chat` is `Unsafe`-free, even
+though the program as a whole uses `Unsafe` for the network
+call. The discipline has contained the `Unsafe` to its
+implementor; the function that does the actual conversation
+work cannot reach it.
+
 ## Honest limits
 
 The discipline is a precise tool. It does what it does, no more.

@@ -1,0 +1,159 @@
+// llm_anthropic_real.capa, single-turn round-trip with the real
+// Anthropic Messages API. Companion to llm_agent_runner.capa,
+// which demonstrates the agent loop with a mock LLM. Together,
+// the two cover both halves of the picture:
+//
+//   - llm_agent_runner.capa: mock LLM, real tool dispatch through
+//     Capa-typed capabilities. The full loop logic is exercised
+//     and the manifest assertion (agent provably excludes
+//     RunCode / Net / Unsafe) is checked end-to-end.
+//
+//   - llm_anthropic_real.capa: real LLM, no tools yet. Shows that
+//     the wire format works and the Capa side parses the response
+//     correctly. The Unsafe boundary is contained in
+//     `make_anthropic_client`; the agent-equivalent code path
+//     above stays Unsafe-free.
+//
+// Requires ANTHROPIC_API_KEY in the environment. Run from the
+// project root so the sys.path bootstrap finds
+// examples/llm_anthropic_helper.py.
+
+// =========================================================
+// The LLM capability (subset of llm_agent_runner)
+// =========================================================
+
+capability LlmClient
+    fun ask(self, prompt: String) -> Result<String, IoError>
+
+// =========================================================
+// Real implementor
+// =========================================================
+//
+// The implementor holds the Unsafe + configuration, and the
+// `ask` method routes through py_invoke to call the helper.
+// Notice that the Unsafe is contained inside the cap-bearing
+// struct, not surfaced in the caller's signature.
+
+type AnthropicClient {
+    u: Unsafe,
+    api_key: String,
+    model: String,
+    max_tokens: Int
+}
+
+impl LlmClient for AnthropicClient
+    fun ask(self, prompt: String) -> Result<String, IoError>
+        let helper = py_import(self.u, "llm_anthropic_helper")
+        // py_invoke takes a homogeneous List, so the max_tokens
+        // int rides over as a string and the helper parses it.
+        let raw = py_invoke(self.u, helper.chat, [
+            self.api_key, self.model, prompt, "${self.max_tokens}"
+        ])
+        // The helper always returns a JSON string. Parse it and
+        // walk the shape to extract the reply text or the error.
+        match parse_json(raw)
+            Err(e) ->
+                return Err(IoError("malformed helper response"))
+            Ok(v) ->
+                match v.as_object()
+                    None ->
+                        return Err(IoError("helper response is not an object"))
+                    Some(obj) ->
+                        match obj.get("ok")
+                            None ->
+                                return Err(IoError("missing 'ok' field"))
+                            Some(ok_v) ->
+                                match ok_v.as_bool()
+                                    Some(true) ->
+                                        return Ok(extract_text(obj))
+                                    Some(false) ->
+                                        return Err(IoError(extract_error(obj)))
+                                    None ->
+                                        return Err(IoError("'ok' is not a boolean"))
+
+// Helpers to pull the two relevant fields out of the parsed
+// response. Both return a sensible default if the field is
+// missing or has the wrong type, so the caller never has to
+// reason about three-way Option chains.
+
+fun extract_text(obj: Map<String, JsonValue>) -> String
+    match obj.get("text")
+        None -> return ""
+        Some(v) ->
+            match v.as_string()
+                Some(s) -> return s
+                None -> return ""
+
+fun extract_error(obj: Map<String, JsonValue>) -> String
+    match obj.get("error")
+        None -> return "unknown error"
+        Some(v) ->
+            match v.as_string()
+                Some(s) -> return s
+                None -> return "unknown error"
+
+// =========================================================
+// Factory
+// =========================================================
+//
+// Reads ANTHROPIC_API_KEY from the environment and wires up the
+// client. Defaults to a current Sonnet variant; pick a different
+// model by hand if your account has access to others.
+
+fun make_anthropic_client(u: Unsafe, env: Env) -> AnthropicClient
+    let key = env.get("ANTHROPIC_API_KEY").unwrap_or("")
+    return AnthropicClient {
+        u: u,
+        api_key: key,
+        model: "claude-sonnet-4-5",
+        max_tokens: 256
+    }
+
+// =========================================================
+// Bootstrap so the helper module is importable
+// =========================================================
+//
+// The .capa file does not know its own location; we add the
+// project's examples/ directory to sys.path so py_import can
+// find llm_anthropic_helper.py. Assumes `capa --run` is invoked
+// from the project root.
+
+fun bootstrap_path(u: Unsafe)
+    let sys_mod = py_import(u, "sys")
+    let os_mod  = py_import(u, "os")
+    let cwd     = py_invoke(u, os_mod.getcwd, [])
+    let examples_dir = py_invoke(u, os_mod.path.join, [cwd, "examples"])
+    py_invoke(u, sys_mod.path.insert, [0, examples_dir])
+
+// =========================================================
+// The "agent" (single-turn for this demo)
+// =========================================================
+//
+// Note the signature: Stdio + LlmClient. No Unsafe in scope here;
+// the agent-equivalent function gets a sanitised LlmClient and
+// nothing else. The Unsafe stays contained in `main`.
+
+fun run_chat(stdio: Stdio, llm: LlmClient, prompt: String) -> Result<Unit, IoError>
+    stdio.println("user: ${prompt}")
+    match llm.ask(prompt)
+        Ok(reply) ->
+            stdio.println("assistant: ${reply}")
+            return Ok(())
+        Err(e) ->
+            stdio.eprintln("error: ${e}")
+            return Err(e)
+
+// =========================================================
+// Wiring
+// =========================================================
+
+fun main(stdio: Stdio, env: Env, u: Unsafe)
+    bootstrap_path(u)
+    let llm = make_anthropic_client(u, env)
+
+    // A short prompt to keep token usage minimal during demos.
+    let prompt = "In one sentence: what is capability-based security?"
+
+    match run_chat(stdio, llm, prompt)
+        Ok(_)  -> return
+        Err(_) -> return
