@@ -918,6 +918,28 @@ running real code is the harshest test of a design.
     trait signature is resolved to the concrete impl type.
   * **Extra methods** (helpers) are allowed.
 
+## Community
+
+Questions, ideas, and showing off what you built with Capa all
+live in [**GitHub Discussions**](https://github.com/nelsonduarte/capa/discussions).
+
+- **[Q&A](https://github.com/nelsonduarte/capa/discussions/categories/q-a)**:
+  stuck on a capability error, an attenuation chain, the manifest output, a
+  syntax oddity. Don't hesitate; "the analyzer told me X and I don't
+  understand why" is the right format.
+- **[Ideas](https://github.com/nelsonduarte/capa/discussions/categories/ideas)**:
+  feature requests, language-design discussions, "what if Capa had X".
+  Pre-implementation thinking; concrete proposals can graduate to issues.
+- **[Show and tell](https://github.com/nelsonduarte/capa/discussions/categories/show-and-tell)**:
+  a Capa program you wrote, a manifest you found interesting, a CVE walkthrough,
+  an integration with another tool. All welcome.
+- **[Announcements](https://github.com/nelsonduarte/capa/discussions/categories/announcements)**:
+  release notes, roadmap updates, and other read-only updates from the maintainer.
+
+For security issues specifically, please use the private vulnerability reporting
+channel at <https://github.com/nelsonduarte/capa/security/advisories/new> rather
+than a public discussion. See [`SECURITY.md`](SECURITY.md) for the disclosure flow.
+
 ## What's next
 
 Capa is a capability-typed language: every function declares
