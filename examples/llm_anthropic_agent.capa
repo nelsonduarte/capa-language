@@ -1,0 +1,322 @@
+// llm_anthropic_agent.capa, end-to-end Anthropic agent with
+// Capa-typed tools. The capstone of the LLM-tool-sandbox arc:
+// a real model decides which tools to call; the dispatcher only
+// has access to the Capa capabilities the agent function declares;
+// the manifest records the agent's tool surface as audit evidence.
+//
+// Composition:
+//
+//   - LlmClient capability + AnthropicClient implementor (from
+//     llm_anthropic_real, extended to handle the tool_use response
+//     shape via the chat_with_tools helper).
+//
+//   - SearchWeb capability + a stub implementor (no real HTTP for
+//     this demo; the point being demonstrated is the loop, not
+//     the search).
+//
+//   - agent_loop function that walks the conversation: every turn
+//     either ends with a text reply (loop terminates) or emits a
+//     tool_use that the dispatcher routes to a Capa method call.
+//     The tool_result is fed back as the next user message; the
+//     model continues.
+//
+// Run with ANTHROPIC_API_KEY set; without it the helper returns
+// a structured error and the agent prints it gracefully.
+
+// =========================================================
+// Capability declarations
+// =========================================================
+
+capability SearchWeb
+    fun search(self, query: String) -> Result<String, IoError>
+
+capability LlmClient
+    fun next_turn(self, history_json: String) -> Result<String, IoError>
+
+// =========================================================
+// AnthropicClient implementation
+// =========================================================
+//
+// Returns the helper's response as a raw JSON string. The caller
+// parses it to pick between "reply" and "tool_use" outcomes. We
+// keep the parsing on the Capa side so the Result chain stays
+// uniform with the rest of the agent's error handling.
+
+type AnthropicClient {
+    u: Unsafe,
+    api_key: String,
+    model: String,
+    tools_json: String,
+    max_tokens_str: String
+}
+
+impl LlmClient for AnthropicClient
+    fun next_turn(self, history_json: String) -> Result<String, IoError>
+        let helper = py_import(self.u, "llm_anthropic_helper")
+        let raw = py_invoke(self.u, helper.chat_with_tools, [
+            self.api_key,
+            self.model,
+            history_json,
+            self.tools_json,
+            self.max_tokens_str
+        ])
+        return Ok(raw)
+
+// =========================================================
+// Stub SearchWeb implementation
+// =========================================================
+//
+// Returns synthetic results keyed by domain prefix in the query.
+// The point being demonstrated is the dispatch path through Capa
+// caps; a real implementation would attenuate Net to specific
+// hosts and route through it.
+
+type StubSearch { allowed_domain: String }
+
+impl SearchWeb for StubSearch
+    fun search(self, query: String) -> Result<String, IoError>
+        return Ok("[stub] top result on ${self.allowed_domain}: '${query}' is documented at https://${self.allowed_domain}/docs")
+
+// =========================================================
+// Factories
+// =========================================================
+
+fun make_anthropic_client(u: Unsafe, env: Env) -> AnthropicClient
+    let key = env.get("ANTHROPIC_API_KEY").unwrap_or("")
+    return AnthropicClient {
+        u: u,
+        api_key: key,
+        model: "claude-sonnet-4-5",
+        tools_json: tool_specs_json(),
+        max_tokens_str: "1024"
+    }
+
+fun make_search(domain: String) -> StubSearch
+    return StubSearch { allowed_domain: domain }
+
+// =========================================================
+// Tool schemas
+// =========================================================
+//
+// Anthropic format: each tool is {name, description,
+// input_schema (JSON Schema)}. We keep the list and the schema
+// as a literal string since they are static-ish content.
+
+fun tool_specs_json() -> String
+    return "[{\"name\":\"search_web\",\"description\":\"Search the web for a query and return the top result.\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\",\"description\":\"The search query.\"}},\"required\":[\"query\"]}}]"
+
+// =========================================================
+// JSON building helpers
+// =========================================================
+//
+// Capa does not yet have a builder API for JsonValue trees, so
+// we build messages by string concatenation. Each helper handles
+// the small set of fields the Anthropic Messages API needs.
+
+fun escape_json(s: String) -> String
+    let backslash_escaped = s.replace("\\", "\\\\")
+    return backslash_escaped.replace("\"", "\\\"")
+
+fun build_user_text_msg(text: String) -> String
+    return "{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"" + escape_json(text) + "\"}]}"
+
+fun build_tool_result_msg(tool_use_id: String, content: String) -> String
+    return "{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"" + escape_json(tool_use_id) + "\",\"content\":\"" + escape_json(content) + "\"}]}"
+
+fun build_history_array(messages: List<String>) -> String
+    var s = "["
+    var first = true
+    for m in messages
+        if first == false
+            s = s + ","
+        s = s + m
+        first = false
+    s = s + "]"
+    return s
+
+// =========================================================
+// Helpers to read tool input
+// =========================================================
+//
+// The model emits tool_input as a JSON object (e.g.,
+// {"query": "..."}). We extract the field we care about with
+// the chained-Option pattern + `?` for terseness.
+
+fun extract_query(tool_input_json: String) -> Option<String>
+    let v = parse_json(tool_input_json).ok()?
+    let obj = v.as_object()?
+    let qv = obj.get("query")?
+    return qv.as_string()
+
+// =========================================================
+// Tool dispatch
+// =========================================================
+//
+// Translates an LLM-emitted tool name into a Capa method call.
+// The dispatcher's signature is the legal-targets set:
+// SearchWeb is the only tool here, so the only callable method
+// is search. Anything else returns "unknown tool: <name>" and
+// the LLM sees that in the next turn.
+
+fun dispatch(
+    tool_name: String,
+    tool_input_json: String,
+    search: SearchWeb
+) -> String
+    if tool_name == "search_web"
+        match extract_query(tool_input_json)
+            None -> return "error: tool input missing or malformed query"
+            Some(q) ->
+                match search.search(q)
+                    Ok(r) -> return r
+                    Err(e) -> return "error: ${e}"
+    return "unknown tool: ${tool_name}"
+
+// =========================================================
+// Response parsing
+// =========================================================
+//
+// The helper returns one of three shapes:
+//   {"ok": true, "kind": "reply", "text": "...", "assistant_msg_json": "..."}
+//   {"ok": true, "kind": "tool_use", "tool_use_id": "...", "tool_name": "...",
+//    "tool_input_json": "...", "assistant_msg_json": "..."}
+//   {"ok": false, "error": "..."}
+//
+// We translate to a Capa sum type so the agent loop pattern-
+// matches cleanly.
+
+type ReplyData {
+    text: String,
+    assistant_msg: String
+}
+
+type ToolUseData {
+    tool_use_id: String,
+    tool_name: String,
+    tool_input_json: String,
+    assistant_msg: String
+}
+
+type TurnOutcome =
+    Reply(ReplyData)
+    ToolUse(ToolUseData)
+    Failed(String)
+
+fun parse_turn(raw: String) -> TurnOutcome
+    match parse_json(raw)
+        Err(_) -> return Failed("helper returned malformed JSON")
+        Ok(v) ->
+            match v.as_object()
+                None -> return Failed("helper response not an object")
+                Some(obj) -> return parse_turn_obj(obj)
+
+// Small accessors that avoid the inline-lambda chain and keep
+// the parse function readable.
+
+fun obj_str(obj: Map<String, JsonValue>, key: String, default_: String) -> String
+    match obj.get(key)
+        None -> return default_
+        Some(v) ->
+            match v.as_string()
+                None -> return default_
+                Some(s) -> return s
+
+fun obj_bool(obj: Map<String, JsonValue>, key: String, default_: Bool) -> Bool
+    match obj.get(key)
+        None -> return default_
+        Some(v) ->
+            match v.as_bool()
+                None -> return default_
+                Some(b) -> return b
+
+fun parse_turn_obj(obj: Map<String, JsonValue>) -> TurnOutcome
+    let ok = obj_bool(obj, "ok", false)
+    if ok == false
+        return Failed(obj_str(obj, "error", "unknown error"))
+    let kind = obj_str(obj, "kind", "")
+    let assistant_msg = obj_str(obj, "assistant_msg_json", "{}")
+    if kind == "reply"
+        return Reply(ReplyData {
+            text: obj_str(obj, "text", ""),
+            assistant_msg: assistant_msg
+        })
+    if kind == "tool_use"
+        return ToolUse(ToolUseData {
+            tool_use_id: obj_str(obj, "tool_use_id", ""),
+            tool_name: obj_str(obj, "tool_name", ""),
+            tool_input_json: obj_str(obj, "tool_input_json", "{}"),
+            assistant_msg: assistant_msg
+        })
+    return Failed("unknown response kind: ${kind}")
+
+// =========================================================
+// The agent loop
+// =========================================================
+//
+// Note the signature: Stdio + LlmClient + SearchWeb. No Unsafe,
+// no Net, no Fs. The agent's tool surface is exactly these three
+// caps; the manifest emits that, regardless of what the model
+// emits at runtime.
+
+fun agent_loop(
+    stdio: Stdio,
+    llm: LlmClient,
+    search: SearchWeb,
+    user_prompt: String
+) -> Result<Unit, IoError>
+    var history: List<String> = []
+    history.push(build_user_text_msg(user_prompt))
+
+    stdio.println("user: ${user_prompt}")
+
+    var step = 0
+    while step < 10
+        step = step + 1
+        let history_str = build_history_array(history)
+        match llm.next_turn(history_str)
+            Err(e) ->
+                stdio.eprintln("llm error: ${e}")
+                return Err(e)
+            Ok(raw) ->
+                match parse_turn(raw)
+                    Failed(msg) ->
+                        stdio.eprintln("error: ${msg}")
+                        return Err(IoError(msg))
+                    Reply(r) ->
+                        stdio.println("assistant: ${r.text}")
+                        return Ok(())
+                    ToolUse(t) ->
+                        stdio.println("  > tool_use: ${t.tool_name}(${t.tool_input_json})")
+                        let result = dispatch(t.tool_name, t.tool_input_json, search)
+                        stdio.println("  < tool_result: ${result}")
+                        history.push(t.assistant_msg)
+                        history.push(build_tool_result_msg(t.tool_use_id, result))
+
+    stdio.eprintln("agent loop exceeded 10 steps; aborting")
+    return Err(IoError("agent loop step limit reached"))
+
+// =========================================================
+// Bootstrap (same as llm_anthropic_real)
+// =========================================================
+
+fun bootstrap_path(u: Unsafe)
+    let sys_mod = py_import(u, "sys")
+    let os_mod  = py_import(u, "os")
+    let cwd     = py_invoke(u, os_mod.getcwd, [])
+    let examples_dir = py_invoke(u, os_mod.path.join, [cwd, "examples"])
+    py_invoke(u, sys_mod.path.insert, [0, examples_dir])
+
+// =========================================================
+// Wiring
+// =========================================================
+
+fun main(stdio: Stdio, env: Env, u: Unsafe)
+    bootstrap_path(u)
+    let llm    = make_anthropic_client(u, env)
+    let search = make_search("capa-language.com")
+
+    let prompt = "Use the search_web tool to find information about Capa language. Then summarise what you found."
+
+    match agent_loop(stdio, llm, search, prompt)
+        Ok(_)  -> return
+        Err(_) -> return

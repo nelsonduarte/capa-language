@@ -425,6 +425,86 @@ call. The discipline has contained the `Unsafe` to its
 implementor; the function that does the actual conversation
 work cannot reach it.
 
+### The full end-to-end: real Anthropic + tool dispatch
+
+The capstone of the arc is at
+[`examples/llm_anthropic_agent.capa`](../examples/llm_anthropic_agent.capa).
+It combines the real Anthropic Messages API with the
+tool-dispatch loop from `llm_agent_runner.capa`: a real model
+decides which tools to call, the agent's dispatcher routes each
+tool call through Capa-typed capabilities, the model continues
+based on the result.
+
+The wire format is the real Anthropic tool-use shape: tool
+schemas are sent as JSON, responses come back as content blocks
+that are either `text` or `tool_use`, and tool results are
+appended to history as `tool_result` content blocks. The
+Python helper (`chat_with_tools`) does the JSON wrangling and
+exposes a small envelope shape back to Capa:
+
+```json
+{"ok": true, "kind": "reply",
+ "text": "...", "assistant_msg_json": "..."}
+
+{"ok": true, "kind": "tool_use",
+ "tool_use_id": "...", "tool_name": "...",
+ "tool_input_json": "...",
+ "assistant_msg_json": "..."}
+
+{"ok": false, "error": "..."}
+```
+
+The Capa side maps these to a sum type and pattern-matches:
+
+```capa
+type TurnOutcome =
+    Reply(ReplyData)
+    ToolUse(ToolUseData)
+    Failed(String)
+
+// ... inside agent_loop ...
+match parse_turn(raw)
+    Failed(msg) -> return Err(IoError(msg))
+    Reply(r)    -> stdio.println("assistant: ${r.text}")
+                   return Ok(())
+    ToolUse(t)  -> let result = dispatch(t.tool_name, t.tool_input_json, search)
+                   history.push(t.assistant_msg)
+                   history.push(build_tool_result_msg(t.tool_use_id, result))
+```
+
+The headline audit claim still holds:
+
+```bash
+$ capa --manifest examples/llm_anthropic_agent.capa | jq '.functions[] | select(.name=="agent_loop")'
+{
+  "declared_capabilities": ["Stdio", "LlmClient", "SearchWeb"],
+  "provably_excluded_capabilities": [
+    "Clock", "Db", "Env", "Fs", "Net",
+    "Proc", "Random", "Unsafe"
+  ],
+  "has_unsafe": false
+}
+```
+
+Even though a real model is in the loop deciding which tools
+to call, `agent_loop` provably cannot escalate beyond
+`(Stdio, LlmClient, SearchWeb)`. Whatever the model emits, the
+dispatcher's only legal targets are the cap parameters the
+agent received. A `tool_use` for `run_code` returns
+`"unknown tool: run_code"` and the model sees that string;
+there is nowhere for the call to land.
+
+Run it with your API key:
+
+```bash
+$ export ANTHROPIC_API_KEY=sk-ant-...
+$ capa --run examples/llm_anthropic_agent.capa
+user: Use the search_web tool to find information about Capa language. Then summarise what you found.
+  > tool_use: search_web({"query": "Capa language"})
+  < tool_result: [stub] top result on capa-language.com: 'Capa language' is documented at https://capa-language.com/docs
+assistant: Based on the search, Capa is a programming language...
+```
+
 ## Honest limits
 
 The discipline is a precise tool. It does what it does, no more.

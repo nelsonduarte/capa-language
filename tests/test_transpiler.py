@@ -1256,6 +1256,56 @@ class TestTranspileExamples(unittest.TestCase):
         self.assertIn("In one sentence: what is capability-based security?", r.stdout)
         self.assertIn("ANTHROPIC_API_KEY is empty", r.stderr)
 
+    def test_llm_anthropic_agent_compiles_and_handles_missing_key(self):
+        # End-to-end agent: real Anthropic + Capa-typed tool dispatch
+        # loop. Cannot exercise the success path in CI (no API key),
+        # but the empty-key path exercises everything else: sys.path
+        # bootstrap, py_import of the helper, py_invoke into
+        # chat_with_tools, JSON parsing, the parse_turn pattern that
+        # dispatches Reply/ToolUse/Failed, and the Result chain back
+        # to the agent_loop. With the key empty the helper returns
+        # the structured error and the agent prints it via eprintln.
+        import os
+        import subprocess
+        import sys
+        env = dict(os.environ)
+        env["ANTHROPIC_API_KEY"] = ""
+        r = subprocess.run(
+            [sys.executable, "-m", "capa", "--run",
+             "examples/llm_anthropic_agent.capa"],
+            capture_output=True, text=True, encoding="utf-8",
+            env=env,
+        )
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("Use the search_web tool", r.stdout)
+        self.assertIn("ANTHROPIC_API_KEY is empty", r.stderr)
+
+    def test_llm_anthropic_agent_manifest_agent_loop_caps(self):
+        # The headline audit claim of the full end-to-end demo: even
+        # though a real LLM is in the loop deciding which tools to
+        # call, the agent_loop function provably excludes Net, Fs,
+        # Env, Unsafe, and anything else it did not declare. The
+        # discipline is preserved through both the dispatch string-
+        # matching and the LLM-as-capability indirection.
+        import json
+        import subprocess
+        import sys
+        r = subprocess.run(
+            [sys.executable, "-m", "capa", "--manifest",
+             "examples/llm_anthropic_agent.capa"],
+            capture_output=True, text=True, encoding="utf-8",
+        )
+        self.assertEqual(r.returncode, 0, r.stderr)
+        m = json.loads(r.stdout)
+        loop = next(
+            f for f in m["functions"] if f["name"] == "agent_loop"
+        )
+        for cap in ("Stdio", "LlmClient", "SearchWeb"):
+            self.assertIn(cap, loop["declared_capabilities"])
+        for cap in ("Net", "Fs", "Env", "Unsafe"):
+            self.assertIn(cap, loop["provably_excluded_capabilities"])
+        self.assertFalse(loop["has_unsafe"])
+
     def test_llm_anthropic_real_manifest_run_chat_unsafe_free(self):
         # The agent-equivalent function `run_chat` is Unsafe-free
         # in the manifest, even though the program as a whole

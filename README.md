@@ -92,6 +92,7 @@ Capa/
 │   ├── llm_tool_sandbox.capa   # LLM tool-use sandboxing via capability discipline
 │   ├── llm_agent_runner.capa   # Mock LLM + Capa-typed tool dispatch loop
 │   ├── llm_anthropic_real.capa # Real Anthropic Messages API round-trip
+│   ├── llm_anthropic_agent.capa # Real LLM + Capa-typed tool dispatch loop
 │   ├── llm_anthropic_helper.py # Python bridge for the real-API HTTP dance
 │   ├── vex_demo.capa           # @vex per-function exploitability claims
 │   ├── spdx_parser.capa        # SPDX 2.3 JSON parser, in Capa
