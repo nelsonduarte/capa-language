@@ -236,31 +236,49 @@ class Transpiler(
 
 _TRY_HELPER = '''
 class _CapaTryEarlyReturn(Exception):
-    """Internal exception used by the ? operator to propagate Err.
+    """Internal exception used by the ? operator to propagate Err
+    or None_ from an expression context. The @_capa_wrap decorator
+    catches it at the function boundary and converts it back into
+    the matching return value. Capa programmers never see it.
 
-    The _capa_run wrapper catches it at each function's boundary and
-    converts it back into an Err return. The Capa programmer never sees
-    this exception.
+    Only used when ? appears in an expression position (sub-expr of
+    a BinOp, inside a call argument, etc.). When ? sits directly as
+    the value of a let / return / expression statement, the
+    transpiler hoists the check inline and the exception path is
+    not taken.
     """
-    def __init__(self, err):
-        self.err = err
+    def __init__(self, value):
+        self.value = value
 
-def _capa_try(result):
-    if isinstance(result, Err):
-        raise _CapaTryEarlyReturn(result)
-    if isinstance(result, Ok):
-        return result.value
-    raise RuntimeError(f"`?` applied to non-Result value: {result!r}")
+def _capa_try(value):
+    """Runtime ? operator for the expression-position case. Returns
+    the unwrapped payload for Ok / Some, raises an internal exception
+    for Err / None_ (caught by @_capa_wrap at the function boundary).
+    """
+    if isinstance(value, Err):
+        raise _CapaTryEarlyReturn(value)
+    if isinstance(value, Ok):
+        return value.value
+    if value is None_:
+        raise _CapaTryEarlyReturn(value)
+    if isinstance(value, Some):
+        return value.value
+    raise RuntimeError(
+        f"`?` applied to a value that is not Result or Option: {value!r}",
+    )
 
 def _capa_wrap(fn):
     """Decorator that catches _CapaTryEarlyReturn and returns the
-    corresponding Err. Applied by the transpiler to functions that use `?`.
+    propagated Err / None_. Applied by the transpiler to functions
+    where at least one ? sits in an expression position that the
+    inline hoist could not handle. Functions whose ? uses are all
+    hoisted skip the decorator entirely.
     """
     def wrapper(*args, **kwargs):
         try:
             return fn(*args, **kwargs)
         except _CapaTryEarlyReturn as e:
-            return e.err
+            return e.value
     wrapper.__name__ = getattr(fn, "__name__", "wrapper")
     return wrapper
 '''
@@ -289,6 +307,47 @@ def _uses_try(node) -> bool:
                 return True
     if isinstance(node, tuple):
         return any(_uses_try(x) for x in node)
+    return False
+
+
+def _uses_exception_try(node) -> bool:
+    """Same intent as :func:`_uses_try`, but exempts ``?`` that sits
+    directly in a position the transpiler hoists statically: the
+    value of a ``LetStmt`` / ``ReturnStmt`` / ``ExprStmt``. Returns
+    True only when at least one ``?`` would still take the
+    exception-based path, in which case the function needs the
+    ``@_capa_wrap`` decorator.
+
+    Functions whose ``?`` uses are all hoist-eligible skip the
+    decorator and save the one wrap call per invocation plus the
+    raise/catch on the Err / None_ path.
+    """
+    if isinstance(node, A.FunDecl):
+        return False  # function boundary
+    if isinstance(node, A.LetStmt):
+        inner = node.value.expr if isinstance(node.value, A.Try) else node.value
+        return _uses_try(inner)
+    if isinstance(node, A.ReturnStmt):
+        if node.value is None:
+            return False
+        inner = (
+            node.value.expr if isinstance(node.value, A.Try) else node.value
+        )
+        return _uses_try(inner)
+    if isinstance(node, A.ExprStmt):
+        inner = node.expr.expr if isinstance(node.expr, A.Try) else node.expr
+        return _uses_try(inner)
+    # Generic recursion through children.
+    if isinstance(node, list):
+        return any(_uses_exception_try(x) for x in node)
+    if isinstance(node, tuple):
+        return any(_uses_exception_try(x) for x in node)
+    if hasattr(node, "__dataclass_fields__"):
+        for f in node.__dataclass_fields__:
+            if f == "pos":
+                continue
+            if _uses_exception_try(getattr(node, f)):
+                return True
     return False
 
 

@@ -448,8 +448,19 @@ to public.
   (bind to `let` first, then pass the binding, or use a
   single-expression body). README, EBNF section on lambdas, and the
   reference page document this precisely.
-- [ ] **Operator `?` uses internal exception**, correct but slower
-  than expanded early-return. Optimisation. P2
+- [x] **Operator `?` inline-hoist optimisation** + **`?` works on
+  `Option<T>`**. The transpiler now lowers ``let x = expr?``,
+  ``return expr?``, and ``expr?`` as a bare statement to an
+  inline isinstance / ``is None_`` guard with an early return;
+  functions whose ``?`` uses are all hoisted skip the
+  ``@_capa_wrap`` decorator entirely. Microbench: 1.36x on the
+  Ok path, 8.91x on the Err path. The same iteration also fixed
+  the latent bug where ``?`` on an ``Option<T>`` value raised
+  ``RuntimeError: ? applied to non-Result value`` because the
+  runtime helper only knew about ``Ok`` / ``Err``. Implementation
+  at ``capa/transpiler/_statements.py`` +
+  ``capa/transpiler/__init__.py``. 7 tests at
+  ``tests/test_transpiler.py::TestQuestionMarkHoisting``.
 
 ---
 

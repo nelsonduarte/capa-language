@@ -310,6 +310,150 @@ class TestTranspileResult(unittest.TestCase):
         self.assertEqual(out, "ok: 43\nerr: bad\n")
 
 
+class TestQuestionMarkHoisting(unittest.TestCase):
+    """The ``?`` operator: the transpiler hoists ``?`` inline when it
+    sits directly as a let / return / expression-statement value
+    (the fast path, no exception). Everywhere else it falls back to
+    the existing ``_capa_try`` exception-based path.
+
+    Also exercises ``?`` on ``Option<T>``; the runtime helper was
+    only wired for Result before this iteration.
+    """
+
+    def _transpile(self, src: str) -> str:
+        from capa.lexer import Lexer
+        from capa.parser import Parser
+        from capa.analyzer import analyze
+        from capa.transpiler import transpile
+        tokens = Lexer(src, filename="<probe>").lex()
+        module = Parser(
+            tokens, source=src, filename="<probe>",
+        ).parse_module()
+        result = analyze(module, source=src, filename="<probe>")
+        self.assertTrue(result.ok, result.errors)
+        return transpile(module, types=result.types)
+
+    def test_hoisted_let_emits_inline_check(self):
+        # `let x = expr?` should not contain `_capa_try(`; it should
+        # emit an isinstance check and an early return.
+        code = self._transpile(
+            "fun first(xs: List<Int>) -> Option<Int>\n"
+            "    let a = xs.first()?\n"
+            "    return Some(a)\n"
+        )
+        # The hoisted form's identifying token:
+        self.assertIn("__capa_try_0 = ", code)
+        self.assertIn("if isinstance(__capa_try_0, Err) or __capa_try_0 is None_:", code)
+        # The exception-path helper must not be involved:
+        self.assertNotIn("_capa_try(xs.first()", code)
+
+    def test_hoisted_expr_stmt_emits_inline_check(self):
+        # `expr?` as a bare statement: discards the unwrapped
+        # payload but still propagates None_ / Err. Valid when the
+        # function returns the matching wrapper.
+        code = self._transpile(
+            "fun ensure_first(xs: List<Int>) -> Option<Int>\n"
+            "    xs.first()?\n"
+            "    return Some(99)\n"
+        )
+        self.assertIn("__capa_try_0 = xs.first()", code)
+        self.assertIn(
+            "if isinstance(__capa_try_0, Err) or __capa_try_0 is None_:",
+            code,
+        )
+        self.assertNotIn("_capa_try(xs.first()", code)
+
+    def test_hoisted_only_skips_capa_wrap(self):
+        # A function whose only ? is in a hoist-eligible position
+        # should NOT carry the @_capa_wrap decorator.
+        code = self._transpile(
+            "fun first(xs: List<Int>) -> Option<Int>\n"
+            "    let a = xs.first()?\n"
+            "    return Some(a)\n"
+        )
+        # Find the function definition; the previous line cannot be
+        # `@_capa_wrap`.
+        lines = code.split("\n")
+        for i, line in enumerate(lines):
+            if line.startswith("def first("):
+                self.assertNotEqual(
+                    lines[i - 1].strip(),
+                    "@_capa_wrap",
+                    "hoisted-only function should not get @_capa_wrap",
+                )
+                break
+        else:
+            self.fail("def first not found in transpiled output")
+
+    def test_expression_position_still_uses_capa_wrap(self):
+        # `?` inside a sub-expression (here, a multiplication) is not
+        # hoist-eligible; the function must still carry @_capa_wrap
+        # and the expression must still call _capa_try.
+        code = self._transpile(
+            "fun doubled(xs: List<Int>) -> Option<Int>\n"
+            "    return Some(xs.first()? * 2)\n"
+        )
+        self.assertIn("@_capa_wrap", code)
+        self.assertIn("_capa_try(", code)
+
+    def test_question_mark_works_on_option(self):
+        # Regression: ? on Option<T> used to raise
+        # `RuntimeError: ? applied to non-Result value` because
+        # _capa_try only knew about Ok/Err. After the fix it handles
+        # Some/None_ too.
+        rc, out, err = run_capa(
+            "fun first(xs: List<Int>) -> Option<Int>\n"
+            "    let a = xs.first()?\n"
+            "    return Some(a)\n"
+            "fun main(stdio: Stdio)\n"
+            "    match first([7])\n"
+            "        Some(n) ->\n"
+            "            stdio.println(\"got: ${n}\")\n"
+            "        None ->\n"
+            "            stdio.println(\"none\")\n"
+            "    match first([])\n"
+            "        Some(n) ->\n"
+            "            stdio.println(\"got: ${n}\")\n"
+            "        None ->\n"
+            "            stdio.println(\"none\")\n"
+        )
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out, "got: 7\nnone\n")
+
+    def test_question_mark_on_option_expression_position(self):
+        # Expression-position ? on Option also goes through
+        # _capa_try; verifies the Some / None_ branches of the
+        # updated runtime helper.
+        rc, out, err = run_capa(
+            "fun first_doubled(xs: List<Int>) -> Option<Int>\n"
+            "    return Some(xs.first()? * 2)\n"
+            "fun main(stdio: Stdio)\n"
+            "    match first_doubled([5])\n"
+            "        Some(n) ->\n"
+            "            stdio.println(\"${n}\")\n"
+            "        None ->\n"
+            "            stdio.println(\"none\")\n"
+            "    match first_doubled([])\n"
+            "        Some(n) ->\n"
+            "            stdio.println(\"${n}\")\n"
+            "        None ->\n"
+            "            stdio.println(\"none\")\n"
+        )
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out, "10\nnone\n")
+
+    def test_question_mark_chains_in_let(self):
+        # Two ? in two lets: each gets its own temp.
+        code = self._transpile(
+            "fun two(xs: List<Int>) -> Option<Int>\n"
+            "    let a = xs.first()?\n"
+            "    let b = xs.get(1)?\n"
+            "    return Some(a + b)\n"
+        )
+        self.assertIn("__capa_try_0 = ", code)
+        self.assertIn("__capa_try_1 = ", code)
+
+
 class TestTranspileImpl(unittest.TestCase):
     def test_method_call(self):
         rc, out, err = run_capa(

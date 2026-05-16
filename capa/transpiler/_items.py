@@ -119,7 +119,7 @@ class _ItemsMixin:
         self.em.write(f"{t.name} = _Trait_{t.name}")
 
     def _emit_impl(self, impl: A.ImplBlock) -> None:
-        from . import _safe_ident, _uses_try
+        from . import _safe_ident, _uses_exception_try
         # In Python, methods are added directly to the target class.
         # For trait impls, we could optionally inject the inheritance,
         # but that would involve modifying the existing declaration.
@@ -129,7 +129,7 @@ class _ItemsMixin:
         target = impl.type_name
         for m in impl.methods:
             params = ", ".join(_safe_ident(p.name) for p in m.params)
-            if _uses_try(m.body):
+            if _uses_exception_try(m.body):
                 self.em.write("@_capa_wrap")
             self.em.write(f"def _{target}_{m.name}({params}):")
             self.em.indent()
@@ -139,12 +139,12 @@ class _ItemsMixin:
             self.em.blank()
 
     def _emit_fun(self, fn: A.FunDecl) -> None:
-        from . import _safe_ident, _uses_try
+        from . import _safe_ident, _uses_exception_try
         params = ", ".join(_safe_ident(p.name) for p in fn.params)
         self._fun_stack.append(fn.name)
         # If the function uses `?`, it needs the decorator that catches
         # the internal exception used for propagation.
-        if _uses_try(fn.body):
+        if _uses_exception_try(fn.body):
             self.em.write("@_capa_wrap")
         self.em.write(f"def {_safe_ident(fn.name)}({params}):")
         self.em.indent()

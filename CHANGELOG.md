@@ -9,6 +9,65 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`?` operator now works on `Option<T>`**: the runtime helper
+  ``_capa_try`` only handled ``Ok`` / ``Err`` before, so any
+  ``?`` applied to an ``Option`` raised
+  ``RuntimeError: ? applied to non-Result value`` even though
+  the analyzer accepted the construct. The helper now also
+  unwraps ``Some(x)`` and propagates ``None_`` via the same
+  early-return exception path.
+
+### Changed
+
+- **`?` operator: inline hoist when the position allows it**.
+  The transpiler now special-cases the three statement contexts
+  that don't need an exception to propagate failures:
+  ``let pat = expr?``, ``return expr?``, and ``expr?`` as a
+  bare expression statement. Each is lowered to an inline
+  ``isinstance(__capa_try_N, Err) or __capa_try_N is None_``
+  guard followed by an early return on failure and a
+  ``.value`` read on success.
+
+  ```capa
+  // before, exception-based:
+  let a = xs.first()?
+
+  // after, inline:
+  __capa_try_0 = xs.first()
+  if isinstance(__capa_try_0, Err) or __capa_try_0 is None_:
+      return __capa_try_0
+  a = __capa_try_0.value
+  ```
+
+  When every ``?`` in a function falls in a hoist-eligible
+  position, the ``@_capa_wrap`` decorator is also skipped, so
+  the function pays no per-call overhead at all. ``?`` in
+  expression positions (call arguments, operands of an
+  operator, branches of an ``if`` expression) keeps using the
+  existing ``_capa_try`` exception path.
+
+  Micro-benchmark (200k iterations on Python 3.14):
+  - Ok path: 0.30us/call → 0.22us/call (1.36x).
+  - Err path: 0.52us/call → 0.06us/call (8.91x), no exception
+    raised when the ``?`` is hoist-eligible.
+
+  Implementation: ``capa/transpiler/_statements.py``
+  (``_emit_let``, ``_emit_stmt`` for ``ReturnStmt`` and
+  ``ExprStmt``, helper ``_emit_try_check``) and
+  ``capa/transpiler/__init__.py`` (new ``_uses_exception_try``
+  walker; updated ``_TRY_HELPER`` for ``Option`` support).
+
+  7 new tests at
+  ``tests/test_transpiler.py::TestQuestionMarkHoisting`` cover
+  the hoisted let / expression-stmt shapes, the
+  ``@_capa_wrap`` skip when only hoisted, the expression-
+  position fallback still using ``_capa_try``, ``?`` on
+  ``Option`` in both hoisted and expression positions, and
+  multi-``?`` chains getting unique temps. Full suite: 932
+  passed (was 925).
+
 ## [0.8.0-beta], 2026-05-15
 
 This release graduates Capa from alpha to beta. The label

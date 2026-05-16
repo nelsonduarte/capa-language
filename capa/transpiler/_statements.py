@@ -51,6 +51,13 @@ class _StatementsMixin:
         elif isinstance(s, A.ReturnStmt):
             if s.value is None:
                 self.em.write("return")
+            elif isinstance(s.value, A.Try):
+                # ``return expr?`` lowers inline: hoist expr to a
+                # temp, return the temp on Err / None_, return the
+                # unwrapped payload on Ok / Some. Avoids the
+                # exception path entirely.
+                tmp = self._emit_try_check(s.value.expr)
+                self.em.write(f"return {tmp}.value")
             else:
                 self.em.write(f"return {self._emit_expr(s.value)}")
         elif isinstance(s, A.BreakStmt):
@@ -62,10 +69,35 @@ class _StatementsMixin:
             # without needing a temporary variable - the value is discarded.
             if isinstance(s.expr, A.MatchExpr):
                 self._emit_match_stmt(s.expr)
+            elif isinstance(s.expr, A.Try):
+                # ``expr?`` as a discarded statement: still propagate
+                # Err / None_ early. The unwrapped payload is dropped.
+                self._emit_try_check(s.expr.expr)
             else:
                 self.em.write(self._emit_expr(s.expr))
         else:
             raise TranspilerError(f"unsupported statement: {type(s).__name__}")
+
+    def _emit_try_check(self, inner: A.Expr) -> str:
+        """Lower ``inner?`` inline: emit a fresh ``__capa_try_N``
+        temp, an ``isinstance(..., Err) or ... is None_`` guard that
+        ``return``s the temp on the failure path, and leave the
+        caller to use ``<tmp>.value`` (or discard it). Returns the
+        temp name so the caller can read ``.value`` from it.
+
+        Replaces the slower ``_capa_try`` path for the three
+        positions the transpiler can hoist statically: ``LetStmt``
+        value, ``ReturnStmt`` value, ``ExprStmt`` expression.
+        """
+        inner_code = self._emit_expr(inner)
+        tmp = f"__capa_try_{self._tmp_counter}"
+        self._tmp_counter += 1
+        self.em.write(f"{tmp} = {inner_code}")
+        self.em.write(f"if isinstance({tmp}, Err) or {tmp} is None_:")
+        self.em.indent()
+        self.em.write(f"return {tmp}")
+        self.em.dedent()
+        return tmp
 
     def _emit_match_stmt(self, m: A.MatchExpr) -> None:
         """Emits a MatchExpr whose value is discarded (used as a statement).
@@ -94,6 +126,16 @@ class _StatementsMixin:
         self.em.dedent()
 
     def _emit_let(self, s: A.LetStmt) -> None:
+        if isinstance(s.value, A.Try):
+            # ``let pat = expr?`` lowers inline: hoist expr to a
+            # temp, return early on Err / None_, bind the
+            # unwrapped payload to the pattern. No exception, no
+            # @_capa_wrap unless something else in the function
+            # still needs it.
+            tmp = self._emit_try_check(s.value.expr)
+            target = self._emit_pattern_lvalue(s.pattern)
+            self.em.write(f"{target} = {tmp}.value")
+            return
         value = self._emit_expr(s.value)
         target = self._emit_pattern_lvalue(s.pattern)
         self.em.write(f"{target} = {value}")
