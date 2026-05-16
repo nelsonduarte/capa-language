@@ -11,6 +11,16 @@ breaking changes and the discipline is still being shaped.
 
 ### Fixed
 
+- **LSP no longer shows false "undefined name" for imported
+  functions**: when the buffer the editor is showing imports
+  other files that exist on disk, the LSP now runs the module
+  loader and analyses the linked module. Calls to imported
+  ``pub`` functions used to surface as ``undefined name``
+  diagnostics in the editor because the LSP analysed each file
+  alone. The single-file path is still the fallback whenever
+  the loader can't resolve (missing import, cycle, in-memory
+  buffer with no on-disk path).
+
 - **`?` operator now works on `Option<T>`**: the runtime helper
   ``_capa_try`` only handled ``Ok`` / ``Err`` before, so any
   ``?`` applied to an ``Option`` raised
@@ -20,6 +30,24 @@ breaking changes and the discipline is still being shaped.
   early-return exception path.
 
 ### Changed
+
+- **LSP completion is module-aware**: when ``LspContext`` runs
+  the loader successfully, completion gains the imported public
+  names directly from the linked module's top-level items.
+  Mangled private names (``_capa_m<N>__<name>`` introduced by
+  the ``pub`` enforcement pass) are filtered out so the
+  suggestion list only carries names the importer's source can
+  actually reach. ``LspContext.idents`` and ``.decl_sites`` are
+  also filtered to entries originating in the current buffer so
+  cursor-position lookups don't collide with line numbers from
+  imported files.
+
+  6 new tests at
+  ``tests/test_lsp.py::TestLspModuleAwareness`` cover: no
+  false-positive ``undefined name`` for imported calls, imported
+  ``pub`` names in completions, private names absent, mangled
+  names absent, single-file fallback when the loader fails, and
+  the in-memory-filename skip. Full suite: 938 passed (was 932).
 
 - **`?` operator: inline hoist when the position allows it**.
   The transpiler now special-cases the three statement contexts

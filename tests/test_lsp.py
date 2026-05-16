@@ -13,6 +13,7 @@ continues to run in a stock-Python environment.
 """
 
 import unittest
+from pathlib import Path
 
 try:
     import lsprotocol  # noqa: F401
@@ -1452,6 +1453,159 @@ class TestSemanticTokens(unittest.TestCase):
             key = (d["line"], d["col"])
             self.assertNotIn(key, seen)
             seen.add(key)
+
+
+class TestLspModuleAwareness(unittest.TestCase):
+    """When the buffer the editor is showing imports other files
+    that exist on disk, ``LspContext`` now runs the loader so the
+    linked module is what gets analysed. Without this the LSP
+    surfaces false "undefined name" diagnostics for every call to
+    an imported function. Completion also gains the imported
+    public names automatically through the linked module's
+    top-level items, while mangled private names from the loader
+    are filtered out.
+    """
+
+    def setUp(self) -> None:
+        import shutil
+        import tempfile
+        self._tmp = Path(tempfile.mkdtemp(prefix="capa_lsp_modaware_"))
+        self.addCleanup(shutil.rmtree, self._tmp, ignore_errors=True)
+
+    def _write(self, name: str, body: str) -> Path:
+        p = self._tmp / name
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(body, encoding="utf-8")
+        return p
+
+    def test_imported_function_does_not_show_undefined(self):
+        # Before module-awareness the LSP would report
+        # "undefined name 'greet'" for an imported function.
+        from capa.lsp.context import LspContext
+        self._write(
+            "util.capa",
+            "pub fun greet(name: String) -> String\n"
+            "    return \"Hi, \" + name\n"
+        )
+        main_src = (
+            "import util\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(greet(\"x\"))\n"
+        )
+        main_path = self._write("main.capa", main_src)
+        ctx = LspContext.parse(main_src, str(main_path))
+        self.assertIsNotNone(ctx)
+        # ctx.linked is the loader output; analysis used it.
+        self.assertIsNotNone(ctx.linked)
+        # No false-positive on the imported call.
+        msgs = [str(e) for e in ctx.result.errors]
+        self.assertFalse(
+            any("undefined name 'greet'" in m for m in msgs),
+            f"unexpected errors: {msgs}",
+        )
+
+    def test_completion_offers_imported_pub_names(self):
+        from capa.lsp.completion import compute_completions
+        self._write(
+            "util.capa",
+            "pub fun greet(name: String) -> String\n"
+            "    return \"Hi, \" + name\n"
+        )
+        main_src = (
+            "import util\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"hi\")\n"
+        )
+        main_path = self._write("main.capa", main_src)
+        completions = compute_completions(main_src, str(main_path), 3, 4)
+        labels = {c.label for c in completions}
+        self.assertIn("greet", labels)
+
+    def test_completion_hides_imported_private_names(self):
+        # The loader mangles private names to _capa_m<N>__<name>;
+        # completion filters those out so the user only sees what
+        # they can actually call.
+        from capa.lsp.completion import compute_completions
+        self._write(
+            "util.capa",
+            "pub fun pub_fn() -> Int\n    return 1\n"
+            "fun secret() -> Int\n    return 42\n"
+        )
+        main_src = (
+            "import util\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"hi\")\n"
+        )
+        main_path = self._write("main.capa", main_src)
+        labels = {
+            c.label for c in
+            compute_completions(main_src, str(main_path), 3, 4)
+        }
+        self.assertIn("pub_fn", labels)
+        self.assertNotIn("secret", labels)
+        # No mangled name should leak either.
+        self.assertFalse(
+            any(l.startswith("_capa_m") for l in labels),
+            f"mangled name leaked into completions: {labels}",
+        )
+
+    def test_falls_back_to_single_file_when_loader_fails(self):
+        # Missing import target: the loader raises LoaderError.
+        # LspContext should fall back to single-file analysis so
+        # the editor still works rather than crashing.
+        from capa.lsp.context import LspContext
+        main_src = (
+            "import nonexistent\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"hi\")\n"
+        )
+        main_path = self._write("main.capa", main_src)
+        ctx = LspContext.parse(main_src, str(main_path))
+        self.assertIsNotNone(ctx)
+        # Loader did not succeed; we fell back to single-file.
+        self.assertIsNone(ctx.linked)
+
+    def test_in_memory_filename_skips_loader(self):
+        # When the LSP is called with an in-memory buffer (filename
+        # starting with '<' or otherwise not on disk), the loader
+        # is skipped: no I/O for a phantom path.
+        from capa.lsp.context import LspContext
+        src = (
+            "import util\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"hi\")\n"
+        )
+        ctx = LspContext.parse(src, "<probe>")
+        self.assertIsNotNone(ctx)
+        self.assertIsNone(ctx.linked)
+
+    def test_idents_filtered_to_current_file_when_linked(self):
+        # When the linker merges the imported module's items in,
+        # ctx.idents must only carry Idents originating in the
+        # current buffer so cursor lookups don't collide with
+        # line numbers from imported files.
+        from capa.lsp.context import LspContext
+        self._write(
+            "util.capa",
+            "pub fun greet(name: String) -> String\n"
+            "    return \"Hi, \" + name\n"
+        )
+        main_src = (
+            "import util\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(greet(\"x\"))\n"
+        )
+        main_path = self._write("main.capa", main_src)
+        ctx = LspContext.parse(main_src, str(main_path))
+        self.assertIsNotNone(ctx)
+        this = str(main_path.resolve())
+        for ident in ctx.idents:
+            ident_file = ident.pos.filename
+            if ident_file:
+                self.assertEqual(
+                    str(Path(ident_file).resolve()), this,
+                    f"ident from a different file leaked: {ident.name}",
+                )
 
 
 if __name__ == "__main__":

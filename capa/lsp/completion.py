@@ -122,11 +122,21 @@ def _floor_completions() -> list[Completion]:
 def _module_completions(
     module: A.Module, result: AnalysisResult,
 ) -> list[Completion]:
-    """Top-level names from the analyzed module."""
+    """Top-level names from the analyzed module. When the module is
+    the linker output, mangled private items
+    (``_capa_m<N>__<name>``) are skipped so the suggestion list
+    only carries the names the importer's source actually has
+    access to.
+    """
     out: list[Completion] = []
     floor_labels = {c.label for c in _floor_completions()}
     for name, sym in result.global_symbols.items():
         if name in floor_labels:
+            continue
+        if name.startswith("_capa_m") and "__" in name:
+            # Mangled private from an imported module; the
+            # importer can't reach it by name and it should not
+            # appear in completions.
             continue
         if sym.kind == SymbolKind.FUNCTION:
             detail = ""
