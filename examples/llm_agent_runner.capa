@@ -1,0 +1,262 @@
+// llm_agent_runner.capa, end-to-end agent loop with Capa-sandboxed tools.
+//
+// llm_tool_sandbox.capa established the static picture: a function
+// that holds (SearchWeb, SendEmail) cannot escalate to RunCode no
+// matter what its body does. This file is the dynamic counterpart:
+// a real agent loop that talks to an LLM, dispatches the LLM's
+// tool calls to local capability-typed implementations, and feeds
+// results back. Both halves of the picture matter, the discipline
+// is at the source level, but only an agent loop makes the
+// dispatch path itself observable.
+//
+// The LLM is itself a capability. A `LlmClient` value carries the
+// authority to do network calls + API auth + JSON parsing; the
+// agent receives one as a parameter, the same way it receives the
+// tools. The agent's signature is the complete contract: the LLM
+// and the tools the agent is allowed to dispatch to.
+//
+// Default demo path uses a scripted `MockLlmClient` so the
+// example runs offline and deterministically. A skeleton
+// `AnthropicLlmClient` shows where the real-API integration plugs
+// in; the full implementation lives in the writeup at
+// `docs/llm-tool-sandbox.md`.
+
+// =========================================================
+// Tool capabilities (the agent's tool surface)
+// =========================================================
+
+capability SearchWeb
+    fun search(self, query: String) -> Result<String, IoError>
+
+capability SendEmail
+    fun send(self, to: String, subject: String, body: String) -> Result<Unit, IoError>
+
+// =========================================================
+// LLM message + response types
+// =========================================================
+//
+// Minimal shape compatible with the major function-calling APIs
+// (Anthropic Messages, OpenAI Chat Completions). A `Message` is
+// one turn of conversation; a `ToolCall` is the LLM's request to
+// invoke a tool; `LlmResponse` is what the LLM hands back.
+
+pub type Message {
+    role: String,
+    content: String
+}
+
+pub type ToolCall {
+    name: String,
+    args: Map<String, String>
+}
+
+pub type LlmResponse =
+    Reply(String)
+    Tool(ToolCall)
+
+// =========================================================
+// The LLM as a capability
+// =========================================================
+//
+// A `LlmClient` makes network calls, holds an API key, and is
+// rate-limited. Each `chat` call is a side effect with cost.
+// Treating it as a capability puts those facts in the type
+// system: the agent's signature declares it, the manifest emits
+// it, attenuation could narrow it (e.g., per-model rate limits)
+// the same way Net narrows by host.
+
+capability LlmClient
+    fun chat(self, history: List<Message>) -> Result<LlmResponse, IoError>
+
+// =========================================================
+// Mock implementation
+// =========================================================
+//
+// Drives the demo offline. The script is hard-coded: turn 1 asks
+// for a search, turn 2 asks for an email, turn 3 emits the final
+// reply. A real LLM would emit roughly the same shape on a real
+// query; the wire format is faithful to what Anthropic / OpenAI
+// return.
+
+type MockLlmClient { _placeholder: Int }
+
+impl LlmClient for MockLlmClient
+    fun chat(self, history: List<Message>) -> Result<LlmResponse, IoError>
+        let n = history.length()
+        // Step 1: after the user prompt, "decide" to search.
+        if n == 1
+            var args: Map<String, String> = new_map()
+            args.set("query", "Capa language news")
+            return Ok(Tool(ToolCall { name: "search_web", args: args }))
+        // Step 2: after search result lands in history, "decide"
+        // to email.
+        if n == 3
+            var args: Map<String, String> = new_map()
+            args.set("to", "user@example.com")
+            args.set("subject", "Capa news digest")
+            args.set("body", "Here is your daily summary.")
+            return Ok(Tool(ToolCall { name: "send_email", args: args }))
+        // Step 3+: emit the final assistant reply.
+        return Ok(Reply("Done. Searched for news, emailed the summary."))
+
+// =========================================================
+// Real LLM client (skeleton)
+// =========================================================
+//
+// A production client would route through Unsafe + py_import to
+// invoke an HTTP library that supports custom headers (the
+// Anthropic API needs `x-api-key` and `anthropic-version`).
+// Sketch:
+//
+//   impl LlmClient for AnthropicLlmClient
+//       fun chat(self, history: List<Message>) -> Result<LlmResponse, IoError>
+//           let urllib = py_import(self.u, "urllib.request")
+//           let json   = py_import(self.u, "json")
+//           // ... build request, POST, parse, extract tool_use ...
+//           return Ok(parsed)
+//
+// The full implementation lives in `docs/llm-tool-sandbox.md`.
+
+type AnthropicLlmClient {
+    u: Unsafe,
+    api_key: String,
+    model: String
+}
+
+impl LlmClient for AnthropicLlmClient
+    fun chat(self, history: List<Message>) -> Result<LlmResponse, IoError>
+        // Placeholder for the demo; see the writeup for the real
+        // urllib-based body. The point of the skeleton being here
+        // is the signature: a real implementation has exactly the
+        // same shape, and the agent code below does not need to
+        // change when the client is swapped.
+        return Ok(Reply("(AnthropicLlmClient skeleton: see docs/llm-tool-sandbox.md)"))
+
+// =========================================================
+// Stub tool implementors
+// =========================================================
+//
+// Offline stubs for the two tools. Real implementations would
+// hold Net (search via HTTPS, mail via SMTP); see
+// `llm_tool_sandbox.capa` for that shape.
+
+type StubSearch { allowed_domain: String }
+type StubMailer { _placeholder: Int }
+
+impl SearchWeb for StubSearch
+    fun search(self, query: String) -> Result<String, IoError>
+        return Ok("(stub) top result for '${query}' on ${self.allowed_domain}")
+
+impl SendEmail for StubMailer
+    fun send(self, to: String, subject: String, body: String) -> Result<Unit, IoError>
+        return Ok(())
+
+// Factories
+pub fun make_mock_llm() -> MockLlmClient
+    return MockLlmClient { _placeholder: 0 }
+
+pub fun make_search(domain: String) -> StubSearch
+    return StubSearch { allowed_domain: domain }
+
+pub fun make_mailer() -> StubMailer
+    return StubMailer { _placeholder: 0 }
+
+// =========================================================
+// Tool dispatch
+// =========================================================
+//
+// Pure plumbing: map the LLM's tool name to the corresponding
+// Capa method call. If the LLM emits a tool the agent does not
+// have, the dispatcher returns an error string. The LLM sees the
+// "unknown tool" message and adjusts (or gives up). The discipline
+// is preserved because there is no way to dispatch to a tool the
+// agent does not hold: the dispatch function only takes
+// (search, mail), so a `run_code` request has nowhere to go.
+
+fun dispatch(
+    call: ToolCall,
+    search: SearchWeb,
+    mail: SendEmail
+) -> String
+    if call.name == "search_web"
+        let query = call.args.get("query").unwrap_or("")
+        match search.search(query)
+            Ok(r) -> return r
+            Err(e) -> return "error: ${e}"
+    if call.name == "send_email"
+        let to = call.args.get("to").unwrap_or("")
+        let subject = call.args.get("subject").unwrap_or("")
+        let body = call.args.get("body").unwrap_or("")
+        match mail.send(to, subject, body)
+            Ok(_) -> return "email sent"
+            Err(e) -> return "error: ${e}"
+    return "unknown tool: ${call.name}"
+
+// =========================================================
+// The agent loop
+// =========================================================
+//
+// The headline function. Note the signature: Stdio (for logging
+// the conversation), LlmClient (to talk to the model), and the
+// two tool caps. Whatever the LLM tells the agent to do, the
+// agent can only call methods on values in scope, and the
+// dispatch function above is the only place that translates
+// LLM-emitted strings into Capa method calls. RunCode is not
+// in scope; the LLM cannot escalate to it.
+//
+// The loop bounds the number of steps so a runaway LLM (or a
+// prompt-injected one) cannot spin forever. Real production
+// runners add timeouts, token budgets, and rate-limit handling
+// around the same shape.
+
+pub fun agent_loop(
+    stdio: Stdio,
+    llm: LlmClient,
+    search: SearchWeb,
+    mail: SendEmail,
+    user_prompt: String
+) -> Result<Unit, IoError>
+    var history: List<Message> = []
+    history.push(Message { role: "user", content: user_prompt })
+
+    stdio.println("user: ${user_prompt}")
+
+    var step = 0
+    while step < 10
+        step = step + 1
+        match llm.chat(history)
+            Err(e) ->
+                stdio.eprintln("llm error: ${e}")
+                return Err(e)
+            Ok(Reply(text)) ->
+                stdio.println("assistant: ${text}")
+                return Ok(())
+            Ok(Tool(call)) ->
+                stdio.println("  > tool_use: ${call.name}")
+                let result = dispatch(call, search, mail)
+                stdio.println("  < tool_result: ${result}")
+                history.push(Message {
+                    role: "assistant",
+                    content: "tool_use:${call.name}"
+                })
+                history.push(Message {
+                    role: "tool",
+                    content: result
+                })
+
+    stdio.eprintln("agent loop exceeded 10 steps; aborting")
+    return Err(IoError("agent loop step limit reached"))
+
+// =========================================================
+// Wiring
+// =========================================================
+
+fun main(stdio: Stdio)
+    let llm    = make_mock_llm()
+    let search = make_search("capa-language.com")
+    let mail   = make_mailer()
+
+    stdio.println("=== running agent ===")
+    match agent_loop(stdio, llm, search, mail, "what is new with the Capa language?")
+        Ok(_)  -> stdio.println("=== done ===")
+        Err(e) -> stdio.eprintln("agent failed: ${e}")

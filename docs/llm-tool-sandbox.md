@@ -198,6 +198,178 @@ is a deterministic function of the source. The same compile
 produces the same manifest. A reviewer never has to read the
 agent's code to know its tool surface; the manifest is enough.
 
+## End-to-end runner: the agent loop
+
+The static demo above shows the discipline. The runtime
+counterpart is an agent loop that actually talks to an LLM,
+dispatches tool calls based on the model's response, and feeds
+results back. The same capability discipline applies to the
+loop: the agent function declares its tool surface as parameters
+and provably cannot escalate beyond it, whatever the LLM emits.
+
+The full runnable example is at
+[`examples/llm_agent_runner.capa`](../examples/llm_agent_runner.capa).
+The shape:
+
+```capa
+// The LLM is itself a capability: it makes network calls,
+// holds an API key, is rate-limited. The agent receives one
+// as a parameter, the same way it receives the tools.
+capability LlmClient
+    fun chat(self, history: List<Message>) -> Result<LlmResponse, IoError>
+
+// LlmResponse: a final reply, or a tool call to dispatch.
+type LlmResponse =
+    Reply(String)
+    Tool(ToolCall)
+
+// The agent loop. Note the signature: Stdio + LlmClient +
+// (search, mail). RunCode is not in scope; the LLM cannot
+// escalate to it.
+pub fun agent_loop(
+    stdio: Stdio,
+    llm: LlmClient,
+    search: SearchWeb,
+    mail: SendEmail,
+    user_prompt: String
+) -> Result<Unit, IoError>
+    var history: List<Message> = []
+    history.push(Message { role: "user", content: user_prompt })
+
+    var step = 0
+    while step < 10
+        step = step + 1
+        match llm.chat(history)
+            Err(e) ->
+                return Err(e)
+            Ok(Reply(text)) ->
+                stdio.println("assistant: ${text}")
+                return Ok(())
+            Ok(Tool(call)) ->
+                let result = dispatch(call, search, mail)
+                history.push(Message { role: "tool", content: result })
+
+    return Err(IoError("agent loop step limit reached"))
+```
+
+The `dispatch` function is the only place that translates an
+LLM-emitted tool name into a Capa method call:
+
+```capa
+fun dispatch(call: ToolCall, search: SearchWeb, mail: SendEmail) -> String
+    if call.name == "search_web"
+        match search.search(call.args.get("query").unwrap_or(""))
+            Ok(r) -> return r
+            Err(e) -> return "error: ${e}"
+    if call.name == "send_email"
+        match mail.send(call.args.get("to").unwrap_or(""), ..., ...)
+            Ok(_) -> return "email sent"
+            Err(e) -> return "error: ${e}"
+    return "unknown tool: ${call.name}"
+```
+
+If the LLM emits `{"tool": "run_code", "args": {...}}`, the
+dispatcher returns `"unknown tool: run_code"` and the LLM
+sees that string in the next turn. The agent did not have
+`RunCode` in scope; there was nowhere to dispatch to. The
+discipline is preserved even though dispatch is string-keyed
+at the wire level, because the *legal targets* are statically
+known: the dispatch function can only call methods on the cap
+parameters it receives.
+
+Run the demo with a scripted mock LLM (offline, deterministic):
+
+```bash
+$ capa --run examples/llm_agent_runner.capa
+=== running agent ===
+user: what is new with the Capa language?
+  > tool_use: search_web
+  < tool_result: (stub) top result for 'Capa language news' on capa-language.com
+  > tool_use: send_email
+  < tool_result: email sent
+assistant: Done. Searched for news, emailed the summary.
+=== done ===
+```
+
+The manifest tells the audit story:
+
+```bash
+$ capa --manifest examples/llm_agent_runner.capa | jq '.functions[] | select(.name=="agent_loop")'
+{
+  "declared_capabilities": ["Stdio", "LlmClient", "SearchWeb", "SendEmail"],
+  "provably_excluded_capabilities": [
+    "Clock", "Db", "Env", "Fs", "Net",
+    "Proc", "Random", "Unsafe"
+  ],
+  "has_unsafe": false
+}
+```
+
+`agent_loop` is provably incapable of touching the filesystem,
+the network, environment variables, or `Unsafe`, regardless of
+what the model emits.
+
+### Plugging in a real LLM
+
+The `MockLlmClient` in the example scripts a fixed conversation
+to keep the demo offline. A real `AnthropicLlmClient` (or
+`OpenAILlmClient`) routes through `Unsafe` to call the API:
+
+```capa
+type AnthropicLlmClient {
+    u: Unsafe,
+    api_key: String,
+    model: String
+}
+
+impl LlmClient for AnthropicLlmClient
+    fun chat(self, history: List<Message>) -> Result<LlmResponse, IoError>
+        let urllib = py_import(self.u, "urllib.request")
+        let json   = py_import(self.u, "json")
+        // 1. Build the request body: convert history + tool schemas
+        //    into the API's JSON shape.
+        // 2. POST to api.anthropic.com with x-api-key and
+        //    anthropic-version headers via urllib.Request.
+        // 3. Parse the JSON response. Extract a text block (-> Reply)
+        //    or a tool_use block (-> Tool).
+        return Ok(parsed)
+```
+
+The factory takes `Unsafe` and the configuration:
+
+```capa
+fun make_anthropic_client(u: Unsafe, env: Env) -> AnthropicLlmClient
+    let key = env.get("ANTHROPIC_API_KEY").unwrap_or("")
+    return AnthropicLlmClient {
+        u: u,
+        api_key: key,
+        model: "claude-sonnet-4-5"
+    }
+```
+
+Wiring at the top:
+
+```capa
+fun main(stdio: Stdio, u: Unsafe, env: Env)
+    let llm    = make_anthropic_client(u, env)
+    let search = make_search("capa-language.com")
+    let mail   = make_mailer()
+    // agent_loop's signature has not changed; it still receives
+    // a LlmClient, a SearchWeb, and a SendEmail. The fact that
+    // the LlmClient is now real instead of mocked is invisible
+    // to the agent, by design.
+    agent_loop(stdio, llm, search, mail, "what is new?")
+```
+
+Two things to notice about this. First, `agent_loop`'s signature
+does not change when the LLM client is swapped from mock to
+real. The agent is decoupled from the LLM implementation
+through the `LlmClient` capability. Second, the manifest for
+`agent_loop` still declares only `(Stdio, LlmClient, SearchWeb,
+SendEmail)`. The fact that `make_anthropic_client` needed
+`Unsafe` is visible at the construction site, *not* at the
+agent's signature. The agent itself remains free of `Unsafe`.
+
 ## Honest limits
 
 The discipline is a precise tool. It does what it does, no more.

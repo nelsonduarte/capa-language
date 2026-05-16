@@ -1189,6 +1189,45 @@ class TestTranspileExamples(unittest.TestCase):
         self.assertIn("email sent", out)
         self.assertIn("done", out)
 
+    def test_llm_agent_runner(self):
+        # End-to-end runner with a scripted mock LLM. Tests that the
+        # agent dispatches tool calls correctly and terminates on a
+        # final Reply. The discipline assertion lives in the
+        # manifest test below.
+        rc, out, err = self._run_example("examples/llm_agent_runner.capa")
+        self.assertEqual(rc, 0, err)
+        self.assertIn("user: what is new with the Capa language?", out)
+        self.assertIn("tool_use: search_web", out)
+        self.assertIn("tool_use: send_email", out)
+        self.assertIn("assistant: Done.", out)
+
+    def test_llm_agent_runner_manifest_agent_loop_excludes_net(self):
+        # The agent_loop function provably cannot touch Net, Fs,
+        # Env, Unsafe, etc.  It only declares (Stdio, LlmClient,
+        # SearchWeb, SendEmail). This is the headline audit claim:
+        # whatever the LLM tells the agent to do, the runner cannot
+        # escalate beyond its declared tool surface.
+        import json
+        import subprocess
+        import sys
+        r = subprocess.run(
+            [sys.executable, "-m", "capa", "--manifest",
+             "examples/llm_agent_runner.capa"],
+            capture_output=True, text=True, encoding="utf-8",
+        )
+        self.assertEqual(r.returncode, 0, r.stderr)
+        m = json.loads(r.stdout)
+        loop = next(
+            f for f in m["functions"] if f["name"] == "agent_loop"
+        )
+        # Declared: the four caps in the agent's signature.
+        for cap in ("Stdio", "LlmClient", "SearchWeb", "SendEmail"):
+            self.assertIn(cap, loop["declared_capabilities"])
+        # Excluded: everything else, including Unsafe.
+        for cap in ("Net", "Fs", "Env", "Unsafe"):
+            self.assertIn(cap, loop["provably_excluded_capabilities"])
+        self.assertFalse(loop["has_unsafe"])
+
     def test_llm_tool_sandbox_manifest_excludes_runcode(self):
         # The headline audit claim: process_request provably
         # excludes RunCode. If this assertion ever fails it means

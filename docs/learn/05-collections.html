@@ -90,17 +90,17 @@
 <section>
     <h2>Maps</h2>
 
-    <p>A <code>Map&lt;K, V&gt;</code> is an unordered set of key-value pairs. There is no map literal in v1; you create one with <code>new_map()</code> and populate it with <code>insert</code>:</p>
+    <p>A <code>Map&lt;K, V&gt;</code> is an unordered set of key-value pairs. There is no map literal in v1; you create one with <code>new_map()</code> and populate it with <code>set</code>:</p>
 
 <pre><code><span class="kw-decl">fun</span> <span class="fn-name">main</span>(stdio: <span class="cap">Stdio</span>)
     <span class="kw-storage">var</span> ages: <span class="ty-builtin">Map</span>&lt;<span class="ty-primitive">String</span>, <span class="ty-primitive">Int</span>&gt; = <span class="fn-call">new_map</span>()
-    ages.<span class="fn-call">insert</span>(<span class="str">"Ana"</span>, 30)
-    ages.<span class="fn-call">insert</span>(<span class="str">"Bruno"</span>, 25)
-    stdio.<span class="fn-call">println</span>(<span class="str">"size: ${ages.size()}"</span>)
+    ages.<span class="fn-call">set</span>(<span class="str">"Ana"</span>, 30)
+    ages.<span class="fn-call">set</span>(<span class="str">"Bruno"</span>, 25)
+    stdio.<span class="fn-call">println</span>(<span class="str">"length: ${ages.length()}"</span>)
     stdio.<span class="fn-call">println</span>(<span class="str">"Ana's age: ${ages.get(\"Ana\")}"</span>)     <span class="comment">// Some(30)</span>
     stdio.<span class="fn-call">println</span>(<span class="str">"Carla's age: ${ages.get(\"Carla\")}"</span>)  <span class="comment">// None</span></code></pre>
 
-    <p>Same shape as <code>List.get</code>: keys that are not present yield <code>None</code>, not a runtime error. Other methods worth knowing: <code>contains_key</code>, <code>keys</code>, <code>values</code>, <code>pairs</code>, <code>remove</code>.</p>
+    <p>Same shape as <code>List.get</code>: keys that are not present yield <code>None</code>, not a runtime error. Other methods worth knowing: <code>contains_key</code>, <code>keys</code>, <code>values</code>, <code>pairs</code>.</p>
 </section>
 
 <section>
@@ -110,10 +110,10 @@
 
 <pre><code><span class="kw-decl">fun</span> <span class="fn-name">main</span>(stdio: <span class="cap">Stdio</span>)
     <span class="kw-storage">var</span> tags: <span class="ty-builtin">Set</span>&lt;<span class="ty-primitive">String</span>&gt; = <span class="fn-call">new_set</span>()
-    tags.<span class="fn-call">insert</span>(<span class="str">"red"</span>)
-    tags.<span class="fn-call">insert</span>(<span class="str">"blue"</span>)
-    tags.<span class="fn-call">insert</span>(<span class="str">"red"</span>)        <span class="comment">// no effect; "red" already in</span>
-    stdio.<span class="fn-call">println</span>(<span class="str">"size: ${tags.size()}"</span>)             <span class="comment">// 2</span>
+    tags.<span class="fn-call">add</span>(<span class="str">"red"</span>)
+    tags.<span class="fn-call">add</span>(<span class="str">"blue"</span>)
+    tags.<span class="fn-call">add</span>(<span class="str">"red"</span>)        <span class="comment">// no effect; "red" already in</span>
+    stdio.<span class="fn-call">println</span>(<span class="str">"length: ${tags.length()}"</span>)           <span class="comment">// 2</span>
     stdio.<span class="fn-call">println</span>(<span class="str">"has blue? ${tags.contains(\"blue\")}"</span>)  <span class="comment">// true</span></code></pre>
 
     <p>Sets shine when you have to ask "is this in the collection?" often.</p>
