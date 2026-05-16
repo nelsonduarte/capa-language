@@ -1586,3 +1586,85 @@ html { scroll-behavior: smooth; scroll-padding-top: 4.5rem; }
 @media (prefers-reduced-motion: reduce) {
     html { scroll-behavior: auto; }
 }
+
+/* =========================================================
+   Learn / tutorial track
+   ========================================================= */
+
+/* Breadcrumb above the chapter heading. */
+.learn-breadcrumb {
+    font-size: 0.85rem;
+    color: var(--fg-mute);
+    margin: 0 0 0.5rem 0;
+    letter-spacing: 0.02em;
+}
+.learn-breadcrumb a { color: var(--accent); text-decoration: none; }
+.learn-breadcrumb a:hover { text-decoration: underline; }
+
+/* The table of contents on the Learn index. One row per chapter,
+   chapter number from the <ol> counter, title as a link, meta
+   description in a smaller dim line beneath. */
+.learn-toc {
+    list-style: none;
+    counter-reset: ch;
+    padding-left: 0;
+    margin: 1.5rem 0;
+}
+.learn-toc > li {
+    counter-increment: ch;
+    display: grid;
+    grid-template-columns: 2.5rem 1fr;
+    gap: 0.5rem 1rem;
+    padding: 0.8rem 0;
+    border-bottom: 1px solid var(--border);
+}
+.learn-toc > li::before {
+    content: counter(ch, decimal-leading-zero);
+    color: var(--fg-mute);
+    font-family: var(--font-mono);
+    font-size: 0.9rem;
+    grid-column: 1;
+    align-self: start;
+    padding-top: 0.15rem;
+}
+.learn-toc > li > a,
+.learn-toc > li > .learn-soon {
+    grid-column: 2;
+    text-decoration: none;
+}
+.learn-toc > li > a strong { color: var(--accent); }
+.learn-toc > li > a:hover strong { text-decoration: underline; }
+.learn-toc > li > .learn-soon { color: var(--fg-mute); }
+.learn-toc > li > .learn-soon strong { color: var(--fg); font-weight: 600; }
+.learn-meta {
+    grid-column: 2;
+    display: block;
+    color: var(--fg-mute);
+    font-size: 0.9rem;
+    margin-top: 0.2rem;
+}
+
+/* Prev / next nav at the bottom of each chapter. */
+.chapter-nav {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 1rem;
+    margin: 3rem 0 1rem 0;
+    padding-top: 1.5rem;
+    border-top: 1px solid var(--border);
+}
+.chapter-nav a {
+    color: var(--accent);
+    text-decoration: none;
+    padding: 0.5rem 0.75rem;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    transition: background 0.15s ease, border-color 0.15s ease;
+}
+.chapter-nav a:hover {
+    background: var(--bg-soft);
+    border-color: var(--accent);
+}
+.chapter-nav a.prev { margin-right: auto; }
+.chapter-nav a.next { margin-left: auto; }

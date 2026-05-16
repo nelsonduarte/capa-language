@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>2. Values and types | Learn Capa</title>
+    <meta name="description" content="Chapter 2 of Learn Capa: primitives, let vs var, type inference, string interpolation.">
+    <link rel="stylesheet" href="../style.css">
+    <link rel="icon" type="image/svg+xml" href="../favicon.svg">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'none'; object-src 'none'; base-uri 'self'; form-action 'self'">
+    <meta name="referrer" content="strict-origin-when-cross-origin">
+</head>
+<body>
+
+<header>
+    <nav>
+        <a href="../index.html" class="logo">
+            <img src="../capa_logo.svg" alt="" aria-hidden="true">
+            Capa
+        </a>
+        <div class="nav-links">
+            <a href="../index.html">Home</a>
+            <a href="../why.html">Why Capa</a>
+            <a href="index.html" class="current">Learn</a>
+            <a href="../reference.html">Reference</a>
+            <a href="../start.html">Get started</a>
+            <a href="../roadmap.html">Roadmap</a>
+            <a href="https://github.com/nelsonduarte/capa" class="github">GitHub</a>
+        </div>
+    </nav>
+</header>
+
+<main>
+
+<div class="page-heading">
+    <p class="learn-breadcrumb"><a href="index.html">Learn</a> &middot; Chapter 2 of 12</p>
+    <h1>Values and types</h1>
+    <p>The data your programs operate on. Six primitive types, two ways to bind names, and a string syntax with built-in interpolation.</p>
+</div>
+
+<section>
+    <h2>The six primitive types</h2>
+
+    <p>Capa has six built-in primitives:</p>
+
+    <ul>
+        <li><code>Int</code> &middot; whole numbers, signed, 64-bit at runtime: <code>42</code>, <code>-7</code>, <code>0</code>.</li>
+        <li><code>Float</code> &middot; floating-point numbers: <code>3.14</code>, <code>-0.5</code>, <code>1e10</code>.</li>
+        <li><code>Bool</code> &middot; <code>true</code> or <code>false</code>.</li>
+        <li><code>String</code> &middot; text, double-quoted: <code>"Capa"</code>.</li>
+        <li><code>Char</code> &middot; one character, single-quoted: <code>'A'</code>.</li>
+        <li><code>Unit</code> &middot; the empty value, written <code>()</code>. The return type of any function that "returns nothing".</li>
+    </ul>
+
+    <p>No silent conversions between them. <code>1 + 1.0</code> is a compile error; you write <code>to_float(1) + 1.0</code> to make the intent explicit. The point is that nothing is ever surprising at run time: if it type-checks, the arithmetic is the arithmetic you wrote.</p>
+</section>
+
+<section>
+    <h2>Binding names: <code>let</code> and <code>var</code></h2>
+
+    <p>Two keywords, two purposes:</p>
+
+<pre><code><span class="kw-storage">let</span> n = 42
+<span class="kw-storage">var</span> counter = 0</code></pre>
+
+    <p><code>let</code> is for values that never change after binding. Trying to reassign one is a compile error:</p>
+
+<pre><code><span class="kw-storage">let</span> n = 42
+n = 7   <span class="comment">// error: 'n' is bound with `let` and cannot be reassigned</span></code></pre>
+
+    <p><code>var</code> is for values that change. The type is fixed at binding time; only the value can change.</p>
+
+<pre><code><span class="kw-storage">var</span> counter = 0
+counter = counter + 1   <span class="comment">// fine</span>
+counter = <span class="str">"one"</span>          <span class="comment">// error: expected Int, got String</span></code></pre>
+
+    <p>Default to <code>let</code>. Reach for <code>var</code> only when the value genuinely changes; in practice this is mostly loop counters and accumulators that cannot be written as a fold. Capa's analyzer reads <code>let</code> as a strong hint to the reader, so prefer it.</p>
+</section>
+
+<section>
+    <h2>Types are inferred, but you can be explicit</h2>
+
+    <p>The examples above leave the type out: the compiler figures it out from the right-hand side. You can also write it explicitly:</p>
+
+<pre><code><span class="kw-storage">let</span> n: <span class="ty-primitive">Int</span> = 42
+<span class="kw-storage">let</span> pi: <span class="ty-primitive">Float</span> = 3.14
+<span class="kw-storage">let</span> ok: <span class="ty-primitive">Bool</span> = <span class="kw-ctrl">true</span>
+<span class="kw-storage">let</span> name: <span class="ty-primitive">String</span> = <span class="str">"Capa"</span></code></pre>
+
+    <p>Two reasons to be explicit: as documentation for the reader, and to constrain the inference when you really want a specific type (e.g. <code>let xs: List&lt;Int&gt; = []</code>; without the annotation the empty list cannot be inferred to anything in particular).</p>
+
+    <p>The convention in the standard library and the examples is: explicit types on function signatures (always), inferred on local <code>let</code> / <code>var</code> bindings (unless the type adds information).</p>
+</section>
+
+<section>
+    <h2>Strings interpolate by default</h2>
+
+    <p>To put a value inside a string, use <code>${expression}</code>. The expression is evaluated and its result is converted to a string:</p>
+
+<pre><code><span class="kw-decl">fun</span> <span class="fn-name">main</span>(stdio: <span class="cap">Stdio</span>)
+    <span class="kw-storage">let</span> name = <span class="str">"Capa"</span>
+    <span class="kw-storage">let</span> n = 42
+    stdio.<span class="fn-call">println</span>(<span class="str">"Hello, ${name}! n is ${n}."</span>)</code></pre>
+
+<pre><code>$ capa --run hello.capa
+Hello, Capa! n is 42.</code></pre>
+
+    <p>The expression inside <code>${...}</code> can be any expression that produces a value: <code>"${1 + 1}"</code> prints <code>2</code>. The conversion to string is automatic for every primitive type and for any type that has a <code>__str__</code> in the runtime (most user types do).</p>
+
+    <p>If you actually want the four characters <code>${ }</code> in your output, double the dollar: <code>"$${"</code> prints <code>${</code>.</p>
+
+    <div class="callout">
+        <p><strong>Raw strings.</strong> Prefix a string with <code>r</code> to disable both escapes and interpolation: <code>r"C:\path\to\file"</code> contains the literal backslashes. Useful for regular expressions and Windows paths.</p>
+    </div>
+</section>
+
+<section>
+    <h2>The two error modes</h2>
+
+    <p>The first one we already saw above: reassigning a <code>let</code> binding is a compile error.</p>
+
+    <p>The second is type mismatch. Try to add an <code>Int</code> and a <code>String</code>:</p>
+
+<pre><code><span class="kw-decl">fun</span> <span class="fn-name">main</span>(stdio: <span class="cap">Stdio</span>)
+    <span class="kw-storage">let</span> result = 42 + <span class="str">"oops"</span>
+    stdio.<span class="fn-call">println</span>(<span class="str">"${result}"</span>)</code></pre>
+
+<pre><code>$ capa --run hello.capa
+hello.capa:2:18: error: '+': expected Int + Int or Float + Float or String + String,
+                        got Int + String
+   2 |     let result = 42 + "oops"
+                        ^</code></pre>
+
+    <p>Capa overloads <code>+</code> within each primitive type (<code>"a" + "b"</code> concatenates), but never across them. The error names the mismatch precisely so you know whether you wanted to convert the number to a string or convert the string to a number.</p>
+</section>
+
+<section>
+    <h2>Where you are now</h2>
+
+    <p>You can declare values, give them types, and produce strings that include them. Next: how to put a sequence of statements behind a name and call it. Functions.</p>
+</section>
+
+<nav class="chapter-nav" aria-label="Tutorial navigation">
+    <a class="prev" href="01-hello.html">&larr; 1. Hello, Capa</a>
+    <a class="next" href="03-functions.html">3. Functions &rarr;</a>
+</nav>
+
+</main>
+
+<footer>
+    <div class="footer-grid">
+        <div>
+            <h4>Pages</h4>
+            <ul>
+                <li><a href="../why.html">Why Capa</a></li>
+                <li><a href="index.html">Learn</a></li>
+                <li><a href="../reference.html">Reference</a></li>
+                <li><a href="../start.html">Get started</a></li>
+                <li><a href="../roadmap.html">Roadmap</a></li>
+            </ul>
+        </div>
+        <div>
+            <h4>Documentation</h4>
+            <ul>
+                <li><a href="../start.html">Getting started</a></li>
+                <li><a href="../reference.html">Reference</a></li>
+                <li><a href="../stdlib.html">Standard library</a></li>
+                <li><a href="../manifest.html">Manifest</a></li>
+                <li><a href="../community.html">Community</a></li>
+            </ul>
+        </div>
+        <div>
+            <h4>Project</h4>
+            <ul>
+                <li><a href="https://github.com/nelsonduarte/capa">Source</a></li>
+                <li><a href="../brand.html">Brand assets</a></li>
+                <li><a href="https://github.com/nelsonduarte/capa/blob/main/LICENSE">License (MIT)</a></li>
+            </ul>
+        </div>
+    </div>
+    <p class="colophon">Built by Nelson Duarte &middot; v0.8.1-beta &middot; MIT-licensed</p>
+</footer>
+
+</body>
+</html>

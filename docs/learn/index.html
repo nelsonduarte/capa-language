@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Learn Capa | Capa</title>
+    <meta name="description" content="A step-by-step tutorial that takes you from zero Capa to writing real programs. Twelve chapters, hands-on, code in every chapter.">
+    <meta property="og:title" content="Learn Capa | step-by-step tutorial">
+    <meta property="og:description" content="Twelve hands-on chapters that take you from zero to writing real Capa programs.">
+    <meta property="og:type" content="article">
+    <meta property="og:url" content="https://capa-language.com/learn/">
+    <meta property="og:image" content="https://capa-language.com/capa_logo.png">
+    <meta property="og:site_name" content="Capa">
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="Learn Capa">
+    <meta name="twitter:description" content="A hands-on tutorial; twelve chapters from zero to real programs.">
+    <meta name="twitter:image" content="https://capa-language.com/capa_logo.png">
+    <link rel="stylesheet" href="../style.css">
+    <link rel="icon" type="image/svg+xml" href="../favicon.svg">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'none'; object-src 'none'; base-uri 'self'; form-action 'self'">
+    <meta name="referrer" content="strict-origin-when-cross-origin">
+</head>
+<body>
+
+<header>
+    <nav>
+        <a href="../index.html" class="logo">
+            <img src="../capa_logo.svg" alt="" aria-hidden="true">
+            Capa
+        </a>
+        <div class="nav-links">
+            <a href="../index.html">Home</a>
+            <a href="../why.html">Why Capa</a>
+            <a href="index.html" class="current">Learn</a>
+            <a href="../reference.html">Reference</a>
+            <a href="../start.html">Get started</a>
+            <a href="../roadmap.html">Roadmap</a>
+            <a href="https://github.com/nelsonduarte/capa" class="github">GitHub</a>
+        </div>
+    </nav>
+</header>
+
+<main>
+
+<div class="page-heading">
+    <h1>Learn Capa</h1>
+    <p>A step-by-step tutorial. Twelve chapters, hands-on. Every chapter has a runnable program and a focused new idea. Read it in order on the first pass; come back as a reference later.</p>
+</div>
+
+<section>
+    <h2>Before you start</h2>
+
+    <p>You need:</p>
+    <ul>
+        <li>Capa installed and on your <code>PATH</code>. Check with <code>capa --version</code>; if not, see <a href="../start.html">Get started</a>.</li>
+        <li>A text editor. Any editor will work; for syntax highlighting and the language server, see <a href="../start.html#editor-integration">editor integration</a> on the install page.</li>
+        <li>A terminal. Every chapter has a <code>capa --run file.capa</code> step.</li>
+    </ul>
+
+    <p>No prior capability-language experience is assumed. If you have written Python, Go, Rust, or any C-family language, you will feel at home. Where Capa is unusual is called out explicitly.</p>
+</section>
+
+<section>
+    <h2>The twelve chapters</h2>
+
+    <p>Each chapter is short (5-10 minutes of reading plus typing). You can stop after any chapter and have a working program. The capability discipline starts to bite in chapter 8; the first seven chapters are a normal-looking language so the surface stays familiar before the unusual ideas arrive.</p>
+
+    <ol class="learn-toc">
+        <li>
+            <a href="01-hello.html"><strong>Hello, Capa</strong></a>
+            <span class="learn-meta">Your first program. The shape of <code>main</code>.</span>
+        </li>
+        <li>
+            <a href="02-values.html"><strong>Values and types</strong></a>
+            <span class="learn-meta">Primitives, <code>let</code> vs <code>var</code>, type inference, string interpolation.</span>
+        </li>
+        <li>
+            <a href="03-functions.html"><strong>Functions</strong></a>
+            <span class="learn-meta">Signatures, parameters, return types, named arguments.</span>
+        </li>
+        <li>
+            <a href="04-control-flow.html"><strong>Control flow</strong></a>
+            <span class="learn-meta"><code>if</code>, <code>while</code>, <code>for</code>, ranges, statement vs expression.</span>
+        </li>
+        <li>
+            <span class="learn-soon"><strong>Collections</strong> &mdash; em constru&ccedil;&atilde;o</span>
+            <span class="learn-meta"><code>List</code>, <code>Map</code>, <code>Set</code>, higher-order methods.</span>
+        </li>
+        <li>
+            <span class="learn-soon"><strong>Structs and sum types</strong> &mdash; em constru&ccedil;&atilde;o</span>
+            <span class="learn-meta">Defining your own types, pattern matching on variants.</span>
+        </li>
+        <li>
+            <span class="learn-soon"><strong>Errors as values</strong> &mdash; em constru&ccedil;&atilde;o</span>
+            <span class="learn-meta"><code>Option&lt;T&gt;</code>, <code>Result&lt;T, E&gt;</code>, the <code>?</code> operator.</span>
+        </li>
+        <li>
+            <span class="learn-soon"><strong>Your first capability</strong> &mdash; em constru&ccedil;&atilde;o</span>
+            <span class="learn-meta">What <code>Stdio</code> really is. Why <code>main</code> declares it. The discipline.</span>
+        </li>
+        <li>
+            <span class="learn-soon"><strong>Attenuating capabilities</strong> &mdash; em constru&ccedil;&atilde;o</span>
+            <span class="learn-meta"><code>restrict_to</code>. Monotonic narrowing. Least-authority programs.</span>
+        </li>
+        <li>
+            <span class="learn-soon"><strong>Defining your own capability</strong> &mdash; em constru&ccedil;&atilde;o</span>
+            <span class="learn-meta"><code>capability X</code>, <code>impl X for Y</code>. Library contracts.</span>
+        </li>
+        <li>
+            <span class="learn-soon"><strong>Modules and visibility</strong> &mdash; em constru&ccedil;&atilde;o</span>
+            <span class="learn-meta"><code>import</code>, <code>pub</code>, <code>CAPA_PATH</code>.</span>
+        </li>
+        <li>
+            <span class="learn-soon"><strong>A small project</strong> &mdash; em constru&ccedil;&atilde;o</span>
+            <span class="learn-meta">Putting it together. A real CLI tool in Capa.</span>
+        </li>
+    </ol>
+
+    <p class="lead-prose-narrow">Once you finish (or want to look something up), the <a href="../reference.html">language reference</a> and the <a href="../stdlib.html">standard library</a> are the dense companions to this track.</p>
+</section>
+
+</main>
+
+<footer>
+    <div class="footer-grid">
+        <div>
+            <h4>Pages</h4>
+            <ul>
+                <li><a href="../why.html">Why Capa</a></li>
+                <li><a href="index.html">Learn</a></li>
+                <li><a href="../reference.html">Reference</a></li>
+                <li><a href="../start.html">Get started</a></li>
+                <li><a href="../roadmap.html">Roadmap</a></li>
+            </ul>
+        </div>
+        <div>
+            <h4>Documentation</h4>
+            <ul>
+                <li><a href="../start.html">Getting started</a></li>
+                <li><a href="../reference.html">Reference</a></li>
+                <li><a href="../stdlib.html">Standard library</a></li>
+                <li><a href="../manifest.html">Manifest</a></li>
+                <li><a href="../community.html">Community</a></li>
+            </ul>
+        </div>
+        <div>
+            <h4>Project</h4>
+            <ul>
+                <li><a href="https://github.com/nelsonduarte/capa">Source</a></li>
+                <li><a href="../brand.html">Brand assets</a></li>
+                <li><a href="https://github.com/nelsonduarte/capa/blob/main/LICENSE">License (MIT)</a></li>
+            </ul>
+        </div>
+    </div>
+    <p class="colophon">Built by Nelson Duarte &middot; v0.8.1-beta &middot; MIT-licensed</p>
+</footer>
+
+</body>
+</html>

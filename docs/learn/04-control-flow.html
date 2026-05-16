@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>4. Control flow | Learn Capa</title>
+    <meta name="description" content="Chapter 4 of Learn Capa: if, while, for, ranges, statement vs expression form.">
+    <link rel="stylesheet" href="../style.css">
+    <link rel="icon" type="image/svg+xml" href="../favicon.svg">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'none'; object-src 'none'; base-uri 'self'; form-action 'self'">
+    <meta name="referrer" content="strict-origin-when-cross-origin">
+</head>
+<body>
+
+<header>
+    <nav>
+        <a href="../index.html" class="logo">
+            <img src="../capa_logo.svg" alt="" aria-hidden="true">
+            Capa
+        </a>
+        <div class="nav-links">
+            <a href="../index.html">Home</a>
+            <a href="../why.html">Why Capa</a>
+            <a href="index.html" class="current">Learn</a>
+            <a href="../reference.html">Reference</a>
+            <a href="../start.html">Get started</a>
+            <a href="../roadmap.html">Roadmap</a>
+            <a href="https://github.com/nelsonduarte/capa" class="github">GitHub</a>
+        </div>
+    </nav>
+</header>
+
+<main>
+
+<div class="page-heading">
+    <p class="learn-breadcrumb"><a href="index.html">Learn</a> &middot; Chapter 4 of 12</p>
+    <h1>Control flow</h1>
+    <p>How to make decisions and loop. The constructs are familiar; Capa lets most of them work both as statements and as expressions.</p>
+</div>
+
+<section>
+    <h2>If, the statement form</h2>
+
+<pre><code><span class="kw-decl">fun</span> <span class="fn-name">main</span>(stdio: <span class="cap">Stdio</span>)
+    <span class="kw-storage">let</span> n = 7
+    <span class="kw-ctrl">if</span> n &gt; 0
+        stdio.<span class="fn-call">println</span>(<span class="str">"positive"</span>)
+    <span class="kw-ctrl">else if</span> n &lt; 0
+        stdio.<span class="fn-call">println</span>(<span class="str">"negative"</span>)
+    <span class="kw-ctrl">else</span>
+        stdio.<span class="fn-call">println</span>(<span class="str">"zero"</span>)</code></pre>
+
+    <p>No parentheses around the condition. Indentation marks each branch's body. The chain is <code>if</code> / <code>else if</code> / <code>else</code>; the final <code>else</code> is optional.</p>
+</section>
+
+<section>
+    <h2>If, the expression form</h2>
+
+    <p>The same construct also produces a value. When every branch produces a value of the same type, you can use <code>if</code> on the right-hand side of a <code>let</code>:</p>
+
+<pre><code><span class="kw-decl">fun</span> <span class="fn-name">main</span>(stdio: <span class="cap">Stdio</span>)
+    <span class="kw-storage">let</span> n = 7
+    <span class="kw-storage">let</span> sign = <span class="kw-ctrl">if</span> n &gt; 0 <span class="kw-ctrl">then</span> <span class="str">"+"</span> <span class="kw-ctrl">else if</span> n &lt; 0 <span class="kw-ctrl">then</span> <span class="str">"-"</span> <span class="kw-ctrl">else</span> <span class="str">"0"</span>
+    stdio.<span class="fn-call">println</span>(<span class="str">"sign is ${sign}"</span>)</code></pre>
+
+    <p>The keyword <code>then</code> separates the condition from the value when <code>if</code> is used as an expression on a single line. The branches must all produce the same type, and the <code>else</code> branch is mandatory.</p>
+</section>
+
+<section>
+    <h2>While</h2>
+
+<pre><code><span class="kw-decl">fun</span> <span class="fn-name">main</span>(stdio: <span class="cap">Stdio</span>)
+    <span class="kw-storage">var</span> n = 3
+    <span class="kw-ctrl">while</span> n &gt; 0
+        stdio.<span class="fn-call">println</span>(<span class="str">"${n}"</span>)
+        n = n - 1
+    stdio.<span class="fn-call">println</span>(<span class="str">"liftoff"</span>)</code></pre>
+
+    <pre><code>$ capa --run countdown.capa
+3
+2
+1
+liftoff</code></pre>
+
+    <p>The loop runs while the condition is <code>true</code>. <code>break</code> exits the loop; <code>continue</code> skips to the next iteration. Both must sit inside a loop or the compiler rejects them.</p>
+</section>
+
+<section>
+    <h2>For, with ranges</h2>
+
+    <p>The same countdown with <code>for</code>:</p>
+
+<pre><code><span class="kw-decl">fun</span> <span class="fn-name">main</span>(stdio: <span class="cap">Stdio</span>)
+    <span class="kw-ctrl">for</span> i <span class="kw-ctrl">in</span> 0..3
+        stdio.<span class="fn-call">println</span>(<span class="str">"${i}"</span>)</code></pre>
+
+    <pre><code>$ capa --run hello.capa
+0
+1
+2</code></pre>
+
+    <p>The expression <code>0..3</code> is a <strong>range</strong>: it produces 0, 1, 2 in turn. The upper bound is <em>exclusive</em>. If you want it inclusive, use <code>0..=3</code>:</p>
+
+<pre><code><span class="kw-ctrl">for</span> i <span class="kw-ctrl">in</span> 0..=3
+    stdio.<span class="fn-call">println</span>(<span class="str">"${i}"</span>)        <span class="comment">// prints 0 1 2 3</span></code></pre>
+
+    <p>A range is its own type (<code>Range&lt;Int&gt;</code>). When you iterate directly with <code>for x in a..b</code>, no list is built; the iteration is lazy. Materialise to a list with <code>.to_list()</code> if you need one.</p>
+
+    <p>You can also iterate any <code>List&lt;T&gt;</code>:</p>
+
+<pre><code><span class="kw-decl">fun</span> <span class="fn-name">main</span>(stdio: <span class="cap">Stdio</span>)
+    <span class="kw-storage">let</span> names = [<span class="str">"Ana"</span>, <span class="str">"Bruno"</span>, <span class="str">"Carla"</span>]
+    <span class="kw-ctrl">for</span> name <span class="kw-ctrl">in</span> names
+        stdio.<span class="fn-call">println</span>(<span class="str">"Hello, ${name}"</span>)</code></pre>
+</section>
+
+<section>
+    <h2>Match, the gentle introduction</h2>
+
+    <p>The full power of <code>match</code> arrives in <a href="index.html">chapter 6</a> (when we introduce sum types). For now you can already use it on primitive values:</p>
+
+<pre><code><span class="kw-decl">fun</span> <span class="fn-name">describe</span>(n: <span class="ty-primitive">Int</span>) -&gt; <span class="ty-primitive">String</span>
+    <span class="kw-ctrl">match</span> n
+        0 -&gt; <span class="kw-ctrl">return</span> <span class="str">"zero"</span>
+        1 -&gt; <span class="kw-ctrl">return</span> <span class="str">"one"</span>
+        _ -&gt; <span class="kw-ctrl">return</span> <span class="str">"many"</span></code></pre>
+
+    <p>The shape is: scrutinee on the first line, then one arm per indented line. Each arm is <code>pattern -&gt; body</code>. The <code>_</code> wildcard matches anything that did not match a previous arm; it acts as a "default" branch.</p>
+
+    <p>Like <code>if</code>, <code>match</code> can also produce a value when every arm produces one and they share a type:</p>
+
+<pre><code><span class="kw-decl">fun</span> <span class="fn-name">describe</span>(n: <span class="ty-primitive">Int</span>) -&gt; <span class="ty-primitive">String</span>
+    <span class="kw-ctrl">return</span> <span class="kw-ctrl">match</span> n
+        0 -&gt; <span class="str">"zero"</span>
+        1 -&gt; <span class="str">"one"</span>
+        _ -&gt; <span class="str">"many"</span></code></pre>
+</section>
+
+<section>
+    <h2>The two error modes</h2>
+
+    <p>First: mismatched branch types in expression form.</p>
+
+<pre><code><span class="kw-decl">fun</span> <span class="fn-name">main</span>(stdio: <span class="cap">Stdio</span>)
+    <span class="kw-storage">let</span> x = <span class="kw-ctrl">if</span> <span class="kw-ctrl">true</span> <span class="kw-ctrl">then</span> 1 <span class="kw-ctrl">else</span> <span class="str">"two"</span>
+    stdio.<span class="fn-call">println</span>(<span class="str">"${x}"</span>)</code></pre>
+
+<pre><code>$ capa --run hello.capa
+hello.capa:2:13: error: if-expr: branches must have the same type;
+                        got Int (then) vs String (else)
+   2 |     let x = if true then 1 else "two"
+                   ^</code></pre>
+
+    <p>The <code>then</code> branch is <code>Int</code>, the <code>else</code> branch is <code>String</code>. There is no unifying type for both, so the analyzer rejects. If you want the result to be a <code>String</code> either way, write the <code>1</code> as <code>"1"</code>.</p>
+
+    <p>Second: <code>break</code> outside a loop.</p>
+
+<pre><code><span class="kw-decl">fun</span> <span class="fn-name">main</span>(stdio: <span class="cap">Stdio</span>)
+    <span class="kw-ctrl">break</span></code></pre>
+
+<pre><code>$ capa --run hello.capa
+hello.capa:2:5: error: 'break' is only valid inside a loop
+   2 |     break
+           ^</code></pre>
+
+    <p>The same diagnostic shape fires for <code>continue</code> outside a loop.</p>
+</section>
+
+<section>
+    <h2>Where you are now</h2>
+
+    <p>You can branch, loop, and pattern-match on primitive values. The first four chapters give you a language that looks like Python with explicit types. From the next chapter onward, things get more interesting.</p>
+
+    <p>Chapter 5 is collections: lists, maps, sets, the higher-order methods that go with them. After that, you start building real programs.</p>
+</section>
+
+<nav class="chapter-nav" aria-label="Tutorial navigation">
+    <a class="prev" href="03-functions.html">&larr; 3. Functions</a>
+    <a class="next" href="index.html">Table of contents &rarr;</a>
+</nav>
+
+</main>
+
+<footer>
+    <div class="footer-grid">
+        <div>
+            <h4>Pages</h4>
+            <ul>
+                <li><a href="../why.html">Why Capa</a></li>
+                <li><a href="index.html">Learn</a></li>
+                <li><a href="../reference.html">Reference</a></li>
+                <li><a href="../start.html">Get started</a></li>
+                <li><a href="../roadmap.html">Roadmap</a></li>
+            </ul>
+        </div>
+        <div>
+            <h4>Documentation</h4>
+            <ul>
+                <li><a href="../start.html">Getting started</a></li>
+                <li><a href="../reference.html">Reference</a></li>
+                <li><a href="../stdlib.html">Standard library</a></li>
+                <li><a href="../manifest.html">Manifest</a></li>
+                <li><a href="../community.html">Community</a></li>
+            </ul>
+        </div>
+        <div>
+            <h4>Project</h4>
+            <ul>
+                <li><a href="https://github.com/nelsonduarte/capa">Source</a></li>
+                <li><a href="../brand.html">Brand assets</a></li>
+                <li><a href="https://github.com/nelsonduarte/capa/blob/main/LICENSE">License (MIT)</a></li>
+            </ul>
+        </div>
+    </div>
+    <p class="colophon">Built by Nelson Duarte &middot; v0.8.1-beta &middot; MIT-licensed</p>
+</footer>
+
+</body>
+</html>

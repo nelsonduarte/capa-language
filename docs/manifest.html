@@ -4,16 +4,16 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Capability manifest | Capa</title>
-    <meta name="description" content="Capa emits a JSON capability manifest, a CycloneDX 1.5 SBOM, an SPDX 2.3 SBOM, per-function CycloneDX VEX, and a SLSA Build L1 provenance attestation. The artefact set an EU Cyber Resilience Act auditor wants.">
+    <meta name="description" content="The Capa compiler emits a machine-readable manifest of every function's declared capabilities, attached attributes, and boundary crossings. The same source also drives CycloneDX, SPDX, VEX, and SLSA outputs.">
     <meta property="og:title" content="Capability manifest | Capa">
-    <meta property="og:description" content="A JSON capability manifest, CycloneDX 1.5 SBOM, SPDX 2.3 SBOM, VEX, and SLSA provenance emitted directly by the compiler. The audit artefact set a CRA reviewer wants.">
+    <meta property="og:description" content="A machine-readable manifest of every function's declared capabilities, plus CycloneDX, SPDX, VEX, and SLSA emitters from the same source.">
     <meta property="og:type" content="article">
     <meta property="og:url" content="https://capa-language.com/manifest.html">
     <meta property="og:image" content="https://capa-language.com/capa_logo.png">
     <meta property="og:site_name" content="Capa">
     <meta name="twitter:card" content="summary_large_image">
     <meta name="twitter:title" content="Capability manifest | Capa">
-    <meta name="twitter:description" content="Machine-readable JSON manifest, CycloneDX + SPDX SBOMs, VEX, and SLSA provenance emitted by the Capa compiler.">
+    <meta name="twitter:description" content="Per-function authority surface, emitted by the compiler.">
     <meta name="twitter:image" content="https://capa-language.com/capa_logo.png">
     <link rel="stylesheet" href="style.css">
     <link rel="icon" type="image/svg+xml" href="favicon.svg">
@@ -31,11 +31,10 @@
         <div class="nav-links">
             <a href="index.html">Home</a>
             <a href="why.html">Why Capa</a>
-            <a href="tour.html">Language tour</a>
+            <a href="learn/index.html">Learn</a>
+            <a href="reference.html">Reference</a>
             <a href="start.html">Get started</a>
-            <a href="community.html">Community</a>
             <a href="roadmap.html">Roadmap</a>
-            <a href="manifest.html" class="current">Manifest</a>
             <a href="https://github.com/nelsonduarte/capa" class="github">GitHub</a>
         </div>
     </nav>
@@ -45,21 +44,8 @@
 
 <div class="page-heading">
     <h1>Capability manifest</h1>
-    <p>A machine-readable description of every function's declared authorities, attached metadata, and boundary crossings, emitted directly by the compiler. The same compiler also emits a CycloneDX 1.5 SBOM, an SPDX 2.3 SBOM, a CycloneDX VEX with per-function exploitability claims, and a SLSA Build L1 provenance attestation, the full supply-chain governance artefact triangle from one source. Designed as the audit artefact set for the EU Cyber Resilience Act era.</p>
+    <p>A machine-readable description of every function's declared authorities, attached metadata, and boundary crossings, emitted directly by the compiler. The same compile also produces CycloneDX 1.5, SPDX 2.3, CycloneDX VEX, and SLSA Build L1 attestations from the same source.</p>
 </div>
-
-<!-- =====================================================
-     The artefact CRA needs
-===================================================== -->
-<section>
-    <h2>What CRA asks for, in plain terms</h2>
-
-    <p>The EU Cyber Resilience Act, in full application from December 2027, requires manufacturers of "products with digital elements" to demonstrate <strong>security by design and by default</strong>, supply a machine-readable <strong>SBOM</strong>, document the product's security properties, and maintain that documentation across the product lifecycle. The expectation is not "your code is secure": it is "you can show, with evidence, what your code is allowed to do."</p>
-
-    <p>That last sentence is the hard one. Existing SBOM formats (SPDX, CycloneDX) describe <em>which components</em> are in a product. They do not describe <em>what each component is authorised to do</em>. The information simply does not exist in the source, no mainstream language carries it in the type system.</p>
-
-    <p>Capa does. The capability manifest is the export of that information into a stable, schema-versioned JSON document.</p>
-</section>
 
 <!-- =====================================================
      A concrete example
@@ -67,7 +53,7 @@
 <section>
     <h2>A concrete example</h2>
 
-    <p>Take a small Capa program with a known security history:</p>
+    <p>Take a small Capa program:</p>
 
 <pre><code><span class="attr">@security</span>(
     cve: <span class="str">"CVE-2024-99999"</span>,
@@ -84,19 +70,23 @@
 <span class="kw-decl">fun</span> <span class="fn-name">token_length</span>(token: <span class="ty-primitive">String</span>) -&gt; <span class="ty-primitive">Int</span>
     <span class="kw-ctrl">return</span> token.<span class="fn-call">length</span>()</code></pre>
 
-    <p>Run it through the compiler with the new flag:</p>
+    <p>Run the manifest emitter:</p>
 
 <pre><code>$ capa --manifest verify.capa</code></pre>
 
-    <p>You get, on stdout:</p>
+    <p>Trimmed output:</p>
 
 <pre><code>{
-  <span class="str">"capa_version"</span>: <span class="str">"0.2.0"</span>,
+  <span class="str">"capa_version"</span>: <span class="str">"0.8.1-beta"</span>,
   <span class="str">"schema_version"</span>: 1,
   <span class="str">"functions"</span>: [
     {
       <span class="str">"name"</span>: <span class="str">"verify_token"</span>,
       <span class="str">"declared_capabilities"</span>: [],
+      <span class="str">"provably_excluded_capabilities"</span>: [
+        <span class="str">"Clock"</span>, <span class="str">"Db"</span>, <span class="str">"Env"</span>, <span class="str">"Fs"</span>, <span class="str">"Net"</span>,
+        <span class="str">"Proc"</span>, <span class="str">"Random"</span>, <span class="str">"Stdio"</span>, <span class="str">"Unsafe"</span>
+      ],
       <span class="str">"has_unsafe"</span>: <span class="kw-ctrl">false</span>,
       <span class="str">"attributes"</span>: [
         {
@@ -105,7 +95,7 @@
             <span class="str">"cve"</span>: <span class="str">"CVE-2024-99999"</span>,
             <span class="str">"severity"</span>: <span class="str">"high"</span>,
             <span class="str">"fixed_in"</span>: <span class="str">"0.2.0"</span>,
-            <span class="str">"description"</span>: <span class="str">"previous implementation was vulnerable..."</span>
+            <span class="str">"description"</span>: <span class="str">"..."</span>
           }
         }
       ]
@@ -113,12 +103,10 @@
     {
       <span class="str">"name"</span>: <span class="str">"fetch_user"</span>,
       <span class="str">"declared_capabilities"</span>: [<span class="str">"Net"</span>],
-      <span class="str">"has_unsafe"</span>: <span class="kw-ctrl">false</span>,
-      <span class="str">"attributes"</span>: []
-    },
-    {
-      <span class="str">"name"</span>: <span class="str">"token_length"</span>,
-      <span class="str">"declared_capabilities"</span>: [],
+      <span class="str">"provably_excluded_capabilities"</span>: [
+        <span class="str">"Clock"</span>, <span class="str">"Db"</span>, <span class="str">"Env"</span>, <span class="str">"Fs"</span>,
+        <span class="str">"Proc"</span>, <span class="str">"Random"</span>, <span class="str">"Stdio"</span>, <span class="str">"Unsafe"</span>
+      ],
       <span class="str">"has_unsafe"</span>: <span class="kw-ctrl">false</span>,
       <span class="str">"attributes"</span>: []
     }
@@ -126,119 +114,24 @@
   <span class="str">"summary"</span>: {
     <span class="str">"total_functions"</span>: 3,
     <span class="str">"functions_with_capabilities"</span>: 1,
-    <span class="str">"functions_with_attributes"</span>: 1,
     <span class="str">"functions_crossing_unsafe"</span>: 0
   }
 }</code></pre>
 
-    <p>An auditor reading this knows, without running the program: <code>verify_token</code> is pure (no capabilities) and references a fixed CVE; <code>fetch_user</code> can touch the network; <code>token_length</code> is pure. There is no other way for any of these to leak data or contact a server, the type system already rejected such a program at compile time.</p>
+    <p>Three things to notice. First, <code>declared_capabilities</code> is exactly what the function's signature carries: <code>verify_token</code> declares nothing; <code>fetch_user</code> declares <code>Net</code>. The list is sound by construction because Capa's analyzer enforces it: a function cannot use a capability it did not list.</p>
 
-    <h3>Call-site visibility</h3>
+    <p>Second, <code>provably_excluded_capabilities</code> is the complement. The compiler emits the set of capabilities the function is <strong>provably incapable</strong> of touching. ``verify_token`` declares nothing, so it provably cannot reach the network, the filesystem, the environment, the clock, or any other built-in. The proof is voided to an empty list when <code>Unsafe</code> is in scope (the escape hatch can side-step the discipline).</p>
 
-    <p>Each function record also carries a <code>calls[]</code> array listing every function and method call inside its body, with the line:col of the call site and a stringified form of the argument expressions. This is where attenuation becomes visible at the audit level: the manifest does not just say "this function holds <code>Net</code>", it shows the actual <code>restrict_to("api.example.com")</code> call before the cap is handed onward.</p>
-
-<pre><code>{
-  <span class="str">"name"</span>: <span class="str">"main"</span>,
-  <span class="str">"declared_capabilities"</span>: [<span class="str">"Net"</span>, <span class="str">"Stdio"</span>],
-  <span class="str">"calls"</span>: [
-    {
-      <span class="str">"kind"</span>: <span class="str">"method"</span>,
-      <span class="str">"callee"</span>: <span class="str">"net.restrict_to"</span>,
-      <span class="str">"pos"</span>: <span class="str">"5:15"</span>,
-      <span class="str">"args"</span>: [<span class="str">"\"api.example.com\""</span>]
-    },
-    {
-      <span class="str">"kind"</span>: <span class="str">"fn"</span>,
-      <span class="str">"callee"</span>: <span class="str">"fetch_user"</span>,
-      <span class="str">"pos"</span>: <span class="str">"6:18"</span>,
-      <span class="str">"args"</span>: [<span class="str">"api"</span>, <span class="str">"\"42\""</span>]
-    }
-  ]
-}</code></pre>
-
-    <p>The auditor can see, without opening the source, that the unrestricted <code>net</code> never reaches <code>fetch_user</code>: it is narrowed to <code>api.example.com</code> on the line before. The CycloneDX SBOM mirrors this in <code>dependencies[]</code>: <code>main</code> now has an explicit edge to <code>fetch_user</code> in addition to the user-capability components it declared.</p>
-
-    <h3>Per-call data-flow</h3>
-
-    <p>The same call record carries a parallel <code>args_flow</code> array. Where an argument names a binding produced by a chain of <code>.restrict_to*</code> calls, the corresponding entry records the bound name and the restrictions applied to it, in source order. For arguments that are literals or unrestricted parameters, the entry is <code>null</code>.</p>
-
-<pre><code>{
-  <span class="str">"callee"</span>: <span class="str">"fetch_user"</span>,
-  <span class="str">"args"</span>: [<span class="str">"narrower"</span>, <span class="str">"\"42\""</span>],
-  <span class="str">"args_flow"</span>: [
-    {
-      <span class="str">"name"</span>: <span class="str">"narrower"</span>,
-      <span class="str">"attenuations"</span>: [
-        { <span class="str">"method"</span>: <span class="str">"restrict_to"</span>,
-          <span class="str">"args"</span>: [<span class="str">"\"api.example.com\""</span>] },
-        { <span class="str">"method"</span>: <span class="str">"restrict_to"</span>,
-          <span class="str">"args"</span>: [<span class="str">"\"v2.api.example.com\""</span>] }
-      ]
-    },
-    <span class="kw-ctrl">null</span>
-  ]
-}</code></pre>
-
-    <p>The auditor sees the effective restriction surface the callee was given, not just the variable name. Source: a chain of <code>let api = net.restrict_to("api.example.com")</code> then <code>let narrower = api.restrict_to("v2.api.example.com")</code> then <code>fetch_user(narrower, "42")</code>. The narrowing history is reconstructed from the AST and surfaced in the static artefact.</p>
-
-    <p>v1 tracking is intentionally narrow: only ``let``-bindings whose right-hand side is a chain of ``.restrict_to*`` calls are recorded, and the walk is not lexical-scope-aware. Inter-procedural propagation (resolving <code>mailer.send</code> to the specific <code>impl</code>) is still out of scope and will arrive in a later pass.</p>
+    <p>Third, attributes attach metadata that travels with the function: a CVE history (<code>@security</code>), an audit timestamp (<code>@audited</code>), a deprecation marker (<code>@deprecated</code>), or a per-function VEX exploitability claim (<code>@vex</code>).</p>
 </section>
 
 <!-- =====================================================
-     CRA mapping
-===================================================== -->
-<section>
-    <h2>How the manifest maps to CRA requirements</h2>
-
-    <p>A non-exhaustive correspondence between fields the manifest emits and obligations the Act imposes. The mapping is not magic, it is just that capability-based security happens to align with what CRA was reaching for.</p>
-
-    <table class="cra-table">
-        <thead>
-            <tr>
-                <th>CRA obligation</th>
-                <th>Manifest field that documents it</th>
-            </tr>
-        </thead>
-        <tbody>
-            <tr>
-                <td>Security by design and by default: products operate with the minimum of privileges necessary.</td>
-                <td><code>functions[].declared_capabilities</code>, the exact set of authorities each function holds. A function that does not list <code>Net</code> cannot reach the network.</td>
-            </tr>
-            <tr>
-                <td>Documentation of security properties of the product.</td>
-                <td><code>functions[].attributes[@security]</code>, CVE references, severity, fix versions, free-form description.</td>
-            </tr>
-            <tr>
-                <td>Vulnerability handling and lifecycle support.</td>
-                <td><code>functions[].attributes[@deprecated]</code>, explicit deprecation markers with reason, since-version, and replacement function.</td>
-            </tr>
-            <tr>
-                <td>Audit trail throughout the product lifecycle.</td>
-                <td><code>functions[].attributes[@audited]</code>, date, auditor, scope, free-form notes.</td>
-            </tr>
-            <tr>
-                <td>Identifying components where standard guarantees do not hold.</td>
-                <td><code>functions[].has_unsafe</code>, explicit flag set whenever a function declares <code>Unsafe</code> as a parameter. The compiler also surfaces it in <code>summary.functions_crossing_unsafe</code>.</td>
-            </tr>
-            <tr>
-                <td>SBOM enrichment: capabilities of each component.</td>
-                <td><code>user_defined_capabilities</code>, high-level capability declarations and their implementors. A library that exposes <code>SendEmail</code> declares its surface; a CI gate can verify that no caller obtains more.</td>
-            </tr>
-        </tbody>
-    </table>
-
-    <div class="callout">
-        <p>CRA is one regulator among several. For the full comparative mapping across <strong>CRA, NIS2, DORA, NIST SSDF (SP 800-218), and OWASP SCVS</strong>, see <a href="https://github.com/nelsonduarte/capa/blob/main/docs/regulatory.md"><code>docs/regulatory.md</code></a>, a headline matrix of Capa's 8 artefacts versus 5 frameworks.</p>
-    </div>
-</section>
-
-<!-- =====================================================
-     The attribute catalogue
+     Attribute catalogue
 ===================================================== -->
 <section>
     <h2>The v1 attribute catalogue</h2>
 
-    <p>Four attributes are recognised. The analyzer rejects unknown names, unknown keys, and duplicates, the schema is fixed so downstream consumers can rely on it.</p>
+    <p>Four attributes are recognised. The analyzer rejects unknown names, unknown keys, and duplicates; the schema is fixed so downstream consumers can rely on it.</p>
 
     <div class="pillars">
         <div class="pillar">
@@ -270,243 +163,51 @@
         </div>
         <div class="pillar">
             <h3>@vex</h3>
-            <p>Attach a per-function CycloneDX VEX exploitability claim for a known CVE. Keys: <code>cve</code>, <code>status</code>, <code>justification</code>, <code>detail</code>. Surfaces in <code>--vex</code> output and embeds in <code>--cyclonedx</code>.</p>
+            <p>Attach a per-function CycloneDX VEX exploitability claim. Keys: <code>cve</code>, <code>status</code>, <code>justification</code>, <code>detail</code>. Surfaces in <code>--vex</code> output and embeds in <code>--cyclonedx</code>.</p>
 <pre><code><span class="attr">@vex</span>(
     cve: <span class="str">"CVE-2024-99999"</span>,
     status: <span class="str">"not_affected"</span>,
     justification: <span class="str">"code_not_reachable"</span>,
-    detail: <span class="str">"path replaced by constant-time compare in 0.3.0"</span>
+    detail: <span class="str">"replaced in 0.3.0"</span>
 )</code></pre>
         </div>
     </div>
-    <p>See <code>examples/vex_demo.capa</code> for three concrete <code>@vex</code> flavours (<code>not_affected</code>, <code>exploitable</code>, <code>under_investigation</code>) and the resulting VEX document.</p>
 </section>
 
 <!-- =====================================================
-     Using the manifest
+     Standard formats from the same source
 ===================================================== -->
 <section>
-    <h2>How to use it in practice</h2>
+    <h2>The same source, in standard formats</h2>
 
-    <p>Three natural integration points:</p>
+    <p>The native <code>--manifest</code> JSON is compact and easy to consume from a Capa-aware tool. For interoperability with the broader supply-chain tooling ecosystem, the compiler emits four additional documents from the same source:</p>
+
+    <ul>
+        <li><strong><code>capa --cyclonedx file.capa</code></strong> &middot; A valid CycloneDX 1.5 SBOM. Each function becomes a <code>library</code> component with a deterministic <code>bom-ref</code>; per-function capability metadata is flattened into the standard <code>properties[]</code> array under the <code>capa:*</code> namespace, including <code>capa:declared_capability</code> and <code>capa:provably_excluded_capability</code>. Ingested by Dependency-Track, OSV-Scanner, syft, sbom-utility, and any other CycloneDX-aware tool.</li>
+        <li><strong><code>capa --spdx file.capa</code></strong> &middot; The SPDX 2.3 companion. Same content, SPDX shape; per-function capability metadata is exposed via <code>annotations[]</code>. Useful when downstream consumers standardise on SPDX rather than CycloneDX.</li>
+        <li><strong><code>capa --vex file.capa</code></strong> &middot; A standalone CycloneDX VEX document driven by the <code>@vex</code> attributes. The same VEX block is also embedded in <code>--cyclonedx</code> output. The <code>affects[]</code> of each entry pinpoints the function the claim was made on, not the package, so VEX granularity matches Capa's manifest granularity.</li>
+        <li><strong><code>capa --provenance file.capa</code></strong> &middot; A SLSA Build L1 provenance attestation: an in-toto Statement v1 envelope wrapping a SLSA Provenance v1.0 predicate. The <code>subject</code> records the SHA-256 of the source file, binding the attestation to the exact bytes that produced the build.</li>
+        <li><strong><code>capa --doc file.capa</code></strong> &middot; A self-contained HTML page for human readers. Doc comments (<code>///</code>, <code>/** */</code>), signatures with capability badges, and attached attributes all rendered without external resources or JavaScript.</li>
+    </ul>
+
+    <p>The <a href="https://github.com/nelsonduarte/capa/tree/main/examples"><code>examples/</code></a> directory has runnable demos for each: <code>examples/manifest_demo.capa</code>, <code>examples/vex_demo.capa</code>, and the case studies that exercise the full chain.</p>
+</section>
+
+<!-- =====================================================
+     Practical use
+===================================================== -->
+<section>
+    <h2>How to use it</h2>
 
     <ol>
         <li><strong>CI gate.</strong> Run <code>capa --manifest src/*.capa</code> in CI, diff the output against a baseline, and fail the build if a function unexpectedly gains a capability or crosses the <code>Unsafe</code> boundary. The capability surface of a library becomes a tracked artefact. The <code>examples/sbom_diff.capa</code> auditor program does the equivalent for CycloneDX SBOMs across releases, reporting per-function widenings, narrowings, additions, and removals.</li>
         <li><strong>Audit evidence.</strong> Generate the manifest at release time and ship it alongside the binary. An auditor can verify the claims without re-running the compiler.</li>
-        <li><strong>SBOM enrichment via CycloneDX 1.5.</strong> Capa also emits the manifest wrapped in a valid CycloneDX 1.5 SBOM (<code>capa --cyclonedx file.capa</code>). The capability metadata is embedded as standard <code>properties[]</code> entries under the <code>capa:*</code> namespace, so Dependency-Track, OSV-Scanner, syft, and any other CycloneDX-aware tool can ingest the document and surface the information without having to know anything about Capa. See the section below.</li>
-        <li><strong>SPDX 2.3 emission.</strong> The same information lands in an SPDX 2.3 JSON document (<code>capa --spdx file.capa</code>), the Linux Foundation companion to CycloneDX. Per-function capability metadata is exposed via SPDX <code>annotations[]</code>. Useful where a downstream consumer or regulator standardises on SPDX rather than CycloneDX.</li>
-        <li><strong>Per-function VEX.</strong> The new <code>@vex</code> attribute attaches an exploitability claim to a function (a CVE plus a CycloneDX VEX status and justification). <code>capa --vex file.capa</code> emits a standalone CycloneDX VEX document; when present, the same VEX block is also embedded in <code>--cyclonedx</code> output.</li>
-        <li><strong>Build provenance.</strong> <code>capa --provenance file.capa</code> emits a SLSA Build L1 provenance attestation, an in-toto Statement v1 envelope wrapping a SLSA Provenance v1.0 predicate, with the SHA-256 of the source as <code>subject</code>. Ships next to the binary to attest <em>how</em> the artefact was built.</li>
+        <li><strong>Policy enforcement.</strong> <code>examples/sbom_capability_audit.capa</code> reads an SBOM plus a per-function policy file and flags any function whose declared capabilities exceed the policy's allowance.</li>
     </ol>
 
     <div class="callout">
-        <p><strong>The manifest is a stable contract.</strong> Versioned via <code>schema_version</code>; consumers should refuse to read manifests with a schema version they do not recognise. v1 is the current version. Breaking changes will bump it.</p>
+        <p><strong>The manifest is a stable contract.</strong> Versioned via <code>schema_version</code>; consumers should refuse to read manifests with a schema version they do not recognise. v1 is the current version.</p>
     </div>
-</section>
-
-<!-- =====================================================
-     Human-readable counterpart
-===================================================== -->
-<section>
-    <h2>Human-readable counterpart: <code>--doc</code></h2>
-
-    <p>The manifest is for machines (CI gates, SBOM tools, audit pipelines). The same source carries enough information to produce a human-readable artefact too. <code>capa --doc file.capa</code> emits a self-contained HTML page documenting every function, type, and user-defined capability, using:</p>
-
-    <ul>
-        <li><strong>Doc comments</strong> (<code>///</code> line and <code>/** */</code> block) attached to declarations. A small subset of markdown (paragraphs and inline <code>code</code> spans) is rendered; HTML special characters are always escaped.</li>
-        <li><strong>Function signatures</strong> with capability parameters highlighted, and a badge per declared capability (with a distinct colour for <code>Unsafe</code>).</li>
-        <li><strong>Attributes</strong> (<code>@security</code>, <code>@deprecated</code>, <code>@audited</code>) flattened to keyword-value rows.</li>
-        <li><strong>Call list</strong> per function (collapsed by default), with the line:col and stringified argument expressions of every call site.</li>
-    </ul>
-
-    <p>The output is one HTML file with inline CSS, no external resources, no JavaScript. Ship it next to the manifest as the auditor's reading copy.</p>
-
-<pre><code><span class="comment">/// Verify a token against an expected value.</span>
-<span class="comment">/// </span>
-<span class="comment">/// Caveat: this is a naive equality comparison; a real implementation</span>
-<span class="comment">/// would use a constant-time compare to avoid timing attacks.</span>
-<span class="attr">@security</span>(
-    cwe: <span class="str">"CWE-208"</span>,
-    severity: <span class="str">"medium"</span>,
-    description: <span class="str">"naive comparison; replace with constant-time before production"</span>
-)
-<span class="kw-decl">fun</span> <span class="fn-name">verify_token</span>(token: <span class="ty-primitive">String</span>, expected: <span class="ty-primitive">String</span>) -&gt; <span class="ty-primitive">Bool</span>
-    <span class="kw-ctrl">return</span> token == expected</code></pre>
-
-    <p>The rendered HTML carries the doc text as paragraphs, the CWE / severity / description as a `@security` row, and the function's pure-no-caps fact as the absence of any capability badge. A reviewer can read it without seeing the source file.</p>
-</section>
-
-<!-- =====================================================
-     CycloneDX
-===================================================== -->
-<section>
-    <h2>CycloneDX 1.5 output</h2>
-
-    <p>The <code>--manifest</code> flag emits Capa's native JSON shape, compact, opinionated, and easy to consume from a Capa-aware tool. For interoperability with the broader supply-chain tooling ecosystem, Capa also emits a <strong>CycloneDX 1.5 SBOM</strong> with the same information embedded:</p>
-
-<pre><code>$ capa --cyclonedx verify.capa</code></pre>
-
-    <p>The resulting document is a valid CycloneDX 1.5 BOM and validates against the published schema. Each function and each user-defined capability becomes a <code>library</code> sub-component with a deterministic <code>bom-ref</code>. Per-function metadata (declared capabilities, attributes, <code>Unsafe</code> crossings, position) is flattened into the standard <code>properties[]</code> array under the <code>capa:*</code> namespace.</p>
-
-<pre><code>{
-  <span class="str">"bomFormat"</span>: <span class="str">"CycloneDX"</span>,
-  <span class="str">"specVersion"</span>: <span class="str">"1.5"</span>,
-  <span class="str">"serialNumber"</span>: <span class="str">"urn:uuid:2687e40d-..."</span>,
-  <span class="str">"version"</span>: 1,
-  <span class="str">"metadata"</span>: {
-    <span class="str">"timestamp"</span>: <span class="str">"2026-05-12T00:00:00Z"</span>,
-    <span class="str">"tools"</span>: { <span class="str">"components"</span>: [{ <span class="str">"name"</span>: <span class="str">"capa"</span>, <span class="str">"version"</span>: <span class="str">"0.2.0"</span> }] },
-    <span class="str">"component"</span>: { <span class="str">"name"</span>: <span class="str">"verify.capa"</span>, <span class="str">"type"</span>: <span class="str">"application"</span> }
-  },
-  <span class="str">"components"</span>: [
-    {
-      <span class="str">"bom-ref"</span>: <span class="str">"capa:fn:verify.capa:verify_token"</span>,
-      <span class="str">"type"</span>: <span class="str">"library"</span>,
-      <span class="str">"name"</span>: <span class="str">"verify_token"</span>,
-      <span class="str">"properties"</span>: [
-        { <span class="str">"name"</span>: <span class="str">"capa:kind"</span>,                       <span class="str">"value"</span>: <span class="str">"function"</span> },
-        { <span class="str">"name"</span>: <span class="str">"capa:has_unsafe"</span>,                 <span class="str">"value"</span>: <span class="str">"false"</span> },
-        { <span class="str">"name"</span>: <span class="str">"capa:declared_capability"</span>,        <span class="str">"value"</span>: <span class="str">"Net"</span> },
-        { <span class="str">"name"</span>: <span class="str">"capa:attribute:security:cve"</span>,     <span class="str">"value"</span>: <span class="str">"CVE-2024-99999"</span> },
-        { <span class="str">"name"</span>: <span class="str">"capa:attribute:security:severity"</span>,<span class="str">"value"</span>: <span class="str">"high"</span> }
-      ]
-    }
-  ],
-  <span class="str">"dependencies"</span>: [
-    { <span class="str">"ref"</span>: <span class="str">"capa:program:verify.capa"</span>, <span class="str">"dependsOn"</span>: [<span class="str">"capa:fn:verify.capa:verify_token"</span>] }
-  ]
-}</code></pre>
-
-    <h3>What you get for free with CycloneDX</h3>
-
-    <ul>
-        <li><strong>Validation</strong> by any CycloneDX schema validator.</li>
-        <li><strong>Ingestion</strong> by Dependency-Track, OSV-Scanner, syft, sbom-utility, and other mainstream SBOM tooling. They will see the components and dependency graph without knowing anything Capa-specific.</li>
-        <li><strong>Deterministic <code>serialNumber</code></strong> derived from the filename (UUIDv5), so re-running the command on the same file produces an identical SBOM, friendly to diffing across releases.</li>
-        <li><strong>Dependency edges</strong> from each function to the user-defined capabilities it depends on, so CycloneDX-aware tooling builds a usable graph.</li>
-    </ul>
-
-    <p>A consumer that <em>is</em> Capa-aware can read the <code>capa:*</code> properties to get the same information the native <code>--manifest</code> flag would emit. The two outputs carry the same content; the CycloneDX form trades a slightly more verbose wrapper for ecosystem fit.</p>
-</section>
-
-<!-- =====================================================
-     SPDX
-===================================================== -->
-<section>
-    <h2>SPDX 2.3 output</h2>
-
-    <p>CycloneDX is one of two mainstream SBOM formats. The other is <strong>SPDX</strong>, the Linux Foundation standard adopted by NTIA's minimum-elements guidance and required by several US government procurement workflows. Capa emits SPDX 2.3 JSON from the same source:</p>
-
-<pre><code>$ capa --spdx verify.capa</code></pre>
-
-    <p>The document validates against the SPDX 2.3 JSON schema. Each function becomes a <code>Package</code> with a deterministic <code>SPDXID</code>; per-function capability metadata (declared capabilities, attributes, <code>Unsafe</code> crossings, position) is exposed via SPDX <code>annotations[]</code>, the standard mechanism for attaching arbitrary structured comments to a package.</p>
-
-<pre><code>{
-  <span class="str">"spdxVersion"</span>: <span class="str">"SPDX-2.3"</span>,
-  <span class="str">"dataLicense"</span>: <span class="str">"CC0-1.0"</span>,
-  <span class="str">"SPDXID"</span>: <span class="str">"SPDXRef-DOCUMENT"</span>,
-  <span class="str">"name"</span>: <span class="str">"verify.capa"</span>,
-  <span class="str">"documentNamespace"</span>: <span class="str">"https://capa-language.com/spdx/..."</span>,
-  <span class="str">"creationInfo"</span>: {
-    <span class="str">"created"</span>: <span class="str">"2026-05-12T00:00:00Z"</span>,
-    <span class="str">"creators"</span>: [<span class="str">"Tool: capa-0.8.1-beta"</span>]
-  },
-  <span class="str">"packages"</span>: [
-    {
-      <span class="str">"SPDXID"</span>: <span class="str">"SPDXRef-fn-verify-token"</span>,
-      <span class="str">"name"</span>: <span class="str">"verify_token"</span>,
-      <span class="str">"downloadLocation"</span>: <span class="str">"NOASSERTION"</span>,
-      <span class="str">"annotations"</span>: [
-        { <span class="str">"annotationType"</span>: <span class="str">"OTHER"</span>,
-          <span class="str">"annotator"</span>: <span class="str">"Tool: capa"</span>,
-          <span class="str">"comment"</span>: <span class="str">"capa:declared_capability=Net"</span> },
-        { <span class="str">"annotationType"</span>: <span class="str">"OTHER"</span>,
-          <span class="str">"annotator"</span>: <span class="str">"Tool: capa"</span>,
-          <span class="str">"comment"</span>: <span class="str">"capa:attribute:security:cve=CVE-2024-99999"</span> }
-      ]
-    }
-  ]
-}</code></pre>
-
-    <p>The CycloneDX and SPDX documents carry the same information; the choice between them is downstream-tooling-driven. A consumer that wants both can run both flags and ship both files.</p>
-</section>
-
-<!-- =====================================================
-     VEX
-===================================================== -->
-<section>
-    <h2>Per-function VEX</h2>
-
-    <p>A CVE in an SBOM means "this component is present"; it does not say "and you are actually exploitable." That second question is what <strong>VEX</strong> (Vulnerability Exploitability eXchange) answers. Capa's <code>@vex</code> attribute lets the source author attach a per-function exploitability claim, and <code>--vex</code> emits it in the CycloneDX VEX shape:</p>
-
-<pre><code><span class="attr">@vex</span>(
-    cve: <span class="str">"CVE-2024-99999"</span>,
-    status: <span class="str">"not_affected"</span>,
-    justification: <span class="str">"code_not_reachable"</span>,
-    detail: <span class="str">"verify_token replaced by constant-time compare in 0.3.0"</span>
-)
-<span class="kw-decl">fun</span> <span class="fn-name">verify_token</span>(token: <span class="ty-primitive">String</span>, expected: <span class="ty-primitive">String</span>) -&gt; <span class="ty-primitive">Bool</span>
-    <span class="kw-ctrl">return</span> <span class="fn-call">constant_time_eq</span>(token, expected)</code></pre>
-
-<pre><code>$ capa --vex verify.capa</code></pre>
-
-<pre><code>{
-  <span class="str">"bomFormat"</span>: <span class="str">"CycloneDX"</span>,
-  <span class="str">"specVersion"</span>: <span class="str">"1.5"</span>,
-  <span class="str">"vulnerabilities"</span>: [
-    {
-      <span class="str">"id"</span>: <span class="str">"CVE-2024-99999"</span>,
-      <span class="str">"analysis"</span>: {
-        <span class="str">"state"</span>: <span class="str">"not_affected"</span>,
-        <span class="str">"justification"</span>: <span class="str">"code_not_reachable"</span>,
-        <span class="str">"detail"</span>: <span class="str">"verify_token replaced by constant-time compare in 0.3.0"</span>
-      },
-      <span class="str">"affects"</span>: [
-        { <span class="str">"ref"</span>: <span class="str">"capa:fn:verify.capa:verify_token"</span> }
-      ]
-    }
-  ]
-}</code></pre>
-
-    <p>The accepted <code>status</code> values mirror the CycloneDX VEX state vocabulary: <code>not_affected</code>, <code>exploitable</code>, <code>in_triage</code>, <code>resolved</code>, <code>false_positive</code>. The <code>justification</code> key carries the CycloneDX justification vocabulary (<code>code_not_reachable</code>, <code>requires_configuration</code>, and so on). When <code>--cyclonedx</code> runs on a program that contains <code>@vex</code> attributes, the same VEX block is embedded in the SBOM under <code>vulnerabilities[]</code>, so a single document carries both the component graph and the exploitability claims.</p>
-
-    <p>See <code>examples/vex_demo.capa</code> for three working flavours.</p>
-</section>
-
-<!-- =====================================================
-     SLSA provenance
-===================================================== -->
-<section>
-    <h2>SLSA Build L1 provenance</h2>
-
-    <p>SBOMs and VEX answer "what is in the artefact" and "is it exploitable." Provenance answers a third question: "how was the artefact built, and can you prove it?" Capa emits a SLSA Build Level 1 provenance attestation from the same source:</p>
-
-<pre><code>$ capa --provenance verify.capa</code></pre>
-
-    <p>The output is an <strong>in-toto Statement v1</strong> envelope wrapping a <strong>SLSA Provenance v1.0</strong> predicate. The <code>subject</code> records the source file's SHA-256, so the attestation binds itself to the exact source bytes that produced the build.</p>
-
-<pre><code>{
-  <span class="str">"_type"</span>: <span class="str">"https://in-toto.io/Statement/v1"</span>,
-  <span class="str">"predicateType"</span>: <span class="str">"https://slsa.dev/provenance/v1"</span>,
-  <span class="str">"subject"</span>: [
-    {
-      <span class="str">"name"</span>: <span class="str">"verify.capa"</span>,
-      <span class="str">"digest"</span>: { <span class="str">"sha256"</span>: <span class="str">"e3b0c44298fc1c149afbf4c8996fb924..."</span> }
-    }
-  ],
-  <span class="str">"predicate"</span>: {
-    <span class="str">"buildDefinition"</span>: {
-      <span class="str">"buildType"</span>: <span class="str">"https://capa-language.com/slsa/build/v1"</span>,
-      <span class="str">"externalParameters"</span>: { <span class="str">"source"</span>: <span class="str">"verify.capa"</span> }
-    },
-    <span class="str">"runDetails"</span>: {
-      <span class="str">"builder"</span>: { <span class="str">"id"</span>: <span class="str">"https://capa-language.com/builder/v1"</span> },
-      <span class="str">"metadata"</span>: { <span class="str">"invocationId"</span>: <span class="str">"capa-0.8.1-beta"</span> }
-    }
-  }
-}</code></pre>
-
-    <p>L1 is the entry rung of the SLSA ladder: the provenance is generated by the build process and is non-forgeable only insofar as the builder is trusted. Higher levels (signed, hermetic, reproducible builds) layer on top of the same attestation shape; the L1 document Capa emits is the format downstream tooling already expects.</p>
 </section>
 
 <!-- =====================================================
@@ -518,17 +219,32 @@
     <ul>
         <li><strong>Whether a capability holder behaves well.</strong> A function that legitimately receives <code>Net</code> can do whatever <code>Net</code> allows, including misuse. The manifest documents the <em>permission surface</em>; it does not predict <em>behaviour</em>.</li>
         <li><strong>Anything beyond an <code>Unsafe</code> boundary.</strong> Once a value crosses into Python interop, the discipline ends. The manifest marks the crossing (<code>has_unsafe: true</code>); content beyond it must be audited separately.</li>
-        <li><strong>Dependencies you did not write.</strong> v1 only describes the program you compile. Aggregating manifests across the dependency graph is on the roadmap, it requires a module system first.</li>
-        <li><strong>Full data-flow tracking.</strong> The manifest now records every call site with its argument expressions, including <code>restrict_to(...)</code> calls visible directly in the source, so an auditor reading the manifest can see that <code>main</code> calls <code>net.restrict_to("api.example.com")</code> before handing the cap to <code>fetch_user</code>. Full <em>flow</em> tracking, propagating restrictions through let-bindings and into method-call resolution, is a deeper analyser change still open for v0.4.</li>
+        <li><strong>Dependencies you did not write.</strong> v1 only describes the program you compile. Aggregating manifests across the dependency graph is on the roadmap; it requires a package manager first.</li>
     </ul>
+</section>
+
+<!-- =====================================================
+     Regulatory mapping
+===================================================== -->
+<section>
+    <h2>Regulatory mapping</h2>
+
+    <p>The manifest's structure was designed with the audit requirements of several frameworks in mind: <strong>CRA</strong> (EU Cyber Resilience Act), <strong>NIS2</strong>, <strong>DORA</strong>, <strong>NIST SSDF</strong>, and <strong>OWASP SCVS</strong>. The article-by-article correspondence lives in:</p>
+
+    <ul>
+        <li><a href="https://github.com/nelsonduarte/capa/blob/main/docs/cra.md"><code>docs/cra.md</code></a> &middot; CRA deep-dive (Annex I obligations &harr; manifest fields).</li>
+        <li><a href="https://github.com/nelsonduarte/capa/blob/main/docs/regulatory.md"><code>docs/regulatory.md</code></a> &middot; Multi-jurisdiction comparative table: 8 Capa artefacts &times; 5 frameworks, four-level classification (direct / indirect / partial / out of scope).</li>
+    </ul>
+
+    <p>These documents are the place to look when you need to point a specific clause to a specific manifest field.</p>
 </section>
 
 <section class="section-centered">
     <h2>See it for yourself</h2>
     <div class="cta">
         <a href="start.html" class="btn primary">Install Capa</a>
+        <a href="learn/index.html" class="btn">Start learning</a>
         <a href="https://github.com/nelsonduarte/capa/blob/main/examples/manifest_demo.capa" class="btn">Read the demo source</a>
-        <a href="tour.html" class="btn">Tour the language</a>
     </div>
 </section>
 
@@ -541,7 +257,7 @@
             <ul>
                 <li><a href="index.html">Home</a></li>
                 <li><a href="why.html">Why Capa</a></li>
-                <li><a href="tour.html">Language tour</a></li>
+                <li><a href="learn/index.html">Learn</a></li>
                 <li><a href="start.html">Get started</a></li>
                 <li><a href="roadmap.html">Roadmap</a></li>
             </ul>
@@ -550,7 +266,7 @@
             <h4>Documentation</h4>
             <ul>
                 <li><a href="start.html">Getting started</a></li>
-                <li><a href="tour.html">Tutorial</a></li>
+                <li><a href="learn/index.html">Tutorial</a></li>
                 <li><a href="reference.html">Reference</a></li>
                 <li><a href="stdlib.html">Standard library</a></li>
             </ul>
@@ -573,7 +289,7 @@
             </ul>
         </div>
     </div>
-    <p class="colophon">Built by Nelson Duarte · v0.8.1-beta · MIT-licensed</p>
+    <p class="colophon">Built by Nelson Duarte &middot; v0.8.1-beta &middot; MIT-licensed</p>
 </footer>
 
 </body>

@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3. Functions | Learn Capa</title>
+    <meta name="description" content="Chapter 3 of Learn Capa: signatures, parameters, return types, named arguments.">
+    <link rel="stylesheet" href="../style.css">
+    <link rel="icon" type="image/svg+xml" href="../favicon.svg">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'none'; object-src 'none'; base-uri 'self'; form-action 'self'">
+    <meta name="referrer" content="strict-origin-when-cross-origin">
+</head>
+<body>
+
+<header>
+    <nav>
+        <a href="../index.html" class="logo">
+            <img src="../capa_logo.svg" alt="" aria-hidden="true">
+            Capa
+        </a>
+        <div class="nav-links">
+            <a href="../index.html">Home</a>
+            <a href="../why.html">Why Capa</a>
+            <a href="index.html" class="current">Learn</a>
+            <a href="../reference.html">Reference</a>
+            <a href="../start.html">Get started</a>
+            <a href="../roadmap.html">Roadmap</a>
+            <a href="https://github.com/nelsonduarte/capa" class="github">GitHub</a>
+        </div>
+    </nav>
+</header>
+
+<main>
+
+<div class="page-heading">
+    <p class="learn-breadcrumb"><a href="index.html">Learn</a> &middot; Chapter 3 of 12</p>
+    <h1>Functions</h1>
+    <p>How to put a sequence of operations behind a name and call it. Capa's signatures are precise: parameter types, return type, no overloading.</p>
+</div>
+
+<section>
+    <h2>The shape of a function</h2>
+
+<pre><code><span class="kw-decl">fun</span> <span class="fn-name">double</span>(n: <span class="ty-primitive">Int</span>) -&gt; <span class="ty-primitive">Int</span>
+    <span class="kw-ctrl">return</span> n * 2</code></pre>
+
+    <p>The same five parts you would expect: the keyword <code>fun</code>, the name <code>double</code>, a parenthesised parameter list (each one annotated with a type), an optional return type after <code>-&gt;</code>, and the body indented underneath.</p>
+
+    <p>Call it like any other function:</p>
+
+<pre><code><span class="kw-decl">fun</span> <span class="fn-name">main</span>(stdio: <span class="cap">Stdio</span>)
+    <span class="kw-storage">let</span> n = <span class="fn-call">double</span>(7)
+    stdio.<span class="fn-call">println</span>(<span class="str">"${n}"</span>)        <span class="comment">// 14</span></code></pre>
+
+    <p>Two function-shape rules to internalise early:</p>
+
+    <ol>
+        <li>
+            <p><strong>Every parameter has a type annotation</strong>, always. The compiler does not guess from call sites. This is a deliberate readability rule: a function's signature is the most useful summary of what it does, so the signature must be self-describing.</p>
+        </li>
+        <li>
+            <p><strong>The return type is required when the function returns a value.</strong> A function with no return type implicitly returns <code>Unit</code>; you can write that explicitly as <code>-&gt; ()</code> but most code leaves it off.</p>
+        </li>
+    </ol>
+</section>
+
+<section>
+    <h2>No overloading, no defaults</h2>
+
+    <p>A name is bound to exactly one function. You cannot have two functions called <code>double</code> with different parameter types. If you want two flavours, give them two names: <code>double_int</code>, <code>double_float</code>.</p>
+
+    <p>There are also no default argument values. Every parameter must be passed at every call site. The cost of typing <code>some_lib.connect(host, port, timeout, retries)</code> is small; the cost of having defaults silently change between library versions is large.</p>
+</section>
+
+<section>
+    <h2>Named arguments</h2>
+
+    <p>For functions with more than two or three parameters, positional calls become hard to read. Capa lets you pass arguments by name at the call site:</p>
+
+<pre><code><span class="kw-decl">fun</span> <span class="fn-name">greet</span>(name: <span class="ty-primitive">String</span>, age: <span class="ty-primitive">Int</span>) -&gt; <span class="ty-primitive">String</span>
+    <span class="kw-ctrl">return</span> <span class="str">"${name} is ${age}."</span>
+
+<span class="kw-decl">fun</span> <span class="fn-name">main</span>(stdio: <span class="cap">Stdio</span>)
+    <span class="kw-storage">let</span> s = <span class="fn-call">greet</span>(name: <span class="str">"Ana"</span>, age: 30)
+    stdio.<span class="fn-call">println</span>(s)</code></pre>
+
+    <p>Named and positional arguments cannot be mixed: a positional argument cannot appear after a named one. The analyzer also rejects unknown names, duplicates, and arity mismatches. Built-in methods (<code>String</code>, <code>Map</code>, <code>Set</code>, capabilities) only accept positional arguments because their parameter names are not tracked in the type system.</p>
+</section>
+
+<section>
+    <h2>Functions that take other functions</h2>
+
+    <p>A function type is written <code>Fun(T1, T2, ...) -&gt; R</code>. A function that takes a function looks like:</p>
+
+<pre><code><span class="kw-decl">fun</span> <span class="fn-name">apply_twice</span>(f: <span class="ty-builtin">Fun</span>(<span class="ty-primitive">Int</span>) -&gt; <span class="ty-primitive">Int</span>, x: <span class="ty-primitive">Int</span>) -&gt; <span class="ty-primitive">Int</span>
+    <span class="kw-ctrl">return</span> <span class="fn-call">f</span>(<span class="fn-call">f</span>(x))
+
+<span class="kw-decl">fun</span> <span class="fn-name">inc</span>(n: <span class="ty-primitive">Int</span>) -&gt; <span class="ty-primitive">Int</span>
+    <span class="kw-ctrl">return</span> n + 1
+
+<span class="kw-decl">fun</span> <span class="fn-name">main</span>(stdio: <span class="cap">Stdio</span>)
+    stdio.<span class="fn-call">println</span>(<span class="str">"${apply_twice(inc, 10)}"</span>)   <span class="comment">// 12</span></code></pre>
+
+    <p>You can also write a function in-place as a lambda. Lambdas are introduced with <code>|param, ...| body</code>:</p>
+
+<pre><code><span class="kw-decl">fun</span> <span class="fn-name">main</span>(stdio: <span class="cap">Stdio</span>)
+    <span class="kw-storage">let</span> add = |a: <span class="ty-primitive">Int</span>, b: <span class="ty-primitive">Int</span>| a + b
+    stdio.<span class="fn-call">println</span>(<span class="str">"${add(3, 4)}"</span>)         <span class="comment">// 7</span></code></pre>
+
+    <p>Lambdas have one important limit: they cannot capture capabilities from the outer scope. This is part of the capability discipline (you cannot smuggle authority through a closure). We come back to this in chapter 8.</p>
+</section>
+
+<section>
+    <h2>The two error modes</h2>
+
+    <p>First: a missing return.</p>
+
+<pre><code><span class="kw-decl">fun</span> <span class="fn-name">double</span>(n: <span class="ty-primitive">Int</span>) -&gt; <span class="ty-primitive">Int</span>
+    <span class="kw-storage">let</span> r = n * 2</code></pre>
+
+<pre><code>$ capa --run hello.capa
+hello.capa:1:5: error: function 'double': declared return type 'Int',
+                       but the body can fall through without returning a value
+   1 | fun double(n: Int) -> Int
+         ^</code></pre>
+
+    <p>The analyzer reads every path through the body. If any path can reach the end of the function without a <code>return</code>, and the declared return type is not <code>Unit</code>, you get this error. Add <code>return r</code> on its own line at the end.</p>
+
+    <p>Second: a wrong return type.</p>
+
+<pre><code><span class="kw-decl">fun</span> <span class="fn-name">double</span>(n: <span class="ty-primitive">Int</span>) -&gt; <span class="ty-primitive">Int</span>
+    <span class="kw-ctrl">return</span> <span class="str">"twice that"</span></code></pre>
+
+<pre><code>$ capa --run hello.capa
+hello.capa:2:12: error: return: expected Int, got String
+   2 |     return "twice that"
+                  ^</code></pre>
+
+    <p>The return value's type must match the declared one exactly. There are no implicit conversions.</p>
+</section>
+
+<section>
+    <h2>Where you are now</h2>
+
+    <p>You can write functions, give them precise signatures, call them positionally or by name, and pass functions to other functions. Next: how to make decisions and loop. Control flow.</p>
+</section>
+
+<nav class="chapter-nav" aria-label="Tutorial navigation">
+    <a class="prev" href="02-values.html">&larr; 2. Values and types</a>
+    <a class="next" href="04-control-flow.html">4. Control flow &rarr;</a>
+</nav>
+
+</main>
+
+<footer>
+    <div class="footer-grid">
+        <div>
+            <h4>Pages</h4>
+            <ul>
+                <li><a href="../why.html">Why Capa</a></li>
+                <li><a href="index.html">Learn</a></li>
+                <li><a href="../reference.html">Reference</a></li>
+                <li><a href="../start.html">Get started</a></li>
+                <li><a href="../roadmap.html">Roadmap</a></li>
+            </ul>
+        </div>
+        <div>
+            <h4>Documentation</h4>
+            <ul>
+                <li><a href="../start.html">Getting started</a></li>
+                <li><a href="../reference.html">Reference</a></li>
+                <li><a href="../stdlib.html">Standard library</a></li>
+                <li><a href="../manifest.html">Manifest</a></li>
+                <li><a href="../community.html">Community</a></li>
+            </ul>
+        </div>
+        <div>
+            <h4>Project</h4>
+            <ul>
+                <li><a href="https://github.com/nelsonduarte/capa">Source</a></li>
+                <li><a href="../brand.html">Brand assets</a></li>
+                <li><a href="https://github.com/nelsonduarte/capa/blob/main/LICENSE">License (MIT)</a></li>
+            </ul>
+        </div>
+    </div>
+    <p class="colophon">Built by Nelson Duarte &middot; v0.8.1-beta &middot; MIT-licensed</p>
+</footer>
+
+</body>
+</html>
