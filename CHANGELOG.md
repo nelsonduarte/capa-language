@@ -9,7 +9,7 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
-## [0.8.2-beta], 2026-05-17
+## [0.8.2-beta], 2026-05-16
 
 A content-and-tooling release on top of v0.8.1-beta. Three
 big new pieces landed: the full **LLM tool-use sandboxing
