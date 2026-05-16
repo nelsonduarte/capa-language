@@ -1174,6 +1174,52 @@ class TestTranspileExamples(unittest.TestCase):
         self.assertIn("malicious input parsed as data:", out)
         self.assertIn("command field stays a String, never executed", out)
 
+    def test_llm_tool_sandbox(self):
+        # The LLM tool-use sandboxing demo. Three user-defined
+        # capabilities (SearchWeb, SendEmail, RunCode), three
+        # implementors, and an agent that receives only Search +
+        # Email but not RunCode. Smoke-tests the end-to-end run;
+        # the discipline assertions (process_request provably
+        # excludes RunCode) are covered by the manifest checks
+        # below.
+        rc, out, err = self._run_example("examples/llm_tool_sandbox.capa")
+        self.assertEqual(rc, 0, err)
+        self.assertIn("agent received query: 'Capa language news'", out)
+        self.assertIn("(stub) results for 'Capa language news' on capa-language.com", out)
+        self.assertIn("email sent", out)
+        self.assertIn("done", out)
+
+    def test_llm_tool_sandbox_manifest_excludes_runcode(self):
+        # The headline audit claim: process_request provably
+        # excludes RunCode. If this assertion ever fails it means
+        # the discipline regressed for user-defined capabilities,
+        # which would be a real soundness bug.
+        import json
+        import subprocess
+        import sys
+        r = subprocess.run(
+            [sys.executable, "-m", "capa", "--manifest",
+             "examples/llm_tool_sandbox.capa"],
+            capture_output=True, text=True, encoding="utf-8",
+        )
+        self.assertEqual(r.returncode, 0, r.stderr)
+        m = json.loads(r.stdout)
+        process = next(
+            f for f in m["functions"] if f["name"] == "process_request"
+        )
+        # process_request declares Stdio + the two tools it uses.
+        self.assertIn("Stdio", process["declared_capabilities"])
+        self.assertIn("SearchWeb", process["declared_capabilities"])
+        self.assertIn("SendEmail", process["declared_capabilities"])
+        self.assertNotIn("RunCode", process["declared_capabilities"])
+        # And it provably cannot reach RunCode, Unsafe, or any
+        # other built-in cap it did not declare.
+        excluded = process["provably_excluded_capabilities"]
+        self.assertIn("RunCode", excluded)
+        self.assertIn("Unsafe", excluded)
+        self.assertIn("Net", excluded)
+        self.assertFalse(process["has_unsafe"])
+
     def test_cve_ua_parser_js(self):
         # Sixth CVE walkthrough: the ua-parser-js npm account
         # hijack of October 2021. Same attack mechanism as

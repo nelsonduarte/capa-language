@@ -178,11 +178,57 @@
 </section>
 
 <!-- =====================================================
+     LLM tool-use sandboxing (2026 angle)
+===================================================== -->
+<section>
+    <h2 class="section-centered">LLM tool-use sandboxing</h2>
+    <p class="lead-prose">
+        An agent that calls tools (search the web, send email, run code) needs to be told what it is allowed to do. The function-calling APIs leave that to application code. Capa's capability discipline puts the contract in the type system: each tool is a capability, the agent's signature declares which tools it has, the compiler proves the agent cannot exceed them. No prompt, no jailbreak, no clever output can talk the runtime into a tool the function did not declare.
+    </p>
+<pre class="showcase"><code><span class="comment">// Each tool is a capability.</span>
+<span class="kw-decl">capability</span> <span class="ty-user">SearchWeb</span>
+    <span class="kw-decl">fun</span> <span class="fn-name">search</span>(self, query: <span class="ty-primitive">String</span>) -&gt; <span class="ty-builtin">Result</span>&lt;<span class="ty-primitive">String</span>, <span class="ty-builtin">IoError</span>&gt;
+
+<span class="kw-decl">capability</span> <span class="ty-user">SendEmail</span>
+    <span class="kw-decl">fun</span> <span class="fn-name">send</span>(self, to: <span class="ty-primitive">String</span>, body: <span class="ty-primitive">String</span>) -&gt; <span class="ty-builtin">Result</span>&lt;<span class="ty-primitive">Unit</span>, <span class="ty-builtin">IoError</span>&gt;
+
+<span class="kw-decl">capability</span> <span class="ty-user">RunCode</span>
+    <span class="kw-decl">fun</span> <span class="fn-name">run</span>(self, code: <span class="ty-primitive">String</span>) -&gt; <span class="ty-builtin">Result</span>&lt;<span class="ty-primitive">String</span>, <span class="ty-builtin">IoError</span>&gt;
+
+<span class="comment">// The agent's signature is the contract.</span>
+<span class="comment">// SearchWeb and SendEmail are declared. RunCode is NOT.</span>
+<span class="comment">// The compiler proves the agent provably cannot run code.</span>
+<span class="kw-decl">fun</span> <span class="fn-name">process_request</span>(
+    stdio: <span class="cap">Stdio</span>,
+    search: <span class="ty-user">SearchWeb</span>,
+    mail: <span class="ty-user">SendEmail</span>,
+    query: <span class="ty-primitive">String</span>) -&gt; <span class="ty-builtin">Result</span>&lt;<span class="ty-primitive">Unit</span>, <span class="ty-builtin">IoError</span>&gt;
+    <span class="kw-storage">let</span> r = search.<span class="fn-call">search</span>(query)?
+    mail.<span class="fn-call">send</span>(<span class="str">"user@example.com"</span>, r)?
+    <span class="kw-ctrl">return</span> <span class="variant">Ok</span>(())</code></pre>
+    <p class="lead-prose-narrow">
+        Runnable demo at <a href="https://github.com/nelsonduarte/capa/blob/main/examples/llm_tool_sandbox.capa"><code>examples/llm_tool_sandbox.capa</code></a>; the full pattern, attenuation, SBOM audit angle, and comparison with allow-lists and OS-level sandboxes are in <a href="https://github.com/nelsonduarte/capa/blob/main/docs/llm-tool-sandbox.md"><code>docs/llm-tool-sandbox.md</code></a>.
+    </p>
+</section>
+
+<!-- =====================================================
      Who builds with Capa
 ===================================================== -->
 <section>
     <h2 class="section-centered">Who builds with Capa</h2>
     <div class="personas">
+        <div class="persona">
+            <h3>Builders of LLM agents</h3>
+            <p>
+                Tool-calling agents need a principled answer to "this
+                tool can do X but not Y". Capa's capability discipline
+                is structurally the right shape: each tool is a
+                capability, the agent declares its tool surface in its
+                signature, the compiler proves the agent cannot exceed
+                it. See the
+                <a href="https://github.com/nelsonduarte/capa/blob/main/docs/llm-tool-sandbox.md">writeup</a>.
+            </p>
+        </div>
         <div class="persona">
             <h3>Library authors</h3>
             <p>

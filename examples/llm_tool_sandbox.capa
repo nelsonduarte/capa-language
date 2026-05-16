@@ -1,0 +1,193 @@
+// llm_tool_sandbox.capa, capability-typed sandbox for LLM tool use.
+//
+// The 2026 problem: an LLM agent that calls external tools (search
+// the web, send mail, run code) has no good story for "this tool
+// can do X but not Y". The function-calling APIs from OpenAI and
+// Anthropic hand the model a list of tools; what each tool can
+// actually do is at the application's mercy. Prompt injection,
+// jailbreaks, or simply a mistaken plan can lead an agent to call
+// a tool with arguments the developer never intended.
+//
+// Capa's capability discipline is structurally the right shape for
+// this. Each tool is a capability. The function that interprets
+// the LLM's tool-call sequence declares which tools it has. The
+// analyser proves the agent cannot exceed its declared tool
+// surface. The manifest emits that surface as an audit artefact a
+// reviewer can read without running the program.
+//
+// The demo is offline: tool implementations return synthetic
+// results so the program runs without network access. A real
+// implementation would route through the built-in caps the
+// implementors already hold (Net for search and mail, Unsafe for
+// code execution); the type-level discipline is unchanged.
+
+// =========================================================
+// The tool capabilities
+// =========================================================
+//
+// Three illustrative tools spanning different risk levels:
+//
+//   - SearchWeb:  low risk; read-only query on a target site.
+//   - SendEmail:  medium risk; outbound side-effect.
+//   - RunCode:    high risk; arbitrary code execution.
+//
+// In a real deployment you would add as many capabilities as
+// you have tools. Each one is a contract: anyone holding the
+// capability can call its methods, nothing else.
+
+capability SearchWeb
+    fun search(self, query: String) -> Result<String, IoError>
+
+capability SendEmail
+    fun send(self, to: String, subject: String, body: String) -> Result<Unit, IoError>
+
+capability RunCode
+    fun run(self, code: String) -> Result<String, IoError>
+
+// =========================================================
+// Concrete implementors
+// =========================================================
+//
+// Each implementor is a struct that holds the built-in capability
+// the tool would use in a real implementation. The cap-bearing
+// struct relaxation lets the struct hold a built-in cap as a
+// field, since the struct itself implements a user-defined
+// capability.
+//
+// We stub the method bodies: real bodies would route through the
+// embedded built-in cap (net.get for search, net.post for mail,
+// unsafe-mediated subprocess.run for code execution).
+
+type StubSearch {
+    net: Net,
+    allowed_domain: String
+}
+
+type StubMailer {
+    net: Net
+}
+
+type StubRunner {
+    u: Unsafe
+}
+
+impl SearchWeb for StubSearch
+    fun search(self, query: String) -> Result<String, IoError>
+        // A real implementation would call:
+        //     return self.net.get("https://${self.allowed_domain}/search?q=${query}")
+        // The stub returns a synthetic result so the demo is
+        // deterministic and runs offline.
+        return Ok("(stub) results for '${query}' on ${self.allowed_domain}")
+
+impl SendEmail for StubMailer
+    fun send(self, to: String, subject: String, body: String) -> Result<Unit, IoError>
+        // A real implementation would call self.net.post with an
+        // SMTP payload. We just return Ok to confirm the call
+        // shape works end-to-end.
+        return Ok(())
+
+impl RunCode for StubRunner
+    fun run(self, code: String) -> Result<String, IoError>
+        // A real implementation would route through self.u
+        // (Unsafe) to invoke a Python interpreter or sandbox.
+        // The stub echoes the request without running anything.
+        return Ok("(would have run: ${code})")
+
+// =========================================================
+// Factories
+// =========================================================
+//
+// Each factory takes the low-level built-in cap, optionally
+// narrows it at the boundary (Search and Mail attenuate Net by
+// host), and returns the high-level user-defined capability. The
+// narrowing is the second pillar of the discipline: even the
+// tool's underlying authority is limited to what the tool needs.
+
+pub fun make_search(net: Net, domain: String) -> StubSearch
+    return StubSearch {
+        net: net.restrict_to(domain),
+        allowed_domain: domain
+    }
+
+pub fun make_mailer(net: Net, smtp_host: String) -> StubMailer
+    return StubMailer {
+        net: net.restrict_to(smtp_host)
+    }
+
+pub fun make_runner(u: Unsafe) -> StubRunner
+    return StubRunner { u: u }
+
+// =========================================================
+// The agent
+// =========================================================
+//
+// The agent receives only the tools it is allowed to use. Note
+// the signature: SearchWeb and SendEmail, no RunCode. Whatever
+// the LLM "decides" inside this function, it can only call
+// methods on values in scope. RunCode is not in scope.
+//
+// The compiler proves the agent cannot run arbitrary code. The
+// manifest emits the same fact in JSON. An auditor reading the
+// SBOM learns that `process_request` is provably incapable of
+// touching RunCode, no matter what the LLM tells it to do.
+
+fun process_request(
+    stdio: Stdio,
+    search: SearchWeb,
+    mail: SendEmail,
+    query: String
+) -> Result<Unit, IoError>
+    stdio.println("agent received query: '${query}'")
+
+    // Simulated LLM step 1: search for context.
+    let results = search.search(query)?
+    stdio.println("  > " + results)
+
+    // Simulated LLM step 2: email the summary.
+    mail.send("user@example.com", "Capa news digest", results)?
+    stdio.println("  > email sent")
+
+    return Ok(())
+
+// =========================================================
+// What the agent CANNOT do
+// =========================================================
+//
+// The block below is commented out because uncommenting it makes
+// the file fail to compile. The compile error is the point:
+//
+//     fun process_request(stdio: Stdio, search: SearchWeb, mail: SendEmail, query: String) -> Result<Unit, IoError>
+//         let _ = runner.run("rm -rf /")?
+//         //         ^^^^^^^ error: undefined name 'runner'
+//
+// To even *attempt* this, the attacker would have to change the
+// signature of `process_request` to take `runner: RunCode`. That
+// change is loud: every call site in the dependency tree has to
+// be updated, every code review can see it, every SBOM diff
+// reports the new declared capability.
+
+// =========================================================
+// Wiring
+// =========================================================
+//
+// Main builds the tool surface the agent receives. RunCode is
+// not constructed here; it is not in scope; the agent function
+// did not declare it; therefore the agent provably cannot use
+// it. This is the closed-world guarantee Capa's discipline
+// gives you.
+
+fun main(stdio: Stdio, net: Net)
+    let search = make_search(net, "capa-language.com")
+    let mail   = make_mailer(net, "smtp.example.com")
+
+    stdio.println("=== running agent ===")
+    match process_request(stdio, search, mail, "Capa language news")
+        Ok(_)  -> stdio.println("done")
+        Err(e) -> stdio.eprintln("agent failed: ${e}")
+
+    stdio.println("")
+    stdio.println("=== what an attacker would have to change ===")
+    stdio.println("To make the agent run arbitrary code, the signature of")
+    stdio.println("`process_request` would have to gain a `runner: RunCode`")
+    stdio.println("parameter. The change is visible in every call site, in")
+    stdio.println("code review, and in the SBOM diff between releases.")

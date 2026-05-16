@@ -89,6 +89,7 @@ Capa/
 │   ├── cve_pickle.capa         # CVE design-pattern: pickle gadget chains
 │   ├── empirical_config.capa   # SBOM diff micro-validation (Capa side)
 │   ├── empirical_config_naive.py # SBOM diff micro-validation (Python side)
+│   ├── llm_tool_sandbox.capa   # LLM tool-use sandboxing via capability discipline
 │   ├── vex_demo.capa           # @vex per-function exploitability claims
 │   ├── spdx_parser.capa        # SPDX 2.3 JSON parser, in Capa
 │   ├── cyclonedx_parser.capa   # CycloneDX 1.5 JSON parser, in Capa
@@ -105,6 +106,7 @@ Capa/
 │   ├── regulatory.md           # Multi-jurisdiction comparative (CRA+NIS2+DORA+SSDF+SCVS)
 │   ├── provenance-signing.md   # Capa SLSA L1 -> L2 via cosign / Sigstore
 │   ├── empirical_micro.md      # SBOM diff Python vs Capa, fully reproducible
+│   ├── llm-tool-sandbox.md     # LLM tool-use sandboxing via capabilities
 │   ├── demo-event-stream.md    # case study walkthrough
 │   ├── cve_eslint_scope.md     # case study walkthrough
 │   ├── cve_ua_parser_js.md     # case study walkthrough
