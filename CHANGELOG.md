@@ -9,6 +9,145 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+## [0.8.2-beta], 2026-05-17
+
+A content-and-tooling release on top of v0.8.1-beta. Three
+big new pieces landed: the full **LLM tool-use sandboxing
+arc** (four runnable demos + writeup), the **complete Learn
+tutorial track** (twelve chapters, hands-on, syntax-checked
+end-to-end), and a **site restructure** that moved the
+public-facing voice from SBOM-first to language-first.
+
+### Added
+
+- **LLM tool-use sandboxing arc**, four files demonstrating the
+  central 2026 adoption argument for Capa, that capability
+  discipline is structurally the right shape for sandboxing
+  agentic tool use:
+
+  - ``examples/llm_tool_sandbox.capa`` &mdash; static demo. An
+    agent function declares ``(SearchWeb, SendEmail)`` and
+    provably cannot escalate to ``RunCode`` even though
+    ``RunCode`` exists in the same compilation unit. Manifest
+    emits the bound.
+  - ``examples/llm_agent_runner.capa`` &mdash; mock LLM + Capa-typed
+    tool dispatch loop. Scripts a three-turn conversation
+    (search &rarr; email &rarr; reply) so the demo is offline
+    and deterministic, exercises the full dispatch path with
+    string-keyed routing into capability methods.
+  - ``examples/llm_anthropic_real.capa`` &mdash; real Anthropic
+    Messages API round-trip, single-turn (no tools), isolating
+    the network-integration path. Bridges through a small
+    Python helper (``examples/llm_anthropic_helper.py``) for
+    the HTTP+auth dance Capa's built-in ``Net`` does not
+    cover in v1.
+  - ``examples/llm_anthropic_agent.capa`` &mdash; the capstone:
+    real model + Capa-typed tool dispatch end-to-end. The
+    headline audit claim aguenta: ``agent_loop`` declares only
+    ``(Stdio, LlmClient, SearchWeb)`` and provably excludes
+    ``Net``, ``Fs``, ``Env``, ``Unsafe`` even with a real model
+    in the loop deciding which tools to call.
+
+  Plus ``docs/llm-tool-sandbox.md``, the writeup: motivation
+  (the 2026 prompt-injection / jailbreak / confused-deputy
+  problem), the pattern in three pieces, attenuation at the
+  boundary, the manifest as audit artefact, a comparison table
+  with allow-lists and OS-level sandboxes, and the honest
+  limits (does not prevent the LLM from being prompted, does
+  not address content-level attacks, etc.).
+
+  Surfaced on the homepage as a featured section ("LLM
+  tool-use sandboxing") and a new persona ("Builders of LLM
+  agents") at the top of the personas grid. Six new tests at
+  ``tests/test_transpiler.py`` cover the smoke runs and the
+  manifest discipline claims.
+
+- **Learn tutorial track**, complete. ``docs/learn/`` with
+  twelve hands-on chapters from "Hello, Capa" to "A small
+  project":
+
+  1. Hello, Capa
+  2. Values and types
+  3. Functions
+  4. Control flow
+  5. Collections
+  6. Structs and sum types
+  7. Errors as values
+  8. Your first capability
+  9. Attenuating capabilities
+  10. Defining your own capability
+  11. Modules and visibility
+  12. A small project
+
+  Each chapter has the same shape: goal &rarr; runnable code
+  &rarr; "Try this" callout &rarr; the two common error modes
+  &rarr; "where you are now". Prev/next navigation between
+  chapters, breadcrumb back to the ToC. The earlier survey-
+  style ``tour.html`` was removed; pedagogical content lives
+  in ``learn/``, dense reference in ``reference.html``. Three
+  syntax bugs introduced during the initial chapter pass were
+  caught and fixed (Rust-style ``|x| body`` lambdas, multi-
+  payload variants, ``Map.insert`` vs ``Map.set``); every
+  remaining code sample verified by extraction into a temp
+  file and ``capa --run``.
+
+- **Specialised diagnostic when reaching for a private item**:
+  the "undefined name" / "undefined type" hint now recognises
+  when the missing reference is a private item of an imported
+  module and points at the right fix (already shipped in
+  v0.8.0, but explicitly noted here because it makes the
+  module system feel polished).
+
+### Changed
+
+- **Site restructure**, language-first throughout:
+
+  - ``tour.html`` removed (replaced by the Learn track). Top
+    nav slimmed to Home / Why / Learn / Reference / Get started
+    / Roadmap / GitHub. Manifest and Community moved to the
+    footer.
+  - ``manifest.html`` shrunk 580 &rarr; 296 lines: the dedicated
+    CRA-mapping block now links out to ``docs/cra.md`` and
+    ``docs/regulatory.md`` instead of duplicating them; the
+    CycloneDX / SPDX / VEX / SLSA JSON-dump sections were
+    condensed into a single "the same source, in standard
+    formats" block pointing at the CLI flag and the
+    ``examples/`` demo for each.
+  - Subtitle, meta tags, release banner copy, personas order,
+    comparison-table caption, FAQ ordering, and the "where to
+    go next" footer all rebalanced. Capa is now described as
+    a capability-typed language first; the supply-chain
+    artefacts come second. ``positioning.md`` reframed the
+    one-sentence thesis the same way.
+
+- **Long-form design / paper drafts are local-only**: removed
+  the ``WHITEPAPER.md`` stub (placeholder pointing at a doc
+  never going to be written publicly) and untracked
+  ``docs/paper-draft.md``. Both stay on disk; ``.gitignore``
+  now lists ``docs/paper-draft.md`` alongside the pre-existing
+  ``Capa-WhitePaper.md``. Stale ``WhitePaper §X.Y`` forward
+  references in source comments and ``Capa-EBNF.md`` were
+  replaced with self-contained descriptions.
+
+### Fixed
+
+- **Learn track syntax bugs in chapters 3, 5, 6, 12**:
+  Rust-style pipe lambdas (``|x: T| body``) replaced with
+  Capa's actual ``fun (x: T) -> R => body``; variants with
+  multiple payloads (``Rectangle(Float, Float)``) replaced
+  with tuple payloads (``Rectangle((Float, Float))``) and
+  tuple-pattern destructure in match arms;
+  ``Map.insert`` / ``Set.insert`` replaced with the correct
+  ``Map.set`` / ``Set.add``. Caught during the LLM-agent demo
+  build because the agent's parsing code wanted to use chained
+  ``.and_then(|v| ...)`` and the compiler refused. Every
+  fixed sample was verified by extraction + ``capa --run``.
+
+### Numbers
+
+- 946 tests, green on Ubuntu / macOS / Windows &times; Python
+  3.10 / 3.12 / 3.14 (up from 938 in v0.8.1).
+
 ## [0.8.1-beta], 2026-05-16
 
 A polish release on top of v0.8.0-beta. Three concentrated

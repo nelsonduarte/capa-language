@@ -52,7 +52,7 @@
         <a href="start.html" class="btn">Get started</a>
         <a href="https://github.com/nelsonduarte/capa" class="btn">GitHub</a>
     </div>
-    <p class="status">v0.8.1-beta · MIT · 938 tests · hand-written compiler in Python</p>
+    <p class="status">v0.8.2-beta · MIT · 946 tests · hand-written compiler in Python</p>
 </section>
 
 <!-- =====================================================
@@ -60,19 +60,20 @@
 ===================================================== -->
 <section class="release-banner-wrap">
     <div class="release-banner">
-        <span class="release-tag">v0.8.1-beta</span>
+        <span class="release-tag">v0.8.2-beta</span>
         <span class="release-body">
-            <strong>Released 2026-05-16.</strong>
-            <code>?</code> operator gains an inline-hoist fast
-            path (1.36x Ok, 8.91x Err) and now also works on
-            <code>Option&lt;T&gt;</code>. The LSP runs the module
-            loader so calls to imported functions stop showing
-            up as "undefined name" in the editor; completion
-            filters mangled private names. A focused unit-test
-            pass lifts <code>capa.runtime</code> coverage from
-            56% to 85%.
+            <strong>Released 2026-05-17.</strong>
+            <strong>LLM tool-use sandboxing</strong>: a complete arc
+            from static discipline to a real Anthropic agent loop
+            with Capa-typed tool dispatch &mdash; the agent provably
+            cannot escalate beyond its declared tools, regardless of
+            what the model emits. Plus a full <strong>Learn track</strong>
+            (twelve hands-on chapters), a homepage rebalance that
+            puts the language first and SBOM second, and tutorial
+            code samples checked end-to-end against the live
+            compiler.
         </span>
-        <a class="release-link" href="https://github.com/nelsonduarte/capa/releases/tag/v0.8.1-beta">Read the notes →</a>
+        <a class="release-link" href="https://github.com/nelsonduarte/capa/releases/tag/v0.8.2-beta">Read the notes →</a>
     </div>
 </section>
 
@@ -363,11 +364,11 @@
             <summary>Is Capa production-ready?</summary>
             <p>
                 Not yet, but the gap is hardening rather than
-                completeness. v0.8.1-beta means the compiler runs,
+                completeness. v0.8.2-beta means the compiler runs,
                 the discipline is implemented end-to-end, the
                 module system is feature-complete (qualified
                 access, transitive imports, <code>pub</code>
-                enforcement, search paths), and 938+ tests pass
+                enforcement, search paths), and 946+ tests pass
                 on three operating systems and three Python
                 versions. The day-to-day tooling is in place:
                 line-level formatter, project scaffolder, watch
@@ -530,7 +531,7 @@
 
 <section class="section-centered">
     <h2>Where to go next</h2>
-    <p class="lead-prose-narrow">Capa is in beta. The compiler runs, 938+ tests pass on three operating systems, the three pillars of the discipline are implemented, the module system is feature-complete, and the day-to-day tooling is in place (formatter, scaffolder, watch mode, REPL with every standard capability pre-bound, language server with diagnostics, hover, go-to-definition, find-references, outline, rename, completion, semantic tokens). What remains pre-1.0: a package manager, a native backend, and any pre-1.0 syntax shifts.</p>
+    <p class="lead-prose-narrow">Capa is in beta. The compiler runs, 946+ tests pass on three operating systems, the three pillars of the discipline are implemented, the module system is feature-complete, and the day-to-day tooling is in place (formatter, scaffolder, watch mode, REPL with every standard capability pre-bound, language server with diagnostics, hover, go-to-definition, find-references, outline, rename, completion, semantic tokens). What remains pre-1.0: a package manager, a native backend, and any pre-1.0 syntax shifts.</p>
     <div class="cta">
         <a href="why.html" class="btn primary">Understand the why</a>
         <a href="learn/index.html" class="btn">Start learning</a>
@@ -595,7 +596,7 @@
             </ul>
         </div>
     </div>
-    <p class="colophon">Built by Nelson Duarte · v0.8.1-beta · MIT-licensed</p>
+    <p class="colophon">Built by Nelson Duarte · v0.8.2-beta · MIT-licensed</p>
 </footer>
 
 </body>
