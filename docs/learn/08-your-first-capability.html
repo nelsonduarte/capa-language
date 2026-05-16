@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>8. Your first capability | Learn Capa</title>
+    <meta name="description" content="Chapter 8 of Learn Capa: what Stdio really is, why main declares it, the rules that govern every capability.">
+    <link rel="stylesheet" href="../style.css">
+    <link rel="icon" type="image/svg+xml" href="../favicon.svg">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'none'; object-src 'none'; base-uri 'self'; form-action 'self'">
+    <meta name="referrer" content="strict-origin-when-cross-origin">
+</head>
+<body>
+
+<header>
+    <nav>
+        <a href="../index.html" class="logo">
+            <img src="../capa_logo.svg" alt="" aria-hidden="true">
+            Capa
+        </a>
+        <div class="nav-links">
+            <a href="../index.html">Home</a>
+            <a href="../why.html">Why Capa</a>
+            <a href="index.html" class="current">Learn</a>
+            <a href="../reference.html">Reference</a>
+            <a href="../start.html">Get started</a>
+            <a href="../roadmap.html">Roadmap</a>
+            <a href="https://github.com/nelsonduarte/capa" class="github">GitHub</a>
+        </div>
+    </nav>
+</header>
+
+<main>
+
+<div class="page-heading">
+    <p class="learn-breadcrumb"><a href="index.html">Learn</a> &middot; Chapter 8 of 12</p>
+    <h1>Your first capability</h1>
+    <p>You have been using one since chapter 1. This chapter is where capabilities stop being a magic word in <code>main</code> and become a tool you reason about explicitly.</p>
+</div>
+
+<section>
+    <h2>The thing you have already been doing</h2>
+
+    <p>Every program in this tutorial has looked like this:</p>
+
+<pre><code><span class="kw-decl">fun</span> <span class="fn-name">main</span>(stdio: <span class="cap">Stdio</span>)
+    stdio.<span class="fn-call">println</span>(<span class="str">"..."</span>)</code></pre>
+
+    <p>The <code>stdio</code> parameter is a <strong>capability</strong>. The runtime hands a fresh <code>Stdio</code> value to <code>main</code> when the program starts, and that single value is the only way anything downstream of <code>main</code> can write to standard output.</p>
+
+    <p>To see why this is unusual, look at the same idea in Python:</p>
+
+<pre><code><span class="comment"># Python</span>
+<span class="kw-decl">def</span> <span class="fn-name">main</span>():
+    <span class="fn-call">print</span>(<span class="str">"Hello"</span>)</code></pre>
+
+    <p>The Python <code>main</code> takes no parameters and yet has access to <code>print</code>. The standard output stream is <em>ambient authority</em>: it is in the surrounding environment, available to any code anywhere in the process, without anything in the function's signature indicating that fact. The same is true of <code>open</code>, <code>os.environ</code>, <code>urllib.request.urlopen</code>, and every other I/O primitive.</p>
+
+    <p>Capa removes ambient authority. The standard output stream becomes a <em>value</em>: a <code>Stdio</code> instance, no different at the language level from an <code>Int</code> or a <code>String</code>. The runtime gives one to <code>main</code>; code that does not receive one cannot use it.</p>
+</section>
+
+<section>
+    <h2>The full set of built-in capabilities</h2>
+
+    <p>Seven capability types are baked into the language:</p>
+
+    <ul>
+        <li><code>Stdio</code> &middot; standard output and input. <code>println</code>, <code>print</code>, <code>eprintln</code>, <code>readln</code>.</li>
+        <li><code>Fs</code> &middot; the filesystem. <code>read_to_string</code>, <code>write_string</code>, <code>exists</code>, <code>list_dir</code>.</li>
+        <li><code>Net</code> &middot; the network. <code>get</code>, <code>post</code> (HTTP).</li>
+        <li><code>Env</code> &middot; environment variables. <code>get</code>, <code>allows</code>.</li>
+        <li><code>Clock</code> &middot; wall-clock time. <code>now_secs</code>, <code>sleep_secs</code>.</li>
+        <li><code>Random</code> &middot; non-deterministic randomness. <code>float_unit</code>, <code>int_range</code>, <code>shuffle</code>.</li>
+        <li><code>Unsafe</code> &middot; the escape hatch. Anything that crosses into Python interop.</li>
+    </ul>
+
+    <p>Any function that needs one of these declares it as a parameter:</p>
+
+<pre><code><span class="kw-decl">fun</span> <span class="fn-name">read_config</span>(fs: <span class="cap">Fs</span>) -&gt; <span class="ty-builtin">Result</span>&lt;<span class="ty-primitive">String</span>, <span class="ty-builtin">IoError</span>&gt;
+    <span class="kw-ctrl">return</span> fs.<span class="fn-call">read_to_string</span>(<span class="str">"config.txt"</span>)
+
+<span class="kw-decl">fun</span> <span class="fn-name">fetch_users</span>(net: <span class="cap">Net</span>) -&gt; <span class="ty-builtin">Result</span>&lt;<span class="ty-primitive">String</span>, <span class="ty-builtin">IoError</span>&gt;
+    <span class="kw-ctrl">return</span> net.<span class="fn-call">get</span>(<span class="str">"https://api.example.com/users"</span>)</code></pre>
+
+    <p>A function that takes no capabilities <strong>cannot</strong> do I/O. Not "is asked not to"; <em>cannot</em>: the names of the capability values are not in scope, and there is no way to obtain one out of thin air. The compiler enforces this structurally.</p>
+</section>
+
+<section>
+    <h2>How a capability gets to where it is needed</h2>
+
+    <p>The runtime gives the full set of capabilities to <code>main</code>. From <code>main</code> down, capabilities flow as parameters:</p>
+
+<pre><code><span class="kw-decl">fun</span> <span class="fn-name">greet</span>(stdio: <span class="cap">Stdio</span>, name: <span class="ty-primitive">String</span>)
+    stdio.<span class="fn-call">println</span>(<span class="str">"Hello, ${name}"</span>)
+
+<span class="kw-decl">fun</span> <span class="fn-name">greet_all</span>(stdio: <span class="cap">Stdio</span>, names: <span class="ty-builtin">List</span>&lt;<span class="ty-primitive">String</span>&gt;)
+    <span class="kw-ctrl">for</span> name <span class="kw-ctrl">in</span> names
+        <span class="fn-call">greet</span>(stdio, name)
+
+<span class="kw-decl">fun</span> <span class="fn-name">main</span>(stdio: <span class="cap">Stdio</span>)
+    <span class="fn-call">greet_all</span>(stdio, [<span class="str">"Ana"</span>, <span class="str">"Bruno"</span>, <span class="str">"Carla"</span>])</code></pre>
+
+    <p>Both intermediate functions declare <code>Stdio</code> because they ultimately call <code>println</code> or call a function that does. Reading the signatures of a Capa program tells you the exact authority surface: a function whose signature contains no capabilities is provably pure.</p>
+
+    <p>When <code>main</code> needs more than one capability, list them as additional parameters:</p>
+
+<pre><code><span class="kw-decl">fun</span> <span class="fn-name">main</span>(stdio: <span class="cap">Stdio</span>, fs: <span class="cap">Fs</span>)
+    <span class="kw-ctrl">match</span> fs.<span class="fn-call">read_to_string</span>(<span class="str">"hello.txt"</span>)
+        <span class="variant">Ok</span>(text) -&gt;
+            stdio.<span class="fn-call">println</span>(text)
+        <span class="variant">Err</span>(e) -&gt;
+            stdio.<span class="fn-call">eprintln</span>(<span class="str">"error: ${e}"</span>)</code></pre>
+
+    <p>The runtime instantiates each parameter from its type: <code>Stdio</code> becomes a fresh <code>Stdio</code>, <code>Fs</code> a fresh <code>Fs</code>, and so on.</p>
+</section>
+
+<section>
+    <h2>The discipline, in three rules</h2>
+
+    <p>Capabilities are not normal values. The analyzer enforces three rules that distinguish them. None of them are arbitrary; each one closes a specific hole that ambient authority leaves open.</p>
+
+    <ol>
+        <li>
+            <p><strong>No aliasing.</strong> A capability cannot be bound to a <code>let</code>. <code>let copy = stdio</code> is a compile error. If you could alias a cap, code could squirrel it away in a global and bypass the signature-as-contract.</p>
+        </li>
+        <li>
+            <p><strong>No returning, no storing.</strong> A built-in capability cannot be returned from a function, stored as a struct field, or captured by a lambda. Authority flows downward through parameters; it cannot flow upward or sideways. (User-defined capabilities, chapter 10, relax this for the wrapper pattern; built-ins do not.)</p>
+        </li>
+        <li>
+            <p><strong>Must be used.</strong> A function that declares a capability parameter and never invokes a method on it is a compile error. The signature is a contract; declaring a cap you do not use is a misleading contract.</p>
+        </li>
+    </ol>
+
+    <p>Together, the three rules guarantee that the set of capabilities in a function's signature is an upper bound on what the function can actually do. The manifest you saw in chapter 1 (and that the compiler emits at any time with <code>capa --manifest</code>) is just this fact written out.</p>
+</section>
+
+<section>
+    <h2>The two error modes</h2>
+
+    <p>First: trying to use a capability you did not declare.</p>
+
+<pre><code><span class="kw-decl">fun</span> <span class="fn-name">main</span>(stdio: <span class="cap">Stdio</span>)
+    <span class="kw-storage">let</span> contents = fs.<span class="fn-call">read_to_string</span>(<span class="str">"hello.txt"</span>)</code></pre>
+
+<pre><code>error: undefined name 'fs'
+   2 |     let contents = fs.read_to_string("hello.txt")
+                          ^</code></pre>
+
+    <p>The name <code>fs</code> is not in scope. Add it to <code>main</code>'s parameters: <code>fun main(stdio: Stdio, fs: Fs)</code>.</p>
+
+    <p>Second: trying to alias a capability.</p>
+
+<pre><code><span class="kw-decl">fun</span> <span class="fn-name">main</span>(stdio: <span class="cap">Stdio</span>)
+    <span class="kw-storage">let</span> dup = stdio
+    dup.<span class="fn-call">println</span>(<span class="str">"hi"</span>)</code></pre>
+
+<pre><code>error: 'stdio' is a capability and cannot be bound to a 'let'
+       (capabilities flow through function parameters only)
+   2 |     let dup = stdio
+                     ^</code></pre>
+
+    <p>If you want a copy with narrower authority, use <code>restrict_to</code> (chapter 9). If you want to pass the capability into a helper function, do so directly: <code>helper(stdio)</code> instead of binding-then-passing.</p>
+
+    <div class="callout">
+        <p><strong>Try this.</strong> Write a program that reads <code>hello.txt</code> and prints its length. <code>main</code> takes <code>stdio: Stdio</code> and <code>fs: Fs</code>; the body uses <code>?</code> on the <code>fs.read_to_string</code> call to propagate failure, then prints the string's length.</p>
+    </div>
+</section>
+
+<section>
+    <h2>Where you are now</h2>
+
+    <p>You understand what a capability is and how authority flows through a Capa program. The next chapter is about narrowing that authority before passing it on: a function that ultimately calls one specific URL does not need full <code>Net</code> authority. <code>restrict_to</code> is the tool.</p>
+</section>
+
+<nav class="chapter-nav" aria-label="Tutorial navigation">
+    <a class="prev" href="07-errors-as-values.html">&larr; 7. Errors as values</a>
+    <a class="next" href="09-attenuating-capabilities.html">9. Attenuating capabilities &rarr;</a>
+</nav>
+
+</main>
+
+<footer>
+    <div class="footer-grid">
+        <div>
+            <h4>Pages</h4>
+            <ul>
+                <li><a href="../why.html">Why Capa</a></li>
+                <li><a href="index.html">Learn</a></li>
+                <li><a href="../reference.html">Reference</a></li>
+                <li><a href="../start.html">Get started</a></li>
+                <li><a href="../roadmap.html">Roadmap</a></li>
+            </ul>
+        </div>
+        <div>
+            <h4>Documentation</h4>
+            <ul>
+                <li><a href="../start.html">Getting started</a></li>
+                <li><a href="../reference.html">Reference</a></li>
+                <li><a href="../stdlib.html">Standard library</a></li>
+                <li><a href="../manifest.html">Manifest</a></li>
+                <li><a href="../community.html">Community</a></li>
+            </ul>
+        </div>
+        <div>
+            <h4>Project</h4>
+            <ul>
+                <li><a href="https://github.com/nelsonduarte/capa">Source</a></li>
+                <li><a href="../brand.html">Brand assets</a></li>
+                <li><a href="https://github.com/nelsonduarte/capa/blob/main/LICENSE">License (MIT)</a></li>
+            </ul>
+        </div>
+    </div>
+    <p class="colophon">Built by Nelson Duarte &middot; v0.8.1-beta &middot; MIT-licensed</p>
+</footer>
+
+</body>
+</html>

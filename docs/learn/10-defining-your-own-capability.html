@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>10. Defining your own capability | Learn Capa</title>
+    <meta name="description" content="Chapter 10 of Learn Capa: capability X / impl X for Y. How libraries declare their authority surface.">
+    <link rel="stylesheet" href="../style.css">
+    <link rel="icon" type="image/svg+xml" href="../favicon.svg">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'none'; object-src 'none'; base-uri 'self'; form-action 'self'">
+    <meta name="referrer" content="strict-origin-when-cross-origin">
+</head>
+<body>
+
+<header>
+    <nav>
+        <a href="../index.html" class="logo">
+            <img src="../capa_logo.svg" alt="" aria-hidden="true">
+            Capa
+        </a>
+        <div class="nav-links">
+            <a href="../index.html">Home</a>
+            <a href="../why.html">Why Capa</a>
+            <a href="index.html" class="current">Learn</a>
+            <a href="../reference.html">Reference</a>
+            <a href="../start.html">Get started</a>
+            <a href="../roadmap.html">Roadmap</a>
+            <a href="https://github.com/nelsonduarte/capa" class="github">GitHub</a>
+        </div>
+    </nav>
+</header>
+
+<main>
+
+<div class="page-heading">
+    <p class="learn-breadcrumb"><a href="index.html">Learn</a> &middot; Chapter 10 of 12</p>
+    <h1>Defining your own capability</h1>
+    <p>Libraries declare their own capability types and the discipline applies uniformly. A function that takes a <code>SendEmail</code> can send mail; nothing else can.</p>
+</div>
+
+<section>
+    <h2>The motivation</h2>
+
+    <p>The seven built-in capabilities cover IO. They do not cover everything you might want to express as a capability. A library that sends email through SMTP, talks to a database, publishes to a message queue, or signs JWTs has a real authority surface that the type system today only sees as "<code>Net</code> + maybe <code>Fs</code>". From a caller's point of view that is too coarse.</p>
+
+    <p>Capa lets a library define a new capability that is just as real as <code>Net</code> or <code>Fs</code>. The discipline applies the same way: any function that wants to send email has to receive a <code>SendEmail</code> value as a parameter.</p>
+</section>
+
+<section>
+    <h2>The declaration</h2>
+
+    <p>A user-defined capability looks like a trait, but the keyword is <code>capability</code>:</p>
+
+<pre><code><span class="kw-decl">capability</span> <span class="ty-builtin">SendEmail</span>
+    <span class="kw-decl">fun</span> <span class="fn-name">send</span>(<span class="kw-storage">self</span>,
+        to: <span class="ty-primitive">String</span>,
+        subject: <span class="ty-primitive">String</span>,
+        body: <span class="ty-primitive">String</span>) -&gt; <span class="ty-builtin">Result</span>&lt;<span class="ty-primitive">Unit</span>, <span class="ty-builtin">IoError</span>&gt;</code></pre>
+
+    <p>The declaration is the contract. Anyone who implements <code>SendEmail</code> must provide <code>send</code> with this exact signature; anyone who receives a <code>SendEmail</code> value can call <code>send</code> on it without knowing the concrete implementation.</p>
+
+    <p>The analyzer treats <code>SendEmail</code> as a capability: it is subject to the same no-aliasing, must-be-used rules as the built-ins.</p>
+</section>
+
+<section>
+    <h2>An implementor</h2>
+
+    <p>A concrete implementor is a struct paired with an <code>impl SendEmail for ThatStruct</code>:</p>
+
+<pre><code><span class="kw-decl">type</span> <span class="ty-builtin">SmtpMailer</span> {
+    server: <span class="ty-primitive">String</span>,
+    net: <span class="cap">Net</span>
+}
+
+<span class="kw-decl">impl</span> <span class="ty-builtin">SendEmail</span> <span class="kw-decl">for</span> <span class="ty-builtin">SmtpMailer</span>
+    <span class="kw-decl">fun</span> <span class="fn-name">send</span>(<span class="kw-storage">self</span>,
+        to: <span class="ty-primitive">String</span>,
+        subject: <span class="ty-primitive">String</span>,
+        body: <span class="ty-primitive">String</span>) -&gt; <span class="ty-builtin">Result</span>&lt;<span class="ty-primitive">Unit</span>, <span class="ty-builtin">IoError</span>&gt;
+        <span class="kw-storage">let</span> _ = <span class="kw-storage">self</span>.net.<span class="fn-call">post</span>(<span class="str">"smtp://${self.server}/"</span>, body)?
+        <span class="kw-ctrl">return</span> <span class="variant">Ok</span>(())</code></pre>
+
+    <p>Two things are unusual about this struct. First, <code>SmtpMailer</code> has a <code>Net</code> field. Built-in capabilities cannot normally appear in struct fields; that would be a way to smuggle authority sideways. The rule relaxes for <strong>cap-bearing structs</strong>: a struct that implements a user-defined capability is allowed to hold built-in caps as fields, on the condition that it is itself treated as a capability by the discipline.</p>
+
+    <p>Second, the constructor is just a regular function. A built-in cap cannot be returned from a function; a user-defined one can. That is the entry point into a user-defined cap: a factory function that takes whatever built-in caps it needs and returns a fresh implementor.</p>
+
+<pre><code><span class="kw-decl">fun</span> <span class="fn-name">make_mailer</span>(net: <span class="cap">Net</span>, server: <span class="ty-primitive">String</span>) -&gt; <span class="ty-builtin">SmtpMailer</span>
+    <span class="kw-ctrl">return</span> <span class="ty-builtin">SmtpMailer</span> { server: server, net: net }</code></pre>
+
+    <p>Inside <code>make_mailer</code>, the built-in <code>net</code> flows into the struct field. After construction, <code>SmtpMailer</code> takes over the discipline: a function that holds a <code>SmtpMailer</code> can send email; one that does not, cannot.</p>
+</section>
+
+<section>
+    <h2>Using it</h2>
+
+    <p>From a caller's perspective, the user-defined cap behaves exactly like a built-in:</p>
+
+<pre><code><span class="kw-decl">fun</span> <span class="fn-name">notify_user</span>(mailer: <span class="ty-builtin">SendEmail</span>, user_id: <span class="ty-primitive">String</span>) -&gt; <span class="ty-builtin">Result</span>&lt;<span class="ty-primitive">Unit</span>, <span class="ty-builtin">IoError</span>&gt;
+    mailer.<span class="fn-call">send</span>(<span class="str">"${user_id}@example.com"</span>, <span class="str">"Welcome"</span>, <span class="str">"Hello"</span>)?
+    <span class="kw-ctrl">return</span> <span class="variant">Ok</span>(())
+
+<span class="kw-decl">fun</span> <span class="fn-name">main</span>(net: <span class="cap">Net</span>, stdio: <span class="cap">Stdio</span>)
+    <span class="kw-storage">let</span> mailer = <span class="fn-call">make_mailer</span>(net, <span class="str">"smtp.example.com"</span>)
+    <span class="kw-ctrl">match</span> <span class="fn-call">notify_user</span>(mailer, <span class="str">"42"</span>)
+        <span class="variant">Ok</span>(_) -&gt; stdio.<span class="fn-call">println</span>(<span class="str">"sent"</span>)
+        <span class="variant">Err</span>(e) -&gt; stdio.<span class="fn-call">eprintln</span>(<span class="str">"error: ${e}"</span>)</code></pre>
+
+    <p>Read the type of <code>notify_user</code>. It declares <code>SendEmail</code>, not <code>Net</code>. Someone reading the signature learns that this function sends email; they do <em>not</em> learn that the underlying transport is HTTP-over-something. The implementation choice is invisible at the call site, which is the point: <code>SendEmail</code> is the contract.</p>
+
+    <p>The manifest reflects this. <code>notify_user</code> appears with <code>declared_capabilities: ["SendEmail"]</code>, no <code>Net</code> in sight. An auditor reading the SBOM sees the high-level authority surface, not the implementation transport. A reviewer who wants to know what <code>SendEmail</code> ultimately translates to looks at the <code>user_defined_capabilities</code> section of the manifest, which lists every type that implements it.</p>
+</section>
+
+<section>
+    <h2>Why this matters for libraries</h2>
+
+    <p>Capability-typed libraries are the unique contribution of Capa. In a normal language, a library's authority surface is documented in the README and enforced by nothing. In Capa it is a type, the compiler enforces it, the SBOM emits it.</p>
+
+    <p>Library authors get a stable contract: "to use this library you give it a <code>SendEmail</code>; to give it one you decide what implementor to build." Callers get reasoning power: "anything that does not take a <code>SendEmail</code> cannot send mail." Auditors get an SBOM where <code>declared_capabilities</code> is meaningful at the level the user actually cares about.</p>
+
+    <p>The pattern scales. A database library exposes <code>capability QueryDB</code>; a message-queue client exposes <code>capability PublishMessage</code>; a JWT signer exposes <code>capability SignToken</code>. None of them appear as built-ins because Capa cannot anticipate every domain; the language makes it cheap for libraries to add their own.</p>
+</section>
+
+<section>
+    <h2>The two error modes</h2>
+
+    <p>First: a struct that holds a built-in cap but does <em>not</em> implement a user-defined cap.</p>
+
+<pre><code><span class="kw-decl">type</span> <span class="ty-builtin">Holder</span> {
+    net: <span class="cap">Net</span>
+}</code></pre>
+
+<pre><code>error: type 'Holder' has a capability field 'net' but does not
+       implement any user-defined capability; capabilities cannot
+       appear as struct fields outside the cap-bearing pattern
+   1 | type Holder {
+              ^</code></pre>
+
+    <p>Either remove the cap field or pair the struct with an <code>impl SomeCap for Holder</code>. The cap-bearing relaxation is opt-in: you have to declare what capability the struct embodies before you are allowed to wrap a built-in inside it.</p>
+
+    <p>Second: a method whose signature does not match the trait.</p>
+
+<pre><code><span class="kw-decl">impl</span> <span class="ty-builtin">SendEmail</span> <span class="kw-decl">for</span> <span class="ty-builtin">SmtpMailer</span>
+    <span class="kw-decl">fun</span> <span class="fn-name">send</span>(<span class="kw-storage">self</span>, to: <span class="ty-primitive">String</span>) -&gt; <span class="ty-builtin">Result</span>&lt;<span class="ty-primitive">Unit</span>, <span class="ty-builtin">IoError</span>&gt;
+        <span class="kw-ctrl">return</span> <span class="variant">Ok</span>(())</code></pre>
+
+<pre><code>error: impl SendEmail for SmtpMailer: method 'send' has the wrong
+       signature; expected (self, String, String, String) -&gt;
+       Result&lt;Unit, IoError&gt;, got (self, String) -&gt; Result&lt;Unit, IoError&gt;</code></pre>
+
+    <p>The implementor's method signature must match the capability declaration exactly: same arity, same parameter types, same return type. Extra helper methods on the struct are fine; the contract is just that the declared method is there with the right shape.</p>
+
+    <div class="callout">
+        <p><strong>Try this.</strong> Define <code>capability StoreUser</code> with a single method <code>save(self, id: String, payload: String) -&gt; Result&lt;Unit, IoError&gt;</code>. Implement it with a struct <code>FileStore</code> that holds an <code>Fs</code> and writes one file per user. In <code>main</code>, narrow the <code>Fs</code> to <code>"/var/users/"</code> before constructing the <code>FileStore</code>.</p>
+    </div>
+</section>
+
+<section>
+    <h2>Where you are now</h2>
+
+    <p>You can define your own capability types and implement them in terms of the built-ins. Authority surfaces in your programs can speak the language of your domain (<code>StoreUser</code>, <code>SendEmail</code>) instead of the language of the runtime (<code>Fs</code>, <code>Net</code>).</p>
+
+    <p>The next chapter moves out of single-file programs: how to split your code into modules, control which names are visible, and find dependencies. Then chapter 12 puts it all together in a real CLI tool.</p>
+</section>
+
+<nav class="chapter-nav" aria-label="Tutorial navigation">
+    <a class="prev" href="09-attenuating-capabilities.html">&larr; 9. Attenuating capabilities</a>
+    <a class="next" href="11-modules-and-visibility.html">11. Modules and visibility &rarr;</a>
+</nav>
+
+</main>
+
+<footer>
+    <div class="footer-grid">
+        <div>
+            <h4>Pages</h4>
+            <ul>
+                <li><a href="../why.html">Why Capa</a></li>
+                <li><a href="index.html">Learn</a></li>
+                <li><a href="../reference.html">Reference</a></li>
+                <li><a href="../start.html">Get started</a></li>
+                <li><a href="../roadmap.html">Roadmap</a></li>
+            </ul>
+        </div>
+        <div>
+            <h4>Documentation</h4>
+            <ul>
+                <li><a href="../start.html">Getting started</a></li>
+                <li><a href="../reference.html">Reference</a></li>
+                <li><a href="../stdlib.html">Standard library</a></li>
+                <li><a href="../manifest.html">Manifest</a></li>
+                <li><a href="../community.html">Community</a></li>
+            </ul>
+        </div>
+        <div>
+            <h4>Project</h4>
+            <ul>
+                <li><a href="https://github.com/nelsonduarte/capa">Source</a></li>
+                <li><a href="../brand.html">Brand assets</a></li>
+                <li><a href="https://github.com/nelsonduarte/capa/blob/main/LICENSE">License (MIT)</a></li>
+            </ul>
+        </div>
+    </div>
+    <p class="colophon">Built by Nelson Duarte &middot; v0.8.1-beta &middot; MIT-licensed</p>
+</footer>
+
+</body>
+</html>

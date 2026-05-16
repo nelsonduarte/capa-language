@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>11. Modules and visibility | Learn Capa</title>
+    <meta name="description" content="Chapter 11 of Learn Capa: import, pub, CAPA_PATH. How to split your code across files and control what is visible.">
+    <link rel="stylesheet" href="../style.css">
+    <link rel="icon" type="image/svg+xml" href="../favicon.svg">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'none'; object-src 'none'; base-uri 'self'; form-action 'self'">
+    <meta name="referrer" content="strict-origin-when-cross-origin">
+</head>
+<body>
+
+<header>
+    <nav>
+        <a href="../index.html" class="logo">
+            <img src="../capa_logo.svg" alt="" aria-hidden="true">
+            Capa
+        </a>
+        <div class="nav-links">
+            <a href="../index.html">Home</a>
+            <a href="../why.html">Why Capa</a>
+            <a href="index.html" class="current">Learn</a>
+            <a href="../reference.html">Reference</a>
+            <a href="../start.html">Get started</a>
+            <a href="../roadmap.html">Roadmap</a>
+            <a href="https://github.com/nelsonduarte/capa" class="github">GitHub</a>
+        </div>
+    </nav>
+</header>
+
+<main>
+
+<div class="page-heading">
+    <p class="learn-breadcrumb"><a href="index.html">Learn</a> &middot; Chapter 11 of 12</p>
+    <h1>Modules and visibility</h1>
+    <p>Splitting a program across files. <code>import</code> brings names in, <code>pub</code> decides which names leave, <code>CAPA_PATH</code> tells the loader where to look beyond your project directory.</p>
+</div>
+
+<section>
+    <h2>Two files</h2>
+
+    <p>Put a helper in <code>util.capa</code>:</p>
+
+<pre><code><span class="comment">// util.capa</span>
+<span class="kw-decl">pub</span> <span class="kw-decl">fun</span> <span class="fn-name">greet</span>(name: <span class="ty-primitive">String</span>) -&gt; <span class="ty-primitive">String</span>
+    <span class="kw-ctrl">return</span> <span class="str">"Hello, ${name}"</span></code></pre>
+
+    <p>Use it from <code>main.capa</code> in the same directory:</p>
+
+<pre><code><span class="comment">// main.capa</span>
+<span class="kw-decl">import</span> util
+
+<span class="kw-decl">fun</span> <span class="fn-name">main</span>(stdio: <span class="cap">Stdio</span>)
+    stdio.<span class="fn-call">println</span>(<span class="fn-call">greet</span>(<span class="str">"Capa"</span>))</code></pre>
+
+    <p>Run it:</p>
+
+<pre><code>$ capa --run main.capa
+Hello, Capa</code></pre>
+
+    <p>Three things to notice. The <code>import util</code> resolves to <code>./util.capa</code>: paths are relative to the file doing the import. The <code>pub</code> keyword in <code>util.capa</code> marked <code>greet</code> as public; without it, the call from <code>main.capa</code> would fail. And the imported function is reachable directly by its unqualified name (<code>greet(...)</code>) without prefixing the module.</p>
+</section>
+
+<section>
+    <h2>Private by default</h2>
+
+    <p>Drop <code>pub</code> and see what happens:</p>
+
+<pre><code><span class="comment">// util.capa</span>
+<span class="kw-decl">fun</span> <span class="fn-name">greet</span>(name: <span class="ty-primitive">String</span>) -&gt; <span class="ty-primitive">String</span>
+    <span class="kw-ctrl">return</span> <span class="str">"Hello, ${name}"</span></code></pre>
+
+<pre><code>$ capa --run main.capa
+main.capa:3:19: error: undefined name 'greet'
+                       (private to module 'util'; mark it 'pub' to expose)
+   3 |     stdio.println(greet("Capa"))
+                         ^</code></pre>
+
+    <p>Every top-level item is private by default. Only items marked <code>pub</code> are reachable from other modules. The diagnostic tells you exactly what to do: add <code>pub</code> to the declaration you wanted to expose.</p>
+
+    <p>This is the opposite of Python (where everything in a module is importable unless underscore-prefixed). The Capa default forces you to think about your module's surface: the names you mark <code>pub</code> are the contract; the names you do not are implementation detail you can refactor freely.</p>
+</section>
+
+<section>
+    <h2>Subdirectories: dotted imports</h2>
+
+    <p>A larger project can nest files in folders. <code>import foo.bar</code> resolves to <code>./foo/bar.capa</code>:</p>
+
+<pre><code>my-project/
+    main.capa
+    util/
+        strings.capa
+        math.capa</code></pre>
+
+<pre><code><span class="comment">// main.capa</span>
+<span class="kw-decl">import</span> util.strings
+<span class="kw-decl">import</span> util.math
+
+<span class="kw-decl">fun</span> <span class="fn-name">main</span>(stdio: <span class="cap">Stdio</span>)
+    stdio.<span class="fn-call">println</span>(<span class="fn-call">capitalise</span>(<span class="str">"capa"</span>))   <span class="comment">// from util/strings.capa</span>
+    stdio.<span class="fn-call">println</span>(<span class="str">"${double(7)}"</span>)        <span class="comment">// from util/math.capa</span></code></pre>
+
+    <p>One <code>import</code> per file, no globs. Transitive imports work: <code>main.capa</code> imports <code>util.strings</code>, which itself imports <code>util.math</code>, and the loader follows the chain. Cycles are detected (<code>a.capa</code> imports <code>b.capa</code> which imports <code>a.capa</code>) and surfaced as a precise error.</p>
+</section>
+
+<section>
+    <h2>Qualified access and aliases</h2>
+
+    <p>Sometimes two modules export the same name. Or you want to make the source of a function explicit at the call site. Qualified access does both:</p>
+
+<pre><code><span class="kw-decl">import</span> util
+
+<span class="kw-decl">fun</span> <span class="fn-name">main</span>(stdio: <span class="cap">Stdio</span>)
+    stdio.<span class="fn-call">println</span>(util.<span class="fn-call">greet</span>(<span class="str">"Capa"</span>))</code></pre>
+
+    <p>The <code>util.greet</code> form is equivalent to the unqualified <code>greet</code>, except the source is named at the call site. Both work side by side.</p>
+
+    <p>To resolve a name conflict between two modules, alias one of them:</p>
+
+<pre><code><span class="kw-decl">import</span> util.strings <span class="kw-decl">as</span> S
+<span class="kw-decl">import</span> third_party <span class="kw-decl">as</span> TP
+
+<span class="kw-decl">fun</span> <span class="fn-name">main</span>(stdio: <span class="cap">Stdio</span>)
+    stdio.<span class="fn-call">println</span>(S.<span class="fn-call">capitalise</span>(<span class="str">"capa"</span>))
+    stdio.<span class="fn-call">println</span>(TP.<span class="fn-call">capitalise</span>(<span class="str">"capa"</span>))</code></pre>
+
+    <p>The default alias when you do not write <code>as</code> is the last segment of the dotted path: <code>import util.strings</code> aliases to <code>strings</code>, so <code>strings.capitalise(...)</code> works too.</p>
+</section>
+
+<section>
+    <h2>CAPA_PATH for shared modules</h2>
+
+    <p>The loader resolves <code>import foo</code> relative to the importing file first. If you have a directory of modules you want to share across projects (a personal stdlib, in effect), point <code>CAPA_PATH</code> at it:</p>
+
+<pre><code>$ export CAPA_PATH=/usr/local/share/capa:./vendor
+$ capa --run app.capa
+<span class="comment"># `import greeter` now resolves to ./greeter.capa first,</span>
+<span class="comment"># then ./vendor/greeter.capa, then /usr/local/share/capa/greeter.capa.</span></code></pre>
+
+    <p>Project-local files always shadow <code>CAPA_PATH</code> entries: if both exist, the local wins. The variable is colon-separated on Unix, semicolon on Windows (<code>os.pathsep</code>). Missing or non-existent directories on the path are silently skipped, so a stale <code>CAPA_PATH</code> does not break every run.</p>
+
+    <p>There is no package manager yet. <code>CAPA_PATH</code> is the v1 way to share modules across projects.</p>
+</section>
+
+<section>
+    <h2>The two error modes</h2>
+
+    <p>First, the one we already met: trying to call a private function from outside its module.</p>
+
+<pre><code>error: undefined name 'helper'
+       (private to module 'util'; mark it 'pub' to expose)</code></pre>
+
+    <p>The diagnostic is specific to the cause: an unresolved name that happens to be a private of an imported module gets the "private to module X" hint instead of the typo guess.</p>
+
+    <p>Second: a name conflict between two imports.</p>
+
+<pre><code><span class="kw-decl">import</span> a    <span class="comment">// exports `helper`</span>
+<span class="kw-decl">import</span> b    <span class="comment">// also exports `helper`</span></code></pre>
+
+<pre><code>error: name conflict: 'helper' declared in
+       a.capa (line 1) and b.capa (line 1).
+       Either rename one or pick the import explicitly.</code></pre>
+
+    <p>Two ways out. Rename one of the two functions, or alias one of the imports (<code>import a as A</code>) and access the conflicting name qualified (<code>A.helper(...)</code>).</p>
+
+    <div class="callout">
+        <p><strong>Try this.</strong> Split chapter 10's email example across files. <code>mailer.capa</code> exports <code>pub capability SendEmail</code> and <code>pub fun make_mailer(net, server)</code>. <code>main.capa</code> imports it, builds a mailer, and calls a function from a third file <code>users.capa</code> that takes the <code>SendEmail</code> as a parameter and sends a notification.</p>
+    </div>
+</section>
+
+<section>
+    <h2>Where you are now</h2>
+
+    <p>You can split your code across files, control what each module exposes, and resolve dependencies the loader knows nothing about by pointing <code>CAPA_PATH</code> at them. With the building blocks of the previous ten chapters, you have everything you need to build a small but real program.</p>
+
+    <p>The final chapter does that. A small CLI tool that does something useful, written end-to-end in Capa, using most of what you have learned.</p>
+</section>
+
+<nav class="chapter-nav" aria-label="Tutorial navigation">
+    <a class="prev" href="10-defining-your-own-capability.html">&larr; 10. Defining your own capability</a>
+    <a class="next" href="12-a-small-project.html">12. A small project &rarr;</a>
+</nav>
+
+</main>
+
+<footer>
+    <div class="footer-grid">
+        <div>
+            <h4>Pages</h4>
+            <ul>
+                <li><a href="../why.html">Why Capa</a></li>
+                <li><a href="index.html">Learn</a></li>
+                <li><a href="../reference.html">Reference</a></li>
+                <li><a href="../start.html">Get started</a></li>
+                <li><a href="../roadmap.html">Roadmap</a></li>
+            </ul>
+        </div>
+        <div>
+            <h4>Documentation</h4>
+            <ul>
+                <li><a href="../start.html">Getting started</a></li>
+                <li><a href="../reference.html">Reference</a></li>
+                <li><a href="../stdlib.html">Standard library</a></li>
+                <li><a href="../manifest.html">Manifest</a></li>
+                <li><a href="../community.html">Community</a></li>
+            </ul>
+        </div>
+        <div>
+            <h4>Project</h4>
+            <ul>
+                <li><a href="https://github.com/nelsonduarte/capa">Source</a></li>
+                <li><a href="../brand.html">Brand assets</a></li>
+                <li><a href="https://github.com/nelsonduarte/capa/blob/main/LICENSE">License (MIT)</a></li>
+            </ul>
+        </div>
+    </div>
+    <p class="colophon">Built by Nelson Duarte &middot; v0.8.1-beta &middot; MIT-licensed</p>
+</footer>
+
+</body>
+</html>

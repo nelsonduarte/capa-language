@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>7. Errors as values | Learn Capa</title>
+    <meta name="description" content="Chapter 7 of Learn Capa: Option, Result, and the ? operator. How Capa handles failure without exceptions.">
+    <link rel="stylesheet" href="../style.css">
+    <link rel="icon" type="image/svg+xml" href="../favicon.svg">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'none'; object-src 'none'; base-uri 'self'; form-action 'self'">
+    <meta name="referrer" content="strict-origin-when-cross-origin">
+</head>
+<body>
+
+<header>
+    <nav>
+        <a href="../index.html" class="logo">
+            <img src="../capa_logo.svg" alt="" aria-hidden="true">
+            Capa
+        </a>
+        <div class="nav-links">
+            <a href="../index.html">Home</a>
+            <a href="../why.html">Why Capa</a>
+            <a href="index.html" class="current">Learn</a>
+            <a href="../reference.html">Reference</a>
+            <a href="../start.html">Get started</a>
+            <a href="../roadmap.html">Roadmap</a>
+            <a href="https://github.com/nelsonduarte/capa" class="github">GitHub</a>
+        </div>
+    </nav>
+</header>
+
+<main>
+
+<div class="page-heading">
+    <p class="learn-breadcrumb"><a href="index.html">Learn</a> &middot; Chapter 7 of 12</p>
+    <h1>Errors as values</h1>
+    <p>Capa has no exceptions. Failure is just a value of a specific type, and the compiler makes sure you handle it. Two sum types in the standard library do the work, plus one operator that makes them pleasant to use.</p>
+</div>
+
+<section>
+    <h2>Option: "might not be there"</h2>
+
+    <p>You met <code>Option&lt;T&gt;</code> implicitly in chapter 5: <code>xs.get(i)</code> returns one. The shape is the obvious one:</p>
+
+<pre><code><span class="kw-decl">type</span> <span class="ty-builtin">Option</span>&lt;T&gt; =
+    <span class="variant">Some</span>(T)
+    <span class="variant">None</span></code></pre>
+
+    <p>It is the standard library's way of saying "this function might not have a sensible value to return". Searching a list, looking up a key, parsing a string that might be malformed: all return <code>Option</code>.</p>
+
+<pre><code><span class="kw-decl">fun</span> <span class="fn-name">main</span>(stdio: <span class="cap">Stdio</span>)
+    <span class="kw-ctrl">match</span> <span class="fn-call">parse_int</span>(<span class="str">"42"</span>)
+        <span class="variant">Some</span>(n) -&gt;
+            stdio.<span class="fn-call">println</span>(<span class="str">"parsed: ${n}"</span>)
+        <span class="variant">None</span> -&gt;
+            stdio.<span class="fn-call">println</span>(<span class="str">"not a number"</span>)</code></pre>
+
+    <p>The compiler will not let you reach into an <code>Option</code> without dealing with both cases. Pattern matching is the unflinching way; the methods on <code>Option</code> are the convenient way:</p>
+
+    <ul>
+        <li><code>opt.is_some()</code> / <code>opt.is_none()</code> &middot; boolean checks.</li>
+        <li><code>opt.unwrap_or(default)</code> &middot; the value, or a fallback.</li>
+        <li><code>opt.map(f)</code> &middot; if Some, apply <code>f</code> to the inner value.</li>
+        <li><code>opt.and_then(f)</code> &middot; if Some, call <code>f</code> with the inner value; <code>f</code> itself returns an <code>Option</code>, useful for chaining.</li>
+        <li><code>opt.or_else(f)</code> &middot; if None, call <code>f()</code> to produce a fallback <code>Option</code>.</li>
+    </ul>
+</section>
+
+<section>
+    <h2>Result: "operation might fail with a reason"</h2>
+
+    <p>Where <code>Option</code> says "value or no value", <code>Result&lt;T, E&gt;</code> says "value of type <code>T</code> on success, value of type <code>E</code> on failure". The failure carries information.</p>
+
+<pre><code><span class="kw-decl">type</span> <span class="ty-builtin">Result</span>&lt;T, E&gt; =
+    <span class="variant">Ok</span>(T)
+    <span class="variant">Err</span>(E)</code></pre>
+
+    <p>Anything that does I/O or talks to the outside world returns a <code>Result</code>. Reading a file, fetching a URL, parsing a JSON document: each one returns <code>Result&lt;T, IoError&gt;</code> or similar.</p>
+
+<pre><code><span class="kw-decl">fun</span> <span class="fn-name">main</span>(stdio: <span class="cap">Stdio</span>, fs: <span class="cap">Fs</span>)
+    <span class="kw-ctrl">match</span> fs.<span class="fn-call">read_to_string</span>(<span class="str">"config.txt"</span>)
+        <span class="variant">Ok</span>(text) -&gt;
+            stdio.<span class="fn-call">println</span>(<span class="str">"file: ${text}"</span>)
+        <span class="variant">Err</span>(e) -&gt;
+            stdio.<span class="fn-call">eprintln</span>(<span class="str">"error: ${e}"</span>)</code></pre>
+
+    <p>The methods mirror <code>Option</code>: <code>r.is_ok()</code>, <code>r.is_err()</code>, <code>r.unwrap_or(default)</code>, <code>r.map(f)</code>, <code>r.map_err(g)</code>, <code>r.and_then(f)</code>, <code>r.or_else(f)</code>. Plus two projections: <code>r.ok()</code> turns a <code>Result&lt;T, E&gt;</code> into an <code>Option&lt;T&gt;</code> (dropping the error), and <code>r.err()</code> turns it into an <code>Option&lt;E&gt;</code> (dropping the value).</p>
+</section>
+
+<section>
+    <h2>The <code>?</code> operator</h2>
+
+    <p>Writing <code>match</code> at every call site becomes tedious when half your function is "do thing, propagate failure, do next thing". Capa borrows Rust's <code>?</code>: append it to an expression that returns <code>Result&lt;T, E&gt;</code> or <code>Option&lt;T&gt;</code> and it does the obvious thing.</p>
+
+<pre><code><span class="kw-decl">fun</span> <span class="fn-name">load_config</span>(fs: <span class="cap">Fs</span>) -&gt; <span class="ty-builtin">Result</span>&lt;<span class="ty-primitive">String</span>, <span class="ty-builtin">IoError</span>&gt;
+    <span class="kw-storage">let</span> text = fs.<span class="fn-call">read_to_string</span>(<span class="str">"config.txt"</span>)?
+    <span class="kw-storage">let</span> trimmed = text.<span class="fn-call">trim</span>()
+    <span class="kw-ctrl">return</span> <span class="variant">Ok</span>(trimmed)</code></pre>
+
+    <p>Reading this aloud: "let <code>text</code> be the result of <code>read_to_string</code>; if that returned <code>Err</code>, return it from <code>load_config</code> immediately; otherwise unwrap the <code>Ok</code> and bind <code>text</code> to the inner string". The single <code>?</code> replaces a five-line <code>match</code>.</p>
+
+    <p>The same operator works on <code>Option&lt;T&gt;</code>, propagating <code>None</code> up:</p>
+
+<pre><code><span class="kw-decl">fun</span> <span class="fn-name">first_two</span>(xs: <span class="ty-builtin">List</span>&lt;<span class="ty-primitive">Int</span>&gt;) -&gt; <span class="ty-builtin">Option</span>&lt;<span class="ty-primitive">Int</span>&gt;
+    <span class="kw-storage">let</span> a = xs.<span class="fn-call">first</span>()?
+    <span class="kw-storage">let</span> b = xs.<span class="fn-call">get</span>(1)?
+    <span class="kw-ctrl">return</span> <span class="variant">Some</span>(a + b)</code></pre>
+
+    <p>The function returns <code>Option&lt;Int&gt;</code>, so the <code>?</code> on each line propagates <code>None</code> to the caller. The same rule applies for both: the enclosing function must return a matching <code>Option</code> / <code>Result</code> shape, otherwise the compiler rejects the <code>?</code>.</p>
+</section>
+
+<section>
+    <h2>Why no exceptions</h2>
+
+    <p>The cost of unchecked exceptions: every function can fail in ways its signature does not declare, and the type system cannot help you enumerate the failure modes. The runtime answer is "wrap everything in <code>try</code>", which most code does not.</p>
+
+    <p>Capa's approach: failure becomes a value, the value carries a type, the compiler refuses to let you ignore it. The <code>?</code> operator gives you the ergonomics of unchecked exceptions in the cases where you genuinely want to "fail through", and full pattern matching for the cases where you want to recover.</p>
+
+    <p>The one escape hatch is <code>Unsafe</code> (chapter 8 introduces capabilities; <code>Unsafe</code> is the most permissive). Python interop crosses an <code>Unsafe</code> boundary and brings Python's exception semantics back into the program; the manifest flags every such function.</p>
+
+    <div class="callout">
+        <p><strong>Try this.</strong> Write <code>fun safe_divide(a: Int, b: Int) -&gt; Option&lt;Int&gt;</code> that returns <code>None</code> when <code>b</code> is zero. Now write a caller that uses <code>?</code> to chain two divisions and returns <code>None</code> if either fails.</p>
+    </div>
+</section>
+
+<section>
+    <h2>The two error modes</h2>
+
+    <p>First: <code>?</code> in a function whose return type does not match. If the inner expression is <code>Result&lt;T, E&gt;</code>, the function must also return a <code>Result&lt;_, E&gt;</code>:</p>
+
+<pre><code><span class="kw-decl">fun</span> <span class="fn-name">read_first_line</span>(fs: <span class="cap">Fs</span>) -&gt; <span class="ty-primitive">String</span>
+    <span class="kw-storage">let</span> text = fs.<span class="fn-call">read_to_string</span>(<span class="str">"config.txt"</span>)?
+    <span class="kw-ctrl">return</span> text</code></pre>
+
+<pre><code>error: '?' can only propagate to a function returning Result&lt;_, E&gt;
+       or Option&lt;_&gt;; this function returns String
+   2 |     let text = fs.read_to_string("config.txt")?
+                      ^</code></pre>
+
+    <p>Either change the return type to <code>Result&lt;String, IoError&gt;</code>, or stop using <code>?</code> and pattern-match locally.</p>
+
+    <p>Second: forgetting that <code>Option</code> is not the inner type. Same shape we saw at the end of chapter 5:</p>
+
+<pre><code><span class="kw-decl">fun</span> <span class="fn-name">main</span>(stdio: <span class="cap">Stdio</span>)
+    <span class="kw-storage">let</span> xs = [10, 20, 30]
+    <span class="kw-storage">let</span> doubled = xs.<span class="fn-call">first</span>() * 2</code></pre>
+
+<pre><code>error: '*': expected Int * Int or Float * Float,
+       got Option&lt;Int&gt; * Int</code></pre>
+
+    <p>Pattern match on the <code>Option</code>, use <code>.unwrap_or(default)</code>, or apply <code>?</code> when the enclosing function returns a compatible type.</p>
+</section>
+
+<section>
+    <h2>Where you are now</h2>
+
+    <p>You can model failures as values, handle them with <code>match</code>, propagate them with <code>?</code>. The next chapter is the heart of Capa: capabilities. We have been using <code>Stdio</code> all along; chapter 8 is where it stops being a magic word and starts being a tool you reason with.</p>
+</section>
+
+<nav class="chapter-nav" aria-label="Tutorial navigation">
+    <a class="prev" href="06-structs-and-sum-types.html">&larr; 6. Structs and sum types</a>
+    <a class="next" href="08-your-first-capability.html">8. Your first capability &rarr;</a>
+</nav>
+
+</main>
+
+<footer>
+    <div class="footer-grid">
+        <div>
+            <h4>Pages</h4>
+            <ul>
+                <li><a href="../why.html">Why Capa</a></li>
+                <li><a href="index.html">Learn</a></li>
+                <li><a href="../reference.html">Reference</a></li>
+                <li><a href="../start.html">Get started</a></li>
+                <li><a href="../roadmap.html">Roadmap</a></li>
+            </ul>
+        </div>
+        <div>
+            <h4>Documentation</h4>
+            <ul>
+                <li><a href="../start.html">Getting started</a></li>
+                <li><a href="../reference.html">Reference</a></li>
+                <li><a href="../stdlib.html">Standard library</a></li>
+                <li><a href="../manifest.html">Manifest</a></li>
+                <li><a href="../community.html">Community</a></li>
+            </ul>
+        </div>
+        <div>
+            <h4>Project</h4>
+            <ul>
+                <li><a href="https://github.com/nelsonduarte/capa">Source</a></li>
+                <li><a href="../brand.html">Brand assets</a></li>
+                <li><a href="https://github.com/nelsonduarte/capa/blob/main/LICENSE">License (MIT)</a></li>
+            </ul>
+        </div>
+    </div>
+    <p class="colophon">Built by Nelson Duarte &middot; v0.8.1-beta &middot; MIT-licensed</p>
+</footer>
+
+</body>
+</html>

@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>5. Collections | Learn Capa</title>
+    <meta name="description" content="Chapter 5 of Learn Capa: List, Map, Set, ranges, and the higher-order methods that go with them.">
+    <link rel="stylesheet" href="../style.css">
+    <link rel="icon" type="image/svg+xml" href="../favicon.svg">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'none'; object-src 'none'; base-uri 'self'; form-action 'self'">
+    <meta name="referrer" content="strict-origin-when-cross-origin">
+</head>
+<body>
+
+<header>
+    <nav>
+        <a href="../index.html" class="logo">
+            <img src="../capa_logo.svg" alt="" aria-hidden="true">
+            Capa
+        </a>
+        <div class="nav-links">
+            <a href="../index.html">Home</a>
+            <a href="../why.html">Why Capa</a>
+            <a href="index.html" class="current">Learn</a>
+            <a href="../reference.html">Reference</a>
+            <a href="../start.html">Get started</a>
+            <a href="../roadmap.html">Roadmap</a>
+            <a href="https://github.com/nelsonduarte/capa" class="github">GitHub</a>
+        </div>
+    </nav>
+</header>
+
+<main>
+
+<div class="page-heading">
+    <p class="learn-breadcrumb"><a href="index.html">Learn</a> &middot; Chapter 5 of 12</p>
+    <h1>Collections</h1>
+    <p>Lists, maps, sets, and the higher-order methods. Most of the data your programs handle lives in one of these.</p>
+</div>
+
+<section>
+    <h2>Lists</h2>
+
+    <p>A <code>List&lt;T&gt;</code> is an ordered, growable sequence of values of the same type. Literal syntax uses square brackets:</p>
+
+<pre><code><span class="kw-storage">let</span> xs: <span class="ty-builtin">List</span>&lt;<span class="ty-primitive">Int</span>&gt; = [1, 2, 3, 4]
+<span class="kw-storage">let</span> empty: <span class="ty-builtin">List</span>&lt;<span class="ty-primitive">Int</span>&gt; = []</code></pre>
+
+    <p>The type parameter on the empty literal matters: an empty <code>[]</code> with no context is ambiguous; the annotation tells the compiler what element type to fix.</p>
+
+    <p>Methods you reach for most:</p>
+
+<pre><code><span class="kw-decl">fun</span> <span class="fn-name">main</span>(stdio: <span class="cap">Stdio</span>)
+    <span class="kw-storage">let</span> xs = [10, 20, 30]
+    stdio.<span class="fn-call">println</span>(<span class="str">"length: ${xs.length()}"</span>)
+    stdio.<span class="fn-call">println</span>(<span class="str">"contains 20? ${xs.contains(20)}"</span>)
+    stdio.<span class="fn-call">println</span>(<span class="str">"empty? ${xs.is_empty()}"</span>)</code></pre>
+
+    <p>Indexed access returns an <code>Option</code> rather than raising on out-of-bounds: <code>xs.get(1)</code> returns <code>Some(20)</code>, <code>xs.get(99)</code> returns <code>None</code>. The same shape applies to <code>xs.first()</code> and <code>xs.last()</code>. You will not get an "index out of range" exception at runtime; the type system forces you to handle the absent case.</p>
+</section>
+
+<section>
+    <h2>Higher-order: map, filter, fold</h2>
+
+    <p>The three classic higher-order methods. <code>map</code> applies a function to every element and returns a new list:</p>
+
+<pre><code><span class="kw-decl">fun</span> <span class="fn-name">main</span>(stdio: <span class="cap">Stdio</span>)
+    <span class="kw-storage">let</span> xs = [1, 2, 3, 4]
+    <span class="kw-storage">let</span> doubled = xs.<span class="fn-call">map</span>(|n: <span class="ty-primitive">Int</span>| n * 2)
+    stdio.<span class="fn-call">println</span>(<span class="str">"${doubled}"</span>)     <span class="comment">// [2, 4, 6, 8]</span></code></pre>
+
+    <p><code>filter</code> keeps elements for which a predicate returns <code>true</code>:</p>
+
+<pre><code><span class="kw-storage">let</span> evens = xs.<span class="fn-call">filter</span>(|n: <span class="ty-primitive">Int</span>| n % 2 == 0)   <span class="comment">// [2, 4]</span></code></pre>
+
+    <p><code>fold</code> reduces the list to a single value, threading an accumulator:</p>
+
+<pre><code><span class="kw-storage">let</span> sum = xs.<span class="fn-call">fold</span>(0, |acc: <span class="ty-primitive">Int</span>, n: <span class="ty-primitive">Int</span>| acc + n)   <span class="comment">// 10</span></code></pre>
+
+    <p>The three compose naturally:</p>
+
+<pre><code><span class="kw-storage">let</span> sum_of_doubled_evens = xs
+    .<span class="fn-call">filter</span>(|n: <span class="ty-primitive">Int</span>| n % 2 == 0)
+    .<span class="fn-call">map</span>(|n: <span class="ty-primitive">Int</span>| n * 2)
+    .<span class="fn-call">fold</span>(0, |acc: <span class="ty-primitive">Int</span>, n: <span class="ty-primitive">Int</span>| acc + n)</code></pre>
+
+    <p>Two more worth knowing: <code>find</code> returns the first element matching a predicate as an <code>Option&lt;T&gt;</code>; <code>find_index</code> returns the index instead.</p>
+</section>
+
+<section>
+    <h2>Maps</h2>
+
+    <p>A <code>Map&lt;K, V&gt;</code> is an unordered set of key-value pairs. There is no map literal in v1; you create one with <code>new_map()</code> and populate it with <code>insert</code>:</p>
+
+<pre><code><span class="kw-decl">fun</span> <span class="fn-name">main</span>(stdio: <span class="cap">Stdio</span>)
+    <span class="kw-storage">var</span> ages: <span class="ty-builtin">Map</span>&lt;<span class="ty-primitive">String</span>, <span class="ty-primitive">Int</span>&gt; = <span class="fn-call">new_map</span>()
+    ages.<span class="fn-call">insert</span>(<span class="str">"Ana"</span>, 30)
+    ages.<span class="fn-call">insert</span>(<span class="str">"Bruno"</span>, 25)
+    stdio.<span class="fn-call">println</span>(<span class="str">"size: ${ages.size()}"</span>)
+    stdio.<span class="fn-call">println</span>(<span class="str">"Ana's age: ${ages.get(\"Ana\")}"</span>)     <span class="comment">// Some(30)</span>
+    stdio.<span class="fn-call">println</span>(<span class="str">"Carla's age: ${ages.get(\"Carla\")}"</span>)  <span class="comment">// None</span></code></pre>
+
+    <p>Same shape as <code>List.get</code>: keys that are not present yield <code>None</code>, not a runtime error. Other methods worth knowing: <code>contains_key</code>, <code>keys</code>, <code>values</code>, <code>pairs</code>, <code>remove</code>.</p>
+</section>
+
+<section>
+    <h2>Sets</h2>
+
+    <p>A <code>Set&lt;T&gt;</code> is an unordered collection of unique values:</p>
+
+<pre><code><span class="kw-decl">fun</span> <span class="fn-name">main</span>(stdio: <span class="cap">Stdio</span>)
+    <span class="kw-storage">var</span> tags: <span class="ty-builtin">Set</span>&lt;<span class="ty-primitive">String</span>&gt; = <span class="fn-call">new_set</span>()
+    tags.<span class="fn-call">insert</span>(<span class="str">"red"</span>)
+    tags.<span class="fn-call">insert</span>(<span class="str">"blue"</span>)
+    tags.<span class="fn-call">insert</span>(<span class="str">"red"</span>)        <span class="comment">// no effect; "red" already in</span>
+    stdio.<span class="fn-call">println</span>(<span class="str">"size: ${tags.size()}"</span>)             <span class="comment">// 2</span>
+    stdio.<span class="fn-call">println</span>(<span class="str">"has blue? ${tags.contains(\"blue\")}"</span>)  <span class="comment">// true</span></code></pre>
+
+    <p>Sets shine when you have to ask "is this in the collection?" often.</p>
+</section>
+
+<section>
+    <h2>Ranges revisited</h2>
+
+    <p>Chapter 4 introduced ranges as the thing you iterate over in a <code>for</code>. They are also a type, <code>Range&lt;Int&gt;</code>, with their own small method surface:</p>
+
+<pre><code><span class="kw-decl">fun</span> <span class="fn-name">main</span>(stdio: <span class="cap">Stdio</span>)
+    <span class="kw-storage">let</span> r = 0..1000
+    stdio.<span class="fn-call">println</span>(<span class="str">"length: ${r.length()}"</span>)         <span class="comment">// 1000</span>
+    stdio.<span class="fn-call">println</span>(<span class="str">"contains 42? ${r.contains(42)}"</span>) <span class="comment">// true</span></code></pre>
+
+    <p>A range is <em>lazy</em>: building <code>0..1_000_000_000</code> does not allocate a billion integers. The list operations (<code>map</code> / <code>filter</code> / <code>fold</code>) are not on Range; convert with <code>.to_list()</code> first when you need them.</p>
+
+    <div class="callout">
+        <p><strong>Try this.</strong> Compute the sum of the squares of the first 100 integers. Two ways: with a <code>for</code> loop accumulating into a <code>var</code>, and with <code>(0..100).to_list().map(...).fold(...)</code>. Which one is easier to read?</p>
+    </div>
+</section>
+
+<section>
+    <h2>The two error modes</h2>
+
+    <p>First: type mismatch in a literal. Capa infers a single element type for a list and rejects elements that do not match:</p>
+
+<pre><code><span class="kw-storage">let</span> mixed = [1, 2, <span class="str">"three"</span>]</code></pre>
+
+<pre><code>error: list literal: elements must have the same type;
+       got Int and String
+   1 | let mixed = [1, 2, "three"]
+                          ^</code></pre>
+
+    <p>If you genuinely want a heterogeneous collection, you need a sum type (chapter 6).</p>
+
+    <p>Second: forgetting that indexed access returns <code>Option</code>:</p>
+
+<pre><code><span class="kw-decl">fun</span> <span class="fn-name">main</span>(stdio: <span class="cap">Stdio</span>)
+    <span class="kw-storage">let</span> xs = [10, 20, 30]
+    <span class="kw-storage">let</span> n = xs.<span class="fn-call">get</span>(0)
+    stdio.<span class="fn-call">println</span>(<span class="str">"${n + 1}"</span>)</code></pre>
+
+<pre><code>error: '+': expected Int + Int or Float + Float or String + String,
+       got Option&lt;Int&gt; + Int
+   3 |     stdio.println("${n + 1}")
+                          ^</code></pre>
+
+    <p><code>xs.get(0)</code> is an <code>Option&lt;Int&gt;</code>, not an <code>Int</code>. To use the value you either pattern-match on <code>Some(n) / None</code> (chapter 6) or apply the <code>?</code> operator (chapter 7).</p>
+</section>
+
+<section>
+    <h2>Where you are now</h2>
+
+    <p>You can store and transform collections of data. The natural next step is to define your own types: a struct for "a record with named fields" and a sum type for "one of these tagged variants". That gives you the vocabulary to model anything more interesting than a list of integers.</p>
+</section>
+
+<nav class="chapter-nav" aria-label="Tutorial navigation">
+    <a class="prev" href="04-control-flow.html">&larr; 4. Control flow</a>
+    <a class="next" href="06-structs-and-sum-types.html">6. Structs and sum types &rarr;</a>
+</nav>
+
+</main>
+
+<footer>
+    <div class="footer-grid">
+        <div>
+            <h4>Pages</h4>
+            <ul>
+                <li><a href="../why.html">Why Capa</a></li>
+                <li><a href="index.html">Learn</a></li>
+                <li><a href="../reference.html">Reference</a></li>
+                <li><a href="../start.html">Get started</a></li>
+                <li><a href="../roadmap.html">Roadmap</a></li>
+            </ul>
+        </div>
+        <div>
+            <h4>Documentation</h4>
+            <ul>
+                <li><a href="../start.html">Getting started</a></li>
+                <li><a href="../reference.html">Reference</a></li>
+                <li><a href="../stdlib.html">Standard library</a></li>
+                <li><a href="../manifest.html">Manifest</a></li>
+                <li><a href="../community.html">Community</a></li>
+            </ul>
+        </div>
+        <div>
+            <h4>Project</h4>
+            <ul>
+                <li><a href="https://github.com/nelsonduarte/capa">Source</a></li>
+                <li><a href="../brand.html">Brand assets</a></li>
+                <li><a href="https://github.com/nelsonduarte/capa/blob/main/LICENSE">License (MIT)</a></li>
+            </ul>
+        </div>
+    </div>
+    <p class="colophon">Built by Nelson Duarte &middot; v0.8.1-beta &middot; MIT-licensed</p>
+</footer>
+
+</body>
+</html>

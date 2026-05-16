@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>6. Structs and sum types | Learn Capa</title>
+    <meta name="description" content="Chapter 6 of Learn Capa: defining your own types. Records with named fields and tagged-union sums.">
+    <link rel="stylesheet" href="../style.css">
+    <link rel="icon" type="image/svg+xml" href="../favicon.svg">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'none'; object-src 'none'; base-uri 'self'; form-action 'self'">
+    <meta name="referrer" content="strict-origin-when-cross-origin">
+</head>
+<body>
+
+<header>
+    <nav>
+        <a href="../index.html" class="logo">
+            <img src="../capa_logo.svg" alt="" aria-hidden="true">
+            Capa
+        </a>
+        <div class="nav-links">
+            <a href="../index.html">Home</a>
+            <a href="../why.html">Why Capa</a>
+            <a href="index.html" class="current">Learn</a>
+            <a href="../reference.html">Reference</a>
+            <a href="../start.html">Get started</a>
+            <a href="../roadmap.html">Roadmap</a>
+            <a href="https://github.com/nelsonduarte/capa" class="github">GitHub</a>
+        </div>
+    </nav>
+</header>
+
+<main>
+
+<div class="page-heading">
+    <p class="learn-breadcrumb"><a href="index.html">Learn</a> &middot; Chapter 6 of 12</p>
+    <h1>Structs and sum types</h1>
+    <p>Two ways to define your own types: a <em>record</em> with named fields (struct) and a <em>tagged union</em> with named variants (sum). Pattern matching becomes powerful here.</p>
+</div>
+
+<section>
+    <h2>Structs: a record of named fields</h2>
+
+<pre><code><span class="kw-decl">type</span> <span class="ty-builtin">Point</span> {
+    x: <span class="ty-primitive">Int</span>,
+    y: <span class="ty-primitive">Int</span>
+}</code></pre>
+
+    <p>Construct an instance with curly-brace syntax that names each field, like a JSON object:</p>
+
+<pre><code><span class="kw-decl">fun</span> <span class="fn-name">main</span>(stdio: <span class="cap">Stdio</span>)
+    <span class="kw-storage">let</span> p = <span class="ty-builtin">Point</span> { x: 3, y: 4 }
+    stdio.<span class="fn-call">println</span>(<span class="str">"(${p.x}, ${p.y})"</span>)</code></pre>
+
+    <p>Field access uses <code>.</code>. Field order does not matter at construction, but every field must be provided. There are no default values; if you want a "zero point", define a function that returns one.</p>
+
+    <p>Structs are <em>nominal</em>: two structs with identical field shapes are different types. A <code>Point2D</code> with <code>x: Int, y: Int</code> is not interchangeable with a <code>Vector2</code> of the same shape. This is deliberate; named types catch confusions at the type level.</p>
+</section>
+
+<section>
+    <h2>Methods on a struct</h2>
+
+    <p>An <code>impl</code> block attaches methods to a type:</p>
+
+<pre><code><span class="kw-decl">type</span> <span class="ty-builtin">Point</span> {
+    x: <span class="ty-primitive">Int</span>,
+    y: <span class="ty-primitive">Int</span>
+}
+
+<span class="kw-decl">impl</span> <span class="ty-builtin">Point</span>
+    <span class="kw-decl">fun</span> <span class="fn-name">distance_from_origin</span>(<span class="kw-storage">self</span>) -&gt; <span class="ty-primitive">Float</span>
+        <span class="kw-storage">let</span> sq = <span class="fn-call">to_float</span>(<span class="kw-storage">self</span>.x * <span class="kw-storage">self</span>.x + <span class="kw-storage">self</span>.y * <span class="kw-storage">self</span>.y)
+        <span class="kw-ctrl">return</span> sq   <span class="comment">// (a real sqrt would live in math; this is illustrative)</span></code></pre>
+
+    <p>Inside an <code>impl</code>, <code>self</code> is the instance. Methods are called on values with <code>.</code>:</p>
+
+<pre><code><span class="kw-decl">fun</span> <span class="fn-name">main</span>(stdio: <span class="cap">Stdio</span>)
+    <span class="kw-storage">let</span> p = <span class="ty-builtin">Point</span> { x: 3, y: 4 }
+    stdio.<span class="fn-call">println</span>(<span class="str">"${p.distance_from_origin()}"</span>)</code></pre>
+
+    <p>An <code>impl</code> can be <em>inherent</em> (<code>impl Point</code>, methods on Point) or <em>of a trait</em> (<code>impl SomeTrait for Point</code>, satisfying the trait's interface). Traits arrive in chapter 10.</p>
+</section>
+
+<section>
+    <h2>Sum types: one-of-these tagged variants</h2>
+
+    <p>A sum type lists a closed set of named variants. Each variant can optionally carry a payload:</p>
+
+<pre><code><span class="kw-decl">type</span> <span class="ty-builtin">Shape</span> =
+    <span class="variant">Circle</span>(<span class="ty-primitive">Float</span>)
+    <span class="variant">Rectangle</span>(<span class="ty-primitive">Float</span>, <span class="ty-primitive">Float</span>)
+    <span class="variant">Square</span>(<span class="ty-primitive">Float</span>)</code></pre>
+
+    <p>Construct a value by naming the variant and passing its payload:</p>
+
+<pre><code><span class="kw-storage">let</span> c = <span class="variant">Circle</span>(5.0)
+<span class="kw-storage">let</span> r = <span class="variant">Rectangle</span>(3.0, 4.0)</code></pre>
+
+    <p>A variant can also be payloadless:</p>
+
+<pre><code><span class="kw-decl">type</span> <span class="ty-builtin">Color</span> =
+    <span class="variant">Red</span>
+    <span class="variant">Green</span>
+    <span class="variant">Blue</span>
+
+<span class="kw-storage">let</span> c = <span class="variant">Red</span></code></pre>
+</section>
+
+<section>
+    <h2>Pattern matching</h2>
+
+    <p>The natural way to operate on a sum value is <code>match</code>. Each arm names a variant and binds its payload:</p>
+
+<pre><code><span class="kw-decl">fun</span> <span class="fn-name">area</span>(shape: <span class="ty-builtin">Shape</span>) -&gt; <span class="ty-primitive">Float</span>
+    <span class="kw-ctrl">match</span> shape
+        <span class="variant">Circle</span>(r) -&gt;
+            <span class="kw-ctrl">return</span> 3.14159 * r * r
+        <span class="variant">Rectangle</span>(w, h) -&gt;
+            <span class="kw-ctrl">return</span> w * h
+        <span class="variant">Square</span>(side) -&gt;
+            <span class="kw-ctrl">return</span> side * side</code></pre>
+
+    <p>The arms bind <code>r</code>, <code>w</code>, <code>h</code>, <code>side</code> to the corresponding payload of the matched variant. Inside that arm, those are normal local <code>Float</code> values.</p>
+
+    <p><code>match</code> on a sum is checked for <strong>exhaustiveness</strong>. If you forget a variant, the compiler refuses:</p>
+
+<pre><code><span class="kw-decl">fun</span> <span class="fn-name">area</span>(shape: <span class="ty-builtin">Shape</span>) -&gt; <span class="ty-primitive">Float</span>
+    <span class="kw-ctrl">match</span> shape
+        <span class="variant">Circle</span>(r) -&gt; <span class="kw-ctrl">return</span> 3.14159 * r * r
+        <span class="variant">Rectangle</span>(w, h) -&gt; <span class="kw-ctrl">return</span> w * h</code></pre>
+
+<pre><code>error: non-exhaustive match: missing variant 'Square'
+   2 |     match shape
+                ^</code></pre>
+
+    <p>This is one of the most useful guarantees in the language: when you add a new variant to a sum, every <code>match</code> on that sum that did not have a wildcard becomes a compile error until you handle the new case. Refactors that would silently miss a branch in Python become impossible.</p>
+</section>
+
+<section>
+    <h2>Generics: sum types with type parameters</h2>
+
+    <p>The built-in <code>Option&lt;T&gt;</code> and <code>Result&lt;T, E&gt;</code> are sum types parameterised by their payload type. Your own types can be too:</p>
+
+<pre><code><span class="kw-decl">type</span> <span class="ty-builtin">Tree</span>&lt;T&gt; =
+    <span class="variant">Leaf</span>
+    <span class="variant">Node</span>(T, <span class="ty-builtin">Tree</span>&lt;T&gt;, <span class="ty-builtin">Tree</span>&lt;T&gt;)</code></pre>
+
+    <p>A <code>Tree&lt;Int&gt;</code> is a tree of integers, a <code>Tree&lt;String&gt;</code> a tree of strings. The type parameter <code>T</code> is bound at use time.</p>
+
+    <div class="callout">
+        <p><strong>Try this.</strong> Define a <code>type Triangle</code> sum with variants <code>Equilateral(Float)</code> (side length), <code>Right(Float, Float)</code> (legs), and <code>Scalene(Float, Float, Float)</code>. Write a function <code>area(t: Triangle) -&gt; Float</code> that handles all three.</p>
+    </div>
+</section>
+
+<section>
+    <h2>The two error modes</h2>
+
+    <p>First, the exhaustiveness check we already saw: a <code>match</code> on a sum must cover every variant unless you write a <code>_</code> wildcard arm. The compiler points at the missing one by name.</p>
+
+    <p>Second, missing fields when constructing a struct:</p>
+
+<pre><code><span class="kw-decl">type</span> <span class="ty-builtin">Point</span> {
+    x: <span class="ty-primitive">Int</span>,
+    y: <span class="ty-primitive">Int</span>
+}
+
+<span class="kw-decl">fun</span> <span class="fn-name">main</span>(stdio: <span class="cap">Stdio</span>)
+    <span class="kw-storage">let</span> p = <span class="ty-builtin">Point</span> { x: 3 }
+    stdio.<span class="fn-call">println</span>(<span class="str">"${p.x}"</span>)</code></pre>
+
+<pre><code>error: struct literal 'Point': missing field 'y'
+   5 |     let p = Point { x: 3 }
+                   ^</code></pre>
+
+    <p>Every field of the struct must appear in the literal. No defaults; if you want one, write a constructor function that fills the missing fields.</p>
+</section>
+
+<section>
+    <h2>Where you are now</h2>
+
+    <p>You can model domains with your own types. The next chapter formalises the most common reason a function returns a sum type rather than a plain value: <em>this operation might fail</em>. <code>Option</code>, <code>Result</code>, and the <code>?</code> operator.</p>
+</section>
+
+<nav class="chapter-nav" aria-label="Tutorial navigation">
+    <a class="prev" href="05-collections.html">&larr; 5. Collections</a>
+    <a class="next" href="07-errors-as-values.html">7. Errors as values &rarr;</a>
+</nav>
+
+</main>
+
+<footer>
+    <div class="footer-grid">
+        <div>
+            <h4>Pages</h4>
+            <ul>
+                <li><a href="../why.html">Why Capa</a></li>
+                <li><a href="index.html">Learn</a></li>
+                <li><a href="../reference.html">Reference</a></li>
+                <li><a href="../start.html">Get started</a></li>
+                <li><a href="../roadmap.html">Roadmap</a></li>
+            </ul>
+        </div>
+        <div>
+            <h4>Documentation</h4>
+            <ul>
+                <li><a href="../start.html">Getting started</a></li>
+                <li><a href="../reference.html">Reference</a></li>
+                <li><a href="../stdlib.html">Standard library</a></li>
+                <li><a href="../manifest.html">Manifest</a></li>
+                <li><a href="../community.html">Community</a></li>
+            </ul>
+        </div>
+        <div>
+            <h4>Project</h4>
+            <ul>
+                <li><a href="https://github.com/nelsonduarte/capa">Source</a></li>
+                <li><a href="../brand.html">Brand assets</a></li>
+                <li><a href="https://github.com/nelsonduarte/capa/blob/main/LICENSE">License (MIT)</a></li>
+            </ul>
+        </div>
+    </div>
+    <p class="colophon">Built by Nelson Duarte &middot; v0.8.1-beta &middot; MIT-licensed</p>
+</footer>
+
+</body>
+</html>

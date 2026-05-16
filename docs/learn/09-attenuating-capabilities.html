@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>9. Attenuating capabilities | Learn Capa</title>
+    <meta name="description" content="Chapter 9 of Learn Capa: restrict_to and monotonic narrowing. Build least-authority programs.">
+    <link rel="stylesheet" href="../style.css">
+    <link rel="icon" type="image/svg+xml" href="../favicon.svg">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'none'; object-src 'none'; base-uri 'self'; form-action 'self'">
+    <meta name="referrer" content="strict-origin-when-cross-origin">
+</head>
+<body>
+
+<header>
+    <nav>
+        <a href="../index.html" class="logo">
+            <img src="../capa_logo.svg" alt="" aria-hidden="true">
+            Capa
+        </a>
+        <div class="nav-links">
+            <a href="../index.html">Home</a>
+            <a href="../why.html">Why Capa</a>
+            <a href="index.html" class="current">Learn</a>
+            <a href="../reference.html">Reference</a>
+            <a href="../start.html">Get started</a>
+            <a href="../roadmap.html">Roadmap</a>
+            <a href="https://github.com/nelsonduarte/capa" class="github">GitHub</a>
+        </div>
+    </nav>
+</header>
+
+<main>
+
+<div class="page-heading">
+    <p class="learn-breadcrumb"><a href="index.html">Learn</a> &middot; Chapter 9 of 12</p>
+    <h1>Attenuating capabilities</h1>
+    <p>Narrowing a capability before passing it down. The same <code>Net</code> that can reach the whole internet, restricted to a single host. The same <code>Fs</code> that can read anywhere, restricted to one directory. Monotonic by construction.</p>
+</div>
+
+<section>
+    <h2>The motivation</h2>
+
+    <p>A function called <code>fetch_users</code> in a library probably talks to one specific API. It does not need authority over the entire network; it needs authority over <code>api.example.com</code>. If you pass it the full <code>Net</code>, you are trusting it not to misuse what it does not need.</p>
+
+    <p>The fix is to narrow the capability at the boundary. Capa's built-in capabilities each carry an <code>restrict_to</code> method that returns a <em>fresh, narrower</em> copy:</p>
+
+<pre><code><span class="kw-decl">fun</span> <span class="fn-name">main</span>(net: <span class="cap">Net</span>, stdio: <span class="cap">Stdio</span>)
+    <span class="kw-storage">let</span> api = net.<span class="fn-call">restrict_to</span>(<span class="str">"api.example.com"</span>)
+    <span class="comment">// `api` can only reach api.example.com.</span>
+    <span class="fn-call">fetch_users</span>(api, stdio)</code></pre>
+
+    <p>The <code>api</code> value is a <code>Net</code>, exactly the same type as what <code>main</code> received. From the function-signature perspective, <code>fetch_users</code> takes a <code>Net</code> and there is no way to tell that it was narrowed. The discipline is at the value level: the narrowed instance carries an internal allow-list, and method calls that fall outside it fail at runtime before any system call.</p>
+</section>
+
+<section>
+    <h2>The five attenuators</h2>
+
+    <p>Each of the five non-<code>Stdio</code> non-<code>Unsafe</code> built-in capabilities has its own <code>restrict_to</code>:</p>
+
+    <ul>
+        <li><code>net.restrict_to(host)</code> &middot; only reach this exact host.</li>
+        <li><code>fs.restrict_to(prefix)</code> &middot; only paths under this prefix.</li>
+        <li><code>env.restrict_to_keys([keys])</code> &middot; only these environment variable names.</li>
+        <li><code>clock.restrict_to_after(t)</code> &middot; only return times after <code>t</code>.</li>
+        <li><code>random.with_seed(seed)</code> &middot; deterministic from this seed.</li>
+    </ul>
+
+    <p>The first four <em>narrow</em>: they reduce what the capability can do. The last <em>determinises</em>: a seeded <code>Random</code> still has the full method surface, but the sequence it produces is fixed. The five together let you say, in code, exactly what a downstream function is allowed to touch.</p>
+</section>
+
+<section>
+    <h2>A worked example</h2>
+
+    <p>Consider a small program that fetches a user's record and writes it to a local file:</p>
+
+<pre><code><span class="kw-decl">fun</span> <span class="fn-name">cache_user</span>(net: <span class="cap">Net</span>, fs: <span class="cap">Fs</span>, id: <span class="ty-primitive">String</span>) -&gt; <span class="ty-builtin">Result</span>&lt;<span class="ty-primitive">Unit</span>, <span class="ty-builtin">IoError</span>&gt;
+    <span class="kw-storage">let</span> body = net.<span class="fn-call">get</span>(<span class="str">"https://api.example.com/users/${id}"</span>)?
+    fs.<span class="fn-call">write_string</span>(<span class="str">"/var/cache/users/${id}.json"</span>, body)?
+    <span class="kw-ctrl">return</span> <span class="variant">Ok</span>(())
+
+<span class="kw-decl">fun</span> <span class="fn-name">main</span>(net: <span class="cap">Net</span>, fs: <span class="cap">Fs</span>, stdio: <span class="cap">Stdio</span>)
+    <span class="kw-ctrl">match</span> <span class="fn-call">cache_user</span>(net, fs, <span class="str">"42"</span>)
+        <span class="variant">Ok</span>(_) -&gt; stdio.<span class="fn-call">println</span>(<span class="str">"cached"</span>)
+        <span class="variant">Err</span>(e) -&gt; stdio.<span class="fn-call">eprintln</span>(<span class="str">"error: ${e}"</span>)</code></pre>
+
+    <p>This works, but <code>cache_user</code> is over-authorised: it has full <code>Net</code> and full <code>Fs</code>. Narrow at the boundary:</p>
+
+<pre><code><span class="kw-decl">fun</span> <span class="fn-name">main</span>(net: <span class="cap">Net</span>, fs: <span class="cap">Fs</span>, stdio: <span class="cap">Stdio</span>)
+    <span class="kw-storage">let</span> api = net.<span class="fn-call">restrict_to</span>(<span class="str">"api.example.com"</span>)
+    <span class="kw-storage">let</span> cache_dir = fs.<span class="fn-call">restrict_to</span>(<span class="str">"/var/cache/users/"</span>)
+    <span class="kw-ctrl">match</span> <span class="fn-call">cache_user</span>(api, cache_dir, <span class="str">"42"</span>)
+        <span class="variant">Ok</span>(_) -&gt; stdio.<span class="fn-call">println</span>(<span class="str">"cached"</span>)
+        <span class="variant">Err</span>(e) -&gt; stdio.<span class="fn-call">eprintln</span>(<span class="str">"error: ${e}"</span>)</code></pre>
+
+    <p>The signature of <code>cache_user</code> did not change. The <em>authority</em> it received did. If a future modification adds <code>net.get("https://attacker.com")</code> inside <code>cache_user</code>, the narrowed <code>Net</code> rejects it at runtime before any HTTP request happens; the program emits a structured error and continues.</p>
+
+    <p>This is the part of Capa's discipline that the type system alone does not give you. Two functions with the same signature can hold different authority surfaces; the difference is who built the value passed in.</p>
+</section>
+
+<section>
+    <h2>Monotonic by construction</h2>
+
+    <p>The most important property of <code>restrict_to</code> is what it <em>cannot</em> do. Once narrowed, a capability cannot be widened back:</p>
+
+<pre><code><span class="kw-decl">fun</span> <span class="fn-name">main</span>(net: <span class="cap">Net</span>, stdio: <span class="cap">Stdio</span>)
+    <span class="kw-storage">let</span> a = net.<span class="fn-call">restrict_to</span>(<span class="str">"api.example.com"</span>)
+    <span class="kw-storage">let</span> b = a.<span class="fn-call">restrict_to</span>(<span class="str">"different.example.com"</span>)
+    <span class="comment">// b is the intersection: { api.example.com } &amp; { different.example.com } = empty.</span>
+    <span class="comment">// b is a Net that can reach NOTHING.</span></code></pre>
+
+    <p>The implementation: a narrowed <code>Net</code> carries an internal "allowed hosts" set. <code>restrict_to</code> on a narrowed cap takes the <em>intersection</em> of the existing set with the newly requested host. Intersections only shrink. There is no method that grows the set. The fresh, unrestricted <code>Net</code> that <code>main</code> receives represents the universal allow-list; every narrowing only constrains it.</p>
+
+    <p>Monotonic narrowing is a structural property: any chain of <code>restrict_to</code> calls always ends at something at least as narrow as where it started. A library given a narrowed cap cannot escape, no matter what it does internally.</p>
+</section>
+
+<section>
+    <h2>The two error modes</h2>
+
+    <p>First: a runtime denial. The compiler does not (and cannot) statically check that every URL or path your code uses falls inside the narrowed set; it would need to know the values at compile time. Instead, the check happens at runtime, before any system call:</p>
+
+<pre><code><span class="kw-decl">fun</span> <span class="fn-name">main</span>(net: <span class="cap">Net</span>, stdio: <span class="cap">Stdio</span>)
+    <span class="kw-storage">let</span> api = net.<span class="fn-call">restrict_to</span>(<span class="str">"api.example.com"</span>)
+    <span class="kw-ctrl">match</span> api.<span class="fn-call">get</span>(<span class="str">"https://attacker.com/"</span>)
+        <span class="variant">Ok</span>(body) -&gt; stdio.<span class="fn-call">println</span>(body)
+        <span class="variant">Err</span>(e) -&gt; stdio.<span class="fn-call">eprintln</span>(<span class="str">"denied: ${e}"</span>)</code></pre>
+
+<pre><code>$ capa --run hello.capa
+denied: NetRestricted: attacker.com is not in the allowed host set</code></pre>
+
+    <p>No request is made; the runtime returns an <code>Err</code> the program handles like any other failure. <em>Fail-closed</em>: a denied call never reaches the network.</p>
+
+    <p>Second (a confusion, not a compiler error): trying to call <code>restrict_to</code> on <code>Stdio</code> or <code>Unsafe</code>. Neither has an attenuator. <code>Stdio</code> writes to one stream; there is no narrower version. <code>Unsafe</code> is the escape hatch and explicitly does not narrow.</p>
+
+    <div class="callout">
+        <p><strong>Try this.</strong> Write <code>fun fetch_users(net: Net) -&gt; Result&lt;String, IoError&gt;</code> that fetches from <code>api.example.com/users</code>. In <code>main</code>, narrow <code>net</code> to <code>"api.example.com"</code> before passing it in. Add a second call inside <code>fetch_users</code> to <code>"evil.example.com"</code> and confirm the runtime denies it.</p>
+    </div>
+</section>
+
+<section>
+    <h2>Where you are now</h2>
+
+    <p>You understand the two halves of Capa's capability discipline: the type-level part (a capability must be in the function's signature to be in scope) and the value-level part (a capability can be narrowed before being passed on, monotonically and fail-closed).</p>
+
+    <p>The next chapter scales the idea up: instead of using only the seven built-in capabilities, you define your own. <code>capability SendEmail</code> turns a library's contract into a value of a type that the discipline applies to uniformly.</p>
+</section>
+
+<nav class="chapter-nav" aria-label="Tutorial navigation">
+    <a class="prev" href="08-your-first-capability.html">&larr; 8. Your first capability</a>
+    <a class="next" href="10-defining-your-own-capability.html">10. Defining your own capability &rarr;</a>
+</nav>
+
+</main>
+
+<footer>
+    <div class="footer-grid">
+        <div>
+            <h4>Pages</h4>
+            <ul>
+                <li><a href="../why.html">Why Capa</a></li>
+                <li><a href="index.html">Learn</a></li>
+                <li><a href="../reference.html">Reference</a></li>
+                <li><a href="../start.html">Get started</a></li>
+                <li><a href="../roadmap.html">Roadmap</a></li>
+            </ul>
+        </div>
+        <div>
+            <h4>Documentation</h4>
+            <ul>
+                <li><a href="../start.html">Getting started</a></li>
+                <li><a href="../reference.html">Reference</a></li>
+                <li><a href="../stdlib.html">Standard library</a></li>
+                <li><a href="../manifest.html">Manifest</a></li>
+                <li><a href="../community.html">Community</a></li>
+            </ul>
+        </div>
+        <div>
+            <h4>Project</h4>
+            <ul>
+                <li><a href="https://github.com/nelsonduarte/capa">Source</a></li>
+                <li><a href="../brand.html">Brand assets</a></li>
+                <li><a href="https://github.com/nelsonduarte/capa/blob/main/LICENSE">License (MIT)</a></li>
+            </ul>
+        </div>
+    </div>
+    <p class="colophon">Built by Nelson Duarte &middot; v0.8.1-beta &middot; MIT-licensed</p>
+</footer>
+
+</body>
+</html>
