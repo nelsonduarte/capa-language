@@ -2629,8 +2629,8 @@ systems and three Python versions.
   (`Capa-EBNF.md`) translated to English and synchronised with the
   implementation.
 
-[Unreleased]: https://github.com/nelsonduarte/capa/compare/v0.5.0-alpha...HEAD
-[0.5.0-alpha]: https://github.com/nelsonduarte/capa/releases/tag/v0.5.0-alpha
-[0.4.0-alpha]: https://github.com/nelsonduarte/capa/releases/tag/v0.4.0-alpha
-[0.3.0-alpha]: https://github.com/nelsonduarte/capa/releases/tag/v0.3.0-alpha
-[0.2.0-alpha]: https://github.com/nelsonduarte/capa/releases/tag/v0.2.0-alpha
+[Unreleased]: https://github.com/nelsonduarte/capa-language/compare/v0.5.0-alpha...HEAD
+[0.5.0-alpha]: https://github.com/nelsonduarte/capa-language/releases/tag/v0.5.0-alpha
+[0.4.0-alpha]: https://github.com/nelsonduarte/capa-language/releases/tag/v0.4.0-alpha
+[0.3.0-alpha]: https://github.com/nelsonduarte/capa-language/releases/tag/v0.3.0-alpha
+[0.2.0-alpha]: https://github.com/nelsonduarte/capa-language/releases/tag/v0.2.0-alpha

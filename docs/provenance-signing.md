@@ -215,7 +215,7 @@ cosign verify-blob \
 # Sigstore bundle (Mode C):
 slsa-verifier verify-artifact \
     --provenance-path attestation.bundle \
-    --source-uri github.com/nelsonduarte/capa \
+    --source-uri github.com/nelsonduarte/capa-language \
     --builder-id "https://github.com/actions/runner/" \
     hello.capa
 ```

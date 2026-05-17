@@ -35,7 +35,7 @@
             <a href="reference.html">Reference</a>
             <a href="start.html" class="current">Get started</a>
             <a href="roadmap.html">Roadmap</a>
-            <a href="https://github.com/nelsonduarte/capa" class="github">GitHub</a>
+            <a href="https://github.com/nelsonduarte/capa-language" class="github">GitHub</a>
         </div>
     </nav>
 </header>
@@ -65,10 +65,10 @@
     <p>The installer downloads the latest pre-built binary and drops it in <code>~/.local/bin/capa</code> (Linux / macOS) or <code>%LOCALAPPDATA%\capa\capa.exe</code> (Windows). Open a new shell afterwards and <code>capa --version</code> should answer.</p>
 
 <pre><code><span class="comment"># Linux / macOS Apple Silicon</span>
-$ curl -fsSL https://raw.githubusercontent.com/nelsonduarte/capa/main/deploy/install.sh | bash</code></pre>
+$ curl -fsSL https://raw.githubusercontent.com/nelsonduarte/capa-language/main/deploy/install.sh | bash</code></pre>
 
 <pre><code><span class="comment"># Windows (PowerShell)</span>
-PS&gt; irm https://raw.githubusercontent.com/nelsonduarte/capa/main/deploy/install.ps1 | iex</code></pre>
+PS&gt; irm https://raw.githubusercontent.com/nelsonduarte/capa-language/main/deploy/install.ps1 | iex</code></pre>
 
     <p>Override the install location with the <code>INSTALL_DIR</code> (bash) or <code>CAPA_INSTALL_DIR</code> (PowerShell) environment variable. The installer is idempotent: rerun it to upgrade to the latest release.</p>
 
@@ -111,9 +111,9 @@ $ source ~/.zshrc</code></pre>
         <div class="download-card">
             <h3>Linux</h3>
             <p class="download-arch">x86_64</p>
-            <p><a class="btn primary" href="https://github.com/nelsonduarte/capa/releases/latest/download/capa-linux-x86_64">Download</a></p>
+            <p><a class="btn primary" href="https://github.com/nelsonduarte/capa-language/releases/latest/download/capa-linux-x86_64">Download</a></p>
 <pre><code>$ curl -L -o capa \
-   https://github.com/nelsonduarte/capa/releases/latest/download/capa-linux-x86_64
+   https://github.com/nelsonduarte/capa-language/releases/latest/download/capa-linux-x86_64
 $ chmod +x capa
 $ ./capa --run hello.capa</code></pre>
             <p class="download-note">
@@ -130,9 +130,9 @@ $ capa --version</code></pre>
         <div class="download-card">
             <h3>macOS</h3>
             <p class="download-arch">Apple Silicon (M1 and later)</p>
-            <p><a class="btn primary" href="https://github.com/nelsonduarte/capa/releases/latest/download/capa-macos-arm64">Download</a></p>
+            <p><a class="btn primary" href="https://github.com/nelsonduarte/capa-language/releases/latest/download/capa-macos-arm64">Download</a></p>
 <pre><code>$ curl -L -o capa \
-   https://github.com/nelsonduarte/capa/releases/latest/download/capa-macos-arm64
+   https://github.com/nelsonduarte/capa-language/releases/latest/download/capa-macos-arm64
 $ chmod +x capa
 $ xattr -d com.apple.quarantine capa   # bypass Gatekeeper
 $ ./capa --run hello.capa</code></pre>
@@ -164,9 +164,9 @@ $ capa --version</code></pre>
         <div class="download-card">
             <h3>Windows</h3>
             <p class="download-arch">x86_64</p>
-            <p><a class="btn primary" href="https://github.com/nelsonduarte/capa/releases/latest/download/capa-windows-x86_64.exe">Download</a></p>
+            <p><a class="btn primary" href="https://github.com/nelsonduarte/capa-language/releases/latest/download/capa-windows-x86_64.exe">Download</a></p>
 <pre><code>PS&gt; Invoke-WebRequest `
-      -Uri "https://github.com/nelsonduarte/capa/releases/latest/download/capa-windows-x86_64.exe" `
+      -Uri "https://github.com/nelsonduarte/capa-language/releases/latest/download/capa-windows-x86_64.exe" `
       -OutFile capa.exe
 PS&gt; .\capa.exe --run hello.capa</code></pre>
         </div>
@@ -177,7 +177,7 @@ PS&gt; .\capa.exe --run hello.capa</code></pre>
     <div class="code-compare">
         <div class="code-block">
             <div class="lang">Linux / macOS</div>
-<pre><code>$ curl -LO https://github.com/nelsonduarte/capa/releases/latest/download/capa-linux-x86_64.sha256
+<pre><code>$ curl -LO https://github.com/nelsonduarte/capa-language/releases/latest/download/capa-linux-x86_64.sha256
 $ sha256sum -c capa-linux-x86_64.sha256
 capa-linux-x86_64: OK</code></pre>
         </div>
@@ -209,7 +209,7 @@ True</code></pre>
 
     <p>Clone and install in editable mode:</p>
 
-<pre><code>$ git clone https://github.com/nelsonduarte/capa
+<pre><code>$ git clone https://github.com/nelsonduarte/capa-language
 $ cd capa
 $ pip install -e .</code></pre>
 
@@ -508,11 +508,11 @@ result = analyze(module, source=source, filename=<span class="str">"program.capa
             <h3>Tour the language →</h3>
             <p>A guided pass through the syntax: types, control flow, generics, capabilities, attenuation.</p>
         </a>
-        <a href="https://github.com/nelsonduarte/capa/tree/main/examples" class="doc-card">
+        <a href="https://github.com/nelsonduarte/capa-language/tree/main/examples" class="doc-card">
             <h3>Read the examples →</h3>
             <p>Twenty-one runnable Capa programs in the repository, from <code>hello.capa</code> to user-defined capabilities and the event-stream demo.</p>
         </a>
-        <a href="https://github.com/nelsonduarte/capa/blob/main/docs/positioning.md" class="doc-card">
+        <a href="https://github.com/nelsonduarte/capa-language/blob/main/docs/positioning.md" class="doc-card">
             <h3>Read the positioning →</h3>
             <p>What is and is not unique about Capa, honestly: where the type system stands against adjacent work, and the one-sentence claim Capa defends.</p>
         </a>
@@ -544,18 +544,18 @@ result = analyze(module, source=source, filename=<span class="str">"program.capa
         <div>
             <h4>Specification</h4>
             <ul>
-                <li><a href="https://github.com/nelsonduarte/capa/blob/main/docs/positioning.md">Positioning</a></li>
-                <li><a href="https://github.com/nelsonduarte/capa/blob/main/Capa-EBNF.md">EBNF grammar</a></li>
-                <li><a href="https://github.com/nelsonduarte/capa/blob/main/docs/demo-event-stream.md">Event-stream demo</a></li>
+                <li><a href="https://github.com/nelsonduarte/capa-language/blob/main/docs/positioning.md">Positioning</a></li>
+                <li><a href="https://github.com/nelsonduarte/capa-language/blob/main/Capa-EBNF.md">EBNF grammar</a></li>
+                <li><a href="https://github.com/nelsonduarte/capa-language/blob/main/docs/demo-event-stream.md">Event-stream demo</a></li>
             </ul>
         </div>
         <div>
             <h4>Project</h4>
             <ul>
-                <li><a href="https://github.com/nelsonduarte/capa">Source</a></li>
+                <li><a href="https://github.com/nelsonduarte/capa-language">Source</a></li>
                 <li><a href="community.html">Community</a></li>
                 <li><a href="brand.html">Brand assets</a></li>
-                <li><a href="https://github.com/nelsonduarte/capa/blob/main/LICENSE">License (MIT)</a></li>
+                <li><a href="https://github.com/nelsonduarte/capa-language/blob/main/LICENSE">License (MIT)</a></li>
             </ul>
         </div>
     </div>

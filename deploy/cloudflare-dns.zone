@@ -3,7 +3,7 @@
 ;;
 ;; Points the apex and www subdomain to GitHub Pages, which
 ;; serves the static site committed under docs/ on the main
-;; branch of nelsonduarte/capa.
+;; branch of nelsonduarte/capa-language.
 ;;
 ;; How to import (Cloudflare dashboard):
 ;;

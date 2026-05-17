@@ -19,7 +19,7 @@
     "license": "MIT",
     "repository": {
         "type": "git",
-        "url": "https://github.com/nelsonduarte/capa.git"
+        "url": "https://github.com/nelsonduarte/capa-language.git"
     },
     "contributes": {
         "languages": [

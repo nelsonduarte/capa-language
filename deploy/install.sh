@@ -7,8 +7,8 @@
 # runtime via PyInstaller; no Python install is required.
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/nelsonduarte/capa/main/deploy/install.sh | bash
-#   curl -fsSL https://raw.githubusercontent.com/nelsonduarte/capa/main/deploy/install.sh | INSTALL_DIR=/usr/local/bin bash
+#   curl -fsSL https://raw.githubusercontent.com/nelsonduarte/capa-language/main/deploy/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/nelsonduarte/capa-language/main/deploy/install.sh | INSTALL_DIR=/usr/local/bin bash
 #
 # Or run it as a regular shell script after cloning the repo:
 #   bash deploy/install.sh
@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-REPO="nelsonduarte/capa"
+REPO="nelsonduarte/capa-language"
 INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
 
 # Resolve the asset for the current platform.

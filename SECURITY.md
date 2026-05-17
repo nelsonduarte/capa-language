@@ -11,7 +11,7 @@ attenuation, or compromise the analyzer, please report it.
 
 Use GitHub's private vulnerability reporting channel:
 
-1. Go to <https://github.com/nelsonduarte/capa/security/advisories/new>
+1. Go to <https://github.com/nelsonduarte/capa-language/security/advisories/new>
 2. Describe the issue in as much detail as you can:
    - Affected version (`git rev-parse HEAD`)
    - A minimal `.capa` reproduction, if applicable

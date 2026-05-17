@@ -35,7 +35,7 @@
             <a href="reference.html">Reference</a>
             <a href="start.html">Get started</a>
             <a href="roadmap.html" class="current">Roadmap</a>
-            <a href="https://github.com/nelsonduarte/capa" class="github">GitHub</a>
+            <a href="https://github.com/nelsonduarte/capa-language" class="github">GitHub</a>
         </div>
     </nav>
 </header>
@@ -53,7 +53,7 @@
 <section>
     <h2>Where we are today</h2>
 
-    <p>Capa is in beta. It compiles, type-checks, transpiles to Python, and runs. Every example in this site and in <a href="https://github.com/nelsonduarte/capa/tree/main/examples">the examples directory</a> is executable. The boundary between what is real and what is roadmap is sharp:</p>
+    <p>Capa is in beta. It compiles, type-checks, transpiles to Python, and runs. Every example in this site and in <a href="https://github.com/nelsonduarte/capa-language/tree/main/examples">the examples directory</a> is executable. The boundary between what is real and what is roadmap is sharp:</p>
 
     <div class="status-grid">
         <div class="status-yes">
@@ -90,7 +90,7 @@
                 <li>Native (non-Python) backend; the runtime today is CPython</li>
                 <li>Async / await (keywords reserved, no implementation)</li>
                 <li>Package manager / registry</li>
-                <li>Mechanised soundness proofs (the sketch in <a href="https://github.com/nelsonduarte/capa/blob/main/docs/semantics.md"><code>docs/semantics.md</code></a> is not yet Agda-checked)</li>
+                <li>Mechanised soundness proofs (the sketch in <a href="https://github.com/nelsonduarte/capa-language/blob/main/docs/semantics.md"><code>docs/semantics.md</code></a> is not yet Agda-checked)</li>
                 <li>REPL polish: incremental analyzer state, readline / history</li>
                 <li>Refinement types (parked, explicitly post-1.0)</li>
             </ul>
@@ -326,7 +326,7 @@
             <strong>No package manager or registry.</strong> There is no <code>capa add &lt;dep&gt;</code> and no <code>capalang.org/registry</code>. Library reuse means copying source between projects. <em>Status: pending; only meaningful after a module system exists (P3).</em>
         </li>
         <li>
-            <strong>Python backend only.</strong> Capa transpiles to Python and runs on CPython. There is no LLVM, Cranelift, or any native backend. Performance is Python's plus the overhead measured in <a href="https://github.com/nelsonduarte/capa/blob/main/benchmarks/README.md">the benchmark suite</a> (1.00x to 1.45x against hand-Python). <em>Status: far future; not in v1 scope.</em>
+            <strong>Python backend only.</strong> Capa transpiles to Python and runs on CPython. There is no LLVM, Cranelift, or any native backend. Performance is Python's plus the overhead measured in <a href="https://github.com/nelsonduarte/capa-language/blob/main/benchmarks/README.md">the benchmark suite</a> (1.00x to 1.45x against hand-Python). <em>Status: far future; not in v1 scope.</em>
         </li>
         <li>
             <strong>No async / await.</strong> The keywords are reserved by the lexer; the parser rejects them. Async semantics that interact correctly with capability discipline is a research question on its own. <em>Status: explicitly not in v1.</em>
@@ -350,8 +350,8 @@
     <h2>Help shape the next milestone</h2>
     <p class="lead-prose">Capa is a personal project; it is also an open one. Issues, design discussions, and pull requests are welcome. The fastest way to influence the roadmap is to show up with a real use case.</p>
     <div class="cta">
-        <a href="https://github.com/nelsonduarte/capa/issues" class="btn primary">Open an issue</a>
-        <a href="https://github.com/nelsonduarte/capa/blob/main/TODO.md" class="btn">Read the full TODO</a>
+        <a href="https://github.com/nelsonduarte/capa-language/issues" class="btn primary">Open an issue</a>
+        <a href="https://github.com/nelsonduarte/capa-language/blob/main/TODO.md" class="btn">Read the full TODO</a>
         <a href="start.html" class="btn">Install and try it</a>
     </div>
 </section>
@@ -381,18 +381,18 @@
         <div>
             <h4>Specification</h4>
             <ul>
-                <li><a href="https://github.com/nelsonduarte/capa/blob/main/docs/positioning.md">Positioning</a></li>
-                <li><a href="https://github.com/nelsonduarte/capa/blob/main/Capa-EBNF.md">EBNF grammar</a></li>
-                <li><a href="https://github.com/nelsonduarte/capa/blob/main/docs/demo-event-stream.md">Event-stream demo</a></li>
+                <li><a href="https://github.com/nelsonduarte/capa-language/blob/main/docs/positioning.md">Positioning</a></li>
+                <li><a href="https://github.com/nelsonduarte/capa-language/blob/main/Capa-EBNF.md">EBNF grammar</a></li>
+                <li><a href="https://github.com/nelsonduarte/capa-language/blob/main/docs/demo-event-stream.md">Event-stream demo</a></li>
             </ul>
         </div>
         <div>
             <h4>Project</h4>
             <ul>
-                <li><a href="https://github.com/nelsonduarte/capa">Source</a></li>
+                <li><a href="https://github.com/nelsonduarte/capa-language">Source</a></li>
                 <li><a href="community.html">Community</a></li>
                 <li><a href="brand.html">Brand assets</a></li>
-                <li><a href="https://github.com/nelsonduarte/capa/blob/main/LICENSE">License (MIT)</a></li>
+                <li><a href="https://github.com/nelsonduarte/capa-language/blob/main/LICENSE">License (MIT)</a></li>
             </ul>
         </div>
     </div>

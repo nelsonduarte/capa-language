@@ -27,7 +27,7 @@ Requirements:
 Clone and install in editable mode:
 
 ```bash
-git clone https://github.com/nelsonduarte/capa
+git clone https://github.com/nelsonduarte/capa-language
 cd capa
 pip install -e .
 ```
@@ -155,7 +155,7 @@ the project; each is intentionally compact.
 ## Reporting bugs
 
 For non-security bugs, open a regular issue at
-<https://github.com/nelsonduarte/capa/issues>. Please include:
+<https://github.com/nelsonduarte/capa-language/issues>. Please include:
 
 - A minimal `.capa` program that reproduces the problem
 - The output of `python -m capa --check <file>` (or `--run`,

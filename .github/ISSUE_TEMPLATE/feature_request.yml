@@ -10,8 +10,8 @@ body:
         roadmap. Before filing, please skim:
 
         - [docs/roadmap.html](https://capa-language.com/roadmap.html)
-        - [TODO.md](https://github.com/nelsonduarte/capa/blob/main/TODO.md)
-        - [docs/positioning.md](https://github.com/nelsonduarte/capa/blob/main/docs/positioning.md)
+        - [TODO.md](https://github.com/nelsonduarte/capa-language/blob/main/TODO.md)
+        - [docs/positioning.md](https://github.com/nelsonduarte/capa-language/blob/main/docs/positioning.md)
 
         Some things are explicitly out of scope for v1 (macros, full
         async/await, LLVM backend, garbage collection beyond CPython's).

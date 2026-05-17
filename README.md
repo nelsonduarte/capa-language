@@ -1,6 +1,6 @@
 # Capa
 
-[![tests](https://github.com/nelsonduarte/capa/actions/workflows/tests.yml/badge.svg)](https://github.com/nelsonduarte/capa/actions/workflows/tests.yml)
+[![tests](https://github.com/nelsonduarte/capa-language/actions/workflows/tests.yml/badge.svg)](https://github.com/nelsonduarte/capa-language/actions/workflows/tests.yml)
 [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![python: >=3.10](https://img.shields.io/badge/python-%3E%3D3.10-blue.svg)](pyproject.toml)
 
@@ -159,12 +159,12 @@ required; the binary bundles its own interpreter.
 
 ```bash
 # Linux / macOS Apple Silicon
-curl -fsSL https://raw.githubusercontent.com/nelsonduarte/capa/main/deploy/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/nelsonduarte/capa-language/main/deploy/install.sh | bash
 ```
 
 ```powershell
 # Windows (PowerShell)
-irm https://raw.githubusercontent.com/nelsonduarte/capa/main/deploy/install.ps1 | iex
+irm https://raw.githubusercontent.com/nelsonduarte/capa-language/main/deploy/install.ps1 | iex
 ```
 
 Open a new shell and `capa --version` should print the installed
@@ -178,7 +178,7 @@ Override the install location with the `INSTALL_DIR` (bash) or
 
 If you prefer to install by hand, grab the asset for your
 platform from the
-[latest release](https://github.com/nelsonduarte/capa/releases/latest):
+[latest release](https://github.com/nelsonduarte/capa-language/releases/latest):
 
 | Platform | File |
 |---|---|
@@ -215,7 +215,7 @@ work from **any directory**.
 > Running `python -m capa init my-project` from, say, your
 > Desktop will fail with `No module named capa`. The fix is the
 > install above, or use one of the [pre-built
-> binaries](https://github.com/nelsonduarte/capa/releases/latest)
+> binaries](https://github.com/nelsonduarte/capa-language/releases/latest)
 > which ship `capa` as a standalone executable with no Python
 > install required.
 
@@ -921,23 +921,23 @@ running real code is the harshest test of a design.
 ## Community
 
 Questions, ideas, and showing off what you built with Capa all
-live in [**GitHub Discussions**](https://github.com/nelsonduarte/capa/discussions).
+live in [**GitHub Discussions**](https://github.com/nelsonduarte/capa-language/discussions).
 
-- **[Q&A](https://github.com/nelsonduarte/capa/discussions/categories/q-a)**:
+- **[Q&A](https://github.com/nelsonduarte/capa-language/discussions/categories/q-a)**:
   stuck on a capability error, an attenuation chain, the manifest output, a
   syntax oddity. Don't hesitate; "the analyzer told me X and I don't
   understand why" is the right format.
-- **[Ideas](https://github.com/nelsonduarte/capa/discussions/categories/ideas)**:
+- **[Ideas](https://github.com/nelsonduarte/capa-language/discussions/categories/ideas)**:
   feature requests, language-design discussions, "what if Capa had X".
   Pre-implementation thinking; concrete proposals can graduate to issues.
-- **[Show and tell](https://github.com/nelsonduarte/capa/discussions/categories/show-and-tell)**:
+- **[Show and tell](https://github.com/nelsonduarte/capa-language/discussions/categories/show-and-tell)**:
   a Capa program you wrote, a manifest you found interesting, a CVE walkthrough,
   an integration with another tool. All welcome.
-- **[Announcements](https://github.com/nelsonduarte/capa/discussions/categories/announcements)**:
+- **[Announcements](https://github.com/nelsonduarte/capa-language/discussions/categories/announcements)**:
   release notes, roadmap updates, and other read-only updates from the maintainer.
 
 For security issues specifically, please use the private vulnerability reporting
-channel at <https://github.com/nelsonduarte/capa/security/advisories/new> rather
+channel at <https://github.com/nelsonduarte/capa-language/security/advisories/new> rather
 than a public discussion. See [`SECURITY.md`](SECURITY.md) for the disclosure flow.
 
 ## What's next

@@ -11,7 +11,7 @@ pre-built binaries. Pick one of the three paths:
 
 Download `capa-linux-x86_64`, `capa-macos-arm64`, or
 `capa-windows-x86_64.exe` from the [latest
-release](https://github.com/nelsonduarte/capa/releases/latest)
+release](https://github.com/nelsonduarte/capa-language/releases/latest)
 and put it on your `PATH`. The binary bundles Python and the
 runtime; nothing else to install. After that, `capa <args>`
 works from any directory.

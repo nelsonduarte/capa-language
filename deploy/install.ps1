@@ -7,8 +7,8 @@
 # is required.
 #
 # Usage:
-#   irm https://raw.githubusercontent.com/nelsonduarte/capa/main/deploy/install.ps1 | iex
-#   $env:CAPA_INSTALL_DIR = "C:\Tools\capa"; irm https://raw.githubusercontent.com/nelsonduarte/capa/main/deploy/install.ps1 | iex
+#   irm https://raw.githubusercontent.com/nelsonduarte/capa-language/main/deploy/install.ps1 | iex
+#   $env:CAPA_INSTALL_DIR = "C:\Tools\capa"; irm https://raw.githubusercontent.com/nelsonduarte/capa-language/main/deploy/install.ps1 | iex
 #
 # Or run it as a regular script after cloning the repo:
 #   powershell -ExecutionPolicy Bypass -File deploy\install.ps1
@@ -18,7 +18,7 @@
 
 $ErrorActionPreference = "Stop"
 
-$Repo = "nelsonduarte/capa"
+$Repo = "nelsonduarte/capa-language"
 $InstallDir = if ($env:CAPA_INSTALL_DIR) { $env:CAPA_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA "capa" }
 $Asset = "capa-windows-x86_64.exe"
 $Url = "https://github.com/$Repo/releases/latest/download/$Asset"

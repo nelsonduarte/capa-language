@@ -1,6 +1,6 @@
 # Capa Language, VSCode extension
 
-Syntax highlighting for the [Capa programming language](https://github.com/nelsonduarte/capa), a capability-centric language with a pythonic surface, built around the idea that the authorities a function holds (network, filesystem, environment, ...) must be visible in its signature.
+Syntax highlighting for the [Capa programming language](https://github.com/nelsonduarte/capa-language), a capability-centric language with a pythonic surface, built around the idea that the authorities a function holds (network, filesystem, environment, ...) must be visible in its signature.
 
 This extension provides TextMate-based highlighting. A capability-aware language server has shipped separately (`python -m capa lsp`); you can wire it up with any generic LSP client extension for VSCode (search the Marketplace for "Generic LSP" or similar) pointed at `python -m capa lsp`. A first-party VSCode extension that bundles the LSP client is on the roadmap.
 
@@ -54,7 +54,7 @@ code --install-extension capa-language-0.7.0.vsix
 
 ## Reporting issues
 
-Open an issue at the main Capa repository: <https://github.com/nelsonduarte/capa/issues>. Mention "vscode" in the title.
+Open an issue at the main Capa repository: <https://github.com/nelsonduarte/capa-language/issues>. Mention "vscode" in the title.
 
 ## License
 
