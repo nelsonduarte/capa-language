@@ -1,0 +1,101 @@
+// Step 3 (final) of the Python -> Capa gradual hardening walkthrough.
+// Companion to docs/migration.md.
+//
+// Every function now declares its exact authority. The Python file is
+// no longer imported; py_import / py_invoke are gone; Unsafe is gone.
+// The manifest is a clean per-function authority bound.
+//
+// What the manifest looks like at this stage:
+//   config_field   -> []                          pure
+//   build_url      -> []                          pure
+//   load_config    -> [Fs]
+//   get_api_key    -> [Env]
+//   fetch_status   -> [Net]
+//   save_response  -> [Fs]
+//   main           -> [Stdio, Fs, Env, Net]       no Unsafe
+//
+// Compare this to step 1, where the only thing the manifest could
+// honestly say about `main` was `[Stdio, Unsafe]`. The supply-chain
+// audit story is now load-bearing: the SBOM is a true per-function
+// authority bound rather than a single Unsafe blob.
+//
+// Run:
+//   capa --run examples/migrate_logfetcher_step3_typed.capa
+//
+// Audit:
+//   capa --manifest examples/migrate_logfetcher_step3_typed.capa
+
+// Tiny helper: pull a string field from a JsonValue object. Pure;
+// no capabilities needed. This is what replaces the
+// `py_invoke(u, py_builtins.dict.get, ...)` calls from step 2.
+fun config_field(cfg: JsonValue, key: String) -> Result<String, String>
+    match cfg.as_object()
+        Some(m) ->
+            match m.get(key)
+                Some(jv) ->
+                    match jv.as_string()
+                        Some(s) -> return Ok(s)
+                        None   -> return Err("field '${key}' is not a string")
+                None -> return Err("field '${key}' missing from config")
+        None -> return Err("config is not a JSON object")
+
+fun load_config(fs: Fs, path: String) -> Result<JsonValue, String>
+    match fs.read(path)
+        Ok(text) ->
+            match parse_json(text)
+                Ok(jv)  -> return Ok(jv)
+                Err(e)  -> return Err("config parse: ${e}")
+        Err(e) -> return Err("config read: ${e}")
+
+fun get_api_key(env: Env) -> Result<String, String>
+    match env.get("LOGS_API_KEY")
+        Some(k) -> return Ok(k)
+        None   -> return Err("LOGS_API_KEY not set")
+
+fun build_url(base: String, service: String, key: String) -> String
+    return "${base}/status?service=${service}&key=${key}"
+
+fun fetch_status(net: Net, url: String) -> Result<String, IoError>
+    return net.get(url)
+
+fun save_response(fs: Fs, path: String, content: String) -> Result<Unit, IoError>
+    return fs.write(path, content)
+
+fun main(stdio: Stdio, fs: Fs, env: Env, net: Net)
+    match load_config(fs, "config.json")
+        Err(e) ->
+            stdio.eprintln("step3: ${e}")
+            return
+        Ok(cfg) ->
+            match get_api_key(env)
+                Err(e) ->
+                    stdio.eprintln("step3: ${e}")
+                    return
+                Ok(key) ->
+                    match config_field(cfg, "base_url")
+                        Err(e) ->
+                            stdio.eprintln("step3: ${e}")
+                            return
+                        Ok(base) ->
+                            match config_field(cfg, "service")
+                                Err(e) ->
+                                    stdio.eprintln("step3: ${e}")
+                                    return
+                                Ok(service) ->
+                                    match config_field(cfg, "output_path")
+                                        Err(e) ->
+                                            stdio.eprintln("step3: ${e}")
+                                            return
+                                        Ok(outpath) ->
+                                            let url = build_url(base, service, key)
+                                            match fetch_status(net, url)
+                                                Err(e) ->
+                                                    stdio.eprintln("step3: fetch error: ${e}")
+                                                    return
+                                                Ok(response) ->
+                                                    match save_response(fs, outpath, response)
+                                                        Err(e) ->
+                                                            stdio.eprintln("step3: write error: ${e}")
+                                                            return
+                                                        Ok(_) ->
+                                                            stdio.println("step3: wrote response to ${outpath}")

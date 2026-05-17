@@ -1,0 +1,34 @@
+// Step 1 of the Python -> Capa gradual hardening walkthrough.
+// Companion to docs/migration.md.
+//
+// At this stage the Capa file is a single entry point that calls back
+// into the original migrate_logfetcher_naive.py via py_import + py_invoke.
+// The behaviour is identical to running the Python file directly; Capa's
+// capability discipline is not yet engaged.
+//
+// What the manifest will say about `main` at this stage:
+//   declared_capabilities = [Stdio, Unsafe]
+//
+// `Unsafe` is the audit signal: this function escapes Capa's analysis
+// and an SBOM consumer should treat it accordingly.
+//
+// Run:
+//   capa --run examples/migrate_logfetcher_step1_unsafe.capa
+//
+// Audit:
+//   capa --manifest examples/migrate_logfetcher_step1_unsafe.capa
+
+// Make examples/ importable so py_import can find migrate_logfetcher_naive.
+// Assumes `capa --run` is invoked from the project root.
+fun bootstrap_path(u: Unsafe)
+    let sys_mod = py_import(u, "sys")
+    let os_mod  = py_import(u, "os")
+    let cwd     = py_invoke(u, os_mod.getcwd, [])
+    let examples_dir = py_invoke(u, os_mod.path.join, [cwd, "examples"])
+    py_invoke(u, sys_mod.path.insert, [0, examples_dir])
+
+fun main(stdio: Stdio, u: Unsafe)
+    bootstrap_path(u)
+    let mod = py_import(u, "migrate_logfetcher_naive")
+    stdio.println("step1: delegating to migrate_logfetcher_naive.main() via py_invoke")
+    py_invoke(u, mod.main, [])

@@ -1501,6 +1501,74 @@ class TestTranspileExamples(unittest.TestCase):
         self.assertIn("narrower allows 'other.example.com'? False", out)
 
 
+    def _manifest_caps(self, example_path):
+        # Helper for the migration tests: run --manifest and return a
+        # dict mapping function name to its declared_capabilities list.
+        import json
+        import subprocess
+        import sys
+        r = subprocess.run(
+            [sys.executable, "-m", "capa", "--manifest", example_path],
+            capture_output=True, text=True, encoding="utf-8",
+        )
+        self.assertEqual(r.returncode, 0, r.stderr)
+        m = json.loads(r.stdout)
+        return {f["name"]: f["declared_capabilities"] for f in m["functions"]}
+
+    def test_migrate_logfetcher_step1_manifest_is_unsafe_blob(self):
+        # Step 1 of the Python -> Capa migration walkthrough. The Capa
+        # file does nothing but py_import + py_invoke into the original
+        # Python module, so the manifest says exactly what an SBOM
+        # consumer should see at this stage: main exercises Stdio and
+        # Unsafe, nothing more is auditable from source.
+        caps = self._manifest_caps(
+            "examples/migrate_logfetcher_step1_unsafe.capa"
+        )
+        self.assertEqual(set(caps["main"]), {"Stdio", "Unsafe"})
+        self.assertEqual(set(caps["bootstrap_path"]), {"Unsafe"})
+
+    def test_migrate_logfetcher_step2_manifest_save_response_is_fs_only(self):
+        # Step 2: one function (save_response) has been moved into
+        # typed Capa. The headline assertion is that save_response
+        # declares Fs and nothing else, even though the rest of the
+        # program still touches Unsafe.
+        caps = self._manifest_caps(
+            "examples/migrate_logfetcher_step2_mixed.capa"
+        )
+        self.assertEqual(set(caps["save_response"]), {"Fs"})
+        self.assertNotIn("Unsafe", caps["save_response"])
+        # main still has Unsafe because the other helpers are still
+        # delegated to Python, but Fs is now visible there too.
+        self.assertEqual(set(caps["main"]), {"Stdio", "Fs", "Unsafe"})
+
+    def test_migrate_logfetcher_step3_manifest_no_unsafe_anywhere(self):
+        # Step 3: every function is typed; Unsafe has been completely
+        # eliminated; main's authority surface is exactly the four
+        # capabilities the program actually exercises.
+        caps = self._manifest_caps(
+            "examples/migrate_logfetcher_step3_typed.capa"
+        )
+        # No function carries Unsafe.
+        for name, declared in caps.items():
+            self.assertNotIn(
+                "Unsafe", declared,
+                f"{name} should not declare Unsafe at step 3",
+            )
+        # main aggregates the four real capabilities.
+        self.assertEqual(
+            set(caps["main"]), {"Stdio", "Fs", "Env", "Net"},
+        )
+        # Per-helper attribution is the migration's payoff: each
+        # function declares exactly the capability it needs.
+        self.assertEqual(set(caps["load_config"]),   {"Fs"})
+        self.assertEqual(set(caps["get_api_key"]),   {"Env"})
+        self.assertEqual(set(caps["fetch_status"]),  {"Net"})
+        self.assertEqual(set(caps["save_response"]), {"Fs"})
+        # Pure helpers carry no capabilities at all.
+        self.assertEqual(caps["build_url"],   [])
+        self.assertEqual(caps["config_field"], [])
+
+
 class TestNetRuntime(unittest.TestCase):
     """Unit tests against the runtime Net class directly, the behaviour
     that the analyzer types describe."""

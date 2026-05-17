@@ -1,0 +1,64 @@
+// Step 2 of the Python -> Capa gradual hardening walkthrough.
+// Companion to docs/migration.md.
+//
+// One function is now native typed Capa (`save_response`, which only
+// needs `Fs`); the rest still delegates to migrate_logfetcher_naive.py
+// via py_invoke. The orchestration in `main` is rebuilt in Capa so that
+// Fs flows through typed code at the point of the write.
+//
+// What the manifest will say at this stage:
+//   bootstrap_path  -> [Unsafe]
+//   save_response   -> [Fs]                       <- newly typed
+//   main            -> [Stdio, Fs, Unsafe]         <- Fs is now explicit
+//
+// The Unsafe is still there because load_config / get_api_key /
+// build_url / fetch_status are still being delegated to Python. The
+// Fs in main is the win this step: an SBOM consumer can now see that
+// the file-write authority is exercised by save_response, a typed
+// function, not by an opaque Python call.
+//
+// Run:
+//   capa --run examples/migrate_logfetcher_step2_mixed.capa
+//
+// Audit:
+//   capa --manifest examples/migrate_logfetcher_step2_mixed.capa
+
+fun bootstrap_path(u: Unsafe)
+    let sys_mod = py_import(u, "sys")
+    let os_mod  = py_import(u, "os")
+    let cwd     = py_invoke(u, os_mod.getcwd, [])
+    let examples_dir = py_invoke(u, os_mod.path.join, [cwd, "examples"])
+    py_invoke(u, sys_mod.path.insert, [0, examples_dir])
+
+// First migrated helper. Pure Capa, only declares Fs, no Unsafe in
+// scope. This is the shape every Python helper will end up with by
+// step 3.
+fun save_response(fs: Fs, path: String, content: String) -> Result<Unit, IoError>
+    return fs.write(path, content)
+
+fun main(stdio: Stdio, fs: Fs, u: Unsafe)
+    bootstrap_path(u)
+    let mod = py_import(u, "migrate_logfetcher_naive")
+
+    // Delegations to migrate_logfetcher_naive.py (still Unsafe-typed).
+    // py_invoke returns Unknown; Capa lets Unknown stand wherever a
+    // concrete type is expected, which is what makes this transitional
+    // bridging tractable.
+    let cfg = py_invoke(u, mod.load_config, ["config.json"])
+    let key = py_invoke(u, mod.get_api_key, [])
+
+    // Field access on the Python dict via builtins.dict.get; same
+    // pattern as the rest of the bridge.
+    let py_builtins = py_import(u, "builtins")
+    let base    = py_invoke(u, py_builtins.dict.get, [cfg, "base_url"])
+    let service = py_invoke(u, py_builtins.dict.get, [cfg, "service"])
+    let outpath = py_invoke(u, py_builtins.dict.get, [cfg, "output_path"])
+
+    let url      = py_invoke(u, mod.build_url, [base, service, key])
+    let response = py_invoke(u, mod.fetch_status, [url])
+
+    // Hand off to typed Capa for the file write. From here on the
+    // authority is Fs, not Unsafe.
+    match save_response(fs, outpath, response)
+        Ok(_) -> stdio.println("step2: wrote response via typed Capa Fs")
+        Err(e) -> stdio.eprintln("step2: error: ${e}")
