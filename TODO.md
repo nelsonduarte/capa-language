@@ -689,6 +689,16 @@ here so they stay visible:
   the external review is now closed; the citable
   soundness property is asserted on every generated program
   across the four capability-flow shapes.
+  Stress hunt (2026-05-17): re-ran the suite locally with
+  `max_examples` bumped to 10k on every property test (50k+
+  generated programs in total across phase 1, 2, 3, 3.5,
+  3.6/3.7). All ten property tests stayed green; soundness
+  invariant `runtime_classes ⊆ manifest_classes` held over
+  ~14k programs across the multi-capability strategies.
+  Observed degree of freedom: `_program_with_caps` is space-
+  exhausted at 87 unique programs (the advanced strategy
+  with 4181 unique programs is the better stress target if
+  the budget is ever raised in CI).
 - [x] **`Range<Int>` as a distinct type from `List<Int>`**.
   Done. `0..n` and `0..=n` now type as `Range<Int>`, a
   separate parametric type registered in `capa/builtins.py`.
