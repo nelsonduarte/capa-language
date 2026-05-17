@@ -3495,6 +3495,98 @@ class TestQuestionMarkOnNonResultOption(unittest.TestCase):
         self.assertTrue(r.ok, r.errors)
 
 
+class TestCallNonCallable(unittest.TestCase):
+    """A call expression ``x(args)`` whose callee resolves to a
+    non-function, non-variant binding (an Int local, a String
+    constant, a struct value, etc.) used to be silently accepted
+    by the v1 checker and would explode at runtime as
+    ``TypeError: 'int' object is not callable``. The analyser
+    now surfaces it at compile time with the actual type of the
+    receiver. Function-typed locals (lambdas assigned to a
+    binding) keep working."""
+
+    def test_call_int_local_is_rejected(self):
+        errs = errors_of(
+            "fun main(stdio: Stdio)\n"
+            "    let x = 5\n"
+            "    let y = x(2)\n"
+            "    stdio.println(\"${y}\")\n"
+        )
+        self.assertTrue(
+            any("'x' is not callable" in e and "Int" in e for e in errs),
+            errs,
+        )
+
+    def test_call_string_constant_is_rejected(self):
+        errs = errors_of(
+            "const NAME: String = \"capa\"\n"
+            "fun main(stdio: Stdio)\n"
+            "    let x = NAME(1)\n"
+            "    stdio.println(\"${x}\")\n"
+        )
+        self.assertTrue(
+            any("'NAME' is not callable" in e and "String" in e for e in errs),
+            errs,
+        )
+
+    def test_call_lambda_local_is_accepted(self):
+        # The function-typed-local exception: a lambda bound to a
+        # local is callable. The checker leaves arity / arg-type
+        # validation to the existing non-Ident-callee path (which
+        # currently passes through to TyUnknown for these shapes);
+        # the important thing is that this does not regress.
+        r = check(
+            "fun main(stdio: Stdio)\n"
+            "    let f = fun (x: Int) -> Int => x * 2\n"
+            "    let y = f(3)\n"
+            "    stdio.println(\"${y}\")\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+
+class TestSelfFieldHint(unittest.TestCase):
+    """Inside an ``impl`` method, a bare identifier that matches a
+    field of ``self``'s struct type is almost certainly a
+    forgotten ``self.``. The analyser surfaces a targeted hint
+    so the fix is obvious from the diagnostic."""
+
+    def test_bare_field_in_impl_method_suggests_self_dot(self):
+        errs = errors_of(
+            "type Counter { v: Int }\n"
+            "impl Counter\n"
+            "    fun get(self) -> Int\n"
+            "        return v\n"
+        )
+        self.assertTrue(
+            any("did you mean `self.v`?" in e for e in errs),
+            errs,
+        )
+
+    def test_bare_non_field_falls_back_to_generic_hint(self):
+        # ``vfx`` is not a field of Counter; the targeted hint
+        # should not appear (no ``self.vfx`` suggestion).
+        errs = errors_of(
+            "type Counter { v: Int }\n"
+            "impl Counter\n"
+            "    fun get(self) -> Int\n"
+            "        return vfx\n"
+        )
+        for e in errs:
+            self.assertNotIn("did you mean `self.", e)
+
+    def test_self_hint_only_inside_impl_methods(self):
+        # A free function does not have a ``self`` type; the hint
+        # must not fire even if a global struct happens to have a
+        # field of that name.
+        errs = errors_of(
+            "type Counter { v: Int }\n"
+            "fun get_outside() -> Int\n"
+            "    return v\n"
+        )
+        for e in errs:
+            self.assertNotIn("did you mean `self.", e)
+
+
 class TestReturnOnAllPaths(unittest.TestCase):
     """A function that declares a non-Unit return type must
     ``return`` on every code path. Before this check landed, a

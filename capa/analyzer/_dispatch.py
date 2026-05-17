@@ -194,7 +194,38 @@ class _DispatchMixin:
                         )
                         return TyName(owner.name, args)
                     return TyUnknown
-        # Non-Ident callee forms: v1 checker does not check.
+                # Resolved Ident whose symbol is neither a function
+                # nor a variant: a local binding, parameter, or
+                # constant. Callable iff its type is a function
+                # type (e.g. a lambda assigned to ``let f = fun (x:
+                # Int) -> Int => x * 2``); otherwise the runtime
+                # would raise ``TypeError: ... is not callable`` and
+                # we should surface that at compile time.
+                if sym.kind in (
+                    SymbolKind.LOCAL,
+                    SymbolKind.LOCAL_VAR,
+                    SymbolKind.PARAM,
+                    SymbolKind.CONSTANT,
+                ):
+                    if isinstance(sym.ty, TyFun):
+                        # Function-typed local / param: lambda-style
+                        # call. Fall through to the generic
+                        # non-Ident path below, which type-checks
+                        # the callee but does not enforce arity /
+                        # arg types yet. Leaving the TyUnknown
+                        # return matches the pre-existing behaviour
+                        # for these call shapes.
+                        pass
+                    else:
+                        self._err(
+                            f"{sym.name!r} is not callable; it has type "
+                            f"{ty_str(sym.ty)}",
+                            e.pos,
+                        )
+                        return TyUnknown
+        # Non-Ident callee forms (method-result, lambda, parens):
+        # v1 checker does not check the call shape on these. Still
+        # type-check the callee so its own diagnostics fire.
         self._check_expr(e.callee)
         return TyUnknown
 

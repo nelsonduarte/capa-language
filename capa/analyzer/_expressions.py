@@ -323,11 +323,44 @@ class _ExpressionsMixin:
             )
         return TyName("Range", (TyInt,))
 
+    def _hint_self_field(self, name: str) -> str:
+        """When ``name`` looks up to nothing in scope but matches a
+        field of ``self``'s struct type inside an ``impl`` method,
+        return ``"; did you mean `self.<name>`?"``. Empty string
+        otherwise. Capa requires explicit ``self.field`` access
+        and the bare-name mistake is the single most common
+        port-from-Python error in user-defined types."""
+        from . import SymbolKind
+        if self.self_type is None or not isinstance(self.self_type, TyName):
+            return ""
+        # The ``self`` parameter must be visible in scope; otherwise
+        # the hint would be misleading (the method may have a
+        # different first-parameter shape).
+        if self.scope.lookup("self") is None:
+            return ""
+        target = self.global_scope.lookup(self.self_type.name)
+        if target is None or target.kind != SymbolKind.TYPE_STRUCT:
+            return ""
+        if name in target.struct_fields:
+            return f"; did you mean `self.{name}`?"
+        return ""
+
     def _check_ident(self, e: A.Ident) -> Ty:
         from . import SymbolKind
 
         sym = self.scope.lookup(e.name)
         if sym is None:
+            # Inside an ``impl`` method, a bare identifier that
+            # matches a field of ``self`` is almost certainly a
+            # forgotten ``self.``. Surface the targeted hint
+            # before falling back to the generic typo guess.
+            self_hint = self._hint_self_field(e.name)
+            if self_hint:
+                self._err(
+                    f"undefined name {e.name!r}{self_hint}",
+                    e.pos,
+                )
+                return TyUnknown
             hint = self._hint_did_you_mean(e.name, self._names_in_scope())
             self._err(f"undefined name {e.name!r}{hint}", e.pos)
             return TyUnknown
