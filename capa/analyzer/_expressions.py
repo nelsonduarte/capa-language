@@ -251,14 +251,31 @@ class _ExpressionsMixin:
         if isinstance(e, A.Try):
             inner = self._check_expr(e.expr)
             # When the inner expression is a Result<T, E> or
-            # Option<T>, the ? operator unwraps and yields T;
-            # otherwise we don't know the inner type yet, so we
-            # fall back to TyUnknown. Tracking this is what makes
-            # type-aware dispatch (e.g. Map.get) work on the
-            # result of a `?` chain.
+            # Option<T>, the ? operator unwraps and yields T.
             if isinstance(inner, TyName) and inner.args:
                 if inner.name in ("Result", "Option"):
                     return inner.args[0]
+            # TyUnknown / TyVar / a Result-or-Option whose type
+            # arguments have not been inferred yet stay permissive:
+            # the runtime helper handles whatever shape they take,
+            # and we do not want to false-positive on generic code
+            # that produces a Result through a type variable.
+            if isinstance(inner, (TyVar,)) or inner is TyUnknown:
+                return TyUnknown
+            if isinstance(inner, TyName) and inner.name in ("Result", "Option"):
+                # No args yet; payload type is unknown but the shape
+                # is fine. Same permissive return as above.
+                return TyUnknown
+            # Concrete non-Result / non-Option type: ``?`` makes no
+            # sense and would raise at runtime as ``? applied to a
+            # value that is not Result or Option``. Surface it now
+            # with the actual type the user wrote so the fix is
+            # obvious from the diagnostic.
+            self._err(
+                f"`?` is only valid on Result<T, E> or Option<T>; "
+                f"this expression has type {ty_str(inner)}",
+                e.pos,
+            )
             return TyUnknown
         if isinstance(e, A.StructLit):
             return self._check_struct_lit(e)

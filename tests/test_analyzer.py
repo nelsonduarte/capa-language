@@ -3441,5 +3441,94 @@ class TestDidYouMeanHints(unittest.TestCase):
             self.assertNotIn("did you mean 'lenght'?", e)
 
 
+class TestQuestionMarkOnNonResultOption(unittest.TestCase):
+    """``?`` is a Result / Option unwrap operator. Applied to any
+    other type it would explode at runtime with
+    ``? applied to a value that is not Result or Option`` (the
+    helper in ``capa.runtime`` raises a ``RuntimeError``). The
+    analyser now surfaces this at type-check time so the error
+    points at the source location with the actual type the user
+    wrote, instead of waiting for the runtime crash."""
+
+    def test_question_on_int_is_rejected(self):
+        errs = errors_of(
+            "fun bad(x: Int) -> Int\n"
+            "    return x?\n"
+        )
+        self.assertTrue(
+            any("`?` is only valid on Result<T, E> or Option<T>" in e
+                and "Int" in e
+                for e in errs),
+            errs,
+        )
+
+    def test_question_on_string_is_rejected(self):
+        errs = errors_of(
+            "fun bad(s: String) -> String\n"
+            "    return s?\n"
+        )
+        self.assertTrue(
+            any("`?` is only valid on Result<T, E> or Option<T>" in e
+                and "String" in e
+                for e in errs),
+            errs,
+        )
+
+    def test_question_on_result_still_accepted(self):
+        # The fix must not regress the legitimate uses of ``?`` on
+        # Result. ``parse_int`` returns ``Result<Int, String>``.
+        r = check(
+            "fun add_one(s: String) -> Result<Int, String>\n"
+            "    let n = parse_int(s)?\n"
+            "    return Ok(n + 1)\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+    def test_question_on_option_still_accepted(self):
+        # Same check for Option<T>: the regression from before this
+        # iteration applied here too.
+        r = check(
+            "fun first_plus_one(xs: List<Int>) -> Option<Int>\n"
+            "    let x = xs.first()?\n"
+            "    return Some(x + 1)\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+
+class TestDuplicateBindingDiagnostic(unittest.TestCase):
+    """``let x = ...; let x = ...`` (or any second binding of the
+    same name in the same scope) is rejected. The diagnostic
+    includes the source position of the previous binding and a
+    hint about the ``var`` + bare-assignment idiom for the common
+    case of "I meant to update the value, not redeclare it"."""
+
+    def test_duplicate_let_names_previous_location(self):
+        errs = errors_of(
+            "fun main(stdio: Stdio)\n"
+            "    let x = 1\n"
+            "    let x = 2\n"
+            "    stdio.println(\"${x}\")\n"
+        )
+        # The previous binding is on line 2, col 9 (``    let x``).
+        self.assertTrue(
+            any("duplicate binding 'x'" in e
+                and "line 2, col 9" in e
+                for e in errs),
+            errs,
+        )
+
+    def test_duplicate_let_suggests_var(self):
+        errs = errors_of(
+            "fun main(stdio: Stdio)\n"
+            "    let x = 1\n"
+            "    let x = 2\n"
+            "    stdio.println(\"${x}\")\n"
+        )
+        self.assertTrue(
+            any("`var x` for a mutable binding" in e for e in errs),
+            errs,
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

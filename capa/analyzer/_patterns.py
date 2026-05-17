@@ -128,6 +128,19 @@ class _PatternsMixin:
             return result
         return [p]
 
+    def _duplicate_binding_message(self, name: str, prev) -> str:
+        """Build the rich message for a duplicate ``let`` / ``var``
+        binding: name the previous-definition location so the user
+        does not have to scan for it, and remind them of the
+        ``var`` + bare-assignment idiom for the common case ("I
+        meant to update the value, not redeclare it")."""
+        return (
+            f"duplicate binding {name!r} (previous binding at "
+            f"line {prev.pos.line}, col {prev.pos.col}); use "
+            f"`var {name}` for a mutable binding and `{name} = ...` "
+            f"to reassign, or rename if you want a distinct value"
+        )
+
     def _bind_pattern(
         self, p: A.Pattern, ty: Ty, mutable: bool,
     ) -> None:
@@ -140,8 +153,12 @@ class _PatternsMixin:
             return
         if isinstance(p, A.IdentPat):
             kind = SymbolKind.LOCAL_VAR if mutable else SymbolKind.LOCAL
-            if self.scope.lookup_local(p.name) is not None:
-                self._err(f"duplicate binding {p.name!r}", p.pos)
+            prev = self.scope.lookup_local(p.name)
+            if prev is not None:
+                self._err(
+                    self._duplicate_binding_message(p.name, prev),
+                    p.pos,
+                )
             self.scope.define(
                 Symbol(name=p.name, kind=kind, pos=p.pos, ty=ty)
             )
@@ -211,8 +228,12 @@ class _PatternsMixin:
                     fty = known[fname]
                 if fpat is None:
                     # shorthand ``field`` -> bind ``field: same-name``
-                    if self.scope.lookup_local(fname) is not None:
-                        self._err(f"duplicate binding {fname!r}", p.pos)
+                    prev = self.scope.lookup_local(fname)
+                    if prev is not None:
+                        self._err(
+                            self._duplicate_binding_message(fname, prev),
+                            p.pos,
+                        )
                     self.scope.define(
                         Symbol(
                             name=fname,
