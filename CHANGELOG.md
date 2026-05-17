@@ -9,6 +9,131 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+## [0.8.3-beta], 2026-05-17
+
+A polish release on top of v0.8.2-beta. No new tentpole
+feature; the focus is taking the discipline-and-artefact
+story closer to adoption. Six concentrated arcs landed:
+the Python-to-Capa migration walkthrough, an LSP
+positional-fidelity fix that had been pending since the LSP
+v1, transpiler type-aware specialisation that closes the
+list-heavy benchmark by a third, a 10k-example property-test
+stress hunt (no regressions found), the repo rename to
+``capa-language`` (with the matching ``capa-language.com``
+domain), and GitHub Discussions opened as the conversation
+space for the language.
+
+### Added
+
+- **Python-to-Capa migration walkthrough**,
+  ``docs/migration.md`` plus a paired example at three
+  stages. The example is a small status fetcher (~35 lines of
+  Python touching Fs + Env + Net); the three Capa stages show
+  the same program with everything ``Unsafe``-wrapped via
+  ``py_import``/``py_invoke``, with one helper moved to typed
+  Capa, and finally with every function carrying an explicit
+  capability signature. The manifest tracks the migration:
+  ``main = [Stdio, Unsafe]`` shrinks to
+  ``main = [Stdio, Fs, Unsafe]`` shrinks to
+  ``main = [Stdio, Fs, Env, Net]`` with no ``Unsafe`` anywhere.
+  Three new tests assert the manifest shape at each stage.
+
+- **GitHub Discussions** opened on the repo as the
+  conversation space (Show and tell, Q&A, Ideas,
+  Announcements). README ``## Community`` section points at
+  it and routes security reports to the private advisory
+  channel. Two seed discussions: a pinned welcome and a
+  worked example of the LLM tool-use sandboxing pattern from
+  v0.8.2.
+
+- **GitHub Topics** set on the repo so the project shows up
+  in topic-based discovery (``capability-security``,
+  ``programming-language``, ``compiler``, ``type-system``,
+  ``sbom``, ``cyclonedx``, ``spdx``, ``slsa``, ``vex``,
+  ``supply-chain-security``, ``static-analysis``,
+  ``language-design``, ``cra``, ``nis2``, ``llm-security``).
+
+### Changed
+
+- **Repo renamed to ``capa-language``** to match the domain
+  (``capa-language.com``) and disambiguate from the many
+  ``capa`` projects on GitHub. The old URL redirects
+  indefinitely; existing clones continue to work. The 37
+  hardcoded ``nelsonduarte/capa`` references in
+  README / CHANGELOG / docs / deploy scripts / issue
+  templates / VSCode extension manifest were updated to the
+  new canonical URL in the same commit.
+
+- **Transpiler type-aware specialisation** for built-in
+  methods and variant ``match``. The simple ``List<T>``
+  methods (``length``, ``push``, ``contains``, ``is_empty``,
+  ``get``) lower to native Python equivalents (``len``,
+  ``.append``, ``in``, ``len == 0``, inline bounds-checked
+  index) on receivers whose static type the analyser knows.
+  Payload-less variant ``match`` lowers to an
+  ``if isinstance(...)`` chain when every arm is a
+  payload-less variant, a wildcard, or an or-pattern of
+  those, with no guard. Anything else (Some(x), struct
+  destructure, literals, guards, higher-order list methods)
+  stays on the general path. Ten new tests in
+  ``TestBuiltinSpecialisations`` pin both the emitted
+  fast-path code and the cases that must keep using the
+  general path.
+
+- **Benchmark numbers shift**: the list-heavy
+  ``scope_analyser`` workload went from 1.20x to 1.12x
+  against hand-Python (CPython 3.14, ``--iterations 30
+  --repeat 15``). The pure-compute ``fib`` stays at 1.00x.
+  The string-plus-struct ``ua_parse`` stays at 1.45x:
+  the match-on-enum part was a small fraction of that
+  workload's time; the remaining gap is per-call class
+  instantiation (the hand-Python baseline uses string
+  constants rather than class instances per variant, which
+  is a different design point). Documented honestly in
+  ``benchmarks/README.md``.
+
+### Fixed
+
+- **LSP positional fidelity for typos inside ``${...}``
+  interpolations**. Before this release, an undefined
+  identifier inside a string interpolation
+  (e.g. ``"Hello, ${nme}!"``) reported its source position at
+  the string literal's opening quote (line 1, col 1 for a
+  one-line program) and the identifier name was lost from
+  the diagnostic. The lexer now records the source ``Pos`` of
+  every top-level ``${`` opener in the ``STRING_LIT`` token;
+  the parser threads each one into the sub-Lexer it spawns
+  for the interpolation contents, so the sub-Lexer starts
+  counting from the right ``line`` / ``col`` / ``offset`` in
+  the outer source. Typos inside ``${...}`` now report the
+  actual identifier position, with the snippet rendering the
+  right line and the caret on the right column, and the
+  identifier name and Levenshtein hint both make it through.
+  Three new tests in ``TestInterpolatedString`` cover the
+  regression (simple typo, typo after escape sequences
+  earlier in the literal, two interpolations where the
+  second has the typo).
+
+### Verified
+
+- **Property-test stress hunt at 10k examples per test** (one-
+  shot, not committed to CI). Roughly 50k generated programs
+  across the lexer / parser / formatter / pipeline / soundness
+  properties; the soundness invariant
+  ``runtime_classes ⊆ manifest_classes`` held over ~14k
+  programs across the multi-capability strategies. Zero
+  regressions surfaced from the rename, migration walkthrough,
+  or interpolation-positions changes. Side finding: the simple
+  ``_program_with_caps`` strategy exhausts its space at 87
+  unique programs (the advanced strategy with 4181 programs
+  is the better stress target if CI ever raises the budget
+  above the conservative defaults).
+
+### Numbers
+
+- **962 tests** (was 946 in v0.8.2-beta), green on Ubuntu /
+  macOS / Windows &times; Python 3.10 / 3.12 / 3.14.
+
 ## [0.8.2-beta], 2026-05-16
 
 A content-and-tooling release on top of v0.8.1-beta. Three

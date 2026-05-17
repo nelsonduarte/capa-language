@@ -52,7 +52,7 @@
         <a href="start.html" class="btn">Get started</a>
         <a href="https://github.com/nelsonduarte/capa-language" class="btn">GitHub</a>
     </div>
-    <p class="status">v0.8.2-beta · MIT · 946 tests · hand-written compiler in Python</p>
+    <p class="status">v0.8.3-beta · MIT · 962 tests · hand-written compiler in Python</p>
 </section>
 
 <!-- =====================================================
@@ -60,20 +60,25 @@
 ===================================================== -->
 <section class="release-banner-wrap">
     <div class="release-banner">
-        <span class="release-tag">v0.8.2-beta</span>
+        <span class="release-tag">v0.8.3-beta</span>
         <span class="release-body">
             <strong>Released 2026-05-17.</strong>
-            <strong>LLM tool-use sandboxing</strong>: a complete arc
-            from static discipline to a real Anthropic agent loop
-            with Capa-typed tool dispatch &mdash; the agent provably
-            cannot escalate beyond its declared tools, regardless of
-            what the model emits. Plus a full <strong>Learn track</strong>
-            (twelve hands-on chapters), a homepage rebalance that
-            puts the language first and SBOM second, and tutorial
-            code samples checked end-to-end against the live
-            compiler.
+            A polish release on top of v0.8.2-beta. New
+            <strong>Python &rarr; Capa migration walkthrough</strong>
+            (a documented gradual-hardening workflow plus paired
+            example at three stages, with the manifest tracking the
+            <code>Unsafe</code>-blob shrinking into typed capabilities
+            function by function). The <strong>LSP</strong> now keeps
+            diagnostics for typos inside <code>${...}</code> string
+            interpolations pointing at the actual identifier rather
+            than the string's opening quote. The transpiler does
+            <strong>type-aware specialisation</strong> for the simple
+            <code>List&lt;T&gt;</code> methods and payload-less variant
+            <code>match</code>, closing the list-heavy benchmark from
+            1.20x to 1.12x against hand-Python. GitHub Discussions
+            opened as the conversation space for the language.
         </span>
-        <a class="release-link" href="https://github.com/nelsonduarte/capa-language/releases/tag/v0.8.2-beta">Read the notes →</a>
+        <a class="release-link" href="https://github.com/nelsonduarte/capa-language/releases/tag/v0.8.3-beta">Read the notes &rarr;</a>
     </div>
 </section>
 
@@ -364,7 +369,7 @@
             <summary>Is Capa production-ready?</summary>
             <p>
                 Not yet, but the gap is hardening rather than
-                completeness. v0.8.2-beta means the compiler runs,
+                completeness. v0.8.3-beta means the compiler runs,
                 the discipline is implemented end-to-end, the
                 module system is feature-complete (qualified
                 access, transitive imports, <code>pub</code>
@@ -596,7 +601,7 @@
             </ul>
         </div>
     </div>
-    <p class="colophon">Built by Nelson Duarte · v0.8.2-beta · MIT-licensed</p>
+    <p class="colophon">Built by Nelson Duarte · v0.8.3-beta · MIT-licensed</p>
 </footer>
 
 </body>
