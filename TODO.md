@@ -341,9 +341,12 @@ to public.
   `foo`. Go-to-definition from a declaration is a no-op (lands on
   the name itself); find-references from either side returns the
   same set, with the declaration entry at the precise name column.
-  Typos inside string interpolation (`${...}`) still lose
-  positions because the interpolation contents go through a
-  side parse channel. `pygls` is an optional dependency
+  Typos inside string interpolation (`${...}`) now keep their
+  source positions: the lexer records the Pos of every top-level
+  `${` opener in the STRING_LIT token and the parser passes that
+  through to the sub-Lexer so identifiers like `nme` in
+  `"Hello, ${nme}!"` report their actual location instead of the
+  string's opening quote. `pygls` is an optional dependency
   (`pip install -e '.[lsp]'`) so the rest of the compiler stays
   standard-library-only. README carries one-line config snippets
   for Helix and Neovim.
@@ -379,7 +382,8 @@ to public.
   references inside parameter / return / field types resolve
   against the global scope so `String`, `Stdio`, etc. get
   coloured wherever they appear.
-  **Pending (v2)**: positional fidelity for `${...}` contents.
+  **Pending (v2)**: none currently identified at the LSP level
+  (positional fidelity for `${...}` contents landed; see above).
 - [~] **`capa-fmt` (formatter)**, canonical, non-configurable
   (gofmt-style). **v1 (line-level) landed**: CLI flags `--fmt` and
   `--fmt-check` normalise line endings, indentation (tabs to 4

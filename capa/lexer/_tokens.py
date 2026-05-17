@@ -82,7 +82,7 @@ class _TokensMixin:
                 self._advance()
             else:
                 break
-        text = self.source[start.offset : self.offset]
+        text = self._slice_from(start)
 
         # Special case: a lone '_' is wildcard, not identifier.
         if text == "_":

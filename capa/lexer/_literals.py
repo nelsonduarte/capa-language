@@ -44,7 +44,7 @@ class _LiteralsMixin:
             else:
                 self._consume_digits(_BIN_DIGITS, "binary", start)
                 base = 2
-            text = self.source[start.offset : self.offset]
+            text = self._slice_from(start)
             value = int(text[2:].replace("_", ""), base)
             self._emit(TokenKind.INT_LIT, text, start, value=value)
             return
@@ -70,7 +70,7 @@ class _LiteralsMixin:
                 raise self._error("expected digit in exponent")
             self._consume_digits(_DEC_DIGITS, "exponent", start)
 
-        text = self.source[start.offset : self.offset]
+        text = self._slice_from(start)
         if is_float:
             value = float(text.replace("_", ""))
             self._emit(TokenKind.FLOAT_LIT, text, start, value=value)
@@ -114,12 +114,30 @@ class _LiteralsMixin:
     def _lex_string(self, start: Pos) -> None:
         self._advance()  # opening quote
         buf: list[str] = []
+        # For each top-level ``${...}`` interpolation in the literal,
+        # we record the source Pos of the first character inside the
+        # braces (i.e. right after the ``${``). The parser uses these
+        # to sub-lex the interpolation contents with correct positions,
+        # so diagnostics for typos inside ``${name}`` point at ``name``
+        # in the source rather than at the string's opening quote.
+        interp_positions: list[Pos] = []
+        # Depth of nested ``{`` / ``}`` once we are inside a top-level
+        # interpolation. Tracked here purely so we can recognise when
+        # we exit the interpolation; the parser's own value-side depth
+        # counter still does the substring extraction.
+        interp_depth = 0
         while not self._at_end():
             c = self._peek()
             if c == '"':
                 self._advance()
-                text = self.source[start.offset : self.offset]
-                self._emit(TokenKind.STRING_LIT, text, start, value="".join(buf))
+                text = self._slice_from(start)
+                self._emit(
+                    TokenKind.STRING_LIT,
+                    text,
+                    start,
+                    value="".join(buf),
+                    interp_positions=interp_positions,
+                )
                 return
             if c == "\n":
                 raise self._error(
@@ -130,14 +148,28 @@ class _LiteralsMixin:
                 self._advance()
                 buf.append(self._read_escape())
                 continue
-            if c == "$" and self._peek(1) == "{":
-                # Interpolation recognized but not tokenized in v1.0.
-                # The content between ${ and } is kept as literal part
-                # of the value.
-                # TODO(v1.1): emit STRING_PART / sub-tokens / STRING_PART.
+            if interp_depth == 0 and c == "$" and self._peek(1) == "{":
+                # Top-level interpolation opener. Record the position
+                # of the first character of the interpolation content,
+                # then keep copying ``${`` into ``buf`` so the parser
+                # sees the same value it always did.
                 buf.append(c)
-                self._advance()
+                self._advance()  # $
+                buf.append(self._peek())
+                self._advance()  # {
+                interp_positions.append(self._pos())
+                interp_depth = 1
                 continue
+            if interp_depth > 0:
+                # Inside an interpolation: track brace depth so we know
+                # when the matching ``}`` closes it. Matches the
+                # parser's value-side depth counter character-for-
+                # character (neither ignores braces inside nested
+                # string literals; that is a pre-existing limitation).
+                if c == "{":
+                    interp_depth += 1
+                elif c == "}":
+                    interp_depth -= 1
             buf.append(c)
             self._advance()
         raise self._error("unterminated string literal", start)
@@ -156,7 +188,7 @@ class _LiteralsMixin:
             c = self._peek()
             if c == '"':
                 self._advance()
-                text = self.source[start.offset : self.offset]
+                text = self._slice_from(start)
                 self._emit(TokenKind.STRING_LIT, text, start, value="".join(buf))
                 return
             if c == "\n":
@@ -241,5 +273,5 @@ class _LiteralsMixin:
                 "(character literals contain a single character)"
             )
         self._advance()
-        text = self.source[start.offset : self.offset]
+        text = self._slice_from(start)
         self._emit(TokenKind.CHAR_LIT, text, start, value=ch)

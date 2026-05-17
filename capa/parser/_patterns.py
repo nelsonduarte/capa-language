@@ -113,7 +113,7 @@ class _PatternsMixin:
         if tok.kind == T.FLOAT_LIT:
             return A.FloatLit(pos=tok.start, value=tok.value)
         if tok.kind == T.STRING_LIT:
-            return self._build_string_lit(tok.value, tok.start)
+            return self._build_string_lit(tok.value, tok.start, tok.interp_positions)
         if tok.kind == T.CHAR_LIT:
             return A.CharLit(pos=tok.start, value=tok.value)
         if tok.kind == T.KW_TRUE:

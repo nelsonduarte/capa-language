@@ -1602,6 +1602,77 @@ class TestInterpolatedString(unittest.TestCase):
             any("undefined name 'nao_existe'" in m for m in msgs)
         )
 
+    def test_undefined_in_interpolation_has_correct_position(self):
+        # Regression: prior to the interp_positions plumbing, a typo
+        # inside ``${...}`` was reported at the string's opening
+        # quote position (line 1, col 1) instead of at the actual
+        # identifier inside the interpolation. Now the sub-lexer is
+        # started at the source Pos of the interpolation content, so
+        # the error position lands on the typo itself and the
+        # rendered snippet shows the correct line with the correct
+        # caret column.
+        source = (
+            "fun main(stdio: Stdio)\n"
+            "    let name = \"World\"\n"
+            "    stdio.println(\"Hello, ${nme}!\")\n"
+        )
+        r = check(source)
+        self.assertFalse(r.ok)
+        # The error should report `nme` (not an empty name) and point
+        # at line 3 where the typo lives, with the column landing on
+        # the `n` of `nme`.
+        msg = r.errors[0].message
+        self.assertIn("undefined name 'nme'", msg)
+        # Levenshtein hint should still find `name` as the suggestion.
+        self.assertIn("did you mean 'name'", msg)
+        # Position: line 3, and the caret lands on the `n` of `nme`
+        # which is column 29 in the source above.
+        self.assertEqual(r.errors[0].pos.line, 3)
+        self.assertEqual(r.errors[0].pos.col, 29)
+
+    def test_interpolation_position_with_escapes_before_it(self):
+        # Escapes in the literal text (``\n``, ``\"``, ``\\``) consume
+        # two source characters but only one byte in the resolved
+        # value. The lexer-side position tracking records the
+        # *source* position of each ``${...}``, so escapes earlier in
+        # the literal do not throw off the column the error reports.
+        source = (
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"a\\nb\\\"c ${missing}\")\n"
+        )
+        r = check(source)
+        self.assertFalse(r.ok)
+        self.assertIn("undefined name 'missing'", r.errors[0].message)
+        # Line 2 (the println line); column lands on the `m` of
+        # `missing`. The exact column comes from the source offset of
+        # `${`'s opener plus 2 (for the ``${``).
+        self.assertEqual(r.errors[0].pos.line, 2)
+        # The string literal begins at col 19. `\n` is 2 source
+        # chars, `\"` is 2 source chars, `${` is 2 source chars. So
+        # ``missing`` starts at col 19 + 1 (quote) + 1 (a) + 2 (\n) +
+        # 1 (b) + 2 (\") + 1 (c) + 1 (space) + 2 (${) = 30.
+        self.assertEqual(r.errors[0].pos.col, 30)
+
+    def test_two_interpolations_each_keep_their_own_position(self):
+        # Two ``${...}`` in the same string. The second is the one
+        # with the typo. The lexer records both positions in order,
+        # and the parser pairs each interpolation with the right one,
+        # so the second-interpolation diagnostic still points at the
+        # second interpolation's position rather than at the first.
+        source = (
+            "fun main(stdio: Stdio)\n"
+            "    let x = 1\n"
+            "    stdio.println(\"${x} and ${y}\")\n"
+        )
+        r = check(source)
+        self.assertFalse(r.ok)
+        self.assertIn("undefined name 'y'", r.errors[0].message)
+        self.assertEqual(r.errors[0].pos.line, 3)
+        # ``y`` is at col 31 in the source:
+        # 4 spaces + "stdio.println(" (14) + `"${x} and ${` (12) = 30,
+        # then `y` is col 31.
+        self.assertEqual(r.errors[0].pos.col, 31)
+
 
 # =============================================================
 # Standard library: Map<K, V> and Set<T>

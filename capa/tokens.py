@@ -10,7 +10,7 @@ the generic IDENT lets the parser pattern-match directly on the token type,
 without having to inspect text.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Any
 
@@ -208,12 +208,18 @@ class Token:
     - value: for literals, the already-processed value (int, float, str, char).
              None for structural tokens and identifiers.
     - start, end: delimiting positions in the source.
+    - interp_positions: for STRING_LIT tokens that contain ``${...}``
+      interpolations, the source position of the first character
+      inside each interpolation (immediately after the ``${``). Empty
+      for plain strings. The parser uses these to keep diagnostics on
+      typos inside ``${...}`` pointing at the actual source location.
     """
     kind: TokenKind
     text: str
     value: Any
     start: Pos
     end: Pos
+    interp_positions: list[Pos] = field(default_factory=list)
 
     def __repr__(self) -> str:
         if self.value is not None and self.value != self.text:

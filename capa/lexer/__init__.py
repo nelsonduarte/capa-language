@@ -8,11 +8,14 @@ implicit line continuation inside parentheses (any of the three
 kinds).
 
 Notes on the scope of version 1.0:
-- String interpolation (``${...}`` syntax) is recognized syntactically
-  but not tokenized recursively: the expression inside the braces is
-  kept as literal part of the string value. This limitation is
-  deliberate to keep the lexer simple; the parser can re-lex the
-  contents if needed.
+- String interpolation (``${...}`` syntax) is recognised syntactically
+  but not tokenised recursively: the expression inside the braces is
+  kept as literal part of the string value, and the parser sub-lexes
+  it on demand. The Lexer accepts ``start_line`` / ``start_col`` /
+  ``start_offset`` arguments so the parser can offset that sub-lex
+  back into the outer source; this keeps diagnostics for typos
+  inside ``${...}`` (e.g. ``${nme}``) reporting the actual identifier
+  position rather than the string literal's opening quote.
 - Raw strings (``r"..."``) are recognised. No escape processing
   applies inside them: every character up to the next unescaped
   quote is taken literally (no ``\\n``, no ``${}`` interpolation).
@@ -99,14 +102,27 @@ class Lexer(
     A Lexer is not reusable: create a new one for each analysis.
     """
 
-    def __init__(self, source: str, filename: str = "<input>"):
+    def __init__(
+        self,
+        source: str,
+        filename: str = "<input>",
+        start_line: int = 1,
+        start_col: int = 1,
+        start_offset: int = 0,
+    ):
         self.source = source
         self.filename = filename
 
-        # Cursor into the source
+        # Cursor into the source string. The ``offset`` is the index
+        # into ``self.source`` and always starts at 0; the ``start_*``
+        # parameters bias the *reported* positions (line, col, and the
+        # offset attached to Pos) so the parser can sub-lex the
+        # contents of a ``${...}`` interpolation and still get back
+        # positions valid in the outer source.
         self.offset = 0
-        self.line = 1
-        self.col = 1
+        self.line = start_line
+        self.col = start_col
+        self._offset_delta = start_offset
 
         # Stack of indentation levels. Always starts with 0 (top of program).
         self.indent_stack: list[int] = [0]
@@ -136,7 +152,18 @@ class Lexer(
         return self.source[i]
 
     def _pos(self) -> Pos:
-        return Pos(self.line, self.col, self.offset, self.filename)
+        return Pos(self.line, self.col, self.offset + self._offset_delta, self.filename)
+
+    def _slice_from(self, start: Pos) -> str:
+        """Slice ``self.source`` from ``start`` (an outer-source Pos
+        produced by ``_pos()``) to the current cursor. Accounts for
+        ``_offset_delta`` so callers don't have to: when the lexer is
+        running in normal mode the delta is 0 and this collapses to
+        ``self.source[start.offset : self.offset]``; when sub-lexing
+        an interpolation, start.offset has the delta baked in and we
+        subtract it back to land in the substring.
+        """
+        return self.source[start.offset - self._offset_delta : self.offset]
 
     def _advance(self) -> str:
         c = self.source[self.offset]
@@ -309,5 +336,9 @@ class Lexer(
         text: str,
         start: Pos,
         value=None,
+        interp_positions=None,
     ) -> None:
-        self.tokens.append(Token(kind, text, value, start, self._pos()))
+        self.tokens.append(Token(
+            kind, text, value, start, self._pos(),
+            interp_positions=interp_positions or [],
+        ))

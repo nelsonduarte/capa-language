@@ -49,7 +49,7 @@ class _CommentsMixin:
         body = body.rstrip()
         self._emit(
             TokenKind.DOC_COMMENT,
-            self.source[start.offset:self.offset],
+            self._slice_from(start),
             start,
             value=body,
         )
@@ -86,7 +86,7 @@ class _CommentsMixin:
                     body = _strip_block_doc_margins(raw)
                     self._emit(
                         TokenKind.DOC_COMMENT,
-                        self.source[start.offset:self.offset],
+                        self._slice_from(start),
                         start,
                         value=body,
                     )

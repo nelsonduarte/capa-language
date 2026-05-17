@@ -247,7 +247,7 @@ class _ExpressionsMixin:
             return A.FloatLit(pos=tok.start, value=tok.value)
         if tok.kind == T.STRING_LIT:
             self._advance()
-            return self._build_string_lit(tok.value, tok.start)
+            return self._build_string_lit(tok.value, tok.start, tok.interp_positions)
         if tok.kind == T.CHAR_LIT:
             self._advance()
             return A.CharLit(pos=tok.start, value=tok.value)

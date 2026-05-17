@@ -79,16 +79,25 @@ class Parser(
         # To use a struct literal as scrutinee, wrap it in parentheses.
         self._no_struct_lit = False
 
-    def _build_string_lit(self, value: str, pos) -> A.Expr:
+    def _build_string_lit(self, value: str, pos, interp_positions=None) -> A.Expr:
         """Builds a string literal. If it contains ``${...}``, returns
         an ``InterpolatedString`` with each interpolation parsed as a
         Capa expression. Otherwise, returns a plain ``StringLit``.
 
         ``$$`` is a literal escape for ``$``. Literal text and
         expressions alternate inside ``parts``.
+
+        ``interp_positions`` (optional) carries the source Pos of each
+        top-level ``${...}`` interpolation's content as emitted by the
+        lexer; when present, each sub-Lexer is started at the
+        corresponding Pos so diagnostics from inside ``${...}`` point
+        at the actual source location rather than the string's opening
+        quote.
         """
         if "${" not in value:
             return A.StringLit(pos=pos, value=value)
+        interp_positions = interp_positions or []
+        interp_idx = 0
         parts: list = []
         buf: list[str] = []
         i = 0
@@ -120,9 +129,17 @@ class Parser(
                         f"unterminated interpolation in string literal: {value!r}"
                     )
                 expr_text = value[i + 2 : j]
-                # Mini-lex + mini-parse of the expression. Reuses the
-                # same lexer/parser on the raw source.
-                expr = self._parse_interpolation(expr_text, pos)
+                # Mini-lex + mini-parse of the expression. The lexer
+                # recorded the source Pos of every top-level ``${...}``
+                # opener; if we have one for this interpolation, pass
+                # it through so sub-diagnostics keep correct positions.
+                sub_pos = (
+                    interp_positions[interp_idx]
+                    if interp_idx < len(interp_positions)
+                    else pos
+                )
+                interp_idx += 1
+                expr = self._parse_interpolation(expr_text, sub_pos)
                 parts.append(expr)
                 i = j + 1
                 continue
@@ -136,15 +153,21 @@ class Parser(
         """Parses ``expr_text`` (the content between ``${`` and ``}``)
         as a Capa expression.
 
-        Creates a local Lexer and Parser for the sub-string. On error,
-        propagates as a ParserError with the original literal's
-        position (fine-grained reporting inside the interpolation
-        would be possible but requires offset arithmetic, a future
-        improvement).
+        Creates a local Lexer and Parser for the sub-string. The
+        sub-Lexer is started at ``pos`` (the position of the first
+        character of ``expr_text`` in the outer source), so every
+        token, AST node, and diagnostic produced from inside the
+        interpolation reports a position valid in the outer source.
         """
         from ..lexer import Lexer
         try:
-            sub_tokens = Lexer(expr_text, filename=self.filename).lex()
+            sub_tokens = Lexer(
+                expr_text,
+                filename=self.filename,
+                start_line=pos.line,
+                start_col=pos.col,
+                start_offset=pos.offset,
+            ).lex()
             sub_parser = Parser(
                 sub_tokens, source=expr_text, filename=self.filename,
             )
