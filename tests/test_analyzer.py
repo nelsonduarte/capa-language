@@ -388,7 +388,7 @@ class TestVariants(unittest.TestCase):
             "    Circulo(Float)\n"
             "    Quadrado(Float)\n"
             "fun area(f: Forma) -> Float\n"
-            "    match f\n"
+            "    return match f\n"
             "        Circulo(r) -> r * r\n"
             "        Quadrado(l) -> l * l\n"
         )
@@ -397,7 +397,7 @@ class TestVariants(unittest.TestCase):
     def test_match_with_guard(self):
         r = check(
             "fun f(n: Int) -> String\n"
-            "    match n\n"
+            "    return match n\n"
             "        x if x > 0 -> \"positivo\"\n"
             "        _ -> \"outro\"\n"
         )
@@ -3491,6 +3491,89 @@ class TestQuestionMarkOnNonResultOption(unittest.TestCase):
             "fun first_plus_one(xs: List<Int>) -> Option<Int>\n"
             "    let x = xs.first()?\n"
             "    return Some(x + 1)\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+
+class TestReturnOnAllPaths(unittest.TestCase):
+    """A function that declares a non-Unit return type must
+    ``return`` on every code path. Before this check landed, a
+    function like ``fun greet(name: String) -> String\\n    \"hi\"``
+    compiled silently and returned None at runtime, breaking
+    downstream callers that trusted the signature."""
+
+    def test_falls_through_with_expression_statement_is_rejected(self):
+        errs = errors_of(
+            "fun greet(name: String) -> String\n"
+            "    \"hello\"\n"
+        )
+        self.assertTrue(
+            any("not every path ends in `return`" in e for e in errs),
+            errs,
+        )
+
+    def test_trailing_match_without_return_is_rejected(self):
+        # The intent was almost certainly ``return match c``; the
+        # bare ``match c`` is an ExprStmt whose value is discarded.
+        errs = errors_of(
+            "type Cor =\n"
+            "    Vermelho\n"
+            "    Azul\n"
+            "fun letra(c: Cor) -> String\n"
+            "    match c\n"
+            "        Vermelho -> \"R\"\n"
+            "        Azul -> \"B\"\n"
+        )
+        self.assertTrue(
+            any("not every path ends in `return`" in e for e in errs),
+            errs,
+        )
+
+    def test_unit_return_does_not_require_return(self):
+        # A function returning Unit can fall through; the check
+        # only fires for non-Unit return types.
+        r = check(
+            "fun shout(stdio: Stdio, s: String)\n"
+            "    stdio.println(s)\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+    def test_if_else_both_returning_is_accepted(self):
+        # An if/else where both branches return is fine: flow
+        # cannot fall through. The check recurses into IfStmt.
+        r = check(
+            "fun sign(n: Int) -> String\n"
+            "    if n >= 0\n"
+            "        return \"non-negative\"\n"
+            "    else\n"
+            "        return \"negative\"\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+    def test_if_without_else_is_rejected(self):
+        # Even if the if branch returns, the missing else means
+        # flow falls through when the condition is false.
+        errs = errors_of(
+            "fun maybe(n: Int) -> String\n"
+            "    if n > 0\n"
+            "        return \"pos\"\n"
+        )
+        self.assertTrue(
+            any("not every path ends in `return`" in e for e in errs),
+            errs,
+        )
+
+    def test_return_match_is_accepted(self):
+        # The idiomatic shape: ``return match scrut { ... }``.
+        # The match's value flows through the explicit return.
+        r = check(
+            "type Cor =\n"
+            "    Vermelho\n"
+            "    Azul\n"
+            "fun letra(c: Cor) -> String\n"
+            "    return match c\n"
+            "        Vermelho -> \"R\"\n"
+            "        Azul -> \"B\"\n"
         )
         self.assertTrue(r.ok, r.errors)
 

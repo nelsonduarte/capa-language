@@ -18,7 +18,7 @@ fun squared_distance(a: Point, b: Point) -> Float
     return dx * dx + dy * dy
 
 fun classify(c: Color) -> String
-    match c
+    return match c
         Red -> "warm"
         Blue -> "cold"
         Green -> "neutral"
