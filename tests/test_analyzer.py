@@ -3544,6 +3544,70 @@ class TestCallNonCallable(unittest.TestCase):
         self.assertTrue(r.ok, r.errors)
 
 
+class TestUnreachableMatchArm(unittest.TestCase):
+    """An arm written after a guardless catch-all (``_`` or a bare
+    binding ident) is unreachable by construction: the catch-all
+    has already matched. The analyser flags this so it cannot be
+    silently introduced by reordering arms or by gluing two
+    fragments together."""
+
+    def test_arm_after_wildcard_is_unreachable(self):
+        errs = errors_of(
+            "type Cor =\n"
+            "    Vermelho\n"
+            "    Verde\n"
+            "fun f(c: Cor) -> Int\n"
+            "    return match c\n"
+            "        Vermelho -> 1\n"
+            "        _ -> 2\n"
+            "        Verde -> 3\n"
+        )
+        self.assertTrue(
+            any("unreachable match arm" in e for e in errs),
+            errs,
+        )
+
+    def test_arm_after_bare_binding_is_unreachable(self):
+        # A bare identifier in a pattern is a fresh binding that
+        # matches anything, same as ``_``. ``x -> ...`` therefore
+        # makes the following arm unreachable.
+        errs = errors_of(
+            "fun f(n: Int) -> Int\n"
+            "    return match n\n"
+            "        x -> x + 1\n"
+            "        0 -> 0\n"
+        )
+        self.assertTrue(
+            any("unreachable match arm" in e for e in errs),
+            errs,
+        )
+
+    def test_catchall_with_guard_does_not_close_match(self):
+        # ``x if x > 0`` is a guarded catch-all; it does not
+        # absorb every value, so a later arm is reachable.
+        r = check(
+            "fun f(n: Int) -> String\n"
+            "    return match n\n"
+            "        x if x > 0 -> \"pos\"\n"
+            "        _ -> \"non-pos\"\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+    def test_trailing_catchall_is_fine(self):
+        # The expected idiomatic shape: catch-all at the end.
+        r = check(
+            "type Cor =\n"
+            "    Vermelho\n"
+            "    Verde\n"
+            "    Azul\n"
+            "fun f(c: Cor) -> Int\n"
+            "    return match c\n"
+            "        Vermelho -> 1\n"
+            "        _ -> 0\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+
 class TestSelfFieldHint(unittest.TestCase):
     """Inside an ``impl`` method, a bare identifier that matches a
     field of ``self``'s struct type is almost certainly a

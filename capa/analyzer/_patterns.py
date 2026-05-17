@@ -51,7 +51,28 @@ class _PatternsMixin:
           2^64 values and structs do not have alternatives.
         - Arms with a guard do NOT count toward coverage (the
           guard may fail).
+        - Any arm following a guardless catch-all is unreachable
+          and reported as an error before exhaustiveness runs.
         """
+        # Unreachable-arm check: once a guardless catch-all is seen,
+        # nothing after it can match. Catches the common typo of
+        # writing the catch-all in the middle of the list and then
+        # adding more variant arms after it.
+        seen_catchall = False
+        for arm in s.arms:
+            if seen_catchall:
+                self._err(
+                    "unreachable match arm: a previous arm is a "
+                    "catch-all (`_` or a bare binding) without a "
+                    "guard and captures every value already",
+                    arm.pattern.pos,
+                )
+                # One report per orphan arm is enough; keep
+                # walking so every dead arm is named in one pass.
+                continue
+            if arm.guard is None and self._pattern_is_catchall(arm.pattern):
+                seen_catchall = True
+
         # Catch-all arm without guard? Exhaustive by definition.
         for arm in s.arms:
             if arm.guard is not None:
