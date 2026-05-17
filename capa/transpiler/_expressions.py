@@ -154,9 +154,20 @@ class _ExpressionsMixin:
         is the match's value. For a block body, we assign None to the
         temporary - the caller is responsible for using ``return``
         inside the block if it wants to exit with a different value.
+
+        Fast path: when every arm is a payload-less variant check
+        (e.g. ``BrowserChrome``), a wildcard, or an or-pattern of
+        those, the match lowers to an ``if isinstance(...)`` chain
+        instead of Python's ``match`` / ``case``. The semantics are
+        identical (each ``case Variant():`` is isinstance-checked
+        anyway) and the overhead is materially lower on hot paths
+        like enum dispatch inside an inner loop.
         """
         tmp = f"_m{self._tmp_counter}"
         self._tmp_counter += 1
+        if self._is_simple_variant_dispatch(m):
+            self._emit_match_expr_isinstance(m, tmp)
+            return tmp
         scrut = self._emit_expr(m.scrutinee)
         self.em.write(f"match {scrut}:")
         self.em.indent()
@@ -180,6 +191,101 @@ class _ExpressionsMixin:
             self.em.dedent()
         self.em.dedent()
         return tmp
+
+    def _is_simple_variant_dispatch(self, m: A.MatchExpr) -> bool:
+        """Returns True iff every arm in the match qualifies for the
+        ``isinstance`` fast path: a payload-less variant pattern, a
+        wildcard, or an or-pattern of those, with no guard. Literal
+        patterns and patterns with destructured payloads stay on the
+        general ``match`` / ``case`` path.
+        """
+        for arm in m.arms:
+            if arm.guard is not None:
+                return False
+            if not self._is_simple_dispatch_pattern(arm.pattern):
+                return False
+        return True
+
+    def _is_simple_dispatch_pattern(self, p) -> bool:
+        if isinstance(p, A.WildcardPat):
+            return True
+        if isinstance(p, A.VariantPat):
+            return p.payload is None
+        if isinstance(p, A.OrPat):
+            return all(self._is_simple_dispatch_pattern(a) for a in p.alternatives)
+        return False
+
+    def _emit_match_expr_isinstance(self, m: A.MatchExpr, tmp: str) -> None:
+        """Fast path of ``_emit_match_expr``: lowers a payload-less
+        variant dispatch to ``if isinstance(...)`` / ``elif`` /
+        ``else``. The scrutinee is bound to a temporary so it is
+        evaluated exactly once even when it has a non-trivial
+        expression shape (e.g. ``parsed.browser``).
+        """
+        scrut_code = self._emit_expr(m.scrutinee)
+        scrut_tmp = f"_ms{self._tmp_counter}"
+        self._tmp_counter += 1
+        self.em.write(f"{scrut_tmp} = {scrut_code}")
+        first = True
+        emitted_else = False
+        for arm in m.arms:
+            keyword = "if" if first else "elif"
+            first = False
+            classes = self._variant_classes_in_pattern(arm.pattern)
+            if classes is None:
+                # Wildcard arm: emit as ``else:`` and stop (any
+                # subsequent arms are unreachable; the analyser
+                # already validates exhaustiveness).
+                self.em.write("else:")
+                emitted_else = True
+            else:
+                check = self._isinstance_check(scrut_tmp, classes)
+                self.em.write(f"{keyword} {check}:")
+            self.em.indent()
+            if isinstance(arm.body, A.Block):
+                self._emit_block_body(arm.body)
+                self.em.write(f"{tmp} = None")
+            else:
+                body_code = self._emit_expr(arm.body)
+                self.em.write(f"{tmp} = {body_code}")
+            self.em.dedent()
+            if emitted_else:
+                break
+
+    def _variant_classes_in_pattern(self, p):
+        """Returns a list of Python class names (as strings) the
+        pattern checks for via isinstance, or ``None`` for a wildcard.
+        Only called on patterns that passed
+        ``_is_simple_dispatch_pattern``.
+        """
+        if isinstance(p, A.WildcardPat):
+            return None
+        if isinstance(p, A.VariantPat):
+            return [self._variant_class_name(p.name)]
+        if isinstance(p, A.OrPat):
+            classes: list[str] = []
+            for alt in p.alternatives:
+                inner = self._variant_classes_in_pattern(alt)
+                if inner is None:
+                    return None
+                classes.extend(inner)
+            return classes
+        raise AssertionError(
+            f"unexpected pattern in isinstance lowering: {type(p).__name__}"
+        )
+
+    def _variant_class_name(self, name: str) -> str:
+        # Mirrors the special case in ``_emit_pattern_match`` for the
+        # ``None`` Option singleton, whose runtime class is
+        # ``_NoneType``.
+        if name == "None":
+            return "_NoneType"
+        return name
+
+    def _isinstance_check(self, scrut: str, classes: list[str]) -> str:
+        if len(classes) == 1:
+            return f"isinstance({scrut}, {classes[0]})"
+        return f"isinstance({scrut}, ({', '.join(classes)}))"
 
     def _emit_ident(self, name: str) -> str:
         from . import _safe_ident

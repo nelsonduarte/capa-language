@@ -454,6 +454,155 @@ class TestQuestionMarkHoisting(unittest.TestCase):
         self.assertIn("__capa_try_1 = ", code)
 
 
+class TestBuiltinSpecialisations(unittest.TestCase):
+    """The transpiler uses the analyser's type information to skip the
+    runtime-wrapper dispatch on a handful of well-known built-in
+    methods (List.{length, push, contains, is_empty, get}) and to
+    lower payload-less variant ``match`` to ``if isinstance(...)``
+    chains. These tests pin the emitted Python so an accidental
+    regression in the type-aware dispatcher (or in the analyser's
+    type assignments) is caught at the transpile boundary instead of
+    waiting for a benchmark regression."""
+
+    def _transpile(self, src: str) -> str:
+        from capa.lexer import Lexer
+        from capa.parser import Parser
+        from capa.analyzer import analyze
+        from capa.transpiler import transpile
+        tokens = Lexer(src, filename="<probe>").lex()
+        module = Parser(
+            tokens, source=src, filename="<probe>",
+        ).parse_module()
+        result = analyze(module, source=src, filename="<probe>")
+        self.assertTrue(result.ok, result.errors)
+        return transpile(module, types=result.types)
+
+    def test_list_push_lowers_to_native_append(self):
+        code = self._transpile(
+            "fun main(stdio: Stdio)\n"
+            "    let xs: List<Int> = []\n"
+            "    xs.push(1)\n"
+            "    xs.push(2)\n"
+            "    stdio.println(\"ok\")\n"
+        )
+        # Native list.append; no CapaList.push wrapper call.
+        self.assertIn("xs.append(1)", code)
+        self.assertIn("xs.append(2)", code)
+        self.assertNotIn("xs.push(", code)
+
+    def test_list_length_lowers_to_len(self):
+        code = self._transpile(
+            "fun main(stdio: Stdio)\n"
+            "    let xs: List<Int> = [1, 2, 3]\n"
+            "    stdio.println(\"${xs.length()}\")\n"
+        )
+        # Native len(...); no CapaList.length method call.
+        self.assertIn("len(xs)", code)
+        self.assertNotIn("xs.length()", code)
+
+    def test_list_contains_lowers_to_in(self):
+        code = self._transpile(
+            "fun main(stdio: Stdio)\n"
+            "    let xs: List<Int> = [1, 2, 3]\n"
+            "    if xs.contains(2)\n"
+            "        stdio.println(\"yes\")\n"
+        )
+        self.assertIn("(2 in xs)", code)
+        self.assertNotIn("xs.contains(", code)
+
+    def test_list_is_empty_lowers_to_len_zero(self):
+        code = self._transpile(
+            "fun main(stdio: Stdio)\n"
+            "    let xs: List<Int> = []\n"
+            "    if xs.is_empty()\n"
+            "        stdio.println(\"empty\")\n"
+        )
+        self.assertIn("(len(xs) == 0)", code)
+        self.assertNotIn("xs.is_empty()", code)
+
+    def test_list_get_lowers_to_lambda_inline(self):
+        # `get` returns Option<T>; the inline lambda evaluates the
+        # receiver and the index exactly once and mirrors the runtime
+        # bounds-check semantics.
+        code = self._transpile(
+            "fun head(xs: List<Int>) -> Option<Int>\n"
+            "    return xs.get(0)\n"
+        )
+        self.assertIn(
+            "(lambda _xs, _i: Some(_xs[_i]) if 0 <= _i < len(_xs) else None_)(xs, 0)",
+            code,
+        )
+        self.assertNotIn("xs.get(0)", code)
+
+    def test_list_map_stays_as_wrapper_call(self):
+        # Higher-order methods stay as direct .map/.filter/.fold calls
+        # on the CapaList wrapper because their semantics live in the
+        # runtime helper (chained CapaList returns).
+        code = self._transpile(
+            "fun double_all(xs: List<Int>) -> List<Int>\n"
+            "    return xs.map(fun (x: Int) -> Int => x * 2)\n"
+        )
+        # Direct method call survives; we did not strip the wrapper.
+        self.assertIn(".map(", code)
+
+    def test_match_payloadless_variant_lowers_to_isinstance(self):
+        code = self._transpile(
+            "type Cor =\n"
+            "    Vermelho\n"
+            "    Verde\n"
+            "    Azul\n"
+            "fun letra(c: Cor) -> String\n"
+            "    return match c\n"
+            "        Vermelho -> \"R\"\n"
+            "        Verde -> \"G\"\n"
+            "        _ -> \"B\"\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(letra(Verde))\n"
+        )
+        # The fast path: ``if isinstance / elif / else`` rather than
+        # Python ``match`` / ``case``.
+        self.assertIn("isinstance(", code)
+        self.assertNotIn("match c", code)
+        self.assertNotIn("case Vermelho()", code)
+
+    def test_match_or_pattern_lowers_to_tuple_isinstance(self):
+        code = self._transpile(
+            "type Cor =\n"
+            "    Vermelho\n"
+            "    Verde\n"
+            "    Azul\n"
+            "fun is_warm(c: Cor) -> Bool\n"
+            "    return match c\n"
+            "        Vermelho | Verde -> true\n"
+            "        _ -> false\n"
+        )
+        # Or-pattern collapses to ``isinstance(x, (A, B))``.
+        self.assertIn("isinstance(", code)
+        self.assertIn("(Vermelho, Verde)", code)
+
+    def test_match_with_payload_stays_on_match_case(self):
+        # As soon as one arm destructures a payload, the dispatch
+        # falls back to Python ``match`` / ``case``.
+        code = self._transpile(
+            "fun unwrap_or(o: Option<Int>, d: Int) -> Int\n"
+            "    return match o\n"
+            "        Some(x) -> x\n"
+            "        None -> d\n"
+        )
+        self.assertIn("match ", code)
+        self.assertIn("case Some(x)", code)
+
+    def test_match_with_guard_stays_on_match_case(self):
+        code = self._transpile(
+            "fun classify(n: Int) -> String\n"
+            "    return match n\n"
+            "        x if x > 0 -> \"pos\"\n"
+            "        _ -> \"non-pos\"\n"
+        )
+        self.assertIn("match ", code)
+        self.assertIn("if (x > 0):", code)
+
+
 class TestTranspileImpl(unittest.TestCase):
     def test_method_call(self):
         rc, out, err = run_capa(

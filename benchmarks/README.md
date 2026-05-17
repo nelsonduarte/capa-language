@@ -58,9 +58,9 @@ individual runs vary by 5-10% but the **ratios are stable**.
 
 | Workload | Description | Capa (ms) | Python (ms) | Overhead |
 |---|---|---:|---:|---:|
-| `fib(25)` | pure compute (recursive function call) | ~7.3 | ~7.4 | **1.00x** |
-| `scope_analyser (1000)` | list-heavy (build + transform List<Struct>) | ~0.67 | ~0.57 | **1.20x** |
-| `ua_parse (1000)` | string-heavy (substring match + struct ctor) | ~0.60 | ~0.42 | **1.45x** |
+| `fib(25)` | pure compute (recursive function call) | ~7.0 | ~7.0 | **1.00x** |
+| `scope_analyser (1000)` | list-heavy (build + transform List<Struct>) | ~0.60 | ~0.54 | **1.12x** |
+| `ua_parse (1000)` | string-heavy (substring match + struct ctor) | ~0.54 | ~0.37 | **1.45x** |
 
 ### What the numbers say
 
@@ -74,25 +74,32 @@ individual runs vary by 5-10% but the **ratios are stable**.
   to do at function-call boundaries that Python wasn't already
   doing.
 
-- **List operations cost ~20%.** `scope_analyser` builds and
-  walks a `List<Struct>` of 1000 elements. Capa's `CapaList`
-  wraps a Python list and exposes `.push`, `.length`,
-  `.first`, `.last`, `.get` as method calls; the Python
-  baseline uses native `.append` and `len()`. The 1.2x ratio
-  is the cost of one extra method-lookup per list operation.
-  Closing the gap is mechanical (special-case `CapaList` in the
-  transpiler for code paths that statically know the type)
-  but has not been done because 1.2x has been comfortably
-  inside everyone's budget so far.
+- **List operations cost ~12%.** `scope_analyser` builds and
+  walks a `List<Struct>` of 1000 elements. The transpiler now
+  specialises the simple `CapaList` methods (`length`, `push`,
+  `contains`, `is_empty`, `get`) to native Python equivalents
+  (`len`, `.append`, `in`, `len == 0`, inline bounds-checked
+  index) on receivers it statically knows to be `List<T>`. The
+  remaining ~12% comes from the dataclass construction inside
+  the loop. The higher-order methods (`map`, `filter`, `fold`)
+  still go through the `CapaList` wrapper because their
+  semantics (Option-wrapped returns, chained `CapaList`
+  results) live in `capa/runtime/_list.py`.
 
 - **String + struct construction costs ~45%.** `ua_parse`
   combines substring matching with `match` over an enum
-  variant and dataclass construction. The 1.45x ratio comes
-  mostly from the dataclass `__init__` path (Capa's user
-  structs are emitted as `@dataclass`, hand Python here uses
-  the same) and the `match`-over-enum lowering. Substring
-  matching itself goes through Python's `in` operator on both
-  sides; that part is at parity.
+  variant and dataclass construction. The variant `match` now
+  lowers to an `if isinstance(...)` chain on the fast path
+  (every arm is a payload-less variant or wildcard, no guard),
+  but the bulk of the 1.45x is the per-call object
+  instantiation: each `detect_browser` returns a fresh
+  `BrowserChrome()` instance and each `parse_user_agent`
+  builds a `UserAgent` dataclass with two object fields. The
+  hand-Python baseline returns string constants instead of
+  class instances, which is the design choice that closes the
+  gap. Reducing it further in Capa would require representing
+  payload-less variants as ints rather than classes (a larger
+  refactor with isinstance-API implications).
 
 The overall picture: **single-digit overhead percentages on
 the pure compute path, low-double-digit on list-heavy paths,

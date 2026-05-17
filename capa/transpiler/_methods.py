@@ -30,13 +30,15 @@ class _MethodsMixin:
         recv = self._emit_expr(e.receiver)
         args_code = [self._emit_expr(a) for a in e.args]
 
-        # Type-aware dispatch. Built-in method maps (String, Map, Set)
-        # see only positional arguments because the analyzer rejects
-        # named arguments on builtins.
+        # Type-aware dispatch. Built-in method maps (String, List,
+        # Map, Set, Range) see only positional arguments because the
+        # analyzer rejects named arguments on builtins.
         recv_ty = self.types.get(id(e.receiver))
         if isinstance(recv_ty, TyName):
             if recv_ty.name == "String":
                 return self._emit_string_method(e.method, recv, args_code)
+            if recv_ty.name == "List":
+                return self._emit_list_method(e.method, recv, args_code)
             if recv_ty.name == "Map":
                 return self._emit_map_method(e.method, recv, args_code)
             if recv_ty.name == "Set":
@@ -91,6 +93,45 @@ class _MethodsMixin:
             return (
                 f"(lambda _i: Some(_i) if _i >= 0 else None_)"
                 f"({recv}.find({args[0]}))"
+            )
+        return f"{recv}.{_safe_ident(method)}({', '.join(args)})"
+
+    def _emit_list_method(
+        self, method: str, recv: str, args: list[str],
+    ) -> str:
+        """Maps a Capa ``List<T>`` method to a Python construct.
+
+        ``List<T>`` is represented at runtime by ``CapaList``, a
+        subclass of Python ``list``. The simple query / mutation
+        methods (``length``, ``push``, ``contains``, ``is_empty``,
+        ``get``) lower to the equivalent native Python expressions
+        and skip the wrapper dispatch entirely. The higher-order
+        methods (``map``, ``filter``, ``fold``, ``first``, ``last``,
+        ``find``, ``find_index``) stay as direct calls on the
+        wrapper: their semantics (Option-wrapped results, chained
+        ``CapaList`` returns) live in ``capa/runtime/_list.py`` and
+        are not worth duplicating inline.
+        """
+        from . import _safe_ident
+        if method == "length":
+            return f"len({recv})"
+        if method == "push":
+            # CapaList inherits from list, so append works directly.
+            return f"{recv}.append({args[0]})"
+        if method == "contains":
+            return f"({args[0]} in {recv})"
+        if method == "is_empty":
+            return f"(len({recv}) == 0)"
+        if method == "get":
+            # Option<T>: Some(recv[i]) when 0 <= i < len(recv), else
+            # None_. Mirrors the runtime ``CapaList.get`` semantics
+            # without the method-call overhead. Uses a lambda to
+            # evaluate ``recv`` and ``args[0]`` exactly once even
+            # when they are non-trivial expressions.
+            return (
+                f"(lambda _xs, _i: "
+                f"Some(_xs[_i]) if 0 <= _i < len(_xs) else None_)"
+                f"({recv}, {args[0]})"
             )
         return f"{recv}.{_safe_ident(method)}({', '.join(args)})"
 
