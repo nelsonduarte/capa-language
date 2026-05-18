@@ -144,6 +144,15 @@ class Symbol:
     # error messages. Empty when the function comes from a builtin and
     # named-arg dispatch is not supported.
     param_names: list[str] = field(default_factory=list)
+    # For methods registered from an `impl` block: True when the
+    # source-level declaration started with a `self` parameter.
+    # Distinct from `param_names` (which strips `self`) and from
+    # `ty.params` (also self-stripped, by design for the rest of
+    # the dispatcher). Built-in methods (Stdio.println etc.) and
+    # free functions leave this as the default False; the dispatch
+    # check that consumes it gates first on `pos != BUILTIN_POS`,
+    # so the default does not cause false positives for built-ins.
+    has_self: bool = False
 
 
 @dataclass

@@ -3544,6 +3544,91 @@ class TestCallNonCallable(unittest.TestCase):
         self.assertTrue(r.ok, r.errors)
 
 
+class TestMethodWithoutSelfNotCallable(unittest.TestCase):
+    """A user-defined impl method that does not take ``self`` as its
+    first parameter cannot be called via ``receiver.method()``: the
+    runtime would pass the receiver as the first positional argument
+    and Python raises ``TypeError: ... takes 0 positional arguments
+    but 1 was given``. The analyser rejects the call site at compile
+    time.
+
+    Built-in capability methods (``stdio.println``) and built-in
+    type methods (``json.as_object``, ``xs.length``) are not subject
+    to the check: they are registered at the BUILTIN_POS sentinel
+    and dispatch through a different runtime path."""
+
+    def test_call_user_method_without_self_is_rejected(self):
+        errs = errors_of(
+            "type Counter { v: Int }\n"
+            "impl Counter\n"
+            "    fun get() -> Int\n"
+            "        return 42\n"
+            "fun main(stdio: Stdio)\n"
+            "    let c = Counter { v: 5 }\n"
+            "    stdio.println(\"${c.get()}\")\n"
+        )
+        self.assertTrue(
+            any("Counter.'get'" in e and "no 'self'" in e for e in errs),
+            errs,
+        )
+
+    def test_static_method_declaration_still_accepted(self):
+        # A "static" method (no self) is allowed at the impl level;
+        # only the dot call is rejected. The user may keep the
+        # method as a constructor-style helper even though there is
+        # no public call syntax for it yet.
+        r = check(
+            "type Ponto { x: Float, y: Float }\n"
+            "impl Ponto\n"
+            "    fun zero() -> Ponto\n"
+            "        return Ponto { x: 0.0, y: 0.0 }\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+    def test_user_method_with_self_still_accepted(self):
+        # Regression guard against a prior failed attempt where the
+        # check fired on every user impl method because ``param_names``
+        # strips ``self``. With ``has_self`` stored on the symbol the
+        # legitimate case stays accepted.
+        r = check(
+            "type Counter { v: Int }\n"
+            "impl Counter\n"
+            "    fun valor(self) -> Int\n"
+            "        return self.v\n"
+            "fun main(stdio: Stdio)\n"
+            "    let c = Counter { v: 7 }\n"
+            "    stdio.println(\"${c.valor()}\")\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+    def test_builtin_capability_method_still_callable(self):
+        # Regression guard against a prior failed attempt that broke
+        # every built-in capability method. ``stdio.println`` lives
+        # in capa/builtins.py at BUILTIN_POS; the check is gated on
+        # ``type_sym.pos != BUILTIN_POS`` and so leaves it alone.
+        r = check(
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"ok\")\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+    def test_builtin_jsonvalue_method_still_callable(self):
+        # Regression guard against a prior failed attempt that broke
+        # JsonValue methods because JsonValue is TYPE_SUM but its
+        # methods are built-in. JsonValue.as_object lives at
+        # BUILTIN_POS so the check leaves it alone.
+        r = check(
+            "fun main(stdio: Stdio)\n"
+            "    match parse_json(\"{}\")\n"
+            "        Ok(j) ->\n"
+            "            match j.as_object()\n"
+            "                Some(_) -> stdio.println(\"object\")\n"
+            "                None    -> stdio.println(\"other\")\n"
+            "        Err(_) -> stdio.println(\"parse error\")\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+
 class TestUnreachableMatchArm(unittest.TestCase):
     """An arm written after a guardless catch-all (``_`` or a bare
     binding ident) is unreachable by construction: the catch-all

@@ -252,6 +252,8 @@ class _DeclarationsMixin:
                 param_names=[
                     p.name for p in method.params if p.name != "self"
                 ],
+                has_self=bool(method.params)
+                    and method.params[0].name == "self",
             )
             target.methods[method.name] = m_sym
 

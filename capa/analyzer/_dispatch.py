@@ -354,6 +354,32 @@ class _DispatchMixin:
             return TyUnknown
         method_fun_ty = method_sym.ty
 
+        # Calling a user-defined impl method that lacks the `self`
+        # parameter via ``receiver.method()`` is a real error: the
+        # runtime would pass ``receiver`` as the first positional
+        # argument and Python raises ``TypeError: name() takes 0
+        # positional arguments but 1 was given``. Capa allows
+        # static-like methods at the impl level (``fun zero() ->
+        # Ponto`` as a constructor) but has no public call syntax
+        # for them; reject the dot call here.
+        #
+        # The check is gated on ``type_sym.pos != BUILTIN_POS`` so
+        # it does not fire on built-in capability methods
+        # (``stdio.println``) or built-in type methods
+        # (``json.as_object``, ``xs.length``): those methods are
+        # registered in ``capa/builtins.py`` without an explicit
+        # ``self`` and dispatch through a different runtime path
+        # where the receiver is bound implicitly.
+        from ..builtins import BUILTIN_POS as _BPOS
+        if type_sym.pos != _BPOS and not method_sym.has_self:
+            self._err(
+                f"method {recv_ty.name}.{e.method!r} has no 'self' "
+                f"parameter; it cannot be called via receiver."
+                f"method() (Capa has no static-method call syntax)",
+                e.pos,
+            )
+            return TyUnknown
+
         # Initial mapping: the type's type_params -> receiver
         # type args. E.g. for ``Caixa<Int>`` the receiver has
         # ``args=(Int,)`` and the type has ``type_params=["T"]``;
