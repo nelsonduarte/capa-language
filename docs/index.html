@@ -52,7 +52,7 @@
         <a href="start.html" class="btn">Get started</a>
         <a href="https://github.com/nelsonduarte/capa-language" class="btn">GitHub</a>
     </div>
-    <p class="status">v0.8.3-beta · MIT · 962 tests · hand-written compiler in Python</p>
+    <p class="status">v0.8.4-beta · MIT · 989 tests · hand-written compiler in Python</p>
 </section>
 
 <!-- =====================================================
@@ -60,25 +60,28 @@
 ===================================================== -->
 <section class="release-banner-wrap">
     <div class="release-banner">
-        <span class="release-tag">v0.8.3-beta</span>
+        <span class="release-tag">v0.8.4-beta</span>
         <span class="release-body">
-            <strong>Released 2026-05-17.</strong>
-            A polish release on top of v0.8.2-beta. New
-            <strong>Python &rarr; Capa migration walkthrough</strong>
-            (a documented gradual-hardening workflow plus paired
-            example at three stages, with the manifest tracking the
-            <code>Unsafe</code>-blob shrinking into typed capabilities
-            function by function). The <strong>LSP</strong> now keeps
-            diagnostics for typos inside <code>${...}</code> string
-            interpolations pointing at the actual identifier rather
-            than the string's opening quote. The transpiler does
-            <strong>type-aware specialisation</strong> for the simple
-            <code>List&lt;T&gt;</code> methods and payload-less variant
-            <code>match</code>, closing the list-heavy benchmark from
-            1.20x to 1.12x against hand-Python. GitHub Discussions
-            opened as the conversation space for the language.
+            <strong>Released 2026-05-18.</strong>
+            A <strong>diagnostic-correctness pass</strong>: five
+            false-negatives the analyser used to accept silently
+            are now compile-time errors. <code>?</code> on a value
+            that is not <code>Result</code> or <code>Option</code>;
+            a function declared <code>-&gt; T</code> with a code path
+            that does not <code>return</code>; a call expression whose
+            callee resolves to a non-function (e.g.
+            <code>let x = 5; x(2)</code>); a <code>match</code> arm
+            written after a guardless catch-all; calling an
+            <code>impl</code> method that was declared without a
+            <code>self</code> parameter via <code>receiver.method()</code>.
+            Each used to produce a confusing runtime error; each is
+            now caught at the source location with the actual type.
+            Plus a richer duplicate-binding hint that names the
+            previous binding's location and reminds you of the
+            <code>var x</code> + bare-assignment idiom, and a
+            <code>self.field</code> hint inside impl methods.
         </span>
-        <a class="release-link" href="https://github.com/nelsonduarte/capa-language/releases/tag/v0.8.3-beta">Read the notes &rarr;</a>
+        <a class="release-link" href="https://github.com/nelsonduarte/capa-language/releases/tag/v0.8.4-beta">Read the notes &rarr;</a>
     </div>
 </section>
 
@@ -369,7 +372,7 @@
             <summary>Is Capa production-ready?</summary>
             <p>
                 Not yet, but the gap is hardening rather than
-                completeness. v0.8.3-beta means the compiler runs,
+                completeness. v0.8.4-beta means the compiler runs,
                 the discipline is implemented end-to-end, the
                 module system is feature-complete (qualified
                 access, transitive imports, <code>pub</code>
@@ -601,7 +604,7 @@
             </ul>
         </div>
     </div>
-    <p class="colophon">Built by Nelson Duarte · v0.8.3-beta · MIT-licensed</p>
+    <p class="colophon">Built by Nelson Duarte · v0.8.4-beta · MIT-licensed</p>
 </footer>
 
 </body>

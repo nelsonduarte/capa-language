@@ -9,6 +9,114 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+## [0.8.4-beta], 2026-05-18
+
+A **diagnostic-correctness pass** on the analyser. Five
+silent false-negatives that used to compile cleanly and then
+explode at runtime with a confusing Python ``TypeError`` /
+``RuntimeError`` are now caught at compile time, each at the
+source location where the mistake was made and with the
+actual type the user wrote. Plus two diagnostic-quality
+improvements that turn generic typo guesses into specific
+hints.
+
+### Fixed
+
+- **``?`` on a value that is not ``Result<T, E>`` or
+  ``Option<T>``** is now rejected at type-check time. Before:
+  ``return x?`` where ``x: Int`` compiled cleanly and raised
+  ``RuntimeError: ? applied to a value that is not Result or
+  Option`` at runtime, with the position pointing at the runtime
+  helper rather than the source. Now:
+
+      file.capa:2:12: error: `?` is only valid on Result<T, E>
+      or Option<T>; this expression has type Int
+
+  ``TyVar`` and ``TyUnknown`` stay permissive so generic code
+  that unifies to Result / Option still type-checks.
+
+- **Non-Unit functions must ``return`` on every code path.**
+  A function declared ``-> T`` (for any ``T`` other than
+  ``Unit``) whose body could fall through without producing a
+  value used to compile silently and return ``None`` at
+  runtime. The most common shape was
+  ``fun classify(c: Color) -> String\n    match c { ... }``
+  where the trailing ``match`` is an ExprStmt whose value is
+  discarded; the function then fell through. Now rejected with
+  a precise error; the fix is always ``return X`` or
+  ``return match ...``. ``examples/basics.capa`` had this bug
+  in ``classify``; updated in the same commit. Two pre-existing
+  tests that exercised the bug-permissive analyser were
+  updated to test the idiomatic ``return match ...`` shape.
+
+- **Calling a non-function silently passed.** ``let x = 5; let
+  y = x(2)`` (or any call expression whose callee resolves to
+  an Int local, a String constant, a struct value, etc.) used
+  to type-check cleanly and explode at runtime as ``TypeError:
+  'int' object is not callable``. The analyser now reports
+  ``'x' is not callable; it has type Int`` at the call site.
+  Function-typed locals (lambdas) keep working: when the
+  bound symbol's type is a ``TyFun``, the call falls through
+  to the existing non-Ident-callee path that handled lambdas
+  before.
+
+- **Match arms after a guardless catch-all are now rejected.**
+  Once a ``match`` arm has a guardless catch-all pattern
+  (``_`` or a bare binding ident), every arm after it is
+  unreachable: the catch-all has already matched every
+  possible value. Previously the analyser accepted this
+  silently and the unreachable arms were just dead code in
+  the transpiled output. Guarded ``x if cond -> ...`` is not
+  a catch-all (the guard may fail), so later arms stay
+  reachable.
+
+- **``impl`` method without ``self`` cannot be called via
+  ``receiver.method()``.** Calling ``c.get()`` where
+  ``Counter.get`` is declared as ``fun get() -> Int`` (no self
+  parameter) used to pass the analyser silently and explode
+  at runtime as ``TypeError: _Counter_get() takes 0 positional
+  arguments but 1 was given``. The fix records ``has_self``
+  on the method's Symbol at registration (before the
+  ``param_names`` strip), and gates the new check on
+  ``type_sym.pos != BUILTIN_POS`` so built-in methods
+  (``stdio.println``, ``json.as_object``, ``xs.length``)
+  remain unaffected. Static-like impl methods (``fun zero()
+  -> Ponto`` as a constructor) are still accepted at the impl
+  boundary because the check only fires at the dot call site;
+  Capa simply has no public static-method call syntax yet.
+
+### Changed
+
+- **Duplicate-binding diagnostic** names the previous-binding
+  location and reminds the user of the ``var`` + bare-
+  assignment idiom. Before:
+
+      file.capa:3:9: error: duplicate binding 'x'
+
+  After:
+
+      file.capa:3:9: error: duplicate binding 'x' (previous
+      binding at line 2, col 9); use `var x` for a mutable
+      binding and `x = ...` to reassign, or rename if you
+      want a distinct value
+
+- **``self.field`` hint inside impl methods.** A bare
+  identifier in an ``impl`` method body that matches a field
+  of ``self``'s struct type is now flagged with the targeted
+  hint (`did you mean \`self.v\`?`) instead of the generic
+  Levenshtein typo guess. The single most common port-from-
+  Python error in user-defined types where Python's implicit-
+  self convention does not carry over.
+
+### Numbers
+
+- **989 tests** (was 962 in v0.8.3-beta), green on Ubuntu /
+  macOS / Windows &times; Python 3.10 / 3.12 / 3.14. The 27 new
+  tests are: 4 in TestQuestionMarkOnNonResultOption, 2 in
+  TestDuplicateBindingDiagnostic, 6 in TestReturnOnAllPaths, 3
+  in TestCallNonCallable, 3 in TestSelfFieldHint, 4 in
+  TestUnreachableMatchArm, 5 in TestMethodWithoutSelfNotCallable.
+
 ## [0.8.3-beta], 2026-05-17
 
 A polish release on top of v0.8.2-beta. No new tentpole
