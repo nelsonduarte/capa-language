@@ -54,11 +54,21 @@ class _PatternsMixin:
         - Any arm following a guardless catch-all is unreachable
           and reported as an error before exhaustiveness runs.
         """
-        # Unreachable-arm check: once a guardless catch-all is seen,
-        # nothing after it can match. Catches the common typo of
-        # writing the catch-all in the middle of the list and then
-        # adding more variant arms after it.
+        # Unreachable-arm check: walk arms in order, track what has
+        # already been covered by a guardless arm, and report each
+        # arm that cannot match. Three sources of unreachability:
+        #
+        #   - A previous arm is a guardless catch-all (`_` or a bare
+        #     ident pattern); it has matched every possible value.
+        #   - A previous arm already named the same payload-less
+        #     variant.
+        #   - A previous arm already named the same literal value.
+        #
+        # Guarded arms (``x if cond -> ...``) do not register coverage
+        # because the guard may fail and let later arms match.
         seen_catchall = False
+        seen_variants: set[str] = set()
+        seen_literals: set = set()
         for arm in s.arms:
             if seen_catchall:
                 self._err(
@@ -67,11 +77,60 @@ class _PatternsMixin:
                     "guard and captures every value already",
                     arm.pattern.pos,
                 )
-                # One report per orphan arm is enough; keep
-                # walking so every dead arm is named in one pass.
                 continue
+            if arm.guard is None:
+                # Report duplicate variant / literal coverage before
+                # the registration step so the SECOND occurrence is
+                # the one flagged, not the first. Tracking happens
+                # both across earlier arms (the global ``seen_*``
+                # sets) and within this arm's own or-pattern (the
+                # local ``arm_*`` sets), so ``Vermelho | Vermelho``
+                # inside a single arm is flagged too.
+                arm_variants: set[str] = set()
+                arm_literals: set = set()
+                for sub in self._flatten_or_pat(arm.pattern):
+                    if (
+                        isinstance(sub, A.VariantPat)
+                        and sub.payload is None
+                    ):
+                        if (
+                            sub.name in seen_variants
+                            or sub.name in arm_variants
+                        ):
+                            self._err(
+                                f"unreachable match arm: variant "
+                                f"{sub.name!r} is already covered "
+                                f"by an earlier arm",
+                                sub.pos,
+                            )
+                        arm_variants.add(sub.name)
+                    elif isinstance(sub, A.LiteralPat):
+                        key = self._literal_pattern_key(sub.value)
+                        if key is not None and (
+                            key in seen_literals or key in arm_literals
+                        ):
+                            self._err(
+                                f"unreachable match arm: literal "
+                                f"value already covered by an "
+                                f"earlier arm",
+                                sub.pos,
+                            )
+                        if key is not None:
+                            arm_literals.add(key)
             if arm.guard is None and self._pattern_is_catchall(arm.pattern):
                 seen_catchall = True
+                continue
+            if arm.guard is None:
+                for sub in self._flatten_or_pat(arm.pattern):
+                    if (
+                        isinstance(sub, A.VariantPat)
+                        and sub.payload is None
+                    ):
+                        seen_variants.add(sub.name)
+                    elif isinstance(sub, A.LiteralPat):
+                        key = self._literal_pattern_key(sub.value)
+                        if key is not None:
+                            seen_literals.add(key)
 
         # Catch-all arm without guard? Exhaustive by definition.
         for arm in s.arms:
@@ -148,6 +207,16 @@ class _PatternsMixin:
                 result.extend(self._flatten_or_pat(a))
             return result
         return [p]
+
+    def _literal_pattern_key(self, value):
+        """Return a hashable key for a literal pattern's value, used
+        by the unreachable-arm check to detect duplicates. Returns
+        ``None`` for shapes the check should not track (anything
+        that is not one of the five literal expression types)."""
+        if isinstance(value, (A.IntLit, A.FloatLit, A.StringLit,
+                              A.CharLit, A.BoolLit)):
+            return (type(value).__name__, value.value)
+        return None
 
     def _duplicate_binding_message(self, name: str, prev) -> str:
         """Build the rich message for a duplicate ``let`` / ``var``

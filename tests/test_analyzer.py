@@ -3650,6 +3650,107 @@ class TestMatchLiteralPatternType(unittest.TestCase):
         self.assertTrue(r.ok, r.errors)
 
 
+class TestDuplicateMatchArms(unittest.TestCase):
+    """A guardless match arm whose pattern is a payload-less variant
+    or a literal already covered by an earlier arm is unreachable.
+    The check fires both across arms (a second ``Vermelho ->``
+    after an earlier ``Vermelho ->``) and within a single arm's
+    or-pattern (``Vermelho | Vermelho ->``).
+
+    Guarded arms (``x if cond ->``) do not register coverage
+    because the guard may fail."""
+
+    def test_duplicate_variant_arm_rejected(self):
+        errs = errors_of(
+            "type Cor =\n"
+            "    Vermelho\n"
+            "    Verde\n"
+            "fun f(c: Cor) -> Int\n"
+            "    return match c\n"
+            "        Vermelho -> 1\n"
+            "        Vermelho -> 2\n"
+            "        Verde -> 3\n"
+        )
+        self.assertTrue(
+            any("variant 'Vermelho'" in e and "already covered" in e
+                for e in errs),
+            errs,
+        )
+
+    def test_duplicate_int_literal_arm_rejected(self):
+        errs = errors_of(
+            "fun f(n: Int) -> String\n"
+            "    return match n\n"
+            "        1 -> \"one\"\n"
+            "        1 -> \"duplicate\"\n"
+            "        _ -> \"other\"\n"
+        )
+        self.assertTrue(
+            any("literal value already covered" in e for e in errs),
+            errs,
+        )
+
+    def test_duplicate_string_literal_arm_rejected(self):
+        errs = errors_of(
+            "fun f(s: String) -> Int\n"
+            "    return match s\n"
+            "        \"capa\" -> 1\n"
+            "        \"capa\" -> 2\n"
+            "        _ -> 0\n"
+        )
+        self.assertTrue(
+            any("literal value already covered" in e for e in errs),
+            errs,
+        )
+
+    def test_duplicate_within_or_pattern_rejected(self):
+        errs = errors_of(
+            "type Cor =\n"
+            "    Vermelho\n"
+            "    Verde\n"
+            "fun f(c: Cor) -> Int\n"
+            "    return match c\n"
+            "        Vermelho | Vermelho -> 1\n"
+            "        Verde -> 2\n"
+        )
+        self.assertTrue(
+            any("variant 'Vermelho'" in e and "already covered" in e
+                for e in errs),
+            errs,
+        )
+
+    def test_guarded_duplicate_is_allowed(self):
+        # A guarded arm does not absorb the value; a later arm
+        # naming the same variant is reachable when the guard
+        # fails. Compiler should accept.
+        r = check(
+            "type Cor =\n"
+            "    Vermelho\n"
+            "    Verde\n"
+            "fun f(c: Cor, n: Int) -> Int\n"
+            "    return match c\n"
+            "        Vermelho if n > 0 -> 1\n"
+            "        Vermelho -> 2\n"
+            "        Verde -> 3\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+    def test_distinct_variants_still_accepted(self):
+        # The legitimate shape: each variant once.
+        r = check(
+            "type Cor =\n"
+            "    Vermelho\n"
+            "    Verde\n"
+            "    Azul\n"
+            "fun f(c: Cor) -> Int\n"
+            "    return match c\n"
+            "        Vermelho -> 1\n"
+            "        Verde -> 2\n"
+            "        Azul -> 3\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+
 class TestMethodWithoutSelfNotCallable(unittest.TestCase):
     """A user-defined impl method that does not take ``self`` as its
     first parameter cannot be called via ``receiver.method()``: the
