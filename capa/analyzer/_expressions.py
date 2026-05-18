@@ -350,6 +350,20 @@ class _ExpressionsMixin:
 
         sym = self.scope.lookup(e.name)
         if sym is None:
+            # ``self`` outside an impl method is almost always the
+            # user trying to access fields like they would in
+            # Python's method body or in a non-method context. Give
+            # them the targeted message instead of the generic
+            # Levenshtein guess (which tends to suggest 'Set' or
+            # 'self_type'-shaped noise).
+            if e.name == "self" and self.self_type is None:
+                self._err(
+                    "'self' is only valid inside an `impl` method; "
+                    "free functions and the top level do not have "
+                    "a receiver",
+                    e.pos,
+                )
+                return TyUnknown
             # Inside an ``impl`` method, a bare identifier that
             # matches a field of ``self`` is almost certainly a
             # forgotten ``self.``. Surface the targeted hint

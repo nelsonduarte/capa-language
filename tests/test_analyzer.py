@@ -3900,6 +3900,44 @@ class TestUnreachableMatchArm(unittest.TestCase):
         self.assertTrue(r.ok, r.errors)
 
 
+class TestSelfOutsideImpl(unittest.TestCase):
+    """``self`` outside an impl method body has no meaningful
+    referent. Before, the generic ``undefined name`` Levenshtein
+    pass suggested unrelated identifiers in scope (``'Set'``,
+    ``'Stdio'``, etc.). The targeted message names what is
+    actually wrong: ``self`` is impl-bound."""
+
+    def test_self_in_free_function_is_targeted(self):
+        errs = errors_of(
+            "fun f() -> Int\n"
+            "    return self.x\n"
+        )
+        self.assertTrue(
+            any("'self' is only valid inside an `impl` method" in e
+                for e in errs),
+            errs,
+        )
+        # The generic Levenshtein hint must NOT also fire on
+        # this one; otherwise users get noisy double-hinting.
+        for e in errs:
+            self.assertNotIn("did you mean", e)
+
+    def test_self_inside_impl_method_with_field_still_works(self):
+        # Regression guard: the existing self.field hint path
+        # still fires when self IS valid (in an impl method) but
+        # the user forgot the dot.
+        errs = errors_of(
+            "type Counter { v: Int }\n"
+            "impl Counter\n"
+            "    fun get(self) -> Int\n"
+            "        return v\n"
+        )
+        self.assertTrue(
+            any("did you mean `self.v`?" in e for e in errs),
+            errs,
+        )
+
+
 class TestSelfFieldHint(unittest.TestCase):
     """Inside an ``impl`` method, a bare identifier that matches a
     field of ``self``'s struct type is almost certainly a
