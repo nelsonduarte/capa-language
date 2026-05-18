@@ -3544,6 +3544,112 @@ class TestCallNonCallable(unittest.TestCase):
         self.assertTrue(r.ok, r.errors)
 
 
+class TestForLoopNonIterable(unittest.TestCase):
+    """Iterating a primitive scalar (Int, Float, String, Char, Bool)
+    is meaningless: Python would raise ``TypeError: 'X' object is
+    not iterable`` at runtime. The analyser now catches it with the
+    actual type name. List<T>, Range<T>, and TyUnknown remain
+    accepted."""
+
+    def test_for_int_is_rejected(self):
+        errs = errors_of(
+            "fun main(stdio: Stdio)\n"
+            "    let x = 5\n"
+            "    for i in x\n"
+            "        stdio.println(\"${i}\")\n"
+        )
+        self.assertTrue(
+            any("cannot iterate" in e and "Int" in e for e in errs),
+            errs,
+        )
+
+    def test_for_string_is_rejected(self):
+        errs = errors_of(
+            "fun main(stdio: Stdio)\n"
+            "    let s = \"hello\"\n"
+            "    for c in s\n"
+            "        stdio.println(\"${c}\")\n"
+        )
+        self.assertTrue(
+            any("cannot iterate" in e and "String" in e for e in errs),
+            errs,
+        )
+
+    def test_for_list_still_accepted(self):
+        r = check(
+            "fun main(stdio: Stdio)\n"
+            "    let xs: List<Int> = [1, 2, 3]\n"
+            "    for i in xs\n"
+            "        stdio.println(\"${i}\")\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+    def test_for_range_still_accepted(self):
+        r = check(
+            "fun main(stdio: Stdio)\n"
+            "    for i in 0..10\n"
+            "        stdio.println(\"${i}\")\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+
+class TestMatchLiteralPatternType(unittest.TestCase):
+    """A literal pattern only matches values of the same type as the
+    literal. ``match int_x { "hello" -> ... }`` is dead code at best
+    and a typo at worst; the analyser rejects it with both types
+    named. TyUnknown / TyVar scrutinees stay permissive so generic
+    code is not affected."""
+
+    def test_string_pattern_against_int_scrutinee_is_rejected(self):
+        errs = errors_of(
+            "fun main(stdio: Stdio)\n"
+            "    let x: Int = 1\n"
+            "    match x\n"
+            "        \"hello\" -> stdio.println(\"str\")\n"
+            "        _ -> stdio.println(\"else\")\n"
+        )
+        self.assertTrue(
+            any("literal of type String" in e
+                and "scrutinee of type Int" in e
+                for e in errs),
+            errs,
+        )
+
+    def test_int_pattern_against_string_scrutinee_is_rejected(self):
+        errs = errors_of(
+            "fun main(stdio: Stdio)\n"
+            "    let s: String = \"hi\"\n"
+            "    match s\n"
+            "        42 -> stdio.println(\"int\")\n"
+            "        _ -> stdio.println(\"else\")\n"
+        )
+        self.assertTrue(
+            any("literal of type Int" in e
+                and "scrutinee of type String" in e
+                for e in errs),
+            errs,
+        )
+
+    def test_matching_int_literal_with_int_still_accepted(self):
+        # Regression guard: the legitimate case still type-checks.
+        r = check(
+            "fun classify(n: Int) -> String\n"
+            "    return match n\n"
+            "        0 -> \"zero\"\n"
+            "        _ -> \"other\"\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+    def test_matching_string_literal_with_string_still_accepted(self):
+        r = check(
+            "fun name(s: String) -> Int\n"
+            "    return match s\n"
+            "        \"capa\" -> 1\n"
+            "        _ -> 0\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+
 class TestMethodWithoutSelfNotCallable(unittest.TestCase):
     """A user-defined impl method that does not take ``self`` as its
     first parameter cannot be called via ``receiver.method()``: the

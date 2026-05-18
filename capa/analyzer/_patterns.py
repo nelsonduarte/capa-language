@@ -185,7 +185,19 @@ class _PatternsMixin:
             )
             return
         if isinstance(p, A.LiteralPat):
-            self._check_expr(p.value)
+            lit_ty = self._check_expr(p.value)
+            # The literal pattern only matches values of the same
+            # type as the literal itself; matching ``"hello"``
+            # against an Int scrutinee is dead code at best and a
+            # typo at worst. ``compatible`` is permissive on
+            # TyUnknown / TyVar, so generic code where the
+            # scrutinee type is not fully resolved still passes.
+            if not compatible(ty, lit_ty):
+                self._err(
+                    f"pattern: literal of type {ty_str(lit_ty)} "
+                    f"cannot match a scrutinee of type {ty_str(ty)}",
+                    p.pos,
+                )
             return
         if isinstance(p, A.VariantPat):
             sym = self.scope.lookup(p.name)
