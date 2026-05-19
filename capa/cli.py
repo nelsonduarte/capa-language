@@ -453,6 +453,7 @@ def main() -> int:
         code = transpile(
             module, filename=filename,
             types=result.types if result is not None else None,
+            bindings=result.bindings if result is not None else None,
         )
 
     if args.transpile and not args.run:

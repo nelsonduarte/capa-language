@@ -27,7 +27,7 @@ def transpile_only(source: str) -> str:
     tokens = Lexer(source).lex()
     module = Parser(tokens, source=source).parse_module()
     result = analyze(module, source=source)
-    return transpile(module, types=result.types)
+    return transpile(module, types=result.types, bindings=result.bindings)
 
 
 def run_capa(source: str) -> tuple[int, str, str]:
@@ -235,6 +235,24 @@ class TestTranspileTypes(unittest.TestCase):
         )
         self.assertEqual(rc, 0, err)
         self.assertEqual(out, "25.0\n")
+
+    def test_uppercase_constant_not_treated_as_variant(self):
+        # Regression: bare-Ident emission used a PascalCase heuristic
+        # that turned every uppercase name into ``Name()``, breaking
+        # idiomatic UPPERCASE constants like ``INFO`` or ``MAX``.
+        # The fix plumbs the analyzer's ident-to-symbol bindings
+        # through to the transpiler so it can tell a payload-less
+        # variant from a CONSTANT and emit accordingly.
+        rc, out, err = run_capa(
+            'const INFO: Int = 1\n'
+            'const WARN: Int = 2\n'
+            'fun main(stdio: Stdio)\n'
+            '    stdio.println("info=${INFO} warn=${WARN}")\n'
+            '    let level = INFO\n'
+            '    stdio.println("level=${level}")\n'
+        )
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out, "info=1 warn=2\nlevel=1\n")
 
 
 class TestTranspileResult(unittest.TestCase):

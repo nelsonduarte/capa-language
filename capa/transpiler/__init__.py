@@ -193,6 +193,7 @@ class Transpiler(
         self,
         filename: str = "<input>",
         types: Optional[dict[int, Ty]] = None,
+        bindings: Optional[dict[int, "object"]] = None,
     ):
         self.filename = filename
         self.em = Emitter()
@@ -206,6 +207,14 @@ class Transpiler(
         # type-aware dispatch in method calls - e.g., String methods
         # that must map to distinct Python functions).
         self.types: dict[int, Ty] = types or {}
+        # Ident-binding map from the analyzer (optional, but needed
+        # so the ident emitter can tell a payload-less variant
+        # (``Red`` -> ``Red()``) from an UPPERCASE constant
+        # (``INFO`` -> ``INFO``). When absent, falls back to the
+        # uppercase-is-variant heuristic; that heuristic is wrong
+        # for all-caps constants and the bindings map is the proper
+        # fix.
+        self.bindings: dict[int, "object"] = bindings or {}
 
     def transpile(self, module: A.Module) -> str:
         self.em.lines.append(_PRELUDE.format(filename=self.filename).rstrip())
@@ -355,14 +364,17 @@ def transpile(
     module: A.Module,
     filename: str = "<input>",
     types: Optional[dict[int, Ty]] = None,
+    bindings: Optional[dict[int, "object"]] = None,
 ) -> str:
     """Transpiles a Capa Module to a Python source string.
 
     The output includes the prelude (runtime imports) and the helper
     for `?`. If ``types`` is passed (from AnalyzeResult), it is used
-    for type-aware dispatch on method calls.
+    for type-aware dispatch on method calls. ``bindings`` (from
+    AnalyzeResult) lets the emitter tell payload-less variants from
+    UPPERCASE constants when both appear as bare identifiers.
     """
-    t = Transpiler(filename=filename, types=types)
+    t = Transpiler(filename=filename, types=types, bindings=bindings)
     code = t.transpile(module)
     # Insert the `?` helper right after the prelude. It is ugly but
     # simple; a future version would emit everything via structured blocks.

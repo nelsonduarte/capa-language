@@ -45,7 +45,7 @@ class _ExpressionsMixin:
         if isinstance(e, A.UnitLit):
             return "None"
         if isinstance(e, A.Ident):
-            return self._emit_ident(e.name)
+            return self._emit_ident(e)
         if isinstance(e, A.BinOp):
             l = self._emit_expr(e.left)
             r = self._emit_expr(e.right)
@@ -287,26 +287,29 @@ class _ExpressionsMixin:
             return f"isinstance({scrut}, {classes[0]})"
         return f"isinstance({scrut}, ({', '.join(classes)}))"
 
-    def _emit_ident(self, name: str) -> str:
+    def _emit_ident(self, e: A.Ident) -> str:
         from . import _safe_ident
-        # Constant variants (PascalCase, no calls after) are
-        # instantiated. This is already handled by the fact that emit of
-        # Call/MethodCall produces `{name}(...)` separately. Here we only
-        # emit the bare name; if it is a payload-less variant used as a
-        # value (e.g., `return Red`), it needs to become `Red()`.
+        from ..analyzer import SymbolKind
+        name = e.name
         # Special case: ``None`` is a runtime singleton, not an
         # instantiable class. Map it directly to the ``None_`` singleton.
         if name == "None":
             return "None_"
-        if name and name[0].isupper() and name not in (
-            # Capabilities, Result variants, Option variants - these are
-            # not "simple variants" because they are classes that must
-            # be explicitly instantiated (and usually already are via Call).
-        ):
-            # Heuristic: if it is a bare Ident with a PascalCase name,
-            # it is probably a variant being used as a value - emit it
-            # as `Name()`. Cases that need the raw type (e.g., passing
-            # a class) are rare in Capa.
+        # If we have analyzer bindings, use them: a payload-less
+        # variant used as a bare value (``return Red``) must be
+        # constructed as ``Red()``. Anything else (CONSTANT,
+        # FUNCTION, capability, etc.) is just the bare name.
+        sym = self.bindings.get(id(e))
+        if sym is not None:
+            if sym.kind == SymbolKind.VARIANT and sym.variant_payload_ty is None:
+                return f"{name}()"
+            return _safe_ident(name)
+        # Fallback (no bindings provided, e.g., direct unit-test
+        # invocation of the transpiler): use the old PascalCase
+        # heuristic. This is wrong for UPPERCASE constants, but
+        # the bindings path handles them correctly when the CLI is
+        # the caller.
+        if name and name[0].isupper():
             return f"{name}()"
         return _safe_ident(name)
 
