@@ -1,0 +1,126 @@
+// quota_check.capa
+//
+// Resource-quota checker for Kubernetes-style pod declarations.
+// Reads a JSON array of pods and reports every pod whose
+// declaration violates the policy (max CPU, max memory, max
+// replicas). Real utility: drop the report into a CI script that
+// greps for "0 violation(s)" to gate a deploy.
+//
+// The policy is a list of closures, each of type
+// `Fun(JsonValue) -> Result<Unit, Violation>`. Each closure is
+// produced by a factory (`max_cpu`, `max_mem`, `max_replicas`)
+// that captures its threshold, and its body uses ? to chain
+// "extract field" with "validate value". The closure is built in
+// the factory and called from `main`, so the ? propagation
+// crosses a function boundary -- the soundness-critical case for
+// the v1.0 ? operator.
+//
+// Run:
+//   capa --run examples/quota_check.capa
+//   capa --run examples/quota_check.capa -- path/to/pods.json
+
+type Violation =
+    Missing(String, String)
+    NotANumber(String, String)
+    Exceeded(String, String, Int, Int)
+
+// ----- field accessors -----
+
+fun pod_name(p: JsonValue) -> String
+    return match p.as_object()
+        None -> "<not-an-object>"
+        Some(m) -> match m.get("name")
+            Some(JStr(s)) -> s
+            _ -> "<unnamed>"
+
+fun int_field(p: JsonValue, field: String) -> Result<Int, Violation>
+    let name = pod_name(p)
+    return match p.as_object()
+        None -> Err(Missing(name, field))
+        Some(m) -> match m.get(field)
+            None -> Err(Missing(name, field))
+            Some(v) -> match v.as_int()
+                None -> Err(NotANumber(name, field))
+                Some(n) -> Ok(n)
+
+// ----- rule factories (each returns a Fun(JsonValue) -> Result<Unit, Violation> closure) -----
+
+fun max_cpu(limit_mc: Int) -> Fun(JsonValue) -> Result<Unit, Violation>
+    let f = fun (p: JsonValue) -> Result<Unit, Violation> =>
+        let cpu = int_field(p, "cpu_mc")?
+        if cpu > limit_mc
+            return Err(Exceeded(pod_name(p), "cpu_mc", cpu, limit_mc))
+        return Ok(())
+    return f
+
+fun max_mem(limit_mb: Int) -> Fun(JsonValue) -> Result<Unit, Violation>
+    let f = fun (p: JsonValue) -> Result<Unit, Violation> =>
+        let mem = int_field(p, "mem_mb")?
+        if mem > limit_mb
+            return Err(Exceeded(pod_name(p), "mem_mb", mem, limit_mb))
+        return Ok(())
+    return f
+
+fun max_replicas(limit: Int) -> Fun(JsonValue) -> Result<Unit, Violation>
+    let f = fun (p: JsonValue) -> Result<Unit, Violation> =>
+        let r = int_field(p, "replicas")?
+        if r > limit
+            return Err(Exceeded(pod_name(p), "replicas", r, limit))
+        return Ok(())
+    return f
+
+// ----- diagnostic rendering -----
+
+fun describe(v: Violation) -> String
+    return match v
+        Missing(pod, f) -> "[${pod}] missing field '${f}'"
+        NotANumber(pod, f) -> "[${pod}] field '${f}' is not a number"
+        Exceeded(pod, dim, got, lim) -> "[${pod}] ${dim} ${got} exceeds limit ${lim}"
+
+// ----- main -----
+
+fun main(stdio: Stdio, fs: Fs, env: Env)
+    let args = env.args()
+    let path = match args.first()
+        Some(p) -> p
+        None -> "examples/data/quota_pods.json"
+
+    let raw = match fs.read(path)
+        Ok(s) -> s
+        Err(_) ->
+            stdio.println("error: cannot read ${path}")
+            return
+
+    let pods = match parse_json(raw)
+        Ok(JArr(xs)) -> xs
+        Ok(_) ->
+            stdio.println("error: top-level JSON must be an array")
+            return
+        Err(msg) ->
+            stdio.println("error: invalid JSON: ${msg}")
+            return
+
+    let policy: List<Fun(JsonValue) -> Result<Unit, Violation>> = [
+        max_cpu(2000),
+        max_mem(4096),
+        max_replicas(10),
+    ]
+
+    var violations = 0
+    var clean_pods = 0
+    for pod in pods
+        let name = pod_name(pod)
+        var pod_ok = true
+        for rule in policy
+            match rule(pod)
+                Ok(_) -> ()
+                Err(v) ->
+                    stdio.println(describe(v))
+                    pod_ok = false
+                    violations += 1
+        if pod_ok
+            stdio.println("[${name}] ok")
+            clean_pods += 1
+
+    stdio.println("")
+    stdio.println("${clean_pods} pod(s) clean, ${violations} violation(s)")

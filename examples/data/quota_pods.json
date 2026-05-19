@@ -1,0 +1,8 @@
+[
+  {"name": "web-frontend",  "cpu_mc":  500, "mem_mb":  1024, "replicas":  3},
+  {"name": "api-backend",   "cpu_mc": 1500, "mem_mb":  2048, "replicas":  6},
+  {"name": "ml-training",   "cpu_mc": 8000, "mem_mb": 16384, "replicas":  2},
+  {"name": "data-worker",   "cpu_mc": 1000, "mem_mb":  2048, "replicas": 25},
+  {"name": "bad-config",                    "mem_mb":   512, "replicas":  1},
+  {"name": "weird-data",    "cpu_mc": "x",  "mem_mb":   512, "replicas":  1}
+]
