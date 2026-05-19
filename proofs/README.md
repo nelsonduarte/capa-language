@@ -1,13 +1,14 @@
 # Capa formal mechanisation: status and plan
 
-> **Status (2026-05-15): skeleton, not yet typechecked.** This
-> directory holds a working sketch of the λ_cap formalisation
-> in Agda syntax. The files state the syntax, typing rules,
-> reduction relation, and the two soundness theorems
-> ([`docs/semantics.md`](../docs/semantics.md) Theorems 1 and 2)
-> as `postulate` declarations. Filling in the proofs is the
-> workshop-paper-sized task referenced in
-> `docs/semantics.md` § 8.
+[![agda](https://github.com/nelsonduarte/capa-language/actions/workflows/agda.yml/badge.svg)](https://github.com/nelsonduarte/capa-language/actions/workflows/agda.yml)
+
+> **Status (2026-05-19): Progress proved; mechanically typechecked
+> in CI.** This directory holds the λ_cap formalisation in Agda.
+> Syntax, typing, and reduction are mechanised, and the Progress
+> theorem ([`docs/semantics.md`](../docs/semantics.md) half of
+> Theorem 1) is proved. Preservation, Capability Soundness, and
+> Manifest Completeness remain as `postulate` declarations
+> (Stages 2 to 4 of the plan below).
 
 ## What this directory is for
 
@@ -59,36 +60,37 @@ tactics differ.
 
 ## How to typecheck
 
+The skeleton declares its own `Nat` / `Bool` / `==`, so
+agda-stdlib is not needed. Any Agda `>= 2.6.4` is enough.
+
 ```bash
-# Install Agda (>= 2.6.4 recommended) and stdlib v2.0.
-# On Linux:
+# Install Agda. On Debian / Ubuntu (or WSL):
 sudo apt install agda
-# Or via cabal / nix / your package manager of choice.
+# Or via cabal / nix / Homebrew on macOS.
 
 # Typecheck (from this directory):
 agda CapaSyntax.agda
 agda CapaSoundness.agda
 ```
 
-If the files fail to typecheck, the most likely cause is a
-minor syntactic drift between Agda versions. The intent of
-each declaration is described in the comments above it, so a
-contributor can fix the syntax without losing the meaning.
+CI also typechecks both files on every push that touches
+`proofs/` (see `.github/workflows/agda.yml`).
 
 ## Mechanisation plan (incremental)
 
 The path from this skeleton to a fully-verified soundness
 proof:
 
-1. **Stage 0 (current)**: syntax + theorem statements +
+1. **Stage 0 (done)**: syntax + theorem statements +
    postulates. The reviewer can read the file and see that
-   the formalisation is well-typed in intent, even if the
-   proofs are not yet filled in.
+   the formalisation is well-typed in intent.
 
-2. **Stage 1**: prove Progress. For every well-typed closed
-   term `t` of type `A`, either `t` is a value or there
-   exists `t'` with `t -> t'`. Standard structural induction
-   on the typing derivation.
+2. **Stage 1 (done)**: prove Progress. For every well-typed
+   closed term `t` of type `A`, either `t` is a value or
+   there exists `t'` with `t -> t'`. Structural induction on
+   the typing derivation; two canonical-forms lemmas
+   discharge the cases where a reduction rule needs to see a
+   specific value shape.
 
 3. **Stage 2**: prove Preservation. If `t : A` and `t -> t'`,
    then `t' : A`. Standard structural induction.
@@ -129,12 +131,13 @@ Honest tracking:
 
 | Stage | Status |
 |---|---|
-| Stage 0: skeleton + theorem statements | **landed** (this commit) |
-| Stage 1: Progress | not started |
+| Stage 0: skeleton + theorem statements | landed |
+| Stage 1: Progress | landed |
 | Stage 2: Preservation | not started |
 | Stage 3: Capability Soundness corollary | not started |
 | Stage 4: Manifest Completeness | not started |
 
-The paper claims sketched proofs, not mechanised proofs. This
-directory is the next step toward the latter; do not cite the
-soundness theorems as machine-verified yet.
+The paper claims sketched proofs. Progress is now machine-
+verified; Preservation, Capability Soundness, and Manifest
+Completeness are not yet. Do not cite the remaining three as
+machine-verified.

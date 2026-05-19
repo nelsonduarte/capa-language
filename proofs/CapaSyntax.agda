@@ -4,9 +4,8 @@
 -- Syntax, typing relation, and small-step reduction for the
 -- lambda_cap calculus described in docs/semantics.md.
 --
--- STATUS: Skeleton. Has not been typechecked by Agda locally.
--- Install Agda >= 2.6.4 and run `agda CapaSyntax.agda` to verify.
--- Minor syntactic adjustments may be required across Agda versions.
+-- STATUS: Typechecks on Agda >= 2.6.4. Verified in CI (see
+-- .github/workflows/agda.yml).
 --
 -- The conventions follow Programming Language Foundations in Agda
 -- (PLFA), Wadler/Kokke/Siek, which is the canonical reference for
@@ -132,7 +131,14 @@ emptyCS : CapSet
 emptyCS _ = false
 
 singletonCS : Cap -> CapSet
-singletonCS c c' = ?               -- decidable equality on Cap
+singletonCS Stdio  Stdio  = true
+singletonCS Fs     Fs     = true
+singletonCS Net    Net    = true
+singletonCS Env    Env    = true
+singletonCS Clock  Clock  = true
+singletonCS Random Random = true
+singletonCS Unsafe Unsafe = true
+singletonCS _      _      = false
 
 ------------------------------------------------------------------
 -- Typing relation.

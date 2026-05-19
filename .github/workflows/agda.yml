@@ -1,0 +1,33 @@
+name: agda
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'proofs/**'
+      - '.github/workflows/agda.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'proofs/**'
+      - '.github/workflows/agda.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  typecheck:
+    name: Typecheck Agda proofs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: wenkokke/setup-agda@v2
+        with:
+          agda-version: '2.6.4.3'
+      - name: Typecheck CapaSyntax
+        working-directory: proofs
+        run: agda CapaSyntax.agda
+      - name: Typecheck CapaSoundness
+        working-directory: proofs
+        run: agda CapaSoundness.agda
