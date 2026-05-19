@@ -238,20 +238,20 @@ FREE_FUNCTIONS: dict[str, tuple[TyFun, list[str]]] = {
 
 # Variant constructors registered in the global scope. The payload
 # type uses TyVar literals tied to the owning sum type's type
-# params; ``None`` means the variant has no payload.
-# Format: variant_name -> (owner_name, payload_ty | None)
-VARIANTS: tuple[tuple[str, str, Optional[Ty]], ...] = (
-    ("Some", "Option", T),
-    ("None", "Option", None),
-    ("Ok",   "Result", T),
-    ("Err",  "Result", E),
+# params; an empty tuple means the variant has no payload.
+# Format: variant_name -> (owner_name, payload_tys)
+VARIANTS: tuple[tuple[str, str, tuple[Ty, ...]], ...] = (
+    ("Some", "Option", (T,)),
+    ("None", "Option", ()),
+    ("Ok",   "Result", (T,)),
+    ("Err",  "Result", (E,)),
     # JsonValue variants
-    ("JNull", "JsonValue", None),
-    ("JBool", "JsonValue", TyBool),
-    ("JNum",  "JsonValue", TyFloat),
-    ("JStr",  "JsonValue", TyString),
-    ("JArr",  "JsonValue", lst(_json_ty)),
-    ("JObj",  "JsonValue", TyName("Map", (TyString, _json_ty))),
+    ("JNull", "JsonValue", ()),
+    ("JBool", "JsonValue", (TyBool,)),
+    ("JNum",  "JsonValue", (TyFloat,)),
+    ("JStr",  "JsonValue", (TyString,)),
+    ("JArr",  "JsonValue", (lst(_json_ty),)),
+    ("JObj",  "JsonValue", (TyName("Map", (TyString, _json_ty)),)),
 )
 
 
@@ -325,7 +325,7 @@ def register_builtins(define, lookup) -> None:
     # Variants. Each is registered both as a top-level constructor
     # in the global scope and on the owner sum type's
     # ``sum_variants`` dict.
-    for vname, owner_name, payload_ty in VARIANTS:
+    for vname, owner_name, payload_tys in VARIANTS:
         owner = lookup(owner_name)
         if owner is None:
             raise RuntimeError(
@@ -334,7 +334,7 @@ def register_builtins(define, lookup) -> None:
             )
         vsym = Symbol(
             name=vname, kind=SymbolKind.VARIANT, pos=BUILTIN_POS,
-            variant_owner=owner, variant_payload_ty=payload_ty,
+            variant_owner=owner, variant_payload_tys=list(payload_tys),
         )
         define(vsym)
         owner.sum_variants[vname] = vsym

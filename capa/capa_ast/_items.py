@@ -87,9 +87,16 @@ class TypeStruct(Item):
 
 @dataclass(kw_only=True)
 class Variant(Node):
-    """Variant of a sum type; payload optional."""
+    """Variant of a sum type. Zero or more payload types.
+
+    Examples
+    --------
+    ``Red``                        -> payloads=[]
+    ``Some(Int)``                  -> payloads=[Int]
+    ``PathEquals(String, JsonValue)`` -> payloads=[String, JsonValue]
+    """
     name: str
-    payload: Optional[TypeExpr] = None
+    payloads: list[TypeExpr] = field(default_factory=list)
     name_pos: Optional[Pos] = None
 
 

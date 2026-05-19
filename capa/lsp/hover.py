@@ -88,8 +88,8 @@ def _format_symbol_for_hover(
     if sym.kind == SymbolKind.VARIANT:
         owner = sym.variant_owner.name if sym.variant_owner else "?"
         head = name
-        if sym.variant_payload_ty is not None:
-            head += f"({ty_str(sym.variant_payload_ty)})"
+        if sym.variant_payload_tys:
+            head += "(" + ", ".join(ty_str(t) for t in sym.variant_payload_tys) + ")"
         return f"```capa\n{head}\n```\n\n*variant of `{owner}`*"
     if sym.kind == SymbolKind.CAPABILITY:
         return (

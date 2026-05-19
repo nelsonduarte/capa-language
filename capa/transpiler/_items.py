@@ -78,19 +78,28 @@ class _ItemsMixin:
 
     def _emit_sum(self, t: A.TypeSum) -> None:
         # For each variant: a class.
-        # - Without payload: empty class, instantiated as Variant().
-        # - With payload: dataclass with `value` field.
+        # - Zero payloads: empty class, instantiated as Variant().
+        # - One payload: dataclass with a single ``value`` field.
+        # - N payloads: dataclass with ``f0``, ``f1``, ... fields.
         for v in t.variants:
-            if v.payload is None:
+            n = len(v.payloads)
+            if n == 0:
                 self.em.write(f"class {v.name}:")
                 self.em.indent()
                 self.em.write("pass")
+                self.em.dedent()
+            elif n == 1:
+                self.em.write("@dataclass")
+                self.em.write(f"class {v.name}:")
+                self.em.indent()
+                self.em.write("value: object")
                 self.em.dedent()
             else:
                 self.em.write("@dataclass")
                 self.em.write(f"class {v.name}:")
                 self.em.indent()
-                self.em.write("value: object")
+                for i in range(n):
+                    self.em.write(f"f{i}: object")
                 self.em.dedent()
             self.em.blank()
         # Type alias for the sum type. Useful in type hints, optional at runtime.

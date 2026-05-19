@@ -161,30 +161,32 @@ class _DispatchMixin:
                         return ret_ty
                     return TyUnknown
                 if sym.kind == SymbolKind.VARIANT:
-                    if sym.variant_payload_ty is None:
+                    expected = sym.variant_payload_tys
+                    if not expected:
                         self._err(
                             f"variant {sym.name!r} takes no payload",
                             e.pos,
                         )
                         return TyUnknown
-                    if len(arg_tys) != 1:
+                    if len(arg_tys) != len(expected):
+                        plural = "argument" if len(expected) == 1 else "arguments"
                         self._err(
-                            f"variant {sym.name!r} takes 1 argument, "
-                            f"got {len(arg_tys)}",
+                            f"variant {sym.name!r} takes {len(expected)} "
+                            f"{plural}, got {len(arg_tys)}",
                             e.pos,
                         )
                     mapping: dict[str, Ty] = {}
-                    if arg_tys:
-                        unify(sym.variant_payload_ty, arg_tys[0], mapping)
-                        substituted_payload = substitute(
-                            sym.variant_payload_ty, mapping,
-                        )
-                        if not compatible(substituted_payload, arg_tys[0]):
+                    for i, exp_ty in enumerate(expected):
+                        if i >= len(arg_tys):
+                            break
+                        unify(exp_ty, arg_tys[i], mapping)
+                        substituted_payload = substitute(exp_ty, mapping)
+                        if not compatible(substituted_payload, arg_tys[i]):
                             self._err(
-                                f"variant {sym.name!r}: expected payload "
-                                f"{ty_str(substituted_payload)}, "
-                                f"got {ty_str(arg_tys[0])}",
-                                e.args[0].pos,
+                                f"variant {sym.name!r}: argument {i + 1} "
+                                f"expected {ty_str(substituted_payload)}, "
+                                f"got {ty_str(arg_tys[i])}",
+                                e.args[i].pos,
                             )
                     if sym.variant_owner is not None:
                         owner = sym.variant_owner

@@ -143,10 +143,11 @@ def _render_type(t: dict[str, Any]) -> str:
     else:
         if t["variants"]:
             def _v(v):
-                if v["payload"]:
+                if v["payloads"]:
+                    args = ", ".join(_html.escape(p) for p in v["payloads"])
                     return (
                         f'<li><code>{_html.escape(v["name"])}'
-                        f'({_html.escape(v["payload"])})</code></li>'
+                        f'({args})</code></li>'
                     )
                 return f'<li><code>{_html.escape(v["name"])}</code></li>'
             members = "<ul>" + "".join(_v(v) for v in t["variants"]) + "</ul>"

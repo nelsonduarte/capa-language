@@ -69,18 +69,23 @@ class _PatternsMixin:
         # Identifier: can be a simple binding, a variant, or a struct pattern.
         if self._check(T.IDENT):
             name = self._advance().text
-            # Variant with payload: Name ( pattern )
+            # Variant with one or more sub-patterns: Name ( pat )
+            # or Name ( pat1, pat2, ... ).
             if self._match(T.LPAREN):
-                payload = self._parse_pattern(in_match=in_match)
-                self._expect(T.RPAREN, "expected ')' after variant payload")
-                return A.VariantPat(pos=start, name=name, payload=payload)
+                payloads: list[A.Pattern] = []
+                if not self._check(T.RPAREN):
+                    payloads.append(self._parse_pattern(in_match=in_match))
+                    while self._match(T.COMMA):
+                        payloads.append(self._parse_pattern(in_match=in_match))
+                self._expect(T.RPAREN, "expected ')' after variant payload(s)")
+                return A.VariantPat(pos=start, name=name, payloads=payloads)
             # Struct pattern: Name { ... }
             if self._match(T.LBRACE):
                 fields = self._parse_struct_pattern_fields(in_match=in_match)
                 return A.StructPat(pos=start, type_name=name, fields=fields)
             # No args/braces: PascalCase heuristic only in match context.
             if in_match and name and name[0].isupper():
-                return A.VariantPat(pos=start, name=name, payload=None)
+                return A.VariantPat(pos=start, name=name, payloads=[])
             return A.IdentPat(pos=start, name=name)
         raise self._error(f"expected pattern, got {self._peek().kind.name}")
 

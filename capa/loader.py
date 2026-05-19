@@ -695,8 +695,8 @@ class _PrivateRenameWalker:
                 self.visit_type(f.type_expr)
         elif isinstance(item, A.TypeSum):
             for v in item.variants:
-                if v.payload is not None:
-                    self.visit_type(v.payload)
+                for pt in v.payloads:
+                    self.visit_type(pt)
         elif isinstance(item, A.TraitDecl):
             for ms in item.methods:
                 for p in ms.params:

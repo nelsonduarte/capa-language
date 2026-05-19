@@ -324,15 +324,22 @@ class _ItemsMixin:
 
     def _parse_variant(self) -> A.Variant:
         vname_tok = self._expect(T.IDENT, "expected variant name")
-        payload: Optional[A.TypeExpr] = None
+        payloads: list[A.TypeExpr] = []
         if self._match(T.LPAREN):
-            payload = self._parse_type()
-            self._expect(T.RPAREN, "expected ')' after variant payload type")
+            # ``Name(A)`` or ``Name(A, B, C, ...)``. Comma-separated
+            # zero-or-more, but if the user wrote `(` they almost
+            # certainly mean at least one type; an empty `()` is
+            # accepted but treated as no payload.
+            if not self._check(T.RPAREN):
+                payloads.append(self._parse_type())
+                while self._match(T.COMMA):
+                    payloads.append(self._parse_type())
+            self._expect(T.RPAREN, "expected ')' after variant payload type(s)")
         return A.Variant(
             pos=vname_tok.start,
             name=vname_tok.text,
             name_pos=vname_tok.start,
-            payload=payload,
+            payloads=payloads,
         )
 
     # -------- trait --------

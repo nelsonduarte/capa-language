@@ -14,7 +14,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 from ._base import Expr, Pattern
@@ -40,14 +40,16 @@ class LiteralPat(Pattern):
 
 @dataclass(kw_only=True)
 class VariantPat(Pattern):
-    """Sum-type variant with optional payload.
+    """Sum-type variant with zero or more sub-patterns.
 
-    Red             -> name='Red', payload=None
-    Some(x)         -> name='Some', payload=IdentPat('x')
-    Some(Red)       -> name='Some', payload=VariantPat('Red', None)
+    Red                    -> name='Red', payloads=[]
+    Some(x)                -> name='Some', payloads=[IdentPat('x')]
+    Some(Red)              -> name='Some', payloads=[VariantPat('Red')]
+    PathEquals(p, v)       -> name='PathEquals',
+                              payloads=[IdentPat('p'), IdentPat('v')]
     """
     name: str
-    payload: Optional[Pattern] = None
+    payloads: list[Pattern] = field(default_factory=list)
 
 
 @dataclass(kw_only=True)

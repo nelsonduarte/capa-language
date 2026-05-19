@@ -413,6 +413,53 @@ class TestVariants(unittest.TestCase):
         )
         self.assertTrue(any("unknown variant" in m for m in msgs))
 
+    def test_variant_with_multiple_payloads_ok(self):
+        # Multi-payload declaration + matching constructor call type check.
+        r = check(
+            "type Pair =\n"
+            "    P(Int, String)\n"
+            "fun mk() -> Pair\n"
+            "    return P(1, \"hi\")\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+    def test_variant_arity_mismatch_at_call(self):
+        msgs = errors_of(
+            "type Pair =\n"
+            "    P(Int, String)\n"
+            "fun f() -> Pair\n"
+            "    return P(1)\n"
+        )
+        self.assertTrue(
+            any("takes 2 arguments" in m for m in msgs),
+            msgs,
+        )
+
+    def test_variant_arity_mismatch_at_pattern(self):
+        msgs = errors_of(
+            "type Pair =\n"
+            "    P(Int, String)\n"
+            "fun f(p: Pair) -> Int\n"
+            "    return match p\n"
+            "        P(a) -> a\n"
+        )
+        self.assertTrue(
+            any("expects 2 sub-pattern" in m for m in msgs),
+            msgs,
+        )
+
+    def test_variant_payload_type_mismatch(self):
+        msgs = errors_of(
+            "type Pair =\n"
+            "    P(Int, String)\n"
+            "fun f() -> Pair\n"
+            "    return P(1, 2)\n"
+        )
+        self.assertTrue(
+            any("argument 2" in m and "expected String" in m for m in msgs),
+            msgs,
+        )
+
 
 # =============================================================
 # Trait and impl

@@ -112,7 +112,7 @@ class Symbol:
     - TYPE_STRUCT: type_params, struct_fields, methods
     - TYPE_SUM: type_params, sum_variants, methods
     - TRAIT: trait_methods (names only for v1)
-    - VARIANT: variant_owner (TYPE_SUM symbol), variant_payload_ty
+    - VARIANT: variant_owner (TYPE_SUM symbol), variant_payload_tys (list)
     - MODULE/CAPABILITY: opaque name
     """
     name: str
@@ -127,7 +127,9 @@ class Symbol:
     # Allows checking that impls provide methods with compatible types.
     trait_method_sigs: dict[str, "TyFun"] = field(default_factory=dict)
     variant_owner: Optional["Symbol"] = None
-    variant_payload_ty: Optional[Ty] = None
+    # Zero or more payload types. Empty list = no payload; the
+    # variant constructor and pattern both accept zero arguments.
+    variant_payload_tys: list[Ty] = field(default_factory=list)
     # Methods defined in impl blocks. Maps name -> Symbol (kind=FUNCTION),
     # whose Ty (TyFun) covers only the explicit parameters (no self).
     methods: dict[str, "Symbol"] = field(default_factory=dict)

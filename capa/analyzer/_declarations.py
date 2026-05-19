@@ -159,13 +159,15 @@ class _DeclarationsMixin:
                     vsym = sym.sum_variants.get(v.name)
                     if vsym is None:
                         continue
-                    if v.payload is not None:
-                        pty = self._resolve_type(v.payload)
+                    payload_tys: list = []
+                    for payload_expr in v.payloads:
+                        pty = self._resolve_type(payload_expr)
                         self._check_no_capability(
                             pty, v.pos,
                             f"payload of variant {v.name!r}",
                         )
-                        vsym.variant_payload_ty = pty
+                        payload_tys.append(pty)
+                    vsym.variant_payload_tys = payload_tys
                 self._pop_type_params()
             elif isinstance(item, A.ConstDecl):
                 sym = self.global_scope.lookup(item.name)

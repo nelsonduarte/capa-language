@@ -83,7 +83,7 @@ def _collect_types(module: A.Module) -> list[dict[str, Any]]:
                 "variants": [
                     {
                         "name": v.name,
-                        "payload": _ty_text(v.payload) if v.payload else None,
+                        "payloads": [_ty_text(p) for p in v.payloads],
                     }
                     for v in item.variants
                 ],

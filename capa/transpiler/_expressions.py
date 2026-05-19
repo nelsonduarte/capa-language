@@ -229,7 +229,7 @@ class _ExpressionsMixin:
         if isinstance(p, A.WildcardPat):
             return True
         if isinstance(p, A.VariantPat):
-            return p.payload is None
+            return not p.payloads
         if isinstance(p, A.OrPat):
             return all(self._is_simple_dispatch_pattern(a) for a in p.alternatives)
         return False
@@ -315,7 +315,7 @@ class _ExpressionsMixin:
         # FUNCTION, capability, etc.) is just the bare name.
         sym = self.bindings.get(id(e))
         if sym is not None:
-            if sym.kind == SymbolKind.VARIANT and sym.variant_payload_ty is None:
+            if sym.kind == SymbolKind.VARIANT and not sym.variant_payload_tys:
                 return f"{name}()"
             return _safe_ident(name)
         # Fallback (no bindings provided, e.g., direct unit-test

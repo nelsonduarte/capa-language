@@ -91,7 +91,7 @@ class _PatternsMixin:
                 for sub in self._flatten_or_pat(arm.pattern):
                     if (
                         isinstance(sub, A.VariantPat)
-                        and sub.payload is None
+                        and not sub.payloads
                     ):
                         if (
                             sub.name in seen_variants
@@ -124,7 +124,7 @@ class _PatternsMixin:
                 for sub in self._flatten_or_pat(arm.pattern):
                     if (
                         isinstance(sub, A.VariantPat)
-                        and sub.payload is None
+                        and not sub.payloads
                     ):
                         seen_variants.add(sub.name)
                     elif isinstance(sub, A.LiteralPat):
@@ -275,17 +275,18 @@ class _PatternsMixin:
                     p.name, self._variant_names(ty),
                 )
                 self._err(f"unknown variant {p.name!r}{hint}", p.pos)
-                if p.payload is not None:
-                    self._bind_pattern(p.payload, TyUnknown, mutable)
+                for sub in p.payloads:
+                    self._bind_pattern(sub, TyUnknown, mutable)
                 return
             if sym.kind != SymbolKind.VARIANT:
                 self._err(f"{p.name!r} is not a variant", p.pos)
-                if p.payload is not None:
-                    self._bind_pattern(p.payload, TyUnknown, mutable)
+                for sub in p.payloads:
+                    self._bind_pattern(sub, TyUnknown, mutable)
                 return
-            payload_ty: Ty = sym.variant_payload_ty or TyUnknown
+            payload_tys = sym.variant_payload_tys
             # Substitute the owner's type params (e.g. ``T`` in
             # ``Some<T>(T)``) with the scrutinee's args.
+            subst: dict[str, Ty] = {}
             if (
                 sym.variant_owner is not None
                 and isinstance(ty, TyName)
@@ -293,18 +294,24 @@ class _PatternsMixin:
                 and len(ty.args) == len(sym.variant_owner.type_params)
             ):
                 subst = dict(zip(sym.variant_owner.type_params, ty.args))
-                payload_ty = substitute(payload_ty, subst)
-            elif ty is TyUnknown:
-                # No info from the scrutinee: collapse abstract
-                # TyVars to TyUnknown so later checks don't fail
-                # on them.
-                if isinstance(payload_ty, TyVar):
-                    payload_ty = TyUnknown
-            if p.payload is not None:
-                self._bind_pattern(p.payload, payload_ty, mutable)
-            elif sym.variant_payload_ty is not None:
+            # Arity check
+            if p.payloads and len(p.payloads) != len(payload_tys):
                 self._err(
-                    f"variant {p.name!r} requires a payload", p.pos,
+                    f"variant {p.name!r} expects {len(payload_tys)} "
+                    f"sub-pattern(s), got {len(p.payloads)}",
+                    p.pos,
+                )
+            if p.payloads:
+                for sub, pty in zip(p.payloads, payload_tys):
+                    bound_ty = substitute(pty, subst) if subst else pty
+                    if ty is TyUnknown and isinstance(bound_ty, TyVar):
+                        bound_ty = TyUnknown
+                    self._bind_pattern(sub, bound_ty, mutable)
+            elif payload_tys:
+                self._err(
+                    f"variant {p.name!r} requires {len(payload_tys)} "
+                    f"sub-pattern(s)",
+                    p.pos,
                 )
             return
         if isinstance(p, A.StructPat):
@@ -439,7 +446,7 @@ class _PatternsMixin:
         if isinstance(p, A.IdentPat):
             return True
         if isinstance(p, A.VariantPat):
-            return p.payload is not None and self._pattern_has_binding(p.payload)
+            return any(self._pattern_has_binding(s) for s in p.payloads)
         if isinstance(p, A.StructPat):
             return any(
                 fp is None or self._pattern_has_binding(fp)

@@ -770,6 +770,42 @@ class TestMatchExpression(unittest.TestCase):
         self.assertEqual(rc, 0, err)
         self.assertEqual(out, "one\n")
 
+    def test_variant_with_multiple_payloads(self):
+        # Variants with N > 1 payload types: declaration, construction,
+        # and match with positional sub-pattern destructure all wire up
+        # end-to-end.
+        rc, out, err = run_capa(
+            'type PathTest =\n'
+            '    PathEquals(String, Int)\n'
+            '    PathExists(String)\n'
+            '    Always\n'
+            'fun describe(t: PathTest) -> String\n'
+            '    return match t\n'
+            '        PathEquals(path, val) -> "${path}=${val}"\n'
+            '        PathExists(path) -> "exists ${path}"\n'
+            '        Always -> "always"\n'
+            'fun main(stdio: Stdio)\n'
+            '    stdio.println(describe(PathEquals("a.b", 42)))\n'
+            '    stdio.println(describe(PathExists("x")))\n'
+            '    stdio.println(describe(Always))\n'
+        )
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out, "a.b=42\nexists x\nalways\n")
+
+    def test_variant_three_payloads_match(self):
+        # Three-payload variant exercises field indexing past 1.
+        rc, out, err = run_capa(
+            'type Vec3 =\n'
+            '    V(Float, Float, Float)\n'
+            'fun show(v: Vec3) -> String\n'
+            '    return match v\n'
+            '        V(x, y, z) -> "${x},${y},${z}"\n'
+            'fun main(stdio: Stdio)\n'
+            '    stdio.println(show(V(1.0, 2.0, 3.0)))\n'
+        )
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out, "1.0,2.0,3.0\n")
+
     def test_match_arm_block_with_payload_destructure_and_trailing_expr(self):
         # The fast-path (isinstance dispatch) covers payload-less
         # variants only. With a payload-destructure arm, the general

@@ -407,7 +407,7 @@ class _ExpressionsMixin:
             # parameters we cannot infer from context, use
             # TyUnknown (built-ins) or TyVar (user types) so
             # later unification can refine.
-            if sym.variant_payload_ty is None and sym.variant_owner is not None:
+            if not sym.variant_payload_tys and sym.variant_owner is not None:
                 owner = sym.variant_owner
                 if owner.pos is _BUILTIN_POS:
                     args = tuple(TyUnknown for _ in owner.type_params)

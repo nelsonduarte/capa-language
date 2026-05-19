@@ -65,10 +65,12 @@ def _item_to_doc_symbol(item: A.Item) -> Optional[DocSymbol]:
     if isinstance(item, A.TypeSum):
         children = []
         for v in item.variants:
-            detail = (
-                f"({_type_expr_to_text(v.payload)})"
-                if v.payload is not None else ""
-            )
+            if v.payloads:
+                detail = (
+                    "(" + ", ".join(_type_expr_to_text(p) for p in v.payloads) + ")"
+                )
+            else:
+                detail = ""
             children.append(
                 DocSymbol(
                     name=v.name, detail=detail,

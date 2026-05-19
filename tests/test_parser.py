@@ -115,8 +115,18 @@ class TestTypeDecls(unittest.TestCase):
         m = parse("type Option<T> =\n    Some(T)\n    None\n")
         t = m.items[0]
         self.assertEqual(t.type_params, ["T"])
-        self.assertIsNotNone(t.variants[0].payload)
-        self.assertIsNone(t.variants[1].payload)
+        self.assertEqual(len(t.variants[0].payloads), 1)
+        self.assertEqual(len(t.variants[1].payloads), 0)
+
+    def test_sum_with_multi_payload(self):
+        m = parse(
+            "type Cond =\n"
+            "    PathEquals(String, Int)\n"
+            "    Always\n"
+        )
+        t = m.items[0]
+        self.assertEqual(len(t.variants[0].payloads), 2)
+        self.assertEqual(len(t.variants[1].payloads), 0)
 
 
 # =============================================================

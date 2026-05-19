@@ -225,13 +225,22 @@ class _StatementsMixin:
             # runtime, an instance of _NoneType. Python match requires
             # a class - we use _NoneType().
             if p.name == "None":
-                if p.payload is not None:
+                if p.payloads:
                     raise TranspilerError("'None' takes no payload")
                 return "_NoneType()"
-            if p.payload is None:
+            if not p.payloads:
                 return f"{p.name}()"
-            sub = self._emit_pattern_match(p.payload)
-            return f"{p.name}({sub})"
+            if len(p.payloads) == 1:
+                sub = self._emit_pattern_match(p.payloads[0])
+                return f"{p.name}({sub})"
+            # Multi-payload: dataclass with f0, f1, ... fields. Use
+            # Python's keyword-pattern form so the order matches the
+            # generated dataclass.
+            parts = [
+                f"f{i}={self._emit_pattern_match(sub)}"
+                for i, sub in enumerate(p.payloads)
+            ]
+            return f"{p.name}({', '.join(parts)})"
         if isinstance(p, A.StructPat):
             parts = []
             for fname, fpat in p.fields:
