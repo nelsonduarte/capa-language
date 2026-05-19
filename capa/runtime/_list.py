@@ -69,6 +69,31 @@ class CapaList(list):
                 return Some(i)
         return None_
 
+    def sorted_by(self, cmp):
+        """Return a new ``CapaList`` sorted by the user-supplied
+        comparator. ``cmp(a, b)`` is a Capa function returning a
+        negative Int (``a < b``), zero (``a == b``), or a positive
+        Int (``a > b``). Stable. The receiver is not mutated.
+
+        Implementation: bridge the comparator into a Python
+        ``key=cmp_to_key(...)``-style adapter inline so we do not
+        pull in ``functools`` just for this. The cost is one
+        comparator call per merge-sort comparison, same as Python.
+        """
+        # Local class because we cannot rely on functools.cmp_to_key
+        # producing a CapaList-friendly call shape, and the adapter
+        # is one screen long.
+        class _K:
+            __slots__ = ("v",)
+            def __init__(self, v): self.v = v
+            def __lt__(self, other): return cmp(self.v, other.v) < 0
+            def __eq__(self, other): return cmp(self.v, other.v) == 0
+            def __le__(self, other): return cmp(self.v, other.v) <= 0
+            def __gt__(self, other): return cmp(self.v, other.v) > 0
+            def __ge__(self, other): return cmp(self.v, other.v) >= 0
+            def __ne__(self, other): return cmp(self.v, other.v) != 0
+        return CapaList(sorted(self, key=_K))
+
 
 class CapaRange:
     """A lazy integer range. Backs the Capa ``Range<T>`` built-in

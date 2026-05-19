@@ -1089,6 +1089,67 @@ class TestStdlibStringsListsMapsJson(unittest.TestCase):
         self.assertEqual(rc, 0, err)
         self.assertEqual(out, "-1\n")
 
+    def test_list_sorted_by_ascending(self):
+        # Comparator returns a - b for ascending order. The original
+        # list is not mutated; sorted_by returns a fresh CapaList.
+        rc, out, err = run_capa(
+            'fun main(stdio: Stdio)\n'
+            '    let xs: List<Int> = [3, 1, 4, 1, 5, 9, 2, 6]\n'
+            '    let r = xs.sorted_by(fun (a: Int, b: Int) -> Int => a - b)\n'
+            '    for n in r\n'
+            '        stdio.print("${n} ")\n'
+            '    stdio.println("")\n'
+            '    // Original list untouched.\n'
+            '    stdio.println("${xs.get(0).unwrap_or(0 - 1)}")\n'
+        )
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out, "1 1 2 3 4 5 6 9 \n3\n")
+
+    def test_list_sorted_by_descending(self):
+        # Comparator returns b - a for descending order.
+        rc, out, err = run_capa(
+            'fun main(stdio: Stdio)\n'
+            '    let xs: List<Int> = [3, 1, 4, 1, 5]\n'
+            '    let r = xs.sorted_by(fun (a: Int, b: Int) -> Int => b - a)\n'
+            '    for n in r\n'
+            '        stdio.print("${n} ")\n'
+            '    stdio.println("")\n'
+        )
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out, "5 4 3 1 1 \n")
+
+    def test_list_sorted_by_string_length(self):
+        # A non-numeric comparator: by string length. Demonstrates
+        # the comparator can call methods on the elements.
+        rc, out, err = run_capa(
+            'fun main(stdio: Stdio)\n'
+            '    let xs: List<String> = ["pear", "fig", "apple", "kiwi"]\n'
+            '    let r = xs.sorted_by(fun (a: String, b: String) -> Int => a.length() - b.length())\n'
+            '    for s in r\n'
+            '        stdio.print("${s} ")\n'
+            '    stdio.println("")\n'
+        )
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out, "fig pear kiwi apple \n")
+
+    def test_string_trim_start(self):
+        rc, out, err = run_capa(
+            'fun main(stdio: Stdio)\n'
+            '    let s = "  hello  "\n'
+            '    stdio.println("[${s.trim_start()}]")\n'
+        )
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out, "[hello  ]\n")
+
+    def test_string_trim_end(self):
+        rc, out, err = run_capa(
+            'fun main(stdio: Stdio)\n'
+            '    let s = "  hello  "\n'
+            '    stdio.println("[${s.trim_end()}]")\n'
+        )
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out, "[  hello]\n")
+
     def test_list_find_index(self):
         rc, out, err = run_capa(
             'fun main(stdio: Stdio)\n'

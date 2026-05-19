@@ -24,7 +24,9 @@ Capa program, no imports required.
 | `is_empty()` | `Bool` | True if the string is empty |
 | `to_upper()` | `String` | Convert to upper case |
 | `to_lower()` | `String` | Convert to lower case |
-| `trim()` | `String` | Strip leading/trailing whitespace |
+| `trim()` | `String` | Strip whitespace at both ends |
+| `trim_start()` | `String` | Strip leading whitespace only |
+| `trim_end()` | `String` | Strip trailing whitespace only |
 | `contains(sub: String)` | `Bool` | Substring is present |
 | `starts_with(s: String)` | `Bool` | |
 | `ends_with(s: String)` | `Bool` | |
@@ -51,6 +53,9 @@ infers the type from the first `push`.
 | `map<U>(f: Fun(T) -> U)` | `List<U>` | Transform each element |
 | `filter(p: Fun(T) -> Bool)` | `List<T>` | Keep elements that match |
 | `fold<U>(init: U, f: Fun(U, T) -> U)` | `U` | Reduce to a single value |
+| `find(p: Fun(T) -> Bool)` | `Option<T>` | First element matching `p` |
+| `find_index(p: Fun(T) -> Bool)` | `Option<Int>` | Index of first element matching `p` |
+| `sorted_by(cmp: Fun(T, T) -> Int)` | `List<T>` | Fresh sorted copy. `cmp(a, b)` returns negative / 0 / positive as in C's `qsort`. Stable. |
 
 Index access: `xs[i]` (no bounds checking, use `get(i)` for safe access).
 
@@ -264,8 +269,16 @@ fun square_root(unsafe: Unsafe, x: Float) -> Float
 | `read(p: String)` | `Result<String, IoError>` | Read the entire file |
 | `write(p: String, c: String)` | `Result<(), IoError>` | Write (overwrites) |
 | `exists(p: String)` | `Bool` | Check whether the path exists |
+| `is_dir(p: String)` | `Bool` | True if `p` exists and is a directory |
+| `mkdir(p: String)` | `Result<(), IoError>` | Create directory, including missing parents. Idempotent: re-creating an existing directory is `Ok`. |
+| `list_dir(p: String)` | `Result<List<String>, IoError>` | Entry names (basenames), alphabetically sorted. |
 | `restrict_to(prefix: String)` | `Fs` | Attenuate: a fresh `Fs` allowing only paths under `prefix`. Monotonic. |
 | `allows(path: String)` | `Bool` | Test whether the current `Fs` would permit `path`. |
+
+`is_dir`, `exists`, and `allows` all use the same fail-closed-as-
+absent convention: a denied path reports `false`, indistinguishable
+from a path that does not exist. The cap therefore does not leak
+the existence of paths outside its allowed set.
 
 Both the stored allowed prefixes and the queried paths are passed
 through `os.path.realpath` (resolves `..` / `.` segments and

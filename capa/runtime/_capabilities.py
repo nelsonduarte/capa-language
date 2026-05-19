@@ -163,6 +163,39 @@ class Fs:
             return False
         return os.path.exists(path)
 
+    def is_dir(self, path: str) -> bool:
+        # Same fail-closed-as-absent convention as ``exists``: a
+        # denied path reports False, so the cap does not leak the
+        # type of a path outside its allowed prefixes.
+        if not self.allows(path):
+            return False
+        return os.path.isdir(path)
+
+    def mkdir(self, path: str) -> "Result[None, IoError]":
+        # ``exist_ok=True`` makes this idempotent: re-running
+        # ``capa install`` or any other tool that creates its
+        # output dir does not fail on a second pass.
+        if not self.allows(path):
+            return self._deny("mkdir", path)
+        try:
+            os.makedirs(path, exist_ok=True)
+            return Ok(None)
+        except OSError as e:
+            return Err(IoError(f"failed to mkdir {path!r}", str(e)))
+
+    def list_dir(self, path: str) -> "Result[CapaList[str], IoError]":
+        # Returns the entry names (basenames) of ``path``, sorted
+        # alphabetically for deterministic output. Symlinks are
+        # listed as their own name; the caller can call
+        # ``is_dir`` / ``allows`` if they need to follow.
+        if not self.allows(path):
+            return self._deny("list_dir", path)
+        try:
+            entries = sorted(os.listdir(path))
+            return Ok(CapaList(entries))
+        except OSError as e:
+            return Err(IoError(f"failed to list {path!r}", str(e)))
+
 
 class Env:
     """Capability for reading environment variables, with first-class

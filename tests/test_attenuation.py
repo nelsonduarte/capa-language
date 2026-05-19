@@ -101,6 +101,86 @@ class TestFsAttenuation(unittest.TestCase):
             os.unlink(outside_path)
 
 
+class TestFsDirectoryOps(unittest.TestCase):
+    """``Fs.mkdir``, ``Fs.list_dir``, and ``Fs.is_dir`` round out the
+    surface so a Capa program no longer has to shell out for the
+    most common directory chores. All three honour the attenuation
+    set; denied operations behave like the path is absent (in the
+    case of the queries) or return ``Err`` (in the case of mkdir).
+    """
+
+    def test_mkdir_creates_directory(self):
+        with tempfile.TemporaryDirectory() as base:
+            fs = Fs().restrict_to(base)
+            target = os.path.join(base, "new")
+            r = fs.mkdir(target)
+            self.assertIsInstance(r, Ok)
+            self.assertTrue(os.path.isdir(target))
+
+    def test_mkdir_is_idempotent(self):
+        # Calling mkdir twice on the same path is not an error.
+        # Useful for CI scripts that run capa install repeatedly.
+        with tempfile.TemporaryDirectory() as base:
+            fs = Fs().restrict_to(base)
+            target = os.path.join(base, "again")
+            self.assertIsInstance(fs.mkdir(target), Ok)
+            self.assertIsInstance(fs.mkdir(target), Ok)
+
+    def test_mkdir_creates_parents(self):
+        # Mirrors os.makedirs(exist_ok=True): nested missing
+        # parents are created in one call.
+        with tempfile.TemporaryDirectory() as base:
+            fs = Fs().restrict_to(base)
+            nested = os.path.join(base, "a", "b", "c")
+            self.assertIsInstance(fs.mkdir(nested), Ok)
+            self.assertTrue(os.path.isdir(nested))
+
+    def test_mkdir_denied_returns_err_before_touching_disk(self):
+        with tempfile.TemporaryDirectory() as inside:
+            fs = Fs().restrict_to(inside)
+            with tempfile.TemporaryDirectory() as outside:
+                target = os.path.join(outside, "should-not-exist")
+                r = fs.mkdir(target)
+                self.assertIsInstance(r, Err)
+                self.assertFalse(os.path.exists(target))
+
+    def test_list_dir_returns_sorted_entries(self):
+        with tempfile.TemporaryDirectory() as base:
+            for name in ("c.txt", "a.txt", "b.txt"):
+                open(os.path.join(base, name), "w").close()
+            fs = Fs().restrict_to(base)
+            r = fs.list_dir(base)
+            self.assertIsInstance(r, Ok)
+            self.assertEqual(list(r.value), ["a.txt", "b.txt", "c.txt"])
+
+    def test_list_dir_denied_returns_err_not_leak(self):
+        with tempfile.TemporaryDirectory() as inside:
+            fs = Fs().restrict_to(inside)
+            with tempfile.TemporaryDirectory() as outside:
+                r = fs.list_dir(outside)
+                self.assertIsInstance(r, Err)
+
+    def test_is_dir_distinguishes_files_and_directories(self):
+        with tempfile.TemporaryDirectory() as base:
+            file_path = os.path.join(base, "f.txt")
+            open(file_path, "w").close()
+            sub = os.path.join(base, "sub")
+            os.mkdir(sub)
+            fs = Fs().restrict_to(base)
+            self.assertTrue(fs.is_dir(sub))
+            self.assertFalse(fs.is_dir(file_path))
+            self.assertFalse(fs.is_dir(os.path.join(base, "missing")))
+
+    def test_is_dir_denied_reports_false_not_leak(self):
+        # Same convention as exists(): denied is indistinguishable
+        # from absent, so the cap cannot leak the existence of
+        # paths outside its allowed set.
+        with tempfile.TemporaryDirectory() as inside:
+            fs = Fs().restrict_to(inside)
+            with tempfile.TemporaryDirectory() as outside:
+                self.assertFalse(fs.is_dir(outside))
+
+
 class TestFsPathCanonicalisation(unittest.TestCase):
     """``Fs`` resolves both stored prefixes and queried paths through
     ``os.path.realpath`` before comparing. These tests cover the

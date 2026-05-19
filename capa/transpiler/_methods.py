@@ -69,6 +69,10 @@ class _MethodsMixin:
             return f"{recv}.lower()"
         if method == "trim":
             return f"{recv}.strip()"
+        if method == "trim_start":
+            return f"{recv}.lstrip()"
+        if method == "trim_end":
+            return f"{recv}.rstrip()"
         if method == "split":
             return f"CapaList({recv}.split({args[0]}))"
         if method == "replace":

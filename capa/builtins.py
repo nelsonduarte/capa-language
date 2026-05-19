@@ -102,6 +102,9 @@ METHODS: dict[str, list[tuple[str, TyFun, list[str]]]] = {
         ("get",        fun(TyInt, opt(T)),                                         []),
         ("find",       fun(fun(T, TyBool), opt(T)),                                []),
         ("find_index", fun(fun(T, TyBool), opt(TyInt)),                            []),
+        # sorted_by takes a comparator (a, b) -> Int and returns a
+        # fresh sorted list. Stable. Does not mutate the receiver.
+        ("sorted_by",  fun(fun(T, T, TyInt), lst(T)),                              []),
     ],
     "Range": [
         # Range<T> is a lazy iterable produced by `a..b` and `a..=b`.
@@ -125,6 +128,8 @@ METHODS: dict[str, list[tuple[str, TyFun, list[str]]]] = {
         ("to_upper",    fun(TyString),                                             []),
         ("to_lower",    fun(TyString),                                             []),
         ("trim",        fun(TyString),                                             []),
+        ("trim_start",  fun(TyString),                                             []),
+        ("trim_end",    fun(TyString),                                             []),
         ("split",       fun(TyString, lst(TyString)),                              []),
         ("replace",     fun(TyString, TyString, TyString),                         []),
         ("is_empty",    fun(TyBool),                                               []),
@@ -183,6 +188,9 @@ METHODS: dict[str, list[tuple[str, TyFun, list[str]]]] = {
         ("read",        fun(TyString, _str_res),                                   []),
         ("write",       fun(TyString, TyString, _unit_res),                        []),
         ("exists",      fun(TyString, TyBool),                                     []),
+        ("is_dir",      fun(TyString, TyBool),                                     []),
+        ("mkdir",       fun(TyString, _unit_res),                                  []),
+        ("list_dir",    fun(TyString, res(lst(TyString), _io_err)),                []),
     ],
     "Env": [
         ("restrict_to_keys", fun(lst(TyString), TyName("Env")),                    []),
