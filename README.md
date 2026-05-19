@@ -114,6 +114,7 @@ capa --provenance  file.capa            # in-toto + SLSA Provenance v1.0
 capa --doc         file.capa            # HTML doc page from /// comments
 capa --fmt         file.capa            # canonical-style rewrite
 capa init          my-project           # project scaffold
+capa install                            # fetch capa.toml dependencies
 capa lsp                                # language server (stdio)
 ```
 
@@ -148,8 +149,24 @@ The runtime ships built-in types (`Result`, `Option`, `List`,
 `Fs`, `Net`, `Env`, `Clock`, `Random`, `Db`, `Proc`, `Unsafe`).
 Full reference in [`docs/stdlib.md`](docs/stdlib.md).
 
-A small set of **seed libraries** lives under [`libraries/`](libraries/),
-auto-loaded when `./libraries/` exists in the project root:
+A small set of **seed libraries** lives under [`libraries/`](libraries/);
+each one is also being extracted to its own GitHub repo so it
+can be consumed via the package manager:
+
+```toml
+# capa.toml
+[dependencies]
+capa_log = { git = "https://github.com/nelsonduarte/capa_log", tag = "v0.1" }
+```
+
+Then `capa install` materialises the dep under `./vendor/` and
+the loader picks it up automatically. See
+[`docs/packages.md`](docs/packages.md) for the manifest schema,
+lockfile semantics, and migration recipe.
+
+Until every library is extracted, the existing `./libraries/`
+convention keeps working: any `libraries/` dir at the project
+root is added to the loader's search path automatically.
 
 | Library | Surface |
 |---------|---------|
@@ -227,6 +244,7 @@ Beyond v1, the workshop-paper continuation is mechanising the
 | [`docs/tutorial.md`](docs/tutorial.md) | longer walkthrough |
 | [`docs/reference.md`](docs/reference.md) | language reference (syntax + semantics) |
 | [`docs/stdlib.md`](docs/stdlib.md) | runtime + library APIs |
+| [`docs/packages.md`](docs/packages.md) | `capa.toml` + `capa install` + lockfile semantics |
 | [`docs/manifest.html`](https://capa-language.com/manifest.html) | the manifest format + how to read it |
 | [`docs/roadmap.html`](https://capa-language.com/roadmap.html) | status + what's planned |
 | [`docs/positioning.md`](docs/positioning.md) | honest comparison vs Pony, Koka, Roc, Wasm CM, Zero |

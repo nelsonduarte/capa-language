@@ -63,21 +63,27 @@ def color_for(kind: TokenKind) -> str:
 def _capa_search_paths() -> list[Path]:
     """Return additional module-search roots.
 
-    Two sources, in priority order:
+    Three sources, in priority order:
 
     1. ``CAPA_PATH`` environment variable. Entries are separated by
        ``os.pathsep`` (``;`` on Windows, ``:`` elsewhere). Empty
        entries and non-existent directories are silently skipped.
 
-    2. Conventional fallback: ``./libraries`` relative to the current
-       working directory, if it exists. Mirrors the ``node_modules``
-       /``vendor`` convention from other ecosystems and lets a project
-       layout like ``./reporter.capa`` + ``./libraries/capa_log/`` work
-       out of the box, no environment variable needed.
+    2. ``capa.toml`` in the cwd. When present, the package
+       manager's vendor dir (``./vendor``) and the parent of every
+       ``path = "..."`` dependency are added so a project that
+       declares its deps in the manifest does not need any
+       environment variable.
+
+    3. Conventional fallback: ``./libraries`` relative to the cwd,
+       if it exists. Mirrors the ``node_modules`` / ``vendor``
+       convention and supports projects that vendor by hand.
 
     Entries are de-duplicated so an explicit ``CAPA_PATH=libraries``
     does not appear twice. A typo in ``CAPA_PATH`` is silently
-    skipped so it does not turn into a noisy error on every run.
+    skipped so it does not turn into a noisy error on every run; a
+    broken ``capa.toml`` emits a one-line warning to stderr but does
+    not abort the CLI.
     """
     out: list[Path] = []
     seen: set[Path] = set()
@@ -100,6 +106,27 @@ def _capa_search_paths() -> list[Path]:
             if not entry:
                 continue
             _append(Path(entry).expanduser())
+
+    manifest_path = Path.cwd() / "capa.toml"
+    if manifest_path.exists():
+        try:
+            from capa.pkg import read_manifest
+            manifest = read_manifest(manifest_path)
+            has_git = any(d.is_git for d in manifest.dependencies)
+            if has_git:
+                _append(Path.cwd() / "vendor")
+            for d in manifest.dependencies:
+                if d.is_path and d.path is not None:
+                    dep_path = (manifest.manifest_dir / d.path).resolve()
+                    _append(dep_path.parent)
+        except Exception as e:
+            # A broken capa.toml should produce a clear warning but
+            # not block unrelated operations (e.g. `capa --check` on
+            # a file outside the project).
+            print(
+                f"capa: warning: ignoring capa.toml ({e})",
+                file=sys.stderr,
+            )
 
     # Conventional fallback. Cheap probe: only the cwd is consulted,
     # so this never escalates I/O for a project that does not use
@@ -137,11 +164,54 @@ def _dispatch_init(argv: list[str]) -> int:
     return init_project(Path(args.name), capa_version=_CAPA_VERSION)
 
 
+def _dispatch_install(argv: list[str]) -> int:
+    """Handle ``python -m capa install [directory]``.
+
+    Reads ``capa.toml`` from the target directory, fetches every
+    declared git dependency into ``vendor/<name>``, validates every
+    path dependency, and writes ``capa.lock``.
+    """
+    sub = argparse.ArgumentParser(
+        prog="capa install",
+        description=(
+            "Resolve and fetch the dependencies declared in capa.toml "
+            "into vendor/, and write capa.lock."
+        ),
+    )
+    sub.add_argument(
+        "directory",
+        nargs="?",
+        default=".",
+        help="project directory containing capa.toml (default: current)",
+    )
+    args = sub.parse_args(argv)
+    project_dir = Path(args.directory).resolve()
+    try:
+        from capa.pkg import install, InstallError, ManifestError
+    except ImportError as e:
+        print(f"capa install: {e}", file=sys.stderr)
+        return 2
+    try:
+        manifest = install(project_dir)
+    except (InstallError, ManifestError) as e:
+        print(f"capa install: {e}", file=sys.stderr)
+        return 2
+    n_git = sum(1 for d in manifest.dependencies if d.is_git)
+    n_path = sum(1 for d in manifest.dependencies if d.is_path)
+    print(
+        f"capa install: {manifest.name} {manifest.version} "
+        f"({n_git} git, {n_path} path)"
+    )
+    return 0
+
+
 def main() -> int:
     # Subcommand dispatch happens before argparse so the rest of
     # the CLI can stay flag-based without complicating help output.
     if len(sys.argv) >= 2 and sys.argv[1] == "init":
         return _dispatch_init(sys.argv[2:])
+    if len(sys.argv) >= 2 and sys.argv[1] == "install":
+        return _dispatch_install(sys.argv[2:])
     if len(sys.argv) >= 2 and sys.argv[1] == "lsp":
         from capa.lsp_server import serve
         return serve()
