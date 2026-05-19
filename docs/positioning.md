@@ -102,6 +102,27 @@ adjacencies:
   those modules can*. For CRA-style audit work, the function-level
   granularity is what matters.
 
+- **Zero** (Vercel Labs, May 2026) is the most recent entrant
+  and the only one that shares Capa's capability-based-I/O
+  headline. It is a systems language in the C / Rust space:
+  native binaries under 10 KB without LLVM, explicit memory
+  control, capability-based I/O where every function declares
+  the side effects it can perform. The distinctive design
+  choice is that the toolchain (`zero check --json`) emits
+  stable error codes and typed repair categories so AI agents
+  can read, repair, and ship code without a human translation
+  step. **The key differences**: Zero's audience is the
+  AI-agent toolchain, not the supply-chain auditor; Zero's
+  runtime story is native binaries, not Python; and Zero
+  documents no regulatory mapping or standard-SBOM emission
+  (CycloneDX / SPDX / VEX / SLSA). Capa and Zero share an
+  intellectual root (capability discipline as the right
+  default for 2026) and split on the application: Zero is the
+  *AI-agent-first* flavour, Capa is the *supply-chain-audit-
+  first* flavour. A reviewer asking "which language emits the
+  CRA-aligned governance artefact set per-function" still
+  finds only Capa in that column.
+
 ## What Capa can claim
 
 - **By-construction soundness**: the type checker enforces that
