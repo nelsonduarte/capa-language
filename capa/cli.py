@@ -61,23 +61,51 @@ def color_for(kind: TokenKind) -> str:
 
 
 def _capa_search_paths() -> list[Path]:
-    """Return additional module-search roots from the ``CAPA_PATH``
-    environment variable. Entries are separated by ``os.pathsep``
-    (``;`` on Windows, ``:`` elsewhere). Empty entries and
-    non-existent directories are silently skipped, so a typo in
-    ``CAPA_PATH`` does not turn into a noisy error on every run.
+    """Return additional module-search roots.
+
+    Two sources, in priority order:
+
+    1. ``CAPA_PATH`` environment variable. Entries are separated by
+       ``os.pathsep`` (``;`` on Windows, ``:`` elsewhere). Empty
+       entries and non-existent directories are silently skipped.
+
+    2. Conventional fallback: ``./libraries`` relative to the current
+       working directory, if it exists. Mirrors the ``node_modules``
+       /``vendor`` convention from other ecosystems and lets a project
+       layout like ``./reporter.capa`` + ``./libraries/capa_log/`` work
+       out of the box, no environment variable needed.
+
+    Entries are de-duplicated so an explicit ``CAPA_PATH=libraries``
+    does not appear twice. A typo in ``CAPA_PATH`` is silently
+    skipped so it does not turn into a noisy error on every run.
     """
-    raw = os.environ.get("CAPA_PATH", "")
-    if not raw:
-        return []
     out: list[Path] = []
-    for entry in raw.split(os.pathsep):
-        entry = entry.strip()
-        if not entry:
-            continue
-        p = Path(entry).expanduser()
+    seen: set[Path] = set()
+
+    def _append(p: Path) -> None:
+        try:
+            resolved = p.resolve()
+        except OSError:
+            return
+        if resolved in seen:
+            return
         if p.is_dir():
             out.append(p)
+            seen.add(resolved)
+
+    raw = os.environ.get("CAPA_PATH", "")
+    if raw:
+        for entry in raw.split(os.pathsep):
+            entry = entry.strip()
+            if not entry:
+                continue
+            _append(Path(entry).expanduser())
+
+    # Conventional fallback. Cheap probe: only the cwd is consulted,
+    # so this never escalates I/O for a project that does not use
+    # the convention.
+    _append(Path.cwd() / "libraries")
+
     return out
 
 
@@ -121,6 +149,19 @@ def main() -> int:
         from capa.repl import serve as repl_serve
         return repl_serve()
 
+    # Split argv on `--`: anything after the separator is forwarded
+    # to the transpiled program via ``sys.argv`` when ``--run``
+    # executes. Done before argparse so the Capa CLI does not try
+    # to interpret the program's own flags. When the separator is
+    # absent, ``program_args`` stays empty and behaviour is
+    # unchanged.
+    program_args: list[str] = []
+    cli_argv = sys.argv[1:]
+    if "--" in cli_argv:
+        sep = cli_argv.index("--")
+        program_args = cli_argv[sep + 1:]
+        cli_argv = cli_argv[:sep]
+
     parser = argparse.ArgumentParser(
         description="Lexer, parser and analyzer for the Capa language",
     )
@@ -154,7 +195,11 @@ def main() -> int:
     parser.add_argument(
         "--run",
         action="store_true",
-        help="transpile and execute the program (calls main with capabilities)",
+        help=(
+            "transpile and execute the program (calls main with "
+            "capabilities). Arguments after `--` are forwarded to the "
+            "program (visible via env.args())"
+        ),
     )
     parser.add_argument(
         "--watch",
@@ -253,7 +298,7 @@ def main() -> int:
         action="store_true",
         help="omit layout tokens (NEWLINE/INDENT/DEDENT/EOF) in the output",
     )
-    args = parser.parse_args()
+    args = parser.parse_args(cli_argv)
 
     # --watch wraps the regular --run flow in a re-run-on-change
     # loop. Implemented as an outer process that spawns a fresh
@@ -268,7 +313,7 @@ def main() -> int:
                 file=sys.stderr,
             )
             return 2
-        return _run_watch_loop(args.file)
+        return _run_watch_loop(args.file, program_args)
 
     if args.stdin:
         source = sys.stdin.read()
@@ -482,6 +527,13 @@ def main() -> int:
             "__name__": "__main__",
             "__file__": "<transpiled>",
         }
+        # Override sys.argv for the duration of the run so the
+        # program's ``env.args()`` returns the user-visible arguments.
+        # argv[0] is the .capa filename (or ``<transpiled>`` for
+        # --stdin); argv[1:] is everything after ``--`` on the
+        # Capa command line.
+        saved_argv = sys.argv
+        sys.argv = [args.file or "<transpiled>", *program_args]
         try:
             exec(compile(code, "<transpiled>", "exec"), run_globals)
             return 0
@@ -495,6 +547,8 @@ def main() -> int:
         except BaseException:
             traceback.print_exc(file=sys.stderr)
             return 1
+        finally:
+            sys.argv = saved_argv
 
     if args.parse:
         print(ast_dump(module))
@@ -523,7 +577,7 @@ def main() -> int:
     return 0
 
 
-def _run_watch_loop(filename: str) -> int:
+def _run_watch_loop(filename: str, program_args: list[str]) -> int:
     """Re-run ``capa --run <filename>`` whenever the target file or
     any of its imported modules changes on disk.
 
@@ -591,9 +645,11 @@ def _run_watch_loop(filename: str) -> int:
             )
             sys.stdout.flush()
         try:
-            subprocess.run(
-                [sys.executable, "-m", "capa", "--run", str(target)],
-            )
+            cmd = [sys.executable, "-m", "capa", "--run", str(target)]
+            if program_args:
+                cmd.append("--")
+                cmd.extend(program_args)
+            subprocess.run(cmd)
         except KeyboardInterrupt:
             # Ctrl-C during the child's run: re-raise so the
             # watcher exits cleanly.

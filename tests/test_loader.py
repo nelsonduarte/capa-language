@@ -857,5 +857,60 @@ class TestModuleSystemEndToEnd(_TempDirMixin, unittest.TestCase):
         self.assertIn("cyclic import", result.stderr)
 
 
+class TestRunArgsPassThrough(_TempDirMixin, unittest.TestCase):
+    """`capa --run file.capa -- a b c` should forward ``a b c`` to
+    the program, where ``env.args()`` returns them. Before the fix,
+    Capa's argparse rejected the trailing positionals; the workaround
+    was to transpile to .py and run the Python directly.
+    """
+
+    def test_passthrough_visible_via_env_args(self):
+        root = self._write(
+            "show_args.capa",
+            "fun main(stdio: Stdio, env: Env)\n"
+            "    for a in env.args()\n"
+            "        stdio.println(a)\n"
+        )
+        result = subprocess.run(
+            [sys.executable, "-m", "capa", "--run", str(root),
+             "--", "first", "second", "third"],
+            capture_output=True, text=True, encoding="utf-8",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "first\nsecond\nthird\n")
+
+    def test_no_dash_dash_means_no_program_args(self):
+        # Without the `--` separator, env.args() is empty (the
+        # Capa CLI's own flags are not leaked into the program).
+        root = self._write(
+            "count_args.capa",
+            "fun main(stdio: Stdio, env: Env)\n"
+            "    stdio.println(\"${env.args().length()}\")\n"
+        )
+        result = subprocess.run(
+            [sys.executable, "-m", "capa", "--run", str(root)],
+            capture_output=True, text=True, encoding="utf-8",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "0\n")
+
+    def test_program_flags_are_not_intercepted(self):
+        # Flags after `--` that look like Capa flags must reach
+        # the program intact instead of being consumed by argparse.
+        root = self._write(
+            "echo_flags.capa",
+            "fun main(stdio: Stdio, env: Env)\n"
+            "    for a in env.args()\n"
+            "        stdio.println(a)\n"
+        )
+        result = subprocess.run(
+            [sys.executable, "-m", "capa", "--run", str(root),
+             "--", "--verbose", "--help", "input.txt"],
+            capture_output=True, text=True, encoding="utf-8",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "--verbose\n--help\ninput.txt\n")
+
+
 if __name__ == "__main__":
     unittest.main()
