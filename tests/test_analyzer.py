@@ -3563,15 +3563,28 @@ class TestForLoopNonIterable(unittest.TestCase):
             errs,
         )
 
-    def test_for_string_is_rejected(self):
-        errs = errors_of(
+    def test_for_string_is_accepted(self):
+        # Python iterates strings character-by-character natively,
+        # and ``examples/io.capa`` relies on this pattern to count
+        # newlines. The check leaves String alone; only the genuinely
+        # non-iterable primitives (Int, Float, Bool) are rejected.
+        r = check(
             "fun main(stdio: Stdio)\n"
             "    let s = \"hello\"\n"
             "    for c in s\n"
             "        stdio.println(\"${c}\")\n"
         )
+        self.assertTrue(r.ok, r.errors)
+
+    def test_for_float_is_rejected(self):
+        errs = errors_of(
+            "fun main(stdio: Stdio)\n"
+            "    let x = 3.14\n"
+            "    for i in x\n"
+            "        stdio.println(\"${i}\")\n"
+        )
         self.assertTrue(
-            any("cannot iterate" in e and "String" in e for e in errs),
+            any("cannot iterate" in e and "Float" in e for e in errs),
             errs,
         )
 

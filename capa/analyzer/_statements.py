@@ -28,7 +28,7 @@ from __future__ import annotations
 
 from .. import capa_ast as A
 from ..typesys import (
-    PRIMITIVE_NAMES, Ty, TyBool, TyName, TyUnit, TyUnknown,
+    Ty, TyBool, TyName, TyUnit, TyUnknown,
     compatible, ty_str,
 )
 
@@ -242,19 +242,21 @@ class _StatementsMixin:
             elem_ty = iter_ty.args[0]
         elif (
             isinstance(iter_ty, TyName)
-            and iter_ty.name in PRIMITIVE_NAMES
+            and iter_ty.name in ("Int", "Float", "Bool")
         ):
-            # Iterating a primitive scalar (Int, Float, String,
-            # Char, Bool) is meaningless: Python would raise
+            # Iterating a numeric or boolean scalar would raise
             # ``TypeError: 'int' object is not iterable`` at
-            # runtime. Catch it at compile time with the actual
-            # type name. String iteration in particular is
-            # tempting but Capa exposes no per-character iterator
-            # method; users wanting that go through Python interop.
+            # runtime. ``String`` and ``Char`` are intentionally
+            # left out of this check: Python iterates them
+            # natively (character-by-character), and the
+            # ``examples/io.capa`` count-lines pattern relies on
+            # ``for c in some_string``. List<T> and Range<T> stay
+            # the documented shapes; this check just catches the
+            # clear-mistake primitives.
             self._err(
                 f"cannot iterate: {ty_str(iter_ty)} is not iterable "
-                f"(only List<T> and Range<T> are supported as "
-                f"for-loop scrutinees)",
+                f"(use List<T>, Range<T>, or String for character "
+                f"iteration)",
                 s.iter.pos,
             )
 
