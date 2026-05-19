@@ -19,7 +19,7 @@ Example usage:
 # cutting a release; consumers (the manifest builder, the docs
 # tooling, the egg-info / wheel metadata) read this value rather
 # than hard-coding a string.
-__version__ = "1.0.0rc0"
+__version__ = "1.0.0rc1"
 
 from . import capa_ast as ast
 from .analyzer import Analyzer, AnalysisError, AnalysisResult, Symbol, SymbolKind, analyze

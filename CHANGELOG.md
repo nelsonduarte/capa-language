@@ -9,6 +9,83 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+## [1.0.0-rc.1], 2026-05-19
+
+Polish iteration on top of `1.0.0-rc.0`. The headline change is
+a soundness fix on the `?` operator (see below); the rest is
+stdlib gaps surfaced while writing real Capa programs, a new
+example pinning the legitimate `?`-in-lambda shape, and a
+website pass.
+
+### Language correctness
+
+- **`?` requires the enclosing function or lambda to return
+  `Result` or `Option`.** Previously the analyzer accepted `?`
+  anywhere the inner expression was `Result` / `Option`,
+  regardless of the enclosing return type. At runtime this let
+  an `Err` flow out of a function declared `-> Int` /
+  `-> String` / `-> Unit`, and inside a lambda the raised
+  `_CapaTryEarlyReturn` could escape past the lambda's caller
+  (which had no decorator to catch it) and crash the program.
+  The analyzer now rejects every `?` whose enclosing fn/lambda
+  returns a different shape, with a diagnostic that names the
+  actual return type. Lambdas push their own
+  `current_return_type` in both block-body and expression-body
+  paths so the rule is checked against the lambda's contract,
+  not the outer function's.
+- **Transpiler: lambdas containing `?` get their own
+  `@_capa_wrap`** (block-bodied) or `_capa_wrap(...)` wrap
+  (expression-bodied). Combined with the analyzer rule above,
+  the legitimate shape (a `Result`-returning lambda whose body
+  uses `?`) is now sound end-to-end. `_uses_try` also treats
+  `LambdaExpr` as a function boundary, mirroring `FunDecl`, so a
+  nested lambda's `?` does not force the outer function to
+  carry a redundant decorator.
+- **`?` in `var x = foo()?` / `x op= foo()?`** now hoists inline
+  the same way `let x = foo()?` does. Previously these positions
+  went through the slow `_capa_try` exception path AND
+  `_uses_exception_try` optimistically skipped the
+  `@_capa_wrap` decorator -- so the raised
+  `_CapaTryEarlyReturn` escaped the function uncaught. The
+  decorator is now emitted defensively for any function
+  containing `?`, and the hoist covers `VarStmt`, `AssignStmt`
+  (every op), `LetStmt`, `ReturnStmt`, and `ExprStmt`.
+
+### Stdlib additions
+
+- **`Fs.mkdir(path)`, `Fs.list_dir(path)`, `Fs.is_dir(path)`.**
+  Closed the three daily-friction gaps in the `Fs` capability;
+  the demos previously had to shell out via `Unsafe`.
+- **`List.sorted_by(comparator)`.** Returns a fresh sorted list
+  given a `(a, b) -> Int` comparator. Stable, non-mutating.
+- **`String.trim_start()` / `String.trim_end()`.** Asymmetric
+  trims; the symmetric `String.trim()` was the only one before.
+
+### Examples
+
+- **`examples/quota_check.capa`** -- a Kubernetes-style
+  resource-quota checker built around the
+  `?`-in-`Result`-lambda shape. Policies are closures of type
+  `Fun(JsonValue) -> Result<Unit, Violation>` produced by
+  factories that capture their thresholds; the closure body
+  chains "extract field" with "validate value" via `?`. The
+  closure is built in one function and called in another, so
+  the `?` propagation crosses a function boundary -- the case
+  the soundness fix locked in. Pins the legitimate lambda+`?`
+  pattern as part of the example suite.
+
+### Documentation site
+
+- **Cleaner landing page** with a light/dark toggle and a
+  hamburger nav that overlays the header on mobile (no
+  page-content shift on open). Single accent, no shadows, no
+  centered text. The dense first-impression page is gone; the
+  value props lead.
+- **Roadmap simplified.** "Known limitations" was removed (it
+  duplicated the README), and the "Where we are today" table
+  now has a single status column instead of side-by-side
+  "shipped" vs "not yet".
+
 ## [1.0.0-rc.0], 2026-05-19
 
 The first **release candidate** for Capa 1.0. The compiler

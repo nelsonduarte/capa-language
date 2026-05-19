@@ -466,6 +466,46 @@ to public.
   ``capa/transpiler/__init__.py``. 7 tests at
   ``tests/test_transpiler.py::TestQuestionMarkHoisting``.
 
+- [x] **`?` soundness fix (rc.1 iteration)**. Two related
+  holes closed:
+  - Analyzer now rejects `?` whose enclosing function or
+    lambda does not return `Result` / `Option`, with a
+    diagnostic that names the actual return type. Lambdas
+    push their own `current_return_type` in both block-body
+    and expression-body paths so the rule applies to the
+    lambda's own contract, not the outer function's. Closed
+    the "Err flows out of `-> Int`" type-violation leak.
+  - Transpiler wraps lambdas containing `?` with `@_capa_wrap`
+    (block-body) or `_capa_wrap(...)` (expression-body) so
+    the `_CapaTryEarlyReturn` raised by `_capa_try` is caught
+    at the lambda's own boundary. `_uses_try` now treats
+    `LambdaExpr` as a function boundary, mirroring `FunDecl`.
+  - Hoist extended to `VarStmt` and `AssignStmt` (every op,
+    not just `=`), and `_uses_exception_try` made defensive
+    (always emit the decorator when any `?` is in the
+    function). Closes the latent crash where
+    `var x = foo()?` / `x += foo()?` raised
+    `_CapaTryEarlyReturn` uncaught.
+  Implementation at `capa/analyzer/_expressions.py` +
+  `capa/transpiler/__init__.py` + `_expressions.py` +
+  `_statements.py`. 9 new tests across
+  `tests/test_analyzer.py::TestQuestionMarkEnclosingReturn`
+  and `tests/test_transpiler.py::TestQuestionMarkHoisting`.
+  Real-world demonstrator at `examples/quota_check.capa`.
+  Landed 2026-05-19.
+
+- [x] **Stdlib gaps (rc.1)**: `Fs.mkdir(path)`,
+  `Fs.list_dir(path)`, `Fs.is_dir(path)` close the three
+  daily-friction holes in the `Fs` capability (demos
+  previously shelled out via `Unsafe`); `List.sorted_by`
+  takes a `(a, b) -> Int` comparator and returns a stable
+  fresh sorted list; `String.trim_start` and
+  `String.trim_end` cover the asymmetric trims (`trim` was
+  the only one before). Implementation at
+  `capa/runtime/_capabilities.py` + `_list.py` +
+  `capa/transpiler/_methods.py` + `capa/builtins.py`.
+  Landed 2026-05-19.
+
 ---
 
 ## Code-quality maintenance (P2)
