@@ -1,0 +1,91 @@
+// libraries/capa_cli/example.capa
+//
+// A small CLI to demonstrate capa-cli. Parses a hardcoded
+// argument list so the smoke run is deterministic; a real
+// program would substitute ``env.args()`` (minus argv[0]).
+// The application has no Net, no Fs, no Unsafe; just Stdio.
+//
+// Run:
+//     capa --run libraries/capa_cli/example.capa
+
+import capa_cli.parser
+
+// Application logic. Takes only the parsed args (a pure value);
+// no capabilities flow through.
+fun describe(parsed: ParsedArgs, stdio: Stdio)
+    match parsed.positionals.get("name")
+        Some(name) -> stdio.println("Hello, ${name}!")
+        None       -> stdio.println("Hello, world!")
+
+    match parsed.flags.get("shout")
+        Some(true) -> stdio.println("(SHOUT MODE ENABLED)")
+        Some(false) -> stdio.println("(shout mode off)")
+        None        -> stdio.println("(shout mode unset)")
+
+    match parsed.options.get("output")
+        Some(path) -> stdio.println("Output destination: ${path}")
+        None       -> stdio.println("No output destination given")
+
+// Run the schema against one set of args and print the result.
+// Centralised here so we can show several invocations in `main`.
+fun run_one(stdio: Stdio, schema: ArgSchema, args: List<String>)
+    stdio.println("--- input: ${render_args(args)}")
+    match parse(schema, args)
+        Ok(parsed) -> describe(parsed, stdio)
+        Err(HelpRequested) -> stdio.println(format_help(schema))
+        Err(Missing(name)) ->
+            stdio.eprintln("error: missing required argument '${name}'")
+        Err(Unknown(arg)) ->
+            stdio.eprintln("error: unrecognised argument '${arg}'")
+        Err(NeedsValue(name)) ->
+            stdio.eprintln("error: option '${name}' needs a value")
+
+// Pretty-print an args list, "a b c" style, for the trace.
+fun render_args(args: List<String>) -> String
+    var out = ""
+    var first = true
+    for a in args
+        if first
+            out = a
+            first = false
+        else
+            out = out + " " + a
+    return out
+
+fun main(stdio: Stdio)
+    let schema = ArgSchema {
+        program: "greet",
+        summary: "say hello, optionally loudly",
+        positionals: [
+            Positional { name: "name", help: "who to greet" }
+        ],
+        flags: [
+            Flag { long: "shout", short: "s", help: "ALL CAPS the greeting" }
+        ],
+        options: [
+            Opt {
+                long: "output",
+                short: "o",
+                help: "write the greeting somewhere instead of stdout",
+                required: false
+            }
+        ]
+    }
+
+    // Four demo invocations to show each code path.
+
+    let demo1: List<String> = ["alice", "--shout", "--output", "out.txt"]
+    run_one(stdio, schema, demo1)
+    stdio.println("")
+
+    let demo2: List<String> = ["bob"]
+    run_one(stdio, schema, demo2)
+    stdio.println("")
+
+    // --help short-circuits parsing.
+    let demo3: List<String> = ["--help"]
+    run_one(stdio, schema, demo3)
+
+    // Missing required positional.
+    let demo4: List<String> = []
+    run_one(stdio, schema, demo4)
