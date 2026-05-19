@@ -381,27 +381,27 @@ class TestQuestionMarkHoisting(unittest.TestCase):
         )
         self.assertNotIn("_capa_try(xs.first()", code)
 
-    def test_hoisted_only_skips_capa_wrap(self):
-        # A function whose only ? is in a hoist-eligible position
-        # should NOT carry the @_capa_wrap decorator.
+    def test_hoisted_position_still_skips_capa_try_call(self):
+        # The hoist optimisation: a ? at a statement-top position
+        # (let / var / assign / return / expr-stmt) is lowered to an
+        # inline isinstance check, NOT a _capa_try(...) call. The
+        # @_capa_wrap decorator is now emitted defensively whenever
+        # any ? is in the function (even hoist-eligible ones), so
+        # the optimisation is observable at the call-site level
+        # rather than at the decorator level: _capa_try(...) is the
+        # slow path the hoist avoids.
         code = self._transpile(
             "fun first(xs: List<Int>) -> Option<Int>\n"
             "    let a = xs.first()?\n"
             "    return Some(a)\n"
         )
-        # Find the function definition; the previous line cannot be
-        # `@_capa_wrap`.
-        lines = code.split("\n")
-        for i, line in enumerate(lines):
-            if line.startswith("def first("):
-                self.assertNotEqual(
-                    lines[i - 1].strip(),
-                    "@_capa_wrap",
-                    "hoisted-only function should not get @_capa_wrap",
-                )
-                break
-        else:
-            self.fail("def first not found in transpiled output")
+        self.assertNotIn(
+            "_capa_try(xs.first()", code,
+            "hoist-eligible ? should not call _capa_try",
+        )
+        # The decorator is emitted as the soundness safety net for
+        # ANY ? in the function (defensive: see _uses_exception_try).
+        self.assertIn("@_capa_wrap", code)
 
     def test_expression_position_still_uses_capa_wrap(self):
         # `?` inside a sub-expression (here, a multiplication) is not
@@ -413,6 +413,83 @@ class TestQuestionMarkHoisting(unittest.TestCase):
         )
         self.assertIn("@_capa_wrap", code)
         self.assertIn("_capa_try(", code)
+
+    def test_question_mark_in_var_propagates_err(self):
+        # Regression: ``var x = foo()?`` used to crash at runtime
+        # because the transpiler did not hoist the Try value but
+        # the analyzer's _uses_exception_try also skipped the
+        # decorator, so the raised _CapaTryEarlyReturn escaped
+        # the function uncaught.
+        rc, out, err = run_capa(
+            "type Bad =\n"
+            "    Oops(String)\n"
+            "fun via(b: Bool) -> Result<Int, Bad>\n"
+            "    var x = produce(b)?\n"
+            "    return Ok(x + 1)\n"
+            "fun produce(b: Bool) -> Result<Int, Bad>\n"
+            "    if b\n"
+            "        return Err(Oops(\"boom\"))\n"
+            "    return Ok(42)\n"
+            "fun main(stdio: Stdio)\n"
+            "    match via(false)\n"
+            "        Ok(n) -> stdio.println(\"ok: ${n}\")\n"
+            "        Err(Oops(m)) -> stdio.println(\"err: ${m}\")\n"
+            "    match via(true)\n"
+            "        Ok(n) -> stdio.println(\"ok: ${n}\")\n"
+            "        Err(Oops(m)) -> stdio.println(\"err: ${m}\")\n"
+        )
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out, "ok: 43\nerr: boom\n")
+
+    def test_question_mark_in_assignment_propagates_err(self):
+        # Same regression as above, but for plain ``x = foo()?``.
+        rc, out, err = run_capa(
+            "type Bad =\n"
+            "    Oops(String)\n"
+            "fun via(b: Bool) -> Result<Int, Bad>\n"
+            "    var x = 0\n"
+            "    x = produce(b)?\n"
+            "    return Ok(x)\n"
+            "fun produce(b: Bool) -> Result<Int, Bad>\n"
+            "    if b\n"
+            "        return Err(Oops(\"boom\"))\n"
+            "    return Ok(7)\n"
+            "fun main(stdio: Stdio)\n"
+            "    match via(false)\n"
+            "        Ok(n) -> stdio.println(\"ok: ${n}\")\n"
+            "        Err(Oops(m)) -> stdio.println(\"err: ${m}\")\n"
+            "    match via(true)\n"
+            "        Ok(n) -> stdio.println(\"ok: ${n}\")\n"
+            "        Err(Oops(m)) -> stdio.println(\"err: ${m}\")\n"
+        )
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out, "ok: 7\nerr: boom\n")
+
+    def test_question_mark_in_compound_assignment(self):
+        # `x += foo()?` is hoisted: tmp = foo(); if Err return tmp;
+        # x += tmp.value. The previous slow path (op-passed to
+        # _capa_try) crashed because the decorator was skipped.
+        rc, out, err = run_capa(
+            "type Bad =\n"
+            "    Oops(String)\n"
+            "fun via(b: Bool) -> Result<Int, Bad>\n"
+            "    var x = 10\n"
+            "    x += produce(b)?\n"
+            "    return Ok(x)\n"
+            "fun produce(b: Bool) -> Result<Int, Bad>\n"
+            "    if b\n"
+            "        return Err(Oops(\"boom\"))\n"
+            "    return Ok(5)\n"
+            "fun main(stdio: Stdio)\n"
+            "    match via(false)\n"
+            "        Ok(n) -> stdio.println(\"ok: ${n}\")\n"
+            "        Err(Oops(m)) -> stdio.println(\"err: ${m}\")\n"
+            "    match via(true)\n"
+            "        Ok(n) -> stdio.println(\"ok: ${n}\")\n"
+            "        Err(Oops(m)) -> stdio.println(\"err: ${m}\")\n"
+        )
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out, "ok: 15\nerr: boom\n")
 
     def test_question_mark_works_on_option(self):
         # Regression: ? on Option<T> used to raise

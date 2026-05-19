@@ -36,12 +36,38 @@ class _StatementsMixin:
         if isinstance(s, A.LetStmt):
             self._emit_let(s)
         elif isinstance(s, A.VarStmt):
-            value = self._emit_expr(s.value)
-            self.em.write(f"{_safe_ident(s.name)} = {value}")
+            if isinstance(s.value, A.Try):
+                # ``var x = expr?`` lowers inline, same as LetStmt:
+                # hoist expr to a temp, return early on the Err /
+                # None_ path, bind the unwrapped payload. Skips the
+                # _capa_try / @_capa_wrap machinery entirely, and
+                # restores correctness too -- _uses_exception_try
+                # already assumed this position was hoist-eligible
+                # and suppressed the decorator, so without this
+                # hoist the raised _CapaTryEarlyReturn would escape
+                # the function uncaught.
+                tmp = self._emit_try_check(s.value.expr)
+                self.em.write(f"{_safe_ident(s.name)} = {tmp}.value")
+            else:
+                value = self._emit_expr(s.value)
+                self.em.write(f"{_safe_ident(s.name)} = {value}")
         elif isinstance(s, A.AssignStmt):
-            target = self._emit_expr(s.target)
-            value = self._emit_expr(s.value)
-            self.em.write(f"{target} {s.op} {value}")
+            if isinstance(s.value, A.Try):
+                # ``target op= expr?`` for any op (``=``, ``+=``,
+                # ``-=``, etc). Hoist the RHS to a temp, propagate
+                # Err / None_ early, and apply the op to the unwrapped
+                # payload. Without this hoist the slow ``_capa_try``
+                # path raises an exception that no decorator catches
+                # (the analyzer's _uses_exception_try walk does not
+                # see AssignStmt as needing the wrap; with the hoist
+                # in place that assumption becomes correct).
+                target = self._emit_expr(s.target)
+                tmp = self._emit_try_check(s.value.expr)
+                self.em.write(f"{target} {s.op} {tmp}.value")
+            else:
+                target = self._emit_expr(s.target)
+                value = self._emit_expr(s.value)
+                self.em.write(f"{target} {s.op} {value}")
         elif isinstance(s, A.IfStmt):
             self._emit_if(s)
         elif isinstance(s, A.WhileStmt):

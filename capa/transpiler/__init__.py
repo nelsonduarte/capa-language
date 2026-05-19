@@ -320,44 +320,26 @@ def _uses_try(node) -> bool:
 
 
 def _uses_exception_try(node) -> bool:
-    """Same intent as :func:`_uses_try`, but exempts ``?`` that sits
-    directly in a position the transpiler hoists statically: the
-    value of a ``LetStmt`` / ``ReturnStmt`` / ``ExprStmt``. Returns
-    True only when at least one ``?`` would still take the
-    exception-based path, in which case the function needs the
-    ``@_capa_wrap`` decorator.
+    """Whether the function body needs the ``@_capa_wrap`` decorator.
 
-    Functions whose ``?`` uses are all hoist-eligible skip the
-    decorator and save the one wrap call per invocation plus the
-    raise/catch on the Err / None_ path.
+    The decorator is the soundness safety net for ``?``: it catches
+    the internal ``_CapaTryEarlyReturn`` exception that ``_capa_try``
+    raises on the Err / None_ path. The transpiler additionally
+    *hoists* ``?`` inline at known statement-top positions
+    (``LetStmt``, ``VarStmt``, ``AssignStmt``, ``ReturnStmt``,
+    ``ExprStmt``) so the common cases avoid the exception cost; but
+    those hoists are an optimisation, not a soundness requirement.
+
+    For correctness we simply emit the decorator whenever there is
+    any ``?`` anywhere in the function body. The cost is one Python
+    call frame per invocation of a function-with-?, which is
+    negligible; the alternative -- enumerating every position the
+    transpiler hoists and keeping the two lists in sync -- is the
+    fragile pattern that previously left ``var x = foo()?``,
+    ``x = foo()?``, and ``x += foo()?`` raising uncaught
+    ``_CapaTryEarlyReturn`` at runtime.
     """
-    if isinstance(node, A.FunDecl):
-        return False  # function boundary
-    if isinstance(node, A.LetStmt):
-        inner = node.value.expr if isinstance(node.value, A.Try) else node.value
-        return _uses_try(inner)
-    if isinstance(node, A.ReturnStmt):
-        if node.value is None:
-            return False
-        inner = (
-            node.value.expr if isinstance(node.value, A.Try) else node.value
-        )
-        return _uses_try(inner)
-    if isinstance(node, A.ExprStmt):
-        inner = node.expr.expr if isinstance(node.expr, A.Try) else node.expr
-        return _uses_try(inner)
-    # Generic recursion through children.
-    if isinstance(node, list):
-        return any(_uses_exception_try(x) for x in node)
-    if isinstance(node, tuple):
-        return any(_uses_exception_try(x) for x in node)
-    if hasattr(node, "__dataclass_fields__"):
-        for f in node.__dataclass_fields__:
-            if f == "pos":
-                continue
-            if _uses_exception_try(getattr(node, f)):
-                return True
-    return False
+    return _uses_try(node)
 
 
 def transpile(
