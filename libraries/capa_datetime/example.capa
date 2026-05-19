@@ -1,0 +1,50 @@
+// libraries/capa_datetime/example.capa
+//
+// Walkthrough of capa-datetime's surface using deterministic
+// inputs. The example reads the current time via the `Clock`
+// capability AND also exercises a fixed timestamp so the
+// smoke output stays comparable across runs.
+
+import capa_datetime.datetime
+
+fun show_timestamp(stdio: Stdio, label: String, secs: Float)
+    stdio.println("--- ${label}: ${secs} ---")
+    stdio.println("iso8601:    ${format_iso8601(secs)}")
+    stdio.println("date only:  ${format_date(secs)}")
+    stdio.println("time only:  ${format_time(secs)}")
+    let c = to_components(secs)
+    stdio.println("components: year=${c.year} month=${c.month} day=${c.day} hour=${c.hour} minute=${c.minute} second=${c.second}")
+    let round_trip = from_components(c)
+    stdio.println("round-trip: ${round_trip}")
+    stdio.println("")
+
+fun main(stdio: Stdio, clock: Clock)
+    // A fixed epoch instant: 2026-05-19T14:30:00Z is
+    // 1779201000 seconds since 1970-01-01.
+    show_timestamp(stdio, "fixed 2026-05-19T14:30:00Z", 1779201000.0)
+
+    // Same value re-derived via the inverse helper: builds
+    // a Components struct by hand and converts.
+    let manual = Components {
+        year: 2026, month: 5, day: 19,
+        hour: 14, minute: 30, second: 0
+    }
+    show_timestamp(stdio, "from manual components", from_components(manual))
+
+    // Round-trip through parse: feed the ISO string back in.
+    match parse_iso8601("2026-05-19T14:30:00Z")
+        Ok(secs) -> show_timestamp(stdio, "parsed from string", secs)
+        Err(InvalidFormat(msg)) -> stdio.eprintln("parse error: ${msg}")
+
+    // Parse error path.
+    match parse_iso8601("not a date")
+        Ok(_)  -> stdio.println("unexpected: parsed garbage")
+        Err(InvalidFormat(msg)) -> stdio.println("parse 'not a date' rejected as expected: ${msg}")
+    stdio.println("")
+
+    // Live read via Clock. The output line is variable; the
+    // surrounding lines stay deterministic so the smoke test
+    // can match against the static parts only.
+    let now = clock.now_secs()
+    stdio.println("--- live clock.now_secs() ---")
+    stdio.println("now iso8601: ${format_iso8601(now)}")

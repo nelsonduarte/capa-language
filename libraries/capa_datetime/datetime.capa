@@ -1,0 +1,193 @@
+// libraries/capa_datetime/datetime.capa
+//
+// Pure-Capa datetime decomposition, formatting, and parsing.
+// Zero capabilities; the surface operates on `Float` seconds-
+// since-Unix-epoch (UTC), which is exactly what
+// `Clock.now_secs()` returns. A caller that wants "the current
+// year" calls `Clock.now_secs()` (Clock capability), then
+// passes the result through `to_components`.
+//
+// What v1 covers:
+//   - Decomposition: Float seconds -> Components (Y/M/D/h/m/s)
+//   - Inverse: Components -> Float seconds
+//   - ISO 8601 formatting: 2026-05-19T14:30:00Z
+//   - ISO 8601 parsing of the basic shape above (no
+//     fractional seconds, no offsets other than Z)
+//   - Date- and time-only formatters for convenience
+//
+// What v1 deliberately does not cover:
+//   - Time zones (everything is UTC)
+//   - Leap seconds
+//   - Fractional seconds in formatted output
+//   - Pre-1970 dates: the decomposition algorithm assumes a
+//     non-negative number of seconds. Pre-epoch timestamps
+//     would produce wrong results; reject would be better but
+//     we leave that to a future iteration.
+
+// =========================================================
+// Public types
+// =========================================================
+
+pub type Components {
+    year: Int,
+    month: Int,    // 1-12
+    day: Int,      // 1-31
+    hour: Int,     // 0-23
+    minute: Int,   // 0-59
+    second: Int    // 0-59 (no leap seconds)
+}
+
+pub type ParseError =
+    InvalidFormat(String)
+
+// =========================================================
+// Decomposition: Float seconds -> Components
+// =========================================================
+
+// Uses Howard Hinnant's days-from-civil algorithm in reverse:
+// given a non-negative number of days since 1970-01-01, return
+// the proleptic Gregorian Y/M/D. Time-of-day is the remainder
+// of the seconds count.
+pub fun to_components(secs: Float) -> Components
+    let total_secs = idiv_float(secs, 1.0)
+    let days = idiv(total_secs, 86400)
+    let day_remainder = total_secs - days * 86400
+    let hour = idiv(day_remainder, 3600)
+    let after_hour = day_remainder - hour * 3600
+    let minute = idiv(after_hour, 60)
+    let second = after_hour - minute * 60
+
+    // Hinnant's civil_from_days. Shift epoch to 0000-03-01
+    // (so the leap day falls at the end of a 400-year era).
+    let z = days + 719468
+    let era = idiv(z, 146097)
+    let doe = z - era * 146097
+    let yoe = idiv(doe - idiv(doe, 1460) + idiv(doe, 36524) - idiv(doe, 146096), 365)
+    var y = yoe + era * 400
+    let doy = doe - (365 * yoe + idiv(yoe, 4) - idiv(yoe, 100))
+    let mp = idiv(5 * doy + 2, 153)
+    let d = doy - idiv(153 * mp + 2, 5) + 1
+    let m = match mp < 10
+        true  -> mp + 3
+        false -> mp - 9
+    if m <= 2
+        y = y + 1
+    return Components {
+        year: y,
+        month: m,
+        day: d,
+        hour: hour,
+        minute: minute,
+        second: second
+    }
+
+// Inverse: Components -> Float seconds. Mirrors Hinnant's
+// days_from_civil. The Components struct is trusted; callers
+// should not pass nonsensical inputs (month=15, day=42, ...).
+pub fun from_components(c: Components) -> Float
+    var y = c.year
+    if c.month <= 2
+        y = y - 1
+    let m = c.month
+    let era = idiv(y, 400)
+    let yoe = y - era * 400
+    let m_adj = match m > 2
+        true  -> m - 3
+        false -> m + 9
+    let doy = idiv(153 * m_adj + 2, 5) + c.day - 1
+    let doe = yoe * 365 + idiv(yoe, 4) - idiv(yoe, 100) + doy
+    let days = era * 146097 + doe - 719468
+    let secs = days * 86400 + c.hour * 3600 + c.minute * 60 + c.second
+    return to_float(secs)
+
+// =========================================================
+// Formatting
+// =========================================================
+
+pub fun format_iso8601(secs: Float) -> String
+    let c = to_components(secs)
+    return "${pad4(c.year)}-${pad2(c.month)}-${pad2(c.day)}T${pad2(c.hour)}:${pad2(c.minute)}:${pad2(c.second)}Z"
+
+pub fun format_date(secs: Float) -> String
+    let c = to_components(secs)
+    return "${pad4(c.year)}-${pad2(c.month)}-${pad2(c.day)}"
+
+pub fun format_time(secs: Float) -> String
+    let c = to_components(secs)
+    return "${pad2(c.hour)}:${pad2(c.minute)}:${pad2(c.second)}"
+
+// =========================================================
+// Parsing ISO 8601
+// =========================================================
+//
+// Accepts the basic form: ``YYYY-MM-DDTHH:MM:SSZ``. Returns the
+// corresponding seconds-since-epoch as Float. Anything else
+// (date-only, fractional seconds, alternative offsets) is
+// out of scope for v1.
+
+pub fun parse_iso8601(s: String) -> Result<Float, ParseError>
+    if s.length() != 20
+        return Err(InvalidFormat("expected 'YYYY-MM-DDTHH:MM:SSZ' (20 chars), got ${s.length()}"))
+    let year = parse_int_substring(s, 0, 4)?
+    let m1 = expect_char(s, 4, "-")?
+    let month = parse_int_substring(s, 5, 7)?
+    let m2 = expect_char(s, 7, "-")?
+    let day = parse_int_substring(s, 8, 10)?
+    let m3 = expect_char(s, 10, "T")?
+    let hour = parse_int_substring(s, 11, 13)?
+    let m4 = expect_char(s, 13, ":")?
+    let minute = parse_int_substring(s, 14, 16)?
+    let m5 = expect_char(s, 16, ":")?
+    let second = parse_int_substring(s, 17, 19)?
+    let m6 = expect_char(s, 19, "Z")?
+    let c = Components {
+        year: year,
+        month: month,
+        day: day,
+        hour: hour,
+        minute: minute,
+        second: second
+    }
+    return Ok(from_components(c))
+
+// =========================================================
+// Internal helpers (private)
+// =========================================================
+
+// Integer division of two Ints, returning Int. Capa's `/`
+// promotes to Float; this wraps the conversion so the
+// algorithms above stay readable. Correct for non-negative
+// operands, which is the only case the v1 surface admits.
+fun idiv(a: Int, b: Int) -> Int
+    return to_int(to_float(a) / to_float(b))
+
+// Float-on-Float "trunc to int" via to_int; rounds toward
+// zero. For non-negative inputs this equals floor.
+fun idiv_float(a: Float, b: Float) -> Int
+    return to_int(a / b)
+
+fun pad2(n: Int) -> String
+    if n < 10
+        return "0${n}"
+    return "${n}"
+
+fun pad4(n: Int) -> String
+    if n < 10
+        return "000${n}"
+    if n < 100
+        return "00${n}"
+    if n < 1000
+        return "0${n}"
+    return "${n}"
+
+fun parse_int_substring(s: String, start: Int, end: Int) -> Result<Int, ParseError>
+    let part = s.substring(start, end)
+    match parse_int(part)
+        Some(n) -> return Ok(n)
+        None    -> return Err(InvalidFormat("expected integer at offset ${start}, got '${part}'"))
+
+fun expect_char(s: String, idx: Int, expected: String) -> Result<Unit, ParseError>
+    let got = s.substring(idx, idx + 1)
+    if got != expected
+        return Err(InvalidFormat("expected '${expected}' at offset ${idx}, got '${got}'"))
+    return Ok(())

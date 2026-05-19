@@ -1455,6 +1455,72 @@ class TestTranspileExamples(unittest.TestCase):
             self.assertIn(cap, loop["provably_excluded_capabilities"])
         self.assertFalse(loop["has_unsafe"])
 
+    def test_capa_datetime_library_compiles_and_runs(self):
+        # capa-datetime is pure (zero capabilities). Smoke-runs
+        # the example, verifies decomposition and round-trip
+        # are consistent, and that the fixed test instant
+        # 1779201000s (= 2026-05-19T14:30:00Z) decomposes and
+        # parses correctly.
+        import os
+        import subprocess
+        import sys
+        env = dict(os.environ)
+        env["CAPA_PATH"] = os.path.abspath("libraries")
+        r = subprocess.run(
+            [sys.executable, "-m", "capa", "--run",
+             "libraries/capa_datetime/example.capa"],
+            capture_output=True, text=True, encoding="utf-8",
+            env=env,
+        )
+        self.assertEqual(r.returncode, 0, r.stderr)
+        # Manual Components -> from_components -> back through
+        # to_components produces the same field values.
+        self.assertIn(
+            "year=2026 month=5 day=19 hour=14 minute=30 second=0",
+            r.stdout,
+        )
+        # ISO 8601 formatting of the fixed instant is exact.
+        self.assertIn("2026-05-19T14:30:00Z", r.stdout)
+        # Parser round-trip recovers the fixed instant.
+        self.assertIn("--- parsed from string: 1779201000.0 ---", r.stdout)
+        # Invalid input is rejected.
+        self.assertIn(
+            "parse 'not a date' rejected as expected", r.stdout,
+        )
+        # Live clock read happens (line begins with the prefix).
+        self.assertIn("now iso8601: ", r.stdout)
+
+    def test_capa_datetime_library_audit_claim_pure(self):
+        # No capabilities on the math; only show_timestamp uses
+        # Stdio; main is the wiring point with Stdio + Clock.
+        import json
+        import os
+        import subprocess
+        import sys
+        env = dict(os.environ)
+        env["CAPA_PATH"] = os.path.abspath("libraries")
+        r = subprocess.run(
+            [sys.executable, "-m", "capa", "--manifest",
+             "libraries/capa_datetime/example.capa"],
+            capture_output=True, text=True, encoding="utf-8",
+            env=env,
+        )
+        self.assertEqual(r.returncode, 0, r.stderr)
+        m = json.loads(r.stdout)
+        fns = {f["name"]: f for f in m["functions"]}
+        for pure_fn in (
+            "to_components", "from_components",
+            "format_iso8601", "format_date", "format_time",
+            "parse_iso8601",
+        ):
+            self.assertEqual(
+                fns[pure_fn]["declared_capabilities"], [],
+                f"{pure_fn} must be pure",
+            )
+        self.assertEqual(fns["show_timestamp"]["declared_capabilities"], ["Stdio"])
+        main_decl = set(fns["main"]["declared_capabilities"])
+        self.assertEqual(main_decl, {"Stdio", "Clock"})
+
     def test_capa_cli_library_compiles_and_runs(self):
         # The capa-cli seed library is pure: zero capabilities, no
         # Unsafe, no Python boundary. The smoke run exercises the
