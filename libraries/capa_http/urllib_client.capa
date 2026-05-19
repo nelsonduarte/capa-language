@@ -1,0 +1,168 @@
+// libraries/capa_http/urllib_client.capa
+//
+// Concrete implementor of the `Http` capability, backed by
+// Python's `urllib.request` via the Unsafe boundary. The
+// implementor struct (`UrllibHttpClient`) holds the Unsafe;
+// user code receives an `Http` and never sees the underlying
+// authority, which is the point.
+//
+// Factory: `make_urllib_client(unsafe)` bootstraps sys.path so
+// `urllib_helper.py` is importable (assumes the program runs
+// from the project root, with `libraries/capa_http/` reachable
+// on disk). Returns the client ready to be passed into
+// `Http`-typed parameters.
+
+import capa_http.http
+
+// =========================================================
+// Cap-bearing struct: Unsafe lives here, not in user code
+// =========================================================
+
+pub type UrllibHttpClient {
+    u: Unsafe
+}
+
+// Factory. Adds `libraries/capa_http/` to `sys.path` so the
+// `urllib_helper` module resolves; returns a client whose
+// `Unsafe` is the one the caller passed in.
+pub fun make_urllib_client(u: Unsafe) -> UrllibHttpClient
+    let sys_mod = py_import(u, "sys")
+    let os_mod  = py_import(u, "os")
+    let cwd     = py_invoke(u, os_mod.getcwd, [])
+    let lib_dir = py_invoke(u, os_mod.path.join, [cwd, "libraries", "capa_http"])
+    py_invoke(u, sys_mod.path.insert, [0, lib_dir])
+    return UrllibHttpClient { u: u }
+
+// =========================================================
+// The implementation
+// =========================================================
+//
+// `send` builds the request envelope as strings (py_invoke
+// requires a homogeneous List), routes through `urllib_helper`,
+// and decodes the JSON-wrapped response.
+
+impl Http for UrllibHttpClient
+    fun send(self, req: Request) -> Result<Response, HttpError>
+        let helper = py_import(self.u, "urllib_helper")
+        let headers_json = serialize_headers(req.headers)
+        let body_json    = serialize_body(req.body)
+        let raw = py_invoke(self.u, helper.send, [
+            req.method,
+            req.url,
+            headers_json,
+            body_json,
+            "${req.timeout_secs}"
+        ])
+        return parse_response_envelope(raw)
+
+// =========================================================
+// Serialisation: Capa side -> Python helper
+// =========================================================
+
+// Build the headers JSON: a list of [key, value] pairs.
+fun serialize_headers(headers: List<(String, String)>) -> String
+    var pairs: List<JsonValue> = []
+    for h in headers
+        let (k, v) = h
+        pairs.push(JArr([JStr(k), JStr(v)]))
+    return to_json(JArr(pairs))
+
+// Body wraps to a JSON null or a JSON string so the Python
+// helper can distinguish "no body" from "empty string body".
+fun serialize_body(body: Option<String>) -> String
+    match body
+        Some(b) -> return to_json(JStr(b))
+        None    -> return to_json(JNull)
+
+// =========================================================
+// Deserialisation: helper's JSON envelope -> Response / HttpError
+// =========================================================
+
+fun parse_response_envelope(raw: String) -> Result<Response, HttpError>
+    let v = match parse_json(raw)
+        Ok(jv)  -> jv
+        Err(e)  -> return Err(NetworkFailure("malformed helper response: ${e}"))
+    let m = expect_object(v, "envelope")?
+    let ok_jv = expect_field(m, "ok")?
+    let ok = expect_bool(ok_jv, "ok")?
+    if ok
+        return decode_success(m)
+    return decode_failure(m)
+
+fun decode_success(m: Map<String, JsonValue>) -> Result<Response, HttpError>
+    let status_jv = expect_field(m, "status")?
+    let status = expect_int(status_jv, "status")?
+    let body_jv = expect_field(m, "body")?
+    let body = expect_string(body_jv, "body")?
+    let headers_jv = expect_field(m, "headers")?
+    let headers = decode_headers(headers_jv)?
+    return Ok(Response {
+        status: status,
+        headers: headers,
+        body: body
+    })
+
+fun decode_failure(m: Map<String, JsonValue>) -> Result<Response, HttpError>
+    let kind_jv = expect_field(m, "kind")?
+    let kind = expect_string(kind_jv, "kind")?
+    let msg_jv = expect_field(m, "msg")?
+    let msg = expect_string(msg_jv, "msg")?
+    if kind == "invalid"
+        return Err(InvalidRequest(msg))
+    return Err(NetworkFailure(msg))
+
+fun decode_headers(v: JsonValue) -> Result<List<(String, String)>, HttpError>
+    let arr = expect_array(v, "headers")?
+    var out: List<(String, String)> = []
+    for pair_jv in arr
+        let pair_arr = expect_array(pair_jv, "header pair")?
+        if pair_arr.length() < 2
+            return Err(NetworkFailure("header pair has fewer than 2 elements"))
+        let k_opt = pair_arr.get(0)
+        let v_opt = pair_arr.get(1)
+        let k_jv = match k_opt
+            Some(jv) -> jv
+            None     -> return Err(NetworkFailure("header key missing"))
+        let v_jv = match v_opt
+            Some(jv) -> jv
+            None     -> return Err(NetworkFailure("header value missing"))
+        let k = expect_string(k_jv, "header key")?
+        let value = expect_string(v_jv, "header value")?
+        out.push((k, value))
+    return Ok(out)
+
+// =========================================================
+// Tiny Option-to-Result lifters. Pure; no capabilities.
+// Each names which field was being decoded so the error
+// message points the user at the right place in the envelope.
+// =========================================================
+
+fun expect_field(m: Map<String, JsonValue>, key: String) -> Result<JsonValue, HttpError>
+    match m.get(key)
+        Some(jv) -> return Ok(jv)
+        None     -> return Err(NetworkFailure("missing field '${key}'"))
+
+fun expect_object(v: JsonValue, what: String) -> Result<Map<String, JsonValue>, HttpError>
+    match v.as_object()
+        Some(m) -> return Ok(m)
+        None    -> return Err(NetworkFailure("expected object for '${what}'"))
+
+fun expect_array(v: JsonValue, what: String) -> Result<List<JsonValue>, HttpError>
+    match v.as_array()
+        Some(a) -> return Ok(a)
+        None    -> return Err(NetworkFailure("expected array for '${what}'"))
+
+fun expect_string(v: JsonValue, what: String) -> Result<String, HttpError>
+    match v.as_string()
+        Some(s) -> return Ok(s)
+        None    -> return Err(NetworkFailure("expected string for '${what}'"))
+
+fun expect_int(v: JsonValue, what: String) -> Result<Int, HttpError>
+    match v.as_int()
+        Some(i) -> return Ok(i)
+        None    -> return Err(NetworkFailure("expected int for '${what}'"))
+
+fun expect_bool(v: JsonValue, what: String) -> Result<Bool, HttpError>
+    match v.as_bool()
+        Some(b) -> return Ok(b)
+        None    -> return Err(NetworkFailure("expected bool for '${what}'"))

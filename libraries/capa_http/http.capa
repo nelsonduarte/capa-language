@@ -1,0 +1,83 @@
+// libraries/capa_http/http.capa
+//
+// User-facing capability + types for HTTP. The Unsafe boundary
+// is contained in urllib_client.capa; programs that take `Http`
+// as a parameter declare exactly that authority and nothing
+// more. An auditor reading the manifest of a function that does
+// `http.send(req)` sees `[Http]`, not `[Unsafe]`.
+//
+// Status: capa-http v0.1 (seed library). Single-host attenuation,
+// streaming bodies, redirects, and proxy support are not in v1;
+// the surface is the smallest API that lets a real program talk
+// to an HTTP API with custom methods, headers, and bodies.
+
+// A request to send. All fields are required (Capa v0.8 has no
+// default field values); use the helpers below for the common
+// shapes.
+pub type Request {
+    method: String,
+    url: String,
+    headers: List<(String, String)>,
+    body: Option<String>,
+    timeout_secs: Float
+}
+
+// A response received from the server. ``status`` is the
+// integer status code (200, 404, 500, ...); the caller decides
+// what to do with non-success codes. ``Http.send`` returns
+// ``Ok(Response)`` for any status the server actually responded
+// with; ``Err`` is reserved for transport-layer failures.
+pub type Response {
+    status: Int,
+    headers: List<(String, String)>,
+    body: String
+}
+
+// Distinguish the two ways an HTTP call can fail before a
+// Response is produced. ``NetworkFailure`` is "the request did
+// not reach a server or the server did not return a response":
+// DNS failure, connection refused, timeout, TLS handshake
+// failure, etc. ``InvalidRequest`` is "the local side rejected
+// the request before sending it": malformed URL, unsupported
+// method, etc.
+//
+// A 4xx or 5xx status from the server is NOT an error: it is a
+// successful Response with that status. The caller checks
+// ``response.status`` and acts accordingly.
+pub type HttpError =
+    NetworkFailure(String)
+    InvalidRequest(String)
+
+// The capability. A function declares ``http: Http`` to assert
+// "I can make HTTP requests"; nothing else.
+pub capability Http
+    fun send(self, req: Request) -> Result<Response, HttpError>
+
+// =========================================================
+// Convenience constructors for the common request shapes
+// =========================================================
+
+// ``get(url)``: a default GET request with a 30 s timeout and
+// no headers or body. The caller can attach headers manually
+// by building a Request struct directly.
+pub fun get(url: String) -> Request
+    return Request {
+        method: "GET",
+        url: url,
+        headers: [],
+        body: None,
+        timeout_secs: 30.0
+    }
+
+// ``post_json(url, body)``: POST with body and the standard
+// JSON Content-Type header. The body is the already-serialised
+// JSON string; the caller is responsible for ``to_json`` or
+// equivalent.
+pub fun post_json(url: String, body: String) -> Request
+    return Request {
+        method: "POST",
+        url: url,
+        headers: [("Content-Type", "application/json")],
+        body: Some(body),
+        timeout_secs: 30.0
+    }

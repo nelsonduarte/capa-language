@@ -1,0 +1,61 @@
+// libraries/capa_http/example.capa
+//
+// Runnable example showing the user-facing surface of capa-http.
+// The headline shape:
+//
+//   - The Unsafe is constructed once in `main` and passed to
+//     `make_urllib_client`, which returns an `Http`.
+//   - The application logic (`fetch_demo`) declares `http: Http`
+//     and `stdio: Stdio`. No `Unsafe`. No `Net`. The auditor
+//     reading the manifest sees this function exercises HTTP
+//     and stdio; nothing more.
+//   - The Unsafe stays contained in the implementor; the
+//     manifest of `fetch_demo` is the bound.
+//
+// Run (requires network):
+//     capa --run libraries/capa_http/example.capa
+//
+// Audit:
+//     capa --manifest libraries/capa_http/example.capa
+
+import capa_http.http
+import capa_http.urllib_client
+
+// Application logic. Notice the signature: `Http` + `Stdio`,
+// nothing else. The Unsafe is invisible from here.
+//
+// The explicit ``let resp: Response`` annotation is load-bearing
+// in v0.8: Capa's method dispatcher does not yet resolve return
+// types for user-defined capability methods (only built-ins),
+// so without the annotation ``resp`` would be typed as
+// TyUnknown and any further String / Map method dispatch on
+// ``resp.body`` would fall back to a raw Python call.
+fun fetch_demo(http: Http, stdio: Stdio) -> Result<Unit, HttpError>
+    let req = get("https://httpbin.org/get")
+    let resp: Response = http.send(req)?
+    stdio.println("HTTP ${resp.status}")
+    stdio.println("body length: ${resp.body.length()}")
+    return Ok(())
+
+// POST example: send a small JSON body and read the echo back.
+fun post_demo(http: Http, stdio: Stdio) -> Result<Unit, HttpError>
+    let body = "{\"name\": \"capa\", \"role\": \"language\"}"
+    let req = post_json("https://httpbin.org/post", body)
+    let resp: Response = http.send(req)?
+    stdio.println("POST HTTP ${resp.status}")
+    return Ok(())
+
+// Wiring. Unsafe is acquired once, the client is built, the
+// app code is called with the cap-typed surface.
+fun main(stdio: Stdio, u: Unsafe)
+    let http = make_urllib_client(u)
+
+    match fetch_demo(http, stdio)
+        Ok(_)  -> stdio.println("GET demo: ok")
+        Err(NetworkFailure(msg)) -> stdio.eprintln("GET network: ${msg}")
+        Err(InvalidRequest(msg)) -> stdio.eprintln("GET invalid: ${msg}")
+
+    match post_demo(http, stdio)
+        Ok(_)  -> stdio.println("POST demo: ok")
+        Err(NetworkFailure(msg)) -> stdio.eprintln("POST network: ${msg}")
+        Err(InvalidRequest(msg)) -> stdio.eprintln("POST invalid: ${msg}")

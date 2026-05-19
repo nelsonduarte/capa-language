@@ -1455,6 +1455,48 @@ class TestTranspileExamples(unittest.TestCase):
             self.assertIn(cap, loop["provably_excluded_capabilities"])
         self.assertFalse(loop["has_unsafe"])
 
+    def test_capa_http_library_compiles_and_audit_claim_holds(self):
+        # The capa-http seed library demonstrates the canonical
+        # "user-defined cap + Unsafe-bearing impl" pattern. Two
+        # claims to pin so the discipline does not regress:
+        #
+        #   1. The library example compiles with CAPA_PATH pointing
+        #      at libraries/.
+        #   2. The application functions (fetch_demo, post_demo)
+        #      declare only [Http, Stdio] in the manifest. The
+        #      Unsafe is contained in make_urllib_client / main.
+        import json
+        import os
+        import subprocess
+        import sys
+        env = dict(os.environ)
+        env["CAPA_PATH"] = os.path.abspath("libraries")
+        r = subprocess.run(
+            [sys.executable, "-m", "capa", "--manifest",
+             "libraries/capa_http/example.capa"],
+            capture_output=True, text=True, encoding="utf-8",
+            env=env,
+        )
+        self.assertEqual(r.returncode, 0, r.stderr)
+        m = json.loads(r.stdout)
+        fns = {f["name"]: f for f in m["functions"]}
+        for app_fn in ("fetch_demo", "post_demo"):
+            decl = fns[app_fn]["declared_capabilities"]
+            self.assertIn("Http", decl)
+            self.assertIn("Stdio", decl)
+            self.assertNotIn("Unsafe", decl)
+            self.assertNotIn("Net", decl)
+            self.assertFalse(fns[app_fn]["has_unsafe"])
+            # The Unsafe is excluded by the discipline, not absent
+            # by accident; surface it in the audit artefact.
+            self.assertIn(
+                "Unsafe", fns[app_fn]["provably_excluded_capabilities"],
+            )
+        # main wires the client: Unsafe + Stdio there is expected.
+        main_decl = fns["main"]["declared_capabilities"]
+        self.assertIn("Unsafe", main_decl)
+        self.assertIn("Stdio", main_decl)
+
     def test_llm_anthropic_real_manifest_run_chat_unsafe_free(self):
         # The agent-equivalent function `run_chat` is Unsafe-free
         # in the manifest, even though the program as a whole
