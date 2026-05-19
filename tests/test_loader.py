@@ -857,6 +857,47 @@ class TestModuleSystemEndToEnd(_TempDirMixin, unittest.TestCase):
         self.assertIn("cyclic import", result.stderr)
 
 
+class TestSubmoduleResolvesRootSiblings(_TempDirMixin, unittest.TestCase):
+    """A submodule (file under a subdirectory) must be able to
+    ``import x`` where ``x.capa`` lives next to the root file.
+    Without this, multi-directory projects (e.g. ``reporter.capa`` +
+    ``sinks/csv_sink.capa`` + ``domain.capa``) would force every
+    submodule to copy or re-export the root's siblings.
+
+    The loader handles this by adding the root file's directory to
+    its search paths once load_root is called.
+    """
+
+    def test_nested_module_imports_root_sibling(self):
+        # Project layout:
+        #   root.capa              (imports sinks.csv)
+        #   domain.capa            (pub fun used by sinks.csv)
+        #   sinks/csv.capa         (imports domain)
+        self._write(
+            "domain.capa",
+            "pub fun label() -> String\n"
+            "    return \"shared\"\n"
+        )
+        self._write(
+            "sinks/csv.capa",
+            "import domain\n"
+            "pub fun greet() -> String\n"
+            "    return \"hello, \" + label()\n"
+        )
+        root = self._write(
+            "root.capa",
+            "import sinks.csv\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(greet())\n"
+        )
+        result = subprocess.run(
+            [sys.executable, "-m", "capa", "--run", str(root)],
+            capture_output=True, text=True, encoding="utf-8",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "hello, shared\n")
+
+
 class TestRunArgsPassThrough(_TempDirMixin, unittest.TestCase):
     """`capa --run file.capa -- a b c` should forward ``a b c`` to
     the program, where ``env.args()`` returns them. Before the fix,

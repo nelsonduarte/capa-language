@@ -162,6 +162,14 @@ class ModuleLoader:
             root_path.parent if root_path.is_absolute() or root_path.exists()
             else Path.cwd()
         )
+        # Make the root file's directory a fallback search path so a
+        # nested submodule (e.g. ``sinks/csv_sink.capa``) can do
+        # ``import domain`` and find the sibling of the root
+        # (``./domain.capa``) without forcing the project to flatten
+        # its layout. Appended at lowest priority so it does not
+        # shadow CAPA_PATH or ./libraries; de-duped.
+        if root_dir not in self._search_paths:
+            self._search_paths.append(root_dir)
         try:
             tokens = Lexer(source, filename=filename).lex()
         except LexerError:
