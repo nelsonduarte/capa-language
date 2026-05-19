@@ -635,6 +635,48 @@ class TestTranspileImpl(unittest.TestCase):
         self.assertEqual(rc, 0, err)
         self.assertEqual(out, "7\n")
 
+    def test_inherent_impl_with_multiple_methods(self):
+        # ``impl Type`` (no trait/cap after) lets a type carry
+        # methods directly. Several methods + use of one method
+        # inside another via ``self.`` works end-to-end.
+        rc, out, err = run_capa(
+            'type Vec { x: Float, y: Float }\n'
+            'impl Vec\n'
+            '    fun length_sq(self) -> Float\n'
+            '        return self.x * self.x + self.y * self.y\n'
+            '    fun translated(self, dx: Float, dy: Float) -> Vec\n'
+            '        return Vec { x: self.x + dx, y: self.y + dy }\n'
+            'fun main(stdio: Stdio)\n'
+            '    let v = Vec { x: 3.0, y: 4.0 }\n'
+            '    stdio.println("${v.length_sq()}")\n'
+            '    let w = v.translated(1.0, 1.0)\n'
+            '    stdio.println("${w.x},${w.y}")\n'
+        )
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out, "25.0\n4.0,5.0\n")
+
+    def test_inherent_impl_on_sum_type(self):
+        # ``impl`` blocks attach methods to sum types just as to
+        # struct types. ``self`` in the method is the variant
+        # instance; the method dispatches via the dataclass shape.
+        rc, out, err = run_capa(
+            'type Shape =\n'
+            '    Circle(Float)\n'
+            '    Square(Float)\n'
+            'impl Shape\n'
+            '    fun area(self) -> Float\n'
+            '        return match self\n'
+            '            Circle(r) -> r * r * 3.14\n'
+            '            Square(l) -> l * l\n'
+            'fun main(stdio: Stdio)\n'
+            '    let c = Circle(2.0)\n'
+            '    let s = Square(3.0)\n'
+            '    stdio.println("${c.area()}")\n'
+            '    stdio.println("${s.area()}")\n'
+        )
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out, "12.56\n9.0\n")
+
 
 class TestMatchExpression(unittest.TestCase):
     """Match as expression, produces a value, usable in RHS of let/var/return,

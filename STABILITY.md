@@ -150,11 +150,19 @@ The `0.x` line is in beta. The plan to `1.0.0` is:
 1. **Burn down the open language gaps**. Tracked in
    [`TODO.md`](TODO.md) and the GitHub issue tracker. The
    current short list:
-   - inherent `impl T` blocks (today `impl T for Type`
-     requires a trait)
-   - `if`-as-expression beyond the ternary form
    - additional stdlib helpers as gaps surface from real
      downstream programs
+
+   Items considered and explicitly deferred to post-1.0:
+   - **Block-form `if`-as-expression**. Only the ternary
+     form (`if cond then a else b`) is an expression today;
+     block-form `if` is a statement. The workaround is
+     `let x = match cond { true -> ..., false -> ... }`
+     (or its multi-line variant), which the block-as-
+     expression match-arm rule already supports. The
+     workaround is clean enough that elevating block-form
+     `if` to an expression does not justify the parser +
+     analyzer surgery before 1.0.
 2. **Finish package-manager round-out**: `capa add`,
    `capa install --frozen`, transitive resolution. The MVP
    (manifest + git fetch + lock) shipped in

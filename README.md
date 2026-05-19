@@ -184,7 +184,7 @@ the audit footprint.
 capa/                 # Python package: compiler + runtime
   lexer/  parser/  analyzer/  transpiler/  runtime/
   manifest/  docgen/  lsp/    cli.py
-tests/                # 1048 unit, end-to-end, and property tests
+tests/                # 1050 unit, end-to-end, and property tests
 examples/             # .capa programs (basics, CVE case studies, LLM sandbox)
 libraries/            # seed libraries (capa_cli, capa_datetime, capa_log, capa_http)
 docs/                 # public website (HTML) + design writeups (.md)
@@ -203,7 +203,7 @@ commitment that will start with `1.0.0` is documented in
 breaking changes require a major bump, deprecations get one
 minor release of warning first".
 
-**1048 tests** spanning the lexer, parser, analyzer, transpiler,
+**1050 tests** spanning the lexer, parser, analyzer, transpiler,
 LSP, formatter, attribute-schema validation, package manager,
 and Hypothesis-based property tests. The transpiler suite
 actually executes the generated Python and checks stdout; the

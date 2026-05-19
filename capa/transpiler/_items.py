@@ -81,6 +81,13 @@ class _ItemsMixin:
         # - Zero payloads: empty class, instantiated as Variant().
         # - One payload: dataclass with a single ``value`` field.
         # - N payloads: dataclass with ``f0``, ``f1``, ... fields.
+        # We also remember the sum type's variant names so a later
+        # `impl T { ... }` block on this type can attach its methods
+        # to every variant class (the type alias Python emits is a
+        # ``typing.Union`` and cannot be monkey-patched).
+        if not hasattr(self, "_sum_variant_names"):
+            self._sum_variant_names: dict[str, list[str]] = {}
+        self._sum_variant_names[t.name] = [v.name for v in t.variants]
         for v in t.variants:
             n = len(v.payloads)
             if n == 0:
@@ -136,6 +143,12 @@ class _ItemsMixin:
         # is semantic in Capa and statically checked - at runtime, it
         # is enough that the methods exist.
         target = impl.type_name
+        # If ``target`` is a sum type, the Python alias we emitted is
+        # a ``typing.Union`` and is not patchable. The variant
+        # *classes* are - attach the method to each one so any
+        # variant instance dispatches correctly.
+        sum_variants = getattr(self, "_sum_variant_names", {})
+        attach_targets = sum_variants.get(target, [target])
         for m in impl.methods:
             params = ", ".join(_safe_ident(p.name) for p in m.params)
             if _uses_exception_try(m.body):
@@ -144,7 +157,10 @@ class _ItemsMixin:
             self.em.indent()
             self._emit_block_body(m.body)
             self.em.dedent()
-            self.em.write(f"{target}.{_safe_ident(m.name)} = _{target}_{m.name}")
+            for at in attach_targets:
+                self.em.write(
+                    f"{at}.{_safe_ident(m.name)} = _{target}_{m.name}"
+                )
             self.em.blank()
 
     def _emit_fun(self, fn: A.FunDecl) -> None:

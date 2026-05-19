@@ -248,8 +248,21 @@ In decreasing precedence:
 let cat = if cond then e1 else e2
 ```
 
-The `then` keyword is the discriminator, without it, `if` is a
-statement.
+The `then` keyword is the discriminator: without it, `if` is a
+statement. Only the ternary form is an expression; block-form
+`if`/`elif`/`else` always produces `()`.
+
+When the branches need intermediate `let` bindings, use the
+block-as-expression form of `match` instead (see §4.3):
+
+```capa
+let watchlist = match opts.watchlist_path.is_empty()
+    true  -> default_watchlist()
+    false ->
+        let loaded = load_watchlist(read_fs, opts.watchlist_path)?
+        log.info("loaded ${loaded.length()} prefixes")
+        loaded
+```
 
 ### 4.3. `match` as an expression
 
