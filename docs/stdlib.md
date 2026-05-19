@@ -264,6 +264,18 @@ fun square_root(unsafe: Unsafe, x: Float) -> Float
 | `read(p: String)` | `Result<String, IoError>` | Read the entire file |
 | `write(p: String, c: String)` | `Result<(), IoError>` | Write (overwrites) |
 | `exists(p: String)` | `Bool` | Check whether the path exists |
+| `restrict_to(prefix: String)` | `Fs` | Attenuate: a fresh `Fs` allowing only paths under `prefix`. Monotonic. |
+| `allows(path: String)` | `Bool` | Test whether the current `Fs` would permit `path`. |
+
+Both the stored allowed prefixes and the queried paths are passed
+through `os.path.realpath` (resolves `..` / `.` segments and
+follows symlinks) before comparison; the containment check is
+path-aware, not string-prefix. Traversal patterns
+(`data/../etc/passwd`) and symlinks pointing outside the prefix
+are both denied. A TOCTOU race between `allows()` and the
+underlying `open()` remains possible against an actively
+hostile attacker; fully closing it requires open-at-dirfd
+semantics, planned for a later iteration.
 
 ### `Env`
 

@@ -13,10 +13,10 @@ program (declarations, attenuation in the program body) live in
 """
 
 import os
+import sys
 import tempfile
-import unittest
-
 import time
+import unittest
 
 from capa.runtime import Fs, Env, Net, Clock, Random, Ok, Err, None_
 
@@ -99,6 +99,94 @@ class TestFsAttenuation(unittest.TestCase):
             self.assertFalse(fs.exists(outside_path))
         finally:
             os.unlink(outside_path)
+
+
+class TestFsPathCanonicalisation(unittest.TestCase):
+    """``Fs`` resolves both stored prefixes and queried paths through
+    ``os.path.realpath`` before comparing. These tests cover the
+    classic traversal + symlink bypasses against a plain string-
+    prefix implementation.
+    """
+
+    def test_traversal_with_dot_dot_is_denied(self):
+        # Prefix is the temp dir; query uses ``..`` to escape.
+        # A naive ``path.startswith(prefix)`` would have allowed
+        # this since the string does start with the prefix.
+        with tempfile.TemporaryDirectory() as base:
+            fs = Fs().restrict_to(base)
+            escape = os.path.join(base, "..", "etc", "passwd")
+            self.assertFalse(fs.allows(escape))
+
+    def test_traversal_returning_to_prefix_is_allowed(self):
+        # ``data/sub/../file`` resolves back to ``data/file`` which
+        # is still inside the prefix.
+        with tempfile.TemporaryDirectory() as base:
+            sub = os.path.join(base, "sub")
+            os.mkdir(sub)
+            fs = Fs().restrict_to(base)
+            round_trip = os.path.join(base, "sub", "..", "file.txt")
+            self.assertTrue(fs.allows(round_trip))
+
+    def test_symlink_pointing_outside_is_denied(self):
+        # POSIX-only: Windows symlinks need admin rights in most
+        # configurations, so skip there.
+        if not hasattr(os, "symlink") or sys.platform.startswith("win"):
+            self.skipTest("symlinks not reliably available")
+        with tempfile.TemporaryDirectory() as base:
+            target_dir = tempfile.mkdtemp(prefix="capa-outside-")
+            target = os.path.join(target_dir, "secret.txt")
+            with open(target, "w") as f:
+                f.write("nope")
+            link = os.path.join(base, "shortcut")
+            try:
+                os.symlink(target, link)
+            except (OSError, NotImplementedError):
+                self.skipTest("symlink creation refused by OS")
+            try:
+                fs = Fs().restrict_to(base)
+                self.assertFalse(fs.allows(link))
+                self.assertIsInstance(fs.read(link), Err)
+            finally:
+                os.unlink(link)
+                os.unlink(target)
+                os.rmdir(target_dir)
+
+    def test_symlink_inside_prefix_is_allowed(self):
+        if not hasattr(os, "symlink") or sys.platform.startswith("win"):
+            self.skipTest("symlinks not reliably available")
+        with tempfile.TemporaryDirectory() as base:
+            real = os.path.join(base, "real.txt")
+            with open(real, "w") as f:
+                f.write("inside")
+            link = os.path.join(base, "alias")
+            try:
+                os.symlink(real, link)
+            except (OSError, NotImplementedError):
+                self.skipTest("symlink creation refused by OS")
+            try:
+                fs = Fs().restrict_to(base)
+                self.assertTrue(fs.allows(link))
+                self.assertIsInstance(fs.read(link), Ok)
+            finally:
+                os.unlink(link)
+                os.unlink(real)
+
+    def test_prefix_normalises_trailing_separator(self):
+        # ``data`` and ``data/`` should behave identically.
+        with tempfile.TemporaryDirectory() as base:
+            fs1 = Fs().restrict_to(base)
+            fs2 = Fs().restrict_to(base + os.sep)
+            target = os.path.join(base, "x.txt")
+            self.assertEqual(fs1.allows(target), fs2.allows(target))
+            self.assertTrue(fs1.allows(target))
+
+    def test_relative_prefix_canonicalised_against_cwd(self):
+        # A relative prefix is resolved relative to the cwd at the
+        # moment of ``restrict_to``.
+        cwd = os.getcwd()
+        fs = Fs().restrict_to("subdir")
+        self.assertTrue(fs.allows(os.path.join(cwd, "subdir", "file")))
+        self.assertFalse(fs.allows(os.path.join(cwd, "other", "file")))
 
 
 # =============================================================

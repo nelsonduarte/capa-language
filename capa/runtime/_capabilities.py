@@ -31,6 +31,7 @@ import random
 import sys
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from ._list import CapaList
@@ -83,28 +84,49 @@ class Fs:
     fresh capability supplied by ``main``) or a frozen set of allowed
     path prefixes. ``restrict_to`` returns a new ``Fs`` whose
     authority is narrowed: the new restriction is *added* to the set,
-    and a path is permitted only if every prefix in the set is a
-    prefix of it. Attenuation is monotonic by construction, adding
-    a prefix can only narrow.
+    and a path is permitted only if it lies within every prefix in
+    the set. Attenuation is monotonic by construction.
 
-    Prefix matching is performed on the raw string. Callers should
-    pass absolute paths (or be consistent in their use of relative
-    paths); v1 does not normalise ``./`` or symlinks.
+    Prefix matching is **path-aware**, not string-prefix. Both the
+    stored allowed prefixes and the queried path are passed through
+    ``os.path.realpath`` (resolves ``..`` / ``.`` segments and
+    follows symlinks to their final target) before comparison; the
+    contains check uses ``pathlib.Path.is_relative_to``. This stops
+    the classic traversal attacks:
+
+        Fs().restrict_to("data/").allows("data/../etc/passwd")  # False
+        Fs().restrict_to("data/").allows(<symlink to /etc/passwd>)  # False
+
+    Known residual: a TOCTOU race between ``allows()`` and the
+    actual ``open()`` call can be exploited by swapping a symlink in
+    between. Fully closing that gap needs ``O_NOFOLLOW`` + open-at-
+    dirfd, which is outside the v1 surface.
     """
 
     __slots__ = ("_allowed_prefixes",)
 
     def __init__(self, _allowed_prefixes=None):
+        # ``_allowed_prefixes`` is either None (unrestricted) or a
+        # frozenset of canonical absolute paths produced by
+        # ``os.path.realpath``.
         self._allowed_prefixes = _allowed_prefixes
 
     def restrict_to(self, prefix: str) -> "Fs":
+        canon = os.path.realpath(prefix)
         existing = self._allowed_prefixes or frozenset()
-        return Fs(_allowed_prefixes=existing | {prefix})
+        return Fs(_allowed_prefixes=existing | {canon})
 
     def allows(self, path: str) -> bool:
         if self._allowed_prefixes is None:
             return True
-        return all(path.startswith(p) for p in self._allowed_prefixes)
+        try:
+            canon = Path(os.path.realpath(path))
+        except (OSError, ValueError):
+            return False
+        for p in self._allowed_prefixes:
+            if not canon.is_relative_to(p):
+                return False
+        return True
 
     def _deny(self, op: str, path: str) -> "Err":
         return Err(IoError(
