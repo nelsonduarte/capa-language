@@ -52,7 +52,7 @@
         <a href="start.html" class="btn">Get started</a>
         <a href="https://github.com/nelsonduarte/capa-language" class="btn">GitHub</a>
     </div>
-    <p class="status">v0.8.4-beta · MIT · 1046 tests · hand-written compiler in Python</p>
+    <p class="status">v1.0.0-rc.0 · MIT · 1046 tests · hand-written compiler in Python</p>
 </section>
 
 <!-- =====================================================
@@ -60,28 +60,26 @@
 ===================================================== -->
 <section class="release-banner-wrap">
     <div class="release-banner">
-        <span class="release-tag">v0.8.4-beta</span>
+        <span class="release-tag">v1.0.0-rc.0</span>
         <span class="release-body">
-            <strong>Released 2026-05-18.</strong>
-            A <strong>diagnostic-correctness pass</strong>: five
-            false-negatives the analyser used to accept silently
-            are now compile-time errors. <code>?</code> on a value
-            that is not <code>Result</code> or <code>Option</code>;
-            a function declared <code>-&gt; T</code> with a code path
-            that does not <code>return</code>; a call expression whose
-            callee resolves to a non-function (e.g.
-            <code>let x = 5; x(2)</code>); a <code>match</code> arm
-            written after a guardless catch-all; calling an
-            <code>impl</code> method that was declared without a
-            <code>self</code> parameter via <code>receiver.method()</code>.
-            Each used to produce a confusing runtime error; each is
-            now caught at the source location with the actual type.
-            Plus a richer duplicate-binding hint that names the
-            previous binding's location and reminds you of the
-            <code>var x</code> + bare-assignment idiom, and a
-            <code>self.field</code> hint inside impl methods.
+            <strong>Released 2026-05-19.</strong>
+            The first <strong>release candidate</strong> for 1.0.
+            Language polish (block-as-expression match arms,
+            multi-payload variants, inherent <code>impl</code> on sum
+            types, recursive sum types confirmed); capability
+            discipline hardened (<code>Fs.restrict_to</code> now
+            canonicalises via <code>realpath</code>, closing the
+            <code>data/../etc/passwd</code> bypass); first
+            <strong>package manager</strong> (<code>capa.toml</code> +
+            <code>capa install</code> + <code>capa.lock</code>);
+            three seed libraries (<code>capa_cli</code>,
+            <code>capa_datetime</code>, <code>capa_log</code>)
+            extracted to standalone repos; three real downstream
+            programs in the org. <a href="https://github.com/nelsonduarte/capa-language/blob/main/STABILITY.md">STABILITY.md</a>
+            documents the post-1.0 commitment that starts the
+            moment 1.0.0 ships.
         </span>
-        <a class="release-link" href="https://github.com/nelsonduarte/capa-language/releases/tag/v0.8.4-beta">Read the notes &rarr;</a>
+        <a class="release-link" href="https://github.com/nelsonduarte/capa-language/releases/tag/v1.0.0-rc.0">Read the notes &rarr;</a>
     </div>
 </section>
 
@@ -372,7 +370,8 @@
             <summary>Is Capa production-ready?</summary>
             <p>
                 Not yet, but the gap is hardening rather than
-                completeness. v0.8.4-beta means the compiler runs,
+                completeness. v1.0.0-rc.0 means the surface is
+                feature-frozen pending feedback; the compiler runs,
                 the discipline is implemented end-to-end, the
                 module system is feature-complete (qualified
                 access, transitive imports, <code>pub</code>
@@ -604,7 +603,7 @@
             </ul>
         </div>
     </div>
-    <p class="colophon">Built by Nelson Duarte · v0.8.4-beta · MIT-licensed</p>
+    <p class="colophon">Built by Nelson Duarte · v1.0.0-rc.0 · MIT-licensed</p>
 </footer>
 
 </body>

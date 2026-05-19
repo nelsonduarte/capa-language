@@ -9,6 +9,161 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+## [1.0.0-rc.0], 2026-05-19
+
+The first **release candidate** for Capa 1.0. The compiler
+surface, the runtime API, the manifest + SBOM + VEX + SLSA
+emission shapes, the module loader, and the new package
+manager are now feature-frozen pending feedback. Breaking
+changes against this candidate are still possible (that is
+the point of an rc), but the stability commitment in
+[`STABILITY.md`](STABILITY.md) starts the moment `1.0.0`
+ships.
+
+Headline shifts since `0.8.4-beta`:
+
+### Language additions
+
+- **Block-as-expression match arms.** A match arm whose body
+  is a block that ends in a bare expression now contributes
+  that expression's value to the match. Lets `let x = match`
+  hold multi-line branches without a `var` + `if` rewrite.
+  (Was a daily friction in two downstream demos.)
+- **Variants with multiple payload types.** `Variant(A, B, C)`
+  is now legal in both type declarations and patterns. The
+  AST, parser, analyzer, transpiler, builtin `Result` /
+  `Option` / `JsonValue`, LSP hover, document symbols, and
+  docgen all updated together. `policy-eval` dropped three
+  wrapper structs after the migration.
+- **Inherent `impl Type`** (no trait or capability after the
+  name) now works for both struct and sum types. The sum-type
+  case used to crash because Python `typing.Union` is not
+  monkey-patchable; the transpiler now attaches methods to
+  every variant class instead of the alias.
+- **Recursive sum types** (a variant whose payload references
+  the type being defined) confirmed working end-to-end and
+  exercised by the new `policy-eval` demo's `Condition` AST.
+
+### Capability discipline
+
+- **`Fs.restrict_to` is now path-aware**, not string-prefix.
+  Both the stored allowed prefixes and the queried path are
+  canonicalised via `os.path.realpath` (resolves `..` segments
+  and follows symlinks to their final target) before the
+  `pathlib.Path.is_relative_to` containment check. Closes the
+  `data/../etc/passwd` and symlink-out bypasses. A TOCTOU race
+  remains and is documented; closing it needs open-at-dirfd.
+
+### Module system + package manager
+
+- **Submodule can `import` a sibling of the root file.**
+  Multi-directory projects (`sinks/csv_sink.capa` importing
+  `domain` at the project root) now work without extra
+  configuration. The loader adds the root file's directory
+  to its search paths once `load_root` is called.
+- **`capa install` + `capa.toml` + `capa.lock`**. A minimal
+  package manager: declare git or path dependencies in
+  `capa.toml`, run `capa install`, the loader picks up
+  `./vendor/` automatically when the manifest declares git
+  deps. Strict TOML parser, idempotent re-install across
+  pin changes, Windows-friendly rmtree on `.git/objects/pack`
+  read-only files. Documented in
+  [`docs/packages.md`](docs/packages.md).
+- **Loader resolution order is now spelled out**: importer-
+  local, `CAPA_PATH`, `./vendor/` (when `capa.toml` declares
+  a git dep), path-dep parents, `./libraries/`, root-file
+  directory.
+
+### CLI
+
+- **Args after `--` are forwarded** to the program: `capa
+  --run myprog.capa -- input.json --verbose` puts `["input.json",
+  "--verbose"]` in `env.args()`. `capa --watch` carries the
+  passthrough across the subprocess respawn.
+- **`./libraries/` auto-discovered** in cwd when present, no
+  `CAPA_PATH` needed. Mirrors the `node_modules` / `vendor`
+  conventions.
+
+### Seed library ecosystem
+
+Three seed libraries extracted to standalone repos and
+consumed via the package manager:
+
+- [`capa_cli`](https://github.com/nelsonduarte/capa_cli)
+  `v0.1` - argument parser
+- [`capa_datetime`](https://github.com/nelsonduarte/capa_datetime)
+  `v0.1` - ISO 8601 + Y/M/D/h/m/s arithmetic
+- [`capa_log`](https://github.com/nelsonduarte/capa_log)
+  `v0.1` - levelled logging via a `Logger` capability
+
+The in-tree copies under `libraries/capa_{cli,datetime,log}`
+are deleted. `capa_http` stays in `libraries/` pending its
+own extraction.
+
+### Three real downstream programs
+
+To stress the language at non-toy scale (and to surface the
+bugs you can't find with synthetic tests), three substantial
+programs in standalone repos:
+
+- [`audit-trail-reporter`](https://github.com/nelsonduarte/audit-trail-reporter)
+  - AML compliance toolkit: four detection rules, four
+    report sinks, attenuated read+write `Fs` split. 1100+
+    lines across 9 files.
+- [`sbom-watch`](https://github.com/nelsonduarte/sbom-watch)
+  - SBOM operationaliser: cross-references a CycloneDX SBOM
+    against an OSV-style CVE database and a policy file.
+    700 lines.
+- [`policy-eval`](https://github.com/nelsonduarte/policy-eval)
+  - JSON-encoded policy-as-code engine. Tree-walk
+    interpreter over a recursive `Condition` AST.
+
+Writing these surfaced (and fixed) seven distinct gaps in the
+language: multi-statement match arms, multi-payload variants,
+path canonicalisation, UPPERCASE-as-identifier transpilation,
+multi-directory module resolution, `--` arg passthrough, and
+inherent impl on sum types.
+
+### Documentation + commitment
+
+- New [`STABILITY.md`](STABILITY.md) documents the post-1.0
+  compatibility commitment: what surfaces are covered by
+  SemVer, what is explicitly outside (diagnostic wording,
+  transpiled-Python output shape, internal Python modules),
+  breaking / additive / patch classification, deprecation
+  window, security exception, pre-1.0 plan.
+- [`docs/packages.md`](docs/packages.md) added: manifest
+  schema, sources, lockfile semantics, library-extraction
+  recipe.
+- `docs/reference.md` §7 Imports completely rewritten (the
+  previous text claimed the module system was "reserved for
+  a future version"; it has been live for many releases).
+  Capability-discipline labels renamed from `(v1)/(v2)/(v3)`
+  to `Structural/Flow/Linear`.
+- `docs/roadmap.html` updated: "Native module system" and
+  "Package manager" both promoted to DONE.
+- README condensed from 1008 to ~280 lines; reference
+  content moved into `docs/`.
+
+### Explicitly deferred to post-1.0
+
+- **Block-form `if`-as-expression.** Only the ternary
+  `if cond then a else b` is an expression today. The
+  block-as-expression `match` form is a clean workaround.
+  Documented in `docs/reference.md` §4.2 and in STABILITY.md.
+
+### Numbers
+
+- **1046 tests** spanning lexer, parser, analyzer,
+  transpiler, LSP, formatter, attributes, dataflow, the
+  package manager, and Hypothesis-based property tests.
+  Green on Ubuntu / macOS / Windows.
+- **5 public repos** in the org (compiler + 3 seed libs +
+  the in-tree `capa_http`), 3 standalone downstream demos.
+- **First time** a Capa program can declare a `capa.toml`,
+  run `capa install`, and have its deps fetched + locked
+  by the toolchain.
+
 ## [0.8.4-beta], 2026-05-18
 
 A **diagnostic-correctness pass** on the analyser. Five
