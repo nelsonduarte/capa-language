@@ -270,6 +270,23 @@ let r = match scrutinee { pat1 -> expr1, pat2 -> expr2 }
 Both forms accept guards and or-patterns. All arms must produce
 compatible types.
 
+A block-body arm (multiple statements under a `pattern ->` line)
+produces a value when its final statement is a bare expression
+(block-as-expression, à la Rust):
+
+```capa
+let n = match key
+    "fast" -> 1
+    "slow" ->
+        let base = compute()
+        base * 2
+```
+
+If the block's final statement is not an expression (it ends in a
+`let`, `var`, assignment, `return`, etc.), the arm produces
+`()`; in that case, mixing it with a value-producing arm is a
+type error and the match must be used in statement position.
+
 The inline form's `{ ... }` opens immediately after the scrutinee.
 This collides syntactically with the struct-literal heuristic, to
 force a struct literal as the scrutinee, wrap it in parentheses:

@@ -179,18 +179,37 @@ class _ExpressionsMixin:
             else:
                 self.em.write(f"case {pat}:")
             self.em.indent()
-            if isinstance(arm.body, A.Block):
-                # For v1, blocks as arm body in expression context
-                # produce None. If the user wants a concrete value,
-                # they must use a single-line expr or an explicit return.
-                self._emit_block_body(arm.body)
-                self.em.write(f"{tmp} = None")
-            else:
-                body_code = self._emit_expr(arm.body)
-                self.em.write(f"{tmp} = {body_code}")
+            self._emit_arm_body_to(arm.body, tmp)
             self.em.dedent()
         self.em.dedent()
         return tmp
+
+    def _emit_arm_body_to(self, body, tmp: str) -> None:
+        """Emit a match arm body, assigning its value to ``tmp``.
+
+        Three shapes are handled:
+          * single-expression body (``Some(x) -> x + 1``): emit
+            ``tmp = <expr>``.
+          * block body whose last statement is an ``ExprStmt``:
+            emit the head statements, then assign the trailing
+            expression to ``tmp`` (block-as-expression semantics).
+          * other block body (ends in let, return, while, ...):
+            emit the block, then assign ``tmp = None`` so the
+            shape of the match expression stays well-formed.
+        """
+        if isinstance(body, A.Block):
+            stmts = body.stmts
+            if stmts and isinstance(stmts[-1], A.ExprStmt):
+                for s in stmts[:-1]:
+                    self._emit_stmt(s)
+                last_expr = self._emit_expr(stmts[-1].expr)
+                self.em.write(f"{tmp} = {last_expr}")
+            else:
+                self._emit_block_body(body)
+                self.em.write(f"{tmp} = None")
+        else:
+            body_code = self._emit_expr(body)
+            self.em.write(f"{tmp} = {body_code}")
 
     def _is_simple_variant_dispatch(self, m: A.MatchExpr) -> bool:
         """Returns True iff every arm in the match qualifies for the
@@ -242,12 +261,7 @@ class _ExpressionsMixin:
                 check = self._isinstance_check(scrut_tmp, classes)
                 self.em.write(f"{keyword} {check}:")
             self.em.indent()
-            if isinstance(arm.body, A.Block):
-                self._emit_block_body(arm.body)
-                self.em.write(f"{tmp} = None")
-            else:
-                body_code = self._emit_expr(arm.body)
-                self.em.write(f"{tmp} = {body_code}")
+            self._emit_arm_body_to(arm.body, tmp)
             self.em.dedent()
             if emitted_else:
                 break

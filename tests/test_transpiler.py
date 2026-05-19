@@ -717,6 +717,81 @@ class TestMatchExpression(unittest.TestCase):
         self.assertEqual(rc, 0, err)
         self.assertEqual(out, "dois\n")
 
+    def test_match_arm_with_multi_statement_block_yields_trailing_expr(self):
+        # Block-as-expression: a block arm body whose final statement is a
+        # bare expression contributes that expression's value to the match.
+        # Previously the arm always typed as Unit, forcing a ``var x; if`` rewrite.
+        rc, out, err = run_capa(
+            'fun pick(b: Bool) -> Int\n'
+            '    let x = match b\n'
+            '        true -> 42\n'
+            '        false ->\n'
+            '            let tmp = 7\n'
+            '            tmp + 1\n'
+            '    return x\n'
+            'fun main(stdio: Stdio)\n'
+            '    stdio.println("${pick(true)}")\n'
+            '    stdio.println("${pick(false)}")\n'
+        )
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out, "42\n8\n")
+
+    def test_match_arm_block_with_only_trailing_expression(self):
+        # Single-statement block whose statement is an expression also
+        # carries the value out (degenerate case of the rule above).
+        rc, out, err = run_capa(
+            'fun rate(n: Int) -> String\n'
+            '    return match n\n'
+            '        0 ->\n'
+            '            "zero"\n'
+            '        _ ->\n'
+            '            "non-zero"\n'
+            'fun main(stdio: Stdio)\n'
+            '    stdio.println(rate(0))\n'
+            '    stdio.println(rate(5))\n'
+        )
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out, "zero\nnon-zero\n")
+
+    def test_match_arm_block_unit_arms_still_type_check(self):
+        # A block whose trailing statement is not an ExprStmt
+        # (e.g. ends in a let) still types as Unit. Used as a
+        # statement-position match here so we don't need a Unit-
+        # typed binding site.
+        rc, out, err = run_capa(
+            'fun main(stdio: Stdio)\n'
+            '    let n = 1\n'
+            '    match n\n'
+            '        1 ->\n'
+            '            let s = "one"\n'
+            '            stdio.println(s)\n'
+            '        _ -> stdio.println("other")\n'
+        )
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out, "one\n")
+
+    def test_match_arm_block_with_payload_destructure_and_trailing_expr(self):
+        # The fast-path (isinstance dispatch) covers payload-less
+        # variants only. With a payload-destructure arm, the general
+        # path runs; verify it too handles trailing-expression blocks.
+        rc, out, err = run_capa(
+            'type Result2 =\n'
+            '    Win(Int)\n'
+            '    Lose\n'
+            'fun score(r: Result2) -> Int\n'
+            '    let s = match r\n'
+            '        Win(n) ->\n'
+            '            let bonus = 10\n'
+            '            n + bonus\n'
+            '        Lose -> 0\n'
+            '    return s\n'
+            'fun main(stdio: Stdio)\n'
+            '    stdio.println("${score(Win(5))}")\n'
+            '    stdio.println("${score(Lose)}")\n'
+        )
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out, "15\n0\n")
+
 
 class TestRangeExpressions(unittest.TestCase):
     """Range expressions: `0..n` (exclusive) and `0..=n` (inclusive).

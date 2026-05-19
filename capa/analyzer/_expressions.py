@@ -166,6 +166,18 @@ class _ExpressionsMixin:
                     self._check_stmt(stmt)
                 if _block_diverges(arm.body):
                     arm_types.append(None)
+                elif (
+                    arm.body.stmts
+                    and isinstance(arm.body.stmts[-1], A.ExprStmt)
+                ):
+                    # Trailing bare expression: the block evaluates
+                    # to its value (block-as-expression semantics,
+                    # à la Rust). Previously the arm always typed as
+                    # Unit; this lets a multi-statement arm body in
+                    # ``let x = match ...`` actually carry the
+                    # trailing expression's value out.
+                    last = arm.body.stmts[-1]
+                    arm_types.append(self.types.get(id(last.expr), TyUnknown))
                 else:
                     arm_types.append(TyUnit)
             else:
