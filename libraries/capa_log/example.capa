@@ -1,0 +1,53 @@
+// libraries/capa_log/example.capa
+//
+// Walkthrough of capa-log: build a StdioLogger, hand the
+// `Logger` capability into application code, and observe that
+// the application no longer sees `Stdio` in its signature.
+//
+// Run:
+//     CAPA_PATH=libraries capa --run libraries/capa_log/example.capa
+//
+// Audit:
+//     CAPA_PATH=libraries capa --manifest libraries/capa_log/example.capa
+
+import capa_log.log
+import capa_log.stdio_logger
+
+// Application code. Notice the signature: it asks for a
+// `Logger`, not a `Stdio`. The auditor reading the manifest
+// sees: "this function logs". They do not see "this function
+// writes arbitrary bytes to stdout".
+fun run_pipeline(log: Logger, n: Int) -> Unit
+    log.info("starting pipeline with n=${n}")
+    if n <= 0
+        log.warn("nothing to do, n=${n}")
+        return ()
+    log.debug("computing")
+    let result = n * 2
+    log.info("done, result=${result}")
+    if result > 100
+        log.error("result too large: ${result}")
+
+fun main(stdio: Stdio)
+    // Default logger: drops DEBUG, prints INFO/WARN/ERROR.
+    stdio.println("--- default logger (min=INFO) ---")
+    let log_default = make_stdio_logger(stdio, INFO)
+    run_pipeline(log_default, 5)
+
+    stdio.println("")
+
+    // Verbose logger: prints everything, including DEBUG.
+    stdio.println("--- verbose logger (min=DEBUG) ---")
+    let log_verbose = make_verbose_logger(stdio)
+    run_pipeline(log_verbose, 5)
+
+    stdio.println("")
+
+    // Edge-case branches in the pipeline.
+    stdio.println("--- error path (large n) ---")
+    run_pipeline(log_default, 100)
+
+    stdio.println("")
+
+    stdio.println("--- warn path (zero n) ---")
+    run_pipeline(log_default, 0)
