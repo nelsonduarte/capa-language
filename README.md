@@ -128,8 +128,9 @@ capa --run myprog.capa -- input.json --verbose
 ## Real programs written in Capa
 
 These live in standalone repositories, each around 500-1500 lines
-of Capa with a vendored copy of the seed libraries and a `README`
-that walks through the audit manifest.
+of Capa. Dependencies on the seed libraries are declared in a
+`capa.toml` and fetched by `capa install`; every demo's `README`
+walks through the audit manifest.
 
 | Repo | What it does | What it stresses |
 |------|--------------|------------------|
@@ -149,50 +150,52 @@ The runtime ships built-in types (`Result`, `Option`, `List`,
 `Fs`, `Net`, `Env`, `Clock`, `Random`, `Db`, `Proc`, `Unsafe`).
 Full reference in [`docs/stdlib.md`](docs/stdlib.md).
 
-A small set of **seed libraries** lives under [`libraries/`](libraries/);
-each one is also being extracted to its own GitHub repo so it
-can be consumed via the package manager:
+Three **seed libraries** live in standalone repos and are
+consumed via the package manager:
+
+| Library | Repo | Surface |
+|---------|------|---------|
+| `capa_cli` | [nelsonduarte/capa_cli](https://github.com/nelsonduarte/capa_cli) | argument parser: positionals, flags, options, `--help` |
+| `capa_datetime` | [nelsonduarte/capa_datetime](https://github.com/nelsonduarte/capa_datetime) | ISO 8601 parsing + Y/M/D/h/m/s arithmetic, zero-capability |
+| `capa_log` | [nelsonduarte/capa_log](https://github.com/nelsonduarte/capa_log) | levelled logging (`DEBUG`/`INFO`/`WARN`/`ERROR`) via a `Logger` capability over `Stdio` |
+
+A fourth library, `capa_http` (cap-typed HTTP client over
+`urllib`; caller sees `Http`, not raw `Net`/`Unsafe`), still
+lives in [`libraries/capa_http/`](libraries/capa_http/)
+pending its own extraction.
+
+To use any of them in a project:
 
 ```toml
 # capa.toml
+[package]
+name = "my-project"
+version = "0.1.0"
+
 [dependencies]
 capa_log = { git = "https://github.com/nelsonduarte/capa_log", tag = "v0.1" }
 ```
 
-Then `capa install` materialises the dep under `./vendor/` and
-the loader picks it up automatically. See
+Then `capa install` materialises the deps under `./vendor/` and
+the loader picks them up automatically. See
 [`docs/packages.md`](docs/packages.md) for the manifest schema,
-lockfile semantics, and migration recipe.
-
-Until every library is extracted, the existing `./libraries/`
-convention keeps working: any `libraries/` dir at the project
-root is added to the loader's search path automatically.
-
-| Library | Surface |
-|---------|---------|
-| [`capa_cli`](libraries/capa_cli/) | argument parser: positionals, flags, options, `--help` |
-| [`capa_datetime`](libraries/capa_datetime/) | ISO 8601 parsing + Y/M/D/h/m/s arithmetic, pure-Capa |
-| [`capa_log`](libraries/capa_log/) | levelled logging (`DEBUG`/`INFO`/`WARN`/`ERROR`) over `Stdio` via a `Logger` capability |
-| [`capa_http`](libraries/capa_http/) | cap-typed HTTP client over `urllib` (caller sees `Http`, not raw `Net`/`Unsafe`) |
-
-Each library has its own `example.capa` and `README.md` showing
-the audit footprint.
+lockfile semantics, and resolution order.
 
 ## Project layout (sketch)
 
 ```
-capa/                 # Python package: compiler + runtime
+capa/                 # Python package: compiler + runtime + pkg manager
   lexer/  parser/  analyzer/  transpiler/  runtime/
-  manifest/  docgen/  lsp/    cli.py
-tests/                # 1050 unit, end-to-end, and property tests
+  manifest/  docgen/  lsp/    pkg/    cli.py
+tests/                # 1046 unit, end-to-end, and property tests
 examples/             # .capa programs (basics, CVE case studies, LLM sandbox)
-libraries/            # seed libraries (capa_cli, capa_datetime, capa_log, capa_http)
+libraries/            # one remaining hand-vendored seed library (capa_http)
 docs/                 # public website (HTML) + design writeups (.md)
 proofs/               # Agda skeleton for the lambda_cap soundness theorem
 benchmarks/           # Capa vs hand-Python micro-benchmarks
 Capa-EBNF.md          # formal grammar
 pyproject.toml        # package metadata + optional [test] / [lsp] extras
-LICENSE  CONTRIBUTING.md  SECURITY.md  README.md
+LICENSE  STABILITY.md  CONTRIBUTING.md  SECURITY.md  README.md
 ```
 
 ## Status
@@ -203,7 +206,7 @@ commitment that will start with `1.0.0` is documented in
 breaking changes require a major bump, deprecations get one
 minor release of warning first".
 
-**1050 tests** spanning the lexer, parser, analyzer, transpiler,
+**1046 tests** spanning the lexer, parser, analyzer, transpiler,
 LSP, formatter, attribute-schema validation, package manager,
 and Hypothesis-based property tests. The transpiler suite
 actually executes the generated Python and checks stdout; the

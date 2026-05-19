@@ -1626,131 +1626,13 @@ class TestTranspileExamples(unittest.TestCase):
             self.assertIn(cap, loop["provably_excluded_capabilities"])
         self.assertFalse(loop["has_unsafe"])
 
-    def test_capa_datetime_library_compiles_and_runs(self):
-        # capa-datetime is pure (zero capabilities). Smoke-runs
-        # the example, verifies decomposition and round-trip
-        # are consistent, and that the fixed test instant
-        # 1779201000s (= 2026-05-19T14:30:00Z) decomposes and
-        # parses correctly.
-        import os
-        import subprocess
-        import sys
-        env = dict(os.environ)
-        env["CAPA_PATH"] = os.path.abspath("libraries")
-        r = subprocess.run(
-            [sys.executable, "-m", "capa", "--run",
-             "libraries/capa_datetime/example.capa"],
-            capture_output=True, text=True, encoding="utf-8",
-            env=env,
-        )
-        self.assertEqual(r.returncode, 0, r.stderr)
-        # Manual Components -> from_components -> back through
-        # to_components produces the same field values.
-        self.assertIn(
-            "year=2026 month=5 day=19 hour=14 minute=30 second=0",
-            r.stdout,
-        )
-        # ISO 8601 formatting of the fixed instant is exact.
-        self.assertIn("2026-05-19T14:30:00Z", r.stdout)
-        # Parser round-trip recovers the fixed instant.
-        self.assertIn("--- parsed from string: 1779201000.0 ---", r.stdout)
-        # Invalid input is rejected.
-        self.assertIn(
-            "parse 'not a date' rejected as expected", r.stdout,
-        )
-        # Live clock read happens (line begins with the prefix).
-        self.assertIn("now iso8601: ", r.stdout)
-
-    def test_capa_datetime_library_audit_claim_pure(self):
-        # No capabilities on the math; only show_timestamp uses
-        # Stdio; main is the wiring point with Stdio + Clock.
-        import json
-        import os
-        import subprocess
-        import sys
-        env = dict(os.environ)
-        env["CAPA_PATH"] = os.path.abspath("libraries")
-        r = subprocess.run(
-            [sys.executable, "-m", "capa", "--manifest",
-             "libraries/capa_datetime/example.capa"],
-            capture_output=True, text=True, encoding="utf-8",
-            env=env,
-        )
-        self.assertEqual(r.returncode, 0, r.stderr)
-        m = json.loads(r.stdout)
-        fns = {f["name"]: f for f in m["functions"]}
-        for pure_fn in (
-            "to_components", "from_components",
-            "format_iso8601", "format_date", "format_time",
-            "parse_iso8601",
-        ):
-            self.assertEqual(
-                fns[pure_fn]["declared_capabilities"], [],
-                f"{pure_fn} must be pure",
-            )
-        self.assertEqual(fns["show_timestamp"]["declared_capabilities"], ["Stdio"])
-        main_decl = set(fns["main"]["declared_capabilities"])
-        self.assertEqual(main_decl, {"Stdio", "Clock"})
-
-    def test_capa_cli_library_compiles_and_runs(self):
-        # The capa-cli seed library is pure: zero capabilities, no
-        # Unsafe, no Python boundary. The smoke run exercises the
-        # four arg-handling code paths (success with all fields,
-        # only positional, --help, missing required positional)
-        # and prints determ-friendly output.
-        import os
-        import subprocess
-        import sys
-        env = dict(os.environ)
-        env["CAPA_PATH"] = os.path.abspath("libraries")
-        r = subprocess.run(
-            [sys.executable, "-m", "capa", "--run",
-             "libraries/capa_cli/example.capa"],
-            capture_output=True, text=True, encoding="utf-8",
-            env=env,
-        )
-        self.assertEqual(r.returncode, 0, r.stderr)
-        # Successful parse with all three fields.
-        self.assertIn("Hello, alice!", r.stdout)
-        self.assertIn("(SHOUT MODE ENABLED)", r.stdout)
-        self.assertIn("Output destination: out.txt", r.stdout)
-        # Flag default + missing option.
-        self.assertIn("(shout mode off)", r.stdout)
-        self.assertIn("No output destination given", r.stdout)
-        # --help output.
-        self.assertIn("Usage: greet [FLAGS] [OPTIONS] NAME", r.stdout)
-        # Missing positional error.
-        self.assertIn(
-            "missing required argument 'name'", r.stderr,
-        )
-
-    def test_capa_cli_library_audit_claim_pure(self):
-        # parse() and format_help() declare no capabilities; the
-        # application functions declare only Stdio. Zero Unsafe
-        # anywhere.
-        import json
-        import os
-        import subprocess
-        import sys
-        env = dict(os.environ)
-        env["CAPA_PATH"] = os.path.abspath("libraries")
-        r = subprocess.run(
-            [sys.executable, "-m", "capa", "--manifest",
-             "libraries/capa_cli/example.capa"],
-            capture_output=True, text=True, encoding="utf-8",
-            env=env,
-        )
-        self.assertEqual(r.returncode, 0, r.stderr)
-        m = json.loads(r.stdout)
-        fns = {f["name"]: f for f in m["functions"]}
-        # parse + format_help are pure.
-        self.assertEqual(fns["parse"]["declared_capabilities"], [])
-        self.assertEqual(fns["format_help"]["declared_capabilities"], [])
-        # describe / run_one / main only need Stdio.
-        for name in ("describe", "run_one", "main"):
-            decl = fns[name]["declared_capabilities"]
-            self.assertEqual(decl, ["Stdio"])
-            self.assertFalse(fns[name]["has_unsafe"])
+    # capa_cli / capa_datetime / capa_log are no longer vendored in
+    # this repo; they live in their own standalone repositories and
+    # are consumed via the package manager. The integration tests
+    # that used to live here moved with them; verification of the
+    # capability claims now happens via the downstream demos
+    # (audit-trail-reporter, sbom-watch, policy-eval) and via each
+    # library's own CI.
 
     def test_capa_http_library_compiles_and_audit_claim_holds(self):
         # The capa-http seed library demonstrates the canonical

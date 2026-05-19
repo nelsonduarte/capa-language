@@ -145,10 +145,11 @@ skipped (so an unused entry never produces an error).
 
 ## Worked example: extracting a library
 
-The current seed libraries (`capa_cli`, `capa_datetime`,
-`capa_log`, `capa_http`) live inside the Capa repo under
-`libraries/`. Migrating one to a standalone repo + package
-look like:
+Three of the seed libraries (`capa_cli`, `capa_datetime`,
+`capa_log`) already live in standalone repos and are consumed
+via the package manager; the fourth (`capa_http`) is still
+under `libraries/` in the Capa repo. The same recipe applies
+to it and to any user-authored library:
 
 1. Copy the library directory out:
    ```bash
