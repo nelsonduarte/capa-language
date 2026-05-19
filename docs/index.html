@@ -3,22 +3,23 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Capa | a capability-centric programming language</title>
-    <meta name="description" content="Capa is a programming language with compile-time capability discipline: every function declares the authorities it holds. Pythonic syntax. Capabilities can be attenuated, narrowed, and reasoned about statically.">
-    <meta property="og:title" content="Capa | a capability-centric programming language">
-    <meta property="og:description" content="Compile-time capability discipline: every function declares the authorities it holds.">
+    <title>Capa | a capability-typed programming language</title>
+    <meta name="description" content="Capa is a programming language where every function declares the authorities it holds. The compiler checks the discipline statically. Pythonic syntax.">
+    <meta property="og:title" content="Capa | a capability-typed programming language">
+    <meta property="og:description" content="Every function declares the authorities it holds. The compiler checks the discipline statically.">
     <meta property="og:type" content="website">
     <meta property="og:url" content="https://capa-language.com/">
     <meta property="og:image" content="https://capa-language.com/capa_logo.png">
     <meta property="og:site_name" content="Capa">
     <meta name="twitter:card" content="summary_large_image">
-    <meta name="twitter:title" content="Capa | a capability-centric programming language">
-    <meta name="twitter:description" content="Compile-time capability discipline: every function declares the authorities it holds.">
+    <meta name="twitter:title" content="Capa | a capability-typed programming language">
+    <meta name="twitter:description" content="Every function declares the authorities it holds. The compiler checks statically.">
     <meta name="twitter:image" content="https://capa-language.com/capa_logo.png">
     <link rel="stylesheet" href="style.css">
     <link rel="icon" type="image/svg+xml" href="favicon.svg">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'none'; object-src 'none'; base-uri 'self'; form-action 'self'">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'">
     <meta name="referrer" content="strict-origin-when-cross-origin">
+    <script src="theme.js"></script>
 </head>
 <body>
 
@@ -28,6 +29,10 @@
             <img src="capa_logo.svg" alt="" aria-hidden="true">
             Capa
         </a>
+        <input type="checkbox" id="nav-toggle" class="nav-toggle" aria-label="Toggle menu">
+        <label for="nav-toggle" class="nav-burger" aria-hidden="true">
+            <span></span><span></span><span></span>
+        </label>
         <div class="nav-links">
             <a href="index.html" class="current">Home</a>
             <a href="why.html">Why Capa</a>
@@ -36,6 +41,7 @@
             <a href="start.html">Get started</a>
             <a href="roadmap.html">Roadmap</a>
             <a href="https://github.com/nelsonduarte/capa-language" class="github">GitHub</a>
+            <button type="button" id="theme-toggle" class="theme-toggle" aria-label="Toggle theme"></button>
         </div>
     </nav>
 </header>
@@ -43,508 +49,121 @@
 <main>
 
 <section class="hero">
-    <img class="hero-logo" src="capa_logo.svg" alt="" aria-hidden="true">
-    <h1>Capa</h1>
+    <div class="hero-brand">
+        <img class="hero-logo" src="capa_logo.svg" alt="" aria-hidden="true">
+        <h1>Capa</h1>
+    </div>
     <p class="tagline">A programming language where every function declares <strong>what it is allowed to do</strong>.</p>
-    <p class="subtitle">Compile-time discipline over what every function can touch: the network, the filesystem, the environment. Pythonic syntax. Auditability is a side effect, not the point.</p>
+    <p class="subtitle">Pythonic syntax. The compiler checks the discipline statically: a function that does not list <code>Fs</code> or <code>Net</code> in its signature cannot touch the filesystem or the network.</p>
     <div class="cta">
-        <a href="why.html" class="btn primary">Read the case</a>
-        <a href="start.html" class="btn">Get started</a>
+        <a href="start.html" class="btn primary">Get started</a>
+        <a href="why.html" class="btn">Why Capa</a>
         <a href="https://github.com/nelsonduarte/capa-language" class="btn">GitHub</a>
     </div>
-    <p class="status">v1.0.0-rc.0 · MIT · 1046 tests · hand-written compiler in Python</p>
+    <p class="status">v1.0.0-rc.0 &middot; MIT &middot; 1046 tests &middot; hand-written compiler in Python</p>
 </section>
 
-<!-- =====================================================
-     Latest release callout
-===================================================== -->
-<section class="release-banner-wrap">
-    <div class="release-banner">
-        <span class="release-tag">v1.0.0-rc.0</span>
-        <span class="release-body">
-            <strong>Released 2026-05-19.</strong>
-            The first <strong>release candidate</strong> for 1.0.
-            Language polish (block-as-expression match arms,
-            multi-payload variants, inherent <code>impl</code> on sum
-            types, recursive sum types confirmed); capability
-            discipline hardened (<code>Fs.restrict_to</code> now
-            canonicalises via <code>realpath</code>, closing the
-            <code>data/../etc/passwd</code> bypass); first
-            <strong>package manager</strong> (<code>capa.toml</code> +
-            <code>capa install</code> + <code>capa.lock</code>);
-            three seed libraries (<code>capa_cli</code>,
-            <code>capa_datetime</code>, <code>capa_log</code>)
-            extracted to standalone repos; three real downstream
-            programs in the org. <a href="https://github.com/nelsonduarte/capa-language/blob/main/STABILITY.md">STABILITY.md</a>
-            documents the post-1.0 commitment that starts the
-            moment 1.0.0 ships.
-        </span>
-        <a class="release-link" href="https://github.com/nelsonduarte/capa-language/releases/tag/v1.0.0-rc.0">Read the notes &rarr;</a>
-    </div>
-</section>
-
-<!-- =====================================================
-     Download for Linux / macOS / Windows
-===================================================== -->
 <section>
-    <h2 class="section-centered">Download</h2>
-    <p class="lead-prose">
-        Self-contained binary. Bundles a Python interpreter; the
-        host machine does not need one. Approximately 8 MB per
-        platform.
+    <h2>What Capa is for</h2>
+    <p>
+        Every dependency you install today runs with the full
+        authority of the program that pulled it in. A logging
+        library can read your environment. A date parser can
+        open a socket. Nothing in the language stops it; you
+        read the README and you trust.
     </p>
-    <div class="download-row">
-        <a class="download-btn" href="https://github.com/nelsonduarte/capa-language/releases/latest/download/capa-linux-x86_64">
-            <span class="download-btn-os">Linux</span>
-            <span class="download-btn-arch">x86_64</span>
-            <span class="download-btn-file">capa-linux-x86_64</span>
-        </a>
-        <a class="download-btn" href="https://github.com/nelsonduarte/capa-language/releases/latest/download/capa-macos-arm64">
-            <span class="download-btn-os">macOS</span>
-            <span class="download-btn-arch">Apple Silicon</span>
-            <span class="download-btn-file">capa-macos-arm64</span>
-        </a>
-        <a class="download-btn" href="https://github.com/nelsonduarte/capa-language/releases/latest/download/capa-windows-x86_64.exe">
-            <span class="download-btn-os">Windows</span>
-            <span class="download-btn-arch">x86_64</span>
-            <span class="download-btn-file">capa-windows-x86_64.exe</span>
-        </a>
-    </div>
-    <p class="download-note">
-        Each download is paired with a <code>.sha256</code> checksum
-        at the same URL. Full instructions and source install on
-        the <a href="start.html">Get started</a> page; release notes
-        on the <a href="https://github.com/nelsonduarte/capa-language/releases/latest">latest release</a>.
+    <p>
+        Capa puts the authority surface in the type system.
+        A function that needs the filesystem says so in its
+        signature; one that does not cannot reach for it, no
+        matter what its body tries to do. The compiler reads
+        the source and emits a manifest of which functions
+        hold which authorities, automatically.
     </p>
 </section>
 
 <section>
-    <div class="value-props">
+    <h2>The 30-second story</h2>
 
-        <div class="value-prop">
-            <h3>Authority is explicit</h3>
-            <p>If a function can touch the network, the filesystem, the environment, or any other system resource, it has to say so in its signature. There is no ambient permission.</p>
-<pre><code><span class="kw-decl">fun</span> <span class="fn-name">fetch</span>(net: <span class="cap">Net</span>, url: <span class="ty-primitive">String</span>)
-    <span class="kw-ctrl">return</span> net.<span class="fn-call">get</span>(url)
+    <p>A pure helper declares no capabilities; the compiler enforces it. There is no global <code>Stdio</code> or ambient filesystem: you cannot reference what is not in the signature.</p>
 
-<span class="kw-decl">fun</span> <span class="fn-name">pure_thing</span>(x: <span class="ty-primitive">Int</span>) -&gt; <span class="ty-primitive">Int</span>
-    <span class="comment">// no caps: cannot do IO.</span>
-    <span class="kw-ctrl">return</span> x * 2</code></pre>
-        </div>
+<pre><code><span class="kw-decl">fun</span> <span class="fn-name">classify</span>(score: <span class="ty-primitive">Float</span>) -&gt; <span class="ty-primitive">String</span>
+    <span class="kw-ctrl">if</span> score &gt;= 9.5
+        <span class="kw-ctrl">return</span> <span class="str">"Excellent"</span>
+    <span class="kw-ctrl">if</span> score &gt;= 6.5
+        <span class="kw-ctrl">return</span> <span class="str">"Pass"</span>
+    <span class="kw-ctrl">return</span> <span class="str">"Fail"</span></code></pre>
 
-        <div class="value-prop">
-            <h3>Capabilities can be narrowed</h3>
-            <p>A capability is not all-or-nothing. <code>Net.restrict_to(host)</code> returns a fresh <code>Net</code> with authority limited to one host. Restrictions only narrow, never widen.</p>
-<pre><code><span class="kw-decl">fun</span> <span class="fn-name">main</span>(net: <span class="cap">Net</span>)
-    <span class="kw-storage">let</span> api = net.<span class="fn-call">restrict_to</span>(<span class="str">"api.example.com"</span>)
-    <span class="comment">// `api` can only reach api.example.com.</span>
-    <span class="fn-call">fetch_users</span>(api)</code></pre>
-        </div>
+    <p>A function that reads files needs <code>Fs</code>. The signature <em>is</em> the contract.</p>
 
-        <div class="value-prop">
-            <h3>Libraries define their own</h3>
-            <p>You declare your own capabilities, <code>SendEmail</code>, <code>QueryDB</code>, <code>PublishMessage</code>. The discipline applies uniformly. A library's contract is enforced at the type level.</p>
-<pre><code><span class="kw-decl">capability</span> <span class="ty-user">SendEmail</span>
-    <span class="kw-decl">fun</span> <span class="fn-name">send</span>(self,
-        to: <span class="ty-primitive">String</span>,
-        subject: <span class="ty-primitive">String</span>,
-        body: <span class="ty-primitive">String</span>)
-        -&gt; <span class="ty-builtin">Result</span>&lt;<span class="ty-primitive">Unit</span>, <span class="ty-builtin">IoError</span>&gt;</code></pre>
-        </div>
-
-    </div>
-</section>
-
-<!-- =====================================================
-     Capa at a glance: a full canonical example
-===================================================== -->
-<section>
-    <h2 class="section-centered">Capa at a glance</h2>
-    <p class="lead-prose">
-        Two functions and a <code>main</code>. The compiler rejects any
-        attempt to fetch from a host other than <code>api.example.com</code>,
-        because the attenuated <code>Net</code> is the only network
-        authority anything downstream of <code>main</code> ever sees.
-    </p>
-<pre class="showcase"><code><span class="comment">// A function that needs the network states it in its signature.</span>
-<span class="kw-decl">fun</span> <span class="fn-name">fetch_user</span>(net: <span class="cap">Net</span>, id: <span class="ty-primitive">String</span>) -&gt; <span class="ty-builtin">Result</span>&lt;<span class="ty-primitive">String</span>, <span class="ty-builtin">IoError</span>&gt;
-    <span class="kw-ctrl">return</span> net.<span class="fn-call">get</span>(<span class="str">"https://api.example.com/users/${id}"</span>)
-
-<span class="comment">// A pure function declares no capabilities and cannot do IO.</span>
-<span class="comment">// `net`, `stdio`, `fs`, `env` are not in scope; the compiler rejects</span>
-<span class="comment">// any reference to them.</span>
-<span class="kw-decl">fun</span> <span class="fn-name">extract_email</span>(payload: <span class="ty-primitive">String</span>) -&gt; <span class="ty-builtin">Option</span>&lt;<span class="ty-primitive">String</span>&gt;
-    ...
-
-<span class="kw-decl">fun</span> <span class="fn-name">main</span>(net: <span class="cap">Net</span>, stdio: <span class="cap">Stdio</span>)
-    <span class="comment">// Narrow the network capability before handing it onward.</span>
-    <span class="kw-storage">let</span> api = net.<span class="fn-call">restrict_to</span>(<span class="str">"api.example.com"</span>)
-    <span class="kw-ctrl">match</span> <span class="fn-call">fetch_user</span>(api, <span class="str">"42"</span>)
-        <span class="variant">Ok</span>(body) -&gt; stdio.<span class="fn-call">println</span>(body)
-        <span class="variant">Err</span>(e)   -&gt; stdio.<span class="fn-call">eprintln</span>(<span class="str">"${e}"</span>)</code></pre>
-</section>
-
-<!-- =====================================================
-     LLM tool-use sandboxing (2026 angle)
-===================================================== -->
-<section>
-    <h2 class="section-centered">LLM tool-use sandboxing</h2>
-    <p class="lead-prose">
-        An agent that calls tools (search the web, send email, run code) needs to be told what it is allowed to do. The function-calling APIs leave that to application code. Capa's capability discipline puts the contract in the type system: each tool is a capability, the agent's signature declares which tools it has, the compiler proves the agent cannot exceed them. No prompt, no jailbreak, no clever output can talk the runtime into a tool the function did not declare.
-    </p>
-<pre class="showcase"><code><span class="comment">// Each tool is a capability.</span>
-<span class="kw-decl">capability</span> <span class="ty-user">SearchWeb</span>
-    <span class="kw-decl">fun</span> <span class="fn-name">search</span>(self, query: <span class="ty-primitive">String</span>) -&gt; <span class="ty-builtin">Result</span>&lt;<span class="ty-primitive">String</span>, <span class="ty-builtin">IoError</span>&gt;
-
-<span class="kw-decl">capability</span> <span class="ty-user">SendEmail</span>
-    <span class="kw-decl">fun</span> <span class="fn-name">send</span>(self, to: <span class="ty-primitive">String</span>, body: <span class="ty-primitive">String</span>) -&gt; <span class="ty-builtin">Result</span>&lt;<span class="ty-primitive">Unit</span>, <span class="ty-builtin">IoError</span>&gt;
-
-<span class="kw-decl">capability</span> <span class="ty-user">RunCode</span>
-    <span class="kw-decl">fun</span> <span class="fn-name">run</span>(self, code: <span class="ty-primitive">String</span>) -&gt; <span class="ty-builtin">Result</span>&lt;<span class="ty-primitive">String</span>, <span class="ty-builtin">IoError</span>&gt;
-
-<span class="comment">// The agent's signature is the contract.</span>
-<span class="comment">// SearchWeb and SendEmail are declared. RunCode is NOT.</span>
-<span class="comment">// The compiler proves the agent provably cannot run code.</span>
-<span class="kw-decl">fun</span> <span class="fn-name">process_request</span>(
-    stdio: <span class="cap">Stdio</span>,
-    search: <span class="ty-user">SearchWeb</span>,
-    mail: <span class="ty-user">SendEmail</span>,
-    query: <span class="ty-primitive">String</span>) -&gt; <span class="ty-builtin">Result</span>&lt;<span class="ty-primitive">Unit</span>, <span class="ty-builtin">IoError</span>&gt;
-    <span class="kw-storage">let</span> r = search.<span class="fn-call">search</span>(query)?
-    mail.<span class="fn-call">send</span>(<span class="str">"user@example.com"</span>, r)?
+<pre><code><span class="kw-decl">fun</span> <span class="fn-name">summarise</span>(stdio: <span class="cap">Stdio</span>, fs: <span class="cap">Fs</span>, path: <span class="ty-primitive">String</span>) -&gt; <span class="ty-builtin">Result</span>&lt;<span class="ty-primitive">Unit</span>, <span class="ty-builtin">IoError</span>&gt;
+    <span class="kw-storage">let</span> body = fs.<span class="fn-call">read</span>(path)?
+    stdio.<span class="fn-call">println</span>(<span class="str">"first line: ${body.split(</span><span class="str">"\n"</span><span class="str">).get(0)}"</span>)
     <span class="kw-ctrl">return</span> <span class="variant">Ok</span>(())</code></pre>
-    <p class="lead-prose-narrow">
-        Runnable demo at <a href="https://github.com/nelsonduarte/capa-language/blob/main/examples/llm_tool_sandbox.capa"><code>examples/llm_tool_sandbox.capa</code></a>; the full pattern, attenuation, SBOM audit angle, and comparison with allow-lists and OS-level sandboxes are in <a href="https://github.com/nelsonduarte/capa-language/blob/main/docs/llm-tool-sandbox.md"><code>docs/llm-tool-sandbox.md</code></a>.
-    </p>
+
+    <p><code>capa --manifest</code> reads the same source and emits JSON listing every function with the capabilities it declared and the ones it can <em>provably never reach</em> (because they are not in scope). A compliance reviewer gets a machine-checkable answer to "which functions can touch the network?".</p>
+
+<pre><code>{
+  <span class="str">"name"</span>: <span class="str">"summarise"</span>,
+  <span class="str">"declared_capabilities"</span>: [<span class="str">"Stdio"</span>, <span class="str">"Fs"</span>],
+  <span class="str">"provably_excluded_capabilities"</span>: [
+    <span class="str">"Clock"</span>, <span class="str">"Db"</span>, <span class="str">"Env"</span>, <span class="str">"Net"</span>,
+    <span class="str">"Proc"</span>, <span class="str">"Random"</span>, <span class="str">"Unsafe"</span>
+  ]
+}</code></pre>
+
+    <p>Same input feeds <code>capa --cyclonedx</code> / <code>--spdx</code> / <code>--vex</code> / <code>--provenance</code>: standard supply-chain artefacts emitted by the compiler itself, not by a separate scanner approximating them.</p>
 </section>
 
-<!-- =====================================================
-     Who builds with Capa
-===================================================== -->
 <section>
-    <h2 class="section-centered">Who builds with Capa</h2>
-    <div class="personas">
-        <div class="persona">
-            <h3>Builders of LLM agents</h3>
-            <p>
-                Tool-calling agents need a principled answer to "this
-                tool can do X but not Y". Capa's capability discipline
-                is structurally the right shape: each tool is a
-                capability, the agent declares its tool surface in its
-                signature, the compiler proves the agent cannot exceed
-                it. See the
-                <a href="https://github.com/nelsonduarte/capa-language/blob/main/docs/llm-tool-sandbox.md">writeup</a>.
-            </p>
-        </div>
-        <div class="persona">
-            <h3>Library authors</h3>
-            <p>
-                When someone installs your library, they want to know
-                what it can do, not trust your README. Capa puts the
-                authority surface in the type signatures, so the
-                contract is enforced at compile time.
-            </p>
-        </div>
-        <div class="persona">
-            <h3>Engineers tired of ambient authority</h3>
-            <p>
-                Every supply-chain incident of the last decade has
-                the same shape: a dependency did something its API
-                never claimed. Capa is the language where that
-                claim is checked at compile time, not in production.
-            </p>
-        </div>
-        <div class="persona">
-            <h3>Researchers and academics</h3>
-            <p>
-                A working reference implementation of capability-based
-                security with a pythonic surface. Hand-written
-                compiler, formal EBNF grammar, a small-step
-                operational semantics (with two soundness theorem
-                sketches), MIT-licensed. Suitable as study material
-                or as the substrate for further research.
-            </p>
-        </div>
-        <div class="persona">
-            <h3>Teams preparing for the EU CRA</h3>
-            <p>
-                The Cyber Resilience Act, applicable December 2027,
-                requires machine-readable evidence of behavioural
-                control. Capa produces it directly from the
-                compiler: capability manifest, CycloneDX 1.5 SBOM,
-                HTML doc page.
-            </p>
-        </div>
-    </div>
+    <h2>Capabilities can be narrowed</h2>
+    <p><code>Fs</code> is broad. A function that should only read one directory does not need broad <code>Fs</code>; the caller hands it a narrowed one. The narrowing is monotonic by construction: you can never widen.</p>
+<pre><code><span class="kw-decl">fun</span> <span class="fn-name">main</span>(fs: <span class="cap">Fs</span>, stdio: <span class="cap">Stdio</span>)
+    <span class="comment">// Hand `summarise` an Fs that only sees ./data/</span>
+    <span class="kw-storage">let</span> data_fs = fs.<span class="fn-call">restrict_to</span>(<span class="str">"data/"</span>)
+    <span class="fn-call">summarise</span>(stdio, data_fs, <span class="str">"data/users.csv"</span>)</code></pre>
+    <p>At runtime the attenuated <code>Fs</code> canonicalises every path before the boundary check, so <code>data/../etc/passwd</code> is denied and a symlink pointing outside the prefix is denied.</p>
 </section>
 
-<!-- =====================================================
-     Comparison
-===================================================== -->
 <section>
-    <h2 class="section-centered">How Capa compares</h2>
-    <p class="lead-prose">
-        A short matrix of properties that matter for code-level
-        authority control. Honest on beta status.
-    </p>
-    <div class="compare-wrap">
-        <table class="compare-table">
-            <thead>
-                <tr>
-                    <th>Property</th>
-                    <th>Python</th>
-                    <th>TypeScript</th>
-                    <th>Rust</th>
-                    <th>Capa</th>
-                </tr>
-            </thead>
-            <tbody>
-                <tr>
-                    <th>Ambient authority</th>
-                    <td class="bad">full</td>
-                    <td class="bad">full</td>
-                    <td class="mid">limited</td>
-                    <td class="good">none</td>
-                </tr>
-                <tr>
-                    <th>Effects in the type system</th>
-                    <td class="bad">no</td>
-                    <td class="bad">no</td>
-                    <td class="mid"><code>Send</code>/<code>Sync</code> only</td>
-                    <td class="good">yes</td>
-                </tr>
-                <tr>
-                    <th>Capability attenuation</th>
-                    <td class="bad">no</td>
-                    <td class="bad">no</td>
-                    <td class="bad">no</td>
-                    <td class="good">yes (5 built-in caps)</td>
-                </tr>
-                <tr>
-                    <th>Audit artefact from compiler</th>
-                    <td class="bad">no</td>
-                    <td class="bad">no</td>
-                    <td class="bad">no</td>
-                    <td class="good">manifest + SBOM + HTML docs</td>
-                </tr>
-                <tr>
-                    <th>Static rejection of unintended IO</th>
-                    <td class="bad">no</td>
-                    <td class="bad">no</td>
-                    <td class="mid">partial</td>
-                    <td class="good">yes</td>
-                </tr>
-                <tr>
-                    <th>Production maturity</th>
-                    <td class="good">mature</td>
-                    <td class="good">mature</td>
-                    <td class="good">mature</td>
-                    <td class="mid">beta</td>
-                </tr>
-            </tbody>
-        </table>
-    </div>
-    <p class="lead-prose-narrow compare-note">
-        Capa is not a replacement for Rust or Python. It is a different
-        slice through the language design space, focused on encoding
-        effect surfaces explicitly. Rust and Capa are orthogonal: one
-        prevents memory errors, the other prevents effect errors. A
-        future language could combine both.
-    </p>
-    <p class="lead-prose-narrow compare-note">
-        For the longer, reviewer-facing version of this comparison,
-        including Pony, Koka, Roc, and the WebAssembly Component
-        Model, and a statement of what is and is not unique about
-        Capa, see
-        <a href="https://github.com/nelsonduarte/capa-language/blob/main/docs/positioning.md">docs/positioning.md</a>.
-    </p>
+    <h2>Real programs written in Capa</h2>
+    <p>Each lives in its own repository, declares its dependencies in <code>capa.toml</code>, and runs through <code>capa install &amp;&amp; capa --run ...</code>.</p>
+    <dl class="program-list">
+        <dt><a href="https://github.com/nelsonduarte/audit-trail-reporter">audit-trail-reporter</a></dt>
+        <dd>AML compliance toolkit. Four detection rules (threshold, watchlist, structuring, velocity), four report sinks, attenuated read+write <code>Fs</code> split. Around 1100 lines across 9 files.</dd>
+
+        <dt><a href="https://github.com/nelsonduarte/sbom-watch">sbom-watch</a></dt>
+        <dd>SBOM operationaliser. Cross-references a CycloneDX SBOM against a CVE database and a policy file. CI-friendly exit code. Around 700 lines, 5 files.</dd>
+
+        <dt><a href="https://github.com/nelsonduarte/policy-eval">policy-eval</a></dt>
+        <dd>JSON-encoded policy-as-code engine. Tree-walk interpreter over a recursive <code>Condition</code> AST. Around 700 lines, 5 files.</dd>
+    </dl>
 </section>
 
-<!-- =====================================================
-     FAQ
-===================================================== -->
 <section>
-    <h2 class="section-centered">Frequently asked</h2>
-    <div class="faq">
-        <details>
-            <summary>Is Capa production-ready?</summary>
-            <p>
-                Not yet, but the gap is hardening rather than
-                completeness. v1.0.0-rc.0 means the surface is
-                feature-frozen pending feedback; the compiler runs,
-                the discipline is implemented end-to-end, the
-                module system is feature-complete (qualified
-                access, transitive imports, <code>pub</code>
-                enforcement, search paths), and 946+ tests pass
-                on three operating systems and three Python
-                versions. The day-to-day tooling is in place:
-                line-level formatter, project scaffolder, watch
-                mode, REPL with every standard capability
-                pre-bound, and a language server with diagnostics,
-                hover, go-to-definition, find-references, outline,
-                rename, completion, and semantic tokens. The
-                artefacts the language emits (manifest, CycloneDX
-                1.5 SBOM, SPDX 2.3, VEX, SLSA L1 provenance,
-                per-function ineligibility proofs) are real and
-                schema-versioned. What remains pre-1.0: the
-                runtime is Python (no native backend yet), there
-                is no package manager, and surface syntax may
-                still shift in pre-1.0 minor bumps. Capa is fine
-                for prototypes, research, security demos, and
-                study substrate; production runtime is a v1
-                conversation.
-            </p>
-        </details>
-        <details>
-            <summary>How does Capa compare to Rust?</summary>
-            <p>
-                Different problem. Rust prevents memory errors via
-                ownership and borrowing; Capa prevents effect errors
-                via capabilities. They are orthogonal: you can
-                imagine a future "Rust with capabilities" or "Capa
-                with linear types". Today, the discipline Capa
-                enforces is not expressible in idiomatic Rust without
-                a lot of newtype scaffolding, and Rust's memory
-                guarantees are not enforced by Capa.
-            </p>
-        </details>
-        <details>
-            <summary>Can I use my Python libraries from Capa?</summary>
-            <p>
-                Yes, through the <code>Unsafe</code> capability and
-                the <code>py_import</code> / <code>py_invoke</code>
-                builtins. Crossing into Python loses Capa's
-                guarantees (Python has ambient authority), but the
-                boundary is explicit: a function that uses Python
-                interop must declare <code>unsafe: Unsafe</code> in
-                its parameter list. The manifest flags every such
-                function with <code>has_unsafe: true</code> for
-                separate audit.
-            </p>
-        </details>
-        <details>
-            <summary>Why does the compiler target Python?</summary>
-            <p>
-                Speed of development. Capa is research-quality
-                software; binding the transpiler output to Python
-                let the capability discipline be implemented in
-                weeks instead of years, with full access to a mature
-                runtime, package ecosystem, and tooling. A native
-                LLVM backend is in the long-term roadmap; until then,
-                Capa programs are Python at runtime, with all the
-                tradeoffs that implies.
-            </p>
-        </details>
-        <details>
-            <summary>Is there a formal soundness proof?</summary>
-            <p>
-                A working sketch lives at
-                <a href="https://github.com/nelsonduarte/capa-language/blob/main/docs/semantics.md">docs/semantics.md</a>:
-                a minimal lambda calculus <em>λ<sub>cap</sub></em>
-                with syntax, typing rules, and small-step
-                operational semantics that capture the capability
-                discipline; two soundness theorems
-                (<em>Capability Soundness</em>: every runtime
-                capability invocation has a class drawn from the
-                initial environment; <em>Manifest Completeness</em>:
-                the emitted manifest is an upper bound on the
-                dynamic capability surface); and proof sketches for
-                each. The proofs are not machine-checked yet;
-                mechanising Theorem 1 in Agda or Coq is the
-                next item on the formalisation track. The
-                <a href="https://github.com/nelsonduarte/capa-language/blob/main/tests/test_properties.py">property-based test suite</a>
-                asserts the dynamic counterpart of Theorem 1 on
-                every generated program: ~150 Hypothesis examples
-                per CI run, across four capability-flow shapes
-                (plain, attenuated, via-helper, consume).
-            </p>
-        </details>
-        <details>
-            <summary>What about performance?</summary>
-            <p>
-                Capa programs run as transpiled Python on CPython,
-                so the runtime characteristics are Python's. The
-                capability checks add no runtime overhead; they are
-                entirely compile-time, except for runtime gating on
-                attenuated capabilities (e.g. <code>Fs.read</code>
-                checking the path prefix before opening). The
-                <a href="https://github.com/nelsonduarte/capa-language/blob/main/benchmarks/README.md">benchmarks suite</a>
-                measures the transpiled output against hand-Python
-                baselines: typical ratios are 1.00x for pure compute,
-                1.20x for list-heavy workloads, and 1.45x for
-                string-heavy ones. A native backend is not in the v1
-                scope.
-            </p>
-        </details>
-        <details>
-            <summary>Is the language stable?</summary>
-            <p>
-                No. Pre-1.0 minor-version bumps may introduce
-                breaking changes. The capability discipline itself
-                (structural, flow, linear layers) is stable and
-                unlikely to change. Surface syntax, the manifest
-                schema, and the attribute catalogue may evolve.
-                The <code>CHANGELOG.md</code> tracks every change.
-            </p>
-        </details>
-        <details>
-            <summary>Does Capa prevent supply-chain attacks?</summary>
-            <p>
-                It eliminates a specific class: attacks that depend
-                on a dependency doing something its API never
-                claimed. Six case studies in the repo walk through
-                concrete CVEs, four where Capa wins structurally
-                and two where it partially loses (with the writeups
-                explaining why; honesty matters here):
-            </p>
-            <ul class="faq-list">
-                <li><a href="https://github.com/nelsonduarte/capa-language/blob/main/docs/demo-event-stream.md">event-stream 2018</a> (npm, cryptocurrency exfiltration): Capa rejects at compile time.</li>
-                <li><a href="https://github.com/nelsonduarte/capa-language/blob/main/docs/cve_eslint_scope.md">eslint-scope 2018</a> (npm credential theft via <code>~/.npmrc</code>): rejected.</li>
-                <li><a href="https://github.com/nelsonduarte/capa-language/blob/main/docs/cve_ua_parser_js.md">ua-parser-js 2021</a> (npm account hijack; cryptominer + DanaBot RAT): rejected.</li>
-                <li><a href="https://github.com/nelsonduarte/capa-language/blob/main/docs/cve_torchtriton.md">torchtriton 2022</a> (PyPI typosquat, SSH-key exfiltration): rejected.</li>
-                <li><a href="https://github.com/nelsonduarte/capa-language/blob/main/docs/cve_node_ipc.md">node-ipc 2022</a> (protestware; legitimate authority misused), partial: attenuation reduces blast radius, the SBOM audit catches policy violations.</li>
-                <li><a href="https://github.com/nelsonduarte/capa-language/blob/main/docs/cve_xz_utils.md">xz-utils 2024</a> (CVE-2024-3094; build-system + dynamic-linker attack beneath the language layer), partial: orthogonal defences (reproducible builds, code signing) are needed.</li>
-            </ul>
-            <p>
-                Capa addresses the source-code-authority row of the
-                supply-chain attack stack. Maintainer takeover,
-                build-system tampering, and dynamic-linker
-                indirection live below the language layer and need
-                orthogonal defences. The
-                <a href="https://github.com/nelsonduarte/capa-language/blob/main/docs/positioning.md">positioning document</a>
-                states the boundary precisely.
-            </p>
-        </details>
-        <details>
-            <summary>Will Capa make my product CRA-compliant?</summary>
-            <p>
-                Capa is a tool, not a product, and compliance is at
-                the product level. What Capa does is make the
-                technical evidence trivial: every function's declared
-                authority, attached audit metadata, and effective
-                attenuation chain are emitted directly by the
-                compiler as JSON (<code>--manifest</code>),
-                CycloneDX 1.5 SBOM (<code>--cyclonedx</code>), and
-                HTML (<code>--doc</code>). An article-by-article
-                mapping of Capa's machinery onto Regulation (EU)
-                2024/2847 (the Cyber Resilience Act), with explicit
-                callouts for which obligations Capa addresses and
-                which remain organisational, lives in the
-                <a href="https://github.com/nelsonduarte/capa-language/blob/main/docs/cra.md">CRA mapping document</a>.
-            </p>
-        </details>
-    </div>
+    <h2>Install</h2>
+    <p>Self-contained binary, no Python install required. Approximately 8 MB per platform.</p>
+<pre><code><span class="comment"># Linux / macOS Apple Silicon</span>
+$ curl -fsSL https://raw.githubusercontent.com/nelsonduarte/capa-language/main/deploy/install.sh | bash
+
+<span class="comment"># Windows (PowerShell)</span>
+PS&gt; irm https://raw.githubusercontent.com/nelsonduarte/capa-language/main/deploy/install.ps1 | iex
+
+<span class="comment"># From source (any platform with Python 3.10+)</span>
+$ git clone https://github.com/nelsonduarte/capa-language
+$ cd capa-language &amp;&amp; pip install -e .</code></pre>
+    <p>Full instructions, manual binary download with <code>.sha256</code> verification, the language-server setup for Helix and Neovim, and the VSCode extension live on the <a href="start.html">Get started</a> page.</p>
 </section>
 
-<section class="section-centered">
+<section>
     <h2>Where to go next</h2>
-    <p class="lead-prose-narrow">Capa is in beta. The compiler runs, 946+ tests pass on three operating systems, the three pillars of the discipline are implemented, the module system is feature-complete, and the day-to-day tooling is in place (formatter, scaffolder, watch mode, REPL with every standard capability pre-bound, language server with diagnostics, hover, go-to-definition, find-references, outline, rename, completion, semantic tokens). What remains pre-1.0: a package manager, a native backend, and any pre-1.0 syntax shifts.</p>
-    <div class="cta">
-        <a href="why.html" class="btn primary">Understand the why</a>
-        <a href="learn/index.html" class="btn">Start learning</a>
-        <a href="start.html" class="btn">Install and run</a>
-        <a href="roadmap.html" class="btn">See the roadmap</a>
-    </div>
+    <ul class="next-list">
+        <li><a href="why.html"><strong>Why Capa exists</strong></a> : the case for capability typing, against ambient authority, against the supply-chain status quo.</li>
+        <li><a href="learn/index.html"><strong>Learn (12 chapters)</strong></a> : a guided tour from hello world to a small project.</li>
+        <li><a href="reference.html"><strong>Language reference</strong></a> : full syntax and semantics.</li>
+        <li><a href="https://github.com/nelsonduarte/capa-language/blob/main/docs/packages.md"><strong>Packages</strong></a> : <code>capa.toml</code>, <code>capa install</code>, and the lockfile.</li>
+        <li><a href="roadmap.html"><strong>Roadmap</strong></a> : what is done, what is next, what is explicitly out of scope.</li>
+    </ul>
 </section>
 
 </main>
@@ -563,47 +182,33 @@
         <div>
             <h4>Documentation</h4>
             <ul>
-                <li><a href="start.html">Getting started</a></li>
-                <li><a href="learn/index.html">Tutorial</a></li>
                 <li><a href="reference.html">Reference</a></li>
                 <li><a href="stdlib.html">Standard library</a></li>
+                <li><a href="https://github.com/nelsonduarte/capa-language/blob/main/docs/packages.md">Packages</a></li>
+                <li><a href="https://github.com/nelsonduarte/capa-language/blob/main/STABILITY.md">Stability</a></li>
             </ul>
         </div>
         <div>
             <h4>Specification</h4>
             <ul>
-                <li><a href="https://github.com/nelsonduarte/capa-language/blob/main/docs/positioning.md">Positioning</a></li>
+                <li><a href="https://github.com/nelsonduarte/capa-language/blob/main/docs/positioning.md">Positioning vs related work</a></li>
                 <li><a href="https://github.com/nelsonduarte/capa-language/blob/main/Capa-EBNF.md">EBNF grammar</a></li>
                 <li><a href="https://github.com/nelsonduarte/capa-language/blob/main/docs/semantics.md">&lambda;<sub>cap</sub> calculus &amp; soundness</a></li>
-                <li><a href="https://github.com/nelsonduarte/capa-language/blob/main/docs/positioning.md">Positioning vs related work</a></li>
-                <li><a href="https://github.com/nelsonduarte/capa-language/blob/main/docs/cra.md">EU Cyber Resilience Act mapping</a></li>
-                <li><a href="https://github.com/nelsonduarte/capa-language/blob/main/docs/regulatory.md">Regulatory comparative table (CRA + NIS2 + DORA + SSDF + SCVS)</a></li>
-                <li><a href="https://github.com/nelsonduarte/capa-language/blob/main/docs/empirical_micro.md">SBOM diff: Python vs Capa</a></li>
-                <li><a href="https://github.com/nelsonduarte/capa-language/blob/main/benchmarks/README.md">Benchmarks &amp; overhead</a></li>
-            </ul>
-        </div>
-        <div>
-            <h4>Case studies</h4>
-            <ul>
-                <li><a href="https://github.com/nelsonduarte/capa-language/blob/main/docs/demo-event-stream.md">event-stream (2018)</a></li>
-                <li><a href="https://github.com/nelsonduarte/capa-language/blob/main/docs/cve_eslint_scope.md">eslint-scope (2018)</a></li>
-                <li><a href="https://github.com/nelsonduarte/capa-language/blob/main/docs/cve_ua_parser_js.md">ua-parser-js (2021)</a></li>
-                <li><a href="https://github.com/nelsonduarte/capa-language/blob/main/docs/cve_torchtriton.md">torchtriton (2022)</a></li>
-                <li><a href="https://github.com/nelsonduarte/capa-language/blob/main/docs/cve_node_ipc.md">node-ipc (2022)</a></li>
-                <li><a href="https://github.com/nelsonduarte/capa-language/blob/main/docs/cve_xz_utils.md">xz-utils (2024)</a></li>
+                <li><a href="https://github.com/nelsonduarte/capa-language/blob/main/docs/regulatory.md">CRA / NIS2 / DORA / SSDF / SCVS</a></li>
             </ul>
         </div>
         <div>
             <h4>Project</h4>
             <ul>
                 <li><a href="https://github.com/nelsonduarte/capa-language">Source</a></li>
+                <li><a href="https://github.com/nelsonduarte/capa-language/releases">Releases</a></li>
                 <li><a href="community.html">Community</a></li>
                 <li><a href="brand.html">Brand assets</a></li>
                 <li><a href="https://github.com/nelsonduarte/capa-language/blob/main/LICENSE">License (MIT)</a></li>
             </ul>
         </div>
     </div>
-    <p class="colophon">Built by Nelson Duarte · v1.0.0-rc.0 · MIT-licensed</p>
+    <p class="colophon">Built by Nelson Duarte &middot; v1.0.0-rc.0 &middot; MIT-licensed</p>
 </footer>
 
 </body>

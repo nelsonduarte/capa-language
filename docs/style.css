@@ -1,7 +1,12 @@
 /* ============================================================
    Capa landing page, single stylesheet, no framework, no JS.
 
-   Palette: dark base with a single accent (soft purple).
+   Two palettes:
+     * Dark (default): soft-purple accent on a deep slate base.
+     * Light: same accent, on a near-white base. Auto-selected
+       via `prefers-color-scheme: light` (no toggle needed; the
+       site follows the user's OS preference).
+
    Typography: system stack, monospaced code.
    ============================================================ */
 
@@ -30,6 +35,12 @@
     --code-comment:  #7c8794;
     --code-variant:  #ffa657;
 
+    /* Header background: solid-with-alpha so the sticky header
+       stays legible over scrolling content. The colour is the
+       page bg so it disappears visually when at top of page. */
+    --header-bg:          rgba(13, 17, 23, 0.78);
+    --header-bg-fallback: rgba(13, 17, 23, 0.95);
+
     /* Type scale: small steps, deliberate. */
     --fs-xs: 0.78rem;
     --fs-sm: 0.88rem;
@@ -45,6 +56,75 @@
     --radius-lg: 10px;
 
     --ease: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Light-mode palette. Two activation paths:
+     1. ``:root[data-theme="light"]`` -- explicit choice from the
+        in-nav toggle button; theme.js sets the attribute and
+        persists the value in localStorage.
+     2. ``@media (prefers-color-scheme: light) :root:not([data-theme])``
+        -- fallback when the user has not made an explicit choice
+        and the OS prefers light. The :not([data-theme]) guard
+        keeps an explicit dark choice winning even on a light-pref OS. */
+
+:root[data-theme="light"] {
+    --bg:            #fbfbfc;
+    --bg-soft:       #f3f4f7;
+    --bg-elevated:   #ffffff;
+    --bg-pre:        #f6f6f9;
+    --border:        #d8dae0;
+    --border-soft:   #e6e8ec;
+    --fg:            #1f2328;
+    --fg-dim:        #5c6470;
+    --fg-bright:     #08090a;
+    --accent:        #6d4ed6;
+    --accent-bright: #553acb;
+    --accent-soft:   rgba(109, 78, 214, 0.10);
+    --accent-glow:   rgba(109, 78, 214, 0.06);
+    --warn:          #b91c1c;
+    --ok:            #15803d;
+    --code-kw:       #b91c1c;
+    --code-cap:      #1d4ed8;
+    --code-ty-bi:    #15803d;
+    --code-ty-u:     #7c3aed;
+    --code-fn:       #6d4ed6;
+    --code-str:      #1e40af;
+    --code-comment:  #6b7280;
+    --code-variant:  #c2410c;
+
+    --header-bg:          rgba(251, 251, 252, 0.78);
+    --header-bg-fallback: rgba(251, 251, 252, 0.95);
+}
+
+@media (prefers-color-scheme: light) {
+    :root:not([data-theme]) {
+        --bg:            #fbfbfc;
+        --bg-soft:       #f3f4f7;
+        --bg-elevated:   #ffffff;
+        --bg-pre:        #f6f6f9;
+        --border:        #d8dae0;
+        --border-soft:   #e6e8ec;
+        --fg:            #1f2328;
+        --fg-dim:        #5c6470;
+        --fg-bright:     #08090a;
+        --accent:        #6d4ed6;
+        --accent-bright: #553acb;
+        --accent-soft:   rgba(109, 78, 214, 0.10);
+        --accent-glow:   rgba(109, 78, 214, 0.06);
+        --warn:          #b91c1c;
+        --ok:            #15803d;
+        --code-kw:       #b91c1c;
+        --code-cap:      #1d4ed8;
+        --code-ty-bi:    #15803d;
+        --code-ty-u:     #7c3aed;
+        --code-fn:       #6d4ed6;
+        --code-str:      #1e40af;
+        --code-comment:  #6b7280;
+        --code-variant:  #c2410c;
+
+        --header-bg:          rgba(251, 251, 252, 0.78);
+        --header-bg-fallback: rgba(251, 251, 252, 0.95);
+    }
 }
 
 * { box-sizing: border-box; }
@@ -64,18 +144,12 @@ html {
 body {
     margin: 0;
     padding: 0;
-    /* Subtle ambient glow that signals the site has a designed
-       palette without needing JS or large background images. */
-    background:
-        radial-gradient(900px 500px at 50% -100px,
-            var(--accent-glow), transparent 60%),
-        var(--bg);
-    background-attachment: fixed;
+    background: var(--bg);
 }
 
 ::selection {
     background: var(--accent);
-    color: #0d1117;
+    color: var(--bg);
 }
 
 /* ============================================================
@@ -104,19 +178,18 @@ header {
     top: 0;
     z-index: 10;
     border-bottom: 1px solid var(--border-soft);
-    /* Translucent so the accent body-glow shows through softly when
-       the user scrolls. backdrop-filter blurs the content underneath
-       on browsers that support it; the fallback alpha is 0.92 so
-       legibility is preserved even without blur. */
-    background: rgba(13, 17, 23, 0.78);
+    /* Translucent over the page bg so the header stays legible
+       when content scrolls under it. backdrop-filter blurs the
+       content underneath on browsers that support it; the
+       fallback uses a higher alpha. The colour follows the
+       active palette (dark / light) via --header-bg. */
+    background: var(--header-bg);
     backdrop-filter: saturate(140%) blur(10px);
     -webkit-backdrop-filter: saturate(140%) blur(10px);
 }
 
-/* On older browsers without backdrop-filter, fall back to a higher
-   alpha so text under the bar does not bleed through. */
 @supports not (backdrop-filter: blur(1px)) {
-    header { background: rgba(13, 17, 23, 0.95); }
+    header { background: var(--header-bg-fallback); }
 }
 
 nav {
@@ -173,51 +246,74 @@ nav {
     border-bottom-color: var(--accent);
 }
 
+/* Theme toggle button. Lives in the nav. Two glyphs (sun / moon)
+   are drawn via the ::before pseudo-element and swapped by the
+   data-active attribute that theme.js writes. */
+.theme-toggle {
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    color: var(--fg-dim);
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 0.95rem;
+    line-height: 1;
+    padding: 0.35rem 0.65rem;
+    transition: color 0.15s var(--ease), border-color 0.15s var(--ease);
+}
+
+.theme-toggle:hover {
+    color: var(--fg-bright);
+    border-color: var(--accent);
+}
+
+.theme-toggle::before {
+    /* Default before JS runs: a half-moon for dark mode. */
+    content: "\263E";  /* ☾ */
+}
+
+.theme-toggle[data-active="light"]::before { content: "\2600"; /* ☀ */ }
+.theme-toggle[data-active="dark"]::before  { content: "\263E"; /* ☾ */ }
+
 /* ============================================================
    Hero
    ============================================================ */
 
 .hero {
-    text-align: center;
-    padding: 5.5rem 0 4rem;
+    padding: 4rem 0 3rem;
     position: relative;
 }
 
+.hero-brand {
+    display: flex;
+    align-items: center;
+    gap: 1.25rem;
+    margin-bottom: 1.5rem;
+}
+
 .hero-logo {
-    display: block;
-    height: 132px;
+    height: 88px;
     width: auto;
-    margin: 0 auto 1.5rem;
-    /* A very soft drop-shadow ties the mark visually to the
-       accent-glow body backdrop without using new colour stops. */
-    filter: drop-shadow(0 8px 24px rgba(167, 139, 250, 0.20));
+    flex: 0 0 auto;
 }
 
 .hero h1 {
-    font-size: var(--fs-4xl);
-    margin: 0 0 0.75rem;
+    font-size: var(--fs-3xl);
+    margin: 0;
     color: var(--fg-bright);
-    font-weight: 800;
-    letter-spacing: -0.045em;
+    font-weight: 700;
+    letter-spacing: -0.04em;
     line-height: 1;
-    background: linear-gradient(120deg,
-        var(--fg-bright) 0%,
-        var(--fg-bright) 35%,
-        var(--accent-bright) 75%,
-        var(--accent) 100%);
-    -webkit-background-clip: text;
-    background-clip: text;
-    -webkit-text-fill-color: transparent;
 }
 
 .tagline {
-    font-size: 1.5rem;
+    font-size: 1.35rem;
     color: var(--fg-bright);
-    margin: 0 auto 1rem;
-    max-width: 38ch;
-    line-height: 1.35;
+    margin: 0 0 0.85rem;
+    max-width: 56ch;
+    line-height: 1.4;
     font-weight: 500;
-    letter-spacing: -0.01em;
+    letter-spacing: -0.005em;
 }
 
 .tagline strong {
@@ -227,15 +323,14 @@ nav {
 
 .subtitle {
     color: var(--fg-dim);
-    max-width: 58ch;
-    margin: 0 auto 2.25rem;
-    font-size: 1.075rem;
-    line-height: 1.55;
+    max-width: 62ch;
+    margin: 0 0 1.75rem;
+    font-size: 1.025rem;
+    line-height: 1.6;
 }
 
 .cta {
     display: flex;
-    justify-content: center;
     gap: 0.6rem;
     flex-wrap: wrap;
     margin-bottom: 1.5rem;
@@ -264,16 +359,14 @@ nav {
 
 .btn.primary {
     background: var(--accent);
-    color: #0d1117;
+    color: var(--bg);
     border-color: var(--accent);
-    box-shadow: 0 8px 24px -10px rgba(167, 139, 250, 0.55);
 }
 
 .btn.primary:hover {
     background: var(--accent-bright);
     border-color: var(--accent-bright);
-    color: #0d1117;
-    box-shadow: 0 10px 28px -10px rgba(167, 139, 250, 0.65);
+    color: var(--bg);
 }
 
 .status {
@@ -340,15 +433,13 @@ hr {
 
 pre {
     background: var(--bg-pre);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    padding: 1rem 1.25rem;
+    border: 1px solid var(--border-soft);
+    border-radius: var(--radius-sm);
+    padding: 1.1rem 1.35rem;
     overflow-x: auto;
-    margin: 1rem 0;
+    margin: 1.25rem 0 1.5rem;
     font-size: 0.875rem;
-    line-height: 1.6;
-    box-shadow: 0 1px 0 rgba(255, 255, 255, 0.02) inset,
-                0 8px 24px -16px rgba(0, 0, 0, 0.45);
+    line-height: 1.65;
 }
 
 code {
@@ -431,19 +522,17 @@ pre code {
     padding: 1.35rem 1.4rem;
     min-width: 0;
     transition: border-color 0.2s var(--ease),
-                transform 0.2s var(--ease),
-                box-shadow 0.2s var(--ease);
+                transform 0.2s var(--ease);
 }
 
 .pillar:hover {
     border-color: var(--accent);
     transform: translateY(-2px);
-    box-shadow: 0 14px 28px -20px rgba(167, 139, 250, 0.4);
 }
 
 .pillar h3 { margin-top: 0; color: var(--accent); letter-spacing: -0.005em; }
 .pillar p  { font-size: 0.95rem; color: var(--fg-dim); margin-bottom: 1rem; }
-.pillar pre { font-size: 0.78rem; margin: 0; box-shadow: none; }
+.pillar pre { font-size: 0.78rem; margin: 0; }
 
 /* ============================================================
    Status grid (working / not yet)
@@ -487,10 +576,7 @@ pre code {
 
 footer {
     border-top: 1px solid var(--border);
-    background:
-        linear-gradient(180deg,
-            rgba(22, 27, 34, 0.4),
-            rgba(22, 27, 34, 0.85));
+    background: var(--bg-soft);
     padding: 3.5rem 0 2rem;
     margin-top: 4.5rem;
 }
@@ -536,16 +622,16 @@ footer {
    Inline-style replacements (so CSP can disallow inline styles)
    ============================================================ */
 
-.section-centered { text-align: center; }
+.section-centered { /* legacy class kept harmless; left-aligned now */ }
 
 .lead-prose {
-    max-width: 60ch;
-    margin: 0 auto 2rem;
+    max-width: 62ch;
+    margin: 0 0 1.5rem;
 }
 
 .lead-prose-narrow {
-    max-width: 56ch;
-    margin: 0 auto 2rem;
+    max-width: 58ch;
+    margin: 0 0 1.5rem;
 }
 
 .colophon {
@@ -555,7 +641,6 @@ footer {
     border-top: 1px solid var(--border-soft);
     color: var(--fg-dim);
     font-size: 0.85rem;
-    text-align: center;
     letter-spacing: 0.01em;
 }
 
@@ -580,14 +665,12 @@ footer {
     min-width: 0; /* allow the pre's overflow-x to kick in instead
                      of stretching the grid column. */
     transition: border-color 0.2s var(--ease),
-                transform 0.2s var(--ease),
-                box-shadow 0.2s var(--ease);
+                transform 0.2s var(--ease);
 }
 
 .value-prop:hover {
     border-color: var(--accent);
     transform: translateY(-2px);
-    box-shadow: 0 14px 28px -20px rgba(167, 139, 250, 0.5);
 }
 
 .value-prop h3 {
@@ -603,7 +686,6 @@ footer {
     background: var(--bg);
     margin: 1rem 0 0;
     font-size: 0.78rem;
-    box-shadow: none;
 }
 
 /* ============================================================
@@ -626,8 +708,7 @@ footer {
     text-decoration: none;
     transition: border-color 0.2s var(--ease),
                 background 0.2s var(--ease),
-                transform 0.2s var(--ease),
-                box-shadow 0.2s var(--ease);
+                transform 0.2s var(--ease);
 }
 
 .doc-card:hover {
@@ -635,7 +716,6 @@ footer {
     background: var(--accent-soft);
     text-decoration: none;
     transform: translateY(-2px);
-    box-shadow: 0 14px 28px -20px rgba(167, 139, 250, 0.5);
 }
 
 .doc-card h3 {
@@ -818,7 +898,7 @@ footer {
 
 .download-grid {
     display: grid;
-    grid-template-columns: 1fr 1fr 1fr;
+    grid-template-columns: 1fr;
     gap: 1.25rem;
     margin: 1.5rem 0;
 }
@@ -844,8 +924,7 @@ footer {
     color: var(--fg);
     transition: border-color 0.2s var(--ease),
                 background 0.2s var(--ease),
-                transform 0.2s var(--ease),
-                box-shadow 0.2s var(--ease);
+                transform 0.2s var(--ease);
     min-width: 0;
 }
 
@@ -854,7 +933,6 @@ footer {
     background: var(--accent-soft);
     text-decoration: none;
     transform: translateY(-2px);
-    box-shadow: 0 14px 28px -20px rgba(167, 139, 250, 0.5);
 }
 
 .download-btn-os {
@@ -916,13 +994,11 @@ footer {
     min-width: 0;
     display: flex;
     flex-direction: column;
-    transition: border-color 0.2s var(--ease),
-                box-shadow 0.2s var(--ease);
+    transition: border-color 0.2s var(--ease);
 }
 
 .download-card:hover {
     border-color: var(--accent);
-    box-shadow: 0 14px 28px -20px rgba(167, 139, 250, 0.4);
 }
 
 .download-card h3 {
@@ -1104,7 +1180,7 @@ section[id] > h3 {
 
 .release-tag {
     background: var(--accent);
-    color: #0d1117;
+    color: var(--bg);
     padding: 0.2rem 0.65rem;
     border-radius: 999px;
     font-family: ui-monospace, "SF Mono", Menlo, Monaco, Consolas, monospace;
@@ -1112,7 +1188,6 @@ section[id] > h3 {
     font-weight: 700;
     letter-spacing: 0.01em;
     white-space: nowrap;
-    box-shadow: 0 4px 12px -6px rgba(167, 139, 250, 0.6);
 }
 
 .release-body {
@@ -1142,9 +1217,6 @@ pre.showcase {
     font-size: 0.92rem;
     line-height: 1.7;
     overflow-x: auto;
-    box-shadow: 0 1px 0 rgba(255, 255, 255, 0.03) inset,
-                0 24px 48px -28px rgba(0, 0, 0, 0.55),
-                0 0 0 1px var(--border);
 }
 
 /* ============================================================
@@ -1165,14 +1237,12 @@ pre.showcase {
     padding: 1.35rem 1.5rem;
     min-width: 0;
     transition: border-color 0.2s var(--ease),
-                transform 0.2s var(--ease),
-                box-shadow 0.2s var(--ease);
+                transform 0.2s var(--ease);
 }
 
 .persona:hover {
     border-color: var(--accent);
     transform: translateY(-2px);
-    box-shadow: 0 14px 28px -20px rgba(167, 139, 250, 0.4);
 }
 
 .persona h3 {
@@ -1346,8 +1416,7 @@ pre.showcase {
     text-decoration: none;
     transition: border-color 0.2s var(--ease),
                 background 0.2s var(--ease),
-                transform 0.2s var(--ease),
-                box-shadow 0.2s var(--ease);
+                transform 0.2s var(--ease);
     min-width: 0;
 }
 
@@ -1356,7 +1425,6 @@ pre.showcase {
     background: var(--accent-soft);
     text-decoration: none;
     transform: translateY(-2px);
-    box-shadow: 0 14px 28px -20px rgba(167, 139, 250, 0.5);
 }
 
 .channel-card h3 {
@@ -1505,23 +1573,147 @@ pre.showcase {
 }
 
 /* ============================================================
+   Program / next-step lists used on the landing page
+   ============================================================ */
+
+dl.program-list {
+    margin: 0;
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 0.75rem;
+}
+
+dl.program-list dt {
+    margin: 1rem 0 0;
+    font-weight: 600;
+    color: var(--fg-bright);
+    font-size: 1.05rem;
+}
+
+dl.program-list dt a {
+    color: var(--accent);
+    text-decoration: none;
+}
+
+dl.program-list dt a:hover { color: var(--accent-bright); text-decoration: underline; }
+
+dl.program-list dd {
+    margin: 0.15rem 0 0.5rem;
+    color: var(--fg-dim);
+}
+
+ul.next-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+}
+
+ul.next-list li {
+    padding: 0.55rem 0;
+    border-bottom: 1px solid var(--border-soft);
+}
+
+ul.next-list li:last-child { border-bottom: 0; }
+
+ul.next-list a {
+    color: var(--accent);
+    text-decoration: none;
+}
+
+ul.next-list a:hover { color: var(--accent-bright); text-decoration: underline; }
+
+ul.next-list strong { color: var(--fg-bright); font-weight: 600; }
+
+/* ============================================================
+   Hamburger nav for mobile (CSS-only, no JS).
+   Implementation: a hidden checkbox drives the menu state.
+   The label looks like a hamburger and toggles the checkbox;
+   ``:checked ~ .nav-links`` expands the menu. Works under
+   ``script-src 'none'``.
+   ============================================================ */
+
+.nav-toggle { display: none; }
+.nav-burger { display: none; }
+
+@media (max-width: 720px) {
+    nav { position: relative; }
+    .nav-burger {
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
+        width: 26px;
+        height: 18px;
+        cursor: pointer;
+        padding: 2px 0;
+    }
+    .nav-burger span {
+        display: block;
+        height: 2px;
+        width: 100%;
+        background: var(--fg);
+        border-radius: 1px;
+        transition: transform 0.2s var(--ease), opacity 0.2s var(--ease);
+    }
+    .nav-toggle:checked ~ .nav-burger span:nth-child(1) {
+        transform: translateY(7px) rotate(45deg);
+    }
+    .nav-toggle:checked ~ .nav-burger span:nth-child(2) {
+        opacity: 0;
+    }
+    .nav-toggle:checked ~ .nav-burger span:nth-child(3) {
+        transform: translateY(-7px) rotate(-45deg);
+    }
+    /* Overlay menu: absolute-positioned beneath the header bar
+       so the page content underneath is not pushed down. Drops
+       in from the right and covers the page until the user
+       toggles it off or taps a link. */
+    .nav-links {
+        display: none;
+        position: absolute;
+        top: 100%;
+        right: 0.75rem;
+        left: 0.75rem;
+        margin-top: 0.4rem;
+        flex-direction: column;
+        align-items: stretch;
+        gap: 0;
+        padding: 0.5rem 0;
+        background: var(--bg-elevated);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+    }
+    .nav-toggle:checked ~ .nav-links { display: flex; }
+    .nav-links a {
+        padding: 0.7rem 1rem;
+        border-bottom: 1px solid var(--border-soft);
+        width: auto;
+    }
+    .nav-links a:last-of-type { border-bottom: 0; }
+    .nav-links a.current { border-bottom: 1px solid var(--border-soft); color: var(--accent); }
+    .nav-links .theme-toggle {
+        align-self: flex-start;
+        margin: 0.5rem 1rem 0.4rem;
+    }
+}
+
+/* ============================================================
    Responsive
    ============================================================ */
 
 @media (max-width: 720px) {
-    .hero { padding: 3rem 0 2rem; }
-    .hero-logo { height: 96px; margin-bottom: 1rem; }
-    .hero h1 { font-size: 2.85rem; letter-spacing: -0.04em; }
-    .tagline { font-size: 1.2rem; max-width: 26ch; }
-    .subtitle { font-size: 1rem; }
+    .hero { padding: 2.5rem 0 2rem; }
+    .hero-brand { gap: 0.85rem; margin-bottom: 1.1rem; }
+    .hero-logo { height: 56px; }
+    .hero h1 { font-size: 2.25rem; letter-spacing: -0.035em; }
+    .tagline { font-size: 1.15rem; max-width: none; }
+    .subtitle { font-size: 0.98rem; max-width: none; }
     .code-compare { grid-template-columns: 1fr; }
     .pillars { grid-template-columns: 1fr; }
     .status-grid { grid-template-columns: 1fr; }
     .footer-grid { grid-template-columns: 1fr 1fr; gap: 1.5rem; }
     nav { padding: 0.7rem 1.25rem; }
-    .nav-links { gap: 0.9rem; font-size: 0.88rem; width: 100%; justify-content: flex-start; }
-    .nav-links a { padding-bottom: 0.15rem; }
-    section { padding: 2.25rem 0; }
+    /* Hamburger nav rules live in the dedicated block above. */
+    section { padding: 2rem 0; }
     h2 { font-size: 1.5rem; }
     .value-props { grid-template-columns: 1fr; gap: 1rem; }
     .doc-grid { grid-template-columns: 1fr; }

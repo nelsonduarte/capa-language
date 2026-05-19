@@ -7,8 +7,9 @@
     <meta name="description" content="Chapter 3 of Learn Capa: signatures, parameters, return types, named arguments.">
     <link rel="stylesheet" href="../style.css">
     <link rel="icon" type="image/svg+xml" href="../favicon.svg">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'none'; object-src 'none'; base-uri 'self'; form-action 'self'">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'">
     <meta name="referrer" content="strict-origin-when-cross-origin">
+    <script src="../theme.js"></script>
 </head>
 <body>
 
@@ -18,6 +19,10 @@
             <img src="../capa_logo.svg" alt="" aria-hidden="true">
             Capa
         </a>
+        <input type="checkbox" id="nav-toggle" class="nav-toggle" aria-label="Toggle menu">
+        <label for="nav-toggle" class="nav-burger" aria-hidden="true">
+            <span></span><span></span><span></span>
+        </label>
         <div class="nav-links">
             <a href="../index.html">Home</a>
             <a href="../why.html">Why Capa</a>
@@ -26,6 +31,7 @@
             <a href="../start.html">Get started</a>
             <a href="../roadmap.html">Roadmap</a>
             <a href="https://github.com/nelsonduarte/capa-language" class="github">GitHub</a>
+            <button type="button" id="theme-toggle" class="theme-toggle" aria-label="Toggle theme"></button>
         </div>
     </nav>
 </header>

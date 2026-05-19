@@ -17,8 +17,9 @@
     <meta name="twitter:image" content="https://capa-language.com/capa_logo.png">
     <link rel="stylesheet" href="style.css">
     <link rel="icon" type="image/svg+xml" href="favicon.svg">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'none'; object-src 'none'; base-uri 'self'; form-action 'self'">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'">
     <meta name="referrer" content="strict-origin-when-cross-origin">
+    <script src="theme.js"></script>
 </head>
 <body>
 
@@ -28,6 +29,10 @@
             <img src="capa_logo.svg" alt="" aria-hidden="true">
             Capa
         </a>
+        <input type="checkbox" id="nav-toggle" class="nav-toggle" aria-label="Toggle menu">
+        <label for="nav-toggle" class="nav-burger" aria-hidden="true">
+            <span></span><span></span><span></span>
+        </label>
         <div class="nav-links">
             <a href="index.html">Home</a>
             <a href="why.html">Why Capa</a>
@@ -36,6 +41,7 @@
             <a href="start.html">Get started</a>
             <a href="roadmap.html" class="current">Roadmap</a>
             <a href="https://github.com/nelsonduarte/capa-language" class="github">GitHub</a>
+            <button type="button" id="theme-toggle" class="theme-toggle" aria-label="Toggle theme"></button>
         </div>
     </nav>
 </header>
@@ -233,24 +239,6 @@
         </li>
     </ul>
 
-    <h3>Known limitations</h3>
-    <ul class="milestone-list">
-        <li>
-            <span class="tag current">P1</span>
-            <div class="item-body">
-                <strong>Multi-line <code>match</code> inside parentheses</strong>
-                <p>Parentheses currently suppress significant newlines, so <code>f(match x ... )</code> with multi-line arms does not parse. Workaround is an inline <code>{ }</code> block. ~1-2 hours to fix.</p>
-            </div>
-        </li>
-        <li>
-            <span class="tag current">P2</span>
-            <div class="item-body">
-                <strong><code>?</code> operator uses an internal exception</strong>
-                <p>Correct but slower than an expanded early-return at the transpiled level. Optimisation; no semantic change.</p>
-            </div>
-        </li>
-    </ul>
-
     <h3>SBOM and supply-chain work</h3>
     <p>Capa's positioning: a capability-typed language whose distinctive contribution is the integration between the type system and the supply-chain governance stack. The compiler natively emits the artefacts that other capability languages leave to external tools. The roadmap below strengthens exactly that axis.</p>
     <ul class="milestone-list">
@@ -320,40 +308,7 @@
     </ul>
 </section>
 
-<!-- =====================================================
-     NOT planned
-===================================================== -->
 <section>
-    <h2>Known limitations</h2>
-
-    <p>Capa is in beta. Things a real adopter should still know are not yet there:</p>
-
-    <ul class="limitations-list">
-        <li>
-            <strong>No package manager or registry.</strong> There is no <code>capa add &lt;dep&gt;</code> and no <code>capalang.org/registry</code>. Library reuse means copying source between projects. <em>Status: pending; only meaningful after a module system exists (P3).</em>
-        </li>
-        <li>
-            <strong>Python backend only.</strong> Capa transpiles to Python and runs on CPython. There is no LLVM, Cranelift, or any native backend. Performance is Python's plus the overhead measured in <a href="https://github.com/nelsonduarte/capa-language/blob/main/benchmarks/README.md">the benchmark suite</a> (1.00x to 1.45x against hand-Python). <em>Status: far future; not in v1 scope.</em>
-        </li>
-        <li>
-            <strong>No async / await.</strong> The keywords are reserved by the lexer; the parser rejects them. Async semantics that interact correctly with capability discipline is a research question on its own. <em>Status: explicitly not in v1.</em>
-        </li>
-        <li>
-            <strong>REPL: MVP only.</strong> <code>capa repl</code> opens an interactive prompt with every standard built-in capability pre-bound (<code>stdio</code>, <code>fs</code>, <code>net</code>, <code>env</code>, <code>clock</code>, <code>random</code>); <code>Unsafe</code> is intentionally left out and must be requested explicitly. Bare expressions are auto-wrapped as <code>stdio.println("${...}")</code>; declarations are accumulated; state survives across inputs via re-running the assembled program with stdout-diffing. Multi-line blocks (<code>if</code>, <code>for</code>, <code>while</code>, <code>match</code>) get a continuation prompt and terminate on a blank line. Meta commands: <code>.exit</code>, <code>.reset</code>, <code>.show</code>, <code>.types &lt;expr&gt;</code>, <code>.help</code>. <em>Not yet</em>: incremental analyzer state (currently re-runs everything on each input), readline / history. <em>Status: MVP landed; full REPL is P2.</em>
-        </li>
-    </ul>
-
-    <p>Additionally, the following are explicitly not in v1:</p>
-
-    <ul>
-        <li><strong>Self-hosting.</strong> Was Phase 5 of the original design roadmap. Very far future. The compiler is unlikely to be rewritten in Capa before there is a working Capa community.</li>
-        <li><strong>Tail-call optimisation.</strong> The transpiler emits regular Python calls; recursion is bounded by the CPython stack.</li>
-        <li><strong>Garbage collection beyond CPython's.</strong> Capa inherits whatever the Python runtime gives it.</li>
-        <li><strong>Custom syntax extensions / macros.</strong> Capa is a fixed grammar by design. The discipline depends on the analyzer being able to read every program completely.</li>
-    </ul>
-</section>
-
-<section class="section-centered">
     <h2>Help shape the next milestone</h2>
     <p class="lead-prose">Capa is a personal project; it is also an open one. Issues, design discussions, and pull requests are welcome. The fastest way to influence the roadmap is to show up with a real use case.</p>
     <div class="cta">
