@@ -548,6 +548,58 @@ class TestQuestionMarkHoisting(unittest.TestCase):
         self.assertIn("__capa_try_0 = ", code)
         self.assertIn("__capa_try_1 = ", code)
 
+    def test_question_mark_in_result_block_lambda(self):
+        # Regression: ``?`` inside a lambda body would raise
+        # _CapaTryEarlyReturn that escaped past the lambda's caller
+        # (which had no @_capa_wrap of its own). The transpiler now
+        # wraps any lambda whose body uses ``?`` with @_capa_wrap so
+        # the exception is caught at the lambda's own boundary.
+        # The legitimate shape is a Result-returning block lambda.
+        rc, out, err = run_capa(
+            "type Bad =\n"
+            "    Oops(String)\n"
+            "fun produce(b: Bool) -> Result<Int, Bad>\n"
+            "    if b\n"
+            "        return Err(Oops(\"boom\"))\n"
+            "    return Ok(7)\n"
+            "fun build() -> Fun(Bool) -> Result<Int, Bad>\n"
+            "    let f = fun (b: Bool) -> Result<Int, Bad> =>\n"
+            "        let x = produce(b)?\n"
+            "        return Ok(x + 1)\n"
+            "    return f\n"
+            "fun main(stdio: Stdio)\n"
+            "    let f = build()\n"
+            "    match f(false)\n"
+            "        Ok(n) -> stdio.println(\"ok: ${n}\")\n"
+            "        Err(Oops(m)) -> stdio.println(\"err: ${m}\")\n"
+            "    match f(true)\n"
+            "        Ok(n) -> stdio.println(\"ok: ${n}\")\n"
+            "        Err(Oops(m)) -> stdio.println(\"err: ${m}\")\n"
+        )
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out, "ok: 8\nerr: boom\n")
+
+    def test_result_block_lambda_emits_capa_wrap_decorator(self):
+        # Pin the emission: a Result-returning block lambda with ``?``
+        # inside its body should be lowered with the @_capa_wrap
+        # decorator on the generated nested function. Without the
+        # decorator, the _CapaTryEarlyReturn exception escapes past
+        # the lambda's caller.
+        code = self._transpile(
+            "type Bad =\n"
+            "    Oops(String)\n"
+            "fun produce() -> Result<Int, Bad>\n"
+            "    return Ok(1)\n"
+            "fun build() -> Fun() -> Result<Int, Bad>\n"
+            "    let f = fun () -> Result<Int, Bad> =>\n"
+            "        let x = produce()?\n"
+            "        return Ok(x + 1)\n"
+            "    return f\n"
+        )
+        self.assertIn("@_capa_wrap", code)
+        # The lambda body lives in a nested def named _lambda_<n>.
+        self.assertIn("def _lambda_", code)
+
 
 class TestBuiltinSpecialisations(unittest.TestCase):
     """The transpiler uses the analyser's type information to skip the

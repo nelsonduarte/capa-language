@@ -3542,6 +3542,131 @@ class TestQuestionMarkOnNonResultOption(unittest.TestCase):
         self.assertTrue(r.ok, r.errors)
 
 
+class TestQuestionMarkEnclosingReturn(unittest.TestCase):
+    """``?`` propagates Err / None_ to the enclosing function. If
+    that function does not return Result or Option, the propagation
+    has nowhere safe to go: at runtime the slow ``_capa_try`` path
+    raises ``_CapaTryEarlyReturn`` and the ``@_capa_wrap`` decorator
+    catches it but then returns an Err / None_ from a function
+    declared to return something else (a silent type violation).
+    In the lambda case the exception used to escape past the lambda's
+    caller entirely. The analyser now rejects every such use at
+    type-check time so the diagnostic points at the ``?`` rather than
+    at the wrong-shape value bubbling up later."""
+
+    def test_question_in_int_returning_function_is_rejected(self):
+        errs = errors_of(
+            "type Bad =\n"
+            "    Oops(String)\n"
+            "fun produce() -> Result<Int, Bad>\n"
+            "    return Ok(1)\n"
+            "fun bad() -> Int\n"
+            "    let x = produce()?\n"
+            "    return x\n"
+        )
+        self.assertTrue(
+            any("can only be used in a function or lambda that returns "
+                "Result or Option" in e and "Int" in e
+                for e in errs),
+            errs,
+        )
+
+    def test_question_in_unit_returning_function_is_rejected(self):
+        errs = errors_of(
+            "type Bad =\n"
+            "    Oops(String)\n"
+            "fun produce() -> Result<Int, Bad>\n"
+            "    return Ok(1)\n"
+            "fun bad()\n"
+            "    produce()?\n"
+        )
+        self.assertTrue(
+            any("can only be used in a function or lambda that returns "
+                "Result or Option" in e and ("Unit" in e or "()" in e)
+                for e in errs),
+            errs,
+        )
+
+    def test_question_in_expr_lambda_with_non_result_return_is_rejected(self):
+        # The bug that motivated this rule: a lambda whose declared
+        # return type is Int but whose body uses ``?``. The lambda
+        # was emitted as a Python lambda with no decorator, and the
+        # raised _CapaTryEarlyReturn escaped past the lambda's caller.
+        errs = errors_of(
+            "type Bad =\n"
+            "    Oops(String)\n"
+            "fun produce() -> Result<Int, Bad>\n"
+            "    return Ok(1)\n"
+            "fun build() -> Fun() -> Int\n"
+            "    return fun () -> Int => produce()?\n"
+        )
+        self.assertTrue(
+            any("can only be used in a function or lambda that returns "
+                "Result or Option" in e
+                for e in errs),
+            errs,
+        )
+
+    def test_question_in_block_lambda_with_non_result_return_is_rejected(self):
+        errs = errors_of(
+            "type Bad =\n"
+            "    Oops(String)\n"
+            "fun produce() -> Result<Int, Bad>\n"
+            "    return Ok(1)\n"
+            "fun build() -> Fun() -> Int\n"
+            "    let f = fun () -> Int =>\n"
+            "        let x = produce()?\n"
+            "        return x\n"
+            "    return f\n"
+        )
+        self.assertTrue(
+            any("can only be used in a function or lambda that returns "
+                "Result or Option" in e
+                for e in errs),
+            errs,
+        )
+
+    def test_question_in_block_lambda_with_result_return_is_accepted(self):
+        # The legitimate shape: a lambda that returns Result and uses
+        # ``?`` inside its block body. The lambda gets ``@_capa_wrap``
+        # in the transpiler so the propagation is caught at the
+        # lambda's own boundary.
+        r = check(
+            "type Bad =\n"
+            "    Oops(String)\n"
+            "fun produce() -> Result<Int, Bad>\n"
+            "    return Ok(1)\n"
+            "fun build() -> Fun() -> Result<Int, Bad>\n"
+            "    let f = fun () -> Result<Int, Bad> =>\n"
+            "        let x = produce()?\n"
+            "        return Ok(x + 1)\n"
+            "    return f\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+    def test_question_in_lambda_does_not_inherit_outer_return(self):
+        # Even when the outer function returns Result, the lambda's
+        # own declared return type is what governs whether ``?`` is
+        # allowed inside the lambda body. A Result-returning outer
+        # function with a non-Result lambda inside must still reject
+        # ``?`` in the lambda.
+        errs = errors_of(
+            "type Bad =\n"
+            "    Oops(String)\n"
+            "fun produce() -> Result<Int, Bad>\n"
+            "    return Ok(1)\n"
+            "fun outer() -> Result<Int, Bad>\n"
+            "    let f = fun () -> Int => produce()?\n"
+            "    return Ok(f())\n"
+        )
+        self.assertTrue(
+            any("can only be used in a function or lambda that returns "
+                "Result or Option" in e
+                for e in errs),
+            errs,
+        )
+
+
 class TestCallNonCallable(unittest.TestCase):
     """A call expression ``x(args)`` whose callee resolves to a
     non-function, non-variant binding (an Int local, a String

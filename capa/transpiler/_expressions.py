@@ -121,12 +121,22 @@ class _ExpressionsMixin:
           The Emitter is already in statement-producing mode, and the
           nested function's stmts appear at the correct indentation
           level.
+
+        Lambdas whose body contains ``?`` get the ``@_capa_wrap``
+        decorator (block-bodied) or are wrapped via ``_capa_wrap(...)``
+        (expression-bodied) so that ``_CapaTryEarlyReturn`` raised by
+        ``_capa_try`` is caught at the lambda's own boundary. Without
+        this, the exception would escape past the lambda's caller,
+        which has no decorator of its own to catch it.
         """
-        from . import _safe_ident
+        from . import _safe_ident, _uses_exception_try
+        needs_wrap = _uses_exception_try(e.body)
         if isinstance(e.body, A.Block):
             name = f"_lambda_{self._tmp_counter}"
             self._tmp_counter += 1
             params = ", ".join(_safe_ident(p.name) for p in e.params)
+            if needs_wrap:
+                self.em.write("@_capa_wrap")
             self.em.write(f"def {name}({params}):")
             self.em.indent()
             self._emit_block_body(e.body)
@@ -134,7 +144,10 @@ class _ExpressionsMixin:
             return name
         param_names = ", ".join(_safe_ident(p.name) for p in e.params)
         body = self._emit_expr(e.body)
-        return f"(lambda {param_names}: {body})"
+        expr = f"(lambda {param_names}: {body})"
+        if needs_wrap:
+            expr = f"_capa_wrap({expr})"
+        return expr
 
     def _emit_match_expr(self, m: A.MatchExpr) -> str:
         """Emits a MatchExpr used in expression position.

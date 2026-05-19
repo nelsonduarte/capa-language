@@ -17,6 +17,8 @@ pulls helpers from the other mixins (``_resolve_type``,
 
 from __future__ import annotations
 
+from typing import Optional
+
 from .. import capa_ast as A
 from ..builtins import BUILTIN_POS as _BUILTIN_POS
 from ..typesys import (
@@ -89,9 +91,21 @@ class _ExpressionsMixin:
             self.current_return_type = prev_ret
             ret_ty: Ty = decl_ret_block
         else:
+            # Push the lambda's declared return type (or None when
+            # absent) so that any `?` inside the body checks against
+            # *this* lambda's contract, not the enclosing function's.
+            # Without this, `fun () -> Int => result_thing()?` would
+            # inherit the outer function's return type and the `?`
+            # check would erroneously accept it.
+            decl_ret_expr: Optional[Ty] = (
+                self._resolve_type(e.return_type)
+                if e.return_type is not None else None
+            )
+            prev_ret = self.current_return_type
+            self.current_return_type = decl_ret_expr
             body_ty = self._check_expr(e.body)
-            if e.return_type is not None:
-                decl_ret_expr = self._resolve_type(e.return_type)
+            self.current_return_type = prev_ret
+            if decl_ret_expr is not None:
                 if not compatible(decl_ret_expr, body_ty):
                     self._err(
                         f"lambda body has type {ty_str(body_ty)}, but "
@@ -266,29 +280,57 @@ class _ExpressionsMixin:
             # Option<T>, the ? operator unwraps and yields T.
             if isinstance(inner, TyName) and inner.args:
                 if inner.name in ("Result", "Option"):
-                    return inner.args[0]
-            # TyUnknown / TyVar / a Result-or-Option whose type
-            # arguments have not been inferred yet stay permissive:
-            # the runtime helper handles whatever shape they take,
-            # and we do not want to false-positive on generic code
-            # that produces a Result through a type variable.
-            if isinstance(inner, (TyVar,)) or inner is TyUnknown:
-                return TyUnknown
-            if isinstance(inner, TyName) and inner.name in ("Result", "Option"):
+                    unwrap_ty: Ty = inner.args[0]
+                else:
+                    self._err(
+                        f"`?` is only valid on Result<T, E> or Option<T>; "
+                        f"this expression has type {ty_str(inner)}",
+                        e.pos,
+                    )
+                    return TyUnknown
+            elif isinstance(inner, (TyVar,)) or inner is TyUnknown:
+                # TyUnknown / TyVar stay permissive: the runtime
+                # helper handles whatever shape they take, and we
+                # do not want to false-positive on generic code
+                # that produces a Result through a type variable.
+                unwrap_ty = TyUnknown
+            elif isinstance(inner, TyName) and inner.name in ("Result", "Option"):
                 # No args yet; payload type is unknown but the shape
                 # is fine. Same permissive return as above.
+                unwrap_ty = TyUnknown
+            else:
+                # Concrete non-Result / non-Option type: ``?`` makes no
+                # sense and would raise at runtime as ``? applied to a
+                # value that is not Result or Option``. Surface it now
+                # with the actual type the user wrote so the fix is
+                # obvious from the diagnostic.
+                self._err(
+                    f"`?` is only valid on Result<T, E> or Option<T>; "
+                    f"this expression has type {ty_str(inner)}",
+                    e.pos,
+                )
                 return TyUnknown
-            # Concrete non-Result / non-Option type: ``?`` makes no
-            # sense and would raise at runtime as ``? applied to a
-            # value that is not Result or Option``. Surface it now
-            # with the actual type the user wrote so the fix is
-            # obvious from the diagnostic.
-            self._err(
-                f"`?` is only valid on Result<T, E> or Option<T>; "
-                f"this expression has type {ty_str(inner)}",
-                e.pos,
+            # The enclosing function or lambda must also return
+            # Result or Option, otherwise `?` would propagate an
+            # Err / None_ out of a function declared to return a
+            # different type -- a type violation that previously
+            # surfaced as a silent wrong-shape return at runtime,
+            # or as an uncaught _CapaTryEarlyReturn when the `?`
+            # sat inside a lambda whose decorator was elided.
+            ret = self.current_return_type
+            ret_ok = (
+                isinstance(ret, TyName)
+                and ret.name in ("Result", "Option")
             )
-            return TyUnknown
+            if not ret_ok:
+                ret_desc = ty_str(ret) if ret is not None else "Unit"
+                self._err(
+                    f"`?` can only be used in a function or lambda that "
+                    f"returns Result or Option; the enclosing function "
+                    f"returns {ret_desc}",
+                    e.pos,
+                )
+            return unwrap_ty
         if isinstance(e, A.StructLit):
             return self._check_struct_lit(e)
         if isinstance(e, A.ListLit):

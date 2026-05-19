@@ -296,14 +296,15 @@ def _capa_wrap(fn):
 def _uses_try(node) -> bool:
     """Determines whether an AST subtree contains any Try expression.
 
-    Recursively visits the subtree. Does not cross function boundaries
-    (a nested fun with ? does not force the outer fun to have the
-    decorator). In Capa v1 there are no nested functions, but the rule
-    is here just in case.
+    Recursively visits the subtree. Stops at function boundaries:
+    ``FunDecl`` and ``LambdaExpr``. A nested function or lambda with
+    ``?`` does not force the outer function to have the decorator --
+    the inner one gets its own decorator at its own boundary, and the
+    exception never escapes past it.
     """
     if isinstance(node, A.Try):
         return True
-    if isinstance(node, (A.FunDecl,)):
+    if isinstance(node, (A.FunDecl, A.LambdaExpr)):
         return False  # function boundary
     if isinstance(node, list):
         return any(_uses_try(x) for x in node)
