@@ -391,19 +391,22 @@ resources (`Stdio`, `Fs`, `Env`, `Clock`, `Random`, `Unsafe`). They
 are only accessible via function parameters, there are no global
 instances.
 
-### 6.2. The capability discipline (3 layers)
+### 6.2. The capability discipline (three layers)
 
-**Structural (v1)**: capabilities cannot appear in struct fields,
+**Structural**: capabilities cannot appear in struct fields,
 variant payloads, function return types, constants, `let`/`var`
-bindings, generic args, or tuples. They only flow through parameters.
+bindings, generic args, or tuples. They only flow through
+parameters. (Exception: a struct that `impl`s a user-defined
+capability *may* hold built-in caps as fields - the
+"cap-bearing struct" relaxation.)
 
-**Flow (v2)**:
+**Flow**:
 - *No aliasing*: the same capability cannot occupy two argument slots
   in a single call
 - *Mandatory use*: capability parameters must be used (or prefixed
   with `_` to silence the warning)
 
-**Linearity (v3)**: the `consume` keyword indicates ownership
+**Linear**: the `consume` keyword indicates ownership
 transfer:
 
 ```capa
@@ -428,14 +431,43 @@ fun with_consume(consume cap: MyCap)      // ownership transfer
 ## 7. Imports
 
 ```capa
-import std.fmt                       // the whole module
-import std.collections.HashMap       // a specific type
-import "./local.capa" as utils       // local file with alias
+import util                     // sibling: ./util.capa
+import sinks.csv_sink           // nested: ./sinks/csv_sink.capa
+import capa_log.log             // package dep: <vendor_or_path>/capa_log/log.capa
+import util as U                // alias the module name
 ```
 
-In v1, top-level `import` is **rejected by the analyzer**. The module
-system is reserved for a future version; for now, all useful code
-comes from the global standard library.
+Only items marked `pub` in the target module are visible to
+the importer. After `import util`, every `pub` name from
+`util.capa` is reachable directly (`greet(...)`), or by
+qualified call (`util.greet(...)`). With `import util as U`,
+qualified calls take the alias: `U.greet(...)`.
+
+### 7.1. Module resolution order
+
+When the loader resolves `import x.y`, it tries each of the
+following search paths in order, and uses the first hit:
+
+1. The directory of the importing `.capa` file
+   (sibling and nested-subdir imports work without any setup).
+2. Every directory in the `CAPA_PATH` environment variable.
+3. `./vendor/` when `capa.toml` declares at least one git
+   dependency (populated by `capa install`).
+4. The parent of every `path = "..."` entry in `capa.toml`.
+5. `./libraries/` - conventional fallback for projects that
+   vendor by hand.
+6. The directory of the root file passed to `capa --run`.
+
+Each entry is deduplicated; a missing directory is silently
+skipped. See [`packages.md`](packages.md) for the package
+manager's role in resolution.
+
+### 7.2. Visibility
+
+- `pub fun`, `pub type`, `pub const`, `pub capability`: visible
+  to importers.
+- Unprefixed declarations: module-private. An importer who
+  tries to call them gets `unresolved name 'foo'`.
 
 For Python interop, use the typed builtins `py_import(unsafe, name)`
 and `py_invoke(unsafe, callable, args)`, both require the `Unsafe`
@@ -477,11 +509,19 @@ Capa transpiles to Python 3.10+, but the semantics differ:
 
 ## 10. Known limitations
 
-- String literals do not support multi-line (use `\n` for line breaks)
-- Nested string literals inside interpolation (`"x ${"inner"} y"`) are
-  not supported
-- Errors inside interpolation report positions starting from the file
-  start
-- Basic module system (only `import`)
-- No asynchronous IO operations
-- `if/match` in block-body lambdas needs `=>` before the indented block
+- String literals do not support multi-line (use `\n` for line breaks).
+- Nested string literals inside interpolation
+  (`"x ${"inner"} y"`) are not supported; bind the inner value
+  to a `let` first.
+- Errors inside interpolation report positions starting from
+  the file start; the offset has not yet been wired to the
+  position inside the `${ ... }` expression.
+- The module system is intentionally small: `import`,
+  optional `as` alias, `pub` visibility. No re-exports, no
+  star imports, no transitive dependency resolution at the
+  language level (the package manager handles transitive
+  fetch via `capa.toml` and `capa install`; see
+  [`packages.md`](packages.md)).
+- No asynchronous IO operations.
+- `if`/`match` in block-body lambdas needs `=>` before the
+  indented block.

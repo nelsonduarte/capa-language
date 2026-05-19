@@ -32,7 +32,7 @@ cd capa
 pip install -e .
 ```
 
-Run the test suite (~25 seconds, currently 1016 tests):
+Run the test suite (~25 seconds, currently 1048 tests):
 
 ```bash
 python -m unittest discover tests

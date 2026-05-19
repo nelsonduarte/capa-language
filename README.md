@@ -184,7 +184,7 @@ the audit footprint.
 capa/                 # Python package: compiler + runtime
   lexer/  parser/  analyzer/  transpiler/  runtime/
   manifest/  docgen/  lsp/    cli.py
-tests/                # 1016 unit, end-to-end, and property tests
+tests/                # 1048 unit, end-to-end, and property tests
 examples/             # .capa programs (basics, CVE case studies, LLM sandbox)
 libraries/            # seed libraries (capa_cli, capa_datetime, capa_log, capa_http)
 docs/                 # public website (HTML) + design writeups (.md)
@@ -197,11 +197,18 @@ LICENSE  CONTRIBUTING.md  SECURITY.md  README.md
 
 ## Status
 
-**1016 tests** spanning the lexer, parser, analyzer, transpiler,
-LSP, formatter, attribute-schema validation, and Hypothesis-based
-property tests. The transpiler suite actually executes the
-generated Python and checks stdout; the property suite fuzzes the
-full pipeline with arbitrary text and syntax-aware Capa programs.
+Capa currently ships as **`0.8.x-beta`**. The stability
+commitment that will start with `1.0.0` is documented in
+[`STABILITY.md`](STABILITY.md); the short version is "post-1.0,
+breaking changes require a major bump, deprecations get one
+minor release of warning first".
+
+**1048 tests** spanning the lexer, parser, analyzer, transpiler,
+LSP, formatter, attribute-schema validation, package manager,
+and Hypothesis-based property tests. The transpiler suite
+actually executes the generated Python and checks stdout; the
+property suite fuzzes the full pipeline with arbitrary text and
+syntax-aware Capa programs.
 
 Run them:
 

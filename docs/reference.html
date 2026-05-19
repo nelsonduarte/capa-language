@@ -375,10 +375,12 @@ fun with_consume(consume cap: MyCap)      // ownership transfer</code></pre>
 
 <section id="imports">
 <h2>7. Imports</h2>
-<pre><code>import std.fmt                       // the whole module
-import std.collections.HashMap       // a specific type
-import "./local.capa" as utils       // local file with alias</code></pre>
-<p>In v1, top-level <code>import</code> is <strong>rejected by the analyzer</strong>. The module system is reserved for a future version; for now, all useful code comes from the global standard library.</p>
+<pre><code>import util                     // sibling: ./util.capa
+import sinks.csv_sink           // nested: ./sinks/csv_sink.capa
+import capa_log.log             // package dep: &lt;vendor or path&gt;/capa_log/log.capa
+import util as U                // alias the module name</code></pre>
+<p>Only items marked <code>pub</code> in the target module are visible to the importer. After <code>import util</code>, every <code>pub</code> name from <code>util.capa</code> is reachable unqualified (<code>greet(...)</code>) or by qualified call (<code>util.greet(...)</code>). With <code>import util as U</code>, qualified calls take the alias.</p>
+<p>The loader resolves <code>import x.y</code> in this order: importing-file directory, <code>CAPA_PATH</code> entries, <code>./vendor/</code> (when <code>capa.toml</code> declares a git dep), the parent of every <code>path = "..."</code> entry in <code>capa.toml</code>, <code>./libraries/</code>, and finally the directory of the root file. See the <a href="packages.html">packages page</a> for the package manager's role.</p>
 <p>For Python interop, use the typed builtins <code>py_import(unsafe, name)</code> and <code>py_invoke(unsafe, callable, args)</code>; both require the <code>Unsafe</code> capability. See the <a href="stdlib.html">standard library</a> page.</p>
 </section>
 
