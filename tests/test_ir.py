@@ -467,6 +467,61 @@ class TestMatch(unittest.TestCase):
         self.assertEqual(ns["length"](ns["Some"]("hi")), 1)
         self.assertEqual(ns["length"](ns["None_"]), 0)
 
+    def test_expression_position_match_returns_value(self):
+        # Phase 5A: ``return match n ...`` is the dominant idiom in
+        # examples. Each arm body is an expression; the lowerer
+        # threads a result local through the arms so the match
+        # itself carries a Value.
+        src = (
+            "fun classify(n: Int) -> Int\n"
+            "    return match n\n"
+            "        0 -> 100\n"
+            "        1 -> 200\n"
+            "        _ -> 300\n"
+        )
+        module, types = _parse_and_check(src)
+        ir_mod = lower(module, types=types)
+        fn = ir_mod.functions[0]
+        matches = [i for i in fn.body if isinstance(i, N.Match)]
+        self.assertEqual(len(matches), 1)
+        self.assertIsNotNone(matches[0].result_dst)
+        py = compile(module, types=types)
+        ns: dict = {}
+        exec(py, ns)
+        self.assertEqual(ns["classify"](0), 100)
+        self.assertEqual(ns["classify"](1), 200)
+        self.assertEqual(ns["classify"](42), 300)
+
+    def test_expression_match_on_variant_payload(self):
+        src = (
+            "fun pluck(r: Result<Int, String>) -> Int\n"
+            "    return match r\n"
+            "        Ok(n) -> n\n"
+            "        Err(_) -> -1\n"
+        )
+        module, types = _parse_and_check(src)
+        py = compile(module, types=types)
+        ns = self._runtime_ns()
+        exec(py, ns)
+        self.assertEqual(ns["pluck"](ns["Ok"](42)), 42)
+        self.assertEqual(ns["pluck"](ns["Err"]("nope")), -1)
+
+    def test_block_bodied_arm_in_expr_match_is_unsupported(self):
+        # Block bodies in expression-position match would need the
+        # lowerer to identify the block's implicit-result
+        # expression; we defer until the analyzer marks it.
+        src = (
+            "fun pick(n: Int) -> Int\n"
+            "    return match n\n"
+            "        0 ->\n"
+            "            let y = 100\n"
+            "            return y\n"
+            "        _ -> 0\n"
+        )
+        module, types = _parse_and_check(src)
+        with self.assertRaises(UnsupportedInIR):
+            lower(module, types=types)
+
     def test_match_arm_with_guard_is_unsupported(self):
         src = (
             "fun classify(n: Int) -> String\n"
@@ -982,16 +1037,6 @@ class TestUnsupportedSurfaces(unittest.TestCase):
     def _try_lower(self, src: str):
         module, types = _parse_and_check(src)
         return lower(module, types=types)
-
-    def test_match_expression_is_unsupported(self):
-        src = (
-            "fun classify(n: Int) -> Int\n"
-            "    return match n\n"
-            "        0 -> 100\n"
-            "        _ -> 200\n"
-        )
-        with self.assertRaises(UnsupportedInIR):
-            self._try_lower(src)
 
     def test_compound_assignment_is_unsupported(self):
         # Phase 2 supports only ``x = expr``. Compound forms like

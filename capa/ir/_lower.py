@@ -74,6 +74,12 @@ class Lowerer:
         # lowered so that references to them inside function bodies
         # resolve to ``Value(kind="global")``.
         self._module_names: set[str] = set()
+        # Payload-less sum-type variants. When the source uses one as
+        # a bare value (``return Excellent``), the Python emitter must
+        # construct it (``Excellent()``); ordinary identifier
+        # resolution would produce just ``Excellent`` which is a class
+        # object, not an instance.
+        self._payloadless_variants: set[str] = set()
 
     # ------------------------------------------------------------
     # Module / function entry points.
@@ -95,6 +101,16 @@ class Lowerer:
             for item in module.items
             if isinstance(item, (A.ConstDecl, A.FunDecl))
         }
+        # Pre-scan: collect payload-less variant names from every
+        # sum-type declaration. References to these as bare values
+        # must construct the variant (``Excellent`` -> ``Excellent()``)
+        # because the runtime class is not its own instance.
+        self._payloadless_variants = set()
+        for item in module.items:
+            if isinstance(item, A.TypeSum):
+                for v in item.variants:
+                    if not v.payloads:
+                        self._payloadless_variants.add(v.name)
         for item in module.items:
             if isinstance(item, A.FunDecl):
                 functions.append(self.lower_function(item))
@@ -540,7 +556,53 @@ class Lowerer:
             return self._lower_try(e)
         if isinstance(e, A.LambdaExpr):
             return self._lower_lambda(e)
+        if isinstance(e, A.MatchExpr):
+            return self._lower_match_expr(e)
         raise UnsupportedInIR(f"expression {type(e).__name__}")
+
+    def _lower_match_expr(self, m: A.MatchExpr) -> Value:
+        """Lower a match used in expression position. Allocates a
+        result local; each arm body lowers normally and is then
+        appended with an AssignConst writing its value into the
+        result local. The emitter's existing Match emission renders
+        the whole thing as a Python ``match`` / ``case`` block; the
+        result local is in function scope (Python has no per-case
+        scope), so subsequent instructions read it naturally.
+
+        Block-bodied arms are deferred: lowering a block to a Value
+        would require the analyzer to mark the implicit-result
+        expression inside, which we do not have access to here.
+        Capa's expression-position matches in practice use
+        expression bodies (``pattern -> expr``), which is the
+        90% case."""
+        result_ty = "Unknown"
+        if self.types:
+            t = self.types.get(id(m))
+            if t is not None:
+                result_ty = _ty_to_str(t)
+        result_dst = fresh_local(self._counter, prefix="m")
+        self._locals[result_dst] = result_ty
+        scrut = self._lower_expr(m.scrutinee)
+        arms: list[MatchArm] = []
+        for arm in m.arms:
+            if arm.guard is not None:
+                raise UnsupportedInIR("match arm with guard")
+            pat = self._lower_pattern(arm.pattern)
+            outer = self._instrs
+            self._instrs = []
+            if isinstance(arm.body, A.Block):
+                raise UnsupportedInIR(
+                    "block-bodied arm in expression-position match"
+                )
+            v = self._lower_expr(arm.body)
+            self._instrs.append(AssignConst(dst=result_dst, src=v))
+            body = self._instrs
+            self._instrs = outer
+            arms.append(MatchArm(pattern=pat, body=body, guard=None))
+        self._instrs.append(
+            Match(scrutinee=scrut, arms=arms, result_dst=result_dst)
+        )
+        return Value(kind="local", name=result_dst, ty=result_ty)
 
     def _lower_lambda(self, e: A.LambdaExpr) -> Value:
         """Lower a lambda. The resulting Value is a local whose name
@@ -638,6 +700,14 @@ class Lowerer:
             # Python-level global; the emitter renders ``Value`` as
             # the bare name.
             return Value(kind="global", name=e.name, ty="Unknown")
+        if e.name == "None":
+            # Capa's ``None`` is the Option singleton, named ``None_``
+            # at the Python level to avoid the keyword clash.
+            return Value(kind="variant_ctor", name="None", ty="Option")
+        if e.name in self._payloadless_variants:
+            # Use as a value: emitter renders ``Name()`` so the
+            # constructor produces an instance.
+            return Value(kind="variant_ctor", name=e.name, ty=e.name)
         if e.name in _BUILTIN_CAPS:
             return Value(kind="cap_const", name=e.name, ty=e.name)
         raise UnsupportedInIR(f"identifier reference {e.name!r}")

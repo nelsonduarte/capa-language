@@ -455,6 +455,14 @@ class PythonEmitter:
     def _format_value(self, v: Value) -> str:
         if v.kind in ("local", "param", "global"):
             return v.name or ""
+        if v.kind == "variant_ctor":
+            # Payload-less sum-type variant used as a value. The
+            # ``None`` variant is a singleton (no per-instance state),
+            # so we reference its runtime constant directly; for any
+            # other variant we construct a fresh instance.
+            if v.name == "None":
+                return "None_"
+            return f"{v.name}()"
         if v.kind == "lit_int":
             return repr(v.literal)
         if v.kind == "lit_float":
