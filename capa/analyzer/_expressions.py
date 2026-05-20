@@ -47,7 +47,13 @@ class _ExpressionsMixin:
         """
         from . import Symbol, SymbolKind
 
-        self._push_scope()
+        # Mark the lambda's scope as a function-root so the
+        # block-shadow check (in _bind_pattern) stops its parent
+        # walk here: a ``let`` inside the lambda body that shadows
+        # a captured outer-function local is fine -- the lambda
+        # compiles to a Python ``def`` / ``lambda`` whose function
+        # scope makes the inner binding a fresh local.
+        self._push_scope(is_function_root=True)
         param_tys: list[Ty] = []
         param_names: set[str] = set()
         for p in e.params:

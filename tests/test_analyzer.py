@@ -215,6 +215,55 @@ class TestNameResolution(unittest.TestCase):
         )
         self.assertTrue(r.ok, r.errors)
 
+    def test_lambda_body_shadows_outer_param_ok(self):
+        # A ``let`` inside a lambda body whose name collides with
+        # an outer-function parameter is NOT a real shadow: the
+        # lambda transpiles to a Python function whose scope
+        # makes the inner binding a fresh local. The shadow check
+        # must stop its parent walk at the lambda's scope-root
+        # marker; otherwise it false-positives this legitimate
+        # pattern.
+        r = check(
+            "fun outer(x: Int) -> Int\n"
+            "    let f = fun () -> Int =>\n"
+            "        let x = 99\n"
+            "        return x\n"
+            "    return f() + x\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+    def test_lambda_body_shadows_outer_let_ok(self):
+        # Same principle for an outer ``let``: the lambda scope
+        # boundary lets the inner ``let`` be a fresh local.
+        r = check(
+            "fun main(stdio: Stdio)\n"
+            "    let y = 1\n"
+            "    let f = fun () -> Int =>\n"
+            "        let y = 2\n"
+            "        return y\n"
+            "    stdio.println(\"${f()} ${y}\")\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+    def test_lambda_body_intra_lambda_shadow_still_rejected(self):
+        # Soundness anchor: shadowing within the SAME lambda
+        # body must still be rejected. Both bindings end up in
+        # the same Python function-local scope so the inner
+        # ``let`` would overwrite the param.
+        msgs = errors_of(
+            "fun main(stdio: Stdio)\n"
+            "    let f = fun (z: Int) -> Int =>\n"
+            "        if z > 0\n"
+            "            let z = 99\n"
+            "            return z\n"
+            "        return z\n"
+            "    stdio.println(\"${f(1)}\")\n"
+        )
+        self.assertTrue(
+            any("would shadow an outer-scope local" in m for m in msgs),
+            msgs,
+        )
+
     def test_capability_in_scope(self):
         r = check(
             "fun f(stdio: Stdio)\n"

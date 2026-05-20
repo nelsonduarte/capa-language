@@ -159,9 +159,19 @@ class Symbol:
 
 @dataclass
 class Scope:
-    """A lexical level. Performs chained lookup through the parent."""
+    """A lexical level. Performs chained lookup through the parent.
+
+    ``is_function_root`` marks the boundary of a function or lambda
+    body. The block-shadow check stops its parent-walk at this
+    marker so that a lambda body that declares a ``let`` with the
+    same name as a captured outer-function local is not falsely
+    flagged: the lambda compiles to a Python ``def`` / ``lambda``
+    whose function scope makes the inner binding a fresh local,
+    not an overwrite of the outer one.
+    """
     symbols: dict[str, Symbol] = field(default_factory=dict)
     parent: Optional["Scope"] = None
+    is_function_root: bool = False
 
     def lookup(self, name: str) -> Optional[Symbol]:
         s = self.symbols.get(name)
@@ -173,6 +183,21 @@ class Scope:
 
     def lookup_local(self, name: str) -> Optional[Symbol]:
         return self.symbols.get(name)
+
+    def lookup_within_function(self, name: str) -> Optional[Symbol]:
+        """Walk the parent chain but stop at the first scope whose
+        ``is_function_root`` is True (inclusive: the function-root
+        scope is searched, then the walk stops). Used by the
+        block-shadow check to detect shadowing within the same
+        function or lambda body without crossing into the enclosing
+        function's scopes.
+        """
+        s = self.symbols.get(name)
+        if s is not None:
+            return s
+        if self.is_function_root or self.parent is None:
+            return None
+        return self.parent.lookup_within_function(name)
 
     def define(self, sym: Symbol) -> None:
         self.symbols[sym.name] = sym
@@ -332,8 +357,8 @@ class Analyzer(
             fname = pos.filename
         self.errors.append(AnalysisError(message, pos, src, fname))
 
-    def _push_scope(self) -> None:
-        self.scope = Scope(parent=self.scope)
+    def _push_scope(self, is_function_root: bool = False) -> None:
+        self.scope = Scope(parent=self.scope, is_function_root=is_function_root)
 
     def _pop_scope(self) -> None:
         assert self.scope.parent is not None

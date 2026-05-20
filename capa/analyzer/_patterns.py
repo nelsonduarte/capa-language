@@ -261,11 +261,18 @@ class _PatternsMixin:
                 # message rather than silently emit code whose
                 # runtime value disagrees with the source.
                 #
+                # The walk stops at the first ``is_function_root``
+                # scope (set on FunDecl and LambdaExpr entry), so
+                # a ``let`` inside a lambda body that shadows a
+                # captured outer-function local is NOT flagged:
+                # the lambda compiles to a Python function whose
+                # scope makes the inner binding a fresh local.
                 # Module-level shadowing (CONSTANT, FUNCTION, etc.)
-                # is fine because Python's function scope makes the
-                # function-local rebind the module name within the
-                # body without affecting the module-level binding.
-                prev_outer = self.scope.lookup(p.name)
+                # is also fine because Python's function scope
+                # makes the function-local rebind the module name
+                # within the body without affecting the
+                # module-level binding.
+                prev_outer = self.scope.lookup_within_function(p.name)
                 if prev_outer is not None and prev_outer.kind in (
                     SymbolKind.PARAM,
                     SymbolKind.LOCAL,

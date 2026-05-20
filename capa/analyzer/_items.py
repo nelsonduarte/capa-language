@@ -119,7 +119,7 @@ class _ItemsMixin:
             self._check_function_attributes(fn)
 
         self._push_type_params(fn.type_params)
-        self._push_scope()
+        self._push_scope(is_function_root=True)
 
         # Capability parameters: collected so the analyzer can
         # warn at the end of the body if any are declared but
