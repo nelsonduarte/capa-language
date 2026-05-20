@@ -175,11 +175,13 @@ class _ExpressionsMixin:
                         f"match guard must be Bool, got {ty_str(gty)}",
                         arm.guard.pos,
                     )
+            arm_diverges = False
             if isinstance(arm.body, A.Block):
                 for stmt in arm.body.stmts:
                     self._check_stmt(stmt)
                 if _block_diverges(arm.body):
                     arm_types.append(None)
+                    arm_diverges = True
                 elif (
                     arm.body.stmts
                     and isinstance(arm.body.stmts[-1], A.ExprStmt)
@@ -197,12 +199,24 @@ class _ExpressionsMixin:
             else:
                 arm_types.append(self._check_expr(arm.body))
             self._pop_scope()
-            branch_results.append(self._consumed)
+            # Divergent arms cannot reach the merge point, so their
+            # ``_consumed`` set must not flow past the match. Same
+            # principle the type-side unification uses: a divergent
+            # arm contributes ``None`` to ``arm_types``; here it
+            # simply does not contribute to ``branch_results``.
+            if not arm_diverges:
+                branch_results.append(self._consumed)
 
-        merged: set[str] = set()
-        for r in branch_results:
-            merged |= r
-        self._consumed = merged
+        if branch_results:
+            merged: set[str] = set()
+            for r in branch_results:
+                merged |= r
+            self._consumed = merged
+        else:
+            # All arms diverge: the code after this match is
+            # unreachable. Keep ``_consumed`` at the pre-match
+            # state.
+            self._consumed = before
 
         self._check_match_exhaustiveness(s, scrutinee_ty)
 

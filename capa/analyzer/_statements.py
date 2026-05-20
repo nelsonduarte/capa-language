@@ -166,6 +166,7 @@ class _StatementsMixin:
                 del self.types[k]
 
     def _check_if(self, s: A.IfStmt) -> None:
+        from ._expressions import _block_diverges
         cond_ty = self._check_expr(s.cond)
         if not compatible(TyBool, cond_ty):
             self._err(
@@ -173,14 +174,20 @@ class _StatementsMixin:
                 s.cond.pos,
             )
         # Flow analysis: snapshot ``_consumed`` before each branch
-        # and take the conservative union after. If any branch
-        # consumes a cap, treat it as consumed past the ``if``.
+        # and take the conservative union after. Branches whose
+        # body diverges (ends in ``return`` / ``break`` /
+        # ``continue``) are excluded from the merge -- their
+        # ``_consumed`` set cannot flow past the if because the
+        # path itself does not reach the merge point. Matches the
+        # divergence treatment match-arm type-unification already
+        # uses (see _check_match_expr).
         before = set(self._consumed)
         branch_results: list[set[str]] = []
 
         self._consumed = set(before)
         self._check_block(s.then_block)
-        branch_results.append(self._consumed)
+        if not _block_diverges(s.then_block):
+            branch_results.append(self._consumed)
 
         for cond, blk in s.elif_arms:
             self._consumed = set(before)
@@ -191,21 +198,30 @@ class _StatementsMixin:
                     cond.pos,
                 )
             self._check_block(blk)
-            branch_results.append(self._consumed)
+            if not _block_diverges(blk):
+                branch_results.append(self._consumed)
 
         if s.else_block is not None:
             self._consumed = set(before)
             self._check_block(s.else_block)
-            branch_results.append(self._consumed)
+            if not _block_diverges(s.else_block):
+                branch_results.append(self._consumed)
         else:
             # No else: the all-conditions-false path falls
             # through and consumes nothing additional.
             branch_results.append(before)
 
-        merged: set[str] = set()
-        for s_set in branch_results:
-            merged |= s_set
-        self._consumed = merged
+        if branch_results:
+            merged: set[str] = set()
+            for s_set in branch_results:
+                merged |= s_set
+            self._consumed = merged
+        else:
+            # Every branch diverges; the code after this if is
+            # unreachable. Keep ``_consumed`` at the pre-if state
+            # so any further analysis (which will not actually
+            # execute) does not see spurious consumption.
+            self._consumed = before
 
     def _check_while(self, s: A.WhileStmt) -> None:
         cty = self._check_expr(s.cond)

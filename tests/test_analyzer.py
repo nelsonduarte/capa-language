@@ -3173,6 +3173,95 @@ class TestConsume(unittest.TestCase):
         )
         self.assertTrue(r.ok, r.errors)
 
+    def test_consume_in_divergent_if_branch_ok(self):
+        # If a branch consumes a cap and then diverges (return),
+        # the cap is not really consumed past the if: the divergent
+        # path never reaches the merge point, so the post-if code
+        # can still see the cap as live. Previously the merge was
+        # naively conservative and treated the divergent path's
+        # consumption as if it flowed forward; this test pins the
+        # NLL-style precision fix.
+        r = check(
+            "fun adoptar(consume stdio: Stdio)\n"
+            "    stdio.println(\"end\")\n"
+            "fun main(stdio: Stdio, b: Bool)\n"
+            "    if b\n"
+            "        adoptar(stdio)\n"
+            "        return\n"
+            "    stdio.println(\"after\")\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+    def test_consume_in_divergent_else_branch_ok(self):
+        # Symmetric to the if-then case: the else diverges, the
+        # then is a no-op, and the post-if code still has the cap.
+        r = check(
+            "fun adoptar(consume stdio: Stdio)\n"
+            "    stdio.println(\"end\")\n"
+            "fun main(stdio: Stdio, b: Bool)\n"
+            "    if b\n"
+            "        stdio.println(\"keep\")\n"
+            "    else\n"
+            "        adoptar(stdio)\n"
+            "        return\n"
+            "    stdio.println(\"after\")\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+    def test_consume_in_divergent_match_arm_ok(self):
+        # Same principle applied to match: the Yes arm consumes and
+        # returns; the No arm does not consume. The post-match code
+        # can only be reached via the No arm, where the cap is
+        # still live.
+        r = check(
+            "type Choice =\n"
+            "    Yes\n"
+            "    No\n"
+            "fun adoptar(consume stdio: Stdio)\n"
+            "    stdio.println(\"end\")\n"
+            "fun main(stdio: Stdio, ch: Choice)\n"
+            "    match ch\n"
+            "        Yes ->\n"
+            "            adoptar(stdio)\n"
+            "            return\n"
+            "        No -> stdio.println(\"no\")\n"
+            "    stdio.println(\"after\")\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+    def test_consume_in_non_divergent_if_branch_still_rejected(self):
+        # Soundness check: the precision fix only excludes branches
+        # that diverge. A branch that consumes and then falls
+        # through must still propagate the consumption to the
+        # merge, otherwise we admit a real use-after-consume.
+        msgs = errors_of(
+            "fun adoptar(consume stdio: Stdio)\n"
+            "    stdio.println(\"end\")\n"
+            "fun main(stdio: Stdio, b: Bool)\n"
+            "    if b\n"
+            "        adoptar(stdio)\n"
+            "    stdio.println(\"after\")\n"
+        )
+        self.assertTrue(
+            any("was consumed earlier" in m for m in msgs), msgs
+        )
+
+    def test_consume_in_all_divergent_branches_ok(self):
+        # All if branches diverge; the code after is unreachable.
+        # The analyzer should not block on a phantom consumption in
+        # the unreachable continuation.
+        r = check(
+            "fun adoptar(consume stdio: Stdio)\n"
+            "    stdio.println(\"end\")\n"
+            "fun main(stdio: Stdio, b: Bool)\n"
+            "    if b\n"
+            "        adoptar(stdio)\n"
+            "        return\n"
+            "    else\n"
+            "        return\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
 
 # =============================================================
 # Smoke tests of the canonical examples
