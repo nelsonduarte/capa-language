@@ -523,6 +523,11 @@ class TestMatch(unittest.TestCase):
             lower(module, types=types)
 
     def test_match_arm_with_guard_is_unsupported(self):
+        # Guards reference pattern-bound names which the ANF
+        # lowerer cannot route around: any guard sub-expression
+        # would need to land before the case in instruction order,
+        # but the bound name is only in scope inside the case.
+        # Deferred until the IR grows an inline-expression escape.
         src = (
             "fun classify(n: Int) -> String\n"
             "    match n\n"
@@ -1058,18 +1063,20 @@ class TestUnsupportedSurfaces(unittest.TestCase):
         module, types = _parse_and_check(src)
         return lower(module, types=types)
 
-    def test_compound_assignment_is_unsupported(self):
-        # Phase 2 supports only ``x = expr``. Compound forms like
-        # ``x += y`` are deferred until the IR has a way to express
-        # the implicit read-then-write semantics safely.
+    def test_compound_assignment_runs(self):
+        # Phase 5C: ``x += y`` rewrites to ``x = x + y`` at IR level.
         src = (
             "fun bump() -> Int\n"
             "    var x = 0\n"
             "    x += 1\n"
+            "    x += 2\n"
             "    return x\n"
         )
-        with self.assertRaises(UnsupportedInIR):
-            self._try_lower(src)
+        module, types = _parse_and_check(src)
+        py = compile(module, types=types)
+        ns: dict = {}
+        exec(py, ns)
+        self.assertEqual(ns["bump"](), 3)
 
 
 if __name__ == "__main__":

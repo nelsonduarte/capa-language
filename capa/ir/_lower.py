@@ -301,19 +301,37 @@ class Lowerer:
         raise UnsupportedInIR(f"statement {type(s).__name__}")
 
     def _lower_let(self, s: A.LetStmt) -> None:
-        # Phase 1 supports only Ident patterns on the left side.
-        if not isinstance(s.pattern, A.IdentPat):
-            raise UnsupportedInIR(
-                f"let-pattern {type(s.pattern).__name__}"
-            )
-        name = s.pattern.name
-        value = self._lower_expr(s.value)
-        # If the source value is already a single Value, bind directly.
-        # Otherwise the expression lowering will have produced
-        # instructions that ended with the result in a temp; chain
-        # an extra AssignConst to give that result the user's name.
-        self._locals[name] = value.ty
-        self._instrs.append(AssignConst(dst=name, src=value))
+        # Ident pattern: ``let x = expr``. Tuple pattern:
+        # ``let (a, b) = expr`` destructures positionally. Other
+        # pattern shapes (Variant, Struct, Or) on the LHS of a let
+        # are still deferred (they would need a one-arm match
+        # lowering with an exhaustiveness check the analyzer has
+        # already done).
+        if isinstance(s.pattern, A.IdentPat):
+            name = s.pattern.name
+            value = self._lower_expr(s.value)
+            self._locals[name] = value.ty
+            self._instrs.append(AssignConst(dst=name, src=value))
+            return
+        if isinstance(s.pattern, A.TuplePat):
+            value = self._lower_expr(s.value)
+            for idx, sub in enumerate(s.pattern.elements):
+                if not isinstance(sub, A.IdentPat):
+                    raise UnsupportedInIR(
+                        f"nested let-pattern {type(sub).__name__}"
+                    )
+                # Index into the tuple positionally; the IR's Index
+                # instruction is the same one ``xs[i]`` uses, so the
+                # emitter renders ``a = pair[0]`` etc.
+                idx_v = Value(kind="lit_int", literal=idx, ty="Int")
+                self._locals[sub.name] = "Unknown"
+                self._instrs.append(
+                    Index(dst=sub.name, receiver=value, index=idx_v)
+                )
+            return
+        raise UnsupportedInIR(
+            f"let-pattern {type(s.pattern).__name__}"
+        )
 
     def _lower_var(self, s: A.VarStmt) -> None:
         # ``var x = expr``: same Python emission as ``let``, but the
@@ -327,19 +345,42 @@ class Lowerer:
         self._instrs.append(AssignConst(dst=s.name, src=value))
 
     def _lower_assign(self, s: A.AssignStmt) -> None:
-        # Phase 2 only handles plain ``x = expr`` on a bare ident.
-        # Compound assignment (``x += y``) and lhs-as-FieldAccess /
-        # Index targets are deferred.
-        if s.op != "=":
-            raise UnsupportedInIR(
-                f"compound assignment operator {s.op!r}"
-            )
+        # Plain ``x = expr`` lowers directly; compound assignments
+        # (``+=``, ``-=``, ``*=``, ``/=``, ``%=``) rewrite to
+        # ``x = x <op> expr`` at the IR level. LHS-as-FieldAccess /
+        # Index targets are still deferred.
         if not isinstance(s.target, A.Ident):
             raise UnsupportedInIR(
                 f"assignment target {type(s.target).__name__}"
             )
-        value = self._lower_expr(s.value)
-        self._instrs.append(Reassign(dst=s.target.name, src=value))
+        if s.op == "=":
+            value = self._lower_expr(s.value)
+            self._instrs.append(Reassign(dst=s.target.name, src=value))
+            return
+        compound_ops = {"+=": "+", "-=": "-", "*=": "*", "/=": "/", "%=": "%"}
+        if s.op not in compound_ops:
+            raise UnsupportedInIR(
+                f"compound assignment operator {s.op!r}"
+            )
+        # Compound: lower the current ident value, the RHS value, then
+        # a BinOp, then a Reassign.
+        op = compound_ops[s.op]
+        cur_ty = self._params.get(s.target.name) or self._locals.get(
+            s.target.name, "Unknown",
+        )
+        left = Value(kind="local", name=s.target.name, ty=cur_ty)
+        if s.target.name in self._params:
+            left = Value(kind="param", name=s.target.name, ty=cur_ty)
+        right = self._lower_expr(s.value)
+        dst = fresh_local(self._counter)
+        self._locals[dst] = cur_ty
+        self._instrs.append(BinOp(dst=dst, op=op, left=left, right=right))
+        self._instrs.append(
+            Reassign(
+                dst=s.target.name,
+                src=Value(kind="local", name=dst, ty=cur_ty),
+            )
+        )
 
     def _lower_if(self, s: A.IfStmt) -> None:
         # Lower ``if cond { then } elif c1 { b1 } ... else { e }`` by
@@ -487,6 +528,13 @@ class Lowerer:
         arms: list[MatchArm] = []
         for arm in m.arms:
             if arm.guard is not None:
+                # Guards reference pattern-bound names that only
+                # exist inside the ``case`` body; ANF flattening
+                # outside the case would move the guard's
+                # sub-expressions to a point where those names are
+                # not in scope. Supporting guards cleanly needs an
+                # inline-expression emitter path, not yet
+                # implemented; defer.
                 raise UnsupportedInIR("match arm with guard")
             self._refine_pattern_binds(arm.pattern, scrut.ty)
             pat = self._lower_pattern(arm.pattern)
@@ -597,6 +645,12 @@ class Lowerer:
             return Value(kind="lit_float", literal=e.value, ty="Float")
         if isinstance(e, A.StringLit):
             return Value(kind="lit_str", literal=e.value, ty="String")
+        if isinstance(e, A.CharLit):
+            # Capa ``Char`` is a single-codepoint String at the
+            # Python layer; the legacy transpiler emits a one-char
+            # string literal for it. Map to the same lit_str kind so
+            # the emitter's repr-based rendering writes it correctly.
+            return Value(kind="lit_str", literal=e.value, ty="Char")
         if isinstance(e, A.BoolLit):
             return Value(kind="lit_bool", literal=e.value, ty="Bool")
         if isinstance(e, A.UnitLit):
@@ -629,7 +683,43 @@ class Lowerer:
             return self._lower_lambda(e)
         if isinstance(e, A.MatchExpr):
             return self._lower_match_expr(e)
+        if isinstance(e, A.IfExpr):
+            return self._lower_if_expr(e)
         raise UnsupportedInIR(f"expression {type(e).__name__}")
+
+    def _lower_if_expr(self, e: A.IfExpr) -> Value:
+        """Lower ``if cond then a else b`` (ternary expression form).
+        Allocates a result local; each branch lowers normally and is
+        appended with an assignment to the result. Uses the existing
+        ``If`` instruction so the emitter renders a Python ``if/else``
+        block rather than the ``a if c else b`` expression form. The
+        ANF shape would not survive the latter cleanly because each
+        branch may have sub-expressions of its own that need
+        intermediate locals."""
+        cond = self._lower_expr(e.cond)
+        result_ty = "Unknown"
+        if self.types:
+            t = self.types.get(id(e))
+            if t is not None:
+                result_ty = _ty_to_str(t)
+        dst = fresh_local(self._counter, prefix="ife")
+        self._locals[dst] = result_ty
+        # then branch
+        outer = self._instrs
+        self._instrs = []
+        v_then = self._lower_expr(e.then_expr)
+        self._instrs.append(AssignConst(dst=dst, src=v_then))
+        then_body = self._instrs
+        # else branch
+        self._instrs = []
+        v_else = self._lower_expr(e.else_expr)
+        self._instrs.append(AssignConst(dst=dst, src=v_else))
+        else_body = self._instrs
+        self._instrs = outer
+        self._instrs.append(
+            If(cond=cond, then_body=then_body, else_body=else_body)
+        )
+        return Value(kind="local", name=dst, ty=result_ty)
 
     def _lower_match_expr(self, m: A.MatchExpr) -> Value:
         """Lower a match used in expression position. Allocates a

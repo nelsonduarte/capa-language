@@ -433,7 +433,11 @@ class PythonEmitter:
             self._indent += 1
             for arm in instr.arms:
                 pat_str = self._format_pattern(arm.pattern)
-                self._write(f"case {pat_str}:")
+                if arm.guard is not None:
+                    guard_str = self._format_value(arm.guard)
+                    self._write(f"case {pat_str} if {guard_str}:")
+                else:
+                    self._write(f"case {pat_str}:")
                 self._indent += 1
                 if not arm.body:
                     self._write("pass")
