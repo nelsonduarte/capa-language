@@ -21,6 +21,7 @@ from ._nodes import (
     Module, Function, Param, Value, Instr,
     AssignConst, Reassign, BinOp, UnaryOp, Call, MethodCall,
     If, While, Break, Continue, Return,
+    MakeStruct, MakeList, MakeTuple, FieldAccess, Index, FormatStr, For,
     fresh_local,
 )
 
@@ -134,6 +135,8 @@ class Lowerer:
         if isinstance(s, A.ContinueStmt):
             self._instrs.append(Continue())
             return
+        if isinstance(s, A.ForStmt):
+            return self._lower_for(s)
         if isinstance(s, A.ReturnStmt):
             return self._lower_return(s)
         if isinstance(s, A.ExprStmt):
@@ -265,6 +268,24 @@ class Lowerer:
             While(cond_setup=cond_setup, cond=cond_value, body=body)
         )
 
+    def _lower_for(self, s: A.ForStmt) -> None:
+        # Phase 2 only supports Ident patterns. Tuple destructuring
+        # (``for (a, b) in pairs``) is deferred.
+        if not isinstance(s.pattern, A.IdentPat):
+            raise UnsupportedInIR(
+                f"for-pattern {type(s.pattern).__name__}"
+            )
+        iter_value = self._lower_expr(s.iter)
+        self._locals[s.pattern.name] = "Unknown"
+        outer = self._instrs
+        self._instrs = []
+        self._lower_block(s.body)
+        body = self._instrs
+        self._instrs = outer
+        self._instrs.append(
+            For(name=s.pattern.name, iter=iter_value, body=body)
+        )
+
     def _lower_return(self, s: A.ReturnStmt) -> None:
         if s.value is None:
             self._instrs.append(Return(value=None))
@@ -313,6 +334,18 @@ class Lowerer:
             return self._lower_call(e)
         if isinstance(e, A.MethodCall):
             return self._lower_method_call(e)
+        if isinstance(e, A.FieldAccess):
+            return self._lower_field_access(e)
+        if isinstance(e, A.Index):
+            return self._lower_index(e)
+        if isinstance(e, A.StructLit):
+            return self._lower_struct_lit(e)
+        if isinstance(e, A.ListLit):
+            return self._lower_list_lit(e)
+        if isinstance(e, A.TupleLit):
+            return self._lower_tuple_lit(e)
+        if isinstance(e, A.InterpolatedString):
+            return self._lower_interpolated_string(e)
         raise UnsupportedInIR(f"expression {type(e).__name__}")
 
     def _lower_ident(self, e: A.Ident) -> Value:
@@ -371,6 +404,85 @@ class Lowerer:
         self._locals[dst] = result_ty
         self._instrs.append(Call(dst=dst, callee_name=callee_name, args=args))
         return Value(kind="local", name=dst, ty=result_ty)
+
+    def _lower_field_access(self, e: A.FieldAccess) -> Value:
+        recv = self._lower_expr(e.receiver)
+        result_ty = "Unknown"
+        if self.types:
+            t = self.types.get(id(e))
+            if t is not None:
+                result_ty = _ty_to_str(t)
+        dst = fresh_local(self._counter)
+        self._locals[dst] = result_ty
+        self._instrs.append(
+            FieldAccess(dst=dst, receiver=recv, field=e.field_name)
+        )
+        return Value(kind="local", name=dst, ty=result_ty)
+
+    def _lower_index(self, e: A.Index) -> Value:
+        recv = self._lower_expr(e.receiver)
+        idx = self._lower_expr(e.index)
+        result_ty = "Unknown"
+        if self.types:
+            t = self.types.get(id(e))
+            if t is not None:
+                result_ty = _ty_to_str(t)
+        dst = fresh_local(self._counter)
+        self._locals[dst] = result_ty
+        self._instrs.append(Index(dst=dst, receiver=recv, index=idx))
+        return Value(kind="local", name=dst, ty=result_ty)
+
+    def _lower_struct_lit(self, e: A.StructLit) -> Value:
+        # Each field's value is lowered into the instruction list
+        # first; the MakeStruct then references the produced locals.
+        fields: list[tuple[str, Value]] = []
+        for fname, fexpr in e.fields:
+            fields.append((fname, self._lower_expr(fexpr)))
+        dst = fresh_local(self._counter)
+        self._locals[dst] = e.type_name
+        self._instrs.append(
+            MakeStruct(dst=dst, type_name=e.type_name, fields=fields)
+        )
+        return Value(kind="local", name=dst, ty=e.type_name)
+
+    def _lower_list_lit(self, e: A.ListLit) -> Value:
+        elements = [self._lower_expr(x) for x in e.elements]
+        result_ty = "List"
+        if self.types:
+            t = self.types.get(id(e))
+            if t is not None:
+                result_ty = _ty_to_str(t)
+        dst = fresh_local(self._counter)
+        self._locals[dst] = result_ty
+        self._instrs.append(MakeList(dst=dst, elements=elements))
+        return Value(kind="local", name=dst, ty=result_ty)
+
+    def _lower_tuple_lit(self, e: A.TupleLit) -> Value:
+        if not e.elements:
+            return Value(kind="lit_unit", literal=None, ty="Unit")
+        elements = [self._lower_expr(x) for x in e.elements]
+        result_ty = "Tuple"
+        dst = fresh_local(self._counter)
+        self._locals[dst] = result_ty
+        self._instrs.append(MakeTuple(dst=dst, elements=elements))
+        return Value(kind="local", name=dst, ty=result_ty)
+
+    def _lower_interpolated_string(self, e: A.InterpolatedString) -> Value:
+        # InterpolatedString carries a list of segments; each is
+        # either a literal string fragment or an embedded expression.
+        # We collect the parts into the FormatStr instruction's
+        # ``parts`` list (alternating str / Value), lowering each
+        # embedded expression into instructions first.
+        parts: list = []
+        for seg in e.parts:
+            if isinstance(seg, str):
+                parts.append(seg)
+            else:
+                parts.append(self._lower_expr(seg))
+        dst = fresh_local(self._counter)
+        self._locals[dst] = "String"
+        self._instrs.append(FormatStr(dst=dst, parts=parts))
+        return Value(kind="local", name=dst, ty="String")
 
     def _lower_method_call(self, e: A.MethodCall) -> Value:
         receiver = self._lower_expr(e.receiver)

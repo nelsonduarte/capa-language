@@ -25,6 +25,7 @@ from ._nodes import (
     Module, Function, Value, Instr,
     AssignConst, Reassign, BinOp, UnaryOp, Call, MethodCall,
     If, While, Break, Continue, Return,
+    MakeStruct, MakeList, MakeTuple, FieldAccess, Index, FormatStr, For,
 )
 
 
@@ -133,6 +134,64 @@ class PythonEmitter:
             return
         if isinstance(instr, Continue):
             self._write("continue")
+            return
+        if isinstance(instr, MakeStruct):
+            args = ", ".join(
+                f"{name}={self._format_value(v)}"
+                for name, v in instr.fields
+            )
+            self._write(f"{instr.dst} = {instr.type_name}({args})")
+            return
+        if isinstance(instr, MakeList):
+            elems = ", ".join(self._format_value(v) for v in instr.elements)
+            self._write(f"{instr.dst} = [{elems}]")
+            return
+        if isinstance(instr, MakeTuple):
+            elems = ", ".join(self._format_value(v) for v in instr.elements)
+            if len(instr.elements) == 1:
+                # Single-element tuple in Python needs the trailing
+                # comma to distinguish from a parenthesised value.
+                self._write(f"{instr.dst} = ({elems},)")
+            else:
+                self._write(f"{instr.dst} = ({elems})")
+            return
+        if isinstance(instr, FieldAccess):
+            recv = self._format_value(instr.receiver)
+            self._write(f"{instr.dst} = {recv}.{instr.field}")
+            return
+        if isinstance(instr, Index):
+            recv = self._format_value(instr.receiver)
+            idx = self._format_value(instr.index)
+            self._write(f"{instr.dst} = {recv}[{idx}]")
+            return
+        if isinstance(instr, FormatStr):
+            # Build a Python f-string. Literal parts are inserted
+            # verbatim; Value parts become ``{name}`` placeholders.
+            # Special characters inside the literal parts must be
+            # escaped (Python f-string escapes ``{`` and ``}`` by
+            # doubling).
+            buf = []
+            for p in instr.parts:
+                if isinstance(p, str):
+                    buf.append(p.replace("{", "{{").replace("}", "}}"))
+                else:
+                    buf.append("{" + self._format_value(p) + "}")
+            body = "".join(buf)
+            # Use the same string-literal repr the legacy transpiler
+            # uses for consistency; escape backslashes and quotes.
+            self._write(f"{instr.dst} = f{repr(body)}")
+            return
+        if isinstance(instr, For):
+            self._write(
+                f"for {instr.name} in {self._format_value(instr.iter)}:"
+            )
+            self._indent += 1
+            if not instr.body:
+                self._write("pass")
+            else:
+                for sub in instr.body:
+                    self._emit_instr(sub)
+            self._indent -= 1
             return
         if isinstance(instr, Return):
             if instr.value is None:

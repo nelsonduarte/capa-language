@@ -187,6 +187,73 @@ class Continue(Instr):
 
 
 @dataclass
+class MakeStruct(Instr):
+    """``dst = TypeName(field=value, ...)``. The struct type is
+    looked up by name at emit time; the IR carries only the name
+    and the ordered (field, value) pairs as written at the source."""
+    dst: str
+    type_name: str
+    fields: list[tuple[str, Value]]
+
+
+@dataclass
+class MakeList(Instr):
+    """``dst = [v1, v2, ...]``. The element type lives in
+    ``Function.locals[dst]``; lists in Capa are List<T> at the type
+    level and Python lists at runtime."""
+    dst: str
+    elements: list[Value]
+
+
+@dataclass
+class MakeTuple(Instr):
+    """``dst = (v1, v2, ...)``. Python tuples. Capa's TupleLit with
+    zero elements lowers to a ``lit_unit`` Value instead."""
+    dst: str
+    elements: list[Value]
+
+
+@dataclass
+class FieldAccess(Instr):
+    """``dst = receiver.field``. Receiver must be a struct value; the
+    type check is the analyzer's responsibility, the IR trusts it."""
+    dst: str
+    receiver: Value
+    field: str
+
+
+@dataclass
+class Index(Instr):
+    """``dst = receiver[index]``. List indexing only for Phase 2;
+    Map / Set indexing routes through dedicated method calls
+    (``.get(k)``) at the analyzer level."""
+    dst: str
+    receiver: Value
+    index: Value
+
+
+@dataclass
+class FormatStr(Instr):
+    """``dst = f"...{v1}...{v2}..."``. Parts is a list of strings
+    interleaved with Values; the literal parts before, between, and
+    after each value. For a source-level ``"hello ${name}"`` the
+    parts list is ``["hello ", v_name, ""]`` (always ends and
+    begins with a literal, possibly empty)."""
+    dst: str
+    parts: list  # list[str | Value]
+
+
+@dataclass
+class For(Instr):
+    """``for name in iter: body``. Pattern lowering is limited to
+    single Ident targets in Phase 2; tuple destructuring patterns
+    raise ``UnsupportedInIR``."""
+    name: str
+    iter: Value
+    body: list[Instr]
+
+
+@dataclass
 class Return(Instr):
     """``return value``; ``value`` is None for a bare ``return``."""
     value: Optional[Value]

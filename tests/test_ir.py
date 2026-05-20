@@ -208,6 +208,91 @@ class TestControlFlow(unittest.TestCase):
         self.assertEqual(ns["first_positive"](-5, -2), 0)
 
 
+class TestDataAndIteration(unittest.TestCase):
+    """Phase 2B: struct / list / tuple literals, field / index access,
+    string interpolation, and for-loop iteration."""
+
+    def test_struct_literal_and_field_access(self):
+        src = (
+            "type Point {\n"
+            "    x: Int,\n"
+            "    y: Int\n"
+            "}\n"
+            "fun build() -> Int\n"
+            "    let p = Point { x: 3, y: 4 }\n"
+            "    return p.x + p.y\n"
+        )
+        module, types = _parse_and_check(src)
+        # Phase 2B handles the function; top-level type declarations
+        # still trip the top-level-item check, so we lower only the
+        # FunDecl items by hand for this test.
+        ir_funs = []
+        from capa.ir._lower import Lowerer
+        lowerer = Lowerer(types=types)
+        from capa import capa_ast as A
+        for item in module.items:
+            if isinstance(item, A.FunDecl):
+                ir_funs.append(lowerer.lower_function(item))
+        self.assertEqual(len(ir_funs), 1)
+        fn = ir_funs[0]
+        instr_kinds = [type(i).__name__ for i in fn.body]
+        self.assertIn("MakeStruct", instr_kinds)
+        self.assertIn("FieldAccess", instr_kinds)
+
+    def test_list_literal_and_index(self):
+        src = (
+            "fun pick(i: Int) -> Int\n"
+            "    let xs = [10, 20, 30]\n"
+            "    return xs[i]\n"
+        )
+        module, types = _parse_and_check(src)
+        ir_mod = lower(module, types=types)
+        py = compile(module, types=types)
+        ns: dict = {}
+        exec(py, ns)
+        self.assertEqual(ns["pick"](0), 10)
+        self.assertEqual(ns["pick"](2), 30)
+
+    def test_tuple_literal_two_elements(self):
+        src = (
+            "fun pair() -> (Int, Int)\n"
+            "    return (1, 2)\n"
+        )
+        module, types = _parse_and_check(src)
+        py = compile(module, types=types)
+        ns: dict = {}
+        exec(py, ns)
+        self.assertEqual(ns["pair"](), (1, 2))
+
+    def test_interpolated_string_emits_fstring(self):
+        src = (
+            "fun greet(name: String) -> String\n"
+            "    return \"hello, ${name}!\"\n"
+        )
+        module, types = _parse_and_check(src)
+        py = compile(module, types=types)
+        # The emitter uses Python f-strings.
+        self.assertIn("f'hello, {", py)
+        ns: dict = {}
+        exec(py, ns)
+        self.assertEqual(ns["greet"]("Ana"), "hello, Ana!")
+
+    def test_for_loop_over_list(self):
+        src = (
+            "fun sum_all(xs: List<Int>) -> Int\n"
+            "    var total = 0\n"
+            "    for x in xs\n"
+            "        total = total + x\n"
+            "    return total\n"
+        )
+        module, types = _parse_and_check(src)
+        py = compile(module, types=types)
+        ns: dict = {}
+        exec(py, ns)
+        self.assertEqual(ns["sum_all"]([1, 2, 3, 4]), 10)
+        self.assertEqual(ns["sum_all"]([]), 0)
+
+
 class TestPythonEmission(unittest.TestCase):
     def test_emits_parseable_python_for_arithmetic(self):
         src = (
