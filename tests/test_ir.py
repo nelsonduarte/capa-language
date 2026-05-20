@@ -106,6 +106,108 @@ class TestIRLowering(unittest.TestCase):
         self.assertIsNone(mc[0].dst)
 
 
+class TestControlFlow(unittest.TestCase):
+    """Phase 2: lowering and emission for ``var`` / ``if`` / ``while``
+    and the bare ``=`` assignment form. Each test verifies both the
+    IR shape and the runtime behaviour of the emitted Python."""
+
+    def test_var_then_reassign(self):
+        src = (
+            "fun main()\n"
+            "    var x = 1\n"
+            "    x = 2\n"
+        )
+        module, types = _parse_and_check(src)
+        ir_mod = lower(module, types=types)
+        fn = ir_mod.functions[0]
+        kinds = [type(i).__name__ for i in fn.body]
+        self.assertEqual(kinds, ["AssignConst", "Reassign"])
+        py = compile(module, types=types)
+        # Both statements compile to plain Python assignments.
+        self.assertIn("x = 1", py)
+        self.assertIn("x = 2", py)
+
+    def test_if_else_emits_and_runs(self):
+        src = (
+            "fun pick(b: Bool) -> Int\n"
+            "    if b\n"
+            "        return 1\n"
+            "    return 2\n"
+        )
+        module, types = _parse_and_check(src)
+        ir_mod = lower(module, types=types)
+        fn = ir_mod.functions[0]
+        # The body should be one If followed by a Return.
+        self.assertIsInstance(fn.body[0], N.If)
+        self.assertIsInstance(fn.body[-1], N.Return)
+        py = compile(module, types=types)
+        ns: dict = {}
+        exec(py, ns)
+        self.assertEqual(ns["pick"](True), 1)
+        self.assertEqual(ns["pick"](False), 2)
+
+    def test_if_elif_else_chains_nest(self):
+        src = (
+            "fun grade(n: Int) -> Int\n"
+            "    if n >= 90\n"
+            "        return 4\n"
+            "    elif n >= 75\n"
+            "        return 3\n"
+            "    elif n >= 50\n"
+            "        return 2\n"
+            "    return 1\n"
+        )
+        module, types = _parse_and_check(src)
+        py = compile(module, types=types)
+        ns: dict = {}
+        exec(py, ns)
+        self.assertEqual(ns["grade"](95), 4)
+        self.assertEqual(ns["grade"](80), 3)
+        self.assertEqual(ns["grade"](60), 2)
+        self.assertEqual(ns["grade"](20), 1)
+
+    def test_while_loop_counts_down(self):
+        src = (
+            "fun count_down(n: Int) -> Int\n"
+            "    var x = n\n"
+            "    var steps = 0\n"
+            "    while x > 0\n"
+            "        x = x - 1\n"
+            "        steps = steps + 1\n"
+            "    return steps\n"
+        )
+        module, types = _parse_and_check(src)
+        ir_mod = lower(module, types=types)
+        fn = ir_mod.functions[0]
+        # Find the While instruction.
+        whiles = [i for i in fn.body if isinstance(i, N.While)]
+        self.assertEqual(len(whiles), 1)
+        py = compile(module, types=types)
+        ns: dict = {}
+        exec(py, ns)
+        self.assertEqual(ns["count_down"](5), 5)
+        self.assertEqual(ns["count_down"](0), 0)
+
+    def test_while_with_break(self):
+        src = (
+            "fun first_positive(a: Int, b: Int) -> Int\n"
+            "    var x = a\n"
+            "    var result = 0\n"
+            "    while x < b\n"
+            "        if x > 0\n"
+            "            result = x\n"
+            "            break\n"
+            "        x = x + 1\n"
+            "    return result\n"
+        )
+        module, types = _parse_and_check(src)
+        py = compile(module, types=types)
+        ns: dict = {}
+        exec(py, ns)
+        self.assertEqual(ns["first_positive"](-3, 10), 1)
+        self.assertEqual(ns["first_positive"](-5, -2), 0)
+
+
 class TestPythonEmission(unittest.TestCase):
     def test_emits_parseable_python_for_arithmetic(self):
         src = (
@@ -158,20 +260,23 @@ class TestUnsupportedSurfaces(unittest.TestCase):
         with self.assertRaises(UnsupportedInIR):
             self._try_lower(src)
 
-    def test_if_statement_is_unsupported(self):
-        src = (
-            "fun pick(b: Bool) -> Int\n"
-            "    if b\n"
-            "        return 1\n"
-            "    return 2\n"
-        )
-        with self.assertRaises(UnsupportedInIR):
-            self._try_lower(src)
-
     def test_lambda_expression_is_unsupported(self):
         src = (
             "fun build() -> Fun(Int) -> Int\n"
             "    return fun (x: Int) -> Int => x + 1\n"
+        )
+        with self.assertRaises(UnsupportedInIR):
+            self._try_lower(src)
+
+    def test_compound_assignment_is_unsupported(self):
+        # Phase 2 supports only ``x = expr``. Compound forms like
+        # ``x += y`` are deferred until the IR has a way to express
+        # the implicit read-then-write semantics safely.
+        src = (
+            "fun bump() -> Int\n"
+            "    var x = 0\n"
+            "    x += 1\n"
+            "    return x\n"
         )
         with self.assertRaises(UnsupportedInIR):
             self._try_lower(src)

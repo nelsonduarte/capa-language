@@ -23,7 +23,8 @@ from typing import List
 
 from ._nodes import (
     Module, Function, Value, Instr,
-    AssignConst, BinOp, UnaryOp, Call, MethodCall, Return,
+    AssignConst, Reassign, BinOp, UnaryOp, Call, MethodCall,
+    If, While, Break, Continue, Return,
 )
 
 
@@ -69,6 +70,9 @@ class PythonEmitter:
         if isinstance(instr, AssignConst):
             self._write(f"{instr.dst} = {self._format_value(instr.src)}")
             return
+        if isinstance(instr, Reassign):
+            self._write(f"{instr.dst} = {self._format_value(instr.src)}")
+            return
         if isinstance(instr, BinOp):
             rhs = self._format_binop(instr.op, instr.left, instr.right)
             self._write(f"{instr.dst} = {rhs}")
@@ -87,6 +91,48 @@ class PythonEmitter:
             recv = self._format_value(instr.receiver)
             rhs = f"{recv}.{instr.method}({args})"
             self._write(self._with_optional_dst(instr.dst, rhs))
+            return
+        if isinstance(instr, If):
+            self._write(f"if {self._format_value(instr.cond)}:")
+            self._indent += 1
+            if not instr.then_body:
+                self._write("pass")
+            else:
+                for sub in instr.then_body:
+                    self._emit_instr(sub)
+            self._indent -= 1
+            if instr.else_body:
+                self._write("else:")
+                self._indent += 1
+                for sub in instr.else_body:
+                    self._emit_instr(sub)
+                self._indent -= 1
+            return
+        if isinstance(instr, While):
+            # Capa loops re-evaluate the condition each iteration.
+            # Python's ``while <expr>:`` only re-evaluates a bare
+            # expression; to re-run the cond_setup instructions
+            # before each test we emit them at the top of the body
+            # and a copy before the ``while``.
+            for sub in instr.cond_setup:
+                self._emit_instr(sub)
+            self._write(f"while {self._format_value(instr.cond)}:")
+            self._indent += 1
+            if not instr.body and not instr.cond_setup:
+                self._write("pass")
+            else:
+                for sub in instr.body:
+                    self._emit_instr(sub)
+                # Recompute the condition for the next iteration.
+                for sub in instr.cond_setup:
+                    self._emit_instr(sub)
+            self._indent -= 1
+            return
+        if isinstance(instr, Break):
+            self._write("break")
+            return
+        if isinstance(instr, Continue):
+            self._write("continue")
             return
         if isinstance(instr, Return):
             if instr.value is None:

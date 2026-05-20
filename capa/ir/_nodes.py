@@ -135,6 +135,58 @@ class MethodCall(Instr):
 
 
 @dataclass
+class Reassign(Instr):
+    """``dst = src`` for a previously-declared variable, where ``src``
+    is a single ``Value``. Used to lower both ``AssignStmt`` with
+    plain ``=`` and ``VarStmt`` rebindings; the difference from
+    ``AssignConst`` is that ``Reassign`` does NOT introduce a new
+    local. Python emits the same line either way; future backends
+    that distinguish let-immutable from var-mutable consume the
+    Instr type to decide."""
+    dst: str
+    src: Value
+
+
+@dataclass
+class If(Instr):
+    """``if cond: then_body else: else_body``. Elif chains are
+    lowered into nested ``If`` instructions inside ``else_body``;
+    keeping the IR binary (then / else only) keeps the emitter
+    simple and matches what every target backend wants."""
+    cond: Value
+    then_body: list[Instr]
+    else_body: list[Instr]
+
+
+@dataclass
+class While(Instr):
+    """``while cond: body``. The condition is recomputed each
+    iteration; lowering responsibility for that recomputation falls
+    on the lowerer, which inserts the condition-computing
+    instructions inside the body's prelude on the first pass and
+    again after each ``continue``. Phase 2 implementation keeps the
+    cond as a single ``Value`` after evaluating any condition-side
+    instructions before the loop and re-evaluating them at the end
+    of the body; this matches the legacy transpiler's emission and
+    is what Python's ``while`` semantics expect."""
+    cond_setup: list[Instr]
+    cond: Value
+    body: list[Instr]
+
+
+@dataclass
+class Break(Instr):
+    """``break`` inside a loop body."""
+    pass
+
+
+@dataclass
+class Continue(Instr):
+    """``continue`` inside a loop body."""
+    pass
+
+
+@dataclass
 class Return(Instr):
     """``return value``; ``value`` is None for a bare ``return``."""
     value: Optional[Value]

@@ -19,7 +19,8 @@ from typing import Optional
 from .. import capa_ast as A
 from ._nodes import (
     Module, Function, Param, Value, Instr,
-    AssignConst, BinOp, UnaryOp, Call, MethodCall, Return,
+    AssignConst, Reassign, BinOp, UnaryOp, Call, MethodCall,
+    If, While, Break, Continue, Return,
     fresh_local,
 )
 
@@ -119,6 +120,20 @@ class Lowerer:
     def _lower_stmt(self, s: A.Stmt) -> None:
         if isinstance(s, A.LetStmt):
             return self._lower_let(s)
+        if isinstance(s, A.VarStmt):
+            return self._lower_var(s)
+        if isinstance(s, A.AssignStmt):
+            return self._lower_assign(s)
+        if isinstance(s, A.IfStmt):
+            return self._lower_if(s)
+        if isinstance(s, A.WhileStmt):
+            return self._lower_while(s)
+        if isinstance(s, A.BreakStmt):
+            self._instrs.append(Break())
+            return
+        if isinstance(s, A.ContinueStmt):
+            self._instrs.append(Continue())
+            return
         if isinstance(s, A.ReturnStmt):
             return self._lower_return(s)
         if isinstance(s, A.ExprStmt):
@@ -139,6 +154,116 @@ class Lowerer:
         # an extra AssignConst to give that result the user's name.
         self._locals[name] = value.ty
         self._instrs.append(AssignConst(dst=name, src=value))
+
+    def _lower_var(self, s: A.VarStmt) -> None:
+        # ``var x = expr``: same Python emission as ``let``, but the
+        # IR records both kinds so future backends can enforce
+        # immutability of let-bindings. Phase 2 collapses both to
+        # AssignConst for simplicity; a follow-up may add a
+        # ``mutable`` flag to AssignConst when a Wasm or LLVM target
+        # cares.
+        value = self._lower_expr(s.value)
+        self._locals[s.name] = value.ty
+        self._instrs.append(AssignConst(dst=s.name, src=value))
+
+    def _lower_assign(self, s: A.AssignStmt) -> None:
+        # Phase 2 only handles plain ``x = expr`` on a bare ident.
+        # Compound assignment (``x += y``) and lhs-as-FieldAccess /
+        # Index targets are deferred.
+        if s.op != "=":
+            raise UnsupportedInIR(
+                f"compound assignment operator {s.op!r}"
+            )
+        if not isinstance(s.target, A.Ident):
+            raise UnsupportedInIR(
+                f"assignment target {type(s.target).__name__}"
+            )
+        value = self._lower_expr(s.value)
+        self._instrs.append(Reassign(dst=s.target.name, src=value))
+
+    def _lower_if(self, s: A.IfStmt) -> None:
+        # Lower ``if cond { then } elif c1 { b1 } ... else { e }`` by
+        # nesting elif chains in the else branch. The IR's ``If`` is
+        # strictly binary (then / else). The condition's intermediate
+        # instructions (e.g., method calls that build a Bool) need to
+        # be emitted before the ``If`` itself; we capture them by
+        # snapshotting the current instruction list, lowering the
+        # condition, then splicing.
+        outer_instrs = self._instrs
+
+        # Condition: lower into a side buffer, then move into the
+        # main instruction list before the ``If``.
+        self._instrs = []
+        cond_value = self._lower_expr(s.cond)
+        cond_setup = self._instrs
+        outer_instrs.extend(cond_setup)
+
+        # Then body.
+        self._instrs = []
+        self._lower_block(s.then_block)
+        then_body = self._instrs
+
+        # Else chain: fold elifs into nested ifs, terminating with
+        # the actual else block (or empty list if none).
+        else_body: list[Instr] = self._fold_elif_chain(
+            s.elif_arms, s.else_block,
+        )
+
+        self._instrs = outer_instrs
+        self._instrs.append(
+            If(cond=cond_value, then_body=then_body, else_body=else_body)
+        )
+
+    def _fold_elif_chain(self, elif_arms, else_block) -> list[Instr]:
+        if not elif_arms:
+            if else_block is None:
+                return []
+            buf = self._instrs
+            self._instrs = []
+            self._lower_block(else_block)
+            out = self._instrs
+            self._instrs = buf
+            return out
+        # First elif becomes ``if`` at this nesting level; remaining
+        # elifs + the original else become its else-body.
+        cond_expr, body = elif_arms[0]
+        rest = elif_arms[1:]
+
+        # Lower condition into a side buffer; its setup instructions
+        # need to precede the nested ``If`` in the else_body.
+        outer = self._instrs
+        self._instrs = []
+        cond_value = self._lower_expr(cond_expr)
+        cond_setup = self._instrs
+
+        self._instrs = []
+        self._lower_block(body)
+        then_body = self._instrs
+
+        nested_else = self._fold_elif_chain(rest, else_block)
+
+        self._instrs = outer
+        return cond_setup + [
+            If(cond=cond_value, then_body=then_body, else_body=nested_else)
+        ]
+
+    def _lower_while(self, s: A.WhileStmt) -> None:
+        outer = self._instrs
+
+        # Lower the condition into a setup buffer + a final Value.
+        self._instrs = []
+        cond_value = self._lower_expr(s.cond)
+        cond_setup = self._instrs
+
+        # Body.
+        self._instrs = []
+        self._lower_block(s.body)
+        body = self._instrs
+
+        self._instrs = outer
+        self._instrs.append(
+            While(cond_setup=cond_setup, cond=cond_value, body=body)
+        )
 
     def _lower_return(self, s: A.ReturnStmt) -> None:
         if s.value is None:
