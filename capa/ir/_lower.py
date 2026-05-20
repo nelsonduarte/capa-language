@@ -25,7 +25,7 @@ from ._nodes import (
     TryUnwrap, MakeLambda,
     Pattern, PatWildcard, PatIdent, PatLiteral, PatVariant,
     MatchArm, Match,
-    StructDecl, StructField, SumDecl, SumVariant,
+    StructDecl, StructField, SumDecl, SumVariant, ImplBlock,
     fresh_local,
 )
 
@@ -75,6 +75,7 @@ class Lowerer:
     def lower_module(self, module: A.Module) -> Module:
         functions: list[Function] = []
         types: list = []
+        impls: list = []
         for item in module.items:
             if isinstance(item, A.FunDecl):
                 functions.append(self.lower_function(item))
@@ -82,11 +83,27 @@ class Lowerer:
                 types.append(self._lower_struct_decl(item))
             elif isinstance(item, A.TypeSum):
                 types.append(self._lower_sum_decl(item))
+            elif isinstance(item, A.ImplBlock):
+                impls.append(self._lower_impl_block(item))
             else:
                 raise UnsupportedInIR(
                     f"top-level item {type(item).__name__}"
                 )
-        return Module(functions=functions, types=types, ast_module=module)
+        return Module(
+            functions=functions, types=types, impls=impls,
+            ast_module=module,
+        )
+
+    def _lower_impl_block(self, impl: A.ImplBlock) -> ImplBlock:
+        # Each method is lowered with the same machinery as a top-level
+        # FunDecl. ``self`` becomes a regular parameter (the analyzer
+        # has already typed it as the impl's target type).
+        methods = [self.lower_function(m) for m in impl.methods]
+        return ImplBlock(
+            type_name=impl.type_name,
+            trait_name=impl.trait_name,
+            methods=methods,
+        )
 
     def _lower_struct_decl(self, t: A.TypeStruct) -> StructDecl:
         fields = [

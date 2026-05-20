@@ -428,16 +428,34 @@ class SumDecl:
 
 
 @dataclass
+class ImplBlock:
+    """A top-level ``impl Type { ... }`` (inherent) or ``impl Trait for Type``
+    block. ``methods`` is the list of lowered method functions; each
+    Function carries its own params (including ``self``) and body.
+
+    ``trait_name`` is the name of the trait being implemented, or
+    ``None`` for an inherent impl. The Python emitter does not lift
+    Capa traits to Python ABCs; the analyzer's static check is what
+    makes the trait-impl relationship meaningful. The field is here
+    because future backends (Wasm CM in particular) need to know
+    which capability/trait each method realises."""
+    type_name: str
+    trait_name: Optional[str]
+    methods: list[Function]
+
+
+@dataclass
 class Module:
     """A lowered module. Phase 1 carried only function declarations;
     Phase 3A adds top-level struct and sum type declarations.
-    Subsequent phases will add traits, capabilities, impls,
-    constants, and imports. The legacy AST is preserved in
-    ``ast_module`` so the Python emitter can defer back to the legacy
-    transpiler for items the IR does not yet cover.
+    Phase 3B adds impl blocks. Subsequent phases will add traits,
+    capabilities, constants, and imports. The legacy AST is preserved
+    in ``ast_module`` so the Python emitter can defer back to the
+    legacy transpiler for items the IR does not yet cover.
     """
     functions: list[Function]
     types: list = field(default_factory=list)  # list[StructDecl | SumDecl]
+    impls: list = field(default_factory=list)  # list[ImplBlock]
     ast_module: object = None  # capa_ast.Module; opaque to the IR
 
 

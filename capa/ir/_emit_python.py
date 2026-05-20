@@ -28,7 +28,7 @@ from ._nodes import (
     MakeStruct, MakeList, MakeTuple, FieldAccess, Index, FormatStr, For,
     TryUnwrap, MakeLambda,
     Pattern, PatWildcard, PatIdent, PatLiteral, PatVariant, Match,
-    StructDecl, SumDecl,
+    StructDecl, SumDecl, ImplBlock,
 )
 
 
@@ -59,11 +59,19 @@ class PythonEmitter:
         if module.types:
             self._write("from dataclasses import dataclass")
             self._lines.append("")
+        # Track sum-type variants so impl blocks can attach their
+        # methods to every variant class (the union alias is not
+        # patchable). Populated by ``_emit_sum`` and consumed by
+        # ``_emit_impl``.
+        self._sum_variants: dict[str, list[str]] = {}
         for ty in module.types:
             self._emit_type(ty)
             self._lines.append("")
         for fn in module.functions:
             self._emit_function(fn)
+            self._lines.append("")
+        for impl in module.impls:
+            self._emit_impl(impl)
             self._lines.append("")
         return "\n".join(self._lines).rstrip() + "\n"
 
@@ -103,6 +111,7 @@ class PythonEmitter:
         # ``pass``; one payload -> dataclass with ``value: object``;
         # N payloads -> dataclass with ``f0, f1, ...`` matching the
         # positional field convention the legacy emitter uses.
+        self._sum_variants[t.name] = [v.name for v in t.variants]
         for v in t.variants:
             n = len(v.payload_tys)
             if n == 0:
@@ -130,6 +139,40 @@ class PythonEmitter:
         if t.variants:
             union = " | ".join(v.name for v in t.variants)
             self._write(f"{t.name} = {union}")
+
+    # ----- impl blocks ------------------------------------------
+
+    def _emit_impl(self, impl: ImplBlock) -> None:
+        # Each impl method lowers to a top-level Python function whose
+        # name is mangled with the target type, then attached to the
+        # target class (and to every variant of a sum type) so
+        # ``instance.method(args)`` dispatches at runtime. We do not
+        # emit Python inheritance for traits: the analyzer has already
+        # certified the trait-impl relationship statically, and Python
+        # method resolution only needs the attribute to exist.
+        attach_targets = self._sum_variants.get(
+            impl.type_name, [impl.type_name],
+        )
+        for m in impl.methods:
+            # Emit ``def _Target_method(...): body``. We reuse the
+            # standard function emission so dst-renaming, indentation,
+            # and instruction dispatch are identical to a top-level
+            # function. The legacy transpiler prefixed the function
+            # name with an underscore to avoid colliding with the
+            # method name in the class namespace; we mirror that.
+            mangled = f"_{impl.type_name}_{m.name}"
+            params = ", ".join(p.name for p in m.params)
+            self._write(f"def {mangled}({params}):")
+            self._indent += 1
+            if not m.body:
+                self._write("pass")
+            else:
+                for instr in m.body:
+                    self._emit_instr(instr)
+            self._indent -= 1
+            for at in attach_targets:
+                self._write(f"{at}.{m.name} = {mangled}")
+            self._lines.append("")
 
     # ----- function-level ---------------------------------------
 

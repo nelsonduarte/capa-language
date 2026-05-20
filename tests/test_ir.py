@@ -550,6 +550,62 @@ class TestTopLevelTypes(unittest.TestCase):
         self.assertIsInstance(ns["make"](), ns["Empty"])
 
 
+class TestImplBlocks(unittest.TestCase):
+    """Phase 3B: ``impl`` blocks. The IR carries an ImplBlock per
+    source impl, with methods lowered as ordinary Functions (their
+    ``self`` is a regular Param). The Python emitter renders each
+    method as a free function and then attaches it to the target
+    class; for sum types, it attaches to every variant class because
+    the union alias is not patchable."""
+
+    def test_inherent_impl_on_struct(self):
+        src = (
+            "type Point {\n"
+            "    x: Int,\n"
+            "    y: Int\n"
+            "}\n"
+            "impl Point\n"
+            "    fun magnitude_sq(self) -> Int\n"
+            "        return self.x * self.x + self.y * self.y\n"
+            "fun make() -> Int\n"
+            "    let p = Point { x: 3, y: 4 }\n"
+            "    return p.magnitude_sq()\n"
+        )
+        module, types = _parse_and_check(src)
+        ir_mod = lower(module, types=types)
+        self.assertEqual(len(ir_mod.impls), 1)
+        self.assertEqual(ir_mod.impls[0].type_name, "Point")
+        self.assertIsNone(ir_mod.impls[0].trait_name)
+        py = compile(module, types=types)
+        ns: dict = {}
+        exec(py, ns)
+        self.assertEqual(ns["make"](), 25)
+
+    def test_impl_on_sum_attaches_to_each_variant(self):
+        src = (
+            "type Shape =\n"
+            "    Circle(Int)\n"
+            "    Square(Int)\n"
+            "impl Shape\n"
+            "    fun area(self) -> Int\n"
+            "        match self\n"
+            "            Circle(r) ->\n"
+            "                return r * r * 3\n"
+            "            Square(s) ->\n"
+            "                return s * s\n"
+            "fun total(a: Shape, b: Shape) -> Int\n"
+            "    return a.area() + b.area()\n"
+        )
+        module, types = _parse_and_check(src)
+        py = compile(module, types=types)
+        # Method should be attached to both variant classes.
+        self.assertIn("Circle.area = _Shape_area", py)
+        self.assertIn("Square.area = _Shape_area", py)
+        ns: dict = {}
+        exec(py, ns)
+        self.assertEqual(ns["total"](ns["Circle"](2), ns["Square"](5)), 37)
+
+
 class TestLambda(unittest.TestCase):
     """Phase 2E: lambdas. Both expression-body and block-body forms
     lower to a ``MakeLambda`` instruction; the Python emitter renders
