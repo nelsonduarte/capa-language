@@ -28,10 +28,18 @@ data Bool : Set where
   true  : Bool
   false : Bool
 
+_||_ : Bool -> Bool -> Bool
+true  || _ = true
+false || b = b
+
+infixr 5 _||_
+
 data _==_ {A : Set} (x : A) : A -> Set where
   refl : x == x
 
 infix 4 _==_
+
+{-# BUILTIN EQUALITY _==_ #-}
 
 ------------------------------------------------------------------
 -- Capabilities.
@@ -201,6 +209,11 @@ singletonCS Clock  Clock  = true
 singletonCS Random Random = true
 singletonCS Unsafe Unsafe = true
 singletonCS _      _      = false
+
+_∪_ : CapSet -> CapSet -> CapSet
+(S ∪ T) c = S c || T c
+
+infixr 5 _∪_
 
 ------------------------------------------------------------------
 -- Typing relation.

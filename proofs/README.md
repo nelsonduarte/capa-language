@@ -2,14 +2,15 @@
 
 [![agda](https://github.com/nelsonduarte/capa-language/actions/workflows/agda.yml/badge.svg)](https://github.com/nelsonduarte/capa-language/actions/workflows/agda.yml)
 
-> **Status (2026-05-20): Progress and Preservation proved;
-> mechanically typechecked in CI.** This directory holds the
-> λ_cap formalisation in Agda. Syntax, typing, reduction, and
-> PLFA-style parallel substitution are mechanised; the Progress
-> and Preservation theorems
+> **Status (2026-05-20): Progress, Preservation, and Capability
+> Soundness proved; mechanically typechecked in CI.** This
+> directory holds the λ_cap formalisation in Agda. Syntax,
+> typing, reduction, PLFA-style parallel substitution, and the
+> inductive `_∈caps_` relation are mechanised; the Progress,
+> Preservation, and Capability Soundness theorems
 > ([`docs/semantics.md`](../docs/semantics.md) Theorem 1) are
-> proved. Capability Soundness and Manifest Completeness remain
-> as `postulate` declarations (Stages 3 and 4 of the plan below).
+> proved. Manifest Completeness remains as a `postulate`
+> declaration (Stage 4 of the plan below).
 
 ## What this directory is for
 
@@ -101,10 +102,15 @@ proof:
    real de Bruijn substitution; the elided form used by
    Stage 1 is gone.
 
-4. **Stage 3**: derive Capability Soundness as a corollary.
-   The reduction relation tracks which capability is being
-   used at each step; the typing context bounds the set of
-   capabilities; preservation gives the rest.
+4. **Stage 3 (done)**: prove Capability Soundness. If
+   `t ==> t'` then every cap that appears syntactically in
+   `t'` already appeared in `t`. Mechanised against the
+   inductive relation `_∈caps_`, with two side lemmas:
+   `rename-∈caps` (renaming preserves the relation) and
+   `subst-∈caps-bounded` (caps in a substituted term either
+   come from the original term or from the substitution image,
+   bounded by a predicate). The Bool-indicator `caps-of`
+   remains defined for downstream Stage 4 work.
 
 5. **Stage 4**: prove Manifest Completeness. This is a
    separate result about the manifest extraction function.
@@ -140,10 +146,10 @@ Honest tracking:
 | Stage 0: skeleton + theorem statements | landed |
 | Stage 1: Progress | landed |
 | Stage 2: Preservation | landed |
-| Stage 3: Capability Soundness corollary | not started |
+| Stage 3: Capability Soundness | landed |
 | Stage 4: Manifest Completeness | not started |
 
-The paper claims sketched proofs. Progress and Preservation
-are now machine-verified; Capability Soundness and Manifest
-Completeness are not yet. Do not cite the remaining two as
+The paper claims sketched proofs. Progress, Preservation, and
+Capability Soundness are now machine-verified; Manifest
+Completeness is not yet. Do not cite the remaining one as
 machine-verified.

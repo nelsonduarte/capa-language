@@ -1,10 +1,10 @@
 ------------------------------------------------------------------
 -- CapaSoundness.agda
 --
--- Soundness theorems for lambda_cap. Progress and Preservation
--- are proved as of Stages 1 and 2 of the mechanisation plan;
--- Capability Soundness and Manifest Completeness remain as
--- postulates pending Stages 3 and 4 (see proofs/README.md).
+-- Soundness theorems for lambda_cap. Progress, Preservation,
+-- and Capability Soundness are proved as of Stages 1, 2, and 3
+-- of the mechanisation plan; Manifest Completeness remains as a
+-- postulate pending Stage 4 (see proofs/README.md).
 --
 -- STATUS: Typechecks on Agda >= 2.6.4. Verified in CI (see
 -- .github/workflows/agda.yml).
@@ -16,7 +16,8 @@
 --   2. preservation is induction on _==>_ given the typing,
 --      supported by PLFA-style parallel renaming / substitution
 --      lemmas (Stage 2, done)
---   3. capability soundness is a corollary (Stage 3, postulate)
+--   3. capability soundness is induction on _==>_ given the
+--      inductive relation `_∈caps_` (Stage 3, done)
 --   4. manifest completeness is a separate structural induction
 --      (Stage 4, postulate)
 ------------------------------------------------------------------
@@ -211,38 +212,209 @@ preservation (T-Consume d)         (R-ConsumeStep s)  = T-Consume (preservation 
 preservation (T-Consume d)         (R-Consume _)      = d
 
 ------------------------------------------------------------------
--- Theorem 3 (Corollary): Capability Soundness.
+-- Theorem 3: Capability Soundness.
 --
--- A well-typed closed term cannot, via any number of reduction
--- steps, exercise a capability it does not contain in its
--- syntactic surface.
+-- For a well-typed closed term t : A, every reduction step
+-- t ==> t' satisfies caps-of(t') subset-of caps-of(t). In words:
+-- reduction can only drop capabilities from the syntactic
+-- surface, never introduce new ones. The single-step formulation
+-- below extends to the reflexive-transitive closure by iteration.
 --
--- More precisely: define caps-of(t) as the set of Cap tags
--- appearing in any cap-introduction or use-c subterm of t. For a
--- well-typed closed term t : A, every reachable t' satisfies
--- caps-of(t') is contained in caps-of(t).
+-- This file mechanises the relational form of the theorem: every
+-- cap that appears syntactically in t' already appeared in t.
+-- The relation `c ∈caps t` has one constructor per place a cap
+-- can appear in a Tm (cap-introductions, use / restrict syntactic
+-- tags, and propagation through lam / app / use / restrict /
+-- consume). Pattern matching on this inductive relation
+-- sidesteps the higher-order unification issues that the Bool-
+-- indicator formulation (`caps-of : Tm -> CapSet` defined below)
+-- would force at every union-decomposition step.
 --
--- Proof: by repeated application of preservation; each reduction
--- step either (a) does not affect the set of capabilities (beta,
--- left/right-step rules) or (b) discharges one (R-Use:
--- use c (cap c) -> unit drops c from the syntactic surface).
--- Restriction (R-Restrict) preserves the set.
---
--- The corollary is stated as a postulate here; the proof would
--- be a relatively short follow-on to preservation.
+-- caps-of stays defined as a Bool indicator function so future
+-- stages (Manifest Completeness compares Bool functions
+-- pointwise) and the README narrative still have a concrete
+-- "set of capabilities appearing in t" reference. The theorem
+-- proper consumes `_∈caps_` and never inspects caps-of.
 ------------------------------------------------------------------
 
-postulate
-  caps-of : Tm -> CapSet
+caps-of : Tm -> CapSet
+caps-of (var _)        = emptyCS
+caps-of (lam _ t)      = caps-of t
+caps-of (app t1 t2)    = caps-of t1 ∪ caps-of t2
+caps-of (i _)          = emptyCS
+caps-of unit           = emptyCS
+caps-of (cap c)        = singletonCS c
+caps-of (use c t)      = singletonCS c ∪ caps-of t
+caps-of (restrict c t) = singletonCS c ∪ caps-of t
+caps-of (consume t)    = caps-of t
 
-postulate
-  capability-soundness
-    : forall {t t' A}
-    -> empty |- t ! A
-    -> t ==> t'
-    -> (c : Cap)
-    -> caps-of t' c == true
-    -> caps-of t  c == true
+------------------------------------------------------------------
+-- Disjunction (sum type), used by the substitution-caps lemma.
+------------------------------------------------------------------
+
+data _⊎_ (A B : Set) : Set where
+  inl : A -> A ⊎ B
+  inr : B -> A ⊎ B
+
+infixr 1 _⊎_
+
+------------------------------------------------------------------
+-- The "c appears syntactically in t" judgement. Each constructor
+-- corresponds to one Tm shape and one place inside that shape
+-- where c can show up; the lam / app / use / restrict / consume
+-- "inside-" constructors propagate through subterms; here-cap,
+-- here-use-tag, here-restrict-tag are the leaves where a cap is
+-- actually introduced.
+------------------------------------------------------------------
+
+data _∈caps_ : Cap -> Tm -> Set where
+  here-cap          : forall {c}       -> c ∈caps (cap c)
+  here-use-tag      : forall {c t}     -> c ∈caps (use c t)
+  here-restrict-tag : forall {c t}     -> c ∈caps (restrict c t)
+  inside-lam        : forall {c A t}   -> c ∈caps t  -> c ∈caps (lam A t)
+  inside-app-l      : forall {c t1 t2} -> c ∈caps t1 -> c ∈caps (app t1 t2)
+  inside-app-r      : forall {c t1 t2} -> c ∈caps t2 -> c ∈caps (app t1 t2)
+  inside-use        : forall {c c' t}  -> c ∈caps t  -> c ∈caps (use c' t)
+  inside-restrict   : forall {c c' t}  -> c ∈caps t  -> c ∈caps (restrict c' t)
+  inside-consume    : forall {c t}     -> c ∈caps t  -> c ∈caps (consume t)
+
+infix 4 _∈caps_
+
+------------------------------------------------------------------
+-- Renaming preserves the "cap appears" judgement: if c appears
+-- in (rename rho t), then it already appeared in t. Renaming
+-- only changes variable indices; the cap-introduction and tag
+-- positions are preserved verbatim. Proved by recursion on the
+-- term so Agda can compute `rename rho t` and the proof's outer
+-- constructor becomes available for pattern matching.
+------------------------------------------------------------------
+
+rename-∈caps : forall {c rho} (t : Tm)
+             -> c ∈caps (rename rho t)
+             -> c ∈caps t
+rename-∈caps (var _)        ()
+rename-∈caps (lam _ t)      (inside-lam h)      = inside-lam (rename-∈caps t h)
+rename-∈caps (app t1 t2)    (inside-app-l h)    = inside-app-l (rename-∈caps t1 h)
+rename-∈caps (app t1 t2)    (inside-app-r h)    = inside-app-r (rename-∈caps t2 h)
+rename-∈caps (i _)          ()
+rename-∈caps unit           ()
+rename-∈caps (cap _)        here-cap            = here-cap
+rename-∈caps (use _ _)      here-use-tag        = here-use-tag
+rename-∈caps (use _ t)      (inside-use h)      = inside-use (rename-∈caps t h)
+rename-∈caps (restrict _ _) here-restrict-tag   = here-restrict-tag
+rename-∈caps (restrict _ t) (inside-restrict h) = inside-restrict (rename-∈caps t h)
+rename-∈caps (consume t)    (inside-consume h)  = inside-consume (rename-∈caps t h)
+
+------------------------------------------------------------------
+-- Substitution-caps lemma: if every term in the image of sigma
+-- has its caps bounded by a predicate P : Cap -> Set, then the
+-- caps appearing in (subst sigma t) come either from t itself or
+-- from P. The bounded form factors the lam case via the
+-- rename-∈caps lemma applied at exts sigma.
+------------------------------------------------------------------
+
+sigma-∈bounded : (Var -> Tm) -> (Cap -> Set) -> Set
+sigma-∈bounded sigma P = (x : Var) (c : Cap)
+                       -> c ∈caps (sigma x) -> P c
+
+exts-∈bounded : forall {P} (sigma : Var -> Tm)
+              -> sigma-∈bounded sigma P
+              -> sigma-∈bounded (exts sigma) P
+exts-∈bounded sigma sb vzero    c ()
+exts-∈bounded sigma sb (vsuc x) c h = sb x c (rename-∈caps (sigma x) h)
+
+subst-∈caps-bounded : forall {P} (sigma : Var -> Tm) (t : Tm) (c : Cap)
+                    -> sigma-∈bounded sigma P
+                    -> c ∈caps (subst sigma t)
+                    -> c ∈caps t ⊎ P c
+subst-∈caps-bounded sigma (var x) c sb h = inr (sb x c h)
+subst-∈caps-bounded sigma (lam _ t) c sb (inside-lam h)
+  with subst-∈caps-bounded (exts sigma) t c (exts-∈bounded sigma sb) h
+... | inl ht = inl (inside-lam ht)
+... | inr p  = inr p
+subst-∈caps-bounded sigma (app t1 t2) c sb (inside-app-l h)
+  with subst-∈caps-bounded sigma t1 c sb h
+... | inl ht = inl (inside-app-l ht)
+... | inr p  = inr p
+subst-∈caps-bounded sigma (app t1 t2) c sb (inside-app-r h)
+  with subst-∈caps-bounded sigma t2 c sb h
+... | inl ht = inl (inside-app-r ht)
+... | inr p  = inr p
+subst-∈caps-bounded sigma (i _)   c sb ()
+subst-∈caps-bounded sigma unit    c sb ()
+subst-∈caps-bounded sigma (cap _) c sb here-cap = inl here-cap
+subst-∈caps-bounded sigma (use _ _) c sb here-use-tag = inl here-use-tag
+subst-∈caps-bounded sigma (use _ t) c sb (inside-use h)
+  with subst-∈caps-bounded sigma t c sb h
+... | inl ht = inl (inside-use ht)
+... | inr p  = inr p
+subst-∈caps-bounded sigma (restrict _ _) c sb here-restrict-tag = inl here-restrict-tag
+subst-∈caps-bounded sigma (restrict _ t) c sb (inside-restrict h)
+  with subst-∈caps-bounded sigma t c sb h
+... | inl ht = inl (inside-restrict ht)
+... | inr p  = inr p
+subst-∈caps-bounded sigma (consume t) c sb (inside-consume h)
+  with subst-∈caps-bounded sigma t c sb h
+... | inl ht = inl (inside-consume ht)
+... | inr p  = inr p
+
+sub-zero-∈bounded : forall (v : Tm)
+                  -> sigma-∈bounded (sub-zero v) (\ c -> c ∈caps v)
+sub-zero-∈bounded v vzero    c h = h
+sub-zero-∈bounded v (vsuc _) c ()
+
+subst-zero-∈caps : forall (t : Tm) {v : Tm} (c : Cap)
+                 -> c ∈caps (t [ v ])
+                 -> c ∈caps t ⊎ c ∈caps v
+subst-zero-∈caps t {v} c h
+  = subst-∈caps-bounded (sub-zero v) t c (sub-zero-∈bounded v) h
+
+------------------------------------------------------------------
+-- Capability Soundness theorem. Induction on the reduction
+-- derivation, pattern-matching on the `c ∈caps t'` proof of the
+-- reduct to determine which subterm of t' the cap came from,
+-- then reconstructing the corresponding witness in t.
+--
+-- R-Beta is the only nontrivial case: the reduct body [ v ]
+-- decomposes via subst-zero-∈caps into "cap was in body" or
+-- "cap was in v"; in the source `app (lam A body) v` these map
+-- to inside-app-l (inside-lam _) and inside-app-r _ respectively.
+-- R-Use's reduct is `unit` whose ∈caps relation is empty; the
+-- hypothesis is absurd. R-Restrict's reduct `cap c0` is
+-- inhabited only by here-cap, and the source `restrict c0 (...)`
+-- has the matching here-restrict-tag witness.
+------------------------------------------------------------------
+
+capability-soundness
+  : forall {t t' A}
+  -> empty |- t ! A
+  -> t ==> t'
+  -> (c : Cap)
+  -> c ∈caps t'
+  -> c ∈caps t
+capability-soundness (T-App d1 d2) (R-AppLeft s1) c (inside-app-l h)
+  = inside-app-l (capability-soundness d1 s1 c h)
+capability-soundness (T-App d1 d2) (R-AppLeft s1) c (inside-app-r h)
+  = inside-app-r h
+capability-soundness (T-App d1 d2) (R-AppRight _ s2) c (inside-app-l h)
+  = inside-app-l h
+capability-soundness (T-App d1 d2) (R-AppRight _ s2) c (inside-app-r h)
+  = inside-app-r (capability-soundness d2 s2 c h)
+capability-soundness (T-App (T-Lam _) _) (R-Beta {t = body} {v = v} _) c h
+  with subst-zero-∈caps body c h
+... | inl ht = inside-app-l (inside-lam ht)
+... | inr hv = inside-app-r hv
+capability-soundness (T-Use d) (R-UseStep s) c here-use-tag = here-use-tag
+capability-soundness (T-Use d) (R-UseStep s) c (inside-use h)
+  = inside-use (capability-soundness d s c h)
+capability-soundness (T-Use _) R-Use c ()
+capability-soundness (T-Restrict d) (R-RestrictStep s) c here-restrict-tag = here-restrict-tag
+capability-soundness (T-Restrict d) (R-RestrictStep s) c (inside-restrict h)
+  = inside-restrict (capability-soundness d s c h)
+capability-soundness (T-Restrict _) R-Restrict c here-cap = here-restrict-tag
+capability-soundness (T-Consume d) (R-ConsumeStep s) c (inside-consume h)
+  = inside-consume (capability-soundness d s c h)
+capability-soundness (T-Consume _) (R-Consume _) c h = inside-consume h
 
 ------------------------------------------------------------------
 -- Theorem 4: Manifest Completeness.
@@ -287,9 +459,8 @@ postulate
     -> declared-caps t c == caps-of-reachable t c
 
 ------------------------------------------------------------------
--- That is the full statement set. `progress` and `preservation`
--- are now real definitions (Stages 1 and 2). The remaining
--- postulates are `caps-of` + `capability-soundness` (Stage 3),
--- and `declared-caps` + `caps-of-reachable` +
--- `manifest-completeness` (Stage 4).
+-- That is the full statement set. `progress`, `preservation`, and
+-- `capability-soundness` are now real definitions (Stages 1, 2,
+-- and 3). The remaining postulates are `declared-caps` +
+-- `caps-of-reachable` + `manifest-completeness` (Stage 4).
 ------------------------------------------------------------------
