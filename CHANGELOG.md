@@ -9,6 +9,91 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+### CIR: capability-aware intermediate representation
+
+A new IR layer sits between the analyzer's typed AST and the
+Python emitter. Lowering is ANF/three-address; every operation
+binds its result to a fresh local, every method-call site
+records the capability it exercises, every function preserves
+its declared capability set. The IR was built so a future
+backend (WebAssembly Component Model, LLVM, Cranelift) has a
+clean structure to lower from without needing to re-derive
+capability information that the analyzer already computed and
+that legacy direct-to-Python emission discards.
+
+Coverage and pipeline:
+
+- `capa.ir.lower(module, types)` produces a `capa.ir.Module`
+  with `functions`, `types`, `impls`, `traits`, `consts`, and
+  `imports`. The lowerer accepts every top-level item the
+  legacy transpiler accepts; constructs the IR does not yet
+  cover raise `UnsupportedInIR(shape)` with a precise reason.
+- `capa.ir.emit_python(ir_module)` emits per-function Python
+  matching the legacy transpiler's idiomatic shape (method
+  dispatch for `String` / `List` / `Map` / `Set` rewritten to
+  Python idioms; sum variants emit as `@dataclass`; `?`
+  expands inline via `TryUnwrap`).
+- `capa.ir.compile_program(module, filename, types)` wraps
+  the function emission with the legacy runtime prelude and
+  the `if __name__ == "__main__":` bootstrap, producing a
+  directly-runnable Python program.
+- **CLI: `--ir`** opts into the new pipeline. The legacy
+  transpiler stays the default; `--ir` falls back to it with
+  a one-line stderr breadcrumb when lowering hits an
+  unsupported construct, so the user-visible behaviour is
+  identical.
+
+What's covered:
+
+- Function bodies in full: literals, identifiers, binops
+  (with short-circuit `and` / `or` re-expansion so out-of-bounds
+  Python evaluation never crosses a short-circuit boundary),
+  unary ops, calls, method calls (with type-aware dispatch for
+  the builtin collection / string surface), interpolated
+  strings, list / tuple / map / set literals, struct literals,
+  field access, indexing, `?`, lambdas (block and expression
+  body, closures), match (statement and expression position
+  with block-as-expression semantics for the latter), `if` /
+  `elif` / `else` / `if`-as-expression, `for`, `while`
+  (recomputes condition before every iteration including
+  `continue`-driven ones), `break`, `continue`, `let` (incl.
+  tuple-pattern destructuring), `var`, plain and compound
+  assignment.
+- Top-level: structs, sums (with method attachment to every
+  variant for `impl T` blocks where `T` is a sum), traits,
+  user-defined capabilities, impl blocks (inherent + trait
+  impls), `const`, `import` (emits the same defence-in-depth
+  breadcrumb the legacy uses).
+- Capability metadata: `Function.declared_caps`,
+  `MethodCall.cap_used`, `TraitDecl.is_capability`, and
+  `Param.is_capability` flow through the IR unchanged.
+
+Equivalence: 36 of 38 runnable examples produce byte-identical
+stdout between the legacy and IR pipelines (the two that don't
+need files / network outside the harness's bare-exec namespace,
+not divergence). The multi-module `audit-trail-reporter`
+program at <https://github.com/nelsonduarte/audit-trail-reporter>
+compiles fully through `--ir` with no fallback.
+
+Known IR-only gaps:
+
+- `TuplePat` in match patterns (in `let` it works).
+- Match arm with guard expression (guard references
+  pattern-bound names that don't survive ANF flattening; would
+  need an inline-expression escape).
+
+Both gaps raise `UnsupportedInIR` and the CLI falls back to
+the legacy path, so no user-visible regression.
+
+Internals (not user-visible):
+
+- Twelve commits across `capa/ir/`, ~1600 lines of new code,
+  ~80 new unit tests. Per-function emission stays under 350
+  lines (the legacy is ~600). See commits `b53f6fd` (Phase 1)
+  through `a36c139` (Phase 5C+) for the staged history.
+- New CLI flag wired through `capa/cli.py`; the legacy code
+  path is unchanged for invocations that don't pass `--ir`.
+
 ## [1.0.0-rc.2], 2026-05-20
 
 Two analyzer-precision fixes surfaced by a focused bug-hunt

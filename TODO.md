@@ -820,12 +820,22 @@ here so they stay visible:
   `declared_capabilities` (it is exercised via `self` even
   without a parameter of that type), and the ineligibility
   set correctly excludes the trait.
-- [ ] **IR with capability annotations + monomorphisation**. The
-  second review document proposes an ANF + basic-blocks + CFG
-  IR with block parameters (MLIR / Swift SIL shape). The right
-  long-term move for a native backend, but the headline
-  contribution rests on the soundness theorem and the demos
-  already in place, not on the IR. Deferred.
+- [x] **CIR (capability-aware IR), partial.** Landed as an
+  ANF / three-address IR sitting between the analyzer's typed
+  AST and an emitter (Python emitter only, for now). Preserves
+  per-function `declared_caps`, per-method-call `cap_used`,
+  and `is_capability` flags on params and traits so a future
+  Wasm Component Model / LLVM backend has the structure to
+  emit WIT or capability-aware imports from. Opt-in via
+  `--ir`; falls back to the legacy direct-to-Python path when
+  lowering hits an unsupported construct (`TuplePat` in match
+  patterns, match arm with guard). Coverage: 44 of 46
+  analysable examples compile through CIR; 36 of 38 runnable
+  ones byte-equivalent to legacy. The multi-module
+  `audit-trail-reporter` runs end-to-end through `--ir`.
+  See `capa/ir/`. Still NOT done from the original sketch:
+  basic-blocks / CFG / block parameters (the IR is ANF only,
+  not MLIR/SIL shape), monomorphisation, native backend.
 
 The reviewer's six-month sequence puts IR redesign in September
 and a native backend by December; that ordering trades the
