@@ -2,13 +2,14 @@
 
 [![agda](https://github.com/nelsonduarte/capa-language/actions/workflows/agda.yml/badge.svg)](https://github.com/nelsonduarte/capa-language/actions/workflows/agda.yml)
 
-> **Status (2026-05-19): Progress proved; mechanically typechecked
-> in CI.** This directory holds the λ_cap formalisation in Agda.
-> Syntax, typing, and reduction are mechanised, and the Progress
-> theorem ([`docs/semantics.md`](../docs/semantics.md) half of
-> Theorem 1) is proved. Preservation, Capability Soundness, and
-> Manifest Completeness remain as `postulate` declarations
-> (Stages 2 to 4 of the plan below).
+> **Status (2026-05-20): Progress and Preservation proved;
+> mechanically typechecked in CI.** This directory holds the
+> λ_cap formalisation in Agda. Syntax, typing, reduction, and
+> PLFA-style parallel substitution are mechanised; the Progress
+> and Preservation theorems
+> ([`docs/semantics.md`](../docs/semantics.md) Theorem 1) are
+> proved. Capability Soundness and Manifest Completeness remain
+> as `postulate` declarations (Stages 3 and 4 of the plan below).
 
 ## What this directory is for
 
@@ -92,8 +93,13 @@ proof:
    discharge the cases where a reduction rule needs to see a
    specific value shape.
 
-3. **Stage 2**: prove Preservation. If `t : A` and `t -> t'`,
-   then `t' : A`. Standard structural induction.
+3. **Stage 2 (done)**: prove Preservation. If `t : A` and
+   `t -> t'`, then `t' : A`. Structural induction on the
+   reduction derivation, supported by PLFA-style parallel
+   renaming / substitution lemmas (`rename-pres`,
+   `subst-pres`, `subst-zero`). The `R-Beta` rule now does
+   real de Bruijn substitution; the elided form used by
+   Stage 1 is gone.
 
 4. **Stage 3**: derive Capability Soundness as a corollary.
    The reduction relation tracks which capability is being
@@ -133,11 +139,11 @@ Honest tracking:
 |---|---|
 | Stage 0: skeleton + theorem statements | landed |
 | Stage 1: Progress | landed |
-| Stage 2: Preservation | not started |
+| Stage 2: Preservation | landed |
 | Stage 3: Capability Soundness corollary | not started |
 | Stage 4: Manifest Completeness | not started |
 
-The paper claims sketched proofs. Progress is now machine-
-verified; Preservation, Capability Soundness, and Manifest
-Completeness are not yet. Do not cite the remaining three as
+The paper claims sketched proofs. Progress and Preservation
+are now machine-verified; Capability Soundness and Manifest
+Completeness are not yet. Do not cite the remaining two as
 machine-verified.

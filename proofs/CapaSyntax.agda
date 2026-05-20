@@ -2,7 +2,9 @@
 -- CapaSyntax.agda
 --
 -- Syntax, typing relation, and small-step reduction for the
--- lambda_cap calculus described in docs/semantics.md.
+-- lambda_cap calculus described in docs/semantics.md. Includes
+-- PLFA-style parallel renaming / substitution (used by R-Beta
+-- and by the preservation proof in CapaSoundness.agda).
 --
 -- STATUS: Typechecks on Agda >= 2.6.4. Verified in CI (see
 -- .github/workflows/agda.yml).
@@ -92,6 +94,66 @@ data Tm : Set where
   use      : Cap -> Tm -> Tm                        -- exercise a cap
   restrict : Cap -> Tm -> Tm                        -- attenuate a cap
   consume  : Tm -> Tm                               -- linear move
+
+------------------------------------------------------------------
+-- Renamings and substitutions (PLFA-style parallel).
+--
+-- A renaming is a function Var -> Var; a substitution is a
+-- function Var -> Tm. `ext` lifts a renaming under a binder
+-- (the new vzero stays put, every existing index shifts up by
+-- one via the underlying renaming); `exts` does the same for a
+-- substitution but the existing indices are first renamed via
+-- `rename vsuc` to skip the new binding. `rename` and `subst`
+-- then recurse over a term applying the lifted renaming or
+-- substitution at each occurrence.
+--
+-- Termination: `rename` and `subst` are structurally recursive
+-- on the Tm argument, so Agda accepts them without pragma.
+-- There is no mutual recursion: `ext` -> `rename` -> `exts` ->
+-- `subst`.
+------------------------------------------------------------------
+
+ext : (Var -> Var) -> (Var -> Var)
+ext rho vzero    = vzero
+ext rho (vsuc x) = vsuc (rho x)
+
+rename : (Var -> Var) -> Tm -> Tm
+rename rho (var x)        = var (rho x)
+rename rho (lam A t)      = lam A (rename (ext rho) t)
+rename rho (app t1 t2)    = app (rename rho t1) (rename rho t2)
+rename rho (i n)          = i n
+rename rho unit           = unit
+rename rho (cap c)        = cap c
+rename rho (use c t)      = use c (rename rho t)
+rename rho (restrict c t) = restrict c (rename rho t)
+rename rho (consume t)    = consume (rename rho t)
+
+exts : (Var -> Tm) -> (Var -> Tm)
+exts sigma vzero    = var vzero
+exts sigma (vsuc x) = rename vsuc (sigma x)
+
+subst : (Var -> Tm) -> Tm -> Tm
+subst sigma (var x)        = sigma x
+subst sigma (lam A t)      = lam A (subst (exts sigma) t)
+subst sigma (app t1 t2)    = app (subst sigma t1) (subst sigma t2)
+subst sigma (i n)          = i n
+subst sigma unit           = unit
+subst sigma (cap c)        = cap c
+subst sigma (use c t)      = use c (subst sigma t)
+subst sigma (restrict c t) = restrict c (subst sigma t)
+subst sigma (consume t)    = consume (subst sigma t)
+
+-- Single-variable substitution: `t [ v ]` replaces the zero
+-- index in t with v, leaving every other index unshifted.
+
+sub-zero : Tm -> (Var -> Tm)
+sub-zero v vzero    = v
+sub-zero v (vsuc x) = var x
+
+_[_] : Tm -> Tm -> Tm
+t [ v ] = subst (sub-zero v) t
+
+infix 6 _[_]
 
 ------------------------------------------------------------------
 -- Typing contexts.
@@ -240,7 +302,7 @@ data _==>_ : Tm -> Tm -> Set where
 
   R-Beta     : forall {A t v}
              -> Value v
-             -> app (lam A t) v ==> t                -- substitution elided
+             -> app (lam A t) v ==> t [ v ]
 
   R-Use      : forall {c}
              -> use c (cap c) ==> unit

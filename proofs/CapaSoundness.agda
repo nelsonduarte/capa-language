@@ -1,10 +1,10 @@
 ------------------------------------------------------------------
 -- CapaSoundness.agda
 --
--- Soundness theorems for lambda_cap. Progress is proved as of
--- Stage 1 of the mechanisation plan; Preservation, Capability
--- Soundness, and Manifest Completeness remain as postulates
--- pending Stages 2 to 4 (see proofs/README.md).
+-- Soundness theorems for lambda_cap. Progress and Preservation
+-- are proved as of Stages 1 and 2 of the mechanisation plan;
+-- Capability Soundness and Manifest Completeness remain as
+-- postulates pending Stages 3 and 4 (see proofs/README.md).
 --
 -- STATUS: Typechecks on Agda >= 2.6.4. Verified in CI (see
 -- .github/workflows/agda.yml).
@@ -13,8 +13,9 @@
 -- in the Wright-Felleisen style. The shape matches PLFA chapter
 -- "Properties":
 --   1. progress is induction on _|-_!_ (Stage 1, done)
---   2. preservation is induction on _==>_ given the typing
---      (Stage 2, postulate)
+--   2. preservation is induction on _==>_ given the typing,
+--      supported by PLFA-style parallel renaming / substitution
+--      lemmas (Stage 2, done)
 --   3. capability soundness is a corollary (Stage 3, postulate)
 --   4. manifest completeness is a separate structural induction
 --      (Stage 4, postulate)
@@ -103,29 +104,111 @@ progress (T-Consume d) with progress d
 ... | done v                   = step (R-Consume v)
 
 ------------------------------------------------------------------
--- Theorem 2: Preservation.
+-- Renaming preserves typing.
 --
--- Reduction preserves the type.
---
--- Proof sketch: induction on the reduction derivation, using a
--- substitution lemma:
---
---   subst-lemma : G , A |- t : B
---               -> G |- v : A
---               -> G |- t[v/0] : B
---
--- which is itself a structural induction on the typing of t.
---
--- The capability-specific rules need no special handling: R-Use
--- and R-Restrict consume a TyCap-typed value and return TyUnit or
--- TyCap c, both of which are correctly typed at the redex.
+-- The standard PLFA lemma. If rho maps every (x : A) in G to
+-- (rho x : A) in G', then for every well-typed G |- t ! A the
+-- renamed term is well-typed in G': G' |- rename rho t ! A.
+-- This is the inner core that the substitution lemma below
+-- relies on (via exts, which under a binder lifts using
+-- `rename vsuc` on the existing substitution image).
 ------------------------------------------------------------------
 
-postulate
-  preservation : forall {G t t' A}
-               -> G |- t ! A
-               -> t ==> t'
-               -> G |- t' ! A
+ext-pres : forall {G G' B} {rho : Var -> Var}
+         -> (forall {x A} -> G >> x ! A -> G' >> rho x ! A)
+         -> (forall {x A} -> (G , B) >> x ! A -> (G' , B) >> ext rho x ! A)
+ext-pres rho-ok here      = here
+ext-pres rho-ok (there d) = there (rho-ok d)
+
+rename-pres : forall {G G' t A} {rho : Var -> Var}
+            -> (forall {x B} -> G >> x ! B -> G' >> rho x ! B)
+            -> G  |- t ! A
+            -> G' |- rename rho t ! A
+rename-pres rho-ok (T-Var x)      = T-Var (rho-ok x)
+rename-pres rho-ok (T-Lam d)      = T-Lam (rename-pres (ext-pres rho-ok) d)
+rename-pres rho-ok (T-App d1 d2)  = T-App (rename-pres rho-ok d1) (rename-pres rho-ok d2)
+rename-pres rho-ok T-Int          = T-Int
+rename-pres rho-ok T-Unit         = T-Unit
+rename-pres rho-ok T-Cap          = T-Cap
+rename-pres rho-ok (T-Use d)      = T-Use (rename-pres rho-ok d)
+rename-pres rho-ok (T-Restrict d) = T-Restrict (rename-pres rho-ok d)
+rename-pres rho-ok (T-Consume d)  = T-Consume (rename-pres rho-ok d)
+
+------------------------------------------------------------------
+-- Substitution preserves typing (parallel form).
+--
+-- If sigma maps every variable (x : A) in G to a term sigma x of
+-- type A in G', then for every G |- t ! A we have
+-- G' |- subst sigma t ! A. The exts-pres helper lifts the
+-- condition under a new binding: at index vzero return T-Var here
+-- (the fresh variable); at (vsuc x) appeal to rename-pres with
+-- the `there` renaming on the IH for the original index.
+------------------------------------------------------------------
+
+exts-pres : forall {G G' B} {sigma : Var -> Tm}
+          -> (forall {x A} -> G >> x ! A -> G' |- sigma x ! A)
+          -> (forall {x A} -> (G , B) >> x ! A -> (G' , B) |- exts sigma x ! A)
+exts-pres sigma-ok here      = T-Var here
+exts-pres sigma-ok (there d) = rename-pres there (sigma-ok d)
+
+subst-pres : forall {G G' t A} {sigma : Var -> Tm}
+           -> (forall {x B} -> G >> x ! B -> G' |- sigma x ! B)
+           -> G  |- t ! A
+           -> G' |- subst sigma t ! A
+subst-pres sigma-ok (T-Var x)      = sigma-ok x
+subst-pres sigma-ok (T-Lam d)      = T-Lam (subst-pres (exts-pres sigma-ok) d)
+subst-pres sigma-ok (T-App d1 d2)  = T-App (subst-pres sigma-ok d1) (subst-pres sigma-ok d2)
+subst-pres sigma-ok T-Int          = T-Int
+subst-pres sigma-ok T-Unit         = T-Unit
+subst-pres sigma-ok T-Cap          = T-Cap
+subst-pres sigma-ok (T-Use d)      = T-Use (subst-pres sigma-ok d)
+subst-pres sigma-ok (T-Restrict d) = T-Restrict (subst-pres sigma-ok d)
+subst-pres sigma-ok (T-Consume d)  = T-Consume (subst-pres sigma-ok d)
+
+------------------------------------------------------------------
+-- Single-substitution corollary. If v has type A in G and t has
+-- type B in G , A, then t [ v ] has type B in G. This is the
+-- form needed at the R-Beta case of preservation.
+------------------------------------------------------------------
+
+sub-zero-pres : forall {G v A}
+              -> G |- v ! A
+              -> (forall {x B} -> (G , A) >> x ! B -> G |- sub-zero v x ! B)
+sub-zero-pres dv here      = dv
+sub-zero-pres dv (there d) = T-Var d
+
+subst-zero : forall {G v t A B}
+           -> (G , A) |- t ! B
+           -> G       |- v ! A
+           -> G       |- t [ v ] ! B
+subst-zero dt dv = subst-pres (sub-zero-pres dv) dt
+
+------------------------------------------------------------------
+-- Theorem 2: Preservation.
+--
+-- Reduction preserves the type. Proof by induction on the
+-- reduction derivation. The congruence cases recurse on the
+-- subderivation; R-Beta uses subst-zero (the lambda body's
+-- typing in the extended context combines with the argument's
+-- typing in the outer context to yield the substituted body's
+-- typing); R-Use and R-Restrict return T-Unit / T-Cap directly;
+-- R-Consume returns the inner derivation unchanged because
+-- consume is a no-op at the type level.
+------------------------------------------------------------------
+
+preservation : forall {G t t' A}
+             -> G |- t ! A
+             -> t ==> t'
+             -> G |- t' ! A
+preservation (T-App d1 d2)         (R-AppLeft s1)     = T-App (preservation d1 s1) d2
+preservation (T-App d1 d2)         (R-AppRight _ s2)  = T-App d1 (preservation d2 s2)
+preservation (T-App (T-Lam db) dv) (R-Beta _)         = subst-zero db dv
+preservation (T-Use d)             (R-UseStep s)      = T-Use (preservation d s)
+preservation (T-Use _)             R-Use              = T-Unit
+preservation (T-Restrict d)        (R-RestrictStep s) = T-Restrict (preservation d s)
+preservation (T-Restrict _)        R-Restrict         = T-Cap
+preservation (T-Consume d)         (R-ConsumeStep s)  = T-Consume (preservation d s)
+preservation (T-Consume d)         (R-Consume _)      = d
 
 ------------------------------------------------------------------
 -- Theorem 3 (Corollary): Capability Soundness.
@@ -204,9 +287,9 @@ postulate
     -> declared-caps t c == caps-of-reachable t c
 
 ------------------------------------------------------------------
--- That is the full statement set. `progress` is now a real
--- definition (Stage 1, this commit). The remaining postulates
--- are `preservation` (Stage 2), `caps-of` +
--- `capability-soundness` (Stage 3), and `declared-caps` +
--- `caps-of-reachable` + `manifest-completeness` (Stage 4).
+-- That is the full statement set. `progress` and `preservation`
+-- are now real definitions (Stages 1 and 2). The remaining
+-- postulates are `caps-of` + `capability-soundness` (Stage 3),
+-- and `declared-caps` + `caps-of-reachable` +
+-- `manifest-completeness` (Stage 4).
 ------------------------------------------------------------------
