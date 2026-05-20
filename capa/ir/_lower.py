@@ -61,8 +61,11 @@ class Lowerer:
         self._locals: dict[str, str] = {}
         # Parameters of the function currently being lowered, used by
         # ``_lower_ident`` to decide between ``kind="param"`` and
-        # ``kind="local"``.
-        self._params: set[str] = set()
+        # ``kind="local"``. Stored as a name->ty mapping so the
+        # emitter can resolve per-receiver method dispatch (a
+        # parameter ``s: String`` must dispatch ``s.length()`` to
+        # ``len(s)`` via the type).
+        self._params: dict[str, str] = {}
         # Capability classes declared in the current function's
         # signature, used by ``_lower_method_call`` to flag
         # ``cap_used``. The set tracks parameter names that are
@@ -80,6 +83,11 @@ class Lowerer:
         # resolution would produce just ``Excellent`` which is a class
         # object, not an instance.
         self._payloadless_variants: set[str] = set()
+        # User-defined variant name -> ordered payload type names.
+        # Populated by ``lower_module`` from every ``TypeSum`` in the
+        # module so ``_refine_pattern_binds`` can recover the payload
+        # types for non-built-in sums.
+        self._user_variants: dict[str, list[str]] = {}
 
     # ------------------------------------------------------------
     # Module / function entry points.
@@ -105,12 +113,18 @@ class Lowerer:
         # sum-type declaration. References to these as bare values
         # must construct the variant (``Excellent`` -> ``Excellent()``)
         # because the runtime class is not its own instance.
+        # Also collect each variant's payload type names so pattern
+        # lowering can thread types into bound identifiers.
         self._payloadless_variants = set()
+        self._user_variants = {}
         for item in module.items:
             if isinstance(item, A.TypeSum):
                 for v in item.variants:
                     if not v.payloads:
                         self._payloadless_variants.add(v.name)
+                    self._user_variants[v.name] = [
+                        _type_name(p) for p in v.payloads
+                    ]
         for item in module.items:
             if isinstance(item, A.FunDecl):
                 functions.append(self.lower_function(item))
@@ -155,7 +169,7 @@ class Lowerer:
         self._counter = {"n": 0}
         self._instrs = []
         self._locals = {}
-        self._params = set()
+        self._params = {}
         self._cap_params = {}
         value = self._lower_expr(c.value)
         # Final binding: ``name = value``. Reuse AssignConst so the
@@ -227,7 +241,7 @@ class Lowerer:
         self._counter = {"n": 0}
         self._instrs = []
         self._locals = {}
-        self._params = set()
+        self._params = {}
         self._cap_params = {}
 
         params: list[Param] = []
@@ -235,7 +249,7 @@ class Lowerer:
             ty_name = _type_name(p.type_expr) if p.type_expr else "Unknown"
             is_cap = ty_name in _BUILTIN_CAPS
             params.append(Param(name=p.name, ty=ty_name, is_capability=is_cap))
-            self._params.add(p.name)
+            self._params[p.name] = ty_name
             if is_cap:
                 self._cap_params[p.name] = ty_name
 
@@ -419,7 +433,15 @@ class Lowerer:
                 f"for-pattern {type(s.pattern).__name__}"
             )
         iter_value = self._lower_expr(s.iter)
-        self._locals[s.pattern.name] = "Unknown"
+        # Extract the element type so the bound name carries enough
+        # info for downstream method dispatch (``for t in xs: t.is_empty()``
+        # must dispatch on the element type, not on ``Unknown``).
+        bind_ty = "Unknown"
+        if iter_value.ty.startswith("List<") and iter_value.ty.endswith(">"):
+            bind_ty = iter_value.ty[5:-1]
+        elif iter_value.ty.startswith("Range"):
+            bind_ty = "Int"
+        self._locals[s.pattern.name] = bind_ty
         outer = self._instrs
         self._instrs = []
         self._lower_block(s.body)
@@ -466,6 +488,7 @@ class Lowerer:
         for arm in m.arms:
             if arm.guard is not None:
                 raise UnsupportedInIR("match arm with guard")
+            self._refine_pattern_binds(arm.pattern, scrut.ty)
             pat = self._lower_pattern(arm.pattern)
             outer = self._instrs
             self._instrs = []
@@ -480,6 +503,51 @@ class Lowerer:
             arms.append(MatchArm(pattern=pat, body=body, guard=None))
         self._instrs.append(Match(scrutinee=scrut, arms=arms, result_dst=None))
 
+    def _refine_pattern_binds(self, p: A.Pattern, scrut_ty: str) -> None:
+        """Best-effort: thread the scrutinee's type into pattern-bound
+        identifier locals so downstream method dispatch sees the
+        right receiver type. Without this, ``Some(m) -> m.get(k)``
+        sees ``m: Unknown`` and skips the type-aware Map/List/String
+        rewrite. We handle Option, Result, and user-defined sum
+        types where the lowerer has the variant decl's payload types
+        in scope."""
+        if not isinstance(p, A.VariantPat) or not p.payloads:
+            return
+        payload_tys = self._variant_payload_tys(p.name, scrut_ty)
+        if payload_tys is None or len(payload_tys) != len(p.payloads):
+            return
+        for sub, ty in zip(p.payloads, payload_tys):
+            if isinstance(sub, A.IdentPat):
+                self._locals[sub.name] = ty
+            else:
+                # Nested patterns share the same refinement rule.
+                self._refine_pattern_binds(sub, ty)
+
+    def _variant_payload_tys(
+        self, variant_name: str, scrut_ty: str,
+    ) -> Optional[list[str]]:
+        """Return the payload type(s) bound by ``Variant(...)`` when
+        the scrutinee has type ``scrut_ty``. Handles the built-in
+        ``Option<T>`` / ``Result<T, E>`` shapes via string parsing,
+        and user-defined sums via the pre-collected ``_user_variants``
+        table populated by ``lower_module``."""
+        if scrut_ty.startswith("Option<") and scrut_ty.endswith(">"):
+            inner = scrut_ty[7:-1]
+            if variant_name == "Some":
+                return [inner]
+            if variant_name == "None":
+                return []
+        if scrut_ty.startswith("Result<") and scrut_ty.endswith(">"):
+            inner = scrut_ty[7:-1]
+            t, e = _split_top_level_comma(inner)
+            if variant_name == "Ok":
+                return [t]
+            if variant_name == "Err":
+                return [e]
+        if variant_name in self._user_variants:
+            return list(self._user_variants[variant_name])
+        return None
+
     def _lower_pattern(self, p: A.Pattern) -> Pattern:
         """Translate an AST pattern to its IR shape. Phase 2D supports
         Wildcard, Ident, Literal (Int / String / Bool / Unit), and
@@ -489,10 +557,13 @@ class Lowerer:
             return PatWildcard()
         if isinstance(p, A.IdentPat):
             # Track the binding name as a local in the arm scope so
-            # that the arm body can reference it. The type is left
-            # Unknown because the analyzer's pattern-binding type is
-            # not carried through the AST node we have here.
-            self._locals[p.name] = "Unknown"
+            # that the arm body can reference it. ``setdefault``
+            # preserves any refinement that ``_refine_pattern_binds``
+            # may have written before us (e.g. ``Some(m)`` against
+            # ``Option<Map<...>>`` -> m: Map<...>); without
+            # ``setdefault`` we would clobber that with "Unknown" and
+            # lose receiver-type dispatch.
+            self._locals.setdefault(p.name, "Unknown")
             return PatIdent(name=p.name)
         if isinstance(p, A.LiteralPat):
             return self._lower_literal_pattern(p)
@@ -587,6 +658,7 @@ class Lowerer:
         for arm in m.arms:
             if arm.guard is not None:
                 raise UnsupportedInIR("match arm with guard")
+            self._refine_pattern_binds(arm.pattern, scrut.ty)
             pat = self._lower_pattern(arm.pattern)
             outer = self._instrs
             self._instrs = []
@@ -622,7 +694,7 @@ class Lowerer:
         outer_params = self._params
         outer_caps = self._cap_params
         self._instrs = []
-        self._params = set(outer_params)
+        self._params = dict(outer_params)
         self._cap_params = dict(outer_caps)
         lambda_params: list[Param] = []
         for p in e.params:
@@ -631,7 +703,7 @@ class Lowerer:
             lambda_params.append(
                 Param(name=p.name, ty=ty_name, is_capability=is_cap)
             )
-            self._params.add(p.name)
+            self._params[p.name] = ty_name
             if is_cap:
                 self._cap_params[p.name] = ty_name
         # Body: an expression body produces a value the lambda must
@@ -690,7 +762,7 @@ class Lowerer:
 
     def _lower_ident(self, e: A.Ident) -> Value:
         if e.name in self._params:
-            ty = self._cap_params.get(e.name) or self._locals.get(e.name) or "Unknown"
+            ty = self._params[e.name]
             return Value(kind="param", name=e.name, ty=ty)
         if e.name in self._locals:
             return Value(kind="local", name=e.name, ty=self._locals[e.name])
@@ -713,6 +785,18 @@ class Lowerer:
         raise UnsupportedInIR(f"identifier reference {e.name!r}")
 
     def _lower_binop(self, e: A.BinOp) -> Value:
+        # ``and`` / ``or`` need short-circuit semantics: Capa source
+        # like ``pos < len(tokens) and tokens[pos] == 'WITH'`` relies
+        # on the right side being skipped when the left short-circuits.
+        # Naïve ANF would lower both sides into locals before the
+        # BinOp, which evaluates the right side eagerly and crashes
+        # on out-of-bounds access. We rewrite to a sequence using the
+        # existing ``If`` instruction so the right side lives inside
+        # a conditional branch:
+        #   a and b  ->  dst = a; if dst:        dst = b
+        #   a or  b  ->  dst = a; if not dst:    dst = b
+        if e.op in ("and", "or"):
+            return self._lower_short_circuit(e)
         left = self._lower_expr(e.left)
         right = self._lower_expr(e.right)
         # Result type: trust the type map if present; otherwise default
@@ -726,6 +810,55 @@ class Lowerer:
         self._locals[dst] = str(result_ty)
         self._instrs.append(BinOp(dst=dst, op=e.op, left=left, right=right))
         return Value(kind="local", name=dst, ty=str(result_ty))
+
+    def _lower_short_circuit(self, e: A.BinOp) -> Value:
+        """Lower ``and`` / ``or`` so the right side only evaluates
+        when the left's value forces it. Uses the existing ``If``
+        instruction; the dst is the result.  The right side's
+        sub-expressions land in the If's then_body, preserving
+        Python's short-circuit behaviour for IR-emitted code."""
+        left = self._lower_expr(e.left)
+        result_ty = "Bool"
+        if self.types:
+            t = self.types.get(id(e))
+            if t is not None:
+                result_ty = _ty_to_str(t)
+        dst = fresh_local(self._counter)
+        self._locals[dst] = result_ty
+        # dst = a
+        self._instrs.append(AssignConst(dst=dst, src=left))
+        # Lower the right side into a side buffer so we can splice it
+        # into the If's body.
+        outer = self._instrs
+        self._instrs = []
+        right = self._lower_expr(e.right)
+        self._instrs.append(
+            Reassign(dst=dst, src=right)
+        )
+        right_body = self._instrs
+        self._instrs = outer
+        if e.op == "and":
+            cond = Value(kind="local", name=dst, ty=result_ty)
+            self._instrs.append(If(
+                cond=cond, then_body=right_body, else_body=[],
+            ))
+        else:
+            # ``or``: short-circuit on truthy left; evaluate right when
+            # left is falsy. We wrap the cond in a UnaryOp(not, dst)
+            # by binding it to a temp first; the emitter doesn't
+            # support a bare ``not`` in an If's cond, so we feed it
+            # the negated value.
+            ncond_dst = fresh_local(self._counter)
+            self._locals[ncond_dst] = "Bool"
+            self._instrs.append(UnaryOp(
+                dst=ncond_dst, op="not",
+                operand=Value(kind="local", name=dst, ty=result_ty),
+            ))
+            cond = Value(kind="local", name=ncond_dst, ty="Bool")
+            self._instrs.append(If(
+                cond=cond, then_body=right_body, else_body=[],
+            ))
+        return Value(kind="local", name=dst, ty=result_ty)
 
     def _lower_unary(self, e: A.UnaryOp) -> Value:
         operand = self._lower_expr(e.operand)
@@ -892,6 +1025,22 @@ def _type_name(te: object) -> str:
     if hasattr(te, "name"):
         return getattr(te, "name")
     return _ty_to_str(te)
+
+
+def _split_top_level_comma(s: str) -> tuple[str, str]:
+    """Split ``"T, Map<K, V>"`` into ``("T", "Map<K, V>")`` by
+    counting angle brackets. Returns the whole string and an empty
+    string if there is no comma at depth zero, which matches
+    Result with a single generic arg (unusual but possible)."""
+    depth = 0
+    for i, ch in enumerate(s):
+        if ch == "<":
+            depth += 1
+        elif ch == ">":
+            depth -= 1
+        elif ch == "," and depth == 0:
+            return s[:i].strip(), s[i + 1:].strip()
+    return s.strip(), ""
 
 
 def _ty_to_str(t: object) -> str:

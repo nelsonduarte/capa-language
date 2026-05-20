@@ -266,9 +266,13 @@ class PythonEmitter:
             self._write(self._with_optional_dst(instr.dst, rhs))
             return
         if isinstance(instr, MethodCall):
-            args = ", ".join(self._format_value(a) for a in instr.args)
+            args = [self._format_value(a) for a in instr.args]
             recv = self._format_value(instr.receiver)
-            rhs = f"{recv}.{instr.method}({args})"
+            rhs = self._rewrite_builtin_method(
+                instr.receiver.ty or "", instr.method, recv, args,
+            )
+            if rhs is None:
+                rhs = f"{recv}.{instr.method}({', '.join(args)})"
             self._write(self._with_optional_dst(instr.dst, rhs))
             return
         if isinstance(instr, If):
@@ -494,6 +498,96 @@ class PythonEmitter:
         if op == "not":
             return f"(not {x})"
         raise NotImplementedError(f"IR Python emitter: unary {op!r}")
+
+    def _rewrite_builtin_method(
+        self, recv_ty: str, method: str, recv: str, args: list[str],
+    ) -> str | None:
+        """Rewrite a method call on a built-in receiver type to its
+        Python idiom. Returns ``None`` if no rewrite applies (the
+        caller falls back to a plain ``recv.method(args)`` emission).
+
+        Mirrors the legacy transpiler's ``_emit_string_method`` /
+        ``_emit_list_method`` / ``_emit_map_method`` / ``_emit_set_method``
+        tables. We dispatch on the receiver type's source-level head
+        (``String``, ``List``, ``Map``, ``Set``, ``Range``) which the
+        IR stores as a string; type-argument suffixes (``List<Int>``)
+        are normalised by chopping at the first ``<``.
+        """
+        head = recv_ty.split("<", 1)[0]
+        if head == "String":
+            return self._string_method(method, recv, args)
+        if head == "List":
+            return self._list_method(method, recv, args)
+        if head == "Map":
+            return self._map_method(method, recv, args)
+        if head == "Set":
+            return self._set_method(method, recv, args)
+        return None
+
+    def _string_method(self, m: str, r: str, a: list[str]) -> str | None:
+        if m == "length":      return f"len({r})"
+        if m == "contains":    return f"({a[0]} in {r})"
+        if m == "starts_with": return f"{r}.startswith({a[0]})"
+        if m == "ends_with":   return f"{r}.endswith({a[0]})"
+        if m == "to_upper":    return f"{r}.upper()"
+        if m == "to_lower":    return f"{r}.lower()"
+        if m == "trim":        return f"{r}.strip()"
+        if m == "trim_start":  return f"{r}.lstrip()"
+        if m == "trim_end":    return f"{r}.rstrip()"
+        if m == "is_empty":    return f"({r} == '')"
+        if m == "split":       return f"CapaList({r}.split({a[0]}))"
+        if m == "replace":     return f"{r}.replace({a[0]}, {a[1]})"
+        if m == "substring":   return f"{r}[{a[0]}:{a[1]}]"
+        if m == "char_at":
+            # Option<String>: Some(s[i]) when 0 <= i < len(s).
+            return (
+                f"(Some({r}[{a[0]}]) "
+                f"if 0 <= {a[0]} < len({r}) else None_)"
+            )
+        if m == "index_of":
+            return (
+                f"(lambda _i: Some(_i) if _i >= 0 else None_)"
+                f"({r}.find({a[0]}))"
+            )
+        return None
+
+    def _list_method(self, m: str, r: str, a: list[str]) -> str | None:
+        # The IR wraps list literals in CapaList(...) (a list subclass
+        # whose methods cover most of the API); the rewrites here are
+        # the ones the legacy bypasses for efficiency.
+        if m == "length":   return f"len({r})"
+        if m == "push":     return f"{r}.append({a[0]})"
+        if m == "contains": return f"({a[0]} in {r})"
+        if m == "is_empty": return f"(len({r}) == 0)"
+        if m == "get":
+            return (
+                f"(lambda _xs, _i: "
+                f"Some(_xs[_i]) if 0 <= _i < len(_xs) else None_)"
+                f"({r}, {a[0]})"
+            )
+        return None
+
+    def _map_method(self, m: str, r: str, a: list[str]) -> str | None:
+        if m == "length":       return f"len({r})"
+        if m == "contains_key": return f"({a[0]} in {r})"
+        if m == "get":
+            return f"(Some({r}[{a[0]}]) if {a[0]} in {r} else None_)"
+        if m == "set":
+            return f"{r}.__setitem__({a[0]}, {a[1]})"
+        if m == "keys":   return f"CapaList({r}.keys())"
+        if m == "values": return f"CapaList({r}.values())"
+        if m == "pairs":  return f"CapaList({r}.items())"
+        if m == "is_empty": return f"(len({r}) == 0)"
+        return None
+
+    def _set_method(self, m: str, r: str, a: list[str]) -> str | None:
+        if m == "length":   return f"len({r})"
+        if m == "contains": return f"({a[0]} in {r})"
+        if m == "add":      return f"{r}.add({a[0]})"
+        if m == "remove":   return f"{r}.discard({a[0]})"
+        if m == "is_empty": return f"(len({r}) == 0)"
+        if m == "to_list":  return f"CapaList({r})"
+        return None
 
     def _format_pattern(self, p: Pattern) -> str:
         # Python 3.10+ structural-match syntax. The IR's PatVariant
