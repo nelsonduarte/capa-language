@@ -1,0 +1,115 @@
+// provenance_demo.capa
+//
+// User-defined capability `Provenance`: the right to query and
+// verify supply-chain metadata about a named artifact (SBOM
+// signatures, SLSA attestations). Demonstrates how a project-
+// specific capability narrows authority down from the broad
+// built-ins (Fs, Net) to a domain-shaped interface that the
+// manifest exposes verbatim.
+//
+// The audit function takes a `Provenance` parameter. It cannot
+// open arbitrary files, reach arbitrary hosts, or read the
+// environment; it can only call the two methods the capability
+// advertises. The implementor encapsulates the underlying
+// authority (here a `Fs` restricted to the metadata directory),
+// so attenuation happens at the constructor boundary and never
+// leaks into the audit code.
+//
+// Two implementors ship in this file: `FsProvenance` reads
+// signature and attestation files from a local directory;
+// `MockProvenance` carries an in-memory trusted set for tests.
+// Both satisfy the same interface, so the audit code is
+// implementation-blind. The manifest of `audit` shows
+// `Provenance`, not `Fs` or `Net`.
+//
+// Run:
+//   capa --run examples/provenance_demo.capa
+
+capability Provenance
+    fun signature_valid(self, artifact: String) -> Result<Bool, IoError>
+    fun attestation_for(self, artifact: String) -> Result<String, IoError>
+
+// ----- Impl 1: reads signatures and attestations from a local
+// directory. Constructor attenuates the supplied `Fs` down to the
+// metadata root, so even the implementor cannot reach outside it.
+
+type FsProvenance {
+    root: String,
+    fs: Fs
+}
+
+fun make_fs_provenance(fs: Fs, root: String) -> FsProvenance
+    return FsProvenance {
+        root: root,
+        fs: fs.restrict_to(root)
+    }
+
+impl Provenance for FsProvenance
+    fun signature_valid(self, artifact: String) -> Result<Bool, IoError>
+        let path = "${self.root}/${artifact}.sig"
+        match self.fs.read(path)
+            Ok(content) -> return Ok(content.trim() == "VALID")
+            Err(_) -> return Ok(false)
+
+    fun attestation_for(self, artifact: String) -> Result<String, IoError>
+        let path = "${self.root}/${artifact}.attestation"
+        return self.fs.read(path)
+
+// ----- Impl 2: in-memory mock. Useful for unit tests that exercise
+// the audit logic without any I/O. The trusted_set is the set of
+// artifacts the mock considers valid. Construction goes through
+// `make_mock_provenance` so the discipline accepts binding the
+// result to a `let` (capability-bearing structs can only flow
+// out of a function call or attenuation method, never a raw
+// struct literal at a binding site).
+
+type MockProvenance {
+    trusted_set: List<String>
+}
+
+fun make_mock_provenance(trusted: List<String>) -> MockProvenance
+    return MockProvenance { trusted_set: trusted }
+
+impl Provenance for MockProvenance
+    fun signature_valid(self, artifact: String) -> Result<Bool, IoError>
+        return Ok(self.trusted_set.contains(artifact))
+
+    fun attestation_for(self, artifact: String) -> Result<String, IoError>
+        if not self.trusted_set.contains(artifact)
+            return Err(IoError("no attestation: ${artifact}"))
+        return Ok("{\"artifact\":\"${artifact}\",\"builder\":\"mock\"}")
+
+// ----- Audit: the consumer of the capability. Signature lists
+// `Provenance`, not the underlying `Fs` / `Net`. The function body
+// can call the two declared methods and nothing else.
+
+type AuditResult =
+    Trusted(String)
+    Untrusted(String, String)
+
+fun audit(prov: Provenance, artifact: String) -> AuditResult
+    return match prov.signature_valid(artifact)
+        Err(_) -> Untrusted(artifact, "verification error")
+        Ok(false) -> Untrusted(artifact, "signature invalid")
+        Ok(true) -> match prov.attestation_for(artifact)
+            Err(_) -> Untrusted(artifact, "no attestation")
+            Ok(_) -> Trusted(artifact)
+
+fun report(stdio: Stdio, result: AuditResult)
+    match result
+        Trusted(name) -> stdio.println("  ${name}: TRUSTED")
+        Untrusted(name, reason) -> stdio.println("  ${name}: UNTRUSTED (${reason})")
+
+fun main(stdio: Stdio, fs: Fs)
+    let artifacts = ["app-1.2.0", "lib-3.0.1", "lib-bad", "lib-mystery"]
+
+    stdio.println("== FsProvenance (reads examples/data/provenance/) ==")
+    let prov_fs = make_fs_provenance(fs, "examples/data/provenance")
+    for art in artifacts
+        report(stdio, audit(prov_fs, art))
+
+    stdio.println("")
+    stdio.println("== MockProvenance (in-memory, two trusted) ==")
+    let prov_mock = make_mock_provenance(["app-1.2.0", "lib-3.0.1"])
+    for art in artifacts
+        report(stdio, audit(prov_mock, art))

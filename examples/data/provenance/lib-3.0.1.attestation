@@ -1,0 +1,1 @@
+{"_type":"https://in-toto.io/Statement/v1","predicateType":"https://slsa.dev/provenance/v1.0","subject":[{"name":"lib-3.0.1","digest":{"sha256":"f6e5d4c3b2a1"}}],"predicate":{"buildDefinition":{"buildType":"https://github.com/actions/runner","externalParameters":{"workflow":"publish.yml"}},"runDetails":{"builder":{"id":"https://github.com/actions/runner"}}}}

@@ -899,9 +899,20 @@ language, not language work.
   and the cross-format comparison writeup that ties SPDX and
   CycloneDX into a single "representation + validation"
   narrative.
-- [ ] **`capability Provenance` (user-defined)**, capability that
+- [x] **`capability Provenance` (user-defined)**, capability that
   represents the right to query/verify a piece of supply-chain
   metadata. Demonstrates user-defined caps in a real domain.
+  Landed 2026-05-20 at `examples/provenance_demo.capa` with
+  two implementors (`FsProvenance` reading signatures and
+  attestations from a local directory via attenuated `Fs`;
+  `MockProvenance` carrying an in-memory trusted set for
+  tests) and a single `audit(prov: Provenance, ...)` consumer
+  that is implementation-blind. Sample signatures and SLSA
+  attestation JSON in `examples/data/provenance/`. Manifest of
+  `audit` shows `Provenance` only -- the underlying `Fs` /
+  `Net` of each implementor stays encapsulated, which is the
+  load-bearing claim for user-defined caps in a supply-chain
+  domain.
 - [~] **Example linking SBOM ↔ capabilities**: the headline
   "auditable supply chain" pitch made concrete. **Demo landed**
   at `examples/sbom_capability_audit.capa`: a Capa program reads
