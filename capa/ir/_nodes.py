@@ -340,6 +340,22 @@ class TryUnwrap(Instr):
 
 
 @dataclass
+class MakeLambda(Instr):
+    """``dst = fun(params) -> ret => body``. The lambda is emitted as
+    a nested ``def`` whose name is ``dst``; Python closures handle
+    capture-by-reference, so no explicit capture list is needed at
+    this level. The body's last instruction for an expression-body
+    lambda is a synthetic ``Return``; for a block-body lambda it is
+    whatever the source's block produces. Wasm CM and LLVM backends
+    will need to hoist this to a top-level function with an explicit
+    capture record; Phase 2E leaves that lift to the backend."""
+    dst: str
+    params: list[Param]
+    return_type: str
+    body: list[Instr]
+
+
+@dataclass
 class Return(Instr):
     """``return value``; ``value`` is None for a bare ``return``."""
     value: Optional[Value]

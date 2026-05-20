@@ -26,7 +26,7 @@ from ._nodes import (
     AssignConst, Reassign, BinOp, UnaryOp, Call, MethodCall,
     If, While, Break, Continue, Return,
     MakeStruct, MakeList, MakeTuple, FieldAccess, Index, FormatStr, For,
-    TryUnwrap,
+    TryUnwrap, MakeLambda,
     Pattern, PatWildcard, PatIdent, PatLiteral, PatVariant, Match,
 )
 
@@ -214,6 +214,25 @@ class PythonEmitter:
             self._write(f"return {instr.dst}")
             self._indent -= 1
             self._write(f"{instr.dst} = {instr.dst}.value")
+            return
+        if isinstance(instr, MakeLambda):
+            # Emit a nested ``def`` whose name is the lambda's dst.
+            # Python's closures capture surrounding locals by reference,
+            # so no explicit capture wiring is needed here. Note we do
+            # not use a Python ``lambda`` expression even for
+            # expression-body source lambdas: the ANF lowering has
+            # already split the body into statement-level instructions,
+            # which a Python lambda (single expression only) cannot
+            # host.
+            params = ", ".join(p.name for p in instr.params)
+            self._write(f"def {instr.dst}({params}):")
+            self._indent += 1
+            if not instr.body:
+                self._write("pass")
+            else:
+                for sub in instr.body:
+                    self._emit_instr(sub)
+            self._indent -= 1
             return
         if isinstance(instr, Match):
             self._write(f"match {self._format_value(instr.scrutinee)}:")

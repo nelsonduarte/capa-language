@@ -477,6 +477,71 @@ class TestMatch(unittest.TestCase):
             lower(module, types=types)
 
 
+class TestLambda(unittest.TestCase):
+    """Phase 2E: lambdas. Both expression-body and block-body forms
+    lower to a ``MakeLambda`` instruction; the Python emitter renders
+    each as a nested ``def`` (a Python ``lambda`` expression cannot
+    host the statement-level instructions ANF lowering produces, so
+    we use the same ``def`` form for both source shapes)."""
+
+    def test_expression_body_lambda_lowers_and_runs(self):
+        src = (
+            "fun build() -> Fun(Int) -> Int\n"
+            "    return fun (x: Int) -> Int => x + 1\n"
+        )
+        module, types = _parse_and_check(src)
+        ir_mod = lower(module, types=types)
+        fn = ir_mod.functions[0]
+        kinds = [type(i).__name__ for i in fn.body]
+        self.assertIn("MakeLambda", kinds)
+        py = compile(module, types=types)
+        ns: dict = {}
+        exec(py, ns)
+        inc = ns["build"]()
+        self.assertEqual(inc(41), 42)
+
+    def test_higher_order_call_with_inline_lambda(self):
+        src = (
+            "fun apply(f: Fun(Int) -> Int, x: Int) -> Int\n"
+            "    return f(x)\n"
+            "fun main() -> Int\n"
+            "    return apply(fun (x: Int) -> Int => x * x, 7)\n"
+        )
+        module, types = _parse_and_check(src)
+        py = compile(module, types=types)
+        ns: dict = {}
+        exec(py, ns)
+        self.assertEqual(ns["main"](), 49)
+
+    def test_block_body_lambda_runs(self):
+        src = (
+            "fun build() -> Fun(Int) -> Int\n"
+            "    return fun (x: Int) -> Int =>\n"
+            "        let y = x + 1\n"
+            "        return y * 2\n"
+        )
+        module, types = _parse_and_check(src)
+        py = compile(module, types=types)
+        ns: dict = {}
+        exec(py, ns)
+        f = ns["build"]()
+        self.assertEqual(f(3), 8)
+
+    def test_lambda_captures_outer_local(self):
+        # Python closures capture by reference; the IR relies on that
+        # rather than emitting an explicit capture record.
+        src = (
+            "fun make_adder(n: Int) -> Fun(Int) -> Int\n"
+            "    return fun (x: Int) -> Int => x + n\n"
+        )
+        module, types = _parse_and_check(src)
+        py = compile(module, types=types)
+        ns: dict = {}
+        exec(py, ns)
+        add3 = ns["make_adder"](3)
+        self.assertEqual(add3(4), 7)
+
+
 class TestPythonEmission(unittest.TestCase):
     def test_emits_parseable_python_for_arithmetic(self):
         src = (
@@ -525,14 +590,6 @@ class TestUnsupportedSurfaces(unittest.TestCase):
             "    return match n\n"
             "        0 -> 100\n"
             "        _ -> 200\n"
-        )
-        with self.assertRaises(UnsupportedInIR):
-            self._try_lower(src)
-
-    def test_lambda_expression_is_unsupported(self):
-        src = (
-            "fun build() -> Fun(Int) -> Int\n"
-            "    return fun (x: Int) -> Int => x + 1\n"
         )
         with self.assertRaises(UnsupportedInIR):
             self._try_lower(src)

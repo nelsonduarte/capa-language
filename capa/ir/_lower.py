@@ -22,7 +22,7 @@ from ._nodes import (
     AssignConst, Reassign, BinOp, UnaryOp, Call, MethodCall,
     If, While, Break, Continue, Return,
     MakeStruct, MakeList, MakeTuple, FieldAccess, Index, FormatStr, For,
-    TryUnwrap,
+    TryUnwrap, MakeLambda,
     Pattern, PatWildcard, PatIdent, PatLiteral, PatVariant,
     MatchArm, Match,
     fresh_local,
@@ -414,7 +414,72 @@ class Lowerer:
             return self._lower_interpolated_string(e)
         if isinstance(e, A.Try):
             return self._lower_try(e)
+        if isinstance(e, A.LambdaExpr):
+            return self._lower_lambda(e)
         raise UnsupportedInIR(f"expression {type(e).__name__}")
+
+    def _lower_lambda(self, e: A.LambdaExpr) -> Value:
+        """Lower a lambda. The resulting Value is a local whose name
+        is the lambda's synthetic identifier; the emitter renders it
+        as a nested ``def`` with that name. Outer-scope state
+        (instruction buffer, locals, params, cap-params) is snapshotted
+        and restored across the lambda body's lowering."""
+        from .. import capa_ast as A_local
+        name = fresh_local(self._counter, prefix="lambda")
+        # Save outer state; the lambda body lowers into a fresh
+        # instruction buffer and a parameter-set augmented with its
+        # own params. Locals and the counter remain shared (the
+        # counter keeps fresh-name allocation unique across the
+        # whole function; locals carry type info only, which the
+        # Python emitter ignores).
+        outer_instrs = self._instrs
+        outer_params = self._params
+        outer_caps = self._cap_params
+        self._instrs = []
+        self._params = set(outer_params)
+        self._cap_params = dict(outer_caps)
+        lambda_params: list[Param] = []
+        for p in e.params:
+            ty_name = _type_name(p.type_expr) if p.type_expr else "Unknown"
+            is_cap = ty_name in _BUILTIN_CAPS
+            lambda_params.append(
+                Param(name=p.name, ty=ty_name, is_capability=is_cap)
+            )
+            self._params.add(p.name)
+            if is_cap:
+                self._cap_params[p.name] = ty_name
+        # Body: an expression body produces a value the lambda must
+        # ``return``; a block body lowers as a sequence of statements
+        # with explicit ``return`` (the analyzer guarantees a Unit
+        # return for fall-off cases, which our emitter matches via the
+        # natural fall-through).
+        if isinstance(e.body, A_local.Block):
+            self._lower_block(e.body)
+        else:
+            v = self._lower_expr(e.body)
+            self._instrs.append(Return(value=v))
+        body = self._instrs
+        # Restore outer state and emit the MakeLambda instruction.
+        self._instrs = outer_instrs
+        self._params = outer_params
+        self._cap_params = outer_caps
+        ret_ty = _type_name(e.return_type) if e.return_type else "Unknown"
+        # The lambda's runtime type, for IR-internal use only; the
+        # Python emitter ignores it. We pick the source-level
+        # ``Fun(P1, P2) -> Ret`` rendering so the type map and the
+        # IR-side string stay consistent.
+        param_tys = ", ".join(p.ty for p in lambda_params)
+        fun_ty = f"Fun({param_tys}) -> {ret_ty}"
+        self._locals[name] = fun_ty
+        self._instrs.append(
+            MakeLambda(
+                dst=name,
+                params=lambda_params,
+                return_type=ret_ty,
+                body=body,
+            )
+        )
+        return Value(kind="local", name=name, ty=fun_ty)
 
     def _lower_try(self, e: A.Try) -> Value:
         # Three-address IR uses a single TryUnwrap instruction for
