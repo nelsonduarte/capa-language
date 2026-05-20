@@ -249,6 +249,36 @@ class _PatternsMixin:
                     self._duplicate_binding_message(p.name, prev),
                     p.pos,
                 )
+            else:
+                # Block-scope shadowing of a function-local
+                # (parameter, prior ``let``, prior ``var``, or a
+                # bound pattern in an enclosing block within the
+                # same function or lambda) cannot be preserved by
+                # the Python transpilation: Python has function
+                # scope, not block scope, so the inner assignment
+                # overwrites the outer binding for the rest of the
+                # function. Reject the shadow here with a precise
+                # message rather than silently emit code whose
+                # runtime value disagrees with the source.
+                #
+                # Module-level shadowing (CONSTANT, FUNCTION, etc.)
+                # is fine because Python's function scope makes the
+                # function-local rebind the module name within the
+                # body without affecting the module-level binding.
+                prev_outer = self.scope.lookup(p.name)
+                if prev_outer is not None and prev_outer.kind in (
+                    SymbolKind.PARAM,
+                    SymbolKind.LOCAL,
+                    SymbolKind.LOCAL_VAR,
+                ):
+                    self._err(
+                        f"binding {p.name!r} would shadow an outer-scope "
+                        f"local of the same function (previous binding at "
+                        f"line {prev_outer.pos.line}, col {prev_outer.pos.col}); "
+                        f"the Python transpilation cannot preserve "
+                        f"block-scope shadowing -- rename one of the bindings",
+                        p.pos,
+                    )
             self.scope.define(
                 Symbol(name=p.name, kind=kind, pos=p.pos, ty=ty)
             )

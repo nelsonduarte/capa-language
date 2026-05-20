@@ -138,6 +138,83 @@ class TestNameResolution(unittest.TestCase):
         )
         self.assertTrue(r.ok, r.errors)
 
+    def test_block_shadow_of_outer_let_rejected(self):
+        # Block-scope shadowing of a function-local cannot be
+        # preserved by Python's function-scope semantics: the
+        # inner ``let`` would assign to the same Python name as
+        # the outer ``let`` and overwrite it for the rest of the
+        # function. The analyzer rejects this with a precise
+        # message rather than silently emit code whose runtime
+        # value disagrees with the source.
+        msgs = errors_of(
+            "fun main(stdio: Stdio)\n"
+            "    let x = 1\n"
+            "    if true\n"
+            "        let x = 2\n"
+            "        stdio.println(\"${x}\")\n"
+            "    stdio.println(\"${x}\")\n"
+        )
+        self.assertTrue(
+            any("would shadow an outer-scope local" in m for m in msgs),
+            msgs,
+        )
+
+    def test_block_shadow_of_outer_var_rejected(self):
+        msgs = errors_of(
+            "fun main(stdio: Stdio)\n"
+            "    var x = 1\n"
+            "    if true\n"
+            "        let x = 2\n"
+            "    stdio.println(\"${x}\")\n"
+        )
+        self.assertTrue(
+            any("would shadow an outer-scope local" in m for m in msgs),
+            msgs,
+        )
+
+    def test_block_shadow_of_param_rejected(self):
+        msgs = errors_of(
+            "fun process(x: Int) -> Int\n"
+            "    if x > 0\n"
+            "        let x = x + 1\n"
+            "        return x\n"
+            "    return x\n"
+        )
+        self.assertTrue(
+            any("would shadow an outer-scope local" in m for m in msgs),
+            msgs,
+        )
+
+    def test_for_loop_binding_shadows_outer_rejected(self):
+        # Same rule applies to ``for`` pattern bindings.
+        msgs = errors_of(
+            "fun main(stdio: Stdio)\n"
+            "    let i = 99\n"
+            "    for i in 0..3\n"
+            "        stdio.println(\"${i}\")\n"
+        )
+        self.assertTrue(
+            any("would shadow an outer-scope local" in m for m in msgs),
+            msgs,
+        )
+
+    def test_sequential_blocks_same_name_ok(self):
+        # Two non-overlapping blocks each declaring ``let x``: the
+        # first ``x`` is out of scope before the second is
+        # introduced, so there is no real shadow. The analyzer
+        # pops each block's scope on exit; the lookup walk does
+        # not find a stale outer ``x``.
+        r = check(
+            "fun main(stdio: Stdio, b: Bool)\n"
+            "    if b\n"
+            "        let x = 1\n"
+            "        stdio.println(\"${x}\")\n"
+            "    if b\n"
+            "        let x = 2\n"
+            "        stdio.println(\"${x}\")\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
     def test_capability_in_scope(self):
         r = check(
             "fun f(stdio: Stdio)\n"
