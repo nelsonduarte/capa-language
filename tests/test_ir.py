@@ -27,6 +27,7 @@ import unittest
 from capa import Lexer, Parser, analyze
 from capa.ir import (
     Lowerer, UnsupportedInIR, PythonEmitter, lower, emit_python, compile,
+    compile_program,
 )
 from capa.ir import _nodes as N
 
@@ -243,7 +244,12 @@ class TestDataAndIteration(unittest.TestCase):
         module, types = _parse_and_check(src)
         ir_mod = lower(module, types=types)
         py = compile(module, types=types)
-        ns: dict = {}
+        # List literals lower to ``CapaList([...])`` so methods like
+        # ``length()`` / ``map()`` resolve; supply the wrapper in the
+        # exec namespace because the minimal ``compile()`` emitter
+        # does not introduce runtime imports.
+        from capa.runtime import CapaList
+        ns: dict = {"CapaList": CapaList}
         exec(py, ns)
         self.assertEqual(ns["pick"](0), 10)
         self.assertEqual(ns["pick"](2), 30)
@@ -284,6 +290,9 @@ class TestDataAndIteration(unittest.TestCase):
         py = compile(module, types=types)
         ns: dict = {}
         exec(py, ns)
+        # The function takes a list parameter; the caller passes a
+        # plain Python list (CapaList inherits from list so either
+        # shape iterates identically).
         self.assertEqual(ns["sum_all"]([1, 2, 3, 4]), 10)
         self.assertEqual(ns["sum_all"]([]), 0)
 
@@ -761,6 +770,175 @@ class TestLambda(unittest.TestCase):
         exec(py, ns)
         add3 = ns["make_adder"](3)
         self.assertEqual(add3(4), 7)
+
+
+class TestLegacyIREquivalence(unittest.TestCase):
+    """Phase 4C: for a curated corpus of examples, the IR pipeline
+    (compile_program) and the legacy direct transpiler must produce
+    Python whose execution yields identical observable output. This
+    is the load-bearing test that justifies the IR's existence: if
+    these two paths ever diverge, the IR has a bug.
+
+    Examples are picked for purity (no network, no env reads beyond
+    what's necessary, no LLM calls) and IR support (they don't hit
+    the still-unsupported constructs: MatchExpr, TuplePat, CharLit,
+    compound assignment, identifier reference to payload-less
+    variants used as values)."""
+
+    # Curated subset: examples whose IR-emitted Python produces the
+    # same observable output as the legacy transpiler's. The subset
+    # excludes programs that use String / Set / Map methods whose
+    # legacy dispatch (e.g. ``s.contains(x)`` -> ``(x in s)``,
+    # ``set.length()`` -> ``len(set)``) has no IR counterpart yet;
+    # the IR currently emits those calls verbatim, which fails on
+    # Python primitives. Closing that gap is a separate Phase 4D
+    # work item; for Phase 4C the goal is to pin equivalence on the
+    # subset where the two paths already agree.
+    _CORPUS = [
+        "hello.capa",
+        "closures.capa",
+        "generics.capa",
+        "stdlib_list.capa",
+        "fs_env_attenuation.capa",
+        "user_capabilities.capa",
+        "manifest_demo.capa",
+        "demo_event_stream.capa",
+        "net_attenuation.capa",
+        "documented_demo.capa",
+        "clock_attenuation.capa",
+    ]
+
+    def _compile_legacy(self, source: str, filename: str) -> str:
+        from capa import transpile
+        tokens = Lexer(source, filename=filename).lex()
+        from capa import Parser as P
+        module = P(tokens, source=source, filename=filename).parse_module()
+        result = analyze(module, source=source, filename=filename)
+        self.assertTrue(result.ok, msg=f"analyzer errors: {result.errors}")
+        return transpile(
+            module, filename=filename,
+            types=result.types, bindings=result.bindings,
+        )
+
+    def _compile_ir(self, source: str, filename: str) -> str:
+        tokens = Lexer(source, filename=filename).lex()
+        from capa import Parser as P
+        module = P(tokens, source=source, filename=filename).parse_module()
+        result = analyze(module, source=source, filename=filename)
+        self.assertTrue(result.ok, msg=f"analyzer errors: {result.errors}")
+        return compile_program(module, filename=filename, types=result.types)
+
+    def _exec_capture(self, code: str) -> str:
+        import io, sys, contextlib
+        run_globals: dict = {"__name__": "__main__", "__file__": "<eq>"}
+        out = io.StringIO()
+        saved_argv = sys.argv
+        sys.argv = ["<eq>"]
+        try:
+            with contextlib.redirect_stdout(out):
+                exec(__builtins__["compile"](code, "<eq>", "exec"), run_globals)
+        except SystemExit as e:
+            if isinstance(e.code, int) and e.code != 0:
+                raise AssertionError(f"program exited with code {e.code}")
+        finally:
+            sys.argv = saved_argv
+        return out.getvalue()
+
+    def test_examples_match_legacy_output(self):
+        import os
+        repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        examples_dir = os.path.join(repo_root, "examples")
+        diverged: list[tuple[str, str, str]] = []
+        for name in self._CORPUS:
+            path = os.path.join(examples_dir, name)
+            with open(path, encoding="utf-8") as f:
+                source = f.read()
+            legacy_code = self._compile_legacy(source, path)
+            ir_code = self._compile_ir(source, path)
+            legacy_out = self._exec_capture(legacy_code)
+            ir_out = self._exec_capture(ir_code)
+            if legacy_out != ir_out:
+                diverged.append((name, legacy_out, ir_out))
+        if diverged:
+            details = "\n\n".join(
+                f"--- {name} ---\nlegacy:\n{lo}\nir:\n{io_}"
+                for name, lo, io_ in diverged
+            )
+            self.fail(
+                f"{len(diverged)} example(s) diverged between legacy and IR:\n"
+                f"{details}"
+            )
+
+
+class TestCompleteProgramEmission(unittest.TestCase):
+    """Phase 4A: end-to-end ``compile_program`` runs through prelude
+    (runtime imports) + IR body + ``main`` bootstrap. The result must
+    exec in a fresh namespace and the bootstrap must call ``main`` with
+    each capability instantiated."""
+
+    def _exec_program(self, source: str, argv=None) -> tuple[int, str, str]:
+        """Compile a Capa source through the IR program pipeline and
+        exec it in a fresh process-like namespace. Returns
+        ``(exit_code, stdout, stderr)`` so tests can assert the
+        program's observable behaviour."""
+        import io, sys, contextlib
+        tokens = Lexer(source).lex()
+        from capa import Parser as P
+        module = P(tokens, source=source).parse_module()
+        result = analyze(module, source=source)
+        self.assertTrue(result.ok, msg=f"analyzer errors: {result.errors}")
+        code = compile_program(module, filename="<test>", types=result.types)
+        run_globals: dict = {"__name__": "__main__", "__file__": "<test>"}
+        out, err = io.StringIO(), io.StringIO()
+        saved_argv = sys.argv
+        sys.argv = ["<test>", *(argv or [])]
+        rc = 0
+        try:
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                exec(__builtins__["compile"](code, "<test>", "exec"), run_globals)
+        except SystemExit as e:
+            rc = e.code if isinstance(e.code, int) else 1
+        finally:
+            sys.argv = saved_argv
+        return rc, out.getvalue(), err.getvalue()
+
+    def test_hello_world_runs(self):
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"hi\")\n"
+        )
+        rc, out, _ = self._exec_program(src)
+        self.assertEqual(rc, 0)
+        self.assertEqual(out.strip(), "hi")
+
+    def test_compile_program_includes_prelude_and_bootstrap(self):
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"x\")\n"
+        )
+        tokens = Lexer(src).lex()
+        from capa import Parser as P
+        module = P(tokens, source=src).parse_module()
+        result = analyze(module, source=src)
+        code = compile_program(module, types=result.types)
+        # Runtime import line and main bootstrap should both appear.
+        self.assertIn("from capa.runtime import", code)
+        self.assertIn('if __name__ == "__main__":', code)
+        self.assertIn("main(Stdio())", code)
+
+    def test_program_with_struct_runs(self):
+        src = (
+            "type Point {\n"
+            "    x: Int,\n"
+            "    y: Int\n"
+            "}\n"
+            "fun main(stdio: Stdio)\n"
+            "    let p = Point { x: 3, y: 4 }\n"
+            "    stdio.println(\"${p.x},${p.y}\")\n"
+        )
+        rc, out, _ = self._exec_program(src)
+        self.assertEqual(rc, 0)
+        self.assertEqual(out.strip(), "3,4")
 
 
 class TestPythonEmission(unittest.TestCase):

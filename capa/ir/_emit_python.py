@@ -25,7 +25,8 @@ from ._nodes import (
     Module, Function, Value, Instr,
     AssignConst, Reassign, BinOp, UnaryOp, Call, MethodCall,
     If, While, Break, Continue, Return,
-    MakeStruct, MakeList, MakeTuple, FieldAccess, Index, FormatStr, For,
+    MakeStruct, MakeList, MakeTuple, MakeMap, MakeSet,
+    FieldAccess, Index, FormatStr, For,
     TryUnwrap, MakeLambda,
     Pattern, PatWildcard, PatIdent, PatLiteral, PatVariant, Match,
     StructDecl, SumDecl, ImplBlock, TraitDecl, ConstDecl, ImportDecl,
@@ -320,8 +321,22 @@ class PythonEmitter:
             self._write(f"{instr.dst} = {instr.type_name}({args})")
             return
         if isinstance(instr, MakeList):
+            # Capa's ``List<T>`` is backed by ``CapaList`` (a subclass
+            # of ``list``) so that ``.length()`` / ``.map()`` /
+            # ``.filter()`` / etc. resolve to real methods on the
+            # wrapper. Emitting a bare ``[...]`` would give a plain
+            # Python list, on which ``xs.length()`` is an
+            # ``AttributeError``. Matching the legacy transpiler's
+            # ``CapaList([...])`` keeps the IR and legacy paths
+            # behaviourally equivalent.
             elems = ", ".join(self._format_value(v) for v in instr.elements)
-            self._write(f"{instr.dst} = [{elems}]")
+            self._write(f"{instr.dst} = CapaList([{elems}])")
+            return
+        if isinstance(instr, MakeMap):
+            self._write(f"{instr.dst} = {{}}")
+            return
+        if isinstance(instr, MakeSet):
+            self._write(f"{instr.dst} = set()")
             return
         if isinstance(instr, MakeTuple):
             elems = ", ".join(self._format_value(v) for v in instr.elements)

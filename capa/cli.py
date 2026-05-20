@@ -359,6 +359,16 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--ir",
+        action="store_true",
+        help=(
+            "use the CIR pipeline (AST -> CIR -> Python) instead of "
+            "the direct legacy transpiler. Same observable output for "
+            "the subset CIR currently covers; falls back to the legacy "
+            "path when CIR lowering raises UnsupportedInIR."
+        ),
+    )
+    parser.add_argument(
         "--no-color",
         action="store_true",
         help="disable ANSI colors in the output",
@@ -565,11 +575,32 @@ def main() -> int:
         # type-aware dispatch in the transpiler.
         if result is None:
             result = analyze(module, source=source, filename=filename)
-        code = transpile(
-            module, filename=filename,
-            types=result.types if result is not None else None,
-            bindings=result.bindings if result is not None else None,
-        )
+        code = None
+        if args.ir:
+            # Opt-in CIR pipeline. UnsupportedInIR drops back to the
+            # legacy transpiler so an --ir invocation still produces
+            # runnable Python on programs the CIR doesn't yet cover;
+            # the user-visible behaviour is identical, only the path
+            # differs. A one-line stderr breadcrumb makes the fallback
+            # visible to anyone debugging the IR's coverage.
+            from capa.ir import compile_program, UnsupportedInIR
+            try:
+                code = compile_program(
+                    module, filename=filename,
+                    types=result.types if result is not None else None,
+                )
+            except UnsupportedInIR as e:
+                msg = f"capa: --ir: falling back to legacy transpiler ({e})"
+                if use_color:
+                    print(f"{C.YELLOW}{msg}{C.RESET}", file=sys.stderr)
+                else:
+                    print(msg, file=sys.stderr)
+        if code is None:
+            code = transpile(
+                module, filename=filename,
+                types=result.types if result is not None else None,
+                bindings=result.bindings if result is not None else None,
+            )
 
     if args.transpile and not args.run:
         print(code)

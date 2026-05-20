@@ -49,6 +49,7 @@ __all__ = [
     "lower",
     "emit_python",
     "compile",
+    "compile_program",
 ]
 
 
@@ -70,3 +71,57 @@ def emit_python(ir_module: Module) -> str:
 def compile(module: A.Module, types: dict | None = None) -> str:
     """End-to-end AST -> CIR -> Python convenience helper."""
     return emit_python(lower(module, types=types))
+
+
+def compile_program(
+    module: A.Module,
+    filename: str = "<input>",
+    types: dict | None = None,
+) -> str:
+    """End-to-end AST -> CIR -> runnable Python program.
+
+    Unlike :func:`compile`, this prepends the runtime prelude (the
+    same one the legacy transpiler emits) and appends the
+    ``if __name__ == "__main__":`` bootstrap when a ``main`` function
+    is present. The result is directly ``exec``-runnable in a bare
+    namespace and matches the legacy transpiler's emission shape for
+    the subset the IR covers.
+
+    Reuses the legacy ``_PRELUDE`` constant rather than duplicating
+    the runtime-import list so the two paths stay in lockstep on
+    runtime-API changes. The legacy's ``_TRY_HELPER`` (the
+    ``_capa_try`` / ``_CapaTryEarlyReturn`` block) is intentionally
+    omitted: the IR expands ``?`` inline via TryUnwrap, so the
+    exception path is never reached.
+    """
+    from ..transpiler import _PRELUDE
+    ir_mod = lower(module, types=types)
+    body = emit_python(ir_mod)
+    # Identify the main function from the IR so the bootstrap
+    # instantiates its capability params correctly.
+    main_fn = next((f for f in ir_mod.functions if f.name == "main"), None)
+    parts: list[str] = [_PRELUDE.format(filename=filename).rstrip(), ""]
+    parts.append(body.rstrip())
+    if main_fn is not None:
+        parts.append("")
+        parts.append(_emit_main_bootstrap(main_fn))
+    return "\n".join(parts).rstrip() + "\n"
+
+
+def _emit_main_bootstrap(main_fn) -> str:
+    """Emit the ``if __name__ == "__main__":`` block that instantiates
+    each capability param and calls ``main(...)``. Mirrors the legacy
+    transpiler's :meth:`_emit_main_bootstrap` so behaviour is
+    identical for the same input."""
+    args: list[str] = []
+    for p in main_fn.params:
+        # The IR's Param carries the source-level type name as a
+        # string in ``p.ty``; for built-in capability params that is
+        # the class name we need to instantiate (e.g. "Stdio").
+        cap_name = p.ty if p.ty else "Stdio"
+        args.append(f"{cap_name}()")
+    call = f"main({', '.join(args)})" if args else "main()"
+    return (
+        'if __name__ == "__main__":\n'
+        f"    {call}\n"
+    )

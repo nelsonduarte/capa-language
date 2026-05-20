@@ -206,6 +206,21 @@ class MakeList(Instr):
 
 
 @dataclass
+class MakeMap(Instr):
+    """``dst = {}``. Capa's ``new_map()`` builtin is recognised by
+    the lowerer and emitted as a dedicated instruction so the Python
+    emitter can render a literal ``{}`` rather than a function call
+    against a name that does not exist at runtime."""
+    dst: str
+
+
+@dataclass
+class MakeSet(Instr):
+    """``dst = set()``. Capa's ``new_set()`` builtin, dual to MakeMap."""
+    dst: str
+
+
+@dataclass
 class MakeTuple(Instr):
     """``dst = (v1, v2, ...)``. Python tuples. Capa's TupleLit with
     zero elements lowers to a ``lit_unit`` Value instead."""

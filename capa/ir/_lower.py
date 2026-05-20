@@ -21,7 +21,8 @@ from ._nodes import (
     Module, Function, Param, Value, Instr,
     AssignConst, Reassign, BinOp, UnaryOp, Call, MethodCall,
     If, While, Break, Continue, Return,
-    MakeStruct, MakeList, MakeTuple, FieldAccess, Index, FormatStr, For,
+    MakeStruct, MakeList, MakeTuple, MakeMap, MakeSet,
+    FieldAccess, Index, FormatStr, For,
     TryUnwrap, MakeLambda,
     Pattern, PatWildcard, PatIdent, PatLiteral, PatVariant,
     MatchArm, Match,
@@ -673,6 +674,24 @@ class Lowerer:
                 f"call with callee {type(e.callee).__name__}"
             )
         callee_name = e.callee.name
+        # Capa exposes ``new_map()`` / ``new_set()`` as builtins that
+        # construct empty collections. They have no runtime function
+        # of the same name, so we recognise them here and emit
+        # dedicated MakeMap / MakeSet instructions; the Python
+        # emitter renders these as literal ``{}`` / ``set()``.
+        if callee_name in ("new_map", "new_set") and not e.args:
+            dst = fresh_local(self._counter)
+            result_ty = (
+                _ty_to_str(self.types.get(id(e)))
+                if self.types and self.types.get(id(e)) is not None
+                else ("Map" if callee_name == "new_map" else "Set")
+            )
+            self._locals[dst] = result_ty
+            if callee_name == "new_map":
+                self._instrs.append(MakeMap(dst=dst))
+            else:
+                self._instrs.append(MakeSet(dst=dst))
+            return Value(kind="local", name=dst, ty=result_ty)
         args = [self._lower_expr(arg) for arg in e.args]
         result_ty = "Unknown"
         if self.types:
