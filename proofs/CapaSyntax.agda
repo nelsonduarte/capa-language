@@ -342,7 +342,21 @@ data _==>_ : Tm -> Tm -> Set where
 infix 4 _==>_
 
 ------------------------------------------------------------------
--- That is the syntax. The two theorems (Progress + Preservation,
--- composing into Capability Soundness, plus Manifest Completeness)
--- are stated in CapaSoundness.agda.
+-- Reflexive-transitive closure of small-step reduction. Read
+-- t ==>* t' as "t reduces to t' in zero or more steps". Used by
+-- the Manifest Completeness theorem in CapaSoundness.agda to
+-- bound the capabilities reachable via any number of reduction
+-- steps.
+------------------------------------------------------------------
+
+data _==>*_ : Tm -> Tm -> Set where
+  done* : forall {t} -> t ==>* t
+  step* : forall {t t' t''} -> t ==> t' -> t' ==>* t'' -> t ==>* t''
+
+infix 4 _==>*_
+
+------------------------------------------------------------------
+-- That is the syntax. The four theorems (Progress + Preservation,
+-- composing into Capability Soundness and Manifest Completeness)
+-- are stated and proved in CapaSoundness.agda.
 ------------------------------------------------------------------

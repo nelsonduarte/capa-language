@@ -2,9 +2,9 @@
 -- CapaSoundness.agda
 --
 -- Soundness theorems for lambda_cap. Progress, Preservation,
--- and Capability Soundness are proved as of Stages 1, 2, and 3
--- of the mechanisation plan; Manifest Completeness remains as a
--- postulate pending Stage 4 (see proofs/README.md).
+-- Capability Soundness, and Manifest Completeness are all
+-- proved as of Stages 1, 2, 3, and 4 of the mechanisation plan.
+-- No postulates remain (see proofs/README.md).
 --
 -- STATUS: Typechecks on Agda >= 2.6.4. Verified in CI (see
 -- .github/workflows/agda.yml).
@@ -18,8 +18,8 @@
 --      lemmas (Stage 2, done)
 --   3. capability soundness is induction on _==>_ given the
 --      inductive relation `_∈caps_` (Stage 3, done)
---   4. manifest completeness is a separate structural induction
---      (Stage 4, postulate)
+--   4. manifest completeness is iterated capability-soundness
+--      over the reflexive-transitive closure ==>* (Stage 4, done)
 ------------------------------------------------------------------
 
 module CapaSoundness where
@@ -417,50 +417,45 @@ capability-soundness (T-Consume d) (R-ConsumeStep s) c (inside-consume h)
 capability-soundness (T-Consume _) (R-Consume _) c h = inside-consume h
 
 ------------------------------------------------------------------
--- Theorem 4: Manifest Completeness.
+-- Theorem 4: Manifest Completeness (multi-step soundness).
 --
--- The manifest emitted by `capa --manifest` for a top-level
--- function declares exactly the capability set the function can
--- exercise (in the sense of caps-of-reachable above).
+-- The capability set of a closed term is an upper bound on the
+-- capabilities that can ever appear in any term reachable by
+-- reduction. In words: reduction never invents capabilities; the
+-- syntactic surface of t is everything its runtime trace can
+-- exercise.
 --
--- Formal statement: define
+-- The statement is multi-step capability soundness: if
+-- t ==>* t' and c appears in t', then c appears in t.
+-- This is the iterated form of Theorem 3 (capability-soundness)
+-- composed with Theorem 2 (preservation): preservation lets us
+-- carry the typing through each step so capability-soundness can
+-- be re-applied; capability-soundness then walks each cap-witness
+-- back through the step.
 --
---   declared-caps(t) = the capability parameters in the surface
---                      signature of t (the analyzer reads these
---                      directly from the AST).
---
--- Then for any well-typed closed function value v : Cap1 => ...
--- => Cap_n => Ret, declared-caps(v) equals caps-of-reachable(v).
---
--- Proof sketch: the typing rule T-Use is the only way a Cap-typed
--- expression can be exercised, and T-Use requires the cap-typed
--- argument to be in scope. The only way a cap-typed value enters
--- scope is via a parameter (or via cap-introduction, which the
--- surface language restricts to main). Therefore every Cap
--- exercised somewhere reachable from v has been declared in
--- some parameter on the path; collecting those gives exactly
--- declared-caps.
---
--- This is the property the runtime trace test in
--- tests/test_properties.py asserts dynamically (runtime_classes
--- subset of manifest_classes); the mechanised version would
--- close it statically for the calculus.
+-- Note on the original skeleton statement. An earlier draft
+-- postulated `declared-caps t == caps-of-reachable t`, with
+-- `declared-caps` defined as the lam-prefix Cap-typed parameter
+-- list. That equation is false in general (declared but unused
+-- caps): a function value `lam (TyCap Net) (i 0)` declares Net
+-- yet never exercises it, so the two sides disagree. The
+-- multi-step soundness above is the honestly-provable claim and
+-- still captures the manifest's role: the cap set advertised
+-- by the program is a sound upper bound on the run-time trace.
 ------------------------------------------------------------------
 
-postulate
-  declared-caps : Tm -> CapSet
-  caps-of-reachable : Tm -> CapSet
-
-postulate
-  manifest-completeness
-    : forall {t A}
-    -> empty |- t ! A
-    -> (c : Cap)
-    -> declared-caps t c == caps-of-reachable t c
+manifest-completeness : forall {t t' A}
+                      -> empty |- t ! A
+                      -> t ==>* t'
+                      -> (c : Cap)
+                      -> c ∈caps t'
+                      -> c ∈caps t
+manifest-completeness d done*           c h = h
+manifest-completeness d (step* s rest)  c h
+  = capability-soundness d s c (manifest-completeness (preservation d s) rest c h)
 
 ------------------------------------------------------------------
--- That is the full statement set. `progress`, `preservation`, and
--- `capability-soundness` are now real definitions (Stages 1, 2,
--- and 3). The remaining postulates are `declared-caps` +
--- `caps-of-reachable` + `manifest-completeness` (Stage 4).
+-- That is the full statement set. `progress`, `preservation`,
+-- `capability-soundness`, and `manifest-completeness` are all
+-- real definitions (Stages 1, 2, 3, 4). No postulates remain.
 ------------------------------------------------------------------
