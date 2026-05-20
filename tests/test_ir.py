@@ -506,10 +506,11 @@ class TestMatch(unittest.TestCase):
         self.assertEqual(ns["pluck"](ns["Ok"](42)), 42)
         self.assertEqual(ns["pluck"](ns["Err"]("nope")), -1)
 
-    def test_block_bodied_arm_in_expr_match_is_unsupported(self):
-        # Block bodies in expression-position match would need the
-        # lowerer to identify the block's implicit-result
-        # expression; we defer until the analyzer marks it.
+    def test_block_bodied_arm_in_expr_match_runs(self):
+        # Block bodies in expression-position match lower with an
+        # implicit ``Unit`` value at the tail of the case body. The
+        # source contract: if the block needs to produce a non-Unit
+        # value it must ``return`` out of the function.
         src = (
             "fun pick(n: Int) -> Int\n"
             "    return match n\n"
@@ -519,8 +520,11 @@ class TestMatch(unittest.TestCase):
             "        _ -> 0\n"
         )
         module, types = _parse_and_check(src)
-        with self.assertRaises(UnsupportedInIR):
-            lower(module, types=types)
+        py = compile(module, types=types)
+        ns: dict = {}
+        exec(py, ns)
+        self.assertEqual(ns["pick"](0), 100)
+        self.assertEqual(ns["pick"](5), 0)
 
     def test_match_arm_with_guard_is_unsupported(self):
         # Guards reference pattern-bound names which the ANF

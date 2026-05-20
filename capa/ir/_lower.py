@@ -753,11 +753,28 @@ class Lowerer:
             outer = self._instrs
             self._instrs = []
             if isinstance(arm.body, A.Block):
-                raise UnsupportedInIR(
-                    "block-bodied arm in expression-position match"
-                )
-            v = self._lower_expr(arm.body)
-            self._instrs.append(AssignConst(dst=result_dst, src=v))
+                # Block-as-expression: if the block's last statement
+                # is an ExprStmt, that expression is the block's
+                # value (Capa's implicit-result-block semantics).
+                # Otherwise the block produces ``Unit``; an early
+                # ``return`` inside the block can still short-circuit
+                # the AssignConst at the tail. Mirrors the legacy
+                # transpiler's ``_emit_arm_body_to``.
+                stmts = arm.body.stmts
+                if stmts and isinstance(stmts[-1], A.ExprStmt):
+                    for s in stmts[:-1]:
+                        self._lower_stmt(s)
+                    v = self._lower_expr(stmts[-1].expr)
+                    self._instrs.append(AssignConst(dst=result_dst, src=v))
+                else:
+                    self._lower_block(arm.body)
+                    unit_v = Value(kind="lit_unit", literal=None, ty="Unit")
+                    self._instrs.append(
+                        AssignConst(dst=result_dst, src=unit_v)
+                    )
+            else:
+                v = self._lower_expr(arm.body)
+                self._instrs.append(AssignConst(dst=result_dst, src=v))
             body = self._instrs
             self._instrs = outer
             arms.append(MatchArm(pattern=pat, body=body, guard=None))

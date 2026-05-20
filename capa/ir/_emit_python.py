@@ -293,21 +293,30 @@ class PythonEmitter:
             return
         if isinstance(instr, While):
             # Capa loops re-evaluate the condition each iteration.
-            # Python's ``while <expr>:`` only re-evaluates a bare
-            # expression; to re-run the cond_setup instructions
-            # before each test we emit them at the top of the body
-            # and a copy before the ``while``.
+            # We use the ``while True / cond_setup / if not c: break``
+            # pattern so the cond is recomputed at the top of every
+            # iteration, including those entered via ``continue``.
+            # The earlier "tail-recompute" shape (cond_setup emitted
+            # before the while AND at the body's tail) silently
+            # broke any loop whose body had a ``continue`` because
+            # Python jumps straight to the while-cond check without
+            # running the body's tail.
+            self._write("while True:")
+            self._indent += 1
             for sub in instr.cond_setup:
                 self._emit_instr(sub)
-            self._write(f"while {self._format_value(instr.cond)}:")
+            self._write(
+                f"if not {self._format_value(instr.cond)}:"
+            )
             self._indent += 1
-            if not instr.body and not instr.cond_setup:
-                self._write("pass")
+            self._write("break")
+            self._indent -= 1
+            if not instr.body:
+                # Empty body is fine; the ``break`` above is the only
+                # loop exit, and the cond_setup keeps it correct.
+                pass
             else:
                 for sub in instr.body:
-                    self._emit_instr(sub)
-                # Recompute the condition for the next iteration.
-                for sub in instr.cond_setup:
                     self._emit_instr(sub)
             self._indent -= 1
             return
