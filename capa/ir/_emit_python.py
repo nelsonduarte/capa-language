@@ -26,6 +26,7 @@ from ._nodes import (
     AssignConst, Reassign, BinOp, UnaryOp, Call, MethodCall,
     If, While, Break, Continue, Return,
     MakeStruct, MakeList, MakeTuple, FieldAccess, Index, FormatStr, For,
+    TryUnwrap,
 )
 
 
@@ -192,6 +193,26 @@ class PythonEmitter:
                 for sub in instr.body:
                     self._emit_instr(sub)
             self._indent -= 1
+            return
+        if isinstance(instr, TryUnwrap):
+            # Inline check: bind src to dst, early-return dst on
+            # Err / None_, then rebind dst to the unwrapped value.
+            # The two-step rebind mirrors the legacy transpiler's
+            # hoisted form and avoids the slow _capa_try call path
+            # entirely. The emitted code assumes ``Err`` and ``None_``
+            # are in scope, which the runtime prelude (consumed by
+            # the legacy transpiler) provides via ``from capa.runtime
+            # import *``; IR-only tests load the symbols explicitly
+            # into their exec namespace.
+            src = self._format_value(instr.src)
+            self._write(f"{instr.dst} = {src}")
+            self._write(
+                f"if isinstance({instr.dst}, Err) or {instr.dst} is None_:"
+            )
+            self._indent += 1
+            self._write(f"return {instr.dst}")
+            self._indent -= 1
+            self._write(f"{instr.dst} = {instr.dst}.value")
             return
         if isinstance(instr, Return):
             if instr.value is None:

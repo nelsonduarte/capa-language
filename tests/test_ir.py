@@ -293,6 +293,94 @@ class TestDataAndIteration(unittest.TestCase):
         self.assertEqual(ns["sum_all"]([]), 0)
 
 
+class TestTryOperator(unittest.TestCase):
+    """Phase 2C: the ``?`` operator. In the three-address IR every
+    ``?`` lowers to a single TryUnwrap instruction; the legacy
+    expression-position-vs-statement-position distinction does not
+    survive ANF flattening. The Python emitter expands TryUnwrap
+    inline (no _capa_try / _CapaTryEarlyReturn exception)."""
+
+    def _runtime_ns(self) -> dict:
+        """Pre-load Err / Ok / Some / None_ so emitted Python that
+        uses TryUnwrap can run in a bare exec namespace."""
+        from capa.runtime import Err, Ok, Some, None_
+        return {"Err": Err, "Ok": Ok, "Some": Some, "None_": None_}
+
+    def test_question_mark_on_result_lowers_to_try_unwrap(self):
+        src = (
+            "fun produce(b: Bool) -> Result<Int, String>\n"
+            "    if b\n"
+            "        return Err(\"boom\")\n"
+            "    return Ok(42)\n"
+            "fun via(b: Bool) -> Result<Int, String>\n"
+            "    let x = produce(b)?\n"
+            "    return Ok(x + 1)\n"
+        )
+        module, types = _parse_and_check(src)
+        # Lower only the ``via`` function (the ``produce`` function
+        # uses ``Err("boom")`` / ``Ok(42)`` constructors that look
+        # like calls -- supported -- but the IR's top-level walk
+        # accepts FunDecl items so the whole module lowers cleanly).
+        try:
+            ir_mod = lower(module, types=types)
+        except UnsupportedInIR:
+            from capa.ir._lower import Lowerer
+            lowerer = Lowerer(types=types)
+            from capa import capa_ast as A
+            ir_funs = [
+                lowerer.lower_function(it)
+                for it in module.items
+                if isinstance(it, A.FunDecl)
+            ]
+            ir_mod = type(ir_mod := None) if False else None  # unreachable
+        # The ``via`` function's IR body contains a TryUnwrap.
+        via_fn = next(f for f in ir_mod.functions if f.name == "via")
+        kinds = [type(i).__name__ for i in via_fn.body]
+        self.assertIn("TryUnwrap", kinds)
+
+    def test_question_mark_runtime_ok_path(self):
+        src = (
+            "fun produce(b: Bool) -> Result<Int, String>\n"
+            "    if b\n"
+            "        return Err(\"boom\")\n"
+            "    return Ok(42)\n"
+            "fun via(b: Bool) -> Result<Int, String>\n"
+            "    let x = produce(b)?\n"
+            "    return Ok(x + 1)\n"
+        )
+        module, types = _parse_and_check(src)
+        py = compile(module, types=types)
+        ns = self._runtime_ns()
+        exec(py, ns)
+        # Ok path: produce(false) -> Ok(42); via unwraps to 42 and
+        # returns Ok(43).
+        result_ok = ns["via"](False)
+        from capa.runtime import Ok as RuntimeOk
+        self.assertIsInstance(result_ok, RuntimeOk)
+        self.assertEqual(result_ok.value, 43)
+
+    def test_question_mark_runtime_err_path(self):
+        src = (
+            "fun produce(b: Bool) -> Result<Int, String>\n"
+            "    if b\n"
+            "        return Err(\"boom\")\n"
+            "    return Ok(42)\n"
+            "fun via(b: Bool) -> Result<Int, String>\n"
+            "    let x = produce(b)?\n"
+            "    return Ok(x + 1)\n"
+        )
+        module, types = _parse_and_check(src)
+        py = compile(module, types=types)
+        ns = self._runtime_ns()
+        exec(py, ns)
+        # Err path: produce(true) -> Err("boom"); via early-returns
+        # the Err unchanged.
+        result_err = ns["via"](True)
+        from capa.runtime import Err as RuntimeErr
+        self.assertIsInstance(result_err, RuntimeErr)
+        self.assertEqual(result_err.error, "boom")
+
+
 class TestPythonEmission(unittest.TestCase):
     def test_emits_parseable_python_for_arithmetic(self):
         src = (

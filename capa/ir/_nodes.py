@@ -254,6 +254,26 @@ class For(Instr):
 
 
 @dataclass
+class TryUnwrap(Instr):
+    """The ``?`` operator. Reads ``src`` (a value of type
+    ``Result<T, E>`` or ``Option<T>``); if it is ``Err`` or
+    ``None_``, returns it from the enclosing function early.
+    Otherwise binds the unwrapped payload (the ``Ok``'s or
+    ``Some``'s ``.value``) to ``dst``.
+
+    Three-address IR sidesteps the legacy expression-position vs.
+    statement-position distinction: every ``?`` becomes a
+    statement-level ``TryUnwrap`` because the surrounding
+    expression has already been flattened into locals. The Python
+    emitter expands this instruction to the same inline check
+    pattern the legacy transpiler uses for the hoist-eligible
+    positions; the slow ``_capa_try``/``_CapaTryEarlyReturn`` path
+    is never reached from IR-emitted code."""
+    dst: str
+    src: Value
+
+
+@dataclass
 class Return(Instr):
     """``return value``; ``value`` is None for a bare ``return``."""
     value: Optional[Value]

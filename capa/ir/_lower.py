@@ -22,6 +22,7 @@ from ._nodes import (
     AssignConst, Reassign, BinOp, UnaryOp, Call, MethodCall,
     If, While, Break, Continue, Return,
     MakeStruct, MakeList, MakeTuple, FieldAccess, Index, FormatStr, For,
+    TryUnwrap,
     fresh_local,
 )
 
@@ -346,7 +347,30 @@ class Lowerer:
             return self._lower_tuple_lit(e)
         if isinstance(e, A.InterpolatedString):
             return self._lower_interpolated_string(e)
+        if isinstance(e, A.Try):
+            return self._lower_try(e)
         raise UnsupportedInIR(f"expression {type(e).__name__}")
+
+    def _lower_try(self, e: A.Try) -> Value:
+        # Three-address IR uses a single TryUnwrap instruction for
+        # every ``?`` site, regardless of whether the source-level
+        # context was a statement-top position or a sub-expression.
+        # The Python emitter expands TryUnwrap into the inline
+        # isinstance / is-None_ check + early return; no exception
+        # path is involved.
+        inner = self._lower_expr(e.expr)
+        # The unwrapped type is the inner's type-arg if known;
+        # without precise inference here we settle for Unknown and
+        # let the emitter rely on duck-typing.
+        result_ty = "Unknown"
+        if self.types:
+            t = self.types.get(id(e))
+            if t is not None:
+                result_ty = _ty_to_str(t)
+        dst = fresh_local(self._counter)
+        self._locals[dst] = result_ty
+        self._instrs.append(TryUnwrap(dst=dst, src=inner))
+        return Value(kind="local", name=dst, ty=result_ty)
 
     def _lower_ident(self, e: A.Ident) -> Value:
         if e.name in self._params:
