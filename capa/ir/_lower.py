@@ -26,6 +26,7 @@ from ._nodes import (
     Pattern, PatWildcard, PatIdent, PatLiteral, PatVariant,
     MatchArm, Match,
     StructDecl, StructField, SumDecl, SumVariant, ImplBlock,
+    TraitDecl, MethodSig,
     fresh_local,
 )
 
@@ -76,6 +77,7 @@ class Lowerer:
         functions: list[Function] = []
         types: list = []
         impls: list = []
+        traits: list = []
         for item in module.items:
             if isinstance(item, A.FunDecl):
                 functions.append(self.lower_function(item))
@@ -85,13 +87,37 @@ class Lowerer:
                 types.append(self._lower_sum_decl(item))
             elif isinstance(item, A.ImplBlock):
                 impls.append(self._lower_impl_block(item))
+            elif isinstance(item, A.TraitDecl):
+                traits.append(self._lower_trait_decl(item))
             else:
                 raise UnsupportedInIR(
                     f"top-level item {type(item).__name__}"
                 )
         return Module(
             functions=functions, types=types, impls=impls,
-            ast_module=module,
+            traits=traits, ast_module=module,
+        )
+
+    def _lower_trait_decl(self, t: A.TraitDecl) -> TraitDecl:
+        methods: list[MethodSig] = []
+        for m in t.methods:
+            ms_params = [
+                Param(
+                    name=p.name,
+                    ty=_type_name(p.type_expr) if p.type_expr else "Unknown",
+                    is_capability=(
+                        _type_name(p.type_expr) in _BUILTIN_CAPS
+                        if p.type_expr else False
+                    ),
+                )
+                for p in m.params
+            ]
+            ret_ty = _type_name(m.return_type) if m.return_type else "Unit"
+            methods.append(
+                MethodSig(name=m.name, params=ms_params, return_type=ret_ty)
+            )
+        return TraitDecl(
+            name=t.name, methods=methods, is_capability=t.is_capability,
         )
 
     def _lower_impl_block(self, impl: A.ImplBlock) -> ImplBlock:

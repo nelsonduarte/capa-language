@@ -428,6 +428,34 @@ class SumDecl:
 
 
 @dataclass
+class MethodSig:
+    """A method signature inside a trait or capability declaration.
+    No body; backends that emit interface-like targets (Wasm CM's
+    WIT, for instance) consume these directly."""
+    name: str
+    params: list[Param]
+    return_type: str
+
+
+@dataclass
+class TraitDecl:
+    """A top-level ``trait Name { method-sigs }`` declaration.
+
+    ``is_capability`` distinguishes Capa's two trait flavours: a
+    plain trait (``trait``) is an interface; a capability trait
+    (``capability``) is a user-defined capability that the manifest
+    builder must track. Wasm CM emission cares about both because
+    capabilities become WIT imports and traits become typed records.
+
+    The Python emitter renders both alike (a class shell with each
+    method raising ``NotImplementedError``); the runtime check that
+    the impl actually exists is the analyzer's job."""
+    name: str
+    methods: list[MethodSig]
+    is_capability: bool
+
+
+@dataclass
 class ImplBlock:
     """A top-level ``impl Type { ... }`` (inherent) or ``impl Trait for Type``
     block. ``methods`` is the list of lowered method functions; each
@@ -456,6 +484,7 @@ class Module:
     functions: list[Function]
     types: list = field(default_factory=list)  # list[StructDecl | SumDecl]
     impls: list = field(default_factory=list)  # list[ImplBlock]
+    traits: list = field(default_factory=list)  # list[TraitDecl]
     ast_module: object = None  # capa_ast.Module; opaque to the IR
 
 

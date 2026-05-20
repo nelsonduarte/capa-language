@@ -550,6 +550,61 @@ class TestTopLevelTypes(unittest.TestCase):
         self.assertIsInstance(ns["make"](), ns["Empty"])
 
 
+class TestTraitsAndCapabilities(unittest.TestCase):
+    """Phase 3C: ``trait`` and user-defined ``capability`` declarations.
+    Both lower to an IR ``TraitDecl`` (distinguished by
+    ``is_capability``); the Python emitter renders both alike as a
+    shell class with stub methods plus a name alias. The substantive
+    work happens in the analyzer's static trait-impl check; at the
+    Python level the class only needs the attribute names to exist."""
+
+    def test_trait_decl_emits_shell_class_and_alias(self):
+        src = (
+            "trait Greeter\n"
+            "    fun greet(self) -> String\n"
+            "type Robot {}\n"
+            "impl Greeter for Robot\n"
+            "    fun greet(self) -> String\n"
+            "        return \"beep\"\n"
+            "fun main() -> String\n"
+            "    let r = Robot {}\n"
+            "    return r.greet()\n"
+        )
+        module, types = _parse_and_check(src)
+        ir_mod = lower(module, types=types)
+        self.assertEqual(len(ir_mod.traits), 1)
+        self.assertEqual(ir_mod.traits[0].name, "Greeter")
+        self.assertFalse(ir_mod.traits[0].is_capability)
+        py = compile(module, types=types)
+        self.assertIn("class _Trait_Greeter:", py)
+        self.assertIn("Greeter = _Trait_Greeter", py)
+        ns: dict = {}
+        exec(py, ns)
+        self.assertEqual(ns["main"](), "beep")
+
+    def test_user_defined_capability_lowers_with_flag_set(self):
+        # User-defined capabilities use the ``capability`` keyword and
+        # produce a TraitDecl with ``is_capability=True``. The Python
+        # emission is structurally identical to a plain trait.
+        src = (
+            "capability Auditable\n"
+            "    fun audit(self) -> String\n"
+            "type Job {\n"
+            "    name: String\n"
+            "}\n"
+            "impl Auditable for Job\n"
+            "    fun audit(self) -> String\n"
+            "        return self.name\n"
+        )
+        module, types = _parse_and_check(src)
+        ir_mod = lower(module, types=types)
+        self.assertEqual(len(ir_mod.traits), 1)
+        self.assertTrue(ir_mod.traits[0].is_capability)
+        # Compile to keep the round-trip honest.
+        py = compile(module, types=types)
+        self.assertIn("class _Trait_Auditable:", py)
+
+
 class TestImplBlocks(unittest.TestCase):
     """Phase 3B: ``impl`` blocks. The IR carries an ImplBlock per
     source impl, with methods lowered as ordinary Functions (their

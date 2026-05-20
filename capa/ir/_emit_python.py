@@ -28,7 +28,7 @@ from ._nodes import (
     MakeStruct, MakeList, MakeTuple, FieldAccess, Index, FormatStr, For,
     TryUnwrap, MakeLambda,
     Pattern, PatWildcard, PatIdent, PatLiteral, PatVariant, Match,
-    StructDecl, SumDecl, ImplBlock,
+    StructDecl, SumDecl, ImplBlock, TraitDecl,
 )
 
 
@@ -66,6 +66,9 @@ class PythonEmitter:
         self._sum_variants: dict[str, list[str]] = {}
         for ty in module.types:
             self._emit_type(ty)
+            self._lines.append("")
+        for tr in module.traits:
+            self._emit_trait(tr)
             self._lines.append("")
         for fn in module.functions:
             self._emit_function(fn)
@@ -139,6 +142,28 @@ class PythonEmitter:
         if t.variants:
             union = " | ".join(v.name for v in t.variants)
             self._write(f"{t.name} = {union}")
+
+    # ----- trait / capability decls -----------------------------
+
+    def _emit_trait(self, t: TraitDecl) -> None:
+        # Mirror the legacy transpiler: emit a shell class
+        # ``_Trait_<Name>`` with one stub per method, plus an alias
+        # ``<Name> = _Trait_<Name>`` for use in annotations. The class
+        # has no real role at runtime (the analyzer's trait check is
+        # static); the alias lets generated annotations resolve.
+        self._write(f"class _Trait_{t.name}:")
+        self._indent += 1
+        if not t.methods:
+            self._write("pass")
+        else:
+            for m in t.methods:
+                params = ", ".join(p.name for p in m.params)
+                self._write(f"def {m.name}({params}):")
+                self._indent += 1
+                self._write("raise NotImplementedError")
+                self._indent -= 1
+        self._indent -= 1
+        self._write(f"{t.name} = _Trait_{t.name}")
 
     # ----- impl blocks ------------------------------------------
 
