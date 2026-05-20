@@ -35,6 +35,7 @@ from .. import capa_ast as A
 from ._nodes import Module, Function, Param, Local, Value, Instr
 from ._lower import Lowerer, UnsupportedInIR
 from ._emit_python import PythonEmitter
+from ._emit_wasm import WasmEmitter, WasmEmissionError
 
 __all__ = [
     "Module",
@@ -46,10 +47,15 @@ __all__ = [
     "Lowerer",
     "UnsupportedInIR",
     "PythonEmitter",
+    "WasmEmitter",
+    "WasmEmissionError",
     "lower",
     "emit_python",
+    "emit_wat",
     "compile",
     "compile_program",
+    "compile_wat",
+    "compile_wasm",
 ]
 
 
@@ -106,6 +112,56 @@ def compile_program(
         parts.append("")
         parts.append(_emit_main_bootstrap(main_fn))
     return "\n".join(parts).rstrip() + "\n"
+
+
+def emit_wat(ir_module: Module) -> str:
+    """Emit WebAssembly text format (WAT) from a CIR module.
+
+    Phase 6A scope: integer / boolean functions only. Any CIR
+    construct outside this subset raises ``WasmEmissionError`` with
+    a precise reason. The output is valid WAT that ``wasm-tools
+    parse`` accepts; see :func:`compile_wasm` for an assemble-to-
+    bytes convenience wrapper."""
+    return WasmEmitter().emit(ir_module)
+
+
+def compile_wat(module: A.Module, types: dict | None = None) -> str:
+    """End-to-end AST -> CIR -> WAT convenience helper. Mirrors
+    :func:`compile` but targets the Wasm Component Model text form
+    instead of Python source."""
+    return emit_wat(lower(module, types=types))
+
+
+def compile_wasm(
+    module: A.Module,
+    types: dict | None = None,
+    wasm_tools_path: str = "wasm-tools",
+) -> bytes:
+    """End-to-end AST -> CIR -> WAT -> binary Wasm assembly.
+
+    Shells out to ``wasm-tools parse`` to assemble the WAT into
+    binary ``.wasm`` bytes. Returns the binary content so callers
+    can write it to disk, load it into a runtime, or sign it
+    without intermediate file shuffling. Raises
+    ``FileNotFoundError`` if ``wasm-tools`` is not on PATH, and
+    ``subprocess.CalledProcessError`` if the assembly itself fails
+    (the WAT it complained about is in ``.stderr``).
+    """
+    import subprocess
+    wat = compile_wat(module, types=types)
+    proc = subprocess.run(
+        [wasm_tools_path, "parse", "-"],
+        input=wat.encode("utf-8"),
+        capture_output=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"wasm-tools parse failed (exit {proc.returncode}):\n"
+            f"{proc.stderr.decode('utf-8', errors='replace')}\n"
+            f"--- WAT input ---\n{wat}"
+        )
+    return proc.stdout
 
 
 def _emit_main_bootstrap(main_fn) -> str:
