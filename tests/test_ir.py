@@ -223,21 +223,16 @@ class TestDataAndIteration(unittest.TestCase):
             "    return p.x + p.y\n"
         )
         module, types = _parse_and_check(src)
-        # Phase 2B handles the function; top-level type declarations
-        # still trip the top-level-item check, so we lower only the
-        # FunDecl items by hand for this test.
-        ir_funs = []
-        from capa.ir._lower import Lowerer
-        lowerer = Lowerer(types=types)
-        from capa import capa_ast as A
-        for item in module.items:
-            if isinstance(item, A.FunDecl):
-                ir_funs.append(lowerer.lower_function(item))
-        self.assertEqual(len(ir_funs), 1)
-        fn = ir_funs[0]
+        ir_mod = lower(module, types=types)
+        self.assertEqual(len(ir_mod.functions), 1)
+        fn = ir_mod.functions[0]
         instr_kinds = [type(i).__name__ for i in fn.body]
         self.assertIn("MakeStruct", instr_kinds)
         self.assertIn("FieldAccess", instr_kinds)
+        py = compile(module, types=types)
+        ns: dict = {}
+        exec(py, ns)
+        self.assertEqual(ns["build"](), 7)
 
     def test_list_literal_and_index(self):
         src = (
@@ -475,6 +470,84 @@ class TestMatch(unittest.TestCase):
         module, types = _parse_and_check(src)
         with self.assertRaises(UnsupportedInIR):
             lower(module, types=types)
+
+
+class TestTopLevelTypes(unittest.TestCase):
+    """Phase 3A: top-level ``type`` declarations. Structs lower to a
+    ``StructDecl`` IR item, sums to a ``SumDecl`` with one ``SumVariant``
+    per arm. The Python emitter renders both as ``@dataclass`` classes
+    (nullary variants stay as bare classes; sum-type aliases use
+    ``|``)."""
+
+    def test_struct_decl_emits_dataclass_and_runs(self):
+        src = (
+            "type Point {\n"
+            "    x: Int,\n"
+            "    y: Int\n"
+            "}\n"
+            "fun origin() -> Point\n"
+            "    return Point { x: 0, y: 0 }\n"
+        )
+        module, types = _parse_and_check(src)
+        ir_mod = lower(module, types=types)
+        self.assertEqual(len(ir_mod.types), 1)
+        self.assertEqual(ir_mod.types[0].name, "Point")
+        self.assertEqual(
+            [(f.name, f.ty) for f in ir_mod.types[0].fields],
+            [("x", "Int"), ("y", "Int")],
+        )
+        py = compile(module, types=types)
+        self.assertIn("@dataclass", py)
+        self.assertIn("class Point:", py)
+        ns: dict = {}
+        exec(py, ns)
+        origin = ns["origin"]()
+        self.assertEqual(origin.x, 0)
+        self.assertEqual(origin.y, 0)
+
+    def test_sum_decl_with_mixed_variants_runs(self):
+        src = (
+            "type Shape =\n"
+            "    Circle(Int)\n"
+            "    Rect(Int, Int)\n"
+            "    Unit\n"
+            "fun area(s: Shape) -> Int\n"
+            "    match s\n"
+            "        Circle(r) ->\n"
+            "            return r * r * 3\n"
+            "        Rect(w, h) ->\n"
+            "            return w * h\n"
+            "        Unit ->\n"
+            "            return 0\n"
+        )
+        module, types = _parse_and_check(src)
+        ir_mod = lower(module, types=types)
+        sums = [t for t in ir_mod.types if isinstance(t, N.SumDecl)]
+        self.assertEqual(len(sums), 1)
+        self.assertEqual([v.name for v in sums[0].variants], ["Circle", "Rect", "Unit"])
+        py = compile(module, types=types)
+        # Sum-type alias should appear.
+        self.assertIn("Shape = Circle | Rect | Unit", py)
+        ns: dict = {}
+        exec(py, ns)
+        self.assertEqual(ns["area"](ns["Circle"](2)), 12)
+        # Two-payload variant uses ``f0`` / ``f1`` positional fields.
+        self.assertEqual(ns["area"](ns["Rect"](3, 4)), 12)
+        self.assertEqual(ns["area"](ns["Unit"]()), 0)
+
+    def test_empty_struct_emits_pass_body(self):
+        src = (
+            "type Empty {}\n"
+            "fun make() -> Empty\n"
+            "    return Empty {}\n"
+        )
+        module, types = _parse_and_check(src)
+        py = compile(module, types=types)
+        self.assertIn("class Empty:", py)
+        self.assertIn("pass", py)
+        ns: dict = {}
+        exec(py, ns)
+        self.assertIsInstance(ns["make"](), ns["Empty"])
 
 
 class TestLambda(unittest.TestCase):

@@ -28,6 +28,7 @@ from ._nodes import (
     MakeStruct, MakeList, MakeTuple, FieldAccess, Index, FormatStr, For,
     TryUnwrap, MakeLambda,
     Pattern, PatWildcard, PatIdent, PatLiteral, PatVariant, Match,
+    StructDecl, SumDecl,
 )
 
 
@@ -49,10 +50,86 @@ class PythonEmitter:
     # ----- public ------------------------------------------------
 
     def emit(self, module: Module) -> str:
+        # The emitter's per-function lowering is the original Phase 1
+        # focus, but once the module carries type declarations we also
+        # need to introduce ``@dataclass`` at the top so the emitted
+        # source is self-contained. Tests / pipelines that mix the IR
+        # with the legacy prelude already have ``dataclass`` in scope,
+        # so the import is harmless when redundant.
+        if module.types:
+            self._write("from dataclasses import dataclass")
+            self._lines.append("")
+        for ty in module.types:
+            self._emit_type(ty)
+            self._lines.append("")
         for fn in module.functions:
             self._emit_function(fn)
             self._lines.append("")
         return "\n".join(self._lines).rstrip() + "\n"
+
+    # ----- type declarations -----------------------------------
+
+    def _emit_type(self, ty) -> None:
+        if isinstance(ty, StructDecl):
+            self._emit_struct(ty)
+            return
+        if isinstance(ty, SumDecl):
+            self._emit_sum(ty)
+            return
+        raise NotImplementedError(
+            f"IR Python emitter: type decl {type(ty).__name__} not supported"
+        )
+
+    def _emit_struct(self, t: StructDecl) -> None:
+        self._write("@dataclass")
+        if not t.fields:
+            self._write(f"class {t.name}:")
+            self._indent += 1
+            self._write("pass")
+            self._indent -= 1
+            return
+        self._write(f"class {t.name}:")
+        self._indent += 1
+        for f in t.fields:
+            # Legacy convention: every Python-level field is annotated
+            # ``object`` rather than the source type. Python's dataclass
+            # does nothing meaningful with the annotation at runtime,
+            # so ``object`` keeps emission target-agnostic.
+            self._write(f"{f.name}: object")
+        self._indent -= 1
+
+    def _emit_sum(self, t: SumDecl) -> None:
+        # One class per variant. Zero payloads -> bare class with
+        # ``pass``; one payload -> dataclass with ``value: object``;
+        # N payloads -> dataclass with ``f0, f1, ...`` matching the
+        # positional field convention the legacy emitter uses.
+        for v in t.variants:
+            n = len(v.payload_tys)
+            if n == 0:
+                self._write(f"class {v.name}:")
+                self._indent += 1
+                self._write("pass")
+                self._indent -= 1
+            elif n == 1:
+                self._write("@dataclass")
+                self._write(f"class {v.name}:")
+                self._indent += 1
+                self._write("value: object")
+                self._indent -= 1
+            else:
+                self._write("@dataclass")
+                self._write(f"class {v.name}:")
+                self._indent += 1
+                for i in range(n):
+                    self._write(f"f{i}: object")
+                self._indent -= 1
+            self._lines.append("")
+        # The sum-type alias. Python ``|`` on classes builds a
+        # ``typing.Union`` at module level; useful for annotations and
+        # harmless at runtime.
+        if t.variants:
+            union = " | ".join(v.name for v in t.variants)
+            self._write(f"{t.name} = {union}")
 
     # ----- function-level ---------------------------------------
 

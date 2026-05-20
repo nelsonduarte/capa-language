@@ -25,6 +25,7 @@ from ._nodes import (
     TryUnwrap, MakeLambda,
     Pattern, PatWildcard, PatIdent, PatLiteral, PatVariant,
     MatchArm, Match,
+    StructDecl, StructField, SumDecl, SumVariant,
     fresh_local,
 )
 
@@ -73,14 +74,36 @@ class Lowerer:
 
     def lower_module(self, module: A.Module) -> Module:
         functions: list[Function] = []
+        types: list = []
         for item in module.items:
             if isinstance(item, A.FunDecl):
                 functions.append(self.lower_function(item))
+            elif isinstance(item, A.TypeStruct):
+                types.append(self._lower_struct_decl(item))
+            elif isinstance(item, A.TypeSum):
+                types.append(self._lower_sum_decl(item))
             else:
                 raise UnsupportedInIR(
                     f"top-level item {type(item).__name__}"
                 )
-        return Module(functions=functions, ast_module=module)
+        return Module(functions=functions, types=types, ast_module=module)
+
+    def _lower_struct_decl(self, t: A.TypeStruct) -> StructDecl:
+        fields = [
+            StructField(name=f.name, ty=_type_name(f.type_expr))
+            for f in t.fields
+        ]
+        return StructDecl(name=t.name, fields=fields)
+
+    def _lower_sum_decl(self, t: A.TypeSum) -> SumDecl:
+        variants = [
+            SumVariant(
+                name=v.name,
+                payload_tys=[_type_name(p) for p in v.payloads],
+            )
+            for v in t.variants
+        ]
+        return SumDecl(name=t.name, variants=variants)
 
     def lower_function(self, fn: A.FunDecl) -> Function:
         # Reset per-function state.

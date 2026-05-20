@@ -391,14 +391,53 @@ class Function:
 
 
 @dataclass
+class StructField:
+    """A field of a struct: name + Capa type as a string. The string
+    form is what the Python emitter consumes; structured Ty access can
+    be added later if a backend needs it."""
+    name: str
+    ty: str
+
+
+@dataclass
+class StructDecl:
+    """A top-level ``type Name { field: T, ... }`` declaration. The
+    Python emitter renders this as ``@dataclass class Name``."""
+    name: str
+    fields: list[StructField]
+
+
+@dataclass
+class SumVariant:
+    """A variant of a sum type: ``Name`` (nullary) or
+    ``Name(T1, T2, ...)`` (with payloads). For one payload the
+    Python emitter emits a single ``value`` field on the dataclass;
+    for N payloads it emits ``f0, f1, ..., f{N-1}`` to match the
+    legacy transpiler's positional access convention."""
+    name: str
+    payload_tys: list[str]
+
+
+@dataclass
+class SumDecl:
+    """A top-level ``type Name = V1 | V2(T) | ...`` declaration.
+    Lowered to a sequence of dataclasses (one per variant) plus a
+    union-type alias the analyzer's type-checker uses."""
+    name: str
+    variants: list[SumVariant]
+
+
+@dataclass
 class Module:
-    """A lowered module. Phase 1 only carries function declarations;
-    later phases will add structs, sums, traits, capabilities, impls,
+    """A lowered module. Phase 1 carried only function declarations;
+    Phase 3A adds top-level struct and sum type declarations.
+    Subsequent phases will add traits, capabilities, impls,
     constants, and imports. The legacy AST is preserved in
     ``ast_module`` so the Python emitter can defer back to the legacy
     transpiler for items the IR does not yet cover.
     """
     functions: list[Function]
+    types: list = field(default_factory=list)  # list[StructDecl | SumDecl]
     ast_module: object = None  # capa_ast.Module; opaque to the IR
 
 
