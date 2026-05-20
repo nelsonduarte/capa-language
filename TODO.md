@@ -506,6 +506,48 @@ to public.
   `capa/transpiler/_methods.py` + `capa/builtins.py`.
   Landed 2026-05-19.
 
+- [x] **Block-scope shadowing rejection (rc.2 iteration)**. A
+  `let` inside a nested block (`if` / `for` / `while` /
+  `match` body) that shadowed a name already bound in an
+  enclosing function scope previously passed the analyzer and
+  silently overwrote the outer binding at the Python runtime
+  (Python has function scope, not block scope). The analyzer
+  now walks the parent chain for PARAM / LOCAL / LOCAL_VAR
+  kinds when binding a pattern; module-level shadowing
+  (CONSTANT, FUNCTION, etc.) stays allowed because Python's
+  function scope handles it correctly. Diagnostic names the
+  source location of the previous binding and tells the user
+  to rename one of the two. Implementation at
+  `capa/analyzer/_patterns.py::_bind_pattern`; 5 new tests.
+  Landed 2026-05-20.
+
+- [x] **NLL-style precision for consume tracking around
+  divergent branches (rc.2 iteration)**. A branch (if / elif
+  / else body, or match arm body) that consumed a capability
+  and then diverged (ended in `return` / `break` / `continue`)
+  was naively unioned into the post-merge consumed set, even
+  though the divergent path could never reach the
+  continuation. `_check_if` and `_check_match_expr` now skip
+  divergent branches when merging `branch_results`, using the
+  same `_block_diverges` predicate the type-side unification
+  already uses. Soundness preserved (only over-restriction is
+  relaxed). Implementation at
+  `capa/analyzer/_statements.py::_check_if` +
+  `capa/analyzer/_expressions.py::_check_match_expr`; 5 new
+  tests. Landed 2026-05-20.
+
+- [x] **Agda mechanisation: all four soundness theorems**
+  (Stages 1 to 4). `proofs/CapaSyntax.agda` +
+  `proofs/CapaSoundness.agda` are real definitions, no
+  `postulate` survives. Roughly 600 lines, self-contained
+  (no agda-stdlib), PLFA-style. The Capability Soundness
+  proof uses an inductive `_∈caps_` relation; the Manifest
+  Completeness theorem was reformulated from the original
+  skeleton equation to the honestly-provable multi-step
+  soundness form (`caps-of-reachable t ⊆ caps-of t`). CI at
+  `.github/workflows/agda.yml` typechecks both files on
+  every push that touches `proofs/`. Landed 2026-05-20.
+
 ---
 
 ## Code-quality maintenance (P2)

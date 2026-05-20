@@ -9,6 +9,84 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+## [1.0.0-rc.2], 2026-05-20
+
+Two analyzer-precision fixes surfaced by a focused bug-hunt
+session, plus the full Agda mechanisation of the four
+load-bearing soundness theorems. Both analyzer fixes are
+backwards-compatible at the source level for code that
+already obeyed the intended semantics; the second fix tightens
+the rule set and rejects a small class of programs whose
+runtime behaviour previously disagreed with the source.
+
+### Language correctness
+
+- **Analyzer rejects block-scope shadowing of function-local
+  bindings.** A `let` inside a nested block (`if` / `for` /
+  `while` / `match` body) that shadowed a name already bound
+  in an enclosing function scope previously passed the
+  analyzer, and the transpiler then emitted plain
+  `x = ...` for both bindings. Python has function scope, not
+  block scope, so the inner assignment overwrote the outer
+  binding for the rest of the function. A program reading
+  like
+  ```
+  let x = 1
+  if cond
+      let x = 2
+      ...
+  stdio.println("${x}")    // source says 1; runtime printed 2
+  ```
+  silently violated source semantics. The analyzer now
+  rejects every such shadow with a diagnostic pointing at the
+  previous binding and telling the user to rename one of the
+  two. Module-level shadowing (`const N` shadowed by
+  `let N` inside a function) stays allowed because Python's
+  function scope handles it correctly. Test count: 1075 ->
+  1080.
+
+- **Analyzer precision: NLL-style consume tracking around
+  divergent branches.** A branch (if/elif/else body, or match
+  arm body) that consumes a capability and then diverges
+  (ends in `return`, `break`, or `continue`) cannot flow its
+  consumption past the merge point: the divergent path never
+  reaches the continuation. The analyzer was naively unioning
+  every branch's consumed set, producing a false positive
+  that rejected programs like
+  ```
+  if b
+      adoptar(stdio)   // consume
+      return
+  stdio.println("after")    // was rejected; stdio is in fact live here
+  ```
+  Both `_check_if` and `_check_match_expr` now skip branches
+  whose body diverges when merging, consistent with the
+  divergence treatment match-arm type-unification already
+  uses (`_block_diverges`). Soundness preserved: the fix only
+  makes the analyzer more permissive on programs the
+  discipline would have accepted anyway. Test count: 1070 ->
+  1075.
+
+### Mechanisation
+
+- **All four soundness theorems mechanised in Agda.** The
+  [`proofs/`] directory now contains real definitions (no
+  `postulate` survives) for Progress, Preservation, Capability
+  Soundness, and a multi-step Manifest Completeness theorem.
+  Roughly 600 lines of self-contained Agda (no agda-stdlib
+  dependency); follows the PLFA template. The
+  Capability Soundness proof uses an inductive `_∈caps_`
+  relation rather than a Bool-indicator function to sidestep
+  higher-order-unification friction with the clausal `_||_`.
+  The Manifest Completeness statement was reformulated from
+  the original skeleton equation (`declared-caps t ==
+  caps-of-reachable t`, which is false in general -- a function
+  can declare a cap parameter and never use it) to the
+  honestly-provable multi-step soundness form. CI workflow
+  at `.github/workflows/agda.yml` typechecks both files on
+  every push that touches `proofs/`. See the `proofs/README.md`
+  status table for the stage-by-stage shape of the proof.
+
 ## [1.0.0-rc.1], 2026-05-19
 
 Polish iteration on top of `1.0.0-rc.0`. The headline change is
