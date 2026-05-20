@@ -254,6 +254,72 @@ class For(Instr):
 
 
 @dataclass
+class Pattern:
+    """Base IR pattern. Concrete shapes below. Each backend's emitter
+    decides how to render the pattern (Python ``match`` / ``case``
+    syntax; Wasm CM ``record.match`` etc.)."""
+    pass
+
+
+@dataclass
+class PatWildcard(Pattern):
+    """``_`` — matches anything, binds nothing."""
+    pass
+
+
+@dataclass
+class PatIdent(Pattern):
+    """A bare identifier in pattern position — binds the scrutinee
+    (or sub-scrutinee for nested patterns) to ``name`` in the arm
+    body's scope."""
+    name: str
+
+
+@dataclass
+class PatLiteral(Pattern):
+    """A literal pattern. ``kind`` is one of ``"int"``, ``"str"``,
+    ``"bool"``, ``"unit"``. ``value`` is the Python-side literal
+    that the pattern compares against by equality."""
+    kind: str
+    value: object
+
+
+@dataclass
+class PatVariant(Pattern):
+    """A sum-type variant pattern: ``VariantName(payload_pattern, ...)``
+    for a variant with payloads, or ``VariantName()`` for a
+    payload-less variant. Capa's ``None`` (Option's singleton)
+    lowers to a PatVariant with name ``"None"`` and no payloads;
+    the Python emitter has a special rule for it."""
+    name: str
+    payloads: list[Pattern]
+
+
+@dataclass
+class MatchArm:
+    """A single arm of a Match. ``guard`` may be a Value that the
+    emitter renders as a ``case ... if guard:`` clause; Phase 2D
+    leaves ``guard=None`` for every arm because the lowerer rejects
+    guard-bearing arms as UnsupportedInIR."""
+    pattern: Pattern
+    body: list[Instr]
+    guard: Optional[Value] = None
+
+
+@dataclass
+class Match(Instr):
+    """``match scrutinee: case pat -> body ...``.
+
+    Statement-form only in Phase 2D: ``result_dst`` is None. A
+    later phase that lifts MatchExpr (match in expression position)
+    will populate ``result_dst`` and arrange for each arm body to
+    write its produced value into it."""
+    scrutinee: Value
+    arms: list[MatchArm]
+    result_dst: Optional[str] = None
+
+
+@dataclass
 class TryUnwrap(Instr):
     """The ``?`` operator. Reads ``src`` (a value of type
     ``Result<T, E>`` or ``Option<T>``); if it is ``Err`` or

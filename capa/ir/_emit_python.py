@@ -27,6 +27,7 @@ from ._nodes import (
     If, While, Break, Continue, Return,
     MakeStruct, MakeList, MakeTuple, FieldAccess, Index, FormatStr, For,
     TryUnwrap,
+    Pattern, PatWildcard, PatIdent, PatLiteral, PatVariant, Match,
 )
 
 
@@ -214,6 +215,21 @@ class PythonEmitter:
             self._indent -= 1
             self._write(f"{instr.dst} = {instr.dst}.value")
             return
+        if isinstance(instr, Match):
+            self._write(f"match {self._format_value(instr.scrutinee)}:")
+            self._indent += 1
+            for arm in instr.arms:
+                pat_str = self._format_pattern(arm.pattern)
+                self._write(f"case {pat_str}:")
+                self._indent += 1
+                if not arm.body:
+                    self._write("pass")
+                else:
+                    for sub in arm.body:
+                        self._emit_instr(sub)
+                self._indent -= 1
+            self._indent -= 1
+            return
         if isinstance(instr, Return):
             if instr.value is None:
                 self._write("return")
@@ -261,6 +277,41 @@ class PythonEmitter:
         if op == "not":
             return f"(not {x})"
         raise NotImplementedError(f"IR Python emitter: unary {op!r}")
+
+    def _format_pattern(self, p: Pattern) -> str:
+        # Python 3.10+ structural-match syntax. The IR's PatVariant
+        # uses the variant's source name; for a sum-type's nullary
+        # variants the legacy runtime emits singleton dataclass
+        # instances named ``<Variant>()``, so the same form works as
+        # a class-pattern here. The one wrinkle is Option's ``None``,
+        # whose runtime singleton is ``None_`` (the ``_`` suffix
+        # avoids the Python keyword); the source-level pattern
+        # ``None`` reaches IR as a PatVariant whose name is "None",
+        # which we rewrite here.
+        if isinstance(p, PatWildcard):
+            return "_"
+        if isinstance(p, PatIdent):
+            return p.name
+        if isinstance(p, PatLiteral):
+            if p.kind == "bool":
+                return "True" if p.value else "False"
+            if p.kind == "unit":
+                return "None"
+            return repr(p.value)
+        if isinstance(p, PatVariant):
+            # Capa's ``None`` is the source-level singleton variant of
+            # Option; in the runtime it's an instance ``None_`` of the
+            # internal ``_NoneType`` class. Python's case-pattern
+            # ``Cls()`` requires a class on the left, so we emit the
+            # class name, not the singleton constant.
+            cls = "_NoneType" if p.name == "None" else p.name
+            if not p.payloads:
+                return f"{cls}()"
+            inner = ", ".join(self._format_pattern(sub) for sub in p.payloads)
+            return f"{cls}({inner})"
+        raise NotImplementedError(
+            f"IR Python emitter: pattern {type(p).__name__} not supported"
+        )
 
     def _with_optional_dst(self, dst, rhs: str) -> str:
         if dst is None:

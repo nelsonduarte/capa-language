@@ -381,6 +381,102 @@ class TestTryOperator(unittest.TestCase):
         self.assertEqual(result_err.error, "boom")
 
 
+class TestMatch(unittest.TestCase):
+    """Phase 2D: statement-form ``match``. The expression-position
+    ``let x = match ...`` form is still deferred (it would need the
+    lowerer to thread a destination through each arm body). Patterns
+    supported here: wildcard, ident binding, literal (int / str / bool
+    / unit), and variant with payloads. The Python emitter targets
+    3.10+ ``match`` / ``case`` syntax."""
+
+    def _runtime_ns(self) -> dict:
+        from capa.runtime import Err, Ok, Some, None_
+        from capa.runtime._result import _NoneType
+        return {
+            "Err": Err, "Ok": Ok, "Some": Some,
+            "None_": None_, "_NoneType": _NoneType,
+        }
+
+    def test_variant_match_with_payload_binding(self):
+        src = (
+            "fun describe(r: Result<Int, String>) -> String\n"
+            "    match r\n"
+            "        Ok(n) ->\n"
+            "            return \"ok:${n}\"\n"
+            "        Err(e) ->\n"
+            "            return \"err:${e}\"\n"
+        )
+        module, types = _parse_and_check(src)
+        ir_mod = lower(module, types=types)
+        fn = ir_mod.functions[0]
+        # Body should contain a Match instruction.
+        matches = [i for i in fn.body if isinstance(i, N.Match)]
+        self.assertEqual(len(matches), 1)
+        self.assertEqual(len(matches[0].arms), 2)
+        # Run the emitted Python end to end.
+        py = compile(module, types=types)
+        ns = self._runtime_ns()
+        exec(py, ns)
+        self.assertEqual(ns["describe"](ns["Ok"](7)), "ok:7")
+        self.assertEqual(ns["describe"](ns["Err"]("nope")), "err:nope")
+
+    def test_wildcard_catch_all_arm(self):
+        src = (
+            "fun bucket(n: Int) -> String\n"
+            "    match n\n"
+            "        0 ->\n"
+            "            return \"zero\"\n"
+            "        1 ->\n"
+            "            return \"one\"\n"
+            "        _ ->\n"
+            "            return \"many\"\n"
+        )
+        module, types = _parse_and_check(src)
+        py = compile(module, types=types)
+        ns: dict = {}
+        exec(py, ns)
+        self.assertEqual(ns["bucket"](0), "zero")
+        self.assertEqual(ns["bucket"](1), "one")
+        self.assertEqual(ns["bucket"](42), "many")
+
+    def test_option_none_variant_pattern(self):
+        # Capa's ``None`` (Option's singleton) is rendered as ``None_``
+        # in Python; the emitter rewrites the variant name.
+        src = (
+            "fun length(o: Option<String>) -> Int\n"
+            "    match o\n"
+            "        Some(s) ->\n"
+            "            return 1\n"
+            "        None ->\n"
+            "            return 0\n"
+        )
+        module, types = _parse_and_check(src)
+        py = compile(module, types=types)
+        # Capa's source-level ``None`` pattern reaches the emitter as a
+        # PatVariant whose name is "None"; the emitter rewrites this
+        # to ``_NoneType()`` because the runtime's ``None_`` is a
+        # singleton instance, not a class, and Python's case-pattern
+        # syntax requires a class on the left of ``(...)``.
+        self.assertIn("_NoneType()", py)
+        ns = self._runtime_ns()
+        exec(py, ns)
+        self.assertEqual(ns["length"](ns["Some"]("hi")), 1)
+        self.assertEqual(ns["length"](ns["None_"]), 0)
+
+    def test_match_arm_with_guard_is_unsupported(self):
+        src = (
+            "fun classify(n: Int) -> String\n"
+            "    match n\n"
+            "        x if x > 0 ->\n"
+            "            return \"pos\"\n"
+            "        _ ->\n"
+            "            return \"nonpos\"\n"
+        )
+        module, types = _parse_and_check(src)
+        with self.assertRaises(UnsupportedInIR):
+            lower(module, types=types)
+
+
 class TestPythonEmission(unittest.TestCase):
     def test_emits_parseable_python_for_arithmetic(self):
         src = (

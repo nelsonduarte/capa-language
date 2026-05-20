@@ -23,6 +23,8 @@ from ._nodes import (
     If, While, Break, Continue, Return,
     MakeStruct, MakeList, MakeTuple, FieldAccess, Index, FormatStr, For,
     TryUnwrap,
+    Pattern, PatWildcard, PatIdent, PatLiteral, PatVariant,
+    MatchArm, Match,
     fresh_local,
 )
 
@@ -295,6 +297,12 @@ class Lowerer:
         self._instrs.append(Return(value=v))
 
     def _lower_expr_stmt(self, s: A.ExprStmt) -> None:
+        # Special case: a bare ``match`` used as a statement (value
+        # discarded). The lowerer emits a Match instruction directly
+        # rather than going through _lower_expr (which would force a
+        # result Value the caller would then discard).
+        if isinstance(s.expr, A.MatchExpr):
+            return self._lower_match_stmt(s.expr)
         # Discard the value of the expression; the side-effecting work
         # has already been emitted by ``_lower_expr``. For a call /
         # method-call we rewrite the last emitted instruction to drop
@@ -309,6 +317,63 @@ class Lowerer:
         # No instruction-level rewrite possible (e.g., a bare literal
         # used as a statement). Just drop it; the emitter has nothing
         # to write.
+
+    def _lower_match_stmt(self, m: A.MatchExpr) -> None:
+        """Lower a match-as-statement. The expression-position form
+        (``let x = match ...``) is deferred until a later phase."""
+        scrut = self._lower_expr(m.scrutinee)
+        arms: list[MatchArm] = []
+        for arm in m.arms:
+            if arm.guard is not None:
+                raise UnsupportedInIR("match arm with guard")
+            pat = self._lower_pattern(arm.pattern)
+            outer = self._instrs
+            self._instrs = []
+            if isinstance(arm.body, A.Block):
+                self._lower_block(arm.body)
+            else:
+                # Expression body used as a statement: lower the
+                # expression for side effects and drop the value.
+                self._lower_expr_stmt(A.ExprStmt(pos=m.pos, expr=arm.body))
+            body = self._instrs
+            self._instrs = outer
+            arms.append(MatchArm(pattern=pat, body=body, guard=None))
+        self._instrs.append(Match(scrutinee=scrut, arms=arms, result_dst=None))
+
+    def _lower_pattern(self, p: A.Pattern) -> Pattern:
+        """Translate an AST pattern to its IR shape. Phase 2D supports
+        Wildcard, Ident, Literal (Int / String / Bool / Unit), and
+        Variant (with payloads). Other shapes (Struct, Tuple, Or)
+        raise UnsupportedInIR until a later phase handles them."""
+        if isinstance(p, A.WildcardPat):
+            return PatWildcard()
+        if isinstance(p, A.IdentPat):
+            # Track the binding name as a local in the arm scope so
+            # that the arm body can reference it. The type is left
+            # Unknown because the analyzer's pattern-binding type is
+            # not carried through the AST node we have here.
+            self._locals[p.name] = "Unknown"
+            return PatIdent(name=p.name)
+        if isinstance(p, A.LiteralPat):
+            return self._lower_literal_pattern(p)
+        if isinstance(p, A.VariantPat):
+            payloads = [self._lower_pattern(sub) for sub in p.payloads]
+            return PatVariant(name=p.name, payloads=payloads)
+        raise UnsupportedInIR(f"match pattern {type(p).__name__}")
+
+    def _lower_literal_pattern(self, p: A.LiteralPat) -> Pattern:
+        v = p.value
+        if isinstance(v, A.IntLit):
+            return PatLiteral(kind="int", value=v.value)
+        if isinstance(v, A.StringLit):
+            return PatLiteral(kind="str", value=v.value)
+        if isinstance(v, A.BoolLit):
+            return PatLiteral(kind="bool", value=v.value)
+        if isinstance(v, A.UnitLit):
+            return PatLiteral(kind="unit", value=None)
+        raise UnsupportedInIR(
+            f"literal pattern of kind {type(v).__name__}"
+        )
 
     # ------------------------------------------------------------
     # Expressions: each returns a Value.
