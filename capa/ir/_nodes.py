@@ -428,6 +428,29 @@ class SumDecl:
 
 
 @dataclass
+class ConstDecl:
+    """A top-level ``const NAME: T = expr``. The right-hand side is
+    represented as a sequence of CIR instructions terminating in an
+    instruction that binds ``dst`` to the constant's name. This keeps
+    constants three-address-uniform with function bodies; the Python
+    emitter renders the prelude instructions inline before the binding."""
+    name: str
+    ty: str
+    body: list[Instr]
+
+
+@dataclass
+class ImportDecl:
+    """An ``import`` declaration. The analyzer rejects ``import`` in
+    v1 (it would punch through Capa's capability discipline); the IR
+    only records it so the emitter can leave a breadcrumb comment in
+    sync with the legacy transpiler. No real Python import is ever
+    emitted from this node."""
+    path: list[str]
+    alias: Optional[str]
+
+
+@dataclass
 class MethodSig:
     """A method signature inside a trait or capability declaration.
     No body; backends that emit interface-like targets (Wasm CM's
@@ -485,6 +508,8 @@ class Module:
     types: list = field(default_factory=list)  # list[StructDecl | SumDecl]
     impls: list = field(default_factory=list)  # list[ImplBlock]
     traits: list = field(default_factory=list)  # list[TraitDecl]
+    consts: list = field(default_factory=list)  # list[ConstDecl]
+    imports: list = field(default_factory=list)  # list[ImportDecl]
     ast_module: object = None  # capa_ast.Module; opaque to the IR
 
 

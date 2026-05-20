@@ -28,7 +28,7 @@ from ._nodes import (
     MakeStruct, MakeList, MakeTuple, FieldAccess, Index, FormatStr, For,
     TryUnwrap, MakeLambda,
     Pattern, PatWildcard, PatIdent, PatLiteral, PatVariant, Match,
-    StructDecl, SumDecl, ImplBlock, TraitDecl,
+    StructDecl, SumDecl, ImplBlock, TraitDecl, ConstDecl, ImportDecl,
 )
 
 
@@ -58,6 +58,14 @@ class PythonEmitter:
         # so the import is harmless when redundant.
         if module.types:
             self._write("from dataclasses import dataclass")
+            self._lines.append("")
+        for imp in module.imports:
+            self._emit_import(imp)
+        if module.imports:
+            self._lines.append("")
+        for c in module.consts:
+            self._emit_const(c)
+        if module.consts:
             self._lines.append("")
         # Track sum-type variants so impl blocks can attach their
         # methods to every variant class (the union alias is not
@@ -142,6 +150,28 @@ class PythonEmitter:
         if t.variants:
             union = " | ".join(v.name for v in t.variants)
             self._write(f"{t.name} = {union}")
+
+    # ----- const + import --------------------------------------
+
+    def _emit_import(self, imp: ImportDecl) -> None:
+        # Defence in depth: the analyzer rejects ``import`` in v1, so
+        # the IR's normal pipeline never reaches here with a valid
+        # module. We mirror the legacy transpiler's breadcrumb to
+        # signal intent and avoid emitting a real Python import.
+        path = ".".join(imp.path)
+        alias = f" as {imp.alias}" if imp.alias else ""
+        self._write(
+            f"# capa: 'import {path}{alias}' rejected, "
+            f"use py_import(unsafe, ...) instead"
+        )
+
+    def _emit_const(self, c: ConstDecl) -> None:
+        # Emit the constant's prelude instructions at the module's
+        # top indent (which is zero at this point), then the final
+        # binding. The instruction list ends with the AssignConst the
+        # lowerer appended, so the last line is ``name = <value>``.
+        for instr in c.body:
+            self._emit_instr(instr)
 
     # ----- trait / capability decls -----------------------------
 
@@ -408,7 +438,7 @@ class PythonEmitter:
     # ----- value rendering --------------------------------------
 
     def _format_value(self, v: Value) -> str:
-        if v.kind in ("local", "param"):
+        if v.kind in ("local", "param", "global"):
             return v.name or ""
         if v.kind == "lit_int":
             return repr(v.literal)

@@ -26,7 +26,7 @@ from ._nodes import (
     Pattern, PatWildcard, PatIdent, PatLiteral, PatVariant,
     MatchArm, Match,
     StructDecl, StructField, SumDecl, SumVariant, ImplBlock,
-    TraitDecl, MethodSig,
+    TraitDecl, MethodSig, ConstDecl, ImportDecl,
     fresh_local,
 )
 
@@ -68,6 +68,11 @@ class Lowerer:
         # capability-typed (built-in caps for now; user-defined caps
         # are added in a later phase).
         self._cap_params: dict[str, str] = {}
+        # Module-level identifiers (top-level consts and function
+        # names). Populated by ``lower_module`` before any function is
+        # lowered so that references to them inside function bodies
+        # resolve to ``Value(kind="global")``.
+        self._module_names: set[str] = set()
 
     # ------------------------------------------------------------
     # Module / function entry points.
@@ -78,6 +83,17 @@ class Lowerer:
         types: list = []
         impls: list = []
         traits: list = []
+        consts: list = []
+        imports: list = []
+        # Pre-scan: collect every top-level identifier (const names and
+        # function names) so that intra-module references resolve to a
+        # module-scope global rather than tripping the unknown-ident
+        # branch in ``_lower_ident``.
+        self._module_names = {
+            item.name
+            for item in module.items
+            if isinstance(item, (A.ConstDecl, A.FunDecl))
+        }
         for item in module.items:
             if isinstance(item, A.FunDecl):
                 functions.append(self.lower_function(item))
@@ -89,14 +105,55 @@ class Lowerer:
                 impls.append(self._lower_impl_block(item))
             elif isinstance(item, A.TraitDecl):
                 traits.append(self._lower_trait_decl(item))
+            elif isinstance(item, A.ConstDecl):
+                consts.append(self._lower_const_decl(item))
+            elif isinstance(item, A.Import):
+                imports.append(
+                    ImportDecl(path=list(item.path), alias=item.alias)
+                )
             else:
                 raise UnsupportedInIR(
                     f"top-level item {type(item).__name__}"
                 )
         return Module(
             functions=functions, types=types, impls=impls,
-            traits=traits, ast_module=module,
+            traits=traits, consts=consts, imports=imports,
+            ast_module=module,
         )
+
+    def _lower_const_decl(self, c: A.ConstDecl) -> ConstDecl:
+        # Constants live at module scope but their RHS uses the same
+        # expression machinery as a function body. We reset per-
+        # function state so the lowering's locals, counter, and
+        # instruction buffer are scoped to this constant's body
+        # alone. The emitted prelude (intermediate locals if the
+        # expression has sub-computations) is bundled into ``body``;
+        # the emitter renders the prelude as ordinary statements
+        # before the final binding.
+        outer_counter = self._counter
+        outer_instrs = self._instrs
+        outer_locals = self._locals
+        outer_params = self._params
+        outer_caps = self._cap_params
+        self._counter = {"n": 0}
+        self._instrs = []
+        self._locals = {}
+        self._params = set()
+        self._cap_params = {}
+        value = self._lower_expr(c.value)
+        # Final binding: ``name = value``. Reuse AssignConst so the
+        # emitter can render it without a special case.
+        self._instrs.append(AssignConst(dst=c.name, src=value))
+        body = self._instrs
+        ty = _type_name(c.type_expr) if c.type_expr else _ty_to_str(
+            self.types.get(id(c.value), "Unknown") if self.types else "Unknown"
+        )
+        self._counter = outer_counter
+        self._instrs = outer_instrs
+        self._locals = outer_locals
+        self._params = outer_params
+        self._cap_params = outer_caps
+        return ConstDecl(name=c.name, ty=ty, body=body)
 
     def _lower_trait_decl(self, t: A.TraitDecl) -> TraitDecl:
         methods: list[MethodSig] = []
@@ -574,10 +631,12 @@ class Lowerer:
             return Value(kind="param", name=e.name, ty=ty)
         if e.name in self._locals:
             return Value(kind="local", name=e.name, ty=self._locals[e.name])
-        # Unknown identifier: could be a top-level function name, a
-        # constant, a built-in capability class. Phase 1 only supports
-        # built-in capability classes used as a value (rare) and
-        # defers everything else.
+        if e.name in self._module_names:
+            # A reference to a top-level constant or a function name
+            # used as a value (e.g. higher-order use). Treated as a
+            # Python-level global; the emitter renders ``Value`` as
+            # the bare name.
+            return Value(kind="global", name=e.name, ty="Unknown")
         if e.name in _BUILTIN_CAPS:
             return Value(kind="cap_const", name=e.name, ty=e.name)
         raise UnsupportedInIR(f"identifier reference {e.name!r}")

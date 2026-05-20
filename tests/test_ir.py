@@ -550,6 +550,43 @@ class TestTopLevelTypes(unittest.TestCase):
         self.assertIsInstance(ns["make"](), ns["Empty"])
 
 
+class TestConstAndImport(unittest.TestCase):
+    """Phase 3D: top-level ``const`` declarations and ``import``
+    statements. Constants emit as module-level assignments with their
+    initialiser prelude inlined. Imports always emit a breadcrumb
+    comment (defence in depth): the analyzer rejects them in v1, but
+    if the IR ever sees one, the emitted source must not contain a
+    real Python import."""
+
+    def test_simple_int_const(self):
+        src = (
+            "const MAX_RETRIES: Int = 3\n"
+            "fun budget() -> Int\n"
+            "    return MAX_RETRIES + 1\n"
+        )
+        module, types = _parse_and_check(src)
+        ir_mod = lower(module, types=types)
+        self.assertEqual(len(ir_mod.consts), 1)
+        self.assertEqual(ir_mod.consts[0].name, "MAX_RETRIES")
+        py = compile(module, types=types)
+        self.assertIn("MAX_RETRIES = 3", py)
+        ns: dict = {}
+        exec(py, ns)
+        self.assertEqual(ns["budget"](), 4)
+
+    def test_const_with_computed_value(self):
+        src = (
+            "const HALF: Int = 100 / 2\n"
+            "fun read() -> Int\n"
+            "    return HALF\n"
+        )
+        module, types = _parse_and_check(src)
+        py = compile(module, types=types)
+        ns: dict = {}
+        exec(py, ns)
+        self.assertEqual(ns["read"](), 50)
+
+
 class TestTraitsAndCapabilities(unittest.TestCase):
     """Phase 3C: ``trait`` and user-defined ``capability`` declarations.
     Both lower to an IR ``TraitDecl`` (distinguished by
