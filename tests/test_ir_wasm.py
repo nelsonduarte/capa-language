@@ -28,7 +28,9 @@ import unittest
 
 from capa import Lexer, Parser, analyze
 from capa.ir import (
-    lower, emit_wat, compile_wat, compile_wasm, WasmEmissionError,
+    lower, emit_wat, emit_wit, compile_wat, compile_wasm, compile_wit,
+    collect_used_capabilities, WasmEmissionError,
+    UnsupportedCapabilityMethod,
 )
 
 
@@ -238,6 +240,227 @@ class TestWasmExecutes(unittest.TestCase):
         self.assertEqual(self._exec(src, "both_pos", 1, 2), 1)
         self.assertEqual(self._exec(src, "both_pos", 1, -1), 0)
         self.assertEqual(self._exec(src, "both_pos", -1, 5), 0)
+
+
+class TestWitGeneration(unittest.TestCase):
+    """Phase 6B: WIT file generation from CIR. Tests the structural
+    output (interface declarations + world) for canonical programs.
+    Does not shell out to wasm-tools; just checks the textual form."""
+
+    def test_program_with_stdio_emits_stdio_interface(self):
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"hi\")\n"
+        )
+        ir_mod, _, _ = _parse_lower(src)
+        wit = emit_wit(ir_mod)
+        self.assertIn("package capa:generated;", wit)
+        self.assertIn("interface stdio {", wit)
+        self.assertIn("println: func(msg: string);", wit)
+        self.assertIn("world program {", wit)
+        self.assertIn("import stdio;", wit)
+
+    def test_program_using_multiple_stdio_methods(self):
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    stdio.print(\"a\")\n"
+            "    stdio.println(\"b\")\n"
+            "    stdio.eprintln(\"err\")\n"
+        )
+        ir_mod, _, _ = _parse_lower(src)
+        wit = emit_wit(ir_mod)
+        # All three methods must show up. Order is deterministic
+        # (we sort by name) but using substring search across
+        # "print:" / "println:" is brittle because "print" is a
+        # prefix of "println"; check on full lines instead.
+        self.assertIn("print: func(msg: string);", wit)
+        self.assertIn("println: func(msg: string);", wit)
+        self.assertIn("eprintln: func(msg: string);", wit)
+
+    def test_program_without_capabilities_has_no_imports(self):
+        src = (
+            "fun add(a: Int, b: Int) -> Int\n"
+            "    return a + b\n"
+        )
+        ir_mod, _, _ = _parse_lower(src)
+        wit = emit_wit(ir_mod)
+        # The world is still emitted (caller may want to package it
+        # as a component) but with no imports.
+        self.assertIn("world program {", wit)
+        self.assertNotIn("interface", wit)
+        self.assertNotIn("import", wit)
+
+    def test_collect_used_capabilities_groups_by_capability(self):
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"a\")\n"
+            "    stdio.eprintln(\"b\")\n"
+        )
+        ir_mod, _, _ = _parse_lower(src)
+        used = collect_used_capabilities(ir_mod)
+        self.assertEqual(used, {"Stdio": {"println", "eprintln"}})
+
+    def test_unsupported_cap_method_raises_at_wit_gen(self):
+        # ``read_line`` is a real Stdio method but Phase 6B does not
+        # yet have a WIT signature for it (returns Result<String, IoError>
+        # which needs Phase 6C+ to encode). The WIT generator must
+        # surface the gap as a precise error rather than emit a
+        # half-defined interface.
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    let line = stdio.read_line()\n"
+        )
+        ir_mod, _, _ = _parse_lower(src)
+        with self.assertRaises(UnsupportedCapabilityMethod):
+            emit_wit(ir_mod)
+
+
+class TestWasmStdioEmission(unittest.TestCase):
+    """Phase 6B Wasm-side emission of capability method calls.
+    Pure shape tests (no toolchain shell-out)."""
+
+    def test_emits_stdio_import(self):
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"hi\")\n"
+        )
+        ir_mod, _, _ = _parse_lower(src)
+        wat = emit_wat(ir_mod)
+        self.assertIn(
+            '(import "capa:stdio" "println" '
+            '(func $Stdio_println (param i32) (param i32))',
+            wat,
+        )
+
+    def test_main_export_drops_capability_param(self):
+        # ``main(stdio: Stdio)`` has no Wasm-level parameters because
+        # the capability is provided via imports, not as a value.
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"hi\")\n"
+        )
+        ir_mod, _, _ = _parse_lower(src)
+        wat = emit_wat(ir_mod)
+        self.assertIn('(func $main (export "main")', wat)
+        self.assertNotIn("$stdio", wat)
+
+    def test_string_literal_lowers_to_data_segment(self):
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"hi\")\n"
+        )
+        ir_mod, _, _ = _parse_lower(src)
+        wat = emit_wat(ir_mod)
+        self.assertIn('(memory (export "memory") 1)', wat)
+        self.assertIn('(data (i32.const 0) "hi")', wat)
+
+    def test_non_string_method_call_raises(self):
+        # No String type for non-capability method calls yet.
+        src = (
+            "fun greet(name: String) -> String\n"
+            "    return name.to_upper()\n"
+        )
+        ir_mod, _, _ = _parse_lower(src)
+        with self.assertRaises(WasmEmissionError):
+            emit_wat(ir_mod)
+
+
+@unittest.skipUnless(
+    _has_wasm_tools() and _has_wasmtime_py(),
+    "wasm-tools and/or wasmtime-py not installed",
+)
+class TestWasmStdioExecutes(unittest.TestCase):
+    """End-to-end: Capa -> CIR -> WAT -> .wasm -> wasmtime with
+    a Python host bridge providing the ``capa:stdio`` interface."""
+
+    def _run_capturing_stdout(self, src: str) -> tuple[str, str]:
+        import io, sys
+        from capa.runtime._wasm_host import WasmHost
+        _, types, ast_mod = _parse_lower(src)
+        blob = compile_wasm(ast_mod, types=types)
+        host = WasmHost()
+        out, err = io.StringIO(), io.StringIO()
+        saved_out, saved_err = sys.stdout, sys.stderr
+        sys.stdout, sys.stderr = out, err
+        try:
+            host.run_main(blob)
+        finally:
+            sys.stdout, sys.stderr = saved_out, saved_err
+        return out.getvalue(), err.getvalue()
+
+    def test_hello_world(self):
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"hello from wasm\")\n"
+        )
+        out, _ = self._run_capturing_stdout(src)
+        self.assertEqual(out, "hello from wasm\n")
+
+    def test_print_does_not_append_newline(self):
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    stdio.print(\"no newline\")\n"
+        )
+        out, _ = self._run_capturing_stdout(src)
+        self.assertEqual(out, "no newline")
+
+    def test_multiple_prints_in_order(self):
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"line one\")\n"
+            "    stdio.println(\"line two\")\n"
+            "    stdio.println(\"line three\")\n"
+        )
+        out, _ = self._run_capturing_stdout(src)
+        self.assertEqual(out, "line one\nline two\nline three\n")
+
+    def test_eprintln_goes_to_stderr(self):
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    stdio.eprintln(\"warn\")\n"
+        )
+        out, err = self._run_capturing_stdout(src)
+        self.assertEqual(out, "")
+        self.assertEqual(err, "warn\n")
+
+    def test_utf8_in_string_literal(self):
+        # Non-ASCII characters survive UTF-8 encoding through the
+        # data segment + host decode round-trip.
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"olá, mundo\")\n"
+        )
+        out, _ = self._run_capturing_stdout(src)
+        self.assertEqual(out, "olá, mundo\n")
+
+    def test_user_function_call_with_capability_arg(self):
+        # ``greet`` takes a Stdio param and a Bool. The Wasm signature
+        # drops Stdio; the call site at ``main`` passes only the Bool.
+        # The capability flows through the module-level import.
+        src = (
+            "fun greet(stdio: Stdio, friendly: Bool)\n"
+            "    if friendly\n"
+            "        stdio.println(\"hi\")\n"
+            "    else\n"
+            "        stdio.println(\"bye\")\n"
+            "fun main(stdio: Stdio)\n"
+            "    greet(stdio, true)\n"
+        )
+        out, _ = self._run_capturing_stdout(src)
+        self.assertEqual(out, "hi\n")
+
+    def test_string_literals_are_pooled(self):
+        # Two identical literals should share a single data-segment
+        # entry (verified indirectly: the emitted WAT only mentions
+        # the literal once).
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"hi\")\n"
+            "    stdio.println(\"hi\")\n"
+        )
+        _, types, ast_mod = _parse_lower(src)
+        wat = compile_wat(ast_mod, types=types)
+        self.assertEqual(wat.count('(data (i32.const 0) "hi")'), 1)
 
 
 if __name__ == "__main__":

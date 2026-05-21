@@ -1,25 +1,33 @@
-"""CIR -> WebAssembly text (WAT) emitter (Phase 6A).
+"""CIR -> WebAssembly text (WAT) emitter (Phase 6A + 6B).
 
-Phase 6A scope: integer / boolean arithmetic, comparisons, locals,
-``if`` / ``while`` / ``break`` / ``continue`` / ``return``. Strings,
-collections, structs, sums, lambdas, capabilities, ``?``, and match
-are deferred to subsequent Phase 6 sub-phases.
+Phase 6A established the core scalar surface (Int / Bool arithmetic,
+control flow). Phase 6B adds capability method calls and string
+literals so a Capa program like ``stdio.println("hi")`` can lower
+end-to-end.
 
 The emitter produces WAT (text) which the caller assembles to binary
 ``.wasm`` via ``wasm-tools parse``. WAT is preferred over direct
 binary because it is human-readable and easy to debug; the binary
 form is mechanically derived from it.
 
-Type mapping (Phase 6A):
+Type mapping:
 
 - Capa ``Int`` -> Wasm ``i64`` (signed 64-bit integer)
 - Capa ``Bool`` -> Wasm ``i32`` (0 or 1; wasm has no native bool)
 - Capa ``Unit`` -> no Wasm result (functions returning Unit omit
   the ``(result ...)`` clause)
+- Capa ``String`` (Phase 6B, literal only) -> two i32s (memory ptr,
+  byte length). Pushed sequentially when a string is passed as a
+  capability method argument.
+- Capa capability types (``Stdio``, ``Fs``, ...) have no Wasm
+  representation: the methods they expose are imported into the
+  module by name (matching the corresponding WIT interface), so a
+  capability "value" carries no information at runtime. Capability
+  params on Capa functions are dropped from the Wasm signature.
 
-Functions are emitted as core Wasm functions for now; the Component
-Model wrapper that turns them into capability-importing components
-lands in Phase 6B.
+Phase 6B coverage is intentionally narrow: only Stdio methods with
+string-literal arguments. Full String semantics (locals, methods,
+concatenation) wait for Phase 6D.
 """
 
 from __future__ import annotations
@@ -28,9 +36,16 @@ from typing import List, Optional
 
 from ._nodes import (
     Module, Function, Param, Value, Instr,
-    AssignConst, Reassign, BinOp, UnaryOp, Call,
+    AssignConst, Reassign, BinOp, UnaryOp, Call, MethodCall,
     If, While, Break, Continue, Return,
 )
+from ._emit_wit import _WIT_SIGNATURES, _KNOWN_CAPABILITIES
+
+
+# Capa built-in capabilities. Receivers of these types route
+# MethodCall instructions to imported Wasm functions rather than
+# core method dispatch; their parameters carry no Wasm value.
+_BUILTIN_CAPS = {"Stdio", "Fs", "Env", "Clock", "Net", "Random", "Proc", "Db", "Unsafe"}
 
 
 # Capa scalar types this phase knows how to lower. Any other type
@@ -88,17 +103,180 @@ class WasmEmitter:
         self._loop_labels: list[tuple[str, str]] = []
         # Per-function counter for unique block labels.
         self._block_counter = 0
+        # Module-level string pool: maps a Python string to its
+        # (offset, length_in_bytes) in the data segment. Populated
+        # by ``_intern_string`` as the emitter walks the function
+        # bodies; the data segment itself is emitted after every
+        # function so all literals are known.
+        self._strings: dict[str, tuple[int, int]] = {}
+        self._string_data_offset = 0
+        # Set of capability classes the emitter has seen in
+        # method-call receivers; drives the ``(import ...)``
+        # declarations at the top of the module.
+        self._used_caps: set[tuple[str, str]] = set()
+        # The function currently being emitted; per-instruction
+        # handlers consult ``self._current_fn.locals`` to resolve
+        # the Capa type of a local without threading the function
+        # through every recursive call.
+        self._current_fn: Optional[Function] = None
 
     # ----- public ------------------------------------------------
 
     def emit(self, module: Module) -> str:
+        # First pass: walk the module to discover used capability
+        # methods and string literals so we can emit imports and
+        # the data segment at the top of the module (Wasm requires
+        # imports before any function/code section, and we want the
+        # data segment in a known location).
+        self._used_caps = set()
+        self._strings = {}
+        self._string_data_offset = 0
+        self._discover(module)
+
+        # Stage 1: emit the (module ... ) header with imports and
+        # memory.
+        body_lines: list[str] = []
+        self._lines = body_lines
         self._write("(module")
         self._indent += 1
+        # Imports for each used capability method. The Wasm import
+        # name follows the WIT interface convention: module name is
+        # the lowercased interface (``capa:stdio`` style) so the
+        # host's Linker maps interface -> import in one step.
+        for cap, method in sorted(self._used_caps):
+            import_module = f"capa:{cap.lower()}"
+            import_name = method
+            params, result = self._cap_method_wasm_sig(cap, method)
+            params_str = " ".join(f"(param {t})" for t in params)
+            result_str = f" (result {result})" if result else ""
+            self._write(
+                f'(import "{import_module}" "{import_name}" '
+                f'(func ${cap}_{method}{(" " + params_str) if params_str else ""}{result_str}))'
+            )
+        # Memory + data segment for string literals. Always declare
+        # at least one page (64KB) so any string fits without growth
+        # logic; the host reads from this memory to materialise
+        # string args.
+        if self._strings:
+            self._write('(memory (export "memory") 1)')
+            for text, (offset, _len) in sorted(
+                self._strings.items(), key=lambda kv: kv[1][0],
+            ):
+                escaped = self._escape_wat_string(text)
+                self._write(f'(data (i32.const {offset}) "{escaped}")')
+        elif self._has_any_caps():
+            # Even without literals, a capability that takes string
+            # args may receive empty strings; export an empty memory
+            # so the host's Linker can resolve the import shape.
+            self._write('(memory (export "memory") 1)')
+        # Stage 2: emit each function.
         for fn in module.functions:
             self._emit_function(fn)
         self._indent -= 1
         self._write(")")
         return "\n".join(self._lines) + "\n"
+
+    # ----- discovery pass ---------------------------------------
+
+    def _discover(self, module: Module) -> None:
+        """Walk all functions and collect string literals + used
+        capability methods. The discovered set drives import
+        declarations and the data segment layout; encountering
+        anything outside the supported set is a fatal error so the
+        emitted Wasm never references something the host did not
+        provide."""
+        for fn in module.functions:
+            self._discover_instrs(fn.body)
+
+    def _discover_instrs(self, instrs: list[Instr]) -> None:
+        for instr in instrs:
+            if isinstance(instr, MethodCall) and instr.cap_used:
+                cap = instr.cap_used
+                if cap not in _BUILTIN_CAPS:
+                    raise WasmEmissionError(
+                        f"Phase 6B: capability {cap!r} not in the "
+                        f"built-in set; user-defined capabilities "
+                        f"land in a later phase"
+                    )
+                key = (cap, instr.method)
+                if (cap, instr.method) not in _WIT_SIGNATURES:
+                    raise WasmEmissionError(
+                        f"Phase 6B: capability method {cap}.{instr.method} "
+                        f"has no WIT/Wasm encoding yet; widen the "
+                        f"signature tables in capa.ir._emit_wit and "
+                        f"capa.ir._emit_wasm together"
+                    )
+                self._used_caps.add(key)
+                # String-typed args must come from literals in this
+                # phase; intern each one.
+                for arg in instr.args:
+                    if arg.kind == "lit_str":
+                        self._intern_string(arg.literal)
+            if isinstance(instr, AssignConst) and instr.src.kind == "lit_str":
+                # Intern, but defer using-this-local to Phase 6D.
+                self._intern_string(instr.src.literal)
+            if isinstance(instr, If):
+                self._discover_instrs(instr.then_body)
+                self._discover_instrs(instr.else_body)
+            elif isinstance(instr, While):
+                self._discover_instrs(instr.cond_setup)
+                self._discover_instrs(instr.body)
+
+    def _intern_string(self, text: str) -> tuple[int, int]:
+        if text in self._strings:
+            return self._strings[text]
+        encoded = text.encode("utf-8")
+        offset = self._string_data_offset
+        length = len(encoded)
+        self._strings[text] = (offset, length)
+        # Align next string on a 1-byte boundary -- no padding needed
+        # for UTF-8. Add a 0 byte between strings so a hex dump is
+        # readable when debugging.
+        self._string_data_offset = offset + length + 1
+        return (offset, length)
+
+    def _has_any_caps(self) -> bool:
+        return len(self._used_caps) > 0
+
+    # ----- capability method signatures -------------------------
+
+    def _cap_method_wasm_sig(
+        self, cap: str, method: str,
+    ) -> tuple[list[str], str]:
+        """Return (param_types, result_type) for the Wasm core
+        signature of a capability method. String args expand to two
+        i32s (ptr, len). The result_type is empty for void methods.
+        Mirrors the WIT signatures in ``_emit_wit._WIT_SIGNATURES``;
+        keep the two tables in sync."""
+        wit = _WIT_SIGNATURES.get((cap, method))
+        if wit is None:
+            raise WasmEmissionError(
+                f"no Wasm signature for {cap}.{method}"
+            )
+        # Phase 6B only emits methods taking a single string arg
+        # returning unit. Parsing the WIT signature would let us
+        # support more shapes; for now, hard-code the pattern.
+        if "func(msg: string)" in wit:
+            return (["i32", "i32"], "")
+        raise WasmEmissionError(
+            f"Phase 6B: cap method {cap}.{method} has shape {wit!r} "
+            f"that the Wasm emitter does not yet decode"
+        )
+
+    @staticmethod
+    def _escape_wat_string(s: str) -> str:
+        """Escape a Python string for inclusion inside a WAT
+        ``(data ... "...")`` literal. WAT data strings use \\HH
+        for arbitrary bytes; we go through UTF-8 and escape every
+        byte that is not a printable ASCII character (avoiding
+        ``"`` and ``\\`` which need special handling)."""
+        out = []
+        for b in s.encode("utf-8"):
+            if 0x20 <= b < 0x7F and b not in (0x22, 0x5C):
+                out.append(chr(b))
+            else:
+                out.append(f"\\{b:02x}")
+        return "".join(out)
 
     # ----- function-level ---------------------------------------
 
@@ -106,10 +284,19 @@ class WasmEmitter:
         # Reset per-function state.
         self._block_counter = 0
         self._loop_labels = []
+        # Cache the current function so per-instruction handlers can
+        # look up local / param Capa types without threading ``fn``
+        # through every helper.
+        self._current_fn = fn
 
-        # Build the function header: params and result.
+        # Build the function header: params and result. Capability
+        # params are dropped from the Wasm signature because their
+        # methods are imported into the module by name -- the param
+        # carries no runtime value.
         param_clauses = []
         for p in fn.params:
+            if p.ty in _BUILTIN_CAPS:
+                continue
             ty = self._wasm_type(p.ty)
             if not ty:
                 raise WasmEmissionError(
@@ -161,6 +348,19 @@ class WasmEmitter:
                     # this default is safe within the supported
                     # subset).
                     capa_ty = fn.locals.get(dst, "Int")
+                    # Capability locals (``let other = stdio``)
+                    # carry no Wasm value; skip declaration.
+                    if capa_ty in _BUILTIN_CAPS:
+                        continue
+                    # String locals exist in Phase 6B only as a
+                    # by-product of intermediate-result locals from
+                    # MethodCall instructions whose dst is later
+                    # discarded; they have no Wasm representation
+                    # yet, so we skip them here. Using a String
+                    # local as a method argument would have already
+                    # tripped ``_push_value`` in the discovery pass.
+                    if capa_ty == "String":
+                        continue
                     wasm_ty = self._wasm_type(capa_ty) or "i64"
                     out[dst] = wasm_ty
                 # Recurse into nested instruction lists.
@@ -178,13 +378,33 @@ class WasmEmitter:
 
     def _emit_instr(self, instr: Instr) -> None:
         if isinstance(instr, AssignConst):
+            # Capability and String AssignConst targets are erased at
+            # the Wasm level (see ``_collect_locals``); skip the emit
+            # so we don't reference a non-existent local. The source
+            # value's side effects (none for literals) are also a
+            # no-op.
+            dst_ty = self._dst_capa_ty(instr.dst)
+            if dst_ty in _BUILTIN_CAPS or dst_ty == "String":
+                return
             self._push_value(instr.src)
             self._write(f"local.set ${instr.dst}")
             return
         if isinstance(instr, Reassign):
+            dst_ty = self._dst_capa_ty(instr.dst)
+            if dst_ty in _BUILTIN_CAPS or dst_ty == "String":
+                return
             self._push_value(instr.src)
             self._write(f"local.set ${instr.dst}")
             return
+        if isinstance(instr, MethodCall):
+            if instr.cap_used:
+                self._emit_cap_method_call(instr)
+                return
+            raise WasmEmissionError(
+                f"Phase 6B: MethodCall on non-capability receiver "
+                f"(method {instr.method!r}); String / List / Map / Set "
+                f"methods land in Phase 6D"
+            )
         if isinstance(instr, BinOp):
             self._emit_binop(instr)
             return
@@ -255,9 +475,8 @@ class WasmEmitter:
             self._write("return")
             return
         if isinstance(instr, Call):
-            raise WasmEmissionError(
-                "Phase 6A does not support function calls; defer to 6B+"
-            )
+            self._emit_user_call(instr)
+            return
         raise WasmEmissionError(
             f"Phase 6A: instruction {type(instr).__name__} not supported"
         )
@@ -305,6 +524,65 @@ class WasmEmitter:
         raise WasmEmissionError(
             f"Phase 6A: unary op {op!r} not supported"
         )
+
+    # ----- user-function calls ----------------------------------
+
+    def _emit_user_call(self, instr: Call) -> None:
+        """Lower a Capa-level function call. Capability-typed args
+        are skipped (the callee's Wasm signature does not include
+        them; capabilities flow through module-level imports). The
+        return value, if any, is bound to ``instr.dst``."""
+        for arg in instr.args:
+            if arg.ty in _BUILTIN_CAPS:
+                continue
+            self._push_value(arg)
+        self._write(f"call ${instr.callee_name}")
+        if instr.dst is not None:
+            dst_ty = self._dst_capa_ty(instr.dst)
+            # If the callee returns a non-empty value, store it in
+            # ``instr.dst``. If the dst type is Unit / capability /
+            # String, skip the set (those locals are erased at the
+            # Wasm level).
+            if dst_ty and dst_ty not in _BUILTIN_CAPS and dst_ty not in ("Unit", "String"):
+                self._write(f"local.set ${instr.dst}")
+
+    # ----- capability method calls ------------------------------
+
+    def _emit_cap_method_call(self, instr: MethodCall) -> None:
+        cap = instr.cap_used
+        method = instr.method
+        # Push each argument. String args expand to (ptr, len).
+        # Scalar args use the regular push path.
+        for arg in instr.args:
+            if arg.kind == "lit_str":
+                offset, length = self._intern_string(arg.literal)
+                self._write(f"i32.const {offset}")
+                self._write(f"i32.const {length}")
+            elif arg.kind == "local" and self._is_string_local(arg.name):
+                # String locals in Phase 6B come from intermediate
+                # IR locals that the Python emitter would have used
+                # as f-string container. The Wasm path does not yet
+                # support them; raise so we don't silently mis-emit.
+                raise WasmEmissionError(
+                    f"Phase 6B: String local {arg.name!r} as cap arg "
+                    f"is not yet supported; pass a string literal "
+                    f"(Phase 6D covers String locals)"
+                )
+            else:
+                self._push_value(arg)
+        self._write(f"call ${cap}_{method}")
+        # Result handling: Phase 6B methods all return Unit, so no
+        # local.set is needed. When a method returns a value (Phase
+        # 6C+), we will local.set $instr.dst here.
+
+    def _is_string_local(self, name: str) -> bool:
+        ty = self._current_fn.locals.get(name) if self._current_fn else None
+        return ty == "String"
+
+    def _dst_capa_ty(self, name: str) -> str:
+        if self._current_fn is None:
+            return ""
+        return self._current_fn.locals.get(name, "")
 
     # ----- value pushing ----------------------------------------
 

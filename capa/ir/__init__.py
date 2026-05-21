@@ -36,6 +36,9 @@ from ._nodes import Module, Function, Param, Local, Value, Instr
 from ._lower import Lowerer, UnsupportedInIR
 from ._emit_python import PythonEmitter
 from ._emit_wasm import WasmEmitter, WasmEmissionError
+from ._emit_wit import (
+    emit_wit, collect_used_capabilities, UnsupportedCapabilityMethod,
+)
 
 __all__ = [
     "Module",
@@ -49,13 +52,17 @@ __all__ = [
     "PythonEmitter",
     "WasmEmitter",
     "WasmEmissionError",
+    "UnsupportedCapabilityMethod",
     "lower",
     "emit_python",
     "emit_wat",
+    "emit_wit",
+    "collect_used_capabilities",
     "compile",
     "compile_program",
     "compile_wat",
     "compile_wasm",
+    "compile_wit",
 ]
 
 
@@ -130,6 +137,20 @@ def compile_wat(module: A.Module, types: dict | None = None) -> str:
     :func:`compile` but targets the Wasm Component Model text form
     instead of Python source."""
     return emit_wat(lower(module, types=types))
+
+
+def compile_wit(
+    module: A.Module,
+    types: dict | None = None,
+    world_name: str = "program",
+) -> str:
+    """End-to-end AST -> CIR -> WIT spec.
+
+    Returns a WIT document declaring an interface per built-in
+    capability the program touches plus a ``world`` that imports
+    them. Pair with :func:`compile_wasm` and a host that provides
+    the interfaces to obtain a runnable component."""
+    return emit_wit(lower(module, types=types), world_name=world_name)
 
 
 def compile_wasm(
