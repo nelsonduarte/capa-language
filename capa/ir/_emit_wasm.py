@@ -435,19 +435,24 @@ class WasmEmitter:
 
     def _uses_heap_alloc(self, module: Module) -> bool:
         """Detect whether any function body contains an instruction
-        that allocates on the heap (MakeList for now; future phases
-        add MakeMap / MakeSet / String operations that build fresh
-        byte buffers). Used to decide whether the module needs the
-        ``$alloc`` helper and the ``$heap_top`` global."""
+        that allocates on the heap. Used to decide whether the
+        module needs the ``$alloc`` helper and the ``$heap_top``
+        global."""
+        # Method names that allocate when called.
+        _ALLOC_METHODS_LIST = {"push"}
+        _ALLOC_METHODS_STRING = {"substring", "to_upper", "to_lower"}
+
         def visit(instrs: list[Instr]) -> bool:
             for instr in instrs:
                 if isinstance(instr, (MakeList, MakeMap, MakeSet)):
                     return True
-                # MethodCall on List with push grows the data array,
-                # which calls alloc too.
                 if isinstance(instr, MethodCall):
                     recv_ty = instr.receiver.ty or ""
-                    if recv_ty.startswith("List") and instr.method in ("push",):
+                    if recv_ty.startswith("List") and instr.method in _ALLOC_METHODS_LIST:
+                        return True
+                    if recv_ty == "String" and instr.method in _ALLOC_METHODS_STRING:
+                        return True
+                    if recv_ty.startswith("Map") and instr.method in ("set", "get"):
                         return True
                 if isinstance(instr, If):
                     if visit(instr.then_body) or visit(instr.else_body):
@@ -469,9 +474,10 @@ class WasmEmitter:
         return False
 
     def _uses_map_ops(self, module: Module) -> bool:
-        """True if the module touches a Map (construction or any
-        method that needs string equality). Drives whether the
-        ``$str_eq`` helper is emitted."""
+        """True if the module touches a Map or a String method that
+        relies on byte-string equality (contains / starts_with /
+        ends_with). Drives whether the ``$str_eq`` helper is
+        emitted."""
         def visit(instrs: list[Instr]) -> bool:
             for instr in instrs:
                 if isinstance(instr, MakeMap):
@@ -479,6 +485,10 @@ class WasmEmitter:
                 if isinstance(instr, MethodCall):
                     recv_ty = instr.receiver.ty or ""
                     if recv_ty.startswith("Map"):
+                        return True
+                    if recv_ty == "String" and instr.method in (
+                        "contains", "starts_with", "ends_with",
+                    ):
                         return True
                 if isinstance(instr, If):
                     if visit(instr.then_body) or visit(instr.else_body):
@@ -765,8 +775,15 @@ class WasmEmitter:
                 )
             param_clauses.append(f"(param ${p.name} {ty})")
         params_str = " ".join(param_clauses)
-        result_ty = self._wasm_type(fn.return_type)
-        result_str = f" (result {result_ty})" if result_ty else ""
+        # String return -> multi-value (i32 ptr, i32 len). Wasm 2.0
+        # supports multi-value, and wasmtime exposes it to Python
+        # as a tuple. Other types use the single-value result form.
+        if fn.return_type == "String":
+            result_str = " (result i32 i32)"
+            result_ty = "string"  # any truthy non-empty value
+        else:
+            result_ty = self._wasm_type(fn.return_type)
+            result_str = f" (result {result_ty})" if result_ty else ""
         header = (
             f'(func ${fn.name} (export "{fn.name}")'
             f'{(" " + params_str) if params_str else ""}'
@@ -819,13 +836,14 @@ class WasmEmitter:
         has_for = False
         has_list_contains_i64 = False
         has_map = False
+        has_string_method = False
 
         def value_uses_variant_ctor(v: Value) -> bool:
             return v is not None and v.kind == "variant_ctor"
 
         def visit(instrs: list[Instr]) -> None:
             nonlocal has_match, has_variant_ctor, has_list, has_for
-            nonlocal has_list_contains_i64, has_map
+            nonlocal has_list_contains_i64, has_map, has_string_method
             for instr in instrs:
                 if isinstance(instr, Match):
                     has_match = True
@@ -842,6 +860,8 @@ class WasmEmitter:
                     recv_ty = instr.receiver.ty or ""
                     if recv_ty.startswith("Map"):
                         has_map = True
+                    if recv_ty == "String":
+                        has_string_method = True
                     if instr.method == "contains" and recv_ty.startswith("List"):
                         elem_ty = _element_type_of_list(recv_ty)
                         if self._size_of(elem_ty) == 8:
@@ -938,6 +958,19 @@ class WasmEmitter:
             out["_alloc_tmp_newcap"] = "i32"
             out["_alloc_tmp_new_data"] = "i32"
             out["_alloc_tmp_result"] = "i32"
+        if has_string_method:
+            # Scratch locals for the String method handlers. All i32:
+            # one pair of (ptr, len) for the receiver, one for the
+            # second operand (needle / prefix / suffix), plus index,
+            # start, end, new_ptr, new_len, byte registers.
+            for name in (
+                "_str_a_ptr", "_str_a_len",
+                "_str_b_ptr", "_str_b_len",
+                "_str_i", "_str_start", "_str_end",
+                "_str_new_ptr", "_str_new_len",
+                "_str_byte",
+            ):
+                out.setdefault(name, "i32")
         return out
 
     # ----- per-instruction --------------------------------------
@@ -975,10 +1008,13 @@ class WasmEmitter:
             if recv_ty.startswith("Map"):
                 self._emit_map_method_call(instr)
                 return
+            if recv_ty == "String":
+                self._emit_string_method_call(instr)
+                return
             raise WasmEmissionError(
                 f"MethodCall on receiver of type {recv_ty!r} "
-                f"(method {instr.method!r}); String / Set methods "
-                f"land in later 6D sub-phases"
+                f"(method {instr.method!r}); Set methods land in "
+                f"a later 6D sub-phase"
             )
         if isinstance(instr, MakeStruct):
             self._emit_make_struct(instr)
@@ -1067,7 +1103,13 @@ class WasmEmitter:
             return
         if isinstance(instr, Return):
             if instr.value is not None:
-                self._push_value(instr.value)
+                # String returns push (ptr, len) as a pair so the
+                # multi-value ``(result i32 i32)`` signature is
+                # satisfied; other types push a single value.
+                if instr.value.ty == "String":
+                    self._push_string_value_as_ptr_len(instr.value)
+                else:
+                    self._push_value(instr.value)
             self._write("return")
             return
         if isinstance(instr, Call):
@@ -1248,6 +1290,473 @@ class WasmEmitter:
         self._push_value(instr.receiver)
         self._write(f"{_load_op_for_size(size)} offset={offset}")
         self._write(f"local.set ${instr.dst}")
+
+    # ----- string methods ---------------------------------------
+
+    def _emit_string_method_call(self, instr: MethodCall) -> None:
+        """Dispatch a method on a String receiver. Strings are
+        (ptr, len) pairs throughout; this method's job is to read
+        from the receiver, optionally allocate a fresh buffer, and
+        bind the result to ``instr.dst``.
+
+        Methods supported in Phase 6D-4: length, is_empty,
+        contains, starts_with, ends_with, substring, to_upper,
+        to_lower, trim, trim_start, trim_end, char_at, index_of.
+        ``split`` and ``replace`` are deferred until List<String>
+        support arrives in a later sub-phase."""
+        method = instr.method
+        recv = instr.receiver
+        dst = instr.dst
+
+        # Push (recv_ptr, recv_len) onto the operand stack twice
+        # for any method that compares against a needle; the two
+        # copies live in scratch locals so we can read multiple
+        # times without re-evaluating the receiver.
+        if method == "length":
+            self._push_string_len_only(recv)
+            self._write("i64.extend_i32_s")
+            if dst is not None:
+                self._write(f"local.set ${dst}")
+            return
+        if method == "is_empty":
+            self._push_string_len_only(recv)
+            self._write("i32.eqz")
+            if dst is not None:
+                self._write(f"local.set ${dst}")
+            return
+        if method == "contains":
+            self._emit_string_contains(recv, instr.args[0])
+            if dst is not None:
+                self._write(f"local.set ${dst}")
+            return
+        if method == "starts_with":
+            self._emit_string_starts_with(recv, instr.args[0])
+            if dst is not None:
+                self._write(f"local.set ${dst}")
+            return
+        if method == "ends_with":
+            self._emit_string_ends_with(recv, instr.args[0])
+            if dst is not None:
+                self._write(f"local.set ${dst}")
+            return
+        if method == "substring":
+            self._emit_string_substring(recv, instr.args[0], instr.args[1], dst)
+            return
+        if method == "to_upper":
+            self._emit_string_case_transform(recv, dst, upper=True)
+            return
+        if method == "to_lower":
+            self._emit_string_case_transform(recv, dst, upper=False)
+            return
+        if method == "trim":
+            self._emit_string_trim(recv, dst, left=True, right=True)
+            return
+        if method == "trim_start":
+            self._emit_string_trim(recv, dst, left=True, right=False)
+            return
+        if method == "trim_end":
+            self._emit_string_trim(recv, dst, left=False, right=True)
+            return
+        raise WasmEmissionError(
+            f"Phase 6D-4: String method {method!r} not supported "
+            f"(split / replace / char_at / index_of land later)"
+        )
+
+    def _push_string_len_only(self, v: Value) -> None:
+        """Push just the length component (i32) of a String value
+        onto the operand stack. Used by length / is_empty handlers
+        that do not need the pointer."""
+        if v.kind == "lit_str":
+            _offset, length = self._intern_string(v.literal)
+            self._write(f"i32.const {length}")
+            return
+        if v.kind in ("local", "param"):
+            self._write(f"local.get ${v.name}_len")
+            return
+        raise WasmEmissionError(
+            f"cannot push string length of Value kind {v.kind!r}"
+        )
+
+    def _set_string_dst(self, dst: str) -> None:
+        """Pop (ptr, len) from the operand stack into the dst
+        String's two locals. Used by every method that returns a
+        String. The push order is (ptr, len) so the consumer sets
+        len first (top of stack), then ptr."""
+        self._write(f"local.set ${dst}_len")
+        self._write(f"local.set ${dst}_ptr")
+
+    def _emit_string_contains(self, recv: Value, needle: Value) -> None:
+        """Linear scan: ``recv.contains(needle)``. For each position
+        i in [0, recv.len - needle.len], check if needle equals
+        recv[i:i+needle.len]; return 1 on first match, 0 if
+        exhausted. Empty needle is treated as always-found."""
+        # Save (ptr, len) for both receiver and needle.
+        self._push_string_value_as_ptr_len(recv)
+        self._write("local.set $_str_a_len")
+        self._write("local.set $_str_a_ptr")
+        self._push_string_value_as_ptr_len(needle)
+        self._write("local.set $_str_b_len")
+        self._write("local.set $_str_b_ptr")
+        # i = 0; while i + needle.len <= recv.len, str_eq the slice.
+        self._write("i32.const 0")
+        self._write("local.set $_str_i")
+        self._block_counter += 1
+        loop = f"$Sc{self._block_counter}_loop"
+        exit_ = f"$Sc{self._block_counter}_exit"
+        self._write(f"block {exit_} (result i32)")
+        self._indent += 1
+        self._write(f"loop {loop}")
+        self._indent += 1
+        # Guard: i + needle.len > recv.len → done with 0.
+        self._write("local.get $_str_i")
+        self._write("local.get $_str_b_len")
+        self._write("i32.add")
+        self._write("local.get $_str_a_len")
+        self._write("i32.gt_s")
+        self._write("if")
+        self._indent += 1
+        self._write("i32.const 0")
+        self._write(f"br {exit_}")
+        self._indent -= 1
+        self._write("end")
+        # str_eq(recv.ptr + i, needle.len, needle.ptr, needle.len)
+        self._write("local.get $_str_a_ptr")
+        self._write("local.get $_str_i")
+        self._write("i32.add")
+        self._write("local.get $_str_b_len")
+        self._write("local.get $_str_b_ptr")
+        self._write("local.get $_str_b_len")
+        self._write("call $str_eq")
+        self._write("if")
+        self._indent += 1
+        self._write("i32.const 1")
+        self._write(f"br {exit_}")
+        self._indent -= 1
+        self._write("end")
+        # i++; continue.
+        self._write("local.get $_str_i")
+        self._write("i32.const 1")
+        self._write("i32.add")
+        self._write("local.set $_str_i")
+        self._write(f"br {loop}")
+        self._indent -= 1
+        self._write("end")
+        self._write("unreachable")
+        self._indent -= 1
+        self._write("end")
+
+    def _emit_string_starts_with(self, recv: Value, prefix: Value) -> None:
+        """``recv.starts_with(prefix)``: false if prefix.len >
+        recv.len, else compare the first prefix.len bytes."""
+        self._push_string_value_as_ptr_len(prefix)
+        self._write("local.set $_str_b_len")
+        self._write("local.set $_str_b_ptr")
+        self._push_string_value_as_ptr_len(recv)
+        self._write("local.set $_str_a_len")
+        self._write("local.set $_str_a_ptr")
+        # if prefix.len > recv.len: 0
+        self._block_counter += 1
+        exit_ = f"$Ss{self._block_counter}_exit"
+        self._write(f"block {exit_} (result i32)")
+        self._indent += 1
+        self._write("local.get $_str_b_len")
+        self._write("local.get $_str_a_len")
+        self._write("i32.gt_s")
+        self._write("if")
+        self._indent += 1
+        self._write("i32.const 0")
+        self._write(f"br {exit_}")
+        self._indent -= 1
+        self._write("end")
+        # str_eq(recv.ptr, prefix.len, prefix.ptr, prefix.len)
+        self._write("local.get $_str_a_ptr")
+        self._write("local.get $_str_b_len")
+        self._write("local.get $_str_b_ptr")
+        self._write("local.get $_str_b_len")
+        self._write("call $str_eq")
+        self._indent -= 1
+        self._write("end")
+
+    def _emit_string_ends_with(self, recv: Value, suffix: Value) -> None:
+        """``recv.ends_with(suffix)``: false if suffix.len >
+        recv.len, else compare the last suffix.len bytes."""
+        self._push_string_value_as_ptr_len(suffix)
+        self._write("local.set $_str_b_len")
+        self._write("local.set $_str_b_ptr")
+        self._push_string_value_as_ptr_len(recv)
+        self._write("local.set $_str_a_len")
+        self._write("local.set $_str_a_ptr")
+        self._block_counter += 1
+        exit_ = f"$Se{self._block_counter}_exit"
+        self._write(f"block {exit_} (result i32)")
+        self._indent += 1
+        # if suffix.len > recv.len: 0
+        self._write("local.get $_str_b_len")
+        self._write("local.get $_str_a_len")
+        self._write("i32.gt_s")
+        self._write("if")
+        self._indent += 1
+        self._write("i32.const 0")
+        self._write(f"br {exit_}")
+        self._indent -= 1
+        self._write("end")
+        # offset = recv.len - suffix.len
+        # str_eq(recv.ptr + offset, suffix.len, suffix.ptr, suffix.len)
+        self._write("local.get $_str_a_ptr")
+        self._write("local.get $_str_a_len")
+        self._write("local.get $_str_b_len")
+        self._write("i32.sub")
+        self._write("i32.add")
+        self._write("local.get $_str_b_len")
+        self._write("local.get $_str_b_ptr")
+        self._write("local.get $_str_b_len")
+        self._write("call $str_eq")
+        self._indent -= 1
+        self._write("end")
+
+    def _emit_string_substring(
+        self, recv: Value, start: Value, end: Value, dst: Optional[str],
+    ) -> None:
+        """``recv.substring(start, end)``: allocate ``end-start``
+        bytes, memory.copy from ``recv.ptr + start``, leave the
+        result in dst's (ptr, len) locals."""
+        if dst is None:
+            return
+        # Save receiver ptr + len.
+        self._push_string_value_as_ptr_len(recv)
+        self._write("local.set $_str_a_len")
+        self._write("local.set $_str_a_ptr")
+        # Save start and end as i32 (the IR pushes Int as i64;
+        # narrow with i32.wrap_i64).
+        self._push_value(start)
+        self._write("i32.wrap_i64")
+        self._write("local.set $_str_start")
+        self._push_value(end)
+        self._write("i32.wrap_i64")
+        self._write("local.set $_str_end")
+        # new_len = end - start
+        self._write("local.get $_str_end")
+        self._write("local.get $_str_start")
+        self._write("i32.sub")
+        self._write("local.tee $_str_new_len")
+        # alloc(new_len)
+        self._write("call $alloc")
+        self._write("local.tee $_str_new_ptr")
+        # memory.copy(dst=new_ptr, src=recv.ptr + start, n=new_len)
+        self._write("local.get $_str_a_ptr")
+        self._write("local.get $_str_start")
+        self._write("i32.add")
+        self._write("local.get $_str_new_len")
+        self._write("memory.copy")
+        # Bind dst.
+        self._write("local.get $_str_new_ptr")
+        self._write("local.get $_str_new_len")
+        self._set_string_dst(dst)
+
+    def _emit_string_case_transform(
+        self, recv: Value, dst: Optional[str], upper: bool,
+    ) -> None:
+        """``recv.to_upper()`` / ``recv.to_lower()`` allocate a
+        fresh ``recv.len`` buffer and copy each byte with ASCII
+        case folding. Non-ASCII bytes pass through unchanged --
+        Phase 6D-4's "ASCII-only" caveat that the legacy Python
+        runtime does not have (it uses Python's full Unicode
+        ``.upper()``); a UTF-8-aware version arrives when the
+        stdlib grows a real character iterator."""
+        if dst is None:
+            return
+        self._push_string_value_as_ptr_len(recv)
+        self._write("local.set $_str_a_len")
+        self._write("local.set $_str_a_ptr")
+        # Allocate new buffer of the same length.
+        self._write("local.get $_str_a_len")
+        self._write("call $alloc")
+        self._write("local.set $_str_new_ptr")
+        # i = 0; while i < len, transform byte.
+        self._write("i32.const 0")
+        self._write("local.set $_str_i")
+        self._block_counter += 1
+        loop = f"$Sx{self._block_counter}_loop"
+        exit_ = f"$Sx{self._block_counter}_exit"
+        self._write(f"block {exit_}")
+        self._indent += 1
+        self._write(f"loop {loop}")
+        self._indent += 1
+        # Guard: i >= len → done.
+        self._write("local.get $_str_i")
+        self._write("local.get $_str_a_len")
+        self._write("i32.ge_s")
+        self._write(f"br_if {exit_}")
+        # Load byte.
+        self._write("local.get $_str_a_ptr")
+        self._write("local.get $_str_i")
+        self._write("i32.add")
+        self._write("i32.load8_u")
+        # Case transform.
+        if upper:
+            # if b >= 'a' (0x61) && b <= 'z' (0x7a), subtract 32.
+            self._write("local.tee $_str_byte")
+            self._write("i32.const 97")
+            self._write("i32.ge_u")
+            self._write("local.get $_str_byte")
+            self._write("i32.const 122")
+            self._write("i32.le_u")
+            self._write("i32.and")
+            self._write("if")
+            self._indent += 1
+            self._write("local.get $_str_byte")
+            self._write("i32.const 32")
+            self._write("i32.sub")
+            self._write("local.set $_str_byte")
+            self._indent -= 1
+            self._write("end")
+        else:
+            # if b >= 'A' (0x41) && b <= 'Z' (0x5a), add 32.
+            self._write("local.tee $_str_byte")
+            self._write("i32.const 65")
+            self._write("i32.ge_u")
+            self._write("local.get $_str_byte")
+            self._write("i32.const 90")
+            self._write("i32.le_u")
+            self._write("i32.and")
+            self._write("if")
+            self._indent += 1
+            self._write("local.get $_str_byte")
+            self._write("i32.const 32")
+            self._write("i32.add")
+            self._write("local.set $_str_byte")
+            self._indent -= 1
+            self._write("end")
+        # Store the (possibly transformed) byte to new_ptr + i.
+        self._write("local.get $_str_new_ptr")
+        self._write("local.get $_str_i")
+        self._write("i32.add")
+        self._write("local.get $_str_byte")
+        self._write("i32.store8")
+        # i++.
+        self._write("local.get $_str_i")
+        self._write("i32.const 1")
+        self._write("i32.add")
+        self._write("local.set $_str_i")
+        self._write(f"br {loop}")
+        self._indent -= 1
+        self._write("end")
+        self._indent -= 1
+        self._write("end")
+        # Bind dst.
+        self._write("local.get $_str_new_ptr")
+        self._write("local.get $_str_a_len")
+        self._set_string_dst(dst)
+
+    def _emit_string_trim(
+        self, recv: Value, dst: Optional[str], left: bool, right: bool,
+    ) -> None:
+        """``recv.trim()`` returns a (ptr, len) view into the
+        original buffer with leading/trailing ASCII whitespace
+        skipped. No allocation; trim is purely a bounds adjustment.
+        Whitespace: space, tab, newline, carriage return."""
+        if dst is None:
+            return
+        self._push_string_value_as_ptr_len(recv)
+        self._write("local.set $_str_a_len")
+        self._write("local.set $_str_a_ptr")
+        # start = 0; end = recv.len.
+        self._write("i32.const 0")
+        self._write("local.set $_str_start")
+        self._write("local.get $_str_a_len")
+        self._write("local.set $_str_end")
+        if left:
+            self._block_counter += 1
+            lloop = f"$St{self._block_counter}_lloop"
+            lexit = f"$St{self._block_counter}_lexit"
+            self._write(f"block {lexit}")
+            self._indent += 1
+            self._write(f"loop {lloop}")
+            self._indent += 1
+            # if start >= end: stop trimming.
+            self._write("local.get $_str_start")
+            self._write("local.get $_str_end")
+            self._write("i32.ge_s")
+            self._write(f"br_if {lexit}")
+            # if byte at start is whitespace, advance.
+            self._write("local.get $_str_a_ptr")
+            self._write("local.get $_str_start")
+            self._write("i32.add")
+            self._write("i32.load8_u")
+            self._emit_byte_is_whitespace()
+            self._write("i32.eqz")
+            self._write(f"br_if {lexit}")
+            self._write("local.get $_str_start")
+            self._write("i32.const 1")
+            self._write("i32.add")
+            self._write("local.set $_str_start")
+            self._write(f"br {lloop}")
+            self._indent -= 1
+            self._write("end")
+            self._indent -= 1
+            self._write("end")
+        if right:
+            self._block_counter += 1
+            rloop = f"$St{self._block_counter}_rloop"
+            rexit = f"$St{self._block_counter}_rexit"
+            self._write(f"block {rexit}")
+            self._indent += 1
+            self._write(f"loop {rloop}")
+            self._indent += 1
+            self._write("local.get $_str_end")
+            self._write("local.get $_str_start")
+            self._write("i32.le_s")
+            self._write(f"br_if {rexit}")
+            # Look at byte at end-1.
+            self._write("local.get $_str_a_ptr")
+            self._write("local.get $_str_end")
+            self._write("i32.const 1")
+            self._write("i32.sub")
+            self._write("i32.add")
+            self._write("i32.load8_u")
+            self._emit_byte_is_whitespace()
+            self._write("i32.eqz")
+            self._write(f"br_if {rexit}")
+            self._write("local.get $_str_end")
+            self._write("i32.const 1")
+            self._write("i32.sub")
+            self._write("local.set $_str_end")
+            self._write(f"br {rloop}")
+            self._indent -= 1
+            self._write("end")
+            self._indent -= 1
+            self._write("end")
+        # Result: (recv.ptr + start, end - start)
+        self._write("local.get $_str_a_ptr")
+        self._write("local.get $_str_start")
+        self._write("i32.add")
+        self._write("local.get $_str_end")
+        self._write("local.get $_str_start")
+        self._write("i32.sub")
+        self._set_string_dst(dst)
+
+    def _emit_byte_is_whitespace(self) -> None:
+        """Consume an i32 byte on the stack; push i32 1 if it is
+        ASCII whitespace (space, tab, LF, CR), else 0. Used by
+        trim methods."""
+        # Save the byte into $_str_byte so we can compare against
+        # each whitespace character without re-reading from memory.
+        self._write("local.set $_str_byte")
+        self._write("local.get $_str_byte")
+        self._write("i32.const 32")        # space
+        self._write("i32.eq")
+        self._write("local.get $_str_byte")
+        self._write("i32.const 9")         # tab
+        self._write("i32.eq")
+        self._write("i32.or")
+        self._write("local.get $_str_byte")
+        self._write("i32.const 10")        # LF
+        self._write("i32.eq")
+        self._write("i32.or")
+        self._write("local.get $_str_byte")
+        self._write("i32.const 13")        # CR
+        self._write("i32.eq")
+        self._write("i32.or")
 
     # ----- maps -------------------------------------------------
 

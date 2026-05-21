@@ -87,10 +87,10 @@ class TestWasmEmissionShape(unittest.TestCase):
         self.assertIn("i64.gt_s", wat)
 
     def test_unsupported_phase_construct_raises(self):
-        # A string literal returning function is outside Phase 6A.
+        # Set methods land in a later 6D sub-phase; pin the gap.
         src = (
-            "fun greet() -> String\n"
-            "    return \"hi\"\n"
+            "fun has(s: Set<Int>, n: Int) -> Bool\n"
+            "    return s.contains(n)\n"
         )
         ir_mod, _, _ = _parse_lower(src)
         with self.assertRaises(WasmEmissionError):
@@ -354,11 +354,12 @@ class TestWasmStdioEmission(unittest.TestCase):
         self.assertIn('(memory (export "memory") 1)', wat)
         self.assertIn('(data (i32.const 0) "hi")', wat)
 
-    def test_non_string_method_call_raises(self):
-        # No String type for non-capability method calls yet.
+    def test_unsupported_method_raises(self):
+        # ``split`` returns List<String> which Phase 6D does not yet
+        # support (would need a List of (ptr,len) pairs); pin the gap.
         src = (
-            "fun greet(name: String) -> String\n"
-            "    return name.to_upper()\n"
+            "fun parts(s: String) -> List<String>\n"
+            "    return s.split(\",\")\n"
         )
         ir_mod, _, _ = _parse_lower(src)
         with self.assertRaises(WasmEmissionError):
@@ -896,6 +897,163 @@ class TestWasmMapStringInt(unittest.TestCase):
         store, exp = self._instantiate(src)
         self.assertEqual(exp["empty_at_start"](store), 1)
         self.assertEqual(exp["empty_after_insert"](store), 0)
+
+
+@unittest.skipUnless(
+    _has_wasm_tools() and _has_wasmtime_py(),
+    "wasm-tools and/or wasmtime-py not installed",
+)
+class TestWasmStringMethods(unittest.TestCase):
+    """Phase 6D-4: String methods backed by (ptr, len) pair
+    semantics. Read-only methods (length, contains, starts_with,
+    ends_with, is_empty) compute over the receiver bytes without
+    allocating. Transforming methods (substring, to_upper,
+    to_lower, trim) allocate fresh buffers via ``$alloc`` and
+    return new (ptr, len) pairs. String returns use Wasm 2.0
+    multi-value ``(result i32 i32)``."""
+
+    def _instantiate(self, src: str):
+        import wasmtime
+        _, types, ast_mod = _parse_lower(src)
+        blob = compile_wasm(ast_mod, types=types)
+        engine = wasmtime.Engine()
+        mod = wasmtime.Module(engine, blob)
+        store = wasmtime.Store(engine)
+        linker = wasmtime.Linker(engine)
+        instance = linker.instantiate(store, mod)
+        return store, instance.exports(store)
+
+    def _read_string(self, store, exports, name: str) -> str:
+        """Call a no-arg function returning String (multi-value
+        i32 ptr, i32 len) and decode the result via the module's
+        exported memory. wasmtime maps multi-value to a tuple."""
+        result = exports[name](store)
+        ptr, length = result
+        data = exports["memory"].read(store, ptr, ptr + length)
+        return bytes(data).decode("utf-8")
+
+    def test_length_and_is_empty(self):
+        src = (
+            "fun len_hello() -> Int\n"
+            "    return \"hello\".length()\n"
+            "fun empty1() -> Bool\n"
+            "    return \"\".is_empty()\n"
+            "fun empty2() -> Bool\n"
+            "    return \"x\".is_empty()\n"
+        )
+        store, exp = self._instantiate(src)
+        self.assertEqual(exp["len_hello"](store), 5)
+        self.assertEqual(exp["empty1"](store), 1)
+        self.assertEqual(exp["empty2"](store), 0)
+
+    def test_starts_with(self):
+        src = (
+            "fun yes() -> Bool\n"
+            "    return \"hello world\".starts_with(\"hello\")\n"
+            "fun no_mismatch() -> Bool\n"
+            "    return \"hello world\".starts_with(\"world\")\n"
+            "fun no_longer_than_self() -> Bool\n"
+            "    return \"hi\".starts_with(\"hello\")\n"
+        )
+        store, exp = self._instantiate(src)
+        self.assertEqual(exp["yes"](store), 1)
+        self.assertEqual(exp["no_mismatch"](store), 0)
+        self.assertEqual(exp["no_longer_than_self"](store), 0)
+
+    def test_ends_with(self):
+        src = (
+            "fun yes() -> Bool\n"
+            "    return \"hello world\".ends_with(\"world\")\n"
+            "fun no_mismatch() -> Bool\n"
+            "    return \"hello world\".ends_with(\"hello\")\n"
+        )
+        store, exp = self._instantiate(src)
+        self.assertEqual(exp["yes"](store), 1)
+        self.assertEqual(exp["no_mismatch"](store), 0)
+
+    def test_contains(self):
+        src = (
+            "fun mid() -> Bool\n"
+            "    return \"hello world\".contains(\"o w\")\n"
+            "fun start() -> Bool\n"
+            "    return \"hello world\".contains(\"hello\")\n"
+            "fun end() -> Bool\n"
+            "    return \"hello world\".contains(\"world\")\n"
+            "fun missing() -> Bool\n"
+            "    return \"hello world\".contains(\"xyz\")\n"
+            "fun empty_needle() -> Bool\n"
+            "    return \"hello\".contains(\"\")\n"
+        )
+        store, exp = self._instantiate(src)
+        self.assertEqual(exp["mid"](store), 1)
+        self.assertEqual(exp["start"](store), 1)
+        self.assertEqual(exp["end"](store), 1)
+        self.assertEqual(exp["missing"](store), 0)
+        self.assertEqual(exp["empty_needle"](store), 1)
+
+    def test_substring(self):
+        src = (
+            "fun mid() -> String\n"
+            "    return \"hello world\".substring(6, 11)\n"
+            "fun empty() -> String\n"
+            "    return \"hello\".substring(2, 2)\n"
+            "fun whole() -> String\n"
+            "    return \"abc\".substring(0, 3)\n"
+        )
+        store, exp = self._instantiate(src)
+        self.assertEqual(self._read_string(store, exp, "mid"), "world")
+        self.assertEqual(self._read_string(store, exp, "empty"), "")
+        self.assertEqual(self._read_string(store, exp, "whole"), "abc")
+
+    def test_to_upper_and_to_lower(self):
+        src = (
+            "fun upper() -> String\n"
+            "    return \"hello world\".to_upper()\n"
+            "fun lower() -> String\n"
+            "    return \"HELLO WORLD\".to_lower()\n"
+            "fun mixed() -> String\n"
+            "    return \"Hello, World!\".to_upper()\n"
+        )
+        store, exp = self._instantiate(src)
+        self.assertEqual(self._read_string(store, exp, "upper"), "HELLO WORLD")
+        self.assertEqual(self._read_string(store, exp, "lower"), "hello world")
+        self.assertEqual(self._read_string(store, exp, "mixed"), "HELLO, WORLD!")
+
+    def test_trim_variants(self):
+        src = (
+            "fun both() -> String\n"
+            "    return \"  spaced  \".trim()\n"
+            "fun left() -> String\n"
+            "    return \"  spaced  \".trim_start()\n"
+            "fun right() -> String\n"
+            "    return \"  spaced  \".trim_end()\n"
+            "fun mixed_ws() -> String\n"
+            "    return \"\\t\\n  hi  \\r\\n\".trim()\n"
+            "fun no_trim_needed() -> String\n"
+            "    return \"abc\".trim()\n"
+        )
+        store, exp = self._instantiate(src)
+        self.assertEqual(self._read_string(store, exp, "both"), "spaced")
+        self.assertEqual(self._read_string(store, exp, "left"), "spaced  ")
+        self.assertEqual(self._read_string(store, exp, "right"), "  spaced")
+        self.assertEqual(self._read_string(store, exp, "mixed_ws"), "hi")
+        self.assertEqual(self._read_string(store, exp, "no_trim_needed"), "abc")
+
+    def test_string_method_chaining(self):
+        # Verify that the result of one string method can be the
+        # receiver of another. Locals carry the (ptr, len) pair so
+        # this works without explicit temp variables.
+        src = (
+            "fun pipeline() -> String\n"
+            "    let s = \"  Hello, World!  \"\n"
+            "    let t = s.trim()\n"
+            "    return t.to_upper()\n"
+        )
+        store, exp = self._instantiate(src)
+        self.assertEqual(
+            self._read_string(store, exp, "pipeline"),
+            "HELLO, WORLD!",
+        )
 
 
 if __name__ == "__main__":
