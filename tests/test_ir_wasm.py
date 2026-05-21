@@ -463,5 +463,157 @@ class TestWasmStdioExecutes(unittest.TestCase):
         self.assertEqual(wat.count('(data (i32.const 0) "hi")'), 1)
 
 
+@unittest.skipUnless(
+    _has_wasm_tools() and _has_wasmtime_py(),
+    "wasm-tools and/or wasmtime-py not installed",
+)
+class TestWasmSumAndStruct(unittest.TestCase):
+    """Phase 6C: sum types, structs, and pattern matching compile
+    to a heap-allocator-backed memory layout and execute on
+    wasmtime end-to-end.
+
+    Layout invariants the tests rely on:
+    - A sum type lays out a 4-byte discriminant at offset 0, then
+      per-variant payloads starting at offset 8 (i64 alignment).
+    - A struct lays out fields in declaration order with natural
+      alignment; the resulting size is rounded up to 8 bytes.
+    - All values larger than a single primitive are referenced by
+      i32 pointer; Python sees opaque integers and can pass them
+      back to subsequent calls."""
+
+    def _exec(self, src: str, fn_name: str, *args):
+        """Compile a Capa source to Wasm, instantiate without any
+        host imports (Phase 6C tests don't use Stdio), call
+        ``fn_name`` with ``args`` and return the result. Each call
+        uses a fresh Store + Linker so per-test heap state is
+        isolated."""
+        import wasmtime
+        _, types, ast_mod = _parse_lower(src)
+        blob = compile_wasm(ast_mod, types=types)
+        engine = wasmtime.Engine()
+        mod = wasmtime.Module(engine, blob)
+        store = wasmtime.Store(engine)
+        linker = wasmtime.Linker(engine)
+        instance = linker.instantiate(store, mod)
+        return instance.exports(store)[fn_name](store, *args)
+
+    def _make_and_call(self, src: str, ctor: str, ctor_args, op: str, op_args=()):
+        """Two-call helper: first instantiate the module once,
+        invoke the constructor to get a pointer, then invoke the
+        operator with that pointer. Pinning the same Store across
+        calls is required because the heap pointer in the wasm
+        module is per-instance state."""
+        import wasmtime
+        _, types, ast_mod = _parse_lower(src)
+        blob = compile_wasm(ast_mod, types=types)
+        engine = wasmtime.Engine()
+        mod = wasmtime.Module(engine, blob)
+        store = wasmtime.Store(engine)
+        linker = wasmtime.Linker(engine)
+        instance = linker.instantiate(store, mod)
+        exp = instance.exports(store)
+        ptr = exp[ctor](store, *ctor_args)
+        return exp[op](store, ptr, *op_args)
+
+    def test_struct_make_and_field_access(self):
+        src = (
+            "type Point {\n"
+            "    x: Int,\n"
+            "    y: Int\n"
+            "}\n"
+            "fun make(a: Int, b: Int) -> Point\n"
+            "    return Point { x: a, y: b }\n"
+            "fun get_x(p: Point) -> Int\n"
+            "    return p.x\n"
+            "fun get_y(p: Point) -> Int\n"
+            "    return p.y\n"
+        )
+        # Construct once, read both fields back, confirm they round-trip.
+        self.assertEqual(self._make_and_call(src, "make", (10, 20), "get_x"), 10)
+        self.assertEqual(self._make_and_call(src, "make", (10, 20), "get_y"), 20)
+
+    def test_struct_magnitude_sq(self):
+        src = (
+            "type Point {\n"
+            "    x: Int,\n"
+            "    y: Int\n"
+            "}\n"
+            "fun make(a: Int, b: Int) -> Point\n"
+            "    return Point { x: a, y: b }\n"
+            "fun mag_sq(p: Point) -> Int\n"
+            "    return p.x * p.x + p.y * p.y\n"
+        )
+        self.assertEqual(self._make_and_call(src, "make", (3, 4), "mag_sq"), 25)
+        self.assertEqual(self._make_and_call(src, "make", (5, 12), "mag_sq"), 169)
+
+    def test_sum_two_variants_with_payload(self):
+        src = (
+            "type Shape =\n"
+            "    Circle(Int)\n"
+            "    Rect(Int, Int)\n"
+            "fun area(s: Shape) -> Int\n"
+            "    match s\n"
+            "        Circle(r) -> return r * r * 3\n"
+            "        Rect(w, h) -> return w * h\n"
+            "fun mk_circle(r: Int) -> Shape\n"
+            "    return Circle(r)\n"
+            "fun mk_rect(w: Int, h: Int) -> Shape\n"
+            "    return Rect(w, h)\n"
+        )
+        # Approximation of pi=3; pinning the value as 5*5*3 = 75.
+        self.assertEqual(self._make_and_call(src, "mk_circle", (5,), "area"), 75)
+        self.assertEqual(self._make_and_call(src, "mk_rect", (3, 4), "area"), 12)
+        self.assertEqual(self._make_and_call(src, "mk_rect", (7, 6), "area"), 42)
+
+    def test_sum_wildcard_arm_matches(self):
+        src = (
+            "type Choice =\n"
+            "    Left(Int)\n"
+            "    Right(Int)\n"
+            "    Neither\n"
+            "fun extract(c: Choice) -> Int\n"
+            "    match c\n"
+            "        Left(n) -> return n\n"
+            "        _ -> return 0\n"
+            "fun mk_left(n: Int) -> Choice\n"
+            "    return Left(n)\n"
+            "fun mk_right(n: Int) -> Choice\n"
+            "    return Right(n)\n"
+            "fun mk_neither() -> Choice\n"
+            "    return Neither\n"
+        )
+        self.assertEqual(self._make_and_call(src, "mk_left", (42,), "extract"), 42)
+        self.assertEqual(self._make_and_call(src, "mk_right", (7,), "extract"), 0)
+        self.assertEqual(self._make_and_call(src, "mk_neither", (), "extract"), 0)
+
+    def test_struct_allocator_advances_heap(self):
+        # Build two structs and confirm they receive distinct
+        # pointers (allocator is monotonic; same-Store calls share
+        # the heap).
+        src = (
+            "type Point {\n"
+            "    x: Int,\n"
+            "    y: Int\n"
+            "}\n"
+            "fun mk(a: Int, b: Int) -> Point\n"
+            "    return Point { x: a, y: b }\n"
+            "fun diff(p: Point, q: Point) -> Int\n"
+            "    return p.x - q.x\n"
+        )
+        import wasmtime
+        _, types, ast_mod = _parse_lower(src)
+        blob = compile_wasm(ast_mod, types=types)
+        engine = wasmtime.Engine()
+        mod = wasmtime.Module(engine, blob)
+        store = wasmtime.Store(engine)
+        linker = wasmtime.Linker(engine)
+        instance = linker.instantiate(store, mod)
+        exp = instance.exports(store)
+        p = exp["mk"](store, 100, 200)
+        q = exp["mk"](store, 1, 2)
+        self.assertNotEqual(p, q, "allocator must hand out distinct pointers")
+        self.assertEqual(exp["diff"](store, p, q), 99)
+
+
 if __name__ == "__main__":
     unittest.main()
