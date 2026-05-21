@@ -39,6 +39,7 @@ class WasmHost:
         # host callbacks read string arguments out of this memory.
         self._memory: Optional[wasmtime.Memory] = None
         self._register_stdio()
+        self._register_clock()
 
     def _register_stdio(self) -> None:
         """Register the ``capa:stdio`` interface methods. Each
@@ -93,6 +94,29 @@ class WasmHost:
         self.linker.define_func(
             "capa:host/stdio", "eprintln", ft_string_to_unit,
             stdio_eprintln, access_caller=True,
+        )
+
+    def _register_clock(self) -> None:
+        """Register the ``capa:host/clock`` interface methods.
+        ``now_secs`` returns Unix epoch seconds as f64;
+        ``now_monotonic`` returns a monotonic time source's value
+        in seconds. Both signatures match the Capa runtime's
+        ``Clock`` class so the Wasm and Python paths produce
+        identical numbers."""
+        import time
+        ft_to_f64 = wasmtime.FuncType([], [wasmtime.ValType.f64()])
+
+        def now_secs():
+            return time.time()
+
+        def now_monotonic():
+            return time.monotonic()
+
+        self.linker.define_func(
+            "capa:host/clock", "now_secs", ft_to_f64, now_secs,
+        )
+        self.linker.define_func(
+            "capa:host/clock", "now_monotonic", ft_to_f64, now_monotonic,
         )
 
     def instantiate(self, wasm_blob: bytes) -> wasmtime.Instance:

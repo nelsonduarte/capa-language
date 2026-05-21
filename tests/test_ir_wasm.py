@@ -1056,5 +1056,86 @@ class TestWasmStringMethods(unittest.TestCase):
         )
 
 
+@unittest.skipUnless(
+    _has_wasm_tools() and _has_wasmtime_py(),
+    "wasm-tools and/or wasmtime-py not installed",
+)
+class TestWasmFloatAndClock(unittest.TestCase):
+    """Phase 7A: Capa ``Float`` lowers to Wasm ``f64``; arithmetic
+    and comparison ops dispatch on operand type. ``Clock.now_secs``
+    / ``now_monotonic`` are imported as capability methods
+    returning ``f64`` and bound to Python's ``time`` module via
+    the WasmHost bridge."""
+
+    def _instantiate(self, src: str):
+        import wasmtime
+        _, types, ast_mod = _parse_lower(src)
+        blob = compile_wasm(ast_mod, types=types)
+        engine = wasmtime.Engine()
+        mod = wasmtime.Module(engine, blob)
+        store = wasmtime.Store(engine)
+        linker = wasmtime.Linker(engine)
+        instance = linker.instantiate(store, mod)
+        return store, instance.exports(store)
+
+    def test_float_arithmetic_round_trip(self):
+        src = (
+            "fun three_quarters() -> Float\n"
+            "    return 0.5 + 0.25\n"
+            "fun divide() -> Float\n"
+            "    return 1.0 / 4.0\n"
+            "fun multiply() -> Float\n"
+            "    return 1.5 * 2.0\n"
+            "fun subtract() -> Float\n"
+            "    return 1.0 - 0.25\n"
+        )
+        store, exp = self._instantiate(src)
+        self.assertAlmostEqual(exp["three_quarters"](store), 0.75)
+        self.assertAlmostEqual(exp["divide"](store), 0.25)
+        self.assertAlmostEqual(exp["multiply"](store), 3.0)
+        self.assertAlmostEqual(exp["subtract"](store), 0.75)
+
+    def test_float_comparison_returns_bool(self):
+        src = (
+            "fun positive(f: Float) -> Bool\n"
+            "    return f > 0.0\n"
+            "fun negative(f: Float) -> Bool\n"
+            "    return f < 0.0\n"
+        )
+        store, exp = self._instantiate(src)
+        self.assertEqual(exp["positive"](store, 5.0), 1)
+        self.assertEqual(exp["positive"](store, -3.0), 0)
+        self.assertEqual(exp["negative"](store, -3.0), 1)
+        self.assertEqual(exp["negative"](store, 5.0), 0)
+
+    def test_clock_capability_via_host(self):
+        # Compile with a Clock parameter. The Wasm signature drops
+        # the capability param itself; the methods are imported via
+        # capa:host/clock and resolved by the WasmHost.
+        from capa.runtime._wasm_host import WasmHost
+        src = (
+            "fun now_positive(clock: Clock) -> Bool\n"
+            "    let t = clock.now_secs()\n"
+            "    return t > 0.0\n"
+            "fun main(stdio: Stdio, clock: Clock)\n"
+            "    if now_positive(clock)\n"
+            "        stdio.println(\"clock OK\")\n"
+            "    else\n"
+            "        stdio.println(\"clock NOT OK\")\n"
+        )
+        import io, sys
+        _, types, ast_mod = _parse_lower(src)
+        blob = compile_wasm(ast_mod, types=types)
+        host = WasmHost()
+        out = io.StringIO()
+        saved = sys.stdout
+        sys.stdout = out
+        try:
+            host.run_main(blob)
+        finally:
+            sys.stdout = saved
+        self.assertEqual(out.getvalue(), "clock OK\n")
+
+
 if __name__ == "__main__":
     unittest.main()

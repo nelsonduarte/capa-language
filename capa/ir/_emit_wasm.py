@@ -57,8 +57,9 @@ _BUILTIN_CAPS = {"Stdio", "Fs", "Env", "Clock", "Net", "Random", "Proc", "Db", "
 # Sets are represented as i32 pointers; their stdlib payloads land
 # in 6D and beyond.
 _TYPE_SIZE = {
-    "Int":  8,  # i64
-    "Bool": 4,  # i32
+    "Int":   8,  # i64
+    "Bool":  4,  # i32
+    "Float": 8,  # f64
 }
 
 
@@ -246,24 +247,28 @@ def compute_sum_layout(
 _CAPA_TO_WASM = {
     "Int": "i64",
     "Bool": "i32",
+    "Float": "f64",
     "Unit": "",  # no result clause
 }
 
 
 # Comparison ops produce i32 (0 or 1) in Wasm; arithmetic ops
-# preserve the operand type (i64).
+# preserve the operand type (i64 for Int, f64 for Float). The
+# emitter dispatches on the operand's Capa type to pick the right
+# opcode family.
 _INT_BINOP = {
     "+": "i64.add",
     "-": "i64.sub",
     "*": "i64.mul",
-    # i64.div_s / i64.rem_s are the signed variants; Capa's source
-    # ``/`` and ``%`` follow signed semantics, matching the Python
-    # integer floor-div convention for positives. The legacy
-    # transpiler also uses Python's ``/`` which does floating-point
-    # division; for Phase 6A we treat ``/`` as integer division.
-    # A later phase that distinguishes Int and Float will revisit.
     "/": "i64.div_s",
     "%": "i64.rem_s",
+}
+
+_FLOAT_BINOP = {
+    "+": "f64.add",
+    "-": "f64.sub",
+    "*": "f64.mul",
+    "/": "f64.div",
 }
 
 _CMP_BINOP = {
@@ -273,6 +278,15 @@ _CMP_BINOP = {
     "<=": "i64.le_s",
     ">":  "i64.gt_s",
     ">=": "i64.ge_s",
+}
+
+_FLOAT_CMP_BINOP = {
+    "==": "f64.eq",
+    "!=": "f64.ne",
+    "<":  "f64.lt",
+    "<=": "f64.le",
+    ">":  "f64.gt",
+    ">=": "f64.ge",
 }
 
 
@@ -440,6 +454,8 @@ class WasmEmitter:
                 self._emit_str_eq_function()
             if self._uses_format_str(module):
                 self._emit_itoa_function()
+                if self._uses_float_format(module):
+                    self._emit_ftoa_function()
         # Stage 2: emit each function.
         for fn in module.functions:
             self._emit_function(fn)
@@ -468,6 +484,34 @@ class WasmEmitter:
                         return True
                     if recv_ty.startswith("Map") and instr.method in ("set", "get"):
                         return True
+                if isinstance(instr, If):
+                    if visit(instr.then_body) or visit(instr.else_body):
+                        return True
+                if isinstance(instr, While):
+                    if visit(instr.cond_setup) or visit(instr.body):
+                        return True
+                if isinstance(instr, For):
+                    if visit(instr.body):
+                        return True
+                if isinstance(instr, Match):
+                    for arm in instr.arms:
+                        if visit(arm.body):
+                            return True
+            return False
+        for fn in module.functions:
+            if visit(fn.body):
+                return True
+        return False
+
+    def _uses_float_format(self, module: Module) -> bool:
+        """True if any ``FormatStr`` instruction has a Float value
+        part, which is what gates emission of the ``$ftoa`` helper."""
+        def visit(instrs: list[Instr]) -> bool:
+            for instr in instrs:
+                if isinstance(instr, FormatStr):
+                    for p in instr.parts:
+                        if isinstance(p, Value) and p.ty == "Float":
+                            return True
                 if isinstance(instr, If):
                     if visit(instr.then_body) or visit(instr.else_body):
                         return True
@@ -744,6 +788,194 @@ class WasmEmitter:
         self._indent -= 1
         self._write(")")
 
+    def _emit_ftoa_function(self) -> None:
+        """``$ftoa(f: f64) -> (i32 ptr, i32 len)``: format a double
+        as ``<int>.<6 decimal digits>`` (with optional leading
+        minus). Fixed 6-decimal precision; sufficient for the
+        ``${time}`` style interpolation in Capa source. Allocates
+        a fresh buffer per call.
+
+        Strategy: separate integer and fractional parts via
+        ``f64.trunc``, reuse the existing ``$itoa`` for the
+        integer part, then write 6 zero-padded fractional digits
+        into the buffer at the trailing positions.
+        """
+        self._write("(func $ftoa (param $f f64) (result i32 i32)")
+        self._indent += 1
+        self._write("(local $abs f64)")
+        self._write("(local $neg i32)")
+        self._write("(local $int_part i64)")
+        self._write("(local $frac_int i64)")
+        self._write("(local $int_ptr i32)")
+        self._write("(local $int_len i32)")
+        self._write("(local $buf i32)")
+        self._write("(local $write_pos i32)")
+        self._write("(local $i i32)")
+        self._write("(local $digit i32)")
+        # neg = f < 0; abs = neg ? -f : f
+        self._write("local.get $f")
+        self._write("f64.const 0")
+        self._write("f64.lt")
+        self._write("local.tee $neg")
+        self._write("if")
+        self._indent += 1
+        self._write("local.get $f")
+        self._write("f64.neg")
+        self._write("local.set $abs")
+        self._indent -= 1
+        self._write("else")
+        self._indent += 1
+        self._write("local.get $f")
+        self._write("local.set $abs")
+        self._indent -= 1
+        self._write("end")
+        # int_part = trunc(abs) as i64
+        self._write("local.get $abs")
+        self._write("f64.trunc")
+        self._write("i64.trunc_f64_u")
+        self._write("local.set $int_part")
+        # frac_int = (abs - trunc(abs)) * 1_000_000 as i64
+        self._write("local.get $abs")
+        self._write("local.get $abs")
+        self._write("f64.trunc")
+        self._write("f64.sub")
+        self._write("f64.const 1000000")
+        self._write("f64.mul")
+        self._write("i64.trunc_f64_u")
+        self._write("local.set $frac_int")
+        # itoa(int_part) -> (int_ptr, int_len)
+        self._write("local.get $int_part")
+        self._write("call $itoa")
+        self._write("local.set $int_len")
+        self._write("local.set $int_ptr")
+        # Allocate result buffer = int_len + 1 ('.') + 6 (digits) + 1 ('-')
+        self._write("local.get $int_len")
+        self._write("i32.const 8")
+        self._write("i32.add")
+        self._write("call $alloc")
+        self._write("local.set $buf")
+        # Write '-' if neg, increment write_pos accordingly.
+        self._write("i32.const 0")
+        self._write("local.set $write_pos")
+        self._write("local.get $neg")
+        self._write("if")
+        self._indent += 1
+        self._write("local.get $buf")
+        self._write("i32.const 45")  # '-'
+        self._write("i32.store8")
+        self._write("i32.const 1")
+        self._write("local.set $write_pos")
+        self._indent -= 1
+        self._write("end")
+        # memory.copy(buf + write_pos, int_ptr, int_len)
+        self._write("local.get $buf")
+        self._write("local.get $write_pos")
+        self._write("i32.add")
+        self._write("local.get $int_ptr")
+        self._write("local.get $int_len")
+        self._write("memory.copy")
+        # write_pos += int_len
+        self._write("local.get $write_pos")
+        self._write("local.get $int_len")
+        self._write("i32.add")
+        self._write("local.set $write_pos")
+        # Write '.'
+        self._write("local.get $buf")
+        self._write("local.get $write_pos")
+        self._write("i32.add")
+        self._write("i32.const 46")  # '.'
+        self._write("i32.store8")
+        self._write("local.get $write_pos")
+        self._write("i32.const 1")
+        self._write("i32.add")
+        self._write("local.set $write_pos")
+        # Pre-fill 6 zeros for fractional region, then overwrite
+        # right-to-left from frac_int.
+        self._write("i32.const 0")
+        self._write("local.set $i")
+        self._block_counter += 1
+        zloop = f"$ftoa{self._block_counter}_zloop"
+        zexit = f"$ftoa{self._block_counter}_zexit"
+        self._write(f"block {zexit}")
+        self._indent += 1
+        self._write(f"loop {zloop}")
+        self._indent += 1
+        self._write("local.get $i")
+        self._write("i32.const 6")
+        self._write("i32.ge_s")
+        self._write(f"br_if {zexit}")
+        self._write("local.get $buf")
+        self._write("local.get $write_pos")
+        self._write("i32.add")
+        self._write("local.get $i")
+        self._write("i32.add")
+        self._write("i32.const 48")  # '0'
+        self._write("i32.store8")
+        self._write("local.get $i")
+        self._write("i32.const 1")
+        self._write("i32.add")
+        self._write("local.set $i")
+        self._write(f"br {zloop}")
+        self._indent -= 1
+        self._write("end")
+        self._indent -= 1
+        self._write("end")
+        # Overwrite from frac_int. Each digit goes to
+        # buf + write_pos + (5 - i), then frac /= 10, i++ until
+        # i == 6 or frac == 0.
+        self._write("i32.const 0")
+        self._write("local.set $i")
+        self._block_counter += 1
+        dloop = f"$ftoa{self._block_counter}_dloop"
+        dexit = f"$ftoa{self._block_counter}_dexit"
+        self._write(f"block {dexit}")
+        self._indent += 1
+        self._write(f"loop {dloop}")
+        self._indent += 1
+        self._write("local.get $i")
+        self._write("i32.const 6")
+        self._write("i32.ge_s")
+        self._write(f"br_if {dexit}")
+        # digit = frac_int % 10
+        self._write("local.get $frac_int")
+        self._write("i64.const 10")
+        self._write("i64.rem_u")
+        self._write("i32.wrap_i64")
+        self._write("local.set $digit")
+        # buf + write_pos + 5 - i = '0' + digit
+        self._write("local.get $buf")
+        self._write("local.get $write_pos")
+        self._write("i32.add")
+        self._write("i32.const 5")
+        self._write("local.get $i")
+        self._write("i32.sub")
+        self._write("i32.add")
+        self._write("local.get $digit")
+        self._write("i32.const 48")
+        self._write("i32.add")
+        self._write("i32.store8")
+        # frac_int /= 10
+        self._write("local.get $frac_int")
+        self._write("i64.const 10")
+        self._write("i64.div_u")
+        self._write("local.set $frac_int")
+        self._write("local.get $i")
+        self._write("i32.const 1")
+        self._write("i32.add")
+        self._write("local.set $i")
+        self._write(f"br {dloop}")
+        self._indent -= 1
+        self._write("end")
+        self._indent -= 1
+        self._write("end")
+        # Return: ptr = buf, len = write_pos + 6
+        self._write("local.get $buf")
+        self._write("local.get $write_pos")
+        self._write("i32.const 6")
+        self._write("i32.add")
+        self._indent -= 1
+        self._write(")")
+
     def _emit_alloc_function(self) -> None:
         """Emit a bump allocator: ``$alloc(size: i32) -> i32`` that
         returns the current heap_top and advances it by the
@@ -878,20 +1110,25 @@ class WasmEmitter:
         signature of a capability method. String args expand to two
         i32s (ptr, len). The result_type is empty for void methods.
         Mirrors the WIT signatures in ``_emit_wit._WIT_SIGNATURES``;
-        keep the two tables in sync."""
+        keep the two tables in sync.
+
+        Phase 6F still hand-codes a handful of WIT patterns rather
+        than parsing the WIT shape generally; widening this table
+        is the natural extension when new capability methods land."""
         wit = _WIT_SIGNATURES.get((cap, method))
         if wit is None:
             raise WasmEmissionError(
                 f"no Wasm signature for {cap}.{method}"
             )
-        # Phase 6B only emits methods taking a single string arg
-        # returning unit. Parsing the WIT signature would let us
-        # support more shapes; for now, hard-code the pattern.
         if "func(msg: string)" in wit:
             return (["i32", "i32"], "")
+        if "func() -> f64" in wit:
+            return ([], "f64")
+        if "func() -> s64" in wit or "func() -> i64" in wit:
+            return ([], "i64")
         raise WasmEmissionError(
-            f"Phase 6B: cap method {cap}.{method} has shape {wit!r} "
-            f"that the Wasm emitter does not yet decode"
+            f"cap method {cap}.{method} has shape {wit!r} that "
+            f"the Wasm emitter does not yet decode"
         )
 
     @staticmethod
@@ -1303,10 +1540,29 @@ class WasmEmitter:
 
     def _emit_binop(self, instr: BinOp) -> None:
         op = instr.op
+        # Dispatch on operand type: Float operands use f64.* opcodes,
+        # everything else stays on the i64 / i32 path.
+        is_float = instr.left.ty == "Float" or instr.right.ty == "Float"
+        if op in _INT_BINOP and is_float:
+            if op == "%":
+                raise WasmEmissionError(
+                    "Float modulo not supported at the Wasm level"
+                )
+            self._push_value(instr.left)
+            self._push_value(instr.right)
+            self._write(_FLOAT_BINOP[op])
+            self._write(f"local.set ${instr.dst}")
+            return
         if op in _INT_BINOP:
             self._push_value(instr.left)
             self._push_value(instr.right)
             self._write(_INT_BINOP[op])
+            self._write(f"local.set ${instr.dst}")
+            return
+        if op in _CMP_BINOP and is_float:
+            self._push_value(instr.left)
+            self._push_value(instr.right)
+            self._write(_FLOAT_CMP_BINOP[op])
             self._write(f"local.set ${instr.dst}")
             return
         if op in _CMP_BINOP:
@@ -1315,10 +1571,6 @@ class WasmEmitter:
             self._write(_CMP_BINOP[op])
             self._write(f"local.set ${instr.dst}")
             return
-        # ``and`` / ``or`` reach the emitter only when the lowerer
-        # did NOT short-circuit them (which it does for Bool BinOps
-        # at the IR level). Reaching here would mean the IR has a
-        # bug; raise rather than silently mis-evaluate.
         raise WasmEmissionError(
             f"Phase 6A: binop {op!r} not supported (and/or are "
             f"short-circuited at the IR level and should not reach "
@@ -2863,6 +3115,12 @@ class WasmEmitter:
             self._write(f"local.set $_fs_l{idx}")
             self._write(f"local.set $_fs_p{idx}")
             return
+        if ty == "Float":
+            self._push_value(v)
+            self._write("call $ftoa")
+            self._write(f"local.set $_fs_l{idx}")
+            self._write(f"local.set $_fs_p{idx}")
+            return
         if ty == "Bool":
             # Use pre-interned "true" / "false". Branch on the value
             # at runtime and stash the right (ptr, len) pair.
@@ -3007,9 +3265,14 @@ class WasmEmitter:
             else:
                 self._push_value(arg)
         self._write(f"call ${cap}_{method}")
-        # Result handling: Phase 6B methods all return Unit, so no
-        # local.set is needed. When a method returns a value (Phase
-        # 6C+), we will local.set $instr.dst here.
+        # Result handling. Void methods (Stdio.print/println) leave
+        # nothing on the stack; methods with a return value (e.g.
+        # Clock.now_secs -> f64) leave a single primitive that we
+        # bind to ``instr.dst``. The dispatch consults the cap's
+        # WIT signature to know whether to expect a result.
+        _params, result_ty = self._cap_method_wasm_sig(cap, method)
+        if result_ty and instr.dst is not None:
+            self._write(f"local.set ${instr.dst}")
 
     def _is_string_local(self, name: str) -> bool:
         ty = self._current_fn.locals.get(name) if self._current_fn else None
@@ -3062,6 +3325,12 @@ class WasmEmitter:
             return
         if v.kind == "lit_int":
             self._write(f"i64.const {v.literal}")
+            return
+        if v.kind == "lit_float":
+            # WAT accepts standard float literal syntax. We rely on
+            # Python's repr() to produce a parseable form for any
+            # finite value the source contained.
+            self._write(f"f64.const {v.literal!r}")
             return
         if v.kind == "lit_bool":
             self._write(f"i32.const {1 if v.literal else 0}")

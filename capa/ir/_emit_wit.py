@@ -46,19 +46,21 @@ _WIT_SIGNATURES: dict[tuple[str, str], str] = {
     ("Stdio", "println"):  "println: func(msg: string)",
     ("Stdio", "eprintln"): "eprintln: func(msg: string)",
 
-    # Clock / Env / Fs / Net entries are reserved for later phases
-    # so the table reads as a coverage map; uncomment + back with
-    # Wasm emitter + host bridge code when those phases land.
-    # ("Clock", "now_secs"): "now-secs: func() -> f64",
-    # ("Env",   "get"):      "get: func(name: string) -> option<string>",
+    # Clock: monotonic + wall time. Phase 7A scope (Float type).
+    ("Clock", "now_secs"):      "now_secs: func() -> f64",
+    ("Clock", "now_monotonic"): "now_monotonic: func() -> f64",
+
+    # Env / Fs / Net entries land in subsequent phases when their
+    # WIT shapes (option<string>, result<string, io-error>, etc.)
+    # have full emitter support.
 }
 
 
-# Capability names recognised by Phase 6B. Methods not in
-# ``_WIT_SIGNATURES`` raise ``UnsupportedCapability`` at WIT
+# Capability names recognised by the WIT generator. Methods not
+# in ``_WIT_SIGNATURES`` raise ``UnsupportedCapability`` at WIT
 # generation time; the Wasm emitter mirrors this so the contract
 # stays in sync.
-_KNOWN_CAPABILITIES = {"Stdio"}
+_KNOWN_CAPABILITIES = {"Stdio", "Clock"}
 
 
 class UnsupportedCapabilityMethod(Exception):

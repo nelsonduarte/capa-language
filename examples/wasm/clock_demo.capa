@@ -1,0 +1,23 @@
+// Float arithmetic + Clock capability. The clock methods import
+// as f64-returning functions; the host bridge wires them to
+// Python's time module. Note 6-decimal-place fixed precision for
+// any Float interpolation -- the $ftoa helper is intentionally
+// simple.
+
+fun price_with_tax(base: Float, rate: Float) -> Float
+    return base + base * rate
+
+fun main(stdio: Stdio, clock: Clock)
+    let t = clock.now_secs()
+    stdio.println("epoch seconds: ${t}")
+
+    let m = clock.now_monotonic()
+    stdio.println("monotonic seconds: ${m}")
+
+    let half = 0.5
+    let quarter = half / 2.0
+    stdio.println("1/2 + 1/4 = ${half + quarter}")
+
+    let net = 100.0
+    let total = price_with_tax(net, 0.23)
+    stdio.println("${net} + 23% VAT = ${total}")
