@@ -71,6 +71,61 @@ _LIST_CAP_OFFSET = 4
 _LIST_DATA_OFFSET = 8
 
 
+# Memory layout of a Map<String, V>: same 16-byte header as List;
+# the data array holds (key_ptr, key_len, value) triples each 16
+# bytes wide. Phase 6D-3 specialises to String keys and 8-byte
+# values (Int / pointer / packed-String-pair). Larger value types
+# wait for a later phase that widens the slot.
+_MAP_HEADER_SIZE = 16
+_MAP_LEN_OFFSET = 0
+_MAP_CAP_OFFSET = 4
+_MAP_DATA_OFFSET = 8
+_MAP_PAIR_SIZE = 16          # key_ptr (4) + key_len (4) + value (8)
+_MAP_PAIR_KEY_PTR_OFFSET = 0
+_MAP_PAIR_KEY_LEN_OFFSET = 4
+_MAP_PAIR_VALUE_OFFSET = 8
+
+
+# Memory layout of Capa's built-in Option<T>: a sum type with two
+# variants (Some with one payload, None with none). Pre-registered
+# in the emitter so ``match`` against Option<T> works without the
+# user having to declare the type in source.
+_OPTION_LAYOUT = {
+    "variants": {
+        # tag -> 0 for Some, payload at offset 8 (uniform 8-byte slot).
+        "Some": (0, [(8, 8, "Any")]),
+        # tag -> 1 for None, no payloads.
+        "None": (1, []),
+    },
+    "size": 16,
+}
+
+
+# Memory layout of Capa's built-in Result<T, E>: also pre-registered.
+_RESULT_LAYOUT = {
+    "variants": {
+        "Ok":  (0, [(8, 8, "Any")]),
+        "Err": (1, [(8, 8, "Any")]),
+    },
+    "size": 16,
+}
+
+
+def _map_value_type(map_ty: str) -> str:
+    """Extract V from ``Map<K, V>``. Phase 6D-3 only supports K =
+    String, so we ignore K; returning V drives method dispatch.
+    Defaults to ``Int`` if the type string lacks args (consistent
+    with the List analogue)."""
+    if map_ty.startswith("Map<") and map_ty.endswith(">"):
+        inner = map_ty[4:-1].strip()
+        _k, _, v = inner.partition(",")
+        v = v.strip()
+        if v.startswith("?") or not v:
+            return "Int"
+        return v
+    return "Int"
+
+
 def _element_type_of_list(list_ty: str) -> str:
     """Extract T from ``List<T>``. Defaults to ``Int`` if the
     string lacks a type argument (the lowerer occasionally leaves
@@ -268,6 +323,18 @@ class WasmEmitter:
     # ----- public ------------------------------------------------
 
     def emit(self, module: Module) -> str:
+        # Pre-register Capa's built-in Option<T> and Result<T, E>
+        # sum types so the emitter can build / pattern-match them
+        # without the user declaring them in source. ``Some``,
+        # ``None``, ``Ok``, ``Err`` map to these layouts. User-
+        # defined types are added on top, never overriding.
+        self._struct_layouts = {}
+        self._sum_layouts = {"Option": _OPTION_LAYOUT, "Result": _RESULT_LAYOUT}
+        self._variant_to_sum = {
+            "Some": "Option", "None": "Option",
+            "Ok": "Result", "Err": "Result",
+        }
+
         # Pass 0: compute layouts for every struct and sum type so
         # subsequent passes can resolve field offsets and variant
         # tags. Layout of struct fields depends on the size of their
@@ -279,9 +346,6 @@ class WasmEmitter:
         # pointer, so the first pass is already correct; the second
         # pass is a no-op but kept for clarity if future phases
         # inline small structs.
-        self._struct_layouts = {}
-        self._sum_layouts = {}
-        self._variant_to_sum = {}
         for ty in module.types:
             if isinstance(ty, StructDecl):
                 self._struct_layouts[ty.name] = compute_struct_layout(
@@ -355,6 +419,13 @@ class WasmEmitter:
                 f"(global $heap_top (mut i32) (i32.const {heap_start}))"
             )
             self._emit_alloc_function()
+            # ``$str_eq`` is only needed when at least one Map
+            # operation may run; it compares two (ptr, len) string
+            # pairs byte-by-byte. Always emit when a map is in
+            # play -- inlining it at every set/get call site would
+            # bloat the WAT.
+            if self._uses_map_ops(module):
+                self._emit_str_eq_function()
         # Stage 2: emit each function.
         for fn in module.functions:
             self._emit_function(fn)
@@ -396,6 +467,113 @@ class WasmEmitter:
             if visit(fn.body):
                 return True
         return False
+
+    def _uses_map_ops(self, module: Module) -> bool:
+        """True if the module touches a Map (construction or any
+        method that needs string equality). Drives whether the
+        ``$str_eq`` helper is emitted."""
+        def visit(instrs: list[Instr]) -> bool:
+            for instr in instrs:
+                if isinstance(instr, MakeMap):
+                    return True
+                if isinstance(instr, MethodCall):
+                    recv_ty = instr.receiver.ty or ""
+                    if recv_ty.startswith("Map"):
+                        return True
+                if isinstance(instr, If):
+                    if visit(instr.then_body) or visit(instr.else_body):
+                        return True
+                if isinstance(instr, While):
+                    if visit(instr.cond_setup) or visit(instr.body):
+                        return True
+                if isinstance(instr, For):
+                    if visit(instr.body):
+                        return True
+                if isinstance(instr, Match):
+                    for arm in instr.arms:
+                        if visit(arm.body):
+                            return True
+            return False
+        for fn in module.functions:
+            if visit(fn.body):
+                return True
+        return False
+
+    def _emit_str_eq_function(self) -> None:
+        """Helper: ``$str_eq(p1: i32, l1: i32, p2: i32, l2: i32) -> i32``
+        returns 1 if the two byte slices are equal, 0 otherwise.
+        Length mismatch is the fast-path no-match; the byte-by-byte
+        compare loops only when lengths match.
+
+        Used by Map.set / Map.get / Map.contains_key to identify
+        the matching slot in the linear-scan key array."""
+        self._write(
+            "(func $str_eq (param $p1 i32) (param $l1 i32) "
+            "(param $p2 i32) (param $l2 i32) (result i32)"
+        )
+        self._indent += 1
+        self._write("(local $i i32)")
+        # Length mismatch: return 0.
+        self._write("local.get $l1")
+        self._write("local.get $l2")
+        self._write("i32.ne")
+        self._write("if")
+        self._indent += 1
+        self._write("i32.const 0")
+        self._write("return")
+        self._indent -= 1
+        self._write("end")
+        # Byte-by-byte loop.
+        self._write("i32.const 0")
+        self._write("local.set $i")
+        self._write("block $eq_exit (result i32)")
+        self._indent += 1
+        self._write("loop $eq_loop")
+        self._indent += 1
+        # if i >= l1: exit with 1.
+        self._write("local.get $i")
+        self._write("local.get $l1")
+        self._write("i32.ge_s")
+        self._write("if")
+        self._indent += 1
+        self._write("i32.const 1")
+        self._write("br $eq_exit")
+        self._indent -= 1
+        self._write("end")
+        # Load byte from p1+i and p2+i, compare.
+        self._write("local.get $p1")
+        self._write("local.get $i")
+        self._write("i32.add")
+        self._write("i32.load8_u")
+        self._write("local.get $p2")
+        self._write("local.get $i")
+        self._write("i32.add")
+        self._write("i32.load8_u")
+        self._write("i32.ne")
+        self._write("if")
+        self._indent += 1
+        self._write("i32.const 0")
+        self._write("br $eq_exit")
+        self._indent -= 1
+        self._write("end")
+        # i += 1; continue.
+        self._write("local.get $i")
+        self._write("i32.const 1")
+        self._write("i32.add")
+        self._write("local.set $i")
+        self._write("br $eq_loop")
+        self._indent -= 1
+        self._write("end")
+        # Wasm's stack type checker wants a value at every path's
+        # exit; the loop never falls through (every iteration ends
+        # with either ``br $eq_exit`` or ``br $eq_loop``) but the
+        # verifier cannot prove that. Mark the fall-through as
+        # unreachable so the block's i32 result type is satisfied.
+        self._write("unreachable")
+        self._indent -= 1
+        self._write("end")
+        self._indent -= 1
+        self._write(")")
 
     def _emit_alloc_function(self) -> None:
         """Emit a bump allocator: ``$alloc(size: i32) -> i32`` that
@@ -640,13 +818,14 @@ class WasmEmitter:
         has_list = False
         has_for = False
         has_list_contains_i64 = False
+        has_map = False
 
         def value_uses_variant_ctor(v: Value) -> bool:
             return v is not None and v.kind == "variant_ctor"
 
         def visit(instrs: list[Instr]) -> None:
             nonlocal has_match, has_variant_ctor, has_list, has_for
-            nonlocal has_list_contains_i64
+            nonlocal has_list_contains_i64, has_map
             for instr in instrs:
                 if isinstance(instr, Match):
                     has_match = True
@@ -654,12 +833,16 @@ class WasmEmitter:
                         visit(arm.body)
                 if isinstance(instr, MakeList):
                     has_list = True
+                if isinstance(instr, MakeMap):
+                    has_map = True
                 if isinstance(instr, For):
                     has_for = True
                     visit(instr.body)
-                if isinstance(instr, MethodCall) and instr.method == "contains":
+                if isinstance(instr, MethodCall):
                     recv_ty = instr.receiver.ty or ""
-                    if recv_ty.startswith("List"):
+                    if recv_ty.startswith("Map"):
+                        has_map = True
+                    if instr.method == "contains" and recv_ty.startswith("List"):
                         elem_ty = _element_type_of_list(recv_ty)
                         if self._size_of(elem_ty) == 8:
                             has_list_contains_i64 = True
@@ -741,10 +924,20 @@ class WasmEmitter:
         if has_match or has_for:
             out["_m_scrut"] = "i32"
             out["_m_tag"] = "i32"
-        if has_variant_ctor or has_list:
+        if has_variant_ctor or has_list or has_map:
             out["_alloc_tmp"] = "i32"
-        if has_list_contains_i64:
+        if has_list_contains_i64 or has_map:
             out["_alloc_tmp_i64"] = "i64"
+        if has_map:
+            # Match/For scratch locals double as Map scan helpers
+            # (map_local, idx_local). Plus map-specific scratch.
+            out.setdefault("_m_scrut", "i32")
+            out.setdefault("_m_tag", "i32")
+            out["_alloc_tmp_key_len"] = "i32"
+            out["_alloc_tmp_pair"] = "i32"
+            out["_alloc_tmp_newcap"] = "i32"
+            out["_alloc_tmp_new_data"] = "i32"
+            out["_alloc_tmp_result"] = "i32"
         return out
 
     # ----- per-instruction --------------------------------------
@@ -779,16 +972,22 @@ class WasmEmitter:
             if recv_ty.startswith("List"):
                 self._emit_list_method_call(instr)
                 return
+            if recv_ty.startswith("Map"):
+                self._emit_map_method_call(instr)
+                return
             raise WasmEmissionError(
                 f"MethodCall on receiver of type {recv_ty!r} "
-                f"(method {instr.method!r}); String / Map / Set "
-                f"methods land in later 6D sub-phases"
+                f"(method {instr.method!r}); String / Set methods "
+                f"land in later 6D sub-phases"
             )
         if isinstance(instr, MakeStruct):
             self._emit_make_struct(instr)
             return
         if isinstance(instr, MakeList):
             self._emit_make_list(instr)
+            return
+        if isinstance(instr, MakeMap):
+            self._emit_make_map(instr)
             return
         if isinstance(instr, FieldAccess):
             self._emit_field_access(instr)
@@ -1050,6 +1249,449 @@ class WasmEmitter:
         self._write(f"{_load_op_for_size(size)} offset={offset}")
         self._write(f"local.set ${instr.dst}")
 
+    # ----- maps -------------------------------------------------
+
+    def _emit_make_map(self, instr: MakeMap) -> None:
+        """Allocate a Map<String, V> header (16 bytes) + an initial
+        data array of 8 pair slots (8 * 16 = 128 bytes). Layout
+        matches Phase 6D-2 List for the header; the data slots are
+        (key_ptr, key_len, value) triples each 16 bytes wide."""
+        initial_cap = 8
+        self._write(f"i32.const {_MAP_HEADER_SIZE}")
+        self._write("call $alloc")
+        self._write(f"local.set ${instr.dst}")
+        self._write(f"local.get ${instr.dst}")
+        self._write("i32.const 0")
+        self._write(f"i32.store offset={_MAP_LEN_OFFSET}")
+        self._write(f"local.get ${instr.dst}")
+        self._write(f"i32.const {initial_cap}")
+        self._write(f"i32.store offset={_MAP_CAP_OFFSET}")
+        # Data array allocation. Save the freshly-allocated pointer
+        # to ``$_alloc_tmp`` so we can both write it into the header
+        # and reuse it for any later per-pair element initialisation
+        # (currently none for an empty map). The store consumes
+        # (addr=header_ptr, value=data_ptr): wasm pops value first,
+        # then addr, so the push order must be addr-then-value.
+        self._write(f"i32.const {initial_cap * _MAP_PAIR_SIZE}")
+        self._write("call $alloc")
+        self._write("local.set $_alloc_tmp")
+        self._write(f"local.get ${instr.dst}")
+        self._write("local.get $_alloc_tmp")
+        self._write(f"i32.store offset={_MAP_DATA_OFFSET}")
+
+    def _emit_map_method_call(self, instr: MethodCall) -> None:
+        """Dispatch Map<String, V> methods. Phase 6D-3 supports:
+        - length / is_empty: read header
+        - set(k, v): linear scan, overwrite-or-append
+        - contains_key(k): linear scan -> Bool
+        - get(k): linear scan -> Option<V>
+
+        Other methods (keys, values, pairs, ...) wait until List<T>
+        can hold structured element types (tuples, strings) in 6D-4."""
+        recv = instr.receiver
+        method = instr.method
+        recv_ty = recv.ty
+        value_ty = _map_value_type(recv_ty)
+
+        if method == "length":
+            self._push_value(recv)
+            self._write(f"i32.load offset={_MAP_LEN_OFFSET}")
+            self._write("i64.extend_i32_s")
+            if instr.dst is not None:
+                self._write(f"local.set ${instr.dst}")
+            return
+        if method == "is_empty":
+            self._push_value(recv)
+            self._write(f"i32.load offset={_MAP_LEN_OFFSET}")
+            self._write("i32.eqz")
+            if instr.dst is not None:
+                self._write(f"local.set ${instr.dst}")
+            return
+        if method == "set":
+            self._emit_map_set(recv, instr.args[0], instr.args[1], value_ty)
+            return
+        if method == "contains_key":
+            self._emit_map_contains_key(recv, instr.args[0])
+            if instr.dst is not None:
+                self._write(f"local.set ${instr.dst}")
+            return
+        if method == "get":
+            self._emit_map_get(recv, instr.args[0], value_ty)
+            if instr.dst is not None:
+                self._write(f"local.set ${instr.dst}")
+            return
+        raise WasmEmissionError(
+            f"Phase 6D-3: Map method {method!r} not yet supported "
+            f"(keys / values / pairs need List of pairs, 6D-4+)"
+        )
+
+    def _push_string_value_as_ptr_len(self, v: Value) -> None:
+        """Push a String value as two consecutive i32s (ptr, len).
+        Used for map keys and any other site that needs to flatten
+        a String onto the operand stack."""
+        if v.kind == "lit_str":
+            offset, length = self._intern_string(v.literal)
+            self._write(f"i32.const {offset}")
+            self._write(f"i32.const {length}")
+            return
+        if v.kind == "local":
+            self._write(f"local.get ${v.name}_ptr")
+            self._write(f"local.get ${v.name}_len")
+            return
+        if v.kind == "param":
+            self._write(f"local.get ${v.name}_ptr")
+            self._write(f"local.get ${v.name}_len")
+            return
+        raise WasmEmissionError(
+            f"cannot push string Value of kind {v.kind!r} as (ptr, len)"
+        )
+
+    def _push_map_value_as_i64(self, v: Value, value_ty: str) -> None:
+        """Push a Map value onto the stack as a 64-bit packed slot.
+        Int values use i64 directly; Bool / pointers are extended
+        to i64 from their i32 wire form. Phase 6D-3 does not yet
+        support String values (would need to pack ptr+len into 64
+        bits or widen the slot)."""
+        if value_ty == "Int":
+            self._push_value(v)
+            return
+        if value_ty == "Bool":
+            self._push_value(v)
+            self._write("i64.extend_i32_s")
+            return
+        if value_ty == "String":
+            raise WasmEmissionError(
+                "Phase 6D-3: Map<String, String> not yet supported; "
+                "widening the value slot to 16 bytes lands in 6D-4"
+            )
+        # Pointer-shaped types (struct, sum, list, map). Extend i32
+        # to i64 to fit the uniform value slot.
+        if value_ty.split("<", 1)[0] in self._struct_layouts \
+                or value_ty.split("<", 1)[0] in self._sum_layouts \
+                or value_ty.startswith(("List", "Map", "Set")):
+            self._push_value(v)
+            self._write("i64.extend_i32_u")
+            return
+        raise WasmEmissionError(
+            f"Phase 6D-3: Map value type {value_ty!r} not supported"
+        )
+
+    def _emit_map_set(
+        self, recv: Value, k: Value, v: Value, value_ty: str,
+    ) -> None:
+        """Linear-scan ``m.set(k, v)``: replace value at existing
+        key or append a new pair, growing the data array if at
+        cap. Uses ``$_m_scrut`` for the map pointer, ``$_m_tag``
+        for the iteration index, and ``$_alloc_tmp`` / ``$_alloc_tmp_i64``
+        for the new value buffer."""
+        map_local = "_m_scrut"
+        idx_local = "_m_tag"
+        key_ptr_local = "_alloc_tmp"
+        key_len_local = "_alloc_tmp_key_len"
+        value_local = "_alloc_tmp_i64"
+
+        # Stash receiver and key into scratch locals.
+        self._push_value(recv)
+        self._write(f"local.set ${map_local}")
+        self._push_string_value_as_ptr_len(k)
+        self._write(f"local.set ${key_len_local}")
+        self._write(f"local.set ${key_ptr_local}")
+        # Stash the value (packed to i64).
+        self._push_map_value_as_i64(v, value_ty)
+        self._write(f"local.set ${value_local}")
+        # Two-level block: $set_done wraps the whole operation;
+        # $scan_exit lets the inner scan terminate when the key is
+        # not found. The overwrite branch ``br $set_done`` skips
+        # the append fallback; the scan-not-found path falls
+        # through to the append code below.
+        self._write("i32.const 0")
+        self._write(f"local.set ${idx_local}")
+        self._block_counter += 1
+        set_done = f"$Mset{self._block_counter}_done"
+        scan_loop = f"$Mset{self._block_counter}_loop"
+        scan_exit = f"$Mset{self._block_counter}_exit"
+        self._write(f"block {set_done}")
+        self._indent += 1
+        self._write(f"block {scan_exit}")
+        self._indent += 1
+        self._write(f"loop {scan_loop}")
+        self._indent += 1
+        # Guard: idx >= len → exit scan, fall through to append.
+        self._write(f"local.get ${idx_local}")
+        self._write(f"local.get ${map_local}")
+        self._write(f"i32.load offset={_MAP_LEN_OFFSET}")
+        self._write("i32.ge_s")
+        self._write(f"br_if {scan_exit}")
+        # pair_base = data_ptr + idx * 16
+        self._write(f"local.get ${map_local}")
+        self._write(f"i32.load offset={_MAP_DATA_OFFSET}")
+        self._write(f"local.get ${idx_local}")
+        self._write(f"i32.const {_MAP_PAIR_SIZE}")
+        self._write("i32.mul")
+        self._write("i32.add")
+        self._write(f"local.tee $_alloc_tmp_pair")
+        # Compare keys: $str_eq(pair.key_ptr, pair.key_len, key_ptr, key_len)
+        self._write(f"i32.load offset={_MAP_PAIR_KEY_PTR_OFFSET}")
+        self._write(f"local.get $_alloc_tmp_pair")
+        self._write(f"i32.load offset={_MAP_PAIR_KEY_LEN_OFFSET}")
+        self._write(f"local.get ${key_ptr_local}")
+        self._write(f"local.get ${key_len_local}")
+        self._write("call $str_eq")
+        self._write("if")
+        self._indent += 1
+        # Match: overwrite value and exit (skip append).
+        self._write(f"local.get $_alloc_tmp_pair")
+        self._write(f"local.get ${value_local}")
+        self._write(f"i64.store offset={_MAP_PAIR_VALUE_OFFSET}")
+        self._write(f"br {set_done}")
+        self._indent -= 1
+        self._write("end")
+        # idx++ and loop.
+        self._write(f"local.get ${idx_local}")
+        self._write("i32.const 1")
+        self._write("i32.add")
+        self._write(f"local.set ${idx_local}")
+        self._write(f"br {scan_loop}")
+        self._indent -= 1
+        self._write("end")
+        self._indent -= 1
+        self._write("end")
+
+        # Append branch: idx == len (reached via $scan_exit).
+        # Check capacity; grow if needed.
+        self._write(f"local.get ${map_local}")
+        self._write(f"i32.load offset={_MAP_LEN_OFFSET}")
+        self._write(f"local.get ${map_local}")
+        self._write(f"i32.load offset={_MAP_CAP_OFFSET}")
+        self._write("i32.ge_s")
+        self._write("if")
+        self._indent += 1
+        self._emit_map_grow(map_local)
+        self._indent -= 1
+        self._write("end")
+        # pair_base = data_ptr + len * 16
+        self._write(f"local.get ${map_local}")
+        self._write(f"i32.load offset={_MAP_DATA_OFFSET}")
+        self._write(f"local.get ${map_local}")
+        self._write(f"i32.load offset={_MAP_LEN_OFFSET}")
+        self._write(f"i32.const {_MAP_PAIR_SIZE}")
+        self._write("i32.mul")
+        self._write("i32.add")
+        self._write(f"local.tee $_alloc_tmp_pair")
+        # Store key_ptr, key_len, value.
+        self._write(f"local.get ${key_ptr_local}")
+        self._write(f"i32.store offset={_MAP_PAIR_KEY_PTR_OFFSET}")
+        self._write(f"local.get $_alloc_tmp_pair")
+        self._write(f"local.get ${key_len_local}")
+        self._write(f"i32.store offset={_MAP_PAIR_KEY_LEN_OFFSET}")
+        self._write(f"local.get $_alloc_tmp_pair")
+        self._write(f"local.get ${value_local}")
+        self._write(f"i64.store offset={_MAP_PAIR_VALUE_OFFSET}")
+        # Increment len.
+        self._write(f"local.get ${map_local}")
+        self._write(f"local.get ${map_local}")
+        self._write(f"i32.load offset={_MAP_LEN_OFFSET}")
+        self._write("i32.const 1")
+        self._write("i32.add")
+        self._write(f"i32.store offset={_MAP_LEN_OFFSET}")
+        # Close the outer $set_done block.
+        self._indent -= 1
+        self._write("end")
+
+    def _emit_map_grow(self, map_local: str) -> None:
+        """Grow the map's data array by doubling capacity. Uses
+        ``memory.copy`` to move existing pairs into the fresh
+        allocation. The new cap is written to the header along
+        with the new data_ptr.
+
+        Uses ``$_alloc_tmp_new_data`` for the freshly-allocated
+        data array so the caller's other ``$_alloc_tmp_*`` slots
+        (e.g. the key_ptr being inserted) are not clobbered."""
+        # new_cap = cap * 2 (min 8 if cap was 0).
+        self._write(f"local.get ${map_local}")
+        self._write(f"i32.load offset={_MAP_CAP_OFFSET}")
+        self._write("i32.const 2")
+        self._write("i32.mul")
+        self._write("local.tee $_alloc_tmp_newcap")
+        self._write("i32.eqz")
+        self._write("if")
+        self._indent += 1
+        self._write("i32.const 8")
+        self._write("local.set $_alloc_tmp_newcap")
+        self._indent -= 1
+        self._write("end")
+        # Allocate new data area.
+        self._write("local.get $_alloc_tmp_newcap")
+        self._write(f"i32.const {_MAP_PAIR_SIZE}")
+        self._write("i32.mul")
+        self._write("call $alloc")
+        self._write("local.tee $_alloc_tmp_new_data")
+        # memory.copy(dst=new_data, src=old_data, n=len*pair_size).
+        self._write(f"local.get ${map_local}")
+        self._write(f"i32.load offset={_MAP_DATA_OFFSET}")
+        self._write(f"local.get ${map_local}")
+        self._write(f"i32.load offset={_MAP_LEN_OFFSET}")
+        self._write(f"i32.const {_MAP_PAIR_SIZE}")
+        self._write("i32.mul")
+        self._write("memory.copy")
+        # Update header.
+        self._write(f"local.get ${map_local}")
+        self._write("local.get $_alloc_tmp_new_data")
+        self._write(f"i32.store offset={_MAP_DATA_OFFSET}")
+        self._write(f"local.get ${map_local}")
+        self._write("local.get $_alloc_tmp_newcap")
+        self._write(f"i32.store offset={_MAP_CAP_OFFSET}")
+
+    def _emit_map_contains_key(self, recv: Value, k: Value) -> None:
+        """Linear-scan ``m.contains_key(k)``. Leaves an i32 (0/1)
+        on the stack."""
+        map_local = "_m_scrut"
+        idx_local = "_m_tag"
+        key_ptr_local = "_alloc_tmp"
+        key_len_local = "_alloc_tmp_key_len"
+        self._push_value(recv)
+        self._write(f"local.set ${map_local}")
+        self._push_string_value_as_ptr_len(k)
+        self._write(f"local.set ${key_len_local}")
+        self._write(f"local.set ${key_ptr_local}")
+        self._write("i32.const 0")
+        self._write(f"local.set ${idx_local}")
+        self._block_counter += 1
+        loop = f"$Mck{self._block_counter}_loop"
+        exit_ = f"$Mck{self._block_counter}_exit"
+        self._write(f"block {exit_} (result i32)")
+        self._indent += 1
+        self._write(f"loop {loop}")
+        self._indent += 1
+        # Guard.
+        self._write(f"local.get ${idx_local}")
+        self._write(f"local.get ${map_local}")
+        self._write(f"i32.load offset={_MAP_LEN_OFFSET}")
+        self._write("i32.ge_s")
+        self._write("if")
+        self._indent += 1
+        self._write("i32.const 0")
+        self._write(f"br {exit_}")
+        self._indent -= 1
+        self._write("end")
+        # Compare key.
+        self._write(f"local.get ${map_local}")
+        self._write(f"i32.load offset={_MAP_DATA_OFFSET}")
+        self._write(f"local.get ${idx_local}")
+        self._write(f"i32.const {_MAP_PAIR_SIZE}")
+        self._write("i32.mul")
+        self._write("i32.add")
+        self._write(f"local.tee $_alloc_tmp_pair")
+        self._write(f"i32.load offset={_MAP_PAIR_KEY_PTR_OFFSET}")
+        self._write(f"local.get $_alloc_tmp_pair")
+        self._write(f"i32.load offset={_MAP_PAIR_KEY_LEN_OFFSET}")
+        self._write(f"local.get ${key_ptr_local}")
+        self._write(f"local.get ${key_len_local}")
+        self._write("call $str_eq")
+        self._write("if")
+        self._indent += 1
+        self._write("i32.const 1")
+        self._write(f"br {exit_}")
+        self._indent -= 1
+        self._write("end")
+        # idx++, loop.
+        self._write(f"local.get ${idx_local}")
+        self._write("i32.const 1")
+        self._write("i32.add")
+        self._write(f"local.set ${idx_local}")
+        self._write(f"br {loop}")
+        self._indent -= 1
+        self._write("end")
+        # Verifier-satisfying terminator: the loop never falls
+        # through (it either br's to $exit_ with a value or br's
+        # back to itself), but Wasm's static checker cannot prove
+        # that, so we mark fall-through as unreachable.
+        self._write("unreachable")
+        self._indent -= 1
+        self._write("end")
+
+    def _emit_map_get(self, recv: Value, k: Value, value_ty: str) -> None:
+        """Linear-scan ``m.get(k)`` returning an Option<V> pointer.
+        Allocates a fresh 16-byte Option<V> with tag=Some + value
+        on hit, or tag=None on miss."""
+        map_local = "_m_scrut"
+        idx_local = "_m_tag"
+        key_ptr_local = "_alloc_tmp"
+        key_len_local = "_alloc_tmp_key_len"
+        result_local = "_alloc_tmp_result"
+        self._push_value(recv)
+        self._write(f"local.set ${map_local}")
+        self._push_string_value_as_ptr_len(k)
+        self._write(f"local.set ${key_len_local}")
+        self._write(f"local.set ${key_ptr_local}")
+        # Alloc the Option result up front; we will fill the tag
+        # (and maybe value) below depending on hit/miss.
+        self._write(f"i32.const {_OPTION_LAYOUT['size']}")
+        self._write("call $alloc")
+        self._write(f"local.set ${result_local}")
+        self._write("i32.const 0")
+        self._write(f"local.set ${idx_local}")
+        self._block_counter += 1
+        loop = f"$Mget{self._block_counter}_loop"
+        exit_ = f"$Mget{self._block_counter}_exit"
+        self._write(f"block {exit_}")
+        self._indent += 1
+        self._write(f"loop {loop}")
+        self._indent += 1
+        # Guard: idx >= len -> miss path.
+        self._write(f"local.get ${idx_local}")
+        self._write(f"local.get ${map_local}")
+        self._write(f"i32.load offset={_MAP_LEN_OFFSET}")
+        self._write("i32.ge_s")
+        self._write("if")
+        self._indent += 1
+        # Miss: store tag=None.
+        self._write(f"local.get ${result_local}")
+        self._write(f"i32.const 1")  # None tag
+        self._write("i32.store")
+        self._write(f"br {exit_}")
+        self._indent -= 1
+        self._write("end")
+        # Compare key.
+        self._write(f"local.get ${map_local}")
+        self._write(f"i32.load offset={_MAP_DATA_OFFSET}")
+        self._write(f"local.get ${idx_local}")
+        self._write(f"i32.const {_MAP_PAIR_SIZE}")
+        self._write("i32.mul")
+        self._write("i32.add")
+        self._write(f"local.tee $_alloc_tmp_pair")
+        self._write(f"i32.load offset={_MAP_PAIR_KEY_PTR_OFFSET}")
+        self._write(f"local.get $_alloc_tmp_pair")
+        self._write(f"i32.load offset={_MAP_PAIR_KEY_LEN_OFFSET}")
+        self._write(f"local.get ${key_ptr_local}")
+        self._write(f"local.get ${key_len_local}")
+        self._write("call $str_eq")
+        self._write("if")
+        self._indent += 1
+        # Hit: store tag=Some + value from pair.
+        self._write(f"local.get ${result_local}")
+        self._write("i32.const 0")  # Some tag
+        self._write("i32.store")
+        self._write(f"local.get ${result_local}")
+        self._write(f"local.get $_alloc_tmp_pair")
+        self._write(f"i64.load offset={_MAP_PAIR_VALUE_OFFSET}")
+        self._write(f"i64.store offset={_OPTION_LAYOUT['variants']['Some'][1][0][0]}")
+        self._write(f"br {exit_}")
+        self._indent -= 1
+        self._write("end")
+        # idx++, loop.
+        self._write(f"local.get ${idx_local}")
+        self._write("i32.const 1")
+        self._write("i32.add")
+        self._write(f"local.set ${idx_local}")
+        self._write(f"br {loop}")
+        self._indent -= 1
+        self._write("end")
+        self._indent -= 1
+        self._write("end")
+        # Leave result pointer on the stack.
+        self._write(f"local.get ${result_local}")
+
     # ----- list methods -----------------------------------------
 
     def _emit_list_method_call(self, instr: MethodCall) -> None:
@@ -1268,6 +1910,10 @@ class WasmEmitter:
         self._write(f"br {loop_label}")
         self._indent -= 1
         self._write("end")
+        # Loop never falls through; the outer block expects an
+        # i32 result, so an unreachable terminator satisfies the
+        # type-checker without producing a spurious value.
+        self._write("unreachable")
         self._indent -= 1
         self._write("end")
 
@@ -1449,7 +2095,10 @@ class WasmEmitter:
         into arm bodies.
         """
         scrut_ty = instr.scrutinee.ty
-        sum_layout = self._sum_layouts.get(scrut_ty)
+        # Sum-layout lookups strip generic args: ``Option<Int>`` ->
+        # ``Option``. The built-in Option / Result and user-defined
+        # sums are all keyed by the bare type name.
+        sum_layout = self._sum_layouts.get(scrut_ty.split("<", 1)[0])
         if sum_layout is None:
             raise WasmEmissionError(
                 f"Match on scrutinee of type {scrut_ty!r}: only sum "

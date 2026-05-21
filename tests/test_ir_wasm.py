@@ -778,5 +778,125 @@ class TestWasmListInt(unittest.TestCase):
         self.assertEqual(exp["build_big"](store), 1225)
 
 
+@unittest.skipUnless(
+    _has_wasm_tools() and _has_wasmtime_py(),
+    "wasm-tools and/or wasmtime-py not installed",
+)
+class TestWasmMapStringInt(unittest.TestCase):
+    """Phase 6D-3: Map<String, Int> backed by a 16-byte header
+    (len, cap, data_ptr, padding) + a linear array of 16-byte
+    (key_ptr, key_len, value) triples. Methods covered: set
+    (with grow + key-overwrite), get (returning Option<Int>),
+    contains_key, length, is_empty.
+
+    Strings are compared via the inline ``$str_eq`` helper that
+    the emitter writes alongside ``$alloc`` whenever the module
+    touches a Map. Phase 6D-3 only supports String keys; richer
+    key types wait until the pair slot layout becomes
+    configurable in a later phase."""
+
+    def _instantiate(self, src: str):
+        import wasmtime
+        _, types, ast_mod = _parse_lower(src)
+        blob = compile_wasm(ast_mod, types=types)
+        engine = wasmtime.Engine()
+        mod = wasmtime.Module(engine, blob)
+        store = wasmtime.Store(engine)
+        linker = wasmtime.Linker(engine)
+        instance = linker.instantiate(store, mod)
+        return store, instance.exports(store)
+
+    def test_set_and_length_distinct_keys(self):
+        src = (
+            "fun build() -> Int\n"
+            "    let m: Map<String, Int> = new_map()\n"
+            "    m.set(\"a\", 10)\n"
+            "    m.set(\"b\", 20)\n"
+            "    m.set(\"c\", 30)\n"
+            "    return m.length()\n"
+        )
+        store, exp = self._instantiate(src)
+        self.assertEqual(exp["build"](store), 3)
+
+    def test_set_overwrite_does_not_grow_length(self):
+        src = (
+            "fun build() -> Int\n"
+            "    let m: Map<String, Int> = new_map()\n"
+            "    m.set(\"a\", 1)\n"
+            "    m.set(\"a\", 99)\n"
+            "    m.set(\"a\", 7)\n"
+            "    return m.length()\n"
+        )
+        store, exp = self._instantiate(src)
+        self.assertEqual(exp["build"](store), 1)
+
+    def test_get_returns_some_on_hit(self):
+        src = (
+            "fun apples() -> Int\n"
+            "    let m: Map<String, Int> = new_map()\n"
+            "    m.set(\"apples\", 5)\n"
+            "    m.set(\"oranges\", 3)\n"
+            "    match m.get(\"apples\")\n"
+            "        Some(n) -> return n\n"
+            "        None -> return -1\n"
+        )
+        store, exp = self._instantiate(src)
+        self.assertEqual(exp["apples"](store), 5)
+
+    def test_get_returns_none_on_miss(self):
+        src = (
+            "fun bananas() -> Int\n"
+            "    let m: Map<String, Int> = new_map()\n"
+            "    m.set(\"apples\", 5)\n"
+            "    match m.get(\"bananas\")\n"
+            "        Some(n) -> return n\n"
+            "        None -> return -1\n"
+        )
+        store, exp = self._instantiate(src)
+        self.assertEqual(exp["bananas"](store), -1)
+
+    def test_overwrite_then_get_returns_new_value(self):
+        src = (
+            "fun overwrite() -> Int\n"
+            "    let m: Map<String, Int> = new_map()\n"
+            "    m.set(\"a\", 1)\n"
+            "    m.set(\"a\", 99)\n"
+            "    match m.get(\"a\")\n"
+            "        Some(n) -> return n\n"
+            "        None -> return 0\n"
+        )
+        store, exp = self._instantiate(src)
+        self.assertEqual(exp["overwrite"](store), 99)
+
+    def test_contains_key_hit_and_miss(self):
+        src = (
+            "fun has_a() -> Bool\n"
+            "    let m: Map<String, Int> = new_map()\n"
+            "    m.set(\"a\", 1)\n"
+            "    return m.contains_key(\"a\")\n"
+            "fun has_z() -> Bool\n"
+            "    let m: Map<String, Int> = new_map()\n"
+            "    m.set(\"a\", 1)\n"
+            "    return m.contains_key(\"z\")\n"
+        )
+        store, exp = self._instantiate(src)
+        self.assertEqual(exp["has_a"](store), 1)
+        self.assertEqual(exp["has_z"](store), 0)
+
+    def test_is_empty_before_and_after_insert(self):
+        src = (
+            "fun empty_at_start() -> Bool\n"
+            "    let m: Map<String, Int> = new_map()\n"
+            "    return m.is_empty()\n"
+            "fun empty_after_insert() -> Bool\n"
+            "    let m: Map<String, Int> = new_map()\n"
+            "    m.set(\"k\", 1)\n"
+            "    return m.is_empty()\n"
+        )
+        store, exp = self._instantiate(src)
+        self.assertEqual(exp["empty_at_start"](store), 1)
+        self.assertEqual(exp["empty_after_insert"](store), 0)
+
+
 if __name__ == "__main__":
     unittest.main()
