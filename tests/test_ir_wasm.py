@@ -1137,5 +1137,49 @@ class TestWasmFloatAndClock(unittest.TestCase):
         self.assertEqual(out.getvalue(), "clock OK\n")
 
 
+@unittest.skipUnless(
+    _has_wasm_tools() and _has_wasmtime_py(),
+    "wasm-tools and/or wasmtime-py not installed",
+)
+class TestWasmEnv(unittest.TestCase):
+    """Phase 7B: Env.get returns Option<String>, with the host
+    bridge allocating both the Option container and the string
+    payload bytes via the module's exported \\$alloc. String
+    payloads are packed into the 8-byte Option slot as
+    (ptr low, len high); the match emitter unpacks at the
+    Some-binding site."""
+
+    def test_env_get_hit_and_miss(self):
+        import os
+        from capa.runtime._wasm_host import WasmHost
+        src = (
+            "fun lookup(stdio: Stdio, env: Env, key: String)\n"
+            "    match env.get(key)\n"
+            "        Some(v) -> stdio.println(\"hit: ${v}\")\n"
+            "        None -> stdio.println(\"miss\")\n"
+            "fun main(stdio: Stdio, env: Env)\n"
+            "    lookup(stdio, env, \"CAPA_WASM_TEST_HIT\")\n"
+            "    lookup(stdio, env, \"DEFINITELY_NOT_SET_XYZ\")\n"
+        )
+        _, types, ast_mod = _parse_lower(src)
+        blob = compile_wasm(ast_mod, types=types)
+        os.environ["CAPA_WASM_TEST_HIT"] = "found-value"
+        os.environ.pop("DEFINITELY_NOT_SET_XYZ", None)
+        try:
+            import io, sys
+            host = WasmHost()
+            out = io.StringIO()
+            saved = sys.stdout
+            sys.stdout = out
+            try:
+                host.run_main(blob)
+            finally:
+                sys.stdout = saved
+            lines = out.getvalue().strip().split("\n")
+            self.assertEqual(lines, ["hit: found-value", "miss"])
+        finally:
+            os.environ.pop("CAPA_WASM_TEST_HIT", None)
+
+
 if __name__ == "__main__":
     unittest.main()

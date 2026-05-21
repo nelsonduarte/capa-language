@@ -982,8 +982,12 @@ class WasmEmitter:
         requested size aligned to 8 bytes. No free, no GC; this is
         the simplest correct allocator and matches Phase 6C's
         no-collections scope. A later phase that adds growth or
-        compaction replaces this implementation."""
-        self._write("(func $alloc (param $size i32) (result i32)")
+        compaction replaces this implementation.
+
+        Exported so host bridges (capa:host/env etc.) can allocate
+        Option / Result wrappers in linear memory before handing
+        them back to the wasm code."""
+        self._write('(func $alloc (export "alloc") (param $size i32) (result i32)')
         self._indent += 1
         self._write("(local $ret i32)")
         # Align $heap_top up to 8 bytes before returning.
@@ -1126,6 +1130,13 @@ class WasmEmitter:
             return ([], "f64")
         if "func() -> s64" in wit or "func() -> i64" in wit:
             return ([], "i64")
+        if "func(name: string) -> option<string>" in wit:
+            # Single string arg (ptr, len), returns an i32 pointer
+            # to an Option<String> allocated in linear memory by
+            # the host. The Option uses Capa's standard layout
+            # (tag@0, payload@8) so the IR's match emitter handles
+            # it without further plumbing.
+            return (["i32", "i32"], "i32")
         raise WasmEmissionError(
             f"cap method {cap}.{method} has shape {wit!r} that "
             f"the Wasm emitter does not yet decode"
@@ -1353,7 +1364,9 @@ class WasmEmitter:
             out["_m_tag"] = "i32"
         if has_variant_ctor or has_list or has_map:
             out["_alloc_tmp"] = "i32"
-        if has_list_contains_i64 or has_map:
+        if has_list_contains_i64 or has_map or has_match:
+            # has_match also needs the i64 scratch when a String
+            # payload is unpacked from an Option/Result/variant.
             out["_alloc_tmp_i64"] = "i64"
         if has_map:
             # Match/For scratch locals double as Map scan helpers
@@ -3214,9 +3227,30 @@ class WasmEmitter:
                 pat.payloads, payload_layouts,
             ):
                 if isinstance(sub_pat, PatIdent):
-                    self._write(f"local.get ${scrut_local}")
-                    self._write(f"{_load_op_for_size(size)} offset={offset}")
-                    self._write(f"local.set ${sub_pat.name}")
+                    bind_ty = (
+                        self._current_fn.locals.get(sub_pat.name, "")
+                        if self._current_fn else ""
+                    )
+                    if bind_ty == "String":
+                        # String payload is packed into the i64
+                        # slot: low 32 bits = ptr, high 32 bits =
+                        # len. Unpack into the bind's (ptr, len)
+                        # locals so downstream String operations
+                        # work transparently.
+                        self._write(f"local.get ${scrut_local}")
+                        self._write(f"i64.load offset={offset}")
+                        self._write(f"local.tee $_alloc_tmp_i64")
+                        self._write("i32.wrap_i64")
+                        self._write(f"local.set ${sub_pat.name}_ptr")
+                        self._write("local.get $_alloc_tmp_i64")
+                        self._write("i64.const 32")
+                        self._write("i64.shr_u")
+                        self._write("i32.wrap_i64")
+                        self._write(f"local.set ${sub_pat.name}_len")
+                    else:
+                        self._write(f"local.get ${scrut_local}")
+                        self._write(f"{_load_op_for_size(size)} offset={offset}")
+                        self._write(f"local.set ${sub_pat.name}")
                 elif isinstance(sub_pat, PatWildcard):
                     continue
                 else:

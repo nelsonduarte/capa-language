@@ -38,8 +38,14 @@ class WasmHost:
         # Holds the instance's exported memory after instantiation;
         # host callbacks read string arguments out of this memory.
         self._memory: Optional[wasmtime.Memory] = None
+        # Cache the module's exported $alloc once we instantiate;
+        # host functions like ``env.get`` need to allocate Option /
+        # Result records back into wasm memory, which requires
+        # calling ``$alloc`` from the host side.
+        self._alloc_export: Optional[wasmtime.Func] = None
         self._register_stdio()
         self._register_clock()
+        self._register_env()
 
     def _register_stdio(self) -> None:
         """Register the ``capa:stdio`` interface methods. Each
@@ -119,6 +125,63 @@ class WasmHost:
             "capa:host/clock", "now_monotonic", ft_to_f64, now_monotonic,
         )
 
+    def _register_env(self) -> None:
+        """Register the ``capa:host/env`` interface methods.
+
+        ``get(name: string) -> option<string>``: reads the named
+        env var from the host process. On miss, allocates an
+        Option with tag=None (1); on hit, allocates an Option
+        with tag=Some (0) and a packed (ptr, len) payload pointing
+        to a copy of the value's UTF-8 bytes in wasm memory.
+
+        The host calls back into ``$alloc`` to materialise both
+        the Option container and the string buffer. That side-
+        channel keeps the WIT contract clean (``option<string>``)
+        and ties allocations to the module's bump heap so memory
+        stays linear and traceable."""
+        import os
+        ft_string_to_optptr = wasmtime.FuncType(
+            [wasmtime.ValType.i32(), wasmtime.ValType.i32()],
+            [wasmtime.ValType.i32()],
+        )
+
+        def env_get(caller, name_ptr, name_len):
+            if self._memory is None or self._alloc_export is None:
+                raise RuntimeError(
+                    "env.get called before instance memory + $alloc set"
+                )
+            # Read input string out of wasm memory.
+            data = self._memory.read(caller, name_ptr, name_ptr + name_len)
+            name = bytes(data).decode("utf-8")
+            value = os.environ.get(name)
+            # Allocate the 16-byte Option container.
+            opt_ptr = self._alloc_export(caller, 16)
+            if value is None:
+                # tag=None (1) at offset 0
+                self._memory.write(
+                    caller, (1).to_bytes(4, "little"), opt_ptr,
+                )
+                return opt_ptr
+            # tag=Some (0) + packed (str_ptr, str_len) at offset 8
+            encoded = value.encode("utf-8")
+            str_ptr = self._alloc_export(caller, len(encoded))
+            self._memory.write(caller, encoded, str_ptr)
+            self._memory.write(
+                caller, (0).to_bytes(4, "little"), opt_ptr,
+            )
+            packed = (str_ptr & 0xFFFFFFFF) | (
+                (len(encoded) & 0xFFFFFFFF) << 32
+            )
+            self._memory.write(
+                caller, packed.to_bytes(8, "little"), opt_ptr + 8,
+            )
+            return opt_ptr
+
+        self.linker.define_func(
+            "capa:host/env", "get", ft_string_to_optptr,
+            env_get, access_caller=True,
+        )
+
     def instantiate(self, wasm_blob: bytes) -> wasmtime.Instance:
         """Load ``wasm_blob`` and instantiate it against the
         registered host imports. Caches the exported memory so
@@ -128,6 +191,8 @@ class WasmHost:
         exports = instance.exports(self.store)
         if "memory" in exports:
             self._memory = exports["memory"]
+        if "alloc" in exports:
+            self._alloc_export = exports["alloc"]
         return instance
 
     def run_main(self, wasm_blob: bytes) -> None:

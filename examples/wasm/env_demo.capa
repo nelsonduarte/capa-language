@@ -1,0 +1,16 @@
+// Env.get returns Option<String>; the host bridge constructs
+// the Option in wasm memory by allocating both the container
+// and the value bytes via the module's exported $alloc. The
+// match arm unpacks the (ptr, len) pair packed into the
+// Option's 8-byte payload slot.
+
+fun describe(stdio: Stdio, env: Env, key: String)
+    match env.get(key)
+        Some(value) -> stdio.println("${key} = ${value}")
+        None -> stdio.println("${key} is not set")
+
+fun main(stdio: Stdio, env: Env)
+    describe(stdio, env, "PATH")
+    describe(stdio, env, "USER")
+    describe(stdio, env, "CAPA_VERSION")
+    describe(stdio, env, "DEFINITELY_NOT_DEFINED_XYZ123")

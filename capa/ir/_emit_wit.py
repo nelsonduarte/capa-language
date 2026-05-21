@@ -50,9 +50,12 @@ _WIT_SIGNATURES: dict[tuple[str, str], str] = {
     ("Clock", "now_secs"):      "now_secs: func() -> f64",
     ("Clock", "now_monotonic"): "now_monotonic: func() -> f64",
 
-    # Env / Fs / Net entries land in subsequent phases when their
-    # WIT shapes (option<string>, result<string, io-error>, etc.)
-    # have full emitter support.
+    # Env: process environment + argv. Phase 7B scope (Option<String>).
+    ("Env", "get"): "get: func(name: string) -> option<string>",
+
+    # Fs / Net entries land in subsequent phases when their
+    # WIT shapes (result<string, io-error>, etc.) have full
+    # emitter support.
 }
 
 
@@ -60,7 +63,7 @@ _WIT_SIGNATURES: dict[tuple[str, str], str] = {
 # in ``_WIT_SIGNATURES`` raise ``UnsupportedCapability`` at WIT
 # generation time; the Wasm emitter mirrors this so the contract
 # stays in sync.
-_KNOWN_CAPABILITIES = {"Stdio", "Clock"}
+_KNOWN_CAPABILITIES = {"Stdio", "Clock", "Env"}
 
 
 class UnsupportedCapabilityMethod(Exception):
