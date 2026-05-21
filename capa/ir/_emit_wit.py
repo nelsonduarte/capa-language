@@ -53,9 +53,13 @@ _WIT_SIGNATURES: dict[tuple[str, str], str] = {
     # Env: process environment + argv. Phase 7B scope (Option<String>).
     ("Env", "get"): "get: func(name: string) -> option<string>",
 
-    # Fs / Net entries land in subsequent phases when their
-    # WIT shapes (result<string, io-error>, etc.) have full
-    # emitter support.
+    # Fs: filesystem reads + writes. Phase 7C scope (Result<T, IoError>).
+    # IoError is a Capa-side record with two String fields (message,
+    # cause). The host constructs it via $alloc on error.
+    ("Fs", "read"):  "read: func(path: string) -> result<string, io-error>",
+    ("Fs", "write"): "write: func(path: string, content: string) -> result<_, io-error>",
+
+    # Net entries follow once the request/response model is stable.
 }
 
 
@@ -63,7 +67,7 @@ _WIT_SIGNATURES: dict[tuple[str, str], str] = {
 # in ``_WIT_SIGNATURES`` raise ``UnsupportedCapability`` at WIT
 # generation time; the Wasm emitter mirrors this so the contract
 # stays in sync.
-_KNOWN_CAPABILITIES = {"Stdio", "Clock", "Env"}
+_KNOWN_CAPABILITIES = {"Stdio", "Clock", "Env", "Fs"}
 
 
 class UnsupportedCapabilityMethod(Exception):

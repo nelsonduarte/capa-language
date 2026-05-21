@@ -1181,5 +1181,67 @@ class TestWasmEnv(unittest.TestCase):
             os.environ.pop("CAPA_WASM_TEST_HIT", None)
 
 
+@unittest.skipUnless(
+    _has_wasm_tools() and _has_wasmtime_py(),
+    "wasm-tools and/or wasmtime-py not installed",
+)
+class TestWasmFs(unittest.TestCase):
+    """Phase 7C: Fs.read / Fs.write return Result<T, IoError>. The
+    host bridge constructs Result + IoError records in wasm
+    memory via the module's exported \\$alloc. Pattern matching
+    on Ok / Err works through the existing match emitter, with
+    String payloads unpacked from the i64 slot and IoError
+    pointer payloads i32-wrapped at the bind site."""
+
+    def test_fs_round_trip(self):
+        import os
+        import tempfile
+        from capa.runtime._wasm_host import WasmHost
+        with tempfile.TemporaryDirectory() as td:
+            target = os.path.join(td, "out.txt").replace("\\", "/")
+            src = (
+                "fun main(stdio: Stdio, fs: Fs)\n"
+                "    match fs.write(\"" + target + "\", \"hello-fs\")\n"
+                "        Ok(_) -> stdio.println(\"wrote\")\n"
+                "        Err(_) -> stdio.eprintln(\"write failed\")\n"
+                "    match fs.read(\"" + target + "\")\n"
+                "        Ok(text) -> stdio.println(\"read: ${text}\")\n"
+                "        Err(_) -> stdio.eprintln(\"read failed\")\n"
+            )
+            _, types, ast_mod = _parse_lower(src)
+            blob = compile_wasm(ast_mod, types=types)
+            import io, sys
+            host = WasmHost()
+            out = io.StringIO()
+            saved = sys.stdout
+            sys.stdout = out
+            try:
+                host.run_main(blob)
+            finally:
+                sys.stdout = saved
+            self.assertEqual(out.getvalue(), "wrote\nread: hello-fs\n")
+
+    def test_fs_read_missing_returns_err(self):
+        from capa.runtime._wasm_host import WasmHost
+        src = (
+            "fun main(stdio: Stdio, fs: Fs)\n"
+            "    match fs.read(\"/does/not/exist/xyz\")\n"
+            "        Ok(_) -> stdio.println(\"BUG\")\n"
+            "        Err(_) -> stdio.println(\"missing\")\n"
+        )
+        _, types, ast_mod = _parse_lower(src)
+        blob = compile_wasm(ast_mod, types=types)
+        import io, sys
+        host = WasmHost()
+        out = io.StringIO()
+        saved = sys.stdout
+        sys.stdout = out
+        try:
+            host.run_main(blob)
+        finally:
+            sys.stdout = saved
+        self.assertEqual(out.getvalue(), "missing\n")
+
+
 if __name__ == "__main__":
     unittest.main()

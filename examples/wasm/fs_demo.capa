@@ -1,0 +1,24 @@
+// Fs.read / Fs.write return Result<T, IoError>. The host bridge
+// builds the Result + IoError records in linear memory via the
+// module's exported $alloc; the match emitter unpacks String
+// payloads from the packed i64 slot and IoError pointers from
+// the i32-extended slot.
+//
+// IoError stringification (${e}) is deferred; for now we use
+// wildcard binds in the Err arm. Phase 7D will add struct-to-
+// string formatting and unlock idiomatic error messages.
+
+fun main(stdio: Stdio, fs: Fs)
+    let path = "/tmp/capa_wasm_fs_demo.txt"
+
+    match fs.write(path, "Hello from a Wasm-compiled Capa program!\n")
+        Ok(_) -> stdio.println("wrote ${path}")
+        Err(_) -> stdio.eprintln("write failed")
+
+    match fs.read(path)
+        Ok(text) -> stdio.println("read back: ${text}")
+        Err(_) -> stdio.eprintln("read failed")
+
+    match fs.read("/this/path/will/not/exist")
+        Ok(_) -> stdio.println("BUG: read should have failed")
+        Err(_) -> stdio.println("missing path returned Err (as expected)")

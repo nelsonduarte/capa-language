@@ -57,9 +57,14 @@ _BUILTIN_CAPS = {"Stdio", "Fs", "Env", "Clock", "Net", "Random", "Proc", "Db", "
 # Sets are represented as i32 pointers; their stdlib payloads land
 # in 6D and beyond.
 _TYPE_SIZE = {
-    "Int":   8,  # i64
-    "Bool":  4,  # i32
-    "Float": 8,  # f64
+    "Int":    8,  # i64
+    "Bool":   4,  # i32
+    "Float":  8,  # f64
+    # Strings live as (ptr, len) pairs -- two i32s = 8 bytes total.
+    # When a struct field has String type, the FieldAccess emitter
+    # issues two i32.loads (offset, offset+4) into the bind's
+    # ${name}_ptr / ${name}_len locals.
+    "String": 8,
 }
 
 
@@ -108,6 +113,24 @@ _RESULT_LAYOUT = {
     "variants": {
         "Ok":  (0, [(8, 8, "Any")]),
         "Err": (1, [(8, 8, "Any")]),
+    },
+    "size": 16,
+}
+
+
+# Memory layout of Capa's built-in IoError struct. The Capa runtime
+# defines this in capa.runtime._capabilities; pre-registering the
+# Wasm layout here means Capa code that pattern-matches on
+# ``Err(io_error)`` and then reads ``io_error.message`` works
+# through the existing struct field-access machinery without the
+# user declaring the type in source.
+_IOERROR_LAYOUT = {
+    "fields": {
+        # Each String field is 8 bytes (ptr@offset + len@offset+4).
+        # The FieldAccess emitter handles the two-load expansion
+        # when the field's recorded type is "String".
+        "message": (0, 8, "String"),
+        "cause":   (8, 8, "String"),
     },
     "size": 16,
 }
@@ -343,7 +366,7 @@ class WasmEmitter:
         # without the user declaring them in source. ``Some``,
         # ``None``, ``Ok``, ``Err`` map to these layouts. User-
         # defined types are added on top, never overriding.
-        self._struct_layouts = {}
+        self._struct_layouts = {"IoError": _IOERROR_LAYOUT}
         self._sum_layouts = {"Option": _OPTION_LAYOUT, "Result": _RESULT_LAYOUT}
         self._variant_to_sum = {
             "Some": "Option", "None": "Option",
@@ -1137,6 +1160,14 @@ class WasmEmitter:
             # (tag@0, payload@8) so the IR's match emitter handles
             # it without further plumbing.
             return (["i32", "i32"], "i32")
+        if "func(path: string) -> result<string, io-error>" in wit:
+            # Same shape as Env.get above: one string arg, i32
+            # pointer to a Result<String, IoError> built on the
+            # heap.
+            return (["i32", "i32"], "i32")
+        if "func(path: string, content: string) -> result<_, io-error>" in wit:
+            # Two strings in (ptr, len pairs), i32 pointer return.
+            return (["i32", "i32", "i32", "i32"], "i32")
         raise WasmEmissionError(
             f"cap method {cap}.{method} has shape {wit!r} that "
             f"the Wasm emitter does not yet decode"
@@ -1685,9 +1716,49 @@ class WasmEmitter:
         self._write(f"local.get ${instr.dst}")
         self._write(f"i32.const {tag}")
         self._write("i32.store")
-        # Store each payload at its offset.
+        # Store each payload at its offset. Phase 7B+ uses uniform
+        # 8-byte payload slots for Option / Result. The arg's type
+        # determines whether we store directly (Int -> i64) or
+        # pack/extend:
+        # - String: pack (ptr, len) into i64 = ptr | (len << 32)
+        # - Pointer-shaped (struct, sum, list, map): extend i32
+        #   to i64 to fit the uniform slot
+        # - Bool: extend i32 to i64
+        # - Int / Float: store as-is at the i64 slot
         for arg, (offset, size, _ty) in zip(instr.args, payload_layouts):
             self._write(f"local.get ${instr.dst}")
+            if size == 8 and arg.ty == "String":
+                # Pack (ptr, len) into i64.
+                self._push_string_value_as_ptr_len(arg)
+                # Stack: [..., dst, ptr, len]
+                self._write("i64.extend_i32_u")  # len -> i64
+                self._write("i64.const 32")
+                self._write("i64.shl")
+                # Stack: [..., dst, ptr, (len << 32)]
+                self._write(f"local.tee $_alloc_tmp_i64")
+                # Drop and re-fetch with ptr; simpler approach:
+                # save the high part, then OR with ptr.
+                self._write("drop")
+                self._write("i64.extend_i32_u")  # ptr -> i64
+                self._write("local.get $_alloc_tmp_i64")
+                self._write("i64.or")
+                self._write(f"i64.store offset={offset}")
+                continue
+            if size == 8 and arg.ty == "Bool":
+                self._push_value(arg)
+                self._write("i64.extend_i32_u")
+                self._write(f"i64.store offset={offset}")
+                continue
+            if size == 8 and (
+                arg.ty.split("<", 1)[0] in self._struct_layouts
+                or arg.ty.split("<", 1)[0] in self._sum_layouts
+                or arg.ty.startswith(("List", "Map", "Set"))
+            ):
+                # Pointer payload: extend i32 to i64.
+                self._push_value(arg)
+                self._write("i64.extend_i32_u")
+                self._write(f"i64.store offset={offset}")
+                continue
             self._push_value(arg)
             self._write(f"{_store_op_for_size(size)} offset={offset}")
 
@@ -1719,7 +1790,12 @@ class WasmEmitter:
     def _emit_field_access(self, instr: FieldAccess) -> None:
         """Load a struct field by offset. The receiver is an i32
         pointer to the struct in linear memory; we add the field's
-        layout offset and emit the appropriate load opcode."""
+        layout offset and emit the appropriate load opcode.
+
+        String fields expand to two i32 loads (offset, offset+4)
+        into the destination String's ``${dst}_ptr`` and
+        ``${dst}_len`` locals -- mirroring how String params and
+        locals carry their (ptr, len) pair through the emitter."""
         recv_ty = instr.receiver.ty
         layout = self._struct_layouts.get(recv_ty)
         if layout is None:
@@ -1733,7 +1809,16 @@ class WasmEmitter:
             raise WasmEmissionError(
                 f"struct {recv_ty}: field {instr.field!r} not found"
             )
-        offset, size, _ty = f_info
+        offset, size, field_ty = f_info
+        if field_ty == "String":
+            # Two i32 loads: ptr@offset, len@offset+4 -> dst's pair.
+            self._push_value(instr.receiver)
+            self._write(f"i32.load offset={offset}")
+            self._write(f"local.set ${instr.dst}_ptr")
+            self._push_value(instr.receiver)
+            self._write(f"i32.load offset={offset + 4}")
+            self._write(f"local.set ${instr.dst}_len")
+            return
         self._push_value(instr.receiver)
         self._write(f"{_load_op_for_size(size)} offset={offset}")
         self._write(f"local.set ${instr.dst}")
@@ -3247,6 +3332,19 @@ class WasmEmitter:
                         self._write("i64.shr_u")
                         self._write("i32.wrap_i64")
                         self._write(f"local.set ${sub_pat.name}_len")
+                    elif size == 8 and (
+                        bind_ty.split("<", 1)[0] in self._struct_layouts
+                        or bind_ty.split("<", 1)[0] in self._sum_layouts
+                        or bind_ty.startswith(("List", "Map", "Set"))
+                    ):
+                        # Pointer-shaped payload (struct / sum /
+                        # collection) stored in the uniform 8-byte
+                        # slot via i64.extend; unpack with
+                        # i32.wrap_i64.
+                        self._write(f"local.get ${scrut_local}")
+                        self._write(f"i64.load offset={offset}")
+                        self._write("i32.wrap_i64")
+                        self._write(f"local.set ${sub_pat.name}")
                     else:
                         self._write(f"local.get ${scrut_local}")
                         self._write(f"{_load_op_for_size(size)} offset={offset}")
