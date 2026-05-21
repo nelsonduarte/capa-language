@@ -31,7 +31,7 @@ class WasmHost:
     """A wasmtime-based host that wires Capa's built-in capabilities
     into a compiled Wasm module."""
 
-    def __init__(self) -> None:
+    def __init__(self, args: Optional[list[str]] = None) -> None:
         self.engine = wasmtime.Engine()
         self.store = wasmtime.Store(self.engine)
         self.linker = wasmtime.Linker(self.engine)
@@ -43,6 +43,10 @@ class WasmHost:
         # Result records back into wasm memory, which requires
         # calling ``$alloc`` from the host side.
         self._alloc_export: Optional[wasmtime.Func] = None
+        # Program arguments handed to the wasm module via env.args.
+        # Defaults to an empty list; callers (e.g. the CLI) pass the
+        # real argv when they have it.
+        self._args: list[str] = list(args) if args is not None else []
         self._register_stdio()
         self._register_clock()
         self._register_env()
@@ -183,6 +187,61 @@ class WasmHost:
             env_get, access_caller=True,
         )
 
+        # env.args() -> list<string>. Builds a List<String> in
+        # linear memory: 16-byte header (len, cap, data_ptr, pad)
+        # + N*8-byte data array of packed (ptr, len) i64s. The
+        # WasmHost stashes argv at construction time so the
+        # callback knows what to materialise.
+        ft_to_listptr = wasmtime.FuncType([], [wasmtime.ValType.i32()])
+
+        def env_args(caller):
+            if self._memory is None or self._alloc_export is None:
+                raise RuntimeError(
+                    "env.args called before memory + $alloc set"
+                )
+            n = len(self._args)
+            # Allocate each string and pack its (ptr, len) i64.
+            packed_values: list[int] = []
+            for arg in self._args:
+                encoded = arg.encode("utf-8")
+                if encoded:
+                    s_ptr = self._alloc_export(caller, len(encoded))
+                    self._memory.write(caller, encoded, s_ptr)
+                else:
+                    # Empty string: a valid (0, 0) packing; pointer
+                    # never read because length is zero.
+                    s_ptr = 0
+                packed = (s_ptr & 0xFFFFFFFF) | (
+                    (len(encoded) & 0xFFFFFFFF) << 32
+                )
+                packed_values.append(packed)
+            # Allocate the List header (16 bytes).
+            header_ptr = self._alloc_export(caller, 16)
+            # Allocate the data array. Use cap = max(n, 8) so a
+            # downstream .push lands without an immediate grow,
+            # matching the MakeList convention.
+            cap = max(n, 8)
+            data_ptr = (
+                self._alloc_export(caller, cap * 8) if cap else 0
+            )
+            # Write header.
+            self._memory.write(caller, n.to_bytes(4, "little"), header_ptr)
+            self._memory.write(caller, cap.to_bytes(4, "little"), header_ptr + 4)
+            self._memory.write(
+                caller, data_ptr.to_bytes(4, "little"), header_ptr + 8,
+            )
+            # Write each packed element.
+            for i, packed in enumerate(packed_values):
+                self._memory.write(
+                    caller, packed.to_bytes(8, "little"), data_ptr + i * 8,
+                )
+            return header_ptr
+
+        self.linker.define_func(
+            "capa:host/env", "args", ft_to_listptr,
+            env_args, access_caller=True,
+        )
+
     def _register_fs(self) -> None:
         """Register ``capa:host/fs`` interface methods.
 
@@ -314,6 +373,23 @@ class WasmHost:
         self.linker.define_func(
             "capa:host/fs", "write", ft_path_content_to_resultptr,
             fs_write, access_caller=True,
+        )
+
+        # fs.restrict_to is a no-op at the Wasm level. Static
+        # capability discipline is enforced by the analyzer; this
+        # callback only exists so the import resolves. A future
+        # phase that threads handles through the Fs interface
+        # would replace it with real prefix tracking.
+        ft_string_to_unit = wasmtime.FuncType(
+            [wasmtime.ValType.i32(), wasmtime.ValType.i32()], [],
+        )
+
+        def fs_restrict_to(caller, prefix_ptr, prefix_len):
+            return None
+
+        self.linker.define_func(
+            "capa:host/fs", "restrict_to", ft_string_to_unit,
+            fs_restrict_to, access_caller=True,
         )
 
     def instantiate(self, wasm_blob: bytes) -> wasmtime.Instance:

@@ -669,7 +669,11 @@ def main() -> int:
         # --run path: assemble and execute on a wasmtime host.
         try:
             from capa.runtime._wasm_host import WasmHost
-            host = WasmHost()
+            # Pass the user-visible program args (everything after
+            # ``--`` on the CLI) through to the host so env.args
+            # inside the wasm module sees the same values it would
+            # see under --run on the Python path.
+            host = WasmHost(args=program_args)
             host.run_main(blob)
             return 0
         except Exception as e:

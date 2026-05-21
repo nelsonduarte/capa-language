@@ -1078,6 +1078,8 @@ class WasmEmitter:
             elif isinstance(instr, While):
                 self._discover_instrs(instr.cond_setup)
                 self._discover_instrs(instr.body)
+            elif isinstance(instr, For):
+                self._discover_instrs(instr.body)
             elif isinstance(instr, Match):
                 for arm in instr.arms:
                     self._discover_instrs(arm.body)
@@ -1168,6 +1170,15 @@ class WasmEmitter:
         if "func(path: string, content: string) -> result<_, io-error>" in wit:
             # Two strings in (ptr, len pairs), i32 pointer return.
             return (["i32", "i32", "i32", "i32"], "i32")
+        if "func() -> list<string>" in wit:
+            # Returns an i32 pointer to a List<String> built by
+            # the host in linear memory.
+            return ([], "i32")
+        if "func(prefix: string)" in wit and "->" not in wit:
+            # Fs.restrict_to: a string-arg, no-result no-op at the
+            # Wasm level. The capability discipline is enforced
+            # by the analyzer; at runtime the import is shared.
+            return (["i32", "i32"], "")
         raise WasmEmissionError(
             f"cap method {cap}.{method} has shape {wit!r} that "
             f"the Wasm emitter does not yet decode"
@@ -1395,9 +1406,11 @@ class WasmEmitter:
             out["_m_tag"] = "i32"
         if has_variant_ctor or has_list or has_map:
             out["_alloc_tmp"] = "i32"
-        if has_list_contains_i64 or has_map or has_match:
-            # has_match also needs the i64 scratch when a String
-            # payload is unpacked from an Option/Result/variant.
+        if has_list_contains_i64 or has_map or has_match or has_for:
+            # The i64 scratch is shared by: List.contains for i64
+            # elements, Map scan (value packing), match-arm String
+            # unpacking, and for-iter over List<String> (where the
+            # element slot is a packed i64).
             out["_alloc_tmp_i64"] = "i64"
         if has_map:
             # Match/For scratch locals double as Map scan helpers
@@ -1585,7 +1598,31 @@ class WasmEmitter:
     def _emit_binop(self, instr: BinOp) -> None:
         op = instr.op
         # Dispatch on operand type: Float operands use f64.* opcodes,
-        # everything else stays on the i64 / i32 path.
+        # String operands use ``$str_eq`` for equality, everything
+        # else stays on the i64 / i32 path.
+        is_string = instr.left.ty == "String" or instr.right.ty == "String"
+        if is_string and op == "==":
+            self._push_string_value_as_ptr_len(instr.left)
+            self._push_string_value_as_ptr_len(instr.right)
+            self._write("call $str_eq")
+            self._write(f"local.set ${instr.dst}")
+            return
+        if is_string and op == "!=":
+            self._push_string_value_as_ptr_len(instr.left)
+            self._push_string_value_as_ptr_len(instr.right)
+            self._write("call $str_eq")
+            self._write("i32.eqz")
+            self._write(f"local.set ${instr.dst}")
+            return
+        if is_string and op == "+":
+            # Concatenate two strings. Allocates a fresh buffer of
+            # combined length, memory.copies each source.
+            self._emit_string_concat(instr)
+            return
+        if is_string:
+            raise WasmEmissionError(
+                f"String operator {op!r} not supported at the Wasm level"
+            )
         is_float = instr.left.ty == "Float" or instr.right.ty == "Float"
         if op in _INT_BINOP and is_float:
             if op == "%":
@@ -1766,7 +1803,12 @@ class WasmEmitter:
         """Emit alloc + per-field store for a struct literal. The
         pointer to the newly-allocated struct lands in ``instr.dst``.
         Field order follows the declaration; the lowerer guarantees
-        ``instr.fields`` matches."""
+        ``instr.fields`` matches.
+
+        String fields are stored as two adjacent i32s (ptr@offset,
+        len@offset+4) so the FieldAccess emitter can recover the
+        pair without unpacking. Other field types use the regular
+        size-dispatched store."""
         layout = self._struct_layouts.get(instr.type_name)
         if layout is None:
             raise WasmEmissionError(
@@ -1782,10 +1824,85 @@ class WasmEmitter:
                 raise WasmEmissionError(
                     f"struct {instr.type_name}: field {fname!r} not in layout"
                 )
-            offset, size, _ty = f_info
+            offset, size, field_ty = f_info
+            if field_ty == "String":
+                # Two i32 stores: ptr at offset, len at offset+4.
+                self._write(f"local.get ${instr.dst}")
+                self._push_string_field_ptr_only(fval)
+                self._write(f"i32.store offset={offset}")
+                self._write(f"local.get ${instr.dst}")
+                self._push_string_field_len_only(fval)
+                self._write(f"i32.store offset={offset + 4}")
+                continue
             self._write(f"local.get ${instr.dst}")
             self._push_value(fval)
             self._write(f"{_store_op_for_size(size)} offset={offset}")
+
+    def _emit_string_concat(self, instr: BinOp) -> None:
+        """Emit a String + String concatenation: allocate a new
+        buffer of combined length, memory.copy each operand, bind
+        the resulting (ptr, len) to the dst String locals.
+
+        Used by source-level ``a + b`` where both operands have
+        type String. Allocates one fresh buffer per concat.
+        """
+        self._push_string_value_as_ptr_len(instr.left)
+        self._write("local.set $_str_a_len")
+        self._write("local.set $_str_a_ptr")
+        self._push_string_value_as_ptr_len(instr.right)
+        self._write("local.set $_str_b_len")
+        self._write("local.set $_str_b_ptr")
+        # total = a_len + b_len
+        self._write("local.get $_str_a_len")
+        self._write("local.get $_str_b_len")
+        self._write("i32.add")
+        self._write("local.tee $_str_new_len")
+        # alloc total
+        self._write("call $alloc")
+        self._write("local.tee $_str_new_ptr")
+        # memory.copy(new_ptr, a_ptr, a_len)
+        self._write("local.get $_str_a_ptr")
+        self._write("local.get $_str_a_len")
+        self._write("memory.copy")
+        # memory.copy(new_ptr + a_len, b_ptr, b_len)
+        self._write("local.get $_str_new_ptr")
+        self._write("local.get $_str_a_len")
+        self._write("i32.add")
+        self._write("local.get $_str_b_ptr")
+        self._write("local.get $_str_b_len")
+        self._write("memory.copy")
+        # bind dst
+        self._write("local.get $_str_new_ptr")
+        self._write("local.get $_str_new_len")
+        self._set_string_dst(instr.dst)
+
+    def _push_string_field_ptr_only(self, v: Value) -> None:
+        """Push the ptr half of a String Value as i32 (for struct
+        field stores). Wraps the existing ``_push_string_value_as_ptr_len``
+        but only keeps the ptr; the caller handles the len via
+        ``_push_string_field_len_only``."""
+        if v.kind == "lit_str":
+            offset, _length = self._intern_string(v.literal)
+            self._write(f"i32.const {offset}")
+            return
+        if v.kind in ("local", "param"):
+            self._write(f"local.get ${v.name}_ptr")
+            return
+        raise WasmEmissionError(
+            f"cannot push string ptr of Value kind {v.kind!r}"
+        )
+
+    def _push_string_field_len_only(self, v: Value) -> None:
+        if v.kind == "lit_str":
+            _offset, length = self._intern_string(v.literal)
+            self._write(f"i32.const {length}")
+            return
+        if v.kind in ("local", "param"):
+            self._write(f"local.get ${v.name}_len")
+            return
+        raise WasmEmissionError(
+            f"cannot push string len of Value kind {v.kind!r}"
+        )
 
     def _emit_field_access(self, instr: FieldAccess) -> None:
         """Load a struct field by offset. The receiver is an i32
@@ -3088,16 +3205,21 @@ class WasmEmitter:
         self._write("i32.add")
         self._write(load_op)
         if elem_ty == "String":
-            # String iteration is exotic: each element is a (ptr,
-            # len) pair stored consecutively. The simple load above
-            # reads only one half. Defer until 6D-4 when full
-            # String support arrives.
-            raise WasmEmissionError(
-                "Phase 6D-2: for-iter over List<String> not yet "
-                "supported; iterate over List<Int> or a pointer-typed "
-                "element type"
-            )
-        self._write(f"local.set ${instr.name}")
+            # String element stored as packed i64 (ptr low, len
+            # high). Stash the packed value, unpack into the bind's
+            # (ptr, len) locals so downstream String operations
+            # work transparently.
+            self._write(f"local.set $_alloc_tmp_i64")
+            self._write(f"local.get $_alloc_tmp_i64")
+            self._write("i32.wrap_i64")
+            self._write(f"local.set ${instr.name}_ptr")
+            self._write(f"local.get $_alloc_tmp_i64")
+            self._write("i64.const 32")
+            self._write("i64.shr_u")
+            self._write("i32.wrap_i64")
+            self._write(f"local.set ${instr.name}_len")
+        else:
+            self._write(f"local.set ${instr.name}")
         # Body.
         for sub in instr.body:
             self._emit_instr(sub)

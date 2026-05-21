@@ -51,13 +51,21 @@ _WIT_SIGNATURES: dict[tuple[str, str], str] = {
     ("Clock", "now_monotonic"): "now_monotonic: func() -> f64",
 
     # Env: process environment + argv. Phase 7B scope (Option<String>).
-    ("Env", "get"): "get: func(name: string) -> option<string>",
+    ("Env", "get"):  "get: func(name: string) -> option<string>",
+    # Env.args returns a list<string> of program arguments. The
+    # host constructs the list in linear memory via \$alloc.
+    ("Env", "args"): "args: func() -> list<string>",
 
     # Fs: filesystem reads + writes. Phase 7C scope (Result<T, IoError>).
     # IoError is a Capa-side record with two String fields (message,
     # cause). The host constructs it via $alloc on error.
-    ("Fs", "read"):  "read: func(path: string) -> result<string, io-error>",
-    ("Fs", "write"): "write: func(path: string, content: string) -> result<_, io-error>",
+    ("Fs", "read"):        "read: func(path: string) -> result<string, io-error>",
+    ("Fs", "write"):       "write: func(path: string, content: string) -> result<_, io-error>",
+    # restrict_to is a no-op at the Wasm level: capabilities carry
+    # no runtime value (their methods are imports by name), so an
+    # attenuation that returns another Fs has nothing to thread.
+    # The analyzer's static check is what enforces the discipline.
+    ("Fs", "restrict_to"): "restrict_to: func(prefix: string)",
 
     # Net entries follow once the request/response model is stable.
 }
