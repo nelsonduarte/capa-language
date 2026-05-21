@@ -34,7 +34,7 @@ from __future__ import annotations
 
 from typing import List, Optional
 
-from ._nodes import (
+from .._nodes import (
     Module, Function, Param, Value, Instr,
     AssignConst, Reassign, BinOp, UnaryOp, Call, MethodCall,
     If, While, Break, Continue, Return,
@@ -43,7 +43,7 @@ from ._nodes import (
     Pattern, PatWildcard, PatIdent, PatLiteral, PatVariant, MatchArm, Match,
     StructDecl, SumDecl,
 )
-from ._emit_wit import _WIT_SIGNATURES, _KNOWN_CAPABILITIES
+from .._emit_wit import _WIT_SIGNATURES, _KNOWN_CAPABILITIES
 
 
 # Capa built-in capabilities. Receivers of these types route
