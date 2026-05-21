@@ -1,0 +1,41 @@
+// Phase 6E demo: closure conversion in the Wasm backend.
+//
+// Lambdas lift to top-level Wasm functions. Each closure value is
+// an i64 packed as (fn_idx << 32) | env_ptr. Captured locals live
+// in a heap-allocated env record; the lifted function takes env_ptr
+// as its first parameter and loads captures from there. Closure
+// invocations route through `call_indirect` against a generated
+// `(type $sig_N (func ...))` declaration.
+
+// Higher-order function: takes a closure, applies it.
+fun apply(f: Fun(Int) -> Int, x: Int) -> Int
+    return f(x)
+
+// Closure factory: returns a lambda that captures `n`.
+fun make_adder(n: Int) -> Fun(Int) -> Int
+    return fun (x: Int) -> Int => x + n
+
+fun main(stdio: Stdio)
+    // No-capture lambda passed as argument.
+    let double_5 = apply(fun (x: Int) -> Int => x * 2, 5)
+    stdio.println("apply(double, 5) = ${double_5}")
+
+    // Int capture via a closure factory.
+    let add7 = make_adder(7)
+    stdio.println("make_adder(7)(3) = ${add7(3)}")
+
+    // List<Int> HOFs.
+    let xs = [1, 2, 3, 4, 5]
+    let squares = xs.map(fun (x: Int) -> Int => x * x)
+    stdio.println("[1..5].map(x*x)[4] = ${squares[4]}")
+
+    let evens = xs.filter(fun (x: Int) -> Bool => x % 2 == 0)
+    stdio.println("[1..5].filter(even)[1] = ${evens[1]}")
+
+    let sum = xs.fold(0, fun (acc: Int, x: Int) -> Int => acc + x)
+    stdio.println("[1..5].fold(0, +) = ${sum}")
+
+    // Capture inside a HOF: the lambda closes over `factor`.
+    let factor = 100
+    let scaled = xs.map(fun (x: Int) -> Int => x * factor)
+    stdio.println("[1..5] * factor=100 -> scaled[2] = ${scaled[2]}")

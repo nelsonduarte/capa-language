@@ -1243,5 +1243,91 @@ class TestWasmFs(unittest.TestCase):
         self.assertEqual(out.getvalue(), "missing\n")
 
 
+@unittest.skipUnless(
+    _has_wasm_tools() and _has_wasmtime_py(),
+    "wasm-tools and/or wasmtime-py not installed",
+)
+class TestWasmClosures(unittest.TestCase):
+    """Phase 6E: closure conversion in the Wasm backend. Lambdas
+    lift to top-level functions with an env_ptr first parameter;
+    captured locals are read from a heap-allocated env record;
+    the closure value packs (fn_idx << 32) | env_ptr into an i64.
+
+    Tests pin: no-capture apply pattern, Int capture, List<Int>
+    map/filter/fold via call_indirect."""
+
+    def _instantiate(self, src: str):
+        import wasmtime
+        _, types, ast_mod = _parse_lower(src)
+        blob = compile_wasm(ast_mod, types=types)
+        engine = wasmtime.Engine()
+        mod = wasmtime.Module(engine, blob)
+        store = wasmtime.Store(engine)
+        linker = wasmtime.Linker(engine)
+        instance = linker.instantiate(store, mod)
+        return store, instance.exports(store)
+
+    def test_apply_pattern_no_capture(self):
+        src = (
+            "fun apply(f: Fun(Int) -> Int, x: Int) -> Int\n"
+            "    return f(x)\n"
+            "fun main() -> Int\n"
+            "    return apply(fun (x: Int) -> Int => x * 2, 5)\n"
+        )
+        store, exp = self._instantiate(src)
+        self.assertEqual(exp["main"](store), 10)
+
+    def test_int_capture(self):
+        src = (
+            "fun make_adder(n: Int) -> Fun(Int) -> Int\n"
+            "    return fun (x: Int) -> Int => x + n\n"
+            "fun main() -> Int\n"
+            "    let add7 = make_adder(7)\n"
+            "    return add7(3)\n"
+        )
+        store, exp = self._instantiate(src)
+        self.assertEqual(exp["main"](store), 10)
+
+    def test_list_map_int(self):
+        src = (
+            "fun main() -> Int\n"
+            "    let xs = [1, 2, 3, 4]\n"
+            "    let ys = xs.map(fun (x: Int) -> Int => x * x)\n"
+            "    return ys[3]\n"
+        )
+        store, exp = self._instantiate(src)
+        self.assertEqual(exp["main"](store), 16)
+
+    def test_list_filter_int(self):
+        src = (
+            "fun main() -> Int\n"
+            "    let xs = [1, 2, 3, 4, 5, 6]\n"
+            "    let evens = xs.filter(fun (x: Int) -> Bool => x % 2 == 0)\n"
+            "    return evens[2]\n"
+        )
+        store, exp = self._instantiate(src)
+        self.assertEqual(exp["main"](store), 6)
+
+    def test_list_fold_int(self):
+        src = (
+            "fun main() -> Int\n"
+            "    let xs = [1, 2, 3, 4, 5]\n"
+            "    return xs.fold(0, fun (acc: Int, x: Int) -> Int => acc + x)\n"
+        )
+        store, exp = self._instantiate(src)
+        self.assertEqual(exp["main"](store), 15)
+
+    def test_capture_in_hof(self):
+        src = (
+            "fun main() -> Int\n"
+            "    let factor = 10\n"
+            "    let xs = [1, 2, 3]\n"
+            "    let scaled = xs.map(fun (x: Int) -> Int => x * factor)\n"
+            "    return scaled[2]\n"
+        )
+        store, exp = self._instantiate(src)
+        self.assertEqual(exp["main"](store), 30)
+
+
 if __name__ == "__main__":
     unittest.main()

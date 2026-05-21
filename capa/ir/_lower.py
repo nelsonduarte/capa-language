@@ -1124,11 +1124,20 @@ class Lowerer:
 def _type_name(te: object) -> str:
     """Best-effort name for a TypeExpr or Ty. Phase 1 only needs the
     string form for the Python emitter; structured Ty access can come
-    later via the type map."""
+    later via the type map. ``FunType`` is rendered as
+    ``Fun(P1, P2) -> R`` so backends that pattern-match the type
+    string (the Wasm closure-signature lookup, for instance) can
+    recognise it."""
     if te is None:
         return "Unknown"
     if isinstance(te, str):
         return te
+    # FunType: render as ``Fun(P1, P2) -> R`` to match the canonical
+    # Capa source syntax and the Wasm emitter's sig-key parser.
+    if te.__class__.__name__ == "FunType":
+        params = ", ".join(_type_name(p) for p in te.param_types)
+        ret = _type_name(te.return_type)
+        return f"Fun({params}) -> {ret}"
     if hasattr(te, "name"):
         return getattr(te, "name")
     return _ty_to_str(te)
@@ -1152,9 +1161,19 @@ def _split_top_level_comma(s: str) -> tuple[str, str]:
 
 def _ty_to_str(t: object) -> str:
     """Convert a typesys Ty to a string. Falls back to ``repr`` for
-    unknown shapes; the Python emitter does not consume this string."""
+    unknown shapes; the Python emitter does not consume this string.
+
+    Capa's analyzer renders function types as ``fun(...) -> R``
+    (lowercase). The IR's downstream consumers (Wasm emitter
+    closure machinery, in particular) match against the
+    ``Fun(...)`` form used by the AST-side rendering, so we
+    normalise the prefix here to keep the two paths in lockstep.
+    """
     try:
         from ..typesys import ty_str
-        return ty_str(t)
+        s = ty_str(t)
     except Exception:
         return repr(t)
+    if s.startswith("fun("):
+        return "Fun" + s[3:]
+    return s
