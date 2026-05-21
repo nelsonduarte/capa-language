@@ -383,20 +383,52 @@ class WasmEmitter:
                         f"capa.ir._emit_wasm together"
                     )
                 self._used_caps.add(key)
-                # String-typed args must come from literals in this
-                # phase; intern each one.
-                for arg in instr.args:
-                    if arg.kind == "lit_str":
-                        self._intern_string(arg.literal)
-            if isinstance(instr, AssignConst) and instr.src.kind == "lit_str":
-                # Intern, but defer using-this-local to Phase 6D.
-                self._intern_string(instr.src.literal)
+            # Walk every Value-bearing slot of every instruction for
+            # ``lit_str`` literals; the data segment must cover any
+            # literal the emitter will reference at use site, not
+            # just those that flow into capability calls.
+            for v in self._values_of(instr):
+                if v.kind == "lit_str":
+                    self._intern_string(v.literal)
             if isinstance(instr, If):
                 self._discover_instrs(instr.then_body)
                 self._discover_instrs(instr.else_body)
             elif isinstance(instr, While):
                 self._discover_instrs(instr.cond_setup)
                 self._discover_instrs(instr.body)
+            elif isinstance(instr, Match):
+                for arm in instr.arms:
+                    self._discover_instrs(arm.body)
+
+    @staticmethod
+    def _values_of(instr: Instr) -> list[Value]:
+        """Return every Value-typed slot on ``instr`` so the
+        discovery pass can intern string literals reachable from
+        anywhere in the function body, not just the few sites the
+        previous pass enumerated by hand."""
+        out: list[Value] = []
+        for attr in (
+            "src", "value", "left", "right",
+            "operand", "receiver", "iter", "cond", "index",
+        ):
+            v = getattr(instr, attr, None)
+            if isinstance(v, Value):
+                out.append(v)
+        for v in getattr(instr, "args", []) or []:
+            if isinstance(v, Value):
+                out.append(v)
+        for fname_v in getattr(instr, "fields", []) or []:
+            if isinstance(fname_v, tuple) and len(fname_v) == 2:
+                v = fname_v[1]
+                if isinstance(v, Value):
+                    out.append(v)
+        for v in getattr(instr, "elements", []) or []:
+            if isinstance(v, Value):
+                out.append(v)
+        for part in getattr(instr, "parts", []) or []:
+            if isinstance(part, Value):
+                out.append(part)
+        return out
 
     def _intern_string(self, text: str) -> tuple[int, int]:
         if text in self._strings:
@@ -468,10 +500,15 @@ class WasmEmitter:
         # Build the function header: params and result. Capability
         # params are dropped from the Wasm signature because their
         # methods are imported into the module by name -- the param
-        # carries no runtime value.
+        # carries no runtime value. String params expand to two
+        # i32s (ptr, len) named ``${p.name}_ptr`` / ``${p.name}_len``.
         param_clauses = []
         for p in fn.params:
             if p.ty in _BUILTIN_CAPS:
+                continue
+            if p.ty == "String":
+                param_clauses.append(f"(param ${p.name}_ptr i32)")
+                param_clauses.append(f"(param ${p.name}_len i32)")
                 continue
             ty = self._wasm_type(p.ty)
             if not ty:
@@ -564,14 +601,14 @@ class WasmEmitter:
                     # carry no Wasm value; skip declaration.
                     if capa_ty in _BUILTIN_CAPS:
                         continue
-                    # String locals exist in Phase 6B only as a
-                    # by-product of intermediate-result locals from
-                    # MethodCall instructions whose dst is later
-                    # discarded; they have no Wasm representation
-                    # yet, so we skip them here. Using a String
-                    # local as a method argument would have already
-                    # tripped ``_push_value`` in the discovery pass.
+                    # String locals expand to a (ptr, len) pair so
+                    # the function can carry the value forward. The
+                    # convention: ``$name_ptr`` + ``$name_len``, both
+                    # i32. ``_push_string_local`` / ``_set_string_local``
+                    # emit operations against the pair.
                     if capa_ty == "String":
+                        out[f"{dst}_ptr"] = "i32"
+                        out[f"{dst}_len"] = "i32"
                         continue
                     wasm_ty = self._wasm_type(capa_ty) or "i64"
                     out[dst] = wasm_ty
@@ -592,7 +629,15 @@ class WasmEmitter:
         for name, capa_ty in fn.locals.items():
             if name in param_names or name in out:
                 continue
-            if capa_ty in _BUILTIN_CAPS or capa_ty == "String" or capa_ty == "Unit":
+            if capa_ty in _BUILTIN_CAPS or capa_ty == "Unit":
+                continue
+            if capa_ty == "String":
+                ptr_name = f"{name}_ptr"
+                if ptr_name not in out:
+                    out[ptr_name] = "i32"
+                len_name = f"{name}_len"
+                if len_name not in out:
+                    out[len_name] = "i32"
                 continue
             try:
                 wasm_ty = self._wasm_type(capa_ty) or "i64"
@@ -616,20 +661,22 @@ class WasmEmitter:
 
     def _emit_instr(self, instr: Instr) -> None:
         if isinstance(instr, AssignConst):
-            # Capability and String AssignConst targets are erased at
-            # the Wasm level (see ``_collect_locals``); skip the emit
-            # so we don't reference a non-existent local. The source
-            # value's side effects (none for literals) are also a
-            # no-op.
             dst_ty = self._dst_capa_ty(instr.dst)
-            if dst_ty in _BUILTIN_CAPS or dst_ty == "String":
+            if dst_ty in _BUILTIN_CAPS:
+                # Capability locals are erased at the Wasm level.
+                return
+            if dst_ty == "String":
+                self._emit_string_assign(instr.dst, instr.src)
                 return
             self._push_value(instr.src)
             self._write(f"local.set ${instr.dst}")
             return
         if isinstance(instr, Reassign):
             dst_ty = self._dst_capa_ty(instr.dst)
-            if dst_ty in _BUILTIN_CAPS or dst_ty == "String":
+            if dst_ty in _BUILTIN_CAPS:
+                return
+            if dst_ty == "String":
+                self._emit_string_assign(instr.dst, instr.src)
                 return
             self._push_value(instr.src)
             self._write(f"local.set ${instr.dst}")
@@ -793,6 +840,22 @@ class WasmEmitter:
             return
         for arg in instr.args:
             if arg.ty in _BUILTIN_CAPS:
+                continue
+            if arg.ty == "String":
+                if arg.kind == "lit_str":
+                    offset, length = self._intern_string(arg.literal)
+                    self._write(f"i32.const {offset}")
+                    self._write(f"i32.const {length}")
+                elif arg.kind == "local":
+                    self._write(f"local.get ${arg.name}_ptr")
+                    self._write(f"local.get ${arg.name}_len")
+                elif arg.kind == "param":
+                    self._write(f"local.get ${arg.name}_ptr")
+                    self._write(f"local.get ${arg.name}_len")
+                else:
+                    raise WasmEmissionError(
+                        f"String arg of kind {arg.kind!r} not supported"
+                    )
                 continue
             self._push_value(arg)
         self._write(f"call ${instr.callee_name}")
@@ -981,23 +1044,20 @@ class WasmEmitter:
     def _emit_cap_method_call(self, instr: MethodCall) -> None:
         cap = instr.cap_used
         method = instr.method
-        # Push each argument. String args expand to (ptr, len).
-        # Scalar args use the regular push path.
+        # Push each argument. String args (literals or locals)
+        # expand to (ptr, len) i32 pairs; scalar args use the
+        # regular push path.
         for arg in instr.args:
             if arg.kind == "lit_str":
                 offset, length = self._intern_string(arg.literal)
                 self._write(f"i32.const {offset}")
                 self._write(f"i32.const {length}")
             elif arg.kind == "local" and self._is_string_local(arg.name):
-                # String locals in Phase 6B come from intermediate
-                # IR locals that the Python emitter would have used
-                # as f-string container. The Wasm path does not yet
-                # support them; raise so we don't silently mis-emit.
-                raise WasmEmissionError(
-                    f"Phase 6B: String local {arg.name!r} as cap arg "
-                    f"is not yet supported; pass a string literal "
-                    f"(Phase 6D covers String locals)"
-                )
+                self._write(f"local.get ${arg.name}_ptr")
+                self._write(f"local.get ${arg.name}_len")
+            elif arg.kind == "param" and self._param_is_string(arg.name):
+                self._write(f"local.get ${arg.name}_ptr")
+                self._write(f"local.get ${arg.name}_len")
             else:
                 self._push_value(arg)
         self._write(f"call ${cap}_{method}")
@@ -1009,10 +1069,41 @@ class WasmEmitter:
         ty = self._current_fn.locals.get(name) if self._current_fn else None
         return ty == "String"
 
+    def _param_is_string(self, name: str) -> bool:
+        if self._current_fn is None:
+            return False
+        for p in self._current_fn.params:
+            if p.name == name:
+                return p.ty == "String"
+        return False
+
     def _dst_capa_ty(self, name: str) -> str:
         if self._current_fn is None:
             return ""
         return self._current_fn.locals.get(name, "")
+
+    # ----- string locals ----------------------------------------
+
+    def _emit_string_assign(self, dst: str, src: Value) -> None:
+        """Bind a String value to the (ptr, len) pair representing
+        ``dst``. ``src`` may be a literal (from the pool) or another
+        String local."""
+        if src.kind == "lit_str":
+            offset, length = self._intern_string(src.literal)
+            self._write(f"i32.const {offset}")
+            self._write(f"local.set ${dst}_ptr")
+            self._write(f"i32.const {length}")
+            self._write(f"local.set ${dst}_len")
+            return
+        if src.kind == "local" and self._is_string_local(src.name):
+            self._write(f"local.get ${src.name}_ptr")
+            self._write(f"local.set ${dst}_ptr")
+            self._write(f"local.get ${src.name}_len")
+            self._write(f"local.set ${dst}_len")
+            return
+        raise WasmEmissionError(
+            f"cannot bind String dst {dst!r} from value {src!r}"
+        )
 
     # ----- value pushing ----------------------------------------
 

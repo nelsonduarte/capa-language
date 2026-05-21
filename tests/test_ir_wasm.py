@@ -615,5 +615,67 @@ class TestWasmSumAndStruct(unittest.TestCase):
         self.assertEqual(exp["diff"](store, p, q), 99)
 
 
+@unittest.skipUnless(
+    _has_wasm_tools() and _has_wasmtime_py(),
+    "wasm-tools and/or wasmtime-py not installed",
+)
+class TestWasmStringLocals(unittest.TestCase):
+    """Phase 6D-1: String values backed by a (ptr, len) i32 pair.
+    A String local declares two Wasm locals (``$name_ptr`` /
+    ``$name_len``); String params expand to two i32 params at the
+    function signature. String literals and locals can be passed
+    interchangeably to capability methods and user functions."""
+
+    def _run_capturing_stdout(self, src: str) -> tuple[str, str]:
+        import io, sys
+        from capa.runtime._wasm_host import WasmHost
+        _, types, ast_mod = _parse_lower(src)
+        blob = compile_wasm(ast_mod, types=types)
+        host = WasmHost()
+        out, err = io.StringIO(), io.StringIO()
+        saved_out, saved_err = sys.stdout, sys.stderr
+        sys.stdout, sys.stderr = out, err
+        try:
+            host.run_main(blob)
+        finally:
+            sys.stdout, sys.stderr = saved_out, saved_err
+        return out.getvalue(), err.getvalue()
+
+    def test_string_local_used_in_println(self):
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    let msg = \"hello from a local\"\n"
+            "    stdio.println(msg)\n"
+        )
+        out, _ = self._run_capturing_stdout(src)
+        self.assertEqual(out, "hello from a local\n")
+
+    def test_string_param_in_user_function(self):
+        src = (
+            "fun say(stdio: Stdio, msg: String)\n"
+            "    stdio.println(msg)\n"
+            "fun main(stdio: Stdio)\n"
+            "    say(stdio, \"forwarded literal\")\n"
+            "    let s = \"forwarded local\"\n"
+            "    say(stdio, s)\n"
+        )
+        out, _ = self._run_capturing_stdout(src)
+        self.assertEqual(
+            out,
+            "forwarded literal\nforwarded local\n",
+        )
+
+    def test_string_reassign_to_local(self):
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    var msg = \"first\"\n"
+            "    stdio.println(msg)\n"
+            "    msg = \"second\"\n"
+            "    stdio.println(msg)\n"
+        )
+        out, _ = self._run_capturing_stdout(src)
+        self.assertEqual(out, "first\nsecond\n")
+
+
 if __name__ == "__main__":
     unittest.main()
