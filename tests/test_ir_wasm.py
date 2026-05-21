@@ -677,5 +677,106 @@ class TestWasmStringLocals(unittest.TestCase):
         self.assertEqual(out, "first\nsecond\n")
 
 
+@unittest.skipUnless(
+    _has_wasm_tools() and _has_wasmtime_py(),
+    "wasm-tools and/or wasmtime-py not installed",
+)
+class TestWasmListInt(unittest.TestCase):
+    """Phase 6D-2: List<Int> backed by a 16-byte header + grow-
+    able element array. Methods covered: length, is_empty, push
+    (with realloc via memory.copy), iteration via ``for``,
+    indexing via ``xs[i]``."""
+
+    def _instantiate(self, src: str):
+        import wasmtime
+        _, types, ast_mod = _parse_lower(src)
+        blob = compile_wasm(ast_mod, types=types)
+        engine = wasmtime.Engine()
+        mod = wasmtime.Module(engine, blob)
+        store = wasmtime.Store(engine)
+        linker = wasmtime.Linker(engine)
+        instance = linker.instantiate(store, mod)
+        return store, instance.exports(store)
+
+    def test_literal_length_and_iteration(self):
+        src = (
+            "fun sum_list(xs: List<Int>) -> Int\n"
+            "    var total = 0\n"
+            "    for x in xs\n"
+            "        total = total + x\n"
+            "    return total\n"
+            "fun build() -> List<Int>\n"
+            "    let xs = [10, 20, 30, 40]\n"
+            "    return xs\n"
+        )
+        store, exp = self._instantiate(src)
+        xs = exp["build"](store)
+        self.assertEqual(exp["sum_list"](store, xs), 100)
+
+    def test_push_then_iterate(self):
+        src = (
+            "fun build_and_sum() -> Int\n"
+            "    let xs: List<Int> = []\n"
+            "    xs.push(7)\n"
+            "    xs.push(14)\n"
+            "    xs.push(21)\n"
+            "    xs.push(28)\n"
+            "    var total = 0\n"
+            "    for x in xs\n"
+            "        total = total + x\n"
+            "    return total\n"
+        )
+        store, exp = self._instantiate(src)
+        self.assertEqual(exp["build_and_sum"](store), 70)
+
+    def test_length_and_is_empty(self):
+        src = (
+            "fun len_of() -> Int\n"
+            "    let xs = [1, 2, 3, 4, 5]\n"
+            "    return xs.length()\n"
+            "fun empty_check() -> Bool\n"
+            "    let xs: List<Int> = []\n"
+            "    return xs.is_empty()\n"
+            "fun nonempty_check() -> Bool\n"
+            "    let xs = [1]\n"
+            "    return xs.is_empty()\n"
+        )
+        store, exp = self._instantiate(src)
+        self.assertEqual(exp["len_of"](store), 5)
+        self.assertEqual(exp["empty_check"](store), 1)
+        self.assertEqual(exp["nonempty_check"](store), 0)
+
+    def test_indexing_by_position(self):
+        src = (
+            "fun pick(i: Int) -> Int\n"
+            "    let xs = [100, 200, 300, 400]\n"
+            "    return xs[i]\n"
+        )
+        store, exp = self._instantiate(src)
+        self.assertEqual(exp["pick"](store, 0), 100)
+        self.assertEqual(exp["pick"](store, 2), 300)
+        self.assertEqual(exp["pick"](store, 3), 400)
+
+    def test_push_grows_beyond_initial_capacity(self):
+        # Initial cap is 8 for empty literals; pushing more than 8
+        # forces the data array to grow via memory.copy. This pins
+        # the grow path against accidentally clobbering elements.
+        src = (
+            "fun build_big() -> Int\n"
+            "    let xs: List<Int> = []\n"
+            "    var i = 0\n"
+            "    while i < 50\n"
+            "        xs.push(i)\n"
+            "        i = i + 1\n"
+            "    var total = 0\n"
+            "    for x in xs\n"
+            "        total = total + x\n"
+            "    return total\n"
+        )
+        store, exp = self._instantiate(src)
+        # 0 + 1 + ... + 49 = 1225
+        self.assertEqual(exp["build_big"](store), 1225)
+
+
 if __name__ == "__main__":
     unittest.main()

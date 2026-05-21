@@ -38,7 +38,7 @@ from ._nodes import (
     Module, Function, Param, Value, Instr,
     AssignConst, Reassign, BinOp, UnaryOp, Call, MethodCall,
     If, While, Break, Continue, Return,
-    MakeStruct, FieldAccess,
+    MakeStruct, MakeList, MakeMap, MakeSet, FieldAccess, Index, For,
     Pattern, PatWildcard, PatIdent, PatLiteral, PatVariant, MatchArm, Match,
     StructDecl, SumDecl,
 )
@@ -53,12 +53,41 @@ _BUILTIN_CAPS = {"Stdio", "Fs", "Env", "Clock", "Net", "Random", "Proc", "Db", "
 
 # Per-type byte size for Capa scalar types. Used by layout
 # computation for structs and sum payloads. Strings, Lists, Maps,
-# Sets are represented as i32 pointers in this phase but their
-# stdlib counterparts only arrive in 6D.
+# Sets are represented as i32 pointers; their stdlib payloads land
+# in 6D and beyond.
 _TYPE_SIZE = {
     "Int":  8,  # i64
     "Bool": 4,  # i32
 }
+
+
+# Memory layout of a List<T>: 16-byte header (len, cap, data_ptr,
+# padding) followed by a separately-allocated element array. The
+# header is kept fixed-size so List<T> for any T is a 16-byte
+# allocation; the data array's stride depends on T.
+_LIST_HEADER_SIZE = 16
+_LIST_LEN_OFFSET = 0
+_LIST_CAP_OFFSET = 4
+_LIST_DATA_OFFSET = 8
+
+
+def _element_type_of_list(list_ty: str) -> str:
+    """Extract T from ``List<T>``. Defaults to ``Int`` if the
+    string lacks a type argument (the lowerer occasionally leaves
+    bare ``List`` when the analyzer has no precise inference),
+    or if the inner type is an unresolved type variable like
+    ``?lst_0`` (the analyzer's type-var notation; happens for
+    empty literals where inference happens elsewhere). Phase 6D-2
+    defaults the unresolved case to Int because that is by far
+    the most common element type in practice. A subsequent
+    analyzer fix that propagates annotations into IR type strings
+    will obsolete this fallback."""
+    if list_ty.startswith("List<") and list_ty.endswith(">"):
+        inner = list_ty[5:-1].strip()
+        if inner.startswith("?"):
+            return "Int"
+        return inner
+    return "Int"
 
 
 def _size_of(capa_ty: str, sum_layouts: dict, struct_layouts: dict) -> int:
@@ -304,6 +333,7 @@ class WasmEmitter:
             or self._has_any_caps()
             or self._struct_layouts
             or self._sum_layouts
+            or self._uses_heap_alloc(module)
         )
         if needs_memory:
             self._write('(memory (export "memory") 1)')
@@ -315,7 +345,11 @@ class WasmEmitter:
         # Heap: starts just after the static data segment, aligned
         # to 8 bytes. The ``$alloc`` function below bumps the global
         # forward by the requested size, rounded up to 8.
-        if self._struct_layouts or self._sum_layouts:
+        if (
+            self._struct_layouts
+            or self._sum_layouts
+            or self._uses_heap_alloc(module)
+        ):
             heap_start = _align_up(self._string_data_offset, 8)
             self._write(
                 f"(global $heap_top (mut i32) (i32.const {heap_start}))"
@@ -327,6 +361,41 @@ class WasmEmitter:
         self._indent -= 1
         self._write(")")
         return "\n".join(self._lines) + "\n"
+
+    def _uses_heap_alloc(self, module: Module) -> bool:
+        """Detect whether any function body contains an instruction
+        that allocates on the heap (MakeList for now; future phases
+        add MakeMap / MakeSet / String operations that build fresh
+        byte buffers). Used to decide whether the module needs the
+        ``$alloc`` helper and the ``$heap_top`` global."""
+        def visit(instrs: list[Instr]) -> bool:
+            for instr in instrs:
+                if isinstance(instr, (MakeList, MakeMap, MakeSet)):
+                    return True
+                # MethodCall on List with push grows the data array,
+                # which calls alloc too.
+                if isinstance(instr, MethodCall):
+                    recv_ty = instr.receiver.ty or ""
+                    if recv_ty.startswith("List") and instr.method in ("push",):
+                        return True
+                if isinstance(instr, If):
+                    if visit(instr.then_body) or visit(instr.else_body):
+                        return True
+                if isinstance(instr, While):
+                    if visit(instr.cond_setup) or visit(instr.body):
+                        return True
+                if isinstance(instr, For):
+                    if visit(instr.body):
+                        return True
+                if isinstance(instr, Match):
+                    for arm in instr.arms:
+                        if visit(arm.body):
+                            return True
+            return False
+        for fn in module.functions:
+            if visit(fn.body):
+                return True
+        return False
 
     def _emit_alloc_function(self) -> None:
         """Emit a bump allocator: ``$alloc(size: i32) -> i32`` that
@@ -568,17 +637,32 @@ class WasmEmitter:
         out: dict[str, str] = {}
         has_match = False
         has_variant_ctor = False
+        has_list = False
+        has_for = False
+        has_list_contains_i64 = False
 
         def value_uses_variant_ctor(v: Value) -> bool:
             return v is not None and v.kind == "variant_ctor"
 
         def visit(instrs: list[Instr]) -> None:
-            nonlocal has_match, has_variant_ctor
+            nonlocal has_match, has_variant_ctor, has_list, has_for
+            nonlocal has_list_contains_i64
             for instr in instrs:
                 if isinstance(instr, Match):
                     has_match = True
                     for arm in instr.arms:
                         visit(arm.body)
+                if isinstance(instr, MakeList):
+                    has_list = True
+                if isinstance(instr, For):
+                    has_for = True
+                    visit(instr.body)
+                if isinstance(instr, MethodCall) and instr.method == "contains":
+                    recv_ty = instr.receiver.ty or ""
+                    if recv_ty.startswith("List"):
+                        elem_ty = _element_type_of_list(recv_ty)
+                        if self._size_of(elem_ty) == 8:
+                            has_list_contains_i64 = True
                 # Detect Values of kind variant_ctor anywhere; they
                 # require the ``$_alloc_tmp`` local at emit time.
                 for attr in ("src", "value", "left", "right",
@@ -650,11 +734,17 @@ class WasmEmitter:
                 # a clearer error.
                 wasm_ty = "i64"
             out[name] = wasm_ty
-        if has_match:
+        # ``_m_scrut`` / ``_m_tag`` are used by both Match and For
+        # loops (they double as iter-pointer and index registers).
+        # ``_alloc_tmp`` is used by variant-ctor pushes and by
+        # MakeList for the data-array base pointer.
+        if has_match or has_for:
             out["_m_scrut"] = "i32"
             out["_m_tag"] = "i32"
-        if has_variant_ctor:
+        if has_variant_ctor or has_list:
             out["_alloc_tmp"] = "i32"
+        if has_list_contains_i64:
+            out["_alloc_tmp_i64"] = "i64"
         return out
 
     # ----- per-instruction --------------------------------------
@@ -685,16 +775,29 @@ class WasmEmitter:
             if instr.cap_used:
                 self._emit_cap_method_call(instr)
                 return
+            recv_ty = instr.receiver.ty or ""
+            if recv_ty.startswith("List"):
+                self._emit_list_method_call(instr)
+                return
             raise WasmEmissionError(
-                f"Phase 6B: MethodCall on non-capability receiver "
-                f"(method {instr.method!r}); String / List / Map / Set "
-                f"methods land in Phase 6D"
+                f"MethodCall on receiver of type {recv_ty!r} "
+                f"(method {instr.method!r}); String / Map / Set "
+                f"methods land in later 6D sub-phases"
             )
         if isinstance(instr, MakeStruct):
             self._emit_make_struct(instr)
             return
+        if isinstance(instr, MakeList):
+            self._emit_make_list(instr)
+            return
         if isinstance(instr, FieldAccess):
             self._emit_field_access(instr)
+            return
+        if isinstance(instr, Index):
+            self._emit_index(instr)
+            return
+        if isinstance(instr, For):
+            self._emit_for(instr)
             return
         if isinstance(instr, Match):
             self._emit_match(instr)
@@ -947,6 +1050,387 @@ class WasmEmitter:
         self._write(f"{_load_op_for_size(size)} offset={offset}")
         self._write(f"local.set ${instr.dst}")
 
+    # ----- list methods -----------------------------------------
+
+    def _emit_list_method_call(self, instr: MethodCall) -> None:
+        """Dispatch a method on a List receiver. Methods that read
+        the header (length, is_empty) emit a single i32.load + a
+        compare/store. ``push`` does grow-if-needed + store + len
+        increment. ``contains`` walks the array linearly. Methods
+        that need closures (map / filter / fold / find) raise; they
+        land in Phase 6E."""
+        recv = instr.receiver
+        method = instr.method
+        recv_ty = recv.ty
+        elem_ty = _element_type_of_list(recv_ty)
+        elem_size = self._size_of(elem_ty)
+
+        if method == "length":
+            # Result is Int (i64). Capa.List.length returns the
+            # number of elements; the header stores it as i32, so
+            # extend to i64 before binding the dst.
+            self._push_value(recv)
+            self._write(f"i32.load offset={_LIST_LEN_OFFSET}")
+            self._write("i64.extend_i32_s")
+            if instr.dst is not None:
+                self._write(f"local.set ${instr.dst}")
+            return
+        if method == "is_empty":
+            self._push_value(recv)
+            self._write(f"i32.load offset={_LIST_LEN_OFFSET}")
+            self._write("i32.eqz")
+            if instr.dst is not None:
+                self._write(f"local.set ${instr.dst}")
+            return
+        if method == "push":
+            self._emit_list_push(recv, instr.args[0], elem_size, elem_ty)
+            return
+        if method == "get":
+            # List<T>.get returns Option<T>. Building Option here
+            # requires the Option sum-type layout, which lives in
+            # the module's user-defined types. Defer this until the
+            # standard library wraps Option centrally in 6D-3.
+            raise WasmEmissionError(
+                "Phase 6D-2: List.get returning Option<T> not yet "
+                "supported; use direct indexing xs[i]"
+            )
+        if method == "contains":
+            self._emit_list_contains(recv, instr.args[0], elem_size, elem_ty)
+            if instr.dst is not None:
+                self._write(f"local.set ${instr.dst}")
+            return
+        raise WasmEmissionError(
+            f"Phase 6D-2: List method {method!r} not supported "
+            f"(map / filter / fold need closures, see 6E)"
+        )
+
+    def _emit_list_push(
+        self, recv: Value, elem: Value, elem_size: int, elem_ty: str,
+    ) -> None:
+        """Emit ``recv.push(elem)``. Grows the data array if the
+        list is at capacity (doubling strategy); stores the element
+        at ``data_ptr + len * elem_size``; increments len.
+
+        Uses ``$_m_scrut`` / ``$_m_tag`` / ``$_alloc_tmp`` as scratch
+        for the list pointer, current length, and new data pointer
+        respectively; these are guaranteed declared by
+        ``_collect_locals``."""
+        list_local = "_m_scrut"
+        len_local = "_m_tag"
+        # Stash the list pointer so we can re-read header fields
+        # without re-evaluating the receiver.
+        self._push_value(recv)
+        self._write(f"local.set ${list_local}")
+        # Branch: if len >= cap, grow. Otherwise reuse data array.
+        self._write(f"local.get ${list_local}")
+        self._write(f"i32.load offset={_LIST_LEN_OFFSET}")
+        self._write(f"local.tee ${len_local}")
+        self._write(f"local.get ${list_local}")
+        self._write(f"i32.load offset={_LIST_CAP_OFFSET}")
+        self._write("i32.ge_s")
+        self._write("if")
+        self._indent += 1
+        # Grow: new_cap = max(cap * 2, 8). Allocate fresh data, copy
+        # old contents, install in header. ``memory.copy`` (bulk
+        # memory ops) is supported by wasmtime; we use it for the
+        # element copy because the loop alternative would be tedious
+        # to emit by hand.
+        self._write(f"local.get ${list_local}")
+        self._write(f"i32.load offset={_LIST_CAP_OFFSET}")
+        self._write("i32.const 2")
+        self._write("i32.mul")
+        # If cap was 0, new_cap is 0; bump to 8 in that case.
+        self._write("local.tee $_alloc_tmp")
+        self._write("i32.eqz")
+        self._write("if")
+        self._indent += 1
+        self._write("i32.const 8")
+        self._write("local.set $_alloc_tmp")
+        self._indent -= 1
+        self._write("end")
+        # Allocate new data array: $_alloc_tmp * elem_size bytes.
+        self._write("local.get $_alloc_tmp")
+        self._write(f"i32.const {elem_size}")
+        self._write("i32.mul")
+        self._write("call $alloc")
+        # Stack: new_data_ptr. Save it.
+        self._write("local.tee $_m_tag")  # reuse len_local as new_data
+        # Now memory.copy: dst=new_data, src=old_data, n=len*elem_size
+        # Sequence: dst, src, size.
+        self._write(f"local.get ${list_local}")
+        self._write(f"i32.load offset={_LIST_DATA_OFFSET}")
+        self._write(f"local.get ${list_local}")
+        self._write(f"i32.load offset={_LIST_LEN_OFFSET}")
+        self._write(f"i32.const {elem_size}")
+        self._write("i32.mul")
+        self._write("memory.copy")
+        # Update header: data_ptr = new_data, cap = new_cap.
+        self._write(f"local.get ${list_local}")
+        self._write("local.get $_m_tag")
+        self._write(f"i32.store offset={_LIST_DATA_OFFSET}")
+        self._write(f"local.get ${list_local}")
+        self._write("local.get $_alloc_tmp")
+        self._write(f"i32.store offset={_LIST_CAP_OFFSET}")
+        # Refresh the cached len_local; it lost its value when we
+        # reused $_m_tag.
+        self._write(f"local.get ${list_local}")
+        self._write(f"i32.load offset={_LIST_LEN_OFFSET}")
+        self._write(f"local.set ${len_local}")
+        self._indent -= 1
+        self._write("end")
+        # Store the new element at data[len]. Address = data_ptr +
+        # len * elem_size.
+        self._write(f"local.get ${list_local}")
+        self._write(f"i32.load offset={_LIST_DATA_OFFSET}")
+        self._write(f"local.get ${len_local}")
+        self._write(f"i32.const {elem_size}")
+        self._write("i32.mul")
+        self._write("i32.add")
+        self._push_value(elem)
+        self._write(_store_op_for_size(elem_size))
+        # Increment len.
+        self._write(f"local.get ${list_local}")
+        self._write(f"local.get ${len_local}")
+        self._write("i32.const 1")
+        self._write("i32.add")
+        self._write(f"i32.store offset={_LIST_LEN_OFFSET}")
+
+    def _emit_list_contains(
+        self, recv: Value, needle: Value, elem_size: int, elem_ty: str,
+    ) -> None:
+        """Emit a linear-scan ``recv.contains(needle)``. Leaves an
+        i32 0/1 on the stack. String element type would need a
+        per-byte comparator and is deferred until 6D-4."""
+        if elem_ty == "String":
+            raise WasmEmissionError(
+                "Phase 6D-2: List<String>.contains not yet supported"
+            )
+        list_local = "_m_scrut"
+        idx_local = "_m_tag"
+        # Compare op depends on element width.
+        eq_op = "i64.eq" if elem_size == 8 else "i32.eq"
+        load_op = _load_op_for_size(elem_size)
+        # Push needle once into a fresh local; reusing $_alloc_tmp.
+        # Needle is a scalar (Int or Bool) so it fits in i64 / i32.
+        if elem_size == 8:
+            self._push_value(needle)
+            self._write(f"local.set $_alloc_tmp_i64")
+            needle_local = "_alloc_tmp_i64"
+        else:
+            self._push_value(needle)
+            self._write(f"local.set $_alloc_tmp")
+            needle_local = "_alloc_tmp"
+        self._push_value(recv)
+        self._write(f"local.set ${list_local}")
+        self._write("i32.const 0")
+        self._write(f"local.set ${idx_local}")
+        # Loop: while idx < len, compare element with needle; break
+        # with 1 on match; fall through to 0 if none matched.
+        self._block_counter += 1
+        loop_label = f"$C{self._block_counter}_loop"
+        exit_label = f"$C{self._block_counter}_exit"
+        self._write(f"block {exit_label} (result i32)")
+        self._indent += 1
+        self._write(f"loop {loop_label}")
+        self._indent += 1
+        # Guard: idx >= len -> push 0 and exit.
+        self._write(f"local.get ${idx_local}")
+        self._write(f"local.get ${list_local}")
+        self._write(f"i32.load offset={_LIST_LEN_OFFSET}")
+        self._write("i32.ge_s")
+        self._write("if")
+        self._indent += 1
+        self._write("i32.const 0")
+        self._write(f"br {exit_label}")
+        self._indent -= 1
+        self._write("end")
+        # Compare element with needle.
+        self._write(f"local.get ${list_local}")
+        self._write(f"i32.load offset={_LIST_DATA_OFFSET}")
+        self._write(f"local.get ${idx_local}")
+        self._write(f"i32.const {elem_size}")
+        self._write("i32.mul")
+        self._write("i32.add")
+        self._write(load_op)
+        self._write(f"local.get ${needle_local}")
+        self._write(eq_op)
+        self._write("if")
+        self._indent += 1
+        self._write("i32.const 1")
+        self._write(f"br {exit_label}")
+        self._indent -= 1
+        self._write("end")
+        # Advance index and loop.
+        self._write(f"local.get ${idx_local}")
+        self._write("i32.const 1")
+        self._write("i32.add")
+        self._write(f"local.set ${idx_local}")
+        self._write(f"br {loop_label}")
+        self._indent -= 1
+        self._write("end")
+        self._indent -= 1
+        self._write("end")
+
+    # ----- lists ------------------------------------------------
+
+    def _emit_make_list(self, instr: MakeList) -> None:
+        """Allocate a List<T> header (16 bytes) + an element data
+        array sized for the literal's elements. Store len = cap =
+        n, then write each element at its index. The list pointer
+        lands in ``instr.dst``."""
+        list_ty = self._dst_capa_ty(instr.dst) or "List<Int>"
+        elem_ty = _element_type_of_list(list_ty)
+        elem_size = self._size_of(elem_ty)
+        n = len(instr.elements)
+        # Allocate the header. Empty literals get cap=8 so a
+        # subsequent ``push`` lands without immediate realloc.
+        cap = max(n, 8)
+        self._write(f"i32.const {_LIST_HEADER_SIZE}")
+        self._write("call $alloc")
+        self._write(f"local.set ${instr.dst}")
+        # Store len and cap. Header layout: len@0, cap@4, data_ptr@8.
+        self._write(f"local.get ${instr.dst}")
+        self._write(f"i32.const {n}")
+        self._write(f"i32.store offset={_LIST_LEN_OFFSET}")
+        self._write(f"local.get ${instr.dst}")
+        self._write(f"i32.const {cap}")
+        self._write(f"i32.store offset={_LIST_CAP_OFFSET}")
+        # Allocate the data array (cap * elem_size); record the
+        # base pointer in the header's data slot. Even for empty
+        # literals we allocate an array of cap slots so push has
+        # somewhere to write without an immediate grow.
+        data_bytes = cap * elem_size
+        self._write(f"i32.const {data_bytes}")
+        self._write("call $alloc")
+        # Stack: data_ptr; duplicate before storing so we keep a
+        # copy for the element writes below.
+        self._write("local.tee $_alloc_tmp")  # data_ptr saved in tmp
+        self._write(f"local.get ${instr.dst}")
+        self._write(f"local.get $_alloc_tmp")
+        self._write(f"i32.store offset={_LIST_DATA_OFFSET}")
+        # Write each literal element. ``_alloc_tmp`` holds the base
+        # pointer of the data array.
+        store_op = _store_op_for_size(elem_size)
+        for i, elem in enumerate(instr.elements):
+            self._write(f"local.get $_alloc_tmp")
+            self._push_value(elem)
+            self._write(f"{store_op} offset={i * elem_size}")
+        # Drop the leftover from local.tee (it lives in $_alloc_tmp
+        # but the stack value persisted). i32.store consumed the tag
+        # offset's stack value already in the data_ptr store above,
+        # so the stack is balanced at this point.
+
+    def _emit_index(self, instr: Index) -> None:
+        """Lower ``xs[i]`` for a List receiver. Loads
+        ``data_ptr + i * elem_size`` from memory. The bounds
+        check is the analyzer's job (or the IR's; the Wasm path
+        trusts that the index is valid)."""
+        recv_ty = instr.receiver.ty
+        if not recv_ty.startswith("List"):
+            raise WasmEmissionError(
+                f"Index on receiver of type {recv_ty!r}: only List "
+                f"indexing is supported in Phase 6D-2"
+            )
+        elem_ty = _element_type_of_list(recv_ty)
+        elem_size = self._size_of(elem_ty)
+        load_op = _load_op_for_size(elem_size)
+        # Compute address: data_ptr + index * elem_size.
+        self._push_value(instr.receiver)
+        self._write(f"i32.load offset={_LIST_DATA_OFFSET}")
+        # Index needs to be an i32 offset; the IR's Value for the
+        # index is typically lit_int (i64) or local Int (i64).
+        # Cast i64 -> i32 with ``i32.wrap_i64``.
+        self._push_value(instr.index)
+        self._write("i32.wrap_i64")
+        self._write(f"i32.const {elem_size}")
+        self._write("i32.mul")
+        self._write("i32.add")
+        self._write(load_op)
+        self._write(f"local.set ${instr.dst}")
+
+    def _emit_for(self, instr: For) -> None:
+        """Lower ``for x in xs`` for a List iterator. Emits a
+        counted loop:
+        ``i = 0; while i < len(xs) { x = xs[i]; ...body...; i += 1 }``
+        Uses the function's match-helper locals (``$_m_scrut`` and
+        ``$_m_tag``) as scratch space for the iterator pointer and
+        index, plus the bind name's own local for the element."""
+        iter_ty = instr.iter.ty
+        if not iter_ty.startswith("List"):
+            raise WasmEmissionError(
+                f"For-iter over type {iter_ty!r}: only List iteration "
+                f"is supported in Phase 6D-2 (range iteration lands "
+                f"in a later phase)"
+            )
+        elem_ty = _element_type_of_list(iter_ty)
+        elem_size = self._size_of(elem_ty)
+        load_op = _load_op_for_size(elem_size)
+        # We need a list-pointer scratch and an index scratch. Reuse
+        # the match helpers; their live range does not overlap the
+        # for loop's body (no match runs concurrently). The IR
+        # walker has ensured these locals exist when needed (see
+        # ``_collect_locals``).
+        list_local = "_m_scrut"
+        idx_local = "_m_tag"
+        # Capture the list pointer in $list_local.
+        self._push_value(instr.iter)
+        self._write(f"local.set ${list_local}")
+        self._write(f"i32.const 0")
+        self._write(f"local.set ${idx_local}")
+        # block/loop encoding (same shape as while):
+        self._block_counter += 1
+        loop_label = f"$F{self._block_counter}_loop"
+        exit_label = f"$F{self._block_counter}_exit"
+        self._loop_labels.append((loop_label, exit_label))
+        self._write(f"block {exit_label}")
+        self._indent += 1
+        self._write(f"loop {loop_label}")
+        self._indent += 1
+        # Loop guard: if idx >= len(list), exit.
+        self._write(f"local.get ${idx_local}")
+        self._write(f"local.get ${list_local}")
+        self._write(f"i32.load offset={_LIST_LEN_OFFSET}")
+        self._write("i32.ge_s")
+        self._write(f"br_if {exit_label}")
+        # Bind the iteration variable: list.data[idx].
+        self._write(f"local.get ${list_local}")
+        self._write(f"i32.load offset={_LIST_DATA_OFFSET}")
+        self._write(f"local.get ${idx_local}")
+        self._write(f"i32.const {elem_size}")
+        self._write("i32.mul")
+        self._write("i32.add")
+        self._write(load_op)
+        if elem_ty == "String":
+            # String iteration is exotic: each element is a (ptr,
+            # len) pair stored consecutively. The simple load above
+            # reads only one half. Defer until 6D-4 when full
+            # String support arrives.
+            raise WasmEmissionError(
+                "Phase 6D-2: for-iter over List<String> not yet "
+                "supported; iterate over List<Int> or a pointer-typed "
+                "element type"
+            )
+        self._write(f"local.set ${instr.name}")
+        # Body.
+        for sub in instr.body:
+            self._emit_instr(sub)
+        # Increment idx and continue.
+        self._write(f"local.get ${idx_local}")
+        self._write("i32.const 1")
+        self._write("i32.add")
+        self._write(f"local.set ${idx_local}")
+        self._write(f"br {loop_label}")
+        self._indent -= 1
+        self._write("end")
+        self._indent -= 1
+        self._write("end")
+        self._loop_labels.pop()
+
+    def _size_of(self, capa_ty: str) -> int:
+        """Wrapper around the module-level ``_size_of`` that
+        consults the emitter's known struct/sum layouts."""
+        return _size_of(capa_ty, self._sum_layouts, self._struct_layouts)
+
     # ----- match emission ---------------------------------------
 
     def _emit_match(self, instr: Match) -> None:
@@ -1163,6 +1647,12 @@ class WasmEmitter:
         # i32 pointer. Locals/params/return values of these types
         # are i32 at the Wasm level.
         if head in self._struct_layouts or head in self._sum_layouts:
+            return "i32"
+        # Collection types: List / Map / Set are also heap pointers.
+        # Their stdlib methods will resolve dispatch on the receiver
+        # type string later, but at the value-shape level they are
+        # i32 pointers identical to structs.
+        if head in ("List", "Map", "Set"):
             return "i32"
         raise WasmEmissionError(
             f"Capa type {capa_ty!r} has no Wasm encoding yet"
