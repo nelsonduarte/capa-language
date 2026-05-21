@@ -9,6 +9,85 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+### Wasm Component Model backend
+
+A real Wasm backend now sits next to the Python emitter inside
+`capa.ir`. Capa programs in a defined subset compile to genuine
+`.wasm` modules and Component Model components, with the capability
+story carried end-to-end:
+
+- **Capabilities as WIT imports.** Each built-in capability the
+  program uses turns into a `capa:host/<cap>` WIT interface. A
+  Capa program with `fun main(stdio: Stdio)` becomes a Wasm
+  component that imports `capa:host/stdio` and exports `main`.
+  The capability parameter has no Wasm runtime value -- its
+  methods are imported by name, matching the WIT.
+- **Linear memory layout for aggregates.** Structs, sums, lists,
+  and maps are heap-allocated via a bump allocator. Layouts:
+  structs use natural-aligned fields, sums use tag@0 + payload@8,
+  lists use a 16-byte header + element array (grows via
+  `memory.copy`), maps use a 16-byte header + (key_ptr, key_len,
+  value) triples.
+- **String values as (ptr, len) pairs.** String locals expand to
+  two i32 Wasm locals; String params take two i32s; String
+  returns use Wasm 2.0 multi-value `(result i32 i32)`. The host
+  decodes UTF-8 through the module's exported memory.
+- **Built-in Option<T> / Result<T, E>** registered as sum-type
+  layouts inside the emitter so user code can pattern-match on
+  them without declaring the type in source.
+- **String interpolation** ("hello ${name}") lowers to inline
+  concatenation: each value part stashes (ptr, len), total length
+  is summed, the buffer is allocated, and pieces copied in order.
+  Int parts use a `$itoa` helper emitted alongside `$alloc`.
+
+CLI surface:
+
+- `capa --wit file.capa` -- print the WIT spec describing the
+  program's capability imports.
+- `capa --wasm --transpile file.capa` -- emit WAT (text format).
+- `capa --wasm --run file.capa` -- assemble + execute via wasmtime
+  with a Python host bridge wired to `sys.stdout` / `sys.stderr`.
+- `capa --wasm -o X.wasm file.capa` -- save the assembled binary.
+- `capa --wasm --component -o X.wasm file.capa` -- wrap in a CM
+  component via `wasm-tools component embed` + `component new`.
+  The resulting `.wasm` is consumable by any CM-aware runtime.
+
+Demo gallery in `examples/wasm/`: hello, fizzbuzz, shape_area
+(recursive sums + pattern matching), word_count (Map<String,Int>
+with Option-returning get), strings (String methods chained). All
+five run end-to-end through `capa --wasm --run`.
+
+Coverage (Phase 6 of the IR roadmap):
+
+- 6A: Int / Bool arithmetic, comparisons, control flow.
+- 6B: Capability method calls (Stdio) via imported functions.
+- 6C: Sums, structs, pattern matching, bump allocator.
+- 6D: String literals + locals + methods (length, contains,
+  starts_with, ends_with, substring, to_upper, to_lower, trim);
+  List<Int> (literal, push with realloc, length, iter, indexing);
+  Map<String, V> (set, get returning Option, contains_key,
+  length, is_empty).
+- 6F: CM component packaging via wasm-tools, demo gallery.
+
+Known gaps (documented in `TODO.md`):
+
+- Capabilities other than Stdio (Fs, Env, Clock, Net) -- need
+  Float type, Result<T, E> propagation across the host boundary,
+  and a richer WIT signature table.
+- Closures / lambdas (6E) -- Wasm has no first-class functions
+  in the form Capa source produces; closure conversion lifts
+  lambdas to top-level + an environment record, work for a later
+  phase.
+- `List.map/filter/fold`, `Map.keys/values/pairs` -- need
+  closures or richer List element types (List<(K, V)>).
+- `String.split/replace`, `Stdio.read_line` -- need List<String>
+  or Result<String, IoError>.
+
+The three downstream demos (`audit-trail-reporter`,
+`policy-eval`, `sbom-watch`) currently exceed Phase 6's Wasm
+coverage; they remain on the Python pipeline. Pushing them
+through Wasm waits for the Fs/Env/Clock work above.
+
 ### CIR: capability-aware intermediate representation
 
 A new IR layer sits between the analyzer's typed AST and the

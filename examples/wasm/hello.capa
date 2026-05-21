@@ -1,0 +1,7 @@
+// Smallest possible Wasm-compilable Capa program. Compiles to a
+// .wasm component that imports the capa:host/stdio interface and
+// exports main; runs on any Component Model host or via
+// `capa --wasm --run`.
+
+fun main(stdio: Stdio)
+    stdio.println("hello from a real .wasm component")

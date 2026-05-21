@@ -1,0 +1,32 @@
+// Map<String, Int> word-frequency counter. Exercises:
+// - Map heap layout (16-byte header + (key_ptr, key_len, value) triples)
+// - String key comparison via the inline $str_eq helper
+// - Option<Int> as a built-in sum type returned by Map.get
+// - Pattern matching on Option in Wasm
+
+fun bump(counts: Map<String, Int>, word: String)
+    match counts.get(word)
+        Some(n) -> counts.set(word, n + 1)
+        None -> counts.set(word, 1)
+
+fun main(stdio: Stdio)
+    let counts: Map<String, Int> = new_map()
+    bump(counts, "apple")
+    bump(counts, "banana")
+    bump(counts, "apple")
+    bump(counts, "cherry")
+    bump(counts, "apple")
+    bump(counts, "banana")
+
+    match counts.get("apple")
+        Some(n) -> stdio.println("apple: ${n}")
+        None -> stdio.println("apple: 0")
+    match counts.get("banana")
+        Some(n) -> stdio.println("banana: ${n}")
+        None -> stdio.println("banana: 0")
+    match counts.get("cherry")
+        Some(n) -> stdio.println("cherry: ${n}")
+        None -> stdio.println("cherry: 0")
+    match counts.get("durian")
+        Some(n) -> stdio.println("durian: ${n}")
+        None -> stdio.println("durian: not seen")

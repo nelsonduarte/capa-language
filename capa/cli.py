@@ -369,6 +369,51 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--wasm",
+        action="store_true",
+        help=(
+            "compile via CIR to WebAssembly text (WAT). With "
+            "--transpile, prints the WAT. With --run, assembles the "
+            "WAT to binary via wasm-tools and executes it on a "
+            "wasmtime-backed host that provides the Capa capability "
+            "interfaces. Coverage matches Phase 6 of the IR roadmap; "
+            "constructs outside that subset fail loudly rather than "
+            "fall back to Python."
+        ),
+    )
+    parser.add_argument(
+        "--wit",
+        action="store_true",
+        help=(
+            "emit the WIT spec describing the program's capability "
+            "imports. Useful for inspecting the capability surface "
+            "the Wasm backend would generate; does not produce "
+            "executable output."
+        ),
+    )
+    parser.add_argument(
+        "--output", "-o",
+        type=str,
+        default=None,
+        help=(
+            "with --wasm, save the assembled binary to the given "
+            "path instead of executing it. Use with --component to "
+            "save a Component Model wrapper (.wasm) instead of the "
+            "core module."
+        ),
+    )
+    parser.add_argument(
+        "--component",
+        action="store_true",
+        help=(
+            "with --wasm --output, wrap the core module in a "
+            "Component Model component via 'wasm-tools component "
+            "new'. Requires 'wasm-tools' on PATH. The resulting "
+            "file embeds the WIT spec and is consumable by any "
+            "Component-Model-aware runtime."
+        ),
+    )
+    parser.add_argument(
         "--no-color",
         action="store_true",
         help="disable ANSI colors in the output",
@@ -459,6 +504,7 @@ def main() -> int:
     needs_analysis = (
         args.check or args.run or args.manifest or args.cyclonedx
         or args.spdx or args.vex or args.provenance or args.doc
+        or args.wit or args.wasm
     )
     linked = None
     if args.parse or args.transpile or needs_analysis:
@@ -497,7 +543,9 @@ def main() -> int:
             return 1
 
     result = None
-    if args.check or args.run or args.manifest or args.cyclonedx or args.spdx or args.vex or args.provenance or args.doc:
+    if (args.check or args.run or args.manifest or args.cyclonedx
+            or args.spdx or args.vex or args.provenance or args.doc
+            or args.wit or args.wasm):
         # Semantic analysis is required before running. If the
         # loader produced a sources map (multi-file program),
         # pass it so errors in imported modules render with the
@@ -568,6 +616,66 @@ def main() -> int:
             else:
                 print(msg)
             return 0
+        if args.wit:
+            from capa.ir import compile_wit
+            try:
+                print(compile_wit(module, types=result.types))
+                return 0
+            except Exception as e:
+                print(f"capa: --wit: {e}", file=sys.stderr)
+                return 1
+
+    if args.wasm and (args.transpile or args.run or args.output):
+        # Wasm pipeline: AST -> CIR -> WAT -> binary -> (wasmtime
+        # | file | component). Failures are loud (no fallback to
+        # Python) so coverage gaps in the Wasm backend surface as
+        # actionable errors rather than silent shape changes.
+        from capa.ir import compile_wat, compile_wasm, compile_wit
+        if result is None:
+            result = analyze(module, source=source, filename=filename)
+        try:
+            if args.transpile:
+                wat = compile_wat(module, types=result.types)
+                print(wat)
+                return 0
+            blob = compile_wasm(module, types=result.types)
+        except Exception as e:
+            msg = f"capa: --wasm: {e}"
+            if use_color:
+                print(f"{C.RED}{msg}{C.RESET}", file=sys.stderr)
+            else:
+                print(msg, file=sys.stderr)
+            return 1
+        # --output: save the binary instead of running it. With
+        # --component, wrap the core module in a Component Model
+        # component first.
+        if args.output:
+            try:
+                if args.component:
+                    blob = _wrap_as_component(
+                        blob,
+                        compile_wit(module, types=result.types),
+                    )
+                Path(args.output).write_bytes(blob)
+                kind = "component" if args.component else "core module"
+                print(
+                    f"capa: --wasm: wrote {kind} ({len(blob)} bytes) to {args.output}",
+                    file=sys.stderr,
+                )
+                return 0
+            except Exception as e:
+                print(f"capa: --wasm: {e}", file=sys.stderr)
+                return 1
+        # --run path: assemble and execute on a wasmtime host.
+        try:
+            from capa.runtime._wasm_host import WasmHost
+            host = WasmHost()
+            host.run_main(blob)
+            return 0
+        except Exception as e:
+            import traceback
+            traceback.print_exc(file=sys.stderr)
+            return 1
 
     if args.transpile or args.run:
         # If we haven't yet run analyze (in --transpile mode without --check),
@@ -676,6 +784,58 @@ def main() -> int:
             print(f"{pos}  {kind_name:<14}  {text_repr}{value_repr}")
 
     return 0
+
+
+def _wrap_as_component(core_wasm: bytes, wit_text: str) -> bytes:
+    """Wrap a core Wasm module in a Component Model component by
+    shelling out to ``wasm-tools component embed`` + ``component new``.
+    Returns the bytes of the resulting .wasm component, which embeds
+    the WIT world and declares the capability interfaces as imports.
+
+    The two-step embed/new flow is what wasm-tools uses canonically:
+    embed encodes the WIT metadata into the core module as a custom
+    section; new then promotes that core module to a CM component.
+    Both steps require ``wasm-tools`` on PATH.
+    """
+    import subprocess
+    import tempfile
+    from pathlib import Path as _Path
+    with tempfile.TemporaryDirectory() as td:
+        td_path = _Path(td)
+        wit_path = td_path / "capa.wit"
+        core_path = td_path / "core.wasm"
+        embed_path = td_path / "embed.wasm"
+        comp_path = td_path / "component.wasm"
+        wit_path.write_text(wit_text, encoding="utf-8")
+        core_path.write_bytes(core_wasm)
+        # embed: stamp the WIT world into the core module.
+        embed = subprocess.run(
+            [
+                "wasm-tools", "component", "embed",
+                "--world", "program", str(wit_path), str(core_path),
+                "-o", str(embed_path),
+            ],
+            capture_output=True, check=False,
+        )
+        if embed.returncode != 0:
+            raise RuntimeError(
+                f"wasm-tools component embed failed:\n"
+                f"{embed.stderr.decode('utf-8', errors='replace')}"
+            )
+        # new: promote to a CM component.
+        new = subprocess.run(
+            [
+                "wasm-tools", "component", "new",
+                str(embed_path), "-o", str(comp_path),
+            ],
+            capture_output=True, check=False,
+        )
+        if new.returncode != 0:
+            raise RuntimeError(
+                f"wasm-tools component new failed:\n"
+                f"{new.stderr.decode('utf-8', errors='replace')}"
+            )
+        return comp_path.read_bytes()
 
 
 def _run_watch_loop(filename: str, program_args: list[str]) -> int:

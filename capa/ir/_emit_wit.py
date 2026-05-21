@@ -115,7 +115,7 @@ def emit_wit(module: Module, world_name: str = "program") -> str:
     used = collect_used_capabilities(module)
 
     lines: list[str] = []
-    lines.append("package capa:generated;")
+    lines.append("package capa:host;")
     lines.append("")
 
     # Emit interfaces in a deterministic order so two runs of the

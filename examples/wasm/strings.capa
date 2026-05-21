@@ -1,0 +1,22 @@
+// String methods in Wasm: length, trim, to_upper, substring,
+// starts_with, contains. Strings are (ptr, len) pairs in linear
+// memory; allocating methods (substring, to_upper, trim) bump the
+// heap and return new pairs through Wasm 2.0 multi-value returns.
+
+fun main(stdio: Stdio)
+    let raw = "  Hello, World!  "
+    let trimmed = raw.trim()
+    let shout = trimmed.to_upper()
+    stdio.println("trimmed: ${trimmed}")
+    stdio.println("shout: ${shout}")
+    stdio.println("trimmed.length() = ${trimmed.length()}")
+    let first_five = trimmed.substring(0, 5)
+    stdio.println("first 5: ${first_five}")
+    if trimmed.starts_with("Hello")
+        stdio.println("starts_with Hello: yes")
+    else
+        stdio.println("starts_with Hello: no")
+    if trimmed.contains("World")
+        stdio.println("contains World: yes")
+    else
+        stdio.println("contains World: no")

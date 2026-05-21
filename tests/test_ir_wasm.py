@@ -254,7 +254,7 @@ class TestWitGeneration(unittest.TestCase):
         )
         ir_mod, _, _ = _parse_lower(src)
         wit = emit_wit(ir_mod)
-        self.assertIn("package capa:generated;", wit)
+        self.assertIn("package capa:host;", wit)
         self.assertIn("interface stdio {", wit)
         self.assertIn("println: func(msg: string);", wit)
         self.assertIn("world program {", wit)
@@ -327,7 +327,7 @@ class TestWasmStdioEmission(unittest.TestCase):
         ir_mod, _, _ = _parse_lower(src)
         wat = emit_wat(ir_mod)
         self.assertIn(
-            '(import "capa:stdio" "println" '
+            '(import "capa:host/stdio" "println" '
             '(func $Stdio_println (param i32) (param i32))',
             wat,
         )

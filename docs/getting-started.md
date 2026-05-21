@@ -102,6 +102,10 @@ For a progressive 10-chapter introduction to the language, open
 | `capa --check file.capa` | Type-check only (do not run). |
 | `capa --transpile file.capa` | Print the generated Python code. |
 | `capa --ir [--run|--transpile] file.capa` | Use the CIR (capability-aware IR) pipeline instead of the direct legacy transpiler. Same observable output; falls back to legacy when CIR lowering hits an unsupported construct. |
+| `capa --wasm --run file.capa` | Compile via CIR -> WAT -> binary `.wasm` and execute on `wasmtime` with a Python host bridge. Requires `wasm-tools` and `wasmtime` on PATH. Coverage subset documented in `examples/wasm/`. |
+| `capa --wasm --transpile file.capa` | Print the WAT (WebAssembly text format) the Wasm backend would compile. |
+| `capa --wasm -o X.wasm file.capa` | Save the assembled core module to `X.wasm`. Add `--component` to wrap it in a Component Model component (via `wasm-tools component new`). |
+| `capa --wit file.capa` | Emit the WIT spec describing the program's capability imports. Useful for inspecting what a Wasm component would request from its host. |
 | `capa --parse file.capa` | Print the AST (for debugging). |
 | `capa --fmt file.capa` | Rewrite the file in canonical Capa style (line-level). |
 | `capa --fmt-check file.capa` | Verify canonical style without rewriting. |

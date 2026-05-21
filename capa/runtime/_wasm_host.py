@@ -83,15 +83,15 @@ class WasmHost:
             sys.stderr.flush()
 
         self.linker.define_func(
-            "capa:stdio", "print", ft_string_to_unit,
+            "capa:host/stdio", "print", ft_string_to_unit,
             stdio_print, access_caller=True,
         )
         self.linker.define_func(
-            "capa:stdio", "println", ft_string_to_unit,
+            "capa:host/stdio", "println", ft_string_to_unit,
             stdio_println, access_caller=True,
         )
         self.linker.define_func(
-            "capa:stdio", "eprintln", ft_string_to_unit,
+            "capa:host/stdio", "eprintln", ft_string_to_unit,
             stdio_eprintln, access_caller=True,
         )
 

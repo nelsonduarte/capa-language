@@ -1,0 +1,23 @@
+// Demonstrates recursive sum types + pattern matching in Wasm.
+// Compiles a heap-allocated Shape variant with i32-tagged
+// discriminants; the area() function loads the tag and dispatches
+// via nested if/else.
+
+type Shape =
+    Circle(Int)
+    Rectangle(Int, Int)
+    Square(Int)
+
+fun area(s: Shape) -> Int
+    match s
+        Circle(r) -> return r * r * 3
+        Rectangle(w, h) -> return w * h
+        Square(side) -> return side * side
+
+fun main(stdio: Stdio)
+    let c = Circle(5)
+    let r = Rectangle(3, 4)
+    let sq = Square(7)
+    stdio.println("Circle(5) area = ${area(c)}")
+    stdio.println("Rectangle(3,4) area = ${area(r)}")
+    stdio.println("Square(7) area = ${area(sq)}")

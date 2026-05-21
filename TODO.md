@@ -835,7 +835,26 @@ here so they stay visible:
   `audit-trail-reporter` runs end-to-end through `--ir`.
   See `capa/ir/`. Still NOT done from the original sketch:
   basic-blocks / CFG / block parameters (the IR is ANF only,
-  not MLIR/SIL shape), monomorphisation, native backend.
+  not MLIR/SIL shape), monomorphisation.
+- [x] **Wasm Component Model backend, partial.** Landed as
+  `capa.ir.WasmEmitter` and `capa.runtime._wasm_host`. Capa
+  programs compile to genuine `.wasm` (core module or CM
+  component) with capabilities materialised as WIT imports
+  under `capa:host/<cap>`. Coverage scope: Phase 6A-D + 6F.
+  Int / Bool / String / List<Int> / Map<String, V>, sums +
+  structs + pattern matching, Stdio (print / println /
+  eprintln). String interpolation handled via inline `$itoa`
+  + concatenation. CM components produced via `wasm-tools
+  component embed`/`new`. Demo gallery: `examples/wasm/`,
+  five programs running end-to-end on wasmtime via
+  `capa --wasm --run`. Still NOT done: capabilities other
+  than Stdio (Fs / Env / Clock / Net need Float, Result
+  propagation, richer WIT tables); closures / lambdas (need
+  closure conversion); List HOFs / `List.map`/`fold`; Map
+  keys/values/pairs (need List of tuples); String split /
+  replace (need List<String>). The three downstream demos
+  (audit-trail-reporter, policy-eval, sbom-watch) exceed
+  this surface; they remain on the Python pipeline.
 
 The reviewer's six-month sequence puts IR redesign in September
 and a native backend by December; that ordering trades the
