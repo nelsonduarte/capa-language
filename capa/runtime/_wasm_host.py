@@ -125,10 +125,10 @@ class WasmHost:
             return time.monotonic()
 
         self.linker.define_func(
-            "capa:host/clock", "now_secs", ft_to_f64, now_secs,
+            "capa:host/clock", "now-secs", ft_to_f64, now_secs,
         )
         self.linker.define_func(
-            "capa:host/clock", "now_monotonic", ft_to_f64, now_monotonic,
+            "capa:host/clock", "now-monotonic", ft_to_f64, now_monotonic,
         )
 
     def _register_env(self) -> None:
@@ -389,7 +389,7 @@ class WasmHost:
             return None
 
         self.linker.define_func(
-            "capa:host/fs", "restrict_to", ft_string_to_unit,
+            "capa:host/fs", "restrict-to", ft_string_to_unit,
             fs_restrict_to, access_caller=True,
         )
 
@@ -631,7 +631,7 @@ class WasmHost:
             json_parse, access_caller=True,
         )
         self.linker.define_func(
-            "capa:host/json", "to_string", ft_to_string,
+            "capa:host/json", "to-string", ft_to_string,
             json_to_string, access_caller=True,
         )
 

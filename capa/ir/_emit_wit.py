@@ -47,8 +47,12 @@ _WIT_SIGNATURES: dict[tuple[str, str], str] = {
     ("Stdio", "eprintln"): "eprintln: func(msg: string)",
 
     # Clock: monotonic + wall time. Phase 7A scope (Float type).
-    ("Clock", "now_secs"):      "now_secs: func() -> f64",
-    ("Clock", "now_monotonic"): "now_monotonic: func() -> f64",
+    # WIT identifiers are kebab-case; Capa keys keep snake_case so
+    # the rest of the toolchain (lowerer, host bridge) reads as
+    # source-level names. The Wasm import emitter rewrites the
+    # method-name component to kebab-case to match this WIT.
+    ("Clock", "now_secs"):      "now-secs: func() -> f64",
+    ("Clock", "now_monotonic"): "now-monotonic: func() -> f64",
 
     # Env: process environment + argv. Phase 7B scope (Option<String>).
     ("Env", "get"):  "get: func(name: string) -> option<string>",
@@ -65,7 +69,7 @@ _WIT_SIGNATURES: dict[tuple[str, str], str] = {
     # no runtime value (their methods are imports by name), so an
     # attenuation that returns another Fs has nothing to thread.
     # The analyzer's static check is what enforces the discipline.
-    ("Fs", "restrict_to"): "restrict_to: func(prefix: string)",
+    ("Fs", "restrict_to"): "restrict-to: func(prefix: string)",
 
     # Net entries follow once the request/response model is stable.
 
@@ -75,7 +79,7 @@ _WIT_SIGNATURES: dict[tuple[str, str], str] = {
     # Wasm import machinery treats them as a 9th capability so the
     # host bridge can ship two functions without bespoke plumbing.
     ("Json", "parse"):     "parse: func(s: string) -> result<i32, string>",
-    ("Json", "to_string"): "to_string: func(jv: i32) -> string",
+    ("Json", "to_string"): "to-string: func(jv: i32) -> string",
 }
 
 
@@ -84,6 +88,21 @@ _WIT_SIGNATURES: dict[tuple[str, str], str] = {
 # generation time; the Wasm emitter mirrors this so the contract
 # stays in sync.
 _KNOWN_CAPABILITIES = {"Stdio", "Clock", "Env", "Fs", "Json"}
+
+
+# Per-interface type declarations injected before the method
+# signatures. Some capabilities reference Capa-side record types
+# (``IoError``) that have no WIT primitive equivalent; we declare
+# them inline so the WIT spec is self-contained and the Component
+# Model linker can resolve every name.
+_INTERFACE_TYPE_PRELUDE: dict[str, list[str]] = {
+    "Fs": [
+        "record io-error {",
+        "  message: string,",
+        "  cause: string,",
+        "}",
+    ],
+}
 
 
 class UnsupportedCapabilityMethod(Exception):
@@ -155,6 +174,16 @@ def emit_wit(module: Module, world_name: str = "program") -> str:
             # alongside the Wasm emitter that handles them.
             continue
         lines.append(f"interface {cap.lower()} {{")
+        # Per-interface type prelude. WIT references inside this
+        # interface's method signatures must resolve to a type
+        # declared in the same interface (or imported from another).
+        # The Fs interface uses ``io-error`` as the result-error
+        # arm of ``read`` / ``write``; declare it inline so
+        # ``wasm-tools component embed`` can resolve the name.
+        for type_line in _INTERFACE_TYPE_PRELUDE.get(cap, []):
+            lines.append(f"  {type_line}")
+        if cap in _INTERFACE_TYPE_PRELUDE:
+            lines.append("")
         for method in sorted(used[cap]):
             key = (cap, method)
             if key not in _WIT_SIGNATURES:
