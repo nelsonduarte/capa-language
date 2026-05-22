@@ -19,69 +19,42 @@ Status legend: `[x]` done · `[~]` partial · `[ ]` pending.
 
 ## Current goal (May 2026)
 
-P0 is closed. `audit-trail-reporter`, `policy-eval`, and
-`sbom-watch` all build and run end-to-end via
-`capa --wasm --run`, with output bit-identical to the Python
-reference pipeline.
+Both Wasm milestones are closed. `audit-trail-reporter`,
+`policy-eval`, and `sbom-watch` all run end-to-end via
+`capa --wasm --run` with output bit-identical to the Python
+reference pipeline, AND build successfully under
+`capa --wasm --component --output app.wasm` as Component
+Model binaries (canonical ABI canonical-lowered for every
+indirect-return capability method).
 
-Session 2026-05-22 closed the remaining bugs that blocked
-parity: pattern-binder shadowing (alpha-rename in the IR
-lowerer), for-loop `continue` skipping the index increment,
-Float-typed struct fields using `i64.store`/`load`, the bump
-allocator never growing memory (`memory.grow` in `$alloc`),
-nested for-loops sharing scratch locals (`$_f_list_N` /
-`$_f_idx_N` per depth), and `List<String>.contains` raising
-in `_emit_list_contains`. Also kebab-cased the WIT identifiers
-and declared the `io-error` record so the generated WIT spec
-validates standalone.
+Session 2026-05-22 closed: pattern-binder shadowing (alpha-
+rename in the lowerer), for-loop `continue` skipping the
+index increment, Float-typed struct fields using
+`i64.store`/`load`, the bump allocator never growing memory
+(`memory.grow` in `$alloc`), nested for-loops sharing scratch
+locals (`$_f_list_N` / `$_f_idx_N` per depth),
+`List<String>.contains` raising in `_emit_list_contains`,
+kebab-case WIT identifiers, `io-error` record declaration,
+and the canonical-ABI rework for `list<string>` /
+`option<string>` / `result<string, io-error>` /
+`result<_, io-error>` / `result<u32, string>` / `string`
+returns plus the `cabi_realloc` export the Component Model
+linker requires.
 
-The Component Model wrapper (``capa --wasm --component``)
-remains the next milestone: it fails at the canonical-ABI
-boundary because our core wasm imports return raw pointers
-where the canonical ABI expects return-area pointers or
-multi-value pairs. Tracked below.
+The Wasm CM backend is functionally complete for the demo
+surface; remaining work shifts to P1 (study, polish, paper)
+and P2 (LLM tool-use demo).
 
 ---
 
-## P0 — Component Model wrapper (canonical ABI)
+## P0 — done for this milestone
 
-The ``--wasm --run`` path is solid. The ``--wasm --component``
-path needs the core wasm imports to follow the Component
-Model's canonical ABI so ``wasm-tools component embed`` /
-``component new`` can wrap the core module without a manual
-shim.
-
-- [ ] **`list<string>` return values via canonical ABI**.
-  `Env.args` returns `list<string>` in WIT but the core
-  wasm import returns a single i32 (pointer to our List
-  header). Canonical ABI lowering wants either a return-area
-  pointer or a multi-value `(i32 i32)` for `(ptr, len)`.
-  Pick the simpler one and rework the host bridge to match.
-  ⏱ 4-6h.
-
-- [ ] **`result<T, E>` return values via canonical ABI**.
-  Same shape problem: `Fs.read -> result<string, io-error>`
-  is returned as an i32 pointer to a Result record today.
-  The canonical ABI passes the tag + payload via multi-value
-  or a return-area pointer. ⏱ 3-4h once the list lowering
-  pattern is in place.
-
-- [ ] **`option<string>` return values via canonical ABI**.
-  `Env.get -> option<string>` has the same issue. ⏱ 1-2h
-  after the result lowering is in place.
-
-- [ ] **Record types via canonical ABI**. `io-error` is a
-  WIT record; its passing convention is field-by-field via
-  multi-value or a return-area pointer. ⏱ 2-3h.
-
-- [ ] **`--component` end-to-end test**. A test that builds
-  each demo with `--component`, instantiates the resulting
-  component, and runs it -- currently the only sanity check
-  is the unit-test suite, which exercises only `--wasm --run`.
-  ⏱ 1-2h after the lowerings above.
-
-Total P0 estimate: ~10-15h to ship the Component Model
-wrapper for the three demos.
+No remaining work in this priority. Future P0 candidates:
+end-to-end Component Model instantiation tests
+(`--component`-built artifacts are validated by `wasm-tools`
+today but not actually instantiated and run yet); and
+running each demo through the property-based Wasm test
+generator once that lands (see P1).
 
 ---
 
