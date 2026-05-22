@@ -88,6 +88,20 @@ class Lowerer:
         # module so ``_refine_pattern_binds`` can recover the payload
         # types for non-built-in sums.
         self._user_variants: dict[str, list[str]] = {}
+        # Lexical alpha-renaming. ``_locals`` is flat per function (a
+        # Wasm function declares each local exactly once with one
+        # type), but Capa source allows the same name to be bound in
+        # sibling scopes with incompatible types (e.g. ``for c in
+        # classified_txs`` then later ``Some(c) -> c`` in a match arm
+        # where ``c: String``). Without alpha-renaming those two ``c``
+        # bindings collide on a single Wasm local with conflicting
+        # shapes. ``_alias_stack`` is a list of frames; each frame
+        # maps source-level names to the renamed binding used in IR.
+        # A binding that shadows an outer scope gets a fresh suffix
+        # (``c__s17``) recorded in the current frame; ``_resolve_name``
+        # walks the stack innermost-first so identifier references
+        # inside the shadowing scope resolve to the fresh name.
+        self._alias_stack: list[dict[str, str]] = [{}]
 
     # ------------------------------------------------------------
     # Module / function entry points.
@@ -166,11 +180,13 @@ class Lowerer:
         outer_locals = self._locals
         outer_params = self._params
         outer_caps = self._cap_params
+        outer_alias = self._alias_stack
         self._counter = {"n": 0}
         self._instrs = []
         self._locals = {}
         self._params = {}
         self._cap_params = {}
+        self._alias_stack = [{}]
         value = self._lower_expr(c.value)
         # Final binding: ``name = value``. Reuse AssignConst so the
         # emitter can render it without a special case.
@@ -184,6 +200,7 @@ class Lowerer:
         self._locals = outer_locals
         self._params = outer_params
         self._cap_params = outer_caps
+        self._alias_stack = outer_alias
         return ConstDecl(name=c.name, ty=ty, body=body)
 
     def _lower_trait_decl(self, t: A.TraitDecl) -> TraitDecl:
@@ -236,6 +253,62 @@ class Lowerer:
         ]
         return SumDecl(name=t.name, variants=variants)
 
+    # ------------------------------------------------------------
+    # Lexical scope + alpha-renaming helpers.
+    # ------------------------------------------------------------
+
+    def _enter_scope(self) -> None:
+        self._alias_stack.append({})
+
+    def _exit_scope(self) -> None:
+        self._alias_stack.pop()
+
+    def _resolve_name(self, name: str) -> str:
+        """Resolve a source-level identifier to its IR binding name,
+        walking the alias stack innermost-first. Returns the original
+        name when no alias is recorded (parameters, module-level
+        identifiers, fresh ANF temporaries)."""
+        for frame in reversed(self._alias_stack):
+            if name in frame:
+                return frame[name]
+        return name
+
+    def _bind_local(self, name: str, ty: str) -> str:
+        """Bind ``name`` with type ``ty`` in the current scope.
+
+        Three cases:
+        - Same-scope rebinding (name already in current frame): reuse
+          the same binding name; refine the recorded type when the new
+          one is more specific than the existing one. Covers the
+          ``_refine_pattern_binds`` -> ``_lower_pattern`` IdentPat
+          handoff where two binding writes target the same scope.
+        - Shadowing (name lives in ``_params`` or in ``_locals`` from
+          an outer/sibling scope): generate a fresh ``name__sN`` binding
+          and record the alias in the current frame.
+        - Fresh binding: install ``name`` directly.
+
+        Returns the binding name to use in the IR."""
+        cur_frame = self._alias_stack[-1]
+        if name in cur_frame:
+            bound = cur_frame[name]
+            existing = self._locals.get(bound, "Unknown")
+            if existing == "Unknown" and ty != "Unknown":
+                self._locals[bound] = ty
+            return bound
+        if name in self._params or name in self._locals:
+            fresh = self._fresh_shadow(name)
+            cur_frame[name] = fresh
+            self._locals[fresh] = ty
+            return fresh
+        cur_frame[name] = name
+        self._locals[name] = ty
+        return name
+
+    def _fresh_shadow(self, name: str) -> str:
+        n = self._counter["n"]
+        self._counter["n"] = n + 1
+        return f"{name}__s{n}"
+
     def lower_function(self, fn: A.FunDecl) -> Function:
         # Reset per-function state.
         self._counter = {"n": 0}
@@ -243,6 +316,7 @@ class Lowerer:
         self._locals = {}
         self._params = {}
         self._cap_params = {}
+        self._alias_stack = [{}]
 
         params: list[Param] = []
         for p in fn.params:
@@ -308,7 +382,6 @@ class Lowerer:
         # lowering with an exhaustiveness check the analyzer has
         # already done).
         if isinstance(s.pattern, A.IdentPat):
-            name = s.pattern.name
             value = self._lower_expr(s.value)
             # Prefer the explicit type annotation when present and
             # concrete (see _lower_var for the rationale -- the
@@ -320,8 +393,8 @@ class Lowerer:
                 ann_ty if ann_ty and ann_ty != "Unknown"
                 else value.ty
             )
-            self._locals[name] = local_ty
-            self._instrs.append(AssignConst(dst=name, src=value))
+            bound = self._bind_local(s.pattern.name, local_ty)
+            self._instrs.append(AssignConst(dst=bound, src=value))
             return
         if isinstance(s.pattern, A.TuplePat):
             value = self._lower_expr(s.value)
@@ -341,9 +414,9 @@ class Lowerer:
                 # emitter renders ``a = pair[0]`` etc.
                 idx_v = Value(kind="lit_int", literal=idx, ty="Int")
                 bind_ty = elem_types[idx] if idx < len(elem_types) else "Unknown"
-                self._locals[sub.name] = bind_ty
+                bound = self._bind_local(sub.name, bind_ty)
                 self._instrs.append(
-                    Index(dst=sub.name, receiver=value, index=idx_v)
+                    Index(dst=bound, receiver=value, index=idx_v)
                 )
             return
         raise UnsupportedInIR(
@@ -372,8 +445,8 @@ class Lowerer:
             ann_ty if ann_ty and ann_ty != "Unknown"
             else value.ty
         )
-        self._locals[s.name] = local_ty
-        self._instrs.append(AssignConst(dst=s.name, src=value))
+        bound = self._bind_local(s.name, local_ty)
+        self._instrs.append(AssignConst(dst=bound, src=value))
 
     def _lower_assign(self, s: A.AssignStmt) -> None:
         # Plain ``x = expr`` lowers directly; compound assignments
@@ -384,9 +457,10 @@ class Lowerer:
             raise UnsupportedInIR(
                 f"assignment target {type(s.target).__name__}"
             )
+        target = self._resolve_name(s.target.name)
         if s.op == "=":
             value = self._lower_expr(s.value)
-            self._instrs.append(Reassign(dst=s.target.name, src=value))
+            self._instrs.append(Reassign(dst=target, src=value))
             return
         compound_ops = {"+=": "+", "-=": "-", "*=": "*", "/=": "/", "%=": "%"}
         if s.op not in compound_ops:
@@ -396,19 +470,18 @@ class Lowerer:
         # Compound: lower the current ident value, the RHS value, then
         # a BinOp, then a Reassign.
         op = compound_ops[s.op]
-        cur_ty = self._params.get(s.target.name) or self._locals.get(
-            s.target.name, "Unknown",
-        )
-        left = Value(kind="local", name=s.target.name, ty=cur_ty)
-        if s.target.name in self._params:
-            left = Value(kind="param", name=s.target.name, ty=cur_ty)
+        cur_ty = self._params.get(target) or self._locals.get(target, "Unknown")
+        if target in self._params:
+            left = Value(kind="param", name=target, ty=cur_ty)
+        else:
+            left = Value(kind="local", name=target, ty=cur_ty)
         right = self._lower_expr(s.value)
         dst = fresh_local(self._counter)
         self._locals[dst] = cur_ty
         self._instrs.append(BinOp(dst=dst, op=op, left=left, right=right))
         self._instrs.append(
             Reassign(
-                dst=s.target.name,
+                dst=target,
                 src=Value(kind="local", name=dst, ty=cur_ty),
             )
         )
@@ -432,7 +505,9 @@ class Lowerer:
 
         # Then body.
         self._instrs = []
+        self._enter_scope()
         self._lower_block(s.then_block)
+        self._exit_scope()
         then_body = self._instrs
 
         # Else chain: fold elifs into nested ifs, terminating with
@@ -452,7 +527,9 @@ class Lowerer:
                 return []
             buf = self._instrs
             self._instrs = []
+            self._enter_scope()
             self._lower_block(else_block)
+            self._exit_scope()
             out = self._instrs
             self._instrs = buf
             return out
@@ -469,7 +546,9 @@ class Lowerer:
         cond_setup = self._instrs
 
         self._instrs = []
+        self._enter_scope()
         self._lower_block(body)
+        self._exit_scope()
         then_body = self._instrs
 
         nested_else = self._fold_elif_chain(rest, else_block)
@@ -489,7 +568,9 @@ class Lowerer:
 
         # Body.
         self._instrs = []
+        self._enter_scope()
         self._lower_block(s.body)
+        self._exit_scope()
         body = self._instrs
 
         self._instrs = outer
@@ -513,14 +594,16 @@ class Lowerer:
             bind_ty = iter_value.ty[5:-1]
         elif iter_value.ty.startswith("Range"):
             bind_ty = "Int"
-        self._locals[s.pattern.name] = bind_ty
+        self._enter_scope()
+        bound = self._bind_local(s.pattern.name, bind_ty)
         outer = self._instrs
         self._instrs = []
         self._lower_block(s.body)
         body = self._instrs
         self._instrs = outer
+        self._exit_scope()
         self._instrs.append(
-            For(name=s.pattern.name, iter=iter_value, body=body)
+            For(name=bound, iter=iter_value, body=body)
         )
 
     def _lower_return(self, s: A.ReturnStmt) -> None:
@@ -567,6 +650,7 @@ class Lowerer:
                 # inline-expression emitter path, not yet
                 # implemented; defer.
                 raise UnsupportedInIR("match arm with guard")
+            self._enter_scope()
             self._refine_pattern_binds(arm.pattern, scrut.ty)
             pat = self._lower_pattern(arm.pattern)
             outer = self._instrs
@@ -579,6 +663,7 @@ class Lowerer:
                 self._lower_expr_stmt(A.ExprStmt(pos=m.pos, expr=arm.body))
             body = self._instrs
             self._instrs = outer
+            self._exit_scope()
             arms.append(MatchArm(pattern=pat, body=body, guard=None))
         self._instrs.append(Match(scrutinee=scrut, arms=arms, result_dst=None))
 
@@ -597,7 +682,7 @@ class Lowerer:
             return
         for sub, ty in zip(p.payloads, payload_tys):
             if isinstance(sub, A.IdentPat):
-                self._locals[sub.name] = ty
+                self._bind_local(sub.name, ty)
             else:
                 # Nested patterns share the same refinement rule.
                 self._refine_pattern_binds(sub, ty)
@@ -636,14 +721,14 @@ class Lowerer:
             return PatWildcard()
         if isinstance(p, A.IdentPat):
             # Track the binding name as a local in the arm scope so
-            # that the arm body can reference it. ``setdefault``
+            # that the arm body can reference it. ``_bind_local``
             # preserves any refinement that ``_refine_pattern_binds``
-            # may have written before us (e.g. ``Some(m)`` against
-            # ``Option<Map<...>>`` -> m: Map<...>); without
-            # ``setdefault`` we would clobber that with "Unknown" and
-            # lose receiver-type dispatch.
-            self._locals.setdefault(p.name, "Unknown")
-            return PatIdent(name=p.name)
+            # may have written before us (same-frame rebinding keeps
+            # the more specific type); when the name shadows an outer
+            # binding it gets a fresh alpha-renamed identifier so the
+            # two Wasm locals don't collide on incompatible shapes.
+            bound = self._bind_local(p.name, "Unknown")
+            return PatIdent(name=bound)
         if isinstance(p, A.LiteralPat):
             return self._lower_literal_pattern(p)
         if isinstance(p, A.VariantPat):
@@ -779,6 +864,7 @@ class Lowerer:
         for arm in m.arms:
             if arm.guard is not None:
                 raise UnsupportedInIR("match arm with guard")
+            self._enter_scope()
             self._refine_pattern_binds(arm.pattern, scrut.ty)
             pat = self._lower_pattern(arm.pattern)
             outer = self._instrs
@@ -808,6 +894,7 @@ class Lowerer:
                 self._instrs.append(AssignConst(dst=result_dst, src=v))
             body = self._instrs
             self._instrs = outer
+            self._exit_scope()
             arms.append(MatchArm(pattern=pat, body=body, guard=None))
         self._instrs.append(
             Match(scrutinee=scrut, arms=arms, result_dst=result_dst)
@@ -849,11 +936,13 @@ class Lowerer:
         # with explicit ``return`` (the analyzer guarantees a Unit
         # return for fall-off cases, which our emitter matches via the
         # natural fall-through).
+        self._enter_scope()
         if isinstance(e.body, A_local.Block):
             self._lower_block(e.body)
         else:
             v = self._lower_expr(e.body)
             self._instrs.append(Return(value=v))
+        self._exit_scope()
         body = self._instrs
         # Restore outer state and emit the MakeLambda instruction.
         self._instrs = outer_instrs
@@ -899,11 +988,20 @@ class Lowerer:
         return Value(kind="local", name=dst, ty=result_ty)
 
     def _lower_ident(self, e: A.Ident) -> Value:
+        # Parameters take precedence over local aliases so a lambda
+        # parameter ``|x| ...`` correctly shadows an outer local ``x``
+        # captured into the lambda body.
         if e.name in self._params:
-            ty = self._params[e.name]
-            return Value(kind="param", name=e.name, ty=ty)
-        if e.name in self._locals:
-            return Value(kind="local", name=e.name, ty=self._locals[e.name])
+            return Value(kind="param", name=e.name, ty=self._params[e.name])
+        # Resolve through the alpha-renaming alias stack: a reference
+        # inside a shadowing scope must point at the fresh binding,
+        # not at the outer-scope same-named local. ``_resolve_name``
+        # returns the original name when no shadow is active.
+        resolved = self._resolve_name(e.name)
+        if resolved in self._locals:
+            return Value(
+                kind="local", name=resolved, ty=self._locals[resolved],
+            )
         if e.name in self._module_names:
             # A reference to a top-level constant or a function name
             # used as a value (e.g. higher-order use). Treated as a

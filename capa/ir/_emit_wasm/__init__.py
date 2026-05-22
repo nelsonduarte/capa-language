@@ -1856,7 +1856,13 @@ class WasmEmitter(
                 continue
             self._write(f"local.get ${instr.dst}")
             self._push_value(fval)
-            self._write(f"{_store_op_for_size(size)} offset={offset}")
+            if field_ty == "Float":
+                # f64 field stays as a native f64 slot; using
+                # ``i64.store`` here would trip the Wasm validator
+                # because ``_push_value`` left an f64 on the stack.
+                self._write(f"f64.store offset={offset}")
+            else:
+                self._write(f"{_store_op_for_size(size)} offset={offset}")
 
     def _emit_field_access(self, instr: FieldAccess) -> None:
         """Load a struct field by offset. The receiver is an i32
@@ -1911,7 +1917,11 @@ class WasmEmitter(
             self._write(f"local.set ${instr.dst}_len")
             return
         self._push_value(instr.receiver)
-        self._write(f"{_load_op_for_size(size)} offset={offset}")
+        if field_ty == "Float":
+            # f64 slot: load the native f64, not an i64 reinterp.
+            self._write(f"f64.load offset={offset}")
+        else:
+            self._write(f"{_load_op_for_size(size)} offset={offset}")
         self._write(f"local.set ${instr.dst}")
 
     def _size_of(self, capa_ty: str) -> int:

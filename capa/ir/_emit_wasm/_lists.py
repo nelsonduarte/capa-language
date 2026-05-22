@@ -512,11 +512,21 @@ class _ListEmissionMixin:
         self._write(f"local.set ${list_local}")
         self._write(f"i32.const 0")
         self._write(f"local.set ${idx_local}")
-        # block/loop encoding (same shape as while):
+        # block/loop encoding. A ``while`` loop's ``continue`` jumps
+        # back to the loop top and re-evaluates the condition, but a
+        # ``for`` loop's body has its own index increment that must
+        # still run on continue -- otherwise an empty-line skip with
+        # ``if line.is_empty(): continue`` reuses the same index
+        # forever and the program spins. Wrap the body in an inner
+        # ``block`` so the ``continue`` label is the *end* of that
+        # block; control falls through to the increment + back-branch
+        # naturally after the body or after a ``br`` to the body
+        # block's exit.
         self._block_counter += 1
         loop_label = f"$F{self._block_counter}_loop"
         exit_label = f"$F{self._block_counter}_exit"
-        self._loop_labels.append((loop_label, exit_label))
+        cont_label = f"$F{self._block_counter}_cont"
+        self._loop_labels.append((cont_label, exit_label))
         self._write(f"block {exit_label}")
         self._indent += 1
         self._write(f"loop {loop_label}")
@@ -551,10 +561,16 @@ class _ListEmissionMixin:
             self._write(f"local.set ${instr.name}_len")
         else:
             self._write(f"local.set ${instr.name}")
-        # Body.
+        # Body wrapped in an inner block whose end is the ``continue``
+        # target. Falling off the body or branching to ``cont_label``
+        # both arrive at the increment site below.
+        self._write(f"block {cont_label}")
+        self._indent += 1
         for sub in instr.body:
             self._emit_instr(sub)
-        # Increment idx and continue.
+        self._indent -= 1
+        self._write("end")
+        # Increment idx and back-branch.
         self._write(f"local.get ${idx_local}")
         self._write("i32.const 1")
         self._write("i32.add")
