@@ -271,6 +271,14 @@ class _MatchEmissionMixin:
             self._write(f"f64.load offset={offset}")
             self._write(f"local.set ${sub_pat.name}")
             return
+        if bind_ty == "Bool" and size == 8:
+            # Bool payloads live i64-extended in the uniform 8-byte
+            # slot; narrow back to i32 for the local.
+            self._write(f"local.get ${scrut_local_name}")
+            self._write("i64.load offset=" + str(offset))
+            self._write("i32.wrap_i64")
+            self._write(f"local.set ${sub_pat.name}")
+            return
         self._write(f"local.get ${scrut_local_name}")
         self._write(f"{_load_op_for_size(size)} offset={offset}")
         self._write(f"local.set ${sub_pat.name}")
@@ -412,6 +420,12 @@ class _MatchEmissionMixin:
                         # Float payload stored as f64 in the slot.
                         self._write(f"local.get ${scrut_local}")
                         self._write(f"f64.load offset={offset}")
+                        self._write(f"local.set ${sub_pat.name}")
+                    elif bind_ty == "Bool" and size == 8:
+                        # Bool stored i64-extended; narrow back.
+                        self._write(f"local.get ${scrut_local}")
+                        self._write(f"i64.load offset={offset}")
+                        self._write("i32.wrap_i64")
                         self._write(f"local.set ${sub_pat.name}")
                     else:
                         self._write(f"local.get ${scrut_local}")

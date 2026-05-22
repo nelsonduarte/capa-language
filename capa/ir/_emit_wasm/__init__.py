@@ -344,6 +344,12 @@ class WasmEmitter(
                 self._emit_itoa_function()
                 if self._uses_float_format(module):
                     self._emit_ftoa_function()
+            # parse_int / parse_float are built-in free functions
+            # routed to runtime helpers. Emit only when used.
+            if self._uses_parse_int(module):
+                self._emit_parse_int_function()
+            if self._uses_parse_float(module):
+                self._emit_parse_float_function()
         # Closure infrastructure: function table + (type) decls +
         # each lifted lambda is a top-level function below.
         if self._lifted_lambdas:
@@ -493,6 +499,43 @@ class WasmEmitter(
                 return False
             if visit(fn.body):
                 return True
+        return False
+
+    def _uses_parse_int(self, module: Module) -> bool:
+        return self._uses_builtin_free_fn(module, "parse_int")
+
+    def _uses_parse_float(self, module: Module) -> bool:
+        return self._uses_builtin_free_fn(module, "parse_float")
+
+    def _uses_builtin_free_fn(self, module: Module, name: str) -> bool:
+        """True if any function or impl-method body Calls
+        ``name``. Used to gate emission of optional runtime
+        helpers like ``$parse_int`` / ``$parse_float``."""
+        def visit(instrs: list[Instr]) -> bool:
+            for instr in instrs:
+                if isinstance(instr, Call) and instr.callee_name == name:
+                    return True
+                if isinstance(instr, If):
+                    if visit(instr.then_body) or visit(instr.else_body):
+                        return True
+                if isinstance(instr, While):
+                    if visit(instr.cond_setup) or visit(instr.body):
+                        return True
+                if isinstance(instr, For):
+                    if visit(instr.body):
+                        return True
+                if isinstance(instr, Match):
+                    for arm in instr.arms:
+                        if visit(arm.body):
+                            return True
+            return False
+        for fn in module.functions:
+            if visit(fn.body):
+                return True
+        for impl in module.impls:
+            for method in impl.methods:
+                if visit(method.body):
+                    return True
         return False
 
     def _uses_format_str(self, module: Module) -> bool:
@@ -870,6 +913,7 @@ class WasmEmitter(
         has_json_parse = False
         has_list_string = False
         has_optres_method = False
+        has_list_method = False
 
         def value_uses_variant_ctor(v: Value) -> bool:
             return v is not None and v.kind == "variant_ctor"
@@ -880,6 +924,7 @@ class WasmEmitter(
             nonlocal has_format_str, has_make_lambda, has_list_hof
             nonlocal has_json_method, has_json_parse
             nonlocal has_list_string, has_optres_method
+            nonlocal has_list_method
             for instr in instrs:
                 if isinstance(instr, Match):
                     has_match = True
@@ -973,6 +1018,12 @@ class WasmEmitter(
                         has_map = True
                     if recv_ty == "String":
                         has_string_method = True
+                    if recv_ty.startswith("List"):
+                        # List method calls (push / contains / get
+                        # / length / is_empty / ...) reuse $_m_scrut
+                        # and $_m_tag as their list-pointer and
+                        # length scratch.
+                        has_list_method = True
                     if instr.method == "contains" and recv_ty.startswith("List"):
                         elem_ty = _element_type_of_list(recv_ty)
                         if self._size_of(elem_ty) == 8:
@@ -1083,7 +1134,7 @@ class WasmEmitter(
         # loops (they double as iter-pointer and index registers).
         # ``_alloc_tmp`` is used by variant-ctor pushes and by
         # MakeList for the data-array base pointer.
-        if has_match or has_for:
+        if has_match or has_for or has_list_method:
             out["_m_scrut"] = "i32"
             out["_m_tag"] = "i32"
         if has_for:
@@ -1546,6 +1597,23 @@ class WasmEmitter(
             return
         if instr.callee_name == "to_json":
             self._emit_call_host_json_to_string(instr)
+            return
+        # parse_int / parse_float route to runtime helpers
+        # ($parse_int / $parse_float). The arg is a String pushed
+        # as (ptr, len); the return is an Option<Int> / Option<Float>
+        # pointer.
+        if instr.callee_name in ("parse_int", "parse_float") \
+                and len(instr.args) == 1:
+            arg = instr.args[0]
+            if arg.kind == "lit_str":
+                offset, length = self._intern_string(arg.literal)
+                self._write(f"i32.const {offset}")
+                self._write(f"i32.const {length}")
+            else:
+                self._push_string_value_as_ptr_len(arg)
+            self._write(f"call ${instr.callee_name}")
+            if instr.dst is not None:
+                self._write(f"local.set ${instr.dst}")
             return
         # Numeric conversion intrinsics. These lower to one Wasm
         # instruction each; faster (and simpler) than a host bridge.

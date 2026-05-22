@@ -190,11 +190,14 @@ class _RuntimeHelpersMixin:
         self._write("local.get $neg")
         self._write("if")
         self._indent += 1
+        # Write '-' at buf[31 - i] -- the slot just before the
+        # lowest-order digit written at buf[32 - i]. The returned
+        # slice is buf[32 - (i+1)..32] = buf[31 - i..32], so this
+        # position lies inside the result. Without the correction
+        # the '-' lands at buf[30 - i], outside the slice.
         self._write("local.get $buf")
         self._write("i32.const 31")
         self._write("local.get $i")
-        self._write("i32.sub")
-        self._write("i32.const 1")
         self._write("i32.sub")
         self._write("i32.add")
         self._write("i32.const 45")    # '-'
@@ -400,6 +403,376 @@ class _RuntimeHelpersMixin:
         self._write("local.get $write_pos")
         self._write("i32.const 6")
         self._write("i32.add")
+        self._indent -= 1
+        self._write(")")
+
+    def _emit_parse_int_function(self) -> None:
+        """Emit ``$parse_int(ptr: i32, len: i32) -> i32`` returning
+        a freshly-allocated ``Option<Int>`` pointer.
+
+        Algorithm: linear scan, optional leading '-' or '+',
+        accumulate digits in i64. On any non-digit (or empty
+        input), return None. Otherwise return Some(value).
+
+        Builtin name in source is ``parse_int(s: String) ->
+        Option<Int>``; the user-call interceptor routes the bare
+        ``parse_int`` to a ``call $parse_int`` against this
+        function."""
+        self._write(
+            "(func $parse_int (param $ptr i32) (param $len i32) "
+            "(result i32)"
+        )
+        self._indent += 1
+        self._write("(local $i i32)")
+        self._write("(local $byte i32)")
+        self._write("(local $acc i64)")
+        self._write("(local $neg i32)")
+        self._write("(local $any i32)")
+        self._write("(local $result i32)")
+        # alloc Option<Int> result up front (16 bytes).
+        self._write("i32.const 16")
+        self._write("call $alloc")
+        self._write("local.set $result")
+        # Default to None (tag = 1). Filled in below on success.
+        self._write("local.get $result")
+        self._write("i32.const 1")
+        self._write("i32.store")
+        # Empty string -> None (already default).
+        self._write("local.get $len")
+        self._write("i32.eqz")
+        self._write("if")
+        self._indent += 1
+        self._write("local.get $result")
+        self._write("return")
+        self._indent -= 1
+        self._write("end")
+        # Check sign byte.
+        self._write("local.get $ptr")
+        self._write("i32.load8_u")
+        self._write("local.set $byte")
+        self._write("local.get $byte")
+        self._write("i32.const 45")  # '-'
+        self._write("i32.eq")
+        self._write("if")
+        self._indent += 1
+        self._write("i32.const 1")
+        self._write("local.set $neg")
+        self._write("i32.const 1")
+        self._write("local.set $i")
+        self._indent -= 1
+        self._write("else")
+        self._indent += 1
+        self._write("local.get $byte")
+        self._write("i32.const 43")  # '+'
+        self._write("i32.eq")
+        self._write("if")
+        self._indent += 1
+        self._write("i32.const 1")
+        self._write("local.set $i")
+        self._indent -= 1
+        self._write("end")
+        self._indent -= 1
+        self._write("end")
+        # Loop: i in [i, len). Reject non-digit; accumulate.
+        self._block_counter += 1
+        loop = f"$pi{self._block_counter}_loop"
+        exit_ = f"$pi{self._block_counter}_exit"
+        self._write(f"block {exit_}")
+        self._indent += 1
+        self._write(f"loop {loop}")
+        self._indent += 1
+        # if i >= len: break
+        self._write("local.get $i")
+        self._write("local.get $len")
+        self._write("i32.ge_s")
+        self._write(f"br_if {exit_}")
+        # byte = ptr[i]
+        self._write("local.get $ptr")
+        self._write("local.get $i")
+        self._write("i32.add")
+        self._write("i32.load8_u")
+        self._write("local.set $byte")
+        # if byte < '0' or byte > '9': return None.
+        self._write("local.get $byte")
+        self._write("i32.const 48")
+        self._write("i32.lt_u")
+        self._write("local.get $byte")
+        self._write("i32.const 57")
+        self._write("i32.gt_u")
+        self._write("i32.or")
+        self._write("if")
+        self._indent += 1
+        self._write("local.get $result")
+        self._write("return")
+        self._indent -= 1
+        self._write("end")
+        # acc = acc * 10 + (byte - '0')
+        self._write("local.get $acc")
+        self._write("i64.const 10")
+        self._write("i64.mul")
+        self._write("local.get $byte")
+        self._write("i32.const 48")
+        self._write("i32.sub")
+        self._write("i64.extend_i32_u")
+        self._write("i64.add")
+        self._write("local.set $acc")
+        # any = 1; i++
+        self._write("i32.const 1")
+        self._write("local.set $any")
+        self._write("local.get $i")
+        self._write("i32.const 1")
+        self._write("i32.add")
+        self._write("local.set $i")
+        self._write(f"br {loop}")
+        self._indent -= 1
+        self._write("end")
+        self._indent -= 1
+        self._write("end")
+        # If no digits seen at all -> None (sign-only input).
+        self._write("local.get $any")
+        self._write("i32.eqz")
+        self._write("if")
+        self._indent += 1
+        self._write("local.get $result")
+        self._write("return")
+        self._indent -= 1
+        self._write("end")
+        # Apply sign.
+        self._write("local.get $neg")
+        self._write("if")
+        self._indent += 1
+        self._write("i64.const 0")
+        self._write("local.get $acc")
+        self._write("i64.sub")
+        self._write("local.set $acc")
+        self._indent -= 1
+        self._write("end")
+        # Some(acc): tag=0, payload i64 at offset 8.
+        self._write("local.get $result")
+        self._write("i32.const 0")
+        self._write("i32.store")
+        self._write("local.get $result")
+        self._write("local.get $acc")
+        self._write("i64.store offset=8")
+        self._write("local.get $result")
+        self._indent -= 1
+        self._write(")")
+
+    def _emit_parse_float_function(self) -> None:
+        """Emit ``$parse_float(ptr: i32, len: i32) -> i32``
+        returning a freshly-allocated ``Option<Float>`` pointer.
+
+        Algorithm: scan integer part, then optional '.' + fraction.
+        Accumulate as f64. Reject malformed input (returns None).
+        Doesn't handle scientific notation or hex; the demos that
+        need it stick to the canonical ``-12.345`` shape."""
+        self._write(
+            "(func $parse_float (param $ptr i32) (param $len i32) "
+            "(result i32)"
+        )
+        self._indent += 1
+        self._write("(local $i i32)")
+        self._write("(local $byte i32)")
+        self._write("(local $val f64)")
+        self._write("(local $frac f64)")
+        self._write("(local $neg i32)")
+        self._write("(local $any i32)")
+        self._write("(local $result i32)")
+        self._write("i32.const 16")
+        self._write("call $alloc")
+        self._write("local.set $result")
+        self._write("local.get $result")
+        self._write("i32.const 1")
+        self._write("i32.store")
+        # Empty -> None.
+        self._write("local.get $len")
+        self._write("i32.eqz")
+        self._write("if")
+        self._indent += 1
+        self._write("local.get $result")
+        self._write("return")
+        self._indent -= 1
+        self._write("end")
+        # Sign.
+        self._write("local.get $ptr")
+        self._write("i32.load8_u")
+        self._write("local.set $byte")
+        self._write("local.get $byte")
+        self._write("i32.const 45")
+        self._write("i32.eq")
+        self._write("if")
+        self._indent += 1
+        self._write("i32.const 1")
+        self._write("local.set $neg")
+        self._write("i32.const 1")
+        self._write("local.set $i")
+        self._indent -= 1
+        self._write("else")
+        self._indent += 1
+        self._write("local.get $byte")
+        self._write("i32.const 43")
+        self._write("i32.eq")
+        self._write("if")
+        self._indent += 1
+        self._write("i32.const 1")
+        self._write("local.set $i")
+        self._indent -= 1
+        self._write("end")
+        self._indent -= 1
+        self._write("end")
+        # Integer part.
+        self._block_counter += 1
+        iloop = f"$pf{self._block_counter}_iloop"
+        iexit = f"$pf{self._block_counter}_iexit"
+        self._write(f"block {iexit}")
+        self._indent += 1
+        self._write(f"loop {iloop}")
+        self._indent += 1
+        self._write("local.get $i")
+        self._write("local.get $len")
+        self._write("i32.ge_s")
+        self._write(f"br_if {iexit}")
+        self._write("local.get $ptr")
+        self._write("local.get $i")
+        self._write("i32.add")
+        self._write("i32.load8_u")
+        self._write("local.set $byte")
+        # Decimal point -> break to fraction.
+        self._write("local.get $byte")
+        self._write("i32.const 46")  # '.'
+        self._write("i32.eq")
+        self._write(f"br_if {iexit}")
+        # Non-digit and not '.': reject.
+        self._write("local.get $byte")
+        self._write("i32.const 48")
+        self._write("i32.lt_u")
+        self._write("local.get $byte")
+        self._write("i32.const 57")
+        self._write("i32.gt_u")
+        self._write("i32.or")
+        self._write("if")
+        self._indent += 1
+        self._write("local.get $result")
+        self._write("return")
+        self._indent -= 1
+        self._write("end")
+        self._write("local.get $val")
+        self._write("f64.const 10")
+        self._write("f64.mul")
+        self._write("local.get $byte")
+        self._write("i32.const 48")
+        self._write("i32.sub")
+        self._write("f64.convert_i32_u")
+        self._write("f64.add")
+        self._write("local.set $val")
+        self._write("i32.const 1")
+        self._write("local.set $any")
+        self._write("local.get $i")
+        self._write("i32.const 1")
+        self._write("i32.add")
+        self._write("local.set $i")
+        self._write(f"br {iloop}")
+        self._indent -= 1
+        self._write("end")
+        self._indent -= 1
+        self._write("end")
+        # If we stopped at '.', consume it and parse fraction.
+        self._write("local.get $i")
+        self._write("local.get $len")
+        self._write("i32.lt_s")
+        self._write("if")
+        self._indent += 1
+        # We're at '.'; advance past it.
+        self._write("local.get $i")
+        self._write("i32.const 1")
+        self._write("i32.add")
+        self._write("local.set $i")
+        # frac multiplier starts at 0.1.
+        self._write("f64.const 0.1")
+        self._write("local.set $frac")
+        self._block_counter += 1
+        floop = f"$pf{self._block_counter}_floop"
+        fexit = f"$pf{self._block_counter}_fexit"
+        self._write(f"block {fexit}")
+        self._indent += 1
+        self._write(f"loop {floop}")
+        self._indent += 1
+        self._write("local.get $i")
+        self._write("local.get $len")
+        self._write("i32.ge_s")
+        self._write(f"br_if {fexit}")
+        self._write("local.get $ptr")
+        self._write("local.get $i")
+        self._write("i32.add")
+        self._write("i32.load8_u")
+        self._write("local.set $byte")
+        self._write("local.get $byte")
+        self._write("i32.const 48")
+        self._write("i32.lt_u")
+        self._write("local.get $byte")
+        self._write("i32.const 57")
+        self._write("i32.gt_u")
+        self._write("i32.or")
+        self._write("if")
+        self._indent += 1
+        self._write("local.get $result")
+        self._write("return")
+        self._indent -= 1
+        self._write("end")
+        # val += digit * frac
+        self._write("local.get $byte")
+        self._write("i32.const 48")
+        self._write("i32.sub")
+        self._write("f64.convert_i32_u")
+        self._write("local.get $frac")
+        self._write("f64.mul")
+        self._write("local.get $val")
+        self._write("f64.add")
+        self._write("local.set $val")
+        # frac /= 10
+        self._write("local.get $frac")
+        self._write("f64.const 10")
+        self._write("f64.div")
+        self._write("local.set $frac")
+        self._write("i32.const 1")
+        self._write("local.set $any")
+        self._write("local.get $i")
+        self._write("i32.const 1")
+        self._write("i32.add")
+        self._write("local.set $i")
+        self._write(f"br {floop}")
+        self._indent -= 1
+        self._write("end")
+        self._indent -= 1
+        self._write("end")
+        self._indent -= 1
+        self._write("end")
+        # No digits at all -> None.
+        self._write("local.get $any")
+        self._write("i32.eqz")
+        self._write("if")
+        self._indent += 1
+        self._write("local.get $result")
+        self._write("return")
+        self._indent -= 1
+        self._write("end")
+        # Apply sign.
+        self._write("local.get $neg")
+        self._write("if")
+        self._indent += 1
+        self._write("local.get $val")
+        self._write("f64.neg")
+        self._write("local.set $val")
+        self._indent -= 1
+        self._write("end")
+        # Some(val).
+        self._write("local.get $result")
+        self._write("i32.const 0")
+        self._write("i32.store")
+        self._write("local.get $result")
+        self._write("local.get $val")
+        self._write("f64.store offset=8")
+        self._write("local.get $result")
         self._indent -= 1
         self._write(")")
 
