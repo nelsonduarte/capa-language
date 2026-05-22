@@ -432,6 +432,18 @@ class WasmEmitter(
                                     or cur.startswith("?")):
                                 if payload_ty and payload_ty != "Any":
                                     fn.locals[sub_pat.name] = payload_ty
+                # String-scrutinee match: PatIdent arm binds the
+                # whole scrutinee value. The emitter routes binds
+                # to ${name}_ptr / ${name}_len, so fn.locals must
+                # record "String" for the local-decl sweep to
+                # allocate the pair.
+                if (instr.scrutinee.ty or "") == "String":
+                    for arm in instr.arms:
+                        if isinstance(arm.pattern, PatIdent):
+                            cur = fn.locals.get(arm.pattern.name, "")
+                            if (cur in ("", "Unknown", "?")
+                                    or cur.startswith("?")):
+                                fn.locals[arm.pattern.name] = "String"
                 for arm in instr.arms:
                     self._refine_pattern_binder_types(fn, arm.body)
             elif isinstance(instr, If):
@@ -904,6 +916,18 @@ class WasmEmitter(
                                         or cur == "Any"):
                                     if payload_ty and payload_ty != "Any":
                                         fn.locals[sub_pat.name] = payload_ty
+                    # String-scrutinee match: PatIdent arm binds the
+                    # whole scrutinee to a String local. The emitter
+                    # writes to ${name}_ptr / ${name}_len; refine
+                    # fn.locals so the local-decl sweep allocates the
+                    # pair instead of a default-i64 ``$name``.
+                    if (instr.scrutinee.ty or "") == "String":
+                        for arm in instr.arms:
+                            if isinstance(arm.pattern, PatIdent):
+                                cur = fn.locals.get(arm.pattern.name, "")
+                                if (cur in ("", "Unknown", "?")
+                                        or cur.startswith("?")):
+                                    fn.locals[arm.pattern.name] = "String"
                     for arm in instr.arms:
                         visit(arm.body)
                 if isinstance(instr, MakeList):
@@ -929,6 +953,20 @@ class WasmEmitter(
                     visit(instr.body)
                 if isinstance(instr, FormatStr):
                     has_format_str = True
+                if isinstance(instr, TryUnwrap):
+                    # The `?` lowering stashes the receiver in
+                    # $_m_scrut and the packed-i64 in $_alloc_tmp_i64
+                    # for String payload unpacking. Both locals are
+                    # declared via has_match + the i64-scratch group.
+                    has_match = True
+                if isinstance(instr, BinOp) and instr.op == "+":
+                    # String concatenation reuses the same _str_*
+                    # scratch locals as the String methods. The
+                    # operand type tells us; both operands have
+                    # type String when concat applies.
+                    if (instr.left.ty == "String"
+                            or instr.right.ty == "String"):
+                        has_string_method = True
                 if isinstance(instr, MethodCall):
                     recv_ty = instr.receiver.ty or ""
                     if recv_ty.startswith("Map"):

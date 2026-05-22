@@ -310,7 +310,17 @@ class Lowerer:
         if isinstance(s.pattern, A.IdentPat):
             name = s.pattern.name
             value = self._lower_expr(s.value)
-            self._locals[name] = value.ty
+            # Prefer the explicit type annotation when present and
+            # concrete (see _lower_var for the rationale -- the
+            # RHS expression's inferred type may be less specific
+            # than the user's annotation, particularly for
+            # ``new_map()`` / ``new_set()`` calls).
+            ann_ty = _type_name(s.type_expr) if s.type_expr else None
+            local_ty = (
+                ann_ty if ann_ty and ann_ty != "Unknown"
+                else value.ty
+            )
+            self._locals[name] = local_ty
             self._instrs.append(AssignConst(dst=name, src=value))
             return
         if isinstance(s.pattern, A.TuplePat):
@@ -340,8 +350,22 @@ class Lowerer:
         # AssignConst for simplicity; a follow-up may add a
         # ``mutable`` flag to AssignConst when a Wasm or LLVM target
         # cares.
+        #
+        # Prefer the explicit type annotation when present and
+        # concrete: ``var m: Map<String, String> = new_map()`` has
+        # a typed annotation but the RHS expression's inferred type
+        # may be a less-specific ``Map<?, ?>`` (since ``new_map``
+        # returns fresh type variables that the analyzer unifies
+        # later). Using the annotation directly keeps downstream
+        # dispatch (Map value-shape selection in particular)
+        # working on the concrete shape the user wrote.
         value = self._lower_expr(s.value)
-        self._locals[s.name] = value.ty
+        ann_ty = _type_name(s.type_expr) if s.type_expr else None
+        local_ty = (
+            ann_ty if ann_ty and ann_ty != "Unknown"
+            else value.ty
+        )
+        self._locals[s.name] = local_ty
         self._instrs.append(AssignConst(dst=s.name, src=value))
 
     def _lower_assign(self, s: A.AssignStmt) -> None:
