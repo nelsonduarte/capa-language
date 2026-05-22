@@ -1474,17 +1474,20 @@ class WasmEmitter(
             self._write("i32.wrap_i64")
             self._write(f"local.set ${instr.dst}")
             return
-        # Scalar (Int / Bool / Float).
-        wasm_ty = self._wasm_type(dst_ty or "Int")
+        # Scalar (Int / Bool / Float / Unit / Unknown). Dispatch
+        # on the dst type rather than wasm_type so Unit doesn't
+        # accidentally land on the Bool-narrowing path (Unit has
+        # no real value; the Ok payload slot is a placeholder).
         self._write("local.get $_m_scrut")
-        if wasm_ty == "i64":
-            self._write("i64.load offset=8")
-        elif wasm_ty == "f64":
+        if dst_ty == "Float":
             self._write("f64.load offset=8")
-        else:
-            # i32 (Bool); the i64 slot's low 32 bits are the value.
+        elif dst_ty == "Bool":
             self._write("i64.load offset=8")
             self._write("i32.wrap_i64")
+        else:
+            # Int / Unit / Unknown all stored as i64 in the slot;
+            # the dst local was declared i64 by the locals sweep.
+            self._write("i64.load offset=8")
         self._write(f"local.set ${instr.dst}")
 
     def _emit_binop(self, instr: BinOp) -> None:
@@ -1536,6 +1539,22 @@ class WasmEmitter(
             self._push_value(instr.left)
             self._push_value(instr.right)
             self._write(_FLOAT_CMP_BINOP[op])
+            self._write(f"local.set ${instr.dst}")
+            return
+        # Bool == / != use the i32 comparison opcodes; the default
+        # _CMP_BINOP table is keyed for i64 (Int). Consult effective
+        # types so binders typed Unknown route via fn.locals.
+        left_ty = self._effective_value_ty(instr.left)
+        right_ty = self._effective_value_ty(instr.right)
+        if op in _CMP_BINOP and (left_ty == "Bool" or right_ty == "Bool"):
+            if op not in ("==", "!="):
+                raise WasmEmissionError(
+                    f"Bool operands do not support {op!r} (only "
+                    f"== and != are defined for Bool comparisons)"
+                )
+            self._push_value(instr.left)
+            self._push_value(instr.right)
+            self._write("i32.eq" if op == "==" else "i32.ne")
             self._write(f"local.set ${instr.dst}")
             return
         if op in _CMP_BINOP:
@@ -1749,6 +1768,15 @@ class WasmEmitter(
                 # Float payload stays as f64 in the slot.
                 self._push_value(arg)
                 self._write(f"f64.store offset={offset}")
+                continue
+            if arg.ty == "Unit" or arg.kind == "lit_unit":
+                # Unit values have no Wasm representation;
+                # _push_value is a no-op. Write a placeholder zero
+                # into the slot so it stays deterministically
+                # initialised. The dst addr was already pushed at
+                # the top of this iteration.
+                self._write("i64.const 0")
+                self._write(f"i64.store offset={offset}")
                 continue
             self._push_value(arg)
             self._write(f"{_store_op_for_size(size)} offset={offset}")
