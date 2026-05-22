@@ -131,6 +131,13 @@ class Lowerer:
         # lowering can thread types into bound identifiers.
         self._payloadless_variants = set()
         self._user_variants = {}
+        # Seed payloadless built-in variants so the lowerer accepts
+        # bare references like ``return Ok(JNull)`` or ``Some(None)``
+        # without the user having to wrap them as ``JNull()``. The
+        # analyzer-side ``VARIANTS`` table is the source of truth;
+        # this list mirrors its payloadless rows.
+        for v_name in ("None", "JNull"):
+            self._payloadless_variants.add(v_name)
         for item in module.items:
             if isinstance(item, A.TypeSum):
                 for v in item.variants:
@@ -1331,14 +1338,18 @@ def _split_tuple_elem_types(ty: str) -> list[str]:
 
 def _split_top_level_comma(s: str) -> tuple[str, str]:
     """Split ``"T, Map<K, V>"`` into ``("T", "Map<K, V>")`` by
-    counting angle brackets. Returns the whole string and an empty
-    string if there is no comma at depth zero, which matches
-    Result with a single generic arg (unusual but possible)."""
+    counting angle brackets AND parentheses so commas inside
+    nested ``<...>`` or tuple ``(...)`` shapes don't split. For
+    example ``"(JsonValue, Int), String"`` splits into
+    ``("(JsonValue, Int)", "String")``. Returns the whole string
+    and an empty string if there is no comma at depth zero, which
+    matches Result with a single generic arg (unusual but
+    possible)."""
     depth = 0
     for i, ch in enumerate(s):
-        if ch == "<":
+        if ch in "<(":
             depth += 1
-        elif ch == ">":
+        elif ch in ">)":
             depth -= 1
         elif ch == "," and depth == 0:
             return s[:i].strip(), s[i + 1:].strip()

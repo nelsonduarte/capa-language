@@ -1,0 +1,286 @@
+// Bundled JSON parser/serializer for Capa's Wasm backend.
+//
+// The Wasm build emits ``parse_json`` / ``to_json`` calls into
+// ``__capa_parse_json`` / ``__capa_to_json`` so the Component Model
+// surface (``--wasm --component``) has no host import for JSON --
+// the JsonValue tree is materialised in the component's own linear
+// memory through the standard Capa allocators (variant constructors
+// + List.push + Map.set). That keeps the canonical-ABI boundary
+// memory-clean while preserving the existing JsonValue dispatch
+// (.as_object / .as_string / ...) which dereferences pointers.
+
+// Returns ``Ok((value, new_pos))`` on a parse, ``Err(msg)`` on
+// failure. The wrapper ``__capa_parse_json`` discards the trailing
+// position; everything internal threads it through.
+
+pub fun __capa_parse_json(s: String) -> Result<JsonValue, String>
+    let start = __cj_skip_ws(s, 0)
+    match __cj_parse_value(s, start)
+        Ok(jv_pos) ->
+            let (jv, _trailing_pos) = jv_pos
+            return Ok(jv)
+        Err(msg) -> return Err(msg)
+
+fun __cj_skip_ws(s: String, pos: Int) -> Int
+    var p = pos
+    let n = s.length()
+    while p < n
+        let c = s.substring(p, p + 1)
+        if c == " " or c == "\t" or c == "\n" or c == "\r"
+            p = p + 1
+        else
+            return p
+    return p
+
+fun __cj_parse_value(s: String, pos: Int) -> Result<(JsonValue, Int), String>
+    if pos >= s.length()
+        return Err("unexpected end at ${pos}")
+    let c = s.substring(pos, pos + 1)
+    if c == "n"
+        return __cj_parse_null(s, pos)
+    if c == "t" or c == "f"
+        return __cj_parse_bool(s, pos)
+    if c == "\""
+        return __cj_parse_string(s, pos)
+    if c == "["
+        return __cj_parse_array(s, pos)
+    if c == "{"
+        return __cj_parse_object(s, pos)
+    return __cj_parse_number(s, pos)
+
+fun __cj_parse_null(s: String, pos: Int) -> Result<(JsonValue, Int), String>
+    if s.substring(pos, pos + 4) == "null"
+        return Ok((JNull, pos + 4))
+    return Err("expected 'null' at ${pos}")
+
+fun __cj_parse_bool(s: String, pos: Int) -> Result<(JsonValue, Int), String>
+    if s.substring(pos, pos + 4) == "true"
+        return Ok((JBool(true), pos + 4))
+    if s.substring(pos, pos + 5) == "false"
+        return Ok((JBool(false), pos + 5))
+    return Err("expected true/false at ${pos}")
+
+// Parse a JSON string starting at ``pos`` (the opening quote).
+// Returns the decoded String and the position just after the
+// closing quote. Handles \" \\ \/ \b \f \n \r \t escapes. Unicode
+// \uXXXX escapes are passed through as-is in v1 (the demo dataset
+// does not include them); a follow-up could lift them to UTF-8.
+fun __cj_parse_string(s: String, pos: Int) -> Result<(JsonValue, Int), String>
+    let n = s.length()
+    var p = pos + 1
+    var out = ""
+    while p < n
+        let c = s.substring(p, p + 1)
+        if c == "\""
+            return Ok((JStr(out), p + 1))
+        if c == "\\"
+            if p + 1 >= n
+                return Err("bad escape at ${p}")
+            let e = s.substring(p + 1, p + 2)
+            if e == "\""
+                out = out + "\""
+            else
+                if e == "\\"
+                    out = out + "\\"
+                else
+                    if e == "/"
+                        out = out + "/"
+                    else
+                        if e == "n"
+                            out = out + "\n"
+                        else
+                            if e == "t"
+                                out = out + "\t"
+                            else
+                                if e == "r"
+                                    out = out + "\r"
+                                else
+                                    // \b \f \uXXXX not in the
+                                    // demo corpus; keep verbatim.
+                                    out = out + e
+            p = p + 2
+        else
+            out = out + c
+            p = p + 1
+    return Err("unterminated string at ${pos}")
+
+// Parse a number: optional minus, integer part, optional fraction,
+// optional exponent. The token boundary is the next char that is
+// not in ``0123456789.eE+-``. Routes through the built-in
+// ``parse_float`` (already a Wasm runtime helper) for the actual
+// conversion.
+fun __cj_parse_number(s: String, pos: Int) -> Result<(JsonValue, Int), String>
+    let n = s.length()
+    var p = pos
+    if p < n
+        let c0 = s.substring(p, p + 1)
+        if c0 == "-"
+            p = p + 1
+    while p < n
+        let c = s.substring(p, p + 1)
+        if c == "0" or c == "1" or c == "2" or c == "3" or c == "4" or c == "5" or c == "6" or c == "7" or c == "8" or c == "9" or c == "." or c == "e" or c == "E" or c == "+" or c == "-"
+            p = p + 1
+        else
+            return __cj_finish_number(s, pos, p)
+    return __cj_finish_number(s, pos, p)
+
+fun __cj_finish_number(s: String, start: Int, end: Int) -> Result<(JsonValue, Int), String>
+    if start == end
+        return Err("expected number at ${start}")
+    let text = s.substring(start, end)
+    match parse_float(text)
+        Some(f) -> return Ok((JNum(f), end))
+        None    -> return Err("bad number '${text}' at ${start}")
+
+fun __cj_parse_array(s: String, pos: Int) -> Result<(JsonValue, Int), String>
+    var items: List<JsonValue> = []
+    var p = __cj_skip_ws(s, pos + 1)
+    let n = s.length()
+    if p < n
+        if s.substring(p, p + 1) == "]"
+            return Ok((JArr(items), p + 1))
+    while p < n
+        match __cj_parse_value(s, p)
+            Err(msg) -> return Err(msg)
+            Ok(jv_pos) ->
+                let (jv, after) = jv_pos
+                items.push(jv)
+                p = __cj_skip_ws(s, after)
+                if p >= n
+                    return Err("unterminated array")
+                let sep = s.substring(p, p + 1)
+                if sep == "]"
+                    return Ok((JArr(items), p + 1))
+                if sep == ","
+                    p = __cj_skip_ws(s, p + 1)
+                else
+                    return Err("expected , or ] at ${p}, got '${sep}'")
+    return Err("unterminated array")
+
+fun __cj_parse_object(s: String, pos: Int) -> Result<(JsonValue, Int), String>
+    var obj: Map<String, JsonValue> = new_map()
+    var p = __cj_skip_ws(s, pos + 1)
+    let n = s.length()
+    if p < n
+        if s.substring(p, p + 1) == "}"
+            return Ok((JObj(obj), p + 1))
+    while p < n
+        if s.substring(p, p + 1) != "\""
+            return Err("expected key string at ${p}")
+        let k_res = __cj_parse_string(s, p)
+        match k_res
+            Err(msg) -> return Err(msg)
+            Ok(k_pos) ->
+                let (k_jv, after_k) = k_pos
+                let key = match k_jv.as_string()
+                    Some(k) -> k
+                    None    -> ""
+                p = __cj_skip_ws(s, after_k)
+                if p >= n
+                    return Err("expected ':' at end")
+                if s.substring(p, p + 1) != ":"
+                    return Err("expected ':' at ${p}")
+                p = __cj_skip_ws(s, p + 1)
+                match __cj_parse_value(s, p)
+                    Err(msg) -> return Err(msg)
+                    Ok(v_pos) ->
+                        let (v_jv, after_v) = v_pos
+                        obj.set(key, v_jv)
+                        p = __cj_skip_ws(s, after_v)
+                        if p >= n
+                            return Err("unterminated object")
+                        let sep = s.substring(p, p + 1)
+                        if sep == "}"
+                            return Ok((JObj(obj), p + 1))
+                        if sep == ","
+                            p = __cj_skip_ws(s, p + 1)
+                        else
+                            return Err("expected , or } at ${p}")
+    return Err("unterminated object")
+
+// =====================================================
+// Serializer
+// =====================================================
+
+pub fun __capa_to_json(jv: JsonValue) -> String
+    if jv.is_null()
+        return "null"
+    match jv.as_bool()
+        Some(b) -> return match b
+            true  -> "true"
+            false -> "false"
+        None -> ""
+    match jv.as_num()
+        Some(f) -> return __cj_num_to_string(f)
+        None -> ""
+    match jv.as_string()
+        Some(s) -> return __cj_quote_string(s)
+        None -> ""
+    match jv.as_array()
+        Some(xs) -> return __cj_array_to_string(xs)
+        None -> ""
+    match jv.as_object()
+        Some(m) -> return __cj_object_to_string(m)
+        None -> ""
+    return "null"
+
+fun __cj_num_to_string(f: Float) -> String
+    // ``${f}`` triggers the runtime's ftoa, which prints 6 decimal
+    // digits. Strip the trailing ``.000000`` for whole numbers so
+    // ``JNum(3.0)`` round-trips through JSON as ``3``.
+    let raw = "${f}"
+    if raw.ends_with(".000000")
+        let n = raw.length()
+        return raw.substring(0, n - 7)
+    return raw
+
+fun __cj_quote_string(s: String) -> String
+    var out = "\""
+    let n = s.length()
+    var p = 0
+    while p < n
+        let c = s.substring(p, p + 1)
+        if c == "\""
+            out = out + "\\\""
+        else
+            if c == "\\"
+                out = out + "\\\\"
+            else
+                if c == "\n"
+                    out = out + "\\n"
+                else
+                    if c == "\t"
+                        out = out + "\\t"
+                    else
+                        if c == "\r"
+                            out = out + "\\r"
+                        else
+                            out = out + c
+        p = p + 1
+    out = out + "\""
+    return out
+
+fun __cj_array_to_string(xs: List<JsonValue>) -> String
+    var out = "["
+    var first = true
+    for x in xs
+        if not first
+            out = out + ", "
+        out = out + __capa_to_json(x)
+        first = false
+    out = out + "]"
+    return out
+
+fun __cj_object_to_string(m: Map<String, JsonValue>) -> String
+    var out = "{"
+    var first = true
+    for pair in m.pairs()
+        let (k, v) = pair
+        if not first
+            out = out + ", "
+        out = out + __cj_quote_string(k)
+        out = out + ": "
+        out = out + __capa_to_json(v)
+        first = false
+    out = out + "}"
+    return out
