@@ -1,0 +1,40 @@
+// Phase 6G demo: JsonValue in the Wasm backend.
+//
+// JsonValue is a built-in sum type with six variants:
+//   JNull / JBool(Bool) / JNum(Float) / JStr(String)
+//   JArr(List<JsonValue>) / JObj(Map<String, JsonValue>)
+//
+// The Wasm backend lowers each variant to a 16-byte sum record
+// (tag at offset 0, payload at offset 8). parse_json / to_json
+// route through a capa:host/json bridge so the host Python's
+// json.loads / json.dumps does the actual parsing.
+
+fun main(stdio: Stdio)
+    // Parse + dispatch on variants.
+    let txt = "{\"name\": \"alice\", \"age\": 30, \"admin\": true}"
+    match parse_json(txt)
+        Ok(jv) ->
+            match jv.as_object()
+                Some(obj) ->
+                    match obj.get("name")
+                        Some(jname) ->
+                            match jname.as_string()
+                                Some(s) -> stdio.println("name = ${s}")
+                                None    -> stdio.println("name not a string")
+                        None -> stdio.println("no name key")
+                    match obj.get("age")
+                        Some(jage) ->
+                            match jage.as_num()
+                                Some(n) -> stdio.println("age = ${n}")
+                                None    -> stdio.println("age not a number")
+                        None -> stdio.println("no age key")
+                None -> stdio.println("top-level not an object")
+        Err(msg) -> stdio.println("parse error: ${msg}")
+
+    // Build JsonValue from constructors + serialise.
+    let built = JArr([JStr("alpha"), JNum(1.5), JBool(true)])
+    stdio.println("built = ${to_json(built)}")
+
+    // Round-trip: serialise then re-parse.
+    let serialized = to_json(JObj(new_map()))
+    stdio.println("empty obj = ${serialized}")

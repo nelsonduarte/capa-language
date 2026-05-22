@@ -51,7 +51,7 @@ from ._layout import (
     _LIST_HEADER_SIZE, _LIST_LEN_OFFSET, _LIST_CAP_OFFSET, _LIST_DATA_OFFSET,
     _MAP_HEADER_SIZE, _MAP_LEN_OFFSET, _MAP_CAP_OFFSET, _MAP_DATA_OFFSET,
     _MAP_PAIR_SIZE, _MAP_PAIR_KEY_PTR_OFFSET, _MAP_PAIR_KEY_LEN_OFFSET, _MAP_PAIR_VALUE_OFFSET,
-    _OPTION_LAYOUT, _RESULT_LAYOUT, _IOERROR_LAYOUT,
+    _OPTION_LAYOUT, _RESULT_LAYOUT, _IOERROR_LAYOUT, _JSONVALUE_LAYOUT,
     _map_value_type, _element_type_of_list,
     _size_of, _store_op_for_size, _load_op_for_size, _align_up,
     compute_struct_layout, compute_sum_layout,
@@ -62,6 +62,7 @@ from ._strings import _StringEmissionMixin
 from ._maps import _MapEmissionMixin
 from ._lists import _ListEmissionMixin
 from ._closures import _ClosureEmissionMixin
+from ._json import _JsonEmissionMixin
 
 
 # Capa scalar types this phase knows how to lower. Any other type
@@ -121,6 +122,7 @@ class WasmEmitter(
     _MapEmissionMixin,
     _ListEmissionMixin,
     _ClosureEmissionMixin,
+    _JsonEmissionMixin,
 ):
     def __init__(self, indent_unit: str = "  "):
         self._lines: List[str] = []
@@ -189,10 +191,16 @@ class WasmEmitter(
         # ``None``, ``Ok``, ``Err`` map to these layouts. User-
         # defined types are added on top, never overriding.
         self._struct_layouts = {"IoError": _IOERROR_LAYOUT}
-        self._sum_layouts = {"Option": _OPTION_LAYOUT, "Result": _RESULT_LAYOUT}
+        self._sum_layouts = {
+            "Option": _OPTION_LAYOUT,
+            "Result": _RESULT_LAYOUT,
+            "JsonValue": _JSONVALUE_LAYOUT,
+        }
         self._variant_to_sum = {
             "Some": "Option", "None": "Option",
             "Ok": "Result", "Err": "Result",
+            "JNull": "JsonValue", "JBool": "JsonValue", "JNum": "JsonValue",
+            "JStr": "JsonValue", "JArr": "JsonValue", "JObj": "JsonValue",
         }
 
         # Pass 0: compute layouts for every struct and sum type so
@@ -217,6 +225,15 @@ class WasmEmitter(
                 )
                 for v in ty.variants:
                     self._variant_to_sum[v.name] = ty.name
+
+        # Refine pattern-binder types from variant payload layouts
+        # BEFORE any helper-detection (uses_float_format etc.) reads
+        # fn.locals. The analyzer's pattern-side type inference is
+        # incomplete for builtin sum types (JsonValue / Option /
+        # Result with non-Int payloads), leaving binders as Unknown.
+        # The sum layout always knows what each variant carries.
+        for fn in module.functions:
+            self._refine_pattern_binder_types(fn, fn.body)
 
         # First pass: walk the module to discover used capability
         # methods and string literals so we can emit imports and
@@ -360,30 +377,82 @@ class WasmEmitter(
                 return True
         return False
 
+    def _refine_pattern_binder_types(
+        self, fn: Function, instrs: list[Instr],
+    ) -> None:
+        """Walk every Match in ``instrs`` and update ``fn.locals``
+        for PatVariant payload binders whose recorded type is
+        Unknown / missing. The variant's payload layout owns the
+        authoritative type."""
+        for instr in instrs:
+            if isinstance(instr, Match):
+                scrut_head = (instr.scrutinee.ty or "").split("<", 1)[0]
+                sum_layout = self._sum_layouts.get(scrut_head)
+                if sum_layout is not None:
+                    for arm in instr.arms:
+                        if not isinstance(arm.pattern, PatVariant):
+                            continue
+                        entry = sum_layout["variants"].get(arm.pattern.name)
+                        if entry is None:
+                            continue
+                        _tag, payload_layouts = entry
+                        for sub_pat, (_off, _sz, payload_ty) in zip(
+                            arm.pattern.payloads, payload_layouts,
+                        ):
+                            if not isinstance(sub_pat, PatIdent):
+                                continue
+                            cur = fn.locals.get(sub_pat.name, "")
+                            if (cur in ("", "Unknown", "?", "Any")
+                                    or cur.startswith("?")):
+                                if payload_ty and payload_ty != "Any":
+                                    fn.locals[sub_pat.name] = payload_ty
+                for arm in instr.arms:
+                    self._refine_pattern_binder_types(fn, arm.body)
+            elif isinstance(instr, If):
+                self._refine_pattern_binder_types(fn, instr.then_body)
+                self._refine_pattern_binder_types(fn, instr.else_body)
+            elif isinstance(instr, While):
+                self._refine_pattern_binder_types(fn, instr.cond_setup)
+                self._refine_pattern_binder_types(fn, instr.body)
+            elif isinstance(instr, For):
+                self._refine_pattern_binder_types(fn, instr.body)
+
     def _uses_float_format(self, module: Module) -> bool:
         """True if any ``FormatStr`` instruction has a Float value
-        part, which is what gates emission of the ``$ftoa`` helper."""
-        def visit(instrs: list[Instr]) -> bool:
-            for instr in instrs:
-                if isinstance(instr, FormatStr):
-                    for p in instr.parts:
-                        if isinstance(p, Value) and p.ty == "Float":
-                            return True
-                if isinstance(instr, If):
-                    if visit(instr.then_body) or visit(instr.else_body):
-                        return True
-                if isinstance(instr, While):
-                    if visit(instr.cond_setup) or visit(instr.body):
-                        return True
-                if isinstance(instr, For):
-                    if visit(instr.body):
-                        return True
-                if isinstance(instr, Match):
-                    for arm in instr.arms:
-                        if visit(arm.body):
-                            return True
-            return False
+        part, which is what gates emission of the ``$ftoa`` helper.
+
+        Consults each function's ``locals`` dict as a fallback when
+        a value's ``ty`` is unresolved -- the match emitter refines
+        pattern-binder types into ``fn.locals`` after the analyzer
+        leaves them as Unknown, and the FormatStr dispatcher uses
+        the same fallback at emit time."""
+        def _eff_ty(p: Value, fn: Function) -> str:
+            if p.ty and p.ty not in ("?", "Unknown", "Any"):
+                return p.ty
+            if p.kind in ("local", "param") and p.name in fn.locals:
+                return fn.locals[p.name]
+            return p.ty or ""
         for fn in module.functions:
+            def visit(instrs: list[Instr], fn=fn) -> bool:
+                for instr in instrs:
+                    if isinstance(instr, FormatStr):
+                        for p in instr.parts:
+                            if isinstance(p, Value) and _eff_ty(p, fn) == "Float":
+                                return True
+                    if isinstance(instr, If):
+                        if visit(instr.then_body) or visit(instr.else_body):
+                            return True
+                    if isinstance(instr, While):
+                        if visit(instr.cond_setup) or visit(instr.body):
+                            return True
+                    if isinstance(instr, For):
+                        if visit(instr.body):
+                            return True
+                    if isinstance(instr, Match):
+                        for arm in instr.arms:
+                            if visit(arm.body):
+                                return True
+                return False
             if visit(fn.body):
                 return True
         return False
@@ -483,6 +552,14 @@ class WasmEmitter(
                         f"capa.ir._emit_wasm together"
                     )
                 self._used_caps.add(key)
+            # parse_json / to_json are free functions but route
+            # through a synthetic ``Json`` capability so the import
+            # machinery treats them the same as Stdio / Fs / Env.
+            if isinstance(instr, Call):
+                if instr.callee_name == "parse_json":
+                    self._used_caps.add(("Json", "parse"))
+                elif instr.callee_name == "to_json":
+                    self._used_caps.add(("Json", "to_string"))
             # Walk every Value-bearing slot of every instruction for
             # ``lit_str`` literals; the data segment must cover any
             # literal the emitter will reference at use site, not
@@ -604,6 +681,16 @@ class WasmEmitter(
             # Wasm level. The capability discipline is enforced
             # by the analyzer; at runtime the import is shared.
             return (["i32", "i32"], "")
+        if "func(s: string) -> result<i32, string>" in wit:
+            # Json.parse: one string arg (ptr, len), returns i32
+            # pointer to a Result<JsonValue, String> built on the
+            # heap by the host.
+            return (["i32", "i32"], "i32")
+        if "func(jv: i32) -> string" in wit:
+            # Json.to_string: i32 JsonValue pointer in, (ptr, len)
+            # pair out. Wasm core supports multi-value returns since
+            # the 2.0 spec, which is what wasmtime accepts.
+            return (["i32"], "i32 i32")
         raise WasmEmissionError(
             f"cap method {cap}.{method} has shape {wit!r} that "
             f"the Wasm emitter does not yet decode"
@@ -721,6 +808,8 @@ class WasmEmitter(
         has_format_str = False
         has_make_lambda = False
         has_list_hof = False
+        has_json_method = False
+        has_json_parse = False
 
         def value_uses_variant_ctor(v: Value) -> bool:
             return v is not None and v.kind == "variant_ctor"
@@ -729,9 +818,39 @@ class WasmEmitter(
             nonlocal has_match, has_variant_ctor, has_list, has_for
             nonlocal has_list_contains_i64, has_map, has_string_method
             nonlocal has_format_str, has_make_lambda, has_list_hof
+            nonlocal has_json_method, has_json_parse
             for instr in instrs:
                 if isinstance(instr, Match):
                     has_match = True
+                    # Refine binder types from the variant's payload
+                    # layout. The analyzer's pattern-side type
+                    # inference is incomplete for builtin sum types
+                    # (JsonValue / Option / Result with non-Int
+                    # payloads), leaving the binder as Unknown. The
+                    # sum layout always knows the payload type, so
+                    # use it to fix fn.locals before any local-decl
+                    # emission consumes the (wrong) Unknown type.
+                    scrut_head = (instr.scrutinee.ty or "").split("<", 1)[0]
+                    sum_layout = self._sum_layouts.get(scrut_head)
+                    if sum_layout is not None:
+                        for arm in instr.arms:
+                            if not isinstance(arm.pattern, PatVariant):
+                                continue
+                            entry = sum_layout["variants"].get(arm.pattern.name)
+                            if entry is None:
+                                continue
+                            _tag, payload_layouts = entry
+                            for sub_pat, (_off, _sz, payload_ty) in zip(
+                                arm.pattern.payloads, payload_layouts,
+                            ):
+                                if not isinstance(sub_pat, PatIdent):
+                                    continue
+                                cur = fn.locals.get(sub_pat.name, "")
+                                if (cur in ("", "Unknown", "?")
+                                        or cur.startswith("?")
+                                        or cur == "Any"):
+                                    if payload_ty and payload_ty != "Any":
+                                        fn.locals[sub_pat.name] = payload_ty
                     for arm in instr.arms:
                         visit(arm.body)
                 if isinstance(instr, MakeList):
@@ -759,6 +878,20 @@ class WasmEmitter(
                         "map", "filter", "fold",
                     ):
                         has_list_hof = True
+                    if recv_ty == "JsonValue":
+                        has_json_method = True
+                if isinstance(instr, Call):
+                    if instr.callee_name == "parse_json":
+                        has_json_parse = True
+                    elif instr.callee_name == "to_json":
+                        has_json_parse = True
+                    elif instr.callee_name in self._variant_to_sum:
+                        # Variant-construction Call with payloads. The
+                        # String payload path packs (ptr, len) via
+                        # _alloc_tmp_i64; treat any payload-bearing
+                        # variant call as variant_ctor for scratch-
+                        # local purposes.
+                        has_variant_ctor = True
                 # Detect Values of kind variant_ctor anywhere; they
                 # require the ``$_alloc_tmp`` local at emit time.
                 for attr in ("src", "value", "left", "right",
@@ -839,11 +972,13 @@ class WasmEmitter(
             out["_m_tag"] = "i32"
         if has_variant_ctor or has_list or has_map:
             out["_alloc_tmp"] = "i32"
-        if has_list_contains_i64 or has_map or has_match or has_for:
+        if (has_list_contains_i64 or has_map or has_match or has_for
+                or has_variant_ctor or has_json_method):
             # The i64 scratch is shared by: List.contains for i64
             # elements, Map scan (value packing), match-arm String
-            # unpacking, and for-iter over List<String> (where the
-            # element slot is a packed i64).
+            # unpacking, for-iter over List<String> (packed i64
+            # slot), variant-construction (String payload packing),
+            # and JsonValue as_X projection.
             out["_alloc_tmp_i64"] = "i64"
         if has_map:
             # Match/For scratch locals double as Map scan helpers
@@ -855,6 +990,14 @@ class WasmEmitter(
             out["_alloc_tmp_newcap"] = "i32"
             out["_alloc_tmp_new_data"] = "i32"
             out["_alloc_tmp_result"] = "i32"
+        if has_json_method:
+            # JsonValue method emit reuses the match scrut local for
+            # the receiver pointer and needs an Option-result alloc
+            # slot. _alloc_tmp_i64 is needed for the as_int /
+            # as_X paths.
+            out.setdefault("_m_scrut", "i32")
+            out.setdefault("_alloc_tmp_result", "i32")
+            out.setdefault("_alloc_tmp_i64", "i64")
         if has_format_str:
             # FormatStr scratch: per-value (ptr, len) stashes plus
             # total-length / buffer / position registers.
@@ -934,6 +1077,9 @@ class WasmEmitter(
                 return
             if recv_ty == "String":
                 self._emit_string_method_call(instr)
+                return
+            if recv_ty == "JsonValue":
+                self._emit_jsonvalue_method_call(instr)
                 return
             raise WasmEmissionError(
                 f"MethodCall on receiver of type {recv_ty!r} "
@@ -1223,6 +1369,30 @@ class WasmEmitter(
         if instr.callee_name in self._variant_to_sum:
             self._emit_variant_construction(instr)
             return
+        # Built-in free functions that route through host bridges.
+        # parse_json / to_json take String / JsonValue and would
+        # otherwise miss the ``call $<name>`` path because no Capa
+        # function declares them.
+        if instr.callee_name == "parse_json":
+            self._emit_call_host_json_parse(instr)
+            return
+        if instr.callee_name == "to_json":
+            self._emit_call_host_json_to_string(instr)
+            return
+        # Numeric conversion intrinsics. These lower to one Wasm
+        # instruction each; faster (and simpler) than a host bridge.
+        if instr.callee_name == "to_float" and len(instr.args) == 1:
+            self._push_value(instr.args[0])
+            self._write("f64.convert_i64_s")
+            if instr.dst is not None:
+                self._write(f"local.set ${instr.dst}")
+            return
+        if instr.callee_name == "to_int" and len(instr.args) == 1:
+            self._push_value(instr.args[0])
+            self._write("i64.trunc_f64_s")
+            if instr.dst is not None:
+                self._write(f"local.set ${instr.dst}")
+            return
         # Closure call: callee is a local / param of Fun type.
         callee_ty = self._lookup_local_or_param_ty(instr.callee_name)
         if callee_ty and callee_ty.startswith("Fun"):
@@ -1326,6 +1496,11 @@ class WasmEmitter(
                 self._push_value(arg)
                 self._write("i64.extend_i32_u")
                 self._write(f"i64.store offset={offset}")
+                continue
+            if size == 8 and arg.ty == "Float":
+                # Float payload stays as f64 in the slot.
+                self._push_value(arg)
+                self._write(f"f64.store offset={offset}")
                 continue
             self._push_value(arg)
             self._write(f"{_store_op_for_size(size)} offset={offset}")

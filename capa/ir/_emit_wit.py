@@ -68,6 +68,14 @@ _WIT_SIGNATURES: dict[tuple[str, str], str] = {
     ("Fs", "restrict_to"): "restrict_to: func(prefix: string)",
 
     # Net entries follow once the request/response model is stable.
+
+    # Json: a synthetic capability that wraps the built-in free
+    # functions ``parse_json`` / ``to_json``. They are not declared
+    # in source as ``json.parse(...)`` capability methods, but the
+    # Wasm import machinery treats them as a 9th capability so the
+    # host bridge can ship two functions without bespoke plumbing.
+    ("Json", "parse"):     "parse: func(s: string) -> result<i32, string>",
+    ("Json", "to_string"): "to_string: func(jv: i32) -> string",
 }
 
 
@@ -75,7 +83,7 @@ _WIT_SIGNATURES: dict[tuple[str, str], str] = {
 # in ``_WIT_SIGNATURES`` raise ``UnsupportedCapability`` at WIT
 # generation time; the Wasm emitter mirrors this so the contract
 # stays in sync.
-_KNOWN_CAPABILITIES = {"Stdio", "Clock", "Env", "Fs"}
+_KNOWN_CAPABILITIES = {"Stdio", "Clock", "Env", "Fs", "Json"}
 
 
 class UnsupportedCapabilityMethod(Exception):

@@ -687,7 +687,18 @@ class _StringEmissionMixin:
         ty = v.ty
         # Unresolved tyvars (``?``) default to Int -- the most
         # common case for analyzer-side type inference that bails
-        # out (e.g. inside a Fun-typed param call chain).
+        # out (e.g. inside a Fun-typed param call chain). Before
+        # falling back to Int, consult the function's locals dict:
+        # pattern-bound names refined by the match emitter live
+        # there with their actual type (Float, Bool, ...) even
+        # when the analyzer left ``v.ty`` as Unknown.
+        if ty in ("?", "Unknown", ""):
+            if (v.kind in ("local", "param")
+                    and self._current_fn is not None
+                    and v.name in self._current_fn.locals):
+                refined = self._current_fn.locals[v.name]
+                if refined and refined not in ("?", "Unknown", "Any"):
+                    ty = refined
         if ty in ("?", "Unknown", ""):
             ty = "Int"
         if ty == "String":
@@ -749,6 +760,19 @@ class _StringEmissionMixin:
             self._write(f"local.get ${src.name}_ptr")
             self._write(f"local.set ${dst}_ptr")
             self._write(f"local.get ${src.name}_len")
+            self._write(f"local.set ${dst}_len")
+            return
+        if src.kind == "lit_unit":
+            # The IR lowerer emits a Unit placeholder when a Match
+            # expression assigning to a String dst has an arm whose
+            # body doesn't produce a value (early return, etc.).
+            # Treat as empty string so the (ptr, len) locals get
+            # initialised to (0, 0) -- harmless because the path that
+            # reaches this assign always either branches away or the
+            # caller's logic guards on an outer Result/Option.
+            self._write("i32.const 0")
+            self._write(f"local.set ${dst}_ptr")
+            self._write("i32.const 0")
             self._write(f"local.set ${dst}_len")
             return
         raise WasmEmissionError(

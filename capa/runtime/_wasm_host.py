@@ -51,6 +51,7 @@ class WasmHost:
         self._register_clock()
         self._register_env()
         self._register_fs()
+        self._register_json()
 
     def _register_stdio(self) -> None:
         """Register the ``capa:stdio`` interface methods. Each
@@ -390,6 +391,248 @@ class WasmHost:
         self.linker.define_func(
             "capa:host/fs", "restrict_to", ft_string_to_unit,
             fs_restrict_to, access_caller=True,
+        )
+
+    def _register_json(self) -> None:
+        """Register the ``capa:host/json`` interface methods.
+
+        ``parse(s) -> Result<JsonValue, String>``: parses a JSON
+        document by walking Python's ``json.loads`` output and
+        allocating the equivalent JsonValue tree in linear memory.
+
+        ``to_string(jv) -> String``: walks a JsonValue tree out of
+        linear memory, builds the equivalent Python value, calls
+        ``json.dumps``, copies the bytes back into a fresh alloc.
+
+        Both sides share the 16-byte JsonValue layout: tag at
+        offset 0, payload at offset 8 in an 8-byte slot. Nested
+        ``JArr`` payloads point to ``List<JsonValue>`` headers;
+        nested ``JObj`` payloads point to ``Map<String, JsonValue>``
+        headers. Numbers use the f64 storage slot; bools / pointers
+        use i64-extended; strings are packed (ptr | (len << 32))."""
+        import json as _stdlib_json
+
+        ft_parse = wasmtime.FuncType(
+            [wasmtime.ValType.i32(), wasmtime.ValType.i32()],
+            [wasmtime.ValType.i32()],
+        )
+        ft_to_string = wasmtime.FuncType(
+            [wasmtime.ValType.i32()],
+            [wasmtime.ValType.i32(), wasmtime.ValType.i32()],
+        )
+
+        # ---- helpers (closures over caller-local self._memory + alloc) ----
+
+        def _read_u32(caller, ptr: int) -> int:
+            return int.from_bytes(
+                bytes(self._memory.read(caller, ptr, ptr + 4)), "little",
+            )
+
+        def _read_i64(caller, ptr: int) -> int:
+            raw = bytes(self._memory.read(caller, ptr, ptr + 8))
+            return int.from_bytes(raw, "little", signed=False)
+
+        def _read_f64(caller, ptr: int) -> float:
+            import struct
+            raw = bytes(self._memory.read(caller, ptr, ptr + 8))
+            return struct.unpack("<d", raw)[0]
+
+        def _write_u32(caller, ptr: int, val: int) -> None:
+            self._memory.write(caller, val.to_bytes(4, "little"), ptr)
+
+        def _write_i64(caller, ptr: int, val: int) -> None:
+            self._memory.write(caller, val.to_bytes(8, "little"), ptr)
+
+        def _write_f64(caller, ptr: int, val: float) -> None:
+            import struct
+            self._memory.write(caller, struct.pack("<d", val), ptr)
+
+        def _alloc_string(caller, text: str) -> tuple[int, int]:
+            encoded = text.encode("utf-8")
+            if not encoded:
+                return 0, 0
+            ptr = self._alloc_export(caller, len(encoded))
+            self._memory.write(caller, encoded, ptr)
+            return ptr, len(encoded)
+
+        def _read_string(caller, ptr: int, length: int) -> str:
+            if length <= 0:
+                return ""
+            return bytes(
+                self._memory.read(caller, ptr, ptr + length)
+            ).decode("utf-8")
+
+        def _alloc_jv(caller, tag: int) -> int:
+            """Allocate a 16-byte JsonValue record with ``tag`` and
+            a zero payload slot. Caller fills the payload via the
+            appropriate _write_* on offset 8."""
+            jv_ptr = self._alloc_export(caller, 16)
+            _write_u32(caller, jv_ptr, tag)
+            _write_i64(caller, jv_ptr + 8, 0)
+            return jv_ptr
+
+        def _alloc_list_of_jv(caller, items: list) -> int:
+            """Allocate a 16-byte List header + cap * 4-byte data
+            array. Each element is a JsonValue pointer (i32). The
+            Wasm side computes elem_size from ``_size_of("JsonValue")``
+            which is 4 (sum types are stored by pointer), so the
+            data array uses 4-byte slots, NOT 8-byte ones."""
+            n = len(items)
+            cap = max(n, 8)
+            header_ptr = self._alloc_export(caller, 16)
+            data_ptr = self._alloc_export(caller, cap * 4) if cap else 0
+            _write_u32(caller, header_ptr, n)
+            _write_u32(caller, header_ptr + 4, cap)
+            _write_u32(caller, header_ptr + 8, data_ptr)
+            for i, item in enumerate(items):
+                jv_ptr = _py_to_jv(caller, item)
+                _write_u32(caller, data_ptr + i * 4, jv_ptr)
+            return header_ptr
+
+        def _alloc_map_str_jv(caller, items: dict) -> int:
+            """Allocate a 16-byte Map header + cap * 16-byte triple
+            array (key_ptr, key_len, value-as-i64)."""
+            n = len(items)
+            cap = max(n, 8)
+            header_ptr = self._alloc_export(caller, 16)
+            data_ptr = self._alloc_export(caller, cap * 16) if cap else 0
+            _write_u32(caller, header_ptr, n)
+            _write_u32(caller, header_ptr + 4, cap)
+            _write_u32(caller, header_ptr + 8, data_ptr)
+            for i, (k, v) in enumerate(items.items()):
+                k_ptr, k_len = _alloc_string(caller, str(k))
+                _write_u32(caller, data_ptr + i * 16, k_ptr)
+                _write_u32(caller, data_ptr + i * 16 + 4, k_len)
+                jv_ptr = _py_to_jv(caller, v)
+                _write_i64(caller, data_ptr + i * 16 + 8, jv_ptr & 0xFFFFFFFF)
+            return header_ptr
+
+        def _py_to_jv(caller, val) -> int:
+            """Recursively walk a Python value (from json.loads) into
+            a JsonValue record tree in linear memory; return the
+            JsonValue pointer."""
+            if val is None:
+                return _alloc_jv(caller, 0)  # JNull
+            if isinstance(val, bool):
+                jv = _alloc_jv(caller, 1)  # JBool
+                _write_i64(caller, jv + 8, 1 if val else 0)
+                return jv
+            if isinstance(val, (int, float)):
+                jv = _alloc_jv(caller, 2)  # JNum
+                _write_f64(caller, jv + 8, float(val))
+                return jv
+            if isinstance(val, str):
+                jv = _alloc_jv(caller, 3)  # JStr
+                s_ptr, s_len = _alloc_string(caller, val)
+                packed = (s_ptr & 0xFFFFFFFF) | (
+                    (s_len & 0xFFFFFFFF) << 32
+                )
+                _write_i64(caller, jv + 8, packed)
+                return jv
+            if isinstance(val, list):
+                list_ptr = _alloc_list_of_jv(caller, val)
+                jv = _alloc_jv(caller, 4)  # JArr
+                _write_i64(caller, jv + 8, list_ptr & 0xFFFFFFFF)
+                return jv
+            if isinstance(val, dict):
+                map_ptr = _alloc_map_str_jv(caller, val)
+                jv = _alloc_jv(caller, 5)  # JObj
+                _write_i64(caller, jv + 8, map_ptr & 0xFFFFFFFF)
+                return jv
+            # Fallback: render as String.
+            return _py_to_jv(caller, str(val))
+
+        def _list_of_jv_to_py(caller, list_ptr: int) -> list:
+            n = _read_u32(caller, list_ptr)
+            data_ptr = _read_u32(caller, list_ptr + 8)
+            out = []
+            for i in range(n):
+                # List<JsonValue> slot is i32 (sum types are
+                # pointer-stored, size 4 in the Wasm layout).
+                jv_ptr = _read_u32(caller, data_ptr + i * 4)
+                out.append(_jv_to_py(caller, jv_ptr))
+            return out
+
+        def _map_str_jv_to_py(caller, map_ptr: int) -> dict:
+            n = _read_u32(caller, map_ptr)
+            data_ptr = _read_u32(caller, map_ptr + 8)
+            out = {}
+            for i in range(n):
+                base = data_ptr + i * 16
+                k_ptr = _read_u32(caller, base)
+                k_len = _read_u32(caller, base + 4)
+                key = _read_string(caller, k_ptr, k_len)
+                slot = _read_i64(caller, base + 8)
+                out[key] = _jv_to_py(caller, slot & 0xFFFFFFFF)
+            return out
+
+        def _jv_to_py(caller, jv_ptr: int):
+            tag = _read_u32(caller, jv_ptr)
+            if tag == 0:  # JNull
+                return None
+            if tag == 1:  # JBool
+                return bool(_read_i64(caller, jv_ptr + 8))
+            if tag == 2:  # JNum
+                return _read_f64(caller, jv_ptr + 8)
+            if tag == 3:  # JStr
+                packed = _read_i64(caller, jv_ptr + 8)
+                s_ptr = packed & 0xFFFFFFFF
+                s_len = (packed >> 32) & 0xFFFFFFFF
+                return _read_string(caller, s_ptr, s_len)
+            if tag == 4:  # JArr
+                inner = _read_i64(caller, jv_ptr + 8) & 0xFFFFFFFF
+                return _list_of_jv_to_py(caller, inner)
+            if tag == 5:  # JObj
+                inner = _read_i64(caller, jv_ptr + 8) & 0xFFFFFFFF
+                return _map_str_jv_to_py(caller, inner)
+            raise RuntimeError(
+                f"unknown JsonValue tag {tag} at ptr {jv_ptr}"
+            )
+
+        # ---- the two host functions ----
+
+        def json_parse(caller, s_ptr, s_len):
+            if self._memory is None or self._alloc_export is None:
+                raise RuntimeError(
+                    "json.parse called before memory + $alloc set"
+                )
+            try:
+                text = _read_string(caller, s_ptr, s_len)
+                py_val = _stdlib_json.loads(text)
+                jv_ptr = _py_to_jv(caller, py_val)
+                # Wrap in Ok(JsonValue): 16-byte Result with tag=0
+                # and payload = jv_ptr extended to i64.
+                result_ptr = self._alloc_export(caller, 16)
+                _write_u32(caller, result_ptr, 0)
+                _write_i64(caller, result_ptr + 8, jv_ptr & 0xFFFFFFFF)
+                return result_ptr
+            except (ValueError, _stdlib_json.JSONDecodeError) as e:
+                err_ptr, err_len = _alloc_string(caller, str(e))
+                packed = (err_ptr & 0xFFFFFFFF) | (
+                    (err_len & 0xFFFFFFFF) << 32
+                )
+                result_ptr = self._alloc_export(caller, 16)
+                _write_u32(caller, result_ptr, 1)  # Err
+                _write_i64(caller, result_ptr + 8, packed)
+                return result_ptr
+
+        def json_to_string(caller, jv_ptr):
+            if self._memory is None or self._alloc_export is None:
+                raise RuntimeError(
+                    "json.to_string called before memory + $alloc set"
+                )
+            py_val = _jv_to_py(caller, jv_ptr)
+            text = _stdlib_json.dumps(py_val)
+            ptr, length = _alloc_string(caller, text)
+            return (ptr, length)
+
+        self.linker.define_func(
+            "capa:host/json", "parse", ft_parse,
+            json_parse, access_caller=True,
+        )
+        self.linker.define_func(
+            "capa:host/json", "to_string", ft_to_string,
+            json_to_string, access_caller=True,
         )
 
     def instantiate(self, wasm_blob: bytes) -> wasmtime.Instance:

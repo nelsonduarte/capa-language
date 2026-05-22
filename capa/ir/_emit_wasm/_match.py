@@ -139,6 +139,17 @@ class _MatchEmissionMixin:
                         self._current_fn.locals.get(sub_pat.name, "")
                         if self._current_fn else ""
                     )
+                    # If the analyzer didn't propagate a precise type
+                    # to the bind (Unknown / missing -- happens for
+                    # builtin sum types like JsonValue where the
+                    # pattern-side type inference is incomplete), fall
+                    # back to the payload type declared in the sum
+                    # layout. The layout always knows what the variant
+                    # carries.
+                    if bind_ty in ("", "Unknown", "?") or bind_ty.startswith("?"):
+                        bind_ty = _ty
+                        if self._current_fn is not None and bind_ty != "Any":
+                            self._current_fn.locals[sub_pat.name] = bind_ty
                     if bind_ty == "String":
                         # String payload is packed into the i64
                         # slot: low 32 bits = ptr, high 32 bits =
@@ -167,6 +178,11 @@ class _MatchEmissionMixin:
                         self._write(f"local.get ${scrut_local}")
                         self._write(f"i64.load offset={offset}")
                         self._write("i32.wrap_i64")
+                        self._write(f"local.set ${sub_pat.name}")
+                    elif bind_ty == "Float":
+                        # Float payload stored as f64 in the slot.
+                        self._write(f"local.get ${scrut_local}")
+                        self._write(f"f64.load offset={offset}")
                         self._write(f"local.set ${sub_pat.name}")
                     else:
                         self._write(f"local.get ${scrut_local}")

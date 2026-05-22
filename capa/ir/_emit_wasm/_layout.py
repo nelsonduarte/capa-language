@@ -94,6 +94,34 @@ _RESULT_LAYOUT = {
 }
 
 
+# Memory layout of Capa's built-in JsonValue sum type. Six variants
+# in the uniform 16-byte sum layout: tag at offset 0, payload at
+# offset 8 in an 8-byte slot (matching the Option/Result shape so
+# the existing match-arm payload-extraction logic works unchanged).
+#
+# - JNull: tag=0, no payload
+# - JBool: tag=1, Bool payload (i64-extended)
+# - JNum:  tag=2, Float payload (f64 in the slot)
+# - JStr:  tag=3, String payload (packed ptr+len as i64)
+# - JArr:  tag=4, List<JsonValue> pointer (i64-extended)
+# - JObj:  tag=5, Map<String, JsonValue> pointer (i64-extended)
+#
+# The payload "type" field is set to the Capa type the variant
+# carries (or "Any" for the no-payload JNull) so the variant-
+# construction emitter picks the correct store opcode.
+_JSONVALUE_LAYOUT = {
+    "variants": {
+        "JNull": (0, []),
+        "JBool": (1, [(8, 8, "Bool")]),
+        "JNum":  (2, [(8, 8, "Float")]),
+        "JStr":  (3, [(8, 8, "String")]),
+        "JArr":  (4, [(8, 8, "List<JsonValue>")]),
+        "JObj":  (5, [(8, 8, "Map<String, JsonValue>")]),
+    },
+    "size": 16,
+}
+
+
 # Memory layout of Capa's built-in IoError struct. The Capa runtime
 # defines this in capa.runtime._capabilities; pre-registering the
 # Wasm layout here means Capa code that pattern-matches on

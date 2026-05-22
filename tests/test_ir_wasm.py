@@ -1329,5 +1329,144 @@ class TestWasmClosures(unittest.TestCase):
         self.assertEqual(exp["main"](store), 30)
 
 
+@unittest.skipUnless(
+    _has_wasm_tools() and _has_wasmtime_py(),
+    "wasm-tools and/or wasmtime-py not installed",
+)
+class TestWasmJson(unittest.TestCase):
+    """Phase 6G end-to-end JsonValue support: variant constructors,
+    method dispatch (as_X / is_null), and the parse_json / to_json
+    host bridge.
+
+    Each test drives a small main() through the WasmHost so the
+    full pipeline (CIR -> WAT -> wasm -> host imports) is
+    exercised. Output is checked against the expected stdout."""
+
+    def _run_capturing_stdout(self, src: str) -> str:
+        import io, sys
+        from capa.runtime._wasm_host import WasmHost
+        _, types, ast_mod = _parse_lower(src)
+        blob = compile_wasm(ast_mod, types=types)
+        host = WasmHost()
+        out = io.StringIO()
+        saved_out = sys.stdout
+        sys.stdout = out
+        try:
+            host.run_main(blob)
+        finally:
+            sys.stdout = saved_out
+        return out.getvalue()
+
+    def test_jstr_construct_and_match(self):
+        src = (
+            'fun main(stdio: Stdio)\n'
+            '    let j = JStr("hello")\n'
+            '    match j\n'
+            '        JStr(s) -> stdio.println(s)\n'
+            '        _ -> stdio.println("other")\n'
+        )
+        self.assertEqual(self._run_capturing_stdout(src), "hello\n")
+
+    def test_jnum_construct_and_match(self):
+        src = (
+            'fun main(stdio: Stdio)\n'
+            '    let j = JNum(3.5)\n'
+            '    match j\n'
+            '        JNum(v) -> stdio.println("got ${v}")\n'
+            '        _       -> stdio.println("other")\n'
+        )
+        self.assertEqual(
+            self._run_capturing_stdout(src), "got 3.500000\n",
+        )
+
+    def test_jnull_via_parse(self):
+        # JNull as a bare identifier hits a gap in the IR lowerer
+        # (it only registers user-declared payloadless variants);
+        # exercise the same code path via parse_json("null") which
+        # produces a JNull, then is_null() projects it back to Bool.
+        src = (
+            'fun main(stdio: Stdio)\n'
+            '    match parse_json("null")\n'
+            '        Ok(jv) ->\n'
+            '            if jv.is_null()\n'
+            '                stdio.println("null")\n'
+            '            else\n'
+            '                stdio.println("not null")\n'
+            '        Err(_) -> stdio.println("parse err")\n'
+        )
+        self.assertEqual(self._run_capturing_stdout(src), "null\n")
+
+    def test_as_string_some_on_jstr(self):
+        src = (
+            'fun main(stdio: Stdio)\n'
+            '    let j = JStr("abc")\n'
+            '    match j.as_string()\n'
+            '        Some(s) -> stdio.println("got ${s}")\n'
+            '        None    -> stdio.println("none")\n'
+        )
+        self.assertEqual(self._run_capturing_stdout(src), "got abc\n")
+
+    def test_as_string_none_on_other_variant(self):
+        src = (
+            'fun main(stdio: Stdio)\n'
+            '    let j = JNum(1.0)\n'
+            '    match j.as_string()\n'
+            '        Some(_) -> stdio.println("got string")\n'
+            '        None    -> stdio.println("none")\n'
+        )
+        self.assertEqual(self._run_capturing_stdout(src), "none\n")
+
+    def test_parse_json_array(self):
+        src = (
+            'fun main(stdio: Stdio)\n'
+            '    let txt = "[1, 2, 3]"\n'
+            '    match parse_json(txt)\n'
+            '        Ok(jv) ->\n'
+            '            match jv.as_array()\n'
+            '                Some(arr) -> stdio.println("len=${arr.length()}")\n'
+            '                None      -> stdio.println("not array")\n'
+            '        Err(_) -> stdio.println("parse error")\n'
+        )
+        self.assertEqual(self._run_capturing_stdout(src), "len=3\n")
+
+    def test_parse_json_object_key_lookup(self):
+        src = (
+            'fun main(stdio: Stdio)\n'
+            '    let txt = "{\\"name\\": \\"alice\\"}"\n'
+            '    match parse_json(txt)\n'
+            '        Ok(jv) ->\n'
+            '            match jv.as_object()\n'
+            '                Some(obj) ->\n'
+            '                    match obj.get("name")\n'
+            '                        Some(jname) ->\n'
+            '                            match jname.as_string()\n'
+            '                                Some(s) -> stdio.println(s)\n'
+            '                                None    -> stdio.println("not string")\n'
+            '                        None -> stdio.println("no key")\n'
+            '                None -> stdio.println("not object")\n'
+            '        Err(_) -> stdio.println("parse error")\n'
+        )
+        self.assertEqual(self._run_capturing_stdout(src), "alice\n")
+
+    def test_parse_json_malformed_returns_err(self):
+        src = (
+            'fun main(stdio: Stdio)\n'
+            '    match parse_json("not json")\n'
+            '        Ok(_) -> stdio.println("unexpected ok")\n'
+            '        Err(_) -> stdio.println("got err")\n'
+        )
+        self.assertEqual(self._run_capturing_stdout(src), "got err\n")
+
+    def test_to_json_array_round_trip(self):
+        src = (
+            'fun main(stdio: Stdio)\n'
+            '    let built = JArr([JStr("a"), JNum(1.5), JBool(true)])\n'
+            '    stdio.println(to_json(built))\n'
+        )
+        self.assertEqual(
+            self._run_capturing_stdout(src), '["a", 1.5, true]\n',
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
