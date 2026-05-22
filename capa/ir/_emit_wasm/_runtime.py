@@ -778,11 +778,12 @@ class _RuntimeHelpersMixin:
 
     def _emit_alloc_function(self) -> None:
         """Emit a bump allocator: ``$alloc(size: i32) -> i32`` that
-        returns the current heap_top and advances it by the
-        requested size aligned to 8 bytes. No free, no GC; this is
-        the simplest correct allocator and matches Phase 6C's
-        no-collections scope. A later phase that adds growth or
-        compaction replaces this implementation.
+        returns the current heap_top, aligned to 8, and advances it
+        by the requested size. Grows linear memory in 64 KB pages
+        when the bump would cross the current ``memory.size``
+        boundary; traps via ``unreachable`` if the host refuses to
+        grow further. No free, no GC; the simplest allocator that
+        survives realistic input sizes.
 
         Exported so host bridges (capa:host/env etc.) can allocate
         Option / Result wrappers in linear memory before handing
@@ -790,15 +791,52 @@ class _RuntimeHelpersMixin:
         self._write('(func $alloc (export "alloc") (param $size i32) (result i32)')
         self._indent += 1
         self._write("(local $ret i32)")
-        # Align $heap_top up to 8 bytes before returning.
+        self._write("(local $new_top i32)")
+        self._write("(local $needed_pages i32)")
+        self._write("(local $cur_pages i32)")
+        # ret = align_up(heap_top, 8)
         self._write("global.get $heap_top")
         self._write("i32.const 7")
         self._write("i32.add")
         self._write("i32.const -8")
         self._write("i32.and")
-        self._write("local.tee $ret")
+        self._write("local.set $ret")
+        # new_top = ret + size
+        self._write("local.get $ret")
         self._write("local.get $size")
         self._write("i32.add")
+        self._write("local.set $new_top")
+        # needed_pages = ceil(new_top / 65536) = (new_top + 65535) >> 16
+        self._write("local.get $new_top")
+        self._write("i32.const 65535")
+        self._write("i32.add")
+        self._write("i32.const 16")
+        self._write("i32.shr_u")
+        self._write("local.set $needed_pages")
+        # cur_pages = memory.size
+        self._write("memory.size")
+        self._write("local.set $cur_pages")
+        # if needed_pages > cur_pages: memory.grow(needed_pages - cur_pages)
+        self._write("local.get $needed_pages")
+        self._write("local.get $cur_pages")
+        self._write("i32.gt_u")
+        self._write("if")
+        self._indent += 1
+        self._write("local.get $needed_pages")
+        self._write("local.get $cur_pages")
+        self._write("i32.sub")
+        self._write("memory.grow")
+        self._write("i32.const -1")
+        self._write("i32.eq")
+        self._write("if")
+        self._indent += 1
+        self._write("unreachable")
+        self._indent -= 1
+        self._write("end")
+        self._indent -= 1
+        self._write("end")
+        # heap_top = new_top; return ret
+        self._write("local.get $new_top")
         self._write("global.set $heap_top")
         self._write("local.get $ret")
         self._indent -= 1
