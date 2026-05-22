@@ -904,6 +904,12 @@ class WasmEmitter(
                         # split returns List<String>; uses _alloc_tmp_i64
                         # for the per-chunk packing dance.
                         has_list_string = True
+                    if (instr.method == "get"
+                            and recv_ty.startswith("List")):
+                        # List.get builds an Option<T> result and
+                        # reuses _m_scrut / _m_tag / _alloc_tmp_result.
+                        has_optres_method = True
+                        has_list = True
                 if isinstance(instr, Call):
                     if instr.callee_name == "parse_json":
                         has_json_parse = True
@@ -1074,8 +1080,11 @@ class WasmEmitter(
         if has_optres_method:
             # Option/Result method dispatch stashes the receiver
             # pointer in $_m_scrut so the tag check + payload load
-            # can both read it.
+            # can both read it. List.get also reuses this flag to
+            # build its Option<T> result via $_alloc_tmp_result.
             out.setdefault("_m_scrut", "i32")
+            out.setdefault("_m_tag", "i32")
+            out.setdefault("_alloc_tmp_result", "i32")
         return out
 
     # ----- per-instruction --------------------------------------

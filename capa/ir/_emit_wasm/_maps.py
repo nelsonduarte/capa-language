@@ -106,9 +106,12 @@ class _MapEmissionMixin:
     def _push_map_value_as_i64(self, v: Value, value_ty: str) -> None:
         """Push a Map value onto the stack as a 64-bit packed slot.
         Int values use i64 directly; Bool / pointers are extended
-        to i64 from their i32 wire form. Phase 6D-3 does not yet
-        support String values (would need to pack ptr+len into 64
-        bits or widen the slot)."""
+        to i64 from their i32 wire form. String values pack
+        ``ptr | (len << 32)`` into the 8-byte slot, identical to
+        how List<String> stores its elements; downstream Map.get
+        returns an Option<String> whose payload is the same packed
+        i64, transparently consumed by the match-arm String unpack
+        and Option.unwrap_or paths."""
         if value_ty == "Int":
             self._push_value(v)
             return
@@ -117,10 +120,18 @@ class _MapEmissionMixin:
             self._write("i64.extend_i32_s")
             return
         if value_ty == "String":
-            raise WasmEmissionError(
-                "Phase 6D-3: Map<String, String> not yet supported; "
-                "widening the value slot to 16 bytes lands in 6D-4"
-            )
+            # Pack (ptr, len) into i64. Same dance as variant-ctor
+            # String payload + MakeList<String>.
+            self._push_string_value_as_ptr_len(v)
+            self._write("i64.extend_i32_u")  # len -> i64
+            self._write("i64.const 32")
+            self._write("i64.shl")
+            self._write("local.tee $_alloc_tmp_i64")
+            self._write("drop")
+            self._write("i64.extend_i32_u")  # ptr -> i64
+            self._write("local.get $_alloc_tmp_i64")
+            self._write("i64.or")
+            return
         # Pointer-shaped types (struct, sum, list, map). Extend i32
         # to i64 to fit the uniform value slot.
         if value_ty.split("<", 1)[0] in self._struct_layouts \

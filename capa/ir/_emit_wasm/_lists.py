@@ -23,6 +23,7 @@ from .._nodes import For, Index, MakeList, MethodCall, Value
 from ._layout import (
     WasmEmissionError,
     _LIST_HEADER_SIZE, _LIST_LEN_OFFSET, _LIST_CAP_OFFSET, _LIST_DATA_OFFSET,
+    _OPTION_LAYOUT,
     _element_type_of_list,
     _load_op_for_size, _store_op_for_size,
 )
@@ -66,14 +67,9 @@ class _ListEmissionMixin:
             self._emit_list_push(recv, instr.args[0], elem_size, elem_ty)
             return
         if method == "get":
-            # List<T>.get returns Option<T>. Building Option here
-            # requires the Option sum-type layout, which lives in
-            # the module's user-defined types. Defer this until the
-            # standard library wraps Option centrally in 6D-3.
-            raise WasmEmissionError(
-                "Phase 6D-2: List.get returning Option<T> not yet "
-                "supported; use direct indexing xs[i]"
-            )
+            self._emit_list_get(recv, instr.args[0], elem_size, elem_ty,
+                                instr.dst)
+            return
         if method == "contains":
             self._emit_list_contains(recv, instr.args[0], elem_size, elem_ty)
             if instr.dst is not None:
@@ -254,6 +250,100 @@ class _ListEmissionMixin:
         self._write("unreachable")
         self._indent -= 1
         self._write("end")
+
+    def _emit_list_get(
+        self, recv: Value, idx: Value, elem_size: int, elem_ty: str, dst,
+    ) -> None:
+        """``xs.get(i) -> Option<T>``: bounds-check the index and
+        return Some(xs[i]) when valid, None otherwise. Allocates a
+        fresh 16-byte Option record each call.
+
+        Payload encoding into the Option's 8-byte slot mirrors how
+        the data array stores each element:
+
+        - Int: 8-byte i64 slot, direct i64 copy
+        - Float: 8-byte f64 slot, f64 copy
+        - Bool: 4-byte i32 slot, extend i32 -> i64 to fit uniform
+          Option payload slot
+        - String: 8-byte packed-i64 slot, direct i64 copy
+        - pointer-shaped (struct/sum/list/map): 4-byte i32 slot,
+          extend i32 -> i64
+        """
+        if dst is None:
+            return
+        list_local = "_m_scrut"
+        idx_local = "_m_tag"
+        result_local = "_alloc_tmp_result"
+        # Stash list pointer and index (the IR's i64 index narrowed
+        # to i32 for address arithmetic).
+        self._push_value(recv)
+        self._write(f"local.set ${list_local}")
+        self._push_value(idx)
+        self._write("i32.wrap_i64")
+        self._write(f"local.set ${idx_local}")
+        # Alloc Option<T> result up front; tag filled by branch.
+        self._write(f"i32.const {_OPTION_LAYOUT['size']}")
+        self._write("call $alloc")
+        self._write(f"local.set ${result_local}")
+        # Bounds check: idx < 0 OR idx >= len -> None.
+        self._write(f"local.get ${idx_local}")
+        self._write("i32.const 0")
+        self._write("i32.lt_s")
+        self._write(f"local.get ${idx_local}")
+        self._write(f"local.get ${list_local}")
+        self._write(f"i32.load offset={_LIST_LEN_OFFSET}")
+        self._write("i32.ge_s")
+        self._write("i32.or")
+        self._write("if")
+        self._indent += 1
+        # Out of bounds: None (tag = 1).
+        self._write(f"local.get ${result_local}")
+        self._write("i32.const 1")
+        self._write("i32.store")
+        self._indent -= 1
+        self._write("else")
+        self._indent += 1
+        # In bounds: Some(xs[i]). Tag = 0.
+        self._write(f"local.get ${result_local}")
+        self._write("i32.const 0")
+        self._write("i32.store")
+        # Stack: []. Push result_ptr (target of the payload store),
+        # then push the element address, then load and store
+        # through type-appropriate ops.
+        self._write(f"local.get ${result_local}")
+        self._write(f"local.get ${list_local}")
+        self._write(f"i32.load offset={_LIST_DATA_OFFSET}")
+        self._write(f"local.get ${idx_local}")
+        self._write(f"i32.const {elem_size}")
+        self._write("i32.mul")
+        self._write("i32.add")
+        # Stack: [result_ptr, elem_addr]
+        head = elem_ty.split("<", 1)[0]
+        if elem_ty == "Float":
+            self._write("f64.load")
+            self._write("f64.store offset=8")
+        elif elem_ty == "Bool":
+            self._write("i32.load")
+            self._write("i64.extend_i32_u")
+            self._write("i64.store offset=8")
+        elif elem_ty == "String":
+            self._write("i64.load")
+            self._write("i64.store offset=8")
+        elif (head in self._struct_layouts
+                or head in self._sum_layouts
+                or elem_ty.startswith(("List", "Map", "Set"))):
+            self._write("i32.load")
+            self._write("i64.extend_i32_u")
+            self._write("i64.store offset=8")
+        else:
+            # Int (or unknown defaulting to i64). Direct i64 copy.
+            self._write("i64.load")
+            self._write("i64.store offset=8")
+        self._indent -= 1
+        self._write("end")
+        # Bind result Option pointer to dst.
+        self._write(f"local.get ${result_local}")
+        self._write(f"local.set ${dst}")
 
     def _emit_make_list(self, instr: MakeList) -> None:
         """Allocate a List<T> header (16 bytes) + an element data
