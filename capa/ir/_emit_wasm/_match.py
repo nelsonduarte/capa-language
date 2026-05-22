@@ -40,6 +40,9 @@ class _MatchEmissionMixin:
         if scrut_ty == "Bool":
             self._emit_bool_match(instr)
             return
+        if scrut_ty == "String":
+            self._emit_string_match(instr)
+            return
         # Sum-layout lookups strip generic args: ``Option<Int>`` ->
         # ``Option``. The built-in Option / Result and user-defined
         # sums are all keyed by the bare type name.
@@ -109,6 +112,67 @@ class _MatchEmissionMixin:
                 break
             raise WasmEmissionError(
                 f"Bool match: pattern {type(pat).__name__} not "
+                f"supported (PatLiteral / PatIdent / PatWildcard only)"
+            )
+        for _ in range(opened):
+            self._indent -= 1
+            self._write("end")
+
+    def _emit_string_match(self, instr: Match) -> None:
+        """Lower a String-scrutinee match. Stashes the receiver
+        (ptr, len) into the existing String scratch locals, then
+        compares each arm's literal pattern via ``$str_eq``. Arms
+        cascade through if/else like the sum-type and Bool paths.
+
+        Supported patterns: ``PatLiteral(kind="str")``, ``PatIdent``
+        (catch-all bind), ``PatWildcard``. Other patterns raise."""
+        # Stash receiver into the String-scratch (ptr, len) pair.
+        # Reusing _str_a_* since these only live across the match
+        # body and there are no nested String methods at the same
+        # level competing for the same scratch. _push_value would
+        # try ``local.get $<name>`` which doesn't exist for String
+        # values; use the ptr+len helper instead.
+        self._push_string_value_as_ptr_len(instr.scrutinee)
+        self._write("local.set $_str_a_len")
+        self._write("local.set $_str_a_ptr")
+        opened = 0
+        for arm in instr.arms:
+            pat = arm.pattern
+            if isinstance(pat, PatLiteral) and pat.kind == "str":
+                # Intern the pattern string, push (ptr, len) twice
+                # via the existing helper, call $str_eq.
+                offset, length = self._intern_string(pat.value)
+                self._write(f"i32.const {offset}")
+                self._write(f"i32.const {length}")
+                self._write("local.get $_str_a_ptr")
+                self._write("local.get $_str_a_len")
+                self._write("call $str_eq")
+                self._write("if")
+                self._indent += 1
+                for sub in arm.body:
+                    self._emit_instr(sub)
+                self._indent -= 1
+                self._write("else")
+                self._indent += 1
+                opened += 1
+                continue
+            if isinstance(pat, PatIdent):
+                # Catch-all binding the receiver to a name. Copy the
+                # (ptr, len) pair into the bind's locals so the body
+                # can refer to it as a normal String local.
+                self._write("local.get $_str_a_ptr")
+                self._write(f"local.set ${pat.name}_ptr")
+                self._write("local.get $_str_a_len")
+                self._write(f"local.set ${pat.name}_len")
+                for sub in arm.body:
+                    self._emit_instr(sub)
+                break
+            if isinstance(pat, PatWildcard):
+                for sub in arm.body:
+                    self._emit_instr(sub)
+                break
+            raise WasmEmissionError(
+                f"String match: pattern {type(pat).__name__} not "
                 f"supported (PatLiteral / PatIdent / PatWildcard only)"
             )
         for _ in range(opened):

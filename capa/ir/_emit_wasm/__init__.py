@@ -514,6 +514,9 @@ class WasmEmitter(
                     if visit(instr.body):
                         return True
                 if isinstance(instr, Match):
+                    # String-scrutinee match calls $str_eq per arm.
+                    if (instr.scrutinee.ty or "") == "String":
+                        return True
                     for arm in instr.arms:
                         if visit(arm.body):
                             return True
@@ -827,6 +830,10 @@ class WasmEmitter(
             for instr in instrs:
                 if isinstance(instr, Match):
                     has_match = True
+                    # String-scrutinee match emits $str_eq calls and
+                    # reuses the String-method scratch (_str_a_*).
+                    if (instr.scrutinee.ty or "") == "String":
+                        has_string_method = True
                     # Refine binder types from the variant's payload
                     # layout. The analyzer's pattern-side type
                     # inference is incomplete for builtin sum types
@@ -1472,10 +1479,14 @@ class WasmEmitter(
         if instr.dst is not None:
             dst_ty = self._dst_capa_ty(instr.dst)
             # If the callee returns a non-empty value, store it in
-            # ``instr.dst``. If the dst type is Unit / capability /
-            # String, skip the set (those locals are erased at the
-            # Wasm level).
-            if dst_ty and dst_ty not in _BUILTIN_CAPS and dst_ty not in ("Unit", "String"):
+            # ``instr.dst``. Capability / Unit dsts have no Wasm
+            # representation; String returns are multi-value
+            # (i32 i32) and need to land in the dst's _ptr / _len
+            # pair (in reverse stack order: len is on top, then ptr).
+            if dst_ty == "String":
+                self._write(f"local.set ${instr.dst}_len")
+                self._write(f"local.set ${instr.dst}_ptr")
+            elif dst_ty and dst_ty not in _BUILTIN_CAPS and dst_ty != "Unit":
                 self._write(f"local.set ${instr.dst}")
 
     def _emit_variant_construction(self, instr: Call) -> None:
