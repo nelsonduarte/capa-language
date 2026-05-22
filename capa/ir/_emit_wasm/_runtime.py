@@ -841,3 +841,82 @@ class _RuntimeHelpersMixin:
         self._write("local.get $ret")
         self._indent -= 1
         self._write(")")
+
+    def _emit_cabi_realloc_function(self) -> None:
+        """Emit the ``cabi_realloc`` export the Component Model
+        canonical ABI requires. Signature:
+
+            cabi_realloc(old_ptr: i32, old_size: i32, align: i32,
+                         new_size: i32) -> i32
+
+        Semantics:
+        - ``new_size == 0`` is a free; the bump allocator has no
+          free, so return null.
+        - Otherwise allocate ``new_size`` bytes and -- if there
+          was prior content -- copy ``min(old_size, new_size)``
+          bytes from the old location into the new one. The
+          alignment argument is observed by ``$alloc`` (which
+          aligns to 8 already).
+
+        Required by ``wasm-tools component new`` whenever a host
+        import lowering needs to allocate caller-owned memory
+        (e.g. the data buffer for a ``list<string>`` result)."""
+        self._write(
+            '(func $cabi_realloc (export "cabi_realloc") '
+            '(param $old_ptr i32) (param $old_size i32) '
+            '(param $align i32) (param $new_size i32) (result i32)'
+        )
+        self._indent += 1
+        self._write("(local $new_ptr i32)")
+        self._write("(local $copy_size i32)")
+        # new_size == 0 -> free path: return null (no real free
+        # because the bump allocator has nothing to release).
+        self._write("local.get $new_size")
+        self._write("i32.eqz")
+        self._write("if")
+        self._indent += 1
+        self._write("i32.const 0")
+        self._write("return")
+        self._indent -= 1
+        self._write("end")
+        # Fresh allocation.
+        self._write("local.get $new_size")
+        self._write("call $alloc")
+        self._write("local.set $new_ptr")
+        # If old_ptr != 0 and old_size != 0, copy min(old, new).
+        self._write("local.get $old_ptr")
+        self._write("i32.const 0")
+        self._write("i32.ne")
+        self._write("local.get $old_size")
+        self._write("i32.const 0")
+        self._write("i32.ne")
+        self._write("i32.and")
+        self._write("if")
+        self._indent += 1
+        # copy_size = min(old_size, new_size). The ``if/else``
+        # produces an i32 result on both arms, so the block's
+        # result type must be annotated; without ``(result i32)``
+        # the validator rejects the value on the arm's stack.
+        self._write("local.get $old_size")
+        self._write("local.get $new_size")
+        self._write("i32.lt_u")
+        self._write("if (result i32)")
+        self._indent += 1
+        self._write("local.get $old_size")
+        self._indent -= 1
+        self._write("else")
+        self._indent += 1
+        self._write("local.get $new_size")
+        self._indent -= 1
+        self._write("end")
+        self._write("local.set $copy_size")
+        # memory.copy(dst=new_ptr, src=old_ptr, n=copy_size)
+        self._write("local.get $new_ptr")
+        self._write("local.get $old_ptr")
+        self._write("local.get $copy_size")
+        self._write("memory.copy")
+        self._indent -= 1
+        self._write("end")
+        self._write("local.get $new_ptr")
+        self._indent -= 1
+        self._write(")")

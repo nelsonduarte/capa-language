@@ -146,45 +146,59 @@ class WasmHost:
         and ties allocations to the module's bump heap so memory
         stays linear and traceable."""
         import os
-        ft_string_to_optptr = wasmtime.FuncType(
-            [wasmtime.ValType.i32(), wasmtime.ValType.i32()],
-            [wasmtime.ValType.i32()],
+        # Canonical ABI lowering: ``option<string>`` returns through
+        # a 12-byte caller-allocated area (tag i32 @ 0, ptr i32 @ 4,
+        # len i32 @ 8). The host writes the flat fields; the IR
+        # materialiser repackages them into a Capa Option<String>
+        # heap record.
+        ft_string_to_unit_indirect = wasmtime.FuncType(
+            [
+                wasmtime.ValType.i32(),
+                wasmtime.ValType.i32(),
+                wasmtime.ValType.i32(),
+            ],
+            [],
         )
 
-        def env_get(caller, name_ptr, name_len):
+        def env_get(caller, name_ptr, name_len, ret_area):
             if self._memory is None or self._alloc_export is None:
                 raise RuntimeError(
                     "env.get called before instance memory + $alloc set"
                 )
-            # Read input string out of wasm memory.
             data = self._memory.read(caller, name_ptr, name_ptr + name_len)
             name = bytes(data).decode("utf-8")
             value = os.environ.get(name)
-            # Allocate the 16-byte Option container.
-            opt_ptr = self._alloc_export(caller, 16)
             if value is None:
-                # tag=None (1) at offset 0
+                # tag = 1 (None); ptr/len fields undefined per WIT,
+                # write zeros so memory stays deterministic.
                 self._memory.write(
-                    caller, (1).to_bytes(4, "little"), opt_ptr,
+                    caller, (1).to_bytes(4, "little"), ret_area,
                 )
-                return opt_ptr
-            # tag=Some (0) + packed (str_ptr, str_len) at offset 8
+                self._memory.write(
+                    caller, (0).to_bytes(4, "little"), ret_area + 4,
+                )
+                self._memory.write(
+                    caller, (0).to_bytes(4, "little"), ret_area + 8,
+                )
+                return
             encoded = value.encode("utf-8")
-            str_ptr = self._alloc_export(caller, len(encoded))
-            self._memory.write(caller, encoded, str_ptr)
+            if encoded:
+                s_ptr = self._alloc_export(caller, len(encoded))
+                self._memory.write(caller, encoded, s_ptr)
+            else:
+                s_ptr = 0
+            self._memory.write(caller, (0).to_bytes(4, "little"), ret_area)
             self._memory.write(
-                caller, (0).to_bytes(4, "little"), opt_ptr,
-            )
-            packed = (str_ptr & 0xFFFFFFFF) | (
-                (len(encoded) & 0xFFFFFFFF) << 32
+                caller, s_ptr.to_bytes(4, "little"), ret_area + 4,
             )
             self._memory.write(
-                caller, packed.to_bytes(8, "little"), opt_ptr + 8,
+                caller,
+                len(encoded).to_bytes(4, "little"),
+                ret_area + 8,
             )
-            return opt_ptr
 
         self.linker.define_func(
-            "capa:host/env", "get", ft_string_to_optptr,
+            "capa:host/env", "get", ft_string_to_unit_indirect,
             env_get, access_caller=True,
         )
 
@@ -192,54 +206,54 @@ class WasmHost:
         # linear memory: 16-byte header (len, cap, data_ptr, pad)
         # + N*8-byte data array of packed (ptr, len) i64s. The
         # WasmHost stashes argv at construction time so the
-        # callback knows what to materialise.
-        ft_to_listptr = wasmtime.FuncType([], [wasmtime.ValType.i32()])
+        # Canonical ABI: ``args`` returns ``list<string>`` indirectly
+        # via a caller-allocated return area. The host receives the
+        # return-area pointer as its single argument, writes
+        # ``(data_ptr, len)`` (two i32s) into the area, and returns
+        # nothing. The Capa-side caller then assembles the
+        # List<String> header (16 bytes) around the data buffer.
+        ft_indirect_to_unit = wasmtime.FuncType(
+            [wasmtime.ValType.i32()], [],
+        )
 
-        def env_args(caller):
+        def env_args(caller, ret_area):
             if self._memory is None or self._alloc_export is None:
                 raise RuntimeError(
                     "env.args called before memory + $alloc set"
                 )
             n = len(self._args)
-            # Allocate each string and pack its (ptr, len) i64.
-            packed_values: list[int] = []
-            for arg in self._args:
+            # Allocate the data buffer (n * 8 bytes). Each slot
+            # holds (str_ptr i32, str_len i32) which is the same
+            # byte layout Capa's packed-i64 string convention
+            # produces, so downstream List<String> iteration
+            # works unchanged.
+            data_ptr = self._alloc_export(caller, n * 8) if n else 0
+            for i, arg in enumerate(self._args):
                 encoded = arg.encode("utf-8")
                 if encoded:
                     s_ptr = self._alloc_export(caller, len(encoded))
                     self._memory.write(caller, encoded, s_ptr)
                 else:
-                    # Empty string: a valid (0, 0) packing; pointer
+                    # Empty string: a valid (0, 0) slot; pointer
                     # never read because length is zero.
                     s_ptr = 0
-                packed = (s_ptr & 0xFFFFFFFF) | (
-                    (len(encoded) & 0xFFFFFFFF) << 32
-                )
-                packed_values.append(packed)
-            # Allocate the List header (16 bytes).
-            header_ptr = self._alloc_export(caller, 16)
-            # Allocate the data array. Use cap = max(n, 8) so a
-            # downstream .push lands without an immediate grow,
-            # matching the MakeList convention.
-            cap = max(n, 8)
-            data_ptr = (
-                self._alloc_export(caller, cap * 8) if cap else 0
-            )
-            # Write header.
-            self._memory.write(caller, n.to_bytes(4, "little"), header_ptr)
-            self._memory.write(caller, cap.to_bytes(4, "little"), header_ptr + 4)
-            self._memory.write(
-                caller, data_ptr.to_bytes(4, "little"), header_ptr + 8,
-            )
-            # Write each packed element.
-            for i, packed in enumerate(packed_values):
+                slot = data_ptr + i * 8
                 self._memory.write(
-                    caller, packed.to_bytes(8, "little"), data_ptr + i * 8,
+                    caller, s_ptr.to_bytes(4, "little"), slot,
                 )
-            return header_ptr
+                self._memory.write(
+                    caller, len(encoded).to_bytes(4, "little"), slot + 4,
+                )
+            # Write (data_ptr, len) into the return area.
+            self._memory.write(
+                caller, data_ptr.to_bytes(4, "little"), ret_area,
+            )
+            self._memory.write(
+                caller, n.to_bytes(4, "little"), ret_area + 4,
+            )
 
         self.linker.define_func(
-            "capa:host/env", "args", ft_to_listptr,
+            "capa:host/env", "args", ft_indirect_to_unit,
             env_args, access_caller=True,
         )
 
@@ -260,74 +274,77 @@ class WasmHost:
         Phase 7C scope: no ``Fs.restrict_to`` capability attenuation
         (the wasm-side cap is unrestricted; in production we would
         track the same prefix set as ``capa.runtime.Fs``)."""
-        ft_string_to_resultptr = wasmtime.FuncType(
-            [wasmtime.ValType.i32(), wasmtime.ValType.i32()],
-            [wasmtime.ValType.i32()],
-        )
-        ft_path_content_to_resultptr = wasmtime.FuncType(
+        # Canonical ABI: result<T, io-error> returns indirectly via
+        # a 20-byte caller area. Layout:
+        #   tag i32  @ 0
+        #   Ok arm (string): ptr @ 4, len @ 8 (Ok<unit> writes zeros)
+        #   Err arm (io-error): m_ptr @ 4, m_len @ 8, c_ptr @ 12,
+        #                       c_len @ 16
+        ft_fs_read_indirect = wasmtime.FuncType(
             [
-                wasmtime.ValType.i32(), wasmtime.ValType.i32(),
-                wasmtime.ValType.i32(), wasmtime.ValType.i32(),
+                wasmtime.ValType.i32(),  # path_ptr
+                wasmtime.ValType.i32(),  # path_len
+                wasmtime.ValType.i32(),  # ret_area
             ],
-            [wasmtime.ValType.i32()],
+            [],
+        )
+        ft_fs_write_indirect = wasmtime.FuncType(
+            [
+                wasmtime.ValType.i32(),  # path_ptr
+                wasmtime.ValType.i32(),  # path_len
+                wasmtime.ValType.i32(),  # content_ptr
+                wasmtime.ValType.i32(),  # content_len
+                wasmtime.ValType.i32(),  # ret_area
+            ],
+            [],
         )
 
-        def _alloc_string(caller, text: str) -> tuple[int, int]:
-            """Helper: allocate UTF-8 bytes for ``text`` in wasm
-            memory and return (ptr, len)."""
+        def _alloc_utf8(caller, text: str) -> tuple[int, int]:
             encoded = text.encode("utf-8")
+            if not encoded:
+                return 0, 0
             ptr = self._alloc_export(caller, len(encoded))
             self._memory.write(caller, encoded, ptr)
             return ptr, len(encoded)
 
-        def _alloc_ioerror(caller, message: str, cause: str = "") -> int:
-            """Allocate an IoError struct (16 bytes: two String
-            (ptr, len) pairs) and return its pointer. Matches
-            ``_IOERROR_LAYOUT`` in the Wasm emitter."""
-            m_ptr, m_len = _alloc_string(caller, message)
-            c_ptr, c_len = _alloc_string(caller, cause)
-            ioerror_ptr = self._alloc_export(caller, 16)
+        def _write_result_ok_string(caller, ret_area, ptr, length):
+            self._memory.write(caller, (0).to_bytes(4, "little"), ret_area)
             self._memory.write(
-                caller, m_ptr.to_bytes(4, "little"), ioerror_ptr,
+                caller, ptr.to_bytes(4, "little"), ret_area + 4,
             )
             self._memory.write(
-                caller, m_len.to_bytes(4, "little"), ioerror_ptr + 4,
+                caller, length.to_bytes(4, "little"), ret_area + 8,
             )
+            # Zero the remaining bytes of the Err union for tidiness.
             self._memory.write(
-                caller, c_ptr.to_bytes(4, "little"), ioerror_ptr + 8,
+                caller, (0).to_bytes(8, "little"), ret_area + 12,
             )
-            self._memory.write(
-                caller, c_len.to_bytes(4, "little"), ioerror_ptr + 12,
-            )
-            return ioerror_ptr
 
-        def _alloc_result_ok_string(caller, content: str) -> int:
-            """Build Ok(String) Result and return its pointer."""
-            ptr, length = _alloc_string(caller, content)
-            packed = (ptr & 0xFFFFFFFF) | ((length & 0xFFFFFFFF) << 32)
-            result_ptr = self._alloc_export(caller, 16)
+        def _write_result_ok_unit(caller, ret_area):
+            # Tag = 0, rest zeroed.
+            self._memory.write(caller, (0).to_bytes(4, "little"), ret_area)
             self._memory.write(
-                caller, (0).to_bytes(4, "little"), result_ptr,
+                caller, (0).to_bytes(16, "little"), ret_area + 4,
             )
-            self._memory.write(
-                caller, packed.to_bytes(8, "little"), result_ptr + 8,
-            )
-            return result_ptr
 
-        def _alloc_result_err_ioerror(caller, message: str) -> int:
-            """Build Err(IoError) Result and return its pointer.
-            The IoError is i32-extended-to-i64 in the payload slot."""
-            io_ptr = _alloc_ioerror(caller, message)
-            result_ptr = self._alloc_export(caller, 16)
+        def _write_result_err_ioerror(caller, ret_area, message, cause=""):
+            m_ptr, m_len = _alloc_utf8(caller, message)
+            c_ptr, c_len = _alloc_utf8(caller, cause)
+            self._memory.write(caller, (1).to_bytes(4, "little"), ret_area)
             self._memory.write(
-                caller, (1).to_bytes(4, "little"), result_ptr,
+                caller, m_ptr.to_bytes(4, "little"), ret_area + 4,
             )
             self._memory.write(
-                caller, io_ptr.to_bytes(8, "little"), result_ptr + 8,
+                caller, m_len.to_bytes(4, "little"), ret_area + 8,
             )
-            return result_ptr
+            self._memory.write(
+                caller, c_ptr.to_bytes(4, "little"), ret_area + 12,
+            )
+            self._memory.write(
+                caller, c_len.to_bytes(4, "little"), ret_area + 16,
+            )
 
-        def fs_read(caller, path_ptr, path_len):
+        def fs_read(caller, path_ptr, path_len, ret_area):
             if self._memory is None or self._alloc_export is None:
                 raise RuntimeError(
                     "fs.read called before memory + $alloc set"
@@ -337,11 +354,12 @@ class WasmHost:
             ).decode("utf-8")
             try:
                 content = open(path, encoding="utf-8").read()
-                return _alloc_result_ok_string(caller, content)
+                s_ptr, s_len = _alloc_utf8(caller, content)
+                _write_result_ok_string(caller, ret_area, s_ptr, s_len)
             except OSError as e:
-                return _alloc_result_err_ioerror(caller, str(e))
+                _write_result_err_ioerror(caller, ret_area, str(e))
 
-        def fs_write(caller, p_ptr, p_len, c_ptr, c_len):
+        def fs_write(caller, p_ptr, p_len, c_ptr, c_len, ret_area):
             if self._memory is None or self._alloc_export is None:
                 raise RuntimeError(
                     "fs.write called before memory + $alloc set"
@@ -355,24 +373,16 @@ class WasmHost:
             try:
                 with open(path, "w", encoding="utf-8") as f:
                     f.write(content)
-                # Ok(Unit): tag=0, payload slot zero.
-                result_ptr = self._alloc_export(caller, 16)
-                self._memory.write(
-                    caller, (0).to_bytes(4, "little"), result_ptr,
-                )
-                self._memory.write(
-                    caller, (0).to_bytes(8, "little"), result_ptr + 8,
-                )
-                return result_ptr
+                _write_result_ok_unit(caller, ret_area)
             except OSError as e:
-                return _alloc_result_err_ioerror(caller, str(e))
+                _write_result_err_ioerror(caller, ret_area, str(e))
 
         self.linker.define_func(
-            "capa:host/fs", "read", ft_string_to_resultptr,
+            "capa:host/fs", "read", ft_fs_read_indirect,
             fs_read, access_caller=True,
         )
         self.linker.define_func(
-            "capa:host/fs", "write", ft_path_content_to_resultptr,
+            "capa:host/fs", "write", ft_fs_write_indirect,
             fs_write, access_caller=True,
         )
 
@@ -412,13 +422,22 @@ class WasmHost:
         use i64-extended; strings are packed (ptr | (len << 32))."""
         import json as _stdlib_json
 
+        # Canonical ABI:
+        #   parse: (s_ptr, s_len, ret_area) -> ()  -- 12-byte ret
+        #     area holds tag i32 + max(Ok u32, Err string).
+        #   to-string: (jv, ret_area) -> ()  -- 8-byte ret area
+        #     holds (ptr i32, len i32).
         ft_parse = wasmtime.FuncType(
-            [wasmtime.ValType.i32(), wasmtime.ValType.i32()],
-            [wasmtime.ValType.i32()],
+            [
+                wasmtime.ValType.i32(),
+                wasmtime.ValType.i32(),
+                wasmtime.ValType.i32(),
+            ],
+            [],
         )
         ft_to_string = wasmtime.FuncType(
-            [wasmtime.ValType.i32()],
             [wasmtime.ValType.i32(), wasmtime.ValType.i32()],
+            [],
         )
 
         # ---- helpers (closures over caller-local self._memory + alloc) ----
@@ -591,7 +610,9 @@ class WasmHost:
 
         # ---- the two host functions ----
 
-        def json_parse(caller, s_ptr, s_len):
+        def json_parse(caller, s_ptr, s_len, ret_area):
+            """result<u32, string> indirect lowering. 12-byte area:
+            tag @ 0, Ok-u32 @ 4, Err (msg_ptr, msg_len) @ 4 + 8."""
             if self._memory is None or self._alloc_export is None:
                 raise RuntimeError(
                     "json.parse called before memory + $alloc set"
@@ -600,23 +621,17 @@ class WasmHost:
                 text = _read_string(caller, s_ptr, s_len)
                 py_val = _stdlib_json.loads(text)
                 jv_ptr = _py_to_jv(caller, py_val)
-                # Wrap in Ok(JsonValue): 16-byte Result with tag=0
-                # and payload = jv_ptr extended to i64.
-                result_ptr = self._alloc_export(caller, 16)
-                _write_u32(caller, result_ptr, 0)
-                _write_i64(caller, result_ptr + 8, jv_ptr & 0xFFFFFFFF)
-                return result_ptr
+                _write_u32(caller, ret_area, 0)            # tag Ok
+                _write_u32(caller, ret_area + 4, jv_ptr)   # u32 handle
+                _write_u32(caller, ret_area + 8, 0)        # pad
             except (ValueError, _stdlib_json.JSONDecodeError) as e:
                 err_ptr, err_len = _alloc_string(caller, str(e))
-                packed = (err_ptr & 0xFFFFFFFF) | (
-                    (err_len & 0xFFFFFFFF) << 32
-                )
-                result_ptr = self._alloc_export(caller, 16)
-                _write_u32(caller, result_ptr, 1)  # Err
-                _write_i64(caller, result_ptr + 8, packed)
-                return result_ptr
+                _write_u32(caller, ret_area, 1)            # tag Err
+                _write_u32(caller, ret_area + 4, err_ptr)
+                _write_u32(caller, ret_area + 8, err_len)
 
-        def json_to_string(caller, jv_ptr):
+        def json_to_string(caller, jv_ptr, ret_area):
+            """string indirect lowering. 8-byte area: (ptr, len)."""
             if self._memory is None or self._alloc_export is None:
                 raise RuntimeError(
                     "json.to_string called before memory + $alloc set"
@@ -624,7 +639,8 @@ class WasmHost:
             py_val = _jv_to_py(caller, jv_ptr)
             text = _stdlib_json.dumps(py_val)
             ptr, length = _alloc_string(caller, text)
-            return (ptr, length)
+            _write_u32(caller, ret_area, ptr)
+            _write_u32(caller, ret_area + 4, length)
 
         self.linker.define_func(
             "capa:host/json", "parse", ft_parse,

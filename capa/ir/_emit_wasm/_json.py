@@ -181,9 +181,10 @@ class _JsonEmissionMixin:
     def _emit_call_host_json_parse(self, instr: Call) -> None:
         """``parse_json(s: String) -> Result<JsonValue, String>``.
 
-        Push the String arg as (ptr, len), call the imported host
-        function ``$Json_parse``, which returns an i32 pointer to a
-        freshly-allocated Result record. Bind to ``instr.dst``."""
+        Canonical ABI: push the String arg (ptr, len) + a 12-byte
+        return area, call the imported host function (void return),
+        then materialise a Capa Result<i32, String> heap record
+        from the flat fields in the return area."""
         if not instr.args:
             raise WasmEmissionError("parse_json: expected 1 arg")
         arg = instr.args[0]
@@ -191,28 +192,32 @@ class _JsonEmissionMixin:
             raise WasmEmissionError(
                 f"parse_json: expected String arg, got {arg.ty!r}"
             )
-        # Push (ptr, len) -- handle literal, local, and param cases
-        # the same way other String args are pushed.
         if arg.kind == "lit_str":
             offset, length = self._intern_string(arg.literal)
             self._write(f"i32.const {offset}")
             self._write(f"i32.const {length}")
         else:
             self._push_string_value_as_ptr_len(arg)
+        self._write("i32.const 12")
+        self._write("call $alloc")
+        self._write("local.tee $_ret_area")
         self._write("call $Json_parse")
-        if instr.dst is not None:
-            self._write(f"local.set ${instr.dst}")
+        self._emit_cap_indirect_materialise(
+            "result_u32_string", instr.dst,
+        )
 
     def _emit_call_host_json_to_string(self, instr: Call) -> None:
         """``to_json(jv: JsonValue) -> String``.
 
-        Push the JsonValue pointer (i32), call the imported host
-        function ``$Json_to_string``, which returns (ptr, len). Bind
-        to ``instr.dst``'s String locals."""
+        Canonical ABI: push the JsonValue handle (i32) + an 8-byte
+        return area, call (void return), then bind dst's String
+        (ptr, len) locals from the flat fields the host wrote."""
         if not instr.args:
             raise WasmEmissionError("to_json: expected 1 arg")
         arg = instr.args[0]
         self._push_value(arg)
+        self._write("i32.const 8")
+        self._write("call $alloc")
+        self._write("local.tee $_ret_area")
         self._write("call $Json_to_string")
-        if instr.dst is not None:
-            self._set_string_dst(instr.dst)
+        self._emit_cap_indirect_materialise("string", instr.dst)

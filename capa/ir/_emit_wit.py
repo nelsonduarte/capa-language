@@ -30,7 +30,7 @@ from typing import List, Optional
 
 from ._nodes import (
     Module, Function, Instr,
-    MethodCall, If, While, Match,
+    Call, MethodCall, If, While, For, Match,
 )
 
 
@@ -78,8 +78,13 @@ _WIT_SIGNATURES: dict[tuple[str, str], str] = {
     # in source as ``json.parse(...)`` capability methods, but the
     # Wasm import machinery treats them as a 9th capability so the
     # host bridge can ship two functions without bespoke plumbing.
-    ("Json", "parse"):     "parse: func(s: string) -> result<i32, string>",
-    ("Json", "to_string"): "to-string: func(jv: i32) -> string",
+    # JsonValue crosses the component boundary as an opaque u32
+    # handle: the host's parse builds the value in linear memory
+    # via $alloc and returns the pointer; the consumer hands it
+    # back to to-string. WIT has no raw-pointer type, so u32
+    # carries the handle the linker can validate.
+    ("Json", "parse"):     "parse: func(s: string) -> result<u32, string>",
+    ("Json", "to_string"): "to-string: func(jv: u32) -> string",
 }
 
 
@@ -123,22 +128,42 @@ class UnsupportedCapabilityMethod(Exception):
 
 def collect_used_capabilities(module: Module) -> dict[str, set[str]]:
     """Walk every instruction in every function and return a
-    capability_name -> set-of-method-names mapping. Includes only
-    method calls flagged ``cap_used`` by the lowerer; ordinary
-    method calls on non-capability receivers are ignored."""
+    capability_name -> set-of-method-names mapping.
+
+    Mirrors the Wasm emitter's discovery pass: a method call is a
+    capability call when the lowerer set ``cap_used`` *or* when the
+    receiver's type is a built-in capability class (impl-method-
+    internal calls do not always carry ``cap_used`` through). The
+    Json synthetic capability is also picked up from
+    ``parse_json`` / ``to_json`` free-function calls. The WIT and
+    the core wasm imports must agree on the used-cap set or the
+    Component Model linker rejects the artifact."""
     out: dict[str, set[str]] = {}
 
     def visit(instrs: list[Instr]) -> None:
         for instr in instrs:
-            if isinstance(instr, MethodCall) and instr.cap_used:
-                out.setdefault(instr.cap_used, set()).add(instr.method)
+            if isinstance(instr, MethodCall):
+                cap = instr.cap_used
+                if cap is None:
+                    rty = instr.receiver.ty or ""
+                    if rty in _BUILTIN_CAPS:
+                        cap = rty
+                if cap is not None:
+                    out.setdefault(cap, set()).add(instr.method)
+            elif isinstance(instr, Call):
+                if instr.callee_name == "parse_json":
+                    out.setdefault("Json", set()).add("parse")
+                elif instr.callee_name == "to_json":
+                    out.setdefault("Json", set()).add("to_string")
             # Recurse into nested instruction lists so we don't miss
-            # method calls inside if/while/match arm bodies.
+            # method calls inside if/while/for/match arm bodies.
             if isinstance(instr, If):
                 visit(instr.then_body)
                 visit(instr.else_body)
             elif isinstance(instr, While):
                 visit(instr.cond_setup)
+                visit(instr.body)
+            elif isinstance(instr, For):
                 visit(instr.body)
             elif isinstance(instr, Match):
                 for arm in instr.arms:
@@ -147,6 +172,13 @@ def collect_used_capabilities(module: Module) -> dict[str, set[str]]:
     for fn in module.functions:
         visit(fn.body)
     return out
+
+
+# Mirrors capa.ir._emit_wasm._BUILTIN_CAPS without importing the
+# Wasm emitter (which would create a cycle: _emit_wit is imported
+# by the CLI before the Wasm emitter is ready). Built-in capability
+# names recognised as receiver types when ``cap_used`` is not set.
+_BUILTIN_CAPS = {"Stdio", "Fs", "Net", "Env", "Clock", "Random", "Proc", "Db", "Unsafe"}
 
 
 def emit_wit(module: Module, world_name: str = "program") -> str:
