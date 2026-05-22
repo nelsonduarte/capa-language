@@ -1,1001 +1,371 @@
 # Capa, TODO / Roadmap
 
-Living inventory of pending work, captured locally so context survives
-across sessions. Loosely ordered by impact. Edit freely.
+Living inventory of pending work. Re-prioritised 2026-05-22.
 
-Legend: **P0** = blocking next public milestone · **P1** = high
-impact within the next 1-2 milestones · **P2** = nice to have ·
-**P3** = future / research-grade · ⏱ = rough effort estimate.
+## Priority levels
+
+- **P0**: blocking the current goal (Wasm CM backend that runs
+  the three downstream demos end-to-end). Touch first.
+- **P1**: high impact within Capa's positioning (capability
+  discipline + supply-chain governance). Touch once P0 is clear.
+- **P2**: adoption-moving but not core to the headline claim.
+  Touch when P0/P1 lulls.
+- **P3**: research-grade or far-future. Parked. Listed for
+  completeness; revisit only if a concrete need surfaces.
+
+Status legend: `[x]` done · `[~]` partial · `[ ]` pending.
+
+---
+
+## Current goal (May 2026)
+
+The Wasm Component Model backend should compile and run the three
+downstream demos (`audit-trail-reporter`, `policy-eval`,
+`sbom-watch`) end-to-end via `capa --wasm --run`. Everything in
+the P0 block below is what stands between today's state and that
+goal.
+
+Session 2026-05-22 closed Phase 6E (closures), 6G (JsonValue),
+6H (String.split + List<String>), 6I (Option/Result methods);
+fixed the lowerer's parametric-type drop; added List.get,
+Map<String, String>, String-scrutinee match, multi-value String
+returns. 92 Wasm tests green. The `policy-eval` frontier moved
+from `MakeLambda not supported` (Phase 6E entry) to
+`Value(kind="global")` at the module-level constant lookup.
+
+---
+
+## P0 — Wasm CM backend, finish the three downstream demos
+
+Concrete blockers observed against each demo in May 2026.
+
+- [ ] **Module-level constants in Wasm**. `policy-eval`'s next
+  wall: a top-level `const DEBUG: Bool = false` lowers to
+  `Value(kind="global", name="DEBUG", ty="Unknown")`, which
+  `_push_value` does not handle. Two approaches: (a) inline the
+  constant's value at use sites (works for scalar literals);
+  (b) emit a Wasm `(global ...)` declaration per module-level
+  const (works for any const, future-proof). Recommend (b) since
+  the const table is small and the analyzer already records each
+  const's type and initialiser. ⏱ 2-3h.
+
+- [ ] **`capa_datetime` stdlib in Wasm**.
+  `audit-trail-reporter` needs date/timestamp parsing + ISO
+  formatting. Today this lives as a vendored library that
+  transpiles to Python `datetime`. Wasm needs either a host
+  bridge (`capa:host/datetime`) or pure-Wasm implementations.
+  Bridge is faster: ~3 methods (`parse_iso`, `format_iso`,
+  `now_utc`). ⏱ 4-6h.
+
+- [ ] **`capa_http` capability in Wasm**. `sbom-watch` fetches
+  CVE feeds over HTTP. Today this transpiles to Python
+  `urllib.request`. Wasm side: new `capa:host/net` WIT interface
+  with `get(url) -> Result<String, IoError>` (minimum
+  viable for the demo) + `post(url, body) -> Result<String,
+  IoError>`. Host bridge in `_wasm_host.py`. ⏱ 4-6h.
+
+- [ ] **Lit_str in `_push_value`**. Currently raises; affects
+  any path that pushes a literal where the receiver isn't
+  already filtered by callers. Surfaced by MakeList<String>
+  before that path was special-cased; may recur. ⏱ 1h once
+  reproduced.
+
+- [ ] **List<String>.contains** and **List<JsonValue>.contains**.
+  Each call uses byte-by-byte / pointer compare; both deferred
+  in the current `_emit_list_contains`. policy-eval may need
+  one of these for its filter step. ⏱ 1-2h each.
+
+- [ ] **Multi-byte separator in `String.split`**. Today
+  supports single-byte only. policy-eval and the demos only use
+  single-byte separators (`","`, `"."`, `"="`), but a future
+  case may hit this. ⏱ 2h.
+
+- [ ] **`String.replace` / `String.char_at` / `String.index_of`**
+  in Wasm. Documented gaps in `_emit_string_method_call`.
+  Probably not needed for the three demos but worth closing
+  while the String emitter is fresh. ⏱ 3-4h together.
+
+Total P0 estimate: ~15-25h to ship the three demos end-to-end.
+
+---
+
+## P1 — High-impact within positioning
+
+Strengthens the capability + supply-chain claim, but isn't on
+the current Wasm critical path.
+
+- [~] **CIR coverage gap**. CIR lowers 44 of 46 analysable
+  examples; `TuplePat` in match patterns and match-arm guards
+  remain unsupported (`UnsupportedInIR`). Closes the CIR
+  pipeline as the primary path; legacy direct-to-Python emitter
+  becomes the fallback only for unsupported constructs the IR
+  doesn't yet model. ⏱ 4-6h.
+
+- [~] **Property-based testing for the Wasm backend**. The
+  Hypothesis suite at `tests/test_properties.py` only covers
+  the Python pipeline (manifest ⊇ runtime classes). Mirror the
+  property for `--wasm`: generate a small program, compile to
+  Wasm, run through the host bridge with a traced version of
+  the imports, assert `wasm_runtime_classes ⊆ manifest_classes`.
+  Same citable invariant, new pipeline. ⏱ 6-8h.
+
+- [~] **Empirical study at scale**. Four design-pattern CVE
+  case studies landed in `examples/cve_*.capa` + `docs/cve_*.md`
+  (PyYAML, Jinja2 SSTI, lxml XXE, pickle). Bug-class taxonomy
+  is structurally complete. **Pending**: the quantitative study,
+  transliterate 10-20 real libraries, measure SBOM-diff against
+  hand-Python equivalents, report aggregates. Multi-session
+  arc. ⏱ 20-30h.
+
+- [~] **Formatter v3, AST round-trip**. v1 (line-level) and v2
+  (intra-line spaces / comma fixup) landed. v3 needs expression
+  re-emission from the AST and `//` comment preservation through
+  the AST round-trip. Comment-preservation design comes first;
+  no AST round-trip is safe without it. ⏱ 8-12h, design-heavy.
+
+- [ ] **Test-coverage review**. `coverage.py` run + identify
+  which parts of the analyzer / emitters are under-tested.
+  Quick pass on the existing 1211 tests probably uncovers
+  meaningful gaps. ⏱ 2-3h to measure + 4-8h to fill the worst.
+
+- [~] **CycloneDX / SPDX parsers — pending optional fields**.
+  `examples/cyclonedx_parser.capa` and
+  `examples/spdx_parser.capa` cover the core fields with
+  validation passes. Missing: SPDX annotations / snippets /
+  has-extracted-licensing-info; CycloneDX vulnerabilities[] /
+  VEX / services[] / evidence[] / signatures; the tag-value
+  alternative serialisation; the "representation + validation"
+  writeup tying them together. ⏱ 8-12h each.
+
+- [~] **SBOM-capability audit example, structural policies**.
+  Today's audit at `examples/sbom_capability_audit.capa`
+  supports per-function allow-lists. Pending: structural
+  cross-function policies (e.g. "no Net anywhere except inside
+  an impl of trait NetClient"). ⏱ 4-6h.
+
+- [~] **Workshop paper revision**. Draft v1 (~5000 words, all
+  sections) is local-only. Iterate on revision; convert to
+  LaTeX when targeting a specific venue submission. Target
+  venues: PLAS, EuroS&P workshops, NDSS workshops. ⏱ 10-20h
+  for a publishable revision; 20-40h for venue submission.
+
+---
+
+## P2 — Adoption-moving, not core
+
+The single highest-leverage move per the strategy section is
+**LLM tool-use sandboxing**: capability discipline is
+structurally the right shape for sandboxing LLM agents that can
+call tools. The industry has no good solution; Capa has the
+right primitives. Listed at the top of this section accordingly.
+
+- [ ] **LLM tool-use demo**. Small library (`capability
+  LlmTool`, attenuated per-tool, embedded in the SBOM as the
+  declared authority surface) showing a Capa-shaped agent
+  harness where each tool's authority is statically narrowed
+  and surfaced in the manifest. Probably the single
+  highest-leverage thing to build next. ⏱ 2-3 days.
+
+- [~] **LSP server v2 polish**. v1 covers diagnostics, hover,
+  go-to-definition, find-references, documentSymbol, code
+  actions, rename, completion (floor + module scope + receiver
+  methods), semantic tokens. Pending items: none currently
+  identified at the LSP level. Re-evaluate after a real-user
+  session. ⏱ depends on what surfaces.
+
+- [~] **REPL v2**. MVP at `capa/repl.py` re-runs everything on
+  each input (no incremental state). v2 needs incremental
+  analyzer state and readline / history. ⏱ 8-12h.
+
+- [ ] **VSCode marketplace publication**. Grammar lives in
+  `vscode/`; install today is manual symlink/junction. Publish
+  to Marketplace for one-click install. ⏱ 1-2h once the
+  Marketplace account + publisher are set up.
+
+- [ ] **Migration path from Python**. Today's interop is one-way
+  via `Unsafe`. A "gradual hardening" mode (start with
+  everything `Unsafe`, then narrow function by function) would
+  lower the entry barrier significantly. ⏱ design-heavy,
+  weeks not hours.
+
+- [ ] **Package manager + minimal registry**. Listed elsewhere
+  as P3 ecosystem work. Without it there's no "install Capa,
+  run a real program from a real library" path. Chicken-and-egg
+  with libraries. ⏱ months as a real product; days as a
+  manifest-only MVP.
+
+- [ ] **Debugger integration**. Python debugger works on the
+  transpiled output but maps poorly. Source maps would help.
+  ⏱ 8-16h depending on Python debug-info granularity.
+
+- [ ] **Analyzer performance benchmarks**. Lex+parse+analyze
+  wallclock isn't measured. Probably not slow yet, but a
+  measurement bar is cheap to add. ⏱ 2-4h.
+
+---
+
+## P3 — Research-grade, parked
+
+None on the current plan. Each is a multi-month arc of its own.
+Listed so the design space is explicit.
+
+### Type-system extensions
+
+- **Linear handles for resources** (must-call types). Smallest
+  of the four extensions, most defensible value-add. ROI: high
+  — closes a concrete bug class (resource leaks).
+- **Information Flow Control (IFC)**. Cost: large; the type
+  system needs a label algebra + noninterference proof. ROI:
+  highest — addresses privacy leakage and prompt-injection
+  attacks where capability discipline alone is not enough.
+- **Typestate / session types**. Real for network / protocol
+  code; concrete pain point even in Rust.
+- **Constant-time markers for crypto**. Niche but high-value
+  for the crypto subset. The CVE case studies already include
+  CWE-208 (timing attack) examples that this would mechanically
+  prevent.
+- **Quantitative capabilities** (budgeted authority). ROI:
+  marginal; most rate-limiting use cases are solved at the
+  application level.
+- **Refinement types**. Parked explicitly future.
+- **Turbofish (`::<T>`)**. EBNF §7.3 mentions; never needed.
+  Implement only if a concrete case comes up.
+
+### Backend / runtime
+
+- **Native LLVM backend**. The single biggest adoption blocker
+  long-term. Python target is fine for prototyping; production
+  deployment requires real performance.
+- **Self-hosting**. Very far future.
+- **Async / await with capability-aware semantics**. Hard part
+  is the semantics: capabilities cannot leak across `await`
+  boundaries; cancellation must not strand resources
+  (intersects with linear handles).
+- **Tail-call optimisation**.
+- **Garbage collection beyond CPython's**.
+- **Custom syntax extensions / macros**.
+
+### Wasm-specific gaps that are not P0
+
+- **List<T>.map / filter / fold for non-Int element types**.
+  Today Phase 6E supports List<Int> HOFs only. Other element
+  types need their packed-i64 / pointer-shape paths threaded
+  through the HOF lowering. ⏱ ~8h.
+- **Lambdas-inside-lambdas (nested closures)**. Today raises;
+  needs env-of-env encoding. Rare in practice. ⏱ unknown.
+- **Pure-Wasm JSON parser** (alternative to today's host
+  bridge). ~500 lines of WAT; only matters for shipping
+  truly host-independent Wasm modules. ⏱ 12-16h.
+
+---
+
+## Known restrictions (documented, not bugs)
+
+- **Indent-based `match` inside parentheses** fails because
+  parens suppress NEWLINE / INDENT / DEDENT. Workaround: the
+  braced inline form (`match x { P1 -> e1, ... }`) works inside
+  call expressions. Reclassified from "bug" to "documented
+  restriction"; promote to a fix only if someone proposes a
+  lexer change whose blast radius doesn't break the indent-based
+  form elsewhere.
+- **Block-body lambdas in deep expression contexts**. Same root
+  cause as the indent-form match restriction above. Parser
+  emits a targeted error pointing at the workaround (bind to
+  `let` first, or use a single-expression body).
 
 ---
 
 ## Known limitations (visible to adopters)
 
-What an adopter should know is not yet there. The full reasoning
-per item is scattered through the rest of this file; this section
-is the consolidated honest list.
+What an adopter should know is not yet there. Surfaced in
+`docs/roadmap.html`.
 
-- **No package manager or registry.** No way to share or
+- **No package manager or registry**. No way to share or
   reuse Capa libraries beyond copying source. Waits on the
-  module system. (P3, line 308.)
-- **No native backend.** Capa transpiles to Python; runtime
-  is CPython. The benchmark suite measures 1.00x to 1.45x
-  overhead vs hand-Python. (Far future; "not in v1" at line
-  744.)
-- **No async / await.** Keywords are reserved; no
+  module system. (P2)
+- **No native backend**. Capa transpiles to Python; runtime
+  is CPython. Benchmarks measure 1.00x to 1.45x overhead vs
+  hand-Python. The Wasm CM backend (in active development)
+  changes this but isn't 1.0-ready yet. (P3 long-term)
+- **No async / await**. Keywords are reserved; no
   implementation. Capability-aware async is a research
-  question on its own. ("Not in v1" at line 746.)
-- **REPL: MVP only.** `capa repl` opens an interactive prompt
-  with every standard built-in capability pre-bound (`stdio`,
-  `fs`, `net`, `env`, `clock`, `random`; `Unsafe` is left out
-  on purpose). Multi-line blocks (`if` / `for` / `while` /
-  `match`) get a continuation prompt and terminate on a blank
-  line. Re-runs the assembled program on each input with
-  stdout-diffing. Meta commands `.exit`, `.reset`, `.show`,
-  `.help`. Pending: incremental analyzer state, readline /
-  history. (P2, line 310.)
-
-Surfacing this list in `docs/roadmap.html` so adopters see it
-before adopting. The detail-level entries below stay as the
-source of truth.
+  question. (P3)
+- **REPL: MVP only**. Re-runs the assembled program on each
+  input; no incremental state or readline. (P2)
 
 ---
 
-## Language development
+## Completed (selective; full history in CHANGELOG.md)
 
-Small focused additions, prioritised by friction encountered
-while writing real Capa programs.
+Listed here so a glance shows the shape of done work; one line
+per item with a date for time-anchoring. The CHANGELOG carries
+the full reasoning.
 
-- [x] **String stdlib gaps**: `char_at`, `substring`,
-  `index_of` (with the same `Option<T>`-on-failure convention
-  the existing List/Map methods use). Landed 2026-05-15;
-  surfaced while writing the design-pattern CVE case studies
-  in this session. `capa/builtins.py` +
-  `capa/transpiler/_methods.py` + 12 new tests.
+### Wasm CM backend
+- 2026-05-22: **Phase 6E-6I** all landed in a single multi-hour
+  session: closures + HOFs, Bool/`()`/`?` follow-ups, JsonValue
+  + `capa:host/json` host bridge, `String.split` +
+  List<String> baseline, Option/Result method dispatch
+  (`is_some/none/ok/err/unwrap_or`), lowerer fix for parametric
+  type rendering, List.get + Map<String,String>, String-
+  scrutinee match, multi-value String returns. 92 Wasm tests
+  green.
+- 2026-05-22: **Wasm emitter modularised**. `_emit_wasm/`
+  package with 7 focused mixins (closures 888, strings 756,
+  maps 450, runtime 432, lists 417, layout 242, match 149,
+  json 245, option 174); main `__init__.py` 1506 lines (was
+  4628). Composition pattern matches the analyzer / parser /
+  transpiler splits.
 
-- [x] **More stdlib gaps**: `List.find`, `List.find_index`,
-  `Map.pairs`, `JsonValue.as_number` (alias for `as_num`),
-  `JsonValue.as_int`. Plus parser change allowing assignment
-  as a single-line match arm body (`_ -> sum = sum + x`).
-  Landed 2026-05-15. 8 new tests.
+### Frontend / analyzer
+- 2026-05-20: NLL-style consume tracking around divergent
+  branches.
+- 2026-05-20: Block-scope shadowing rejection.
+- 2026-05-20: All four Agda soundness theorems mechanised
+  (Stages 1-4 of `proofs/`).
+- 2026-05-19: `?` soundness fix (analyzer rejects `?` whose
+  enclosing function/lambda doesn't return Result/Option).
+- 2026-05-15: `pub` visibility enforcement via per-module name
+  mangling.
+- 2026-05-15: Stdlib paths via `CAPA_PATH`.
 
-- [x] **Watch mode** (`capa --watch file.capa`): re-runs the
-  program when the file or any imported module changes on
-  disk. Polling loop + per-iteration subprocess to keep zero
-  state between runs. Landed 2026-05-15. 2 new tests.
+### Supply-chain artefacts
+- 2026-05-15: **Tier 1 complete** — SBOM diff tool, SPDX 2.3
+  emission, VEX integration, SLSA Build L1 provenance.
+- 2026-05-15: **Tier 2 complete** — `docs/regulatory.md`
+  covering CRA + NIS2 + DORA + NIST SSDF + OWASP SCVS.
+- 2026-05-15: Tier 3 — provenance signing workflow.
+- 2026-05-15: Ineligibility proofs as SBOM enrichment
+  (`provably_excluded_capabilities` in CycloneDX + SPDX).
 
-- [x] **Specialised "private to module" diagnostic**. When an
-  unresolved name (or type) matches a private of some imported
-  module, the analyzer's hint becomes `(private to module 'X';
-  mark it 'pub' to expose)` instead of the generic typo guess.
-  Multi-module collisions list every candidate. Landed
-  2026-05-15. 4 new tests at
-  `tests/test_loader.py::TestPrivateDiagnostic`.
+### CVE case studies (6 landed)
+- event-stream 2018, eslint-scope 2018, node-ipc 2022,
+  xz-utils 2024, torchtriton 2022, ua-parser-js 2021. Four
+  clean wins + two honest partial losses, balanced experimental
+  panel. Plus four design-pattern CVE studies (PyYAML,
+  Jinja2 SSTI, lxml XXE, pickle).
 
-- [x] **`pub` visibility enforcement**. The `pub` keyword
-  has parsed for ages without doing anything; it now blocks
-  imported modules' private items from being reached by
-  importers. Implementation: per-module name mangling in
-  the loader. Public items keep their declared names;
-  private items get renamed to `_capa_m<N>__<name>` along
-  with every internal reference to them (Ident, TypeName,
-  ImplBlock.trait_name / type_name, StructLit.type_name).
-  Importers' unqualified references no longer resolve; the
-  exports map used by the qualified-call rewriter is also
-  filtered to pub-only so `M.private()` is denied too.
-  Behavior change for any pre-existing multi-file Capa
-  code that did not put `pub` on imported items. Landed
-  2026-05-15. 8 new tests.
+### Tooling
+- 2026-05-15: LSP v1 (diagnostics, hover, go-to-definition,
+  find-references, documentSymbol, code actions, rename,
+  completion incl. receiver-method completion after `.`,
+  semantic tokens).
+- 2026-05-15: Formatter v2 (line-level + intra-line spaces /
+  comma fixup).
+- 2026-05-15: REPL MVP.
+- 2026-05-15: `capa init` project scaffolding.
+- 2026-05-15: Property-based testing through Phase 3.7 (multi-
+  capability strategies with plain / attenuated / via_helper /
+  consumed flavours, 50k+ generated programs stress-tested).
+- 2026-05-15: Watch mode (`capa --watch`).
+- 2026-05-15: Doc comments (`///`, `/**`), raw strings,
+  named arguments.
 
-- [x] **Stdlib paths via `CAPA_PATH`**. `ModuleLoader` now
-  takes a `search_paths: list[Path]`; resolution tries
-  importer-relative first (proximity wins) and then each
-  search root in order. CLI reads `CAPA_PATH` from the
-  environment, splits on `os.pathsep`, and passes the
-  existing directories through to the loader. Missing-import
-  diagnostics now list every path that was tried. Landed
-  2026-05-15. 6 new tests at `tests/test_loader.py`.
-
-- [x] **Option / Result combinator gaps**: `Option.filter`,
-  `Option.or_else`, `Result.or_else`, `Result.ok`,
-  `Result.err`. Closes the gap with standard Rust/Swift/OCaml
-  Option/Result APIs. Landed 2026-05-15. 6 new tests.
-
-- [x] **Divergent statements in single-line match arms**.
-  `return`, `break`, `continue` now work in the single-line
-  `pat -> stmt` form; previously required multi-line block
-  bodies. Parser change + analyzer change to skip divergent
-  arms during arm-type unification. Landed 2026-05-15. 5 new
-  tests.
-
----
-
-## Current focus (May - October 2026)
-
-Plan-closed development at 8h/week, scoped to ~175h total. The
-positioning Capa stands behind: *"a capability-typed language
-whose distinctive contribution is the integration between the
-type system and the supply-chain governance stack"*. The
-sequence below strengthens exactly that axis.
-
-**Tier 1, technical artefacts:**
-
-- [x] **SBOM diff tool**
-  ([`examples/sbom_diff.capa`](examples/sbom_diff.capa)).
-  Consumes two CycloneDX SBOMs and reports per-function
-  capability widenings (alert), narrowings (improvement),
-  additions, removals. Companion to the
-  `sbom_capability_audit.capa` (which compares ONE SBOM
-  against a written policy). First piece of Tier 1, landed
-  2026-05-15.
-- [x] **SPDX 2.3 emission** (`capa --spdx file.capa`).
-  Companion to `--cyclonedx`; emits SPDX 2.3 JSON with
-  per-function capability metadata via standard
-  `annotations[]`. SPDX IDs sanitised to spec
-  (`SPDXRef-[A-Za-z0-9.-]+`). Implementation at
-  `capa/manifest/_spdx.py`; 11 tests at
-  `tests/test_attributes.py::TestSPDX`. Landed 2026-05-15.
-- [x] **VEX integration** (CycloneDX VEX format, embedded in
-  `--cyclonedx` and standalone via `--vex`). Per-function
-  exploitability claims via `@vex(cve, status, justification,
-  detail)` attribute. Genuinely novel: no other language emits
-  VEX at function granularity. Implementation at
-  `capa/manifest/_vex.py`; example at `examples/vex_demo.capa`;
-  10 tests at `tests/test_attributes.py::TestVEX`. Landed
-  2026-05-15.
-- [x] **SLSA Build L1 provenance attestation** (`capa
-  --provenance file.capa`). In-toto Statement v1 with SLSA
-  Provenance v1.0 predicate; subject = SHA-256 of the source
-  .capa file. L1 scope: generated and distributed, not signed
-  (signing is L2+, left to external tooling). Implementation
-  at `capa/manifest/_provenance.py`; 7 tests at
-  `tests/test_attributes.py::TestProvenance`. Landed
-  2026-05-15. **Tier 1 complete.**
-
-**Tier 2, consolidated regulatory mapping:**
-
-- [x] **`docs/regulatory.md`**: multi-jurisdiction comparative
-  table covering **CRA + NIS2 + DORA** (cybersecurity articles
-  only) + **NIST SSDF (SP 800-218)** + **OWASP SCVS**. Headline
-  matrix: 8 Capa artefacts vs 5 frameworks with four-level
-  classification (direct / indirect / partial / out of scope).
-  Per-framework section for each, brief and honest about scope.
-  `docs/cra.md` stays as the CRA deep-dive; this is the
-  comparative view. **Excluded**: ISO 27001, SOC 2, PCI DSS,
-  HIPAA, EO 14028, AI Act, GDPR, SWID. Landed 2026-05-15.
-  **Tier 2 complete.**
-
-**Tier 3, polish:**
-
-- [x] **Provenance signing workflow (L1 -> L2)**:
-  `deploy/sign-provenance.sh` + `docs/provenance-signing.md`.
-  Three signing modes documented (keypair, Sigstore keyless,
-  hosted build platform); verification recipes; per-framework
-  mapping. Capa emits L1; signing is external (cosign /
-  Sigstore) so the language stays independent of any specific
-  signing service. Landed 2026-05-15.
-
-- [~] **Empirical study at scale: design-pattern CVEs**.
-  Four libraries landed, covering the four canonical bug
-  classes in this category:
-    - PyYAML CVE-2017-18342 (deserialisation-as-codegen) at
-      `examples/cve_pyyaml.capa` + `docs/cve_pyyaml.md`.
-    - Jinja2 SSTI (template-injection-via-attribute-traversal)
-      at `examples/cve_jinja2_ssti.capa` +
-      `docs/cve_jinja2_ssti.md`.
-    - lxml XXE (parser-as-fetcher) at
-      `examples/cve_lxml_xxe.capa` + `docs/cve_lxml_xxe.md`.
-    - pickle / ObjectInputStream (gadget-chain
-      unserialisation) at `examples/cve_pickle.capa` +
-      `docs/cve_pickle.md`.
-  Bug-class taxonomy now structurally complete. Next step is
-  the **quantitative empirical study**: transliterate 10-20
-  real-world libraries, measure the SBOM-diff against their
-  hand-Python equivalents, and report aggregate numbers.
-  Substantial work; multi-session arc on its own.
-
-- [~] **Mechanisation skeleton in Agda** at `proofs/`.
-  Stage 0 landed: syntax of λ_cap (types, terms, typing,
-  reduction) in `CapaSyntax.agda`; four theorem statements as
-  `postulate` in `CapaSoundness.agda`; staged plan and status
-  badge in `proofs/README.md`. Stages 1-4 (Progress,
-  Preservation, Capability Soundness, Manifest Completeness)
-  are workshop-paper-sized future work; the skeleton is what
-  a reviewer expects to see as evidence of mechanisation
-  intent. Honestly marked as not-yet-typechecked because Agda
-  is not installed on the dev machine.
-
-
-
-- [~] 1 workshop paper **draft v1 landed**, kept local only
-  (the paper track is private until / unless it becomes a
-  venue submission). ~5000 words, all sections written
-  (abstract, intro, related work, three-layer discipline,
-  implementation, six-CVE empirical, runtime overhead,
-  SBOM-diff information-gain, regulatory mapping, discussion,
-  conclusion, references, two appendices). Status: working
-  draft v1, all sections complete in first-pass form. Iterate
-  on revision; convert to LaTeX when targeting a specific
-  venue submission. Target venues: PLAS, EuroS&P workshops,
-  NDSS workshops. The companion public docs that fed it
-  (`docs/semantics.md`, `docs/positioning.md`, `docs/cra.md`,
-  `docs/regulatory.md`, `docs/empirical_micro.md`,
-  `benchmarks/README.md`) stay in the repo.
-
-When Tier 1 + Tier 2 + paper are done, **stop**. Excess time
-goes elsewhere, not to Tier 4 expansions on Capa.
-
----
-
-## Historical bridge work, v0.2 alpha (DONE)
-
-Bridge from "working alpha" to "shareable v0.2 alpha". Three pieces:
-
-- [x] **Demo: "Capa would have caught X"**, event-stream (Nov 2018).
-  Safe Capa library in `examples/demo_event_stream.capa`; writeup
-  with attack-attempt code + analyzer rejections in
-  `docs/demo-event-stream.md`; cross-referenced from README.
-- [x] **VSCode syntax highlighting**, TextMate grammar covering
-  keywords (by category), built-in caps highlighted distinctly,
-  string interpolation, numeric literals in all bases, operators
-  including `..`, `..=`, `=>`, `?`. Lives in `vscode/`. Install
-  manually via symlink/junction; Marketplace publication later.
-- [x] **Full website (5 pages)**, `docs/{index,why,tour,start,roadmap}.html`
-  + `docs/style.css`. Slim landing with three value-prop cards; "Why
-  Capa" makes the case (ambient authority, event-stream, three
-  pillars, attenuation, user-defined caps, honest limits); language
-  tour in 12 sections; getting-started with full CLI reference;
-  honest roadmap with status pills. Dark theme, single accent, no
-  JS, no framework, no external fonts. Header is purely typographic
-  (a hand-coded SVG logo was attempted and abandoned, bad call,
-  see memory). Ready to serve via GitHub Pages when enabled for
-  `docs/`.
-
-When the public-readiness items land: tag `v0.2.0-alpha`, flip repo
-to public.
-
----
-
-## Pending design items (P1)
-
-- [x] **Atenuação genérica**: every built-in capability has an
-  attenuator. `Net.restrict_to(host)`, `Fs.restrict_to(prefix)`,
-  `Env.restrict_to_keys([...])`, `Clock.restrict_to_after(t)`,
-  and `Random.with_seed(seed)`. The first four monotonically
-  narrow authority and are fail-closed on denied access; the
-  last has no denied state but produces a deterministic sequence
-  whose seed is visible in the manifest's data-flow tracker.
-- [x] **Visibility (`pub`)**: enforced by the loader via
-  per-module name mangling. Every private top-level item in
-  an imported module is renamed to `_capa_m<N>__<name>` at
-  link time, along with every reference to it inside the
-  module's own items. The importer's references resolve
-  against the global flat scope and hit a regular
-  "undefined name" diagnostic for private items.
-  Qualified-call rewrites consult an exports map that only
-  contains pub items, so `M.private_fn()` is also denied.
-  Implementation at `capa/loader.py::_mangle_private_items`
-  + `_PrivateRenameWalker`; 8 tests at
-  `tests/test_loader.py::TestPubVisibility`. Landed
-  2026-05-15.
-- [x] **Capa module system**. Fully landed. `import foo.bar`
-  resolves to `<importer-dir>/foo/bar.capa` first (proximity
-  wins), then to each entry of `CAPA_PATH`
-  (`os.pathsep`-separated). Both unqualified (`fn()`) and
-  qualified (`foo.fn()`, `import foo as F; F.fn()`) access
-  work. Transitive imports, cycle detection, name
-  conflicts, per-file error-snippet rendering, search-path
-  resolution, and `pub` visibility enforcement all in.
-  Implementation at `capa/loader.py` + `capa/cli.py`
-  integration; 30 tests at `tests/test_loader.py`. **No
-  follow-ups pending.**
-- [ ] **Refinement types**, parked as explicitly future. P3
-
----
-
-## EBNF declares but not implemented (P2)
-
-- [x] **Doc comments** (`///`, `/**`). Lexer emits `DOC_COMMENT`
-  tokens with leading-space and Javadoc star-margin stripped;
-  parser attaches them to the following `fun` / `type` / `trait` /
-  `capability` / `impl` method as the `doc` field; `--doc` runs
-  the `capa.docgen` HTML generator. The markdown subset covers
-  paragraphs, inline `code` spans, fenced code blocks (with
-  optional language tag), and bulleted lists. Plain (non-capability)
-  traits get their own section with method signatures and the
-  list of implementor types.
-- [x] **Raw strings** (`r"..."`), no escape processing and no
-  `${}` interpolation; useful for regex and Windows paths. A raw
-  string cannot embed `"`; use a regular string with `\"` for that.
-- [x] **Named arguments** (`f(name: "Ana", age: 30)`), parser
-  accepts an optional `IDENT ":"` prefix on each call argument;
-  the analyzer reorders to parameter order before type checking,
-  rejects positional-after-named, unknown names, duplicates, and
-  arity mismatches; the transpiler emits Python keyword arguments.
-  Built-in methods (String, Map, Set, capabilities) reject named
-  arguments because their parameter names are not tracked.
-- [ ] **Turbofish (`::<T>`)**, EBNF §7.3 mentions; never needed
-  because inference has been enough. Only implement if a real case
-  comes up. P3
-
----
-
-## Tooling that moves the adoption needle (P1-P2)
-
-- [~] **LSP server** (Python, `pygls>=2.0`). **v1 landed**:
-  `python -m capa lsp` starts a stdio server that delivers
-  diagnostics (full pipeline on every didOpen / didChange /
-  didSave), hover (signature or `name: T` markdown),
-  go-to-definition (jump to declaring symbol), find-references
-  (all uses of the same symbol), documentSymbol (hierarchical
-  outline: constants, structs with fields, sums with variants,
-  traits/capabilities with method signatures, functions, impl
-  blocks with methods), and code actions (Quick Fix
-  "Replace with 'X'" for every `did you mean 'X'?` hint emitted
-  by the analyzer). Coverage spans both **references** (uses of
-  a symbol) **and declaration sites**: the parser records
-  ``name_pos`` for every declared name (functions, types, traits,
-  capabilities, constants, parameters, struct fields, variants,
-  trait method signatures), so hovering on `foo` in
-  `fun foo(...)` fires the same way as hovering on a call to
-  `foo`. Go-to-definition from a declaration is a no-op (lands on
-  the name itself); find-references from either side returns the
-  same set, with the declaration entry at the precise name column.
-  Typos inside string interpolation (`${...}`) now keep their
-  source positions: the lexer records the Pos of every top-level
-  `${` opener in the STRING_LIT token and the parser passes that
-  through to the sub-Lexer so identifiers like `nme` in
-  `"Hello, ${nme}!"` report their actual location instead of the
-  string's opening quote. `pygls` is an optional dependency
-  (`pip install -e '.[lsp]'`) so the rest of the compiler stays
-  standard-library-only. README carries one-line config snippets
-  for Helix and Neovim.
-  Rename (`textDocument/rename` + `prepareRename`) also landed:
-  validates the new name against the lexer's IDENT shape (and
-  rejects reserved keywords), then rewrites every reference and
-  the declaration. Built-in symbols (`Stdio`, `Net`, `Result`,
-  ...) refuse rename cleanly. Completion
-  (`textDocument/completion`) offers a floor of keywords + built-in
-  types/capabilities/variants/functions, plus module-level names
-  (functions with signatures, constants with types, sum types and
-  their variants, user-defined traits and capabilities) and the
-  function-scope params/locals visible at the cursor. Mid-edit
-  buffers that fail to parse fall back to just the floor, so the
-  suggestion list never goes dark on a half-typed line.
-  Type-aware completion after `.` also landed: when the cursor
-  sits in a `receiver.<here>` context, the analyzer's known
-  methods for the receiver's type are offered (with their full
-  TyFun signature in the detail column). Built-in types and
-  capabilities (String, List, Map, Set, Stdio, Net, Fs, Env,
-  Clock, Random, Option, Result, JsonValue) plus user-defined
-  struct / sum methods all work. Mid-edit buffers (a bare
-  trailing `.`) are handled by re-parsing with a synthetic
-  placeholder identifier injected at the cursor.
-  Semantic tokens (`textDocument/semanticTokens/full`) deliver
-  type-aware highlighting beyond what the TextMate grammar can do.
-  The legend distinguishes function, parameter, variable
-  (with `readonly` modifier for `let` bindings and constants),
-  interface (Capa's capabilities, with `defaultLibrary` modifier
-  on the built-ins), type (struct / sum / trait), enumMember
-  (sum-type variants), and property (struct fields). Both
-  reference and declaration sites are tagged; type-annotation
-  references inside parameter / return / field types resolve
-  against the global scope so `String`, `Stdio`, etc. get
-  coloured wherever they appear.
-  **Pending (v2)**: none currently identified at the LSP level
-  (positional fidelity for `${...}` contents landed; see above).
-- [~] **`capa-fmt` (formatter)**, canonical, non-configurable
-  (gofmt-style). **v1 (line-level) landed**: CLI flags `--fmt` and
-  `--fmt-check` normalise line endings, indentation (tabs to 4
-  spaces, partial indents floor to a 4-space multiple), trailing
-  whitespace, blank-line clusters (collapse to one), and the final
-  newline. Block-comment interiors (`/* ... */` and `/** ... */`)
-  are preserved verbatim so Javadoc-style `*` continuation lines
-  survive. Idempotent by construction. **v2 intra-line pass also
-  landed**: a character-by-character walk over each non-block
-  line collapses runs of two or more spaces in code to a single
-  space, and inserts a missing space after `,`. Strings, char
-  literals, and `//` comments are tracked and skipped; trailing
-  commas before `)`/`]`/`}` are preserved. **Pending (v3)**:
-  expression re-emission from the AST (operator spacing around
-  binary ops, brace placement) and `//` comment preservation
-  through the AST round-trip. v3 needs a comment-preservation
-  design before any AST round-trip is safe.
-- [ ] **Package manager**, only meaningful once there's a module
-  system. P3
-- [~] **REPL: MVP landed**. `capa repl` opens an interactive
-  prompt with every standard built-in capability pre-bound
-  under its conventional lowercase name (`stdio`, `fs`, `net`,
-  `env`, `clock`, `random`); `Unsafe` is intentionally left
-  out. Bare expressions are auto-wrapped as
-  `stdio.println("${...}")`, declarations are accumulated,
-  state survives via re-running the assembled program with
-  stdout-diffing. Each pre-bound cap gets a read-only probe in
-  the synthesised main's body so the analyzer's "declared but
-  never used" check passes regardless of which caps the user
-  touches. Multi-line blocks (`if` / `for` / `while` /
-  `match`) get a continuation prompt that terminates on a
-  blank line. Meta commands: `.exit`, `.reset`, `.show`,
-  `.types <expr>` (prints the inferred type without running
-  the expression; the probe uses an ExprStmt rather than a
-  `let` so capability references type-check too), `.help`.
-  Implementation at `capa/repl.py`; 30 tests at
-  `tests/test_repl.py`. **Pending for the full REPL**:
-  incremental analyzer state (the MVP re-runs everything on
-  each input), readline / history. P2.
-- [x] **`capa init`**, project scaffolding. `python -m capa init [name]`
-  creates `main.capa` (a runnable, canonically-formatted starter that
-  uses `Stdio` so the capability discipline shows up on line one),
-  `README.md`, `.gitignore`, and `.capa-version`. Refuses to overwrite
-  a non-empty directory or a path that is a file. The starter passes
-  `--check` and `--run` out of the box.
-- [ ] **Debugger integration**, Python debugger works on the
-  transpiled output but maps poorly. Source maps would help. P3
-
----
-
-## Known bugs / partial features (P1)
-
-- [ ] **Indent-based `match` inside parentheses**, by design fails
-  because parens suppress NEWLINE/INDENT/DEDENT. The braced inline
-  form (`match x { P1 -> e1, P2 -> e2, ... }`) does work inside a
-  call expression and is the documented way to write a `match` as
-  an argument. Reclassified from "bug" to "documented restriction";
-  promote to a real fix only if someone proposes a lexer change
-  whose blast radius does not eat the indent-based form elsewhere.
-- [x] **Block-body lambdas in deep expression contexts**, verified
-  and documented as a deliberate restriction. Same root cause as
-  indent-form match inside parens: the lexer suppresses
-  NEWLINE/INDENT/DEDENT inside `(...)` for implicit line continuation,
-  so block-body lambdas there are unreachable by design. The parser
-  now emits a targeted error pointing at the recommended workaround
-  (bind to `let` first, then pass the binding, or use a
-  single-expression body). README, EBNF section on lambdas, and the
-  reference page document this precisely.
-- [x] **Operator `?` inline-hoist optimisation** + **`?` works on
-  `Option<T>`**. The transpiler now lowers ``let x = expr?``,
-  ``return expr?``, and ``expr?`` as a bare statement to an
-  inline isinstance / ``is None_`` guard with an early return;
-  functions whose ``?`` uses are all hoisted skip the
-  ``@_capa_wrap`` decorator entirely. Microbench: 1.36x on the
-  Ok path, 8.91x on the Err path. The same iteration also fixed
-  the latent bug where ``?`` on an ``Option<T>`` value raised
-  ``RuntimeError: ? applied to non-Result value`` because the
-  runtime helper only knew about ``Ok`` / ``Err``. Implementation
-  at ``capa/transpiler/_statements.py`` +
-  ``capa/transpiler/__init__.py``. 7 tests at
-  ``tests/test_transpiler.py::TestQuestionMarkHoisting``.
-
-- [x] **`?` soundness fix (rc.1 iteration)**. Two related
-  holes closed:
-  - Analyzer now rejects `?` whose enclosing function or
-    lambda does not return `Result` / `Option`, with a
-    diagnostic that names the actual return type. Lambdas
-    push their own `current_return_type` in both block-body
-    and expression-body paths so the rule applies to the
-    lambda's own contract, not the outer function's. Closed
-    the "Err flows out of `-> Int`" type-violation leak.
-  - Transpiler wraps lambdas containing `?` with `@_capa_wrap`
-    (block-body) or `_capa_wrap(...)` (expression-body) so
-    the `_CapaTryEarlyReturn` raised by `_capa_try` is caught
-    at the lambda's own boundary. `_uses_try` now treats
-    `LambdaExpr` as a function boundary, mirroring `FunDecl`.
-  - Hoist extended to `VarStmt` and `AssignStmt` (every op,
-    not just `=`), and `_uses_exception_try` made defensive
-    (always emit the decorator when any `?` is in the
-    function). Closes the latent crash where
-    `var x = foo()?` / `x += foo()?` raised
-    `_CapaTryEarlyReturn` uncaught.
-  Implementation at `capa/analyzer/_expressions.py` +
-  `capa/transpiler/__init__.py` + `_expressions.py` +
-  `_statements.py`. 9 new tests across
-  `tests/test_analyzer.py::TestQuestionMarkEnclosingReturn`
-  and `tests/test_transpiler.py::TestQuestionMarkHoisting`.
-  Real-world demonstrator at `examples/quota_check.capa`.
-  Landed 2026-05-19.
-
-- [x] **Stdlib gaps (rc.1)**: `Fs.mkdir(path)`,
-  `Fs.list_dir(path)`, `Fs.is_dir(path)` close the three
-  daily-friction holes in the `Fs` capability (demos
-  previously shelled out via `Unsafe`); `List.sorted_by`
-  takes a `(a, b) -> Int` comparator and returns a stable
-  fresh sorted list; `String.trim_start` and
-  `String.trim_end` cover the asymmetric trims (`trim` was
-  the only one before). Implementation at
-  `capa/runtime/_capabilities.py` + `_list.py` +
-  `capa/transpiler/_methods.py` + `capa/builtins.py`.
-  Landed 2026-05-19.
-
-- [x] **Block-scope shadowing rejection (rc.2 iteration)**. A
-  `let` inside a nested block (`if` / `for` / `while` /
-  `match` body) that shadowed a name already bound in an
-  enclosing function scope previously passed the analyzer and
-  silently overwrote the outer binding at the Python runtime
-  (Python has function scope, not block scope). The analyzer
-  now walks the parent chain for PARAM / LOCAL / LOCAL_VAR
-  kinds when binding a pattern; module-level shadowing
-  (CONSTANT, FUNCTION, etc.) stays allowed because Python's
-  function scope handles it correctly. Diagnostic names the
-  source location of the previous binding and tells the user
-  to rename one of the two. Implementation at
-  `capa/analyzer/_patterns.py::_bind_pattern`; 5 new tests.
-  Landed 2026-05-20.
-
-- [x] **NLL-style precision for consume tracking around
-  divergent branches (rc.2 iteration)**. A branch (if / elif
-  / else body, or match arm body) that consumed a capability
-  and then diverged (ended in `return` / `break` / `continue`)
-  was naively unioned into the post-merge consumed set, even
-  though the divergent path could never reach the
-  continuation. `_check_if` and `_check_match_expr` now skip
-  divergent branches when merging `branch_results`, using the
-  same `_block_diverges` predicate the type-side unification
-  already uses. Soundness preserved (only over-restriction is
-  relaxed). Implementation at
-  `capa/analyzer/_statements.py::_check_if` +
-  `capa/analyzer/_expressions.py::_check_match_expr`; 5 new
-  tests. Landed 2026-05-20.
-
-- [x] **Agda mechanisation: all four soundness theorems**
-  (Stages 1 to 4). `proofs/CapaSyntax.agda` +
-  `proofs/CapaSoundness.agda` are real definitions, no
-  `postulate` survives. Roughly 600 lines, self-contained
-  (no agda-stdlib), PLFA-style. The Capability Soundness
-  proof uses an inductive `_∈caps_` relation; the Manifest
-  Completeness theorem was reformulated from the original
-  skeleton equation to the honestly-provable multi-step
-  soundness form (`caps-of-reachable t ⊆ caps-of t`). CI at
-  `.github/workflows/agda.yml` typechecks both files on
-  every push that touches `proofs/`. Landed 2026-05-20.
-
----
-
-## Code-quality maintenance (P2)
-
-- [x] **Split every >700-line compiler file into a package**.
-  Following the analyzer split, the same pattern was applied to
-  the parser, transpiler, runtime, manifest, docgen, capa_ast,
-  and lexer. All large files now live in `capa/<name>/__init__.py`
-  with per-topic submodules; `__init__.py` is either a thin
-  re-export (runtime, manifest, docgen, capa_ast) or hosts a
-  ``ClassName(MixinA, MixinB, ...)`` composition (analyzer,
-  parser, transpiler, lexer). `cli.py` (396 lines) and
-  `lsp/server.py` (420 lines) were evaluated and kept whole:
-  the first is sequential pipeline glue, the second is a pygls
-  registration block where every handler is a closure. The
-  analyzer's own split is documented below for reference:
-  - `_typing.py` (92 lines): TyVar generation + substitution.
-  - `_discipline.py` (252 lines): capability discipline
-    (aliasing, no-capability, no-builtin-capability,
-    use-after-consume, self-substitution, impls-aware
-    compatibility).
-  - `_statements.py` (265 lines): block / let / var / assign /
-    if / while / for / return + flow-analysis dry-run.
-  - `_items.py` (275 lines): const / fun / impl phase-2
-    checking + attribute schema validation.
-  - `_patterns.py` (329 lines): pattern binding + exhaustiveness.
-  - `_dispatch.py` (365 lines): call + method dispatch + named
-    arguments.
-  - `_declarations.py` (382 lines): phase-1 globals registration
-    + type resolution + signature inference.
-  - `_expressions.py` (492 lines): lambda / match / if-expr +
-    the per-shape expression checkers.
-
-  ``capa/analyzer/__init__.py`` is **423 lines** (down from
-  3300+, an 87% reduction), and hosts only the Analyzer
-  composition, the state types (Symbol, Scope, AnalysisResult,
-  AnalysisError, SymbolKind), `__init__`, the public `analyze()`
-  function, the small bookkeeping helpers (`_err`, scope and
-  type-param push/pop, suggestion haystack collectors), and the
-  shared `_signatures_match` helper.
-- [x] **Error-message audit (second pass)**. The five typo-shaped
-  hints from the first pass (`did you mean 'X'?` on undefined
-  names, types, methods, fields, variants) are now complemented by
-  three more:
-  - **Arity errors include the signature**: `"call to 'add':
-    expected 2 arguments, got 3 (signature: fun(Int, Int) ->
-    Int)"`. Same shape for method calls.
-  - **Built-in capability method typos are caught**:
-    `stdio.prntln(...)` no longer passes silently; it raises
-    `"capability 'Stdio' has no method 'prntln'; did you mean
-    'println'?"` with the standard Levenshtein hint.
-  - **Top-level keyword typos detected**: `def`/`function`/`func`
-    /`fn` → suggest `fun`; `class`/`struct` → suggest `type`;
-    `interface` → suggest `trait`; `enum` → suggest `type Name
-    = ...`; bare `let` at top level → suggest `const`.
-- [ ] **Analyzer performance**, no benchmarks. Only worth attacking
-  if someone reports slowness. (Runtime-side overhead is covered
-  by `benchmarks/`; this row is about lex+parse+analyze+transpile
-  wallclock, which is fast enough to not need measurement yet.)
-- [x] **Runtime-overhead benchmark suite**, `benchmarks/`. Three
-  paired workloads (Capa + hand-Python baseline) covering pure
-  compute, list-heavy, and string-heavy regimes. Numbers stable
-  across runs: ~1.00x / 1.20x / 1.45x. Methodology and headline
-  table in `benchmarks/README.md`. Closes the "is Capa
-  practical at the source level?" question with numbers
-  instead of hand-waving.
-- [ ] **Test-coverage review**, `coverage.py` run + identify which
-  parts of the analyzer are under-tested.
-- [x] **`for x in a..b` was materialising the full range** as a
-  `CapaList(range(a, b))`, allocating ~28 bytes per integer in
-  CPython. For large ranges this was gigabytes. The transpiler
-  now special-cases `ForStmt(iter=RangeExpr)` to emit
-  `for x in range(start, stop)` directly. Bound ranges
-  (`let xs = 0..n`) still materialise to keep the
-  `List<T>` method surface (`.map`, `.length()`, etc.) working;
-  only the direct for-iteration form is lazy. Found by an
-  external review (analise_capa/capa-revisao-critica.md §2.3);
-  same review also notes that the proper long-term fix
-  is a `Range<Int>` type distinct from `List<Int>` (still
-  pending; the for-loop hack closes the urgent memory bug for
-  v1).
-
----
-
-## External review action items (P1, from analise_capa, 2026-05-13)
-
-A friend-of-the-project review of Capa's design, EBNF, and
-analyzer arrived as two markdown documents kept locally next
-to the repo (not checked in). Capturing the actionable items
-here so they stay visible:
-
-- [~] **Small-step operational semantics + soundness theorem**.
-  **Sketch landed** at `docs/semantics.md`. Defines λ_cap (a
-  minimal lambda calculus capturing Capa's capability surface),
-  states syntax + typing rules + small-step semantics with a
-  trace of capability invocations, and proves two theorems at
-  the sketch level: *Capability Soundness* (every invocation
-  recorded in the trace has class drawn from the initial
-  environment) and *Manifest Completeness* (the manifest is
-  an upper bound on the dynamic capability surface). The
-  proofs are sketched, not mechanised; deferred for full
-  paper writeup are (a) the branch/loop discipline of the
-  linear layer, (b) attenuation completeness, (c) the
-  `Unsafe` boundary, (d) the translation lemma from full Capa
-  to λ_cap. **Pending**: mechanisation in Agda or Coq for a
-  referee-checkable proof of Theorem 1; this is the
-  workshop-paper ticket the reviewer was pointing at. Stage 0
-  skeleton landed at `proofs/`.
-- [x] **3-5 CVE case studies** mapped to Capa typing rules.
-  Each is a paired `examples/cve_*.capa` (safe library) +
-  `docs/cve_*.md` (walkthrough showing the attack pattern,
-  what an attacker would transliterate into Capa, and the
-  exact analyzer rejection). Six landed so far:
-  - **event-stream 2018**:
-    `examples/demo_event_stream.capa` +
-    `docs/demo-event-stream.md`. Bitcoin-wallet exfiltration via
-    a tampered dependency. Capa wins structurally.
-  - **eslint-scope 2018**:
-    `examples/cve_eslint_scope.capa` +
-    `docs/cve_eslint_scope.md`. npm credential theft via
-    reading `~/.npmrc` and POSTing to a Pastebin drop. Capa
-    wins structurally.
-  - **node-ipc 2022 (protestware)**:
-    `examples/cve_node_ipc.capa` +
-    `docs/cve_node_ipc.md`. Maintainer-as-attacker with
-    legitimate `Net` + `Fs` authority writes `❤️` to files on
-    hosts geolocated to Russia / Belarus. Deliberately picked
-    as the case where **Capa partially loses**: structural
-    rule does not help, attenuation in the caller can bound
-    the blast radius, the audit on the SBOM can flag any
-    later widening of the declared capability.
-  - **xz-utils 2024 (CVE-2024-3094)**:
-    `examples/cve_xz_utils.capa` + `docs/cve_xz_utils.md`.
-    Multi-year sshd backdoor delivered via .m4 autotools +
-    binary test fixtures + IFUNC dynamic-linker indirection.
-    Capa's source-level discipline does not apply to any of
-    those layers. Deliberately included as the most
-    pessimistic case study: any claim of supply-chain defence
-    has to acknowledge attacks beneath the language layer.
-  - **torchtriton 2022 (PyPI typosquat)**:
-    `examples/cve_torchtriton.capa` +
-    `docs/cve_torchtriton.md`. PyTorch nightly's
-    `torchtriton` Python module dependency typosquatted on
-    public PyPI. The malicious version walked `$HOME`,
-    captured SSH keys and env, POSTed to `*.h4ck.cfd`. A
-    Capa-shaped kernel-launch-planning library has zero
-    capabilities; the typosquat's `Fs`/`Net`/`Env` widening
-    is loud at the SBOM level. Third clean win, different
-    ecosystem (Python / PyPI) than event-stream and
-    eslint-scope (both npm).
-  - **ua-parser-js 2021 (npm account hijack)**:
-    `examples/cve_ua_parser_js.capa` +
-    `docs/cve_ua_parser_js.md`. Maintainer's npm account
-    compromised; three malicious versions shipped a
-    `preinstall` script that dropped an XMRig cryptominer on
-    Linux and additionally DanaBot (a credential-stealing
-    RAT) on Windows. Same attack mechanism as eslint-scope
-    but wildly different payload, and Capa's response is
-    structurally identical. The case study is in the repo
-    specifically to make the **payload-independence** point;
-    `ua-parser-js` also has the cleanest possible signature
-    of any of the studies (`(String) -> UserAgent`).
-  Six demos now give a balanced experimental panel: four
-  clean wins (event-stream, eslint-scope,
-  ua-parser-js, torchtriton) across npm and PyPI and four
-  different payloads (malicious-dependency, credential-
-  theft, cryptominer+RAT, kernel exfil); two honest partial
-  losses (node-ipc for legitimate-authority-abuse, xz-utils
-  for below-the-language attacks). The breakdown is
-  summarised in `docs/cve_ua_parser_js.md` § "The
-  six-case-study summary".
-- [~] **Property-based testing with Hypothesis**. The most
-  citable suggestion in the review. **Phases 1, 2 and 3
-  (minimal) landed** in `tests/test_properties.py`.
-  - Phase 1: six properties on arbitrary text (formatter
-    idempotence and fixpoint, lexer / parser robustness).
-  - Phase 2: a syntax-aware strategy generates valid Capa
-    programs of the shape *main with stdio + N stmts*
-    (N ∈ {0..4}, each stmt a `let`/`var`/`println`/`if`/
-    `for` with position-indexed unique names) and asserts
-    the full pipeline (lex + parse + analyse + transpile +
-    `ast.parse` of the transpiled Python) succeeds. The
-    strategy itself surfaced two real bugs during its own
-    development (capability-must-use violation on a
-    `stdio`-less body; duplicate `let` bindings from a
-    fixed identifier pool).
-  - Phase 3 (minimal): the *citable* property in dynamic
-    form. `capa.runtime._trace` wraps the public methods of
-    every built-in capability class on first opt-in (the
-    `enable()` call) so each method invocation appends
-    `(class_name, op_name)` to a module-level list. The
-    test transpiles a generated program, execs it in-process
-    with `__name__ == "__main__"`, reads the trace, and
-    asserts `runtime_classes ⊆ manifest_classes`.
-  - Phase 3.5: a second strategy ``_program_with_caps``
-    threads a random subset of `{Fs, Net, Env, Clock, Random}`
-    through `main` and exercises each declared capability
-    with a read-only probe (`Fs.allows`, `Net.allows`,
-    `Env.allows`, `Clock.now_secs`, `Random.float_unit`). The
-    test exercises non-trivial inclusions like
-    `{Stdio, Net, Fs} ⊆ {Stdio, Net, Fs}`. The probes are
-    pure queries with no filesystem or network side effects,
-    so the property test stays self-contained.
-  **Phases 3.6 and 3.7 landed**. The multi-cap strategy
-  `_program_with_caps_advanced` picks per capability among
-  four call shapes:
-    - `plain` (the 3.5 shape, probe directly in main),
-    - `attenuated` (`let a = c.restrict_to(...); a.probe()`),
-    - `via_helper` (emit `fun use_X(x: Cap) -> Bool`, call from
-      main, capability value crosses a function boundary),
-    - `consumed` (emit `fun take_X(consume x: Cap) -> Bool`,
-      call from main, capability is consumed and cannot be
-      used afterwards).
-  Programs in the wild mix all four flavours across the
-  declared capabilities. Each flavour preserves
-  `runtime_classes ⊆ manifest_classes` by construction; the
-  test catches regressions where an analyser or transpiler
-  change ever lets a method call leak a class not in the
-  function's signature, OR a use-after-consume slips through
-  the linear-layer bookkeeping. The property-testing arc of
-  the external review is now closed; the citable
-  soundness property is asserted on every generated program
-  across the four capability-flow shapes.
-  Stress hunt (2026-05-17): re-ran the suite locally with
-  `max_examples` bumped to 10k on every property test (50k+
-  generated programs in total across phase 1, 2, 3, 3.5,
-  3.6/3.7). All ten property tests stayed green; soundness
-  invariant `runtime_classes ⊆ manifest_classes` held over
-  ~14k programs across the multi-capability strategies.
-  Observed degree of freedom: `_program_with_caps` is space-
-  exhausted at 87 unique programs (the advanced strategy
-  with 4181 unique programs is the better stress target if
-  the budget is ever raised in CI).
-- [x] **`Range<Int>` as a distinct type from `List<Int>`**.
-  Done. `0..n` and `0..=n` now type as `Range<Int>`, a
-  separate parametric type registered in `capa/builtins.py`.
-  Method surface: `length`, `contains`, `is_empty`, `to_list`
-  (the four pure queries plus explicit materialisation; the
-  full `List<T>` API is reached via `.to_list().filter(...)`
-  rather than implicitly available on Range). Runtime class
-  `CapaRange` in `capa/runtime/_list.py` wraps Python's
-  `range` and exposes `__iter__` so bound ranges iterate
-  lazily; the direct `for x in a..b` form keeps its fast
-  path emitting bare `for x in range(...)` with no wrapper.
-  Verified: `CapaRange(0, 1_000_000_000)` constructs in 2µs
-  with no allocation; the old `CapaList(range(0, 1B))` would
-  allocate ~28 GB. Five existing tests migrated to the new
-  shape (`.to_list()` for List-API calls, `Range<Int>`
-  instead of `List<Int>` in type assertions). One new test
-  asserts that direct `.filter` on a Range is now a typed
-  rejection rather than silently working. No `Iterable` trait
-  yet; the analyzer enumerates `List` and `Range` as the two
-  iterables in `_check_for`. The trait consolidation can come
-  if a third iterable shows up.
-- [x] **`docs/positioning.md`** with honest comparison vs Pony,
-  Koka, Roc, WebAssembly Component Model. The reviewer cited
-  it approvingly; already landed.
-- [x] **Ineligibility proofs as SBOM enrichment**. Landed
-  2026-05-15. `provably_excluded_capabilities` is now a per-
-  function field on the manifest, embedded in both CycloneDX
-  (`capa:provably_excluded_capability` properties) and SPDX
-  (`provably_excluded_capability` annotations). Sound because
-  Capa's discipline makes the declared cap set an upper bound;
-  the proof is voided (empty list) when `Unsafe` is declared.
-  Implementation at `capa/manifest/_funrec.py`; 10 tests at
-  `tests/test_attributes.py::TestIneligibilityProofs`. The
-  initial caveat about impl methods of capability traits is
-  closed: methods inside `impl Trait for Type` where `Trait`
-  is a capability now show the trait in
-  `declared_capabilities` (it is exercised via `self` even
-  without a parameter of that type), and the ineligibility
-  set correctly excludes the trait.
-- [x] **CIR (capability-aware IR), partial.** Landed as an
-  ANF / three-address IR sitting between the analyzer's typed
-  AST and an emitter (Python emitter only, for now). Preserves
-  per-function `declared_caps`, per-method-call `cap_used`,
-  and `is_capability` flags on params and traits so a future
-  Wasm Component Model / LLVM backend has the structure to
-  emit WIT or capability-aware imports from. Opt-in via
-  `--ir`; falls back to the legacy direct-to-Python path when
-  lowering hits an unsupported construct (`TuplePat` in match
-  patterns, match arm with guard). Coverage: 44 of 46
-  analysable examples compile through CIR; 36 of 38 runnable
-  ones byte-equivalent to legacy. The multi-module
-  `audit-trail-reporter` runs end-to-end through `--ir`.
-  See `capa/ir/`. Still NOT done from the original sketch:
-  basic-blocks / CFG / block parameters (the IR is ANF only,
-  not MLIR/SIL shape), monomorphisation.
-- [x] **Wasm Component Model backend, partial.** Landed as
-  `capa.ir.WasmEmitter` and `capa.runtime._wasm_host`. Capa
-  programs compile to genuine `.wasm` (core module or CM
-  component) with capabilities materialised as WIT imports
-  under `capa:host/<cap>`. Coverage scope: Phase 6A-D + 6F.
-  Int / Bool / String / List<Int> / Map<String, V>, sums +
-  structs + pattern matching, Stdio (print / println /
-  eprintln). String interpolation handled via inline `$itoa`
-  + concatenation. CM components produced via `wasm-tools
-  component embed`/`new`. Demo gallery: `examples/wasm/`,
-  five programs running end-to-end on wasmtime via
-  `capa --wasm --run`. Still NOT done: capabilities other
-  than Stdio (Fs / Env / Clock / Net need Float, Result
-  propagation, richer WIT tables); closures / lambdas (need
-  closure conversion); List HOFs / `List.map`/`fold`; Map
-  keys/values/pairs (need List of tuples); String split /
-  replace (need List<String>). The three downstream demos
-  (audit-trail-reporter, policy-eval, sbom-watch) exceed
-  this surface; they remain on the Python pipeline.
-
-The reviewer's six-month sequence puts IR redesign in September
-and a native backend by December; that ordering trades the
-load-bearing work (formalisation + case studies) for
-infrastructure the headline argument does not need. My
-counter-sequence: formalisation → CVE case studies → Hypothesis
-tests → `Range<Int>` type → workshop paper draft → defer IR /
-native backend until after the workshop submission.
-
----
-
-## SBOM and supply-chain tooling (P1)
-
-Capa programs that interoperate with the standard SBOM
-formats and policy machinery. Applications written in the
-language, not language work.
-
-- [~] **SPDX 2.3 parser in Capa**, proves Capa can mex with the
-  real SBOM format. **Demo landed** at
-  `examples/spdx_parser.capa`: parses the core SPDX 2.3 fields
-  (document metadata, packages, file checksums, relationships)
-  into typed Capa structs, with `capability SbomReader` marking
-  the trust boundary, full `?`-chaining on `Result`, and pattern
-  matching on every `JsonValue` variant. Regression test in
-  `tests/test_transpiler.py::test_spdx_parser`. **Validation
-  pass added** (`validate_spdx(doc) -> List<String>`): checks
-  two invariants: (1) referential integrity, every
-  `Relationship.source` and `Relationship.target` must point at
-  a known SPDXID (`SPDXRef-DOCUMENT` plus every
-  `Package.SPDXID`); (2) the relationship graph is acyclic,
-  via three-colour DFS that returns `Some(witness)` for an
-  arbitrary node in a cycle or `None` for a DAG. Returns a
-  human-readable violation list, empty list = the document is
-  internally consistent. **License-expression parser landed
-  separately** at `examples/spdx_license_expr.capa`: a
-  recursive-descent parser for the SPDX 2.3 Annex D grammar
-  (`MIT OR (Apache-2.0 AND BSD-3-Clause WITH Classpath-
-  exception-2.0)`), with a typed LicenseExpr AST (sum +
-  mutually recursive struct payloads), structured Result errors
-  on malformed input, and a precedence-aware renderer that
-  round-trips (drops redundant parens, keeps load-bearing
-  ones). **Pending**: optional SPDX fields (annotations,
-  snippets, has-extracted-licensing-info), the tag-value
-  alternative serialisation, and the writeup that frames
-  this as the "representation + validation" piece.
-  Found and fixed a real analyzer bug along the way: `?` was
-  returning `TyUnknown` instead of unwrapping `Result<T, E>` /
-  `Option<T>` to `T`, which blocked type-aware method dispatch
-  (e.g. `Map.get` lowering) on any expression downstream of a
-  `?`.
-- [~] **CycloneDX 1.5 parser in Capa**, same story. **Demo
-  landed** at `examples/cyclonedx_parser.capa`: parses the
-  CycloneDX 1.5 JSON shape (metadata with tools and main
-  component, components[] with hashes and licenses,
-  dependencies[] as a flat (ref, dependsOn[]) graph) into typed
-  Capa structs (`CdxDocument`, `CdxComponent`, `CdxHash`,
-  `CdxLicense`, `CdxDependency`, `CdxMetadata`). Handles both
-  license shapes (`{license: {id|name}}` and `{expression:
-  <SPDX-license-expression>}`) plus both `tools[]` shapes
-  (modern `tools.components[]` and legacy flat array).
-  Regression test in
-  `tests/test_transpiler.py::test_cyclonedx_parser`.
-  **Validation pass added**
-  (`validate_cyclonedx(doc) -> List<String>`): mirrors the
-  SPDX validator on both axes: referential integrity (every
-  `Dependency.ref` and every entry in `dependsOn[]` must point
-  at a known `bom-ref`, drawn from `metadata.component.bom-ref`
-  plus every `components[i].bom-ref`) and acyclicity (same
-  three-colour DFS as the SPDX side). **Pending**:
-  vulnerabilities[] / VEX, services[], evidence[], signatures,
-  and the cross-format comparison writeup that ties SPDX and
-  CycloneDX into a single "representation + validation"
-  narrative.
-- [x] **`capability Provenance` (user-defined)**, capability that
-  represents the right to query/verify a piece of supply-chain
-  metadata. Demonstrates user-defined caps in a real domain.
-  Landed 2026-05-20 at `examples/provenance_demo.capa` with
-  two implementors (`FsProvenance` reading signatures and
-  attestations from a local directory via attenuated `Fs`;
-  `MockProvenance` carrying an in-memory trusted set for
-  tests) and a single `audit(prov: Provenance, ...)` consumer
-  that is implementation-blind. Sample signatures and SLSA
-  attestation JSON in `examples/data/provenance/`. Manifest of
-  `audit` shows `Provenance` only -- the underlying `Fs` /
-  `Net` of each implementor stays encapsulated, which is the
-  load-bearing claim for user-defined caps in a supply-chain
-  domain.
-- [~] **Example linking SBOM ↔ capabilities**: the headline
-  "auditable supply chain" pitch made concrete. **Demo landed**
-  at `examples/sbom_capability_audit.capa`: a Capa program reads
-  both a CycloneDX SBOM and a JSON policy file via the `Fs`
-  capability (attenuated to `examples/data/` via
-  `Fs.restrict_to` before either file is touched), extracts
-  each function's declared capabilities from the
-  `capa:declared_capability` properties in the SBOM, and checks
-  them against the per-function allow-list policy. Reports a
-  per-function summary plus a list of violations. The novel
-  part vs npm/PyPI/cargo SBOM tooling: in Capa both sides of
-  the comparison are static (the type system makes the
-  declared set rigorous; the audit is a syntactic comparison
-  of two finite lists), so a diff between SBOM and policy is
-  unambiguous and travels with the build artefact. Sample
-  data at `examples/data/demo-sbom.json` +
-  `examples/data/demo-policy.json` (the policy deliberately
-  omits one function so the audit fires). Regression test in
-  `tests/test_transpiler.py::test_sbom_capability_audit`.
-  **Pending**: support structural cross-function policies
-  (e.g. "no Net anywhere except inside an impl of trait
-  NetClient"), and a writeup that bridges Representation
-  (the four parsers) and Validation (the audit) into the
-  CRA-aligned pitch.
-
-These are not Capa-the-language work; they're SBOM-tooling
-demos written in the language.
-
----
-
-## Strategic / governance (P0 once we go public)
-
-- [x] **`CONTRIBUTING.md`**, how to file an issue, what makes a good
-  PR, dev setup, compiler structure, what kinds of contributions help
-  and what does not currently fit.
-- [x] **`CHANGELOG.md`**, Keep-a-Changelog format starting at
-  `v0.2.0-alpha` (the first tagged release) with an `[Unreleased]`
-  section for the post-tag security + governance work.
-- [x] **Issue / PR templates** in `.github/`, two YAML issue forms
-  (bug, feature) with required fields, a `config.yml` that disables
-  blank issues and contact-links to security advisories + discussions,
-  plus a `PULL_REQUEST_TEMPLATE.md`.
-- [x] **`CODE_OF_CONDUCT.md`**, adopts Contributor Covenant 2.1 by
-  reference with maintainer contact for reports.
-- [x] **Security policy**, `SECURITY.md` with how to report
-  vulnerabilities. Lists in/out-of-scope issues, the GitHub private
-  advisory channel, supported versions, disclosure flow.
-- [x] **Flip repo to public**, `gh repo edit --visibility public`.
-  Tagged `v0.2.0-alpha` first.
-- [x] **Repo security hardening**, Dependabot vulnerability alerts +
-  security updates, secret scanning + push protection, private
-  vulnerability reporting, CodeQL workflow (push + PR + weekly
-  cron), `.github/dependabot.yml` for GitHub Actions, explicit
-  `permissions: contents: read` on the tests workflow.
+### Strategic / governance
+- All public-readiness items landed; repo flipped public,
+  tagged `v0.2.0-alpha`. Security policy, code of conduct,
+  contributing guide, issue / PR templates, Dependabot, secret
+  scanning, CodeQL workflow.
 
 ---
 
@@ -1007,127 +377,5 @@ For honesty / scope control:
 - Self-hosting (very far future)
 - Full async/await (reserved keywords, no implementation)
 - Tail-call optimisation
-- Garbage collection beyond what CPython provides
+- Garbage collection beyond CPython's
 - Custom syntax extensions / macros
-
----
-
-## Future research directions (P3)
-
-Genuine extensions of Capa's discipline, parked as research-grade
-investments. None is on the May-October 2026 plan; each one is a
-multi-month arc of its own. Listed here so the design space is
-explicit and a future iteration knows where to look.
-
-- **Linear handles for resources**. Today's `consume` qualifier
-  is *affine*: a value can be passed at most once. A truly
-  *linear* extension would mean some values (file handles,
-  socket connections, transactions) **must** be consumed
-  exactly once before they go out of scope, with the analyzer
-  enforcing that at compile time. Rust does this via ownership
-  + `Drop`. Capa would need a "must-call" type-system marker
-  and a destructor-like mechanism. **ROI**: high; closes a
-  concrete bug class (resource leaks) that every program in
-  every language suffers from. Smallest of the three
-  extensions, most defensible value-add.
-
-- **Information Flow Control (IFC)**. Data labels (high/low,
-  secret/public) flow alongside capabilities. Capabilities
-  answer "who can call this?"; IFC answers "where can the data
-  flow?". A function that touches `Secret` data has its output
-  also `Secret` unless it explicitly declassifies. Prior art:
-  Jif, Flow Caml, FlowCrypt, LIO. **Cost**: large; the type
-  system needs a label algebra and noninterference proof.
-  **ROI**: highest of the three; addresses privacy leakage and
-  prompt-injection style attacks where capability discipline
-  alone is not enough. Honest framing required: classical IFC
-  failed adoption because it was too restrictive; modern
-  gradual / reactive IFC is the credible path.
-
-- **Quantitative capabilities**. A capability that carries a
-  budget instead of (or alongside) a fixed allow-list: "this
-  `Net` can make 100 requests, then fails", "this `Fs` can
-  write at most 1 MB cumulatively". Same shape as
-  `restrict_to` but on a numeric axis. Sound because the
-  budget lives in the value and is fail-closed when exhausted.
-  Prior art: rate-limited capabilities in Joe-E, effects with
-  bounded use in Eff. **ROI**: marginal; most rate-limiting
-  use cases are solved at the application level, not the
-  language. Worth listing for completeness.
-
-- **Typestate / session types**. A connection that must be
-  `Open` before `Send`, must `Close` to release. The type
-  carries the current state; methods are only callable in
-  states where they make sense. Prior art: Session Types
-  (Honda et al), Plaid, F* with state effects. **ROI**: real
-  for network and protocol code; concrete pain point even in
-  Rust.
-
-- **Constant-time markers for crypto**. A function-level
-  attribute or type-system marker that promises (and checks)
-  the function runs in constant time: no early returns based
-  on secret data, no branch on secret values, no
-  data-dependent memory access. Prior art: Vale, FaCT, Jasmin.
-  **ROI**: niche but high-value for the crypto subset; the
-  CVE case studies already include CWE-208 (timing attack)
-  examples that this would mechanically prevent.
-
----
-
-## Strategic directions for adoption
-
-Not features. Strategic angles that would move Capa from
-"interesting language with a working compiler" to "language a
-real community uses". Honest reflection of where the gap is.
-
-- **LLM tool-use sandboxing as the 2026 angle**. Capability
-  discipline is structurally the right shape for sandboxing
-  LLM agents that can call tools (search the web, send email,
-  run code). The industry has no good solution; Capa has the
-  right primitives. A small demo library (`capability
-  LlmTool`, attenuated per-tool, embedded in the SBOM as the
-  declared authority surface) would be a more compelling
-  "killer use case" than any new type-system feature. Probably
-  the single highest-leverage thing to build next.
-
-- **Native backend (LLVM, Cranelift, or Wasm-CM)**. Already
-  noted as "not in v1", but listing here as the single biggest
-  adoption blocker. Python target is fine for prototyping;
-  production deployment of a capability-typed language requires
-  real performance. Wasm Component Model is the most credible
-  technical fit (already capability-based at the module
-  boundary; emitting Wasm + WIT from Capa is conceptually
-  straightforward).
-
-- **Async/await with capability-aware semantics**. Modern
-  applications are network-bound and concurrent. A language
-  without async is unappealing for the workloads where
-  capabilities are most valuable (servers, agents,
-  distributed systems). The hard part is the semantics:
-  capabilities cannot leak across `await` boundaries; an
-  attenuated cap must remain attenuated; cancellation must
-  not strand resources (intersects with linear handles
-  above).
-
-- **Migration path from Python**. Today's interop is one-way
-  via `Unsafe`. TypeScript and Kotlin won mainstream traction
-  because they had an incremental migration story from
-  JavaScript and Java. Capa-from-Python with a "gradual
-  hardening" mode (start with everything `Unsafe`, then narrow
-  function by function) would lower the entry barrier
-  significantly.
-
-- **Package manager + minimal registry**. Listed elsewhere as
-  P3 ecosystem work, repeated here because without it there is
-  no "install Capa, run a real program from a real library"
-  path. Chicken-and-egg: no registry means no libraries; no
-  libraries means no adoption.
-
-The honest order: an **LLM tool-use demo** is the smallest
-high-leverage move (days, not months) and would do more for
-adoption than any of the type-system extensions above. Native
-backend and async are large but necessary if Capa wants to be
-production-credible. The type-system research directions
-strengthen Capa as a *research artefact*; the strategic
-directions above are what move it from there to *adopted
-language*.
