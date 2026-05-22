@@ -325,6 +325,12 @@ class Lowerer:
             return
         if isinstance(s.pattern, A.TuplePat):
             value = self._lower_expr(s.value)
+            # Parse element types from the tuple's type string so
+            # the binders carry precise types rather than Unknown.
+            # ``(String, Int)`` -> ["String", "Int"]. When the type
+            # string isn't a tuple shape (e.g. analyser couldn't
+            # narrow it), fall back to ``Unknown`` per element.
+            elem_types = _split_tuple_elem_types(value.ty)
             for idx, sub in enumerate(s.pattern.elements):
                 if not isinstance(sub, A.IdentPat):
                     raise UnsupportedInIR(
@@ -334,7 +340,8 @@ class Lowerer:
                 # instruction is the same one ``xs[i]`` uses, so the
                 # emitter renders ``a = pair[0]`` etc.
                 idx_v = Value(kind="lit_int", literal=idx, ty="Int")
-                self._locals[sub.name] = "Unknown"
+                bind_ty = elem_types[idx] if idx < len(elem_types) else "Unknown"
+                self._locals[sub.name] = bind_ty
                 self._instrs.append(
                     Index(dst=sub.name, receiver=value, index=idx_v)
                 )
@@ -1101,7 +1108,20 @@ class Lowerer:
         if not e.elements:
             return Value(kind="lit_unit", literal=None, ty="Unit")
         elements = [self._lower_expr(x) for x in e.elements]
+        # Render as ``(T1, T2)`` so downstream consumers
+        # (TuplePat destructure, Wasm emitter) can read precise
+        # element types instead of seeing a bare ``Tuple``.
+        # Prefer the analyzer's recorded type for the whole
+        # expression when present; fall back to element Value
+        # types otherwise.
         result_ty = "Tuple"
+        if self.types:
+            t = self.types.get(id(e))
+            if t is not None:
+                result_ty = _ty_to_str(t)
+        if result_ty == "Tuple":
+            inner = ", ".join(v.ty or "Unknown" for v in elements)
+            result_ty = f"({inner})"
         dst = fresh_local(self._counter)
         self._locals[dst] = result_ty
         self._instrs.append(MakeTuple(dst=dst, elements=elements))
@@ -1182,6 +1202,33 @@ def _type_name(te: object) -> str:
             return f"{te.name}<{inner}>"
         return te.name
     return _ty_to_str(te)
+
+
+def _split_tuple_elem_types(ty: str) -> list[str]:
+    """``(String, Int)`` -> ``['String', 'Int']``. Returns an empty
+    list when ``ty`` isn't shaped like a parenthesised tuple, so
+    callers can fall back to per-element ``Unknown``."""
+    if not ty.startswith("(") or not ty.endswith(")"):
+        return []
+    inner = ty[1:-1].strip()
+    if not inner:
+        return []
+    out: list[str] = []
+    buf = ""
+    depth = 0
+    for ch in inner:
+        if ch in "(<":
+            depth += 1
+        elif ch in ")>":
+            depth -= 1
+        if ch == "," and depth == 0:
+            out.append(buf.strip())
+            buf = ""
+            continue
+        buf += ch
+    if buf.strip():
+        out.append(buf.strip())
+    return out
 
 
 def _split_top_level_comma(s: str) -> tuple[str, str]:

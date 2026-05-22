@@ -38,7 +38,8 @@ from .._nodes import (
     Module, Function, Param, Value, Instr,
     AssignConst, Reassign, BinOp, UnaryOp, Call, MethodCall,
     If, While, Break, Continue, Return, TryUnwrap,
-    MakeStruct, MakeList, MakeMap, MakeSet, FieldAccess, Index, For,
+    MakeStruct, MakeList, MakeMap, MakeSet, MakeTuple,
+    FieldAccess, Index, For,
     FormatStr, MakeLambda,
     Pattern, PatWildcard, PatIdent, PatLiteral, PatVariant, MatchArm, Match,
     StructDecl, SumDecl,
@@ -65,6 +66,7 @@ from ._closures import _ClosureEmissionMixin
 from ._json import _JsonEmissionMixin
 from ._option import _OptionEmissionMixin
 from ._traits import _TraitEmissionMixin
+from ._tuples import _TupleEmissionMixin
 
 
 # Capa scalar types this phase knows how to lower. Any other type
@@ -127,6 +129,7 @@ class WasmEmitter(
     _JsonEmissionMixin,
     _OptionEmissionMixin,
     _TraitEmissionMixin,
+    _TupleEmissionMixin,
 ):
     def __init__(self, indent_unit: str = "  "):
         self._lines: List[str] = []
@@ -914,6 +917,7 @@ class WasmEmitter(
         has_list_string = False
         has_optres_method = False
         has_list_method = False
+        has_tuple = False
 
         def value_uses_variant_ctor(v: Value) -> bool:
             return v is not None and v.kind == "variant_ctor"
@@ -924,7 +928,7 @@ class WasmEmitter(
             nonlocal has_format_str, has_make_lambda, has_list_hof
             nonlocal has_json_method, has_json_parse
             nonlocal has_list_string, has_optres_method
-            nonlocal has_list_method
+            nonlocal has_list_method, has_tuple
             for instr in instrs:
                 if isinstance(instr, Match):
                     has_match = True
@@ -975,6 +979,12 @@ class WasmEmitter(
                                     fn.locals[arm.pattern.name] = "String"
                     for arm in instr.arms:
                         visit(arm.body)
+                if isinstance(instr, MakeTuple):
+                    # MakeTuple's String-element path packs (ptr,
+                    # len) into i64 via _alloc_tmp_i64; Index over
+                    # a tuple's String slot unpacks via the same
+                    # scratch.
+                    has_tuple = True
                 if isinstance(instr, MakeList):
                     has_list = True
                     # MakeList over String elements needs the i64
@@ -984,11 +994,14 @@ class WasmEmitter(
                         has_list_string = True
                 if isinstance(instr, Index):
                     # Index over List<String> unpacks a packed i64
-                    # via _alloc_tmp_i64.
+                    # via _alloc_tmp_i64. Same goes for tuple
+                    # indices when the slot type is String.
                     recv_ty = instr.receiver.ty or ""
                     if (recv_ty.startswith("List")
                             and _element_type_of_list(recv_ty) == "String"):
                         has_list_string = True
+                    if recv_ty.startswith("(") and recv_ty.endswith(")"):
+                        has_tuple = True
                 if isinstance(instr, MakeMap):
                     has_map = True
                 if isinstance(instr, MakeLambda):
@@ -1040,6 +1053,12 @@ class WasmEmitter(
                     if instr.method == "split" and recv_ty == "String":
                         # split returns List<String>; uses _alloc_tmp_i64
                         # for the per-chunk packing dance.
+                        has_list_string = True
+                    if (instr.method == "push"
+                            and recv_ty.startswith("List")
+                            and _element_type_of_list(recv_ty) == "String"):
+                        # List<String>.push packs (ptr, len) via
+                        # _alloc_tmp_i64.
                         has_list_string = True
                     if (instr.method == "get"
                             and recv_ty.startswith("List")):
@@ -1150,7 +1169,7 @@ class WasmEmitter(
             out["_alloc_tmp"] = "i32"
         if (has_list_contains_i64 or has_map or has_match or has_for
                 or has_variant_ctor or has_json_method or has_list_string
-                or has_optres_method):
+                or has_optres_method or has_tuple):
             # The i64 scratch is shared by: List.contains for i64
             # elements, Map scan (value packing), match-arm String
             # unpacking, for-iter over List<String> (packed i64
@@ -1314,6 +1333,9 @@ class WasmEmitter(
         if isinstance(instr, MakeMap):
             self._emit_make_map(instr)
             return
+        if isinstance(instr, MakeTuple):
+            self._emit_make_tuple(instr)
+            return
         if isinstance(instr, MakeLambda):
             self._emit_make_lambda(instr)
             return
@@ -1321,6 +1343,13 @@ class WasmEmitter(
             self._emit_field_access(instr)
             return
         if isinstance(instr, Index):
+            # Tuple receivers go through the type-aware tuple
+            # emitter. List receivers use the size-dispatched
+            # path in _lists.
+            recv_ty = self._effective_value_ty(instr.receiver)
+            if self._is_tuple_ty(recv_ty):
+                self._emit_tuple_index(instr)
+                return
             self._emit_index(instr)
             return
         if isinstance(instr, For):
@@ -2024,6 +2053,16 @@ class WasmEmitter(
             # is a no-op. The instruction that asked for the push
             # should not have done so for a Unit-typed sink.
             return
+        if v.kind == "lit_str":
+            # String literal pushed as a packed i64 (ptr |
+            # (len << 32)). Callers that need (ptr, len) as two
+            # i32s should use _push_string_value_as_ptr_len
+            # explicitly; the packed form here is what every
+            # uniform 8-byte slot expects (tuple slot, Map value
+            # slot, variant payload slot).
+            offset, length = self._intern_string(v.literal)
+            self._write(f"i64.const {offset | (length << 32)}")
+            return
         if v.kind == "variant_ctor":
             # Payload-less variant used as a value (``return Neither``,
             # ``let x = Excellent``, ...). Emit alloc + tag store
@@ -2079,6 +2118,16 @@ class WasmEmitter(
         # User-defined trait / capability with a unique impl:
         # values are i32 pointers to the impl's struct.
         if head in self._trait_to_impl:
+            return "i32"
+        # Tuples render as ``(T1, T2, ...)``. Stored on the heap
+        # as 16-byte records (one uniform 8-byte slot per element
+        # for up to 2 elements; arities other than 2 are deferred).
+        if capa_ty.startswith("(") and capa_ty.endswith(")"):
+            return "i32"
+        # Payloadless variant values (e.g. ``Low`` for a Severity
+        # sum) carry the variant name as their .ty rather than the
+        # parent sum name. Resolve via _variant_to_sum.
+        if head in self._variant_to_sum:
             return "i32"
         # Unresolved tyvars (``?`` or analyzer's ``?lst_N``) default
         # to i64 so the Wasm verifier accepts the local declaration;

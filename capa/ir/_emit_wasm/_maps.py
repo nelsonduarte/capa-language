@@ -98,10 +98,136 @@ class _MapEmissionMixin:
             if instr.dst is not None:
                 self._write(f"local.set ${instr.dst}")
             return
+        if method == "pairs":
+            self._emit_map_pairs(recv, value_ty, instr.dst)
+            return
         raise WasmEmissionError(
             f"Phase 6D-3: Map method {method!r} not yet supported "
-            f"(keys / values / pairs need List of pairs, 6D-4+)"
+            f"(keys / values need List of K / V, 6D-4+)"
         )
+
+    def _emit_map_pairs(self, recv: Value, value_ty: str, dst) -> None:
+        """``m.pairs() -> List<(K, V)>``. Iterate the map's data
+        array, allocate a fresh ``(K, V)`` tuple per pair, push
+        each tuple's pointer into a new List<Tuple>. K is fixed
+        to String today (Phase 6D-3 map specialisation); the
+        tuple's slot 0 stores the packed-i64 String, slot 1
+        stores V via the same shape-aware encoding the rest of
+        the emitter uses.
+
+        Reuses ``$_m_scrut`` (map ptr) and ``$_m_tag`` (iteration
+        index) as scratch; the for-loop's own scratch is separate
+        (\$_f_list / \$_f_idx) so a ``for pair in m.pairs(): ...``
+        doesn't clobber the iteration state."""
+        if dst is None:
+            return
+        # _LIST_*_OFFSET constants come from the layout module; we
+        # import locally so the _maps mixin stays close to the
+        # data structures it works with.
+        from ._layout import (
+            _LIST_HEADER_SIZE, _LIST_LEN_OFFSET, _LIST_CAP_OFFSET,
+            _LIST_DATA_OFFSET,
+        )
+        map_local = "_m_scrut"
+        idx_local = "_m_tag"
+        # Stash map pointer.
+        self._push_value(recv)
+        self._write(f"local.set ${map_local}")
+        # Allocate list header.
+        self._write(f"i32.const {_LIST_HEADER_SIZE}")
+        self._write("call $alloc")
+        self._write(f"local.set ${dst}")
+        # Copy len + cap from map into the new list header; the
+        # data array is sized to the map's cap (max likely needed)
+        # so subsequent ``.push`` operations on the returned list
+        # don't immediately realloc.
+        self._write(f"local.get ${dst}")
+        self._write(f"local.get ${map_local}")
+        self._write(f"i32.load offset={_MAP_LEN_OFFSET}")
+        self._write(f"i32.store offset={_LIST_LEN_OFFSET}")
+        self._write(f"local.get ${dst}")
+        self._write(f"local.get ${map_local}")
+        self._write(f"i32.load offset={_MAP_CAP_OFFSET}")
+        self._write(f"i32.store offset={_LIST_CAP_OFFSET}")
+        # Allocate the data array: cap * 4 (tuple pointers).
+        self._write(f"local.get ${map_local}")
+        self._write(f"i32.load offset={_MAP_CAP_OFFSET}")
+        self._write("i32.const 4")
+        self._write("i32.mul")
+        self._write("call $alloc")
+        self._write("local.set $_alloc_tmp")
+        self._write(f"local.get ${dst}")
+        self._write("local.get $_alloc_tmp")
+        self._write(f"i32.store offset={_LIST_DATA_OFFSET}")
+        # Iterate i = 0 .. len.
+        self._write("i32.const 0")
+        self._write(f"local.set ${idx_local}")
+        self._block_counter += 1
+        loop = f"$Mpairs{self._block_counter}_loop"
+        exit_ = f"$Mpairs{self._block_counter}_exit"
+        self._write(f"block {exit_}")
+        self._indent += 1
+        self._write(f"loop {loop}")
+        self._indent += 1
+        # if idx >= len: break
+        self._write(f"local.get ${idx_local}")
+        self._write(f"local.get ${map_local}")
+        self._write(f"i32.load offset={_MAP_LEN_OFFSET}")
+        self._write("i32.ge_s")
+        self._write(f"br_if {exit_}")
+        # pair_addr = map.data_ptr + idx * 16
+        self._write(f"local.get ${map_local}")
+        self._write(f"i32.load offset={_MAP_DATA_OFFSET}")
+        self._write(f"local.get ${idx_local}")
+        self._write(f"i32.const {_MAP_PAIR_SIZE}")
+        self._write("i32.mul")
+        self._write("i32.add")
+        self._write("local.set $_alloc_tmp_pair")
+        # Allocate the tuple record (16 bytes: K + V).
+        self._write("i32.const 16")
+        self._write("call $alloc")
+        self._write(f"local.set $_alloc_tmp_result")
+        # tuple[0] = packed-i64(key_ptr, key_len). The map's pair
+        # already stores key_ptr at offset 0 and key_len at offset
+        # 4; pack them into a single i64.
+        self._write(f"local.get $_alloc_tmp_result")
+        self._write("local.get $_alloc_tmp_pair")
+        self._write(f"i32.load offset={_MAP_PAIR_KEY_LEN_OFFSET}")
+        self._write("i64.extend_i32_u")
+        self._write("i64.const 32")
+        self._write("i64.shl")
+        self._write("local.tee $_alloc_tmp_i64")
+        self._write("drop")
+        self._write("local.get $_alloc_tmp_pair")
+        self._write(f"i32.load offset={_MAP_PAIR_KEY_PTR_OFFSET}")
+        self._write("i64.extend_i32_u")
+        self._write("local.get $_alloc_tmp_i64")
+        self._write("i64.or")
+        self._write("i64.store offset=0")
+        # tuple[1] = pair.value (already encoded as i64 in the
+        # map's pair record; direct copy).
+        self._write(f"local.get $_alloc_tmp_result")
+        self._write("local.get $_alloc_tmp_pair")
+        self._write(f"i64.load offset={_MAP_PAIR_VALUE_OFFSET}")
+        self._write("i64.store offset=8")
+        # data[idx] = tuple_ptr (i32, list's slots are 4 bytes).
+        self._write("local.get $_alloc_tmp")
+        self._write(f"local.get ${idx_local}")
+        self._write("i32.const 4")
+        self._write("i32.mul")
+        self._write("i32.add")
+        self._write(f"local.get $_alloc_tmp_result")
+        self._write("i32.store")
+        # idx++
+        self._write(f"local.get ${idx_local}")
+        self._write("i32.const 1")
+        self._write("i32.add")
+        self._write(f"local.set ${idx_local}")
+        self._write(f"br {loop}")
+        self._indent -= 1
+        self._write("end")
+        self._indent -= 1
+        self._write("end")
 
     def _push_map_value_as_i64(self, v: Value, value_ty: str) -> None:
         """Push a Map value onto the stack as a 64-bit packed slot.
@@ -118,6 +244,16 @@ class _MapEmissionMixin:
         if value_ty == "Bool":
             self._push_value(v)
             self._write("i64.extend_i32_s")
+            return
+        if value_ty == "Float":
+            # Bitcast f64 -> i64 to fit the uniform 8-byte value
+            # slot. The Map.get path's Option<Float> reads the
+            # slot as f64.load directly (the i64 bytes are the
+            # IEEE-754 f64 bit pattern); a future ``as_float``
+            # accessor on the Option would just be an alias for
+            # the existing JsonValue.as_num path.
+            self._push_value(v)
+            self._write("i64.reinterpret_f64")
             return
         if value_ty == "String":
             # Pack (ptr, len) into i64. Same dance as variant-ctor

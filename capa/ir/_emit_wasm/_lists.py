@@ -162,8 +162,24 @@ class _ListEmissionMixin:
         self._write(f"i32.const {elem_size}")
         self._write("i32.mul")
         self._write("i32.add")
-        self._push_value(elem)
-        self._write(_store_op_for_size(elem_size))
+        if elem_ty == "String":
+            # Pack (ptr, len) into the 8-byte slot. Mirrors the
+            # same packing dance _emit_make_list does for String
+            # elements; the consumer (for-iter / Index over
+            # List<String>) unpacks the inverse way.
+            self._push_string_value_as_ptr_len(elem)
+            self._write("i64.extend_i32_u")
+            self._write("i64.const 32")
+            self._write("i64.shl")
+            self._write("local.tee $_alloc_tmp_i64")
+            self._write("drop")
+            self._write("i64.extend_i32_u")
+            self._write("local.get $_alloc_tmp_i64")
+            self._write("i64.or")
+            self._write("i64.store")
+        else:
+            self._push_value(elem)
+            self._write(_store_op_for_size(elem_size))
         # Increment len.
         self._write(f"local.get ${list_local}")
         self._write(f"local.get ${len_local}")
