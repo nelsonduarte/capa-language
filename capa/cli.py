@@ -667,14 +667,29 @@ def main() -> int:
                 print(f"capa: --wasm: {e}", file=sys.stderr)
                 return 1
         # --run path: assemble and execute on a wasmtime host.
+        # ``--component --run`` wraps the core module in a
+        # Component Model component first and dispatches to the
+        # component-aware host (different lift/lower semantics,
+        # see capa.runtime._wasm_component_host).
         try:
-            from capa.runtime._wasm_host import WasmHost
-            # Pass the user-visible program args (everything after
-            # ``--`` on the CLI) through to the host so env.args
-            # inside the wasm module sees the same values it would
-            # see under --run on the Python path.
-            host = WasmHost(args=program_args)
-            host.run_main(blob)
+            if args.component:
+                from capa.runtime._wasm_component_host import (
+                    WasmComponentHost,
+                )
+                component_blob = _wrap_as_component(
+                    blob, compile_wit(module, types=result.types),
+                )
+                host = WasmComponentHost(args=program_args)
+                host.run_main(component_blob)
+            else:
+                from capa.runtime._wasm_host import WasmHost
+                # Pass the user-visible program args (everything
+                # after ``--`` on the CLI) through to the host so
+                # env.args inside the wasm module sees the same
+                # values it would see under --run on the Python
+                # path.
+                host = WasmHost(args=program_args)
+                host.run_main(blob)
             return 0
         except Exception as e:
             import traceback

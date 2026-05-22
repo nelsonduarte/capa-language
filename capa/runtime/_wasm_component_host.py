@@ -1,0 +1,193 @@
+"""Component Model host for Capa Wasm artifacts.
+
+Companion to ``_wasm_host.py``, which speaks the *core* Wasm
+import protocol (raw pointers + canonical-ABI return areas).
+This module instead drives a Component-Model-wrapped Capa
+artifact: ``wasmtime.component.Component`` plus a high-level
+linker where each capability method is a Python function that
+receives lifted WIT values (strings, lists, options, results,
+records) and returns the same shape -- no manual pointer work.
+
+The two hosts share semantics. Capa Wasm artifacts built with
+``capa --wasm --output app.wasm`` are core modules and load
+through ``WasmHost``; artifacts built with
+``capa --wasm --component --output app.wasm`` are components
+and load through ``WasmComponentHost``.
+"""
+
+from __future__ import annotations
+
+import json as _stdlib_json
+import os
+import sys
+from typing import Any, Iterable, Optional
+
+import wasmtime
+import wasmtime.component as wc
+
+
+class IoErrorRecord(wc.Record):
+    """Record subclass matching the WIT ``io-error`` shape with
+    ``message`` and ``cause`` string fields. wasmtime.component's
+    RecordType.convert_to_c uses ``getattr(val, name)`` plus
+    ``isinstance(val, wc.Record)`` so any Record subclass with
+    the right attrs works."""
+
+    def __init__(self, message: str, cause: str = "") -> None:
+        self.message = message
+        self.cause = cause
+
+
+class WasmComponentHost:
+    """Wraps a Component Model ``.wasm`` artifact in a wasmtime
+    linker pre-populated with Capa's ``capa:host/*`` interfaces.
+
+    Construction takes the program ``argv`` (visible to the
+    component via ``Env.args()``); ``run_main`` instantiates
+    and dispatches to the world's ``run`` export."""
+
+    def __init__(self, args: Iterable[str] = ()):
+        self._args = list(args)
+        self._engine = wasmtime.Engine()
+        self._store = wasmtime.Store(self._engine)
+        self._linker = wc.Linker(self._engine)
+        self._register_all()
+
+    def _register_all(self) -> None:
+        root = self._linker.root()
+        self._register_stdio(root)
+        self._register_clock(root)
+        self._register_env(root)
+        self._register_fs(root)
+        self._register_json(root)
+        root.close()
+
+    # ---- per-interface registration ----------------------------
+
+    def _register_stdio(self, root: wc.LinkerInstance) -> None:
+        stdio = root.add_instance("capa:host/stdio")
+        stdio.add_func("print",    lambda _store, msg: sys.stdout.write(msg))
+        stdio.add_func("println",  lambda _store, msg: print(msg))
+        stdio.add_func("eprintln", lambda _store, msg: print(msg, file=sys.stderr))
+        stdio.close()
+
+    def _register_clock(self, root: wc.LinkerInstance) -> None:
+        clock = root.add_instance("capa:host/clock")
+        import time
+        clock.add_func("now-secs",      lambda _store: time.time())
+        clock.add_func("now-monotonic", lambda _store: time.monotonic())
+        clock.close()
+
+    def _register_env(self, root: wc.LinkerInstance) -> None:
+        env = root.add_instance("capa:host/env")
+        env.add_func("args", lambda _store: list(self._args))
+        env.add_func(
+            "get",
+            lambda _store, name: os.environ.get(name),  # None -> WIT none
+        )
+        env.close()
+
+    def _register_fs(self, root: wc.LinkerInstance) -> None:
+        fs = root.add_instance("capa:host/fs")
+
+        def fs_read(_store, path: str):
+            # result<string, io-error>: untagged, dispatch by
+            # Python type. Return a str on success, an
+            # IoErrorRecord on failure.
+            try:
+                with open(path, encoding="utf-8") as f:
+                    return f.read()
+            except OSError as e:
+                return IoErrorRecord(
+                    message=str(e), cause=type(e).__name__,
+                )
+
+        def fs_write(_store, path: str, content: str):
+            # result<_, io-error>: Ok carries unit -> return None;
+            # Err carries io-error -> return IoErrorRecord.
+            try:
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(content)
+                return None
+            except OSError as e:
+                return IoErrorRecord(
+                    message=str(e), cause=type(e).__name__,
+                )
+
+        def fs_restrict_to(_store, _prefix: str):
+            # No-op at the Wasm/Component level. The analyzer's
+            # static capability discipline is what enforces it;
+            # the runtime accepts the call so attenuation chains
+            # do not trap.
+            return None
+
+        fs.add_func("read",         fs_read)
+        fs.add_func("write",        fs_write)
+        fs.add_func("restrict-to",  fs_restrict_to)
+        fs.close()
+
+    def _register_json(self, root: wc.LinkerInstance) -> None:
+        json_ifc = root.add_instance("capa:host/json")
+
+        # JsonValue crosses the boundary as an opaque u32 handle:
+        # the host owns a side table mapping u32 -> Python value
+        # so to-string can recover the value parse handed back.
+        # In the core-wasm path the handle is a real linear-memory
+        # pointer; here it stays Python-side because lifted host
+        # functions never see the component's memory.
+        self._jv_table: dict[int, Any] = {}
+        self._jv_next_id = 1
+
+        def alloc_handle(py_val: Any) -> int:
+            nonlocal_id = self._jv_next_id
+            self._jv_table[nonlocal_id] = py_val
+            self._jv_next_id += 1
+            return nonlocal_id
+
+        def json_parse(_store, s: str):
+            # result<u32, string>: untagged (int vs str). Return
+            # int for Ok, str for Err.
+            try:
+                return alloc_handle(_stdlib_json.loads(s))
+            except (ValueError, _stdlib_json.JSONDecodeError) as e:
+                return str(e)
+
+        def json_to_string(_store, jv: int):
+            return _stdlib_json.dumps(self._jv_table[jv])
+
+        json_ifc.add_func("parse",     json_parse)
+        json_ifc.add_func("to-string", json_to_string)
+        json_ifc.close()
+
+    # ---- public surface ----------------------------------------
+
+    def run_main(self, wasm_blob_or_path) -> None:
+        """Load a Component artifact (bytes or filesystem path)
+        and dispatch to the world's ``run`` export. Traps and
+        exceptions inside the component bubble up unchanged."""
+        if isinstance(wasm_blob_or_path, (bytes, bytearray)):
+            # wasmtime.Component has no from_bytes; round-trip
+            # through a temp file so the same surface as
+            # ``WasmHost.run_main`` works.
+            import tempfile
+            with tempfile.NamedTemporaryFile(
+                suffix=".wasm", delete=False,
+            ) as tmp:
+                tmp.write(bytes(wasm_blob_or_path))
+                tmp_path = tmp.name
+            try:
+                component = wc.Component.from_file(self._engine, tmp_path)
+            finally:
+                os.unlink(tmp_path)
+        else:
+            component = wc.Component.from_file(
+                self._engine, str(wasm_blob_or_path),
+            )
+        instance = self._linker.instantiate(self._store, component)
+        main = instance.get_func(self._store, "main")
+        if main is None:
+            raise RuntimeError(
+                "component has no exported `main` function; "
+                "the WIT world must declare ``export main: func();``"
+            )
+        main(self._store)

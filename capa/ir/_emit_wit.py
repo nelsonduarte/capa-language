@@ -228,6 +228,13 @@ def emit_wit(module: Module, world_name: str = "program") -> str:
     for cap in sorted(used.keys()):
         if cap in _KNOWN_CAPABILITIES:
             lines.append(f"  import {cap.lower()};")
+    # Export the Capa program's entry point so external Component
+    # Model runtimes can call it. ``main`` matches the Capa
+    # source-level convention and the core wasm's existing
+    # ``(export "main")`` clause; capability parameters are erased
+    # at the Wasm level (they become imports), so the export's
+    # canonical-ABI signature is the trivial ``() -> ()`` shape.
+    lines.append("  export main: func();")
     lines.append("}")
     lines.append("")
 
