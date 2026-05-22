@@ -37,7 +37,7 @@ from typing import List, Optional
 from .._nodes import (
     Module, Function, Param, Value, Instr,
     AssignConst, Reassign, BinOp, UnaryOp, Call, MethodCall,
-    If, While, Break, Continue, Return,
+    If, While, Break, Continue, Return, TryUnwrap,
     MakeStruct, MakeList, MakeMap, MakeSet, FieldAccess, Index, For,
     FormatStr, MakeLambda,
     Pattern, PatWildcard, PatIdent, PatLiteral, PatVariant, MatchArm, Match,
@@ -1045,9 +1045,82 @@ class WasmEmitter(
         if isinstance(instr, Call):
             self._emit_user_call(instr)
             return
+        if isinstance(instr, TryUnwrap):
+            self._emit_try_unwrap(instr)
+            return
         raise WasmEmissionError(
             f"Phase 6A: instruction {type(instr).__name__} not supported"
         )
+
+    def _emit_try_unwrap(self, instr: TryUnwrap) -> None:
+        """Lower the ``?`` operator. ``instr.src`` is an i32 pointer
+        to a 16-byte sum record (Result<T, E> or Option<T>). If the
+        tag at offset 0 is 1 (Err / None), return the original
+        pointer from the enclosing function early. Otherwise extract
+        the payload at offset 8 into ``instr.dst``.
+
+        Mirrors the sum-type Match arm-extraction logic but elides
+        the per-arm cascade since we only care about Ok/Err
+        discrimination."""
+        src_ty = instr.src.ty
+        # Strip generic args: ``Option<Int>`` -> ``Option``.
+        head = src_ty.split("<", 1)[0]
+        if head not in ("Option", "Result"):
+            raise WasmEmissionError(
+                f"TryUnwrap on type {src_ty!r}: only Option<T> and "
+                f"Result<T, E> are supported"
+            )
+        self._push_value(instr.src)
+        self._write("local.set $_m_scrut")
+        # Tag check: 1 = Err / None -> early return.
+        self._write("local.get $_m_scrut")
+        self._write("i32.load")
+        self._write("i32.const 1")
+        self._write("i32.eq")
+        self._write("if")
+        self._indent += 1
+        self._write("local.get $_m_scrut")
+        self._write("return")
+        self._indent -= 1
+        self._write("end")
+        # Ok / Some path: load payload at offset 8.
+        dst_ty = self._dst_capa_ty(instr.dst)
+        if dst_ty == "String":
+            # Payload packed as i64 (ptr low / len high). Unpack
+            # into dst's (ptr, len) locals.
+            self._write("local.get $_m_scrut")
+            self._write("i64.load offset=8")
+            self._write("local.set $_alloc_tmp_i64")
+            self._write("local.get $_alloc_tmp_i64")
+            self._write("i32.wrap_i64")
+            self._write(f"local.set ${instr.dst}_ptr")
+            self._write("local.get $_alloc_tmp_i64")
+            self._write("i64.const 32")
+            self._write("i64.shr_u")
+            self._write("i32.wrap_i64")
+            self._write(f"local.set ${instr.dst}_len")
+            return
+        head_dst = dst_ty.split("<", 1)[0] if dst_ty else ""
+        if head_dst in self._struct_layouts or head_dst in self._sum_layouts \
+                or (dst_ty and dst_ty.startswith(("List", "Map", "Set"))):
+            # Pointer-shaped payload stored as i64.extend; unpack.
+            self._write("local.get $_m_scrut")
+            self._write("i64.load offset=8")
+            self._write("i32.wrap_i64")
+            self._write(f"local.set ${instr.dst}")
+            return
+        # Scalar (Int / Bool / Float).
+        wasm_ty = self._wasm_type(dst_ty or "Int")
+        self._write("local.get $_m_scrut")
+        if wasm_ty == "i64":
+            self._write("i64.load offset=8")
+        elif wasm_ty == "f64":
+            self._write("f64.load offset=8")
+        else:
+            # i32 (Bool); the i64 slot's low 32 bits are the value.
+            self._write("i64.load offset=8")
+            self._write("i32.wrap_i64")
+        self._write(f"local.set ${instr.dst}")
 
     def _emit_binop(self, instr: BinOp) -> None:
         op = instr.op
@@ -1475,6 +1548,10 @@ class WasmEmitter(
         head = capa_ty.split("<", 1)[0]
         if head in _CAPA_TO_WASM:
             return _CAPA_TO_WASM[head]
+        # ``()`` is Capa's empty-tuple / Unit alias from the type
+        # printer; treat it the same as Unit (no Wasm result).
+        if capa_ty == "()":
+            return ""
         # Struct and sum types are stored on the heap and passed by
         # i32 pointer. Locals/params/return values of these types
         # are i32 at the Wasm level.

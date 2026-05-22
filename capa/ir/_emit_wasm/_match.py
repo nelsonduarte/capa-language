@@ -15,7 +15,7 @@ plumbing in the main ``WasmEmitter``: ``_sum_layouts``,
 from __future__ import annotations
 
 from .._nodes import (
-    Match, MatchArm, PatVariant, PatIdent, PatWildcard,
+    Match, MatchArm, PatVariant, PatIdent, PatLiteral, PatWildcard,
 )
 from ._layout import WasmEmissionError, _load_op_for_size
 
@@ -37,6 +37,9 @@ class _MatchEmissionMixin:
         into arm bodies.
         """
         scrut_ty = instr.scrutinee.ty
+        if scrut_ty == "Bool":
+            self._emit_bool_match(instr)
+            return
         # Sum-layout lookups strip generic args: ``Option<Int>`` ->
         # ``Option``. The built-in Option / Result and user-defined
         # sums are all keyed by the bare type name.
@@ -44,9 +47,9 @@ class _MatchEmissionMixin:
         if sum_layout is None:
             raise WasmEmissionError(
                 f"Match on scrutinee of type {scrut_ty!r}: only sum "
-                f"types are supported in Phase 6C. Int / Bool match "
-                f"lands in a later phase (or stays statement-form via "
-                f"if/elif)."
+                f"types and Bool are supported in Phase 6C. Int / "
+                f"String match lands in a later phase (or stays "
+                f"statement-form via if/elif)."
             )
         scrut_local = "_m_scrut"
         tag_local = "_m_tag"
@@ -61,6 +64,53 @@ class _MatchEmissionMixin:
         opened = 0
         for arm in instr.arms:
             opened += self._emit_match_arm(arm, scrut_local, tag_local, sum_layout)
+        for _ in range(opened):
+            self._indent -= 1
+            self._write("end")
+
+    def _emit_bool_match(self, instr: Match) -> None:
+        """Lower a Bool-scrutinee match. The scrutinee is an i32
+        (0/1); each arm pattern is ``PatLiteral(kind="bool")`` (with
+        value True/False), ``PatWildcard``, or ``PatIdent`` (binds
+        the scrutinee unconditionally). The arms cascade through
+        nested if/else just like the sum-type path."""
+        scrut_local = "_m_scrut"
+        self._push_value(instr.scrutinee)
+        self._write(f"local.set ${scrut_local}")
+        opened = 0
+        for arm in instr.arms:
+            pat = arm.pattern
+            if isinstance(pat, PatLiteral) and pat.kind == "bool":
+                self._write(f"local.get ${scrut_local}")
+                if not pat.value:
+                    self._write("i32.eqz")
+                self._write("if")
+                self._indent += 1
+                for sub in arm.body:
+                    self._emit_instr(sub)
+                self._indent -= 1
+                self._write("else")
+                self._indent += 1
+                opened += 1
+                continue
+            if isinstance(pat, PatIdent):
+                # Catch-all that binds the scrutinee to a name. Bind
+                # then run the body inline; subsequent arms are dead
+                # but the IR/analyzer guarantees this is the last arm
+                # in practice.
+                self._write(f"local.get ${scrut_local}")
+                self._write(f"local.set ${pat.name}")
+                for sub in arm.body:
+                    self._emit_instr(sub)
+                break
+            if isinstance(pat, PatWildcard):
+                for sub in arm.body:
+                    self._emit_instr(sub)
+                break
+            raise WasmEmissionError(
+                f"Bool match: pattern {type(pat).__name__} not "
+                f"supported (PatLiteral / PatIdent / PatWildcard only)"
+            )
         for _ in range(opened):
             self._indent -= 1
             self._write("end")
