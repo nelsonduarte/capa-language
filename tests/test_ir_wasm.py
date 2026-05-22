@@ -1562,5 +1562,117 @@ class TestWasmStringSplit(unittest.TestCase):
         )
 
 
+@unittest.skipUnless(
+    _has_wasm_tools() and _has_wasmtime_py(),
+    "wasm-tools and/or wasmtime-py not installed",
+)
+class TestWasmOptionResult(unittest.TestCase):
+    """Phase 6I: Option<T> and Result<T, E> method dispatch.
+    Covers is_some / is_none / is_ok / is_err (tag check returning
+    Bool) and unwrap_or(default) for the four payload shapes
+    policy-eval exercises (Int / Bool / Float / String)."""
+
+    def _run_capturing_stdout(self, src: str) -> str:
+        import io, sys
+        from capa.runtime._wasm_host import WasmHost
+        _, types, ast_mod = _parse_lower(src)
+        blob = compile_wasm(ast_mod, types=types)
+        host = WasmHost()
+        out = io.StringIO()
+        saved_out = sys.stdout
+        sys.stdout = out
+        try:
+            host.run_main(blob)
+        finally:
+            sys.stdout = saved_out
+        return out.getvalue()
+
+    def test_option_is_some_is_none(self):
+        src = (
+            'fun main(stdio: Stdio)\n'
+            '    let s: Option<Int> = Some(7)\n'
+            '    let n: Option<Int> = None\n'
+            '    stdio.println("s_is_some=${s.is_some()}")\n'
+            '    stdio.println("s_is_none=${s.is_none()}")\n'
+            '    stdio.println("n_is_some=${n.is_some()}")\n'
+            '    stdio.println("n_is_none=${n.is_none()}")\n'
+        )
+        self.assertEqual(
+            self._run_capturing_stdout(src),
+            "s_is_some=true\ns_is_none=false\n"
+            "n_is_some=false\nn_is_none=true\n",
+        )
+
+    def test_option_unwrap_or_int(self):
+        src = (
+            'fun main(stdio: Stdio)\n'
+            '    let s: Option<Int> = Some(42)\n'
+            '    let n: Option<Int> = None\n'
+            '    stdio.println("${s.unwrap_or(0)}")\n'
+            '    stdio.println("${n.unwrap_or(99)}")\n'
+        )
+        self.assertEqual(self._run_capturing_stdout(src), "42\n99\n")
+
+    def test_option_unwrap_or_bool(self):
+        src = (
+            'fun main(stdio: Stdio)\n'
+            '    let s: Option<Bool> = Some(true)\n'
+            '    let n: Option<Bool> = None\n'
+            '    stdio.println("${s.unwrap_or(false)}")\n'
+            '    stdio.println("${n.unwrap_or(false)}")\n'
+        )
+        self.assertEqual(self._run_capturing_stdout(src), "true\nfalse\n")
+
+    def test_option_unwrap_or_float(self):
+        src = (
+            'fun main(stdio: Stdio)\n'
+            '    let s: Option<Float> = Some(3.14)\n'
+            '    let n: Option<Float> = None\n'
+            '    stdio.println("${s.unwrap_or(0.0)}")\n'
+            '    stdio.println("${n.unwrap_or(0.0)}")\n'
+        )
+        self.assertEqual(
+            self._run_capturing_stdout(src), "3.140000\n0.000000\n",
+        )
+
+    def test_option_unwrap_or_string(self):
+        src = (
+            'fun main(stdio: Stdio)\n'
+            '    let s: Option<String> = Some("hi")\n'
+            '    let n: Option<String> = None\n'
+            '    let dflt = "fallback"\n'
+            '    stdio.println(s.unwrap_or(dflt))\n'
+            '    stdio.println(n.unwrap_or(dflt))\n'
+        )
+        self.assertEqual(
+            self._run_capturing_stdout(src), "hi\nfallback\n",
+        )
+
+    def test_result_is_ok_is_err(self):
+        src = (
+            'fun main(stdio: Stdio)\n'
+            '    let o: Result<Int, String> = Ok(7)\n'
+            '    let msg = "boom"\n'
+            '    let e: Result<Int, String> = Err(msg)\n'
+            '    stdio.println("o_is_ok=${o.is_ok()}")\n'
+            '    stdio.println("e_is_err=${e.is_err()}")\n'
+        )
+        self.assertEqual(
+            self._run_capturing_stdout(src),
+            "o_is_ok=true\ne_is_err=true\n",
+        )
+
+    def test_result_unwrap_or(self):
+        src = (
+            'fun main(stdio: Stdio)\n'
+            '    let o: Result<Int, String> = Ok(11)\n'
+            '    let msg = "x"\n'
+            '    let e: Result<Int, String> = Err(msg)\n'
+            '    stdio.println("${o.unwrap_or(0)}")\n'
+            '    stdio.println("${e.unwrap_or(0)}")\n'
+        )
+        self.assertEqual(self._run_capturing_stdout(src), "11\n0\n")
+
+
 if __name__ == "__main__":
     unittest.main()

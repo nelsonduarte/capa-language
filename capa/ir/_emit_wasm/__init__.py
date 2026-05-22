@@ -63,6 +63,7 @@ from ._maps import _MapEmissionMixin
 from ._lists import _ListEmissionMixin
 from ._closures import _ClosureEmissionMixin
 from ._json import _JsonEmissionMixin
+from ._option import _OptionEmissionMixin
 
 
 # Capa scalar types this phase knows how to lower. Any other type
@@ -123,6 +124,7 @@ class WasmEmitter(
     _ListEmissionMixin,
     _ClosureEmissionMixin,
     _JsonEmissionMixin,
+    _OptionEmissionMixin,
 ):
     def __init__(self, indent_unit: str = "  "):
         self._lines: List[str] = []
@@ -811,6 +813,7 @@ class WasmEmitter(
         has_json_method = False
         has_json_parse = False
         has_list_string = False
+        has_optres_method = False
 
         def value_uses_variant_ctor(v: Value) -> bool:
             return v is not None and v.kind == "variant_ctor"
@@ -820,7 +823,7 @@ class WasmEmitter(
             nonlocal has_list_contains_i64, has_map, has_string_method
             nonlocal has_format_str, has_make_lambda, has_list_hof
             nonlocal has_json_method, has_json_parse
-            nonlocal has_list_string
+            nonlocal has_list_string, has_optres_method
             for instr in instrs:
                 if isinstance(instr, Match):
                     has_match = True
@@ -894,6 +897,9 @@ class WasmEmitter(
                         has_list_hof = True
                     if recv_ty == "JsonValue":
                         has_json_method = True
+                    if (recv_ty.startswith("Option")
+                            or recv_ty.startswith("Result")):
+                        has_optres_method = True
                     if instr.method == "split" and recv_ty == "String":
                         # split returns List<String>; uses _alloc_tmp_i64
                         # for the per-chunk packing dance.
@@ -991,7 +997,8 @@ class WasmEmitter(
         if has_variant_ctor or has_list or has_map:
             out["_alloc_tmp"] = "i32"
         if (has_list_contains_i64 or has_map or has_match or has_for
-                or has_variant_ctor or has_json_method or has_list_string):
+                or has_variant_ctor or has_json_method or has_list_string
+                or has_optres_method):
             # The i64 scratch is shared by: List.contains for i64
             # elements, Map scan (value packing), match-arm String
             # unpacking, for-iter over List<String> (packed i64
@@ -1064,6 +1071,11 @@ class WasmEmitter(
             # by the variant_ctor / for-loop branches above.
             out.setdefault("_m_tag", "i32")
             out.setdefault("_alloc_tmp", "i32")
+        if has_optres_method:
+            # Option/Result method dispatch stashes the receiver
+            # pointer in $_m_scrut so the tag check + payload load
+            # can both read it.
+            out.setdefault("_m_scrut", "i32")
         return out
 
     # ----- per-instruction --------------------------------------
@@ -1106,6 +1118,9 @@ class WasmEmitter(
                 return
             if recv_ty == "JsonValue":
                 self._emit_jsonvalue_method_call(instr)
+                return
+            if recv_ty.startswith("Option") or recv_ty.startswith("Result"):
+                self._emit_option_method_call(instr)
                 return
             raise WasmEmissionError(
                 f"MethodCall on receiver of type {recv_ty!r} "
