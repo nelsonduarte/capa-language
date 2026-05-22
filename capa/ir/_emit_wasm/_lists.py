@@ -191,12 +191,13 @@ class _ListEmissionMixin:
         self, recv: Value, needle: Value, elem_size: int, elem_ty: str,
     ) -> None:
         """Emit a linear-scan ``recv.contains(needle)``. Leaves an
-        i32 0/1 on the stack. String element type would need a
-        per-byte comparator and is deferred until 6D-4."""
+        i32 0/1 on the stack. Scalar elements (Int / Bool / pointer)
+        compare via i32.eq / i64.eq; String elements unpack the
+        packed-i64 slot to a (ptr, len) pair and route to the
+        ``$str_eq`` byte-compare helper."""
         if elem_ty == "String":
-            raise WasmEmissionError(
-                "Phase 6D-2: List<String>.contains not yet supported"
-            )
+            self._emit_list_string_contains(recv, needle)
+            return
         list_local = "_m_scrut"
         idx_local = "_m_tag"
         # Compare op depends on element width.
@@ -263,6 +264,94 @@ class _ListEmissionMixin:
         # Loop never falls through; the outer block expects an
         # i32 result, so an unreachable terminator satisfies the
         # type-checker without producing a spurious value.
+        self._write("unreachable")
+        self._indent -= 1
+        self._write("end")
+
+    def _emit_list_string_contains(
+        self, recv: Value, needle: Value,
+    ) -> None:
+        """Emit ``recv.contains(needle)`` for ``List<String>``. Each
+        element is stored as a packed i64 in the data array (low 32
+        bits = ptr, high 32 bits = len); the needle's (ptr, len)
+        pair is byte-compared against each element via the shared
+        ``$str_eq`` helper. Leaves an i32 0/1 on the stack.
+
+        Uses the same ``_str_a_*`` / ``_str_b_*`` scratch the String
+        method emitters use, plus ``$_m_scrut`` (list pointer) and
+        ``$_m_tag`` (index) -- all declared by ``_collect_locals``
+        once ``has_string_method`` + ``has_list_method`` fire."""
+        list_local = "_m_scrut"
+        idx_local = "_m_tag"
+        # Stash the needle's (ptr, len) in $_str_b_ptr / $_str_b_len
+        # so the inner loop can call $str_eq without re-evaluating
+        # the needle expression each iteration.
+        self._push_string_value_as_ptr_len(needle)
+        self._write("local.set $_str_b_len")
+        self._write("local.set $_str_b_ptr")
+        # Stash the list pointer and reset idx.
+        self._push_value(recv)
+        self._write(f"local.set ${list_local}")
+        self._write("i32.const 0")
+        self._write(f"local.set ${idx_local}")
+        self._block_counter += 1
+        loop_label = f"$C{self._block_counter}_loop"
+        exit_label = f"$C{self._block_counter}_exit"
+        self._write(f"block {exit_label} (result i32)")
+        self._indent += 1
+        self._write(f"loop {loop_label}")
+        self._indent += 1
+        # Guard: idx >= len -> push 0 + exit.
+        self._write(f"local.get ${idx_local}")
+        self._write(f"local.get ${list_local}")
+        self._write(f"i32.load offset={_LIST_LEN_OFFSET}")
+        self._write("i32.ge_s")
+        self._write("if")
+        self._indent += 1
+        self._write("i32.const 0")
+        self._write(f"br {exit_label}")
+        self._indent -= 1
+        self._write("end")
+        # Load packed i64 at data[idx], unpack into _str_a_ptr/_len.
+        self._write(f"local.get ${list_local}")
+        self._write(f"i32.load offset={_LIST_DATA_OFFSET}")
+        self._write(f"local.get ${idx_local}")
+        self._write("i32.const 8")
+        self._write("i32.mul")
+        self._write("i32.add")
+        self._write("i64.load")
+        self._write("local.set $_alloc_tmp_i64")
+        self._write("local.get $_alloc_tmp_i64")
+        self._write("i32.wrap_i64")
+        self._write("local.set $_str_a_ptr")
+        self._write("local.get $_alloc_tmp_i64")
+        self._write("i64.const 32")
+        self._write("i64.shr_u")
+        self._write("i32.wrap_i64")
+        self._write("local.set $_str_a_len")
+        # Compare element vs needle via $str_eq.
+        self._write("local.get $_str_a_ptr")
+        self._write("local.get $_str_a_len")
+        self._write("local.get $_str_b_ptr")
+        self._write("local.get $_str_b_len")
+        self._write("call $str_eq")
+        self._write("if")
+        self._indent += 1
+        self._write("i32.const 1")
+        self._write(f"br {exit_label}")
+        self._indent -= 1
+        self._write("end")
+        # Advance and loop.
+        self._write(f"local.get ${idx_local}")
+        self._write("i32.const 1")
+        self._write("i32.add")
+        self._write(f"local.set ${idx_local}")
+        self._write(f"br {loop_label}")
+        self._indent -= 1
+        self._write("end")
+        # Loop body always exits via br; the outer block's i32 result
+        # is satisfied by an unreachable terminator the validator
+        # treats as polymorphic.
         self._write("unreachable")
         self._indent -= 1
         self._write("end")

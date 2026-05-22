@@ -586,6 +586,12 @@ class WasmEmitter(
                         "contains", "starts_with", "ends_with",
                     ):
                         return True
+                    # List<String>.contains compares the needle to
+                    # each element via $str_eq.
+                    if (recv_ty.startswith("List")
+                            and instr.method == "contains"
+                            and _element_type_of_list(recv_ty) == "String"):
+                        return True
                 if isinstance(instr, If):
                     if visit(instr.then_body) or visit(instr.else_body):
                         return True
@@ -1054,6 +1060,13 @@ class WasmEmitter(
                         elem_ty = _element_type_of_list(recv_ty)
                         if self._size_of(elem_ty) == 8:
                             has_list_contains_i64 = True
+                        if elem_ty == "String":
+                            # List<String>.contains needs the
+                            # ``$str_eq`` byte-compare helper and
+                            # the ``_str_a_*`` / ``_str_b_*``
+                            # scratch pairs that the String
+                            # methods already share.
+                            has_string_method = True
                     if recv_ty.startswith("List") and instr.method in (
                         "map", "filter", "fold",
                     ):
