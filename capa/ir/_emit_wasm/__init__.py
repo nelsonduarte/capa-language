@@ -57,6 +57,7 @@ from ._layout import (
     compute_struct_layout, compute_sum_layout,
 )
 from ._runtime import _RuntimeHelpersMixin
+from ._match import _MatchEmissionMixin
 
 
 # Capa scalar types this phase knows how to lower. Any other type
@@ -109,7 +110,7 @@ _FLOAT_CMP_BINOP = {
 }
 
 
-class WasmEmitter(_RuntimeHelpersMixin):
+class WasmEmitter(_RuntimeHelpersMixin, _MatchEmissionMixin):
     def __init__(self, indent_unit: str = "  "):
         self._lines: List[str] = []
         self._indent = 0
@@ -3683,135 +3684,6 @@ class WasmEmitter(_RuntimeHelpersMixin):
         raise WasmEmissionError(
             f"Phase 6F: FormatStr value of type {ty!r} not supported "
             f"(Int / Bool / String only)"
-        )
-
-    # ----- match emission ---------------------------------------
-
-    def _emit_match(self, instr: Match) -> None:
-        """Lower a sum-type match. The scrutinee is an i32 pointer;
-        we load the discriminant from offset 0 and dispatch via a
-        nested if-else chain (one level per arm), extracting each
-        variant's payload into the arm-bound local before running
-        the arm body. Phase 6C does not yet emit ``br_table`` for
-        dense discriminants -- nested ``if`` is correct and easier
-        to read in WAT dumps; an optimisation phase can switch to
-        ``br_table`` when contiguous tags warrant it.
-
-        Reuses ``$_m_scrut`` and ``$_m_tag`` locals declared at the
-        top of the enclosing function; nested matches are safe
-        because each Match consumes the locals before recursing
-        into arm bodies.
-        """
-        scrut_ty = instr.scrutinee.ty
-        # Sum-layout lookups strip generic args: ``Option<Int>`` ->
-        # ``Option``. The built-in Option / Result and user-defined
-        # sums are all keyed by the bare type name.
-        sum_layout = self._sum_layouts.get(scrut_ty.split("<", 1)[0])
-        if sum_layout is None:
-            raise WasmEmissionError(
-                f"Match on scrutinee of type {scrut_ty!r}: only sum "
-                f"types are supported in Phase 6C. Int / Bool match "
-                f"lands in a later phase (or stays statement-form via "
-                f"if/elif)."
-            )
-        scrut_local = "_m_scrut"
-        tag_local = "_m_tag"
-        self._push_value(instr.scrutinee)
-        self._write(f"local.set ${scrut_local}")
-        self._write(f"local.get ${scrut_local}")
-        self._write("i32.load")
-        self._write(f"local.set ${tag_local}")
-        # Emit arms as a nested if/else chain. Track how many
-        # ``if`` statements we open so we can close them all at the
-        # end. ``else`` blocks open implicitly when we cascade.
-        opened = 0
-        for arm in instr.arms:
-            opened += self._emit_match_arm(arm, scrut_local, tag_local, sum_layout)
-        for _ in range(opened):
-            self._indent -= 1
-            self._write("end")
-
-    def _emit_match_arm(
-        self, arm: MatchArm, scrut_local: str, tag_local: str,
-        sum_layout: dict,
-    ) -> int:
-        """Emit one arm. Returns the number of new ``if`` blocks
-        opened (0 for a wildcard, 1 for a variant arm). The caller
-        emits matching ``end`` instructions after all arms are
-        processed."""
-        pat = arm.pattern
-        if isinstance(pat, PatVariant):
-            tag, payload_layouts = sum_layout["variants"][pat.name]
-            self._write(f"local.get ${tag_local}")
-            self._write(f"i32.const {tag}")
-            self._write("i32.eq")
-            self._write("if")
-            self._indent += 1
-            for sub_pat, (offset, size, _ty) in zip(
-                pat.payloads, payload_layouts,
-            ):
-                if isinstance(sub_pat, PatIdent):
-                    bind_ty = (
-                        self._current_fn.locals.get(sub_pat.name, "")
-                        if self._current_fn else ""
-                    )
-                    if bind_ty == "String":
-                        # String payload is packed into the i64
-                        # slot: low 32 bits = ptr, high 32 bits =
-                        # len. Unpack into the bind's (ptr, len)
-                        # locals so downstream String operations
-                        # work transparently.
-                        self._write(f"local.get ${scrut_local}")
-                        self._write(f"i64.load offset={offset}")
-                        self._write(f"local.tee $_alloc_tmp_i64")
-                        self._write("i32.wrap_i64")
-                        self._write(f"local.set ${sub_pat.name}_ptr")
-                        self._write("local.get $_alloc_tmp_i64")
-                        self._write("i64.const 32")
-                        self._write("i64.shr_u")
-                        self._write("i32.wrap_i64")
-                        self._write(f"local.set ${sub_pat.name}_len")
-                    elif size == 8 and (
-                        bind_ty.split("<", 1)[0] in self._struct_layouts
-                        or bind_ty.split("<", 1)[0] in self._sum_layouts
-                        or bind_ty.startswith(("List", "Map", "Set"))
-                    ):
-                        # Pointer-shaped payload (struct / sum /
-                        # collection) stored in the uniform 8-byte
-                        # slot via i64.extend; unpack with
-                        # i32.wrap_i64.
-                        self._write(f"local.get ${scrut_local}")
-                        self._write(f"i64.load offset={offset}")
-                        self._write("i32.wrap_i64")
-                        self._write(f"local.set ${sub_pat.name}")
-                    else:
-                        self._write(f"local.get ${scrut_local}")
-                        self._write(f"{_load_op_for_size(size)} offset={offset}")
-                        self._write(f"local.set ${sub_pat.name}")
-                elif isinstance(sub_pat, PatWildcard):
-                    continue
-                else:
-                    raise WasmEmissionError(
-                        f"Phase 6C: nested pattern "
-                        f"{type(sub_pat).__name__} inside variant "
-                        f"payload not yet supported"
-                    )
-            for sub in arm.body:
-                self._emit_instr(sub)
-            # Cascade into the else block where the next arm lives.
-            self._indent -= 1
-            self._write("else")
-            self._indent += 1
-            return 1
-        if isinstance(pat, PatWildcard):
-            # Catch-all: body emits inside the current cascade
-            # (which is the open ``else`` of the previous arm).
-            for sub in arm.body:
-                self._emit_instr(sub)
-            return 0
-        raise WasmEmissionError(
-            f"Phase 6C: match arm pattern {type(pat).__name__} not "
-            f"supported (PatVariant + PatWildcard are the current set)"
         )
 
     # ----- capability method calls ------------------------------
