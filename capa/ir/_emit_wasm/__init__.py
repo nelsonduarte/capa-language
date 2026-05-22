@@ -810,6 +810,7 @@ class WasmEmitter(
         has_list_hof = False
         has_json_method = False
         has_json_parse = False
+        has_list_string = False
 
         def value_uses_variant_ctor(v: Value) -> bool:
             return v is not None and v.kind == "variant_ctor"
@@ -819,6 +820,7 @@ class WasmEmitter(
             nonlocal has_list_contains_i64, has_map, has_string_method
             nonlocal has_format_str, has_make_lambda, has_list_hof
             nonlocal has_json_method, has_json_parse
+            nonlocal has_list_string
             for instr in instrs:
                 if isinstance(instr, Match):
                     has_match = True
@@ -855,6 +857,18 @@ class WasmEmitter(
                         visit(arm.body)
                 if isinstance(instr, MakeList):
                     has_list = True
+                    # MakeList over String elements needs the i64
+                    # scratch for the (ptr, len) -> packed-i64 dance.
+                    dst_ty = fn.locals.get(instr.dst, "") if instr.dst else ""
+                    if _element_type_of_list(dst_ty) == "String":
+                        has_list_string = True
+                if isinstance(instr, Index):
+                    # Index over List<String> unpacks a packed i64
+                    # via _alloc_tmp_i64.
+                    recv_ty = instr.receiver.ty or ""
+                    if (recv_ty.startswith("List")
+                            and _element_type_of_list(recv_ty) == "String"):
+                        has_list_string = True
                 if isinstance(instr, MakeMap):
                     has_map = True
                 if isinstance(instr, MakeLambda):
@@ -880,6 +894,10 @@ class WasmEmitter(
                         has_list_hof = True
                     if recv_ty == "JsonValue":
                         has_json_method = True
+                    if instr.method == "split" and recv_ty == "String":
+                        # split returns List<String>; uses _alloc_tmp_i64
+                        # for the per-chunk packing dance.
+                        has_list_string = True
                 if isinstance(instr, Call):
                     if instr.callee_name == "parse_json":
                         has_json_parse = True
@@ -973,12 +991,13 @@ class WasmEmitter(
         if has_variant_ctor or has_list or has_map:
             out["_alloc_tmp"] = "i32"
         if (has_list_contains_i64 or has_map or has_match or has_for
-                or has_variant_ctor or has_json_method):
+                or has_variant_ctor or has_json_method or has_list_string):
             # The i64 scratch is shared by: List.contains for i64
             # elements, Map scan (value packing), match-arm String
             # unpacking, for-iter over List<String> (packed i64
             # slot), variant-construction (String payload packing),
-            # and JsonValue as_X projection.
+            # JsonValue as_X projection, and List<String>
+            # construction / indexing / split (per-element packing).
             out["_alloc_tmp_i64"] = "i64"
         if has_map:
             # Match/For scratch locals double as Map scan helpers
@@ -1038,6 +1057,13 @@ class WasmEmitter(
                 "_str_byte",
             ):
                 out.setdefault(name, "i32")
+        if has_list_string:
+            # split() reuses the match-helper $_m_tag as its chunk
+            # counter; MakeList<String> and Index<List<String>>
+            # rely on $_alloc_tmp + $_alloc_tmp_i64 already declared
+            # by the variant_ctor / for-loop branches above.
+            out.setdefault("_m_tag", "i32")
+            out.setdefault("_alloc_tmp", "i32")
         return out
 
     # ----- per-instruction --------------------------------------

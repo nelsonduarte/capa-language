@@ -294,10 +294,35 @@ class _ListEmissionMixin:
         self._write("local.get $_alloc_tmp")
         self._write(f"i32.store offset={_LIST_DATA_OFFSET}")
         # Write each literal element. ``_alloc_tmp`` holds the base
-        # pointer of the data array.
+        # pointer of the data array. String elements pack (ptr, len)
+        # into the 8-byte slot as ``ptr | (len << 32)``; other types
+        # use the size-dispatched store directly.
         store_op = _store_op_for_size(elem_size)
         for i, elem in enumerate(instr.elements):
-            self._write(f"local.get $_alloc_tmp")
+            if elem_ty == "String":
+                # Pack (ptr, len) -> i64. Mirrors the variant-ctor
+                # String payload path. Stack progression:
+                #   [base]
+                #   [base, ptr, len]
+                #   [base, ptr, len_i64]
+                #   [base, ptr, (len_i64<<32)]   (also stashed)
+                #   [base, ptr]
+                #   [base, ptr_i64]
+                #   [base, ptr_i64, (len_i64<<32)]
+                #   [base, packed_i64]
+                self._write("local.get $_alloc_tmp")
+                self._push_string_value_as_ptr_len(elem)
+                self._write("i64.extend_i32_u")
+                self._write("i64.const 32")
+                self._write("i64.shl")
+                self._write("local.tee $_alloc_tmp_i64")
+                self._write("drop")
+                self._write("i64.extend_i32_u")
+                self._write("local.get $_alloc_tmp_i64")
+                self._write("i64.or")
+                self._write(f"i64.store offset={i * elem_size}")
+                continue
+            self._write("local.get $_alloc_tmp")
             self._push_value(elem)
             self._write(f"{store_op} offset={i * elem_size}")
         # Drop the leftover from local.tee (it lives in $_alloc_tmp
@@ -309,7 +334,12 @@ class _ListEmissionMixin:
         """Lower ``xs[i]`` for a List receiver. Loads
         ``data_ptr + i * elem_size`` from memory. The bounds
         check is the analyzer's job (or the IR's; the Wasm path
-        trusts that the index is valid)."""
+        trusts that the index is valid).
+
+        String elements are stored as packed i64 (ptr in low 32,
+        len in high 32). After the i64.load we unpack into the
+        dst's ``_ptr`` / ``_len`` pair so downstream String ops
+        work transparently, mirroring the for-iter String path."""
         recv_ty = instr.receiver.ty
         if not recv_ty.startswith("List"):
             raise WasmEmissionError(
@@ -331,6 +361,18 @@ class _ListEmissionMixin:
         self._write("i32.mul")
         self._write("i32.add")
         self._write(load_op)
+        if elem_ty == "String":
+            # Unpack packed i64 into (ptr, len) locals.
+            self._write("local.set $_alloc_tmp_i64")
+            self._write("local.get $_alloc_tmp_i64")
+            self._write("i32.wrap_i64")
+            self._write(f"local.set ${instr.dst}_ptr")
+            self._write("local.get $_alloc_tmp_i64")
+            self._write("i64.const 32")
+            self._write("i64.shr_u")
+            self._write("i32.wrap_i64")
+            self._write(f"local.set ${instr.dst}_len")
+            return
         self._write(f"local.set ${instr.dst}")
 
     def _emit_for(self, instr: For) -> None:

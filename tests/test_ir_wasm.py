@@ -355,11 +355,11 @@ class TestWasmStdioEmission(unittest.TestCase):
         self.assertIn('(data (i32.const 0) "hi")', wat)
 
     def test_unsupported_method_raises(self):
-        # ``split`` returns List<String> which Phase 6D does not yet
-        # support (would need a List of (ptr,len) pairs); pin the gap.
+        # ``replace`` still raises (Phase 6D-4 deferred);
+        # ``split`` itself works as of Phase 6H.
         src = (
-            "fun parts(s: String) -> List<String>\n"
-            "    return s.split(\",\")\n"
+            "fun cleaned(s: String) -> String\n"
+            "    return s.replace(\",\", \";\")\n"
         )
         ir_mod, _, _ = _parse_lower(src)
         with self.assertRaises(WasmEmissionError):
@@ -1465,6 +1465,100 @@ class TestWasmJson(unittest.TestCase):
         )
         self.assertEqual(
             self._run_capturing_stdout(src), '["a", 1.5, true]\n',
+        )
+
+
+@unittest.skipUnless(
+    _has_wasm_tools() and _has_wasmtime_py(),
+    "wasm-tools and/or wasmtime-py not installed",
+)
+class TestWasmStringSplit(unittest.TestCase):
+    """Phase 6H: String.split(sep) -> List<String> via single-char
+    separator. Also exercises the new List<String> baseline
+    (literal + index + iter) that the same change unlocks."""
+
+    def _run_capturing_stdout(self, src: str) -> str:
+        import io, sys
+        from capa.runtime._wasm_host import WasmHost
+        _, types, ast_mod = _parse_lower(src)
+        blob = compile_wasm(ast_mod, types=types)
+        host = WasmHost()
+        out = io.StringIO()
+        saved_out = sys.stdout
+        sys.stdout = out
+        try:
+            host.run_main(blob)
+        finally:
+            sys.stdout = saved_out
+        return out.getvalue()
+
+    def test_list_string_literal_and_index(self):
+        src = (
+            'fun main(stdio: Stdio)\n'
+            '    let xs = ["alpha", "beta", "gamma"]\n'
+            '    stdio.println(xs[0])\n'
+            '    stdio.println(xs[2])\n'
+        )
+        self.assertEqual(self._run_capturing_stdout(src), "alpha\ngamma\n")
+
+    def test_list_string_for_iteration(self):
+        src = (
+            'fun main(stdio: Stdio)\n'
+            '    let xs = ["one", "two", "three"]\n'
+            '    for s in xs\n'
+            '        stdio.println(s)\n'
+        )
+        self.assertEqual(
+            self._run_capturing_stdout(src), "one\ntwo\nthree\n",
+        )
+
+    def test_split_simple(self):
+        src = (
+            'fun main(stdio: Stdio)\n'
+            '    let parts = "a,b,c".split(",")\n'
+            '    stdio.println("n=${parts.length()}")\n'
+            '    stdio.println(parts[0])\n'
+            '    stdio.println(parts[1])\n'
+            '    stdio.println(parts[2])\n'
+        )
+        self.assertEqual(
+            self._run_capturing_stdout(src), "n=3\na\nb\nc\n",
+        )
+
+    def test_split_no_separator_found(self):
+        src = (
+            'fun main(stdio: Stdio)\n'
+            '    let parts = "abc".split(",")\n'
+            '    stdio.println("n=${parts.length()}")\n'
+            '    stdio.println(parts[0])\n'
+        )
+        self.assertEqual(
+            self._run_capturing_stdout(src), "n=1\nabc\n",
+        )
+
+    def test_split_trailing_separator(self):
+        # "a,,c" produces 3 elements with the middle one empty.
+        src = (
+            'fun main(stdio: Stdio)\n'
+            '    let parts = "a,,c".split(",")\n'
+            '    stdio.println("n=${parts.length()}")\n'
+            '    stdio.println("mid_empty=${parts[1].is_empty()}")\n'
+        )
+        self.assertEqual(
+            self._run_capturing_stdout(src), "n=3\nmid_empty=true\n",
+        )
+
+    def test_split_dotted_path(self):
+        # policy-eval pattern: a.b.c -> ["a", "b", "c"]
+        src = (
+            'fun main(stdio: Stdio)\n'
+            '    let segs = "config.encryption.enabled".split(".")\n'
+            '    for s in segs\n'
+            '        stdio.println(s)\n'
+        )
+        self.assertEqual(
+            self._run_capturing_stdout(src),
+            "config\nencryption\nenabled\n",
         )
 
 

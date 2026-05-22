@@ -27,7 +27,10 @@ from __future__ import annotations
 from typing import Optional
 
 from .._nodes import BinOp, FormatStr, MethodCall, Value
-from ._layout import WasmEmissionError
+from ._layout import (
+    WasmEmissionError,
+    _LIST_HEADER_SIZE, _LIST_LEN_OFFSET, _LIST_CAP_OFFSET, _LIST_DATA_OFFSET,
+)
 
 
 class _StringEmissionMixin:
@@ -161,9 +164,12 @@ class _StringEmissionMixin:
         if method == "trim_end":
             self._emit_string_trim(recv, dst, left=False, right=True)
             return
+        if method == "split":
+            self._emit_string_split(recv, instr.args[0], dst)
+            return
         raise WasmEmissionError(
             f"Phase 6D-4: String method {method!r} not supported "
-            f"(split / replace / char_at / index_of land later)"
+            f"(replace / char_at / index_of land later)"
         )
 
     def _push_string_len_only(self, v: Value) -> None:
@@ -544,6 +550,210 @@ class _StringEmissionMixin:
         self._write("local.get $_str_start")
         self._write("i32.sub")
         self._set_string_dst(dst)
+
+    def _emit_string_split(
+        self, recv: Value, sep: Value, dst: Optional[str],
+    ) -> None:
+        """``recv.split(sep) -> List<String>``. Phase 6H supports
+        single-byte separators only (the only shape policy-eval and
+        the gallery demos use). The result is a ``List<String>``
+        where each element occupies an 8-byte slot packed as
+        ``ptr | (len << 32)``.
+
+        Algorithm: linear scan over the receiver. At each position
+        where ``recv[i] == sep_byte``, emit chunk ``[start, i)``
+        into the result list; advance start to ``i + 1``. After the
+        loop, emit the trailing chunk ``[start, recv.len)`` (which
+        is empty when the receiver ends with the separator). Grow
+        the data array inline if the chunk count exceeds the
+        initial capacity.
+
+        For an empty receiver, the result is a single empty-string
+        element -- mirrors Python's ``"".split(",") == [""]``."""
+        if dst is None:
+            return
+
+        # Save receiver (ptr, len).
+        self._push_string_value_as_ptr_len(recv)
+        self._write("local.set $_str_a_len")
+        self._write("local.set $_str_a_ptr")
+        # Load the separator byte (first byte of sep). Assumes
+        # sep.len >= 1; an empty sep would degenerate to a per-
+        # character split which is not yet supported. We do not
+        # error here; the result is just the unchanged receiver in
+        # one chunk.
+        self._push_string_value_as_ptr_len(sep)
+        self._write("local.set $_str_b_len")
+        self._write("local.set $_str_b_ptr")
+        # sep_byte = i32.load8_u(sep.ptr)
+        self._write("local.get $_str_b_ptr")
+        self._write("i32.load8_u")
+        self._write("local.set $_str_byte")
+
+        # Allocate list header + initial 16-slot data array
+        # (128 bytes). The grow path doubles cap when full.
+        initial_cap = 16
+        self._write(f"i32.const {_LIST_HEADER_SIZE}")
+        self._write("call $alloc")
+        self._write(f"local.set ${dst}")
+        self._write(f"i32.const {initial_cap * 8}")
+        self._write("call $alloc")
+        self._write("local.set $_alloc_tmp")
+        self._write(f"local.get ${dst}")
+        self._write(f"i32.const {initial_cap}")
+        self._write(f"i32.store offset={_LIST_CAP_OFFSET}")
+        self._write(f"local.get ${dst}")
+        self._write("local.get $_alloc_tmp")
+        self._write(f"i32.store offset={_LIST_DATA_OFFSET}")
+
+        # State locals:
+        #   $_str_i       = scan index
+        #   $_str_start   = current chunk start
+        #   $_m_tag       = chunk count (output index)
+        self._write("i32.const 0")
+        self._write("local.set $_str_i")
+        self._write("i32.const 0")
+        self._write("local.set $_str_start")
+        self._write("i32.const 0")
+        self._write("local.set $_m_tag")
+
+        # Outer block: scan loop. Each iteration tests the byte at
+        # recv[i]; on match, pushes chunk [start, i) and advances
+        # start. On loop exit (i == recv.len), pushes the trailing
+        # chunk [start, recv.len).
+        self._block_counter += 1
+        loop = f"$Ssplit{self._block_counter}_loop"
+        exit_ = f"$Ssplit{self._block_counter}_exit"
+        self._write(f"block {exit_}")
+        self._indent += 1
+        self._write(f"loop {loop}")
+        self._indent += 1
+        # if i >= len: exit.
+        self._write("local.get $_str_i")
+        self._write("local.get $_str_a_len")
+        self._write("i32.ge_s")
+        self._write(f"br_if {exit_}")
+        # byte = recv[i]
+        self._write("local.get $_str_a_ptr")
+        self._write("local.get $_str_i")
+        self._write("i32.add")
+        self._write("i32.load8_u")
+        self._write("local.get $_str_byte")
+        self._write("i32.eq")
+        self._write("if")
+        self._indent += 1
+        # Match: push chunk [start, i). chunk_ptr = recv_ptr+start;
+        # chunk_len = i - start.
+        self._emit_split_push_chunk(dst, start_local="_str_start",
+                                    end_local="_str_i")
+        self._write("local.get $_str_i")
+        self._write("i32.const 1")
+        self._write("i32.add")
+        self._write("local.set $_str_start")
+        self._indent -= 1
+        self._write("end")
+        # i++
+        self._write("local.get $_str_i")
+        self._write("i32.const 1")
+        self._write("i32.add")
+        self._write("local.set $_str_i")
+        self._write(f"br {loop}")
+        self._indent -= 1
+        self._write("end")
+        self._indent -= 1
+        self._write("end")
+
+        # Trailing chunk [start, recv.len).
+        self._emit_split_push_chunk(dst, start_local="_str_start",
+                                    end_local="_str_a_len")
+
+        # Write final len into header.
+        self._write(f"local.get ${dst}")
+        self._write("local.get $_m_tag")
+        self._write(f"i32.store offset={_LIST_LEN_OFFSET}")
+
+    def _emit_split_push_chunk(
+        self, dst: str, start_local: str, end_local: str,
+    ) -> None:
+        """Push one chunk ``[start, end)`` of ``$_str_a_ptr`` onto
+        the result list whose header pointer is in ``$<dst>`` and
+        whose current element count is in ``$_m_tag``. Grows the
+        data array via memory.copy if the count has reached cap.
+
+        Used by ``_emit_string_split`` for each separator match and
+        for the trailing chunk after the scan."""
+        # Capacity check: if count >= cap, grow.
+        self._write("local.get $_m_tag")
+        self._write(f"local.get ${dst}")
+        self._write(f"i32.load offset={_LIST_CAP_OFFSET}")
+        self._write("i32.ge_s")
+        self._write("if")
+        self._indent += 1
+        # new_cap = cap * 2. Save in $_alloc_tmp_newcap is wishful;
+        # split-specific scratch reuses $_str_new_len which has
+        # no live conflict in this path.
+        self._write(f"local.get ${dst}")
+        self._write(f"i32.load offset={_LIST_CAP_OFFSET}")
+        self._write("i32.const 2")
+        self._write("i32.mul")
+        self._write("local.set $_str_new_len")
+        # new_data = alloc(new_cap * 8)
+        self._write("local.get $_str_new_len")
+        self._write("i32.const 8")
+        self._write("i32.mul")
+        self._write("call $alloc")
+        self._write("local.set $_str_new_ptr")
+        # memory.copy(new_data, old_data, count * 8)
+        self._write("local.get $_str_new_ptr")
+        self._write(f"local.get ${dst}")
+        self._write(f"i32.load offset={_LIST_DATA_OFFSET}")
+        self._write("local.get $_m_tag")
+        self._write("i32.const 8")
+        self._write("i32.mul")
+        self._write("memory.copy")
+        # Update header.
+        self._write(f"local.get ${dst}")
+        self._write("local.get $_str_new_ptr")
+        self._write(f"i32.store offset={_LIST_DATA_OFFSET}")
+        self._write(f"local.get ${dst}")
+        self._write("local.get $_str_new_len")
+        self._write(f"i32.store offset={_LIST_CAP_OFFSET}")
+        self._indent -= 1
+        self._write("end")
+
+        # Compute chunk_ptr = recv_ptr + start, chunk_len = end - start.
+        # Stash chunk_len in $_str_i temporarily? No -- $_str_i is
+        # the scan index (live across calls). Use $_str_new_len for
+        # chunk_len since the grow path is done with it.
+        self._write(f"local.get ${end_local}")
+        self._write(f"local.get ${start_local}")
+        self._write("i32.sub")
+        self._write("local.set $_str_new_len")
+        # slot_addr = data_ptr + count * 8
+        self._write(f"local.get ${dst}")
+        self._write(f"i32.load offset={_LIST_DATA_OFFSET}")
+        self._write("local.get $_m_tag")
+        self._write("i32.const 8")
+        self._write("i32.mul")
+        self._write("i32.add")
+        # packed = chunk_ptr | (chunk_len << 32)
+        # chunk_ptr = recv_ptr + start
+        self._write("local.get $_str_a_ptr")
+        self._write(f"local.get ${start_local}")
+        self._write("i32.add")
+        self._write("i64.extend_i32_u")
+        # chunk_len as i64 shifted
+        self._write("local.get $_str_new_len")
+        self._write("i64.extend_i32_u")
+        self._write("i64.const 32")
+        self._write("i64.shl")
+        self._write("i64.or")
+        self._write("i64.store")
+        # count++
+        self._write("local.get $_m_tag")
+        self._write("i32.const 1")
+        self._write("i32.add")
+        self._write("local.set $_m_tag")
 
     def _emit_byte_is_whitespace(self) -> None:
         """Consume an i32 byte on the stack; push i32 1 if it is
