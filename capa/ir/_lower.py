@@ -877,8 +877,16 @@ class Lowerer:
             # A reference to a top-level constant or a function name
             # used as a value (e.g. higher-order use). Treated as a
             # Python-level global; the emitter renders ``Value`` as
-            # the bare name.
-            return Value(kind="global", name=e.name, ty="Unknown")
+            # the bare name. Use the analyzer's recorded type for
+            # the Ident so downstream dispatch (Wasm FormatStr part
+            # selection, type-aware method routing) sees the actual
+            # type rather than a placeholder.
+            ty = "Unknown"
+            if self.types:
+                t = self.types.get(id(e))
+                if t is not None:
+                    ty = _ty_to_str(t)
+            return Value(kind="global", name=e.name, ty=ty)
         if e.name == "None":
             # Capa's ``None`` is the Option singleton, named ``None_``
             # at the Python level to avoid the keyword clash.

@@ -204,6 +204,20 @@ class WasmEmitter(
             "JNull": "JsonValue", "JBool": "JsonValue", "JNum": "JsonValue",
             "JStr": "JsonValue", "JArr": "JsonValue", "JObj": "JsonValue",
         }
+        # Module-level constants: name -> Value (the RHS literal).
+        # Populated below from ``module.consts``. _push_value
+        # consults this when it sees Value(kind="global", ...) so
+        # use sites inline the literal rather than emitting a
+        # global.get. Only literal-RHS consts land here; consts
+        # with computed bodies raise at the use site so a future
+        # Wasm-global-with-start-fn pass can take over cleanly.
+        self._const_values: dict[str, Value] = {}
+        for c in module.consts:
+            if len(c.body) == 1 and isinstance(c.body[0], AssignConst):
+                src = c.body[0].src
+                if src.kind in ("lit_int", "lit_float",
+                                "lit_bool", "lit_str", "lit_unit"):
+                    self._const_values[c.name] = src
 
         # Pass 0: compute layouts for every struct and sum type so
         # subsequent passes can resolve field offsets and variant
@@ -1743,6 +1757,13 @@ class WasmEmitter(
                 size = self._size_of(capa_ty)
                 self._write(f"{_load_op_for_size(size)} offset={offset}")
                 return
+        if v.kind == "global" and v.name in self._const_values:
+            # Module-level constant: inline the RHS literal at the
+            # use site. Recurse into the literal Value via the same
+            # push path so the lit_int / lit_bool / lit_str / etc.
+            # cases below handle the actual emission.
+            self._push_value(self._const_values[v.name])
+            return
         if v.kind in ("local", "param"):
             self._write(f"local.get ${v.name}")
             return
