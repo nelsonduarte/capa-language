@@ -504,9 +504,18 @@ class _ListEmissionMixin:
         # iteration state mid-loop (the match's tag/scrutinee
         # writes overwrite the loop's idx/list pointer, so the
         # loop's increment + guard read garbage and exit
-        # prematurely).
-        list_local = "_f_list"
-        idx_local = "_f_idx"
+        # prematurely). Nested for-loops also need *each* loop's
+        # locals to be unique -- using a single pair across nested
+        # loops would let the inner loop overwrite the outer's
+        # iteration state and silently truncate the outer
+        # iteration (a classic bug in audit-trail-reporter's
+        # ``for c in classified; for f in c.findings`` shape). The
+        # depth index is the live ``_for_depth`` (incremented
+        # below before the body emits and decremented after); the
+        # function-prelude declared one pair per max depth seen by
+        # ``_collect_locals``.
+        list_local = f"_f_list_{self._for_depth}"
+        idx_local = f"_f_idx_{self._for_depth}"
         # Capture the list pointer in $list_local.
         self._push_value(instr.iter)
         self._write(f"local.set ${list_local}")
@@ -563,11 +572,15 @@ class _ListEmissionMixin:
             self._write(f"local.set ${instr.name}")
         # Body wrapped in an inner block whose end is the ``continue``
         # target. Falling off the body or branching to ``cont_label``
-        # both arrive at the increment site below.
+        # both arrive at the increment site below. Bump ``_for_depth``
+        # so any nested for-loop inside the body uses fresh
+        # ``$_f_list_N+1`` / ``$_f_idx_N+1`` scratch locals.
         self._write(f"block {cont_label}")
         self._indent += 1
+        self._for_depth += 1
         for sub in instr.body:
             self._emit_instr(sub)
+        self._for_depth -= 1
         self._indent -= 1
         self._write("end")
         # Increment idx and back-branch.

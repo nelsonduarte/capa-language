@@ -821,6 +821,7 @@ class WasmEmitter(
         # Reset per-function state.
         self._block_counter = 0
         self._loop_labels = []
+        self._for_depth = 0
         # Cache the current function so per-instruction handlers can
         # look up local / param Capa types without threading ``fn``
         # through every helper.
@@ -918,6 +919,13 @@ class WasmEmitter(
         has_optres_method = False
         has_list_method = False
         has_tuple = False
+        # Maximum nesting depth of For instructions. Nested for-loops
+        # need distinct iteration scratch (``$_f_list_N`` /
+        # ``$_f_idx_N``) so an inner loop doesn't clobber the outer
+        # loop's state. ``cur_for_depth`` is the live depth during the
+        # walk; ``max_for_depth`` is the watermark we declare for.
+        cur_for_depth = 0
+        max_for_depth = 0
 
         def value_uses_variant_ctor(v: Value) -> bool:
             return v is not None and v.kind == "variant_ctor"
@@ -929,6 +937,7 @@ class WasmEmitter(
             nonlocal has_json_method, has_json_parse
             nonlocal has_list_string, has_optres_method
             nonlocal has_list_method, has_tuple
+            nonlocal cur_for_depth, max_for_depth
             for instr in instrs:
                 if isinstance(instr, Match):
                     has_match = True
@@ -1008,7 +1017,11 @@ class WasmEmitter(
                     has_make_lambda = True
                 if isinstance(instr, For):
                     has_for = True
+                    cur_for_depth += 1
+                    if cur_for_depth > max_for_depth:
+                        max_for_depth = cur_for_depth
                     visit(instr.body)
+                    cur_for_depth -= 1
                 if isinstance(instr, FormatStr):
                     has_format_str = True
                 if isinstance(instr, TryUnwrap):
@@ -1158,9 +1171,14 @@ class WasmEmitter(
             out["_m_tag"] = "i32"
         if has_for:
             # For-loop owns its own scratch locals so a match in
-            # the body can't clobber the iteration state.
-            out["_f_list"] = "i32"
-            out["_f_idx"] = "i32"
+            # the body can't clobber the iteration state. Nested
+            # for-loops each need their own pair so the inner loop
+            # doesn't overwrite the outer's list pointer / index;
+            # we declare one pair per nesting depth observed in
+            # the function body.
+            for d in range(max_for_depth):
+                out[f"_f_list_{d}"] = "i32"
+                out[f"_f_idx_{d}"] = "i32"
         if has_match:
             # Nested PatVariant arms (depth 1) stash the inner
             # scrutinee pointer here; flat arms never touch it.
