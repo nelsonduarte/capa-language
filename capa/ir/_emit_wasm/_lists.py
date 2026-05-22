@@ -482,13 +482,15 @@ class _ListEmissionMixin:
         elem_ty = _element_type_of_list(iter_ty)
         elem_size = self._size_of(elem_ty)
         load_op = _load_op_for_size(elem_size)
-        # We need a list-pointer scratch and an index scratch. Reuse
-        # the match helpers; their live range does not overlap the
-        # for loop's body (no match runs concurrently). The IR
-        # walker has ensured these locals exist when needed (see
-        # ``_collect_locals``).
-        list_local = "_m_scrut"
-        idx_local = "_m_tag"
+        # For-loop needs its own list-pointer and index scratch
+        # locals distinct from the match-helper locals: a match
+        # inside the for-body would otherwise clobber the
+        # iteration state mid-loop (the match's tag/scrutinee
+        # writes overwrite the loop's idx/list pointer, so the
+        # loop's increment + guard read garbage and exit
+        # prematurely).
+        list_local = "_f_list"
+        idx_local = "_f_idx"
         # Capture the list pointer in $list_local.
         self._push_value(instr.iter)
         self._write(f"local.set ${list_local}")

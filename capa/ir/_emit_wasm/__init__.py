@@ -1048,6 +1048,15 @@ class WasmEmitter(
         if has_match or has_for:
             out["_m_scrut"] = "i32"
             out["_m_tag"] = "i32"
+        if has_for:
+            # For-loop owns its own scratch locals so a match in
+            # the body can't clobber the iteration state.
+            out["_f_list"] = "i32"
+            out["_f_idx"] = "i32"
+        if has_match:
+            # Nested PatVariant arms (depth 1) stash the inner
+            # scrutinee pointer here; flat arms never touch it.
+            out["_m_scrut_inner"] = "i32"
         if has_variant_ctor or has_list or has_map:
             out["_alloc_tmp"] = "i32"
         if (has_list_contains_i64 or has_map or has_match or has_for
@@ -1612,11 +1621,19 @@ class WasmEmitter(
                 self._write("i64.extend_i32_u")
                 self._write(f"i64.store offset={offset}")
                 continue
-            if size == 8 and (
-                arg.ty.split("<", 1)[0] in self._struct_layouts
-                or arg.ty.split("<", 1)[0] in self._sum_layouts
+            arg_head = arg.ty.split("<", 1)[0]
+            is_pointer_shape = (
+                arg_head in self._struct_layouts
+                or arg_head in self._sum_layouts
                 or arg.ty.startswith(("List", "Map", "Set"))
-            ):
+                # Variant constructors produce a sum-record pointer
+                # (i32); the Value's ty carries the variant name
+                # (e.g. "HelpRequested") rather than the sum name
+                # (e.g. "ArgError"), so resolve via _variant_to_sum.
+                or arg.ty in self._variant_to_sum
+                or arg.kind == "variant_ctor"
+            )
+            if size == 8 and is_pointer_shape:
                 # Pointer payload: extend i32 to i64.
                 self._push_value(arg)
                 self._write("i64.extend_i32_u")

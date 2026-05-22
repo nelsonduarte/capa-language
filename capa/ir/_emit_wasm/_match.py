@@ -17,7 +17,11 @@ from __future__ import annotations
 from .._nodes import (
     Match, MatchArm, PatVariant, PatIdent, PatLiteral, PatWildcard,
 )
-from ._layout import WasmEmissionError, _load_op_for_size
+from ._layout import (
+    WasmEmissionError,
+    _OPTION_LAYOUT, _RESULT_LAYOUT,
+    _load_op_for_size,
+)
 
 
 class _MatchEmissionMixin:
@@ -118,6 +122,159 @@ class _MatchEmissionMixin:
             self._indent -= 1
             self._write("end")
 
+    def _emit_nested_variant_arm(
+        self, arm: MatchArm, scrut_local: str, tag_local: str,
+        sum_layout: dict,
+    ) -> int:
+        """Emit a variant arm whose payload contains a nested
+        PatVariant (one level deep). Cascades into the next arm
+        on mismatch like the flat case, but the if's condition
+        combines outer + inner tag checks via i32.and so a
+        partial match (outer tag matches, inner does not) still
+        falls through to the next arm.
+
+        Example: ``Err(Missing(name))`` against
+        ``Result<Args, ArgError>``:
+
+        - Outer tag check: result.tag == 1 (Err)
+        - Eagerly extract Err's payload at offset 8 as an i32
+          pointer (the ArgError), stash in $_m_scrut_inner
+        - Inner tag check: argerror.tag == <Missing's tag>
+        - AND the two; the arm's if takes both at once
+        - In then: extract Missing's own payloads (the name
+          binder) from $_m_scrut_inner
+        - else cascades to the next arm
+
+        Limitation: only one level of nesting is implemented. A
+        triple-nested ``Some(Err(Missing(x)))`` would need a
+        $_m_scrut_inner2 scratch and another AND clause; the
+        emit code would generalise straightforwardly but no
+        program in the demo set needs it."""
+        pat = arm.pattern
+        outer_tag, outer_payloads = sum_layout["variants"][pat.name]
+        # Exactly one nested PatVariant; the analyzer guarantees
+        # the payload arity matches the variant's declared shape.
+        nested_idx, nested_pat = next(
+            (i, p) for i, p in enumerate(pat.payloads)
+            if isinstance(p, PatVariant)
+        )
+        outer_offset, _outer_size, outer_payload_ty = outer_payloads[nested_idx]
+        # Resolve the inner sum layout. The lowerer leaves the
+        # payload type as 'Any' for builtin sums (Option/Result),
+        # so we look up the nested variant's owning sum via
+        # _variant_to_sum.
+        inner_sum_name = self._variant_to_sum.get(nested_pat.name)
+        if inner_sum_name is None:
+            raise WasmEmissionError(
+                f"nested variant {nested_pat.name!r} has no known "
+                f"parent sum; was the type declared in module.types?"
+            )
+        inner_sum_layout = self._sum_layouts[inner_sum_name]
+        inner_tag, inner_payloads = inner_sum_layout["variants"][nested_pat.name]
+
+        # 1. Eager extract: outer's inner-ptr payload into scratch.
+        # The slot is i64-uniform (sum payloads always go via the
+        # i64.extend / i64.load path); we read it back as i32.
+        self._write(f"local.get ${scrut_local}")
+        self._write(f"i64.load offset={outer_offset}")
+        self._write("i32.wrap_i64")
+        self._write("local.set $_m_scrut_inner")
+
+        # 2. Combined tag check: outer.tag == outer_tag AND
+        #    inner.tag == inner_tag.
+        self._write(f"local.get ${tag_local}")
+        self._write(f"i32.const {outer_tag}")
+        self._write("i32.eq")
+        self._write("local.get $_m_scrut_inner")
+        self._write("i32.load")
+        self._write(f"i32.const {inner_tag}")
+        self._write("i32.eq")
+        self._write("i32.and")
+
+        # 3. Single if for the combined check; the else carries
+        # the next arm's cascade.
+        self._write("if")
+        self._indent += 1
+
+        # 4. Extract the inner variant's payload binders. Mirrors
+        # the flat PatVariant binding code but reads from
+        # $_m_scrut_inner.
+        for sub_pat, (offset, size, _ty) in zip(
+            nested_pat.payloads, inner_payloads,
+        ):
+            if isinstance(sub_pat, PatIdent):
+                self._bind_variant_payload(
+                    sub_pat, offset, size, _ty,
+                    scrut_local_name="_m_scrut_inner",
+                )
+            elif isinstance(sub_pat, PatWildcard):
+                continue
+            else:
+                raise WasmEmissionError(
+                    f"Phase 6J: triple-nested pattern "
+                    f"{type(sub_pat).__name__} inside "
+                    f"{nested_pat.name!r}'s payload not yet "
+                    f"supported (max nesting depth is 2)"
+                )
+
+        # 5. Run the arm body.
+        for sub in arm.body:
+            self._emit_instr(sub)
+
+        # 6. Open the else cascade for the next arm.
+        self._indent -= 1
+        self._write("else")
+        self._indent += 1
+        return 1
+
+    def _bind_variant_payload(
+        self, sub_pat: PatIdent, offset: int, size: int,
+        payload_ty: str, scrut_local_name: str,
+    ) -> None:
+        """Extract a PatIdent's payload from a scrutinee local into
+        the bind's Wasm local(s). Factored out so both the flat
+        variant arm path and the nested arm path can share the
+        type-dispatch (String packed-i64, pointer-shaped,
+        Float, scalar)."""
+        bind_ty = (
+            self._current_fn.locals.get(sub_pat.name, "")
+            if self._current_fn else ""
+        )
+        if bind_ty in ("", "Unknown", "?") or bind_ty.startswith("?"):
+            bind_ty = payload_ty
+            if self._current_fn is not None and bind_ty != "Any":
+                self._current_fn.locals[sub_pat.name] = bind_ty
+        if bind_ty == "String":
+            self._write(f"local.get ${scrut_local_name}")
+            self._write(f"i64.load offset={offset}")
+            self._write("local.tee $_alloc_tmp_i64")
+            self._write("i32.wrap_i64")
+            self._write(f"local.set ${sub_pat.name}_ptr")
+            self._write("local.get $_alloc_tmp_i64")
+            self._write("i64.const 32")
+            self._write("i64.shr_u")
+            self._write("i32.wrap_i64")
+            self._write(f"local.set ${sub_pat.name}_len")
+            return
+        if size == 8 and (
+            bind_ty.split("<", 1)[0] in self._struct_layouts
+            or bind_ty.split("<", 1)[0] in self._sum_layouts
+            or bind_ty.startswith(("List", "Map", "Set"))
+        ):
+            self._write(f"local.get ${scrut_local_name}")
+            self._write(f"i64.load offset={offset}")
+            self._write("i32.wrap_i64")
+            self._write(f"local.set ${sub_pat.name}")
+            return
+        if bind_ty == "Float":
+            self._write(f"local.get ${scrut_local_name}")
+            self._write(f"f64.load offset={offset}")
+            self._write(f"local.set ${sub_pat.name}")
+            return
+        self._write(f"local.get ${scrut_local_name}")
+        self._write(f"{_load_op_for_size(size)} offset={offset}")
+        self._write(f"local.set ${sub_pat.name}")
+
     def _emit_string_match(self, instr: Match) -> None:
         """Lower a String-scrutinee match. Stashes the receiver
         (ptr, len) into the existing String scratch locals, then
@@ -188,6 +345,14 @@ class _MatchEmissionMixin:
         emits matching ``end`` instructions after all arms are
         processed."""
         pat = arm.pattern
+        # If any payload sub-pattern is itself a PatVariant, the
+        # arm needs a combined two-level tag check; delegate.
+        if isinstance(pat, PatVariant) and any(
+            isinstance(p, PatVariant) for p in pat.payloads
+        ):
+            return self._emit_nested_variant_arm(
+                arm, scrut_local, tag_local, sum_layout,
+            )
         if isinstance(pat, PatVariant):
             tag, payload_layouts = sum_layout["variants"][pat.name]
             self._write(f"local.get ${tag_local}")
@@ -255,6 +420,10 @@ class _MatchEmissionMixin:
                 elif isinstance(sub_pat, PatWildcard):
                     continue
                 else:
+                    # PatVariant is handled by _emit_nested_variant_arm
+                    # via the upfront detector at the top of this
+                    # method, so we only see non-variant nested
+                    # patterns here.
                     raise WasmEmissionError(
                         f"Phase 6C: nested pattern "
                         f"{type(sub_pat).__name__} inside variant "

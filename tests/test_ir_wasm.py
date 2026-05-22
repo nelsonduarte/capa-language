@@ -1720,6 +1720,32 @@ class TestWasmTraitDispatch(unittest.TestCase):
         )
         self.assertEqual(self._run_capturing_stdout(src), "Hi, Capa!\n")
 
+    def test_nested_variant_pattern(self):
+        # Two-level destructuring: Result<T, ArgError> with
+        # variant patterns inside Err. Each arm combines the
+        # outer + inner tag checks into a single AND-bool.
+        src = (
+            'pub type ArgError =\n'
+            '    Missing(String)\n'
+            '    Unknown(String)\n'
+            'fun classify(r: Result<Int, ArgError>) -> String\n'
+            '    match r\n'
+            '        Ok(_)             -> return "ok"\n'
+            '        Err(Missing(n))   -> return "missing ${n}"\n'
+            '        Err(Unknown(a))   -> return "unknown ${a}"\n'
+            'fun main(stdio: Stdio)\n'
+            '    let m: Result<Int, ArgError> = Err(Missing("name"))\n'
+            '    let u: Result<Int, ArgError> = Err(Unknown("flag"))\n'
+            '    let o: Result<Int, ArgError> = Ok(7)\n'
+            '    stdio.println(classify(m))\n'
+            '    stdio.println(classify(u))\n'
+            '    stdio.println(classify(o))\n'
+        )
+        self.assertEqual(
+            self._run_capturing_stdout(src),
+            "missing name\nunknown flag\nok\n",
+        )
+
     def test_self_method_call_inside_impl(self):
         # Impl method delegates to another method on self via the
         # concrete-impl-type entry in _method_table.
