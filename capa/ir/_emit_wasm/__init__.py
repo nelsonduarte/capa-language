@@ -64,6 +64,7 @@ from ._lists import _ListEmissionMixin
 from ._closures import _ClosureEmissionMixin
 from ._json import _JsonEmissionMixin
 from ._option import _OptionEmissionMixin
+from ._traits import _TraitEmissionMixin
 
 
 # Capa scalar types this phase knows how to lower. Any other type
@@ -125,6 +126,7 @@ class WasmEmitter(
     _ClosureEmissionMixin,
     _JsonEmissionMixin,
     _OptionEmissionMixin,
+    _TraitEmissionMixin,
 ):
     def __init__(self, indent_unit: str = "  "):
         self._lines: List[str] = []
@@ -204,6 +206,10 @@ class WasmEmitter(
             "JNull": "JsonValue", "JBool": "JsonValue", "JNum": "JsonValue",
             "JStr": "JsonValue", "JArr": "JsonValue", "JObj": "JsonValue",
         }
+        # Trait dispatch: build trait_name -> impl map for traits
+        # with exactly one implementor. Multi-impl traits leave the
+        # entry empty; dispatch path raises when it hits one.
+        self._setup_trait_dispatch(module)
         # Module-level constants: name -> Value (the RHS literal).
         # Populated below from ``module.consts``. _push_value
         # consults this when it sees Value(kind="global", ...) so
@@ -344,9 +350,13 @@ class WasmEmitter(
             self._emit_closure_types_and_table()
             for lifted in self._lifted_lambdas:
                 self._emit_lifted_lambda(lifted)
-        # Stage 2: emit each function.
+        # Stage 2: emit each function. Impl methods are emitted as
+        # additional top-level functions with mangled names
+        # (<TypeName>_<method_name>) so MethodCall dispatch on a
+        # trait receiver can route to them via call $<mangled>.
         for fn in module.functions:
             self._emit_function(fn)
+        self._emit_impl_methods(module)
         self._indent -= 1
         self._write(")")
         return "\n".join(self._lines) + "\n"
@@ -548,14 +558,31 @@ class WasmEmitter(
         declarations and the data segment layout; encountering
         anything outside the supported set is a fatal error so the
         emitted Wasm never references something the host did not
-        provide."""
+        provide.
+
+        Also walks every impl method body so the cap calls inside
+        impl methods (e.g. ``self.stdio.println(...)`` in
+        ``impl Logger for StdioLogger``) contribute their imports
+        to the module just like top-level function bodies."""
         for fn in module.functions:
             self._discover_instrs(fn.body)
+        for impl in module.impls:
+            for method in impl.methods:
+                self._discover_instrs(method.body)
 
     def _discover_instrs(self, instrs: list[Instr]) -> None:
         for instr in instrs:
-            if isinstance(instr, MethodCall) and instr.cap_used:
-                cap = instr.cap_used
+            # Cap dispatch: prefer instr.cap_used, fall back to the
+            # receiver type for impl-method-internal calls where
+            # the analyzer doesn't propagate cap_used through. The
+            # emit-side dispatch in _emit_instr mirrors this rule.
+            cap_from_recv = None
+            if isinstance(instr, MethodCall) and not instr.cap_used:
+                rty = (instr.receiver.ty or "")
+                if rty in _BUILTIN_CAPS:
+                    cap_from_recv = rty
+            if isinstance(instr, MethodCall) and (instr.cap_used or cap_from_recv):
+                cap = instr.cap_used or cap_from_recv
                 if cap not in _BUILTIN_CAPS:
                     raise WasmEmissionError(
                         f"Phase 6B: capability {cap!r} not in the "
@@ -1133,10 +1160,29 @@ class WasmEmitter(
             self._write(f"local.set ${instr.dst}")
             return
         if isinstance(instr, MethodCall):
+            # Built-in cap dispatch: prefer instr.cap_used (set by
+            # the analyzer for direct calls), but fall back to the
+            # receiver type for impl-method-internal calls where
+            # the analyzer doesn't propagate cap_used through.
+            # Receiver type itself may be Unknown when the IR
+            # Value was captured at lowering time before the
+            # analyzer's type info reached it; fall back to the
+            # fn.locals entry which the emitter populates for
+            # impl-method ``self`` and pattern binders.
+            recv_ty_pre = self._effective_value_ty(instr.receiver)
             if instr.cap_used:
                 self._emit_cap_method_call(instr)
                 return
-            recv_ty = instr.receiver.ty or ""
+            if recv_ty_pre in _BUILTIN_CAPS:
+                # Synthesise cap_used from the receiver type. Mutate
+                # a copy so the IR module stays untouched.
+                import dataclasses
+                synth = dataclasses.replace(instr, cap_used=recv_ty_pre)
+                self._emit_cap_method_call(synth)
+                return
+            # Use the effective type for downstream receiver-shape
+            # dispatch so impl-method self.method() resolves cleanly.
+            recv_ty = recv_ty_pre or ""
             if recv_ty.startswith("List"):
                 self._emit_list_method_call(instr)
                 return
@@ -1151,6 +1197,10 @@ class WasmEmitter(
                 return
             if recv_ty.startswith("Option") or recv_ty.startswith("Result"):
                 self._emit_option_method_call(instr)
+                return
+            recv_head = recv_ty.split("<", 1)[0]
+            if (recv_head, instr.method) in self._method_table:
+                self._emit_trait_method_call(instr)
                 return
             raise WasmEmissionError(
                 f"MethodCall on receiver of type {recv_ty!r} "
@@ -1606,6 +1656,15 @@ class WasmEmitter(
                     f"struct {instr.type_name}: field {fname!r} not in layout"
                 )
             offset, size, field_ty = f_info
+            if field_ty in _BUILTIN_CAPS:
+                # Capability field: erased at the Wasm level. The
+                # slot exists in the struct layout (so subsequent
+                # FieldAccess on it returns *something*), but no
+                # value is stored; the FieldAccess emitter knows
+                # not to read from a capability-typed field. We
+                # could omit the slot entirely, but keeping it
+                # makes layouts uniform with the analyzer's view.
+                continue
             if field_ty == "String":
                 # Two i32 stores: ptr at offset, len at offset+4.
                 self._write(f"local.get ${instr.dst}")
@@ -1655,6 +1714,13 @@ class WasmEmitter(
                 f"struct {recv_ty}: field {instr.field!r} not found"
             )
         offset, size, field_ty = f_info
+        if field_ty in _BUILTIN_CAPS:
+            # Capability field: erased at the Wasm level. The dst
+            # local has no Wasm representation either; consumers
+            # that need to invoke a method on the capability route
+            # to the imported function by name without reading the
+            # receiver value.
+            return
         if field_ty == "String":
             # Two i32 loads: ptr@offset, len@offset+4 -> dst's pair.
             self._push_value(instr.receiver)
@@ -1737,6 +1803,29 @@ class WasmEmitter(
         if self._current_fn is None:
             return ""
         return self._current_fn.locals.get(name, "")
+
+    def _effective_value_ty(self, v: Value) -> str:
+        """Resolve a Value's effective Capa type. The IR sometimes
+        carries Unknown on Values captured at lowering time before
+        the analyzer's type info reached them (impl-method ``self``,
+        pattern binders for builtin sum-type variants). When the
+        Value is a local or param, consult fn.locals for a
+        refined entry, fall back to the param list, and only then
+        accept the raw v.ty.
+
+        Returns the empty string when nothing concrete is
+        recoverable; callers should treat that as Unknown."""
+        ty = v.ty or ""
+        if ty and ty not in ("Unknown", "?") and not ty.startswith("?"):
+            return ty
+        if v.kind in ("local", "param") and self._current_fn is not None:
+            from_locals = self._current_fn.locals.get(v.name, "")
+            if from_locals and from_locals not in ("Unknown", "?"):
+                return from_locals
+            for p in self._current_fn.params:
+                if p.name == v.name and p.ty and p.ty not in ("Unknown", "?"):
+                    return p.ty
+        return ty
 
     # ----- value pushing ----------------------------------------
 
@@ -1836,6 +1925,10 @@ class WasmEmitter(
         # Closures are packed i64: (fn_idx << 32) | env_ptr.
         if capa_ty.startswith("Fun"):
             return "i64"
+        # User-defined trait / capability with a unique impl:
+        # values are i32 pointers to the impl's struct.
+        if head in self._trait_to_impl:
+            return "i32"
         # Unresolved tyvars (``?`` or analyzer's ``?lst_N``) default
         # to i64 so the Wasm verifier accepts the local declaration;
         # callers that use the local with a wrong type will surface

@@ -1674,5 +1674,73 @@ class TestWasmOptionResult(unittest.TestCase):
         self.assertEqual(self._run_capturing_stdout(src), "11\n0\n")
 
 
+@unittest.skipUnless(
+    _has_wasm_tools() and _has_wasmtime_py(),
+    "wasm-tools and/or wasmtime-py not installed",
+)
+class TestWasmTraitDispatch(unittest.TestCase):
+    """Phase 6J: user-defined trait + capability dispatch via
+    monomorphisation (unique impl per trait). Covers both the
+    trait-typed receiver (param of type Greeter) and the concrete-
+    impl-typed self call inside an impl body."""
+
+    def _run_capturing_stdout(self, src: str) -> str:
+        import io, sys
+        from capa.runtime._wasm_host import WasmHost
+        _, types, ast_mod = _parse_lower(src)
+        blob = compile_wasm(ast_mod, types=types)
+        host = WasmHost()
+        out = io.StringIO()
+        saved_out = sys.stdout
+        sys.stdout = out
+        try:
+            host.run_main(blob)
+        finally:
+            sys.stdout = saved_out
+        return out.getvalue()
+
+    def test_user_capability_with_unique_impl(self):
+        src = (
+            'pub capability Greeter\n'
+            '    fun greet(self, name: String) -> Unit\n'
+            'pub type StdioGreeter {\n'
+            '    stdio: Stdio,\n'
+            '    prefix: String,\n'
+            '}\n'
+            'pub fun make_greeter(stdio: Stdio, prefix: String) -> StdioGreeter\n'
+            '    return StdioGreeter { stdio: stdio, prefix: prefix }\n'
+            'impl Greeter for StdioGreeter\n'
+            '    fun greet(self, name: String) -> Unit\n'
+            '        self.stdio.println("${self.prefix}, ${name}!")\n'
+            'fun say_hi(g: Greeter, name: String) -> Unit\n'
+            '    g.greet(name)\n'
+            'fun main(stdio: Stdio)\n'
+            '    let g = make_greeter(stdio, "Hi")\n'
+            '    say_hi(g, "Capa")\n'
+        )
+        self.assertEqual(self._run_capturing_stdout(src), "Hi, Capa!\n")
+
+    def test_self_method_call_inside_impl(self):
+        # Impl method delegates to another method on self via the
+        # concrete-impl-type entry in _method_table.
+        src = (
+            'pub capability Logger\n'
+            '    fun log(self, msg: String) -> Unit\n'
+            '    fun info(self, msg: String) -> Unit\n'
+            'pub type StdioLogger { stdio: Stdio }\n'
+            'pub fun make_logger(stdio: Stdio) -> StdioLogger\n'
+            '    return StdioLogger { stdio: stdio }\n'
+            'impl Logger for StdioLogger\n'
+            '    fun log(self, msg: String) -> Unit\n'
+            '        self.stdio.println("[LOG] ${msg}")\n'
+            '    fun info(self, msg: String) -> Unit\n'
+            '        self.log(msg)\n'
+            'fun main(stdio: Stdio)\n'
+            '    let log = make_logger(stdio)\n'
+            '    log.info("boot")\n'
+        )
+        self.assertEqual(self._run_capturing_stdout(src), "[LOG] boot\n")
+
+
 if __name__ == "__main__":
     unittest.main()
