@@ -19,73 +19,69 @@ Status legend: `[x]` done · `[~]` partial · `[ ]` pending.
 
 ## Current goal (May 2026)
 
-The Wasm Component Model backend should compile and run the three
-downstream demos (`audit-trail-reporter`, `policy-eval`,
-`sbom-watch`) end-to-end via `capa --wasm --run`. Everything in
-the P0 block below is what stands between today's state and that
-goal.
+P0 is closed. `audit-trail-reporter`, `policy-eval`, and
+`sbom-watch` all build and run end-to-end via
+`capa --wasm --run`, with output bit-identical to the Python
+reference pipeline.
 
-Session 2026-05-22 closed Phase 6E (closures), 6G (JsonValue),
-6H (String.split + List<String>), 6I (Option/Result methods);
-fixed the lowerer's parametric-type drop; added List.get,
-Map<String, String>, String-scrutinee match, multi-value String
-returns. 92 Wasm tests green. The `policy-eval` frontier moved
-from `MakeLambda not supported` (Phase 6E entry) to
-`Value(kind="global")` at the module-level constant lookup.
+Session 2026-05-22 closed the remaining bugs that blocked
+parity: pattern-binder shadowing (alpha-rename in the IR
+lowerer), for-loop `continue` skipping the index increment,
+Float-typed struct fields using `i64.store`/`load`, the bump
+allocator never growing memory (`memory.grow` in `$alloc`),
+nested for-loops sharing scratch locals (`$_f_list_N` /
+`$_f_idx_N` per depth), and `List<String>.contains` raising
+in `_emit_list_contains`. Also kebab-cased the WIT identifiers
+and declared the `io-error` record so the generated WIT spec
+validates standalone.
+
+The Component Model wrapper (``capa --wasm --component``)
+remains the next milestone: it fails at the canonical-ABI
+boundary because our core wasm imports return raw pointers
+where the canonical ABI expects return-area pointers or
+multi-value pairs. Tracked below.
 
 ---
 
-## P0 — Wasm CM backend, finish the three downstream demos
+## P0 — Component Model wrapper (canonical ABI)
 
-Concrete blockers observed against each demo in May 2026.
+The ``--wasm --run`` path is solid. The ``--wasm --component``
+path needs the core wasm imports to follow the Component
+Model's canonical ABI so ``wasm-tools component embed`` /
+``component new`` can wrap the core module without a manual
+shim.
 
-- [ ] **Module-level constants in Wasm**. `policy-eval`'s next
-  wall: a top-level `const DEBUG: Bool = false` lowers to
-  `Value(kind="global", name="DEBUG", ty="Unknown")`, which
-  `_push_value` does not handle. Two approaches: (a) inline the
-  constant's value at use sites (works for scalar literals);
-  (b) emit a Wasm `(global ...)` declaration per module-level
-  const (works for any const, future-proof). Recommend (b) since
-  the const table is small and the analyzer already records each
-  const's type and initialiser. ⏱ 2-3h.
+- [ ] **`list<string>` return values via canonical ABI**.
+  `Env.args` returns `list<string>` in WIT but the core
+  wasm import returns a single i32 (pointer to our List
+  header). Canonical ABI lowering wants either a return-area
+  pointer or a multi-value `(i32 i32)` for `(ptr, len)`.
+  Pick the simpler one and rework the host bridge to match.
+  ⏱ 4-6h.
 
-- [ ] **`capa_datetime` stdlib in Wasm**.
-  `audit-trail-reporter` needs date/timestamp parsing + ISO
-  formatting. Today this lives as a vendored library that
-  transpiles to Python `datetime`. Wasm needs either a host
-  bridge (`capa:host/datetime`) or pure-Wasm implementations.
-  Bridge is faster: ~3 methods (`parse_iso`, `format_iso`,
-  `now_utc`). ⏱ 4-6h.
+- [ ] **`result<T, E>` return values via canonical ABI**.
+  Same shape problem: `Fs.read -> result<string, io-error>`
+  is returned as an i32 pointer to a Result record today.
+  The canonical ABI passes the tag + payload via multi-value
+  or a return-area pointer. ⏱ 3-4h once the list lowering
+  pattern is in place.
 
-- [ ] **`capa_http` capability in Wasm**. `sbom-watch` fetches
-  CVE feeds over HTTP. Today this transpiles to Python
-  `urllib.request`. Wasm side: new `capa:host/net` WIT interface
-  with `get(url) -> Result<String, IoError>` (minimum
-  viable for the demo) + `post(url, body) -> Result<String,
-  IoError>`. Host bridge in `_wasm_host.py`. ⏱ 4-6h.
+- [ ] **`option<string>` return values via canonical ABI**.
+  `Env.get -> option<string>` has the same issue. ⏱ 1-2h
+  after the result lowering is in place.
 
-- [ ] **Lit_str in `_push_value`**. Currently raises; affects
-  any path that pushes a literal where the receiver isn't
-  already filtered by callers. Surfaced by MakeList<String>
-  before that path was special-cased; may recur. ⏱ 1h once
-  reproduced.
+- [ ] **Record types via canonical ABI**. `io-error` is a
+  WIT record; its passing convention is field-by-field via
+  multi-value or a return-area pointer. ⏱ 2-3h.
 
-- [ ] **List<String>.contains** and **List<JsonValue>.contains**.
-  Each call uses byte-by-byte / pointer compare; both deferred
-  in the current `_emit_list_contains`. policy-eval may need
-  one of these for its filter step. ⏱ 1-2h each.
+- [ ] **`--component` end-to-end test**. A test that builds
+  each demo with `--component`, instantiates the resulting
+  component, and runs it -- currently the only sanity check
+  is the unit-test suite, which exercises only `--wasm --run`.
+  ⏱ 1-2h after the lowerings above.
 
-- [ ] **Multi-byte separator in `String.split`**. Today
-  supports single-byte only. policy-eval and the demos only use
-  single-byte separators (`","`, `"."`, `"="`), but a future
-  case may hit this. ⏱ 2h.
-
-- [ ] **`String.replace` / `String.char_at` / `String.index_of`**
-  in Wasm. Documented gaps in `_emit_string_method_call`.
-  Probably not needed for the three demos but worth closing
-  while the String emitter is fresh. ⏱ 3-4h together.
-
-Total P0 estimate: ~15-25h to ship the three demos end-to-end.
+Total P0 estimate: ~10-15h to ship the Component Model
+wrapper for the three demos.
 
 ---
 
