@@ -1597,6 +1597,19 @@ class WasmEmitter(
         recv_ty = instr.receiver.ty
         layout = self._struct_layouts.get(recv_ty)
         if layout is None:
+            # Analyzer-side type-propagation gap: the FieldAccess's
+            # receiver Value sometimes carries ``ty="Unknown"`` even
+            # though the receiver itself is a local with a concrete
+            # struct type recorded in fn.locals. Fall back to the
+            # local's declared type before giving up.
+            if (instr.receiver.kind in ("local", "param")
+                    and self._current_fn is not None
+                    and instr.receiver.name in self._current_fn.locals):
+                fallback = self._current_fn.locals[instr.receiver.name]
+                layout = self._struct_layouts.get(fallback)
+                if layout is not None:
+                    recv_ty = fallback
+        if layout is None:
             raise WasmEmissionError(
                 f"FieldAccess on receiver of type {recv_ty!r}: no "
                 f"struct layout known. The IR's type inference must "

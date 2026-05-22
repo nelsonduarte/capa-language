@@ -1139,7 +1139,16 @@ def _type_name(te: object) -> str:
         ret = _type_name(te.return_type)
         return f"Fun({params}) -> {ret}"
     if hasattr(te, "name"):
-        return getattr(te, "name")
+        # Parametric types (List<T>, Map<K, V>, Option<T>, user-
+        # defined generics) carry their args in ``te.args``; render
+        # them in the canonical ``Name<A, B>`` form so downstream
+        # consumers (for-iter element extraction, method dispatch
+        # on receiver type, Wasm size_of) can parse them back.
+        args = getattr(te, "args", None) or []
+        if args:
+            inner = ", ".join(_type_name(a) for a in args)
+            return f"{te.name}<{inner}>"
+        return te.name
     return _ty_to_str(te)
 
 
