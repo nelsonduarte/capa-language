@@ -19,13 +19,17 @@ Status legend: `[x]` done · `[~]` partial · `[ ]` pending.
 
 ## Current goal (May 2026)
 
-Both Wasm milestones are closed. `audit-trail-reporter`,
-`policy-eval`, and `sbom-watch` all run end-to-end via
-`capa --wasm --run` with output bit-identical to the Python
-reference pipeline, AND build successfully under
-`capa --wasm --component --output app.wasm` as Component
-Model binaries (canonical ABI canonical-lowered for every
-indirect-return capability method).
+Wasm milestones essentially closed.
+`audit-trail-reporter`, `policy-eval`, and `sbom-watch` all
+run end-to-end via `capa --wasm --run` with output bit-
+identical to the Python reference pipeline, and build
+successfully under `capa --wasm --component --output app.wasm`
+as Component Model binaries. The new `capa --wasm --component
+--run` path instantiates the component in an external
+wasmtime.component runtime (no core-wasm host shortcuts) and
+works end-to-end for programs that touch Stdio / Clock / Env
+/ Fs; the JsonValue host bridge still leaks its memory
+abstraction across the WIT boundary (see P1).
 
 Session 2026-05-22 closed: pattern-binder shadowing (alpha-
 rename in the lowerer), for-loop `continue` skipping the
@@ -35,26 +39,35 @@ index increment, Float-typed struct fields using
 locals (`$_f_list_N` / `$_f_idx_N` per depth),
 `List<String>.contains` raising in `_emit_list_contains`,
 kebab-case WIT identifiers, `io-error` record declaration,
-and the canonical-ABI rework for `list<string>` /
+the canonical-ABI rework for `list<string>` /
 `option<string>` / `result<string, io-error>` /
 `result<_, io-error>` / `result<u32, string>` / `string`
 returns plus the `cabi_realloc` export the Component Model
-linker requires.
-
-The Wasm CM backend is functionally complete for the demo
-surface; remaining work shifts to P1 (study, polish, paper)
-and P2 (LLM tool-use demo).
+linker requires, the `export main: func();` WIT entry point,
+and an external Component Model runtime in
+`capa/runtime/_wasm_component_host.py` wired as
+`--component --run`.
 
 ---
 
 ## P0 — done for this milestone
 
-No remaining work in this priority. Future P0 candidates:
-end-to-end Component Model instantiation tests
-(`--component`-built artifacts are validated by `wasm-tools`
-today but not actually instantiated and run yet); and
-running each demo through the property-based Wasm test
-generator once that lands (see P1).
+Future P0 candidates:
+
+- [ ] **JsonValue across the WIT boundary**. parse_json /
+  to_json return u32 handles per WIT, but the Capa-side
+  JsonValue methods (`.as_object`, `.as_string`, ...)
+  dereference the handle as a real linear-memory pointer.
+  Under `--component --run` the host can't access the
+  component's memory to materialise a real JsonValue tree,
+  so programs that round-trip parse_json + JsonValue
+  methods don't run end-to-end. Three options on the table:
+  (a) declare JsonValue as a WIT resource and route every
+  method through a resource-method import; (b) a pure-Wasm
+  JSON parser in Capa, no host bridge at all; (c) embed a
+  byte-serialisation format that Capa parses internally.
+  Each unblocks the three demos under `--component --run`.
+  ⏱ 8-12h depending on the route.
 
 ---
 
