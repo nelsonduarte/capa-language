@@ -362,6 +362,17 @@ the full reasoning.
   missing-`gh` / non-GitHub host. Closes the three-layer
   supply-chain claim end-to-end. 10 new unit tests cover the
   branch table.
+- 2026-05-23: **Website extracted to standalone repo** at
+  [nelsonduarte/capa-language-website](https://github.com/nelsonduarte/capa-language-website).
+  `git filter-repo` preserved per-file history; GitHub Pages
+  custom-domain cut-over to the new repo completed in the same
+  session with no measurable downtime (DNS unchanged, certificate
+  carried over). `docs/` in this repo now contains only the
+  Markdown source documents the website links to via absolute
+  github.com URLs; the HTML pages, `style.css`, learn/ tutorial
+  sequence, sitemap, robots, CNAME, and the logo assets all live
+  in the new repo. README + CONTRIBUTING + STABILITY + templates
+  rewritten to point at the canonical URLs.
 - 2026-05-23: **LLM tool-use demo** shipped at
   [nelsonduarte/capa_agent_demo](https://github.com/nelsonduarte/capa_agent_demo)
   v0.1.0, the last P2 item from the alignment plan. The pitch:

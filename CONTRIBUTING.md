@@ -90,7 +90,7 @@ the project; each is intentionally compact.
 - **Tooling polish**: the language server (`capa lsp`),
   formatter (`capa --fmt`), and project scaffolder (`capa init`)
   have v1 implementations. The next pieces queued on the
-  [roadmap](docs/roadmap.html) are LSP completion / semantic
+  [roadmap](https://capa-language.com/roadmap.html) are LSP completion / semantic
   tokens / rename, `capa-fmt` v2 (intra-line operator spacing
   with comment preservation), and editor extensions that ship
   the LSP client out of the box (a VSCode extension that does

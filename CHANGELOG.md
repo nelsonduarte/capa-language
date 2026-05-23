@@ -9,6 +9,30 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+### Website extracted to its own repo
+
+The marketing + learning-pages site (`docs/index.html`,
+`docs/learn/`, `docs/style.css`, the rest of the HTML assets)
+moves out of this repo and into
+[nelsonduarte/capa-language-website](https://github.com/nelsonduarte/capa-language-website).
+`capa-language.com` now serves from there via GitHub Pages.
+
+Extraction was via `git filter-repo` so the per-file history
+is preserved: the earliest commits in the new repo are the
+original website-only commits from this repo. No git-blame
+loss for anyone tracing a layout choice or copy edit.
+
+What stays here, in `docs/`: every Markdown document the
+website links to via absolute github.com URLs (semantics,
+packages, regulatory, paper draft, CVE case studies, etc.),
+plus the templates folder. The split is "the rendered site
+vs. the source documents that ship with the language."
+
+README's Documentation map gets a small rewrite to point at
+`capa-language.com` for the HTML pages and keep the `docs/*.md`
+table for the in-repo Markdown. CONTRIBUTING, STABILITY, and
+the GitHub issue / PR templates pick up the new URLs.
+
 ### LLM tool-use demo at `capa_agent_demo`
 
 A four-tool agent harness in ~400 lines of Capa, live-verified

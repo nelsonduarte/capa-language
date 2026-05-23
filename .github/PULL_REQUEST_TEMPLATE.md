@@ -24,7 +24,7 @@ GitHub UI rather than as "Ready for review".
 <!-- A short bulleted list of the user-visible changes:
      - Added `Fs.restrict_to(prefix)`
      - Adjusted analyzer error message for cap-aliasing
-     - Documented the new API in docs/tour.html
+     - Documented the new API in the capa-language-website repo
 -->
 
 ## How this was tested

@@ -283,22 +283,28 @@ Agda (no `agda-stdlib` dependency) cover Progress, Preservation,
 Capability Soundness, and a multi-step Manifest Completeness
 theorem. CI typechecks the proofs on every push to
 [`proofs/`](proofs/). The full roadmap is at
-[`docs/roadmap.html`](https://capa-language.com/roadmap.html).
+[`capa-language.com/roadmap.html`](https://capa-language.com/roadmap.html).
 
 ## Documentation map
 
+The marketing + rendered learning pages live at
+[`capa-language.com`](https://capa-language.com), source in the
+[`capa-language-website`](https://github.com/nelsonduarte/capa-language-website)
+repo. The deeper Markdown documents below stay here, next to the
+code they describe.
+
 | Doc | What it is |
 |-----|------------|
-| [`docs/tour.html`](https://capa-language.com/tour.html) | guided tour of the language |
-| [`docs/why.html`](https://capa-language.com/why.html) | the case for the language |
-| [`docs/start.html`](https://capa-language.com/start.html) | install + first program + CLI |
+| [`capa-language.com`](https://capa-language.com/) | landing page, with the case for the language |
+| [`capa-language.com/start.html`](https://capa-language.com/start.html) | install + first program + CLI |
+| [`capa-language.com/learn/`](https://capa-language.com/learn/) | 12-page tutorial sequence |
+| [`capa-language.com/manifest.html`](https://capa-language.com/manifest.html) | the manifest format + how to read it |
+| [`capa-language.com/roadmap.html`](https://capa-language.com/roadmap.html) | status + what's planned |
 | [`docs/getting-started.md`](docs/getting-started.md) | text version, plus LSP / editor setup |
 | [`docs/tutorial.md`](docs/tutorial.md) | longer walkthrough |
 | [`docs/reference.md`](docs/reference.md) | language reference (syntax + semantics) |
 | [`docs/stdlib.md`](docs/stdlib.md) | runtime + library APIs |
 | [`docs/packages.md`](docs/packages.md) | `capa.toml` + `capa install` + lockfile semantics |
-| [`docs/manifest.html`](https://capa-language.com/manifest.html) | the manifest format + how to read it |
-| [`docs/roadmap.html`](https://capa-language.com/roadmap.html) | status + what's planned |
 | [`docs/positioning.md`](docs/positioning.md) | honest comparison vs Pony, Koka, Roc, Wasm CM, Zero |
 | [`docs/semantics.md`](docs/semantics.md) | lambda_cap calculus sketch + soundness theorems |
 | [`docs/cra.md`](docs/cra.md) + [`regulatory.md`](docs/regulatory.md) | EU CRA + multi-jurisdiction regulatory mapping |

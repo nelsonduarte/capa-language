@@ -18,7 +18,7 @@ ship as **minor**; bug fixes ship as **patch**.
 | Standard library types and methods | [`docs/stdlib.md`](docs/stdlib.md) |
 | Built-in capability surface (`Fs`, `Net`, `Env`, `Clock`, `Random`, `Stdio`, `Proc`, `Db`, `Unsafe`) | [`docs/stdlib.md`](docs/stdlib.md) |
 | Public CLI subcommands and flags | [`README.md`](README.md), `--help` output |
-| Capability manifest JSON schema | [`docs/manifest.html`](https://capa-language.com/manifest.html) |
+| Capability manifest JSON schema | [`capa-language.com/manifest.html`](https://capa-language.com/manifest.html) |
 | CycloneDX / SPDX / VEX / SLSA emitted schemas | the respective external specs the compiler conforms to |
 | Package-manager manifest format (`capa.toml`) and lockfile (`capa.lock`) | [`docs/packages.md`](docs/packages.md) |
 | Numbered diagnostic codes (planned for 1.0, see below) | `docs/diagnostics.md` (to be added pre-1.0) |
