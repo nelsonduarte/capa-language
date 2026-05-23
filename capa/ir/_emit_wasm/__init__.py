@@ -695,14 +695,12 @@ class WasmEmitter(
                         f"capa.ir._emit_wasm together"
                     )
                 self._used_caps.add(key)
-            # parse_json / to_json are free functions but route
-            # through a synthetic ``Json`` capability so the import
-            # machinery treats them the same as Stdio / Fs / Env.
-            if isinstance(instr, Call):
-                if instr.callee_name == "parse_json":
-                    self._used_caps.add(("Json", "parse"))
-                elif instr.callee_name == "to_json":
-                    self._used_caps.add(("Json", "to_string"))
+            # parse_json / to_json used to route through a synthetic
+            # ``Json`` host capability with canonical-ABI imports.
+            # They now compile to ``call $__capa_parse_json`` /
+            # ``call $__capa_to_json`` into the bundled Capa-source
+            # parser injected by ``_builtin_json.inject_into``; no
+            # host import is produced for either function.
             # Walk every Value-bearing slot of every instruction for
             # ``lit_str`` literals; the data segment must cover any
             # literal the emitter will reference at use site, not
@@ -1149,14 +1147,15 @@ class WasmEmitter(
                         has_list = True
                 if isinstance(instr, Call):
                     if instr.callee_name == "parse_json":
-                        has_json_parse = True
-                        # parse_json/to_json now use canonical ABI
-                        # indirect return, so the function needs the
-                        # $_ret_area scratch local.
-                        has_indirect_cap_call = True
+                        # parse_json / to_json land as Capa-source
+                        # function calls (``$__capa_parse_json`` /
+                        # ``$__capa_to_json``); no host import, no
+                        # extra scratch beyond what the parser
+                        # bodies already declare via the normal
+                        # variant / List / Map paths.
+                        pass
                     elif instr.callee_name == "to_json":
-                        has_json_parse = True
-                        has_indirect_cap_call = True
+                        pass
                     elif instr.callee_name in self._variant_to_sum:
                         # Variant-construction Call with payloads. The
                         # String payload path packs (ptr, len) via
@@ -1883,6 +1882,13 @@ class WasmEmitter(
                 # (e.g. "ArgError"), so resolve via _variant_to_sum.
                 or arg.ty in self._variant_to_sum
                 or arg.kind == "variant_ctor"
+                # Tuples are heap-allocated records too; their
+                # pointer needs the same i32 -> i64 extension as a
+                # struct/sum/collection pointer when stored in a
+                # variant slot. ``Ok((JNull, pos))`` is the path
+                # that surfaced this.
+                or (arg.ty.startswith("(") and arg.ty.endswith(")")
+                    and arg.ty != "()")
             )
             if size == 8 and is_pointer_shape:
                 # Pointer payload: extend i32 to i64.

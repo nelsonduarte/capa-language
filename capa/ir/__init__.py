@@ -135,8 +135,20 @@ def emit_wat(ir_module: Module) -> str:
 def compile_wat(module: A.Module, types: dict | None = None) -> str:
     """End-to-end AST -> CIR -> WAT convenience helper. Mirrors
     :func:`compile` but targets the Wasm Component Model text form
-    instead of Python source."""
-    return emit_wat(lower(module, types=types))
+    instead of Python source.
+
+    Programs that touch ``parse_json`` / ``to_json`` get the
+    bundled Capa-source JSON parser spliced in via
+    ``_builtin_json.inject_into``; the Wasm emitter then routes
+    ``parse_json`` / ``to_json`` calls into the bundled functions
+    instead of importing ``capa:host/json``. That keeps the
+    JsonValue tree inside the component's own linear memory so
+    ``--component --run`` works without any host-side memory
+    access."""
+    from ._builtin_json import inject_into
+    ir_mod = lower(module, types=types)
+    inject_into(ir_mod)
+    return emit_wat(ir_mod)
 
 
 def compile_wit(

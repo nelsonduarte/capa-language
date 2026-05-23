@@ -260,7 +260,16 @@ class _MatchEmissionMixin:
             bind_ty.split("<", 1)[0] in self._struct_layouts
             or bind_ty.split("<", 1)[0] in self._sum_layouts
             or bind_ty.startswith(("List", "Map", "Set"))
+            or (bind_ty.startswith("(") and bind_ty.endswith(")")
+                and bind_ty != "()")
         ):
+            # Pointer-shaped payload: tuples join structs/sums/
+            # collections here because their record lives on the
+            # heap, with the pointer i64-extended into the variant
+            # slot. ``Result<(JsonValue, Int), _>`` is the path that
+            # surfaced this; without the tuple branch the load
+            # produced an i64 and the assignment to the i32 tuple
+            # binder tripped the Wasm validator.
             self._write(f"local.get ${scrut_local_name}")
             self._write(f"i64.load offset={offset}")
             self._write("i32.wrap_i64")
@@ -407,11 +416,18 @@ class _MatchEmissionMixin:
                         bind_ty.split("<", 1)[0] in self._struct_layouts
                         or bind_ty.split("<", 1)[0] in self._sum_layouts
                         or bind_ty.startswith(("List", "Map", "Set"))
+                        or (bind_ty.startswith("(") and bind_ty.endswith(")")
+                            and bind_ty != "()")
                     ):
                         # Pointer-shaped payload (struct / sum /
-                        # collection) stored in the uniform 8-byte
-                        # slot via i64.extend; unpack with
-                        # i32.wrap_i64.
+                        # collection / tuple) stored in the uniform
+                        # 8-byte slot via i64.extend; unpack with
+                        # i32.wrap_i64. Tuples surfaced this when a
+                        # JSON parser used Result<(JsonValue, Int),
+                        # String> as the Ok arm; the previous code
+                        # fell through to the default branch and
+                        # tried to store an i64 into the i32 tuple
+                        # local.
                         self._write(f"local.get ${scrut_local}")
                         self._write(f"i64.load offset={offset}")
                         self._write("i32.wrap_i64")

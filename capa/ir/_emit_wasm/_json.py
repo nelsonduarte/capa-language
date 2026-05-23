@@ -181,10 +181,14 @@ class _JsonEmissionMixin:
     def _emit_call_host_json_parse(self, instr: Call) -> None:
         """``parse_json(s: String) -> Result<JsonValue, String>``.
 
-        Canonical ABI: push the String arg (ptr, len) + a 12-byte
-        return area, call the imported host function (void return),
-        then materialise a Capa Result<i32, String> heap record
-        from the flat fields in the return area."""
+        Routes to the bundled Capa-source parser
+        ``__capa_parse_json`` (spliced into the IR module by
+        ``_builtin_json.inject_into``) so no ``capa:host/json``
+        host bridge is needed. The JsonValue tree is built in the
+        guest's own linear memory through normal Capa allocators,
+        which means Capa-side ``.as_object`` / ``.as_string``
+        traversal works unchanged under both ``--wasm --run`` and
+        ``--wasm --component --run``."""
         if not instr.args:
             raise WasmEmissionError("parse_json: expected 1 arg")
         arg = instr.args[0]
@@ -198,26 +202,21 @@ class _JsonEmissionMixin:
             self._write(f"i32.const {length}")
         else:
             self._push_string_value_as_ptr_len(arg)
-        self._write("i32.const 12")
-        self._write("call $alloc")
-        self._write("local.tee $_ret_area")
-        self._write("call $Json_parse")
-        self._emit_cap_indirect_materialise(
-            "result_u32_string", instr.dst,
-        )
+        self._write("call $__capa_parse_json")
+        if instr.dst is not None:
+            self._write(f"local.set ${instr.dst}")
 
     def _emit_call_host_json_to_string(self, instr: Call) -> None:
         """``to_json(jv: JsonValue) -> String``.
 
-        Canonical ABI: push the JsonValue handle (i32) + an 8-byte
-        return area, call (void return), then bind dst's String
-        (ptr, len) locals from the flat fields the host wrote."""
+        Routes to the bundled Capa-source serialiser
+        ``__capa_to_json``. Returns a multi-value
+        ``(i32 ptr, i32 len)`` String pair the IR's String-dst
+        machinery splits into ``${dst}_ptr`` / ``${dst}_len``."""
         if not instr.args:
             raise WasmEmissionError("to_json: expected 1 arg")
         arg = instr.args[0]
         self._push_value(arg)
-        self._write("i32.const 8")
-        self._write("call $alloc")
-        self._write("local.tee $_ret_area")
-        self._write("call $Json_to_string")
-        self._emit_cap_indirect_materialise("string", instr.dst)
+        self._write("call $__capa_to_json")
+        if instr.dst is not None:
+            self._set_string_dst(instr.dst)
