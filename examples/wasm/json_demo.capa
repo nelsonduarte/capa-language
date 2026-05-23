@@ -6,8 +6,12 @@
 //
 // The Wasm backend lowers each variant to a 16-byte sum record
 // (tag at offset 0, payload at offset 8). parse_json / to_json
-// route through a capa:host/json bridge so the host Python's
-// json.loads / json.dumps does the actual parsing.
+// route through a bundled Capa-source parser/serializer
+// (capa/ir/_builtin_json.capa) so the JsonValue tree is built in
+// the guest module's own linear memory. That keeps the Component
+// Model surface free of a capa:host/json import: --wasm,
+// --wasm --component, and --wasm --component --run all work the
+// same way without a host bridge.
 
 fun main(stdio: Stdio)
     // Parse + dispatch on variants.
