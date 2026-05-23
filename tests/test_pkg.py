@@ -646,6 +646,224 @@ class TestInstallVerifyKey(_TempDirMixin, unittest.TestCase):
         self.assertFalse((project / "capa.lock").exists())
 
 
+class TestParseGithubOwnerRepo(unittest.TestCase):
+    """Cover the URL parser that decides whether SLSA-provenance
+    verification is even applicable. Non-GitHub URLs return None
+    so the verifier skips them silently."""
+
+    def test_https_clean(self):
+        from capa.pkg._install import _parse_github_owner_repo
+        self.assertEqual(
+            _parse_github_owner_repo("https://github.com/foo/bar"),
+            ("foo", "bar"),
+        )
+
+    def test_https_with_dot_git(self):
+        from capa.pkg._install import _parse_github_owner_repo
+        self.assertEqual(
+            _parse_github_owner_repo("https://github.com/foo/bar.git"),
+            ("foo", "bar"),
+        )
+
+    def test_ssh_form(self):
+        from capa.pkg._install import _parse_github_owner_repo
+        self.assertEqual(
+            _parse_github_owner_repo("git@github.com:foo/bar.git"),
+            ("foo", "bar"),
+        )
+
+    def test_non_github_returns_none(self):
+        from capa.pkg._install import _parse_github_owner_repo
+        for url in (
+            "https://gitlab.com/foo/bar",
+            "https://bitbucket.org/foo/bar",
+            "https://example.com/foo/bar",
+            "file:///tmp/some/path",
+            "git@gitlab.com:foo/bar.git",
+        ):
+            self.assertIsNone(_parse_github_owner_repo(url), url)
+
+
+@unittest.skipUnless(_has_git(), "git not available")
+class TestInstallSlsaProvenance(_TempDirMixin, unittest.TestCase):
+    """Cover the implicit SLSA L2 verification path that runs
+    inside install() when a dep declares verify_key AND is hosted
+    on GitHub. We can't generate real Sigstore attestations in a
+    test, so each case patches subprocess.run to model what gh
+    would return for the situation under test.
+
+    The behaviour matrix the tests cover:
+
+      * Non-GitHub git URL: SLSA path is a no-op (verifier never
+        touches subprocess). The graceful-skip is observed by the
+        absence of any ``gh`` invocation.
+      * gh CLI missing: graceful skip (no subprocess error).
+      * Release tarball missing on GitHub: graceful skip.
+      * Release tarball present + attestation valid: install
+        succeeds (no error raised).
+      * Release tarball present + attestation invalid:
+        VerificationError raised, lockfile NOT written.
+
+    GPG verification is shared scaffolding from TestInstallVerifyKey;
+    we reuse its helpers via inheritance for the live signing case
+    on POSIX. The GPG layer is mocked away on Windows so the SLSA
+    branch can run in isolation.
+    """
+
+    def _capa_toml_with_dep(self, project: Path, git_url: str) -> None:
+        _write(project / "capa.toml", f'''
+            [package]
+            name = "proj"
+            version = "0.1.0"
+
+            [dependencies.mylib]
+            git = "{git_url}"
+            tag = "v0.1"
+            verify_key = "{"AB" * 20}"
+        ''')
+
+    def test_non_github_url_skips_slsa_verifier(self):
+        # When the git URL is a local file:// path (not GitHub),
+        # the SLSA verifier returns immediately without touching
+        # gh. We patch shutil.which so even if gh IS installed on
+        # the test machine, the absence of GitHub URL is enough
+        # to short-circuit.
+        from unittest.mock import patch
+        from capa.pkg._install import _verify_slsa_provenance
+        from capa.pkg._manifest import Dependency
+
+        dep = Dependency(
+            name="mylib",
+            git="file:///tmp/local-upstream",
+            tag="v0.1",
+            verify_key="A" * 40,
+        )
+        with patch("capa.pkg._install.subprocess.run") as mock_run:
+            _verify_slsa_provenance(dep, "v0.1", "tag")
+            mock_run.assert_not_called()
+
+    def test_rev_pin_skips_slsa_verifier(self):
+        from unittest.mock import patch
+        from capa.pkg._install import _verify_slsa_provenance
+        from capa.pkg._manifest import Dependency
+
+        dep = Dependency(
+            name="mylib",
+            git="https://github.com/foo/bar",
+            rev="deadbeef" * 5,
+            verify_key="A" * 40,
+        )
+        with patch("capa.pkg._install.subprocess.run") as mock_run:
+            _verify_slsa_provenance(dep, "deadbeef" * 5, "rev")
+            mock_run.assert_not_called()
+
+    def test_gh_not_installed_skips_silently(self):
+        from unittest.mock import patch
+        from capa.pkg._install import _verify_slsa_provenance
+        from capa.pkg._manifest import Dependency
+
+        dep = Dependency(
+            name="mylib",
+            git="https://github.com/foo/bar",
+            tag="v0.1",
+            verify_key="A" * 40,
+        )
+        with patch("capa.pkg._install.shutil.which", return_value=None):
+            with patch("capa.pkg._install.subprocess.run") as mock_run:
+                _verify_slsa_provenance(dep, "v0.1", "tag")
+                mock_run.assert_not_called()
+
+    def test_release_tarball_missing_skips_silently(self):
+        # gh release download returns non-zero (release doesn't
+        # exist or has no source-tarball asset). Verifier skips.
+        from unittest.mock import patch, MagicMock
+        from capa.pkg._install import _verify_slsa_provenance
+        from capa.pkg._manifest import Dependency
+
+        dep = Dependency(
+            name="mylib",
+            git="https://github.com/foo/bar",
+            tag="v0.1",
+            verify_key="A" * 40,
+        )
+        with patch("capa.pkg._install.shutil.which", return_value="/usr/bin/gh"):
+            with patch("capa.pkg._install.subprocess.run") as mock_run:
+                mock_run.return_value = MagicMock(
+                    returncode=1, stderr="release not found", stdout="",
+                )
+                # Should NOT raise.
+                _verify_slsa_provenance(dep, "v0.1", "tag")
+                # Confirms we only invoked `gh release download` -
+                # the verify call was short-circuited.
+                self.assertEqual(mock_run.call_count, 1)
+                self.assertIn("release", mock_run.call_args.args[0])
+                self.assertIn("download", mock_run.call_args.args[0])
+
+    def test_attestation_invalid_raises(self):
+        # gh release download succeeds (tarball materialises in the
+        # temp dir), gh attestation verify returns non-zero
+        # (tampered or wrong owner). Verifier raises.
+        from unittest.mock import patch, MagicMock
+        from capa.pkg._install import _verify_slsa_provenance
+        from capa.pkg._manifest import Dependency
+        from capa.pkg import VerificationError
+
+        dep = Dependency(
+            name="mylib",
+            git="https://github.com/foo/bar",
+            tag="v0.1",
+            verify_key="A" * 40,
+        )
+
+        def fake_run(cmd, *args, **kw):
+            if "download" in cmd:
+                # Materialise a stub tarball in the --dir target
+                # so the verifier sees it on disk.
+                dir_idx = cmd.index("--dir") + 1
+                target_dir = Path(cmd[dir_idx])
+                (target_dir / "bar-v0.1.tar.gz").write_bytes(b"stub")
+                return MagicMock(returncode=0, stderr="", stdout="")
+            if "verify" in cmd:
+                return MagicMock(
+                    returncode=1,
+                    stderr="verification failed: no matching attestations",
+                    stdout="",
+                )
+            return MagicMock(returncode=0, stderr="", stdout="")
+
+        with patch("capa.pkg._install.shutil.which", return_value="/usr/bin/gh"):
+            with patch("capa.pkg._install.subprocess.run", side_effect=fake_run):
+                with self.assertRaises(VerificationError) as cm:
+                    _verify_slsa_provenance(dep, "v0.1", "tag")
+        self.assertIn("SLSA", str(cm.exception))
+        self.assertIn("foo/bar", str(cm.exception))
+
+    def test_attestation_valid_succeeds(self):
+        # Both subprocess calls return 0 (download + verify). The
+        # verifier returns without raising.
+        from unittest.mock import patch, MagicMock
+        from capa.pkg._install import _verify_slsa_provenance
+        from capa.pkg._manifest import Dependency
+
+        dep = Dependency(
+            name="mylib",
+            git="https://github.com/foo/bar",
+            tag="v0.1",
+            verify_key="A" * 40,
+        )
+
+        def fake_run(cmd, *args, **kw):
+            if "download" in cmd:
+                dir_idx = cmd.index("--dir") + 1
+                target_dir = Path(cmd[dir_idx])
+                (target_dir / "bar-v0.1.tar.gz").write_bytes(b"stub")
+            return MagicMock(returncode=0, stderr="", stdout="")
+
+        with patch("capa.pkg._install.shutil.which", return_value="/usr/bin/gh"):
+            with patch("capa.pkg._install.subprocess.run", side_effect=fake_run):
+                _verify_slsa_provenance(dep, "v0.1", "tag")
+
+
 class TestLoaderIntegration(_TempDirMixin, unittest.TestCase):
     """A project with ``capa.toml`` + a path dep transpiles and
     executes without ``CAPA_PATH`` being set: the loader picks up

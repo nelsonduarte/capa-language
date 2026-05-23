@@ -9,6 +9,50 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+### Package manager: implicit SLSA L2 verification on install
+
+`capa install` now also verifies the SLSA L2 build-provenance
+attestation against Sigstore Rekor when a dep declares
+`verify_key` and is hosted on GitHub. The verification is
+implicit: no new manifest field, no opt-in flag. If you trust
+the publisher with `verify_key` and the repo is on GitHub, we
+also check the build came through the attested CI path.
+
+```toml
+[dependencies.capa_log]
+git = "https://github.com/nelsonduarte/capa_log"
+tag = "v0.1.2"
+verify_key = "6C1D222D491FB88031E041A536CFB426101AA24B"
+# capa install now refuses on:
+#   1. SHA mismatch vs capa.lock                       (existing)
+#   2. GPG tag signature invalid / wrong fingerprint   (existing)
+#   3. SLSA attestation in Rekor invalid or tampered   (new)
+```
+
+The verifier shells out to `gh attestation verify` (no new
+runtime dependency on `capa-language`; `gh` is already the
+canonical Sigstore client). Graceful skip (no warning, install
+continues) when:
+
+- the repo is not GitHub-hosted (no Sigstore pipeline today);
+- the pin is a `rev` (releases live on tags);
+- `gh` is not on the consumer's PATH;
+- the GitHub release ships no source-tarball asset (publisher
+  hasn't adopted attesting yet);
+- the network is unreachable.
+
+The skip-on-missing semantics are deliberate: SLSA augments
+the GPG layer rather than replacing it, so publishers
+pre-attestation keep working. A future `verify_provenance =
+"required"` field can flip every skip path to fail-closed for
+strict consumers. Test coverage: six new unit tests with
+mocked `gh` for each skip + success + fail branch, plus a
+URL-parser test class.
+
+The three downstream demos (policy-eval, audit-trail-reporter,
+sbom-watch) now exercise the full three-layer stack on every
+`capa install`: lockfile + GPG + SLSA, all enforced.
+
 ### Supply-chain: SLSA L2 build provenance via Sigstore
 
 Each seed-library repo (capa_cli, capa_datetime, capa_log,

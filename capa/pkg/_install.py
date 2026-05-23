@@ -20,6 +20,18 @@ the new content. To accept new commits intentionally, delete
 ``capa.lock`` before re-running ``install`` (or use
 ``allow_lock_update=True`` from a CLI flag).
 
+When a dep declares ``verify_key`` (a 40-char GPG fingerprint),
+``install`` runs two independent verification layers:
+
+  1. ``git verify-tag`` (or ``verify-commit``) against the
+     consumer's GPG keyring (the publisher-identity layer).
+  2. ``gh attestation verify`` against the public Sigstore
+     Rekor log, against the source tarball attached to the
+     GitHub release for this tag (the SLSA L2 build-provenance
+     layer). Implicit; runs only on GitHub-hosted tag pins
+     when the ``gh`` CLI is available, and skips silently for
+     other hosts / for releases that don't ship attestations.
+
 The implementation shells out to ``git`` so the runtime does
 not pull in a heavyweight git library. ``git`` must be on the
 caller's PATH.
@@ -28,11 +40,14 @@ caller's PATH.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import stat
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
+from typing import Optional
 
 from ._manifest import (
     Dependency,
@@ -215,6 +230,14 @@ def _fetch_git_dep(vendor_dir: Path, dep: Dependency) -> LockedDependency:
         signing_key = _verify_signed_pin(
             dest, pin_kind, pin, dep.verify_key, dep.name,
         )
+        # Layer 3 of the supply-chain stack: try SLSA L2 build
+        # provenance via Sigstore when the dep is GitHub-hosted
+        # and pinned to a tag. The verification is implicit
+        # (no separate opt-in field): if you already trust this
+        # publisher with verify_key + the repo is on GitHub, we
+        # also check the build came through the attested CI path.
+        # See _verify_slsa_provenance for the graceful-skip rules.
+        _verify_slsa_provenance(dep, pin, pin_kind)
 
     return LockedDependency(
         name=dep.name,
@@ -285,6 +308,113 @@ def _verify_signed_pin(
             f"with this name. Refusing the install."
         )
     return fingerprint
+
+
+_GITHUB_URL_RE = re.compile(
+    r"^(?:https?://(?:www\.)?github\.com/|git@github\.com:)"
+    r"(?P<owner>[^/]+)/(?P<repo>[^/.]+)(?:\.git)?/?$"
+)
+
+
+def _parse_github_owner_repo(url: str) -> Optional[tuple[str, str]]:
+    """Return ``(owner, repo)`` for a GitHub git URL, or None when
+    the URL does not point at GitHub. Accepts both the https and
+    ssh forms (``https://github.com/<o>/<r>[.git]`` and
+    ``git@github.com:<o>/<r>[.git]``). Used to decide whether
+    SLSA-provenance verification is even applicable: non-GitHub
+    hosts have no attestation publishing pipeline today."""
+    m = _GITHUB_URL_RE.match(url.strip())
+    if m is None:
+        return None
+    return m.group("owner"), m.group("repo")
+
+
+def _verify_slsa_provenance(
+    dep: Dependency, pin: str, pin_kind: str,
+) -> None:
+    """Try to verify a SLSA L2 build-provenance attestation for the
+    just-cloned dependency against the public Sigstore Rekor log.
+
+    Implicit verification: this runs only when the dep already
+    declares ``verify_key`` (the GPG layer is the trigger) AND the
+    git URL points at GitHub AND the pin is a tag. The two layers
+    are independent supply-chain claims; if GPG passes but SLSA
+    fails, the install refuses.
+
+    The verifier is the ``gh`` CLI's ``attestation verify``
+    subcommand. Skipping silently rather than raising when:
+
+      * the dep is not GitHub-hosted (no attestation pipeline);
+      * the pin is a ``rev`` (releases live on tags);
+      * the ``gh`` CLI is not installed on the caller's PATH;
+      * the GitHub release for this tag exists but has no source
+        tarball asset (publisher pre-dates the workflow, or hasn't
+        adopted it yet);
+      * the release endpoint is unreachable (offline / network
+        glitch).
+
+    Raising ``VerificationError`` when the release tarball IS
+    present but ``gh attestation verify`` returns non-zero (the
+    attestation in Rekor was tampered, or the workflow that signed
+    it was not run from this owner's identity).
+
+    A future iteration can add a ``verify_provenance = "required"``
+    field to flip every graceful-skip path to fail-closed.
+    """
+    if pin_kind != "tag":
+        return
+    assert dep.git is not None
+    owner_repo = _parse_github_owner_repo(dep.git)
+    if owner_repo is None:
+        return
+    owner, repo = owner_repo
+
+    if shutil.which("gh") is None:
+        return
+
+    tarball_name = f"{repo}-{pin}.tar.gz"
+    with tempfile.TemporaryDirectory(prefix="capa_slsa_") as td:
+        td_path = Path(td)
+        r = subprocess.run(
+            [
+                "gh", "release", "download", pin,
+                "--repo", f"{owner}/{repo}",
+                "--pattern", tarball_name,
+                "--dir", str(td_path),
+            ],
+            capture_output=True, text=True, encoding="utf-8",
+        )
+        # Release missing, no matching asset, no auth, or offline.
+        # All graceful skips: an honest publisher just hasn't
+        # adopted SLSA yet, or this user is offline. We never
+        # downgrade trust because of these.
+        if r.returncode != 0:
+            return
+        tarball_path = td_path / tarball_name
+        if not tarball_path.exists():
+            return
+
+        r = subprocess.run(
+            [
+                "gh", "attestation", "verify", str(tarball_path),
+                "--owner", owner,
+            ],
+            capture_output=True, text=True, encoding="utf-8",
+        )
+        if r.returncode == 0:
+            return
+
+        raise VerificationError(
+            f"SLSA provenance verification failed on {dep.name!r} "
+            f"pin {pin!r}: ``gh attestation verify`` returned "
+            f"non-zero against the published source tarball at "
+            f"{owner}/{repo} ({tarball_name}).\n\n"
+            f"gh output:\n{(r.stderr or r.stdout).strip()}\n\n"
+            f"The release ships a tarball but its SLSA attestation "
+            f"in Sigstore Rekor is either missing, tampered, or "
+            f"was issued by a different identity than {owner!r}. "
+            f"Refusing the install."
+        )
 
 
 def _rmtree_force(path: Path) -> None:

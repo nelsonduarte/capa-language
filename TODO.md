@@ -113,17 +113,6 @@ the current Wasm critical path.
   alternative serialisation; the "representation + validation"
   writeup tying them together. ⏱ 8-12h each.
 
-- [ ] **`capa install`: consumer-side SLSA provenance
-  auto-verify**. Producer side landed 2026-05-23 (v0.1.2 of
-  every seed library carries a SLSA L2 attestation in Rekor).
-  Next: extend `capa install` to verify the attestation
-  automatically when the dependency declares
-  `verify_provenance = true` (or imply it from `verify_key`),
-  via `gh attestation verify` shell-out or `sigstore-python`
-  binding. Refuses the install on attestation mismatch /
-  wrong owner / missing entry. Closes the last gap in the
-  three-layer supply-chain story. ⏱ 4-6h.
-
 - [~] **SBOM-capability audit example, structural policies**.
   Today's audit at `examples/sbom_capability_audit.capa`
   supports per-function allow-lists. Pending: structural
@@ -335,8 +324,13 @@ the full reasoning.
   push, builds a tarball, generates a SLSA L2 attestation
   through `actions/attest-build-provenance@v1`, publishes to
   Rekor). v0.1.2 is the first attested release; demos updated.
-  Consumer-side auto-verification in `capa install` is the
-  next adjacent tier (P1, not yet started).
+- 2026-05-23: **Consumer-side SLSA L2 auto-verify**. `capa
+  install` now runs `gh attestation verify` implicitly when a
+  dep declares `verify_key` and is GitHub-hosted; refuses on
+  attestation mismatch, graceful-skips on missing-tarball /
+  missing-`gh` / non-GitHub host. Closes the three-layer
+  supply-chain claim end-to-end. 10 new unit tests cover the
+  branch table.
 
 ### CVE case studies (6 landed)
 - event-stream 2018, eslint-scope 2018, node-ipc 2022,

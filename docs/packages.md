@@ -101,6 +101,41 @@ verify_key = "1234 5678 90AB CDEF 1234 5678 90AB CDEF 1234 5678"
 The 40-char fingerprint may include spaces or colons for
 readability; the parser normalises before comparison.
 
+#### SLSA L2 build provenance (implicit)
+
+When `verify_key` is set AND the git URL points at GitHub AND
+the pin is a tag AND the `gh` CLI is on your PATH, `capa
+install` also runs `gh attestation verify` against the source
+tarball attached to the GitHub release for that tag, against
+the public Sigstore Rekor transparency log. This is the third
+supply-chain layer (lockfile SHA + GPG fingerprint + SLSA L2
+provenance); it runs automatically with no extra capa.toml
+field needed.
+
+`capa install` refuses when the release tarball is published
+**and** its SLSA attestation in Rekor is invalid, tampered, or
+issued by a different identity than the repository owner.
+
+It gracefully skips (logs nothing, install continues) when:
+
+- The repo is not GitHub-hosted (no Sigstore pipeline today).
+- The `gh` CLI is missing from PATH.
+- The release for this tag has no source-tarball asset
+  (publisher hasn't adopted the attesting workflow yet).
+- The network is unreachable.
+
+The skip-on-missing behaviour is deliberate: the SLSA layer
+augments the GPG layer rather than replacing it. A publisher
+who hasn't shipped attestations yet still gets verified by
+the GPG fingerprint. A future opt-in `verify_provenance =
+"required"` field can flip every skip path to fail-closed for
+consumers who want the strictest mode.
+
+The reference seed libraries (capa_cli, capa_datetime,
+capa_log, capa_http) ship attestations from v0.1.2 onwards;
+each repo's `.github/workflows/release.yml` is the canonical
+publisher-side template.
+
 **path source**:
 
 ```toml
