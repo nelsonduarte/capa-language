@@ -64,6 +64,13 @@ class LockMismatchError(InstallError):
     rather than silently overwrite the lockfile."""
 
 
+class VerificationError(InstallError):
+    """Raised when a dependency declares ``verify_key`` in its
+    ``capa.toml`` entry but the cloned tag/commit fails GPG
+    verification (unsigned, signed with an unknown key, signed
+    with a different key, or invalid signature)."""
+
+
 def install(
     project_dir: Path,
     *,
@@ -199,13 +206,85 @@ def _fetch_git_dep(vendor_dir: Path, dep: Dependency) -> LockedDependency:
         f"resolve HEAD of {dep.name}",
     ).strip()
 
+    # Optional GPG signature check. Runs against the consumer's
+    # GPG keyring; the trust anchor is the fingerprint declared
+    # in ``capa.toml``. Returns an empty string when no
+    # ``verify_key`` is declared (no verification requested).
+    signing_key = ""
+    if dep.verify_key is not None:
+        signing_key = _verify_signed_pin(
+            dest, pin_kind, pin, dep.verify_key, dep.name,
+        )
+
     return LockedDependency(
         name=dep.name,
         git=dep.git,
         pin=pin,
         pin_kind=pin_kind,
         commit=commit,
+        signing_key=signing_key,
     )
+
+
+def _verify_signed_pin(
+    dest: Path, pin_kind: str, pin: str,
+    expected_fingerprint: str, dep_name: str,
+) -> str:
+    """Verify the signature on a git ref via GPG and return the
+    fingerprint that produced it. Raises VerificationError on
+    any failure (unsigned ref, unknown key, mismatched key,
+    invalid signature). The expected fingerprint must already
+    be uppercase + space-stripped (the manifest parser
+    normalises it on read)."""
+    git_cmd = "verify-tag" if pin_kind == "tag" else "verify-commit"
+    try:
+        r = subprocess.run(
+            ["git", "-C", str(dest), git_cmd, "--raw", pin],
+            capture_output=True, text=True, encoding="utf-8",
+        )
+    except FileNotFoundError:
+        raise InstallError(
+            "'git' executable not found on PATH; the package manager "
+            "needs git for signature verification too"
+        ) from None
+    if r.returncode != 0:
+        raise VerificationError(
+            f"signature verification failed on {dep_name!r} pin "
+            f"{pin!r}: ``git {git_cmd}`` returned non-zero. Either the "
+            f"ref is unsigned, the signing key is not in your GPG "
+            f"keyring, or the signature is invalid.\n\n"
+            f"git output:\n{r.stderr.strip()}\n\n"
+            f"To bring the publisher's key into your keyring:\n"
+            f"  gpg --recv-keys {expected_fingerprint}\n"
+            f"or import from a file you obtained out of band:\n"
+            f"  gpg --import path/to/publisher.asc"
+        )
+    # --raw emits machine-readable status lines to stderr; look for
+    # ``VALIDSIG <fingerprint>``.
+    fingerprint = None
+    for line in r.stderr.splitlines():
+        if line.startswith("[GNUPG:] VALIDSIG "):
+            parts = line.split()
+            if len(parts) >= 3:
+                fingerprint = parts[2].upper()
+                break
+    if fingerprint is None:
+        raise VerificationError(
+            f"signature verification on {dep_name!r}: ``git "
+            f"{git_cmd}`` succeeded but no VALIDSIG line in the GPG "
+            f"raw output. This is unusual; please report the case.\n\n"
+            f"git stderr:\n{r.stderr.strip()}"
+        )
+    if fingerprint != expected_fingerprint:
+        raise VerificationError(
+            f"signature on {dep_name!r} pin {pin!r}: signed by "
+            f"{fingerprint}, capa.toml declares verify_key "
+            f"{expected_fingerprint}. Either (a) the upstream rotated "
+            f"its signing key -- confirm out of band and update the "
+            f"verify_key field; or (b) someone else signed a tag "
+            f"with this name. Refusing the install."
+        )
+    return fingerprint
 
 
 def _rmtree_force(path: Path) -> None:

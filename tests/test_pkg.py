@@ -424,6 +424,228 @@ class TestInstallGit(_TempDirMixin, unittest.TestCase):
         self.assertIn("tampered", body)
 
 
+def _gpg_available() -> bool:
+    try:
+        r = subprocess.run(
+            ["gpg", "--version"], capture_output=True, text=True,
+        )
+        return r.returncode == 0
+    except FileNotFoundError:
+        return False
+
+
+@unittest.skipUnless(
+    _gpg_available(), "gpg binary not on PATH (signature tests need it)",
+)
+class TestInstallVerifyKey(_TempDirMixin, unittest.TestCase):
+    """Cover the optional ``verify_key`` field on a git dependency.
+    Builds an ephemeral GPG home + keypair, signs a tag with it,
+    points ``capa.toml`` at a local file:// repo whose tag is
+    signed, and asserts:
+
+      - install with the right fingerprint succeeds and records
+        the signing key in the lockfile.
+      - install with the wrong fingerprint raises
+        ``VerificationError`` and does NOT record anything.
+      - install of an unsigned tag with a verify_key declared
+        raises ``VerificationError``.
+
+    The ephemeral GPG home means the test does not touch the
+    user's real keyring and does not require any pre-existing
+    key material."""
+
+    def _make_gpg_home(self) -> tuple[Path, str, dict]:
+        """Create an isolated GNUPGHOME, generate a passphrase-less
+        keypair inside it, and return (gnupg_home, fingerprint,
+        env_for_subprocess). The env carries GNUPGHOME so every
+        gpg / git invocation talks to the ephemeral keyring."""
+        gnupg_home = self._tmp / "gnupg"
+        gnupg_home.mkdir(parents=True, exist_ok=True)
+        # Windows tolerates 0o700; Unix needs it for gpg to not
+        # complain about insecure perms.
+        try:
+            os.chmod(gnupg_home, 0o700)
+        except OSError:
+            pass
+        env = {**os.environ, "GNUPGHOME": str(gnupg_home)}
+        batch = (
+            "%no-protection\n"
+            "Key-Type: RSA\n"
+            "Key-Length: 2048\n"
+            "Subkey-Type: RSA\n"
+            "Subkey-Length: 2048\n"
+            "Name-Real: Capa Test\n"
+            "Name-Email: capa-test@example.invalid\n"
+            "Expire-Date: 0\n"
+            "%commit\n"
+        )
+        r = subprocess.run(
+            ["gpg", "--batch", "--generate-key"],
+            input=batch, capture_output=True, text=True, env=env,
+        )
+        if r.returncode != 0:
+            self.skipTest(
+                f"gpg --generate-key failed (sandbox / entropy issue): "
+                f"{r.stderr.strip()}"
+            )
+        # Extract the freshly-generated key's long fingerprint.
+        r = subprocess.run(
+            ["gpg", "--list-keys", "--with-colons", "capa-test@example.invalid"],
+            capture_output=True, text=True, env=env,
+        )
+        fingerprint = None
+        for line in r.stdout.splitlines():
+            if line.startswith("fpr:"):
+                fingerprint = line.split(":")[9]
+                break
+        if fingerprint is None:
+            self.skipTest("could not read the ephemeral key's fingerprint")
+        return gnupg_home, fingerprint, env
+
+    def _make_signed_git_repo(
+        self, repo_dir: Path, env_with_gpg: dict, fingerprint: str,
+    ) -> str:
+        """Create a tiny git repo with a GPG-signed tag at v0.1."""
+        repo_dir.mkdir(parents=True, exist_ok=True)
+        env = {
+            **env_with_gpg,
+            "GIT_AUTHOR_NAME": "capa-test",
+            "GIT_AUTHOR_EMAIL": "capa-test@example.invalid",
+            "GIT_COMMITTER_NAME": "capa-test",
+            "GIT_COMMITTER_EMAIL": "capa-test@example.invalid",
+        }
+
+        def git(*args, check=True):
+            r = subprocess.run(
+                ["git", "-C", str(repo_dir), *args],
+                capture_output=True, text=True, env=env,
+            )
+            if check and r.returncode != 0:
+                raise RuntimeError(f"git {args}: {r.stderr}")
+            return r
+
+        git("init", "-b", "main")
+        git("config", "user.signingkey", fingerprint)
+        (repo_dir / "log.capa").write_text(
+            'pub fun greet() -> String\n    return "signed hi"\n',
+            encoding="utf-8",
+        )
+        git("add", "log.capa")
+        git("commit", "-m", "initial")
+        git("tag", "-s", "-u", fingerprint, "-m", "release", "v0.1")
+        return repo_dir.as_uri()
+
+    def _make_unsigned_git_repo(self, repo_dir: Path) -> str:
+        repo_dir.mkdir(parents=True, exist_ok=True)
+        env = {
+            **os.environ,
+            "GIT_AUTHOR_NAME": "capa-test",
+            "GIT_AUTHOR_EMAIL": "test@example.invalid",
+            "GIT_COMMITTER_NAME": "capa-test",
+            "GIT_COMMITTER_EMAIL": "test@example.invalid",
+        }
+
+        def git(*args):
+            r = subprocess.run(
+                ["git", "-C", str(repo_dir), *args],
+                capture_output=True, text=True, env=env,
+            )
+            if r.returncode != 0:
+                raise RuntimeError(f"git {args}: {r.stderr}")
+
+        git("init", "-b", "main")
+        (repo_dir / "log.capa").write_text(
+            'pub fun greet() -> String\n    return "unsigned"\n',
+            encoding="utf-8",
+        )
+        git("add", "log.capa")
+        git("commit", "-m", "initial")
+        git("tag", "v0.1")
+        return repo_dir.as_uri()
+
+    @unittest.skipIf(
+        sys.platform == "win32",
+        "GPG keypair generation against an ephemeral GNUPGHOME mangles "
+        "Windows paths under the MSYS git distribution; the production "
+        "path runs fine, only the test scaffold is platform-fragile.",
+    )
+    def test_install_accepts_signed_tag_with_matching_fingerprint(self):
+        from unittest.mock import patch
+        _, fingerprint, env = self._make_gpg_home()
+        url = self._make_signed_git_repo(
+            self._tmp / "upstream", env, fingerprint,
+        )
+        project = self._tmp / "proj"
+        _write(project / "capa.toml", f'''
+            [package]
+            name = "proj"
+            version = "0.1.0"
+
+            [dependencies.mylib]
+            git = "{url}"
+            tag = "v0.1"
+            verify_key = "{fingerprint}"
+        ''')
+        # subprocess invocations inside install() inherit os.environ
+        # by default, so route GNUPGHOME through for the duration
+        # of this test only.
+        with patch.dict(os.environ, env, clear=False):
+            install(project)
+        lock = read_lock(project / "capa.lock")
+        self.assertEqual(len(lock), 1)
+        self.assertEqual(lock[0].signing_key, fingerprint.upper())
+
+    @unittest.skipIf(
+        sys.platform == "win32",
+        "ephemeral GNUPGHOME path mangling under MSYS; see the "
+        "matching-fingerprint test for the rationale.",
+    )
+    def test_install_refuses_signed_tag_with_wrong_fingerprint(self):
+        from unittest.mock import patch
+        from capa.pkg import VerificationError
+        _, fingerprint, env = self._make_gpg_home()
+        url = self._make_signed_git_repo(
+            self._tmp / "upstream", env, fingerprint,
+        )
+        # 40-char fake fingerprint that does NOT match.
+        wrong = "DEAD" * 10
+        project = self._tmp / "proj"
+        _write(project / "capa.toml", f'''
+            [package]
+            name = "proj"
+            version = "0.1.0"
+
+            [dependencies.mylib]
+            git = "{url}"
+            tag = "v0.1"
+            verify_key = "{wrong}"
+        ''')
+        with patch.dict(os.environ, env, clear=False):
+            with self.assertRaises(VerificationError) as cm:
+                install(project)
+        self.assertIn(fingerprint.upper(), str(cm.exception))
+        self.assertIn(wrong, str(cm.exception))
+        self.assertFalse((project / "capa.lock").exists())
+
+    def test_install_refuses_unsigned_tag_when_verify_key_declared(self):
+        from capa.pkg import VerificationError
+        url = self._make_unsigned_git_repo(self._tmp / "upstream")
+        project = self._tmp / "proj"
+        _write(project / "capa.toml", f'''
+            [package]
+            name = "proj"
+            version = "0.1.0"
+
+            [dependencies.mylib]
+            git = "{url}"
+            tag = "v0.1"
+            verify_key = "{"AB" * 20}"
+        ''')
+        with self.assertRaises(VerificationError):
+            install(project)
+        self.assertFalse((project / "capa.lock").exists())
+
+
 class TestLoaderIntegration(_TempDirMixin, unittest.TestCase):
     """A project with ``capa.toml`` + a path dep transpiles and
     executes without ``CAPA_PATH`` being set: the loader picks up

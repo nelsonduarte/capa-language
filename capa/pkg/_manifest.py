@@ -38,7 +38,7 @@ LOCK_FILENAME = "capa.lock"
 
 # Keys recognised in each table; anything else is an error.
 _PACKAGE_KEYS = frozenset({"name", "version", "capa"})
-_DEP_GIT_KEYS = frozenset({"git", "tag", "rev"})
+_DEP_GIT_KEYS = frozenset({"git", "tag", "rev", "verify_key"})
 _DEP_PATH_KEYS = frozenset({"path"})
 
 
@@ -52,12 +52,20 @@ class Dependency:
 
     Exactly one of ``git`` (with one of ``tag`` / ``rev``) or
     ``path`` is set; this is enforced by ``read_manifest``.
-    """
+
+    ``verify_key`` is an optional GPG fingerprint (40 hex chars,
+    spaces allowed and stripped). When set, ``capa install``
+    runs ``git verify-tag`` / ``git verify-commit`` against the
+    cloned dep and rejects the install unless the signature
+    matches that fingerprint. The fingerprint is the trust
+    anchor: it must already be present in the consumer's GPG
+    keyring (``gpg --import`` or ``gpg --recv-keys``)."""
     name: str
     git: Optional[str] = None
     tag: Optional[str] = None
     rev: Optional[str] = None
     path: Optional[str] = None
+    verify_key: Optional[str] = None
 
     @property
     def is_git(self) -> bool:
@@ -90,6 +98,12 @@ class LockedDependency:
     pin: str               # the tag or rev from the manifest
     pin_kind: str          # "tag" or "rev"
     commit: str            # the full SHA the pin resolved to
+    # The GPG fingerprint that signed the tag / commit, captured
+    # on successful verification. Empty string when verification
+    # was not requested (no ``verify_key`` in capa.toml). Recorded
+    # so an auditor can confirm what key signed each frozen pin
+    # without re-running the verification.
+    signing_key: str = ""
 
 
 def read_manifest(path: Path) -> Manifest:
@@ -189,7 +203,24 @@ def _parse_dep(path: Path, name: str, spec: dict) -> Dependency:
             raise ManifestError(
                 f"{path}: dependencies.{name}.rev must be a string"
             )
-        return Dependency(name=name, git=git, tag=tag, rev=rev)
+        verify_key = spec.get("verify_key")
+        if verify_key is not None:
+            if not isinstance(verify_key, str):
+                raise ManifestError(
+                    f"{path}: dependencies.{name}.verify_key must be a string"
+                )
+            normalised = verify_key.replace(" ", "").replace(":", "").upper()
+            if (len(normalised) != 40
+                    or any(c not in "0123456789ABCDEF" for c in normalised)):
+                raise ManifestError(
+                    f"{path}: dependencies.{name}.verify_key must be a "
+                    f"40-character GPG fingerprint (hex, spaces optional). "
+                    f"Got {verify_key!r}"
+                )
+            verify_key = normalised
+        return Dependency(
+            name=name, git=git, tag=tag, rev=rev, verify_key=verify_key,
+        )
     # path source
     _check_keys(path, f"dependencies.{name}", spec, _DEP_PATH_KEYS)
     p = _require_str(path, spec, "path", f"dependencies.{name}")
@@ -240,12 +271,18 @@ def read_lock(path: Path) -> list[LockedDependency]:
             raise ManifestError(
                 f"{path}: each lockfile entry must be a table"
             )
+        signing_key = entry.get("signing_key", "")
+        if not isinstance(signing_key, str):
+            raise ManifestError(
+                f"{path}: lock entry 'signing_key' must be a string"
+            )
         out.append(LockedDependency(
             name=_require_str(path, entry, "name", "lock entry"),
             git=_require_str(path, entry, "git", "lock entry"),
             pin=_require_str(path, entry, "pin", "lock entry"),
             pin_kind=_require_str(path, entry, "pin_kind", "lock entry"),
             commit=_require_str(path, entry, "commit", "lock entry"),
+            signing_key=signing_key,
         ))
     return out
 
@@ -266,5 +303,7 @@ def write_lock(path: Path, locked: list[LockedDependency]) -> None:
         lines.append(f'pin = "{d.pin}"')
         lines.append(f'pin_kind = "{d.pin_kind}"')
         lines.append(f'commit = "{d.commit}"')
+        if d.signing_key:
+            lines.append(f'signing_key = "{d.signing_key}"')
         lines.append("")
     path.write_text("\n".join(lines), encoding="utf-8")

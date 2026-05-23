@@ -200,6 +200,15 @@ capa_log = { git = "https://github.com/nelsonduarte/capa_log", rev = "<commit-sh
 # runs when the upstream tag has been re-pointed at a different
 # commit. Pass ``--update`` to accept a new SHA deliberately.
 # capa_log = { git = "https://github.com/nelsonduarte/capa_log", tag = "v0.1" }
+
+# For audit-grade builds: add the publisher's GPG fingerprint and
+# ``capa install`` runs ``git verify-tag`` against your keyring,
+# refusing to install unless the signature matches. Defends against
+# account compromise + tag tampering even when the lockfile is empty.
+[dependencies.capa_log]
+git = "https://github.com/nelsonduarte/capa_log"
+tag = "v0.1"
+verify_key = "1234 5678 90AB CDEF 1234 5678 90AB CDEF 1234 5678"
 ```
 
 Then `capa install` materialises the deps under `./vendor/` and

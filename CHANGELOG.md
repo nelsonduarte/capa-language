@@ -9,6 +9,45 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+### Package manager: optional GPG signature verification
+
+A git dependency in ``capa.toml`` may now carry a
+``verify_key`` field with the publisher's 40-character GPG
+fingerprint. ``capa install`` then runs ``git verify-tag``
+(or ``git verify-commit`` for a ``rev`` pin) against the
+consumer's local GPG keyring and refuses to install on any
+signature failure: unsigned ref, unknown key, key mismatch,
+or invalid signature.
+
+```toml
+[dependencies.capa_log]
+git = "https://github.com/nelsonduarte/capa_log"
+tag = "v0.1"
+verify_key = "1234 5678 90AB CDEF 1234 5678 90AB CDEF 1234 5678"
+```
+
+The trust anchor is the fingerprint itself; the consumer
+imports the publisher's key once (``gpg --import``,
+``gpg --recv-keys``, or out-of-band copy of the .asc file),
+after which every ``capa install`` independently re-verifies
+each signed tag. ``capa.lock`` grows a ``signing_key`` field
+recording the verified fingerprint for the audit trail.
+
+Closes the "account compromise + retag" supply-chain vector
+that the SHA-only lockfile check still let through on the
+*first* install (an attacker compromising the account before
+any consumer has installed could ship a malicious initial
+release with no SHA on record to compare against). With
+``verify_key`` declared, an attacker who pushes a malicious
+tag also needs the publisher's private key.
+
+Defaults: ``verify_key`` is opt-in. Existing capa.toml files
+without the field continue to work unchanged; verification
+runs only when the user explicitly declares a fingerprint.
+``LockMismatchError`` and ``VerificationError`` are both
+subclasses of ``InstallError``, so callers that catch the
+base class keep working.
+
 ### Package manager: lockfile enforcement + rev-pinning docs
 
 ``capa install`` now treats ``capa.lock`` as authoritative.

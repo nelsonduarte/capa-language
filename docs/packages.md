@@ -82,6 +82,25 @@ mylib = { git = "https://github.com/user/mylib", rev = "abc123def" }
 mylib = { git = "https://github.com/user/mylib", tag = "v0.1" }
 ```
 
+A git source may also carry a `verify_key` fingerprint; when
+present, `capa install` runs `git verify-tag` (or
+`git verify-commit` for a `rev` pin) against your local GPG
+keyring and refuses to install when the signature is absent,
+invalid, or from a different key. The fingerprint is the trust
+anchor: it must already be in the consumer's keyring (via
+`gpg --import` or `gpg --recv-keys`). Use the multi-line table
+form for legibility:
+
+```toml
+[dependencies.mylib]
+git = "https://github.com/user/mylib"
+tag = "v0.1"
+verify_key = "1234 5678 90AB CDEF 1234 5678 90AB CDEF 1234 5678"
+```
+
+The 40-char fingerprint may include spaces or colons for
+readability; the parser normalises before comparison.
+
 **path source**:
 
 ```toml
