@@ -19,21 +19,22 @@ Status legend: `[x]` done · `[~]` partial · `[ ]` pending.
 
 ## Current goal (May 2026)
 
-Wasm milestones essentially closed.
+Wasm milestones closed.
 `audit-trail-reporter`, `policy-eval`, and `sbom-watch` all
-run end-to-end via `capa --wasm --run` with output bit-
-identical to the Python reference pipeline, and build
-successfully under `capa --wasm --component --output app.wasm`
-as Component Model binaries. The new `capa --wasm --component
---run` path instantiates the component in an external
-wasmtime.component runtime (no core-wasm host shortcuts) and
-works end-to-end for programs that touch Stdio / Clock / Env
-/ Fs; the JsonValue host bridge still leaks its memory
-abstraction across the WIT boundary (see P1).
+run end-to-end via both:
 
-Session 2026-05-22 closed: pattern-binder shadowing (alpha-
-rename in the lowerer), for-loop `continue` skipping the
-index increment, Float-typed struct fields using
+- `capa --wasm --run` (core wasm host bridge), and
+- `capa --wasm --component --run` (Component Model artifact
+  instantiated through an external wasmtime.component runtime)
+
+with output bit-identical to the Python reference pipeline.
+`capa --wasm --component --output app.wasm` still produces a
+standalone Component Model `.wasm` artifact (`wasm-tools
+component new` accepted, WIT spec embedded).
+
+Sessions 2026-05-22 and 2026-05-23 closed: pattern-binder
+shadowing (alpha-rename in the lowerer), for-loop `continue`
+skipping the index increment, Float-typed struct fields using
 `i64.store`/`load`, the bump allocator never growing memory
 (`memory.grow` in `$alloc`), nested for-loops sharing scratch
 locals (`$_f_list_N` / `$_f_idx_N` per depth),
@@ -44,30 +45,23 @@ the canonical-ABI rework for `list<string>` /
 `result<_, io-error>` / `result<u32, string>` / `string`
 returns plus the `cabi_realloc` export the Component Model
 linker requires, the `export main: func();` WIT entry point,
-and an external Component Model runtime in
+an external Component Model runtime in
 `capa/runtime/_wasm_component_host.py` wired as
-`--component --run`.
+`--component --run`, and a pure-Capa JSON parser bundled at
+`capa/ir/_builtin_json.capa` that replaces the
+`capa:host/json` host bridge so the JsonValue tree lives in
+the guest's own linear memory (closing the handle leak that
+blocked the three demos under `--component --run`).
+
+The Wasm CM backend is functionally complete for the demo
+surface. Remaining work shifts to P1 (study, polish, paper)
+and P2 (LLM tool-use demo).
 
 ---
 
 ## P0 — done for this milestone
 
-Future P0 candidates:
-
-- [ ] **JsonValue across the WIT boundary**. parse_json /
-  to_json return u32 handles per WIT, but the Capa-side
-  JsonValue methods (`.as_object`, `.as_string`, ...)
-  dereference the handle as a real linear-memory pointer.
-  Under `--component --run` the host can't access the
-  component's memory to materialise a real JsonValue tree,
-  so programs that round-trip parse_json + JsonValue
-  methods don't run end-to-end. Three options on the table:
-  (a) declare JsonValue as a WIT resource and route every
-  method through a resource-method import; (b) a pure-Wasm
-  JSON parser in Capa, no host bridge at all; (c) embed a
-  byte-serialisation format that Capa parses internally.
-  Each unblocks the three demos under `--component --run`.
-  ⏱ 8-12h depending on the route.
+No remaining work in this priority.
 
 ---
 
