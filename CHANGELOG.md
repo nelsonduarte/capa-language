@@ -9,6 +9,29 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+### `capa_http` v0.1.3 + `capa_agent_demo` workaround removed
+
+[`capa_http` v0.1.3](https://github.com/nelsonduarte/capa_http/releases/tag/v0.1.3)
+fixes the `urllib_client.capa::make_urllib_client` factory to
+probe both `./vendor/capa_http/` (the package-manager path)
+and `./libraries/capa_http/` (the legacy hand-vendoring path)
+for `urllib_helper.py`, instead of only the latter. Surfaced
+by `capa_agent_demo` v0.1.0's smoke run on 2026-05-23, which
+had to inject the vendor path in its own `main` as a six-line
+workaround.
+
+`capa_agent_demo` updated to consume `capa_http` v0.1.3
+([commit `1cf666f`](https://github.com/nelsonduarte/capa_agent_demo/commit/1cf666f)),
+removing the workaround so `main` becomes the clean wiring
+point the README claims. Runtime-verified end-to-end on
+2026-05-25: `make_urllib_client` resolves without manipulation,
+the LLM request/response loop runs through.
+
+Both releases shipped with the full supply-chain stack
+(signed tag + SLSA L2 attestation in Sigstore Rekor); the
+demo's `capa install` exercises all three layers (lockfile
+SHA + GPG verify-tag + `gh attestation verify`) on the new pin.
+
 ### Website extracted to its own repo
 
 The marketing + learning-pages site (`docs/index.html`,

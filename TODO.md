@@ -113,17 +113,6 @@ the current Wasm critical path.
   alternative serialisation; the "representation + validation"
   writeup tying them together. ⏱ 8-12h each.
 
-- [ ] **`capa_http` v0.1.3: vendor-aware sys.path injection**.
-  Surfaced by the 2026-05-23 agent-demo smoke test.
-  `urllib_client.capa::make_urllib_client` inserts
-  `./libraries/capa_http/` (the legacy hand-vendoring path) into
-  Python's `sys.path` so `py_import("urllib_helper")` resolves,
-  but the package manager puts the helper in
-  `./vendor/capa_http/`. The `capa_agent_demo` v0.1.0 works
-  around this in its own `main`; the fix belongs upstream as a
-  capa_http v0.1.3 that probes both locations. ⏱ 30min + cut +
-  attested release.
-
 - [ ] **Method-name shadow on user-defined capabilities**. When
   a user-defined capability declares a method with the same name
   as a free function imported into the module's scope (e.g.
@@ -373,6 +362,14 @@ the full reasoning.
   sequence, sitemap, robots, CNAME, and the logo assets all live
   in the new repo. README + CONTRIBUTING + STABILITY + templates
   rewritten to point at the canonical URLs.
+- 2026-05-25: **`capa_http` v0.1.3** — vendor-aware sys.path
+  in `make_urllib_client`. Probes both `./vendor/capa_http/`
+  (package manager) and `./libraries/capa_http/` (legacy
+  hand-vendoring), with vendor taking priority. Closes the
+  loose end from `capa_agent_demo` v0.1.0 (whose `main` carried
+  a workaround); demo bumped to v0.1.3 and the workaround
+  removed in commit `1cf666f`. Signed tag + SLSA L2 attestation
+  in Sigstore Rekor verified before the cleanup landed.
 - 2026-05-23: **LLM tool-use demo** shipped at
   [nelsonduarte/capa_agent_demo](https://github.com/nelsonduarte/capa_agent_demo)
   v0.1.0, the last P2 item from the alignment plan. The pitch:
