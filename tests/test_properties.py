@@ -713,5 +713,251 @@ class TestRuntimeSubsetOfManifest(unittest.TestCase):
         )
 
 
+# ===========================================================
+# Phase 4: runtime <= manifest under the Wasm backend
+# ===========================================================
+#
+# Same invariant as Phase 3, different runtime: every capability
+# the .wasm artefact actually invokes through its WIT imports
+# must appear in the analyser-derived manifest. The Python
+# pipeline catches divergences where the transpiler injects a
+# call past the cap discipline; the Wasm pipeline catches the
+# analogue at the canonical-ABI / WIT-import boundary, which is
+# the surface ``--wasm --component --run`` exposes to an
+# external runtime.
+#
+# Implementation notes:
+#
+# - ``_TracingLinker`` wraps the wasmtime Linker so each
+#   ``define_func`` call gets an interposed callback. The
+#   interposition records ``(cap, method)`` each time the
+#   compiled wasm module actually invokes the host import. No
+#   change to the production ``WasmHost``; the wrapper sits in
+#   the test process only.
+# - ``_program_with_caps_wasm`` is a strategy that mirrors
+#   ``_program_with_caps`` but uses only capability methods the
+#   Wasm backend's WIT signatures table supports (``Clock``,
+#   ``Env``, ``Fs`` -- with cap-safe probes that don't depend
+#   on a real filesystem). The existing strategies use
+#   ``Net.allows`` / ``Fs.allows`` etc. which exist Python-side
+#   but have no WIT/Wasm encoding yet.
+# - Compilation can fail on programs that the Wasm backend does
+#   not yet handle (``WasmEmissionError``); those are skipped
+#   exactly the way Phase 3 skips analyser-rejected programs.
+#   Either the wasm-tools binary or the wasmtime runtime can be
+#   absent on the developer's machine; the test class is
+#   skipped wholesale in that case rather than failing.
+
+
+try:
+    import wasmtime  # noqa: F401
+    import shutil
+    if shutil.which("wasm-tools") is None:
+        raise unittest.SkipTest(
+            "wasm-tools binary not on PATH; the Wasm property tests "
+            "need ``wasm-tools parse`` to assemble each generated "
+            "program. Install from https://github.com/bytecodealliance/wasm-tools."
+        )
+    _HAVE_WASM_TOOLCHAIN = True
+except unittest.SkipTest:
+    _HAVE_WASM_TOOLCHAIN = False
+except ImportError:
+    _HAVE_WASM_TOOLCHAIN = False
+
+
+# Capability probes the Wasm backend's WIT table handles today.
+# Each value is a Capa expression of statement type; bound under a
+# ``let _ = ...`` so the analyser threads the capability through
+# without complaint. ``Fs`` uses ``restrict_to`` because that's
+# the only Fs entry that compiles to a side-effect-free WIT call
+# (the runtime treats it as a no-op while still routing through
+# the import, which is exactly what the trace needs).
+_WASM_CAP_PROBES: dict[str, str] = {
+    "Clock":  '{var}.now_secs()',
+    "Env":    '{var}.get("PATH")',
+    "Fs":     '{var}.restrict_to("data/")',
+}
+
+
+@st.composite
+def _program_with_caps_wasm(draw):
+    """Generate a Capa program whose main signature declares a
+    random subset of the Wasm-supported capabilities, with each
+    capability exercised by a single probe call. ``Stdio`` is
+    always declared (the program prints ``start`` so there is a
+    runtime trace entry even when the random subset is empty)."""
+    cap_set = draw(st.sets(
+        st.sampled_from(list(_WASM_CAP_PROBES.keys())),
+        min_size=0,
+        max_size=3,
+    ))
+    params = ["stdio: Stdio"]
+    bindings: list[tuple[str, str]] = []
+    for cap in sorted(cap_set):
+        var = cap.lower()
+        params.append(f"{var}: {cap}")
+        bindings.append((cap, var))
+
+    lines = [
+        f"fun main({', '.join(params)})",
+        '    stdio.println("start")',
+    ]
+    for i, (cap, var) in enumerate(bindings):
+        probe = _WASM_CAP_PROBES[cap].format(var=var)
+        lines.append(f"    let _v{i} = {probe}")
+    return "\n".join(lines) + "\n"
+
+
+class _TracingLinker:
+    """Thin wrapper over a ``wasmtime.Linker`` that records every
+    host import the compiled module invokes. ``define_func`` wraps
+    the user callback to push ``(cap, method)`` onto a shared list
+    each call; every other Linker attribute (``instantiate``,
+    ``define_module``, ...) is forwarded unchanged via
+    ``__getattr__``.
+
+    Defined inline in the tests because production code has no
+    use for runtime tracing; introducing it as a public hook on
+    ``WasmHost`` would dilute that class for what is essentially
+    a test invariant."""
+
+    # Maps the lowercase interface name ("stdio") that appears in
+    # ``capa:host/<cap>`` to the proper Capa class name the
+    # manifest uses ("Stdio"). Keep in sync with the WIT generator.
+    _INTERFACE_TO_CAP = {
+        "stdio": "Stdio",
+        "clock": "Clock",
+        "env":   "Env",
+        "fs":    "Fs",
+        "net":   "Net",
+        "json":  "Json",
+    }
+
+    def __init__(self, inner, calls: list):
+        self._inner = inner
+        self._calls = calls
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+    def define_func(self, module, name, func_type, callback, **kwargs):
+        cap_lower = module.rsplit("/", 1)[-1]
+        cap = self._INTERFACE_TO_CAP.get(cap_lower, cap_lower.capitalize())
+        method_name = name.replace("-", "_")
+        calls = self._calls
+
+        def traced(*args, **kwargs_inner):
+            calls.append((cap, method_name))
+            return callback(*args, **kwargs_inner)
+
+        return self._inner.define_func(
+            module, name, func_type, traced, **kwargs,
+        )
+
+
+if _HAVE_WASM_TOOLCHAIN:
+    from capa.runtime._wasm_host import WasmHost
+
+    class _TracingWasmHost(WasmHost):
+        """Test-only WasmHost subclass that records every capability
+        method the guest invokes via host imports. The recording
+        attaches at the linker layer (see ``_TracingLinker``) so
+        the rest of ``WasmHost.__init__`` runs unchanged."""
+
+        def __init__(self, args=None):
+            # Replicate the parent's scaffolding manually so we can
+            # install the linker wrapper BEFORE the _register_*
+            # methods call ``self.linker.define_func``. A subclass
+            # that called ``super().__init__()`` first would see the
+            # registrations land on the un-instrumented linker.
+            self.engine = wasmtime.Engine()
+            self.store = wasmtime.Store(self.engine)
+            self.calls: list[tuple[str, str]] = []
+            self.linker = _TracingLinker(
+                wasmtime.Linker(self.engine), self.calls,
+            )
+            self._memory = None
+            self._alloc_export = None
+            self._args = list(args) if args is not None else []
+            self._register_stdio()
+            self._register_clock()
+            self._register_env()
+            self._register_fs()
+            self._register_json()
+
+
+@unittest.skipUnless(
+    _HAVE_WASM_TOOLCHAIN,
+    "wasm toolchain (wasm-tools + wasmtime) not available",
+)
+class TestWasmRuntimeSubsetOfManifest(unittest.TestCase):
+    """Wasm-backend mirror of ``TestRuntimeSubsetOfManifest``. For
+    every generated program, the set of (cap, method) the
+    compiled .wasm module invokes through its WIT imports must
+    be a subset of the cap classes declared in the analyser
+    manifest. Catches regressions where the Wasm emitter injects
+    a capability call past the analyser's manifest emission."""
+
+    def _manifest_classes(self, module) -> set[str]:
+        from capa.manifest import build_manifest
+        m = build_manifest(module)
+        result: set[str] = set()
+        for fn in m["functions"]:
+            for cap in fn["declared_capabilities"]:
+                result.add(cap)
+        return result
+
+    @given(_program_with_caps_wasm())
+    @settings(
+        max_examples=15,
+        deadline=20000,
+        suppress_health_check=[HealthCheck.too_slow],
+    )
+    def test_wasm_runtime_classes_subset_of_manifest_classes(self, source):
+        from capa import analyze
+        from capa.ir import compile_wasm
+        from capa.ir._emit_wasm import WasmEmissionError
+        from capa.ir._lower import UnsupportedInIR
+
+        tokens = Lexer(source).lex()
+        module = Parser(tokens, source=source).parse_module()
+        result = analyze(module, source=source)
+        if not result.ok:
+            return
+
+        manifest_classes = self._manifest_classes(module)
+
+        # Compile + run. The IR / Wasm emitter may reject some
+        # generated programs even when the analyser accepts them
+        # (a construct outside the current Wasm coverage); skip
+        # those, the soundness invariant holds vacuously for
+        # programs the Wasm pipeline cannot produce.
+        try:
+            wasm_blob = compile_wasm(module, types=result.types)
+        except (WasmEmissionError, UnsupportedInIR):
+            return
+
+        host = _TracingWasmHost(args=[])
+        try:
+            host.run_main(wasm_blob)
+        except Exception:  # pragma: no cover - trap-like runtime errors
+            # A wasmtime trap during the run shouldn't invalidate
+            # the soundness claim; the claim is about which caps
+            # the module CAN invoke, not whether the run succeeds.
+            pass
+
+        runtime_classes = {cap for (cap, _method) in host.calls}
+
+        self.assertTrue(
+            runtime_classes.issubset(manifest_classes),
+            msg=(
+                f"wasm runtime classes {runtime_classes} not subset of "
+                f"manifest classes {manifest_classes} for program:\n"
+                f"{textwrap.indent(source, '    ')}\n"
+                f"trace:\n{host.calls!r}"
+            ),
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
