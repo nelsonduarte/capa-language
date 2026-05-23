@@ -9,6 +9,30 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+### Tests: end-to-end coverage for `WasmComponentHost`
+
+`capa/runtime/_wasm_component_host.py` (the Component Model
+runtime that drives `--wasm --component --run` artifacts) had
+0% coverage until 2026-05-25: nothing in the test suite invoked
+it. The CLI was its only client and we never exercised that
+path under `unittest`. Lifting that to 74% with four
+end-to-end smoke tests (`TestWasmComponentHost` in
+`tests/test_ir_wasm.py`):
+
+  - `test_hello_under_component_host` — Stdio.println basic path
+  - `test_stdio_with_string_interpolation` — string interp lift
+  - `test_env_args_round_trip` — Env.args() argv lifting (3 args)
+  - `test_clock_now_secs_returns_positive_float` — Clock bridge
+
+Each compiles a small Capa source to a core wasm, wraps it as
+a Component Model component via `wasm-tools component embed/new`
+(reusing `capa.cli._wrap_as_component`), instantiates
+`WasmComponentHost`, and asserts on captured stdout. Skipped
+gracefully when `wasm-tools` or `wasmtime-py` are missing
+(same guard as the existing Wasm tests).
+
+Total suite: 1242 → 1246 tests (+4), 4 platform-skips.
+
 ### Loader: scope-aware qualified-call rewrite
 
 `capa.loader._rewrite_qualified_calls` (the post-link pass that

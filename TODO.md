@@ -99,10 +99,21 @@ the current Wasm critical path.
   the AST round-trip. Comment-preservation design comes first;
   no AST round-trip is safe without it. ⏱ 8-12h, design-heavy.
 
-- [ ] **Test-coverage review**. `coverage.py` run + identify
-  which parts of the analyzer / emitters are under-tested.
-  Quick pass on the existing 1211 tests probably uncovers
-  meaningful gaps. ⏱ 2-3h to measure + 4-8h to fill the worst.
+- [~] **Test-coverage review**. First-pass measurement landed
+  2026-05-25: `coverage.py` over 1242 tests showed
+  `capa/runtime/_wasm_component_host.py` at 0% (entire CM
+  runtime never exercised by tests, only by the CLI's
+  `--wasm --component --run` path which the suite did not
+  invoke). Closed: `TestWasmComponentHost` (4 cases: stdio,
+  string-interp, env.args round-trip, clock.now_secs) lifts
+  that file 0% → 74%. Other worst-covered targets remain
+  open: `capa/lsp/server.py` (10%, hard to test without
+  driving an LSP client), `capa/repl.py` (30%),
+  `capa/ir/_emit_wasm/_match.py` (41%), `capa/loader.py`
+  (60%; many error-path branches still untested even after
+  the recent shadow-check work). Next pass: drive
+  `_emit_wasm/_match.py` and `loader.py` toward ~80% with
+  targeted variant + error-path tests. ⏱ 4-6h.
 
 - [~] **CycloneDX / SPDX parsers — pending optional fields**.
   `examples/cyclonedx_parser.capa` and

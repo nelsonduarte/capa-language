@@ -1768,5 +1768,100 @@ class TestWasmTraitDispatch(unittest.TestCase):
         self.assertEqual(self._run_capturing_stdout(src), "[LOG] boot\n")
 
 
+@unittest.skipUnless(
+    _has_wasm_tools() and _has_wasmtime_py(),
+    "wasm-tools and/or wasmtime-py not installed",
+)
+class TestWasmComponentHost(unittest.TestCase):
+    """End-to-end coverage for the Component Model runtime host
+    (``capa.runtime._wasm_component_host``). The CLI's
+    ``--wasm --component --run`` path wraps a core module in a
+    CM component via ``wasm-tools component embed/new`` and
+    dispatches through ``WasmComponentHost`` (which speaks lifted
+    WIT values instead of raw pointers). These tests exercise
+    that runtime directly.
+
+    Coverage motivation: before this class landed,
+    ``_wasm_component_host.py`` had 0% test coverage; the only
+    real user was the CLI path, never invoked from the test
+    suite. Adding even one end-to-end run lifts the file to ~70%
+    and catches any future regression that breaks the CM
+    runtime."""
+
+    def _wrap_as_component(self, core_blob: bytes, wit_text: str) -> bytes:
+        """Re-export of capa.cli._wrap_as_component. Couples this
+        test file to the CLI's private helper; acceptable because
+        the shape (core wasm + WIT text -> CM component bytes) is
+        the only contract that matters and is stable across
+        wasm-tools versions."""
+        from capa.cli import _wrap_as_component
+        return _wrap_as_component(core_blob, wit_text)
+
+    def _run_capturing_stdout(self, src: str, args=()) -> str:
+        import io, sys
+        from capa.runtime._wasm_component_host import WasmComponentHost
+        _, types, ast_mod = _parse_lower(src)
+        core_blob = compile_wasm(ast_mod, types=types)
+        wit = compile_wit(ast_mod, types=types)
+        component_blob = self._wrap_as_component(core_blob, wit)
+        host = WasmComponentHost(args=list(args))
+        out = io.StringIO()
+        saved_out = sys.stdout
+        sys.stdout = out
+        try:
+            host.run_main(component_blob)
+        finally:
+            sys.stdout = saved_out
+        return out.getvalue()
+
+    def test_hello_under_component_host(self):
+        src = (
+            'fun main(stdio: Stdio)\n'
+            '    stdio.println("hello from component")\n'
+        )
+        self.assertEqual(
+            self._run_capturing_stdout(src),
+            "hello from component\n",
+        )
+
+    def test_stdio_with_string_interpolation(self):
+        src = (
+            'fun main(stdio: Stdio)\n'
+            '    let name = "capa"\n'
+            '    stdio.println("hi ${name}")\n'
+        )
+        self.assertEqual(
+            self._run_capturing_stdout(src), "hi capa\n",
+        )
+
+    def test_env_args_round_trip(self):
+        # Component-host argv lifting: Env.args() should return
+        # the list passed at construction time, length-and-order
+        # preserved. The print-each-arg pattern catches both
+        # truncation and reordering bugs.
+        src = (
+            'fun main(stdio: Stdio, env: Env)\n'
+            '    for a in env.args()\n'
+            '        stdio.println(a)\n'
+        )
+        out = self._run_capturing_stdout(src, args=["alpha", "beta", "gamma"])
+        self.assertEqual(out, "alpha\nbeta\ngamma\n")
+
+    def test_clock_now_secs_returns_positive_float(self):
+        # Component-host Clock bridge. Exact value depends on
+        # wall-clock so we only assert shape + sign.
+        src = (
+            'fun main(stdio: Stdio, clock: Clock)\n'
+            '    let t = clock.now_secs()\n'
+            '    if t > 0.0\n'
+            '        stdio.println("positive")\n'
+            '    else\n'
+            '        stdio.println("non-positive")\n'
+        )
+        self.assertEqual(
+            self._run_capturing_stdout(src), "positive\n",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
