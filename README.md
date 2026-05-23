@@ -25,7 +25,11 @@ scanner approximating them after the fact.
 
 The toolchain is a complete Python 3.10+ implementation: lexer,
 parser, semantic analyzer, transpiler to Python, runtime, language
-server, formatter, and documentation generator.
+server, formatter, documentation generator, and a **WebAssembly
+Component Model backend** (`capa --wasm`) that compiles the same
+source to a `.wasm` component with a WIT spec per capability, runnable
+on any Component-Model-aware runtime or inline through the bundled
+wasmtime host.
 
 ```bash
 $ capa --run examples/grades.capa
@@ -103,17 +107,26 @@ VSCode extension, see [`docs/getting-started.md`](docs/getting-started.md).
 ## CLI
 
 ```bash
-capa --run         file.capa            # transpile + execute
-capa --check       file.capa            # lex + parse + semantic check
-capa --transpile   file.capa            # emit Python to stdout
-capa --manifest    file.capa            # JSON capability manifest
-capa --cyclonedx   file.capa            # CycloneDX 1.5 SBOM (caps embedded)
-capa --spdx        file.capa            # SPDX 2.3 (caps embedded)
-capa --vex         file.capa            # standalone VEX document
-capa --provenance  file.capa            # in-toto + SLSA Provenance v1.0
-capa --doc         file.capa            # HTML doc page from /// comments
-capa --fmt         file.capa            # canonical-style rewrite
-capa init          my-project           # project scaffold
+capa --run                  file.capa   # transpile + execute via Python
+capa --check                file.capa   # lex + parse + semantic check
+capa --transpile            file.capa   # emit Python to stdout
+capa --wasm --run           file.capa   # compile + run on wasmtime
+capa --wasm --component --run    file.capa
+                                        # wrap as a Component Model
+                                        # artifact + run via
+                                        # wasmtime.component
+capa --wasm --component --output app.wasm  file.capa
+                                        # write a standalone .wasm
+                                        # component (WIT embedded)
+capa --wit                  file.capa   # emit the WIT spec to stdout
+capa --manifest             file.capa   # JSON capability manifest
+capa --cyclonedx            file.capa   # CycloneDX 1.5 SBOM (caps embedded)
+capa --spdx                 file.capa   # SPDX 2.3 (caps embedded)
+capa --vex                  file.capa   # standalone VEX document
+capa --provenance           file.capa   # in-toto + SLSA Provenance v1.0
+capa --doc                  file.capa   # HTML doc page from /// comments
+capa --fmt                  file.capa   # canonical-style rewrite
+capa init                   my-project  # project scaffold
 capa install                            # fetch capa.toml dependencies
 capa lsp                                # language server (stdio)
 ```
@@ -142,6 +155,14 @@ Each demo's `--manifest` is a good way to see what the capability
 discipline catches in practice: the rule functions and the
 renderers declare no capabilities; only parsers and writers
 ever see `Fs`.
+
+All three also run end-to-end under the Wasm backend with output
+bit-identical to the Python reference path, in both modes:
+`capa --wasm --run` (core wasm on wasmtime) and `capa --wasm
+--component --run` (Component Model artifact instantiated via
+`wasmtime.component`, no host-side memory bridges). The JSON
+parser is bundled into the guest module so no `capa:host/json`
+import is needed at the Component Model boundary.
 
 ## Standard library + seed libraries
 
@@ -186,12 +207,13 @@ lockfile semantics, and resolution order.
 ```
 capa/                 # Python package: compiler + runtime + pkg manager
   lexer/  parser/  analyzer/  transpiler/  runtime/
+  ir/                 # CIR + Wasm Component Model backend + WIT emitter
   manifest/  docgen/  lsp/    pkg/    cli.py
-tests/                # 1046 unit, end-to-end, and property tests
+tests/                # 1214 unit, end-to-end, and property tests
 examples/             # .capa programs (basics, CVE case studies, LLM sandbox)
 libraries/            # one remaining hand-vendored seed library (capa_http)
 docs/                 # public website (HTML) + design writeups (.md)
-proofs/               # Agda skeleton for the lambda_cap soundness theorem
+proofs/               # mechanised soundness theorems for lambda_cap (Agda)
 benchmarks/           # Capa vs hand-Python micro-benchmarks
 Capa-EBNF.md          # formal grammar
 pyproject.toml        # package metadata + optional [test] / [lsp] extras
@@ -200,18 +222,20 @@ LICENSE  STABILITY.md  CONTRIBUTING.md  SECURITY.md  README.md
 
 ## Status
 
-Capa currently ships as **`0.8.x-beta`**. The stability
-commitment that will start with `1.0.0` is documented in
-[`STABILITY.md`](STABILITY.md); the short version is "post-1.0,
-breaking changes require a major bump, deprecations get one
-minor release of warning first".
+Capa currently ships as **`1.0.0-rc.2`**, with the Wasm
+Component Model backend on the `main` branch ahead of the next
+release tag (see [`CHANGELOG.md`](CHANGELOG.md) Unreleased
+section). The stability commitment that starts with `1.0.0` is
+documented in [`STABILITY.md`](STABILITY.md); the short version
+is "post-1.0, breaking changes require a major bump, deprecations
+get one minor release of warning first".
 
-**1046 tests** spanning the lexer, parser, analyzer, transpiler,
+**1214 tests** spanning the lexer, parser, analyzer, transpiler,
 LSP, formatter, attribute-schema validation, package manager,
-and Hypothesis-based property tests. The transpiler suite
-actually executes the generated Python and checks stdout; the
-property suite fuzzes the full pipeline with arbitrary text and
-syntax-aware Capa programs.
+the Wasm backend, and Hypothesis-based property tests. The
+transpiler suite actually executes the generated Python and
+checks stdout; the property suite fuzzes the full pipeline with
+arbitrary text and syntax-aware Capa programs.
 
 Run them:
 
@@ -230,6 +254,8 @@ The Tier 1 supply-chain artefacts are **all shipping** today:
 | SPDX 2.3 SBOM       | `capa --spdx`         | capability metadata via `annotations[]` |
 | VEX                 | `capa --vex`          | per-function exploitability claims via `@vex(...)` |
 | SLSA Build L1       | `capa --provenance`   | in-toto Statement v1 + Provenance v1.0 predicate |
+| WIT spec            | `capa --wit`          | one interface per capability the program touches |
+| Wasm CM component   | `capa --wasm --component --output app.wasm` | WIT embedded, canonical ABI |
 
 Tier 2 (regulatory mapping) is **complete**:
 [`docs/regulatory.md`](docs/regulatory.md) covers the EU CRA,
@@ -237,9 +263,11 @@ NIS2, DORA (cybersecurity articles), NIST SSDF, and OWASP SCVS
 side-by-side; the article-by-article CRA mapping lives in
 [`docs/cra.md`](docs/cra.md).
 
-Beyond v1, the workshop-paper continuation is mechanising the
-`lambda_cap` soundness theorem in Agda; a Stage 0 skeleton
-(syntax + theorem statements as postulates) is in
+The `lambda_cap` soundness theorems are **mechanised in Agda**,
+no `postulate` remaining. Roughly 600 lines of self-contained
+Agda (no `agda-stdlib` dependency) cover Progress, Preservation,
+Capability Soundness, and a multi-step Manifest Completeness
+theorem. CI typechecks the proofs on every push to
 [`proofs/`](proofs/). The full roadmap is at
 [`docs/roadmap.html`](https://capa-language.com/roadmap.html).
 
