@@ -9,6 +9,59 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+### Supply-chain: SLSA L2 build provenance via Sigstore
+
+Each seed-library repo (capa_cli, capa_datetime, capa_log,
+capa_http) now ships a
+[`.github/workflows/release.yml`](docs/templates/release.yml)
+that fires on `v*` tag push, builds a source tarball via
+`git archive`, generates a SLSA Level 2 build-provenance
+attestation through `actions/attest-build-provenance@v1`, and
+publishes it to the public Sigstore Rekor transparency log via
+GitHub's OIDC identity. The tarball lands on the corresponding
+GitHub release.
+
+```bash
+# Consumer-side verification (manual today; auto-verify in
+# `capa install` is the next supply-chain tier):
+gh release download v0.1.2 \
+    --repo nelsonduarte/capa_cli \
+    --pattern '*.tar.gz'
+
+gh attestation verify capa_cli-v0.1.2.tar.gz \
+    --owner nelsonduarte
+```
+
+The attestation certifies, in machine-checkable form, that the
+published tarball was produced by an unmodified CI run
+triggered by the signed `v*` tag on the named repository. It
+is a stronger claim than the GPG signature alone: even with
+the publisher's GPG key compromised, moving a tag still
+requires landing a new commit and re-running CI under the
+attacker's OIDC identity, which would be visible in the
+public Rekor log.
+
+The three downstream demos (policy-eval, audit-trail-reporter,
+sbom-watch) now pin v0.1.2 of each seed library, which is the
+first SLSA L2 attested release. The publisher GPG fingerprint
+remains
+`6C1D222D491FB88031E041A536CFB426101AA24B`
+across both layers.
+
+This stacks on top of the existing supply-chain layers:
+
+1. **Lockfile SHA enforcement** (catches tag retag).
+2. **GPG tag signature + `verify_key` pinning** (catches
+   account compromise that moves a tag to an attacker commit).
+3. **SLSA L2 build provenance + Sigstore Rekor** (catches a
+   publisher whose GPG key is compromised but whose CI
+   identity is not, and makes the build path auditable).
+
+A consumer-side auto-verification path in `capa install` (the
+SLSA-verification-grade tier) is the next adjacent step;
+deferred so the producer-side story can land in a focused
+release.
+
 ### Package manager: optional GPG signature verification
 
 A git dependency in ``capa.toml`` may now carry a

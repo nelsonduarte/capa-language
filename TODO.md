@@ -113,6 +113,17 @@ the current Wasm critical path.
   alternative serialisation; the "representation + validation"
   writeup tying them together. ⏱ 8-12h each.
 
+- [ ] **`capa install`: consumer-side SLSA provenance
+  auto-verify**. Producer side landed 2026-05-23 (v0.1.2 of
+  every seed library carries a SLSA L2 attestation in Rekor).
+  Next: extend `capa install` to verify the attestation
+  automatically when the dependency declares
+  `verify_provenance = true` (or imply it from `verify_key`),
+  via `gh attestation verify` shell-out or `sigstore-python`
+  binding. Refuses the install on attestation mismatch /
+  wrong owner / missing entry. Closes the last gap in the
+  three-layer supply-chain story. ⏱ 4-6h.
+
 - [~] **SBOM-capability audit example, structural policies**.
   Today's audit at `examples/sbom_capability_audit.capa`
   supports per-function allow-lists. Pending: structural
@@ -313,6 +324,19 @@ the full reasoning.
 - 2026-05-15: Tier 3 — provenance signing workflow.
 - 2026-05-15: Ineligibility proofs as SBOM enrichment
   (`provably_excluded_capabilities` in CycloneDX + SPDX).
+- 2026-05-23: **Package-manager supply-chain hardening, three
+  stacked layers** in `capa_cli` / `capa_datetime` / `capa_log`
+  / `capa_http`:
+  (1) lockfile SHA enforcement (catches tag retag);
+  (2) GPG tag signatures + `verify_key` pinning (catches
+  account compromise that moves a tag to an attacker commit);
+  (3) **SLSA L2 build provenance via Sigstore** (each seed
+  library's `.github/workflows/release.yml` fires on `v*` tag
+  push, builds a tarball, generates a SLSA L2 attestation
+  through `actions/attest-build-provenance@v1`, publishes to
+  Rekor). v0.1.2 is the first attested release; demos updated.
+  Consumer-side auto-verification in `capa install` is the
+  next adjacent tier (P1, not yet started).
 
 ### CVE case studies (6 landed)
 - event-stream 2018, eslint-scope 2018, node-ipc 2022,

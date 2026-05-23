@@ -1,0 +1,90 @@
+name: Release
+
+# Triggered by a signed v* tag push. Produces a source tarball,
+# generates a SLSA L2 build-provenance attestation through
+# Sigstore (keyless OIDC; published to the Rekor transparency
+# log via `actions/attest-build-provenance@v1`), and attaches
+# both to a new GitHub release.
+#
+# To verify a downloaded tarball on the consumer side:
+#
+#   gh attestation verify <repo>-<tag>.tar.gz --owner <owner>
+#
+# That confirms the tarball was built by this repo's CI on a tag
+# matching the SHA recorded in the Rekor entry.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  # Allow manually re-firing the release pipeline for an existing
+  # tag (e.g. after a workflow-only fix, or when a tag-push raced
+  # the workflow registration on the very first deploy):
+  #     gh workflow run release.yml --ref v0.1.2
+  workflow_dispatch:
+
+permissions:
+  contents: write       # create release + upload assets
+  id-token: write       # Sigstore OIDC for keyless signing
+  attestations: write   # publish SLSA provenance attestation
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout tag
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.ref }}
+
+      - name: Verify tag is GPG-signed by publisher
+        run: |
+          gpg --import publisher.asc
+          git verify-tag "${GITHUB_REF_NAME}"
+
+      - name: Build source tarball
+        id: tarball
+        run: |
+          NAME="${GITHUB_REPOSITORY##*/}-${GITHUB_REF_NAME}"
+          git archive --format=tar.gz --prefix="${NAME}/" HEAD > "${NAME}.tar.gz"
+          SHA256=$(sha256sum "${NAME}.tar.gz" | cut -d' ' -f1)
+          echo "name=${NAME}.tar.gz" >> "$GITHUB_OUTPUT"
+          echo "sha256=${SHA256}" >> "$GITHUB_OUTPUT"
+
+      - name: Generate SLSA L2 provenance
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-path: ${{ steps.tarball.outputs.name }}
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ steps.tarball.outputs.name }}
+          generate_release_notes: false
+          body: |
+            First SLSA L2 attested release of `${{ github.event.repository.name }}`.
+
+            **Tarball:** `${{ steps.tarball.outputs.name }}`
+            **SHA-256:** `${{ steps.tarball.outputs.sha256 }}`
+
+            ## Verification
+
+            Tag signature (publisher identity):
+
+            ```
+            gpg --import publisher.asc
+            git verify-tag ${{ github.ref_name }}
+            ```
+
+            SLSA L2 build provenance (CI-attested, published to Sigstore Rekor):
+
+            ```
+            gh attestation verify ${{ steps.tarball.outputs.name }} \
+                --owner ${{ github.repository_owner }}
+            ```
+
+            Publisher GPG fingerprint:
+            `6C1D222D491FB88031E041A536CFB426101AA24B`
+
+            See `SECURITY.md` for the full provenance model.
