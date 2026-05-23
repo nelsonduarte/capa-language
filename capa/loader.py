@@ -450,6 +450,149 @@ def _rewrite_qualified_calls(
     rewriter.visit_module(module)
 
 
+def _names_bound_by_pattern(p: A.Pattern, out: set[str]) -> None:
+    """Add every name introduced by ``p`` (recursively) to ``out``.
+    Used by :func:`_collect_bound_names` to assemble the shadow
+    set the qualified-call rewriter consults."""
+    if isinstance(p, A.IdentPat):
+        out.add(p.name)
+    elif isinstance(p, A.VariantPat):
+        for sub in p.payloads:
+            _names_bound_by_pattern(sub, out)
+    elif isinstance(p, A.TuplePat):
+        for sub in p.elements:
+            _names_bound_by_pattern(sub, out)
+    elif isinstance(p, A.StructPat):
+        # ``Foo { x }`` (shorthand for ``x: x``) binds ``x``.
+        # ``Foo { x: pat }`` recurses into ``pat``.
+        for (fname, sub) in p.fields:
+            if sub is None:
+                out.add(fname)
+            else:
+                _names_bound_by_pattern(sub, out)
+    # WildcardPat / LiteralPat / OrPat (v0: no bindings inside
+    # alternatives) introduce no names.
+
+
+def _collect_bound_names(fn: A.FunDecl) -> set[str]:
+    """Return every name that becomes a local binding inside
+    ``fn``: parameters, ``let`` / ``var`` / ``for`` patterns,
+    ``match`` arm pattern binders, and ``LambdaExpr`` params.
+
+    Scope is function-level, not block-level: a ``let foo = ...``
+    on line 10 marks ``foo`` as shadowed for every line of the
+    function, not just lines 10+. That is over-conservative
+    (a use on line 5 that pre-dates the local binding would be
+    treated as shadowed too) but SOUND: we never silently drop a
+    method call's receiver and rewrite it as a free-function
+    call when the receiver could refer to a local. The user
+    workaround if they want the pre-line-10 use to be the module
+    call is to either rename the local or call the module
+    function bare; both are obvious from the error site."""
+    names: set[str] = set()
+    for p in fn.params:
+        names.add(p.name)
+    if fn.body is not None:
+        _walk_block_for_binders(fn.body, names)
+    return names
+
+
+def _walk_block_for_binders(b: A.Block, names: set[str]) -> None:
+    for stmt in b.stmts:
+        _walk_stmt_for_binders(stmt, names)
+
+
+def _walk_stmt_for_binders(s: A.Stmt, names: set[str]) -> None:
+    if isinstance(s, A.LetStmt):
+        _names_bound_by_pattern(s.pattern, names)
+        _walk_expr_for_binders(s.value, names)
+    elif isinstance(s, A.VarStmt):
+        names.add(s.name)
+        _walk_expr_for_binders(s.value, names)
+    elif isinstance(s, A.AssignStmt):
+        _walk_expr_for_binders(s.target, names)
+        _walk_expr_for_binders(s.value, names)
+    elif isinstance(s, A.ReturnStmt):
+        if s.value is not None:
+            _walk_expr_for_binders(s.value, names)
+    elif isinstance(s, A.ExprStmt):
+        _walk_expr_for_binders(s.expr, names)
+    elif isinstance(s, A.IfStmt):
+        _walk_expr_for_binders(s.cond, names)
+        _walk_block_for_binders(s.then_block, names)
+        for (cond, blk) in s.elif_arms:
+            _walk_expr_for_binders(cond, names)
+            _walk_block_for_binders(blk, names)
+        if s.else_block is not None:
+            _walk_block_for_binders(s.else_block, names)
+    elif isinstance(s, A.WhileStmt):
+        _walk_expr_for_binders(s.cond, names)
+        _walk_block_for_binders(s.body, names)
+    elif isinstance(s, A.ForStmt):
+        _names_bound_by_pattern(s.pattern, names)
+        _walk_expr_for_binders(s.iter, names)
+        _walk_block_for_binders(s.body, names)
+    # BreakStmt / ContinueStmt: nothing to walk.
+
+
+def _walk_expr_for_binders(e: A.Expr, names: set[str]) -> None:
+    if isinstance(e, A.LambdaExpr):
+        for p in e.params:
+            names.add(p.name)
+        if isinstance(e.body, A.Block):
+            _walk_block_for_binders(e.body, names)
+        else:
+            _walk_expr_for_binders(e.body, names)
+    elif isinstance(e, A.MatchExpr):
+        _walk_expr_for_binders(e.scrutinee, names)
+        for arm in e.arms:
+            _names_bound_by_pattern(arm.pattern, names)
+            if arm.guard is not None:
+                _walk_expr_for_binders(arm.guard, names)
+            if isinstance(arm.body, A.Block):
+                _walk_block_for_binders(arm.body, names)
+            else:
+                _walk_expr_for_binders(arm.body, names)
+    elif isinstance(e, A.IfExpr):
+        _walk_expr_for_binders(e.cond, names)
+        _walk_expr_for_binders(e.then_expr, names)
+        _walk_expr_for_binders(e.else_expr, names)
+    elif isinstance(e, A.Call):
+        _walk_expr_for_binders(e.callee, names)
+        for a in e.args:
+            _walk_expr_for_binders(a, names)
+    elif isinstance(e, A.MethodCall):
+        _walk_expr_for_binders(e.receiver, names)
+        for a in e.args:
+            _walk_expr_for_binders(a, names)
+    elif isinstance(e, A.BinOp):
+        _walk_expr_for_binders(e.left, names)
+        _walk_expr_for_binders(e.right, names)
+    elif isinstance(e, A.UnaryOp):
+        _walk_expr_for_binders(e.operand, names)
+    elif isinstance(e, A.FieldAccess):
+        _walk_expr_for_binders(e.receiver, names)
+    elif isinstance(e, A.Index):
+        _walk_expr_for_binders(e.receiver, names)
+        _walk_expr_for_binders(e.index, names)
+    elif isinstance(e, A.Try):
+        _walk_expr_for_binders(e.expr, names)
+    elif isinstance(e, A.StructLit):
+        for (_, fexpr) in e.fields:
+            _walk_expr_for_binders(fexpr, names)
+    elif isinstance(e, (A.ListLit, A.TupleLit)):
+        for x in e.elements:
+            _walk_expr_for_binders(x, names)
+    elif isinstance(e, A.InterpolatedString):
+        for p in e.parts:
+            if isinstance(p, A.Expr):
+                _walk_expr_for_binders(p, names)
+    elif isinstance(e, A.RangeExpr):
+        _walk_expr_for_binders(e.start, names)
+        _walk_expr_for_binders(e.end, names)
+    # Leaf exprs (Ident, *Lit, ...) introduce nothing.
+
+
 class _Rewriter:
     """Single-purpose AST mutator: replace
     ``MethodCall(Ident(alias), method, args)`` with
@@ -458,10 +601,25 @@ class _Rewriter:
     expression node types Capa currently has; new node types
     added later need a clause here to keep the rewrite working
     inside them.
+
+    Scope-aware: before each function/method body is walked, the
+    set of names introduced as local bindings (parameters, let /
+    var / for / match-pattern / lambda-param) is collected via
+    :func:`_collect_bound_names` and stashed on ``_locals``. The
+    MethodCall rewrite then skips when the receiver's name is in
+    that set, since the local binding shadows whatever module
+    alias the same name might otherwise refer to. This prevents
+    e.g. ``fun foo(http: GetOnlyHttp) ... http.get(url)`` from
+    being silently downgraded into ``get(url)`` when an upstream
+    ``import capa_http.http`` registered ``http`` as a module
+    alias and capa_http.http exports ``get``.
     """
 
     def __init__(self, module_exports: dict[str, set[str]]) -> None:
         self.module_exports = module_exports
+        # Names that are bound locally in the function/method
+        # body currently being walked. Refreshed per-function.
+        self._locals: set[str] = set()
 
     def visit_module(self, m: A.Module) -> None:
         for item in m.items:
@@ -470,13 +628,23 @@ class _Rewriter:
     def visit_item(self, item: A.Item) -> None:
         if isinstance(item, A.FunDecl):
             if item.body is not None:
-                self.visit_block(item.body)
+                saved = self._locals
+                self._locals = _collect_bound_names(item)
+                try:
+                    self.visit_block(item.body)
+                finally:
+                    self._locals = saved
         elif isinstance(item, A.ConstDecl):
             item.value = self.visit_expr(item.value)
         elif isinstance(item, A.ImplBlock):
             for method in item.methods:
                 if method.body is not None:
-                    self.visit_block(method.body)
+                    saved = self._locals
+                    self._locals = _collect_bound_names(method)
+                    try:
+                        self.visit_block(method.body)
+                    finally:
+                        self._locals = saved
         # Other items (TypeStruct, TypeSum, TraitDecl, Import) have
         # no expression-bearing slots to walk for this rewrite.
 
@@ -525,7 +693,7 @@ class _Rewriter:
             e.receiver = self.visit_expr(e.receiver)
             e.args = [self.visit_expr(a) for a in e.args]
             recv = e.receiver
-            if isinstance(recv, A.Ident):
+            if isinstance(recv, A.Ident) and recv.name not in self._locals:
                 exports = self.module_exports.get(recv.name)
                 if exports is not None and e.method in exports:
                     # Rewrite in place: replace the MethodCall's

@@ -113,20 +113,6 @@ the current Wasm critical path.
   alternative serialisation; the "representation + validation"
   writeup tying them together. ⏱ 8-12h each.
 
-- [ ] **Method-name shadow on user-defined capabilities**. When
-  a user-defined capability declares a method with the same name
-  as a free function imported into the module's scope (e.g.
-  `capability GetOnlyHttp { fun get(self, url: String) -> ... }`
-  imported alongside `capa_http.http` which exports a free
-  `get(url) -> Request`), the transpiler resolves `recv.get(url)`
-  to the bare free function call, dropping the receiver. The
-  analyzer's `--check` passes, so this is a codegen bug rather
-  than a type bug. Workaround in capa_agent_demo: rename the
-  method (`get` -> `fetch`). Real fix: method dispatch on
-  user-defined caps should beat free-function resolution.
-  ⏱ unknown; reproducer in the demo's git history at the
-  `smoke-green` commit before the rename.
-
 - [~] **SBOM-capability audit example, structural policies**.
   Today's audit at `examples/sbom_capability_audit.capa`
   supports per-function allow-lists. Pending: structural
@@ -362,6 +348,21 @@ the full reasoning.
   sequence, sitemap, robots, CNAME, and the logo assets all live
   in the new repo. README + CONTRIBUTING + STABILITY + templates
   rewritten to point at the canonical URLs.
+- 2026-05-25: **Loader: scope-aware qualified-call rewrite**.
+  The post-link `mod.fn() -> fn()` pass now consults a
+  per-function set of local-binding names (parameters, let /
+  var / for / match-pattern / lambda-param) before rewriting
+  a `MethodCall(Ident(name), ...)`. When `name` shadows a
+  module alias, the rewrite is skipped and the MethodCall
+  survives intact for the analyzer + transpiler. Closes the
+  second loose end surfaced by the agent demo (where
+  `http: GetOnlyHttp` was being silently downgraded into a
+  free-function call to `capa_http.http::get`). 5 new tests
+  in `tests/test_loader.py::TestQualifiedCallShadowing`
+  covering param / let / for / match-pat / negative control.
+  Lambda-param case left as latent (the bound names are
+  collected, no test added since LambdaExpr parsing has its
+  own quirks worth a separate scope).
 - 2026-05-25: **`capa_http` v0.1.3** — vendor-aware sys.path
   in `make_urllib_client`. Probes both `./vendor/capa_http/`
   (package manager) and `./libraries/capa_http/` (legacy

@@ -9,6 +9,51 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+### Loader: scope-aware qualified-call rewrite
+
+`capa.loader._rewrite_qualified_calls` (the post-link pass that
+turns `mod.fn(args)` into a plain `fn(args)` once the merged
+module already holds `fn` at the top level) used to be
+scope-blind. If a function had a local binding whose name
+happened to match an imported module alias, the rewriter still
+matched and dropped the receiver. Concrete bite: in
+`capa_agent_demo` v0.1.0,
+
+```capa
+import attenuated   // transitively `import capa_http.http`
+
+pub fun tool_get_url(http: GetOnlyHttp, url: String) -> String
+    match http.get(url)        // ← silently rewritten to get(url)
+        Ok(body) -> return body
+        ...
+```
+
+was lowered into `match get(url):` calling
+`capa_http.http::get` (a free function returning `Request`),
+ignoring the `http: GetOnlyHttp` parameter entirely. The
+analyzer's `--check` accepted the resulting AST since it
+type-checked as a different (free-function) call; only the
+runtime crashed. The demo worked around it by renaming the
+wrapper method from `.get` to `.fetch`.
+
+The fix: before walking each FunDecl / impl method body, the
+rewriter now collects every name introduced by a local
+binding (parameters, `let` / `var` / `for` patterns, match
+arm pattern binders, `LambdaExpr` parameters) into a
+function-level shadow set. The `MethodCall(Ident(name), ...)`
+rewrite skips when `name` is in that set. Scoping is
+function-level rather than block-level — slightly
+over-conservative (a `let http = ...` on line 10 shadows the
+alias for the whole function, including line 5) but SOUND:
+the loader never silently drops a method receiver in favour
+of a free-function call.
+
+Test coverage: 5 new cases in
+`tests/test_loader.py::TestQualifiedCallShadowing` (parameter
+shadow, `let` shadow, `for` shadow, match-pattern shadow, and
+a negative regression-control where no shadow exists and the
+rewrite still fires correctly).
+
 ### `capa_http` v0.1.3 + `capa_agent_demo` workaround removed
 
 [`capa_http` v0.1.3](https://github.com/nelsonduarte/capa_http/releases/tag/v0.1.3)

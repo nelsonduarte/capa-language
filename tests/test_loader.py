@@ -356,6 +356,196 @@ class TestQualifiedModuleAccess(_TempDirMixin, unittest.TestCase):
         self.assertEqual(linked.module_exports["util"], {"a", "T"})
 
 
+class TestQualifiedCallShadowing(_TempDirMixin, unittest.TestCase):
+    """The post-link ``mod.fn() -> fn()`` rewrite must skip when a
+    name that matches a module alias has been shadowed by a local
+    binding (parameter, ``let`` / ``var`` / ``for`` pattern, match
+    pattern, or lambda parameter). Otherwise ``mylib.get(url)``
+    where ``mylib`` is a local of a user-defined capability gets
+    silently rewritten to a free-function call ``get(url)`` and
+    the receiver is dropped from the AST -- the analyzer then
+    type-checks it as a different function (a bug filed and fixed
+    in 2026-05).
+
+    The tests load the linked AST and assert what shape the
+    rewriter produced for the ``mylib.get(url)`` call site:
+    ``MethodCall`` (when shadowed; the receiver lives) or
+    ``Call`` (when unshadowed; the rewrite fired).
+    """
+
+    def _link_and_inspect(self, root_path):
+        """Returns the linked module so a test can walk it.
+        Helper because every test needs the same boilerplate."""
+        from capa.loader import ModuleLoader
+        from capa import capa_ast as A
+        loader = ModuleLoader()
+        linked = loader.load_root(root_path.read_text(), str(root_path))
+        return linked.module, A
+
+    def _find_fn(self, module, name):
+        from capa import capa_ast as A
+        for item in module.items:
+            if isinstance(item, A.FunDecl) and item.name == name:
+                return item
+        raise AssertionError(f"function {name!r} not in module")
+
+    def _setup_mylib(self):
+        """Writes a module ``mylib.capa`` exporting ``pub fun get``.
+        The root file then ``import mylib``, which registers
+        ``mylib`` as an alias whose exports include ``get``."""
+        self._write(
+            "mylib.capa",
+            "pub fun get(x: String) -> String\n"
+            "    return \"free: \" + x\n",
+        )
+
+    def test_param_shadow_keeps_method_call(self):
+        self._setup_mylib()
+        root = self._write(
+            "root.capa",
+            "import mylib\n"
+            "\n"
+            "pub capability MyCap\n"
+            "    fun get(self, x: String) -> String\n"
+            "\n"
+            "fun call(mylib: MyCap, x: String) -> String\n"
+            "    return mylib.get(x)\n"
+            "\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"unused\")\n"
+        )
+        module, A = self._link_and_inspect(root)
+        call = self._find_fn(module, "call")
+        ret_value = call.body.stmts[0].value
+        self.assertIsInstance(
+            ret_value, A.MethodCall,
+            "rewriter wrongly converted the method call to a free-function "
+            "call when the receiver name shadowed an imported module alias",
+        )
+        self.assertEqual(ret_value.method, "get")
+
+    def test_let_shadow_keeps_method_call(self):
+        self._setup_mylib()
+        root = self._write(
+            "root.capa",
+            "import mylib\n"
+            "\n"
+            "pub capability MyCap\n"
+            "    fun get(self, x: String) -> String\n"
+            "\n"
+            "pub type MyImpl { dummy: Int }\n"
+            "impl MyCap for MyImpl\n"
+            "    fun get(self, x: String) -> String\n"
+            "        return \"impl: \" + x\n"
+            "\n"
+            "fun call() -> String\n"
+            "    let mylib = MyImpl { dummy: 0 }\n"
+            "    return mylib.get(\"hi\")\n"
+            "\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(call())\n"
+        )
+        module, A = self._link_and_inspect(root)
+        call = self._find_fn(module, "call")
+        # First stmt: let; second stmt: return (with the method call)
+        ret_stmt = call.body.stmts[1]
+        self.assertIsInstance(ret_stmt.value, A.MethodCall)
+        self.assertEqual(ret_stmt.value.method, "get")
+
+    def test_for_shadow_keeps_method_call(self):
+        self._setup_mylib()
+        root = self._write(
+            "root.capa",
+            "import mylib\n"
+            "\n"
+            "pub capability MyCap\n"
+            "    fun get(self, x: String) -> String\n"
+            "\n"
+            "fun call_each(items: List<MyCap>, x: String) -> String\n"
+            "    var out = \"\"\n"
+            "    for mylib in items\n"
+            "        out = out + mylib.get(x)\n"
+            "    return out\n"
+            "\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"unused\")\n"
+        )
+        module, A = self._link_and_inspect(root)
+        call = self._find_fn(module, "call_each")
+        # Walk into the for-loop body to find the method call
+        for_stmt = call.body.stmts[1]
+        self.assertIsInstance(for_stmt, A.ForStmt)
+        # Inside for body: AssignStmt with value `out + mylib.get(x)`
+        assign = for_stmt.body.stmts[0]
+        self.assertIsInstance(assign, A.AssignStmt)
+        # Walk the RHS to find the MethodCall
+        rhs = assign.value
+        # rhs is BinOp(+); the right operand is the MethodCall
+        self.assertIsInstance(rhs, A.BinOp)
+        self.assertIsInstance(rhs.right, A.MethodCall)
+        self.assertEqual(rhs.right.method, "get")
+
+    def test_match_pattern_shadow_keeps_method_call(self):
+        self._setup_mylib()
+        root = self._write(
+            "root.capa",
+            "import mylib\n"
+            "\n"
+            "pub capability MyCap\n"
+            "    fun get(self, x: String) -> String\n"
+            "\n"
+            "fun call_opt(opt: Option<MyCap>, x: String) -> String\n"
+            "    match opt\n"
+            "        Some(mylib) -> return mylib.get(x)\n"
+            "        None        -> return \"none\"\n"
+            "\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"unused\")\n"
+        )
+        module, A = self._link_and_inspect(root)
+        call = self._find_fn(module, "call_opt")
+        # body: ExprStmt(MatchExpr); first arm body is a ReturnStmt
+        # with `mylib.get(x)` as its value
+        match_expr = call.body.stmts[0].expr
+        self.assertIsInstance(match_expr, A.MatchExpr)
+        some_arm = match_expr.arms[0]
+        # Single-line arm body is an Expr (the return),
+        # or a Block containing a ReturnStmt depending on parse shape
+        if isinstance(some_arm.body, A.Block):
+            ret_value = some_arm.body.stmts[0].value
+        else:
+            # Body is a return expr already
+            ret_value = some_arm.body
+            if isinstance(ret_value, A.ReturnStmt):
+                ret_value = ret_value.value
+        self.assertIsInstance(ret_value, A.MethodCall)
+        self.assertEqual(ret_value.method, "get")
+
+    def test_no_shadow_rewrite_still_fires(self):
+        """Regression guard: when the receiver is genuinely the
+        module alias (no local shadow), the rewrite must still
+        convert ``mod.fn(x)`` to ``fn(x)`` so the analyzer sees
+        a plain function call."""
+        self._setup_mylib()
+        root = self._write(
+            "root.capa",
+            "import mylib\n"
+            "\n"
+            "fun call(x: String) -> String\n"
+            "    return mylib.get(x)\n"
+            "\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"unused\")\n"
+        )
+        module, A = self._link_and_inspect(root)
+        call = self._find_fn(module, "call")
+        ret_value = call.body.stmts[0].value
+        # Rewriter fired: the MethodCall became a Call.
+        self.assertIsInstance(ret_value, A.Call)
+        self.assertIsInstance(ret_value.callee, A.Ident)
+        self.assertEqual(ret_value.callee.name, "get")
+
+
 class TestSearchPathResolution(_TempDirMixin, unittest.TestCase):
     """``ModuleLoader(search_paths=[...])`` resolves imports that
     do not exist relative to the importer. Used by the CLI to honor
