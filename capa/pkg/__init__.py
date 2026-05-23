@@ -15,9 +15,14 @@ Public surface:
 - ``Manifest`` + ``Dependency``: in-memory parsed shape.
 - ``read_manifest(path)``: load + validate a ``capa.toml``.
 - ``read_lock(path)``: load a ``capa.lock`` if present.
-- ``install(project_dir, *, write_lock=True)``: run a full
-  resolve + fetch pass and write the lock file.
-- ``InstallError``: the only error variant exposed.
+- ``install(project_dir, *, write_lock=True,
+  allow_lock_update=False)``: run a full resolve + fetch pass
+  and write the lock file. Raises ``LockMismatchError`` (a
+  subclass of ``InstallError``) when a pre-existing
+  ``capa.lock`` pins a SHA that the freshly cloned tag does
+  not produce -- the canonical "upstream tag was moved"
+  signal.
+- ``InstallError`` / ``LockMismatchError``: error variants.
 
 The CLI entry point ``capa install`` calls into this module.
 """
@@ -33,13 +38,14 @@ from ._manifest import (
     LOCK_FILENAME,
     MANIFEST_FILENAME,
 )
-from ._install import InstallError, install
+from ._install import InstallError, LockMismatchError, install
 
 __all__ = [
     "Dependency",
     "Manifest",
     "ManifestError",
     "InstallError",
+    "LockMismatchError",
     "read_manifest",
     "read_lock",
     "install",

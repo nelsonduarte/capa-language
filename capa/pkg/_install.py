@@ -11,6 +11,15 @@ For each path dependency, nothing is fetched - the loader
 later reads the path directly off the manifest. Path deps do
 not appear in the lockfile.
 
+When a ``capa.lock`` already exists, ``install`` *enforces* the
+recorded SHA: a freshly cloned tag whose HEAD does not match
+the locked commit raises ``LockMismatchError``. The check
+catches a moved tag (upstream force-push, account compromise,
+or an honest re-tag) without the user having silently consumed
+the new content. To accept new commits intentionally, delete
+``capa.lock`` before re-running ``install`` (or use
+``allow_lock_update=True`` from a CLI flag).
+
 The implementation shells out to ``git`` so the runtime does
 not pull in a heavyweight git library. ``git`` must be on the
 caller's PATH.
@@ -32,6 +41,7 @@ from ._manifest import (
     MANIFEST_FILENAME,
     Manifest,
     ManifestError,
+    read_lock,
     read_manifest,
     write_lock,
 )
@@ -46,13 +56,32 @@ class InstallError(Exception):
     """
 
 
-def install(project_dir: Path, *, write_lock_file: bool = True) -> Manifest:
+class LockMismatchError(InstallError):
+    """Raised when a freshly cloned dependency's HEAD SHA does not
+    match the SHA recorded in ``capa.lock`` for the same name +
+    git URL + pin. Strong signal that the upstream tag has moved
+    since the lockfile was written; surface it to the caller
+    rather than silently overwrite the lockfile."""
+
+
+def install(
+    project_dir: Path,
+    *,
+    write_lock_file: bool = True,
+    allow_lock_update: bool = False,
+) -> Manifest:
     """Run a full resolve + fetch over the project at ``project_dir``.
 
     Returns the parsed ``Manifest`` on success. Writes
     ``vendor/<name>`` for every git dep and ``capa.lock`` (unless
     ``write_lock_file=False``, useful in tests).
-    """
+
+    When ``capa.lock`` exists, the freshly resolved commit SHA for
+    each git dep must match the lockfile entry (same name + git +
+    pin). A mismatch raises ``LockMismatchError`` so a force-pushed
+    upstream tag does not slip through unnoticed. Pass
+    ``allow_lock_update=True`` (CLI surface: ``--update``) to
+    accept the new SHAs and overwrite the lockfile."""
     manifest_path = project_dir / MANIFEST_FILENAME
     if not manifest_path.exists():
         raise InstallError(
@@ -62,15 +91,55 @@ def install(project_dir: Path, *, write_lock_file: bool = True) -> Manifest:
     vendor_dir = project_dir / VENDOR_DIRNAME
     vendor_dir.mkdir(exist_ok=True)
 
+    lock_path = project_dir / LOCK_FILENAME
+    existing_lock = read_lock(lock_path) if lock_path.exists() else []
+    existing_by_name = {d.name: d for d in existing_lock}
+
     locked: list[LockedDependency] = []
+    mismatches: list[tuple[str, str, str, str]] = []
     for dep in manifest.dependencies:
         if dep.is_path:
             _check_path_dep(manifest, dep)
             continue
-        locked.append(_fetch_git_dep(vendor_dir, dep))
+        fresh = _fetch_git_dep(vendor_dir, dep)
+        prior = existing_by_name.get(dep.name)
+        # Only enforce when the lock entry matches the source +
+        # pin recorded today; a changed git URL or pin in capa.toml
+        # is a deliberate edit, not an upstream tampering signal.
+        if (
+            prior is not None
+            and prior.git == fresh.git
+            and prior.pin == fresh.pin
+            and prior.commit != fresh.commit
+            and not allow_lock_update
+        ):
+            mismatches.append(
+                (dep.name, fresh.git, fresh.pin, prior.commit, fresh.commit),
+            )
+        locked.append(fresh)
+
+    if mismatches:
+        details = "\n".join(
+            f"  {name} ({git} @ {pin}):\n"
+            f"      locked  {old}\n"
+            f"      fresh   {new}"
+            for name, git, pin, old, new in mismatches
+        )
+        raise LockMismatchError(
+            f"capa.lock SHA mismatch on "
+            f"{[m[0] for m in mismatches]}: the upstream tag(s) have "
+            f"moved since the lockfile was written.\n\n"
+            f"{details}\n\n"
+            f"A moved tag is a supply-chain signal worth investigating. "
+            f"If this is a deliberate upstream update, either:\n"
+            f"  * delete capa.lock and re-run ``capa install``, or\n"
+            f"  * pin the dependency to a specific commit SHA in "
+            f"capa.toml (``rev = \"<sha>\"`` instead of ``tag = ...``).\n"
+            f"\nFor automation that wants to refresh the lockfile, "
+            f"the API takes ``allow_lock_update=True``."
+        )
 
     if write_lock_file:
-        lock_path = project_dir / LOCK_FILENAME
         write_lock(lock_path, locked)
 
     return manifest

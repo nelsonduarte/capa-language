@@ -190,7 +190,16 @@ name = "my-project"
 version = "0.1.0"
 
 [dependencies]
-capa_log = { git = "https://github.com/nelsonduarte/capa_log", tag = "v0.1" }
+# For production: pin to an immutable commit SHA. Tags are
+# convenient but mutable upstream (a force-push moves them);
+# rev = "<sha>" is what audit-grade builds want.
+capa_log = { git = "https://github.com/nelsonduarte/capa_log", rev = "<commit-sha>" }
+
+# For development the friendlier tag form works too; ``capa install``
+# records the resolved SHA in capa.lock and *refuses* on subsequent
+# runs when the upstream tag has been re-pointed at a different
+# commit. Pass ``--update`` to accept a new SHA deliberately.
+# capa_log = { git = "https://github.com/nelsonduarte/capa_log", tag = "v0.1" }
 ```
 
 Then `capa install` materialises the deps under `./vendor/` and

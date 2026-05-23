@@ -367,6 +367,62 @@ class TestInstallGit(_TempDirMixin, unittest.TestCase):
         body = (project / "vendor" / "mylib" / "log.capa").read_text("utf-8")
         self.assertIn("v0.2", body)
 
+    def test_install_refuses_silently_moved_tag(self):
+        # Force-pushed-tag scenario: the lockfile pins a SHA; the
+        # upstream then re-tags v0.1 to a different commit. A second
+        # ``install`` must REFUSE rather than silently overwrite the
+        # lock, so the consumer notices an unexpected upstream
+        # change before linking the new code.
+        from capa.pkg import LockMismatchError
+        upstream = self._tmp / "upstream"
+        url = self._make_local_git_repo(upstream)
+        project = self._tmp / "proj"
+        _write(project / "capa.toml", f'''
+            [package]
+            name = "proj"
+            version = "0.1.0"
+
+            [dependencies]
+            mylib = {{ git = "{url}", tag = "v0.1" }}
+        ''')
+        install(project)  # writes capa.lock pinning SHA_1
+        lock_first = read_lock(project / "capa.lock")
+        sha_first = lock_first[0].commit
+        # Move v0.1 to a new commit upstream.
+        env = {
+            **os.environ,
+            "GIT_AUTHOR_NAME": "capa-test",
+            "GIT_AUTHOR_EMAIL": "test@example.invalid",
+            "GIT_COMMITTER_NAME": "capa-test",
+            "GIT_COMMITTER_EMAIL": "test@example.invalid",
+        }
+        (upstream / "log.capa").write_text(
+            'pub fun greet() -> String\n    return "tampered"\n',
+            encoding="utf-8",
+        )
+        subprocess.run(
+            ["git", "-C", str(upstream), "commit", "-am", "tamper"],
+            check=True, capture_output=True, text=True, env=env,
+        )
+        subprocess.run(
+            ["git", "-C", str(upstream), "tag", "-f", "v0.1"],
+            check=True, capture_output=True, text=True, env=env,
+        )
+        # Plain re-install: must raise LockMismatchError; the
+        # lockfile on disk must NOT have been overwritten.
+        with self.assertRaises(LockMismatchError) as cm:
+            install(project)
+        self.assertIn("v0.1", str(cm.exception))
+        self.assertIn("mylib", str(cm.exception))
+        lock_after_refusal = read_lock(project / "capa.lock")
+        self.assertEqual(lock_after_refusal[0].commit, sha_first)
+        # Allow-update path: lockfile updates to the new SHA.
+        install(project, allow_lock_update=True)
+        lock_after_update = read_lock(project / "capa.lock")
+        self.assertNotEqual(lock_after_update[0].commit, sha_first)
+        body = (project / "vendor" / "mylib" / "log.capa").read_text("utf-8")
+        self.assertIn("tampered", body)
+
 
 class TestLoaderIntegration(_TempDirMixin, unittest.TestCase):
     """A project with ``capa.toml`` + a path dep transpiles and

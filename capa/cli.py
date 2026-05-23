@@ -184,6 +184,17 @@ def _dispatch_install(argv: list[str]) -> int:
         default=".",
         help="project directory containing capa.toml (default: current)",
     )
+    sub.add_argument(
+        "--update",
+        action="store_true",
+        help=(
+            "accept a fresh upstream commit even when capa.lock pins a "
+            "different SHA for the same git URL + tag. Use only when "
+            "the upstream tag move is deliberate (or you have audited "
+            "the new commit); the default refusal exists so a "
+            "force-pushed tag cannot slip into your build silently."
+        ),
+    )
     args = sub.parse_args(argv)
     project_dir = Path(args.directory).resolve()
     try:
@@ -192,7 +203,7 @@ def _dispatch_install(argv: list[str]) -> int:
         print(f"capa install: {e}", file=sys.stderr)
         return 2
     try:
-        manifest = install(project_dir)
+        manifest = install(project_dir, allow_lock_update=args.update)
     except (InstallError, ManifestError) as e:
         print(f"capa install: {e}", file=sys.stderr)
         return 2

@@ -9,6 +9,31 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+### Package manager: lockfile enforcement + rev-pinning docs
+
+``capa install`` now treats ``capa.lock`` as authoritative.
+For every git dep whose ``capa.toml`` source + pin are
+unchanged across runs, the resolved commit SHA must match the
+lockfile entry; otherwise ``LockMismatchError`` (a subclass of
+``InstallError``) raises with a precise diff. The check
+catches the canonical "upstream tag was force-pushed" supply-
+chain signal that previously slipped through silently because
+the lockfile was a record, not an enforcement gate.
+
+Two explicit escape hatches when the new SHA is deliberate:
+
+- delete ``capa.lock`` and re-run ``capa install`` (signals
+  "I accept the new resolution"); or
+- pass ``capa install --update`` (or the API kwarg
+  ``allow_lock_update=True``) to overwrite the lockfile.
+
+Docs (README and docs/packages.md) now show
+``rev = "<commit-sha>"`` as the production-grade pin form,
+with ``tag = "v0.1"`` documented as the convenience form that
+relies on lockfile enforcement to stay honest. Cargo's
+``cargo build --frozen`` and ``cargo update`` set the
+precedent for the same shape.
+
 ### `capa_http` extracted to its own repo
 
 The last hand-vendored seed library moves out of

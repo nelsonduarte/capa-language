@@ -70,8 +70,16 @@ one source** plus its pin:
 **git source** (must include `tag` xor `rev`):
 
 ```toml
-mylib = { git = "https://github.com/user/mylib", tag = "v0.1" }
+# Production-grade: pin to an immutable commit SHA. Tags are
+# mutable upstream (a maintainer or a compromised account can
+# re-point them); ``rev`` makes the artefact what you audited.
 mylib = { git = "https://github.com/user/mylib", rev = "abc123def" }
+
+# Development-grade: a tag is more readable but mutable. ``capa
+# install`` records the resolved SHA in capa.lock and refuses on
+# subsequent runs when the upstream tag has moved (see
+# "Lockfile" below). ``--update`` is the explicit escape hatch.
+mylib = { git = "https://github.com/user/mylib", tag = "v0.1" }
 ```
 
 **path source**:
@@ -118,10 +126,33 @@ not reproducible across machines.
 commit SHA. Lockfile entries are emitted in dependency-order
 so diffs against `git diff` stay readable.
 
-Commit `capa.lock` alongside `capa.toml`. A future `capa
-install --frozen` mode (planned, not yet shipped) will refuse
-to fetch any version other than the locked commit, the way
-`cargo build --frozen` does.
+Commit `capa.lock` alongside `capa.toml`.
+
+**Lockfile enforcement.** When `capa.lock` exists, `capa
+install` reads it and refuses to silently consume a different
+commit for the same git URL + pin. Concrete scenario: a
+dependency declared as `mylib = { git = "...", tag = "v0.1" }`
+resolves to SHA `abc` on the first install; the upstream
+maintainer (or an attacker who compromised the account)
+force-pushes `v0.1` to point at SHA `def`; the next `capa
+install` clones the new SHA, compares against `capa.lock`,
+sees `abc != def`, and exits with `LockMismatchError`
+*without* overwriting the lockfile. The vendor directory has
+the new code but the build is refused until the operator
+acknowledges the change.
+
+Two ways to accept the new SHA:
+
+- Delete `capa.lock` and re-run `capa install`. Signals "I
+  accept whatever the manifest pin resolves to today".
+- Pass `capa install --update` (or `allow_lock_update=True`
+  via the API). Same effect, friendlier for CI scripts that
+  want to bump a single dep deliberately.
+
+The check fires for `tag`-pinned deps only in practice; an
+`rev`-pinned dep cannot move (the SHA is the pin), so a
+mismatch there means the upstream rewrote git history, which
+should also be loud.
 
 ## Loader resolution order
 
