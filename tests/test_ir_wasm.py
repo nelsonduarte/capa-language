@@ -1328,6 +1328,32 @@ class TestWasmClosures(unittest.TestCase):
         store, exp = self._instantiate(src)
         self.assertEqual(exp["main"](store), 30)
 
+    def test_call_through_fun_typed_param_returning_bool(self):
+        # Regression: before 2026-05-25 the analyzer returned
+        # TyUnknown for a call whose callee was a parameter
+        # typed as ``Fun(...) -> ...``. The lowerer then
+        # marked the call's dst local as ``?``, and
+        # ``_wasm_type('?')`` fell back to i64. When the actual
+        # closure returned Bool (i32 at Wasm level), the
+        # ``local.set $dst`` after the call_indirect failed
+        # the wasm-validator with ``i64 vs i32 mismatch``.
+        # Tested return = Bool (the case the existing tests
+        # didn't cover; their lambdas returned Int = i64 by
+        # coincidence agreed with the fallback).
+        src = (
+            "fun apply_pred(items: List<Int>, pred: Fun(Int) -> Bool) -> Int\n"
+            "    var count = 0\n"
+            "    for x in items\n"
+            "        if pred(x)\n"
+            "            count = count + 1\n"
+            "    return count\n"
+            "fun main() -> Int\n"
+            "    let xs: List<Int> = [1, 2, 3, 4, 5]\n"
+            "    return apply_pred(xs, fun (n: Int) -> Bool => n % 2 == 0)\n"
+        )
+        store, exp = self._instantiate(src)
+        self.assertEqual(exp["main"](store), 2)
+
 
 @unittest.skipUnless(
     _has_wasm_tools() and _has_wasmtime_py(),

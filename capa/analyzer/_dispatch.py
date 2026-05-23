@@ -211,13 +211,24 @@ class _DispatchMixin:
                 ):
                     if isinstance(sym.ty, TyFun):
                         # Function-typed local / param: lambda-style
-                        # call. Fall through to the generic
-                        # non-Ident path below, which type-checks
-                        # the callee but does not enforce arity /
-                        # arg types yet. Leaving the TyUnknown
-                        # return matches the pre-existing behaviour
-                        # for these call shapes.
-                        pass
+                        # call. Check arity for an actionable error,
+                        # then return the function's declared return
+                        # type so downstream typing flows through.
+                        # (Pre-2026-05-25 this returned TyUnknown,
+                        # which propagated as ``?`` through the
+                        # lowerer and tripped the Wasm backend with
+                        # an i64 fallback that the validator
+                        # rejected at runtime.)
+                        fun_ty = sym.ty
+                        if len(fun_ty.params) != len(arg_tys):
+                            self._err(
+                                f"call to {sym.name!r}: expected "
+                                f"{len(fun_ty.params)} arguments, got "
+                                f"{len(arg_tys)} (signature: "
+                                f"{ty_str(fun_ty)})",
+                                e.pos,
+                            )
+                        return fun_ty.ret
                     else:
                         self._err(
                             f"{sym.name!r} is not callable; it has type "

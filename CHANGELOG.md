@@ -9,6 +9,38 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+### Analyzer: propagate return type through Fun-typed callees
+
+`capa.analyzer._dispatch._check_call` used to return `TyUnknown`
+when the callee was a parameter / local / constant typed as
+`Fun(P...) -> R`. The code carried a comment admitting "Leaving
+the TyUnknown return matches the pre-existing behaviour for
+these call shapes." This was load-bearing: the unknown type
+propagated through the lowerer as `?`, which the Wasm emitter
+mapped to an `i64` fallback. When the actual closure returned
+`Bool` (`i32` at Wasm level), the `local.set $_ir_t1` after the
+`call_indirect` failed the wasm-validator with `i64 vs i32 type
+mismatch`. The third Wasm gap surfaced by `capa_showcase`.
+
+The fix: when the callee resolves to a `TyFun`-typed sym,
+`_check_call` now returns `fun_ty.ret` directly (and raises
+an arity-mismatch error if the call arity disagrees with the
+function signature). The existing closures tests didn't catch
+this because their lambdas all returned `Int` (which by
+coincidence agreed with the i64 fallback).
+
+`TestWasmClosures::test_call_through_fun_typed_param_returning_bool`
+is the regression guard: an `apply_pred` style helper takes
+a `Fun(Int) -> Bool` predicate, the lambda body counts even
+numbers, runs end-to-end under `--wasm`, asserts `2` for
+`[1, 2, 3, 4, 5]`.
+
+Suite: 1255 → 1256 tests, 4 platform-skips. Case A of the
+showcase Wasm-gap assessment is now closed end-to-end; the
+remaining two gaps (generic function monomorphisation +
+multi-value lowering for non-scalar lambda params/returns)
+stay open in TODO.md as P1 items.
+
 ### Wasm: actionable errors for generic functions + non-scalar lambda params
 
 Surfaced by the `capa_showcase` assessment on 2026-05-25.

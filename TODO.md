@@ -96,18 +96,6 @@ the current Wasm critical path.
   weeks; touches `_register_lambda`, `_emit_lambda_call`, and
   `_collect_locals` for the lifted body.
 
-- [ ] **Wasm backend: closure-over-Int lowers but emits
-  invalid wasm**. The simplest lambda case (`fun (n: Int) ->
-  Bool => n % 2 == 0`) registers fine + emits a WAT that the
-  wasm-validator rejects with `i64 vs i32 type mismatch at
-  offset 418`. Reproducer at the `capa_showcase` assessment.
-  Bug is somewhere in the closure invocation path: the
-  call_indirect args look correct at the WAT level, so the
-  validator's complaint may relate to a downstream `if`
-  predicate type or a return-stack mismatch. Needs a dedicated
-  debugging session with a minimal Int-lambda reproducer +
-  step-through. ⏱ unknown, possibly 2-4h, possibly a day.
-
 - [~] **CIR coverage gap**. CIR lowers 44 of 46 analysable
   examples; `TuplePat` in match patterns and match-arm guards
   remain unsupported (`UnsupportedInIR`). Closes the CIR
@@ -399,6 +387,20 @@ the full reasoning.
   sequence, sitemap, robots, CNAME, and the logo assets all live
   in the new repo. README + CONTRIBUTING + STABILITY + templates
   rewritten to point at the canonical URLs.
+- 2026-05-25: **Analyzer: propagate return type of calls
+  through Fun-typed callees**. The analyzer's `_check_call`
+  used to return `TyUnknown` when the callee was a parameter /
+  local / constant typed `Fun(P...) -> R`, with a comment
+  admitting "Leaving the TyUnknown return matches the
+  pre-existing behaviour for these call shapes." Now returns
+  `R` directly (with an arity-mismatch error when applicable).
+  Closes the third Wasm gap surfaced by the showcase: closure
+  invocation through a Fun-typed param returning Bool used to
+  produce wasm rejected by the validator (the `_ir_t1` temp
+  was declared i64 from the fallback, the call_indirect
+  returned i32, mismatch). New regression test
+  `test_call_through_fun_typed_param_returning_bool` in
+  `TestWasmClosures` pins the case.
 - 2026-05-25: **Loader: scope-aware qualified-call rewrite**.
   The post-link `mod.fn() -> fn()` pass now consults a
   per-function set of local-binding names (parameters, let /
