@@ -9,6 +9,27 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+### `capa_http` extracted to its own repo
+
+The last hand-vendored seed library moves out of
+``libraries/capa_http/`` and into
+[nelsonduarte/capa_http](https://github.com/nelsonduarte/capa_http)
+at tag ``v0.1``. ``libraries/`` is now empty and removed from
+the working tree; the four seed libraries (capa_cli,
+capa_datetime, capa_log, capa_http) all live in standalone
+repos consumed via the package manager:
+
+```toml
+[dependencies]
+capa_http = { git = "https://github.com/nelsonduarte/capa_http", tag = "v0.1" }
+```
+
+No code change to the library surface; the contents of the
+extracted repo are a verbatim copy of
+``libraries/capa_http/`` plus a README rewritten for the
+``capa.toml`` consumption path (instead of the prior
+``CAPA_PATH=libraries`` ad-hoc invocation).
+
 ### License: dual MIT OR Apache-2.0
 
 Capa is now dual-licensed under either the MIT License or the

@@ -171,7 +171,7 @@ The runtime ships built-in types (`Result`, `Option`, `List`,
 `Fs`, `Net`, `Env`, `Clock`, `Random`, `Db`, `Proc`, `Unsafe`).
 Full reference in [`docs/stdlib.md`](docs/stdlib.md).
 
-Three **seed libraries** live in standalone repos and are
+Four **seed libraries** live in standalone repos and are
 consumed via the package manager:
 
 | Library | Repo | Surface |
@@ -179,11 +179,7 @@ consumed via the package manager:
 | `capa_cli` | [nelsonduarte/capa_cli](https://github.com/nelsonduarte/capa_cli) | argument parser: positionals, flags, options, `--help` |
 | `capa_datetime` | [nelsonduarte/capa_datetime](https://github.com/nelsonduarte/capa_datetime) | ISO 8601 parsing + Y/M/D/h/m/s arithmetic, zero-capability |
 | `capa_log` | [nelsonduarte/capa_log](https://github.com/nelsonduarte/capa_log) | levelled logging (`DEBUG`/`INFO`/`WARN`/`ERROR`) via a `Logger` capability over `Stdio` |
-
-A fourth library, `capa_http` (cap-typed HTTP client over
-`urllib`; caller sees `Http`, not raw `Net`/`Unsafe`), still
-lives in [`libraries/capa_http/`](libraries/capa_http/)
-pending its own extraction.
+| `capa_http` | [nelsonduarte/capa_http](https://github.com/nelsonduarte/capa_http) | capability-typed HTTP client over `urllib`; caller sees `Http`, never `Unsafe` |
 
 To use any of them in a project:
 
@@ -211,7 +207,7 @@ capa/                 # Python package: compiler + runtime + pkg manager
   manifest/  docgen/  lsp/    pkg/    cli.py
 tests/                # 1214 unit, end-to-end, and property tests
 examples/             # .capa programs (basics, CVE case studies, LLM sandbox)
-libraries/            # one remaining hand-vendored seed library (capa_http)
+# (seed libraries now all live in standalone repos; see Standard library section)
 docs/                 # public website (HTML) + design writeups (.md)
 proofs/               # mechanised soundness theorems for lambda_cap (Agda)
 benchmarks/           # Capa vs hand-Python micro-benchmarks
