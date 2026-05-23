@@ -24,7 +24,7 @@ from ._nodes import (
     MakeStruct, MakeList, MakeTuple, MakeMap, MakeSet,
     FieldAccess, Index, FormatStr, For,
     TryUnwrap, MakeLambda,
-    Pattern, PatWildcard, PatIdent, PatLiteral, PatVariant,
+    Pattern, PatWildcard, PatIdent, PatLiteral, PatVariant, PatTuple,
     MatchArm, Match,
     StructDecl, StructField, SumDecl, SumVariant, ImplBlock,
     TraitDecl, MethodSig, ConstDecl, ImportDecl,
@@ -648,18 +648,21 @@ class Lowerer:
         scrut = self._lower_expr(m.scrutinee)
         arms: list[MatchArm] = []
         for arm in m.arms:
-            if arm.guard is not None:
-                # Guards reference pattern-bound names that only
-                # exist inside the ``case`` body; ANF flattening
-                # outside the case would move the guard's
-                # sub-expressions to a point where those names are
-                # not in scope. Supporting guards cleanly needs an
-                # inline-expression emitter path, not yet
-                # implemented; defer.
-                raise UnsupportedInIR("match arm with guard")
             self._enter_scope()
             self._refine_pattern_binds(arm.pattern, scrut.ty)
             pat = self._lower_pattern(arm.pattern)
+            # Lower the guard FIRST -- inside the arm's scope so
+            # pattern binders resolve, but BEFORE the body so its
+            # ANF setup lands ahead of the body in the arm's
+            # instruction list. ``case PAT if EXPR:`` in Python
+            # requires EXPR to be a single expression, so for the
+            # Python emitter we accept only guards whose lowered
+            # form has empty setup; the Wasm emitter (which has
+            # arbitrary control flow) tolerates richer guards but
+            # we restrict the surface to the common shape.
+            guard_value = None
+            if arm.guard is not None:
+                guard_value = self._lower_guard(arm.guard)
             outer = self._instrs
             self._instrs = []
             if isinstance(arm.body, A.Block):
@@ -671,8 +674,39 @@ class Lowerer:
             body = self._instrs
             self._instrs = outer
             self._exit_scope()
-            arms.append(MatchArm(pattern=pat, body=body, guard=None))
+            arms.append(MatchArm(pattern=pat, body=body, guard=guard_value))
         self._instrs.append(Match(scrutinee=scrut, arms=arms, result_dst=None))
+
+    def _lower_guard(self, guard_expr: A.Expr) -> Value:
+        """Lower a match-arm guard. The guard is an AST expression
+        the source-level ``case PAT if EXPR:`` carries; the
+        resulting Value is attached to the IR ``MatchArm.guard``
+        field and emitters dispatch on it (Python emits
+        ``case PAT if <value>:``; Wasm emits a conditional branch).
+
+        Restriction: the lowered guard must reduce to a single
+        Value with no preceding instructions in the arm's local
+        buffer. Python ``case ... if EXPR:`` syntax does not
+        allow statements between the case clause and the if
+        clause, so a guard whose ANF requires intermediate locals
+        cannot be re-emitted in that form. Practical guard
+        expressions in Capa source (a bound name, a method call
+        on a binder, a simple comparison) all fit this shape; the
+        restriction lifts when an emitter learns to fall back to
+        an if/elif chain for the prelude-bearing case."""
+        outer = self._instrs
+        self._instrs = []
+        v = self._lower_expr(guard_expr)
+        prelude = self._instrs
+        self._instrs = outer
+        if prelude:
+            raise UnsupportedInIR(
+                "match arm guard with non-trivial setup; "
+                "use a let-binding before the match or simplify "
+                "the guard expression so it reduces to a single "
+                "identifier / literal / direct comparison"
+            )
+        return v
 
     def _refine_pattern_binds(self, p: A.Pattern, scrut_ty: str) -> None:
         """Best-effort: thread the scrutinee's type into pattern-bound
@@ -681,7 +715,18 @@ class Lowerer:
         sees ``m: Unknown`` and skips the type-aware Map/List/String
         rewrite. We handle Option, Result, and user-defined sum
         types where the lowerer has the variant decl's payload types
-        in scope."""
+        in scope. Tuple patterns recurse element-by-element using
+        the per-position types parsed out of the scrutinee's tuple
+        type string."""
+        if isinstance(p, A.TuplePat):
+            elem_tys = _split_tuple_elem_types(scrut_ty)
+            for idx, sub in enumerate(p.elements):
+                ety = elem_tys[idx] if idx < len(elem_tys) else "Unknown"
+                if isinstance(sub, A.IdentPat):
+                    self._bind_local(sub.name, ety)
+                else:
+                    self._refine_pattern_binds(sub, ety)
+            return
         if not isinstance(p, A.VariantPat) or not p.payloads:
             return
         payload_tys = self._variant_payload_tys(p.name, scrut_ty)
@@ -741,6 +786,9 @@ class Lowerer:
         if isinstance(p, A.VariantPat):
             payloads = [self._lower_pattern(sub) for sub in p.payloads]
             return PatVariant(name=p.name, payloads=payloads)
+        if isinstance(p, A.TuplePat):
+            elements = [self._lower_pattern(sub) for sub in p.elements]
+            return PatTuple(elements=elements)
         raise UnsupportedInIR(f"match pattern {type(p).__name__}")
 
     def _lower_literal_pattern(self, p: A.LiteralPat) -> Pattern:
@@ -869,11 +917,12 @@ class Lowerer:
         scrut = self._lower_expr(m.scrutinee)
         arms: list[MatchArm] = []
         for arm in m.arms:
-            if arm.guard is not None:
-                raise UnsupportedInIR("match arm with guard")
             self._enter_scope()
             self._refine_pattern_binds(arm.pattern, scrut.ty)
             pat = self._lower_pattern(arm.pattern)
+            guard_value = None
+            if arm.guard is not None:
+                guard_value = self._lower_guard(arm.guard)
             outer = self._instrs
             self._instrs = []
             if isinstance(arm.body, A.Block):
@@ -902,7 +951,7 @@ class Lowerer:
             body = self._instrs
             self._instrs = outer
             self._exit_scope()
-            arms.append(MatchArm(pattern=pat, body=body, guard=None))
+            arms.append(MatchArm(pattern=pat, body=body, guard=guard_value))
         self._instrs.append(
             Match(scrutinee=scrut, arms=arms, result_dst=result_dst)
         )

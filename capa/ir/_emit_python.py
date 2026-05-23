@@ -28,7 +28,7 @@ from ._nodes import (
     MakeStruct, MakeList, MakeTuple, MakeMap, MakeSet,
     FieldAccess, Index, FormatStr, For,
     TryUnwrap, MakeLambda,
-    Pattern, PatWildcard, PatIdent, PatLiteral, PatVariant, Match,
+    Pattern, PatWildcard, PatIdent, PatLiteral, PatVariant, PatTuple, Match,
     StructDecl, SumDecl, ImplBlock, TraitDecl, ConstDecl, ImportDecl,
 )
 
@@ -633,6 +633,15 @@ class PythonEmitter:
                 return f"{cls}()"
             inner = ", ".join(self._format_pattern(sub) for sub in p.payloads)
             return f"{cls}({inner})"
+        if isinstance(p, PatTuple):
+            # Python's match accepts ``(a, b)`` as a sequence pattern;
+            # one-element tuples need the trailing comma so Python
+            # reads them as a tuple rather than a parenthesised
+            # sub-pattern.
+            parts = [self._format_pattern(sub) for sub in p.elements]
+            if len(parts) == 1:
+                return f"({parts[0]},)"
+            return f"({', '.join(parts)})"
         raise NotImplementedError(
             f"IR Python emitter: pattern {type(p).__name__} not supported"
         )

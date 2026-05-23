@@ -311,6 +311,17 @@ class PatVariant(Pattern):
 
 
 @dataclass
+class PatTuple(Pattern):
+    """A tuple pattern: ``(pat0, pat1, ...)``. Each element is a
+    nested pattern; the scrutinee at match time is a tuple value
+    of matching arity. Lowered from ``A.TuplePat``; the Python
+    emitter renders it as a Python ``(a, b)`` tuple pattern, the
+    Wasm emitter loads each slot from the tuple heap record and
+    matches the corresponding sub-pattern."""
+    elements: list[Pattern]
+
+
+@dataclass
 class MatchArm:
     """A single arm of a Match. ``guard`` may be a Value that the
     emitter renders as a ``case ... if guard:`` clause; Phase 2D

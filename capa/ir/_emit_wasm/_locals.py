@@ -134,6 +134,36 @@ class _LocalsCollectionMixin:
                                 if (cur in ("", "Unknown", "?")
                                         or cur.startswith("?")):
                                     fn.locals[arm.pattern.name] = "String"
+                    # Tuple-scrutinee match: a PatTuple arm with
+                    # PatIdent sub-patterns binds each tuple slot;
+                    # refine fn.locals with the per-position element
+                    # type so the local-decl sweep picks the right
+                    # Wasm shape (i64 for Int, f64 for Float, String
+                    # _ptr/_len pair, pointer-shape i32, ...).
+                    s_ty = instr.scrutinee.ty or ""
+                    if (s_ty.startswith("(") and s_ty.endswith(")")
+                            and s_ty != "()"):
+                        from ._tuples import _tuple_elem_types
+                        elem_tys = _tuple_elem_types(s_ty)
+                        for arm in instr.arms:
+                            if not hasattr(arm.pattern, "elements"):
+                                continue
+                            for idx, sub in enumerate(arm.pattern.elements):
+                                if not isinstance(sub, PatIdent):
+                                    continue
+                                ety = (elem_tys[idx]
+                                       if idx < len(elem_tys)
+                                       else "Unknown")
+                                cur = fn.locals.get(sub.name, "")
+                                if (cur in ("", "Unknown", "?")
+                                        or cur.startswith("?")):
+                                    if ety and ety != "Unknown":
+                                        fn.locals[sub.name] = ety
+                        # Tuple match unpacks String slots via the
+                        # packed-i64 dance; ensure the i64 scratch
+                        # is declared even if the function has no
+                        # other String-producing instruction.
+                        has_tuple = True
                     for arm in instr.arms:
                         visit(arm.body)
                 if isinstance(instr, MakeTuple):

@@ -15,7 +15,7 @@ plumbing in the main ``WasmEmitter``: ``_sum_layouts``,
 from __future__ import annotations
 
 from .._nodes import (
-    Match, MatchArm, PatVariant, PatIdent, PatLiteral, PatWildcard,
+    Match, MatchArm, PatVariant, PatIdent, PatLiteral, PatWildcard, PatTuple,
 )
 from ._layout import (
     WasmEmissionError,
@@ -40,12 +40,38 @@ class _MatchEmissionMixin:
         because each Match consumes the locals before recursing
         into arm bodies.
         """
+        # Guards land as IR ``MatchArm.guard`` Values; the Python
+        # emitter handles them via ``case PAT if EXPR:`` syntax,
+        # but the Wasm emitter would need an arm-level fall-through
+        # block to skip the body and re-enter the cascade for the
+        # next arm on guard failure. That refactor lands later;
+        # for now, refuse guards with a precise error so the
+        # caller can rewrite the match as nested if/else.
+        for arm in instr.arms:
+            if arm.guard is not None:
+                raise WasmEmissionError(
+                    "match arm guard not yet supported in the Wasm "
+                    "backend; the Python pipeline accepts guards "
+                    "today, the Wasm pipeline needs an arm-level "
+                    "fall-through block restructure that has not "
+                    "landed. Rewrite as nested if/else or move the "
+                    "condition outside the match for now."
+                )
         scrut_ty = instr.scrutinee.ty
         if scrut_ty == "Bool":
             self._emit_bool_match(instr)
             return
         if scrut_ty == "String":
             self._emit_string_match(instr)
+            return
+        # Tuple scrutinee: ``match pair; (a, b) -> ...``. The
+        # scrutinee is an i32 pointer to a tuple heap record (16
+        # bytes for arity 2); each arm's pattern is either a
+        # PatTuple of matching arity, an identifier that binds the
+        # whole tuple, or a wildcard.
+        if (scrut_ty.startswith("(") and scrut_ty.endswith(")")
+                and scrut_ty != "()"):
+            self._emit_tuple_match(instr, scrut_ty)
             return
         # Sum-layout lookups strip generic args: ``Option<Int>`` ->
         # ``Option``. The built-in Option / Result and user-defined
@@ -54,8 +80,8 @@ class _MatchEmissionMixin:
         if sum_layout is None:
             raise WasmEmissionError(
                 f"Match on scrutinee of type {scrut_ty!r}: only sum "
-                f"types and Bool are supported in Phase 6C. Int / "
-                f"String match lands in a later phase (or stays "
+                f"types, Bool, String, and tuples are supported. "
+                f"Int match lands in a later phase (or stays "
                 f"statement-form via if/elif)."
             )
         scrut_local = "_m_scrut"
@@ -352,6 +378,197 @@ class _MatchEmissionMixin:
         for _ in range(opened):
             self._indent -= 1
             self._write("end")
+
+    def _emit_tuple_match(self, instr: Match, scrut_ty: str) -> None:
+        """Lower a tuple-scrutinee match. The scrutinee is an i32
+        pointer to a tuple heap record; each arm pattern is either:
+
+        - PatTuple of matching arity: bind / check each element.
+          Sub-patterns may be PatIdent (bind the slot), PatWildcard
+          (skip), or PatLiteral (compare; arm falls through to the
+          next when the literal doesn't match).
+        - PatIdent: catch-all that binds the whole tuple pointer.
+        - PatWildcard: catch-all that ignores the value.
+
+        Tuple patterns with arity mismatch or sub-patterns we do
+        not yet support (nested PatVariant / PatTuple / PatStruct)
+        raise. Bool-match-style if/else cascading handles literal
+        arms; the final identifier / wildcard arm closes the
+        cascade without opening a new ``if``."""
+        # Local import to avoid circular dependency: _tuples.py
+        # imports from this module via the WasmEmitter MRO.
+        from ._tuples import _tuple_elem_types
+        elem_tys = _tuple_elem_types(scrut_ty)
+        arity = len(elem_tys)
+        scrut_local = "_m_scrut"
+        self._push_value(instr.scrutinee)
+        self._write(f"local.set ${scrut_local}")
+        opened = 0
+        for arm in instr.arms:
+            pat = arm.pattern
+            if isinstance(pat, PatTuple):
+                if len(pat.elements) != arity:
+                    raise WasmEmissionError(
+                        f"Tuple match: arm arity {len(pat.elements)} "
+                        f"does not match scrutinee arity {arity} "
+                        f"({scrut_ty})"
+                    )
+                # Literal sub-patterns produce a per-arm guard
+                # condition. Build the combined condition by
+                # ANDing together each literal check; bind the
+                # PatIdent slots inside the if-true branch.
+                literal_checks: list[tuple[int, PatLiteral]] = []
+                for idx, sub in enumerate(pat.elements):
+                    if isinstance(sub, PatLiteral):
+                        literal_checks.append((idx, sub))
+                    elif isinstance(sub, (PatIdent, PatWildcard)):
+                        continue
+                    else:
+                        raise WasmEmissionError(
+                            f"Tuple match: sub-pattern "
+                            f"{type(sub).__name__} not yet supported "
+                            f"(PatIdent / PatWildcard / PatLiteral "
+                            f"only at the moment)"
+                        )
+                if literal_checks:
+                    # Push each per-slot comparison, AND them all.
+                    for n, (idx, lit_pat) in enumerate(literal_checks):
+                        self._emit_tuple_slot_eq(
+                            scrut_local, idx, elem_tys[idx], lit_pat,
+                        )
+                        if n > 0:
+                            self._write("i32.and")
+                    self._write("if")
+                    self._indent += 1
+                    self._emit_tuple_arm_binds(
+                        scrut_local, elem_tys, pat.elements,
+                    )
+                    for sub in arm.body:
+                        self._emit_instr(sub)
+                    self._indent -= 1
+                    self._write("else")
+                    self._indent += 1
+                    opened += 1
+                    continue
+                # Catch-all tuple pattern (only PatIdent / PatWildcard
+                # sub-patterns): always matches; bind, run body,
+                # stop emitting further arms (they're dead).
+                self._emit_tuple_arm_binds(
+                    scrut_local, elem_tys, pat.elements,
+                )
+                for sub in arm.body:
+                    self._emit_instr(sub)
+                break
+            if isinstance(pat, PatIdent):
+                self._write(f"local.get ${scrut_local}")
+                self._write(f"local.set ${pat.name}")
+                for sub in arm.body:
+                    self._emit_instr(sub)
+                break
+            if isinstance(pat, PatWildcard):
+                for sub in arm.body:
+                    self._emit_instr(sub)
+                break
+            raise WasmEmissionError(
+                f"Tuple match: pattern {type(pat).__name__} not "
+                f"supported (PatTuple / PatIdent / PatWildcard only)"
+            )
+        for _ in range(opened):
+            self._indent -= 1
+            self._write("end")
+
+    def _emit_tuple_slot_eq(
+        self, scrut_local: str, idx: int, elem_ty: str,
+        lit_pat: PatLiteral,
+    ) -> None:
+        """Push an i32 0/1 onto the stack: 1 iff tuple slot ``idx``
+        equals the literal in ``lit_pat``. Uses the tuple's uniform
+        8-byte slot layout (offset = idx * 8)."""
+        offset = idx * 8
+        if lit_pat.kind == "int":
+            self._write(f"local.get ${scrut_local}")
+            self._write(f"i64.load offset={offset}")
+            self._write(f"i64.const {int(lit_pat.value)}")
+            self._write("i64.eq")
+            return
+        if lit_pat.kind == "bool":
+            self._write(f"local.get ${scrut_local}")
+            self._write(f"i64.load offset={offset}")
+            self._write("i32.wrap_i64")
+            self._write(f"i32.const {1 if lit_pat.value else 0}")
+            self._write("i32.eq")
+            return
+        if lit_pat.kind == "str":
+            # String slot is packed (ptr | len << 32); compare via
+            # $str_eq against the literal interned in data segment.
+            offset_ptr, length = self._intern_string(lit_pat.value)
+            self._write(f"local.get ${scrut_local}")
+            self._write(f"i64.load offset={offset}")
+            self._write(f"local.tee $_alloc_tmp_i64")
+            self._write("i32.wrap_i64")
+            self._write("local.get $_alloc_tmp_i64")
+            self._write("i64.const 32")
+            self._write("i64.shr_u")
+            self._write("i32.wrap_i64")
+            self._write(f"i32.const {offset_ptr}")
+            self._write(f"i32.const {length}")
+            self._write("call $str_eq")
+            return
+        raise WasmEmissionError(
+            f"Tuple match: literal kind {lit_pat.kind!r} not supported"
+        )
+
+    def _emit_tuple_arm_binds(
+        self, scrut_local: str, elem_tys: list,
+        elements: list,
+    ) -> None:
+        """Bind tuple slots into their PatIdent locals. Slot encoding
+        mirrors ``_store_tuple_slot`` / ``_emit_tuple_index``: i64
+        for Int, f64 for Float, i32 wrap for pointer-shape, packed
+        i64 split for String."""
+        for idx, sub in enumerate(elements):
+            if not isinstance(sub, PatIdent):
+                continue
+            offset = idx * 8
+            ty = elem_tys[idx] if idx < len(elem_tys) else "Unknown"
+            head = ty.split("<", 1)[0]
+            if ty == "String":
+                self._write(f"local.get ${scrut_local}")
+                self._write(f"i64.load offset={offset}")
+                self._write("local.tee $_alloc_tmp_i64")
+                self._write("i32.wrap_i64")
+                self._write(f"local.set ${sub.name}_ptr")
+                self._write("local.get $_alloc_tmp_i64")
+                self._write("i64.const 32")
+                self._write("i64.shr_u")
+                self._write("i32.wrap_i64")
+                self._write(f"local.set ${sub.name}_len")
+                continue
+            if ty == "Float":
+                self._write(f"local.get ${scrut_local}")
+                self._write(f"f64.load offset={offset}")
+                self._write(f"local.set ${sub.name}")
+                continue
+            if ty == "Bool":
+                self._write(f"local.get ${scrut_local}")
+                self._write(f"i64.load offset={offset}")
+                self._write("i32.wrap_i64")
+                self._write(f"local.set ${sub.name}")
+                continue
+            if (head in self._struct_layouts
+                    or head in self._sum_layouts
+                    or ty.startswith(("List", "Map", "Set"))
+                    or (ty.startswith("(") and ty.endswith(")")
+                        and ty != "()")):
+                self._write(f"local.get ${scrut_local}")
+                self._write(f"i64.load offset={offset}")
+                self._write("i32.wrap_i64")
+                self._write(f"local.set ${sub.name}")
+                continue
+            # Default: Int / Unknown -> i64 store.
+            self._write(f"local.get ${scrut_local}")
+            self._write(f"i64.load offset={offset}")
+            self._write(f"local.set ${sub.name}")
 
     def _emit_match_arm(
         self, arm: MatchArm, scrut_local: str, tag_local: str,
