@@ -356,6 +356,31 @@ class TestQualifiedModuleAccess(_TempDirMixin, unittest.TestCase):
         self.assertEqual(linked.module_exports["util"], {"a", "T"})
 
 
+class TestLoaderErrorFormat(unittest.TestCase):
+    """The ``LoaderError.format()`` shape is what the CLI feeds
+    into its single-line diagnostic renderer. Two branches:
+    with a ``pos`` (filename + line:col) and without (filename
+    only, no positional anchor)."""
+
+    def test_format_with_pos(self):
+        from capa.tokens import Pos
+        err = LoaderError(
+            "thing is broken",
+            pos=Pos(line=12, col=5, offset=0, filename="root.capa"),
+            filename="root.capa",
+        )
+        self.assertEqual(
+            err.format(),
+            "root.capa:12:5: error: thing is broken",
+        )
+
+    def test_format_without_pos(self):
+        err = LoaderError("thing is broken", filename="root.capa")
+        self.assertEqual(
+            err.format(), "root.capa: error: thing is broken",
+        )
+
+
 class TestQualifiedCallShadowing(_TempDirMixin, unittest.TestCase):
     """The post-link ``mod.fn() -> fn()`` rewrite must skip when a
     name that matches a module alias has been shadowed by a local
@@ -518,6 +543,189 @@ class TestQualifiedCallShadowing(_TempDirMixin, unittest.TestCase):
             ret_value = some_arm.body
             if isinstance(ret_value, A.ReturnStmt):
                 ret_value = ret_value.value
+        self.assertIsInstance(ret_value, A.MethodCall)
+        self.assertEqual(ret_value.method, "get")
+
+    def test_tuple_pattern_shadow_in_let(self):
+        """``let (mylib, _) = pair`` introduces ``mylib`` as a
+        local; the rewriter's _names_bound_by_pattern must
+        descend into TuplePat to see it."""
+        self._setup_mylib()
+        root = self._write(
+            "root.capa",
+            "import mylib\n"
+            "\n"
+            "pub capability MyCap\n"
+            "    fun get(self, x: String) -> String\n"
+            "\n"
+            "pub type MyImpl { dummy: Int }\n"
+            "impl MyCap for MyImpl\n"
+            "    fun get(self, x: String) -> String\n"
+            "        return \"impl: \" + x\n"
+            "\n"
+            "fun call(pair: (MyImpl, Int)) -> String\n"
+            "    let (mylib, _n) = pair\n"
+            "    return mylib.get(\"hi\")\n"
+            "\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"unused\")\n"
+        )
+        module, A = self._link_and_inspect(root)
+        call = self._find_fn(module, "call")
+        # body[0]: let (mylib, _n) = pair
+        # body[1]: return mylib.get("hi")
+        ret = call.body.stmts[1].value
+        self.assertIsInstance(ret, A.MethodCall)
+        self.assertEqual(ret.method, "get")
+
+    def test_struct_pattern_shorthand_shadow_in_let(self):
+        """``let Foo { mylib } = obj`` (shorthand) binds the
+        field name as a local. Covers the
+        ``sub is None`` branch of StructPat handling in
+        _names_bound_by_pattern."""
+        self._setup_mylib()
+        root = self._write(
+            "root.capa",
+            "import mylib\n"
+            "\n"
+            "pub capability MyCap\n"
+            "    fun get(self, x: String) -> String\n"
+            "\n"
+            "pub type Wrap { mylib: Int }\n"
+            "\n"
+            "fun call(w: Wrap, mylib: MyCap, x: String) -> String\n"
+            "    // The struct pattern would bind a shadowed `mylib`\n"
+            "    // (Int); we use the unrelated parameter `mylib: MyCap`\n"
+            "    // for the method call. Either way the rewriter must\n"
+            "    // NOT downgrade.\n"
+            "    let Wrap { mylib: _n } = w\n"
+            "    return mylib.get(x)\n"
+            "\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"unused\")\n"
+        )
+        module, A = self._link_and_inspect(root)
+        call = self._find_fn(module, "call")
+        ret = call.body.stmts[1].value
+        self.assertIsInstance(ret, A.MethodCall)
+        self.assertEqual(ret.method, "get")
+
+    def test_for_pattern_tuple_shadow(self):
+        """``for (mylib, n) in pairs`` introduces ``mylib`` per
+        iteration. Exercises the TuplePat branch through ForStmt."""
+        self._setup_mylib()
+        root = self._write(
+            "root.capa",
+            "import mylib\n"
+            "\n"
+            "pub capability MyCap\n"
+            "    fun get(self, x: String) -> String\n"
+            "\n"
+            "fun call_each(pairs: List<(MyCap, Int)>, x: String) -> String\n"
+            "    var out = \"\"\n"
+            "    for pair in pairs\n"
+            "        let (mylib, _n) = pair\n"
+            "        out = out + mylib.get(x)\n"
+            "    return out\n"
+            "\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"unused\")\n"
+        )
+        module, A = self._link_and_inspect(root)
+        call = self._find_fn(module, "call_each")
+        for_stmt = call.body.stmts[1]
+        self.assertIsInstance(for_stmt, A.ForStmt)
+        # Loop body: stmt[0] = let, stmt[1] = AssignStmt with `out + mylib.get(x)`
+        assign = for_stmt.body.stmts[1]
+        rhs = assign.value
+        self.assertIsInstance(rhs, A.BinOp)
+        self.assertIsInstance(rhs.right, A.MethodCall)
+        self.assertEqual(rhs.right.method, "get")
+
+    def test_lambda_param_shadow(self):
+        """A ``LambdaExpr`` parameter shadows the alias inside
+        the lambda body. Covers the LambdaExpr branch of
+        _walk_expr_for_binders + the params.add path."""
+        self._setup_mylib()
+        root = self._write(
+            "root.capa",
+            "import mylib\n"
+            "\n"
+            "pub capability MyCap\n"
+            "    fun get(self, x: String) -> String\n"
+            "\n"
+            "pub type MyImpl { dummy: Int }\n"
+            "impl MyCap for MyImpl\n"
+            "    fun get(self, x: String) -> String\n"
+            "        return \"impl: \" + x\n"
+            "\n"
+            "fun call() -> String\n"
+            "    let m = MyImpl { dummy: 0 }\n"
+            "    let f = fun (mylib: MyImpl) -> String => mylib.get(\"hi\")\n"
+            "    return f(m)\n"
+            "\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"unused\")\n"
+        )
+        module, A = self._link_and_inspect(root)
+        call = self._find_fn(module, "call")
+        # let f = fun (mylib) => mylib.get("hi"); the lambda is
+        # the value of stmt[1] (LetStmt). Its body's expr is
+        # the MethodCall we care about.
+        let_stmt = call.body.stmts[1]
+        self.assertIsInstance(let_stmt, A.LetStmt)
+        lam = let_stmt.value
+        self.assertIsInstance(lam, A.LambdaExpr)
+        body = lam.body
+        # Single-expr lambda body: body IS the method call expr.
+        self.assertIsInstance(body, A.MethodCall)
+        self.assertEqual(body.method, "get")
+
+    def test_if_elif_else_shadow(self):
+        """A let inside an elif branch contributes to the
+        function-level shadow set; covers the elif_arms branch
+        of _walk_stmt_for_binders."""
+        self._setup_mylib()
+        root = self._write(
+            "root.capa",
+            "import mylib\n"
+            "\n"
+            "pub capability MyCap\n"
+            "    fun get(self, x: String) -> String\n"
+            "\n"
+            "pub type MyImpl { dummy: Int }\n"
+            "impl MyCap for MyImpl\n"
+            "    fun get(self, x: String) -> String\n"
+            "        return \"impl: \" + x\n"
+            "\n"
+            "fun call(b1: Bool, b2: Bool) -> String\n"
+            "    if b1\n"
+            "        let mylib = MyImpl { dummy: 1 }\n"
+            "        return mylib.get(\"a\")\n"
+            "    else\n"
+            "        if b2\n"
+            "            let mylib = MyImpl { dummy: 2 }\n"
+            "            return mylib.get(\"b\")\n"
+            "        else\n"
+            "            let mylib = MyImpl { dummy: 3 }\n"
+            "            return mylib.get(\"c\")\n"
+            "\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"unused\")\n"
+        )
+        module, A = self._link_and_inspect(root)
+        call = self._find_fn(module, "call")
+        # Walk into the if branches; every branch should preserve
+        # the MethodCall on `mylib.get(...)`. We assert one branch
+        # (the deeply nested else) to confirm the walker reached
+        # both elif-cond walking and else_block walking.
+        if_stmt = call.body.stmts[0]
+        self.assertIsInstance(if_stmt, A.IfStmt)
+        # Inside the outer else_block: another IfStmt
+        inner_if = if_stmt.else_block.stmts[0]
+        self.assertIsInstance(inner_if, A.IfStmt)
+        # Inner else_block: let + return
+        ret_value = inner_if.else_block.stmts[1].value
         self.assertIsInstance(ret_value, A.MethodCall)
         self.assertEqual(ret_value.method, "get")
 

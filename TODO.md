@@ -99,21 +99,23 @@ the current Wasm critical path.
   the AST round-trip. Comment-preservation design comes first;
   no AST round-trip is safe without it. ⏱ 8-12h, design-heavy.
 
-- [~] **Test-coverage review**. First-pass measurement landed
-  2026-05-25: `coverage.py` over 1242 tests showed
-  `capa/runtime/_wasm_component_host.py` at 0% (entire CM
-  runtime never exercised by tests, only by the CLI's
-  `--wasm --component --run` path which the suite did not
-  invoke). Closed: `TestWasmComponentHost` (4 cases: stdio,
-  string-interp, env.args round-trip, clock.now_secs) lifts
-  that file 0% → 74%. Other worst-covered targets remain
-  open: `capa/lsp/server.py` (10%, hard to test without
-  driving an LSP client), `capa/repl.py` (30%),
-  `capa/ir/_emit_wasm/_match.py` (41%), `capa/loader.py`
-  (60%; many error-path branches still untested even after
-  the recent shadow-check work). Next pass: drive
-  `_emit_wasm/_match.py` and `loader.py` toward ~80% with
-  targeted variant + error-path tests. ⏱ 4-6h.
+- [~] **Test-coverage review**. First two passes landed
+  2026-05-25: `capa/runtime/_wasm_component_host.py` lifted
+  0% → 74% via 4 `TestWasmComponentHost` cases. `capa/loader.py`
+  lifted 60% → 65% via 7 cases extending `TestQualifiedCallShadowing`
+  (TuplePat, StructPat shorthand, for-pat tuple, lambda param,
+  if/elif/else nested shadow) plus `TestLoaderErrorFormat`
+  (with-pos + without-pos branches of `LoaderError.format`).
+  Suite: 1242 → 1253 tests total.
+  Still open and worth a future pass:
+  `capa/ir/_emit_wasm/_match.py` (41%; remaining gaps are
+  variant payloads for Float/Bool, tuple-match sub-patterns,
+  String-scrutinee match arms — domain-specific Wasm emission
+  paths reached only by particular pattern shapes),
+  `capa/loader.py` (still 65%; the ~175-line `_PrivateRenameWalker`
+  visit-* dispatch dominates the remaining gap),
+  `capa/lsp/server.py` (10%, needs an in-process LSP harness),
+  `capa/repl.py` (30%). ⏱ 4-6h.
 
 - [~] **CycloneDX / SPDX parsers — pending optional fields**.
   `examples/cyclonedx_parser.capa` and

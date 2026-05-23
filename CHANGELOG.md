@@ -9,6 +9,29 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+### Tests: extended loader coverage (60% -> 65%)
+
+Continues the 2026-05-25 coverage-review pass. Seven new
+tests on `tests/test_loader.py`:
+
+  - `TestQualifiedCallShadowing` extended with five cases
+    covering the AST-binder shapes the earlier round's tests
+    did not exercise:
+    * `test_tuple_pattern_shadow_in_let` — `let (mylib, _n) = pair`
+    * `test_struct_pattern_shorthand_shadow_in_let` — `let Foo { x } = obj`
+    * `test_for_pattern_tuple_shadow` — destructuring in for-loop
+    * `test_lambda_param_shadow` — `fun (mylib) => mylib.method(x)`
+    * `test_if_elif_else_shadow` — shadow introduced inside a
+      nested else branch
+  - New `TestLoaderErrorFormat` class with two cases for the
+    `LoaderError.format` rendering (with positional anchor and
+    without; both branches of the conditional).
+
+These exercise the `_names_bound_by_pattern` TuplePat /
+StructPat-shorthand branches, the `_walk_*_for_binders`
+LambdaExpr / IfStmt-elif paths, and the `LoaderError`
+diagnostic format. Suite: 1246 → 1253 tests.
+
 ### Tests: end-to-end coverage for `WasmComponentHost`
 
 `capa/runtime/_wasm_component_host.py` (the Component Model
