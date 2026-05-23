@@ -70,6 +70,44 @@ No remaining work in this priority.
 Strengthens the capability + supply-chain claim, but isn't on
 the current Wasm critical path.
 
+- [ ] **Wasm backend: generic user functions (monomorphisation)**.
+  Surfaced 2026-05-25 by `capa_showcase`'s `count_by<T>`
+  helper. Today the Wasm emitter raises a clear
+  `WasmEmissionError` directing users to `capa --run` (the
+  Python backend handles generics fine). Real fix: either
+  monomorphise generic functions at lower-time (emit one
+  specialised body per concrete instantiation seen at call
+  sites) or erase type parameters to a uniform i64 box with
+  boxing/unboxing at call boundaries. Decision likely
+  monomorphisation (cleaner, no runtime overhead, matches
+  Rust). ⏱ 1-2 weeks.
+
+- [ ] **Wasm backend: multi-value lowering for lambda
+  params / return types**. Surfaced 2026-05-25. Today the
+  closure registrator (`_register_lambda` in
+  `capa/ir/_emit_wasm/_closures.py`) only accepts scalar
+  param/return types (Int / Bool / Float). `String` /
+  `List<T>` / `Map<K,V>` / user structs raise with an
+  actionable error. The fix: extend `_register_lambda` to
+  expand the signature with (ptr, len) for String params and
+  the analogous shape for other multi-value types; update the
+  call-site to push the matching count of values; update the
+  body's locals declaration. Same gap on return types. ⏱ 1-2
+  weeks; touches `_register_lambda`, `_emit_lambda_call`, and
+  `_collect_locals` for the lifted body.
+
+- [ ] **Wasm backend: closure-over-Int lowers but emits
+  invalid wasm**. The simplest lambda case (`fun (n: Int) ->
+  Bool => n % 2 == 0`) registers fine + emits a WAT that the
+  wasm-validator rejects with `i64 vs i32 type mismatch at
+  offset 418`. Reproducer at the `capa_showcase` assessment.
+  Bug is somewhere in the closure invocation path: the
+  call_indirect args look correct at the WAT level, so the
+  validator's complaint may relate to a downstream `if`
+  predicate type or a return-stack mismatch. Needs a dedicated
+  debugging session with a minimal Int-lambda reproducer +
+  step-through. ⏱ unknown, possibly 2-4h, possibly a day.
+
 - [~] **CIR coverage gap**. CIR lowers 44 of 46 analysable
   examples; `TuplePat` in match patterns and match-arm guards
   remain unsupported (`UnsupportedInIR`). Closes the CIR

@@ -1768,6 +1768,72 @@ class TestWasmTraitDispatch(unittest.TestCase):
         self.assertEqual(self._run_capturing_stdout(src), "[LOG] boot\n")
 
 
+class TestWasmActionableErrors(unittest.TestCase):
+    """The Wasm backend has real coverage gaps (generic user
+    functions don't monomorphise; lambdas only accept scalar
+    param/return types). Before 2026-05-25 these surfaced as
+    confusing Python NameError tracebacks or wasm-validator
+    type-mismatch errors with offsets in the bytecode. The
+    fixes in this date stamp surface them as actionable
+    WasmEmissionError messages naming the user-level construct
+    and the workaround. These tests pin the new shape."""
+
+    def test_generic_user_function_gives_clear_error(self):
+        # ``fun first<T>(items: List<T>) -> Option<T>`` -- the
+        # body's locals include `x: T`, which has no Wasm
+        # encoding. The pre-fix path silently fell back to i64
+        # and produced wasm that the validator rejected at
+        # runtime. Now the emitter raises with a clear message.
+        src = (
+            'fun first<T>(items: List<T>) -> Option<T>\n'
+            '    for x in items\n'
+            '        return Some(x)\n'
+            '    return None\n'
+            '\n'
+            'fun main(stdio: Stdio)\n'
+            '    let xs: List<Int> = [1, 2, 3]\n'
+            '    match first(xs)\n'
+            '        Some(n) -> stdio.println("got int")\n'
+            '        None    -> stdio.println("empty")\n'
+        )
+        _, types, ast_mod = _parse_lower(src)
+        with self.assertRaises(WasmEmissionError) as cm:
+            compile_wasm(ast_mod, types=types)
+        msg = str(cm.exception)
+        self.assertIn("'T'", msg)
+        self.assertIn("generic", msg)
+        self.assertIn("--run", msg)
+
+    def test_lambda_with_string_param_gives_clear_error(self):
+        # ``fun (s: String) -> Bool => ...`` -- the lambda
+        # registration needs multi-value lowering for String
+        # (ptr + len) which isn't implemented. Before: confusing
+        # "Capa type 'String' has no Wasm encoding" with no
+        # context. After: actionable message naming the lambda
+        # param + the workaround.
+        src = (
+            'fun apply(items: List<String>, pred: Fun(String) -> Bool) -> List<String>\n'
+            '    var out: List<String> = []\n'
+            '    for x in items\n'
+            '        if pred(x)\n'
+            '            out.push(x)\n'
+            '    return out\n'
+            '\n'
+            'fun main(stdio: Stdio)\n'
+            '    let xs: List<String> = ["a", "bb"]\n'
+            '    let long = apply(xs, fun(s: String) -> Bool => s.length() > 1)\n'
+            '    stdio.println("done")\n'
+        )
+        _, types, ast_mod = _parse_lower(src)
+        with self.assertRaises(WasmEmissionError) as cm:
+            compile_wasm(ast_mod, types=types)
+        msg = str(cm.exception)
+        self.assertIn("lambda param", msg)
+        self.assertIn("'String'", msg)
+        self.assertIn("scalar", msg)
+        self.assertIn("--run", msg)
+
+
 @unittest.skipUnless(
     _has_wasm_tools() and _has_wasmtime_py(),
     "wasm-tools and/or wasmtime-py not installed",

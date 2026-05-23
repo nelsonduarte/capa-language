@@ -273,16 +273,47 @@ class _ClosureEmissionMixin:
         param_wasm_tys = []
         param_wasm_tys.append("i32")  # env_ptr always first
         for p in instr.params:
-            t = self._wasm_type(p.ty)
+            try:
+                t = self._wasm_type(p.ty)
+            except WasmEmissionError as e:
+                # String / List<T> / Map<K,V> / user struct params
+                # in a lambda would need to be lowered as (ptr,
+                # len) pairs or wrapped pointers; the closure
+                # registration code only handles scalar param types
+                # today (Int / Bool / Float, plus capability slots).
+                # Surface that limit clearly rather than emit
+                # invalid wasm or raise the generic "no encoding".
+                raise WasmEmissionError(
+                    f"lambda param {p.name!r} has type {p.ty!r}, "
+                    f"which the Wasm backend's closure lowering does "
+                    f"not yet handle. Closures currently support only "
+                    f"scalar params (Int / Bool / Float) plus built-in "
+                    f"capability handles. String / List / Map / struct "
+                    f"params need multi-value lowering, planned but not "
+                    f"shipped. Workaround: use the Python backend "
+                    f"(``capa --run``), or refactor the lambda into a "
+                    f"named function. Original: {e}"
+                ) from e
             if not t:
                 raise WasmEmissionError(
                     f"lambda param {p.name!r} has Unit type, which "
                     f"has no Wasm encoding"
                 )
             param_wasm_tys.append(t)
-        result_ty = (
-            self._wasm_type(instr.return_type) if instr.return_type else ""
-        )
+        try:
+            result_ty = (
+                self._wasm_type(instr.return_type)
+                if instr.return_type else ""
+            )
+        except WasmEmissionError as e:
+            raise WasmEmissionError(
+                f"lambda return type {instr.return_type!r} not "
+                f"supported by the Wasm closure lowering (same gap "
+                f"as String / List / Map / struct param lowering). "
+                f"Workaround: use the Python backend, or refactor "
+                f"the lambda body to return a scalar (Int / Bool / "
+                f"Float). Original: {e}"
+            ) from e
         sig_key = f"({' '.join(param_wasm_tys)}) -> {result_ty or '()'}"
         if sig_key not in self._closure_sig_keys:
             self._closure_sig_keys[sig_key] = len(self._closure_sig_keys)

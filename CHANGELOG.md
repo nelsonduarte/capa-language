@@ -9,6 +9,51 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+### Wasm: actionable errors for generic functions + non-scalar lambda params
+
+Surfaced by the `capa_showcase` assessment on 2026-05-25.
+Three pre-existing Wasm backend gaps used to manifest as
+confusing tracebacks; this round replaces them with explicit
+`WasmEmissionError` messages that name the user-level
+construct and the workaround.
+
+1. **Generic user functions**: `_collect_locals` in
+   `capa/ir/_emit_wasm/_locals.py` previously caught the
+   `WasmEmissionError` raised by `_wasm_type` on an unresolved
+   type parameter and silently fell back to `i64`, which made
+   downstream emit produce wasm that the validator rejected at
+   runtime with a generic "i32 vs i64 type mismatch at offset
+   N". On top of that, the `except` clause referenced
+   `WasmEmissionError` without importing it, so the catch
+   raised `NameError` instead of running. Now: the import is
+   added and the catch re-raises with an actionable message
+   pointing at the generic function and suggesting either the
+   Python backend (`capa --run`) or manual specialisation.
+
+2. **Lambda params / return types with non-scalar shape**:
+   `_register_lambda` in `capa/ir/_emit_wasm/_closures.py`
+   called `_wasm_type(p.ty)` for each lambda param, which
+   raises on `String` / `List<T>` / `Map<K,V>` / user structs
+   because those need multi-value lowering (the closure
+   signature emits one Wasm type per param, but a String is a
+   (ptr, len) pair). Same gap on the lambda's return type.
+   Now: both raise with a message naming the lambda param /
+   return + the actual unsupported type + the workaround
+   (Python backend, or refactor into a named function).
+
+Test coverage: `TestWasmActionableErrors` (2 cases) pins the
+new error shape: one for the generic + Option<T> case, one
+for the lambda-over-String case (the exact construct the
+showcase used).
+
+Underlying feature gaps (full monomorphisation of generic
+user functions + multi-value lowering for lambda params)
+remain open as P1 follow-ups; the work is multi-day. Until
+they ship, the Wasm backend now fails LOUDLY and CORRECTLY
+on the unsupported shapes rather than producing invalid wasm.
+
+Suite: 1253 → 1255 tests, 4 platform-skips.
+
 ### Tests: extended loader coverage (60% -> 65%)
 
 Continues the 2026-05-25 coverage-review pass. Seven new

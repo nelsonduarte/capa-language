@@ -27,7 +27,7 @@ from .._nodes import (
     MakeLambda, MakeList, MakeMap, MakeTuple,
     PatIdent, PatVariant,
 )
-from ._layout import _BUILTIN_CAPS, _element_type_of_list
+from ._layout import _BUILTIN_CAPS, _element_type_of_list, WasmEmissionError
 from ._caps import _CANONICAL_INDIRECT_RETURN
 
 
@@ -349,14 +349,24 @@ class _LocalsCollectionMixin:
                 continue
             try:
                 wasm_ty = self._wasm_type(capa_ty) or "i64"
-            except WasmEmissionError:
-                # Conservative default for types whose Wasm shape is
-                # not yet decided (e.g. List<T> in Phase 6C). The
-                # local is most likely never read in a supported
-                # path; allocate as i64 so subsequent emit attempts
-                # at least parse before they fail at use-site with
-                # a clearer error.
-                wasm_ty = "i64"
+            except WasmEmissionError as e:
+                # Capa types that lack a Wasm encoding (commonly
+                # unresolved type variables like ``T`` from a
+                # generic user function) used to silently fall
+                # back to ``i64``, which produced wasm that the
+                # validator rejected with a confusing i32/i64
+                # mismatch at runtime. Re-raise with a clearer
+                # message so the user knows the actual gap.
+                raise WasmEmissionError(
+                    f"local {name!r} has type {capa_ty!r}, which the "
+                    f"Wasm backend cannot encode. This is typically a "
+                    f"generic / type-parameter case (e.g. ``fun "
+                    f"first<T>(...)``); the Wasm backend does not yet "
+                    f"monomorphise user-defined generic functions. "
+                    f"Workarounds: use the Python backend "
+                    f"(``capa --run``), or specialise the function "
+                    f"to a concrete type. Original: {e}"
+                ) from e
             out[name] = wasm_ty
         # ``_m_scrut`` / ``_m_tag`` are used by both Match and For
         # loops (they double as iter-pointer and index registers).
