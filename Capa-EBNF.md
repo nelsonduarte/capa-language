@@ -363,7 +363,9 @@ import_decl = "import" module_path [ "as" IDENT ] NEWLINE
 module_path = IDENT { "." IDENT }
 ```
 
-> **Status of `import` in 1.0.** The grammar accepts `import` syntactically, but the semantic analyzer rejects every occurrence with an error directing the user to `py_import(unsafe, "...")` instead. The reason is the capability discipline: transpiling `import` directly to a Python `import` would let any function in the program call into the imported module's globals without an `Unsafe` capability, punching a hole through the entire system. The `import` form is reserved for a future Capa module system; until that lands, the only legitimate crossing of the Python boundary is the `py_import` / `py_invoke` pair (see `docs/stdlib.md`), both of which require `Unsafe`.
+> **Status of `import` in 1.0.** The grammar production `import_decl` is fully supported by both the parser and the semantic analyzer. An `import foo.bar` (optionally with `as alias`) loads another Capa module: the loader resolves the path against the current project's source tree and against the package manager's `vendor/` directory (see [`docs/packages.md`](docs/packages.md)). Imported names are visible to the importing module under the imported module's namespace; capability flow across module boundaries follows the same discipline as in-module calls (a function in another module that takes `Fs` still has to be called from a function that holds `Fs`).
+>
+> The `py_import` / `py_invoke` pair (see [`docs/stdlib.md`](docs/stdlib.md)) is a *separate* mechanism for crossing the Python boundary, not a replacement for `import`. Both require the `Unsafe` capability and exist to let a Capa program reach a Python library when no Capa-native alternative is available. Most user programs use `import` for Capa modules and never touch `py_import`.
 
 ### 5.2 Function declarations
 
