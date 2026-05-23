@@ -6,7 +6,7 @@
 
 [![tests](https://github.com/nelsonduarte/capa-language/actions/workflows/tests.yml/badge.svg)](https://github.com/nelsonduarte/capa-language/actions/workflows/tests.yml)
 [![release](https://img.shields.io/github/v/release/nelsonduarte/capa-language?include_prereleases&label=release&color=blue)](https://github.com/nelsonduarte/capa-language/releases)
-[![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![license: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE)
 [![python: >=3.10](https://img.shields.io/badge/python-%3E%3D3.10-blue.svg)](pyproject.toml)
 [![SLSA Level 1](https://slsa.dev/images/gh-badge-level1.svg)](https://slsa.dev/spec/v1.0/levels#build-l1)
 [![Discussions](https://img.shields.io/github/discussions/nelsonduarte/capa-language?logo=github&color=blueviolet)](https://github.com/nelsonduarte/capa-language/discussions)
@@ -328,4 +328,7 @@ the disclosure flow is in [`SECURITY.md`](SECURITY.md).
 
 ## License
 
-MIT. See [`LICENSE`](LICENSE).
+Dual-licensed under either [MIT](LICENSE-MIT) or
+[Apache-2.0](LICENSE-APACHE) at your option. SPDX expression
+`MIT OR Apache-2.0` (the Rust idiom). See [`LICENSE`](LICENSE)
+for the rationale and the contribution clause.

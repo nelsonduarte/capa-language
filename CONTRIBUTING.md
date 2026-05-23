@@ -171,4 +171,6 @@ Participation in this project is governed by the
 ## License
 
 By contributing you agree that your contribution will be released
-under the project's [MIT license](LICENSE).
+under the project's dual [MIT](LICENSE-MIT) / [Apache-2.0](LICENSE-APACHE)
+license (SPDX `MIT OR Apache-2.0`), as defined in [`LICENSE`](LICENSE).
+No additional terms or conditions.

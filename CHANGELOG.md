@@ -9,6 +9,27 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+### License: dual MIT OR Apache-2.0
+
+Capa is now dual-licensed under either the MIT License or the
+Apache License 2.0, at the user's option (SPDX
+`MIT OR Apache-2.0`). The previous MIT-only file is preserved
+verbatim at [`LICENSE-MIT`](LICENSE-MIT); the Apache-2.0 text
+lives at [`LICENSE-APACHE`](LICENSE-APACHE); the top-level
+[`LICENSE`](LICENSE) is a short dispatcher explaining the
+choice and the rationale.
+
+Why both? MIT preserves the friction-free permissive story Capa
+shipped with; Apache-2.0 adds an explicit patent grant
+(Section 3) and an automatic termination clause against
+litigants. The patent grant matters for institutional adopters
+in regulated supply-chain contexts (EU CRA, NIS2, DORA) that
+prefer or require Apache-style protection.
+
+Contributions are now dual-licensed under the same terms, per
+the clause in [`CONTRIBUTING.md`](CONTRIBUTING.md). No CLA
+required; submitting a PR is enough.
+
 ### Wasm Component Model backend
 
 A real Wasm backend now sits next to the Python emitter inside
