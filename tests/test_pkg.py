@@ -458,7 +458,20 @@ class TestInstallVerifyKey(_TempDirMixin, unittest.TestCase):
         """Create an isolated GNUPGHOME, generate a passphrase-less
         keypair inside it, and return (gnupg_home, fingerprint,
         env_for_subprocess). The env carries GNUPGHOME so every
-        gpg / git invocation talks to the ephemeral keyring."""
+        gpg / git invocation talks to the ephemeral keyring.
+
+        The ephemeral key is Ed25519 with NO signing subkey. This
+        matters: when an RSA master + RSA subkey pair is used,
+        Linux GPG signs commits/tags with the subkey by default
+        while ``gpg --list-keys`` returns the master fingerprint,
+        and ``git verify-tag --raw`` reports the subkey fingerprint
+        on the VALIDSIG line. The two don't match, so any test
+        that asserts the listed fingerprint appears in the
+        verification error message would fail on Linux while
+        passing on Windows MSYS (whose GPG uses the master). Going
+        Ed25519 single-key sidesteps the whole subkey class of
+        flakiness. It also matches the algorithm of the real
+        publisher key, so the test exercises the same shape."""
         gnupg_home = self._tmp / "gnupg"
         gnupg_home.mkdir(parents=True, exist_ok=True)
         # Windows tolerates 0o700; Unix needs it for gpg to not
@@ -470,10 +483,8 @@ class TestInstallVerifyKey(_TempDirMixin, unittest.TestCase):
         env = {**os.environ, "GNUPGHOME": str(gnupg_home)}
         batch = (
             "%no-protection\n"
-            "Key-Type: RSA\n"
-            "Key-Length: 2048\n"
-            "Subkey-Type: RSA\n"
-            "Subkey-Length: 2048\n"
+            "Key-Type: EDDSA\n"
+            "Key-Curve: ed25519\n"
             "Name-Real: Capa Test\n"
             "Name-Email: capa-test@example.invalid\n"
             "Expire-Date: 0\n"
