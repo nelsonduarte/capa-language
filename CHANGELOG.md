@@ -9,6 +9,48 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+### LLM tool-use demo at `capa_agent_demo`
+
+A four-tool agent harness in ~400 lines of Capa, live-verified
+against the Anthropic Messages API on 2026-05-23. Lives at
+[nelsonduarte/capa_agent_demo](https://github.com/nelsonduarte/capa_agent_demo)
+v0.1.0 with the full three-layer supply-chain stack (signed
+tag + SLSA L2 attestation in Sigstore Rekor).
+
+The pitch: every other LLM agent framework (LangChain, OpenAI
+function-calling, MCP servers) ships tools as arbitrary
+functions with no permission system. The blast radius is
+implicit. Capa flips this: each tool's signature names its
+capabilities, the agent loop's signature names the union, and
+the compiler refuses any call to an authority outside the
+declared bound. The manifest is the audit contract:
+
+```
+tool_read_file:    [ReadOnlyFs]
+tool_list_dir:     [ReadOnlyFs]
+tool_get_url:      [GetOnlyHttp]
+tool_current_time: [Clock]
+dispatch_tool:     [Clock, GetOnlyHttp, ReadOnlyFs]
+run_agent_loop:    [Clock, GetOnlyHttp, LlmClient, Logger,
+                    ReadOnlyFs, Stdio]
+main:              [Clock, Env, Fs, Stdio, Unsafe]
+```
+
+Two attenuated wrappers (`ReadOnlyFsImpl { fs: Fs }`,
+`GetOnlyHttpImpl { http: Http, allowed_hosts: List<String> }`)
+show that attenuation is a cap-bearing-struct coding pattern,
+not a language feature. The demo is also the fourth downstream
+consumer of the seed libraries (`capa_http`, `capa_log`) at
+v0.1.2, exercising the full lockfile + GPG + SLSA install
+path.
+
+The smoke run surfaced two real bugs filed as P1 follow-ups
+in TODO.md: a `capa_http` v0.1.2 sys.path hard-coding that
+breaks against the package-manager vendor path, and a codegen
+method-name shadow when a user-defined-capability method has
+the same name as an imported free function. Both have
+documented workarounds in the demo.
+
 ### Package manager: implicit SLSA L2 verification on install
 
 `capa install` now also verifies the SLSA L2 build-provenance

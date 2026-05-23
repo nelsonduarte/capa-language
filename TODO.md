@@ -113,6 +113,31 @@ the current Wasm critical path.
   alternative serialisation; the "representation + validation"
   writeup tying them together. ⏱ 8-12h each.
 
+- [ ] **`capa_http` v0.1.3: vendor-aware sys.path injection**.
+  Surfaced by the 2026-05-23 agent-demo smoke test.
+  `urllib_client.capa::make_urllib_client` inserts
+  `./libraries/capa_http/` (the legacy hand-vendoring path) into
+  Python's `sys.path` so `py_import("urllib_helper")` resolves,
+  but the package manager puts the helper in
+  `./vendor/capa_http/`. The `capa_agent_demo` v0.1.0 works
+  around this in its own `main`; the fix belongs upstream as a
+  capa_http v0.1.3 that probes both locations. ⏱ 30min + cut +
+  attested release.
+
+- [ ] **Method-name shadow on user-defined capabilities**. When
+  a user-defined capability declares a method with the same name
+  as a free function imported into the module's scope (e.g.
+  `capability GetOnlyHttp { fun get(self, url: String) -> ... }`
+  imported alongside `capa_http.http` which exports a free
+  `get(url) -> Request`), the transpiler resolves `recv.get(url)`
+  to the bare free function call, dropping the receiver. The
+  analyzer's `--check` passes, so this is a codegen bug rather
+  than a type bug. Workaround in capa_agent_demo: rename the
+  method (`get` -> `fetch`). Real fix: method dispatch on
+  user-defined caps should beat free-function resolution.
+  ⏱ unknown; reproducer in the demo's git history at the
+  `smoke-green` commit before the rename.
+
 - [~] **SBOM-capability audit example, structural policies**.
   Today's audit at `examples/sbom_capability_audit.capa`
   supports per-function allow-lists. Pending: structural
@@ -135,12 +160,18 @@ structurally the right shape for sandboxing LLM agents that can
 call tools. The industry has no good solution; Capa has the
 right primitives. Listed at the top of this section accordingly.
 
-- [ ] **LLM tool-use demo**. Small library (`capability
-  LlmTool`, attenuated per-tool, embedded in the SBOM as the
-  declared authority surface) showing a Capa-shaped agent
-  harness where each tool's authority is statically narrowed
-  and surfaced in the manifest. Probably the single
-  highest-leverage thing to build next. ⏱ 2-3 days.
+- [x] **LLM tool-use demo** (2026-05-23 landed at
+  [nelsonduarte/capa_agent_demo](https://github.com/nelsonduarte/capa_agent_demo)
+  v0.1.0). Four-tool agent harness in ~400 lines of Capa,
+  talking to the real Anthropic Messages API. Attenuated
+  capability wrappers (`ReadOnlyFs`, `GetOnlyHttp`) keep the
+  LLM's blast radius statically bounded; `run_agent_loop`
+  declares `[Clock, GetOnlyHttp, LlmClient, Logger, ReadOnlyFs,
+  Stdio]` and nothing more, even total prompt-injection cannot
+  escape because the compiler refuses the call. Live-verified
+  against `claude-haiku-4-5`. Tagged v0.1.0 with the full
+  three-layer supply-chain stack (signed tag + SLSA L2
+  attestation in Sigstore Rekor).
 
 - [~] **LSP server v2 polish**. v1 covers diagnostics, hover,
   go-to-definition, find-references, documentSymbol, code
@@ -331,6 +362,19 @@ the full reasoning.
   missing-`gh` / non-GitHub host. Closes the three-layer
   supply-chain claim end-to-end. 10 new unit tests cover the
   branch table.
+- 2026-05-23: **LLM tool-use demo** shipped at
+  [nelsonduarte/capa_agent_demo](https://github.com/nelsonduarte/capa_agent_demo)
+  v0.1.0, the last P2 item from the alignment plan. The pitch:
+  capability discipline is structurally the right shape for
+  sandboxing LLM agents that can call tools. Industry
+  competitors (LangChain, OpenAI function-calling, MCP) ship
+  tools as arbitrary Python functions with no permission system;
+  Capa replaces convention with a type-system proof. The
+  `run_agent_loop` function's capability signature bounds the
+  blast radius of *any* prompt injection. Live-verified against
+  `claude-haiku-4-5`. First downstream demo that surfaced two
+  real Capa-side bugs (capa_http vendor-path, codegen method
+  shadow); both filed as P1 follow-ups.
 
 ### CVE case studies (6 landed)
 - event-stream 2018, eslint-scope 2018, node-ipc 2022,
