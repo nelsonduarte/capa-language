@@ -728,7 +728,14 @@ class Lowerer:
         types where the lowerer has the variant decl's payload types
         in scope. Tuple patterns recurse element-by-element using
         the per-position types parsed out of the scrutinee's tuple
-        type string."""
+        type string. A top-level IdentPat catch-all binds the whole
+        scrutinee, so the binder takes the scrutinee's type directly;
+        without this the Wasm backend declared the local as the
+        Unknown-default ``i64`` and the assignment from an i32
+        scrutinee (Bool, tuple pointer) tripped the validator."""
+        if isinstance(p, A.IdentPat):
+            self._bind_local(p.name, scrut_ty)
+            return
         if isinstance(p, A.TuplePat):
             elem_tys = _split_tuple_elem_types(scrut_ty)
             for idx, sub in enumerate(p.elements):

@@ -129,23 +129,37 @@ the current Wasm critical path.
   the AST round-trip. Comment-preservation design comes first;
   no AST round-trip is safe without it. ⏱ 8-12h, design-heavy.
 
-- [~] **Test-coverage review**. First two passes landed
-  2026-05-25: `capa/runtime/_wasm_component_host.py` lifted
-  0% → 74% via 4 `TestWasmComponentHost` cases. `capa/loader.py`
-  lifted 60% → 65% via 7 cases extending `TestQualifiedCallShadowing`
-  (TuplePat, StructPat shorthand, for-pat tuple, lambda param,
-  if/elif/else nested shadow) plus `TestLoaderErrorFormat`
-  (with-pos + without-pos branches of `LoaderError.format`).
-  Suite: 1242 → 1253 tests total.
+- [~] **Test-coverage review**. Three passes landed:
+  - 2026-05-25 (1): `capa/runtime/_wasm_component_host.py`
+    lifted 0% → 74% via 4 `TestWasmComponentHost` cases.
+  - 2026-05-25 (2): `capa/loader.py` lifted 60% → 65% via
+    7 cases extending `TestQualifiedCallShadowing` plus
+    `TestLoaderErrorFormat`.
+  - 2026-05-24 (3): `capa/ir/_emit_wasm/_match.py` lifted
+    43% → 86% via 13 `TestWasmMatchEmission` cases targeting
+    the missing-line ranges directly (Bool catch-all branches,
+    String-scrutinee match, every tuple-match shape including
+    literal sub-patterns + Float / Bool / String element binds,
+    variant payload Float / Bool binding). Surfaced and fixed
+    two real soundness bugs in the process: top-level IdentPat
+    catch-all on Bool / Tuple matches declared the binder local
+    as i64 instead of i32 (analyser refinement gap, fixed in
+    `_refine_pattern_binds`); and `$str_eq` was not auto-imported
+    when the only String comparison came from a tuple-match
+    sub-pattern (fixed in `_discovery._uses_map_ops`).
+    `capa/loader.py` lifted 69% → 93% via 6
+    `TestPrivateRenameWalkerCoverage` cases hitting every
+    visit-* branch of `_PrivateRenameWalker` and `_Rewriter`
+    in-process (the existing `TestPubVisibility` cases run
+    `--run` via subprocess and don't register against the
+    parent's coverage instance, which is why the gap had
+    stayed open).
+    Suite: 1299 → 1318.
   Still open and worth a future pass:
-  `capa/ir/_emit_wasm/_match.py` (41%; remaining gaps are
-  variant payloads for Float/Bool, tuple-match sub-patterns,
-  String-scrutinee match arms — domain-specific Wasm emission
-  paths reached only by particular pattern shapes),
-  `capa/loader.py` (still 65%; the ~175-line `_PrivateRenameWalker`
-  visit-* dispatch dominates the remaining gap),
-  `capa/lsp/server.py` (10%, needs an in-process LSP harness),
-  `capa/repl.py` (30%). ⏱ 4-6h.
+  `capa/lsp/server.py` (12%, needs an in-process LSP harness),
+  `capa/repl.py` (30%, needs an interactive-IO harness). Each
+  is a meaningful infrastructure investment on top of writing
+  tests, so they belong in their own slices. ⏱ ~4-6h each.
 
 - [~] **CycloneDX / SPDX parsers — pending optional fields**.
   `examples/cyclonedx_parser.capa` and

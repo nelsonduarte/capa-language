@@ -2434,5 +2434,237 @@ class TestWasmComponentHost(unittest.TestCase):
         )
 
 
+@unittest.skipUnless(
+    _has_wasm_tools() and _has_wasmtime_py(),
+    "wasm-tools or wasmtime-py not installed",
+)
+class TestWasmMatchEmission(unittest.TestCase):
+    """Focused coverage for the dark code paths in
+    ``capa/ir/_emit_wasm/_match.py``: the scrutinee-type-specific
+    emitters (Bool / String / Tuple) and the per-shape payload
+    binders (Float / Bool / String / pointer-shaped tuple).
+
+    Each test compiles a small Capa function, instantiates it
+    via wasmtime, and asserts the result matches what the legacy
+    Python pipeline would produce. Coverage gaps in this module
+    were measured at 43 % before this class landed; the tests
+    were written from the missing-line ranges reported by
+    ``coverage report --show-missing`` to maximise lines hit per
+    test rather than chasing breadth."""
+
+    def _exec(self, src: str, fn_name: str, *args):
+        """Same helper as TestWasmExecutes._exec. Inlined here so
+        coverage for the match emitter stays attributable to this
+        class rather than diffused across the file."""
+        import wasmtime
+        _, types, ast_mod = _parse_lower(src)
+        blob = compile_wasm(ast_mod, types=types)
+        engine = wasmtime.Engine()
+        store = wasmtime.Store(engine)
+        mod = wasmtime.Module(engine, blob)
+        instance = wasmtime.Instance(store, mod, [])
+        fn = instance.exports(store)[fn_name]
+        return fn(store, *args)
+
+    # ------- Bool-scrutinee match: catch-all branches -------
+
+    def test_bool_match_with_pat_ident_catch_all(self):
+        # ``other`` binds the scrutinee; emitter writes
+        # ``local.set $other`` and runs the arm body inline.
+        src = (
+            "fun pick(b: Bool) -> Int\n"
+            "    match b\n"
+            "        true -> return 1\n"
+            "        other -> return 0\n"
+        )
+        self.assertEqual(self._exec(src, "pick", 1), 1)
+        self.assertEqual(self._exec(src, "pick", 0), 0)
+
+    def test_bool_match_with_wildcard_catch_all(self):
+        # ``_`` matches without binding; emitter emits the body
+        # then ``break``s out of the arm loop.
+        src = (
+            "fun pick(b: Bool) -> Int\n"
+            "    match b\n"
+            "        false -> return 0\n"
+            "        _ -> return 1\n"
+        )
+        self.assertEqual(self._exec(src, "pick", 1), 1)
+        self.assertEqual(self._exec(src, "pick", 0), 0)
+
+    # ------- String-scrutinee match: every arm shape ----------
+
+    def test_string_match_with_literal_arms_and_wildcard(self):
+        # Hits the literal-arm path (interns each pattern + calls
+        # ``$str_eq``) plus the PatWildcard catch-all close.
+        src = (
+            "fun classify(s: String) -> Int\n"
+            "    match s\n"
+            "        \"yes\" -> return 1\n"
+            "        \"no\" -> return 0\n"
+            "        _ -> return -1\n"
+        )
+        # Need a Stdio entrypoint to drive String input; build
+        # an indirection that hard-codes the strings instead.
+        src = (
+            "fun classify_yes() -> Int\n"
+            "    return classify_inner(\"yes\")\n"
+            "fun classify_no() -> Int\n"
+            "    return classify_inner(\"no\")\n"
+            "fun classify_other() -> Int\n"
+            "    return classify_inner(\"maybe\")\n"
+            "fun classify_inner(s: String) -> Int\n"
+            "    match s\n"
+            "        \"yes\" -> return 1\n"
+            "        \"no\" -> return 0\n"
+            "        _ -> return -1\n"
+        )
+        self.assertEqual(self._exec(src, "classify_yes"), 1)
+        self.assertEqual(self._exec(src, "classify_no"), 0)
+        self.assertEqual(self._exec(src, "classify_other"), -1)
+
+    def test_string_match_with_pat_ident_catch_all(self):
+        # ``other`` binds the receiver into ``$other_ptr`` /
+        # ``$other_len`` Wasm locals; the body can then re-use
+        # the binding (here, computes its length).
+        src = (
+            "fun pick_len() -> Int\n"
+            "    return inner(\"banana\")\n"
+            "fun inner(s: String) -> Int\n"
+            "    match s\n"
+            "        \"\" -> return -1\n"
+            "        other -> return other.length()\n"
+        )
+        self.assertEqual(self._exec(src, "pick_len"), 6)
+
+    # ------- Tuple-scrutinee match: literal sub-patterns -------
+
+    def test_tuple_match_with_literal_int_sub_patterns(self):
+        # ``(1, 2) -> ...`` exercises _emit_tuple_slot_eq's int
+        # branch + the AND-of-slots cascade.
+        src = (
+            "fun pick(a: Int, b: Int) -> Int\n"
+            "    let p = (a, b)\n"
+            "    return match p\n"
+            "        (1, 2) -> 100\n"
+            "        (3, _) -> 200\n"
+            "        (x, y) -> x + y\n"
+        )
+        self.assertEqual(self._exec(src, "pick", 1, 2), 100)
+        self.assertEqual(self._exec(src, "pick", 3, 99), 200)
+        self.assertEqual(self._exec(src, "pick", 10, 20), 30)
+
+    def test_tuple_match_with_literal_bool_sub_pattern(self):
+        # ``(true, _) -> ...`` exercises _emit_tuple_slot_eq's
+        # bool branch (i64.load + i32.wrap_i64 + i32.eq).
+        src = (
+            "fun pick(b: Bool, n: Int) -> Int\n"
+            "    let p = (b, n)\n"
+            "    return match p\n"
+            "        (true, x) -> x\n"
+            "        (false, x) -> -x\n"
+        )
+        self.assertEqual(self._exec(src, "pick", 1, 7), 7)
+        self.assertEqual(self._exec(src, "pick", 0, 7), -7)
+
+    def test_tuple_match_with_literal_string_sub_pattern(self):
+        # ``("yes", _) -> ...`` exercises _emit_tuple_slot_eq's
+        # str branch (packed-i64 split + interned $str_eq call).
+        src = (
+            "fun pick_yes() -> Int\n"
+            "    return inner(\"yes\", 5)\n"
+            "fun pick_other() -> Int\n"
+            "    return inner(\"no\", 5)\n"
+            "fun inner(s: String, n: Int) -> Int\n"
+            "    let p = (s, n)\n"
+            "    return match p\n"
+            "        (\"yes\", x) -> x * 10\n"
+            "        (k, x) -> x\n"
+        )
+        self.assertEqual(self._exec(src, "pick_yes"), 50)
+        self.assertEqual(self._exec(src, "pick_other"), 5)
+
+    # ------- Tuple-scrutinee match: bind shapes --------------
+
+    def test_tuple_match_binds_string_element(self):
+        # ``(k, x) -> ...`` with k: String hits the String
+        # branch in _emit_tuple_arm_binds (i64 split into _ptr /
+        # _len locals).
+        src = (
+            "fun pick() -> Int\n"
+            "    return inner(\"hello\", 99)\n"
+            "fun inner(s: String, n: Int) -> Int\n"
+            "    let p = (s, n)\n"
+            "    return match p\n"
+            "        (k, x) -> k.length() + x\n"
+        )
+        self.assertEqual(self._exec(src, "pick"), 104)
+
+    def test_tuple_match_binds_float_element(self):
+        # ``(f, x) -> ...`` with f: Float hits the Float branch
+        # in _emit_tuple_arm_binds (f64.load).
+        src = (
+            "fun pick(f: Float, n: Int) -> Int\n"
+            "    let p = (f, n)\n"
+            "    return match p\n"
+            "        (g, x) -> x\n"
+        )
+        # Float arg encoded as wasmtime-py float; we just need
+        # the bind path to compile and return the int side.
+        self.assertEqual(self._exec(src, "pick", 3.14, 42), 42)
+
+    def test_tuple_match_catch_all_pat_ident_whole(self):
+        # PatIdent on the whole tuple: ``p -> ...`` binds the
+        # tuple pointer; subsequent arms are dead.
+        src = (
+            "fun pick(a: Int, b: Int) -> Int\n"
+            "    let p = (a, b)\n"
+            "    return match p\n"
+            "        whole -> a + b\n"
+        )
+        self.assertEqual(self._exec(src, "pick", 3, 4), 7)
+
+    def test_tuple_match_catch_all_wildcard(self):
+        # PatWildcard on the whole tuple: ``_ -> ...`` matches
+        # without binding; emitter exits the arm loop.
+        src = (
+            "fun pick(a: Int, b: Int) -> Int\n"
+            "    let p = (a, b)\n"
+            "    return match p\n"
+            "        _ -> 42\n"
+        )
+        self.assertEqual(self._exec(src, "pick", 1, 2), 42)
+
+    # ------- Variant payload binding: Float / Bool / Tuple ----
+
+    def test_variant_payload_float_binding(self):
+        # JsonValue's JNum variant carries a Float payload;
+        # extracting it via match hits the Float branch in
+        # _bind_variant_payload (f64.load offset=8).
+        src = (
+            "fun read_num() -> Float\n"
+            "    let jv = JNum(3.5)\n"
+            "    return match jv\n"
+            "        JNum(x) -> x\n"
+            "        _ -> 0.0\n"
+        )
+        self.assertAlmostEqual(self._exec(src, "read_num"), 3.5, places=5)
+
+    def test_variant_payload_bool_binding(self):
+        # JBool carries a Bool payload; the Bool branch in
+        # _bind_variant_payload (i64.load + i32.wrap_i64).
+        src = (
+            "fun read_flag() -> Int\n"
+            "    let jv = JBool(true)\n"
+            "    return match jv\n"
+            "        JBool(b) ->\n"
+            "            if b\n"
+            "                return 1\n"
+            "            return 0\n"
+            "        _ -> -1\n"
+        )
+        self.assertEqual(self._exec(src, "read_flag"), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

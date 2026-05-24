@@ -31,7 +31,7 @@ from .._nodes import (
     Module, Instr, Value, Function,
     Call, MethodCall, For, FormatStr, If, While, Match,
     MakeList, MakeMap, MakeSet, MakeLambda,
-    PatIdent, PatVariant,
+    PatIdent, PatLiteral, PatTuple, PatVariant,
 )
 from .._emit_wit import _WIT_SIGNATURES
 from ._layout import _BUILTIN_CAPS, _element_type_of_list, WasmEmissionError
@@ -285,7 +285,20 @@ class _DiscoveryMixin:
                     # String-scrutinee match calls $str_eq per arm.
                     if (instr.scrutinee.ty or "") == "String":
                         return True
+                    # Tuple-scrutinee match with a String literal
+                    # sub-pattern: the per-slot equality check calls
+                    # $str_eq to compare the slot against the interned
+                    # literal. Without this branch a program like
+                    # ``match (s, n) ; ("yes", x) -> ...`` would emit
+                    # a $str_eq call into a module that never imported
+                    # the helper, and wasm-tools parse would refuse
+                    # with "unknown func: failed to find name $str_eq".
                     for arm in instr.arms:
+                        if isinstance(arm.pattern, PatTuple):
+                            for sub in arm.pattern.elements:
+                                if (isinstance(sub, PatLiteral)
+                                        and sub.kind == "str"):
+                                    return True
                         if visit(arm.body):
                             return True
             return False

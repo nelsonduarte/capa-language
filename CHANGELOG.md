@@ -9,6 +9,45 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+### Soundness fixes surfaced by Wasm match coverage pass
+
+Two bugs surfaced while pushing
+[`capa/ir/_emit_wasm/_match.py`](capa/ir/_emit_wasm/_match.py)
+coverage from 43% to 86%, both caught by tests written
+directly against the missing-line ranges from
+`coverage report --show-missing`:
+
+1. **Top-level IdentPat catch-all declared with wrong Wasm
+   type.** A program like `match b ; other -> ...` (Bool
+   scrutinee) or `match p ; whole -> ...` (tuple scrutinee)
+   declared `$other` / `$whole` as the Unknown-default
+   `i64`, then assigned an `i32` scrutinee into it, which
+   the Wasm validator rejected. Root cause: the analyser's
+   `_refine_pattern_binds` had cases for `TuplePat` and
+   `VariantPat` but no top-level `IdentPat` branch, so the
+   binder local stayed `Unknown`. Fix in
+   [`capa/ir/_lower.py`](capa/ir/_lower.py): add the
+   `IdentPat` case that propagates `scrut_ty` to the binder.
+
+2. **`$str_eq` helper not imported for tuple-match arms
+   with String literal sub-patterns.** A program like
+   `match (s, n) ; ("yes", x) -> ...` emitted a `call
+   $str_eq` into a module that never imported the helper;
+   `wasm-tools parse` refused with `unknown func: failed
+   to find name $str_eq`. Root cause: the discovery pass
+   that decides which helpers to emit only checked for
+   String-scrutinee matches, not tuple-match sub-patterns.
+   Fix in
+   [`capa/ir/_emit_wasm/_discovery.py`](capa/ir/_emit_wasm/_discovery.py):
+   extend `_uses_map_ops` to walk Match arms' tuple
+   patterns and trigger on String literal sub-patterns.
+
+Both bugs were silent: nothing in the existing test suite
+caught them. Regression coverage added in
+`TestWasmMatchEmission` (`test_bool_match_with_pat_ident_catch_all`,
+`test_tuple_match_catch_all_pat_ident_whole`,
+`test_tuple_match_with_literal_string_sub_pattern`).
+
 ### CIR: match-arm guards with non-trivial prelude
 
 The IR lowerer no longer rejects guard expressions whose ANF

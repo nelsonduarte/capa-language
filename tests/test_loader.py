@@ -1351,5 +1351,230 @@ class TestRunArgsPassThrough(_TempDirMixin, unittest.TestCase):
         self.assertEqual(result.stdout, "--verbose\n--help\ninput.txt\n")
 
 
+class TestPrivateRenameWalkerCoverage(_TempDirMixin, unittest.TestCase):
+    """Exercise every visit-* branch of ``_PrivateRenameWalker`` and
+    the parallel walker in ``_Rewriter``. Each test writes a util
+    module where a private helper is referenced inside a specific
+    AST shape (statement, expression, type position); in-process
+    ``ModuleLoader.load_root`` runs the walker, then we analyse
+    the merged AST to confirm the rewrite succeeded (an unrewritten
+    reference would surface as an undefined-name diagnostic).
+
+    The earlier ``TestPubVisibility`` cases drive ``--run`` via a
+    subprocess; that path proves end-to-end correctness but does
+    NOT register against the parent process's coverage instance.
+    These cases run the walker inline so the coverage report
+    actually reflects them.
+
+    Coverage gap before this class landed: ~175 lines across
+    loader.py's two AST walkers.
+    """
+
+    def _check_loads_and_analyses(self, root: Path) -> None:
+        from capa import analyze
+        loader = ModuleLoader()
+        linked = loader.load_root(root.read_text(encoding="utf-8"), str(root))
+        # If the walker missed a reference, the analyser will surface
+        # an undefined-name error on the imported reference. Asserting
+        # `result.ok` therefore implies the walker rewrote every
+        # private reference the test exercised.
+        result = analyze(linked.module, source=root.read_text(encoding="utf-8"))
+        self.assertTrue(
+            result.ok,
+            f"analyser errors: {[e.format() for e in result.errors]}",
+        )
+
+    # ---- statement positions ----
+
+    def test_walker_visits_let_var_assign_if_while_for(self):
+        # One pub function exercising LetStmt, VarStmt, AssignStmt,
+        # IfStmt (with elif + else), WhileStmt, ForStmt -- each
+        # referencing the private `helper` so the walker has to
+        # descend into the statement's expression slot and rewrite.
+        self._write(
+            "util.capa",
+            "fun helper(x: Int) -> Int\n"
+            "    return x + 1\n"
+            "pub fun run(n: Int) -> Int\n"
+            "    let a = helper(n)\n"
+            "    var b = helper(a)\n"
+            "    b = b + helper(0)\n"
+            "    if b > 100\n"
+            "        b = helper(1)\n"
+            "    elif b < 0\n"
+            "        b = helper(2)\n"
+            "    else\n"
+            "        b = helper(3)\n"
+            "    var i = 0\n"
+            "    while i < 1\n"
+            "        b = b + helper(i)\n"
+            "        i = i + 1\n"
+            "    for j in 0..1\n"
+            "        b = b + helper(j)\n"
+            "    return b\n"
+        )
+        root = self._write(
+            "root.capa",
+            "import util\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"${run(0)}\")\n"
+        )
+        # n=0 -> a=1, b=2, b=3, b<100 + b>=0 -> elif branch fails,
+        # else -> b=4, while i<1 -> b=4+1=5, i=1, for j in 0..1
+        # -> b=5+1=6 -> return 6.
+        self._check_loads_and_analyses(root)
+
+    # ---- expression positions ----
+
+    def test_walker_visits_binop_unary_field_index_try(self):
+        # BinOp, UnaryOp, FieldAccess, Index, Try -- all referencing
+        # the private helper somewhere.
+        self._write(
+            "util.capa",
+            "fun helper(x: Int) -> Int\n"
+            "    return x + 1\n"
+            "type Box { v: Int }\n"
+            "pub fun run() -> Int\n"
+            "    let a = helper(1) + helper(2)\n"
+            "    let b = -helper(3)\n"
+            "    let box = Box { v: helper(4) }\n"
+            "    let v = box.v\n"
+            "    let xs = [helper(5), helper(6)]\n"
+            "    let z = xs[0]\n"
+            "    return a + b + v + z\n"
+        )
+        root = self._write(
+            "root.capa",
+            "import util\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"${run()}\")\n"
+        )
+        # a=2+3=5, b=-4, v=5, z=6 -> 5-4+5+6 = 12
+        self._check_loads_and_analyses(root)
+
+    def test_walker_visits_lambda_match_if_expr_range_interp(self):
+        # LambdaExpr (block body and expr body), MatchExpr,
+        # IfExpr, RangeExpr, InterpolatedString. Each branch in
+        # _PrivateRenameWalker.visit_expr.
+        self._write(
+            "util.capa",
+            "fun helper(x: Int) -> Int\n"
+            "    return x + 1\n"
+            "pub fun run() -> Int\n"
+            "    let f = fun (n: Int) -> Int => helper(n)\n"
+            "    let g = fun (n: Int) -> Int =>\n"
+            "        let h = helper(n)\n"
+            "        return h\n"
+            "    let m = match 1\n"
+            "        0 -> helper(0)\n"
+            "        n -> helper(n)\n"
+            "    let p = if true then helper(10) else helper(20)\n"
+            "    var total = 0\n"
+            "    for i in helper(0)..helper(2)\n"
+            "        total = total + 1\n"
+            "    let msg = \"v=${helper(5)}\"\n"
+            "    return f(1) + g(2) + m + p + total + msg.length()\n"
+        )
+        root = self._write(
+            "root.capa",
+            "import util\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"${run()}\")\n"
+        )
+        # f(1)=2, g(2)=3, m=2 (n=1, helper(1)=2), p=11 (true branch),
+        # for i in 1..3 -> total=2, msg="v=6" length=3
+        # -> 2+3+2+11+2+3 = 23
+        self._check_loads_and_analyses(root)
+
+    # ---- type positions ----
+
+    def test_walker_visits_type_name_fun_type_tuple_type(self):
+        # TypeName (in struct field, fun param, return type),
+        # TupleType (let annotation), FunType (lambda return).
+        # Private helper TYPE name reference must rewrite at every
+        # type position.
+        self._write(
+            "util.capa",
+            "type Pair { x: Int, y: Int }\n"
+            "fun mk_pair(x: Int, y: Int) -> Pair\n"
+            "    return Pair { x: x, y: y }\n"
+            "pub fun run() -> Int\n"
+            "    let p: Pair = mk_pair(2, 3)\n"
+            "    let t: (Int, Int) = (p.x, p.y)\n"
+            "    let (a, b) = t\n"
+            "    return a + b\n"
+        )
+        root = self._write(
+            "root.capa",
+            "import util\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"${run()}\")\n"
+        )
+        self._check_loads_and_analyses(root)
+
+    # ---- impl block + trait + sum ----
+
+    def test_walker_visits_impl_block_and_sum_variants(self):
+        # ImplBlock.type_name / trait_name and TypeSum variant
+        # payload types both have private-name positions the
+        # walker must rewrite.
+        self._write(
+            "util.capa",
+            "type Bag { v: Int }\n"
+            "pub trait Named\n"
+            "    fun name(self) -> String\n"
+            "impl Named for Bag\n"
+            "    fun name(self) -> String\n"
+            "        return \"bag\"\n"
+            "pub fun describe() -> String\n"
+            "    let b = Bag { v: 1 }\n"
+            "    return b.name()\n"
+        )
+        root = self._write(
+            "root.capa",
+            "import util\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(describe())\n"
+        )
+        self._check_loads_and_analyses(root)
+
+    # ---- alias-qualified call rewriter (_Rewriter) ----
+
+    def test_qualified_call_rewriter_walks_every_expr_shape(self):
+        # Exercises _Rewriter (which walks the same AST shapes as
+        # _PrivateRenameWalker but targets ``alias.method(...)``
+        # rewrites). The util module exposes `add`; the importer
+        # uses `util.add(...)` inside diverse expression positions.
+        self._write(
+            "util.capa",
+            "pub fun add(a: Int, b: Int) -> Int\n"
+            "    return a + b\n"
+        )
+        root = self._write(
+            "root.capa",
+            "import util\n"
+            "fun main(stdio: Stdio)\n"
+            "    let a = util.add(1, 2) + util.add(3, 4)\n"
+            "    let b = -util.add(5, 0)\n"
+            "    let xs = [util.add(1, 1), util.add(2, 2)]\n"
+            "    let t = (util.add(0, 0), util.add(1, 0))\n"
+            "    let s = \"v=${util.add(2, 3)}\"\n"
+            "    var total = a + b + xs[0] + xs[1]\n"
+            "    let (p, q) = t\n"
+            "    total = total + p + q\n"
+            "    for i in 0..1\n"
+            "        total = total + util.add(i, 0)\n"
+            "    let m = match 1\n"
+            "        0 -> util.add(0, 0)\n"
+            "        _ -> util.add(1, 0)\n"
+            "    total = total + m\n"
+            "    stdio.println(\"${total} ${s.length()}\")\n"
+        )
+        # a=3+7=10, b=-5, xs=[2,4], total=10-5+2+4=11,
+        # p=0, q=1 -> total=12, for i=0 -> total=12, m=1 -> total=13,
+        # s = "v=5" length=3
+        self._check_loads_and_analyses(root)
+
+
 if __name__ == "__main__":
     unittest.main()
