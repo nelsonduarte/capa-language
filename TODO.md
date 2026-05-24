@@ -80,12 +80,26 @@ the current Wasm critical path.
   emit site now points the user at ``${e.message}`` as the
   near-term workaround for non-IoError structs. ⏱ unknown.
 
-- [~] **CIR coverage gap**. CIR lowers 44 of 46 analysable
-  examples; `TuplePat` in match patterns and match-arm guards
-  remain unsupported (`UnsupportedInIR`). Closes the CIR
-  pipeline as the primary path; legacy direct-to-Python emitter
-  becomes the fallback only for unsupported constructs the IR
-  doesn't yet model. ⏱ 4-6h.
+- [x] **CIR coverage gap** (closed 2026-05-24). CIR now lowers
+  46 of 46 analysable examples. `TuplePat` was already supported
+  by 2026-05-24 (the TODO had it stale); match-arm guards landed
+  in this session. The lowerer captures any ANF prelude the
+  guard expression produces into a new `MatchArm.guard_setup`
+  field; the Python emitter's `_format_guard` walks the setup
+  and inlines it back into a single `case PAT if EXPR:` clause
+  by substituting each prelude instruction's expression form
+  into a `dst -> python_expr` map. Inlineable shapes today:
+  `FieldAccess`, `Index`, `UnaryOp`, `BinOp`. Non-inlineable
+  shapes (`Call`, `MethodCall`, etc.) raise `UnsupportedInIR`
+  from the emitter, which the CLI's `--ir` path catches as
+  before and falls back to the legacy transpiler. The Wasm
+  emitter still rejects every guard (arm-level fall-through
+  block restructure is its own piece of work). Coverage in
+  `TestMatch`: `test_match_arm_with_trivial_guard_runs`,
+  `test_match_arm_with_non_trivial_guard_runs`,
+  `test_match_arm_guard_with_chained_binops_inlines`,
+  `test_match_arm_guard_with_call_emit_raises_unsupported`.
+  Suite: 1296 → 1299.
 
 - [x] **Property-based testing for the Wasm backend** (closed
   2026-05-24). `tests/test_properties.py` Phase 4 now mirrors

@@ -31,6 +31,7 @@ from ._nodes import (
     Pattern, PatWildcard, PatIdent, PatLiteral, PatVariant, PatTuple, Match,
     StructDecl, SumDecl, ImplBlock, TraitDecl, ConstDecl, ImportDecl,
 )
+from ._lower import UnsupportedInIR
 
 
 # Source-level operators that translate verbatim into Python. The few
@@ -443,7 +444,7 @@ class PythonEmitter:
             for arm in instr.arms:
                 pat_str = self._format_pattern(arm.pattern)
                 if arm.guard is not None:
-                    guard_str = self._format_value(arm.guard)
+                    guard_str = self._format_guard(arm.guard, arm.guard_setup)
                     self._write(f"case {pat_str} if {guard_str}:")
                 else:
                     self._write(f"case {pat_str}:")
@@ -511,6 +512,76 @@ class PythonEmitter:
         if op == "not":
             return f"(not {x})"
         raise NotImplementedError(f"IR Python emitter: unary {op!r}")
+
+    def _format_guard(
+        self, guard: Value, setup: list[Instr],
+    ) -> str:
+        """Render a match-arm guard back into a single Python
+        expression for emission inside ``case PAT if EXPR:``.
+
+        When ``setup`` is empty the guard is already a trivial
+        Value (a bare local, literal, or capability constant) and
+        renders directly. When it is non-empty the lowerer's ANF
+        decomposition split a richer expression into intermediate
+        instructions whose destination locals only feed back into
+        the guard Value; this method walks the setup in order,
+        builds a ``local_name -> python_expression`` substitution
+        map for each intermediate, then renders the final guard
+        with substitutions applied.
+
+        Only side-effect-free shapes are inlineable: FieldAccess,
+        Index, UnaryOp, BinOp. Method calls and free-function
+        calls may legitimately appear in source-level guards but
+        the inlining cannot prove their purity, so this method
+        raises ``UnsupportedInIR`` for them and lets the caller
+        (the CLI's ``--ir`` path) fall back to the legacy
+        direct-to-Python transpiler, which handles guards via
+        plain expression emission and does not need ANF lowering.
+        """
+        if not setup:
+            return self._format_value(guard)
+
+        subst: dict[str, str] = {}
+
+        def render(v: Value) -> str:
+            if v.kind in ("local", "param") and v.name in subst:
+                return subst[v.name]
+            return self._format_value(v)
+
+        for ins in setup:
+            if isinstance(ins, FieldAccess):
+                expr = f"{render(ins.receiver)}.{ins.field}"
+            elif isinstance(ins, Index):
+                expr = f"{render(ins.receiver)}[{render(ins.index)}]"
+            elif isinstance(ins, UnaryOp):
+                operand = render(ins.operand)
+                if ins.op == "-":
+                    expr = f"(-{operand})"
+                elif ins.op == "not":
+                    expr = f"(not {operand})"
+                else:
+                    raise UnsupportedInIR(
+                        f"guard prelude UnaryOp with op {ins.op!r} cannot "
+                        f"be inlined into a Python `case ... if EXPR:` clause"
+                    )
+            elif isinstance(ins, BinOp):
+                if ins.op not in _PY_BINOPS:
+                    raise UnsupportedInIR(
+                        f"guard prelude BinOp with op {ins.op!r} cannot "
+                        f"be inlined into a Python `case ... if EXPR:` clause"
+                    )
+                expr = f"({render(ins.left)} {ins.op} {render(ins.right)})"
+            else:
+                raise UnsupportedInIR(
+                    f"guard prelude instruction {type(ins).__name__} "
+                    f"cannot be inlined into a Python `case ... if EXPR:` "
+                    f"clause; either rewrite the guard as a bare "
+                    f"identifier / direct comparison, or hoist the "
+                    f"computation into a let-binding above the match"
+                )
+            subst[ins.dst] = expr
+
+        return render(guard)
 
     def _rewrite_builtin_method(
         self, recv_ty: str, method: str, recv: str, args: list[str],

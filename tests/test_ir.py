@@ -526,23 +526,102 @@ class TestMatch(unittest.TestCase):
         self.assertEqual(ns["pick"](0), 100)
         self.assertEqual(ns["pick"](5), 0)
 
-    def test_match_arm_with_guard_is_unsupported(self):
-        # Guards reference pattern-bound names which the ANF
-        # lowerer cannot route around: any guard sub-expression
-        # would need to land before the case in instruction order,
-        # but the bound name is only in scope inside the case.
-        # Deferred until the IR grows an inline-expression escape.
+    def test_match_arm_with_trivial_guard_runs(self):
+        # Guard ``x > 0`` lowers to a single BinOp with no prelude;
+        # the Python emitter renders ``case x if (x > 0):`` directly.
+        # Locked in 2026-05-24 along with the non-trivial-prelude
+        # case below; previously the IR rejected every guard with
+        # any prelude.
         src = (
             "fun classify(n: Int) -> String\n"
-            "    match n\n"
-            "        x if x > 0 ->\n"
-            "            return \"pos\"\n"
-            "        _ ->\n"
-            "            return \"nonpos\"\n"
+            "    return match n\n"
+            "        x if x > 0 -> \"pos\"\n"
+            "        _ -> \"nonpos\"\n"
         )
         module, types = _parse_and_check(src)
+        py = compile(module, types=types)
+        ns: dict = {}
+        exec(py, ns)
+        self.assertEqual(ns["classify"](5), "pos")
+        self.assertEqual(ns["classify"](0), "nonpos")
+        self.assertEqual(ns["classify"](-3), "nonpos")
+
+    def test_match_arm_with_non_trivial_guard_runs(self):
+        # ``not t.done`` is a UnaryOp on a FieldAccess; the lowerer
+        # captures the FieldAccess + UnaryOp pair as guard_setup and
+        # the Python emitter inlines them back into the case clause
+        # as ``case High() if (not t.done):``. End-to-end coverage
+        # of the example/tasks.capa pattern via CIR.
+        src = (
+            "type Priority =\n"
+            "    High\n"
+            "    Low\n"
+            "type Task { priority: Priority, done: Bool }\n"
+            "fun classify(t: Task) -> String\n"
+            "    return match t.priority\n"
+            "        High if not t.done -> \"urgent\"\n"
+            "        High -> \"done\"\n"
+            "        Low -> \"later\"\n"
+        )
+        module, types = _parse_and_check(src)
+        # IR layer: the arm carries guard_setup with the prelude
+        # the ANF lowering produced.
+        ir_mod = lower(module, types=types)
+        fn = next(f for f in ir_mod.functions if f.name == "classify")
+        match_instr = next(i for i in fn.body if isinstance(i, N.Match))
+        guarded = [a for a in match_instr.arms if a.guard is not None]
+        self.assertEqual(len(guarded), 1)
+        self.assertTrue(
+            guarded[0].guard_setup,
+            "expected guard_setup to carry the FieldAccess + UnaryOp "
+            "prelude that lowering produced for `not t.done`",
+        )
+        # End-to-end: emitted Python runs and produces the right
+        # verdicts. We can't exec without instantiating Task/Priority,
+        # so verify the emitted source contains the inlined guard.
+        py = compile(module, types=types)
+        self.assertIn("case High() if (not t.done):", py)
+
+    def test_match_arm_guard_with_chained_binops_inlines(self):
+        # Two chained BinOps in the guard: lowering produces a
+        # prelude with one BinOp computing ``n + 1``, the emitter
+        # inlines it back into the case clause as a single
+        # composite expression. Locks the inline-chain code path.
+        src = (
+            "fun classify(n: Int) -> String\n"
+            "    return match n\n"
+            "        x if (x + 1) > 5 -> \"big\"\n"
+            "        _ -> \"small\"\n"
+        )
+        module, types = _parse_and_check(src)
+        py = compile(module, types=types)
+        self.assertIn("if ((x + 1) > 5):", py)
+        ns: dict = {}
+        exec(py, ns)
+        self.assertEqual(ns["classify"](5), "big")
+        self.assertEqual(ns["classify"](2), "small")
+
+    def test_match_arm_guard_with_call_emit_raises_unsupported(self):
+        # A guard whose lowered prelude includes a free-function
+        # ``Call`` is not safely inlineable (purity unknown), so
+        # emission raises UnsupportedInIR. The CLI's ``--ir`` path
+        # catches this and falls back to the legacy transpiler;
+        # the test enforces the emitter-side refusal.
+        src = (
+            "fun positive(n: Int) -> Bool\n"
+            "    return n > 0\n"
+            "fun classify(n: Int) -> String\n"
+            "    return match n\n"
+            "        x if positive(x) -> \"pos\"\n"
+            "        _ -> \"nonpos\"\n"
+        )
+        module, types = _parse_and_check(src)
+        # IR lowering must succeed (the lowerer no longer rejects
+        # any guard); the emitter is the layer that refuses.
+        ir_mod = lower(module, types=types)
+        from capa.ir import emit_python
         with self.assertRaises(UnsupportedInIR):
-            lower(module, types=types)
+            emit_python(ir_mod)
 
 
 class TestTopLevelTypes(unittest.TestCase):

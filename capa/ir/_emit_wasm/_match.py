@@ -41,21 +41,25 @@ class _MatchEmissionMixin:
         into arm bodies.
         """
         # Guards land as IR ``MatchArm.guard`` Values; the Python
-        # emitter handles them via ``case PAT if EXPR:`` syntax,
-        # but the Wasm emitter would need an arm-level fall-through
-        # block to skip the body and re-enter the cascade for the
-        # next arm on guard failure. That refactor lands later;
-        # for now, refuse guards with a precise error so the
-        # caller can rewrite the match as nested if/else.
+        # emitter handles them via ``case PAT if EXPR:`` syntax
+        # (inlining any ``guard_setup`` prelude into the
+        # expression), but the Wasm emitter would need an
+        # arm-level fall-through block to skip the body and
+        # re-enter the cascade for the next arm on guard failure.
+        # That restructure has not landed; for now, refuse
+        # guards with a precise error so the caller rewrites the
+        # match as nested if/else or moves the condition outside.
         for arm in instr.arms:
             if arm.guard is not None:
                 raise WasmEmissionError(
                     "match arm guard not yet supported in the Wasm "
-                    "backend; the Python pipeline accepts guards "
-                    "today, the Wasm pipeline needs an arm-level "
-                    "fall-through block restructure that has not "
-                    "landed. Rewrite as nested if/else or move the "
-                    "condition outside the match for now."
+                    "backend; the IR accepts guards (including ones "
+                    "with non-trivial prelude) and the Python "
+                    "pipeline emits them via `case PAT if EXPR:`, "
+                    "but the Wasm pipeline still needs an arm-level "
+                    "fall-through block restructure. Rewrite as "
+                    "nested if/else or move the condition outside "
+                    "the match for now."
                 )
         scrut_ty = instr.scrutinee.ty
         if scrut_ty == "Bool":

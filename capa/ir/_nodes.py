@@ -323,13 +323,22 @@ class PatTuple(Pattern):
 
 @dataclass
 class MatchArm:
-    """A single arm of a Match. ``guard`` may be a Value that the
-    emitter renders as a ``case ... if guard:`` clause; Phase 2D
-    leaves ``guard=None`` for every arm because the lowerer rejects
-    guard-bearing arms as UnsupportedInIR."""
+    """A single arm of a Match.
+
+    ``guard`` is the Value the emitter tests for the arm to fire;
+    ``None`` for unconditional arms. ``guard_setup`` carries the
+    ANF prelude instructions the guard expression lowered to
+    (FieldAccess, UnaryOp, BinOp, ...) when the guard is not a
+    trivial Value reference. Emitters either inline the prelude
+    back into a single expression (Python ``case PAT if EXPR:``)
+    or emit it as a fall-through control-flow block before testing
+    ``guard`` (Wasm). For trivial guards (a bare identifier, a
+    literal, a single binop on locals) ``guard_setup`` is empty
+    and the guard renders directly as a Python expression."""
     pattern: Pattern
     body: list[Instr]
     guard: Optional[Value] = None
+    guard_setup: list[Instr] = field(default_factory=list)
 
 
 @dataclass

@@ -9,6 +9,27 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+### CIR: match-arm guards with non-trivial prelude
+
+The IR lowerer no longer rejects guard expressions whose ANF
+form requires intermediate locals. `MatchArm` gains a
+`guard_setup: list[Instr]` field that carries the prelude;
+the Python emitter inlines it back into the case clause by
+walking the setup and building a `dst -> python_expr`
+substitution map, so a guard like `not t.done` renders as
+`case High() if (not t.done):` (identical to the legacy
+transpiler's output). Inlineable shapes: `FieldAccess`,
+`Index`, `UnaryOp`, `BinOp`. Non-inlineable shapes (Call,
+MethodCall, ...) raise `UnsupportedInIR` from the emitter,
+which the CLI's `--ir` path catches and falls back to the
+legacy direct-to-Python transpiler exactly as before.
+
+Effect on CIR coverage of the example suite: 45/46 → 46/46.
+The remaining gap was `examples/tasks.capa`, which uses a
+`High if not t.done` guard. Wasm emitter still rejects all
+guards (it would need an arm-level fall-through block
+restructure); see `capa/ir/_emit_wasm/_match.py`.
+
 ### Soundness fix: user-defined-cap aliasing
 
 The non-aliasing rule ("each call uses each capability at most

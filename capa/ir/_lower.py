@@ -662,8 +662,9 @@ class Lowerer:
             # arbitrary control flow) tolerates richer guards but
             # we restrict the surface to the common shape.
             guard_value = None
+            guard_setup: list = []
             if arm.guard is not None:
-                guard_value = self._lower_guard(arm.guard)
+                guard_value, guard_setup = self._lower_guard(arm.guard)
             outer = self._instrs
             self._instrs = []
             if isinstance(arm.body, A.Block):
@@ -675,39 +676,48 @@ class Lowerer:
             body = self._instrs
             self._instrs = outer
             self._exit_scope()
-            arms.append(MatchArm(pattern=pat, body=body, guard=guard_value))
+            arms.append(MatchArm(
+                pattern=pat, body=body,
+                guard=guard_value, guard_setup=guard_setup,
+            ))
         self._instrs.append(Match(scrutinee=scrut, arms=arms, result_dst=None))
 
-    def _lower_guard(self, guard_expr: A.Expr) -> Value:
-        """Lower a match-arm guard. The guard is an AST expression
-        the source-level ``case PAT if EXPR:`` carries; the
-        resulting Value is attached to the IR ``MatchArm.guard``
-        field and emitters dispatch on it (Python emits
-        ``case PAT if <value>:``; Wasm emits a conditional branch).
+    def _lower_guard(self, guard_expr: A.Expr) -> tuple[Value, list]:
+        """Lower a match-arm guard.
 
-        Restriction: the lowered guard must reduce to a single
-        Value with no preceding instructions in the arm's local
-        buffer. Python ``case ... if EXPR:`` syntax does not
-        allow statements between the case clause and the if
-        clause, so a guard whose ANF requires intermediate locals
-        cannot be re-emitted in that form. Practical guard
-        expressions in Capa source (a bound name, a method call
-        on a binder, a simple comparison) all fit this shape; the
-        restriction lifts when an emitter learns to fall back to
-        an if/elif chain for the prelude-bearing case."""
+        The guard is an AST expression the source-level
+        ``case PAT if EXPR:`` carries. Returns ``(value, prelude)``:
+        ``value`` is the final Value the emitter tests, and
+        ``prelude`` is the list of ANF instructions that produce
+        any intermediate locals the Value references.
+
+        Emitters consume the pair differently:
+        - The Python emitter substitutes prelude instructions back
+          into the guard's expression form so ``case PAT if EXPR:``
+          stays a single expression (a guard like ``not t.done``
+          lowers to a FieldAccess + UnaryOp pair that the emitter
+          collapses back to ``(not t.done)``). Prelude shapes the
+          emitter cannot inline (a free-function call with side
+          effects, a MakeLambda, ...) trip
+          ``UnsupportedInIR`` at emit time so the caller can fall
+          back to the legacy direct-to-Python transpiler.
+        - The Wasm emitter would emit prelude as a fall-through
+          control-flow block before testing the guard Value, but
+          that restructure has not landed; see
+          ``capa/ir/_emit_wasm/_match.py``.
+
+        Pre-2026-05-24 this raised ``UnsupportedInIR`` whenever
+        prelude was non-empty, blocking ``examples/tasks.capa``
+        (the ``High if not t.done`` arm) and any program with
+        comparable guards from the CIR path. The IR now carries
+        the prelude through; rejection moves to the emitter that
+        actually cannot handle it."""
         outer = self._instrs
         self._instrs = []
         v = self._lower_expr(guard_expr)
         prelude = self._instrs
         self._instrs = outer
-        if prelude:
-            raise UnsupportedInIR(
-                "match arm guard with non-trivial setup; "
-                "use a let-binding before the match or simplify "
-                "the guard expression so it reduces to a single "
-                "identifier / literal / direct comparison"
-            )
-        return v
+        return v, prelude
 
     def _refine_pattern_binds(self, p: A.Pattern, scrut_ty: str) -> None:
         """Best-effort: thread the scrutinee's type into pattern-bound
@@ -922,8 +932,9 @@ class Lowerer:
             self._refine_pattern_binds(arm.pattern, scrut.ty)
             pat = self._lower_pattern(arm.pattern)
             guard_value = None
+            guard_setup: list = []
             if arm.guard is not None:
-                guard_value = self._lower_guard(arm.guard)
+                guard_value, guard_setup = self._lower_guard(arm.guard)
             outer = self._instrs
             self._instrs = []
             if isinstance(arm.body, A.Block):
@@ -952,7 +963,10 @@ class Lowerer:
             body = self._instrs
             self._instrs = outer
             self._exit_scope()
-            arms.append(MatchArm(pattern=pat, body=body, guard=guard_value))
+            arms.append(MatchArm(
+                pattern=pat, body=body,
+                guard=guard_value, guard_setup=guard_setup,
+            ))
         self._instrs.append(
             Match(scrutinee=scrut, arms=arms, result_dst=result_dst)
         )
