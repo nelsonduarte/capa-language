@@ -9,6 +9,35 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+### Milestone: every downstream demo runs end-to-end under `--wasm --run`
+
+Cross-demo smoke on 2026-05-27. All four downstream consumers
+of the seed libraries now compile to Wasm CM and execute
+through `WasmHost` with output matching the Python `--run`
+path:
+
+- **`capa_showcase`** (JSONL log processor, 5 files, JsonValue
+  parse + serialise, lambdas, generics, attenuated cap):
+  ✓ green, byte-identical to Python output
+- **`policy-eval`** (recursive-sum policy tree, custom CLI):
+  ✓ green, 7 findings rendered, gate fails as expected
+- **`audit-trail-reporter`** (CSV + JSON + alerts, multi-file
+  output, capa_datetime + capa_log + capa_cli):
+  ✓ green, 15 flagged transactions, all 4 output files
+  written
+- **`sbom-watch`** (SBOM risk grading, license + CVE +
+  banned-package rules): ✓ green, 7 findings, gate logic
+  matches Python
+
+The original public-pitch claim ("Capa has a Wasm CM
+backend that runs the demos") is now demonstrably true for
+every demo, not just the toy ones. Zero new compiler gaps
+surfaced -- the 8 fixes that landed for the `capa_showcase`
+assessment over the past three days (commits `80ffe8f`,
+`9de9d3c`, `3e31c41`, `49367b2`, `8b47d78`, `4d7a6fd`,
+`01bb305`, `bdaa869`) cover every non-trivial code path
+the other three demos hit.
+
 ### Wasm: `${io}` interpolation for `IoError` + closure-type monomorphiser unification
 
 Two fixes that together close the last `capa_showcase` blocker

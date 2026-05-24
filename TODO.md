@@ -371,6 +371,15 @@ the full reasoning.
   sequence, sitemap, robots, CNAME, and the logo assets all live
   in the new repo. README + CONTRIBUTING + STABILITY + templates
   rewritten to point at the canonical URLs.
+- 2026-05-27: **Milestone: every downstream demo runs
+  end-to-end under ``--wasm --run``**. Cross-demo smoke
+  on the four downstream consumers (capa_showcase,
+  policy-eval, audit-trail-reporter, sbom-watch) all
+  produce Python-equivalent output under the Wasm CM
+  backend. Zero new compiler gaps surfaced beyond the 8
+  showcase-driven fixes from the past three days. The
+  "Wasm CM backend that runs the demos" public-pitch claim
+  is now demonstrably true for every demo, not just toys.
 - 2026-05-27: **Wasm backend: ``${io}`` interpolation for
   ``IoError`` values**. ``_emit_format_part_stash`` gains an
   ``IoError`` branch that mirrors Python's ``__str__``:
