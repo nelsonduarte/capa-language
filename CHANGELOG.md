@@ -9,6 +9,28 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+### Soundness fix: user-defined-cap aliasing
+
+The non-aliasing rule ("each call uses each capability at most
+once") only fired on built-in caps (`CAPABILITY_NAMES`). User-
+defined caps slipped through: `dispatch(my_llm, my_llm)` passed
+`--check`, violating the single-flow property the paper claims
+the discipline guarantees. Surfaced by the slice-6 fuzz panel
+attempt `cat_llm_dispatch_escape / llm_aliased_dispatch`.
+
+Fix: [`_is_capability_ident`](capa/analyzer/_discipline.py)
+now recognises both built-in caps and user-defined ones (it
+walks the global scope to see if the type name resolves to a
+`SymbolKind.CAPABILITY` symbol). Regression covered by
+`test_user_defined_cap_aliasing_rejected` in
+[tests/test_analyzer.py](tests/test_analyzer.py).
+
+This is the second soundness escape surfaced during the
+empirical-study build-out (after the capability-forge fix
+in the preceding section). Both were silent regressions in
+the legacy `--python` backend that `--wasm` was incidentally
+protected against.
+
 ### Soundness fix: capability-forge in --python mode
 
 The analyzer now rejects any call where the callee resolves to a

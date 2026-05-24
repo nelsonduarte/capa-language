@@ -32,9 +32,19 @@ from evaluation.shared.runner_utils import (
     CapaRun, run_capa, write_csv,
 )
 
-# Category names land here as the panel grows. Slice 1 ships one.
+# Category names land here as the panel grows. Slice 1 shipped
+# one; slice 6 fills in the rest of the 8-category panel called
+# for in the empirical-study plan.
 ALL_CATEGORIES = [
     "cat_fs_traversal",
+    "cat_env_leak",
+    "cat_net_punch",
+    "cat_time_channel",
+    "cat_subprocess",
+    "cat_unsafe_smuggle",
+    "cat_capability_in_data",
+    "cat_capability_aliasing",
+    "cat_llm_dispatch_escape",
 ]
 
 

@@ -23,7 +23,14 @@ from evaluation.fuzz.attacks import cat_fs_traversal
 
 class TestFuzzHarnessSmoke(unittest.TestCase):
     def test_categories_registered(self):
-        self.assertIn("cat_fs_traversal", harness.ALL_CATEGORIES)
+        # All 9 categories from slices 1 + 6 must be registered.
+        for cat in (
+            "cat_fs_traversal", "cat_env_leak", "cat_net_punch",
+            "cat_time_channel", "cat_subprocess",
+            "cat_unsafe_smuggle", "cat_capability_in_data",
+            "cat_capability_aliasing", "cat_llm_dispatch_escape",
+        ):
+            self.assertIn(cat, harness.ALL_CATEGORIES)
 
     def test_fs_traversal_generates_attacks(self):
         attacks = cat_fs_traversal.generate()
@@ -41,6 +48,18 @@ class TestFuzzHarnessSmoke(unittest.TestCase):
         self.assertEqual(
             escaped, [],
             f"static-soundness escape: {escaped}",
+        )
+
+    def test_llm_dispatch_panel_all_rejected(self):
+        # The LLM-agent-escape category includes the user-cap
+        # aliasing attack that slipped through pre-2026-05-24.
+        # Verifying every attempt is rejected here keeps that
+        # regression from coming back.
+        results = harness.run_category("cat_llm_dispatch_escape")
+        escaped = [r for r in results if not r.rejected]
+        self.assertEqual(
+            escaped, [],
+            f"LLM-dispatch escape: {[(r.attack_id, r.rejection_reason) for r in escaped]}",
         )
 
 

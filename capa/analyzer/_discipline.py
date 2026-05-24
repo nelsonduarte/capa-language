@@ -90,14 +90,33 @@ class _DisciplineMixin:
         """If ``expr`` is an Ident bound to a capability in
         scope, return the name; otherwise ``None``. Used by the
         aliasing check, which only cares about direct identifier
-        references (not the values of more complex expressions)."""
+        references (not the values of more complex expressions).
+
+        Recognises both built-in capabilities and user-defined
+        ones. Pre-2026-05-24 this only matched ``CAPABILITY_NAMES``
+        (the built-in set), which let user-defined caps escape
+        the non-aliasing rule: ``dispatch(my_llm, my_llm)`` passed
+        --check, violating the single-flow property the paper
+        relies on. Surfaced by slice 6 of the empirical-study
+        fuzz panel (cat_llm_dispatch_escape /
+        llm_aliased_dispatch)."""
         if not isinstance(expr, A.Ident):
             return None
         sym = self.scope.lookup(expr.name)
         if sym is None or sym.ty is None:
             return None
-        if isinstance(sym.ty, TyName) and sym.ty.name in CAPABILITY_NAMES:
-            return expr.name
+        if isinstance(sym.ty, TyName):
+            if sym.ty.name in CAPABILITY_NAMES:
+                return expr.name
+            # User-defined capability: walk the global scope to
+            # see if the type name resolves to a CAPABILITY-kind
+            # symbol. Late import of SymbolKind avoids the cycle
+            # with capa.analyzer.__init__.
+            type_sym = self.global_scope.lookup(sym.ty.name)
+            if type_sym is not None:
+                from . import SymbolKind
+                if type_sym.kind == SymbolKind.CAPABILITY:
+                    return expr.name
         return None
 
     def _check_no_aliasing(self, slots: list[tuple[A.Expr, str]]) -> None:

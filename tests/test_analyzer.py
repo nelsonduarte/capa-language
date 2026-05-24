@@ -962,6 +962,30 @@ class TestCapabilityForgeRejected(unittest.TestCase):
             msgs,
         )
 
+    def test_user_defined_cap_aliasing_rejected(self):
+        # Pre-2026-05-24, the non-aliasing rule only fired on
+        # built-in caps (CAPABILITY_NAMES). User-defined caps
+        # slipped through, violating the single-flow property
+        # the paper claims. Surfaced by the slice-6 fuzz panel
+        # (cat_llm_dispatch_escape / llm_aliased_dispatch).
+        msgs = errors_of(
+            "capability Llm\n"
+            "    fun chat(self, p: String) -> String\n"
+            "fun dispatch(a: Llm, b: Llm) -> String\n"
+            "    let _ = a.chat(\"x\")\n"
+            "    return b.chat(\"y\")\n"
+            "fun main(stdio: Stdio, llm: Llm)\n"
+            "    let _ = dispatch(llm, llm)\n"
+            "    stdio.println(\"done\")\n"
+        )
+        self.assertTrue(
+            any(
+                "appears as argument 2 but was already used as argument 1"
+                in m for m in msgs
+            ),
+            msgs,
+        )
+
 
 # =============================================================
 # Generics inference

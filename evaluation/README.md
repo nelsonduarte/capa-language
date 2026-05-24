@@ -58,7 +58,7 @@ are produced from these CSVs.
 | 3 (auto-classify) | done 2026-05-24 | N=150 sample, 4305 candidates filtered; preliminary headline 97.3% Capa-relevant |
 | 4 (manual + figures) | figures done 2026-05-24; manual review pending | [`cve/summary.md`](cve/summary.md) + [`cve/summary.png`](cve/summary.png) auto-generated. The manual reviewer pass on `decisions.csv` STRUCTURAL_REJECT / ATTENUATION_MITIGATED rows is the remaining work |
 | 5 (runtime baselines) | done 2026-05-24 (Capa --python vs --wasm only) | hand-Python + Node baselines deferred; macro figure in [`runtime/results.png`](runtime/results.png); headline 1.52x Wasm overhead at cold-start macro scale |
-| 6 (full fuzz panel) | pending | |
+| 6 (full fuzz panel) | done 2026-05-24 | 9 categories x ~15 attacks each = 138 attempts, 138/138 rejected; surfaced user-cap aliasing bug fixed in same slice |
 | 7 (paper polish) | pending | |
 
 ## Caveats for paper citation
