@@ -1345,6 +1345,18 @@ def _type_name(te: object) -> str:
         params = ", ".join(_type_name(p) for p in te.param_types)
         ret = _type_name(te.return_type)
         return f"Fun({params}) -> {ret}"
+    # TupleType: render as ``(T1, T2, ...)`` to match the Capa
+    # source syntax. Empty tuple renders as ``()`` (i.e., Unit
+    # alias). Without this branch the fall-through to ``repr(te)``
+    # would put the raw AST node text into a ``ty`` string, which
+    # tripped the Wasm emitter with "Capa type '<AST repr>' has no
+    # Wasm encoding" -- visible only on bare tuple parameters
+    # (``cand: (String, Int)``); wrapped forms like
+    # ``List<(String, Int)>`` short-circuited via the
+    # ``head in ("List", ...)`` check in ``_wasm_type``.
+    if te.__class__.__name__ == "TupleType":
+        inner = ", ".join(_type_name(e) for e in te.elements)
+        return f"({inner})"
     if hasattr(te, "name"):
         # Parametric types (List<T>, Map<K, V>, Option<T>, user-
         # defined generics) carry their args in ``te.args``; render

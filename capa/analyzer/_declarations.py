@@ -205,6 +205,29 @@ class _DeclarationsMixin:
                     fty = self._method_type_from_decl(method)
                     if isinstance(fty, TyFun):
                         sym.trait_method_sigs[method.name] = fty
+                    # Also populate sym.methods with a typed
+                    # FUNCTION Symbol so call-site method
+                    # dispatch (_check_method_call's CAPABILITY
+                    # branch) can resolve `value.method(args)`
+                    # without falling through to TyUnknown.
+                    # Pre-2026-05-26 this was empty for user-
+                    # defined caps; the result propagated as
+                    # ``?`` through the lowerer and broke the
+                    # Wasm backend at layout time.
+                    from . import Symbol, SymbolKind
+                    sym.methods[method.name] = Symbol(
+                        name=method.name,
+                        kind=SymbolKind.FUNCTION,
+                        pos=method.pos,
+                        ty=fty,
+                        type_params=list(method.type_params),
+                        param_names=[
+                            p.name for p in method.params
+                            if p.name != "self"
+                        ],
+                        has_self=bool(method.params)
+                            and method.params[0].name == "self",
+                    )
                 self.self_type = prev_self
                 self._pop_type_params()
 

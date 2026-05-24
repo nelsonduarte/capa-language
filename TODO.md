@@ -70,20 +70,30 @@ No remaining work in this priority.
 Strengthens the capability + supply-chain claim, but isn't on
 the current Wasm critical path.
 
-- [ ] **Analyzer: propagate return type of user-capability
-  methods**. Surfaced 2026-05-26 by the capa_showcase smoke
-  under `--wasm`. `fs.read(path)?` where
-  `fs: ReadOnlyFs` (user-defined cap with method
-  `read(self, path) -> Result<String, IoError>`) reaches the
-  Wasm emitter as `TryUnwrap on type '?'`: the analyzer
-  doesn't propagate the method's declared return type to the
-  call expression. Same root pattern as the Fun-typed callee
-  fix on 2026-05-25 but for user capability method dispatch.
-  Closes the last remaining Wasm gap on capa_showcase. ⏱ ~1
-  day; the fix lives in
-  `capa/analyzer/_dispatch.py::_check_method_call` (the user-
-  defined-cap branch currently returns TyUnknown instead of
-  consulting the cap's method table).
+- [ ] **Wasm backend: `_ret_area` not declared for user-cap
+  Result-returning method calls inside a match-scrutinee
+  context**. Surfaced 2026-05-26 by a user-cap method that
+  returns `Result<String, IoError>` and is matched in
+  `match cap.read(p)`. Error: `unknown local: failed to find
+  name $_ret_area`. The canonical-ABI return area used for
+  multi-value capability returns isn't reserved when the
+  method call appears in this exact shape. ⏱ unknown; needs
+  a focused look at `_collect_locals` + the cap-call emit
+  path. The simpler scalar case (user cap method returning
+  Int / Bool / Float / Unit) works correctly as of
+  2026-05-26's analyzer fix.
+
+- [ ] **Wasm backend: pre-existing global-typed String
+  Value push not supported**. Surfaced 2026-05-26 by the
+  capa_showcase top-level `pub const SCHEMA_VERSION: String
+  = "1.0"` used inside an interpolated string. Error:
+  `cannot push string Value of kind 'global' as (ptr, len)`.
+  The Wasm emitter's `_push_string_value_as_ptr_len` knows
+  ``local`` / ``param`` / ``lit_str`` Value kinds but not
+  ``global``. Fix: add the ``global`` case (load the
+  pre-interned ptr+len from the WASM-side global storage
+  for the constant). Small once the global-emit path is
+  understood. ⏱ 2-4h.
 
 - [~] **CIR coverage gap**. CIR lowers 44 of 46 analysable
   examples; `TuplePat` in match patterns and match-arm guards
@@ -376,6 +386,26 @@ the full reasoning.
   sequence, sitemap, robots, CNAME, and the logo assets all live
   in the new repo. README + CONTRIBUTING + STABILITY + templates
   rewritten to point at the canonical URLs.
+- 2026-05-26: **Analyzer: propagate user-capability method
+  return types**. ``_check_method_call`` used to gate the
+  cap-method-table consult on ``recv_ty.name in
+  CAPABILITY_NAMES`` (built-ins only). User-defined caps fell
+  through to ``TyUnknown``, which propagated as ``?`` through
+  the lowerer and broke the Wasm backend on any user-cap
+  method call result. Fix: broaden the check to any
+  ``SymbolKind.CAPABILITY`` symbol; populate
+  ``sym.methods`` for user-defined caps during the second
+  declarations pass (same shape that built-in caps get from
+  ``register_builtins``). Same root pattern as the Fun-typed
+  callee fix from 2026-05-25. Bonus tuple-type fix landed in
+  the same change: ``_type_name`` in the lowerer was
+  falling through to ``repr(te)`` for bare
+  ``TupleType`` AST nodes, stuffing AST text into a ``ty``
+  string. The wrapped-in-List form short-circuited via
+  ``_wasm_type``'s head check and worked by accident; bare
+  tuple params surfaced the gap. 3 new tests:
+  ``TestWasmUserCapMethodDispatch`` (2 cases) and
+  ``TestWasmTupleParamTypes`` (1 case).
 - 2026-05-26: **Wasm backend: multi-value lowering for
   String in lambda params + returns**. The lifted-lambda
   signature now emits two i32s ``(ptr, len)`` per String

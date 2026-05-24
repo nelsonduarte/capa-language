@@ -306,12 +306,25 @@ class _DispatchMixin:
 
         from . import SymbolKind
 
-        # Capabilities: consult registered methods. For built-in
-        # capabilities the method table is closed, so an unknown
-        # method is a real error with a "did you mean" hint.
-        if isinstance(recv_ty, TyName) and recv_ty.name in CAPABILITY_NAMES:
+        # Capabilities: consult registered methods. Covers both
+        # built-in caps (Stdio, Fs, ...) whose method tables are
+        # populated by ``capa.builtins.register_builtins`` and
+        # user-defined caps (``capability Logger``,
+        # ``capability ReadOnlyFs``, ...) whose method tables
+        # are populated by ``_declarations.py`` when the cap is
+        # declared. The branch fires whenever the receiver
+        # resolves to a CAPABILITY symbol -- the prior check on
+        # ``recv_ty.name in CAPABILITY_NAMES`` only caught
+        # built-ins, leaving user-cap method calls typed as
+        # TyUnknown (which propagated as ``?`` through the
+        # lowerer and broke the Wasm backend on any user-cap
+        # method call result).
+        if isinstance(recv_ty, TyName):
             cap_sym = self.global_scope.lookup(recv_ty.name)
-            if cap_sym is not None:
+            if (
+                cap_sym is not None
+                and cap_sym.kind == SymbolKind.CAPABILITY
+            ):
                 method_sym = cap_sym.methods.get(e.method)
                 if method_sym is not None and isinstance(method_sym.ty, TyFun):
                     return self._check_method_dispatch(
@@ -326,7 +339,7 @@ class _DispatchMixin:
                         f"{e.method!r}{hint}",
                         e.pos,
                     )
-            return TyUnknown
+                return TyUnknown
 
         if isinstance(recv_ty, TyName):
             type_sym = self.global_scope.lookup(recv_ty.name)

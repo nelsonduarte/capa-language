@@ -9,6 +9,59 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+### Analyzer: propagate return type of user-capability method calls
+
+`_check_method_call` used to gate the cap-method-table consult on
+`recv_ty.name in CAPABILITY_NAMES` -- only built-in caps (Stdio,
+Fs, Env, Clock, Random, Net, Proc, Db, Unsafe) got their method
+return types. User-defined caps (e.g.
+`capability Logger { fun info(self, msg: String) -> Unit }`) fell
+through to `TyUnknown`, which propagated as `?` through the
+lowerer and broke the Wasm backend on any user-cap method call
+result. The Python `--run` path tolerated it (duck typing); the
+Wasm `--wasm --run` path crashed at layout time or downstream
+during pattern matching with a generic `TryUnwrap on '?'` error.
+
+Same root pattern as the Fun-typed-callee fix from 2026-05-25.
+Two-part fix:
+
+1. `capa/analyzer/_declarations.py`: extend the
+   `TraitDecl`-handling second pass to populate `sym.methods`
+   with typed `FUNCTION` Symbols, parallel to how the impl-block
+   handler populates target struct/sum types' method tables. The
+   method types come from the existing `_method_type_from_decl`
+   helper, which already handles `Self` resolution via
+   `self.self_type = TyName("Self")`.
+2. `capa/analyzer/_dispatch.py::_check_method_call`: broaden the
+   capability-routing check from `recv_ty.name in
+   CAPABILITY_NAMES` to any `cap_sym.kind ==
+   SymbolKind.CAPABILITY`. Built-in and user-defined caps now
+   share the same dispatch path; the only difference is who
+   populates their method table.
+
+Bonus fix in the same commit: `_type_name` in the lowerer
+(`capa/ir/_lower.py`) gains a `TupleType` AST case. The fall-
+through to `repr(te)` was stuffing AST node text into a `ty`
+string for bare tuple types (`fun f(p: (String, Int))`). Wrapped
+forms like `List<(String, Int)>` worked by accident because
+`_wasm_type`'s `head in ("List", ...)` branch short-circuits
+without inspecting the args; the showcase surfaced this when its
+`top_k_insert` helper used a bare tuple param.
+
+`TestWasmUserCapMethodDispatch` (2 cases) and
+`TestWasmTupleParamTypes` (1 case) pin both fixes end-to-end
+under `--wasm --run`. Suite: 1259 → 1262 tests, 4 platform-skips.
+
+Two more pre-existing Wasm gaps were surfaced (and filed as
+P1 follow-ups in TODO.md) when the showcase advanced past
+these fixes: the canonical-ABI `_ret_area` local isn't
+declared for a user-cap method that returns Result and is
+matched in scrutinee position; and the Wasm emitter's
+`_push_string_value_as_ptr_len` doesn't handle the `global`
+Value kind for top-level `pub const STRING_NAME = "..."`.
+Both are smaller than the analyzer fix; deferred to keep
+this round focused.
+
 ### Wasm: multi-value lowering for String in lambda params + returns
 
 Closures with `String` parameters and/or `String` return types

@@ -1884,6 +1884,130 @@ class TestWasmClosureStringTypes(unittest.TestCase):
     _has_wasm_tools() and _has_wasmtime_py(),
     "wasm-tools and/or wasmtime-py not installed",
 )
+class TestWasmUserCapMethodDispatch(unittest.TestCase):
+    """User-defined capability methods (``capability ReadOnlyFs``
+    plus ``impl ReadOnlyFs for ...``) used to fall through to
+    TyUnknown in the analyzer because ``_check_method_call``
+    only routed built-in capability names to the cap-method
+    table. The fix in 2026-05-26 broadens the check to any
+    SymbolKind.CAPABILITY symbol and populates the cap's
+    method table during the second declarations pass. These
+    tests pin user-cap method calls + ``?`` propagation
+    end-to-end under ``--wasm --run``."""
+
+    def _run_capturing_stdout(self, src: str) -> str:
+        import io, sys
+        from capa.runtime._wasm_host import WasmHost
+        _, types, ast_mod = _parse_lower(src)
+        blob = compile_wasm(ast_mod, types=types)
+        host = WasmHost()
+        out = io.StringIO()
+        saved_out = sys.stdout
+        sys.stdout = out
+        try:
+            host.run_main(blob)
+        finally:
+            sys.stdout = saved_out
+        return out.getvalue()
+
+    def test_user_cap_method_call_typed_correctly(self):
+        # Before the fix: greet's call to log.info(...) was
+        # typed as TyUnknown; the lowerer dropped the dst type
+        # to ``?`` and the Wasm emitter raised a generic
+        # layout error. Now the call returns Unit correctly
+        # and the program runs end-to-end.
+        src = (
+            'pub capability Logger\n'
+            '    fun info(self, msg: String) -> Unit\n'
+            'pub type StdioLogger { stdio: Stdio }\n'
+            'pub fun make_logger(stdio: Stdio) -> StdioLogger\n'
+            '    return StdioLogger { stdio: stdio }\n'
+            'impl Logger for StdioLogger\n'
+            '    fun info(self, msg: String) -> Unit\n'
+            '        self.stdio.println("[INFO] ${msg}")\n'
+            'fun greet(log: Logger, name: String)\n'
+            '    log.info("hello ${name}")\n'
+            'fun main(stdio: Stdio)\n'
+            '    let log = make_logger(stdio)\n'
+            '    greet(log, "world")\n'
+        )
+        self.assertEqual(
+            self._run_capturing_stdout(src),
+            "[INFO] hello world\n",
+        )
+
+    def test_user_cap_method_returning_int(self):
+        # Pins the analyzer's return-type propagation for a
+        # user-cap method whose return is a single-value Int.
+        # Without the fix, ``inc.bump()`` would have typed as
+        # TyUnknown and the caller's ``Int`` annotation would
+        # have raised a let-binding mismatch in the analyzer.
+        src = (
+            'pub capability Counter\n'
+            '    fun bump(self) -> Int\n'
+            'pub type C { n: Int }\n'
+            'pub fun make_c() -> C\n'
+            '    return C { n: 42 }\n'
+            'impl Counter for C\n'
+            '    fun bump(self) -> Int\n'
+            '        return self.n + 1\n'
+            'fun use_counter(inc: Counter) -> Int\n'
+            '    return inc.bump()\n'
+            'fun main(stdio: Stdio)\n'
+            '    let c = make_c()\n'
+            '    let v: Int = use_counter(c)\n'
+            '    stdio.println("v=${v}")\n'
+        )
+        self.assertEqual(
+            self._run_capturing_stdout(src), "v=43\n",
+        )
+
+
+@unittest.skipUnless(
+    _has_wasm_tools() and _has_wasmtime_py(),
+    "wasm-tools and/or wasmtime-py not installed",
+)
+class TestWasmTupleParamTypes(unittest.TestCase):
+    """Bare tuple types in function parameter / return positions
+    (``fun f(p: (String, Int)) -> (String, Int)``) lower to an
+    i32 pointer-shaped value at the Wasm level. Before
+    2026-05-26 the IR's ``_type_name`` helper had no
+    ``TupleType`` AST case and fell through to ``repr(te)``,
+    which stuffed the AST node's text into a ``ty`` string.
+    Wrapped forms (``List<(String, Int)>``) short-circuited
+    via the ``head in ("List", ...)`` branch in
+    ``_wasm_type`` and worked by accident; bare tuple params
+    surfaced the gap. Test pins the fix."""
+
+    def _run(self, src: str) -> int:
+        import wasmtime
+        _, types, ast_mod = _parse_lower(src)
+        blob = compile_wasm(ast_mod, types=types)
+        engine = wasmtime.Engine()
+        mod = wasmtime.Module(engine, blob)
+        store = wasmtime.Store(engine)
+        linker = wasmtime.Linker(engine)
+        instance = linker.instantiate(store, mod)
+        return instance.exports(store)["main"](store)
+
+    def test_tuple_param_and_return(self):
+        # main returns the second element of a (Int, Int) tuple
+        # passed through a helper. Pins the lowerer +
+        # _wasm_type contract for bare tuple types.
+        src = (
+            'fun second(t: (Int, Int)) -> Int\n'
+            '    let (a, b) = t\n'
+            '    return b\n'
+            'fun main() -> Int\n'
+            '    return second((10, 42))\n'
+        )
+        self.assertEqual(self._run(src), 42)
+
+
+@unittest.skipUnless(
+    _has_wasm_tools() and _has_wasmtime_py(),
+    "wasm-tools and/or wasmtime-py not installed",
+)
 class TestWasmGenericMonomorphisation(unittest.TestCase):
     """Generic free functions (``fun first<T>(items: List<T>) -> Option<T>``)
     used to crash the Wasm backend at layout time because the IR
