@@ -215,10 +215,39 @@ class Transpiler(
         # for all-caps constants and the bindings map is the proper
         # fix.
         self.bindings: dict[int, "object"] = bindings or {}
+        # Set of type names with a ``fun to_string(self) -> String``
+        # declared in an impl block. The interpolated-string emitter
+        # consults this to route ``${value}`` of such a type through
+        # ``{value.to_string()}`` (Display protocol) instead of the
+        # default ``{value}`` which falls through to dataclass repr.
+        # Populated in ``transpile()`` once the module is in hand.
+        self._display_types: set[str] = set()
 
     def transpile(self, module: A.Module) -> str:
         self.em.lines.append(_PRELUDE.format(filename=self.filename).rstrip())
         self.em.blank()
+
+        # Pre-pass: discover every (type_name) with a
+        # ``fun to_string(self) -> String`` declared in an impl
+        # block. Mirrors the Wasm emitter's `_method_table` lookup
+        # so ${struct} interpolation routes through the user's
+        # to_string() on both backends consistently.
+        for item in module.items:
+            if not isinstance(item, A.ImplBlock):
+                continue
+            for method in item.methods:
+                if method.name != "to_string":
+                    continue
+                non_self = [p for p in method.params if p.name != "self"]
+                if non_self:
+                    continue
+                ret = getattr(method, "return_type", None)
+                if (
+                    ret is not None
+                    and isinstance(ret, A.TypeName)
+                    and ret.name == "String"
+                ):
+                    self._display_types.add(item.type_name)
 
         # First pass: handle all imports, top-level consts and type decls.
         for item in module.items:

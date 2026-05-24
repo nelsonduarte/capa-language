@@ -2438,6 +2438,122 @@ class TestWasmComponentHost(unittest.TestCase):
     _has_wasm_tools() and _has_wasmtime_py(),
     "wasm-tools or wasmtime-py not installed",
 )
+class TestWasmStructToStringDisplay(unittest.TestCase):
+    """``${value}`` where ``value`` is a user struct routes through
+    ``value.to_string()`` when the struct declares
+    ``fun to_string(self) -> String`` in an impl block. Mirrors
+    the Python emitter's Display protocol (transpiler's f-string
+    emitter consults the same set of opted-in types), so both
+    backends produce identical output for any struct that opted
+    in. Structs that did NOT opt in fail Wasm emission with an
+    actionable error pointing at the protocol.
+
+    Closes the P1 "Wasm FormatStr on arbitrary user struct types"
+    item with an opt-in Display protocol rather than auto-derive,
+    which would have required reproducing Python's dataclass
+    repr (TypeName(field=value, ...)) byte-for-byte and would
+    have committed both backends to an arbitrary format choice.
+    """
+
+    def _run_capturing_stdout(self, src: str) -> str:
+        import io
+        import sys
+        from capa.runtime._wasm_host import WasmHost
+        _, types, ast_mod = _parse_lower(src)
+        blob = compile_wasm(ast_mod, types=types)
+        host = WasmHost()
+        out = io.StringIO()
+        saved = sys.stdout
+        sys.stdout = out
+        try:
+            host.run_main(blob)
+        finally:
+            sys.stdout = saved
+        return out.getvalue()
+
+    def test_struct_with_to_string_renders_via_display(self):
+        # The user's to_string() returns a formatted String; the
+        # Wasm emitter's FormatStr Display branch calls it and
+        # stashes the returned (ptr, len) pair.
+        src = (
+            "type Point { x: Int, y: Int }\n"
+            "impl Point\n"
+            "    fun to_string(self) -> String\n"
+            "        return \"Point<${self.x}, ${self.y}>\"\n"
+            "fun main(stdio: Stdio)\n"
+            "    let p = Point { x: 3, y: 4 }\n"
+            "    stdio.println(\"p = ${p}\")\n"
+        )
+        self.assertEqual(self._run_capturing_stdout(src), "p = Point<3, 4>\n")
+
+    def test_struct_without_to_string_raises_actionable_error(self):
+        # Pre-fix the message pointed at ${value.field}; post-fix
+        # it points at adding `fun to_string(self) -> String` in
+        # an impl block, matching the new Display protocol.
+        src = (
+            "type Point { x: Int, y: Int }\n"
+            "fun main(stdio: Stdio)\n"
+            "    let p = Point { x: 3, y: 4 }\n"
+            "    stdio.println(\"p = ${p}\")\n"
+        )
+        with self.assertRaises(WasmEmissionError) as ctx:
+            _, types, ast_mod = _parse_lower(src)
+            compile_wasm(ast_mod, types=types)
+        msg = str(ctx.exception)
+        self.assertIn("to_string", msg)
+        self.assertIn("Point", msg)
+
+    def test_struct_to_string_called_inside_method_body(self):
+        # Verifies the dispatch works when the interpolated value
+        # appears inside a regular function body, not just main.
+        src = (
+            "type Tag { name: String }\n"
+            "impl Tag\n"
+            "    fun to_string(self) -> String\n"
+            "        return \"[${self.name}]\"\n"
+            "fun describe(t: Tag) -> String\n"
+            "    return \"tag is ${t}\"\n"
+            "fun main(stdio: Stdio)\n"
+            "    let t = Tag { name: \"alpha\" }\n"
+            "    stdio.println(describe(t))\n"
+        )
+        self.assertEqual(
+            self._run_capturing_stdout(src), "tag is [alpha]\n",
+        )
+
+    def test_legacy_python_backend_uses_same_to_string(self):
+        # The Python transpiler's Display path mirrors the Wasm
+        # one; both should print the same `${p}` output for any
+        # struct that opted into the protocol. Smoke check via
+        # the in-process transpiler.
+        src = (
+            "type Point { x: Int, y: Int }\n"
+            "impl Point\n"
+            "    fun to_string(self) -> String\n"
+            "        return \"Point<${self.x}, ${self.y}>\"\n"
+            "fun main(stdio: Stdio)\n"
+            "    let p = Point { x: 3, y: 4 }\n"
+            "    stdio.println(\"p = ${p}\")\n"
+        )
+        from capa import analyze, transpile, Lexer, Parser
+        tokens = Lexer(src).lex()
+        module = Parser(tokens, source=src).parse_module()
+        result = analyze(module, source=src)
+        py = transpile(module, types=result.types)
+        # The emitted Python should wrap the interpolated `p` in
+        # a .to_string() call rather than letting it fall through
+        # to dataclass repr. The emitter parenthesises the
+        # expression before appending `.to_string()` so a complex
+        # sub-expression (e.g. a method call) stays self-contained.
+        self.assertIn("(p).to_string()", py)
+        # And the f-string interpolates the result, not the bare `p`.
+        self.assertIn("{(p).to_string()}", py)
+
+
+@unittest.skipUnless(
+    _has_wasm_tools() and _has_wasmtime_py(),
+    "wasm-tools or wasmtime-py not installed",
+)
 class TestWasmMatchEmission(unittest.TestCase):
     """Focused coverage for the dark code paths in
     ``capa/ir/_emit_wasm/_match.py``: the scrutinee-type-specific

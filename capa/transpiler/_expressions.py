@@ -418,7 +418,18 @@ class _ExpressionsMixin:
         type dispatch, e.g., ``s.length()`` -> ``len(s)``). Literal
         text between interpolations is escaped so it does not interfere
         with f-string syntax.
+
+        Display protocol: when an interpolated expression's type
+        declares a ``fun to_string(self) -> String`` method (tracked
+        in ``self._display_types`` by the pre-pass in
+        ``transpile()``), the emitter wraps the expression in a
+        ``.to_string()`` call instead of leaving the formatter to
+        fall through to dataclass repr. Mirrors the Wasm emitter's
+        FormatStr Display branch in ``_strings._emit_format_part_stash``
+        so ``${p}`` produces identical output on both backends for
+        any struct that opted in.
         """
+        from ..typesys import TyName
         parts: list[str] = []
         for part in e.parts:
             if isinstance(part, str):
@@ -435,6 +446,12 @@ class _ExpressionsMixin:
                 parts.append(escaped)
             else:
                 expr_code = self._emit_expr(part)
+                ty = self.types.get(id(part))
+                if (
+                    isinstance(ty, TyName)
+                    and ty.name in self._display_types
+                ):
+                    expr_code = f"({expr_code}).to_string()"
                 parts.append("{" + expr_code + "}")
         return 'f"' + "".join(parts) + '"'
 

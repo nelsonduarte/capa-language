@@ -9,6 +9,50 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+### Language: opt-in Display protocol via `to_string()`
+
+`${value}` interpolation of a user struct now routes through
+the struct's `fun to_string(self) -> String` method when
+declared in an impl block, on both the `--python` and `--wasm`
+backends. Closes the long-standing "Wasm FormatStr on arbitrary
+user struct types" P1 item without committing the language to
+an auto-derived default format.
+
+```capa
+type Point { x: Int, y: Int }
+impl Point
+    fun to_string(self) -> String
+        return "Point<${self.x}, ${self.y}>"
+
+fun main(stdio: Stdio)
+    let p = Point { x: 3, y: 4 }
+    stdio.println("${p}")    // prints: Point<3, 4>
+```
+
+Structs that do not declare `to_string()` keep their
+pre-existing behaviour:
+- `--python` falls through to dataclass repr (unchanged).
+- `--wasm` raises a `WasmEmissionError` with a message
+  pointing the user at the protocol (`Either declare
+  `fun to_string(self) -> String` in an impl block ..., or
+  interpolate a specific field`).
+
+Implementation:
+- Wasm emitter's `_emit_format_part_stash` consults
+  `_method_table[(ty_head, "to_string")]`; when present,
+  emits `call $<MangledName>` and stashes the multi-value
+  String return into the per-part `(ptr, len)` slot.
+- Python transpiler's pre-pass collects every type whose
+  impl block declares `fun to_string(self) -> String`; the
+  f-string emitter wraps interpolated expressions of those
+  types in `({expr}).to_string()` instead of leaving them
+  as bare `{expr}`.
+
+A formal `trait Display { fun to_string(self) -> String }`
+could supersede the duck-typed method check in a later slice;
+the current shape is minimal but already gives a single
+authoritative rendering rule shared by both backends.
+
 ### Soundness fixes surfaced by Wasm match coverage pass
 
 Two bugs surfaced while pushing

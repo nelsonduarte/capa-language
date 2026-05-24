@@ -968,8 +968,9 @@ class _StringEmissionMixin:
             # intentionally skipped here -- Python's ``__str__``
             # also drops it when empty, and the common formatter
             # usage is just ``${io}`` for a one-line diagnostic.
-            # General struct-to-string rendering for arbitrary
-            # user types stays a separate P1 item.
+            # IoError keeps the field-access fast path; user-
+            # defined structs route through the Display protocol
+            # below.
             # Push the receiver twice rather than stash through a
             # scratch local; avoids needing _collect_locals to
             # declare a new helper local just for this branch.
@@ -980,12 +981,35 @@ class _StringEmissionMixin:
             self._write("i32.load offset=4")  # message_len
             self._write(f"local.set $_fs_l{idx}")
             return
+        # Display protocol: if the value's type declares a
+        # ``fun to_string(self) -> String`` in an impl block, call
+        # it and use the returned String's (ptr, len) pair. The
+        # method appears in ``_method_table`` under the concrete
+        # type name (or its head when generic), populated by
+        # ``_build_method_table`` from every impl block. Mirrors
+        # the Python emitter's ``${v}`` -> ``{v.to_string()}``
+        # rewrite, so both backends agree on the formatting of
+        # any struct that opts in.
+        head = ty.split("<", 1)[0]
+        target = self._method_table.get((head, "to_string"))
+        if target is not None:
+            self._push_value(v)
+            self._write(f"call ${target}")
+            # call returns (i32 i32) = (ptr, len) multi-value; len
+            # is on top of stack, ptr below. Stash in the same
+            # order as the Int / Float / Bool branches above.
+            self._write(f"local.set $_fs_l{idx}")
+            self._write(f"local.set $_fs_p{idx}")
+            return
         raise WasmEmissionError(
-            f"Phase 6F: FormatStr value of type {ty!r} not supported "
-            f"(Int / Bool / Float / String / IoError only; arbitrary "
-            f"struct-to-string interpolation is a future feature). "
-            f"Workaround: interpolate a specific String field, e.g. "
-            f"${{e.message}} instead of ${{e}}."
+            f"FormatStr value of type {ty!r} not supported: built-in "
+            f"types (Int / Bool / Float / String / IoError) and any "
+            f"user type that declares a `fun to_string(self) -> "
+            f"String` method are rendered automatically; other "
+            f"structs are not. Either declare "
+            f"`fun to_string(self) -> String` in an impl block for "
+            f"{ty!r}, or interpolate a specific field "
+            f"(e.g. ${{value.name}} instead of ${{value}})."
         )
 
     def _emit_string_assign(self, dst: str, src: Value) -> None:

@@ -71,14 +71,28 @@ Strengthens the capability + supply-chain claim, but isn't on
 the current Wasm critical path.
 
 
-- [ ] **Wasm backend: FormatStr on arbitrary user struct types**.
-  IoError landed 2026-05-27 (special case: read ``message``
-  field at offset 0). Generalising to any struct that
-  declares ``to_string()`` (or every struct with a single
-  String field, or a per-type derived ``__str__`` analog)
-  is the open design question; the error message at the
-  emit site now points the user at ``${e.message}`` as the
-  near-term workaround for non-IoError structs. ⏱ unknown.
+- [x] **Wasm backend: FormatStr on arbitrary user struct types**
+  (closed 2026-05-24). Design decision: opt-in Display protocol
+  rather than auto-derive. A struct that declares
+  ``fun to_string(self) -> String`` in an impl block opts in;
+  both backends honour the method consistently
+  (``${value}`` -> ``value.to_string()`` rewrite at emit time).
+  Structs without it keep their pre-existing behaviour:
+  ``--python`` falls through to dataclass repr (unchanged); the
+  Wasm emitter raises a `WasmEmissionError` whose message
+  points the user at the protocol ("declare
+  `fun to_string(self) -> String` in an impl block for X") or
+  at field-specific interpolation as a workaround. Auto-derive
+  was rejected because reproducing Python's dataclass repr
+  byte-for-byte from the Wasm side would have been months of
+  brittle work, and inventing a different default format would
+  have created backend output drift on the existing corpus.
+  Coverage: 4 new `TestWasmStructToStringDisplay` cases (Wasm
+  + Python display round-trip; opted-in struct in main and in
+  a callee; actionable error for non-opted-in structs).
+  Suite: 1345 -> 1349. The Display protocol is itself a small
+  language feature; a formal `trait Display` could supersede
+  the duck-typed method check in a later slice.
 
 - [x] **CIR coverage gap** (closed 2026-05-24). CIR now lowers
   46 of 46 analysable examples. `TuplePat` was already supported
