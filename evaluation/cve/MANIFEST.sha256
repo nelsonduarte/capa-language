@@ -1,0 +1,25 @@
+# NVD JSON 2.0 yearly feeds used by the CVE classification study.
+#
+# Each line: <sha256>  <filename>  <source-url>
+#
+# The sha256 column is filled in by the first successful
+# download_nvd run; subsequent runs re-verify and refuse to
+# silently re-download a mismatch. The committed checksums lock
+# the dataset to a known good snapshot so paper figures stay
+# reproducible across re-runs.
+#
+# Snapshot date: 2026-05-24 (first download run).
+#
+# Total cache size: ~140 MB; cache/ is gitignored, not in the
+# repo. Anyone with the venv + network can re-run
+# `python -m evaluation.cve.download_nvd` to recreate it
+# bit-for-bit.
+
+# checksums populated by first run:
+140fd337eefae01b20ae681e7d7a410c75403268d689254fb953b9bf7c11f2f0  nvdcve-2.0-2018.json.gz  https://nvd.nist.gov/feeds/json/cve/2.0/nvdcve-2.0-2018.json.gz
+f4da3ca1391ed4cf14ca846b4308e97e4b314f25f3049ccd84a1801f1e6facc9  nvdcve-2.0-2019.json.gz  https://nvd.nist.gov/feeds/json/cve/2.0/nvdcve-2.0-2019.json.gz
+61ffbb20b33ba4dd0e6348ea6ea8786514993228a353dc418bda76a3656e812f  nvdcve-2.0-2020.json.gz  https://nvd.nist.gov/feeds/json/cve/2.0/nvdcve-2.0-2020.json.gz
+1029a58fa7799f5c063939fe3d1dce3f2c40aa340f4af24199de3e24698c5a96  nvdcve-2.0-2021.json.gz  https://nvd.nist.gov/feeds/json/cve/2.0/nvdcve-2.0-2021.json.gz
+64d623708985d68b47be628abbd247038f68fa172a5b9c48f66adf686bd612b4  nvdcve-2.0-2022.json.gz  https://nvd.nist.gov/feeds/json/cve/2.0/nvdcve-2.0-2022.json.gz
+63d27412a17ff67df62c6fbd648254d9438f79262325dd47828a8c839a1e0970  nvdcve-2.0-2023.json.gz  https://nvd.nist.gov/feeds/json/cve/2.0/nvdcve-2.0-2023.json.gz
+e82086ab5cbb0c4b1726c66ea95afd7f58f5319be8f165fd2032b79b8dbcfcb6  nvdcve-2.0-2024.json.gz  https://nvd.nist.gov/feeds/json/cve/2.0/nvdcve-2.0-2024.json.gz
