@@ -18,7 +18,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from evaluation.cve import classify, download_nvd
+from evaluation.cve import classify, download_nvd, summary
 
 
 class TestNvdDownloaderHelpers(unittest.TestCase):
@@ -156,6 +156,37 @@ class TestClassifierHelpers(unittest.TestCase):
         }
         for d in first:
             self.assertIn(d.bucket, valid_buckets)
+
+
+class TestSummaryAggregation(unittest.TestCase):
+    """Tests for the summary aggregator. Uses inline mock rows so
+    they do not depend on the live decisions.csv."""
+
+    def test_aggregate_counts_per_year_bucket(self):
+        rows = [
+            {"year": "2022", "bucket": "STRUCTURAL_REJECT"},
+            {"year": "2022", "bucket": "STRUCTURAL_REJECT"},
+            {"year": "2022", "bucket": "ATTENUATION_MITIGATED"},
+            {"year": "2023", "bucket": "STRUCTURAL_REJECT"},
+            {"year": "2023", "bucket": "OUT_OF_SCOPE_MEMORY"},
+        ]
+        aggs, totals = summary._aggregate(rows)
+        self.assertEqual(totals["STRUCTURAL_REJECT"], 3)
+        self.assertEqual(totals["ATTENUATION_MITIGATED"], 1)
+        self.assertEqual(totals["OUT_OF_SCOPE_MEMORY"], 1)
+        as_set = {(a.year, a.bucket, a.count) for a in aggs}
+        self.assertIn((2022, "STRUCTURAL_REJECT", 2), as_set)
+        self.assertIn((2023, "STRUCTURAL_REJECT", 1), as_set)
+
+    def test_bucket_order_contains_all_taxonomy_keys(self):
+        for b in classify._auto_bucket({
+            "descriptions": [{"lang": "en", "value": "buffer overflow"}],
+            "weaknesses": [{"description": [{"lang": "en", "value": "CWE-94"}]}],
+        }):
+            pass
+        # All six taxonomy keys must have a description string.
+        for b in summary.BUCKET_ORDER:
+            self.assertIn(b, summary.BUCKET_DESCRIPTION)
 
 
 if __name__ == "__main__":

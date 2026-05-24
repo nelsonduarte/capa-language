@@ -209,37 +209,63 @@ def _passes_filter(cve: dict) -> bool:
 
 def _auto_bucket(cve: dict) -> tuple[str, str]:
     """Return (bucket, reason). The bucket is one of the six
-    taxonomy strings; reason is a one-line trace for the CSV."""
+    taxonomy strings; reason is a one-line trace for the CSV.
+
+    Resolution order:
+
+    1. CWE-decisive structural CWEs (78, 77, 94, 502, 611, 918,
+       829, 1357) bind first. These categories' definitions
+       already constrain the bug class enough that downstream
+       keyword matches on the *consequence* (e.g. "information
+       disclosure" as the impact of an XXE) cannot override the
+       structural-reject classification. Capa's discipline
+       rejects the *means*, regardless of the consequence.
+    2. Memory / below-language keyword overrides apply BEFORE the
+       attenuation set. If a path-traversal CVE description
+       screams 'use-after-free' the right call is memory-bug.
+    3. Attenuation CWEs (22, 345, 444, 506, 494) bind last among
+       the CWE classifications.
+    4. Logic-keyword override is reserved for CVEs that have no
+       structural/attenuation CWE but still slipped through some
+       reference / CVSS filter; treat them as logic-layer issues.
+    """
     desc = _extract_description(cve)
     cwes = set(_extract_cwes(cve))
 
-    if RE_MEMORY.search(desc):
-        return ("OUT_OF_SCOPE_MEMORY", "description matches memory-bug keywords")
-    if RE_LOGIC.search(desc):
-        return ("OUT_OF_SCOPE_LOGIC", "description matches logic/auth keywords")
-    if RE_BELOW_LANG.search(desc):
-        return ("OUT_OF_SCOPE_BELOW_LANG", "description matches below-language artefact")
-
     structural = cwes & CWE_STRUCTURAL
     attenuated = cwes & CWE_ATTENUATION
-    if structural and not attenuated:
+
+    # Structural CWEs bind first: the means-of-attack is the
+    # classification, the impact is not. (Pre-tightening, the
+    # description-keyword override misrouted CWE-611 XXE entries
+    # to OUT_OF_SCOPE_LOGIC because their impact line mentioned
+    # 'information disclosure'.)
+    if structural and not RE_MEMORY.search(desc) and not RE_BELOW_LANG.search(desc):
         return (
             "STRUCTURAL_REJECT",
             f"CWE match in structural set: {sorted(structural)}",
         )
-    if attenuated and not structural:
-        return (
-            "ATTENUATION_MITIGATED",
-            f"CWE match in attenuation set: {sorted(attenuated)}",
-        )
+
+    if RE_MEMORY.search(desc):
+        return ("OUT_OF_SCOPE_MEMORY", "description matches memory-bug keywords")
+    if RE_BELOW_LANG.search(desc):
+        return ("OUT_OF_SCOPE_BELOW_LANG", "description matches below-language artefact")
+
     if structural and attenuated:
-        # Prefer the stricter classification (STRUCTURAL_REJECT)
-        # so the manual reviewer sees the tighter claim first.
+        # Mixed: prefer the stricter STRUCTURAL_REJECT.
         return (
             "STRUCTURAL_REJECT",
             f"mixed CWEs; structural={sorted(structural)} "
             f"attenuated={sorted(attenuated)}; defaulted to STRUCTURAL_REJECT",
         )
+    if attenuated:
+        return (
+            "ATTENUATION_MITIGATED",
+            f"CWE match in attenuation set: {sorted(attenuated)}",
+        )
+
+    if RE_LOGIC.search(desc):
+        return ("OUT_OF_SCOPE_LOGIC", "description matches logic/auth keywords")
     return ("UNCLEAR", "passed filter but no decisive CWE / keyword match")
 
 

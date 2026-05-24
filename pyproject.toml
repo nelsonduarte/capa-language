@@ -36,6 +36,11 @@ lsp = ["pygls>=2.0"]
 # `tests/test_properties.py` that fuzz the lexer / parser /
 # formatter with Hypothesis.
 test = ["pytest>=7", "hypothesis>=6"]
+# Install with: `pip install -e .[eval]`. Brings the matplotlib +
+# numpy stack used by the empirical-study scripts under
+# `evaluation/`. The core compiler does not depend on these; they
+# are only needed to regenerate the paper figures.
+eval = ["matplotlib>=3.8"]
 
 [project.scripts]
 capa = "capa.cli:main"

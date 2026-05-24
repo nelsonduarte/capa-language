@@ -53,10 +53,22 @@ are produced from these CSVs.
 | Slice | Status | Notes |
 |---|---|---|
 | 0 (soundness fix) | done 2026-05-24 | capability-forge bug found by slice-1 smoke before slice 1 even completed; fix in commit 67d9878 |
-| 1 (scaffold + smoke) | in progress | this commit |
-| 2 (NVD download) | pending | |
-| 3 (auto-classify) | pending | |
-| 4 (manual + figures) | pending | |
+| 1 (scaffold + smoke) | done 2026-05-24 | fuzz harness lives in [`fuzz/`](fuzz/), category `cat_fs_traversal` x 3 attacks 3/3 rejected |
+| 2 (NVD download) | done 2026-05-24 | 7 yearly feeds pinned in [`cve/MANIFEST.sha256`](cve/MANIFEST.sha256), 95 MB cache (gitignored) |
+| 3 (auto-classify) | done 2026-05-24 | N=150 sample, 4305 candidates filtered; preliminary headline 97.3% Capa-relevant |
+| 4 (manual + figures) | figures done 2026-05-24; manual review pending | [`cve/summary.md`](cve/summary.md) + [`cve/summary.png`](cve/summary.png) auto-generated. The manual reviewer pass on `decisions.csv` STRUCTURAL_REJECT / ATTENUATION_MITIGATED rows is the remaining work |
 | 5 (runtime baselines) | pending | |
 | 6 (full fuzz panel) | pending | |
 | 7 (paper polish) | pending | |
+
+## Caveats for paper citation
+
+The slice-3 / slice-4 CVE figures are the output of an
+**automatic first-pass classifier**, not human review. Any paper
+text that cites the 97.3% headline must declare the
+single-reviewer + automatic-first-pass status as a
+threat-to-validity (see paper §7). The manual review will refine
+the load-bearing buckets and is expected to shift the number by
+a few percentage points in either direction. Re-run
+`python -m evaluation.cve.summary` after any manual edit to
+`decisions.csv` to regenerate the figure.
