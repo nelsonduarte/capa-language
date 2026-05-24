@@ -155,11 +155,25 @@ the current Wasm critical path.
     parent's coverage instance, which is why the gap had
     stayed open).
     Suite: 1299 → 1318.
-  Still open and worth a future pass:
-  `capa/lsp/server.py` (12%, needs an in-process LSP harness),
-  `capa/repl.py` (30%, needs an interactive-IO harness). Each
-  is a meaningful infrastructure investment on top of writing
-  tests, so they belong in their own slices. ⏱ ~4-6h each.
+  - 2026-05-24 (4): `capa/lsp/server.py` lifted 12% → 97% via
+    27 new cases. `TestLspServerHandlersInProcess` builds the
+    real LanguageServer, stubs the workspace + publish +
+    show_message, then drives every `@server.feature(...)`
+    handler directly via `server.protocol.fm.features[...]`
+    (pygls 2.x's feature map). Handlers come back as
+    `functools.partial` with the server pre-bound, so each
+    call is just `handler(params)`. Covers did_open / did_change
+    / did_save / did_close, hover, definition, references,
+    document_symbol, code_action, semantic_tokens_full,
+    completion, prepare_rename, rename, plus the small URI /
+    Pos translation helpers and the `serve()` ImportError
+    fallback. Final 5 missed lines are 3 trivial early-returns
+    + the 2-line `start_io()` blocking loop -- not worth
+    chasing. Suite: 1318 → 1345.
+  Still open:
+  `capa/repl.py` (30%, needs an interactive-IO harness; a
+  meaningful infrastructure investment on top of writing
+  tests, so belongs in its own slice). ⏱ ~4-6h.
 
 - [~] **CycloneDX / SPDX parsers — pending optional fields**.
   `examples/cyclonedx_parser.capa` and

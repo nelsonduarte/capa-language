@@ -22,6 +22,470 @@ except ImportError:
     _HAVE_LSP = False
 
 
+try:
+    import pygls  # noqa: F401
+    _HAVE_PYGLS = True
+except ImportError:
+    _HAVE_PYGLS = False
+
+
+@unittest.skipUnless(
+    _HAVE_LSP and _HAVE_PYGLS,
+    "requires pygls + lsprotocol (pip install '.[lsp]')",
+)
+class TestLspServerHandlersInProcess(unittest.TestCase):
+    """In-process coverage for the handlers built inside
+    ``capa.lsp.server._build_server()``. The earlier suites
+    (``TestHover``, ``TestGoToDefinition``, ...) hit the
+    ``compute_*`` helpers directly through the back-compat shim;
+    that misses the server itself, which translates between
+    pygls' LSP types and the compute helpers' Capa-native types.
+
+    The harness builds the real LanguageServer, then stubs the
+    workspace + publish_diagnostics + show_message so each
+    feature handler can be invoked with mock LSP params without
+    a JSON-RPC round-trip. Handlers are retrieved from
+    ``server.protocol.fm.features`` (pygls 2.x's feature map).
+    """
+
+    def setUp(self):
+        from unittest.mock import MagicMock
+        from capa.lsp.server import _build_server
+        self.server = _build_server()
+        # Stub workspace: callers do ``ls.workspace.get_text_document(uri)``
+        # then ``.source`` on the result.
+        self.workspace = MagicMock()
+        self.doc = MagicMock()
+        self.workspace.get_text_document.return_value = self.doc
+        self.server.protocol._workspace = self.workspace
+        # Capture published diagnostics + show_message calls so tests
+        # can assert against them without a JSON-RPC channel.
+        self.published: list = []
+        self.server.text_document_publish_diagnostics = (
+            lambda params: self.published.append(params)
+        )
+        self.messages: list = []
+        self.server.show_message = (
+            lambda msg, kind=None: self.messages.append((msg, kind))
+        )
+
+    # ---- helpers ---------------------------------------------
+
+    def _handler(self, method: str):
+        """Fetch a registered handler by LSP method name. KeyError
+        flags a regression (a handler was renamed or removed)."""
+        return self.server.protocol.fm.features[method]
+
+    def _set_source(self, source: str) -> None:
+        """Replace the fake doc's source so the next handler call
+        sees the new content."""
+        self.doc.source = source
+
+    def _params_position(self, line: int, char: int):
+        from lsprotocol import types as lsp
+        return lsp.Position(line=line, character=char)
+
+    def _text_doc_id(self):
+        from lsprotocol import types as lsp
+        return lsp.TextDocumentIdentifier(uri="file:///t.capa")
+
+    # ---- did_open / did_change / did_save / did_close --------
+
+    def test_did_open_publishes_diagnostics(self):
+        from lsprotocol import types as lsp
+        params = lsp.DidOpenTextDocumentParams(
+            text_document=lsp.TextDocumentItem(
+                uri="file:///t.capa",
+                language_id="capa",
+                version=1,
+                text="fun main(stdio: Stdio)\n    let x = undefined_thing\n",
+            )
+        )
+        self._handler(lsp.TEXT_DOCUMENT_DID_OPEN)(params)
+        self.assertEqual(len(self.published), 1)
+        diags = self.published[0].diagnostics
+        self.assertTrue(any("undefined" in d.message for d in diags))
+
+    def test_did_change_re_publishes_from_workspace_doc(self):
+        from lsprotocol import types as lsp
+        self._set_source(
+            "fun main(stdio: Stdio)\n    let y = oops\n"
+        )
+        params = lsp.DidChangeTextDocumentParams(
+            text_document=lsp.VersionedTextDocumentIdentifier(
+                uri="file:///t.capa", version=2,
+            ),
+            content_changes=[],
+        )
+        self._handler(lsp.TEXT_DOCUMENT_DID_CHANGE)(params)
+        self.assertEqual(len(self.published), 1)
+        self.assertTrue(any(
+            "undefined" in d.message
+            for d in self.published[0].diagnostics
+        ))
+
+    def test_did_save_re_publishes(self):
+        from lsprotocol import types as lsp
+        self._set_source(
+            "fun main(stdio: Stdio)\n    stdio.println(\"ok\")\n"
+        )
+        params = lsp.DidSaveTextDocumentParams(
+            text_document=self._text_doc_id(),
+        )
+        self._handler(lsp.TEXT_DOCUMENT_DID_SAVE)(params)
+        self.assertEqual(len(self.published), 1)
+        self.assertEqual(self.published[0].diagnostics, [])
+
+    def test_did_close_clears_diagnostics(self):
+        from lsprotocol import types as lsp
+        params = lsp.DidCloseTextDocumentParams(
+            text_document=self._text_doc_id(),
+        )
+        self._handler(lsp.TEXT_DOCUMENT_DID_CLOSE)(params)
+        self.assertEqual(len(self.published), 1)
+        self.assertEqual(self.published[0].diagnostics, [])
+
+    # ---- hover -----------------------------------------------
+
+    def test_hover_on_reference_returns_markdown(self):
+        from lsprotocol import types as lsp
+        self._set_source(
+            "fun greet(name: String) -> String\n"
+            "    return \"hi \" + name\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(greet(\"x\"))\n"
+        )
+        # Cursor over `greet` in `greet("x")` (line 4 col 19, 0-based 3/18).
+        params = lsp.HoverParams(
+            text_document=self._text_doc_id(),
+            position=self._params_position(3, 18),
+        )
+        result = self._handler(lsp.TEXT_DOCUMENT_HOVER)(params)
+        self.assertIsNotNone(result)
+        self.assertIn("greet", result.contents.value)
+
+    def test_hover_on_whitespace_returns_none(self):
+        from lsprotocol import types as lsp
+        self._set_source("fun main(stdio: Stdio)\n    stdio.println(\"x\")\n")
+        params = lsp.HoverParams(
+            text_document=self._text_doc_id(),
+            position=self._params_position(0, 0),  # column 0, before `fun`
+        )
+        result = self._handler(lsp.TEXT_DOCUMENT_HOVER)(params)
+        self.assertIsNone(result)
+
+    # ---- definition + references -----------------------------
+
+    def test_definition_resolves_to_decl_site(self):
+        from lsprotocol import types as lsp
+        self._set_source(
+            "fun greet(name: String) -> String\n"
+            "    return name\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(greet(\"x\"))\n"
+        )
+        # Cursor over the `greet` reference on line 4.
+        params = lsp.DefinitionParams(
+            text_document=self._text_doc_id(),
+            position=self._params_position(3, 18),
+        )
+        result = self._handler(lsp.TEXT_DOCUMENT_DEFINITION)(params)
+        self.assertIsNotNone(result)
+        self.assertEqual(result.range.start.line, 0)  # `fun greet(...)` is line 1 (0-based 0)
+
+    def test_definition_on_unknown_returns_none(self):
+        from lsprotocol import types as lsp
+        self._set_source("fun main(stdio: Stdio)\n    stdio.println(\"x\")\n")
+        params = lsp.DefinitionParams(
+            text_document=self._text_doc_id(),
+            position=self._params_position(0, 0),
+        )
+        result = self._handler(lsp.TEXT_DOCUMENT_DEFINITION)(params)
+        self.assertIsNone(result)
+
+    def test_references_returns_locations(self):
+        from lsprotocol import types as lsp
+        self._set_source(
+            "fun greet(name: String) -> String\n"
+            "    return name\n"
+            "fun main(stdio: Stdio)\n"
+            "    let a = greet(\"x\")\n"
+            "    let b = greet(\"y\")\n"
+            "    stdio.println(a)\n"
+            "    stdio.println(b)\n"
+        )
+        params = lsp.ReferenceParams(
+            text_document=self._text_doc_id(),
+            position=self._params_position(3, 12),
+            context=lsp.ReferenceContext(include_declaration=False),
+        )
+        result = self._handler(lsp.TEXT_DOCUMENT_REFERENCES)(params)
+        self.assertIsNotNone(result)
+        self.assertGreaterEqual(len(result), 2)
+
+    def test_references_default_includes_declaration(self):
+        from lsprotocol import types as lsp
+        self._set_source(
+            "fun greet(name: String) -> String\n"
+            "    return name\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(greet(\"x\"))\n"
+        )
+        # Construct ReferenceParams without context to hit the
+        # `include_decl=True` default branch on line 191.
+        params = lsp.ReferenceParams(
+            text_document=self._text_doc_id(),
+            position=self._params_position(3, 18),
+            context=lsp.ReferenceContext(include_declaration=True),
+        )
+        # Force the include_declaration default branch by null-ing context.
+        params.context = None
+        result = self._handler(lsp.TEXT_DOCUMENT_REFERENCES)(params)
+        self.assertIsNotNone(result)
+
+    # ---- document_symbol -------------------------------------
+
+    def test_document_symbol_lists_top_level_items(self):
+        from lsprotocol import types as lsp
+        self._set_source(
+            "type Pair { x: Int, y: Int }\n"
+            "fun add(a: Int, b: Int) -> Int\n"
+            "    return a + b\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"x\")\n"
+        )
+        params = lsp.DocumentSymbolParams(text_document=self._text_doc_id())
+        syms = self._handler(lsp.TEXT_DOCUMENT_DOCUMENT_SYMBOL)(params)
+        names = {s.name for s in syms}
+        self.assertIn("Pair", names)
+        self.assertIn("add", names)
+        self.assertIn("main", names)
+
+    # ---- code_action -----------------------------------------
+
+    def test_code_action_offers_quickfix_for_did_you_mean(self):
+        from lsprotocol import types as lsp
+        self._set_source(
+            "fun main(stdio: Stdio)\n"
+            "    let n = \"hi\".lenght()\n"
+            "    stdio.println(\"${n}\")\n"
+        )
+        # Provide a diagnostic mirroring what `_refresh` would publish
+        # so `compute_code_actions` finds a matching quickfix.
+        diag = lsp.Diagnostic(
+            range=lsp.Range(
+                start=lsp.Position(line=1, character=17),
+                end=lsp.Position(line=1, character=24),
+            ),
+            severity=lsp.DiagnosticSeverity.Error,
+            source="capa-lsp",
+            message="unknown String method 'lenght'; did you mean 'length'?",
+        )
+        params = lsp.CodeActionParams(
+            text_document=self._text_doc_id(),
+            range=diag.range,
+            context=lsp.CodeActionContext(diagnostics=[diag]),
+        )
+        result = self._handler(lsp.TEXT_DOCUMENT_CODE_ACTION)(params)
+        self.assertIsNotNone(result)
+        self.assertTrue(any("length" in a.title for a in result))
+
+    def test_code_action_with_no_diagnostics_returns_none(self):
+        from lsprotocol import types as lsp
+        self._set_source("fun main(stdio: Stdio)\n    stdio.println(\"ok\")\n")
+        params = lsp.CodeActionParams(
+            text_document=self._text_doc_id(),
+            range=lsp.Range(
+                start=lsp.Position(line=0, character=0),
+                end=lsp.Position(line=0, character=0),
+            ),
+            context=lsp.CodeActionContext(diagnostics=[]),
+        )
+        result = self._handler(lsp.TEXT_DOCUMENT_CODE_ACTION)(params)
+        self.assertIsNone(result)
+
+    # ---- semantic_tokens -------------------------------------
+
+    def test_semantic_tokens_full_returns_data(self):
+        from lsprotocol import types as lsp
+        self._set_source(
+            "fun main(stdio: Stdio)\n"
+            "    let x = 42\n"
+            "    stdio.println(\"${x}\")\n"
+        )
+        params = lsp.SemanticTokensParams(text_document=self._text_doc_id())
+        result = self._handler(lsp.TEXT_DOCUMENT_SEMANTIC_TOKENS_FULL)(params)
+        self.assertIsNotNone(result)
+        # data is a flat list of ints; should be non-empty for this source.
+        self.assertGreater(len(result.data), 0)
+
+    # ---- completion ------------------------------------------
+
+    def test_completion_returns_items(self):
+        from lsprotocol import types as lsp
+        self._set_source(
+            "fun main(stdio: Stdio)\n"
+            "    let x = \n"
+        )
+        params = lsp.CompletionParams(
+            text_document=self._text_doc_id(),
+            position=self._params_position(1, 12),
+        )
+        result = self._handler(lsp.TEXT_DOCUMENT_COMPLETION)(params)
+        self.assertIsNotNone(result)
+        # We at least get keyword completions like `true`, `false`, ...
+        self.assertGreater(len(result), 0)
+
+    # ---- prepare_rename / rename -----------------------------
+
+    def test_prepare_rename_returns_range_for_valid_target(self):
+        from lsprotocol import types as lsp
+        self._set_source(
+            "fun greet(name: String) -> String\n"
+            "    return name\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(greet(\"x\"))\n"
+        )
+        params = lsp.PrepareRenameParams(
+            text_document=self._text_doc_id(),
+            position=self._params_position(3, 18),
+        )
+        result = self._handler(lsp.TEXT_DOCUMENT_PREPARE_RENAME)(params)
+        self.assertIsNotNone(result)
+        self.assertEqual(result.start.line, 3)
+
+    def test_prepare_rename_on_invalid_returns_none(self):
+        from lsprotocol import types as lsp
+        self._set_source("fun main(stdio: Stdio)\n    stdio.println(\"ok\")\n")
+        params = lsp.PrepareRenameParams(
+            text_document=self._text_doc_id(),
+            position=self._params_position(0, 0),
+        )
+        result = self._handler(lsp.TEXT_DOCUMENT_PREPARE_RENAME)(params)
+        self.assertIsNone(result)
+
+    def test_rename_produces_workspace_edit(self):
+        from lsprotocol import types as lsp
+        self._set_source(
+            "fun greet(name: String) -> String\n"
+            "    return name\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(greet(\"x\"))\n"
+        )
+        params = lsp.RenameParams(
+            text_document=self._text_doc_id(),
+            position=self._params_position(3, 18),
+            new_name="hello",
+        )
+        result = self._handler(lsp.TEXT_DOCUMENT_RENAME)(params)
+        self.assertIsNotNone(result)
+        self.assertIn("file:///t.capa", result.changes)
+        edits = result.changes["file:///t.capa"]
+        self.assertTrue(all(e.new_text == "hello" for e in edits))
+        self.assertGreaterEqual(len(edits), 2)  # decl + at least one use
+
+    def test_rename_to_invalid_identifier_shows_warning(self):
+        from lsprotocol import types as lsp
+        self._set_source(
+            "fun greet(name: String) -> String\n"
+            "    return name\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(greet(\"x\"))\n"
+        )
+        params = lsp.RenameParams(
+            text_document=self._text_doc_id(),
+            position=self._params_position(3, 18),
+            new_name="123_not_an_ident",
+        )
+        result = self._handler(lsp.TEXT_DOCUMENT_RENAME)(params)
+        self.assertIsNone(result)
+        self.assertEqual(len(self.messages), 1)
+        msg, kind = self.messages[0]
+        self.assertIn("123_not_an_ident", msg)
+
+
+@unittest.skipUnless(
+    _HAVE_LSP and _HAVE_PYGLS,
+    "requires pygls + lsprotocol (pip install '.[lsp]')",
+)
+class TestLspServerHelpers(unittest.TestCase):
+    """Direct coverage for the small helpers around the handler
+    body: URI parsing, Pos -> LSP Range translation, and the
+    `serve()` early-exit when pygls is missing."""
+
+    def test_uri_to_filename_strips_file_prefix(self):
+        from capa.lsp.server import _uri_to_filename
+        self.assertEqual(
+            _uri_to_filename("file:///tmp/a.capa"), "/tmp/a.capa",
+        )
+
+    def test_uri_to_filename_strips_windows_drive_slash(self):
+        from capa.lsp.server import _uri_to_filename
+        self.assertEqual(
+            _uri_to_filename("file:///c:/x/y.capa"), "c:/x/y.capa",
+        )
+
+    def test_uri_to_filename_unquotes_percent_escapes(self):
+        from capa.lsp.server import _uri_to_filename
+        self.assertEqual(
+            _uri_to_filename("file:///tmp/has%20space.capa"),
+            "/tmp/has space.capa",
+        )
+
+    def test_uri_to_filename_passthrough_non_file_scheme(self):
+        from capa.lsp.server import _uri_to_filename
+        # untitled:* and other schemes pass through unchanged so
+        # the editor's own identifier reaches the error message.
+        self.assertEqual(
+            _uri_to_filename("untitled:Untitled-1"), "untitled:Untitled-1",
+        )
+
+    def test_to_lsp_position_is_zero_based(self):
+        from capa.lsp.server import _to_lsp_position
+        from capa.tokens import Pos
+        p = _to_lsp_position(Pos(line=3, col=5, offset=0, filename="t.capa"))
+        self.assertEqual(p.line, 2)
+        self.assertEqual(p.character, 4)
+
+    def test_to_lsp_range_one_char_when_no_end(self):
+        from capa.lsp.server import _to_lsp_range
+        from capa.tokens import Pos
+        r = _to_lsp_range(Pos(line=2, col=3, offset=0, filename="t.capa"))
+        self.assertEqual(r.start.line, 1)
+        self.assertEqual(r.start.character, 2)
+        self.assertEqual(r.end.line, 1)
+        self.assertEqual(r.end.character, 3)
+
+    def test_to_lsp_range_uses_end_pos_when_given(self):
+        from capa.lsp.server import _to_lsp_range
+        from capa.tokens import Pos
+        r = _to_lsp_range(
+            Pos(line=2, col=3, offset=0, filename="t.capa"),
+            Pos(line=2, col=10, offset=0, filename="t.capa"),
+        )
+        self.assertEqual(r.end.character, 9)
+
+    def test_serve_returns_2_when_pygls_missing(self):
+        # Force the ImportError branch of `serve()` by patching
+        # `_build_server` to raise. The function's contract is
+        # "exit code 2 + a stderr message" when pygls is absent;
+        # the patch simulates that without uninstalling pygls.
+        import io
+        import sys
+        from unittest.mock import patch
+        from capa.lsp import server as server_mod
+
+        def _raise_import_error():
+            raise ImportError("pygls is not installed")
+
+        captured = io.StringIO()
+        with patch.object(server_mod, "_build_server", _raise_import_error):
+            with patch.object(sys, "stderr", captured):
+                rc = server_mod.serve()
+        self.assertEqual(rc, 2)
+        self.assertIn("pygls", captured.getvalue())
+
+
 @unittest.skipUnless(_HAVE_LSP, "requires `pygls` extra (pip install '.[lsp]')")
 class TestComputeDiagnostics(unittest.TestCase):
     def setUp(self):
