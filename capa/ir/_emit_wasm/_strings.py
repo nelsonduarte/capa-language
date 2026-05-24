@@ -809,6 +809,16 @@ class _StringEmissionMixin:
             self._write(f"local.get ${v.name}_ptr")
             self._write(f"local.get ${v.name}_len")
             return
+        if v.kind == "global" and v.name in self._const_values:
+            # Top-level ``pub const NAME: String = "..."``. The
+            # module-init pass populated ``_const_values`` with
+            # the RHS literal Value; recurse to land in the
+            # ``lit_str`` branch above, which interns the bytes
+            # and pushes (ptr, len). Mirrors how the packed-i64
+            # ``_push_value`` path handles the same kind via
+            # the same dict.
+            self._push_string_value_as_ptr_len(self._const_values[v.name])
+            return
         raise WasmEmissionError(
             f"cannot push string Value of kind {v.kind!r} as (ptr, len)"
         )
@@ -984,6 +994,14 @@ class _StringEmissionMixin:
             self._write(f"local.set ${dst}_ptr")
             self._write("i32.const 0")
             self._write(f"local.set ${dst}_len")
+            return
+        if src.kind == "global" and src.name in self._const_values:
+            # Top-level ``pub const NAME: String = "..."``. The
+            # module-init pre-interned the RHS literal; recurse
+            # via the lit_str branch above to lift the
+            # (offset, length) into the dst's ${name}_ptr /
+            # ${name}_len locals.
+            self._emit_string_assign(dst, self._const_values[src.name])
             return
         raise WasmEmissionError(
             f"cannot bind String dst {dst!r} from value {src!r}"

@@ -9,6 +9,46 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+### Wasm: top-level String const support end-to-end
+
+`pub const SCHEMA: String = "1.0"` referenced from any
+function body used to fail the Wasm backend with one of three
+errors depending on the use shape:
+
+- ``cannot push string Value of kind 'global' as (ptr, len)``
+  (interpolation site, ``"${SCHEMA}"``)
+- ``cannot bind String dst ... from value Value(kind='global',
+  ...)`` (let-binding, ``let g = SCHEMA``)
+- ``String arg of kind 'global' not supported`` (passing the
+  const as a function argument)
+
+Root cause was two-fold: the three emit helpers above had no
+``global`` Value-kind case, and even if they had, the
+constant's UTF-8 bytes were never interned in the data segment
+(discovery walks function bodies only, never ConstDecl) so
+the lookup would push offset=0 -- the data segment's start,
+NUL bytes interpolated where the user expects the constant's
+text.
+
+Two-part fix in `capa/ir/_emit_wasm/`:
+
+1. `__init__.py`: pre-intern every String-typed top-level
+   constant at module-emit init, alongside the existing
+   `"true"` / `"false"` Bool-FormatStr pre-intern. Collapsed
+   the hand-inlined String-arg branch in `_emit_user_call`
+   into the shared helper (was the only site that diverged).
+2. `_strings.py`: add `global` cases in
+   `_push_string_value_as_ptr_len` (recurses into the const's
+   stored `lit_str` Value) and `_emit_string_assign` (same
+   recursion shape into the let-binding path). Both consult
+   `_const_values` which the init pass populates.
+
+`TestWasmGlobalStringConst` (3 cases): interpolation, let-bound,
+passed-as-arg. All three execute end-to-end under `--wasm
+--run` with the expected string content (no NULs).
+
+Suite: 1262 → 1265 tests, 4 platform-skips.
+
 ### Analyzer: propagate return type of user-capability method calls
 
 `_check_method_call` used to gate the cap-method-table consult on

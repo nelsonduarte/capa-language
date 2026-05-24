@@ -2008,6 +2008,88 @@ class TestWasmTupleParamTypes(unittest.TestCase):
     _has_wasm_tools() and _has_wasmtime_py(),
     "wasm-tools and/or wasmtime-py not installed",
 )
+class TestWasmGlobalStringConst(unittest.TestCase):
+    """Top-level ``pub const NAME: String = "..."`` referenced from
+    a function body used to fail the Wasm backend with either
+    ``cannot push string Value of kind 'global' as (ptr, len)``
+    (interpolation site) or ``cannot bind String dst ... from
+    value Value(kind='global', ...)`` (let-binding site).
+
+    Root cause was two-fold: (1) ``_push_string_value_as_ptr_len``
+    and ``_emit_string_assign`` had no ``global`` case; (2) even
+    if they had, the constant's UTF-8 bytes were never interned
+    in the data segment (the discovery pass walks function
+    bodies only, never ConstDecl) so the recursion would push
+    offset=0 -- the data segment's start, not the constant's
+    location.
+
+    Fix landed 2026-05-27: pre-intern every String-typed
+    top-level constant at module-emit init, and add the
+    ``global`` branch in both push / assign helpers. Tests
+    pin both code paths."""
+
+    def _run_capturing_stdout(self, src: str) -> str:
+        import io, sys
+        from capa.runtime._wasm_host import WasmHost
+        _, types, ast_mod = _parse_lower(src)
+        blob = compile_wasm(ast_mod, types=types)
+        host = WasmHost()
+        out = io.StringIO()
+        saved_out = sys.stdout
+        sys.stdout = out
+        try:
+            host.run_main(blob)
+        finally:
+            sys.stdout = saved_out
+        return out.getvalue()
+
+    def test_const_string_interpolated_via_push(self):
+        # Exercises ``_push_string_value_as_ptr_len``'s new
+        # global branch -- the format-string lowering pushes
+        # the value as (ptr, len) into the format buffer.
+        src = (
+            'pub const SCHEMA: String = "1.0"\n'
+            'fun main(stdio: Stdio)\n'
+            '    stdio.println("schema=${SCHEMA}")\n'
+        )
+        self.assertEqual(
+            self._run_capturing_stdout(src), "schema=1.0\n",
+        )
+
+    def test_const_string_let_bound_then_used(self):
+        # Exercises ``_emit_string_assign``'s new global branch
+        # -- the let copies the constant into a String local
+        # (${dst}_ptr / ${dst}_len), then println reads from
+        # the local.
+        src = (
+            'pub const GREETING: String = "hello"\n'
+            'fun main(stdio: Stdio)\n'
+            '    let g = GREETING\n'
+            '    stdio.println(g)\n'
+        )
+        self.assertEqual(
+            self._run_capturing_stdout(src), "hello\n",
+        )
+
+    def test_const_string_passed_as_arg(self):
+        # The arg push path also routes through
+        # _push_string_value_as_ptr_len for String params.
+        src = (
+            'pub const NAME: String = "world"\n'
+            'fun greet(stdio: Stdio, name: String)\n'
+            '    stdio.println("hi ${name}")\n'
+            'fun main(stdio: Stdio)\n'
+            '    greet(stdio, NAME)\n'
+        )
+        self.assertEqual(
+            self._run_capturing_stdout(src), "hi world\n",
+        )
+
+
+@unittest.skipUnless(
+    _has_wasm_tools() and _has_wasmtime_py(),
+    "wasm-tools and/or wasmtime-py not installed",
+)
 class TestWasmGenericMonomorphisation(unittest.TestCase):
     """Generic free functions (``fun first<T>(items: List<T>) -> Option<T>``)
     used to crash the Wasm backend at layout time because the IR

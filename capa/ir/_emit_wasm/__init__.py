@@ -285,6 +285,16 @@ class WasmEmitter(
         if self._uses_format_str(module):
             self._intern_string("true")
             self._intern_string("false")
+        # Pre-intern every String-typed top-level constant. Use
+        # sites walk function bodies, never ConstDecl, so a
+        # bare ``pub const S: String = "..."`` referenced from
+        # any function would otherwise look up an offset of 0
+        # (the data segment's start, not the constant's
+        # location). Without this the user gets NUL bytes
+        # interpolated where they expect the constant's text.
+        for name, v in self._const_values.items():
+            if v.kind == "lit_str":
+                self._intern_string(v.literal)
         self._discover(module)
         self._discover_lambdas(module)
 
@@ -935,20 +945,12 @@ class WasmEmitter(
             if arg.ty in _BUILTIN_CAPS:
                 continue
             if arg.ty == "String":
-                if arg.kind == "lit_str":
-                    offset, length = self._intern_string(arg.literal)
-                    self._write(f"i32.const {offset}")
-                    self._write(f"i32.const {length}")
-                elif arg.kind == "local":
-                    self._write(f"local.get ${arg.name}_ptr")
-                    self._write(f"local.get ${arg.name}_len")
-                elif arg.kind == "param":
-                    self._write(f"local.get ${arg.name}_ptr")
-                    self._write(f"local.get ${arg.name}_len")
-                else:
-                    raise WasmEmissionError(
-                        f"String arg of kind {arg.kind!r} not supported"
-                    )
+                # Defer to the shared helper, which now handles
+                # ``lit_str`` / ``local`` / ``param`` / ``global``
+                # uniformly (the previous hand-inlined branch
+                # missed ``global`` for top-level
+                # ``pub const X: String`` constants).
+                self._push_string_value_as_ptr_len(arg)
                 continue
             self._push_value(arg)
         self._write(f"call ${instr.callee_name}")

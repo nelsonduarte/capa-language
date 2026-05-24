@@ -83,17 +83,17 @@ the current Wasm critical path.
   Int / Bool / Float / Unit) works correctly as of
   2026-05-26's analyzer fix.
 
-- [ ] **Wasm backend: pre-existing global-typed String
-  Value push not supported**. Surfaced 2026-05-26 by the
-  capa_showcase top-level `pub const SCHEMA_VERSION: String
-  = "1.0"` used inside an interpolated string. Error:
-  `cannot push string Value of kind 'global' as (ptr, len)`.
-  The Wasm emitter's `_push_string_value_as_ptr_len` knows
-  ``local`` / ``param`` / ``lit_str`` Value kinds but not
-  ``global``. Fix: add the ``global`` case (load the
-  pre-interned ptr+len from the WASM-side global storage
-  for the constant). Small once the global-emit path is
-  understood. ⏱ 2-4h.
+- [ ] **Wasm backend: FormatStr on user struct types**.
+  Surfaced 2026-05-27 by the capa_showcase. ``${e}`` where
+  ``e`` is an ``IoError`` (or any user struct) trips
+  ``Phase 6F: FormatStr value of type 'IoError' not supported
+  (Int / Bool / String only)``. Python ``--run`` tolerates
+  via ``__str__`` dispatch; Wasm needs explicit codegen for
+  the struct's textual representation. Workaround: replace
+  ``${e}`` with ``${e.message}`` (a String field) -- requires
+  fields to be analyzer-visible too. ⏱ unknown; depends on
+  whether we want generic ``${struct}`` rendering or just
+  field-access support.
 
 - [~] **CIR coverage gap**. CIR lowers 44 of 46 analysable
   examples; `TuplePat` in match patterns and match-arm guards
@@ -386,6 +386,22 @@ the full reasoning.
   sequence, sitemap, robots, CNAME, and the logo assets all live
   in the new repo. README + CONTRIBUTING + STABILITY + templates
   rewritten to point at the canonical URLs.
+- 2026-05-27: **Wasm backend: top-level String const support
+  end-to-end**. Three sites had no ``global`` case:
+  ``_push_string_value_as_ptr_len`` (interpolation +
+  String-arg push), ``_emit_string_assign`` (let-binding
+  copy), and the hand-inlined String-arg branch in
+  ``_emit_user_call`` (collapsed into the shared helper).
+  Plus a deeper bug: the constant's UTF-8 bytes were never
+  interned in the data segment because the discovery pass
+  walks function bodies only, not ConstDecl. Fix:
+  pre-intern every String-typed top-level constant at
+  module-emit init, alongside the existing ``"true"`` /
+  ``"false"`` Bool-FormatStr pre-intern. Without the
+  pre-intern the recursion would push offset=0 (data
+  segment start, NUL bytes interpolated where the user
+  expects the constant's text). 3 new tests in
+  ``TestWasmGlobalStringConst``.
 - 2026-05-26: **Analyzer: propagate user-capability method
   return types**. ``_check_method_call`` used to gate the
   cap-method-table consult on ``recv_ty.name in
