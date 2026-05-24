@@ -94,10 +94,43 @@ def _split_top_level_args(args_str: str) -> list[str]:
 def _parse_ty(ty_str: str) -> tuple[str, list[str]]:
     """Decompose a Capa type string into ``(head, args)`` where
     ``head`` is the leading identifier and ``args`` is the list of
-    top-level arg strings. Tuple types ``(T, U)`` become
-    ``("(tuple)", ["T", "U"])`` so the unifier can structurally
-    compare them."""
+    top-level arg strings.
+
+    Shapes handled:
+    - ``T`` / ``Int`` / ``String``        -> ``(ty_str, [])``
+    - ``List<T>``, ``Map<K, V>``, ...      -> ``(head, [args...])``
+    - ``(T, U)`` (tuple)                   -> ``("(tuple)", [...])``
+    - ``Fun(T, U) -> R`` (closure type)    -> ``("(fun)", [T, U, R])``
+
+    The ``(fun)`` head lets the monomorphiser unify
+    ``Fun(T) -> String`` against ``Fun(LogEntry) -> String``
+    structurally and infer ``T=LogEntry``. Without this case the
+    closure-typed param of a generic HOF (e.g.
+    ``count_by<T>(items: List<T>, key: Fun(T) -> String)``)
+    would be treated as an opaque atom and unification would
+    fail, leaving the call un-monomorphised."""
     ty_str = ty_str.strip()
+    if ty_str.startswith("Fun(") and "->" in ty_str:
+        # Locate the matching ``)`` of the ``Fun(...)`` to
+        # tolerate nested parens (``Fun((A, B), C) -> R``).
+        depth = 0
+        close_idx = -1
+        for i, ch in enumerate(ty_str[3:], start=3):
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+                if depth == 0:
+                    close_idx = i
+                    break
+        if close_idx > 0:
+            params_str = ty_str[4:close_idx]
+            tail = ty_str[close_idx + 1:].lstrip()
+            if tail.startswith("->"):
+                ret_str = tail[2:].strip()
+                parts = _split_top_level_args(params_str)
+                parts.append(ret_str)
+                return ("(fun)", parts)
     if ty_str.startswith("(") and ty_str.endswith(")"):
         inner = ty_str[1:-1]
         return ("(tuple)", _split_top_level_args(inner))

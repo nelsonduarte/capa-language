@@ -960,9 +960,32 @@ class _StringEmissionMixin:
             self._indent -= 1
             self._write("end")
             return
+        if ty == "IoError":
+            # ``${io}`` where ``io: IoError`` mirrors the Python
+            # runtime's ``__str__``: render the ``message`` field
+            # (a String at offset 0 of the IoError record, see
+            # ``_IOERROR_LAYOUT``). The ``cause`` field is
+            # intentionally skipped here -- Python's ``__str__``
+            # also drops it when empty, and the common formatter
+            # usage is just ``${io}`` for a one-line diagnostic.
+            # General struct-to-string rendering for arbitrary
+            # user types stays a separate P1 item.
+            # Push the receiver twice rather than stash through a
+            # scratch local; avoids needing _collect_locals to
+            # declare a new helper local just for this branch.
+            self._push_value(v)              # i32 ptr -> IoError record
+            self._write("i32.load offset=0")  # message_ptr
+            self._write(f"local.set $_fs_p{idx}")
+            self._push_value(v)              # again
+            self._write("i32.load offset=4")  # message_len
+            self._write(f"local.set $_fs_l{idx}")
+            return
         raise WasmEmissionError(
             f"Phase 6F: FormatStr value of type {ty!r} not supported "
-            f"(Int / Bool / String only)"
+            f"(Int / Bool / Float / String / IoError only; arbitrary "
+            f"struct-to-string interpolation is a future feature). "
+            f"Workaround: interpolate a specific String field, e.g. "
+            f"${{e.message}} instead of ${{e}}."
         )
 
     def _emit_string_assign(self, dst: str, src: Value) -> None:

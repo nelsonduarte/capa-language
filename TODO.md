@@ -71,17 +71,14 @@ Strengthens the capability + supply-chain claim, but isn't on
 the current Wasm critical path.
 
 
-- [ ] **Wasm backend: FormatStr on user struct types**.
-  Surfaced 2026-05-27 by the capa_showcase. ``${e}`` where
-  ``e`` is an ``IoError`` (or any user struct) trips
-  ``Phase 6F: FormatStr value of type 'IoError' not supported
-  (Int / Bool / String only)``. Python ``--run`` tolerates
-  via ``__str__`` dispatch; Wasm needs explicit codegen for
-  the struct's textual representation. Workaround: replace
-  ``${e}`` with ``${e.message}`` (a String field) -- requires
-  fields to be analyzer-visible too. ⏱ unknown; depends on
-  whether we want generic ``${struct}`` rendering or just
-  field-access support.
+- [ ] **Wasm backend: FormatStr on arbitrary user struct types**.
+  IoError landed 2026-05-27 (special case: read ``message``
+  field at offset 0). Generalising to any struct that
+  declares ``to_string()`` (or every struct with a single
+  String field, or a per-type derived ``__str__`` analog)
+  is the open design question; the error message at the
+  emit site now points the user at ``${e.message}`` as the
+  near-term workaround for non-IoError structs. ⏱ unknown.
 
 - [~] **CIR coverage gap**. CIR lowers 44 of 46 analysable
   examples; `TuplePat` in match patterns and match-arm guards
@@ -374,6 +371,29 @@ the full reasoning.
   sequence, sitemap, robots, CNAME, and the logo assets all live
   in the new repo. README + CONTRIBUTING + STABILITY + templates
   rewritten to point at the canonical URLs.
+- 2026-05-27: **Wasm backend: ``${io}`` interpolation for
+  ``IoError`` values**. ``_emit_format_part_stash`` gains an
+  ``IoError`` branch that mirrors Python's ``__str__``:
+  read the ``message`` field (String at offset 0 of the
+  16-byte IoError record) and push as (ptr, len). The
+  ``cause`` field is intentionally skipped (matches
+  Python). General struct-to-string codegen for arbitrary
+  user types stays a separate item; the error message at
+  the unsupported branch now points users at the
+  ``${e.message}`` workaround.
+- 2026-05-27: **Monomorphiser: ``Fun(T) -> R`` unification**.
+  The string-based unifier in ``_monomorphise._parse_ty``
+  used to treat closure types as opaque atoms, so a generic
+  HOF whose param list included a closure (the showcase's
+  ``count_by<T>(items: List<T>, key: Fun(T) -> String)``)
+  failed unification at every call site and was never
+  monomorphised, leaving an undefined ``$count_by`` call in
+  the WAT. Fix: decompose ``Fun(P, ...) -> R`` into a
+  pseudo-head ``(fun)`` with the params + return as args so
+  the existing recursive unifier infers ``T=LogEntry`` etc.
+  Plus the showcase's last blocker: ``capa_showcase`` now
+  runs end-to-end under ``--wasm --run`` with byte-identical
+  output to the Python path. 2 new tests.
 - 2026-05-27: **Lowerer: tag cap_used on built-in cap method
   calls reached via field access**. The lowerer's
   ``_lower_method_call`` only set ``cap_used`` when the

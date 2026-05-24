@@ -2008,6 +2008,113 @@ class TestWasmTupleParamTypes(unittest.TestCase):
     _has_wasm_tools() and _has_wasmtime_py(),
     "wasm-tools and/or wasmtime-py not installed",
 )
+class TestWasmIoErrorFormatStr(unittest.TestCase):
+    """``${io}`` where ``io: IoError`` used to fail the Wasm
+    backend with ``Phase 6F: FormatStr value of type 'IoError'
+    not supported (Int / Bool / String only)``. Python tolerated
+    it via ``__str__``. The 2026-05-27 fix special-cases IoError
+    in ``_emit_format_part_stash`` to read the ``message`` field
+    (a String at offset 0 of the 16-byte IoError record).
+
+    General struct-to-string codegen for arbitrary user types
+    is a separate (still open) P1 item; the cheap IoError
+    special-case lands now because it unblocks the showcase's
+    common ``stdio.eprintln("read error: ${io}")`` pattern."""
+
+    def _run_capturing_stderr(self, src: str) -> str:
+        # IoError interpolation flows through ``stdio.eprintln``
+        # in the typical pattern; capture stderr to assert the
+        # message renders correctly. The actual error path uses
+        # fs.read on a non-existent file which returns an
+        # IoError carrying a real OS message.
+        import io, sys
+        from capa.runtime._wasm_host import WasmHost
+        _, types, ast_mod = _parse_lower(src)
+        blob = compile_wasm(ast_mod, types=types)
+        host = WasmHost()
+        out = io.StringIO()
+        saved_err = sys.stderr
+        sys.stderr = out
+        try:
+            host.run_main(blob)
+        finally:
+            sys.stderr = saved_err
+        return out.getvalue()
+
+    def test_io_error_interpolated_via_eprintln(self):
+        # Trigger a real IoError via fs.read on a missing path,
+        # match the Err, interpolate the IoError into a stderr
+        # message. The exact OS message varies, so we only
+        # assert the prefix + non-empty suffix.
+        src = (
+            'fun main(stdio: Stdio, fs: Fs)\n'
+            '    match fs.read("/does/not/exist/at/all")\n'
+            '        Ok(_)  -> stdio.println("unexpected ok")\n'
+            '        Err(e) -> stdio.eprintln("read error: ${e}")\n'
+        )
+        out = self._run_capturing_stderr(src)
+        self.assertTrue(
+            out.startswith("read error: "),
+            f"unexpected stderr: {out!r}",
+        )
+        self.assertGreater(
+            len(out.strip()), len("read error: "),
+            "IoError message should be non-empty",
+        )
+
+
+@unittest.skipUnless(
+    _has_wasm_tools() and _has_wasmtime_py(),
+    "wasm-tools and/or wasmtime-py not installed",
+)
+class TestWasmGenericMonomorphisationFunType(unittest.TestCase):
+    """Bonus regression added 2026-05-27: the monomorphiser's
+    string-based unifier originally treated ``Fun(...) -> R``
+    as an opaque atom because ``_parse_ty`` had no case for
+    closure types. Consequence: a generic HOF whose param
+    list included a closure (the showcase's
+    ``count_by<T>(items: List<T>, key: Fun(T) -> String)``)
+    failed unification at every call site and was never
+    monomorphised, leaving an undefined ``$count_by`` call in
+    the WAT. Test pins the now-working shape."""
+
+    def _run_capturing_stdout(self, src: str) -> str:
+        import io, sys
+        from capa.runtime._wasm_host import WasmHost
+        _, types, ast_mod = _parse_lower(src)
+        blob = compile_wasm(ast_mod, types=types)
+        host = WasmHost()
+        out = io.StringIO()
+        saved_out = sys.stdout
+        sys.stdout = out
+        try:
+            host.run_main(blob)
+        finally:
+            sys.stdout = saved_out
+        return out.getvalue()
+
+    def test_generic_hof_with_closure_param(self):
+        src = (
+            'fun count_matching<T>(items: List<T>, pred: Fun(T) -> Bool) -> Int\n'
+            '    var n = 0\n'
+            '    for x in items\n'
+            '        if pred(x)\n'
+            '            n = n + 1\n'
+            '    return n\n'
+            'fun main(stdio: Stdio)\n'
+            '    let xs: List<Int> = [1, 2, 3, 4, 5]\n'
+            '    let n = count_matching(xs, fun(v: Int) -> Bool => v > 2)\n'
+            '    stdio.println("n=${n}")\n'
+        )
+        self.assertEqual(
+            self._run_capturing_stdout(src), "n=3\n",
+        )
+
+
+@unittest.skipUnless(
+    _has_wasm_tools() and _has_wasmtime_py(),
+    "wasm-tools and/or wasmtime-py not installed",
+)
 class TestWasmCapCallViaFieldAccess(unittest.TestCase):
     """The IR's MethodCall.cap_used field was set only when the
     receiver was a capability parameter (``param.method(...)``).

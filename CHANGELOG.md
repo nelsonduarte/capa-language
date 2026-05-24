@@ -9,6 +9,48 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+### Wasm: `${io}` interpolation for `IoError` + closure-type monomorphiser unification
+
+Two fixes that together close the last `capa_showcase` blocker
+under `--wasm --run`. The showcase now executes end-to-end with
+byte-identical output to the Python path.
+
+**IoError in FormatStr.** `_emit_format_part_stash` gains an
+`IoError` case that mirrors Python's `__str__`: load the
+`message` field (a String at offset 0 of the 16-byte IoError
+record, per `_IOERROR_LAYOUT`) and push (ptr, len) into the
+format buffer. The `cause` field is intentionally skipped --
+Python's `__str__` also drops it when empty, and the common
+pattern is just `${e}` for a one-line diagnostic. General
+struct-to-string codegen for arbitrary user types is a
+separate (open) item; the error message at the unsupported
+branch now points users at `${e.message}` as the near-term
+workaround for non-IoError structs.
+
+**`Fun(T) -> R` unification in the monomorphiser.** The
+string-based `_parse_ty` in `capa/ir/_monomorphise.py` had no
+case for closure types, so it treated `Fun(T) -> String` as
+an opaque atom. A generic HOF whose param list included a
+closure (the showcase's
+`count_by<T>(items: List<T>, key: Fun(T) -> String)`) failed
+unification at every call site and was never monomorphised,
+leaving an undefined `$count_by` call in the WAT. Fix:
+decompose `Fun(P, ...) -> R` into a pseudo-head `(fun)` with
+the params + return as args so the existing recursive unifier
+infers `T=LogEntry` etc. The closure type now structurally
+participates in inference like tuples and parameterised types.
+
+Tests: `TestWasmIoErrorFormatStr` (1 case, real `fs.read` on
+a missing path + `${e}` interpolation) and
+`TestWasmGenericMonomorphisationFunType` (1 case, a generic
+`count_matching<T>` with a `Fun(T) -> Bool` predicate).
+
+Suite: 1266 → 1268 tests, 4 platform-skips. The
+`capa_showcase` (the 5-file JSONL log processor we built as
+the assessment yardstick) is now bit-for-bit Python-equivalent
+under `--wasm --run` -- a first for any non-trivial Capa
+program.
+
 ### Lowerer: tag `cap_used` on built-in cap method calls reached via field access
 
 `_lower_method_call` set `MethodCall.cap_used` only when the
