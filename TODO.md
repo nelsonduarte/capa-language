@@ -87,13 +87,19 @@ the current Wasm critical path.
   becomes the fallback only for unsupported constructs the IR
   doesn't yet model. ⏱ 4-6h.
 
-- [~] **Property-based testing for the Wasm backend**. The
-  Hypothesis suite at `tests/test_properties.py` only covers
-  the Python pipeline (manifest ⊇ runtime classes). Mirror the
-  property for `--wasm`: generate a small program, compile to
-  Wasm, run through the host bridge with a traced version of
-  the imports, assert `wasm_runtime_classes ⊆ manifest_classes`.
-  Same citable invariant, new pipeline. ⏱ 6-8h.
+- [x] **Property-based testing for the Wasm backend** (closed
+  2026-05-24). `tests/test_properties.py` Phase 4 now mirrors
+  Phase 3's split: a basic strategy
+  (`test_wasm_runtime_classes_subset_of_manifest_classes`) plus
+  an advanced-flavours strategy
+  (`test_wasm_runtime_subset_under_advanced_flavours`) that
+  exercises plain / attenuated / via_helper / consumed call
+  shapes through the lowerer and Wasm emitter. The
+  `attenuated` flavour is gated to caps with WIT-encoded
+  attenuators (currently `Fs.restrict_to`); the other three
+  apply to every cap in `_WASM_CAP_PROBES` (Clock, Env, Fs).
+  Same citable invariant as Phase 3:
+  `wasm_runtime_classes ⊆ manifest_classes`. Suite: 1295 → 1296.
 
 - [~] **Empirical study at scale**. Four design-pattern CVE
   case studies landed in `examples/cve_*.capa` + `docs/cve_*.md`

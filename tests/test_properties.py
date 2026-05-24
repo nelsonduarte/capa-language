@@ -726,6 +726,20 @@ class TestRuntimeSubsetOfManifest(unittest.TestCase):
 # the surface ``--wasm --component --run`` exposes to an
 # external runtime.
 #
+# Two test methods (mirroring the Phase 3 / Phase 3.6-7 split):
+#
+#   - ``test_wasm_runtime_classes_subset_of_manifest_classes``:
+#     basic strategy, each declared capability exercised via a
+#     single plain probe in main. The minimum useful coverage.
+#   - ``test_wasm_runtime_subset_under_advanced_flavours``:
+#     advanced strategy, each capability appears under one of
+#     four call shapes (plain / attenuated / via_helper /
+#     consumed). Exercises the helper-routed and consumed paths
+#     in the lowerer + Wasm emitter, which the basic strategy
+#     never enters. Mirrors Phase 3's
+#     ``test_runtime_subset_under_advanced_flavours`` for the
+#     Wasm backend.
+#
 # Implementation notes:
 #
 # - ``_TracingLinker`` wraps the wasmtime Linker so each
@@ -734,13 +748,18 @@ class TestRuntimeSubsetOfManifest(unittest.TestCase):
 #   compiled wasm module actually invokes the host import. No
 #   change to the production ``WasmHost``; the wrapper sits in
 #   the test process only.
-# - ``_program_with_caps_wasm`` is a strategy that mirrors
-#   ``_program_with_caps`` but uses only capability methods the
-#   Wasm backend's WIT signatures table supports (``Clock``,
-#   ``Env``, ``Fs`` -- with cap-safe probes that don't depend
-#   on a real filesystem). The existing strategies use
-#   ``Net.allows`` / ``Fs.allows`` etc. which exist Python-side
-#   but have no WIT/Wasm encoding yet.
+# - ``_program_with_caps_wasm`` mirrors ``_program_with_caps``
+#   but uses only capability methods the Wasm backend's WIT
+#   signatures table supports (``Clock``, ``Env``, ``Fs`` --
+#   with cap-safe probes that don't depend on a real filesystem).
+#   The existing Phase 3 strategies use ``Net.allows`` /
+#   ``Fs.allows`` etc. which exist Python-side but have no
+#   WIT/Wasm encoding yet.
+# - ``_program_with_caps_wasm_advanced`` mirrors
+#   ``_program_with_caps_advanced``. The ``attenuated`` flavour
+#   is gated to caps with a WIT-encoded attenuator (currently
+#   just ``Fs.restrict_to``); the other three flavours apply to
+#   every cap in ``_WASM_CAP_PROBES``.
 # - Compilation can fail on programs that the Wasm backend does
 #   not yet handle (``WasmEmissionError``); those are skipped
 #   exactly the way Phase 3 skips analyser-rejected programs.
@@ -778,6 +797,28 @@ _WASM_CAP_PROBES: dict[str, str] = {
     "Fs":     '{var}.restrict_to("data/")',
 }
 
+# Per-capability attenuation expression for the Wasm-supported
+# subset. Only ``Fs`` has a WIT-encoded attenuator
+# (``restrict_to``); the other caps' attenuators (``Env``'s
+# ``restrict_to_keys``, ``Clock``'s ``restrict_to_after``) have
+# no WIT signature yet, so the attenuated flavour is gated to
+# caps in this dict.
+_WASM_CAP_ATTEN: dict[str, str] = {
+    "Fs": '{var}.restrict_to("data/")',
+}
+
+# Per-capability list of advanced flavours each cap can take.
+# Phase 3's strategy gives every cap all four flavours; the
+# Wasm subset gates ``attenuated`` to caps with a WIT attenuator.
+_WASM_CAP_FLAVOURS: dict[str, list[str]] = {
+    cap: (
+        ["plain", "attenuated", "via_helper", "consumed"]
+        if cap in _WASM_CAP_ATTEN
+        else ["plain", "via_helper", "consumed"]
+    )
+    for cap in _WASM_CAP_PROBES
+}
+
 
 @st.composite
 def _program_with_caps_wasm(draw):
@@ -806,6 +847,91 @@ def _program_with_caps_wasm(draw):
         probe = _WASM_CAP_PROBES[cap].format(var=var)
         lines.append(f"    let _v{i} = {probe}")
     return "\n".join(lines) + "\n"
+
+
+@st.composite
+def _program_with_caps_wasm_advanced(draw):
+    """Wasm-pipeline mirror of ``_program_with_caps_advanced``.
+
+    For each declared capability, pick one of the flavours the
+    Wasm backend supports (see ``_WASM_CAP_FLAVOURS``):
+
+      - ``plain``: probe the capability directly in main.
+      - ``attenuated``: bind an attenuated form first
+        (``let af = fs.restrict_to("data/")``) then probe it.
+        Only available for caps with a WIT-encoded attenuator;
+        currently just ``Fs``.
+      - ``via_helper``: route the probe through a helper
+        ``fun use_{cap}(c: Cap) -> Bool``. Exercises the
+        analyser's flow-tracking across call boundaries plus
+        the manifest's per-function rollup (both main and the
+        helper declare the cap, so the manifest set is unchanged).
+      - ``consumed``: helper takes the cap with ``consume``,
+        forbidding any further use after the call. Strategy
+        places the consumed call last in main so the linear
+        constraint is satisfied by construction.
+
+    All four flavours keep ``runtime_classes ⊆ manifest_classes``
+    true by construction; the test catches regressions where the
+    Wasm emitter or canonical-ABI layer leaks a call past the
+    discipline, or where a helper / consumed shape silently
+    drops a cap from the manifest rollup.
+    """
+    cap_set = draw(st.sets(
+        st.sampled_from(list(_WASM_CAP_PROBES.keys())),
+        min_size=0,
+        max_size=3,
+    ))
+    cap_flavors = {}
+    for cap in sorted(cap_set):
+        cap_flavors[cap] = draw(
+            st.sampled_from(_WASM_CAP_FLAVOURS[cap])
+        )
+
+    helpers: list[str] = []
+    for cap, flavor in cap_flavors.items():
+        var = cap.lower()
+        probe = _WASM_CAP_PROBES[cap].format(var=var)
+        if flavor == "via_helper":
+            helpers.append(
+                f"fun use_{var}({var}: {cap}) -> Bool\n"
+                f"    let _r = {probe}\n"
+                f"    return true\n"
+            )
+        elif flavor == "consumed":
+            helpers.append(
+                f"fun take_{var}(consume {var}: {cap}) -> Bool\n"
+                f"    let _r = {probe}\n"
+                f"    return true\n"
+            )
+
+    params = ["stdio: Stdio"]
+    bindings = []
+    for cap in sorted(cap_set):
+        var = cap.lower()
+        params.append(f"{var}: {cap}")
+        bindings.append((cap, var, cap_flavors[cap]))
+
+    body_lines = [
+        f"fun main({', '.join(params)})",
+        '    stdio.println("start")',
+    ]
+    for i, (cap, var, flavor) in enumerate(bindings):
+        if flavor == "plain":
+            probe = _WASM_CAP_PROBES[cap].format(var=var)
+            body_lines.append(f"    let _v{i} = {probe}")
+        elif flavor == "attenuated":
+            attn = _WASM_CAP_ATTEN[cap].format(var=var)
+            attn_var = f"a{i}"
+            body_lines.append(f"    let {attn_var} = {attn}")
+            probe = _WASM_CAP_PROBES[cap].format(var=attn_var)
+            body_lines.append(f"    let _v{i} = {probe}")
+        elif flavor == "via_helper":
+            body_lines.append(f"    let _v{i} = use_{var}({var})")
+        elif flavor == "consumed":
+            body_lines.append(f"    let _v{i} = take_{var}({var})")
+
+    return "\n".join(helpers + body_lines) + "\n"
 
 
 class _TracingLinker:
@@ -907,13 +1033,19 @@ class TestWasmRuntimeSubsetOfManifest(unittest.TestCase):
                 result.add(cap)
         return result
 
-    @given(_program_with_caps_wasm())
-    @settings(
-        max_examples=15,
-        deadline=20000,
-        suppress_health_check=[HealthCheck.too_slow],
-    )
-    def test_wasm_runtime_classes_subset_of_manifest_classes(self, source):
+    def _check_subset(self, source: str) -> None:
+        """Lex + parse + analyse + Wasm-compile + run with a
+        tracing host, then assert ``runtime_classes ⊆
+        manifest_classes``. Shared body for both the basic and
+        the advanced-flavours property tests.
+
+        Programs the analyser rejects, or that the Wasm emitter
+        cannot produce, are skipped: the soundness claim holds
+        vacuously for programs that never compile. Runtime traps
+        are tolerated for the same reason -- the invariant is
+        about which caps the module CAN invoke, not whether the
+        execution succeeds.
+        """
         from capa import analyze
         from capa.ir import compile_wasm
         from capa.ir._emit_wasm import WasmEmissionError
@@ -927,11 +1059,6 @@ class TestWasmRuntimeSubsetOfManifest(unittest.TestCase):
 
         manifest_classes = self._manifest_classes(module)
 
-        # Compile + run. The IR / Wasm emitter may reject some
-        # generated programs even when the analyser accepts them
-        # (a construct outside the current Wasm coverage); skip
-        # those, the soundness invariant holds vacuously for
-        # programs the Wasm pipeline cannot produce.
         try:
             wasm_blob = compile_wasm(module, types=result.types)
         except (WasmEmissionError, UnsupportedInIR):
@@ -941,9 +1068,6 @@ class TestWasmRuntimeSubsetOfManifest(unittest.TestCase):
         try:
             host.run_main(wasm_blob)
         except Exception:  # pragma: no cover - trap-like runtime errors
-            # A wasmtime trap during the run shouldn't invalidate
-            # the soundness claim; the claim is about which caps
-            # the module CAN invoke, not whether the run succeeds.
             pass
 
         runtime_classes = {cap for (cap, _method) in host.calls}
@@ -957,6 +1081,45 @@ class TestWasmRuntimeSubsetOfManifest(unittest.TestCase):
                 f"trace:\n{host.calls!r}"
             ),
         )
+
+    @given(_program_with_caps_wasm())
+    @settings(
+        max_examples=15,
+        deadline=20000,
+        suppress_health_check=[HealthCheck.too_slow],
+    )
+    def test_wasm_runtime_classes_subset_of_manifest_classes(self, source):
+        self._check_subset(source)
+
+    @given(_program_with_caps_wasm_advanced())
+    @settings(
+        max_examples=20,
+        deadline=25000,
+        suppress_health_check=[HealthCheck.too_slow],
+    )
+    def test_wasm_runtime_subset_under_advanced_flavours(self, source):
+        """Wasm mirror of
+        ``test_runtime_subset_under_advanced_flavours``: each
+        capability appears under one of four call shapes (plain,
+        attenuated, via_helper, consumed). Soundness invariant is
+        identical; this test exercises the analyser+lowerer+Wasm-
+        emitter chain for the helper-routed and consumed paths,
+        which the basic strategy never enters.
+
+        Catches:
+        - lowerer regressions where a ``consume``d capability's
+          last-use marking propagates wrongly to the Wasm
+          emitter, leaving a stranded import.
+        - manifest-rollup regressions where a helper that
+          declares the cap is dropped from
+          ``declared_capabilities``, causing the runtime trace
+          (which still records the helper's import calls) to
+          escape the manifest set.
+        - canonical-ABI regressions where the attenuated form
+          of a cap is invoked through an import that the
+          analyser never accounted for.
+        """
+        self._check_subset(source)
 
 
 if __name__ == "__main__":
