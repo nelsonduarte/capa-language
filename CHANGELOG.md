@@ -9,6 +9,56 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+### Wasm: generic-function monomorphisation
+
+`fun first<T>(items: List<T>) -> Option<T>` (and any other
+generic free function) used to crash the Wasm backend at
+layout time: the IR carried `T` as a string, and
+`_wasm_type('T')` had no encoding. As of 2026-05-25 we
+swallowed the failure into an actionable error directing
+users to `capa --run`; this commit goes further and actually
+runs them under `--wasm`.
+
+New IR pass at [`capa/ir/_monomorphise.py`](capa/ir/_monomorphise.py)
+walks the lowered module, identifies generic free functions
+(`type_params != []`), walks every call into them, infers
+each call's type-parameter substitution by string-unifying
+the call's arg types against the callee's generic param
+types, and synthesises a specialised clone per unique
+substitution (mangled name like `first__Int` / `first__String`).
+Call sites are rewritten to target the mangled name; original
+generic Functions are removed before emit. Plumbed into
+`compile_wat` only (Python `--run` doesn't need it; duck
+typing handles substitution at runtime). Iterates to a fixed
+point so generic-calls-generic chains fully specialise.
+
+Scope (v1):
+- Free functions only. Generic methods (`impl<T>`), generic
+  struct types, and generic capability methods still hit the
+  actionable "no Wasm encoding" error.
+- String-based unification: handles `T` directly, `List<T>`,
+  `Map<K, V>`, `(T, U)`, `Option<T>`, `Result<T, E>`. Nested
+  arities work; unbound type parameters abort the rewrite.
+- No partial application; every type parameter must be
+  resolved from the concrete argument types.
+
+`TestWasmGenericMonomorphisation` (3 cases):
+- `test_generic_first_with_int_arg`: `first<T>` instantiated
+  with `Int`
+- `test_generic_first_with_string_arg`: same with `String`
+- `test_same_generic_function_called_with_two_types`: dedupe
+  by substitution, not by source name
+
+Closes one of the three Wasm gaps surfaced by the
+`capa_showcase` assessment. The remaining gap (lambda
+multi-value lowering for non-scalar param / return types)
+stays open in TODO.md as a P1 follow-up.
+
+Suite: 1256 → 1258 tests, 4 platform-skips. The pre-existing
+`test_generic_user_function_gives_clear_error` (which pinned
+the actionable error) is removed; its slot is the new
+success-case class.
+
 ### Analyzer: propagate return type through Fun-typed callees
 
 `capa.analyzer._dispatch._check_call` used to return `TyUnknown`

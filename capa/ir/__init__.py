@@ -146,8 +146,16 @@ def compile_wat(module: A.Module, types: dict | None = None) -> str:
     ``--component --run`` works without any host-side memory
     access."""
     from ._builtin_json import inject_into
+    from ._monomorphise import monomorphise
     ir_mod = lower(module, types=types)
     inject_into(ir_mod)
+    # Specialise every generic free function per concrete
+    # instantiation reached from a non-generic caller. The Wasm
+    # backend's layout machinery cannot encode type variables
+    # like ``T``; after this pass the module has no
+    # ``type_params`` left to confuse it. Pass is a no-op on
+    # programs without generics.
+    monomorphise(ir_mod)
     return emit_wat(ir_mod)
 
 

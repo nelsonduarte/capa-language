@@ -1795,40 +1795,19 @@ class TestWasmTraitDispatch(unittest.TestCase):
 
 
 class TestWasmActionableErrors(unittest.TestCase):
-    """The Wasm backend has real coverage gaps (generic user
-    functions don't monomorphise; lambdas only accept scalar
-    param/return types). Before 2026-05-25 these surfaced as
-    confusing Python NameError tracebacks or wasm-validator
-    type-mismatch errors with offsets in the bytecode. The
-    fixes in this date stamp surface them as actionable
-    WasmEmissionError messages naming the user-level construct
-    and the workaround. These tests pin the new shape."""
+    """The Wasm backend has real coverage gaps (lambdas only
+    accept scalar param/return types today). Before 2026-05-25
+    these surfaced as confusing Python NameError tracebacks or
+    wasm-validator type-mismatch errors with offsets in the
+    bytecode. The fixes in this date stamp surface them as
+    actionable WasmEmissionError messages naming the user-level
+    construct and the workaround. These tests pin the new shape.
 
-    def test_generic_user_function_gives_clear_error(self):
-        # ``fun first<T>(items: List<T>) -> Option<T>`` -- the
-        # body's locals include `x: T`, which has no Wasm
-        # encoding. The pre-fix path silently fell back to i64
-        # and produced wasm that the validator rejected at
-        # runtime. Now the emitter raises with a clear message.
-        src = (
-            'fun first<T>(items: List<T>) -> Option<T>\n'
-            '    for x in items\n'
-            '        return Some(x)\n'
-            '    return None\n'
-            '\n'
-            'fun main(stdio: Stdio)\n'
-            '    let xs: List<Int> = [1, 2, 3]\n'
-            '    match first(xs)\n'
-            '        Some(n) -> stdio.println("got int")\n'
-            '        None    -> stdio.println("empty")\n'
-        )
-        _, types, ast_mod = _parse_lower(src)
-        with self.assertRaises(WasmEmissionError) as cm:
-            compile_wasm(ast_mod, types=types)
-        msg = str(cm.exception)
-        self.assertIn("'T'", msg)
-        self.assertIn("generic", msg)
-        self.assertIn("--run", msg)
+    Note: generic user functions used to live in this class too;
+    as of 2026-05-26 they are monomorphised by the IR pass, so
+    the generic test moved to TestWasmGenericMonomorphisation
+    where it asserts successful execution instead of an error
+    message."""
 
     def test_lambda_with_string_param_gives_clear_error(self):
         # ``fun (s: String) -> Bool => ...`` -- the lambda
@@ -1858,6 +1837,88 @@ class TestWasmActionableErrors(unittest.TestCase):
         self.assertIn("'String'", msg)
         self.assertIn("scalar", msg)
         self.assertIn("--run", msg)
+
+
+@unittest.skipUnless(
+    _has_wasm_tools() and _has_wasmtime_py(),
+    "wasm-tools and/or wasmtime-py not installed",
+)
+class TestWasmGenericMonomorphisation(unittest.TestCase):
+    """Generic free functions (``fun first<T>(items: List<T>) -> Option<T>``)
+    used to crash the Wasm backend at layout time because the IR
+    carried ``T`` as a string with no Wasm encoding. The
+    monomorphisation pass at ``capa/ir/_monomorphise.py`` walks
+    the IR after lowering, infers each call's type-parameter
+    substitution from the actual arg types, and synthesises a
+    specialised clone with a mangled name (e.g., ``first__Int``).
+    These tests pin the new behaviour end-to-end through
+    ``--wasm --run``."""
+
+    def _run_capturing_stdout(self, src: str) -> str:
+        import io, sys
+        from capa.runtime._wasm_host import WasmHost
+        _, types, ast_mod = _parse_lower(src)
+        blob = compile_wasm(ast_mod, types=types)
+        host = WasmHost()
+        out = io.StringIO()
+        saved_out = sys.stdout
+        sys.stdout = out
+        try:
+            host.run_main(blob)
+        finally:
+            sys.stdout = saved_out
+        return out.getvalue()
+
+    def test_generic_first_with_int_arg(self):
+        src = (
+            'fun first<T>(items: List<T>) -> Option<T>\n'
+            '    for x in items\n'
+            '        return Some(x)\n'
+            '    return None\n'
+            'fun main(stdio: Stdio)\n'
+            '    let xs: List<Int> = [10, 20, 30]\n'
+            '    match first(xs)\n'
+            '        Some(n) -> stdio.println("got ${n}")\n'
+            '        None    -> stdio.println("empty")\n'
+        )
+        self.assertEqual(self._run_capturing_stdout(src), "got 10\n")
+
+    def test_generic_first_with_string_arg(self):
+        src = (
+            'fun first<T>(items: List<T>) -> Option<T>\n'
+            '    for x in items\n'
+            '        return Some(x)\n'
+            '    return None\n'
+            'fun main(stdio: Stdio)\n'
+            '    let xs: List<String> = ["alpha", "beta"]\n'
+            '    match first(xs)\n'
+            '        Some(s) -> stdio.println(s)\n'
+            '        None    -> stdio.println("empty")\n'
+        )
+        self.assertEqual(self._run_capturing_stdout(src), "alpha\n")
+
+    def test_same_generic_function_called_with_two_types(self):
+        # Both call sites must produce their own monomorphic clone;
+        # the dedupe key is the substitution, not the source name.
+        src = (
+            'fun first<T>(items: List<T>) -> Option<T>\n'
+            '    for x in items\n'
+            '        return Some(x)\n'
+            '    return None\n'
+            'fun main(stdio: Stdio)\n'
+            '    let ns: List<Int> = [1, 2]\n'
+            '    let ss: List<String> = ["x", "y"]\n'
+            '    match first(ns)\n'
+            '        Some(n) -> stdio.println("int=${n}")\n'
+            '        None    -> stdio.println("ne")\n'
+            '    match first(ss)\n'
+            '        Some(s) -> stdio.println("str=${s}")\n'
+            '        None    -> stdio.println("se")\n'
+        )
+        self.assertEqual(
+            self._run_capturing_stdout(src),
+            "int=1\nstr=x\n",
+        )
 
 
 @unittest.skipUnless(

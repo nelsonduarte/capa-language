@@ -70,18 +70,6 @@ No remaining work in this priority.
 Strengthens the capability + supply-chain claim, but isn't on
 the current Wasm critical path.
 
-- [ ] **Wasm backend: generic user functions (monomorphisation)**.
-  Surfaced 2026-05-25 by `capa_showcase`'s `count_by<T>`
-  helper. Today the Wasm emitter raises a clear
-  `WasmEmissionError` directing users to `capa --run` (the
-  Python backend handles generics fine). Real fix: either
-  monomorphise generic functions at lower-time (emit one
-  specialised body per concrete instantiation seen at call
-  sites) or erase type parameters to a uniform i64 box with
-  boxing/unboxing at call boundaries. Decision likely
-  monomorphisation (cleaner, no runtime overhead, matches
-  Rust). ⏱ 1-2 weeks.
-
 - [ ] **Wasm backend: multi-value lowering for lambda
   params / return types**. Surfaced 2026-05-25. Today the
   closure registrator (`_register_lambda` in
@@ -387,6 +375,27 @@ the full reasoning.
   sequence, sitemap, robots, CNAME, and the logo assets all live
   in the new repo. README + CONTRIBUTING + STABILITY + templates
   rewritten to point at the canonical URLs.
+- 2026-05-26: **Wasm backend: generic-function
+  monomorphisation**. New IR pass at
+  `capa/ir/_monomorphise.py` walks the lowered module,
+  identifies generic free functions (`type_params != []`),
+  walks every call into them, infers each call's
+  type-parameter substitution by string-unifying the call's
+  arg types against the callee's generic param types, and
+  synthesises a specialised clone per unique substitution
+  (mangled name like `first__Int` / `first__String`). Call
+  sites are rewritten to target the mangled name; original
+  generic Functions are removed before emit. Plumbed into
+  `compile_wat` only (Python `--run` doesn't need it).
+  Iterates to a fixed point so generic-calls-generic chains
+  fully specialise.
+  Scope cut: free functions only; generic methods, generic
+  struct types, and generic capability methods still hit the
+  actionable "no Wasm encoding" error. 3 new tests in
+  `TestWasmGenericMonomorphisation` cover the simple
+  instantiations + same-fn-called-with-two-types dedupe.
+  Closes one of the three Wasm gaps surfaced by the showcase;
+  the other (lambda multi-value lowering) stays open.
 - 2026-05-25: **Analyzer: propagate return type of calls
   through Fun-typed callees**. The analyzer's `_check_call`
   used to return `TyUnknown` when the callee was a parameter /

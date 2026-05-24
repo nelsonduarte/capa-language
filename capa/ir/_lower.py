@@ -346,6 +346,7 @@ class Lowerer:
             declared_caps=declared_caps,
             body=self._instrs,
             locals=dict(self._locals),
+            type_params=list(fn.type_params),
         )
 
     # ------------------------------------------------------------

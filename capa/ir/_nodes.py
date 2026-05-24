@@ -407,6 +407,12 @@ class Function:
     """A lowered function. ``locals`` is the mapping of every
     fresh local name introduced by the lowering pass to its CIR type
     (used by emitters that need to declare locals up front).
+
+    ``type_params`` carries the source's ``fun first<T, U>(...)``
+    type-parameter names. The Python backend ignores them (duck
+    typing handles substitution at runtime); the Wasm backend's
+    monomorphisation pass uses them to identify generic functions
+    that need per-instantiation specialisation before emit.
     """
     name: str
     params: list[Param]
@@ -414,6 +420,7 @@ class Function:
     declared_caps: list[str]
     body: list[Instr]
     locals: dict[str, str] = field(default_factory=dict)
+    type_params: list[str] = field(default_factory=list)
 
 
 @dataclass
