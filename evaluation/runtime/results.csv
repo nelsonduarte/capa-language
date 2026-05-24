@@ -1,0 +1,7 @@
+workload,backend,n_trials,n_ok,seconds_mean,seconds_min,seconds_max,seconds_stdev,rss_mb_max
+audit_trail,capa_python,3,3,0.2993,0.2893,0.3073,0.0092,6.63
+audit_trail,capa_wasm,3,3,0.4542,0.4460,0.4605,0.0075,6.63
+policy_eval,capa_python,3,3,0.2655,0.2645,0.2672,0.0015,6.67
+policy_eval,capa_wasm,3,3,0.4115,0.4054,0.4232,0.0102,6.63
+sbom_watch,capa_python,3,3,0.2806,0.2574,0.2986,0.0211,6.65
+sbom_watch,capa_wasm,3,3,0.4179,0.4155,0.4221,0.0036,6.74
