@@ -70,19 +70,20 @@ No remaining work in this priority.
 Strengthens the capability + supply-chain claim, but isn't on
 the current Wasm critical path.
 
-- [ ] **Wasm backend: multi-value lowering for lambda
-  params / return types**. Surfaced 2026-05-25. Today the
-  closure registrator (`_register_lambda` in
-  `capa/ir/_emit_wasm/_closures.py`) only accepts scalar
-  param/return types (Int / Bool / Float). `String` /
-  `List<T>` / `Map<K,V>` / user structs raise with an
-  actionable error. The fix: extend `_register_lambda` to
-  expand the signature with (ptr, len) for String params and
-  the analogous shape for other multi-value types; update the
-  call-site to push the matching count of values; update the
-  body's locals declaration. Same gap on return types. ⏱ 1-2
-  weeks; touches `_register_lambda`, `_emit_lambda_call`, and
-  `_collect_locals` for the lifted body.
+- [ ] **Analyzer: propagate return type of user-capability
+  methods**. Surfaced 2026-05-26 by the capa_showcase smoke
+  under `--wasm`. `fs.read(path)?` where
+  `fs: ReadOnlyFs` (user-defined cap with method
+  `read(self, path) -> Result<String, IoError>`) reaches the
+  Wasm emitter as `TryUnwrap on type '?'`: the analyzer
+  doesn't propagate the method's declared return type to the
+  call expression. Same root pattern as the Fun-typed callee
+  fix on 2026-05-25 but for user capability method dispatch.
+  Closes the last remaining Wasm gap on capa_showcase. ⏱ ~1
+  day; the fix lives in
+  `capa/analyzer/_dispatch.py::_check_method_call` (the user-
+  defined-cap branch currently returns TyUnknown instead of
+  consulting the cap's method table).
 
 - [~] **CIR coverage gap**. CIR lowers 44 of 46 analysable
   examples; `TuplePat` in match patterns and match-arm guards
@@ -375,6 +376,25 @@ the full reasoning.
   sequence, sitemap, robots, CNAME, and the logo assets all live
   in the new repo. README + CONTRIBUTING + STABILITY + templates
   rewritten to point at the canonical URLs.
+- 2026-05-26: **Wasm backend: multi-value lowering for
+  String in lambda params + returns**. The lifted-lambda
+  signature now emits two i32s ``(ptr, len)`` per String
+  param and a multi-value ``(result i32 i32)`` for a String
+  return, matching the call-site convention already in
+  ``_emit_closure_call`` + ``_set_string_dst``. Three surgical
+  edits (``_register_lambda``, ``_fun_type_to_sig_key``,
+  ``_emit_lifted_lambda``) plus two discovery walkers
+  (``_uses_format_str``, ``_uses_float_format``) that needed
+  ``MakeLambda`` recursion so a format-string inside a closure
+  still triggers the ``$itoa`` / ``$ftoa`` helper. The latter
+  surfaced a stale ``MakeLambda`` reference in
+  ``_discovery.py`` that worked only because the dead code
+  path was never reached; fixed the missing imports
+  (``MakeList``, ``MakeSet``, ``MakeLambda``, ``Function``).
+  Closes the second-to-last Wasm gap from the capa_showcase
+  assessment. The remaining gap (analyzer not propagating
+  user-cap method return types) is filed as the next item.
+  2 new tests in ``TestWasmClosureStringTypes``.
 - 2026-05-26: **Wasm backend: generic-function
   monomorphisation**. New IR pass at
   `capa/ir/_monomorphise.py` walks the lowered module,

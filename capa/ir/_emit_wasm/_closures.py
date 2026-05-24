@@ -106,11 +106,14 @@ class _ClosureEmissionMixin:
         # Header.
         param_clauses = ["(param $env i32)"]
         for p in lifted["params"]:
-            ty = self._wasm_type(p.ty)
+            # String params lower to a (ptr, len) pair of i32s;
+            # check before _wasm_type because _wasm_type raises
+            # on "String" (no single-value encoding).
             if p.ty == "String":
                 param_clauses.append(f"(param ${p.name}_ptr i32)")
                 param_clauses.append(f"(param ${p.name}_len i32)")
             else:
+                ty = self._wasm_type(p.ty)
                 param_clauses.append(f"(param ${p.name} {ty})")
         params_str = " ".join(param_clauses)
         result_str = (
@@ -269,30 +272,36 @@ class _ClosureEmissionMixin:
 
         # ------- signature -------
         # ``(param i32) (param ...) -> (result ...)`` rendered as
-        # a stable string so duplicates dedupe.
-        param_wasm_tys = []
-        param_wasm_tys.append("i32")  # env_ptr always first
+        # a stable string so duplicates dedupe. The leading i32 is
+        # always the env_ptr (first param of every lifted lambda).
+        # String params lower as a (ptr, len) pair of i32s
+        # ("multi-value"); the call-site + body emit code already
+        # expects the same convention (see _emit_closure_call and
+        # _emit_lifted_lambda's `${name}_ptr` / `${name}_len`
+        # locals). Other shapes (Int / Bool / Float / Fun /
+        # struct / List / Map / Set / tuple / sum) are single
+        # Wasm values and route through _wasm_type.
+        param_wasm_tys = ["i32"]  # env_ptr always first
         for p in instr.params:
+            if p.ty == "String":
+                param_wasm_tys.append("i32")
+                param_wasm_tys.append("i32")
+                continue
             try:
                 t = self._wasm_type(p.ty)
             except WasmEmissionError as e:
-                # String / List<T> / Map<K,V> / user struct params
-                # in a lambda would need to be lowered as (ptr,
-                # len) pairs or wrapped pointers; the closure
-                # registration code only handles scalar param types
-                # today (Int / Bool / Float, plus capability slots).
-                # Surface that limit clearly rather than emit
-                # invalid wasm or raise the generic "no encoding".
+                # Multi-value lowering for non-scalar collection
+                # types in lambda position would still be needed
+                # in principle; today every non-String type the
+                # backend supports has a single-value encoding via
+                # _wasm_type, so this branch only fires for genuine
+                # gaps (unknown types, unresolved tyvars, etc.).
                 raise WasmEmissionError(
                     f"lambda param {p.name!r} has type {p.ty!r}, "
-                    f"which the Wasm backend's closure lowering does "
-                    f"not yet handle. Closures currently support only "
-                    f"scalar params (Int / Bool / Float) plus built-in "
-                    f"capability handles. String / List / Map / struct "
-                    f"params need multi-value lowering, planned but not "
-                    f"shipped. Workaround: use the Python backend "
-                    f"(``capa --run``), or refactor the lambda into a "
-                    f"named function. Original: {e}"
+                    f"which the Wasm backend cannot encode. "
+                    f"Workaround: use the Python backend "
+                    f"(``capa --run``), or refactor the lambda. "
+                    f"Original: {e}"
                 ) from e
             if not t:
                 raise WasmEmissionError(
@@ -300,20 +309,25 @@ class _ClosureEmissionMixin:
                     f"has no Wasm encoding"
                 )
             param_wasm_tys.append(t)
-        try:
-            result_ty = (
-                self._wasm_type(instr.return_type)
-                if instr.return_type else ""
-            )
-        except WasmEmissionError as e:
-            raise WasmEmissionError(
-                f"lambda return type {instr.return_type!r} not "
-                f"supported by the Wasm closure lowering (same gap "
-                f"as String / List / Map / struct param lowering). "
-                f"Workaround: use the Python backend, or refactor "
-                f"the lambda body to return a scalar (Int / Bool / "
-                f"Float). Original: {e}"
-            ) from e
+        # Return type. String returns lower as multi-value
+        # ``(result i32 i32)``; everything else is a single
+        # Wasm value. ``""`` means no result (Unit-returning).
+        if instr.return_type == "String":
+            result_ty = "i32 i32"
+        else:
+            try:
+                result_ty = (
+                    self._wasm_type(instr.return_type)
+                    if instr.return_type else ""
+                )
+            except WasmEmissionError as e:
+                raise WasmEmissionError(
+                    f"lambda return type {instr.return_type!r} not "
+                    f"supported by the Wasm closure lowering. "
+                    f"Workaround: use the Python backend, or "
+                    f"refactor the lambda body to return a scalar. "
+                    f"Original: {e}"
+                ) from e
         sig_key = f"({' '.join(param_wasm_tys)}) -> {result_ty or '()'}"
         if sig_key not in self._closure_sig_keys:
             self._closure_sig_keys[sig_key] = len(self._closure_sig_keys)
@@ -522,9 +536,15 @@ class _ClosureEmissionMixin:
                 wasm_params.append("i32")
             else:
                 wasm_params.append(self._wasm_type(pt))
-        wasm_result = (
-            self._wasm_type(ret_ty_str) if ret_ty_str else ""
-        )
+        # Multi-value return for String: must match the encoding
+        # _register_lambda produced, otherwise sig_idx lookup
+        # misses and call_indirect can't dispatch.
+        if ret_ty_str == "String":
+            wasm_result = "i32 i32"
+        else:
+            wasm_result = (
+                self._wasm_type(ret_ty_str) if ret_ty_str else ""
+            )
         return f"({' '.join(wasm_params)}) -> {wasm_result or '()'}"
 
     # ----- HOFs on List<Int> ------------------------------------

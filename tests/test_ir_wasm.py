@@ -1795,48 +1795,89 @@ class TestWasmTraitDispatch(unittest.TestCase):
 
 
 class TestWasmActionableErrors(unittest.TestCase):
-    """The Wasm backend has real coverage gaps (lambdas only
-    accept scalar param/return types today). Before 2026-05-25
-    these surfaced as confusing Python NameError tracebacks or
-    wasm-validator type-mismatch errors with offsets in the
-    bytecode. The fixes in this date stamp surface them as
-    actionable WasmEmissionError messages naming the user-level
-    construct and the workaround. These tests pin the new shape.
+    """Placeholder for future actionable-error tests. The two
+    cases that lived here (generic user functions, lambda over
+    String) are both closed:
+    - generics: monomorphised by the IR pass; see
+      TestWasmGenericMonomorphisation
+    - lambda over String: handled via multi-value lowering;
+      see TestWasmClosureStringTypes
 
-    Note: generic user functions used to live in this class too;
-    as of 2026-05-26 they are monomorphised by the IR pass, so
-    the generic test moved to TestWasmGenericMonomorphisation
-    where it asserts successful execution instead of an error
-    message."""
+    Kept as a class so a future surfacing of a NEW unsupported
+    construct has an obvious home for its actionable-error test.
+    """
 
-    def test_lambda_with_string_param_gives_clear_error(self):
-        # ``fun (s: String) -> Bool => ...`` -- the lambda
-        # registration needs multi-value lowering for String
-        # (ptr + len) which isn't implemented. Before: confusing
-        # "Capa type 'String' has no Wasm encoding" with no
-        # context. After: actionable message naming the lambda
-        # param + the workaround.
+
+@unittest.skipUnless(
+    _has_wasm_tools() and _has_wasmtime_py(),
+    "wasm-tools and/or wasmtime-py not installed",
+)
+class TestWasmClosureStringTypes(unittest.TestCase):
+    """Closures with String params and/or String returns lower
+    as multi-value Wasm functions: a String param becomes two
+    i32s ``(ptr, len)`` in the closure signature, a String
+    return becomes a multi-value ``(result i32 i32)``. The
+    call-site emitter already pushed two i32s for a String arg
+    and called ``_set_string_dst`` for a String dst; this
+    class pins the now-functional path end-to-end via
+    ``--wasm --run``."""
+
+    def _run_capturing_stdout(self, src: str) -> str:
+        import io, sys
+        from capa.runtime._wasm_host import WasmHost
+        _, types, ast_mod = _parse_lower(src)
+        blob = compile_wasm(ast_mod, types=types)
+        host = WasmHost()
+        out = io.StringIO()
+        saved_out = sys.stdout
+        sys.stdout = out
+        try:
+            host.run_main(blob)
+        finally:
+            sys.stdout = saved_out
+        return out.getvalue()
+
+    def test_lambda_with_string_param(self):
+        # The pred lambda takes a String, returns a Bool. The
+        # lifted lambda's signature becomes (env i32, s_ptr i32,
+        # s_len i32) -> i32; the call-site pushes 2 i32s for the
+        # String arg.
         src = (
-            'fun apply(items: List<String>, pred: Fun(String) -> Bool) -> List<String>\n'
-            '    var out: List<String> = []\n'
+            'fun apply_pred(items: List<String>, pred: Fun(String) -> Bool) -> Int\n'
+            '    var count = 0\n'
             '    for x in items\n'
             '        if pred(x)\n'
-            '            out.push(x)\n'
+            '            count = count + 1\n'
+            '    return count\n'
+            '\n'
+            'fun main(stdio: Stdio)\n'
+            '    let xs: List<String> = ["a", "bb", "ccc"]\n'
+            '    let n = apply_pred(xs, fun(s: String) -> Bool => s.length() > 1)\n'
+            '    stdio.println("n=${n}")\n'
+        )
+        self.assertEqual(self._run_capturing_stdout(src), "n=2\n")
+
+    def test_lambda_returning_string(self):
+        # The f lambda takes an Int, returns a String. The
+        # lifted lambda's result becomes multi-value
+        # (result i32 i32); the call-site stores into
+        # ${dst}_ptr / ${dst}_len via _set_string_dst.
+        src = (
+            'fun transform(items: List<Int>, f: Fun(Int) -> String) -> List<String>\n'
+            '    var out: List<String> = []\n'
+            '    for x in items\n'
+            '        out.push(f(x))\n'
             '    return out\n'
             '\n'
             'fun main(stdio: Stdio)\n'
-            '    let xs: List<String> = ["a", "bb"]\n'
-            '    let long = apply(xs, fun(s: String) -> Bool => s.length() > 1)\n'
-            '    stdio.println("done")\n'
+            '    let xs: List<Int> = [1, 2, 3]\n'
+            '    let ss = transform(xs, fun(n: Int) -> String => "n=${n}")\n'
+            '    for s in ss\n'
+            '        stdio.println(s)\n'
         )
-        _, types, ast_mod = _parse_lower(src)
-        with self.assertRaises(WasmEmissionError) as cm:
-            compile_wasm(ast_mod, types=types)
-        msg = str(cm.exception)
-        self.assertIn("lambda param", msg)
-        self.assertIn("'String'", msg)
-        self.assertIn("scalar", msg)
-        self.assertIn("--run", msg)
+        self.assertEqual(
+            self._run_capturing_stdout(src), "n=1\nn=2\nn=3\n",
+        )
 
 
 @unittest.skipUnless(

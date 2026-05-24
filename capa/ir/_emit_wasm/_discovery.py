@@ -28,8 +28,9 @@ orchestration + per-instruction dispatch.
 from __future__ import annotations
 
 from .._nodes import (
-    Module, Instr, Value,
-    Call, MethodCall, For, FormatStr, If, While, Match, MakeMap,
+    Module, Instr, Value, Function,
+    Call, MethodCall, For, FormatStr, If, While, Match,
+    MakeList, MakeMap, MakeSet, MakeLambda,
     PatIdent, PatVariant,
 )
 from .._emit_wit import _WIT_SIGNATURES
@@ -153,6 +154,12 @@ class _DiscoveryMixin:
                         for p in instr.parts:
                             if isinstance(p, Value) and _eff_ty(p, fn) == "Float":
                                 return True
+                    if isinstance(instr, MakeLambda):
+                        # Recurse into the lambda body so a Float-
+                        # interpolation inside a closure still
+                        # triggers $ftoa emission.
+                        if visit(instr.body):
+                            return True
                     if isinstance(instr, If):
                         if visit(instr.then_body) or visit(instr.else_body):
                             return True
@@ -212,11 +219,17 @@ class _DiscoveryMixin:
         """True if any function body contains a ``FormatStr``
         instruction. Drives the emission of the ``$itoa`` helper
         (and pre-interning of ``"true"`` / ``"false"`` for Bool
-        parts)."""
+        parts). Recurses into ``MakeLambda`` bodies so a format
+        string nested inside a lambda still triggers the helper
+        emission (otherwise the lifted lambda's body references
+        ``$itoa`` that the module never defined)."""
         def visit(instrs: list[Instr]) -> bool:
             for instr in instrs:
                 if isinstance(instr, FormatStr):
                     return True
+                if isinstance(instr, MakeLambda):
+                    if visit(instr.body):
+                        return True
                 if isinstance(instr, If):
                     if visit(instr.then_body) or visit(instr.else_body):
                         return True

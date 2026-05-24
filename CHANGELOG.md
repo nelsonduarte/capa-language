@@ -9,6 +9,57 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+### Wasm: multi-value lowering for String in lambda params + returns
+
+Closures with `String` parameters and/or `String` return types
+used to fail closure registration with `Capa type 'String' has
+no Wasm encoding yet`. The call-site emitter
+(`_emit_closure_call`) and lifted-lambda body emitter
+(`_emit_lifted_lambda`) had ALREADY been wired for the
+(ptr, len) convention; what was missing was the signature
+plumbing in `_register_lambda` and `_fun_type_to_sig_key`.
+
+Three surgical edits in `capa/ir/_emit_wasm/_closures.py`:
+
+1. `_register_lambda`: when a param `ty == "String"`, append two
+   `i32`s to `param_wasm_tys`. When `return_type == "String"`,
+   use `"i32 i32"` as `result_ty` (multi-value Wasm result).
+2. `_fun_type_to_sig_key`: same treatment for the return-type
+   side so the sig_key the call-site builds matches what
+   `_register_lambda` registered.
+3. `_emit_lifted_lambda`: move the String check before
+   `_wasm_type(p.ty)` (which raises on String) so the
+   `${name}_ptr` / `${name}_len` param convention is honoured.
+
+Plus two discovery walkers in
+`capa/ir/_emit_wasm/_discovery.py` that needed `MakeLambda`
+recursion: `_uses_format_str` and `_uses_float_format`. A
+format-string inside a closure body now correctly triggers
+`$itoa` / `$ftoa` helper emission. Fixed the latent
+`MakeLambda`/`MakeList`/`MakeSet`/`Function` imports the
+discovery module had been referencing through dead branches
+since they were added.
+
+`TestWasmClosureStringTypes` (2 cases):
+- `test_lambda_with_string_param`: count items with a
+  closure that takes a `String` and returns a `Bool`
+- `test_lambda_returning_string`: map a list of `Int`s
+  through a closure that returns `String` via interpolation
+  ("n=${n}")
+
+Closes the second of the three Wasm gaps surfaced by the
+`capa_showcase` assessment. The last remaining gap (analyzer
+not propagating user-cap method return types, surfaced as
+`TryUnwrap on type '?'` on `fs.read(path)?` where `fs` is a
+user-defined capability) stays open as the next P1
+follow-up. Same root pattern as the Fun-typed-callee fix
+that landed yesterday.
+
+Suite: 1258 → 1259 tests, 4 platform-skips. The
+pre-existing `test_lambda_with_string_param_gives_clear_error`
+is removed (gap closed); its actionable-error placeholder
+class stays in place for future surfaces.
+
 ### Wasm: generic-function monomorphisation
 
 `fun first<T>(items: List<T>) -> Option<T>` (and any other
