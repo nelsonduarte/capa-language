@@ -18,7 +18,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from evaluation.cve import download_nvd
+from evaluation.cve import classify, download_nvd
 
 
 class TestNvdDownloaderHelpers(unittest.TestCase):
@@ -65,6 +65,97 @@ class TestNvdDownloaderHelpers(unittest.TestCase):
         for name in entries:
             self.assertEqual(entries[name].sha256, reparsed[name].sha256)
             self.assertEqual(entries[name].url, reparsed[name].url)
+
+
+class TestClassifierHelpers(unittest.TestCase):
+    """Heuristic-level tests for the auto-classifier. The full
+    end-to-end pass depends on the NVD cache being present, so
+    those tests are skipped when the cache is missing; the helpers
+    work on inline mock CVE records."""
+
+    def test_extract_cwes_from_weaknesses(self):
+        cve = {
+            "weaknesses": [
+                {"description": [
+                    {"lang": "en", "value": "CWE-78"},
+                    {"lang": "en", "value": "CWE-22"},
+                ]},
+                {"description": [
+                    {"lang": "en", "value": "CWE-22"},  # duplicate
+                    {"lang": "en", "value": "NVD-CWE-Other"},
+                ]},
+            ],
+        }
+        self.assertEqual(classify._extract_cwes(cve), ["CWE-22", "CWE-78"])
+
+    def test_extract_cvss_prefers_v31(self):
+        cve = {
+            "metrics": {
+                "cvssMetricV31": [
+                    {"cvssData": {"baseScore": 9.8, "baseSeverity": "CRITICAL"}},
+                ],
+                "cvssMetricV2": [
+                    {"cvssData": {"baseScore": 5.0}},
+                ],
+            },
+        }
+        score, sev = classify._extract_cvss(cve)
+        self.assertEqual(score, 9.8)
+        self.assertEqual(sev, "CRITICAL")
+
+    def test_auto_bucket_structural(self):
+        cve = {
+            "descriptions": [{"lang": "en", "value": "command injection via shell"}],
+            "weaknesses": [{"description": [{"lang": "en", "value": "CWE-78"}]}],
+        }
+        bucket, _ = classify._auto_bucket(cve)
+        self.assertEqual(bucket, "STRUCTURAL_REJECT")
+
+    def test_auto_bucket_attenuation(self):
+        cve = {
+            "descriptions": [{"lang": "en", "value": "path traversal via ../"}],
+            "weaknesses": [{"description": [{"lang": "en", "value": "CWE-22"}]}],
+        }
+        bucket, _ = classify._auto_bucket(cve)
+        self.assertEqual(bucket, "ATTENUATION_MITIGATED")
+
+    def test_auto_bucket_memory_override(self):
+        # CWE-94 (code injection) is normally STRUCTURAL_REJECT,
+        # but a description that screams 'use-after-free' overrides
+        # to OUT_OF_SCOPE_MEMORY.
+        cve = {
+            "descriptions": [{
+                "lang": "en",
+                "value": "use-after-free in script eval handler",
+            }],
+            "weaknesses": [{"description": [{"lang": "en", "value": "CWE-94"}]}],
+        }
+        bucket, _ = classify._auto_bucket(cve)
+        self.assertEqual(bucket, "OUT_OF_SCOPE_MEMORY")
+
+    def test_full_classification_deterministic(self):
+        # End-to-end pass: requires the cache to exist. If missing,
+        # skip so CI doesn't fail on machines without the dataset.
+        if not (download_nvd.CACHE_DIR / "nvdcve-2.0-2024.json.gz").exists():
+            self.skipTest("NVD cache not present; run download_nvd first")
+
+        first = classify.classify_all()
+        second = classify.classify_all()
+        # Same seed must produce the same sample, in the same order.
+        self.assertEqual(
+            [d.cve_id for d in first],
+            [d.cve_id for d in second],
+        )
+        # Sample size locked to constant.
+        self.assertLessEqual(len(first), classify.SAMPLE_SIZE)
+        # Every bucket label must be a known one.
+        valid_buckets = {
+            "STRUCTURAL_REJECT", "ATTENUATION_MITIGATED",
+            "OUT_OF_SCOPE_MEMORY", "OUT_OF_SCOPE_LOGIC",
+            "OUT_OF_SCOPE_BELOW_LANG", "UNCLEAR",
+        }
+        for d in first:
+            self.assertIn(d.bucket, valid_buckets)
 
 
 if __name__ == "__main__":
