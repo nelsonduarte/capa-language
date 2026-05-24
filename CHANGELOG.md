@@ -9,6 +9,37 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+### Lowerer: tag `cap_used` on built-in cap method calls reached via field access
+
+`_lower_method_call` set `MethodCall.cap_used` only when the
+receiver was a capability parameter (e.g.
+`stdio.println(...)`). User-defined cap impls that reach a
+built-in cap through a struct field (e.g.
+`self.fs.read(...)` inside `impl ReadOnlyFs for
+ReadOnlyFsImpl { fs: Fs }`) left `cap_used = None`, so the
+Wasm backend's canonical-ABI detector in `_collect_locals`
+(the `has_indirect_cap_call` gate) missed the call and
+`$_ret_area` went undeclared. wasm-tools then rejected the
+WAT with `unknown local: failed to find name $_ret_area`.
+
+Fix: extend the lowerer's tagging logic to also fire when
+`receiver.ty`'s head resolves to a built-in cap, regardless
+of how the receiver was bound. Now every method call on a
+built-in cap (parameter, field access, let-binding, etc.)
+carries the cap name through to the IR -- the manifest
+builder, capability discipline checks, and Wasm
+indirect-return area allocation all see it consistently.
+
+`TestWasmCapCallViaFieldAccess` (1 case) pins the
+`impl method -> self.fs.read(...) -> match Result` pattern
+that capa_showcase's `ReadOnlyFs` wrapper exercises.
+
+Suite: 1265 → 1266 tests, 4 platform-skips.
+
+The capa_showcase smoke advances past this gap and surfaces
+the next documented P1 (FormatStr on user struct types,
+e.g. `${e}` where `e: IoError`).
+
 ### Wasm: top-level String const support end-to-end
 
 `pub const SCHEMA: String = "1.0"` referenced from any

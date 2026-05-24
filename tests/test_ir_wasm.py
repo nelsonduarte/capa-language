@@ -2008,6 +2008,70 @@ class TestWasmTupleParamTypes(unittest.TestCase):
     _has_wasm_tools() and _has_wasmtime_py(),
     "wasm-tools and/or wasmtime-py not installed",
 )
+class TestWasmCapCallViaFieldAccess(unittest.TestCase):
+    """The IR's MethodCall.cap_used field was set only when the
+    receiver was a capability parameter (``param.method(...)``).
+    User-defined cap impls that reach a built-in cap via a struct
+    field (``self.fs.read(...)``) left cap_used as None, so the
+    Wasm backend's ``has_indirect_cap_call`` detector in
+    ``_collect_locals`` missed the call. The canonical-ABI
+    indirect-return area ``$_ret_area`` then went undeclared and
+    wasm-tools rejected the WAT with ``unknown local: $_ret_area``.
+
+    Fix landed 2026-05-27: the lowerer now also tags cap_used
+    when the receiver's type string resolves to a built-in cap,
+    regardless of how it was reached. Test pins the impl-method-
+    calls-built-in-cap pattern that the capa_showcase exercised
+    via its ReadOnlyFs wrapper."""
+
+    def _run_capturing_stdout(self, src: str) -> str:
+        import io, sys
+        from capa.runtime._wasm_host import WasmHost
+        _, types, ast_mod = _parse_lower(src)
+        blob = compile_wasm(ast_mod, types=types)
+        host = WasmHost()
+        out = io.StringIO()
+        saved_out = sys.stdout
+        sys.stdout = out
+        try:
+            host.run_main(blob)
+        finally:
+            sys.stdout = saved_out
+        return out.getvalue()
+
+    def test_user_cap_impl_calls_builtin_cap_via_self_field(self):
+        # ReadOnlyFs.read delegates to self.fs.read (built-in
+        # Fs.read with canonical-ABI Result<String, IoError>
+        # return area). Caller matches the Result and routes
+        # Err to a default string. Exercises the full chain:
+        # user-cap method dispatch + impl body's built-in-cap
+        # call via field access + $_ret_area declaration.
+        src = (
+            'pub capability ReadOnlyFs\n'
+            '    fun read(self, path: String) -> Result<String, IoError>\n'
+            'pub type ReadOnlyFsImpl { fs: Fs }\n'
+            'pub fun make_ro_fs(fs: Fs) -> ReadOnlyFsImpl\n'
+            '    return ReadOnlyFsImpl { fs: fs }\n'
+            'impl ReadOnlyFs for ReadOnlyFsImpl\n'
+            '    fun read(self, path: String) -> Result<String, IoError>\n'
+            '        return self.fs.read(path)\n'
+            'fun describe(fs: ReadOnlyFs, path: String) -> String\n'
+            '    match fs.read(path)\n'
+            '        Ok(s)  -> return s\n'
+            '        Err(_) -> return "<missing>"\n'
+            'fun main(stdio: Stdio, fs: Fs)\n'
+            '    let ro = make_ro_fs(fs)\n'
+            '    stdio.println(describe(ro, "/does/not/exist"))\n'
+        )
+        self.assertEqual(
+            self._run_capturing_stdout(src), "<missing>\n",
+        )
+
+
+@unittest.skipUnless(
+    _has_wasm_tools() and _has_wasmtime_py(),
+    "wasm-tools and/or wasmtime-py not installed",
+)
 class TestWasmGlobalStringConst(unittest.TestCase):
     """Top-level ``pub const NAME: String = "..."`` referenced from
     a function body used to fail the Wasm backend with either

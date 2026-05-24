@@ -70,18 +70,6 @@ No remaining work in this priority.
 Strengthens the capability + supply-chain claim, but isn't on
 the current Wasm critical path.
 
-- [ ] **Wasm backend: `_ret_area` not declared for user-cap
-  Result-returning method calls inside a match-scrutinee
-  context**. Surfaced 2026-05-26 by a user-cap method that
-  returns `Result<String, IoError>` and is matched in
-  `match cap.read(p)`. Error: `unknown local: failed to find
-  name $_ret_area`. The canonical-ABI return area used for
-  multi-value capability returns isn't reserved when the
-  method call appears in this exact shape. ⏱ unknown; needs
-  a focused look at `_collect_locals` + the cap-call emit
-  path. The simpler scalar case (user cap method returning
-  Int / Bool / Float / Unit) works correctly as of
-  2026-05-26's analyzer fix.
 
 - [ ] **Wasm backend: FormatStr on user struct types**.
   Surfaced 2026-05-27 by the capa_showcase. ``${e}`` where
@@ -386,6 +374,20 @@ the full reasoning.
   sequence, sitemap, robots, CNAME, and the logo assets all live
   in the new repo. README + CONTRIBUTING + STABILITY + templates
   rewritten to point at the canonical URLs.
+- 2026-05-27: **Lowerer: tag cap_used on built-in cap method
+  calls reached via field access**. The lowerer's
+  ``_lower_method_call`` only set ``cap_used`` when the
+  receiver was a capability parameter (``cap.method(...)``).
+  User-defined cap impls that reach a built-in cap through a
+  struct field (``self.fs.read(...)``) left cap_used None, so
+  the Wasm backend's canonical-ABI detector
+  (``_collect_locals``' ``has_indirect_cap_call``) missed the
+  call. The ``$_ret_area`` local then went undeclared and
+  wasm-tools rejected the WAT with ``unknown local:
+  $_ret_area``. Fix: tag cap_used by ``receiver.ty`` (head)
+  when the type resolves to a built-in cap, regardless of
+  how the receiver was reached. 1 new test:
+  ``TestWasmCapCallViaFieldAccess``.
 - 2026-05-27: **Wasm backend: top-level String const support
   end-to-end**. Three sites had no ``global`` case:
   ``_push_string_value_as_ptr_len`` (interpolation +

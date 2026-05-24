@@ -1308,6 +1308,18 @@ class Lowerer:
         # method invocation.
         if receiver.kind == "param" and receiver.name in self._cap_params:
             cap_used = self._cap_params[receiver.name]
+        elif (receiver.ty or "").split("<", 1)[0] in _BUILTIN_CAPS:
+            # Receiver is a built-in cap reached via field access or
+            # local binding (e.g. ``self.fs.read(...)`` inside an
+            # impl method, or ``let f = my_cap; f.read(...)`` in a
+            # parent function). Without this branch the Wasm
+            # backend's canonical-ABI indirect-return detection
+            # (_collect_locals' has_indirect_cap_call gate) would
+            # miss the call and ``$_ret_area`` would go undeclared,
+            # producing WAT that wasm-tools rejects. Tag with the
+            # receiver's cap type so the manifest builder + the
+            # Wasm emitter both see it.
+            cap_used = (receiver.ty or "").split("<", 1)[0]
         result_ty = "Unknown"
         if self.types:
             t = self.types.get(id(e))
