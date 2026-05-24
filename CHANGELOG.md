@@ -9,6 +9,33 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+### Soundness fix: capability-forge in --python mode
+
+The analyzer now rejects any call where the callee resolves to a
+capability symbol (built-in or user-defined). Before this fix, a
+function declared `main(stdio: Stdio)` could write `let fs = Fs()`
+and obtain unrestricted filesystem authority through the legacy
+--python backend: the transpiler emitted a literal `Fs()`
+instantiation and the runtime `Fs.__init__` defaults to an
+unrestricted instance. The bug was incidentally absent in --wasm
+(the cap constructor produced TyUnknown and the Wasm emitter
+refused to dispatch methods on it, surfacing as an emission
+error rather than a leak), so the leak only affected --python.
+
+Surfaced 2026-05-24 by the empirical-study fuzz harness on the
+first attack program written for slice 1; this is exactly the
+class of negative test §5.5 of the paper is meant to provide.
+Fix: `_check_call` in [capa/analyzer/_dispatch.py](capa/analyzer/_dispatch.py)
+emits `capability 'X' cannot be constructed at a call site;
+capabilities only flow through function parameters ...` and
+returns `TyName(X)` so downstream method calls do not avalanche
+with secondary "unknown receiver" diagnostics. Coverage added
+in `TestCapabilityForgeRejected` in
+[tests/test_analyzer.py](tests/test_analyzer.py): 7 new tests
+covering every built-in cap, user-defined caps, in-helper and
+in-main forge attempts, plus the positive case that
+capability-as-param is still accepted.
+
 ### Milestone: every downstream demo runs end-to-end under `--wasm --run`
 
 Cross-demo smoke on 2026-05-27. All four downstream consumers

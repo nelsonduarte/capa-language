@@ -838,6 +838,132 @@ class TestCapabilityDiscipline(unittest.TestCase):
 
 
 # =============================================================
+# Capability forge: rejecting `Fs()`-style local construction.
+# Surfaced 2026-05-24 by the empirical-study fuzz harness: the
+# legacy --python backend transpiled `let fs = Fs()` to a literal
+# `Fs()` instantiation that obtained unrestricted filesystem
+# authority because the runtime `Fs` class defaults to an
+# unrestricted instance. The analyzer must reject the call form
+# so the static discipline holds across both backends.
+# =============================================================
+
+class TestCapabilityForgeRejected(unittest.TestCase):
+    """A built-in capability name used as a callee is a forge
+    attempt: it would let any function obtain authority it never
+    declared. The analyzer rejects every such call."""
+
+    def test_fs_forge_rejected(self):
+        msgs = errors_of(
+            "fun main(stdio: Stdio)\n"
+            "    let fs = Fs()\n"
+            "    stdio.println(\"x\")\n"
+        )
+        self.assertTrue(
+            any(
+                "capability 'Fs' cannot be constructed at a call site"
+                in m for m in msgs
+            ),
+            msgs,
+        )
+
+    def test_stdio_forge_rejected(self):
+        msgs = errors_of(
+            "fun no_caps()\n"
+            "    let s = Stdio()\n"
+            "    s.println(\"smuggled\")\n"
+        )
+        self.assertTrue(
+            any(
+                "capability 'Stdio' cannot be constructed at a call site"
+                in m for m in msgs
+            ),
+            msgs,
+        )
+
+    def test_net_forge_rejected(self):
+        msgs = errors_of(
+            "fun phone_home(stdio: Stdio)\n"
+            "    let n = Net()\n"
+            "    stdio.println(\"got net\")\n"
+        )
+        self.assertTrue(
+            any(
+                "capability 'Net' cannot be constructed at a call site"
+                in m for m in msgs
+            ),
+            msgs,
+        )
+
+    def test_env_forge_in_helper_rejected(self):
+        # Forge inside a helper called from main: must still be
+        # rejected. Verifies the check does not depend on the
+        # enclosing function being `main`.
+        msgs = errors_of(
+            "fun leak()\n"
+            "    let e = Env()\n"
+            "    let _key = e.get(\"ANTHROPIC_API_KEY\")\n"
+            "fun main(stdio: Stdio)\n"
+            "    leak()\n"
+            "    stdio.println(\"done\")\n"
+        )
+        self.assertTrue(
+            any(
+                "capability 'Env' cannot be constructed at a call site"
+                in m for m in msgs
+            ),
+            msgs,
+        )
+
+    def test_all_builtin_caps_rejected(self):
+        # Every built-in cap name must be rejected as callee.
+        for cap in (
+            "Stdio", "Fs", "Net", "Env", "Proc", "Clock", "Random",
+            "Db", "Unsafe",
+        ):
+            with self.subTest(cap=cap):
+                msgs = errors_of(
+                    f"fun forge()\n"
+                    f"    let c = {cap}()\n"
+                )
+                self.assertTrue(
+                    any(
+                        f"capability {cap!r} cannot be constructed at a "
+                        f"call site" in m for m in msgs
+                    ),
+                    f"{cap}: {msgs}",
+                )
+
+    def test_cap_as_param_still_ok(self):
+        # The legitimate use stays legitimate.
+        r = check(
+            "fun main(stdio: Stdio, fs: Fs)\n"
+            "    match fs.read(\"x\")\n"
+            "        Ok(_) -> stdio.println(\"ok\")\n"
+            "        Err(_) -> stdio.println(\"err\")\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+    def test_user_defined_cap_call_also_rejected(self):
+        # User-defined capabilities are abstract: they must be
+        # constructed via a struct implementor + factory, not by
+        # calling the cap name as if it were a constructor.
+        msgs = errors_of(
+            "capability Logger\n"
+            "    fun log(self, msg: String)\n"
+            "fun no_caps()\n"
+            "    let l = Logger()\n"
+            "    l.log(\"x\")\n"
+        )
+        self.assertTrue(
+            any(
+                "capability 'Logger' cannot be constructed at a call site"
+                in m for m in msgs
+            ),
+            msgs,
+        )
+
+
+# =============================================================
 # Generics inference
 # =============================================================
 

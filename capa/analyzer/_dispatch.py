@@ -138,6 +138,18 @@ class _DispatchMixin:
             sym = self.scope.lookup(e.callee.name)
             if sym is not None:
                 self.bindings[id(e.callee)] = sym
+                if sym.kind == SymbolKind.CAPABILITY:
+                    self._err(
+                        f"capability {sym.name!r} cannot be constructed at "
+                        f"a call site; capabilities only flow through "
+                        f"function parameters (declare "
+                        f"{sym.name.lower()}: {sym.name} on this function "
+                        f"and let the caller pass it in). Constructing a "
+                        f"capability locally would let any function "
+                        f"silently obtain authority it never declared.",
+                        e.pos,
+                    )
+                    return TyName(sym.name)
                 if sym.kind == SymbolKind.FUNCTION:
                     if isinstance(sym.ty, TyFun):
                         perm = self._resolve_named_args(
