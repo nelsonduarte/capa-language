@@ -378,9 +378,22 @@ right primitives. Listed at the top of this section accordingly.
   transpiled output but maps poorly. Source maps would help.
   ⏱ 8-16h depending on Python debug-info granularity.
 
-- [ ] **Analyzer performance benchmarks**. Lex+parse+analyze
-  wallclock isn't measured. Probably not slow yet, but a
-  measurement bar is cheap to add. ⏱ 2-4h.
+- [x] **Analyzer performance benchmarks** (closed 2026-05-25).
+  New runner at [`benchmarks/compile_bench.py`](benchmarks/compile_bench.py)
+  measures lex / parse / analyse wallclock on three synthetic
+  programs (10 / 100 / 1000 function definitions; the medium
+  workload mixes capability calls and sum-variant match, the
+  large adds structs + field access + sum + match). Each phase
+  is timed in isolation across ``--repeat`` standalone trials.
+  Output is plain text by default, ``--markdown`` for inclusion
+  in docs. The benchmark itself doesn't gate CI; it exists as a
+  reproducible bar so a future ``O(n^2)`` pass in the analyser
+  surfaces in a manual run before it ships. Current baseline on
+  Windows 11 / CPython 3.14: small ~3.5ms, medium ~55ms, large
+  ~450ms (lex / parse roughly linear in LOC; analyse grows
+  super-linearly with sum + match density but stays well within
+  the regression bar). Benchmarks README updated to point at
+  the new runner.
 
 ---
 

@@ -116,10 +116,10 @@ program. The following are excluded by design:
 
 - **Compile time.** The Capa pipeline (lex + parse + analyze +
   transpile) is run once per workload before the timing loop.
-  It is not in the measured number. Compile time is a separate
-  question, addressed in the `--check` and `--transpile` flag
-  performance which is fast enough not to require a benchmark
-  yet.
+  It is not in the measured number; see
+  [`compile_bench.py`](compile_bench.py) for the compile-time
+  benchmark (lex / parse / analyse on synthetic 10 / 100 / 1000
+  function programs).
 
 - **Python startup.** Both the Capa and baseline measurements
   run inside the same Python process via `exec()` of the
@@ -134,6 +134,23 @@ program. The following are excluded by design:
 
 - **JIT / specialisation.** CPython has no JIT (yet); these
   numbers are interpreter-direct.
+
+## Compile-time benchmark
+
+Separately, [`compile_bench.py`](compile_bench.py) measures the
+front-end cost (lex, parse, analyse) on three synthetic
+programs of growing size (10, 100, 1000 function definitions).
+Run with:
+
+```bash
+python benchmarks/compile_bench.py
+python benchmarks/compile_bench.py --repeat 7 --markdown
+```
+
+The numbers are not a public-facing claim about compile speed
+on real-world programs; they exist as a regression bar so a
+future O(n^2) pass in the analyser surfaces in CI / a manual
+run before it ships.
 
 ## Reproducing
 
