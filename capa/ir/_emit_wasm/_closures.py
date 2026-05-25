@@ -154,47 +154,88 @@ class _ClosureEmissionMixin:
         normally see the function body, but MakeLambda bodies are
         a separate Instr list.
 
-        Lambdas inside lambdas are rejected here -- nested closure
-        records would need an env-of-env shape that Phase 6E does
-        not support."""
+        Nested lambdas use flat envs: every inner closure gets its
+        own env record holding all the names it references from
+        any outer scope (no env-of-env chain). The scope-stack
+        ``scopes`` carries the immediate-enclosing-lambda's
+        ``params`` / ``locals`` / ``captures`` so the inner's
+        capture-type lookup can walk the outer's view; the
+        ``parent_fn`` parameter stays the top-level function so
+        ``_register_lambda`` can find a body-local's type in the
+        lowerer's flat ``fn.locals`` map."""
 
-        def visit(instrs: list[Instr], parent_fn: Function, inside_lambda: bool) -> None:
+        def visit(
+            instrs: list[Instr],
+            parent_fn: Function,
+            scopes: list[dict],
+        ) -> None:
             for instr in instrs:
                 if isinstance(instr, MakeLambda):
-                    if inside_lambda:
-                        raise WasmEmissionError(
-                            "Phase 6E: lambdas inside lambdas are "
-                            "not supported (would need env-of-env)"
-                        )
-                    self._register_lambda(instr, parent_fn)
-                # Discover-time string interning for the lambda body
-                # has already been handled by ``_discover`` -- it
-                # walks parent_fn.body and intern_strings any
-                # ``lit_str`` Values it finds. MakeLambda's body is
-                # NOT a child of parent_fn.body for that walk, so
-                # we re-walk it here:
-                if isinstance(instr, MakeLambda):
+                    # ``parent_scope_name`` is the immediate
+                    # enclosing emission unit's name. At MakeLambda
+                    # emit time ``self._current_fn`` is either the
+                    # top-level Function (no scopes pushed) or the
+                    # synthesised lifted function for the outer
+                    # lambda (scopes[-1]["name"]); key the
+                    # registration the same way.
+                    if scopes:
+                        parent_scope_name = scopes[-1]["name"]
+                    else:
+                        parent_scope_name = parent_fn.name
+                    self._register_lambda(
+                        instr, parent_fn,
+                        parent_scope_name=parent_scope_name,
+                        outer_scope=scopes[-1] if scopes else None,
+                    )
                     self._discover_instrs(instr.body)
-                    visit(instr.body, parent_fn, True)
+                    # Push this lambda's scope, recurse into its
+                    # body, pop. The freshly registered lambda is
+                    # at the end of ``_lifted_lambdas`` -- its
+                    # ``params`` / ``locals`` / ``captures`` are
+                    # what an even-deeper nested lambda would need.
+                    lifted = self._lifted_lambdas[-1]
+                    scopes.append(lifted)
+                    try:
+                        visit(instr.body, parent_fn, scopes)
+                    finally:
+                        scopes.pop()
                 if isinstance(instr, If):
-                    visit(instr.then_body, parent_fn, inside_lambda)
-                    visit(instr.else_body, parent_fn, inside_lambda)
+                    visit(instr.then_body, parent_fn, scopes)
+                    visit(instr.else_body, parent_fn, scopes)
                 elif isinstance(instr, While):
-                    visit(instr.cond_setup, parent_fn, inside_lambda)
-                    visit(instr.body, parent_fn, inside_lambda)
+                    visit(instr.cond_setup, parent_fn, scopes)
+                    visit(instr.body, parent_fn, scopes)
                 elif isinstance(instr, For):
-                    visit(instr.body, parent_fn, inside_lambda)
+                    visit(instr.body, parent_fn, scopes)
                 elif isinstance(instr, Match):
                     for arm in instr.arms:
-                        visit(arm.body, parent_fn, inside_lambda)
+                        visit(arm.body, parent_fn, scopes)
 
         for fn in module.functions:
-            visit(fn.body, fn, False)
+            visit(fn.body, fn, [])
 
-    def _register_lambda(self, instr: MakeLambda, parent_fn: Function) -> None:
+    def _register_lambda(
+        self,
+        instr: MakeLambda,
+        parent_fn: Function,
+        parent_scope_name: Optional[str] = None,
+        outer_scope: Optional[dict] = None,
+    ) -> None:
         """Compute captures + env layout + signature for one
         lambda; append the resulting record to ``_lifted_lambdas``
-        and assign it an fn_idx."""
+        and assign it an fn_idx.
+
+        ``parent_fn`` is the top-level Function the lambda is
+        ultimately nested inside (used for the flat ``fn.locals``
+        map the lowerer populated). ``outer_scope`` is the
+        immediate enclosing lambda's lifted record (or ``None``
+        when the lambda sits directly inside a Function); its
+        ``params`` / ``locals`` / ``captures`` are consulted in
+        priority order before falling through to ``parent_fn``.
+        ``parent_scope_name`` is the name the MakeLambda emit
+        site will see in ``self._current_fn.name`` -- it's the
+        outer lambda's lifted name for nested cases, the
+        top-level function's name otherwise."""
         # ------- free-variable analysis -------
         own_params: set[str] = {p.name for p in instr.params}
         defined_in_body: set[str] = set()
@@ -221,45 +262,106 @@ class _ClosureEmissionMixin:
 
         collect_defs(instr.body)
 
+        # Free-variable set for this lambda. Direct references in
+        # the body contribute, AND references inside any nested
+        # MakeLambda body that the nested lambda itself cannot
+        # satisfy (i.e. not in the nested's own params or
+        # body-defined locals). This is the standard
+        # ``free_vars(outer) = free_vars(direct) ∪
+        #   (free_vars(nested) - nested.params - nested.locals)``
+        # rule -- a nested closure's unbound names must be
+        # supplied by some enclosing scope, and if the outer is
+        # that enclosing scope, the outer must capture them too
+        # (and then pass them through into the nested's env at
+        # MakeLambda emit time).
         referenced: set[str] = set()
 
-        def collect_refs(v: Value) -> None:
-            if v.kind in ("local", "param") and v.name:
-                referenced.add(v.name)
+        def free_vars(
+            body_instrs: list[Instr],
+            shadow_params: set[str],
+            shadow_locals: set[str],
+        ) -> set[str]:
+            out: set[str] = set()
 
-        def visit_for_refs(instrs: list[Instr]) -> None:
-            for i in instrs:
-                for v in self._values_of(i):
-                    collect_refs(v)
-                if isinstance(i, If):
-                    collect_refs(i.cond)
-                    visit_for_refs(i.then_body)
-                    visit_for_refs(i.else_body)
-                elif isinstance(i, While):
-                    visit_for_refs(i.cond_setup)
-                    collect_refs(i.cond)
-                    visit_for_refs(i.body)
-                elif isinstance(i, For):
-                    collect_refs(i.iter)
-                    visit_for_refs(i.body)
-                elif isinstance(i, Match):
-                    collect_refs(i.scrutinee)
-                    for arm in i.arms:
-                        visit_for_refs(arm.body)
+            def collect(v: Value) -> None:
+                if v.kind in ("local", "param") and v.name:
+                    if v.name in shadow_params or v.name in shadow_locals:
+                        return
+                    out.add(v.name)
 
-        visit_for_refs(instr.body)
+            def walk(instrs: list[Instr]) -> None:
+                for i in instrs:
+                    if isinstance(i, MakeLambda):
+                        # Compute the nested lambda's own
+                        # shadowed set and propagate only the
+                        # unsatisfied free variables upward.
+                        inner_params = {p.name for p in i.params}
+                        inner_defs: set[str] = set()
+                        # Mirror ``collect_defs`` for the nested
+                        # body so its locally-bound names shadow
+                        # any outer reference.
+                        def nested_defs(ins: list[Instr]) -> None:
+                            for ii in ins:
+                                dst = getattr(ii, "dst", None)
+                                if dst:
+                                    inner_defs.add(dst)
+                                if isinstance(ii, For):
+                                    inner_defs.add(ii.name)
+                                    nested_defs(ii.body)
+                                elif isinstance(ii, If):
+                                    nested_defs(ii.then_body)
+                                    nested_defs(ii.else_body)
+                                elif isinstance(ii, While):
+                                    nested_defs(ii.cond_setup)
+                                    nested_defs(ii.body)
+                                elif isinstance(ii, Match):
+                                    for arm in ii.arms:
+                                        nested_defs(arm.body)
+                                        self._collect_pattern_names(
+                                            arm.pattern, inner_defs,
+                                        )
+                        nested_defs(i.body)
+                        nested_free = free_vars(
+                            i.body, inner_params, inner_defs,
+                        )
+                        for n in nested_free:
+                            if (n not in shadow_params
+                                    and n not in shadow_locals):
+                                out.add(n)
+                        # Skip the standard value walk for
+                        # MakeLambda; its dst is not a reference.
+                        continue
+                    for v in self._values_of(i):
+                        collect(v)
+                    if isinstance(i, If):
+                        collect(i.cond)
+                        walk(i.then_body)
+                        walk(i.else_body)
+                    elif isinstance(i, While):
+                        walk(i.cond_setup)
+                        collect(i.cond)
+                        walk(i.body)
+                    elif isinstance(i, For):
+                        collect(i.iter)
+                        walk(i.body)
+                    elif isinstance(i, Match):
+                        collect(i.scrutinee)
+                        for arm in i.arms:
+                            walk(arm.body)
 
-        captures_names = (referenced - defined_in_body - own_params)
+            walk(body_instrs)
+            return out
+
+        referenced = free_vars(instr.body, own_params, defined_in_body)
+        captures_names = referenced  # shadows already subtracted
 
         # ------- env layout -------
         env_layout: dict[str, tuple[int, str]] = {}
         offset = 0
         # Sort for deterministic layouts (helps debugging + tests).
         for name in sorted(captures_names):
-            capa_ty = (
-                parent_fn.locals.get(name)
-                or self._params_lookup(parent_fn, name)
-                or "Unknown"
+            capa_ty = self._resolve_capture_type(
+                name, parent_fn, outer_scope,
             )
             if capa_ty in BUILTIN_CAPS:
                 # Capability captures are free at the Wasm level.
@@ -333,9 +435,13 @@ class _ClosureEmissionMixin:
             self._closure_sig_keys[sig_key] = len(self._closure_sig_keys)
         sig_idx = self._closure_sig_keys[sig_key]
 
-        # Copy out the body's locals from the parent function's
+        # Copy out the body's locals from the top-level function's
         # locals dict so the synthesised lifted function carries
-        # precise types for ``_collect_locals``.
+        # precise types for ``_collect_locals``. The lowerer flattens
+        # every introduced local (including those created inside any
+        # depth of nested lambda) into the outermost function's
+        # locals map, so ``parent_fn.locals`` is the single source
+        # of truth even for deeply nested lambdas.
         body_locals: dict[str, str] = {}
         for name in defined_in_body:
             if name in parent_fn.locals:
@@ -357,7 +463,12 @@ class _ClosureEmissionMixin:
             "sig_idx": sig_idx,
             "fn_idx": fn_idx,
         })
-        self._lambda_by_dst[(parent_fn.name, instr.dst)] = fn_idx
+        # ``parent_scope_name`` is the lifted-lambda name for nested
+        # cases (so the inner MakeLambda emit -- which runs while
+        # ``self._current_fn`` is the outer's synth function -- finds
+        # the right entry) and the top-level function name otherwise.
+        key_parent = parent_scope_name or parent_fn.name
+        self._lambda_by_dst[(key_parent, instr.dst)] = fn_idx
 
     def _collect_pattern_names(self, pat: Pattern, out: set[str]) -> None:
         if isinstance(pat, PatIdent):
@@ -375,6 +486,56 @@ class _ClosureEmissionMixin:
             if p.name == name:
                 return p.ty
         return None
+
+    @staticmethod
+    def _resolve_capture_type(
+        name: str,
+        parent_fn: Function,
+        outer_scope: Optional[dict],
+    ) -> str:
+        """Look up the Capa type of a captured name for a lambda
+        being registered. Priority order:
+
+        1. Outer scope's locals (names defined inside the outer
+           lambda body, like ``let x = ...``).
+        2. Outer scope's params.
+        3. Outer scope's captures (the outer lambda is itself
+           closing over them -- the inner needs its own copy).
+        4. Top-level function's locals.
+        5. Top-level function's params.
+
+        Falls through to ``"Unknown"`` if absent everywhere. The
+        flat-env design copies the value at MakeLambda emit time,
+        so the chain stops at one level: the inner doesn't reach
+        through the outer's env at run time, it just gets the
+        same value stored directly in its own env."""
+        if outer_scope is not None:
+            scope_locals: dict[str, str] = outer_scope.get("locals", {}) or {}
+            ty = scope_locals.get(name)
+            if ty:
+                return ty
+            for p in outer_scope.get("params", []) or []:
+                if p.name == name:
+                    return p.ty
+            scope_caps: dict[str, tuple[int, str]] = (
+                outer_scope.get("captures", {}) or {}
+            )
+            if name in scope_caps:
+                return scope_caps[name][1]
+        # Fall through to the top-level function (the lowerer's
+        # flat locals map carries every name introduced anywhere
+        # under it, including pattern-bound names and lambda
+        # params -- but lambda params live on the MakeLambda
+        # instruction, not in ``fn.locals``, so the param-list
+        # walk above is still needed for the outer-lambda-param
+        # case).
+        ty2 = parent_fn.locals.get(name)
+        if ty2:
+            return ty2
+        for p in parent_fn.params:
+            if p.name == name:
+                return p.ty
+        return "Unknown"
 
     # ----- MakeLambda + closure_call ----------------------------
 
@@ -406,19 +567,33 @@ class _ClosureEmissionMixin:
             self._write(f"i32.const {env_size}")
             self._write("call $alloc")
             self._write("local.set $_lam_env_tmp")
-            # Store each capture.
+            # Store each capture. The push routes through
+            # ``_push_value`` / ``_push_string_value_as_ptr_len``
+            # so that a name which is itself an outer capture (we
+            # are emitting an inner MakeLambda inside the outer
+            # lambda's body) loads from the outer's ``$env`` rather
+            # than a Wasm local that doesn't exist. The flat-env
+            # design copies the value into the inner's env right
+            # here -- no run-time env chain.
             for name, (offset, capa_ty) in env_layout.items():
                 if capa_ty == "String":
                     self._write("local.get $_lam_env_tmp")
-                    self._write(f"local.get ${name}_ptr")
+                    cap_val = Value(kind="local", name=name, ty="String")
+                    self._push_string_value_as_ptr_len(cap_val)
+                    # Stack: [..., env_tmp, ptr, len].
+                    # Store ptr at offset, len at offset+4.
+                    self._write("local.set $_str_a_len")
+                    self._write("local.set $_str_a_ptr")
+                    self._write("local.get $_str_a_ptr")
                     self._write(f"i32.store offset={offset}")
                     self._write("local.get $_lam_env_tmp")
-                    self._write(f"local.get ${name}_len")
+                    self._write("local.get $_str_a_len")
                     self._write(f"i32.store offset={offset + 4}")
                 else:
                     size = self._size_of(capa_ty)
                     self._write("local.get $_lam_env_tmp")
-                    self._write(f"local.get ${name}")
+                    cap_val = Value(kind="local", name=name, ty=capa_ty)
+                    self._push_value(cap_val)
                     self._write(f"{_store_op_for_size(size)} offset={offset}")
         else:
             self._write("i32.const 0")

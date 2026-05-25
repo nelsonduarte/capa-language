@@ -449,8 +449,31 @@ Listed so the design space is explicit.
   Python backend as workaround. Coverage: 8 new tests in
   `TestWasmListHofNonInt` + 2 documented skips. Suite:
   1472 -> 1482.
-- **Lambdas-inside-lambdas (nested closures)**. Today raises;
-  needs env-of-env encoding. Rare in practice. ⏱ unknown.
+- [x] **Lambdas-inside-lambdas (nested closures)** (closed
+  2026-05-25). Lambda lifting with flat envs: each nested
+  closure gets its own env record containing every name it
+  references from any outer scope, with values copied straight
+  into that env at MakeLambda emit time. No env-of-env chain at
+  run time. The discovery walker now threads a scope stack
+  (function at the bottom, each lifted lambda pushed when
+  descending into its body); ``_register_lambda`` consults the
+  immediate-outer scope's ``params`` / ``locals`` / ``captures``
+  in priority order before falling through to the top-level
+  function for capture-type resolution. The MakeLambda emit
+  site routes per-capture stores through ``_push_value`` /
+  ``_push_string_value_as_ptr_len`` so a name that is itself an
+  outer capture loads from the outer's ``$env`` rather than a
+  Wasm local that doesn't exist. Free-variable analysis
+  recurses into nested MakeLambda bodies and subtracts the
+  nested's own params + body-defined locals before propagating
+  the remainder upward, so an outer that never references a
+  name directly still captures it when an inner needs it. Works
+  for arbitrary nesting depth (verified through triple nesting
+  in interactive testing). Coverage: 4 new tests in
+  ``TestWasmNestedClosures`` (simple nested closure spanning
+  function + outer scopes; inner captures only outer's param;
+  inner captures only function-scope variable; nested closure
+  used as a HOF callback). Suite: 1488 -> 1492.
 - **Pure-Wasm JSON parser** (alternative to today's host
   bridge). ~500 lines of WAT; only matters for shipping
   truly host-independent Wasm modules. ⏱ 12-16h.

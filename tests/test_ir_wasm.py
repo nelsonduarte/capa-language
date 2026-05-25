@@ -1875,6 +1875,104 @@ class TestWasmClosures(unittest.TestCase):
     _has_wasm_tools() and _has_wasmtime_py(),
     "wasm-tools and/or wasmtime-py not installed",
 )
+class TestWasmNestedClosures(unittest.TestCase):
+    """Phase 6E extension (2026-05-25): lambdas inside lambdas via
+    lambda-lifting with flat envs. Each nested closure gets its own
+    env record holding every name it references from any outer
+    scope; there is no env-of-env chain at run time. At MakeLambda
+    emit time the outer lambda's body copies values straight from
+    its own ``$env`` / locals into the inner's freshly-allocated
+    env record, so the inner only ever needs a single env-ptr.
+
+    Tests pin: inner captures both function-scope and outer-lambda
+    names; inner captures only the outer's param; inner captures
+    only the function-scope variable; and a nested closure used as
+    a HOF callback's body."""
+
+    def _instantiate(self, src: str):
+        import wasmtime
+        _, types, ast_mod = _parse_lower(src)
+        blob = compile_wasm(ast_mod, types=types)
+        engine = wasmtime.Engine()
+        mod = wasmtime.Module(engine, blob)
+        store = wasmtime.Store(engine)
+        linker = wasmtime.Linker(engine)
+        instance = linker.instantiate(store, mod)
+        return store, instance.exports(store)
+
+    def test_simple_nested_closure(self):
+        # Outer captures n (function-scope Int). Inner captures
+        # both x (outer's param, copied into inner's env from a
+        # Wasm local) and n (outer's capture, copied into inner's
+        # env via an outer-$env i64.load). 7 + 5 + 10 = 22.
+        src = (
+            "fun main() -> Int\n"
+            "    let n = 7\n"
+            "    let outer = fun (x: Int) -> Int =>\n"
+            "        let inner = fun (y: Int) -> Int => x + y + n\n"
+            "        return inner(10)\n"
+            "    return outer(5)\n"
+        )
+        store, exp = self._instantiate(src)
+        self.assertEqual(exp["main"](store), 22)
+
+    def test_inner_captures_only_outer(self):
+        # Classic make_adder: outer takes n, returns a closure
+        # that captures n. Inner captures only the outer's param,
+        # no function-scope variable. The outer itself has no
+        # captures (env_size 0) -- its only free variable is n,
+        # which is its own param.
+        src = (
+            "fun main() -> Int\n"
+            "    let mk_adder = fun (n: Int) -> Fun(Int) -> Int =>\n"
+            "        return fun (x: Int) -> Int => x + n\n"
+            "    let add5 = mk_adder(5)\n"
+            "    return add5(3)\n"
+        )
+        store, exp = self._instantiate(src)
+        self.assertEqual(exp["main"](store), 8)
+
+    def test_inner_captures_only_function(self):
+        # Outer is a thunk; inner captures n from the function
+        # scope, skipping the outer's own scope entirely. The
+        # outer therefore must still capture n (so the inner's
+        # env can be populated at MakeLambda emit time) even
+        # though outer itself never references n directly.
+        src = (
+            "fun main() -> Int\n"
+            "    let n = 100\n"
+            "    let outer = fun () -> Fun(Int) -> Int =>\n"
+            "        return fun (x: Int) -> Int => x + n\n"
+            "    let inner = outer()\n"
+            "    return inner(7)\n"
+        )
+        store, exp = self._instantiate(src)
+        self.assertEqual(exp["main"](store), 107)
+
+    def test_nested_in_hof(self):
+        # Nested closure inside a HOF callback (List<Int>.map).
+        # The let-binding extracts the callback out of the call
+        # site to side-step the parser's block-body-lambda-in-
+        # parens restriction; the closure machinery is the same
+        # either way. For xs = [1, 2, 3] this computes [2, 4, 6]
+        # and reads element 2 -> 6.
+        src = (
+            "fun main() -> Int\n"
+            "    let xs = [1, 2, 3]\n"
+            "    let h = fun (x: Int) -> Int =>\n"
+            "        let f = fun (y: Int) -> Int => x + y\n"
+            "        return f(x)\n"
+            "    let ys = xs.map(h)\n"
+            "    return ys[2]\n"
+        )
+        store, exp = self._instantiate(src)
+        self.assertEqual(exp["main"](store), 6)
+
+
+@unittest.skipUnless(
+    _has_wasm_tools() and _has_wasmtime_py(),
+    "wasm-tools and/or wasmtime-py not installed",
+)
 class TestWasmListHofNonInt(unittest.TestCase):
     """Phase 6E extension (2026-05-25): List<T>.map / filter / fold
     for non-Int element types T. Closure signatures now reflect the

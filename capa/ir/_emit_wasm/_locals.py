@@ -469,8 +469,14 @@ class _LocalsCollectionMixin:
         if has_make_lambda:
             # MakeLambda emission uses ``$_lam_env_tmp`` as scratch
             # for the freshly-allocated env pointer (or 0 for no
-            # captures).
+            # captures). String captures additionally route through
+            # the ``$_str_a_*`` pair to flip operand-stack order
+            # between ``_push_string_value_as_ptr_len`` (leaves ptr
+            # then len) and the per-field stores (need ptr first
+            # then len at offset+4, both alongside env_tmp).
             out["_lam_env_tmp"] = "i32"
+            out.setdefault("_str_a_ptr", "i32")
+            out.setdefault("_str_a_len", "i32")
         if has_list_hof:
             # List HOFs (map/filter/fold) need: a stash for the
             # closure value (i64), an iteration index, plus the
