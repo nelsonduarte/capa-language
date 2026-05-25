@@ -223,6 +223,25 @@ class TestReplEndToEnd(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         self.assertIn("99", result.stdout)
 
+    def test_parser_error_keeps_repl_alive(self):
+        # Lock in the assumption that ``ParserError`` is a subclass
+        # of ``LexerError`` and that the REPL's ``except LexerError``
+        # catches it. Audit 2026-05-25 (item #6) initially flagged
+        # this as a bug; investigation showed the inheritance makes
+        # the catch correct, but no test exercised the parser-error
+        # path. If someone ever decouples ``ParserError`` from
+        # ``LexerError``, this test fails and forces the catch site
+        # to be widened.
+        script = "let x =\nlet y = 42\ny\n.exit\n"
+        result = self._run(script)
+        self.assertEqual(result.returncode, 0)
+        # The first line is a parser error (incomplete let); the
+        # REPL must keep accepting input so the third line (a
+        # bare ``y``) prints 42.
+        self.assertIn("42", result.stdout)
+        # And the parser-error message itself made it to stderr.
+        self.assertIn("error", result.stderr.lower())
+
     def test_clock_is_pre_bound(self):
         # ``clock`` is pre-bound; calling ``clock.now_secs()`` at
         # the prompt should succeed and print a number.
