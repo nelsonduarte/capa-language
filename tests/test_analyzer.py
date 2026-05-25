@@ -4649,5 +4649,108 @@ class TestDuplicateBindingDiagnostic(unittest.TestCase):
         )
 
 
+class TestCapabilityFieldDiscipline(unittest.TestCase):
+    """Capabilities held in cap-bearing struct fields must follow
+    the same flow discipline as bare capability parameters. Two
+    holes surfaced by the 2026-05-25 audit:
+
+    A. ``mailer.net = other_net`` was accepted: capability fields
+       could be re-bound after construction, laundering the cap.
+    B. ``f(box.cap, box.cap)`` was accepted: the aliasing check
+       only canonicalised bare ``Ident`` expressions, so two
+       references via the same FieldAccess path looked distinct.
+    """
+
+    _SETUP = (
+        "capability Mailer\n"
+        "    fun send(self, to: String) -> Result<Unit, IoError>\n"
+        "\n"
+        "type SmtpMailer { server: String, net: Net }\n"
+        "\n"
+        "impl Mailer for SmtpMailer\n"
+        "    fun send(self, to: String) -> Result<Unit, IoError>\n"
+        "        return Ok(())\n"
+        "\n"
+    )
+
+    def test_field_assign_builtin_capability_rejected(self):
+        # Hole A: mailer.net = other_net used to pass silently.
+        msgs = errors_of(
+            self._SETUP
+            + "fun forge(mailer: SmtpMailer, other_net: Net)\n"
+            + "    mailer.net = other_net\n"
+        )
+        self.assertTrue(
+            any("capability 'Net'" in m and "cannot be re-bound" in m for m in msgs),
+            msgs,
+        )
+
+    def test_field_assign_user_capability_rejected(self):
+        # Same as above but the field holds a user-defined cap rather
+        # than a built-in one. Same hole.
+        msgs = errors_of(
+            "capability Logger\n"
+            "    fun log(self, msg: String) -> Result<Unit, IoError>\n"
+            "\n"
+            "capability Driver\n"
+            "    fun drive(self) -> Result<Unit, IoError>\n"
+            "\n"
+            "type Service { name: String, log: Logger }\n"
+            "\n"
+            "impl Driver for Service\n"
+            "    fun drive(self) -> Result<Unit, IoError>\n"
+            "        return Ok(())\n"
+            "\n"
+            "fun forge(svc: Service, other_log: Logger)\n"
+            "    svc.log = other_log\n"
+        )
+        self.assertTrue(
+            any("capability 'Logger'" in m and "cannot be re-bound" in m for m in msgs),
+            msgs,
+        )
+
+    def test_field_assign_non_capability_still_allowed(self):
+        # Sanity: assigning to a non-capability field of a cap-bearing
+        # struct is fine.
+        r = check(
+            self._SETUP
+            + "fun rename(mailer: SmtpMailer, new_name: String)\n"
+            + "    mailer.server = new_name\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+    def test_aliasing_through_same_field_path_rejected(self):
+        # Hole B: take_two(mailer.net, mailer.net) used to pass.
+        msgs = errors_of(
+            self._SETUP
+            + "fun take_two(a: Net, b: Net) -> Result<Unit, IoError>\n"
+            + "    let _ = a.get(\"https://x\")\n"
+            + "    let _ = b.get(\"https://y\")\n"
+            + "    return Ok(())\n"
+            + "\n"
+            + "fun use_mailer(mailer: SmtpMailer)\n"
+            + "    let _ = take_two(mailer.net, mailer.net)\n"
+        )
+        self.assertTrue(
+            any("'mailer.net'" in m and "cannot be aliased" in m for m in msgs),
+            msgs,
+        )
+
+    def test_aliasing_through_different_owners_allowed(self):
+        # Sanity: take_two(m1.net, m2.net) where m1 and m2 are
+        # different parameters is fine, because the paths differ.
+        r = check(
+            self._SETUP
+            + "fun take_two(a: Net, b: Net) -> Result<Unit, IoError>\n"
+            + "    let _ = a.get(\"https://x\")\n"
+            + "    let _ = b.get(\"https://y\")\n"
+            + "    return Ok(())\n"
+            + "\n"
+            + "fun use_mailers(m1: SmtpMailer, m2: SmtpMailer) -> Result<Unit, IoError>\n"
+            + "    return take_two(m1.net, m2.net)\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+
 if __name__ == "__main__":
     unittest.main()

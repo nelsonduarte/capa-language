@@ -210,6 +210,24 @@ the current Wasm critical path.
   venues: PLAS, EuroS&P workshops, NDSS workshops. ⏱ 10-20h
   for a publishable revision; 20-40h for venue submission.
 
+- [ ] **Capability-discipline hole C: generic instantiation
+  re-check** (audit 2026-05-25). The structural check
+  (`_check_no_capability`) fires on a generic struct's declaration
+  body: `type Box<T> { value: T }` is fine because `T` is a type
+  variable, not a capability. But the call site of `fun
+  store<T>(box: Box<T>, x: T)` invoked as `store(b, my_stdio)`
+  substitutes `T = Stdio` and the resulting `Box<Stdio>` never
+  gets re-validated. The fix needs a post-instantiation walk:
+  after the dispatcher resolves the type-parameter mapping
+  (`_dispatch.py` `instantiate` / `_commit_fresh_substitutions`),
+  re-run `_contains_any_capability` on every parameter type and
+  on the return type, with the substitution applied. Reject if a
+  cap shows up at a position that didn't have one pre-substitution.
+  Holes A and B (field re-bind + FieldAccess aliasing) closed in
+  rc.3+; this one stayed deferred because it sits in the generic
+  dispatch path rather than the discipline mixin proper. ⏱ 3-5h
+  plus regression tests. P1.
+
 ---
 
 ## P2 — Adoption-moving, not core

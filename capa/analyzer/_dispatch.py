@@ -124,14 +124,14 @@ class _DispatchMixin:
         return assigned  # type: ignore[return-value]
 
     def _check_call(self, e: A.Call) -> Ty:
-        # Aliasing is independent of whether the callee resolves
-        # or not, so it runs first.
+        # Evaluate args first so their types populate ``self.types``;
+        # the aliasing check needs that for FieldAccess paths
+        # (``f(box.cap, box.cap)``). Aliasing is still independent
+        # of whether the callee resolves.
+        arg_tys = [self._check_expr(a) for a in e.args]
         self._check_no_aliasing(
             [(a, f"argument {i + 1}") for i, a in enumerate(e.args)]
         )
-        # Evaluate args first to report independent errors even
-        # when the callee fails.
-        arg_tys = [self._check_expr(a) for a in e.args]
 
         if isinstance(e.callee, A.Ident):
             from . import SymbolKind
@@ -307,14 +307,16 @@ class _DispatchMixin:
         return instantiate(fun_ty.ret, type_params, mapping)
 
     def _check_method_call(self, e: A.MethodCall) -> Ty:
+        # Receiver + args first so their types populate
+        # ``self.types`` for the FieldAccess-aware aliasing check.
+        recv_ty = self._check_expr(e.receiver)
+        arg_tys = [self._check_expr(a) for a in e.args]
+
         # The receiver occupies a call slot; a cap passed as
         # receiver and also as argument is aliasing.
         slots: list[tuple[A.Expr, str]] = [(e.receiver, "receiver")]
         slots.extend((a, f"argument {i + 1}") for i, a in enumerate(e.args))
         self._check_no_aliasing(slots)
-
-        recv_ty = self._check_expr(e.receiver)
-        arg_tys = [self._check_expr(a) for a in e.args]
 
         from . import SymbolKind
 

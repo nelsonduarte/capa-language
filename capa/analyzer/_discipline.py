@@ -87,37 +87,69 @@ class _DisciplineMixin:
         return ty
 
     def _is_capability_ident(self, expr: A.Expr) -> Optional[str]:
-        """If ``expr`` is an Ident bound to a capability in
-        scope, return the name; otherwise ``None``. Used by the
-        aliasing check, which only cares about direct identifier
-        references (not the values of more complex expressions).
+        """Canonical path string for capability-source expressions.
 
-        Recognises both built-in capabilities and user-defined
-        ones. Pre-2026-05-24 this only matched ``CAPABILITY_NAMES``
-        (the built-in set), which let user-defined caps escape
-        the non-aliasing rule: ``dispatch(my_llm, my_llm)`` passed
-        --check, violating the single-flow property the paper
-        relies on. Surfaced by slice 6 of the empirical-study
-        fuzz panel (cat_llm_dispatch_escape /
-        llm_aliased_dispatch)."""
-        if not isinstance(expr, A.Ident):
-            return None
-        sym = self.scope.lookup(expr.name)
-        if sym is None or sym.ty is None:
-            return None
-        if isinstance(sym.ty, TyName):
-            if sym.ty.name in CAPABILITY_NAMES:
+        Two shapes resolve to a capability source:
+
+        - bare ``Ident`` bound to a capability in scope;
+        - Ident-rooted ``FieldAccess`` chain whose final type is
+          a capability (``box.cap``, ``outer.inner.cap``).
+
+        Returns the dotted path so the aliasing check can compare
+        equal references; returns ``None`` for anything else.
+
+        Pre-2026-05-24 only matched ``CAPABILITY_NAMES`` (built-in
+        set), letting user-defined caps escape the non-aliasing
+        rule. The 2026-05-25 audit found a deeper hole: bare-Ident
+        matching missed ``f(box.cap, box.cap)`` because both args
+        are ``FieldAccess`` nodes, so the dict-keyed aliasing
+        check saw two distinct entries.
+        """
+        if isinstance(expr, A.Ident):
+            sym = self.scope.lookup(expr.name)
+            if sym is None or sym.ty is None:
+                return None
+            if self._ty_is_capability(sym.ty):
                 return expr.name
-            # User-defined capability: walk the global scope to
-            # see if the type name resolves to a CAPABILITY-kind
-            # symbol. Late import of SymbolKind avoids the cycle
-            # with capa.analyzer.__init__.
-            type_sym = self.global_scope.lookup(sym.ty.name)
-            if type_sym is not None:
-                from . import SymbolKind
-                if type_sym.kind == SymbolKind.CAPABILITY:
-                    return expr.name
+            return None
+        if isinstance(expr, A.FieldAccess):
+            path = self._path_of(expr)
+            if path is None:
+                return None
+            ty = self.types.get(id(expr))
+            if ty is None or not self._ty_is_capability(ty):
+                return None
+            return path
         return None
+
+    def _path_of(self, expr: A.Expr) -> Optional[str]:
+        """Canonical dotted-path string for an Ident-rooted
+        FieldAccess chain (``a``, ``a.b``, ``a.b.c``). Returns
+        ``None`` for any other shape so the aliasing check stays
+        conservative on non-static paths (calls, indices, ...)."""
+        if isinstance(expr, A.Ident):
+            return expr.name
+        if isinstance(expr, A.FieldAccess):
+            base = self._path_of(expr.receiver)
+            if base is None:
+                return None
+            return f"{base}.{expr.field_name}"
+        return None
+
+    def _ty_is_capability(self, ty: Ty) -> bool:
+        """True iff ``ty`` is a built-in or user-declared
+        capability name. Cap-bearing structs are not treated as
+        capabilities themselves at this layer; their fields are
+        what the aliasing check walks into."""
+        if not isinstance(ty, TyName):
+            return False
+        if ty.name in CAPABILITY_NAMES:
+            return True
+        sym = self.global_scope.lookup(ty.name)
+        if sym is None:
+            return False
+        from . import SymbolKind
+        return sym.kind == SymbolKind.CAPABILITY
 
     def _check_no_aliasing(self, slots: list[tuple[A.Expr, str]]) -> None:
         """Check that no capability appears twice in ``slots``.

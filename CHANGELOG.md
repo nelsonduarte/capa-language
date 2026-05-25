@@ -9,6 +9,54 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+### Soundness: close two capability-discipline holes surfaced by the 2026-05-25 audit
+
+Two adjacent gaps were both letting cap-bearing struct fields
+escape the flow discipline:
+
+A. **Capability fields could be re-bound.** `mailer.net =
+   other_net` (where `mailer: SmtpMailer` and `SmtpMailer`
+   carries `net: Net` because it implements a user-defined
+   capability) passed silently. The mutability check in
+   [`_check_assign`](capa/analyzer/_statements.py) only fired on
+   bare `Ident` targets; `FieldAccess` / `Index` targets skipped
+   it. Result: the cap-bearing-struct construction-time check
+   could be laundered by a single re-assignment.
+
+   Fix: `_check_assign` now refuses to assign to any
+   `FieldAccess` / `Index` target whose declared type contains a
+   capability. Construction-time binding (struct literal) and
+   function-parameter binding remain the only legal sites.
+
+B. **Aliasing via FieldAccess paths was missed.**
+   `take_two(mailer.net, mailer.net)` passed because
+   `_is_capability_ident` only canonicalised bare `Ident`
+   expressions; two `FieldAccess` nodes were dict-keyed as
+   distinct entries even when they referenced the same path.
+
+   Fix: `_is_capability_ident` now returns a dotted-path string
+   for Ident-rooted `FieldAccess` chains whose final type is a
+   capability (`box.cap`, `outer.inner.cap`). The aliasing check
+   compares the canonical paths, so same-path references collide
+   correctly and different-owner references stay distinct.
+   `_check_call` and `_check_method_call` reorder their work so
+   args / receiver are typed before the aliasing check runs
+   (the FieldAccess path lookup needs the cached type).
+
+Both fixes ship with five new tests in
+[`tests/test_analyzer.py`](tests/test_analyzer.py)
+(`TestCapabilityFieldDiscipline`): the two rejection paths, a
+user-cap variant of the rejection, plus two sanity tests
+confirming that non-capability fields and different-owner paths
+still pass.
+
+**Known gap deferred to a later slice**: hole C from the same
+audit (`fun store<T>(box: Box<T>, x: T)` instantiated with
+`T = Stdio` does not re-check the resulting `Box<Stdio>` at the
+call site) needs a different fix: call-site re-validation of
+generic instantiation against the structural rule. Tracked in
+[`TODO.md`](TODO.md).
+
 ## [1.0.0-rc.3], 2026-05-25
 
 ### Language: opt-in Display protocol via `to_string()`

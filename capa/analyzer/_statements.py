@@ -133,6 +133,15 @@ class _StatementsMixin:
                 self._err(
                     f"cannot assign to parameter {sym.name!r}", s.pos,
                 )
+        elif isinstance(s.target, (A.FieldAccess, A.Index)):
+            cap = self._contains_any_capability(target_ty)
+            if cap is not None:
+                self._err(
+                    f"capability {cap.name!r} cannot be re-bound via field "
+                    f"or index assignment; capabilities bind once at struct "
+                    f"construction (or as a function parameter) and stay put",
+                    s.pos,
+                )
         if not compatible(target_ty, value_ty):
             self._err(
                 f"assignment: cannot assign {ty_str(value_ty)} to "
