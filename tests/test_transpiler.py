@@ -1576,6 +1576,10 @@ class TestTranspileExamples(unittest.TestCase):
         self.assertIn("DESCRIBES", out)
         self.assertIn("annotations: 1", out)
         self.assertIn("OTHER by Tool: capa-0.6: summary:total_functions=42", out)
+        self.assertIn("Extracted licenses (1):", out)
+        self.assertIn("- LicenseRef-AcmeProprietary", out)
+        self.assertIn("name:     Acme Proprietary License", out)
+        self.assertIn("https://example.org/acme-license", out)
         self.assertIn("Validation: ok (refs resolve + acyclic)", out)
 
     def test_cve_torchtriton(self):

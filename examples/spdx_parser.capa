@@ -19,9 +19,9 @@
 // - Building typed Capa structs from the unstructured tree.
 //
 // Scope limits: only the SPDX fields needed to demonstrate the
-// approach. SPDX has dozens of optional fields (annotations,
-// snippets, external document refs, has-extracted-licensing-info);
-// extending this to the full spec is mechanical.
+// approach. SPDX has dozens of optional fields (snippets,
+// external document refs); extending this to the full spec is
+// mechanical.
 
 capability SbomReader
     fun read(self, source: String) -> Result<String, String>
@@ -64,6 +64,18 @@ type Annotation {
     comment: String
 }
 
+// SPDX 2.3 hasExtractedLicensingInfo: a license definition not
+// in the SPDX License List (vendor-specific or custom). The
+// licenseId must start with "LicenseRef-" and extractedText
+// carries the verbatim license body.
+type ExtractedLicense {
+    license_id: String,
+    extracted_text: String,
+    name: String,
+    see_alsos: List<String>,
+    comment: String
+}
+
 type SpdxDocument {
     spdx_version: String,
     data_license: String,
@@ -73,7 +85,8 @@ type SpdxDocument {
     creation_info: CreationInfo,
     packages: List<Package>,
     relationships: List<Relationship>,
-    annotations: List<Annotation>
+    annotations: List<Annotation>,
+    extracted_licenses: List<ExtractedLicense>
 }
 
 // ---- typed-extraction helpers ----
@@ -157,6 +170,30 @@ fun parse_annotations(items: List<JsonValue>) -> Result<List<Annotation>, String
         result.push(parse_annotation(item)?)
     return Ok(result)
 
+fun parse_extracted_license(j: JsonValue) -> Result<ExtractedLicense, String>
+    let see_alsos: List<String> = []
+    match optional_field(j, "seeAlsos")
+        None ->
+            ()
+        Some(v) ->
+            let xs = as_array_or_err(v, "ExtractedLicense.seeAlsos")?
+            for x in xs
+                see_alsos.push(as_string_or_err(x, "seeAlsos entry")?)
+
+    return Ok(ExtractedLicense {
+        license_id: as_string_or_err(field(j, "licenseId")?, "ExtractedLicense.licenseId")?,
+        extracted_text: as_string_or_err(field(j, "extractedText")?, "ExtractedLicense.extractedText")?,
+        name: string_field_or(j, "name", ""),
+        see_alsos: see_alsos,
+        comment: string_field_or(j, "comment", "")
+    })
+
+fun parse_extracted_licenses(items: List<JsonValue>) -> Result<List<ExtractedLicense>, String>
+    let result: List<ExtractedLicense> = []
+    for item in items
+        result.push(parse_extracted_license(item)?)
+    return Ok(result)
+
 fun parse_package(j: JsonValue) -> Result<Package, String>
     let checksums: List<Checksum> = []
     match optional_field(j, "checksums")
@@ -235,6 +272,16 @@ fun parse_document(j: JsonValue) -> Result<SpdxDocument, String>
             for a in parsed
                 annotations.push(a)
 
+    let extracted_licenses: List<ExtractedLicense> = []
+    match optional_field(j, "hasExtractedLicensingInfos")
+        None ->
+            ()
+        Some(v) ->
+            let xs = as_array_or_err(v, "document.hasExtractedLicensingInfos")?
+            let parsed = parse_extracted_licenses(xs)?
+            for el in parsed
+                extracted_licenses.push(el)
+
     return Ok(SpdxDocument {
         spdx_version: as_string_or_err(field(j, "spdxVersion")?, "spdxVersion")?,
         data_license: as_string_or_err(field(j, "dataLicense")?, "dataLicense")?,
@@ -244,7 +291,8 @@ fun parse_document(j: JsonValue) -> Result<SpdxDocument, String>
         creation_info: parse_creation_info(j)?,
         packages: packages,
         relationships: relationships,
-        annotations: annotations
+        annotations: annotations,
+        extracted_licenses: extracted_licenses
     })
 
 fun parse_spdx(json_text: String) -> Result<SpdxDocument, String>
@@ -290,6 +338,11 @@ fun validate_spdx(doc: SpdxDocument) -> List<String>
     for a in doc.annotations
         if a.kind != "REVIEW" and a.kind != "OTHER"
             errors.push("document has annotation with invalid type '${a.kind}'")
+    for el in doc.extracted_licenses
+        if not el.license_id.starts_with("LicenseRef-")
+            errors.push("extracted license '${el.license_id}' must start with 'LicenseRef-'")
+        if el.extracted_text == ""
+            errors.push("extracted license '${el.license_id}' has empty extractedText")
     let cycle = detect_spdx_cycle(doc)
     match cycle
         None ->
@@ -375,7 +428,7 @@ fun main(stdio: Stdio)
     // DESCRIBES relationship. Capa string literals do not span
     // newlines in v1, so this is on a single line; in real
     // pipelines the SBOM comes from an Fs.read.
-    let sample = "{\"spdxVersion\": \"SPDX-2.3\", \"dataLicense\": \"CC0-1.0\", \"SPDXID\": \"SPDXRef-DOCUMENT\", \"name\": \"capa-demo-sbom\", \"documentNamespace\": \"https://example.org/sbom/capa-demo-001\", \"creationInfo\": {\"created\": \"2026-05-13T10:00:00Z\", \"creators\": [\"Tool: capa-0.6\", \"Person: Nelson Duarte\"]}, \"packages\": [{\"SPDXID\": \"SPDXRef-Package-capa\", \"name\": \"capa\", \"versionInfo\": \"0.6.0-alpha\", \"downloadLocation\": \"https://github.com/nelsonduarte/capa-language\", \"licenseConcluded\": \"Apache-2.0\", \"licenseDeclared\": \"Apache-2.0\", \"filesAnalyzed\": true, \"checksums\": [{\"algorithm\": \"SHA1\", \"checksumValue\": \"aaaabbbbccccddddeeeeffffaaaabbbbccccdddd\"}, {\"algorithm\": \"SHA256\", \"checksumValue\": \"0011223344556677889900aabbccddeeff0011223344556677889900aabbccdd\"}], \"annotations\": [{\"annotator\": \"Tool: capa-0.6\", \"annotationDate\": \"2026-05-13T10:00:00Z\", \"annotationType\": \"OTHER\", \"comment\": \"summary:total_functions=42\"}]}], \"relationships\": [{\"spdxElementId\": \"SPDXRef-DOCUMENT\", \"relationshipType\": \"DESCRIBES\", \"relatedSpdxElement\": \"SPDXRef-Package-capa\"}], \"annotations\": [{\"annotator\": \"Tool: capa-0.6\", \"annotationDate\": \"2026-05-13T10:00:00Z\", \"annotationType\": \"OTHER\", \"comment\": \"document-level note\"}]}"
+    let sample = "{\"spdxVersion\": \"SPDX-2.3\", \"dataLicense\": \"CC0-1.0\", \"SPDXID\": \"SPDXRef-DOCUMENT\", \"name\": \"capa-demo-sbom\", \"documentNamespace\": \"https://example.org/sbom/capa-demo-001\", \"creationInfo\": {\"created\": \"2026-05-13T10:00:00Z\", \"creators\": [\"Tool: capa-0.6\", \"Person: Nelson Duarte\"]}, \"packages\": [{\"SPDXID\": \"SPDXRef-Package-capa\", \"name\": \"capa\", \"versionInfo\": \"0.6.0-alpha\", \"downloadLocation\": \"https://github.com/nelsonduarte/capa-language\", \"licenseConcluded\": \"Apache-2.0\", \"licenseDeclared\": \"Apache-2.0\", \"filesAnalyzed\": true, \"checksums\": [{\"algorithm\": \"SHA1\", \"checksumValue\": \"aaaabbbbccccddddeeeeffffaaaabbbbccccdddd\"}, {\"algorithm\": \"SHA256\", \"checksumValue\": \"0011223344556677889900aabbccddeeff0011223344556677889900aabbccdd\"}], \"annotations\": [{\"annotator\": \"Tool: capa-0.6\", \"annotationDate\": \"2026-05-13T10:00:00Z\", \"annotationType\": \"OTHER\", \"comment\": \"summary:total_functions=42\"}]}], \"relationships\": [{\"spdxElementId\": \"SPDXRef-DOCUMENT\", \"relationshipType\": \"DESCRIBES\", \"relatedSpdxElement\": \"SPDXRef-Package-capa\"}], \"annotations\": [{\"annotator\": \"Tool: capa-0.6\", \"annotationDate\": \"2026-05-13T10:00:00Z\", \"annotationType\": \"OTHER\", \"comment\": \"document-level note\"}], \"hasExtractedLicensingInfos\": [{\"licenseId\": \"LicenseRef-AcmeProprietary\", \"extractedText\": \"Copyright (c) Acme Corp. All rights reserved. Redistribution requires written permission.\", \"name\": \"Acme Proprietary License\", \"seeAlsos\": [\"https://example.org/acme-license\"], \"comment\": \"Bundled in vendored third-party tarball\"}]}"
 
     match parse_spdx(sample)
         Err(msg) ->
@@ -398,6 +451,18 @@ fun main(stdio: Stdio)
                 stdio.println("      annotations: ${p.annotations.length()}")
                 for a in p.annotations
                     stdio.println("        ${a.kind} by ${a.annotator}: ${a.comment}")
+            stdio.println("")
+            stdio.println("Extracted licenses (${doc.extracted_licenses.length()}):")
+            for el in doc.extracted_licenses
+                stdio.println("  - ${el.license_id}")
+                if el.name != ""
+                    stdio.println("      name:     ${el.name}")
+                if not el.see_alsos.is_empty()
+                    stdio.println("      seeAlsos: ${el.see_alsos.length()}")
+                    for url in el.see_alsos
+                        stdio.println("        ${url}")
+                if el.comment != ""
+                    stdio.println("      comment:  ${el.comment}")
             stdio.println("")
             stdio.println("Relationships (${doc.relationships.length()}):")
             for r in doc.relationships
