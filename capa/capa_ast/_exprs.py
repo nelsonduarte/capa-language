@@ -112,7 +112,6 @@ class UnaryOp(Expr):
 @dataclass(kw_only=True)
 class Call(Expr):
     callee: Expr
-    type_args: list[TypeExpr] = field(default_factory=list)  # turbofish ::<T>
     args: list[Expr]
     # Parallel to `args`. None for positional arguments; the parameter
     # name (a str) for named arguments such as ``f(age: 30)``. All
@@ -125,7 +124,6 @@ class Call(Expr):
 class MethodCall(Expr):
     receiver: Expr
     method: str
-    type_args: list[TypeExpr] = field(default_factory=list)
     args: list[Expr]
     arg_names: list[Optional[str]] = field(default_factory=list)
 

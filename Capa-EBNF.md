@@ -55,6 +55,19 @@ It is important to delimit the scope. This grammar describes the syntax of the l
 
 These aspects will be the subject of separate documents in the course of implementation. The present document confines itself to what can be said about the form of a program before any semantic analysis.
 
+### 1.5 Features deliberately deferred past v1.0
+
+The following shapes have been considered for the language but are not part of v1.0 and are *not* in this grammar. They are listed here so a reader who expects them does not assume they were forgotten:
+
+- **Generic-parameter trait bounds** (e.g. `<T: Display + Clone>`). v1.0 generics are unconstrained; constraints will use the reserved-but-unused `where` keyword when introduced.
+- **Trait supertraits** (`trait B: A`).
+- **Default method bodies in traits.** Trait declarations carry signatures only; concrete implementations are always in `impl` blocks.
+- **Generic `impl` blocks** (`impl<T> Foo<T>`). Generic implementations are tied to the named type's own generic parameters via the type-args slot.
+- **Named variant payload fields** (e.g. `Add(left: Int, right: Int)`). v1.0 variant payloads are positional.
+- **Map literals and block expressions inside expressions.** `{...}` in expression position is reserved for struct literals only; map values come from `new_map()`, and blocks live as statement bodies.
+- **Struct-pattern rest (`{a, ..}`).** Struct patterns must list every field they care about; ignore unused fields with `_` bindings.
+- **Turbofish (`::<T>`).** Generic call sites infer type arguments; explicit syntax for them will land if inference proves insufficient.
+
 ---
 
 ## 2. EBNF Notation Conventions
@@ -391,9 +404,7 @@ attribute_arg = IDENT ":" STRING
 
 generic_params = "<" generic_param { "," generic_param } ">"
 
-generic_param = IDENT [ ":" trait_bound { "+" trait_bound } ]
-
-trait_bound = qualified_name [ type_args ]
+generic_param = IDENT
 
 param_list = param { "," param } [ "," ]
 
@@ -431,7 +442,7 @@ sum_variant = IDENT [ variant_payload ] NEWLINE
 
 variant_payload = "(" variant_field { "," variant_field } [ "," ] ")"
 
-variant_field = [ IDENT ":" ] type
+variant_field = type
 ```
 
 > **DECISION: CLEAR SEPARATION BETWEEN STRUCT AND SUM**
@@ -444,11 +455,9 @@ A trait defines a set of function signatures (and, optionally, default implement
 
 ```ebnf
 trait_decl = [ "pub" ] "trait" IDENT [ generic_params ]
-    [ ":" trait_bound { "+" trait_bound } ]   (* supertraits *)
     NEWLINE INDENT { trait_member } DEDENT
 
 trait_member = function_signature NEWLINE
-             | function_decl                  (* default implementation *)
 
 function_signature = "fun" IDENT [ generic_params ]
     "(" [ param_list ] ")"
@@ -460,7 +469,7 @@ function_signature = "fun" IDENT [ generic_params ]
 An `impl` declaration associates a set of methods with a concrete type. There are two forms: a plain `impl` (methods belonging to the type itself) and a trait `impl` (which satisfies the signatures declared by the trait).
 
 ```ebnf
-impl_decl = "impl" [ generic_params ]
+impl_decl = "impl"
     [ qualified_name [ type_args ] "for" ] type
     NEWLINE INDENT { function_decl } DEDENT
 ```
@@ -643,8 +652,7 @@ tuple_pattern = "(" pattern { "," pattern } [ "," ] ")"
 
 ctor_pattern = qualified_name [ "(" [ pattern { "," pattern } ] ")" ]
 
-struct_pattern = qualified_name "{" field_pattern { "," field_pattern }
-    [ "," "..." ] "}"
+struct_pattern = qualified_name "{" field_pattern { "," field_pattern } "}"
 
 field_pattern = IDENT [ ":" pattern ]
 
@@ -760,9 +768,7 @@ primary_expr = literal_expr
              | paren_expr
              | tuple_expr
              | list_expr
-             | map_expr
              | struct_expr
-             | block_expr
 
 literal_expr = INT_LIT | FLOAT_LIT | STRING_LIT | CHAR_LIT
              | BOOL_LIT | UNIT_LIT
@@ -777,22 +783,15 @@ tuple_expr = "(" expression "," ")"                          (* 1-tuple *)
 
 list_expr = "[" [ expression { "," expression } [ "," ] ] "]"
 
-map_expr = "{" [ map_entry { "," map_entry } [ "," ] ] "}"
-
-map_entry = expression ":" expression
-
 struct_expr = qualified_name "{" struct_init
     { "," struct_init } [ "," ] "}"
 
 struct_init = IDENT ":" expression
-            | ".." expression                                (* spread *)
-
-block_expr = block                                            (* block as expression; value = last expression *)
 ```
 
 Relevant notes. The distinction between `paren_expr` and `tuple_expr` is made by the presence of a comma: `(x)` is an expression in parentheses, `(x,)` is a one-element tuple. This convention is identical to Python's and Rust's.
 
-The ambiguity between `map_expr` (map literal with braces) and `block_expr` (block with braces) is resolved by the parser by context: braces are interpreted as a map when they appear in expression position and contain at least one `map_entry`, and as a block otherwise. Details in Section 7.2.
+`{...}` in expression position is always a struct literal in v1.0 (map literals and block expressions are deferred; see section 1.5). The parser distinguishes by the leading `qualified_name`: braces preceded by a type-named identifier open a struct literal, braces in any other expression position are a parse error.
 
 ### 5.13 Documentation comments
 
@@ -863,44 +862,24 @@ else
     B
 ```
 
-### 7.2 Braces: block vs. map literal
-
-In expression position, `{ ... }` may be interpreted as a map literal (a list of `key: value` pairs) or as a block. The rule is the following:
-
-- If the content of the braces is empty (`{}`), it is an empty map literal.
-- If the first significant token inside the braces is an `expression` followed by `:`, it is a map literal.
-- Otherwise, it is a block expression.
-
-This rule is decidable with two-token lookahead, satisfying the LL(2) parser implementation constraint.
-
-### 7.3 `<` and `>` as comparison or type args
+### 7.2 `<` and `>` as comparison or type args
 
 In `Vec<Int>`, the symbols `<` and `>` delimit type arguments. In `x < y`, they are comparison operators. The distinction depends on the syntactic context:
 
 - In type position (after `let x:`, after `->`, inside another `type_args`), `<` opens `type_args`.
-- In expression position, `<` is a comparison operator. The exception is when preceded by a `qualified_name` and followed by a `type`, in that case the parser considers the possibility of an explicit generic function call `f<Int>(x)`.
+- In expression position, `<` is always a comparison operator. Generic call sites infer their type arguments; explicit syntax for them (the Rust turbofish `::<T>`) is deferred past v1.0.
 
-The solution adopted is the turbofish, in the Rust spirit: to force interpretation as type arguments in an expression, use `::<T>`. This convention is visually strange but avoids the need for unlimited backtracking in the parser.
-
-```capa
-// No ambiguity: we are in type position
-let xs: List<Int> = []
-
-// Ambiguous without turbofish (the parser first tries as comparison)
-let result = parse::<Int>("42")
-```
-
-### 7.4 One-element tuple vs. expression in parentheses
+### 7.3 One-element tuple vs. expression in parentheses
 
 Already mentioned in 5.12.5: the comma resolves it. `(x)` is an expression; `(x,)` is a one-element tuple. This convention is unambiguous and is directly encoded in the grammar.
 
-### 7.5 Lambda vs. paren_expr
+### 7.4 Lambda vs. paren_expr
 
 In the current grammar there is no ambiguity: a lambda always starts with the `fun` keyword (`fun (params) -> Ret => body`), and a parenthesised expression starts with `(`. The two are trivially distinguishable with a single-token lookahead.
 
 This is a deliberate design choice over a Python-style `(params) -> expr` lambda, which would force the parser into backtracking (every `(` could start either a paren expression or a lambda, and you only know at the closing `)` followed by `->`). Reusing the `fun` keyword keeps lookahead constant.
 
-### 7.6 Inline match vs. struct literal as scrutinee
+### 7.5 Inline match vs. struct literal as scrutinee
 
 The inline form `match X { ... }` collides syntactically with the struct-literal heuristic (`PascalCaseIdent { field: value, ... }`). Without intervention, the parser would read `match Color { Red -> 1 }` as `match (Color { Red -> 1 })`, a match whose scrutinee is a struct literal whose first field name is `Red`, and then fail at the `->`.
 

@@ -701,7 +701,6 @@ class _Rewriter:
                     return A.Call(
                         pos=e.pos,
                         callee=A.Ident(pos=recv.pos, name=e.method),
-                        type_args=e.type_args,
                         args=e.args,
                         arg_names=e.arg_names,
                     )
@@ -953,15 +952,11 @@ class _PrivateRenameWalker:
             return
         if isinstance(e, A.Call):
             self.visit_expr(e.callee)
-            for ta in e.type_args:
-                self.visit_type(ta)
             for a in e.args:
                 self.visit_expr(a)
             return
         if isinstance(e, A.MethodCall):
             self.visit_expr(e.receiver)
-            for ta in e.type_args:
-                self.visit_type(ta)
             for a in e.args:
                 self.visit_expr(a)
             return
