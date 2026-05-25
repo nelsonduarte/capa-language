@@ -13,9 +13,20 @@
 // failure. The wrapper ``__capa_parse_json`` discards the trailing
 // position; everything internal threads it through.
 
+// Audit 2026-05-25 H4: the recursive descent in __cj_parse_value
+// / __cj_parse_array / __cj_parse_object has no nesting cap. An
+// adversarial input like ``[[[[ ... ]]]]`` runs the parser until
+// it hits the Wasm stack limit (trap) or, on hosts that grew the
+// stack, recurses deep enough to make ``parse_json`` a DoS surface
+// for any Capa module exposing JSON parsing to untrusted input.
+// Python's ``json`` module caps at ~1000 internally; we cap at 100
+// since the typical Capa use case (config files, simple records)
+// never approaches that, and a lower limit fails fast.
+const __CJ_MAX_DEPTH: Int = 100
+
 pub fun __capa_parse_json(s: String) -> Result<JsonValue, String>
     let start = __cj_skip_ws(s, 0)
-    match __cj_parse_value(s, start)
+    match __cj_parse_value(s, start, 0)
         Ok(jv_pos) ->
             let (jv, _trailing_pos) = jv_pos
             return Ok(jv)
@@ -32,7 +43,9 @@ fun __cj_skip_ws(s: String, pos: Int) -> Int
             return p
     return p
 
-fun __cj_parse_value(s: String, pos: Int) -> Result<(JsonValue, Int), String>
+fun __cj_parse_value(s: String, pos: Int, depth: Int) -> Result<(JsonValue, Int), String>
+    if depth > __CJ_MAX_DEPTH
+        return Err("max nesting depth ${__CJ_MAX_DEPTH} exceeded at ${pos}")
     if pos >= s.length()
         return Err("unexpected end at ${pos}")
     let c = s.substring(pos, pos + 1)
@@ -43,9 +56,9 @@ fun __cj_parse_value(s: String, pos: Int) -> Result<(JsonValue, Int), String>
     if c == "\""
         return __cj_parse_string(s, pos)
     if c == "["
-        return __cj_parse_array(s, pos)
+        return __cj_parse_array(s, pos, depth + 1)
     if c == "{"
-        return __cj_parse_object(s, pos)
+        return __cj_parse_object(s, pos, depth + 1)
     return __cj_parse_number(s, pos)
 
 fun __cj_parse_null(s: String, pos: Int) -> Result<(JsonValue, Int), String>
@@ -132,7 +145,7 @@ fun __cj_finish_number(s: String, start: Int, end: Int) -> Result<(JsonValue, In
         Some(f) -> return Ok((JNum(f), end))
         None    -> return Err("bad number '${text}' at ${start}")
 
-fun __cj_parse_array(s: String, pos: Int) -> Result<(JsonValue, Int), String>
+fun __cj_parse_array(s: String, pos: Int, depth: Int) -> Result<(JsonValue, Int), String>
     var items: List<JsonValue> = []
     var p = __cj_skip_ws(s, pos + 1)
     let n = s.length()
@@ -140,7 +153,7 @@ fun __cj_parse_array(s: String, pos: Int) -> Result<(JsonValue, Int), String>
         if s.substring(p, p + 1) == "]"
             return Ok((JArr(items), p + 1))
     while p < n
-        match __cj_parse_value(s, p)
+        match __cj_parse_value(s, p, depth)
             Err(msg) -> return Err(msg)
             Ok(jv_pos) ->
                 let (jv, after) = jv_pos
@@ -157,7 +170,7 @@ fun __cj_parse_array(s: String, pos: Int) -> Result<(JsonValue, Int), String>
                     return Err("expected , or ] at ${p}, got '${sep}'")
     return Err("unterminated array")
 
-fun __cj_parse_object(s: String, pos: Int) -> Result<(JsonValue, Int), String>
+fun __cj_parse_object(s: String, pos: Int, depth: Int) -> Result<(JsonValue, Int), String>
     var obj: Map<String, JsonValue> = new_map()
     var p = __cj_skip_ws(s, pos + 1)
     let n = s.length()
@@ -181,7 +194,7 @@ fun __cj_parse_object(s: String, pos: Int) -> Result<(JsonValue, Int), String>
                 if s.substring(p, p + 1) != ":"
                     return Err("expected ':' at ${p}")
                 p = __cj_skip_ws(s, p + 1)
-                match __cj_parse_value(s, p)
+                match __cj_parse_value(s, p, depth)
                     Err(msg) -> return Err(msg)
                     Ok(v_pos) ->
                         let (v_jv, after_v) = v_pos

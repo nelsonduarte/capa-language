@@ -1751,6 +1751,75 @@ class TestWasmJson(unittest.TestCase):
             self._run_capturing_stdout(src), '["a", 1.5, true]\n',
         )
 
+    def test_parse_json_deeply_nested_within_limit_succeeds(self):
+        # 50 nested arrays is well under the 100-level cap.
+        # Builds ``[[[ ... [] ... ]]]`` at runtime and parses it.
+        # The parse must succeed; the result is an array of arrays
+        # ending in an empty list.
+        src = (
+            'fun main(stdio: Stdio)\n'
+            '    var s = ""\n'
+            '    var i = 0\n'
+            '    while i < 50\n'
+            '        s = s + "["\n'
+            '        i = i + 1\n'
+            '    i = 0\n'
+            '    while i < 50\n'
+            '        s = s + "]"\n'
+            '        i = i + 1\n'
+            '    match parse_json(s)\n'
+            '        Ok(_)  -> stdio.println("ok")\n'
+            '        Err(_) -> stdio.println("err")\n'
+        )
+        self.assertEqual(self._run_capturing_stdout(src), "ok\n")
+
+    def test_parse_json_exceeds_depth_limit_returns_err(self):
+        # Audit 2026-05-25 H4: pre-fix the parser recursed without
+        # bound, so adversarial ``[[[ ... ]]]`` input was a DoS
+        # surface (Wasm stack trap or deep recursion before failing).
+        # Post-fix 150 levels exceeds the 100-level cap and the
+        # parser returns Err(...) cleanly with a "max nesting depth"
+        # diagnostic.
+        src = (
+            'fun main(stdio: Stdio)\n'
+            '    var s = ""\n'
+            '    var i = 0\n'
+            '    while i < 150\n'
+            '        s = s + "["\n'
+            '        i = i + 1\n'
+            '    i = 0\n'
+            '    while i < 150\n'
+            '        s = s + "]"\n'
+            '        i = i + 1\n'
+            '    match parse_json(s)\n'
+            '        Ok(_)   -> stdio.println("unexpected ok")\n'
+            '        Err(msg) -> stdio.println(msg)\n'
+        )
+        out = self._run_capturing_stdout(src)
+        self.assertIn("max nesting depth", out)
+
+    def test_parse_json_deeply_nested_objects_capped(self):
+        # Same cap applies to nested objects: 150 nested ``{"k":...}``
+        # exceeds the depth limit.
+        src = (
+            'fun main(stdio: Stdio)\n'
+            '    var s = ""\n'
+            '    var i = 0\n'
+            '    while i < 150\n'
+            '        s = s + "{\\"k\\":"\n'
+            '        i = i + 1\n'
+            '    s = s + "null"\n'
+            '    i = 0\n'
+            '    while i < 150\n'
+            '        s = s + "}"\n'
+            '        i = i + 1\n'
+            '    match parse_json(s)\n'
+            '        Ok(_)    -> stdio.println("unexpected ok")\n'
+            '        Err(msg) -> stdio.println(msg)\n'
+        )
+        out = self._run_capturing_stdout(src)
+        self.assertIn("max nesting depth", out)
+
 
 @unittest.skipUnless(
     _has_wasm_tools() and _has_wasmtime_py(),
