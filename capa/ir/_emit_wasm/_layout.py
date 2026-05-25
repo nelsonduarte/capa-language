@@ -22,10 +22,7 @@ class WasmEmissionError(Exception):
     error surface is preferred to silently emitting wrong code."""
 
 
-# Capa built-in capabilities. Receivers of these types route
-# MethodCall instructions to imported Wasm functions rather than
-# core method dispatch; their parameters carry no Wasm value.
-_BUILTIN_CAPS = {"Stdio", "Fs", "Env", "Clock", "Net", "Random", "Proc", "Db", "Unsafe"}
+from .._capa_types import BUILTIN_CAPS
 
 
 # Per-type byte size for Capa scalar types. Used by layout

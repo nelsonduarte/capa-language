@@ -33,8 +33,9 @@ from .._nodes import (
     MakeList, MakeMap, MakeSet, MakeLambda,
     PatIdent, PatLiteral, PatTuple, PatVariant,
 )
+from .._capa_types import BUILTIN_CAPS
 from .._emit_wit import _WIT_SIGNATURES
-from ._layout import _BUILTIN_CAPS, _element_type_of_list, WasmEmissionError
+from ._layout import _element_type_of_list, WasmEmissionError
 
 
 class _DiscoveryMixin:
@@ -336,11 +337,11 @@ class _DiscoveryMixin:
             cap_from_recv = None
             if isinstance(instr, MethodCall) and not instr.cap_used:
                 rty = (instr.receiver.ty or "")
-                if rty in _BUILTIN_CAPS:
+                if rty in BUILTIN_CAPS:
                     cap_from_recv = rty
             if isinstance(instr, MethodCall) and (instr.cap_used or cap_from_recv):
                 cap = instr.cap_used or cap_from_recv
-                if cap not in _BUILTIN_CAPS:
+                if cap not in BUILTIN_CAPS:
                     raise WasmEmissionError(
                         f"Phase 6B: capability {cap!r} not in the "
                         f"built-in set; user-defined capabilities "

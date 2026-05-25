@@ -32,9 +32,9 @@ from .._nodes import (
     If, While, For, Match, FormatStr,
     Pattern, PatIdent, PatVariant,
 )
+from .._capa_types import BUILTIN_CAPS
 from ._layout import (
     WasmEmissionError,
-    _BUILTIN_CAPS,
     _LIST_HEADER_SIZE, _LIST_LEN_OFFSET, _LIST_CAP_OFFSET, _LIST_DATA_OFFSET,
     _align_up,
     _store_op_for_size,
@@ -261,7 +261,7 @@ class _ClosureEmissionMixin:
                 or self._params_lookup(parent_fn, name)
                 or "Unknown"
             )
-            if capa_ty in _BUILTIN_CAPS:
+            if capa_ty in BUILTIN_CAPS:
                 # Capability captures are free at the Wasm level.
                 continue
             size = self._size_of(capa_ty)
@@ -455,7 +455,7 @@ class _ClosureEmissionMixin:
         self._write("i32.wrap_i64")
         # Push the user-level args.
         for arg in instr.args:
-            if arg.ty in _BUILTIN_CAPS:
+            if arg.ty in BUILTIN_CAPS:
                 continue
             if arg.ty == "String":
                 self._push_string_value_as_ptr_len(arg)
@@ -469,7 +469,7 @@ class _ClosureEmissionMixin:
         self._write(f"call_indirect (type $sig_{sig_idx})")
         if instr.dst is not None:
             dst_ty = self._dst_capa_ty(instr.dst)
-            if dst_ty and dst_ty not in _BUILTIN_CAPS and dst_ty not in ("Unit",):
+            if dst_ty and dst_ty not in BUILTIN_CAPS and dst_ty not in ("Unit",):
                 if dst_ty == "String":
                     self._set_string_dst(instr.dst)
                 else:

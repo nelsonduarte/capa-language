@@ -47,9 +47,9 @@ from .._nodes import (
 # ``_WIT_SIGNATURES`` is consumed in ``_caps.py`` (sig dispatch) and
 # ``_discovery.py`` (early validation); not referenced directly
 # from this module any more after the mixin extraction.
+from .._capa_types import BUILTIN_CAPS
 from ._layout import (
     WasmEmissionError,
-    _BUILTIN_CAPS,
     _TYPE_SIZE,
     _LIST_HEADER_SIZE, _LIST_LEN_OFFSET, _LIST_CAP_OFFSET, _LIST_DATA_OFFSET,
     _MAP_HEADER_SIZE, _MAP_LEN_OFFSET, _MAP_CAP_OFFSET, _MAP_DATA_OFFSET,
@@ -453,7 +453,7 @@ class WasmEmitter(
         # i32s (ptr, len) named ``${p.name}_ptr`` / ``${p.name}_len``.
         param_clauses = []
         for p in fn.params:
-            if p.ty in _BUILTIN_CAPS:
+            if p.ty in BUILTIN_CAPS:
                 continue
             if p.ty == "String":
                 param_clauses.append(f"(param ${p.name}_ptr i32)")
@@ -516,7 +516,7 @@ class WasmEmitter(
     def _emit_instr(self, instr: Instr) -> None:
         if isinstance(instr, AssignConst):
             dst_ty = self._dst_capa_ty(instr.dst)
-            if dst_ty in _BUILTIN_CAPS:
+            if dst_ty in BUILTIN_CAPS:
                 # Capability locals are erased at the Wasm level.
                 return
             if dst_ty == "String":
@@ -527,7 +527,7 @@ class WasmEmitter(
             return
         if isinstance(instr, Reassign):
             dst_ty = self._dst_capa_ty(instr.dst)
-            if dst_ty in _BUILTIN_CAPS:
+            if dst_ty in BUILTIN_CAPS:
                 return
             if dst_ty == "String":
                 self._emit_string_assign(instr.dst, instr.src)
@@ -549,7 +549,7 @@ class WasmEmitter(
             if instr.cap_used:
                 self._emit_cap_method_call(instr)
                 return
-            if recv_ty_pre in _BUILTIN_CAPS:
+            if recv_ty_pre in BUILTIN_CAPS:
                 # Synthesise cap_used from the receiver type. Mutate
                 # a copy so the IR module stays untouched.
                 import dataclasses
@@ -942,7 +942,7 @@ class WasmEmitter(
             self._emit_closure_call(instr, callee_ty)
             return
         for arg in instr.args:
-            if arg.ty in _BUILTIN_CAPS:
+            if arg.ty in BUILTIN_CAPS:
                 continue
             if arg.ty == "String":
                 # Defer to the shared helper, which now handles
@@ -964,7 +964,7 @@ class WasmEmitter(
             if dst_ty == "String":
                 self._write(f"local.set ${instr.dst}_len")
                 self._write(f"local.set ${instr.dst}_ptr")
-            elif dst_ty and dst_ty not in _BUILTIN_CAPS and dst_ty != "Unit":
+            elif dst_ty and dst_ty not in BUILTIN_CAPS and dst_ty != "Unit":
                 self._write(f"local.set ${instr.dst}")
 
     def _emit_variant_construction(self, instr: Call) -> None:
@@ -1094,7 +1094,7 @@ class WasmEmitter(
                     f"struct {instr.type_name}: field {fname!r} not in layout"
                 )
             offset, size, field_ty = f_info
-            if field_ty in _BUILTIN_CAPS:
+            if field_ty in BUILTIN_CAPS:
                 # Capability field: erased at the Wasm level. The
                 # slot exists in the struct layout (so subsequent
                 # FieldAccess on it returns *something*), but no
@@ -1158,7 +1158,7 @@ class WasmEmitter(
                 f"struct {recv_ty}: field {instr.field!r} not found"
             )
         offset, size, field_ty = f_info
-        if field_ty in _BUILTIN_CAPS:
+        if field_ty in BUILTIN_CAPS:
             # Capability field: erased at the Wasm level. The dst
             # local has no Wasm representation either; consumers
             # that need to invoke a method on the capability route

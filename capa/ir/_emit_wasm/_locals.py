@@ -27,7 +27,8 @@ from .._nodes import (
     MakeLambda, MakeList, MakeMap, MakeTuple,
     PatIdent, PatVariant,
 )
-from ._layout import _BUILTIN_CAPS, _element_type_of_list, WasmEmissionError
+from .._capa_types import BUILTIN_CAPS
+from ._layout import _element_type_of_list, WasmEmissionError
 from ._caps import _CANONICAL_INDIRECT_RETURN
 
 
@@ -307,7 +308,7 @@ class _LocalsCollectionMixin:
                     capa_ty = fn.locals.get(dst, "Int")
                     # Capability locals (``let other = stdio``)
                     # carry no Wasm value; skip declaration.
-                    if capa_ty in _BUILTIN_CAPS:
+                    if capa_ty in BUILTIN_CAPS:
                         continue
                     # String locals expand to a (ptr, len) pair so
                     # the function can carry the value forward. The
@@ -337,7 +338,7 @@ class _LocalsCollectionMixin:
         for name, capa_ty in fn.locals.items():
             if name in param_names or name in out:
                 continue
-            if capa_ty in _BUILTIN_CAPS or capa_ty == "Unit":
+            if capa_ty in BUILTIN_CAPS or capa_ty == "Unit":
                 continue
             if capa_ty == "String":
                 ptr_name = f"{name}_ptr"

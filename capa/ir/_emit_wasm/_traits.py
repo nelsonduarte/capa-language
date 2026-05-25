@@ -33,7 +33,8 @@ dispatch consumers see the concrete struct type.
 from __future__ import annotations
 
 from .._nodes import Function, MethodCall
-from ._layout import WasmEmissionError, _BUILTIN_CAPS
+from .._capa_types import BUILTIN_CAPS
+from ._layout import WasmEmissionError
 
 
 def _impl_method_name(type_name: str, method_name: str) -> str:
@@ -156,7 +157,7 @@ class _TraitEmissionMixin:
         # args expand to (ptr, len), other args go through the
         # regular push path.
         for arg in instr.args:
-            if arg.ty in _BUILTIN_CAPS:
+            if arg.ty in BUILTIN_CAPS:
                 continue
             if arg.ty == "String":
                 self._push_string_value_as_ptr_len(arg)
@@ -169,5 +170,5 @@ class _TraitEmissionMixin:
                 # Multi-value (i32 i32) return -> dst pair.
                 self._write(f"local.set ${instr.dst}_len")
                 self._write(f"local.set ${instr.dst}_ptr")
-            elif dst_ty and dst_ty not in _BUILTIN_CAPS and dst_ty != "Unit":
+            elif dst_ty and dst_ty not in BUILTIN_CAPS and dst_ty != "Unit":
                 self._write(f"local.set ${instr.dst}")

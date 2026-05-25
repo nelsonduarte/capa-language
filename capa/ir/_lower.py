@@ -32,12 +32,7 @@ from ._nodes import (
 )
 
 
-# Built-in capabilities the analyzer recognises by type name. Used
-# to set ``Param.is_capability``. Kept in sync with capa/builtins.py
-# capability class list.
-_BUILTIN_CAPS = {
-    "Stdio", "Fs", "Net", "Env", "Clock", "Random", "Proc", "Db", "Unsafe",
-}
+from ._capa_types import BUILTIN_CAPS
 
 
 class UnsupportedInIR(Exception):
@@ -218,7 +213,7 @@ class Lowerer:
                     name=p.name,
                     ty=_type_name(p.type_expr) if p.type_expr else "Unknown",
                     is_capability=(
-                        _type_name(p.type_expr) in _BUILTIN_CAPS
+                        _type_name(p.type_expr) in BUILTIN_CAPS
                         if p.type_expr else False
                     ),
                 )
@@ -328,7 +323,7 @@ class Lowerer:
         params: list[Param] = []
         for p in fn.params:
             ty_name = _type_name(p.type_expr) if p.type_expr else "Unknown"
-            is_cap = ty_name in _BUILTIN_CAPS
+            is_cap = ty_name in BUILTIN_CAPS
             params.append(Param(name=p.name, ty=ty_name, is_capability=is_cap))
             self._params[p.name] = ty_name
             if is_cap:
@@ -1002,7 +997,7 @@ class Lowerer:
         lambda_params: list[Param] = []
         for p in e.params:
             ty_name = _type_name(p.type_expr) if p.type_expr else "Unknown"
-            is_cap = ty_name in _BUILTIN_CAPS
+            is_cap = ty_name in BUILTIN_CAPS
             lambda_params.append(
                 Param(name=p.name, ty=ty_name, is_capability=is_cap)
             )
@@ -1102,7 +1097,7 @@ class Lowerer:
             # Use as a value: emitter renders ``Name()`` so the
             # constructor produces an instance.
             return Value(kind="variant_ctor", name=e.name, ty=e.name)
-        if e.name in _BUILTIN_CAPS:
+        if e.name in BUILTIN_CAPS:
             return Value(kind="cap_const", name=e.name, ty=e.name)
         raise UnsupportedInIR(f"identifier reference {e.name!r}")
 
@@ -1329,7 +1324,7 @@ class Lowerer:
         # method invocation.
         if receiver.kind == "param" and receiver.name in self._cap_params:
             cap_used = self._cap_params[receiver.name]
-        elif (receiver.ty or "").split("<", 1)[0] in _BUILTIN_CAPS:
+        elif (receiver.ty or "").split("<", 1)[0] in BUILTIN_CAPS:
             # Receiver is a built-in cap reached via field access or
             # local binding (e.g. ``self.fs.read(...)`` inside an
             # impl method, or ``let f = my_cap; f.read(...)`` in a

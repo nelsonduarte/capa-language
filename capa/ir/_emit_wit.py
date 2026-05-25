@@ -145,7 +145,7 @@ def collect_used_capabilities(module: Module) -> dict[str, set[str]]:
                 cap = instr.cap_used
                 if cap is None:
                     rty = instr.receiver.ty or ""
-                    if rty in _BUILTIN_CAPS:
+                    if rty in BUILTIN_CAPS:
                         cap = rty
                 if cap is not None:
                     out.setdefault(cap, set()).add(instr.method)
@@ -168,11 +168,7 @@ def collect_used_capabilities(module: Module) -> dict[str, set[str]]:
     return out
 
 
-# Mirrors capa.ir._emit_wasm._BUILTIN_CAPS without importing the
-# Wasm emitter (which would create a cycle: _emit_wit is imported
-# by the CLI before the Wasm emitter is ready). Built-in capability
-# names recognised as receiver types when ``cap_used`` is not set.
-_BUILTIN_CAPS = {"Stdio", "Fs", "Net", "Env", "Clock", "Random", "Proc", "Db", "Unsafe"}
+from ._capa_types import BUILTIN_CAPS
 
 
 def emit_wit(module: Module, world_name: str = "program") -> str:
