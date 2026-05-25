@@ -1941,19 +1941,35 @@ class TestTranspileExamples(unittest.TestCase):
         # program reads a CycloneDX SBOM (the shape `capa
         # --cyclonedx` emits), extracts every function's
         # declared capabilities via the `capa:*` properties, and
-        # checks them against an inline allow-list policy. The
-        # sample includes one function deliberately missing from
-        # the policy so the audit fires.
+        # checks them against an inline allow-list policy plus
+        # cross-function structural rules. The sample fires three
+        # times: one per-function violation (notify_remote not in
+        # policy) and two structural violations (main and
+        # notify_remote both declare Net without sitting inside
+        # the NetClient container required by the structural rule).
         rc, out, err = self._run_example("examples/sbom_capability_audit.capa")
         self.assertEqual(rc, 0, err)
         self.assertIn("Auditing demo.capa (CycloneDX 1.5)", out)
         self.assertIn("Functions found in SBOM (5):", out)
         self.assertIn("main: declares { Stdio, Net, Fs }", out)
         self.assertIn("log_event: declares { Stdio }", out)
-        # The audit must flag the deliberately-unauthorised function
-        self.assertIn("Audit: 1 violation(s)", out)
+        # Per-function + structural violations stack additively.
+        self.assertIn("Audit: 3 violation(s)", out)
         self.assertIn("notify_remote declares 'Net'", out)
         self.assertIn("function not listed in policy", out)
+        # Structural rule fires for both main and notify_remote
+        # (neither lives inside the NetClient container).
+        self.assertIn(
+            "violates structural rule 'net-confined-to-NetClient'",
+            out,
+        )
+        self.assertIn("main declares 'Net'", out)
+        # And the active structural rules are echoed in the output.
+        self.assertIn("Structural rules (1):", out)
+        self.assertIn(
+            "net-confined-to-NetClient: 'Net' allowed in [NetClient]",
+            out,
+        )
 
     def test_spdx_license_expr(self):
         # SPDX 2.3 Annex D license-expression parser, recursive

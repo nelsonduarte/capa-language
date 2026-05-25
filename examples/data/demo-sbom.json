@@ -33,6 +33,7 @@
       "name": "fetch_user",
       "properties": [
         { "name": "capa:kind", "value": "function" },
+        { "name": "capa:container", "value": "NetClient" },
         { "name": "capa:declared_capability", "value": "Net" }
       ]
     },

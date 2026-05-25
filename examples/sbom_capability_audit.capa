@@ -41,6 +41,16 @@
 // - Both a passing case (declarations match policy) and a
 //   failing case (a function declares Net without permission)
 //   in the same run.
+//
+// Beyond per-function allow-lists, the policy also supports
+// *structural* rules that scope a capability to a set of
+// containers (impls / traits). For example, "Net is only
+// allowed inside an impl of NetClient" is expressed once and
+// then enforced against every function in the SBOM regardless
+// of name. A structural rule and a per-function rule are
+// independent: a single (fn, cap) pair can violate both, and
+// each is reported separately so policy authors can see which
+// claim was breached.
 
 type DeclaredFn {
     name: String,
@@ -55,12 +65,26 @@ type SbomSummary {
     components: List<DeclaredFn>
 }
 
+type StructuralRule {
+    // A structural rule restricts a capability to functions
+    // whose `container` (impl / trait) is in the allowed list.
+    // It is global: every function in the SBOM is checked,
+    // not just those named in `rules`.
+    name: String,
+    cap: String,
+    allowed_in_containers: List<String>
+}
+
 type Policy {
     // Per-function allow-list of capabilities. A function not in
     // this map is allowed nothing; a function in the map is
     // allowed exactly the capabilities listed (no implicit
     // Stdio).
-    rules: Map<String, List<String>>
+    rules: Map<String, List<String>>,
+    // Cross-function structural rules. Additive with `rules`:
+    // both must pass independently. Missing in the JSON is
+    // treated as an empty list (no structural constraints).
+    structural: List<StructuralRule>
 }
 
 type Violation {
@@ -71,7 +95,8 @@ type Violation {
 
 type AuditOutcome {
     summary: SbomSummary,
-    violations: List<Violation>
+    violations: List<Violation>,
+    structural_rules: List<StructuralRule>
 }
 
 // ---- helpers (typed extraction from JsonValue) ----
@@ -200,6 +225,19 @@ fun parse_sbom_summary(json_text: String) -> Result<SbomSummary, String>
 
 // ---- policy file parsing ----
 
+fun parse_structural_rule(j: JsonValue) -> Result<StructuralRule, String>
+    let name = as_string_or_err(field(j, "name")?, "structural.name")?
+    let cap = as_string_or_err(field(j, "cap")?, "structural.cap")?
+    let xs = as_array_or_err(field(j, "allowed_in_containers")?, "structural.allowed_in_containers")?
+    let allowed: List<String> = []
+    for x in xs
+        allowed.push(as_string_or_err(x, "structural.allowed_in_containers entry")?)
+    return Ok(StructuralRule {
+        name: name,
+        cap: cap,
+        allowed_in_containers: allowed
+    })
+
 fun parse_policy(json_text: String) -> Result<Policy, String>
     let doc = parse_json(json_text)?
     let rules_j = field(doc, "rules")?
@@ -215,13 +253,27 @@ fun parse_policy(json_text: String) -> Result<Policy, String>
                 for x in xs
                     caps.push(as_string_or_err(x, "policy entry value")?)
                 rules.set(key, caps)
-    return Ok(Policy { rules: rules })
+    let structural: List<StructuralRule> = []
+    match optional_field(doc, "structural")
+        None ->
+            ()
+        Some(v) ->
+            let xs = as_array_or_err(v, "policy.structural")?
+            for x in xs
+                structural.push(parse_structural_rule(x)?)
+    return Ok(Policy { rules: rules, structural: structural })
 
 // ---- audit ----
 
 fun is_allowed(cap: String, allowed: List<String>) -> Bool
     for a in allowed
         if a == cap
+            return true
+    return false
+
+fun container_allowed(container: String, allowed: List<String>) -> Bool
+    for a in allowed
+        if a == container
             return true
     return false
 
@@ -241,6 +293,19 @@ fun audit(summary: SbomSummary, policy: Policy) -> List<Violation>
                     cap: cap,
                     reason: reason
                 })
+            // Structural rules are additive: every rule whose
+            // `cap` matches must accept the function's container,
+            // independently of the per-function check above.
+            for rule in policy.structural
+                if rule.cap == cap
+                    if not container_allowed(fn.container, rule.allowed_in_containers)
+                        let containers_str = join_caps(rule.allowed_in_containers)
+                        let sreason = "violates structural rule '${rule.name}': capability '${cap}' only allowed in containers [${containers_str}]"
+                        violations.push(Violation {
+                            function_name: fn.name,
+                            cap: cap,
+                            reason: sreason
+                        })
     return violations
 
 // ---- pipeline ----
@@ -252,7 +317,8 @@ fun run_audit(fs: Fs, sbom_path: String, policy_path: String) -> Result<AuditOut
     let policy = parse_policy(policy_text)?
     return Ok(AuditOutcome {
         summary: summary,
-        violations: audit(summary, policy)
+        violations: audit(summary, policy),
+        structural_rules: policy.structural
     })
 
 // ---- demo ----
@@ -296,3 +362,12 @@ fun main(stdio: Stdio, fs: Fs)
                 for v in outcome.violations
                     stdio.println("  - ${v.function_name} declares '${v.cap}'")
                     stdio.println("      ${v.reason}")
+
+            stdio.println("")
+            if outcome.structural_rules.is_empty()
+                stdio.println("Structural rules: none")
+            else
+                stdio.println("Structural rules (${outcome.structural_rules.length()}):")
+                for r in outcome.structural_rules
+                    let allow_str = join_caps(r.allowed_in_containers)
+                    stdio.println("  - ${r.name}: '${r.cap}' allowed in [${allow_str}]")

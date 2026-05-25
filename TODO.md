@@ -215,11 +215,22 @@ the current Wasm critical path.
   alternative serialisation; the "representation + validation"
   writeup tying them together. ⏱ 8-12h each.
 
-- [~] **SBOM-capability audit example, structural policies**.
-  Today's audit at `examples/sbom_capability_audit.capa`
-  supports per-function allow-lists. Pending: structural
-  cross-function policies (e.g. "no Net anywhere except inside
-  an impl of trait NetClient"). ⏱ 4-6h.
+- [x] **SBOM-capability audit example, structural policies**
+  (closed 2026-05-25). `examples/sbom_capability_audit.capa`
+  now carries a `Policy.structural: List<StructuralRule>`
+  field alongside the existing per-function `rules` map. Each
+  rule pins a capability to a list of allowed containers
+  (impls / traits); every declared capability is checked
+  against every matching structural rule independently of the
+  per-function allow-list, so a single (fn, cap) pair can
+  raise one per-function violation plus one structural
+  violation. Missing `structural` in the JSON is treated as
+  an empty list, keeping old policy files valid. Demo
+  policy gains a `net-confined-to-NetClient` rule and the
+  SBOM tags `fetch_user` with `capa:container=NetClient`;
+  audit now reports 3 violations (notify_remote per-function
+  + main and notify_remote structural). Locked by
+  `tests/test_transpiler.py::TestTranspileExamples::test_sbom_capability_audit`.
 
 - [~] **Workshop paper revision**. Draft v1 (~5000 words, all
   sections) is local-only. Iterate on revision; convert to
