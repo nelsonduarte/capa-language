@@ -1,6 +1,6 @@
 # Stability policy
 
-Capa currently ships as `0.8.x-beta`. This file describes the
+Capa currently ships as `1.0.0-rc.3`. This file describes the
 **stability commitment that will start with `1.0.0`** and the
 process for getting there. The commitment is the only thing
 that changes at 1.0; the language itself does not jump

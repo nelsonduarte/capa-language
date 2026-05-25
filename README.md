@@ -236,7 +236,7 @@ LICENSE  STABILITY.md  CONTRIBUTING.md  SECURITY.md  README.md
 
 ## Status
 
-Capa currently ships as **`1.0.0-rc.2`**, with the Wasm
+Capa currently ships as **`1.0.0-rc.3`**, with the Wasm
 Component Model backend on the `main` branch ahead of the next
 release tag (see [`CHANGELOG.md`](CHANGELOG.md) Unreleased
 section). The stability commitment that starts with `1.0.0` is

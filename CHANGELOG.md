@@ -9,6 +9,8 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+## [1.0.0-rc.3], 2026-05-25
+
 ### Language: opt-in Display protocol via `to_string()`
 
 `${value}` interpolation of a user struct now routes through
