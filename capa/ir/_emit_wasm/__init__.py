@@ -60,6 +60,7 @@ from ._layout import (
     compute_struct_layout, compute_sum_layout,
 )
 from ._runtime import _RuntimeHelpersMixin
+from ._grisu import _GrisuEmissionMixin
 from ._match import _MatchEmissionMixin
 from ._strings import _StringEmissionMixin
 from ._maps import _MapEmissionMixin
@@ -127,6 +128,7 @@ _FLOAT_CMP_BINOP = {
 
 class WasmEmitter(
     _RuntimeHelpersMixin,
+    _GrisuEmissionMixin,
     _MatchEmissionMixin,
     _StringEmissionMixin,
     _MapEmissionMixin,
@@ -318,7 +320,7 @@ class WasmEmitter(
         # the string data segment, before the heap base. The table
         # itself is emitted as a ``(data ...)`` block alongside the
         # string segments below.
-        from ._runtime import _CACHED_POWERS_BYTE_SIZE
+        from ._grisu import _CACHED_POWERS_BYTE_SIZE
         if self._uses_float_format(module):
             self._cached_powers_offset = _align_up(
                 self._string_data_offset, 8,
