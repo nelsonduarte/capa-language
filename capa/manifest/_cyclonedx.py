@@ -42,6 +42,19 @@ from ._vex import build_vex_entries
 # newer but adoption is less universal. Bump when 1.6 is everywhere.
 CYCLONEDX_SPEC_VERSION = "1.5"
 
+# Strict CycloneDX validators (``cyclonedx-cli validate --strict``,
+# OWASP Dependency-Track in compliance mode) expect every component
+# to carry ``licenses[]`` and ``supplier``. Audit 2026-05-25 H5:
+# the prior output omitted both, so strict tooling refused the
+# document. The supplier is the build tool (capa itself); the
+# license list is empty because the Capa source's license is the
+# host project's concern, not ours, and CycloneDX explicitly allows
+# the empty list as the well-defined "no concluded license" state.
+_CDX_COMPONENT_COMPLIANCE_FIELDS: dict[str, Any] = {
+    "supplier": {"name": "capa-build"},
+    "licenses": [],
+}
+
 
 def build_cyclonedx(
     module: A.Module,
@@ -102,6 +115,7 @@ def build_cyclonedx(
             "type": "application",
             "name": bom_basename,
             "version": capa_version,
+            **_CDX_COMPONENT_COMPLIANCE_FIELDS,
         },
         "properties": metadata_properties,
     }
@@ -147,6 +161,7 @@ def build_cyclonedx(
             "type": "library",
             "name": uc["name"],
             "scope": "required",
+            **_CDX_COMPONENT_COMPLIANCE_FIELDS,
             "properties": props,
         })
 
@@ -210,6 +225,7 @@ def build_cyclonedx(
             "type": "library",
             "name": qualname,
             "scope": "required",
+            **_CDX_COMPONENT_COMPLIANCE_FIELDS,
             "properties": props,
         })
 

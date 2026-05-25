@@ -52,6 +52,20 @@ SPDX_SPEC_VERSION = "SPDX-2.3"
 # spec recommends CC0-1.0 and most tools assume it.
 SPDX_DATA_LICENSE = "CC0-1.0"
 
+# Compliance-grade SPDX consumers (OpenChain, spdx-tool validate
+# --strict) require ``licenseConcluded``, ``licenseDeclared``, and
+# ``copyrightText`` on every package. SPDX 2.3 blesses
+# ``NOASSERTION`` as the placeholder when the producer has not
+# determined a license / copyright. Audit 2026-05-25 H5: prior
+# output omitted these fields entirely, so strict validators
+# refused the document. The default is centralised here so the
+# code that builds packages does not repeat the three fields.
+_SPDX_NOASSERT_LICENSE_FIELDS: dict[str, str] = {
+    "licenseConcluded": "NOASSERTION",
+    "licenseDeclared": "NOASSERTION",
+    "copyrightText": "NOASSERTION",
+}
+
 
 _SPDXID_RE = re.compile(r"[^a-zA-Z0-9.-]")
 
@@ -130,6 +144,7 @@ def build_spdx(
         "versionInfo": capa_version,
         "downloadLocation": "NOASSERTION",
         "filesAnalyzed": False,
+        **_SPDX_NOASSERT_LICENSE_FIELDS,
         "annotations": program_annotations,
     }
 
@@ -163,6 +178,7 @@ def build_spdx(
             "name": uc["name"],
             "downloadLocation": "NOASSERTION",
             "filesAnalyzed": False,
+            **_SPDX_NOASSERT_LICENSE_FIELDS,
             "annotations": annots,
         })
         relationships.append({
@@ -219,6 +235,7 @@ def build_spdx(
             "name": qualname,
             "downloadLocation": "NOASSERTION",
             "filesAnalyzed": False,
+            **_SPDX_NOASSERT_LICENSE_FIELDS,
             "annotations": annots,
         })
 

@@ -664,6 +664,41 @@ class TestCycloneDX(unittest.TestCase):
         # method call is not edge-promoted in v1).
         self.assertIsNone(caller_dep)
 
+    def test_every_component_has_compliance_supplier_and_licenses(self):
+        # Audit 2026-05-25 H5: ``cyclonedx-cli validate --strict``
+        # rejects components without ``licenses[]`` and ``supplier``.
+        # Pre-fix only ``name``, ``type``, ``bom-ref``, ``scope``,
+        # and ``properties`` were emitted, so the document was
+        # "valid" only by permissive validators.
+        sbom = cyclonedx_of(
+            'capability SendEmail\n'
+            '    fun send(self, to: String) -> Bool\n'
+            'type SmtpMailer {}\n'
+            'impl SendEmail for SmtpMailer\n'
+            '    fun send(self, to: String) -> Bool\n'
+            '        return true\n'
+            'fun helper(x: Int) -> Int\n'
+            '    return x + 1\n',
+            filename="mailer.capa",
+        )
+        # The metadata.component is also a component for validator
+        # purposes; check it carries the same fields.
+        program = sbom["metadata"]["component"]
+        self.assertEqual(program["supplier"], {"name": "capa-build"})
+        self.assertEqual(program["licenses"], [])
+        # Then every entry in components[]: user cap + impl method
+        # + helper, at minimum.
+        self.assertGreaterEqual(len(sbom["components"]), 3)
+        for comp in sbom["components"]:
+            self.assertEqual(
+                comp.get("supplier"), {"name": "capa-build"},
+                f"{comp['name']}: supplier missing/wrong",
+            )
+            self.assertEqual(
+                comp.get("licenses"), [],
+                f"{comp['name']}: licenses missing/wrong",
+            )
+
 
 # =============================================================
 # Call-site extraction in the manifest
@@ -940,6 +975,50 @@ class TestSPDX(unittest.TestCase):
         self.assertIn("capa:kind=capability", comments)
         self.assertIn("capa:capability:method=send", comments)
         self.assertIn("capa:capability:implementor=SmtpMailer", comments)
+
+    def test_every_package_has_compliance_license_fields(self):
+        # Audit 2026-05-25 H5: compliance-grade SPDX consumers
+        # (OpenChain, ``spdx-tool validate --strict``) require
+        # ``licenseConcluded``, ``licenseDeclared``, and
+        # ``copyrightText`` on every package. Pre-fix only
+        # ``downloadLocation`` was emitted as NOASSERTION and the
+        # other three were absent, so strict validators refused.
+        spdx = spdx_of(
+            'capability SendEmail\n'
+            '    fun send(self, to: String) -> Bool\n'
+            'type SmtpMailer {}\n'
+            'impl SendEmail for SmtpMailer\n'
+            '    fun send(self, to: String) -> Bool\n'
+            '        return true\n'
+            'fun helper(x: Int) -> Int\n'
+            '    return x + 1\n',
+            filename="mailer.capa",
+        )
+        # Three package shapes are emitted: program, user cap, and
+        # function. The required-by-strict fields must be present on
+        # every one. NOASSERTION is the SPDX-blessed placeholder when
+        # the producer has not determined a value.
+        self.assertGreaterEqual(len(spdx["packages"]), 3)
+        for pkg in spdx["packages"]:
+            self.assertEqual(
+                pkg.get("licenseConcluded"), "NOASSERTION",
+                f"{pkg['name']}: licenseConcluded missing/wrong",
+            )
+            self.assertEqual(
+                pkg.get("licenseDeclared"), "NOASSERTION",
+                f"{pkg['name']}: licenseDeclared missing/wrong",
+            )
+            self.assertEqual(
+                pkg.get("copyrightText"), "NOASSERTION",
+                f"{pkg['name']}: copyrightText missing/wrong",
+            )
+            # The pre-existing downloadLocation field stays put;
+            # this test is the strict-compliance regression net so
+            # lock it in alongside the new fields.
+            self.assertEqual(
+                pkg.get("downloadLocation"), "NOASSERTION",
+                f"{pkg['name']}: downloadLocation missing/wrong",
+            )
 
 
 # =============================================================
