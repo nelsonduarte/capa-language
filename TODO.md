@@ -427,28 +427,35 @@ Listed so the design space is explicit.
 
 ### Wasm-specific gaps that are not P0
 
-- [~] **List<T>.map / filter / fold for non-Int element types**
-  (partial 2026-05-25). `List<Int>`, `List<String>`, and
-  `List<Float>` HOFs are now supported by the Wasm backend:
-  the closure sig is built per-element-type via
-  `_closure_sig_key_for` (String -> two i32s ptr/len,
-  Float -> f64, Int -> i64); load uses
-  `i64.load` + `f64.reinterpret_i64` for Float and
-  `_emit_unpack_i64_to_string` for String; map's store path
-  uses `f64.store` / `i64.store` per the output type; filter
-  preserves the packed slot bytes byte-for-byte via
-  `_emit_inline_packed_list_push`; fold widens to handle
-  String accumulators through `_set_string_dst`. Also fixes
-  a pre-existing bug where `List<Float>` literal /
-  indexing / for-iter used `i64.store/load` instead of
-  `f64.store/load`, which made the literal `[1.0, 2.0]` fail
-  to compile. Gaps: `List<Bool>` HOFs (the 4-byte Bool stride
-  conflicts with the loop's 8-byte assumption) and
-  pointer-shape element types (would need alloc-aware store).
-  Both raise a clear `WasmEmissionError` pointing at the
-  Python backend as workaround. Coverage: 8 new tests in
-  `TestWasmListHofNonInt` + 2 documented skips. Suite:
-  1472 -> 1482.
+- [x] **List<T>.map / filter / fold for non-Int element types**
+  (closed 2026-05-25). `List<Int>`, `List<String>`,
+  `List<Float>`, and `List<Bool>` HOFs are now supported by
+  the Wasm backend: the closure sig is built per-element-type
+  via `_closure_sig_key_for` (String -> two i32s ptr/len,
+  Float -> f64, Bool -> i32, Int -> i64); load uses
+  `i64.load` + `f64.reinterpret_i64` for Float,
+  `_emit_unpack_i64_to_string` for String, and
+  `i32.load + i64.extend_i32_u` for Bool (4-byte slot widened
+  into the shared `$_alloc_tmp_i64` scratch local); map's
+  store path uses `f64.store` / `i64.store` /
+  `i32.store` per the output type's stride; filter preserves
+  the packed slot bytes byte-for-byte via
+  `_emit_inline_packed_list_push` with `slot_size=4` on Bool;
+  fold widens to handle String accumulators through
+  `_set_string_dst`. Also fixes a pre-existing bug where
+  `List<Float>` literal / indexing / for-iter used
+  `i64.store/load` instead of `f64.store/load`, which made
+  the literal `[1.0, 2.0]` fail to compile. The map loop now
+  re-reads the dst data pointer from the list header each
+  iteration so the Bool stash path's reuse of `$_alloc_tmp`
+  doesn't clobber it. Remaining gap: pointer-shape element
+  types (would need alloc-aware store); raises a clear
+  `WasmEmissionError` pointing at the Python backend as
+  workaround. Coverage: 4 new tests in `TestWasmListHofNonInt`
+  (`test_list_bool_map`, `test_list_bool_filter`,
+  `test_list_int_map_to_bool`, `test_list_bool_fold_to_int`)
+  on top of the existing 8; pointer-shape skip stays.
+  Suite: 1492 -> 1495.
 - [x] **Lambdas-inside-lambdas (nested closures)** (closed
   2026-05-25). Lambda lifting with flat envs: each nested
   closure gets its own env record containing every name it

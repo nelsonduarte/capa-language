@@ -2111,16 +2111,67 @@ class TestWasmListHofNonInt(unittest.TestCase):
             self._run_capturing_stdout(src), "1\n4\n9\n"
         )
 
-    @unittest.skip(
-        "List<Bool> HOFs not supported: Bool stride is 4 bytes; "
-        "the HOF loop assumes 8-byte slots. Workaround: use the "
-        "Python backend. Documented in TODO.md."
-    )
+    def test_list_bool_map(self):
+        # Closure sig ``(i32 i32) -> i32``; both load and store
+        # paths run on 4-byte slots. Exercises the Bool branch of
+        # ``_emit_store_closure_result_into_slot`` (i32.store) and
+        # the matching map alloc stride.
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    let xs: List<Bool> = [true, false, true]\n"
+            "    let ys = xs.map(fun (b: Bool) -> Bool => not b)\n"
+            "    for v in ys\n"
+            "        stdio.println(\"${v}\")\n"
+        )
+        self.assertEqual(
+            self._run_capturing_stdout(src), "false\ntrue\nfalse\n"
+        )
+
     def test_list_bool_filter(self):
-        # Placeholder: future work would need a parallel 4-byte
-        # stride path in the HOF loop. Not worth the duplication
-        # today for a rare case.
-        pass
+        # Closure sig ``(i32 i32) -> i32``; filter's slot load
+        # uses ``i32.load + i64.extend_i32_u`` and the inline push
+        # path uses ``i32.wrap_i64 + i32.store`` (slot_size=4).
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    let xs: List<Bool> = [true, false, true, false, true]\n"
+            "    let ys = xs.filter(fun (b: Bool) -> Bool => b)\n"
+            "    for v in ys\n"
+            "        stdio.println(\"${v}\")\n"
+        )
+        self.assertEqual(
+            self._run_capturing_stdout(src), "true\ntrue\ntrue\n"
+        )
+
+    def test_list_int_map_to_bool(self):
+        # Int element feeding into a Bool-returning closure: the
+        # output List<Bool> uses ``out_stride=4`` so the store path
+        # collapses to ``i32.store``.
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    let xs = [3, -1, 0, 5]\n"
+            "    let ys = xs.map(fun (i: Int) -> Bool => i > 0)\n"
+            "    for v in ys\n"
+            "        stdio.println(\"${v}\")\n"
+        )
+        self.assertEqual(
+            self._run_capturing_stdout(src),
+            "true\nfalse\nfalse\ntrue\n",
+        )
+
+    def test_list_bool_fold_to_int(self):
+        # Bool element into an Int accumulator: the fold slot load
+        # uses ``i32.load + i64.extend_i32_u`` (no slot_size routing
+        # on the accumulator side because it's a plain local).
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    let xs: List<Bool> = [true, false, true, true]\n"
+            "    let n = xs.fold(0, fun (acc: Int, b: Bool) -> Int =>\n"
+            "        if b then acc + 1 else acc)\n"
+            "    stdio.println(\"${n}\")\n"
+        )
+        self.assertEqual(
+            self._run_capturing_stdout(src), "3\n"
+        )
 
     @unittest.skip(
         "List<List<T>> / List<Struct> HOFs not supported: the "

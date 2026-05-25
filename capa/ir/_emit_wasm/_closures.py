@@ -859,20 +859,26 @@ class _ClosureEmissionMixin:
         )
 
     def _emit_store_closure_result_into_slot(
-        self, out_ty: str, addr_local: str,
+        self, out_ty: str, addr_local: str, slot_size: int = 8,
     ) -> None:
         """The closure's return value(s) are on top of the operand
         stack (in stack order per ``_wasm_result_tys_for``). Pop
         them into temporary locals if necessary, then store at the
         slot whose i32 address is in ``$<addr_local>``.
 
+        ``slot_size`` is the on-disk stride for the destination
+        list's element (4 for ``List<Bool>``, 8 otherwise). When
+        the slot is 4 bytes the Bool branch must use ``i32.store``
+        to avoid clobbering the next slot.
+
         - Int: i64.store -- bytes are the i64 directly.
         - Float: stash into ``$_alloc_tmp_f64`` (declared by the
           json branch already, or now by the HOF branch), then
           ``f64.store`` to write the IEEE-754 bytes.
-        - Bool: i64.extend_i32_u + i64.store -- the high 4 bytes
-          end up zero, which Bool-element loads (`i32.load` of the
-          low 4) ignore.
+        - Bool: ``i32.store`` into a 4-byte slot;
+          ``i64.extend_i32_u + i64.store`` into an 8-byte slot
+          (the high 4 bytes end up zero, which Bool loads on an
+          8-byte slot ignore).
         - String: closure returns two i32s (ptr, len). Pop into
           ``$_str_a_ptr`` / ``$_str_a_len`` then pack as
           ``ptr | (len << 32)`` and store as i64.
@@ -888,11 +894,16 @@ class _ClosureEmissionMixin:
             self._write("f64.store")
             return
         if out_ty == "Bool":
-            # Stack: [..., addr, val_i32]. Widen to i64 so the
-            # slot is fully written (an i32.store would leave the
-            # high 4 bytes as whatever the alloc returned).
-            self._write("i64.extend_i32_u")
-            self._write("i64.store")
+            # Stack: [..., addr, val_i32]. For a 4-byte slot the
+            # val is already i32-shaped and stores cleanly. For an
+            # 8-byte slot we widen so the upper 4 bytes are written
+            # too (otherwise alloc leftovers would leak into Bool
+            # loads on the wider stride).
+            if slot_size == 4:
+                self._write("i32.store")
+            else:
+                self._write("i64.extend_i32_u")
+                self._write("i64.store")
             return
         if out_ty == "String":
             # Stack: [..., addr, ptr_i32, len_i32]. Pack into i64.
@@ -976,16 +987,6 @@ class _ClosureEmissionMixin:
                 f"List.map: dst {dst!r} has non-List type {dst_ty!r}"
             )
         out_elem_ty = dst_ty[5:-1].strip()
-        if out_elem_ty == "Bool" or elem_ty == "Bool":
-            # Bool elements stride 4 bytes -- the loop uses 8-byte
-            # stride; would need a parallel path. Skip for now.
-            raise WasmEmissionError(
-                f"List<{elem_ty}>.map -> List<{out_elem_ty}>: "
-                f"List<Bool> HOFs not supported "
-                f"(Bool stride is 4 bytes, HOF loop assumes 8). "
-                f"Workaround: map to a same-size type or use the "
-                f"Python backend (``capa --run``)."
-            )
         if (self._is_pointer_shape_ty(out_elem_ty)
                 or self._is_pointer_shape_ty(elem_ty)):
             raise WasmEmissionError(
@@ -1048,8 +1049,12 @@ class _ClosureEmissionMixin:
         self._write(f"br_if {exit_}")
         # Compute new-list slot address into $_lam_new_data so it
         # survives the closure call (the operand stack would lose
-        # it otherwise: String returns are two-value).
-        self._write("local.get $_alloc_tmp")
+        # it otherwise: String returns are two-value). Re-read the
+        # data pointer from the dst header each iteration so we
+        # don't have to keep it in a scratch local -- the Bool elem
+        # stash path reuses ``$_alloc_tmp`` and would clobber it.
+        self._write(f"local.get ${dst}")
+        self._write(f"i32.load offset={_LIST_DATA_OFFSET}")
         self._write("local.get $_lam_idx")
         self._write(f"i32.const {out_stride}")
         self._write("i32.mul")
@@ -1086,7 +1091,9 @@ class _ClosureEmissionMixin:
         # fn_idx + call_indirect.
         self._emit_invoke_closure_inline(sig_idx, "_lam_fn_tmp")
         # Store the result into the dst slot.
-        self._emit_store_closure_result_into_slot(out_elem_ty, "_lam_new_data")
+        self._emit_store_closure_result_into_slot(
+            out_elem_ty, "_lam_new_data", slot_size=out_stride,
+        )
         # i++
         self._write("local.get $_lam_idx")
         self._write("i32.const 1")
@@ -1152,12 +1159,6 @@ class _ClosureEmissionMixin:
         dst = instr.dst
         if dst is None:
             return
-        if elem_ty == "Bool":
-            raise WasmEmissionError(
-                f"List<Bool>.filter: Bool element stride is 4 bytes; "
-                f"the HOF loop assumes 8-byte slots. Use the Python "
-                f"backend (``capa --run``)."
-            )
         if self._is_pointer_shape_ty(elem_ty):
             raise WasmEmissionError(
                 f"List<{elem_ty}>.filter: pointer-shape elements not "
@@ -1220,10 +1221,14 @@ class _ClosureEmissionMixin:
         # Stash the slot address so we can re-read after the
         # predicate call without recomputing.
         self._write("local.tee $_lam_new_data")
-        # Load the raw slot bytes into $_alloc_tmp_i64; this works
-        # for every 8-byte element type (Int, Float, String,
-        # pointer-shape via the high zeros).
-        self._write("i64.load")
+        # Load the raw slot bytes into $_alloc_tmp_i64. Bool slots
+        # are 4 bytes wide; widen to i64 so the downstream push /
+        # decode paths can share the same scratch local.
+        if elem_ty == "Bool":
+            self._write("i32.load")
+            self._write("i64.extend_i32_u")
+        else:
+            self._write("i64.load")
         self._write("local.set $_alloc_tmp_i64")
         # Build the predicate call. Push env_ptr, then the
         # decoded args, then fn_idx + call_indirect.
@@ -1235,10 +1240,10 @@ class _ClosureEmissionMixin:
         self._indent += 1
         # Append: re-emit the packed slot bytes onto the new list.
         # ``_emit_inline_packed_list_push`` reads from
-        # $_alloc_tmp_i64 and stores via i64.store. Bool fell out
-        # already because its stride differs; everything else has
-        # an 8-byte stride and identical i64 ABI.
-        self._emit_inline_packed_list_push(dst)
+        # $_alloc_tmp_i64 and stores via i64.store / i32.store
+        # depending on slot_size. Bool elements stride 4 bytes;
+        # everything else strides 8 with identical i64 ABI.
+        self._emit_inline_packed_list_push(dst, slot_size=elem_stride)
         self._indent -= 1
         self._write("end")
         # i++
@@ -1283,13 +1288,16 @@ class _ClosureEmissionMixin:
         self._write("local.get $_alloc_tmp_i64")
         self._write("i32.wrap_i64")
 
-    def _emit_inline_packed_list_push(self, list_local: str) -> None:
-        """Append the i64 value held in ``$_alloc_tmp_i64`` to the
-        list whose pointer is in ``$<list_local>``. Grows the data
-        array via ``memory.copy`` when at capacity. The 8-byte
-        slot stride matches every element type filter actually
-        handles today (Int, Float, String packed-i64); Bool is
-        rejected upstream."""
+    def _emit_inline_packed_list_push(
+        self, list_local: str, slot_size: int = 8,
+    ) -> None:
+        """Append the value held in ``$_alloc_tmp_i64`` to the list
+        whose pointer is in ``$<list_local>``. Grows the data array
+        via ``memory.copy`` when at capacity. The slot stride is 8
+        for every Int / Float / String / pointer-shape element and
+        4 for ``List<Bool>``; callers that know they're handling a
+        4-byte element pass ``slot_size=4`` so the alloc / memcpy /
+        per-slot store all collapse to half-width writes."""
         self._write(f"local.get ${list_local}")
         self._write(f"i32.load offset={_LIST_LEN_OFFSET}")
         self._write("local.set $_lam_grow_len")
@@ -1313,7 +1321,7 @@ class _ClosureEmissionMixin:
         self._indent -= 1
         self._write("end")
         self._write("local.get $_lam_grow_cap")
-        self._write("i32.const 8")
+        self._write(f"i32.const {slot_size}")
         self._write("i32.mul")
         self._write("call $alloc")
         self._write("local.set $_lam_new_data")
@@ -1321,7 +1329,7 @@ class _ClosureEmissionMixin:
         self._write(f"local.get ${list_local}")
         self._write(f"i32.load offset={_LIST_DATA_OFFSET}")
         self._write("local.get $_lam_grow_len")
-        self._write("i32.const 8")
+        self._write(f"i32.const {slot_size}")
         self._write("i32.mul")
         self._write("memory.copy")
         self._write(f"local.get ${list_local}")
@@ -1335,11 +1343,19 @@ class _ClosureEmissionMixin:
         self._write(f"local.get ${list_local}")
         self._write(f"i32.load offset={_LIST_DATA_OFFSET}")
         self._write("local.get $_lam_grow_len")
-        self._write("i32.const 8")
+        self._write(f"i32.const {slot_size}")
         self._write("i32.mul")
         self._write("i32.add")
         self._write("local.get $_alloc_tmp_i64")
-        self._write("i64.store")
+        if slot_size == 4:
+            # The packed slot bits were already wrapped into the
+            # low 4 bytes of $_alloc_tmp_i64 by the caller's load
+            # path (i32.load + i64.extend_i32_u); narrow back to
+            # i32 before the half-width store.
+            self._write("i32.wrap_i64")
+            self._write("i32.store")
+        else:
+            self._write("i64.store")
         self._write(f"local.get ${list_local}")
         self._write("local.get $_lam_grow_len")
         self._write("i32.const 1")
@@ -1362,13 +1378,6 @@ class _ClosureEmissionMixin:
         if dst is None:
             return
         acc_ty = self._dst_capa_ty(dst) or "Int"
-        if acc_ty == "Bool" or elem_ty == "Bool":
-            raise WasmEmissionError(
-                f"List<{elem_ty}>.fold -> {acc_ty}: List<Bool> / "
-                f"Bool accumulators are not supported by the Wasm "
-                f"backend (slot stride mismatch). Workaround: use "
-                f"the Python backend (``capa --run``)."
-            )
         if (self._is_pointer_shape_ty(acc_ty)
                 or self._is_pointer_shape_ty(elem_ty)):
             raise WasmEmissionError(
@@ -1421,7 +1430,13 @@ class _ClosureEmissionMixin:
         self._write(f"i32.const {elem_stride}")
         self._write("i32.mul")
         self._write("i32.add")
-        self._write("i64.load")
+        # Bool elements occupy 4-byte slots; widen to i64 so the
+        # decode helper can share the scratch local.
+        if elem_ty == "Bool":
+            self._write("i32.load")
+            self._write("i64.extend_i32_u")
+        else:
+            self._write("i64.load")
         self._write("local.set $_alloc_tmp_i64")
         # acc = f(env, acc, x). Push env, acc (Capa Value
         # representing the dst local with its declared type),
