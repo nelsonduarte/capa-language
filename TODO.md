@@ -210,6 +210,27 @@ the current Wasm critical path.
   venues: PLAS, EuroS&P workshops, NDSS workshops. ⏱ 10-20h
   for a publishable revision; 20-40h for venue submission.
 
+- [ ] **Wasm Float formatting: bit-identical with Python `str(float)`**
+  (audit 2026-05-25 known divergence). The Wasm runtime's `$ftoa`
+  helper at [`capa/ir/_emit_wasm/_runtime.py`](capa/ir/_emit_wasm/_runtime.py)
+  prints fixed 6 decimals and truncates (no rounding). Python's
+  `str(float)` is variable-width and uses Grisu / repr-shortest.
+  Result: `${1.5}` prints as "1.500000" in Wasm vs "1.5" in
+  Python, and `${1.9999999}` prints as "1.999999" vs "1.9999999".
+  Blocks moving `examples/wasm/clock_demo.capa` and parts of
+  `examples/wasm/json_demo.capa` onto the parity list in
+  [`tests/test_ir_wasm_parity.py`](tests/test_ir_wasm_parity.py).
+  Fix needs a real shortest-round-trip float printer in Wasm
+  (Grisu2 or Ryu). ⏱ 6-10h. P1.
+
+- [ ] **`JsonValue.as_int` parity** (audit 2026-05-25 known
+  divergence). Wasm path truncates floats unconditionally
+  ([`capa/ir/_emit_wasm/_json.py:138-142`](capa/ir/_emit_wasm/_json.py#L138));
+  Python returns `None` for non-integer floats. Same JsonValue
+  programs produce different `Option<Int>` shapes across
+  backends. Align the Wasm side with Python: return `None` (tag=1)
+  when the float has a non-zero fractional part. ⏱ 1-2h. P1.
+
 - [ ] **Capability-discipline hole C: generic instantiation
   re-check** (audit 2026-05-25). The structural check
   (`_check_no_capability`) fires on a generic struct's declaration

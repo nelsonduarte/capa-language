@@ -9,6 +9,47 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+### Tests: Python<->Wasm output parity harness
+
+The README's claim that the Wasm backend produces output
+bit-identical to the Python reference path had no in-tree
+verification: every Wasm execution test in
+[`tests/test_ir_wasm.py`](tests/test_ir_wasm.py) compared the
+Wasm output to a hand-rolled expected string, never to the same
+program's Python output. Audit 2026-05-25 (item #4) recommended
+a cross-backend parity harness; without it the claim has no
+evidence.
+
+New [`tests/test_ir_wasm_parity.py`](tests/test_ir_wasm_parity.py)
+runs six parity-clean examples from
+[`examples/wasm/`](examples/wasm/) -- `hello`, `fizzbuzz`,
+`shape_area`, `strings`, `word_count`, `closures` -- through both
+backends in-process and asserts byte-equal stdout. All six pass:
+the parity claim now has six independent witnesses spanning
+arithmetic, control flow, sum types, pattern matching, strings,
+maps, and closures with HOF (`map` / `filter` / `fold`).
+
+A seventh test asserts every `.capa` file under `examples/wasm/`
+is either in the parity list or in a documented-excluded dict
+with a one-line rationale. Forces any future example to either
+join parity coverage or declare why it can't.
+
+Four examples are deliberately excluded:
+- `clock_demo.capa`: `Clock.now_secs` / `now_monotonic` are
+  time-dependent.
+- `env_demo.capa`, `fs_demo.capa`: depend on host process state
+  / real filesystem; need fixtures both backends agree on.
+- `json_demo.capa`: hits the known Float-printing divergence
+  (`$ftoa` truncates at 6 decimals; Python's `str(float)` is
+  variable-width). The Float-printing gap and the
+  `JsonValue.as_int` truncation divergence are now tracked in
+  [TODO.md](TODO.md) P1.
+
+Suite 1357 -> 1364. The parity tests skip cleanly on machines
+without `wasm-tools` + `wasmtime-py`; CI does not currently
+install either, so they exercise on dev machines only (same
+posture as the existing Wasm-execution tests).
+
 ### Wasm CM: strip phantom `capa:host/json` from the WIT
 
 The `parse_json` / `to_json` free functions used to route through
