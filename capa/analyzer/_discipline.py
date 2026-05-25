@@ -27,42 +27,50 @@ class _DisciplineMixin:
     def _mark_consumed_args(
         self, args: list[A.Expr], consuming_flags: list[bool],
     ) -> None:
-        """For each arg that is a capability Ident and whose flag
-        is True, mark the name as consumed. Called after evaluating
-        the args so the use of those idents in the args themselves
-        (the first occurrence) does not trigger the use-after-
-        consume error.
+        """For each capability-source arg whose ``consuming`` flag
+        is True, mark the canonical dotted path as consumed.
+        Called after evaluating the args so the use of those refs
+        in the args themselves (the first occurrence) does not
+        trigger the use-after-consume error.
 
-        Capture inside a lambda: if the consumed name does not
-        belong to the local parameters (or to enclosing lambdas
-        that contain us), it is a captured cap, and consuming a
-        captured cap is an error because the lambda may be
-        invoked multiple times.
+        Two argument shapes resolve to a capability source:
+        bare ``Ident`` and Ident-rooted ``FieldAccess`` chains
+        (``box.cap``, ``outer.inner.cap``). Pre-2026-05-25 only
+        ``Ident`` was tracked, so ``consume_one(box.cap)`` followed
+        by ``box.cap.use()`` slipped past the analyzer (audit hole
+        D). The canonical path comes from ``_path_of`` for the
+        FieldAccess case; ``_consumed`` stores dotted paths so the
+        same key is compared against ``_check_ident`` and the
+        FieldAccess use-site check.
+
+        Capture inside a lambda: if the consumed root name does
+        not belong to the local parameters (or to enclosing
+        lambdas that contain us), it is a captured cap, and
+        consuming a captured cap is an error because the lambda
+        may be invoked multiple times.
         """
         for arg, consuming in zip(args, consuming_flags):
             if not consuming:
                 continue
-            if not isinstance(arg, A.Ident):
+            path = self._is_capability_ident(arg)
+            if path is None:
                 continue
-            sym = self.scope.lookup(arg.name)
-            if sym is None or sym.ty is None:
-                continue
-            if isinstance(sym.ty, TyName) and sym.ty.name in CAPABILITY_NAMES:
-                if self._lambda_local_names_stack:
-                    is_local_to_some_lambda = any(
-                        arg.name in frame
-                        for frame in self._lambda_local_names_stack
+            root = path.split(".", 1)[0]
+            if self._lambda_local_names_stack:
+                is_local_to_some_lambda = any(
+                    root in frame
+                    for frame in self._lambda_local_names_stack
+                )
+                if not is_local_to_some_lambda:
+                    self._err(
+                        f"cannot consume capability {path!r} "
+                        f"captured from enclosing scope; closures may "
+                        f"be invoked multiple times, but a capability "
+                        f"can only be consumed once",
+                        arg.pos,
                     )
-                    if not is_local_to_some_lambda:
-                        self._err(
-                            f"cannot consume capability {arg.name!r} "
-                            f"captured from enclosing scope; closures may "
-                            f"be invoked multiple times, but a capability "
-                            f"can only be consumed once",
-                            arg.pos,
-                        )
-                        continue
-                self._consumed.add(arg.name)
+                    continue
+            self._consumed.add(path)
 
     def _substitute_self(self, ty: Ty, self_ty: Ty) -> Ty:
         """Substitute ``TyName('Self')`` in ``ty`` with ``self_ty``.

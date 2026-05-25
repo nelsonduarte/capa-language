@@ -4751,6 +4751,83 @@ class TestCapabilityFieldDiscipline(unittest.TestCase):
         )
         self.assertTrue(r.ok, r.errors)
 
+    def test_use_after_consume_through_field_access_rejected(self):
+        # Hole D (audit 2026-05-25 H1): consume_one(box.cap) followed
+        # by box.cap.use() used to pass because _mark_consumed_args
+        # gated on isinstance(arg, Ident) and skipped FieldAccess
+        # sources entirely.
+        msgs = errors_of(
+            self._SETUP
+            + "fun consume_net(consume n: Net) -> Result<Unit, IoError>\n"
+            + "    let _ = n.get(\"https://x\")\n"
+            + "    return Ok(())\n"
+            + "\n"
+            + "fun bug(mailer: SmtpMailer) -> Result<Unit, IoError>\n"
+            + "    let _ = consume_net(mailer.net)\n"
+            + "    let _ = mailer.net.get(\"https://y\")\n"
+            + "    return Ok(())\n"
+        )
+        self.assertTrue(
+            any(
+                "'mailer.net'" in m and "was consumed earlier" in m
+                for m in msgs
+            ),
+            msgs,
+        )
+
+    def test_use_after_consume_through_field_access_chained(self):
+        # Deeper FieldAccess chain: outer.inner.net. _path_of walks
+        # the whole chain so the canonical path matches at both
+        # consume and use sites.
+        msgs = errors_of(
+            "capability Mailer\n"
+            "    fun send(self, to: String) -> Result<Unit, IoError>\n"
+            "\n"
+            "capability Driver\n"
+            "    fun drive(self) -> Result<Unit, IoError>\n"
+            "\n"
+            "type Inner { net: Net }\n"
+            "type Outer { inner: Inner }\n"
+            "\n"
+            "impl Mailer for Inner\n"
+            "    fun send(self, to: String) -> Result<Unit, IoError>\n"
+            "        return Ok(())\n"
+            "\n"
+            "impl Driver for Outer\n"
+            "    fun drive(self) -> Result<Unit, IoError>\n"
+            "        return Ok(())\n"
+            "\n"
+            "fun consume_net(consume n: Net) -> Result<Unit, IoError>\n"
+            "    let _ = n.get(\"https://x\")\n"
+            "    return Ok(())\n"
+            "\n"
+            "fun bug(outer: Outer) -> Result<Unit, IoError>\n"
+            "    let _ = consume_net(outer.inner.net)\n"
+            "    let _ = outer.inner.net.get(\"https://y\")\n"
+            "    return Ok(())\n"
+        )
+        self.assertTrue(
+            any(
+                "'outer.inner.net'" in m and "was consumed earlier" in m
+                for m in msgs
+            ),
+            msgs,
+        )
+
+    def test_consume_through_field_access_single_use_allowed(self):
+        # Sanity: consuming a FieldAccess path exactly once is the
+        # legitimate flow; the new check must not fire here.
+        r = check(
+            self._SETUP
+            + "fun consume_net(consume n: Net) -> Result<Unit, IoError>\n"
+            + "    let _ = n.get(\"https://x\")\n"
+            + "    return Ok(())\n"
+            + "\n"
+            + "fun ok(mailer: SmtpMailer) -> Result<Unit, IoError>\n"
+            + "    return consume_net(mailer.net)\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
 
 class TestCapLeakViaGenericInstantiation(unittest.TestCase):
     """Hole C from the 2026-05-25 audit: the structural check

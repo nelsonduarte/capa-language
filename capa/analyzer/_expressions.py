@@ -559,6 +559,18 @@ class _ExpressionsMixin:
         from . import SymbolKind
 
         rty = self._check_expr(e.receiver)
+        # Use-after-consume on a FieldAccess path: ``consume_one(box.cap)``
+        # then ``box.cap.use()``. Audit 2026-05-25 H1 (hole D).
+        # ``_mark_consumed_args`` canonicalises both Ident and
+        # FieldAccess sources into dotted paths, so the same key
+        # we recorded at the consume site is compared here.
+        path = self._path_of(e)
+        if path is not None and path in self._consumed:
+            self._err(
+                f"capability {path!r} was consumed earlier and cannot "
+                f"be used again",
+                e.pos,
+            )
         if isinstance(rty, TyName):
             sym = self.global_scope.lookup(rty.name)
             if sym is not None and sym.kind == SymbolKind.TYPE_STRUCT:
