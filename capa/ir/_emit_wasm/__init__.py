@@ -70,6 +70,7 @@ from ._option import _OptionEmissionMixin
 from ._traits import _TraitEmissionMixin
 from ._tuples import _TupleEmissionMixin
 from ._caps import _CapDispatchMixin, _CANONICAL_INDIRECT_RETURN  # noqa: F401
+from ._encoding import _EncodingMixin
 from ._locals import _LocalsCollectionMixin
 from ._discovery import _DiscoveryMixin
 
@@ -136,6 +137,7 @@ class WasmEmitter(
     _OptionEmissionMixin,
     _TraitEmissionMixin,
     _TupleEmissionMixin,
+    _EncodingMixin,
     _LocalsCollectionMixin,
     _DiscoveryMixin,
 ):
@@ -1005,20 +1007,7 @@ class WasmEmitter(
         for arg, (offset, size, _ty) in zip(instr.args, payload_layouts):
             self._write(f"local.get ${instr.dst}")
             if size == 8 and arg.ty == "String":
-                # Pack (ptr, len) into i64.
-                self._push_string_value_as_ptr_len(arg)
-                # Stack: [..., dst, ptr, len]
-                self._write("i64.extend_i32_u")  # len -> i64
-                self._write("i64.const 32")
-                self._write("i64.shl")
-                # Stack: [..., dst, ptr, (len << 32)]
-                self._write(f"local.tee $_alloc_tmp_i64")
-                # Drop and re-fetch with ptr; simpler approach:
-                # save the high part, then OR with ptr.
-                self._write("drop")
-                self._write("i64.extend_i32_u")  # ptr -> i64
-                self._write("local.get $_alloc_tmp_i64")
-                self._write("i64.or")
+                self._emit_pack_string_value_to_i64(arg)
                 self._write(f"i64.store offset={offset}")
                 continue
             if size == 8 and arg.ty == "Bool":
@@ -1026,24 +1015,14 @@ class WasmEmitter(
                 self._write("i64.extend_i32_u")
                 self._write(f"i64.store offset={offset}")
                 continue
-            arg_head = arg.ty.split("<", 1)[0]
             is_pointer_shape = (
-                arg_head in self._struct_layouts
-                or arg_head in self._sum_layouts
-                or arg.ty.startswith(("List", "Map", "Set"))
+                self._is_pointer_shape_ty(arg.ty)
                 # Variant constructors produce a sum-record pointer
                 # (i32); the Value's ty carries the variant name
                 # (e.g. "HelpRequested") rather than the sum name
                 # (e.g. "ArgError"), so resolve via _variant_to_sum.
                 or arg.ty in self._variant_to_sum
                 or arg.kind == "variant_ctor"
-                # Tuples are heap-allocated records too; their
-                # pointer needs the same i32 -> i64 extension as a
-                # struct/sum/collection pointer when stored in a
-                # variant slot. ``Ok((JNull, pos))`` is the path
-                # that surfaced this.
-                or (arg.ty.startswith("(") and arg.ty.endswith(")")
-                    and arg.ty != "()")
             )
             if size == 8 and is_pointer_shape:
                 # Pointer payload: extend i32 to i64.

@@ -117,16 +117,7 @@ class _TupleEmissionMixin:
         the store. Mirrors the variant-payload encoding so down-
         stream consumers (Index reads) can decode uniformly."""
         if ty == "String":
-            # Pack (ptr, len) into i64.
-            self._push_string_value_as_ptr_len(v)
-            self._write("i64.extend_i32_u")
-            self._write("i64.const 32")
-            self._write("i64.shl")
-            self._write("local.tee $_alloc_tmp_i64")
-            self._write("drop")
-            self._write("i64.extend_i32_u")
-            self._write("local.get $_alloc_tmp_i64")
-            self._write("i64.or")
+            self._emit_pack_string_value_to_i64(v)
             self._write(f"i64.store offset={offset}")
             return
         if ty == "Float":
@@ -138,11 +129,7 @@ class _TupleEmissionMixin:
             self._write("i64.extend_i32_u")
             self._write(f"i64.store offset={offset}")
             return
-        head = ty.split("<", 1)[0]
-        if (head in self._struct_layouts
-                or head in self._sum_layouts
-                or ty.startswith(("List", "Map", "Set"))
-                or ty in self._variant_to_sum):
+        if self._is_pointer_shape_ty(ty) or ty in self._variant_to_sum:
             # Pointer-shaped value: extend i32 to i64.
             self._push_value(v)
             self._write("i64.extend_i32_u")

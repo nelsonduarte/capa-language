@@ -277,22 +277,11 @@ class _MatchEmissionMixin:
         if bind_ty == "String":
             self._write(f"local.get ${scrut_local_name}")
             self._write(f"i64.load offset={offset}")
-            self._write("local.tee $_alloc_tmp_i64")
-            self._write("i32.wrap_i64")
-            self._write(f"local.set ${sub_pat.name}_ptr")
-            self._write("local.get $_alloc_tmp_i64")
-            self._write("i64.const 32")
-            self._write("i64.shr_u")
-            self._write("i32.wrap_i64")
-            self._write(f"local.set ${sub_pat.name}_len")
+            self._emit_unpack_i64_to_string(
+                f"{sub_pat.name}_ptr", f"{sub_pat.name}_len",
+            )
             return
-        if size == 8 and (
-            bind_ty.split("<", 1)[0] in self._struct_layouts
-            or bind_ty.split("<", 1)[0] in self._sum_layouts
-            or bind_ty.startswith(("List", "Map", "Set"))
-            or (bind_ty.startswith("(") and bind_ty.endswith(")")
-                and bind_ty != "()")
-        ):
+        if size == 8 and self._is_pointer_shape_ty(bind_ty):
             # Pointer-shaped payload: tuples join structs/sums/
             # collections here because their record lives on the
             # heap, with the pointer i64-extended into the variant
@@ -625,21 +614,10 @@ class _MatchEmissionMixin:
                         # work transparently.
                         self._write(f"local.get ${scrut_local}")
                         self._write(f"i64.load offset={offset}")
-                        self._write(f"local.tee $_alloc_tmp_i64")
-                        self._write("i32.wrap_i64")
-                        self._write(f"local.set ${sub_pat.name}_ptr")
-                        self._write("local.get $_alloc_tmp_i64")
-                        self._write("i64.const 32")
-                        self._write("i64.shr_u")
-                        self._write("i32.wrap_i64")
-                        self._write(f"local.set ${sub_pat.name}_len")
-                    elif size == 8 and (
-                        bind_ty.split("<", 1)[0] in self._struct_layouts
-                        or bind_ty.split("<", 1)[0] in self._sum_layouts
-                        or bind_ty.startswith(("List", "Map", "Set"))
-                        or (bind_ty.startswith("(") and bind_ty.endswith(")")
-                            and bind_ty != "()")
-                    ):
+                        self._emit_unpack_i64_to_string(
+                            f"{sub_pat.name}_ptr", f"{sub_pat.name}_len",
+                        )
+                    elif size == 8 and self._is_pointer_shape_ty(bind_ty):
                         # Pointer-shaped payload (struct / sum /
                         # collection / tuple) stored in the uniform
                         # 8-byte slot via i64.extend; unpack with

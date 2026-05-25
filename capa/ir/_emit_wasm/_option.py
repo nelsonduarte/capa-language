@@ -119,15 +119,7 @@ class _OptionEmissionMixin:
             # Some(payload): unpack packed i64 into dst pair.
             self._write("local.get $_m_scrut")
             self._write("i64.load offset=8")
-            self._write("local.set $_alloc_tmp_i64")
-            self._write("local.get $_alloc_tmp_i64")
-            self._write("i32.wrap_i64")
-            self._write(f"local.set ${dst}_ptr")
-            self._write("local.get $_alloc_tmp_i64")
-            self._write("i64.const 32")
-            self._write("i64.shr_u")
-            self._write("i32.wrap_i64")
-            self._write(f"local.set ${dst}_len")
+            self._emit_unpack_i64_to_string(f"{dst}_ptr", f"{dst}_len")
             self._indent -= 1
             self._write("else")
             self._indent += 1
