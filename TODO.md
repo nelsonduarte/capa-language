@@ -474,6 +474,22 @@ Listed so the design space is explicit.
   function + outer scopes; inner captures only outer's param;
   inner captures only function-scope variable; nested closure
   used as a HOF callback). Suite: 1488 -> 1492.
+- [x] **`wasmtime` as optional dep + `--prefer-wasm` opt-in**
+  (closed 2026-05-25). `pyproject.toml` now exposes a `[wasm]`
+  extra (`pip install -e .[wasm]`) that brings in
+  `wasmtime>=20`, so the host-bridge path no longer requires a
+  separate manual install. `wasm-tools` still ships as a Rust
+  binary and stays on PATH separately (Python cannot vendor a
+  Rust toolchain). New CLI flag `--prefer-wasm` (also honoured
+  via `CAPA_PREFER_WASM=1`) makes `capa --run` try the Wasm
+  pipeline first and fall back silently to the Python pipeline
+  when CIR lowering / Wasm emission / wasmtime trap. The
+  fallback is intentionally silent so the default execution
+  path stays predictable for users who opt in best-effort. The
+  toolchain probe (`_wasm_tooling_available`) lazily checks
+  both `shutil.which("wasm-tools")` and `import wasmtime`, so
+  `capa --run` without the flag still pays nothing for the
+  feature. Suite: 1492 tests, 0 regressions.
 - **Pure-Wasm JSON parser** (alternative to today's host
   bridge). ~500 lines of WAT; only matters for shipping
   truly host-independent Wasm modules. ⏱ 12-16h.

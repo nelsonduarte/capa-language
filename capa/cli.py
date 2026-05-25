@@ -60,6 +60,25 @@ def color_for(kind: TokenKind) -> str:
     return C.YELLOW
 
 
+def _wasm_tooling_available() -> bool:
+    """Return True iff the Wasm toolchain is fully usable.
+
+    Two pieces must be present: ``wasm-tools`` on ``PATH`` (the Rust
+    binary that wraps the core ``.wasm`` into a Component Model
+    artefact) and the ``wasmtime`` Python binding (loaded by
+    :class:`capa.runtime._wasm_host.WasmHost`). Probed lazily so
+    ``capa --run`` without ``--prefer-wasm`` pays nothing.
+    """
+    import shutil
+    if shutil.which("wasm-tools") is None:
+        return False
+    try:
+        import wasmtime  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
 def _capa_search_paths() -> list[Path]:
     """Return additional module-search roots.
 
@@ -403,6 +422,18 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--prefer-wasm",
+        action="store_true",
+        help=(
+            "with --run: try the Wasm backend first and fall back "
+            "to the Python pipeline only when CIR lowering or Wasm "
+            "emission rejects a construct. Honoured automatically "
+            "when CAPA_PREFER_WASM=1 is set in the environment. "
+            "Requires the [wasm] extra (wasmtime-py) and wasm-tools "
+            "on PATH."
+        ),
+    )
+    parser.add_argument(
         "--output", "-o",
         type=str,
         default=None,
@@ -635,6 +666,35 @@ def main() -> int:
             except Exception as e:
                 print(f"capa: --wit: {e}", file=sys.stderr)
                 return 1
+
+    # Auto-prefer the Wasm pipeline when --prefer-wasm or the
+    # CAPA_PREFER_WASM env var is set AND the user did not pass
+    # --wasm explicitly AND the Wasm toolchain is available
+    # (wasmtime importable + wasm-tools on PATH). Any failure
+    # (UnsupportedInIR, WasmEmissionError, missing tool, wasmtime
+    # trap) falls back silently to the Python pipeline below.
+    prefer_wasm = (
+        args.prefer_wasm
+        or os.environ.get("CAPA_PREFER_WASM") == "1"
+    )
+    if (
+        args.run and not args.wasm and prefer_wasm
+        and _wasm_tooling_available()
+    ):
+        if result is None:
+            result = analyze(module, source=source, filename=filename)
+        try:
+            from capa.ir import compile_wasm
+            from capa.runtime._wasm_host import WasmHost
+            blob = compile_wasm(module, types=result.types)
+            host = WasmHost(args=program_args)
+            host.run_main(blob)
+            return 0
+        except Exception:
+            # Fall through to the Python pipeline. The user opted
+            # into best-effort Wasm; silent fallback keeps the
+            # default execution path predictable.
+            pass
 
     if args.wasm and (args.transpile or args.run or args.output):
         # Wasm pipeline: AST -> CIR -> WAT -> binary -> (wasmtime

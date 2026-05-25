@@ -42,6 +42,13 @@ test = ["pytest>=7", "hypothesis>=6"]
 # `evaluation/`. The core compiler does not depend on these; they
 # are only needed to regenerate the paper figures.
 eval = ["matplotlib>=3.8"]
+# Install with: `pip install -e .[wasm]`. Adds the wasmtime
+# Python binding so ``capa --wasm --run`` (and the eventual
+# Wasm-preferred path via ``--prefer-wasm``) work without an
+# external pip install. The ``wasm-tools`` binary still needs to
+# be on PATH separately - it ships as a Rust executable and is
+# the only piece of the Wasm pipeline Python cannot vendor.
+wasm = ["wasmtime>=20"]
 
 [project.scripts]
 capa = "capa.cli:main"
