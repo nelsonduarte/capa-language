@@ -3583,6 +3583,10 @@ class TestWasmMatchEmission(unittest.TestCase):
         self.assertEqual(self._exec(src, "read_flag"), 1)
 
 
+@unittest.skipUnless(
+    _has_wasm_tools() and _has_wasmtime_py(),
+    "wasm-tools or wasmtime-py not installed",
+)
 class TestWasmMatchArmGuards(unittest.TestCase):
     """Coverage for the Wasm backend's match-arm guard emission.
 
