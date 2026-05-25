@@ -292,6 +292,88 @@ class TestGitUrlAllowList(_TempDirMixin, unittest.TestCase):
         self.assertIn("allow-listed transports", str(cm.exception))
 
 
+class TestDependencyNameAllowList(_TempDirMixin, unittest.TestCase):
+    """Audit 2026-05-25 C1: dependency keys are appended to
+    ``vendor_dir`` at install time. TOML's quoted-key syntax lets
+    an attacker put ``../foo`` or an absolute path in there;
+    without a manifest-level regex anchor the value reaches the
+    install layer where it becomes a write-anywhere primitive
+    (``_rmtree_force`` then ``git clone`` of attacker content).
+    Reject at parse time."""
+
+    def _capa_toml_with_dep_name(self, dep_name: str) -> Path:
+        p = self._tmp / "capa.toml"
+        _write(p, f'''
+            [package]
+            name = "demo"
+            version = "0.1.0"
+
+            [dependencies]
+            "{dep_name}" = {{ git = "https://example.invalid/x", tag = "v0.1" }}
+        ''')
+        return p
+
+    def test_simple_identifier_allowed(self):
+        m = read_manifest(self._capa_toml_with_dep_name("mylib"))
+        self.assertEqual(m.dependencies[0].name, "mylib")
+
+    def test_underscore_and_dash_allowed(self):
+        m = read_manifest(self._capa_toml_with_dep_name("my_lib-2"))
+        self.assertEqual(m.dependencies[0].name, "my_lib-2")
+
+    def test_parent_traversal_rejected(self):
+        # The textbook attack from the audit: ``vendor_dir / "../evil"``
+        # escapes the vendor tree entirely.
+        with self.assertRaises(ManifestError) as cm:
+            read_manifest(self._capa_toml_with_dep_name("../evil"))
+        self.assertIn("invalid dependency name", str(cm.exception))
+
+    def test_path_separator_rejected(self):
+        with self.assertRaises(ManifestError) as cm:
+            read_manifest(self._capa_toml_with_dep_name("sub/dir"))
+        self.assertIn("invalid dependency name", str(cm.exception))
+
+    def test_backslash_rejected(self):
+        with self.assertRaises(ManifestError) as cm:
+            read_manifest(self._capa_toml_with_dep_name("a\\\\b"))
+        self.assertIn("invalid dependency name", str(cm.exception))
+
+    def test_absolute_unix_path_rejected(self):
+        with self.assertRaises(ManifestError) as cm:
+            read_manifest(self._capa_toml_with_dep_name("/etc/passwd"))
+        self.assertIn("invalid dependency name", str(cm.exception))
+
+    def test_leading_dot_rejected(self):
+        with self.assertRaises(ManifestError) as cm:
+            read_manifest(self._capa_toml_with_dep_name(".hidden"))
+        self.assertIn("invalid dependency name", str(cm.exception))
+
+    def test_leading_dash_rejected(self):
+        # A leading dash could also be parsed as an option in any
+        # tool that later sees the name as positional argument.
+        with self.assertRaises(ManifestError) as cm:
+            read_manifest(self._capa_toml_with_dep_name("-evil"))
+        self.assertIn("invalid dependency name", str(cm.exception))
+
+    def test_empty_name_rejected(self):
+        with self.assertRaises(ManifestError) as cm:
+            read_manifest(self._capa_toml_with_dep_name(""))
+        self.assertIn("invalid dependency name", str(cm.exception))
+
+    def test_whitespace_rejected(self):
+        with self.assertRaises(ManifestError) as cm:
+            read_manifest(self._capa_toml_with_dep_name("a b"))
+        self.assertIn("invalid dependency name", str(cm.exception))
+
+    def test_overlong_name_rejected(self):
+        # The regex caps at 64 chars. Anything longer is rejected
+        # so a build-system pathological case (260-char Windows path
+        # limit) cannot be brewed by an upstream.
+        with self.assertRaises(ManifestError) as cm:
+            read_manifest(self._capa_toml_with_dep_name("a" * 200))
+        self.assertIn("invalid dependency name", str(cm.exception))
+
+
 class TestInstallLocal(_TempDirMixin, unittest.TestCase):
     """Path-source deps: no git required."""
 

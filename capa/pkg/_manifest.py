@@ -19,6 +19,7 @@ a silent classpath surprise at run time.
 
 from __future__ import annotations
 
+import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -49,6 +50,17 @@ _DEP_PATH_KEYS = frozenset({"path"})
 # is refused at manifest-load time so a malicious capa.toml never
 # reaches ``_run_git`` in the first place.
 _ALLOWED_GIT_SCHEMES = ("https://", "http://", "ssh://", "git://", "file://")
+
+# Dependency names are used verbatim as a directory name under
+# ``vendor/`` at install time. TOML's lexical syntax allows
+# arbitrary quoted keys (``[dependencies."../evil"]``), so without
+# a manifest-level allow-list a malicious upstream can pivot the
+# eventual ``vendor/<name>`` write outside the project tree.
+# Audit 2026-05-25 C1: locked down to a conservative identifier
+# shape that matches Capa module names. Any quoted-TOML escape
+# (path separator, leading dot, NUL, whitespace, ...) is refused
+# at parse time, before ``_install`` can touch the filesystem.
+_DEP_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]{0,63}$")
 
 
 class ManifestError(Exception):
@@ -152,6 +164,7 @@ def read_manifest(path: Path) -> Manifest:
         )
     deps: list[Dependency] = []
     for dep_name, spec in deps_raw.items():
+        _validate_dep_name(path, dep_name)
         if not isinstance(spec, dict):
             raise ManifestError(
                 f"{path}: dependency {dep_name!r} must be a table "
@@ -175,6 +188,32 @@ def read_manifest(path: Path) -> Manifest:
         dependencies=deps,
         manifest_dir=path.parent.resolve(),
     )
+
+
+def _validate_dep_name(path: Path, name: str) -> None:
+    """Refuse dependency names that would let a malicious upstream
+    escape ``vendor/`` at install time.
+
+    Audit 2026-05-25 C1: TOML accepts arbitrary quoted keys
+    (``[dependencies."../evil"]``), so without a regex anchor the
+    string ``dep.name`` flows straight into ``vendor_dir / name``
+    and is then ``_rmtree_force``-ed before being clobbered by the
+    fresh clone. Reject anything that is not an obvious Capa
+    identifier shape - path separators, parent traversal, leading
+    dots, NUL bytes, absolute paths, whitespace, and so on all
+    fail the regex and never reach the install layer.
+    """
+    if not isinstance(name, str):
+        raise ManifestError(
+            f"{path}: dependency key must be a string, got {type(name).__name__}"
+        )
+    if not _DEP_NAME_RE.match(name):
+        raise ManifestError(
+            f"{path}: invalid dependency name {name!r}; names must match "
+            f"{_DEP_NAME_RE.pattern} (letters, digits, ``_`` and ``-``; "
+            f"must start with a letter or underscore; max 64 chars). "
+            f"This blocks ``vendor/`` path-traversal at install time."
+        )
 
 
 def _validate_git_url(path: Path, name: str, url: str) -> None:
@@ -334,8 +373,10 @@ def read_lock(path: Path) -> list[LockedDependency]:
             raise ManifestError(
                 f"{path}: lock entry 'signing_key' must be a string"
             )
+        dep_name = _require_str(path, entry, "name", "lock entry")
+        _validate_dep_name(path, dep_name)
         out.append(LockedDependency(
-            name=_require_str(path, entry, "name", "lock entry"),
+            name=dep_name,
             git=_require_str(path, entry, "git", "lock entry"),
             pin=_require_str(path, entry, "pin", "lock entry"),
             pin_kind=_require_str(path, entry, "pin_kind", "lock entry"),
