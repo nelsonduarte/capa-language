@@ -1,15 +1,18 @@
 # λ_cap: a small-step calculus for Capa's capability discipline
 
-> **Status: sketch.** This document is the working draft of
-> the formal core. It states the syntax, typing rules, and
-> small-step semantics of a minimal lambda calculus *λ_cap*
-> that captures Capa's three layers of capability discipline,
-> and the two soundness theorems the discipline is intended
-> to prove. The proofs are sketched, not completed.
+> **Status: mechanised.** This document specifies the formal
+> core of Capa's capability discipline. It states the syntax,
+> typing rules, and small-step semantics of a minimal lambda
+> calculus *λ_cap* that captures the three layers of the
+> discipline, plus the soundness theorems the discipline
+> implies. The proofs are mechanised in Agda at
+> [`proofs/CapaSoundness.agda`](../proofs/CapaSoundness.agda)
+> with no `postulate` remaining; CI typechecks them on every
+> change to [`proofs/`](../proofs/).
 >
-> Audience: reviewers who want to know there is a path from
-> the design-document level to a referee-defensible
-> formalisation.
+> Audience: reviewers who want a reference-quality account of
+> the discipline plus a mechanised soundness argument they can
+> re-check independently.
 
 ---
 
@@ -52,7 +55,7 @@ v ::=  λx:T. e                     lambda value
 ```
 
 Each capability class `c` ranges over a fixed finite set
-`𝒞 = { Stdio, Fs, Net, Env, Clock, Random, Unsafe }`. A
+`𝒞 = { Stdio, Fs, Net, Env, Clock, Random, Proc, Db, Unsafe }`. A
 restriction `ρ ⊆ Σ_c` is a finite subset of the *scope set*
 for class `c` (host names for `Net`, path prefixes for `Fs`,
 key names for `Env`, etc.). `ρ = ⊤` denotes the unattenuated
@@ -323,38 +326,38 @@ deliberately leaves four things for the full writeup:
 
 ---
 
-## 8. What this sketch buys
+## 8. What this calculus buys
 
 Two things:
 
 - A **referee-tractable target**: any reviewer who asks
   "where's the formal core?" can be pointed at this document.
   It states the calculus, the rules, the theorems, and the
-  proof obligations. The proofs themselves are mechanical and
-  fit a workshop paper of moderate length.
+  proof obligations.
 
-- A **mechanically-checkable next step**. The reduction rules
-  here are small enough to mechanise in Agda or Coq. A
-  serious proof would mechanise Theorem 1 and use it as the
-  load-bearing artefact in the
-  [positioning document](positioning.md)'s claim that "the
-  type system is sound, not just convenient". A Stage 0
-  skeleton in Agda (syntax + theorem statements as
-  `postulate`) lives at [`proofs/`](../proofs/); the
-  staged plan to fill in the proofs is documented in
-  `proofs/README.md`.
+- A **mechanically-checked soundness argument**. The
+  reduction rules are mechanised in
+  [`proofs/CapaSoundness.agda`](../proofs/CapaSoundness.agda)
+  (with the syntax layer in
+  [`proofs/CapaSyntax.agda`](../proofs/CapaSyntax.agda)).
+  Progress, Preservation, Capability Soundness, and a
+  multi-step Manifest Completeness theorem are stated as
+  real Agda definitions with no `postulate` declarations
+  remaining. CI typechecks the proofs on every change to
+  [`proofs/`](../proofs/), so the positioning document's
+  claim that "the type system is sound, not just convenient"
+  is independently re-checkable rather than aspirational.
 
-The path from here to "PLAS or EuroS&P submission" is:
-(a) fill in the `postulate` declarations at `proofs/CapaSoundness.agda`
-to mechanise the calculus and Theorem 1 in Agda;
-(b) re-state Theorem 2 as a property over the manifest emitter
-in `capa/manifest/__init__.py`;
-(c) write the translation lemma from full Capa to λ_cap;
-(d) prose around the case studies in
-`examples/cve_*.capa` showing the rules in action.
+What still belongs in a future writeup:
+- the translation lemma from full Capa (structs, sum types,
+  attenuation chains, the `?` operator, generic instantiation)
+  down to λ_cap, with the simulation theorem;
+- prose around the case studies in
+  `examples/cve_*.capa` showing the rules block specific
+  classes of CVE.
 
-Estimated work: two to three months of focused effort, which
-is the workshop-paper budget.
+These are the workshop-paper deliverables; the underlying
+mechanisation they would cite is already in tree.
 
 ---
 
@@ -372,5 +375,5 @@ is the workshop-paper budget.
   module rather than function granularity; the comparison
   belongs in the related-work section of the paper.
 
-(Full references list to be assembled when this document
-graduates from sketch to publishable writeup.)
+(Full references list to be assembled in the workshop-paper
+submission.)

@@ -14,14 +14,15 @@ authors = [
 ]
 keywords = ["language", "compiler", "capabilities", "type-checker", "transpiler"]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Software Development :: Compilers",
     "Topic :: Software Development :: Interpreters",
 ]
@@ -49,5 +50,10 @@ capa = "capa.cli:main"
 # Homepage = "..."
 # Repository = "..."
 
-[tool.setuptools]
-packages = ["capa", "capa.runtime"]
+[tool.setuptools.packages.find]
+# Auto-discover every ``capa.X`` subpackage so the wheel ships
+# the whole compiler. The previous explicit ``["capa",
+# "capa.runtime"]`` list shipped only two of the 13 subpackages
+# on disk, producing wheels that ImportError'd at first use for
+# anything beyond the public API in ``capa.__init__``.
+include = ["capa", "capa.*"]

@@ -17,9 +17,16 @@ and `_`, but must start with a letter or `_`.
 
 ```capa
 // Line comment (runs to the end of the line)
+/* Block comment - may be /* nested */ unlike C/Java */
+/// Doc line comment - attaches to the next declaration
+/** Doc block comment - same attachment, Javadoc-style */
 ```
 
-There are no block comments.
+Block comments nest (in the Rust/Swift tradition rather than the
+C/Java one). Doc comments (`///` and `/**`) are preserved by the
+lexer and consumed by the documentation generator
+(`capa --doc`); they attach to the immediately following
+declaration.
 
 ### 1.3. Indentation
 
@@ -48,9 +55,9 @@ let r = xs
 ### 1.5. Keywords
 
 ```
-fun let var if then elif else match while for in
+fun pub let var if then elif else match while for in
 break continue return import const type trait impl
-true false and or not consume
+capability true false and or not consume
 ```
 
 ### 1.6. Literals
