@@ -474,7 +474,14 @@ class _LocalsCollectionMixin:
         if has_list_hof:
             # List HOFs (map/filter/fold) need: a stash for the
             # closure value (i64), an iteration index, plus the
-            # filter-path grow scratch.
+            # filter-path grow scratch. Non-Int element types also
+            # need: a Float reinterpret slot ($_alloc_tmp_f64), and
+            # the (ptr, len) String-unpack pair ($_str_a_ptr /
+            # $_str_a_len) for List<String> map / filter / fold.
+            # We over-declare here unconditionally rather than
+            # second-pass detect the elem types -- the cost is two
+            # i32 locals + one f64 per function that uses any HOF,
+            # which is negligible.
             out.setdefault("_m_scrut", "i32")
             out.setdefault("_m_tag", "i32")
             out.setdefault("_alloc_tmp", "i32")
@@ -484,6 +491,9 @@ class _LocalsCollectionMixin:
             out["_lam_grow_cap"] = "i32"
             out["_lam_new_data"] = "i32"
             out.setdefault("_alloc_tmp_i64", "i64")
+            out.setdefault("_alloc_tmp_f64", "f64")
+            out.setdefault("_str_a_ptr", "i32")
+            out.setdefault("_str_a_len", "i32")
         if has_string_method:
             # Scratch locals for the String method handlers. All i32:
             # one pair of (ptr, len) for the receiver, one for the

@@ -410,10 +410,28 @@ Listed so the design space is explicit.
 
 ### Wasm-specific gaps that are not P0
 
-- **List<T>.map / filter / fold for non-Int element types**.
-  Today Phase 6E supports List<Int> HOFs only. Other element
-  types need their packed-i64 / pointer-shape paths threaded
-  through the HOF lowering. ⏱ ~8h.
+- [~] **List<T>.map / filter / fold for non-Int element types**
+  (partial 2026-05-25). `List<Int>`, `List<String>`, and
+  `List<Float>` HOFs are now supported by the Wasm backend:
+  the closure sig is built per-element-type via
+  `_closure_sig_key_for` (String -> two i32s ptr/len,
+  Float -> f64, Int -> i64); load uses
+  `i64.load` + `f64.reinterpret_i64` for Float and
+  `_emit_unpack_i64_to_string` for String; map's store path
+  uses `f64.store` / `i64.store` per the output type; filter
+  preserves the packed slot bytes byte-for-byte via
+  `_emit_inline_packed_list_push`; fold widens to handle
+  String accumulators through `_set_string_dst`. Also fixes
+  a pre-existing bug where `List<Float>` literal /
+  indexing / for-iter used `i64.store/load` instead of
+  `f64.store/load`, which made the literal `[1.0, 2.0]` fail
+  to compile. Gaps: `List<Bool>` HOFs (the 4-byte Bool stride
+  conflicts with the loop's 8-byte assumption) and
+  pointer-shape element types (would need alloc-aware store).
+  Both raise a clear `WasmEmissionError` pointing at the
+  Python backend as workaround. Coverage: 8 new tests in
+  `TestWasmListHofNonInt` + 2 documented skips. Suite:
+  1472 -> 1482.
 - **Lambdas-inside-lambdas (nested closures)**. Today raises;
   needs env-of-env encoding. Rare in practice. ⏱ unknown.
 - **Pure-Wasm JSON parser** (alternative to today's host

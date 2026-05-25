@@ -179,7 +179,13 @@ class _ListEmissionMixin:
             self._write("i64.store")
         else:
             self._push_value(elem)
-            self._write(_store_op_for_size(elem_size))
+            if elem_ty == "Float":
+                # f64.store to write the IEEE-754 bit pattern; a
+                # plain i64.store would type-mismatch since the
+                # operand stack carries f64 after _push_value.
+                self._write("f64.store")
+            else:
+                self._write(_store_op_for_size(elem_size))
         # Increment len.
         self._write(f"local.get ${list_local}")
         self._write(f"local.get ${len_local}")
@@ -490,8 +496,12 @@ class _ListEmissionMixin:
         self._write(f"i32.store offset={_LIST_DATA_OFFSET}")
         # Write each literal element. ``_alloc_tmp`` holds the base
         # pointer of the data array. String elements pack (ptr, len)
-        # into the 8-byte slot as ``ptr | (len << 32)``; other types
-        # use the size-dispatched store directly.
+        # into the 8-byte slot as ``ptr | (len << 32)``; Float
+        # elements use ``f64.store`` so the slot bytes are the
+        # IEEE-754 bit pattern (a subsequent ``f64.load`` reads them
+        # back as an f64; an ``i64.load`` reads the same bits as i64
+        # for HOF emission's uniform i64 slot path). Other types use
+        # the size-dispatched store directly.
         store_op = _store_op_for_size(elem_size)
         for i, elem in enumerate(instr.elements):
             if elem_ty == "String":
@@ -519,7 +529,10 @@ class _ListEmissionMixin:
                 continue
             self._write("local.get $_alloc_tmp")
             self._push_value(elem)
-            self._write(f"{store_op} offset={i * elem_size}")
+            if elem_ty == "Float":
+                self._write(f"f64.store offset={i * elem_size}")
+            else:
+                self._write(f"{store_op} offset={i * elem_size}")
         # Drop the leftover from local.tee (it lives in $_alloc_tmp
         # but the stack value persisted). i32.store consumed the tag
         # offset's stack value already in the data_ptr store above,
@@ -543,7 +556,13 @@ class _ListEmissionMixin:
             )
         elem_ty = _element_type_of_list(recv_ty)
         elem_size = self._size_of(elem_ty)
-        load_op = _load_op_for_size(elem_size)
+        # Float elements use ``f64.load`` so the resulting stack
+        # type matches the dst's declared f64 local; the size-
+        # dispatched i64.load would push i64 and mismatch.
+        if elem_ty == "Float":
+            load_op = "f64.load"
+        else:
+            load_op = _load_op_for_size(elem_size)
         # Compute address: data_ptr + index * elem_size.
         self._push_value(instr.receiver)
         self._write(f"i32.load offset={_LIST_DATA_OFFSET}")
@@ -586,7 +605,12 @@ class _ListEmissionMixin:
             )
         elem_ty = _element_type_of_list(iter_ty)
         elem_size = self._size_of(elem_ty)
-        load_op = _load_op_for_size(elem_size)
+        # Float elements need ``f64.load`` (the bind local is f64);
+        # other types take the size-dispatched i32/i64 load.
+        if elem_ty == "Float":
+            load_op = "f64.load"
+        else:
+            load_op = _load_op_for_size(elem_size)
         # For-loop needs its own list-pointer and index scratch
         # locals distinct from the match-helper locals: a match
         # inside the for-body would otherwise clobber the

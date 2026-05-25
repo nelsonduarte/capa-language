@@ -547,76 +547,288 @@ class _ClosureEmissionMixin:
             )
         return f"({' '.join(wasm_params)}) -> {wasm_result or '()'}"
 
-    # ----- HOFs on List<Int> ------------------------------------
+    # ----- HOFs on List<T> --------------------------------------
+    #
+    # Each HOF (map / filter / fold) is parameterised by the
+    # element type of the receiver and, for map / fold, by the
+    # output / accumulator type. Element-type dispatch routes
+    # through three small helpers:
+    #
+    # - ``_wasm_arg_tys_for(ty)`` returns the Wasm wire types a
+    #   value of Capa type ``ty`` occupies as a closure argument
+    #   (String -> two i32s; Int / pointer / Bool -> one i32/i64;
+    #   Float -> one f64).
+    # - ``_emit_load_elem_for_call(elem_ty)`` consumes an i32
+    #   slot-address on the operand stack and leaves the
+    #   ready-to-call argument(s) for that element type.
+    # - ``_emit_store_closure_result(out_ty, addr_local)`` consumes
+    #   the closure's return values (in stack order) and stores
+    #   them into a freshly written element slot at the address
+    #   held in ``$<addr_local>``.
+    #
+    # Pointer-shape outputs (struct / sum / List / Map / Set) and
+    # ``List<Bool>`` are unsupported today: pointer-shape because
+    # the new-list allocation would need an alloc-and-store that
+    # closures rarely return; ``List<Bool>`` because the data
+    # array stride is 4 bytes which conflicts with the 8-byte
+    # stride hardcoded into the filter / fold loops. Both raise a
+    # specific ``WasmEmissionError`` so users see a clear message
+    # instead of a generic wasm-verifier failure.
 
     def _emit_list_hof(self, instr: MethodCall, elem_ty: str) -> None:
-        """Emit a Phase 6E HOF (map / filter / fold) for a
-        ``List<Int>`` receiver. The closure argument is unpacked
-        per element and invoked via ``call_indirect``.
-
-        Phase 6E ships only List<Int>; other element types raise."""
-        if elem_ty != "Int":
-            raise WasmEmissionError(
-                f"Phase 6E: List<{elem_ty}>.{instr.method} not supported "
-                f"(only List<Int> HOFs)"
-            )
+        """Emit a HOF (map / filter / fold) for a ``List<T>``
+        receiver. Dispatches to the per-method emitter; each one
+        consults ``elem_ty`` (and, for map / fold, the output /
+        accumulator type) to pick the right load / pack /
+        call_indirect shape."""
         if instr.method == "map":
-            self._emit_list_map(instr)
+            self._emit_list_map(instr, elem_ty)
             return
         if instr.method == "filter":
-            self._emit_list_filter(instr)
+            self._emit_list_filter(instr, elem_ty)
             return
         if instr.method == "fold":
-            self._emit_list_fold(instr)
+            self._emit_list_fold(instr, elem_ty)
             return
         raise WasmEmissionError(
             f"unhandled List HOF {instr.method!r}"
         )
 
-    def _emit_invoke_closure(
-        self, closure_value: Value, elem_pushes: list[str],
-        sig_key: str,
-    ) -> None:
-        """Emit the (env, args, fn_idx) push + call_indirect for a
-        closure value, given pre-emitted instruction strings for
-        each non-env arg in ``elem_pushes``. The closure value
-        ``closure_value`` is an i64; the sig is looked up by
-        ``sig_key``.
+    # ----- closure-sig helpers ----------------------------------
 
-        Lower-level helper used by the HOF dispatchers."""
-        sig_idx = self._closure_sig_keys.get(sig_key)
-        if sig_idx is None:
-            raise WasmEmissionError(
-                f"no closure sig {sig_key!r} registered"
-            )
-        # env_ptr (low 32 bits)
-        self._push_value(closure_value)
-        self._write("i32.wrap_i64")
-        # args
-        for s in elem_pushes:
-            self._write(s)
-        # fn_idx (high 32 bits)
-        self._push_value(closure_value)
+    def _wasm_arg_tys_for(self, capa_ty: str) -> list[str]:
+        """Return the Wasm wire types ``capa_ty`` occupies as a
+        closure-call argument. String lowers to two i32s (ptr,
+        len); Float to f64; Int to i64; Bool / pointer-shape to
+        i32. Unknown / Unit raise."""
+        if capa_ty == "String":
+            return ["i32", "i32"]
+        if capa_ty == "Float":
+            return ["f64"]
+        if capa_ty == "Int":
+            return ["i64"]
+        if capa_ty == "Bool":
+            return ["i32"]
+        if self._is_pointer_shape_ty(capa_ty):
+            return ["i32"]
+        if capa_ty.startswith("Fun"):
+            return ["i64"]
+        raise WasmEmissionError(
+            f"List HOF: cannot encode Capa type {capa_ty!r} as a "
+            f"closure argument (no Wasm wire mapping)"
+        )
+
+    def _wasm_result_tys_for(self, capa_ty: str) -> list[str]:
+        """Same as ``_wasm_arg_tys_for`` but for the result side.
+        Identical mapping today; kept as a separate name so a
+        future ABI divergence stays explicit at call sites."""
+        return self._wasm_arg_tys_for(capa_ty)
+
+    def _closure_sig_key_for(
+        self, arg_capa_tys: list[str], ret_capa_ty: str,
+    ) -> str:
+        """Build the sig key for a closure with the given
+        non-env Capa-level argument types and result type. The
+        env_ptr (i32) is always prepended."""
+        wasm_params: list[str] = ["i32"]
+        for at in arg_capa_tys:
+            wasm_params.extend(self._wasm_arg_tys_for(at))
+        result_wasm = self._wasm_result_tys_for(ret_capa_ty)
+        return (
+            f"({' '.join(wasm_params)}) -> "
+            f"{' '.join(result_wasm) if result_wasm else '()'}"
+        )
+
+    # ----- per-element load / store helpers ---------------------
+
+    def _emit_load_elem_for_call(self, elem_ty: str) -> None:
+        """Given a slot address on the operand stack, load the
+        element and leave the operand-stack shape that
+        ``_wasm_arg_tys_for(elem_ty)`` describes (so the value(s)
+        can be passed straight into a ``call_indirect`` after
+        env_ptr / fn_idx are sandwiched around them).
+
+        - String: i64.load -> unpack into ($_str_a_ptr,
+          $_str_a_len), then push both as i32s. The pair stays
+          available to the caller through the two locals.
+        - Float: i64.load + f64.reinterpret_i64. The slot bytes
+          ARE the IEEE-754 bit pattern (we made sure of that in
+          ``_emit_make_list`` / ``_emit_list_push``), and the
+          bit-reinterpret has zero cost at the wasm level.
+        - Int: i64.load.
+        - Bool: i32.load (the slot's low 4 bytes hold the i32).
+        - pointer-shape (struct/sum/List/Map/Set/tuple): i32.load.
+        """
+        if elem_ty == "String":
+            self._write("i64.load")
+            self._emit_unpack_i64_to_string("_str_a_ptr", "_str_a_len")
+            self._write("local.get $_str_a_ptr")
+            self._write("local.get $_str_a_len")
+            return
+        if elem_ty == "Float":
+            self._write("i64.load")
+            self._write("f64.reinterpret_i64")
+            return
+        if elem_ty == "Int":
+            self._write("i64.load")
+            return
+        if elem_ty == "Bool":
+            self._write("i32.load")
+            return
+        if self._is_pointer_shape_ty(elem_ty):
+            self._write("i32.load")
+            return
+        raise WasmEmissionError(
+            f"List HOF: cannot load List<{elem_ty}> element "
+            f"(no Wasm load sequence)"
+        )
+
+    def _emit_store_closure_result_into_slot(
+        self, out_ty: str, addr_local: str,
+    ) -> None:
+        """The closure's return value(s) are on top of the operand
+        stack (in stack order per ``_wasm_result_tys_for``). Pop
+        them into temporary locals if necessary, then store at the
+        slot whose i32 address is in ``$<addr_local>``.
+
+        - Int: i64.store -- bytes are the i64 directly.
+        - Float: stash into ``$_alloc_tmp_f64`` (declared by the
+          json branch already, or now by the HOF branch), then
+          ``f64.store`` to write the IEEE-754 bytes.
+        - Bool: i64.extend_i32_u + i64.store -- the high 4 bytes
+          end up zero, which Bool-element loads (`i32.load` of the
+          low 4) ignore.
+        - String: closure returns two i32s (ptr, len). Pop into
+          ``$_str_a_ptr`` / ``$_str_a_len`` then pack as
+          ``ptr | (len << 32)`` and store as i64.
+        - pointer-shape: i64.extend_i32_u + i64.store.
+        """
+        if out_ty == "Int":
+            # Stack: [..., addr, val_i64]; flip so i64.store sees
+            # (addr, val). The driver pushes addr BEFORE the call.
+            self._write("i64.store")
+            return
+        if out_ty == "Float":
+            # Stack: [..., addr, val_f64]; f64.store consumes both.
+            self._write("f64.store")
+            return
+        if out_ty == "Bool":
+            # Stack: [..., addr, val_i32]. Widen to i64 so the
+            # slot is fully written (an i32.store would leave the
+            # high 4 bytes as whatever the alloc returned).
+            self._write("i64.extend_i32_u")
+            self._write("i64.store")
+            return
+        if out_ty == "String":
+            # Stack: [..., addr, ptr_i32, len_i32]. Pack into i64.
+            # We don't have addr available before the call to push
+            # last, so the driver layout is:
+            #   [addr] -> call -> [addr, ptr, len]
+            # Pop (ptr, len) into the str_a locals, then push
+            # ptr | (len << 32) and store.
+            self._write("local.set $_str_a_len")
+            self._write("local.set $_str_a_ptr")
+            # The address is still on the stack as the next-to-top
+            # before the call left, but the call's two results
+            # landed above it. After two local.sets the stack top
+            # is the original addr. Push packed i64:
+            self._write("local.get $_str_a_len")
+            self._write("i64.extend_i32_u")
+            self._write("i64.const 32")
+            self._write("i64.shl")
+            self._write("local.tee $_alloc_tmp_i64")
+            self._write("drop")
+            self._write("local.get $_str_a_ptr")
+            self._write("i64.extend_i32_u")
+            self._write("local.get $_alloc_tmp_i64")
+            self._write("i64.or")
+            self._write("i64.store")
+            return
+        if self._is_pointer_shape_ty(out_ty):
+            # Stack: [..., addr, val_i32]; widen to i64.
+            self._write("i64.extend_i32_u")
+            self._write("i64.store")
+            return
+        raise WasmEmissionError(
+            f"List HOF: cannot store closure result of type "
+            f"{out_ty!r} into a list slot"
+        )
+
+    def _emit_push_value_for_arg(self, v: Value, capa_ty: str) -> None:
+        """Push a Value onto the operand stack with the wire
+        shape ``_wasm_arg_tys_for(capa_ty)`` describes. Strings
+        push as (ptr, len) two i32s; everything else routes through
+        the standard ``_push_value``."""
+        if capa_ty == "String":
+            self._push_string_value_as_ptr_len(v)
+            return
+        self._push_value(v)
+
+    def _emit_invoke_closure_inline(
+        self, sig_idx: int, closure_local: str,
+    ) -> None:
+        """Emit the fn_idx push + call_indirect tail of a closure
+        call. The env_ptr and user args must already be on the
+        operand stack in the right order; this helper appends
+        only the (fn_idx, call_indirect) suffix."""
+        self._write(f"local.get ${closure_local}")
         self._write("i64.const 32")
         self._write("i64.shr_u")
         self._write("i32.wrap_i64")
         self._write(f"call_indirect (type $sig_{sig_idx})")
 
-    def _emit_list_map(self, instr: MethodCall) -> None:
-        """``xs.map(f) -> List<Int>``: allocate a new list of same
-        length, iterate xs and store f(xs[i]) at new[i]."""
+    def _hof_elem_slot_size(self, elem_ty: str) -> int:
+        """Slot size on the data array. Bool elements stride 4
+        bytes; everything else 8."""
+        return 4 if elem_ty == "Bool" else 8
+
+    # ----- map --------------------------------------------------
+
+    def _emit_list_map(self, instr: MethodCall, elem_ty: str) -> None:
+        """``xs.map(f) -> List<U>``: allocate a new list of same
+        length, iterate xs and store f(xs[i]) at new[i]. ``U``
+        comes from the closure's declared return type, taken off
+        the dst local's recorded type."""
         recv = instr.receiver
         f_arg = instr.args[0]
         dst = instr.dst
         if dst is None:
             return
-        # Sig: env_ptr (i32) + i64 -> i64
-        sig_key = "(i32 i64) -> i64"
+        # Output element type: read from the dst's List<U>.
+        dst_ty = self._dst_capa_ty(dst) or "List<Int>"
+        if not (dst_ty.startswith("List<") and dst_ty.endswith(">")):
+            raise WasmEmissionError(
+                f"List.map: dst {dst!r} has non-List type {dst_ty!r}"
+            )
+        out_elem_ty = dst_ty[5:-1].strip()
+        if out_elem_ty == "Bool" or elem_ty == "Bool":
+            # Bool elements stride 4 bytes -- the loop uses 8-byte
+            # stride; would need a parallel path. Skip for now.
+            raise WasmEmissionError(
+                f"List<{elem_ty}>.map -> List<{out_elem_ty}>: "
+                f"List<Bool> HOFs not supported "
+                f"(Bool stride is 4 bytes, HOF loop assumes 8). "
+                f"Workaround: map to a same-size type or use the "
+                f"Python backend (``capa --run``)."
+            )
+        if (self._is_pointer_shape_ty(out_elem_ty)
+                or self._is_pointer_shape_ty(elem_ty)):
+            raise WasmEmissionError(
+                f"List<{elem_ty}>.map -> List<{out_elem_ty}>: "
+                f"pointer-shape element types in HOF arguments / "
+                f"results are not supported by the Wasm backend. "
+                f"Workaround: use the Python backend (``capa --run``)."
+            )
+        sig_key = self._closure_sig_key_for([elem_ty], out_elem_ty)
         if sig_key not in self._closure_sig_keys:
             raise WasmEmissionError(
-                f"List.map: no lambda registered with sig {sig_key!r}"
+                f"List.map: no lambda registered with sig {sig_key!r} "
+                f"(elem={elem_ty!r}, out={out_elem_ty!r})"
             )
-        # Save xs and the closure in scratch locals.
+        sig_idx = self._closure_sig_keys[sig_key]
+        in_stride = self._hof_elem_slot_size(elem_ty)
+        out_stride = self._hof_elem_slot_size(out_elem_ty)
+        # Stash xs and the closure.
         self._push_value(recv)
         self._write("local.set $_m_scrut")
         self._push_value(f_arg)
@@ -629,13 +841,13 @@ class _ClosureEmissionMixin:
         self._write(f"i32.const {_LIST_HEADER_SIZE}")
         self._write("call $alloc")
         self._write(f"local.set ${dst}")
-        # Allocate data array = len * 8 bytes.
+        # Allocate data array = len * out_stride bytes.
         self._write("local.get $_m_tag")
-        self._write("i32.const 8")
+        self._write(f"i32.const {out_stride}")
         self._write("i32.mul")
         self._write("call $alloc")
         self._write("local.set $_alloc_tmp")
-        # Store len, cap, data_ptr into header.
+        # Header: len, cap, data_ptr.
         self._write(f"local.get ${dst}")
         self._write("local.get $_m_tag")
         self._write(f"i32.store offset={_LIST_LEN_OFFSET}")
@@ -659,35 +871,47 @@ class _ClosureEmissionMixin:
         self._write("local.get $_m_tag")
         self._write("i32.ge_s")
         self._write(f"br_if {exit_}")
-        # Load xs[i] (i64 element).
+        # Compute new-list slot address into $_lam_new_data so it
+        # survives the closure call (the operand stack would lose
+        # it otherwise: String returns are two-value).
+        self._write("local.get $_alloc_tmp")
+        self._write("local.get $_lam_idx")
+        self._write(f"i32.const {out_stride}")
+        self._write("i32.mul")
+        self._write("i32.add")
+        self._write("local.set $_lam_new_data")
+        # Compute xs[i] slot address and load element into closure-
+        # call arg shape.
         self._write("local.get $_m_scrut")
         self._write(f"i32.load offset={_LIST_DATA_OFFSET}")
         self._write("local.get $_lam_idx")
-        self._write("i32.const 8")
+        self._write(f"i32.const {in_stride}")
         self._write("i32.mul")
         self._write("i32.add")
-        self._write("i64.load")
-        self._write("local.set $_alloc_tmp_i64")
-        # new[i] = f(env, xs[i]); compute address first.
-        self._write("local.get $_alloc_tmp")  # data_ptr
-        self._write("local.get $_lam_idx")
-        self._write("i32.const 8")
-        self._write("i32.mul")
-        self._write("i32.add")
-        # Push closure call args.
-        sig_idx = self._closure_sig_keys[sig_key]
-        # env_ptr
+        # Push env_ptr (i32) before the slot-address consumes the
+        # i32.load? No -- the load consumes the address. We need
+        # the load first, then push env / args around it.
+        # Concretely:
+        #   compute elem_addr -> stack: [elem_addr]
+        #   _emit_load_elem_for_call -> stack: [<arg wire tys>]
+        # but we want the call layout [env, <args>, fn_idx]. So
+        # load into temporary locals first.
+        self._emit_load_elem_for_call(elem_ty)
+        # The elem is now decoded into either a single value
+        # (Int/Float/Bool/ptr -> i64/f64/i32) on the stack OR
+        # two i32s (String). Stash before we set up the call frame.
+        self._hof_stash_elem(elem_ty, prefix="_str_a")
+        # Address of dst slot lives in $_lam_new_data.
+        self._write("local.get $_lam_new_data")
+        # env_ptr.
         self._write("local.get $_lam_fn_tmp")
         self._write("i32.wrap_i64")
-        # the element (i64)
-        self._write("local.get $_alloc_tmp_i64")
-        # fn_idx
-        self._write("local.get $_lam_fn_tmp")
-        self._write("i64.const 32")
-        self._write("i64.shr_u")
-        self._write("i32.wrap_i64")
-        self._write(f"call_indirect (type $sig_{sig_idx})")
-        self._write("i64.store")
+        # Push the stashed element back.
+        self._hof_push_stashed_elem(elem_ty, prefix="_str_a")
+        # fn_idx + call_indirect.
+        self._emit_invoke_closure_inline(sig_idx, "_lam_fn_tmp")
+        # Store the result into the dst slot.
+        self._emit_store_closure_result_into_slot(out_elem_ty, "_lam_new_data")
         # i++
         self._write("local.get $_lam_idx")
         self._write("i32.const 1")
@@ -699,26 +923,83 @@ class _ClosureEmissionMixin:
         self._indent -= 1
         self._write("end")
 
-    def _emit_list_filter(self, instr: MethodCall) -> None:
-        """``xs.filter(p) -> List<Int>``: iterate xs, push elements
-        where the predicate returns nonzero into a fresh list."""
+    def _hof_stash_elem(self, elem_ty: str, prefix: str) -> None:
+        """Pop the just-loaded element off the stack into hidden
+        scratch local(s) so the closure-call header (env_ptr) can
+        be pushed below it without disturbing the slot address
+        already there. The corresponding ``_hof_push_stashed_elem``
+        re-pushes them in the same order."""
+        if elem_ty == "String":
+            # Already saved by _emit_unpack_i64_to_string into
+            # $_str_a_ptr / $_str_a_len; the two i32s on top of the
+            # stack are duplicates. Drop them.
+            self._write("drop")
+            self._write("drop")
+            return
+        if elem_ty == "Float":
+            self._write("local.set $_alloc_tmp_f64")
+            return
+        if elem_ty == "Int":
+            self._write("local.set $_alloc_tmp_i64")
+            return
+        if elem_ty == "Bool":
+            self._write("local.set $_alloc_tmp")
+            return
+        # pointer-shape
+        self._write("local.set $_alloc_tmp")
+
+    def _hof_push_stashed_elem(self, elem_ty: str, prefix: str) -> None:
+        if elem_ty == "String":
+            self._write("local.get $_str_a_ptr")
+            self._write("local.get $_str_a_len")
+            return
+        if elem_ty == "Float":
+            self._write("local.get $_alloc_tmp_f64")
+            return
+        if elem_ty == "Int":
+            self._write("local.get $_alloc_tmp_i64")
+            return
+        if elem_ty == "Bool":
+            self._write("local.get $_alloc_tmp")
+            return
+        self._write("local.get $_alloc_tmp")
+
+    # ----- filter -----------------------------------------------
+
+    def _emit_list_filter(
+        self, instr: MethodCall, elem_ty: str,
+    ) -> None:
+        """``xs.filter(p) -> List<T>``: iterate xs, push elements
+        for which the predicate returns nonzero into a fresh list
+        with the same element type."""
         recv = instr.receiver
         p_arg = instr.args[0]
         dst = instr.dst
         if dst is None:
             return
-        # Sig: env_ptr (i32) + i64 -> i32 (Bool result)
-        sig_key = "(i32 i64) -> i32"
+        if elem_ty == "Bool":
+            raise WasmEmissionError(
+                f"List<Bool>.filter: Bool element stride is 4 bytes; "
+                f"the HOF loop assumes 8-byte slots. Use the Python "
+                f"backend (``capa --run``)."
+            )
+        if self._is_pointer_shape_ty(elem_ty):
+            raise WasmEmissionError(
+                f"List<{elem_ty}>.filter: pointer-shape elements not "
+                f"supported. Use the Python backend (``capa --run``)."
+            )
+        sig_key = self._closure_sig_key_for([elem_ty], "Bool")
         if sig_key not in self._closure_sig_keys:
             raise WasmEmissionError(
                 f"List.filter: no lambda registered with sig {sig_key!r}"
             )
+        sig_idx = self._closure_sig_keys[sig_key]
+        elem_stride = self._hof_elem_slot_size(elem_ty)
         self._push_value(recv)
         self._write("local.set $_m_scrut")
         self._push_value(p_arg)
         self._write("local.set $_lam_fn_tmp")
-        # New empty list with initial cap 8 -- _emit_list_push will
-        # grow if needed.
+        # Allocate the new list (empty, cap 8).
         self._write(f"i32.const {_LIST_HEADER_SIZE}")
         self._write("call $alloc")
         self._write(f"local.set ${dst}")
@@ -728,7 +1009,7 @@ class _ClosureEmissionMixin:
         self._write(f"local.get ${dst}")
         self._write("i32.const 8")
         self._write(f"i32.store offset={_LIST_CAP_OFFSET}")
-        self._write("i32.const 64")  # 8 * 8 bytes
+        self._write(f"i32.const {8 * elem_stride}")
         self._write("call $alloc")
         self._write("local.set $_alloc_tmp")
         self._write(f"local.get ${dst}")
@@ -751,34 +1032,38 @@ class _ClosureEmissionMixin:
         self._write("local.get $_m_tag")
         self._write("i32.ge_s")
         self._write(f"br_if {exit_}")
-        # Load element.
+        # Save the packed source slot bits before unpacking, so
+        # the post-filter copy can re-emit the same bytes to the
+        # destination list (we don't want to re-pack a String from
+        # ptr/len which would lose the packed-i64 identity).
         self._write("local.get $_m_scrut")
         self._write(f"i32.load offset={_LIST_DATA_OFFSET}")
         self._write("local.get $_lam_idx")
-        self._write("i32.const 8")
+        self._write(f"i32.const {elem_stride}")
         self._write("i32.mul")
         self._write("i32.add")
+        # Stash the slot address so we can re-read after the
+        # predicate call without recomputing.
+        self._write("local.tee $_lam_new_data")
+        # Load the raw slot bytes into $_alloc_tmp_i64; this works
+        # for every 8-byte element type (Int, Float, String,
+        # pointer-shape via the high zeros).
         self._write("i64.load")
         self._write("local.set $_alloc_tmp_i64")
-        # Call predicate.
-        sig_idx = self._closure_sig_keys[sig_key]
+        # Build the predicate call. Push env_ptr, then the
+        # decoded args, then fn_idx + call_indirect.
         self._write("local.get $_lam_fn_tmp")
         self._write("i32.wrap_i64")
-        self._write("local.get $_alloc_tmp_i64")
-        self._write("local.get $_lam_fn_tmp")
-        self._write("i64.const 32")
-        self._write("i64.shr_u")
-        self._write("i32.wrap_i64")
-        self._write(f"call_indirect (type $sig_{sig_idx})")
-        # If true, append to new list. Use the existing push helper
-        # inline so grow + store happens correctly.
+        self._hof_push_decoded_from_packed_i64(elem_ty)
+        self._emit_invoke_closure_inline(sig_idx, "_lam_fn_tmp")
         self._write("if")
         self._indent += 1
-        # Inline list.push: stash dst into _m_scrut briefly? The
-        # push helper reads from receiver via _m_scrut, which we
-        # have already used for xs. To avoid clobbering, we
-        # inline a minimal push here that knows about i64 elems.
-        self._emit_inline_int_list_push(dst, "_alloc_tmp_i64")
+        # Append: re-emit the packed slot bytes onto the new list.
+        # ``_emit_inline_packed_list_push`` reads from
+        # $_alloc_tmp_i64 and stores via i64.store. Bool fell out
+        # already because its stride differs; everything else has
+        # an 8-byte stride and identical i64 ABI.
+        self._emit_inline_packed_list_push(dst)
         self._indent -= 1
         self._write("end")
         # i++
@@ -792,30 +1077,55 @@ class _ClosureEmissionMixin:
         self._indent -= 1
         self._write("end")
 
-    def _emit_inline_int_list_push(
-        self, list_local: str, value_local: str,
-    ) -> None:
-        """Append an i64 value (in ``$<value_local>``) to the list
-        whose pointer is in ``$<list_local>``. Grows the data
-        array via memory.copy if at capacity. Distinct from
-        ``_emit_list_push`` which expects the receiver as a Value
-        and uses different scratch locals; this version reads from
-        named locals so the filter loop can reuse it without
-        clobbering its own scrutinee scratch."""
-        # Load len, cap.
+    def _hof_push_decoded_from_packed_i64(self, elem_ty: str) -> None:
+        """Decode an element value already saved in
+        ``$_alloc_tmp_i64`` and push it onto the operand stack in
+        closure-arg shape. The packed i64 is the literal slot
+        contents; for Int that's the i64 directly, for Float the
+        bit pattern, for String the (ptr, len) pair, for
+        Bool / pointer-shape the value zero-extended."""
+        if elem_ty == "String":
+            self._write("local.get $_alloc_tmp_i64")
+            self._emit_unpack_i64_to_string("_str_a_ptr", "_str_a_len")
+            self._write("local.get $_str_a_ptr")
+            self._write("local.get $_str_a_len")
+            return
+        if elem_ty == "Float":
+            self._write("local.get $_alloc_tmp_i64")
+            self._write("f64.reinterpret_i64")
+            return
+        if elem_ty == "Int":
+            self._write("local.get $_alloc_tmp_i64")
+            return
+        if elem_ty == "Bool":
+            # Slot is 4 bytes for Bool, but this path never runs
+            # because filter bails early on Bool. Still handle for
+            # safety.
+            self._write("local.get $_alloc_tmp_i64")
+            self._write("i32.wrap_i64")
+            return
+        # pointer-shape: i64 packs the i32 pointer in low bits.
+        self._write("local.get $_alloc_tmp_i64")
+        self._write("i32.wrap_i64")
+
+    def _emit_inline_packed_list_push(self, list_local: str) -> None:
+        """Append the i64 value held in ``$_alloc_tmp_i64`` to the
+        list whose pointer is in ``$<list_local>``. Grows the data
+        array via ``memory.copy`` when at capacity. The 8-byte
+        slot stride matches every element type filter actually
+        handles today (Int, Float, String packed-i64); Bool is
+        rejected upstream."""
         self._write(f"local.get ${list_local}")
         self._write(f"i32.load offset={_LIST_LEN_OFFSET}")
         self._write("local.set $_lam_grow_len")
         self._write(f"local.get ${list_local}")
         self._write(f"i32.load offset={_LIST_CAP_OFFSET}")
         self._write("local.set $_lam_grow_cap")
-        # if len >= cap, grow.
         self._write("local.get $_lam_grow_len")
         self._write("local.get $_lam_grow_cap")
         self._write("i32.ge_s")
         self._write("if")
         self._indent += 1
-        # new_cap = max(cap * 2, 8)
         self._write("local.get $_lam_grow_cap")
         self._write("i32.const 2")
         self._write("i32.mul")
@@ -827,13 +1137,11 @@ class _ClosureEmissionMixin:
         self._write("local.set $_lam_grow_cap")
         self._indent -= 1
         self._write("end")
-        # new_data = alloc(new_cap * 8)
         self._write("local.get $_lam_grow_cap")
         self._write("i32.const 8")
         self._write("i32.mul")
         self._write("call $alloc")
         self._write("local.set $_lam_new_data")
-        # memcpy(new_data, old_data, len * 8)
         self._write("local.get $_lam_new_data")
         self._write(f"local.get ${list_local}")
         self._write(f"i32.load offset={_LIST_DATA_OFFSET}")
@@ -841,7 +1149,6 @@ class _ClosureEmissionMixin:
         self._write("i32.const 8")
         self._write("i32.mul")
         self._write("memory.copy")
-        # store new data_ptr + cap
         self._write(f"local.get ${list_local}")
         self._write("local.get $_lam_new_data")
         self._write(f"i32.store offset={_LIST_DATA_OFFSET}")
@@ -850,40 +1157,66 @@ class _ClosureEmissionMixin:
         self._write(f"i32.store offset={_LIST_CAP_OFFSET}")
         self._indent -= 1
         self._write("end")
-        # store at data[len]
         self._write(f"local.get ${list_local}")
         self._write(f"i32.load offset={_LIST_DATA_OFFSET}")
         self._write("local.get $_lam_grow_len")
         self._write("i32.const 8")
         self._write("i32.mul")
         self._write("i32.add")
-        self._write(f"local.get ${value_local}")
+        self._write("local.get $_alloc_tmp_i64")
         self._write("i64.store")
-        # len++
         self._write(f"local.get ${list_local}")
         self._write("local.get $_lam_grow_len")
         self._write("i32.const 1")
         self._write("i32.add")
         self._write(f"i32.store offset={_LIST_LEN_OFFSET}")
 
-    def _emit_list_fold(self, instr: MethodCall) -> None:
-        """``xs.fold(init, f) -> T`` (T = Int): start with init,
-        for each element apply f(acc, x), bind dst to acc."""
+    # ----- fold -------------------------------------------------
+
+    def _emit_list_fold(
+        self, instr: MethodCall, elem_ty: str,
+    ) -> None:
+        """``xs.fold(init, f) -> U``: start with init (type U),
+        apply f(acc, x) per element, bind dst to the final acc.
+        U comes from the dst local's declared type; the closure's
+        sig is ``(env, U_args, T_args) -> U_results``."""
         recv = instr.receiver
         init_arg = instr.args[0]
         f_arg = instr.args[1]
         dst = instr.dst
         if dst is None:
             return
-        # Sig: env_ptr (i32) + i64 + i64 -> i64
-        sig_key = "(i32 i64 i64) -> i64"
+        acc_ty = self._dst_capa_ty(dst) or "Int"
+        if acc_ty == "Bool" or elem_ty == "Bool":
+            raise WasmEmissionError(
+                f"List<{elem_ty}>.fold -> {acc_ty}: List<Bool> / "
+                f"Bool accumulators are not supported by the Wasm "
+                f"backend (slot stride mismatch). Workaround: use "
+                f"the Python backend (``capa --run``)."
+            )
+        if (self._is_pointer_shape_ty(acc_ty)
+                or self._is_pointer_shape_ty(elem_ty)):
+            raise WasmEmissionError(
+                f"List<{elem_ty}>.fold -> {acc_ty}: pointer-shape "
+                f"types not supported in HOF args/result. Workaround: "
+                f"use the Python backend (``capa --run``)."
+            )
+        sig_key = self._closure_sig_key_for([acc_ty, elem_ty], acc_ty)
         if sig_key not in self._closure_sig_keys:
             raise WasmEmissionError(
-                f"List.fold: no lambda registered with sig {sig_key!r}"
+                f"List.fold: no lambda registered with sig {sig_key!r} "
+                f"(acc={acc_ty!r}, elem={elem_ty!r})"
             )
-        # acc = init
-        self._push_value(init_arg)
-        self._write(f"local.set ${dst}")
+        sig_idx = self._closure_sig_keys[sig_key]
+        elem_stride = self._hof_elem_slot_size(elem_ty)
+        # acc = init. For String this binds two locals (_ptr/_len);
+        # other types bind one.
+        if acc_ty == "String":
+            self._push_string_value_as_ptr_len(init_arg)
+            self._set_string_dst(dst)
+        else:
+            self._push_value(init_arg)
+            self._write(f"local.set ${dst}")
         # Save xs and closure.
         self._push_value(recv)
         self._write("local.set $_m_scrut")
@@ -894,7 +1227,6 @@ class _ClosureEmissionMixin:
         self._write("local.set $_m_tag")
         self._write("i32.const 0")
         self._write("local.set $_lam_idx")
-        # Loop.
         self._block_counter += 1
         loop = f"$Hfold{self._block_counter}_loop"
         exit_ = f"$Hfold{self._block_counter}_exit"
@@ -906,27 +1238,33 @@ class _ClosureEmissionMixin:
         self._write("local.get $_m_tag")
         self._write("i32.ge_s")
         self._write(f"br_if {exit_}")
-        # Load element.
+        # Load element into $_alloc_tmp_i64 (the packed slot bits)
+        # before the call frame -- we'll decode in arg position.
         self._write("local.get $_m_scrut")
         self._write(f"i32.load offset={_LIST_DATA_OFFSET}")
         self._write("local.get $_lam_idx")
-        self._write("i32.const 8")
+        self._write(f"i32.const {elem_stride}")
         self._write("i32.mul")
         self._write("i32.add")
         self._write("i64.load")
         self._write("local.set $_alloc_tmp_i64")
-        # acc = f(env, acc, x)
-        sig_idx = self._closure_sig_keys[sig_key]
+        # acc = f(env, acc, x). Push env, acc (Capa Value
+        # representing the dst local with its declared type),
+        # then x, then fn_idx + call.
         self._write("local.get $_lam_fn_tmp")
         self._write("i32.wrap_i64")
-        self._write(f"local.get ${dst}")  # acc
-        self._write("local.get $_alloc_tmp_i64")  # x
-        self._write("local.get $_lam_fn_tmp")
-        self._write("i64.const 32")
-        self._write("i64.shr_u")
-        self._write("i32.wrap_i64")
-        self._write(f"call_indirect (type $sig_{sig_idx})")
-        self._write(f"local.set ${dst}")
+        # Push acc.
+        acc_val = Value(kind="local", name=dst, ty=acc_ty)
+        self._emit_push_value_for_arg(acc_val, acc_ty)
+        # Push x decoded.
+        self._hof_push_decoded_from_packed_i64(elem_ty)
+        # Call.
+        self._emit_invoke_closure_inline(sig_idx, "_lam_fn_tmp")
+        # Bind result back into the acc local.
+        if acc_ty == "String":
+            self._set_string_dst(dst)
+        else:
+            self._write(f"local.set ${dst}")
         # i++
         self._write("local.get $_lam_idx")
         self._write("i32.const 1")

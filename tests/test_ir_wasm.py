@@ -1875,6 +1875,170 @@ class TestWasmClosures(unittest.TestCase):
     _has_wasm_tools() and _has_wasmtime_py(),
     "wasm-tools and/or wasmtime-py not installed",
 )
+class TestWasmListHofNonInt(unittest.TestCase):
+    """Phase 6E extension (2026-05-25): List<T>.map / filter / fold
+    for non-Int element types T. Closure signatures now reflect the
+    elem / accumulator type's Wasm wire shape (String -> two i32s,
+    Float -> f64, Bool / pointer -> i32, Int -> i64); the data-array
+    load / store sequences pick op-codes matching the slot bytes.
+
+    Each test compiles + runs a tiny program that prints the result
+    through stdio and asserts the captured output."""
+
+    def _run_capturing_stdout(self, src: str) -> str:
+        import io
+        import sys
+        from capa.runtime._wasm_host import WasmHost
+        _, types, ast_mod = _parse_lower(src)
+        blob = compile_wasm(ast_mod, types=types)
+        host = WasmHost()
+        out = io.StringIO()
+        saved_out = sys.stdout
+        sys.stdout = out
+        try:
+            host.run_main(blob)
+        finally:
+            sys.stdout = saved_out
+        return out.getvalue()
+
+    def test_list_string_map_to_int(self):
+        # Confirms List<String>.map -> List<Int>: the closure sig
+        # becomes ``(i32 i32 i32) -> i64`` (env, ptr, len) -> i64
+        # and the dst data array uses i64.store.
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    let xs = [\"a\", \"bb\", \"ccc\"]\n"
+            "    let lens = xs.map(fun (s: String) -> Int => s.length())\n"
+            "    for n in lens\n"
+            "        stdio.println(\"${n}\")\n"
+        )
+        self.assertEqual(
+            self._run_capturing_stdout(src), "1\n2\n3\n"
+        )
+
+    def test_list_string_map_to_string(self):
+        # Closure sig ``(i32 i32 i32) -> (i32 i32)``: multi-value
+        # return packed back into the (ptr | (len << 32)) slot.
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    let xs = [\"a\", \"b\"]\n"
+            "    let up = xs.map(fun (s: String) -> String => s.to_upper())\n"
+            "    for s in up\n"
+            "        stdio.println(s)\n"
+        )
+        self.assertEqual(
+            self._run_capturing_stdout(src), "A\nB\n"
+        )
+
+    def test_list_string_filter(self):
+        # Closure sig ``(i32 i32 i32) -> i32``: predicate over a
+        # String, slot-copy preserves the packed-i64 bytes so the
+        # destination list's String elements decode back correctly.
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    let xs = [\"\", \"a\", \"\", \"b\"]\n"
+            "    let nonempty = xs.filter(fun (s: String) -> Bool => s.length() > 0)\n"
+            "    for s in nonempty\n"
+            "        stdio.println(s)\n"
+        )
+        self.assertEqual(
+            self._run_capturing_stdout(src), "a\nb\n"
+        )
+
+    def test_list_string_fold_concat(self):
+        # Closure sig ``(i32 i32 i32 i32 i32) -> (i32 i32)``:
+        # (env, acc_ptr, acc_len, x_ptr, x_len) -> (out_ptr, out_len).
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    let xs = [\"a\", \"b\", \"c\"]\n"
+            "    let joined = xs.fold(\"\", fun (acc: String, x: String) -> String => acc + x)\n"
+            "    stdio.println(joined)\n"
+        )
+        self.assertEqual(
+            self._run_capturing_stdout(src), "abc\n"
+        )
+
+    def test_list_float_map(self):
+        # Closure sig ``(i32 f64) -> f64``; loaded slot bits go
+        # through ``f64.reinterpret_i64`` and stored result uses
+        # ``f64.store``.
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    let xs: List<Float> = [1.5, 2.5]\n"
+            "    let doubled = xs.map(fun (x: Float) -> Float => x * 2.0)\n"
+            "    for v in doubled\n"
+            "        stdio.println(\"${v}\")\n"
+        )
+        self.assertEqual(
+            self._run_capturing_stdout(src), "3.0\n5.0\n"
+        )
+
+    def test_list_float_filter(self):
+        # Closure sig ``(i32 f64) -> i32``: predicate over a Float
+        # value (slot bytes reinterpreted).
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    let xs: List<Float> = [-1.0, 1.0, -2.0, 2.0]\n"
+            "    let pos = xs.filter(fun (x: Float) -> Bool => x > 0.0)\n"
+            "    for v in pos\n"
+            "        stdio.println(\"${v}\")\n"
+        )
+        self.assertEqual(
+            self._run_capturing_stdout(src), "1.0\n2.0\n"
+        )
+
+    def test_list_float_fold_sum(self):
+        # Closure sig ``(i32 f64 f64) -> f64``.
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    let xs: List<Float> = [1.0, 2.0, 3.5]\n"
+            "    let total = xs.fold(0.0, fun (a: Float, x: Float) -> Float => a + x)\n"
+            "    stdio.println(\"${total}\")\n"
+        )
+        self.assertEqual(
+            self._run_capturing_stdout(src), "6.5\n"
+        )
+
+    def test_list_int_map_still_works(self):
+        # Regression: the existing Int path keeps working through
+        # the refactored dispatcher.
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    let xs = [1, 2, 3]\n"
+            "    let ys = xs.map(fun (x: Int) -> Int => x * x)\n"
+            "    for v in ys\n"
+            "        stdio.println(\"${v}\")\n"
+        )
+        self.assertEqual(
+            self._run_capturing_stdout(src), "1\n4\n9\n"
+        )
+
+    @unittest.skip(
+        "List<Bool> HOFs not supported: Bool stride is 4 bytes; "
+        "the HOF loop assumes 8-byte slots. Workaround: use the "
+        "Python backend. Documented in TODO.md."
+    )
+    def test_list_bool_filter(self):
+        # Placeholder: future work would need a parallel 4-byte
+        # stride path in the HOF loop. Not worth the duplication
+        # today for a rare case.
+        pass
+
+    @unittest.skip(
+        "List<List<T>> / List<Struct> HOFs not supported: the "
+        "alloc-and-store for pointer-shape elements is structurally "
+        "different. Workaround: use the Python backend."
+    )
+    def test_list_of_lists_map(self):
+        # Placeholder: future work would need an alloc-aware
+        # store path. Skipped today.
+        pass
+
+
+@unittest.skipUnless(
+    _has_wasm_tools() and _has_wasmtime_py(),
+    "wasm-tools and/or wasmtime-py not installed",
+)
 class TestWasmJson(unittest.TestCase):
     """Phase 6G end-to-end JsonValue support: variant constructors,
     method dispatch (as_X / is_null), and the parse_json / to_json
