@@ -265,6 +265,33 @@ the current Wasm critical path.
   the pre-substitution form already names the capability.
   Coverage: 5 tests in `TestCapLeakViaGenericInstantiation`.
 
+- [x] **Audit 2026-05-25 follow-up sweep** (closed 2026-05-25).
+  Six findings from `security-audit.md` closed in sequence:
+  - **C1** `b21dd73`: dependency-name path-traversal at install
+    time. `[dependencies."../evil"]` now refused at manifest
+    parse.
+  - **H1** `022cb13`: capability hole D. `_mark_consumed_args`
+    now canonicalises FieldAccess via `_path_of`;
+    `consume(box.cap)` + `box.cap.use()` rejected.
+  - **H2** `47bbdc4`: git tag / rev pin validation. Pins
+    starting with `-`, containing whitespace or path separators
+    refused before reaching git argv.
+  - **H3** `0d57139`: lockfile pre-check via `git ls-remote`.
+    Moved-tag mismatch raises before `vendor/<name>` is touched;
+    the working tree no longer holds attacker content during
+    the error.
+  - **H4** `3752972`: 100-level depth cap on the bundled JSON
+    parser. `[[[ ... ]]]` adversarial input fails cleanly with
+    `Err("max nesting depth ...")` instead of trapping the
+    Wasm stack.
+  - **H5** `2570eec`: SPDX `licenseConcluded` /
+    `licenseDeclared` / `copyrightText` and CycloneDX
+    `supplier` / `licenses[]` now emitted on every package /
+    component; strict validators accept the documents.
+
+  C2 (Wasm `Fs.restrict_to` no-op) deferred: needs runtime
+  sandboxing design and is the next focused work item.
+
 ---
 
 ## P2 — Adoption-moving, not core
