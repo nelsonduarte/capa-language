@@ -647,6 +647,61 @@ class TestInstallGit(_TempDirMixin, unittest.TestCase):
         body = (project / "vendor" / "mylib" / "log.capa").read_text("utf-8")
         self.assertIn("tampered", body)
 
+    def test_moved_tag_refusal_does_not_overwrite_vendor(self):
+        # Audit 2026-05-25 H3: pre-2026-05-25 the install loop
+        # cloned over ``vendor/<name>`` and THEN compared SHAs, so
+        # a moved upstream tag was applied to disk before the
+        # LockMismatchError was raised. Any IDE / language server /
+        # ``capa build`` reading the working tree in the window
+        # between the overwrite and the error message saw the new
+        # sources. The fix pre-checks the remote tag via
+        # ``git ls-remote`` and refuses before touching ``vendor/``.
+        from capa.pkg import LockMismatchError
+        upstream = self._tmp / "upstream"
+        url = self._make_local_git_repo(upstream)
+        project = self._tmp / "proj"
+        _write(project / "capa.toml", f'''
+            [package]
+            name = "proj"
+            version = "0.1.0"
+
+            [dependencies]
+            mylib = {{ git = "{url}", tag = "v0.1" }}
+        ''')
+        install(project)  # vendor/mylib now holds the v0.1 content
+        vendor_file = project / "vendor" / "mylib" / "log.capa"
+        original_body = vendor_file.read_text("utf-8")
+        # Move v0.1 to a new commit upstream.
+        env = {
+            **os.environ,
+            "GIT_AUTHOR_NAME": "capa-test",
+            "GIT_AUTHOR_EMAIL": "test@example.invalid",
+            "GIT_COMMITTER_NAME": "capa-test",
+            "GIT_COMMITTER_EMAIL": "test@example.invalid",
+        }
+        vendor_file_relative_text = (
+            'pub fun greet() -> String\n    return "tampered"\n'
+        )
+        (upstream / "log.capa").write_text(
+            vendor_file_relative_text, encoding="utf-8",
+        )
+        subprocess.run(
+            ["git", "-C", str(upstream), "commit", "-am", "tamper"],
+            check=True, capture_output=True, text=True, env=env,
+        )
+        subprocess.run(
+            ["git", "-C", str(upstream), "tag", "-f", "v0.1"],
+            check=True, capture_output=True, text=True, env=env,
+        )
+        with self.assertRaises(LockMismatchError):
+            install(project)
+        # The vendored content must be the ORIGINAL v0.1 sources,
+        # not the tampered text. Pre-fix this assertion failed
+        # because the clone landed before the SHA check.
+        body_after_refusal = vendor_file.read_text("utf-8")
+        self.assertEqual(body_after_refusal, original_body)
+        self.assertNotIn("tampered", body_after_refusal)
+
 
 def _gpg_available() -> bool:
     try:

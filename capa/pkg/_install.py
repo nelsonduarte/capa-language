@@ -12,13 +12,15 @@ later reads the path directly off the manifest. Path deps do
 not appear in the lockfile.
 
 When a ``capa.lock`` already exists, ``install`` *enforces* the
-recorded SHA: a freshly cloned tag whose HEAD does not match
-the locked commit raises ``LockMismatchError``. The check
-catches a moved tag (upstream force-push, account compromise,
-or an honest re-tag) without the user having silently consumed
-the new content. To accept new commits intentionally, delete
-``capa.lock`` before re-running ``install`` (or use
-``allow_lock_update=True`` from a CLI flag).
+recorded SHA. For tag pins the check runs BEFORE the clone (via
+``git ls-remote``), so a moved upstream tag does not overwrite
+``vendor/<name>`` with attacker content while the user is staring
+at the error message. For rev pins the same check runs after the
+clone (a rev pin is itself a SHA, so the only way to mismatch is
+a deliberate edit, not a tag move). A mismatch raises
+``LockMismatchError`` in both cases. To accept new commits
+intentionally, delete ``capa.lock`` before re-running ``install``
+(or use ``allow_lock_update=True`` from a CLI flag).
 
 When a dep declares ``verify_key`` (a 40-char GPG fingerprint),
 ``install`` runs two independent verification layers:
@@ -117,17 +119,70 @@ def install(
     existing_lock = read_lock(lock_path) if lock_path.exists() else []
     existing_by_name = {d.name: d for d in existing_lock}
 
+    # First pass: when the lockfile already pins a commit for a
+    # tag dep, verify the remote tag still points at that commit
+    # BEFORE we touch ``vendor/<name>``. The pre-2026-05-25 shape
+    # cloned first and compared SHAs second, so a moved tag
+    # overwrote the vendored sources with attacker content even
+    # when the lock check would then refuse the install. Any
+    # editor / IDE / language server reading the working tree in
+    # the window between the overwrite and the error message saw
+    # the new sources. Audit 2026-05-25 H3.
+    #
+    # ``git ls-remote`` does not write anywhere; it reads the
+    # remote's ref table. Only tag pins are checkable this way
+    # (a rev pin IS the SHA, so the deliberate-edit path is the
+    # only way the lock would mismatch). Path deps and rev pins
+    # skip the pre-check.
+    for dep in manifest.dependencies:
+        if dep.is_path or dep.tag is None:
+            continue
+        prior = existing_by_name.get(dep.name)
+        if prior is None or prior.git != dep.git or prior.pin != dep.tag:
+            continue
+        if allow_lock_update:
+            continue
+        remote_sha = _resolve_remote_tag(dep.git, dep.tag)
+        if remote_sha is None:
+            # Cannot reach the remote or the tag no longer exists.
+            # Fall through to the regular clone path, which will
+            # surface the underlying git failure with a normal
+            # InstallError. We refuse to silently swap to a missing
+            # tag, but we also do not invent a LockMismatchError for
+            # a network-level failure.
+            continue
+        if remote_sha != prior.commit:
+            raise LockMismatchError(
+                f"capa.lock SHA mismatch on {dep.name!r} "
+                f"({dep.git} @ {dep.tag}):\n"
+                f"    locked  {prior.commit}\n"
+                f"    remote  {remote_sha}\n\n"
+                f"The upstream tag has moved since the lockfile was "
+                f"written. ``vendor/{dep.name}`` has NOT been touched. "
+                f"A moved tag is a supply-chain signal worth "
+                f"investigating. If this is a deliberate upstream "
+                f"update, either:\n"
+                f"  * delete capa.lock and re-run ``capa install``, or\n"
+                f"  * pin the dependency to a specific commit SHA in "
+                f"capa.toml (``rev = \"<sha>\"`` instead of ``tag = ...``).\n"
+                f"\nFor automation that wants to refresh the lockfile, "
+                f"the API takes ``allow_lock_update=True``."
+            )
+
     locked: list[LockedDependency] = []
-    mismatches: list[tuple[str, str, str, str]] = []
+    mismatches: list[tuple[str, str, str, str, str]] = []
     for dep in manifest.dependencies:
         if dep.is_path:
             _check_path_dep(manifest, dep)
             continue
         fresh = _fetch_git_dep(vendor_dir, dep)
         prior = existing_by_name.get(dep.name)
-        # Only enforce when the lock entry matches the source +
-        # pin recorded today; a changed git URL or pin in capa.toml
-        # is a deliberate edit, not an upstream tampering signal.
+        # Second-pass safety net for rev pins (and any tag-pin
+        # path that slipped through the pre-check above, e.g. a
+        # network-level skip). A rev mismatch here implies the
+        # lockfile and capa.toml disagree about the SHA the same
+        # rev should resolve to, which is the deliberate-edit
+        # path. Same allow-lock-update knob.
         if (
             prior is not None
             and prior.git == fresh.git
@@ -165,6 +220,53 @@ def install(
         write_lock(lock_path, locked)
 
     return manifest
+
+
+def _resolve_remote_tag(url: str, tag: str) -> Optional[str]:
+    """Return the commit SHA the remote currently has for ``tag``,
+    without writing anything to disk.
+
+    Audit 2026-05-25 H3: the install loop used to clone first and
+    compare SHAs second, so a force-pushed tag overwrote
+    ``vendor/<name>`` with attacker content before the lockfile
+    check refused. Pre-checking via ``git ls-remote`` is read-only
+    on the local side and lets the lock-mismatch check fire before
+    any destructive operation.
+
+    For annotated tags ``ls-remote`` reports BOTH the tag object
+    and the commit it points at (``<sha>\\trefs/tags/<t>`` plus
+    ``<sha>\\trefs/tags/<t>^{}``). The peeled ``^{}`` form is the
+    commit SHA we recorded in the lockfile via ``rev-parse HEAD``
+    on a cloned checkout. Prefer that when present; fall back to
+    the bare line for lightweight tags.
+
+    Returns ``None`` when the remote is unreachable, the tag does
+    not exist, or ``git`` is not on PATH. Caller treats ``None``
+    as ``skip the pre-check and let the regular clone path raise
+    the underlying error``.
+    """
+    try:
+        r = subprocess.run(
+            ["git", "ls-remote", "--tags", url, f"refs/tags/{tag}",
+             f"refs/tags/{tag}^" + "{}"],
+            capture_output=True, text=True, encoding="utf-8",
+        )
+    except FileNotFoundError:
+        return None
+    if r.returncode != 0 or not r.stdout.strip():
+        return None
+    peeled: Optional[str] = None
+    bare: Optional[str] = None
+    for line in r.stdout.splitlines():
+        parts = line.split("\t", 1)
+        if len(parts) != 2:
+            continue
+        sha, ref = parts[0].strip(), parts[1].strip()
+        if ref.endswith("^{}"):
+            peeled = sha
+        else:
+            bare = sha
+    return peeled or bare
 
 
 def _check_path_dep(manifest: Manifest, dep: Dependency) -> None:
