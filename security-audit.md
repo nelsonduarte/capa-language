@@ -73,7 +73,40 @@ shape as `_validate_git_url`. Also resolve the final destination with
 `Path.resolve()` and assert it is under `vendor_dir.resolve()` before
 any rmtree / clone.
 
-### C2. Wasm `Fs.restrict_to` is a runtime no-op
+### [CLOSED 2a2f566] C2. Wasm `Fs.restrict_to` is a runtime no-op
+
+Closed by emitting an inline attenuation check at IR -> Wasm time.
+The lowerer now builds an intra-function attenuation map via the
+existing `capa.manifest._flow._build_attenuation_map` and threads the
+result into a new `MethodCall.attenuations` field. The Wasm emitter
+inspects this field on privileged ops (`Fs.read`, `Fs.write`,
+`Net.get`, `Net.post`, `Env.get`) and emits a runtime check before
+the host import: `$str_starts_with` for `Fs.restrict_to(prefix)`,
+`$str_contains` for `Net.restrict_to(host)`, an OR-chain of
+`$str_eq` for `Env.restrict_to_keys([...])`. On check failure the
+emitter materialises the canonical `Err(IoError(...))` (or `None`
+for `Env.get`) into the canonical-ABI return area and skips the
+host call. Multiple attenuations chain with AND semantics, matching
+the Python runtime's `frozenset(... | {prefix})` shape.
+
+**Scope limitation (documented)**: the check fires only when the
+intra-function flow analyser resolves the attenuation. Cross-
+function attenuation chains (a function that receives an already-
+restricted cap as a parameter) still rely on the analyzer's
+static discipline check. The attenuation argument must be a
+literal string at the source level; a dynamic-string restriction
+raises `WasmEmissionError` rather than silently fall-through-
+permitting (the Python backend's `realpath`-based `Fs.allows`
+still handles dynamic strings on the `--python` path).
+
+Coverage: 11 new `TestWasmAttenuationEnforcement` tests cover Fs
+read/write inside-prefix / outside-prefix / two-attenuations
+chain, Env `restrict_to_keys` allow / deny, Net WAT shape, and
+the no-restrict path (no check emitted). Suite: 1463 -> 1472.
+
+Original audit text follows.
+
+
 
 [`capa/runtime/_wasm_host.py:389-404`](capa/runtime/_wasm_host.py#L389)
 ("fs.restrict_to is a no-op at the Wasm level") and the parallel

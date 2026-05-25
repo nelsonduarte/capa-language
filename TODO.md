@@ -289,8 +289,22 @@ the current Wasm critical path.
     `supplier` / `licenses[]` now emitted on every package /
     component; strict validators accept the documents.
 
-  C2 (Wasm `Fs.restrict_to` no-op) deferred: needs runtime
-  sandboxing design and is the next focused work item.
+  C2 (Wasm `Fs.restrict_to` no-op) closed in commit `2a2f566`:
+  compile-time inline checks via dataflow analysis. The lowerer
+  now threads a per-function attenuation map (built by
+  `capa.manifest._flow._build_attenuation_map`) into a new
+  `MethodCall.attenuations` field; the Wasm emitter consumes the
+  field on privileged ops (`Fs.read`, `Fs.write`, `Net.get`,
+  `Net.post`, `Env.get`) and emits an inline check before the
+  host import (`$str_starts_with` for Fs prefix,
+  `$str_contains` for Net host, OR-chain of `$str_eq` for Env
+  keys). Failure path materialises the canonical Err/None into
+  the canonical-ABI return area and skips the host call. Scope:
+  intra-function (matches `_flow`'s documented intra-function
+  scope); cross-function chains still rely on the analyzer's
+  static discipline check. The audit document records the
+  limitation explicitly. 11 new `TestWasmAttenuationEnforcement`
+  tests pin the contract; suite 1463 -> 1472.
 
 ---
 
