@@ -374,6 +374,65 @@ class TestDependencyNameAllowList(_TempDirMixin, unittest.TestCase):
         self.assertIn("invalid dependency name", str(cm.exception))
 
 
+class TestGitPinAllowList(_TempDirMixin, unittest.TestCase):
+    """Audit 2026-05-25 H2: pin strings flow into git argv as
+    positionals at multiple call sites (``clone --branch <pin>``,
+    ``checkout --detach <pin>``, ``verify-tag --raw <pin>``). The
+    last one in particular puts the pin in an option position.
+    Lock pins down at parse time."""
+
+    def _capa_toml_with_pin(self, key: str, pin: str) -> Path:
+        p = self._tmp / "capa.toml"
+        _write(p, f'''
+            [package]
+            name = "demo"
+            version = "0.1.0"
+
+            [dependencies]
+            mylib = {{ git = "https://example.invalid/x", {key} = "{pin}" }}
+        ''')
+        return p
+
+    def test_semver_tag_allowed(self):
+        m = read_manifest(self._capa_toml_with_pin("tag", "v1.2.3"))
+        self.assertEqual(m.dependencies[0].tag, "v1.2.3")
+
+    def test_sha_rev_allowed(self):
+        m = read_manifest(self._capa_toml_with_pin("rev", "abc123def456"))
+        self.assertEqual(m.dependencies[0].rev, "abc123def456")
+
+    def test_tag_with_dots_and_plus_allowed(self):
+        m = read_manifest(self._capa_toml_with_pin("tag", "1.0.0+build.42"))
+        self.assertEqual(m.dependencies[0].tag, "1.0.0+build.42")
+
+    def test_tag_starting_with_dash_rejected(self):
+        # ``git verify-tag --raw --no-such-flag`` is the audit's
+        # H2 shape; refuse before it lands in argv.
+        with self.assertRaises(ManifestError) as cm:
+            read_manifest(self._capa_toml_with_pin("tag", "-no-such-flag"))
+        self.assertIn("not a valid git ref shape", str(cm.exception))
+
+    def test_pin_with_whitespace_rejected(self):
+        with self.assertRaises(ManifestError) as cm:
+            read_manifest(self._capa_toml_with_pin("tag", "v1 -x"))
+        self.assertIn("not a valid git ref shape", str(cm.exception))
+
+    def test_pin_with_path_separator_rejected(self):
+        with self.assertRaises(ManifestError) as cm:
+            read_manifest(self._capa_toml_with_pin("tag", "v1/../v2"))
+        self.assertIn("not a valid git ref shape", str(cm.exception))
+
+    def test_pin_with_backslash_rejected(self):
+        with self.assertRaises(ManifestError) as cm:
+            read_manifest(self._capa_toml_with_pin("rev", "abc\\\\def"))
+        self.assertIn("not a valid git ref shape", str(cm.exception))
+
+    def test_empty_pin_rejected(self):
+        with self.assertRaises(ManifestError) as cm:
+            read_manifest(self._capa_toml_with_pin("tag", ""))
+        self.assertIn("not a valid git ref shape", str(cm.exception))
+
+
 class TestInstallLocal(_TempDirMixin, unittest.TestCase):
     """Path-source deps: no git required."""
 

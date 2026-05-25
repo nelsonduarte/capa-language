@@ -62,6 +62,16 @@ _ALLOWED_GIT_SCHEMES = ("https://", "http://", "ssh://", "git://", "file://")
 # at parse time, before ``_install`` can touch the filesystem.
 _DEP_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]{0,63}$")
 
+# Git pins (``tag`` / ``rev``) flow into ``git`` argv as
+# positionals (``clone --branch <pin>``, ``checkout --detach <pin>``,
+# ``verify-tag --raw <pin>``). Audit 2026-05-25 H2: even with the
+# URL allow-list closing the option-injection-at-URL-position
+# class, a pin shaped like ``--no-such-flag`` lands in an option
+# position for ``verify-tag``. Lock pins down to the characters
+# that real-world tag / commit-id syntax actually uses, with no
+# leading ``-`` (so it cannot be parsed as a flag).
+_PIN_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._+\-]{0,127}$")
+
 
 class ManifestError(Exception):
     """Raised on invalid ``capa.toml`` or ``capa.lock`` contents."""
@@ -216,6 +226,27 @@ def _validate_dep_name(path: Path, name: str) -> None:
         )
 
 
+def _validate_pin(path: Path, name: str, kind: str, pin: str) -> None:
+    """Refuse git pins (tag / rev) that could be parsed as a git
+    command-line flag or break out of an argv positional.
+
+    Audit 2026-05-25 H2: pins flow into ``git clone --branch <pin>``,
+    ``git checkout --detach <pin>``, and ``git verify-tag --raw <pin>``.
+    The URL allow-list already closed the option-position-at-URL hole,
+    but the pin still ends up at an option position for ``verify-tag``.
+    Lock pins down to characters that real-world refs actually use
+    (``[A-Za-z0-9._+\\-]``), no leading ``-``, no whitespace, no NUL,
+    no path separators.
+    """
+    if not _PIN_RE.match(pin):
+        raise ManifestError(
+            f"{path}: dependencies.{name}.{kind} = {pin!r} is not a valid "
+            f"git ref shape. Pins must match {_PIN_RE.pattern} (letters, "
+            f"digits, ``._+-``; first char cannot be ``-`` or punctuation). "
+            f"This blocks git argv injection via the pin position."
+        )
+
+
 def _validate_git_url(path: Path, name: str, url: str) -> None:
     """Reject git URLs that historically gave ``git clone`` an
     RCE primitive. The two attack shapes we close here:
@@ -300,6 +331,10 @@ def _parse_dep(path: Path, name: str, spec: dict) -> Dependency:
             raise ManifestError(
                 f"{path}: dependencies.{name}.rev must be a string"
             )
+        if tag is not None:
+            _validate_pin(path, name, "tag", tag)
+        if rev is not None:
+            _validate_pin(path, name, "rev", rev)
         verify_key = spec.get("verify_key")
         if verify_key is not None:
             if not isinstance(verify_key, str):
@@ -375,11 +410,14 @@ def read_lock(path: Path) -> list[LockedDependency]:
             )
         dep_name = _require_str(path, entry, "name", "lock entry")
         _validate_dep_name(path, dep_name)
+        pin_kind = _require_str(path, entry, "pin_kind", "lock entry")
+        pin = _require_str(path, entry, "pin", "lock entry")
+        _validate_pin(path, dep_name, pin_kind, pin)
         out.append(LockedDependency(
             name=dep_name,
             git=_require_str(path, entry, "git", "lock entry"),
-            pin=_require_str(path, entry, "pin", "lock entry"),
-            pin_kind=_require_str(path, entry, "pin_kind", "lock entry"),
+            pin=pin,
+            pin_kind=pin_kind,
             commit=_require_str(path, entry, "commit", "lock entry"),
             signing_key=signing_key,
         ))
