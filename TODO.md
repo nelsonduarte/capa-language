@@ -94,26 +94,43 @@ the current Wasm critical path.
   language feature; a formal `trait Display` could supersede
   the duck-typed method check in a later slice.
 
-- [x] **CIR coverage gap** (closed 2026-05-24). CIR now lowers
-  46 of 46 analysable examples. `TuplePat` was already supported
-  by 2026-05-24 (the TODO had it stale); match-arm guards landed
-  in this session. The lowerer captures any ANF prelude the
-  guard expression produces into a new `MatchArm.guard_setup`
-  field; the Python emitter's `_format_guard` walks the setup
-  and inlines it back into a single `case PAT if EXPR:` clause
-  by substituting each prelude instruction's expression form
-  into a `dst -> python_expr` map. Inlineable shapes today:
+- [x] **CIR coverage gap** (closed 2026-05-24, Wasm-side
+  guards 2026-05-25). CIR now lowers 46 of 46 analysable
+  examples. `TuplePat` was already supported by 2026-05-24
+  (the TODO had it stale); match-arm guards landed in the
+  2026-05-24 session for the IR + Python side. The lowerer
+  captures any ANF prelude the guard expression produces into
+  a new `MatchArm.guard_setup` field; the Python emitter's
+  `_format_guard` walks the setup and inlines it back into a
+  single `case PAT if EXPR:` clause by substituting each
+  prelude instruction's expression form into a
+  `dst -> python_expr` map. Inlineable shapes today:
   `FieldAccess`, `Index`, `UnaryOp`, `BinOp`. Non-inlineable
   shapes (`Call`, `MethodCall`, etc.) raise `UnsupportedInIR`
   from the emitter, which the CLI's `--ir` path catches as
   before and falls back to the legacy transpiler. The Wasm
-  emitter still rejects every guard (arm-level fall-through
-  block restructure is its own piece of work). Coverage in
+  emitter now supports guards too (2026-05-25) via a
+  flat-block-with-labeled-exit restructure: when any arm
+  carries a guard the per-scrutinee emitter opens a
+  `block $match_done<N>` and emits each arm as
+  ``predicate ; if ; bind-payloads ; guard-setup ; guard ;
+  if ; body ; br $match_done<N>`` (nested ifs so a failed
+  guard falls through to the next arm naturally). Guard-free
+  matches keep the legacy nested cascade. Covers
+  Bool / String / sum / tuple scrutinees; nested-variant +
+  guard arms raise a precise WasmEmissionError pointing the
+  user at the two-nested-matches workaround. Coverage in
   `TestMatch`: `test_match_arm_with_trivial_guard_runs`,
   `test_match_arm_with_non_trivial_guard_runs`,
   `test_match_arm_guard_with_chained_binops_inlines`,
   `test_match_arm_guard_with_call_emit_raises_unsupported`.
-  Suite: 1296 → 1299.
+  Wasm-side coverage in `TestWasmMatchArmGuards`:
+  `test_simple_guard_on_int_variant`,
+  `test_guard_with_setup`, `test_bool_match_with_guard`,
+  `test_string_match_with_guard`,
+  `test_guard_failure_falls_through`,
+  `test_no_guard_matches_unchanged`.
+  Suite: 1296 → 1299 (IR side) → 1488 (Wasm side).
 
 - [x] **Property-based testing for the Wasm backend** (closed
   2026-05-24). `tests/test_properties.py` Phase 4 now mirrors

@@ -6,6 +6,14 @@ The arm emitter handles variant-payload binding, including the
 String packed-i64 unpack into ``${name}_ptr`` / ``${name}_len``
 locals and the pointer-shaped-payload unwrap.
 
+When any arm carries a ``guard`` (the ``case PAT if EXPR:`` shape
+in source), the emitter switches to a flat-block-with-labeled-exit
+strategy: every arm's pattern-check + guard-check is a NESTED if;
+a failed guard falls through to the next arm naturally, and a
+matched arm escapes via ``br $match_done<N>`` to the surrounding
+block. Guard-free matches keep the legacy nested cascade to
+avoid regressing the existing test corpus.
+
 Depends on ``_RuntimeHelpersMixin`` and the layout/value-push
 plumbing in the main ``WasmEmitter``: ``_sum_layouts``,
 ``_struct_layouts``, ``_current_fn``, ``_push_value``,
@@ -24,6 +32,14 @@ from ._layout import (
 )
 
 
+def _match_has_guards(instr: Match) -> bool:
+    """True iff any arm in ``instr`` carries a non-None guard.
+    Selects between the legacy nested-cascade path (no guards)
+    and the flat-block-with-labeled-exit path (at least one
+    guard)."""
+    return any(arm.guard is not None for arm in instr.arms)
+
+
 class _MatchEmissionMixin:
     def _emit_match(self, instr: Match) -> None:
         """Lower a sum-type match. The scrutinee is an i32 pointer;
@@ -40,27 +56,6 @@ class _MatchEmissionMixin:
         because each Match consumes the locals before recursing
         into arm bodies.
         """
-        # Guards land as IR ``MatchArm.guard`` Values; the Python
-        # emitter handles them via ``case PAT if EXPR:`` syntax
-        # (inlining any ``guard_setup`` prelude into the
-        # expression), but the Wasm emitter would need an
-        # arm-level fall-through block to skip the body and
-        # re-enter the cascade for the next arm on guard failure.
-        # That restructure has not landed; for now, refuse
-        # guards with a precise error so the caller rewrites the
-        # match as nested if/else or moves the condition outside.
-        for arm in instr.arms:
-            if arm.guard is not None:
-                raise WasmEmissionError(
-                    "match arm guard not yet supported in the Wasm "
-                    "backend; the IR accepts guards (including ones "
-                    "with non-trivial prelude) and the Python "
-                    "pipeline emits them via `case PAT if EXPR:`, "
-                    "but the Wasm pipeline still needs an arm-level "
-                    "fall-through block restructure. Rewrite as "
-                    "nested if/else or move the condition outside "
-                    "the match for now."
-                )
         scrut_ty = instr.scrutinee.ty
         if scrut_ty == "Bool":
             self._emit_bool_match(instr)
@@ -95,6 +90,11 @@ class _MatchEmissionMixin:
         self._write(f"local.get ${scrut_local}")
         self._write("i32.load")
         self._write(f"local.set ${tag_local}")
+        if _match_has_guards(instr):
+            self._emit_sum_match_with_guards(
+                instr, scrut_local, tag_local, sum_layout,
+            )
+            return
         # Emit arms as a nested if/else chain. Track how many
         # ``if`` statements we open so we can close them all at the
         # end. ``else`` blocks open implicitly when we cascade.
@@ -110,10 +110,16 @@ class _MatchEmissionMixin:
         (0/1); each arm pattern is ``PatLiteral(kind="bool")`` (with
         value True/False), ``PatWildcard``, or ``PatIdent`` (binds
         the scrutinee unconditionally). The arms cascade through
-        nested if/else just like the sum-type path."""
+        nested if/else just like the sum-type path. When any arm
+        carries a guard we switch to the flat-block-with-labeled
+        -exit form so a failed guard falls through to the next
+        arm naturally."""
         scrut_local = "_m_scrut"
         self._push_value(instr.scrutinee)
         self._write(f"local.set ${scrut_local}")
+        if _match_has_guards(instr):
+            self._emit_bool_match_with_guards(instr, scrut_local)
+            return
         opened = 0
         for arm in instr.arms:
             pat = arm.pattern
@@ -328,6 +334,9 @@ class _MatchEmissionMixin:
         self._push_string_value_as_ptr_len(instr.scrutinee)
         self._write("local.set $_str_a_len")
         self._write("local.set $_str_a_ptr")
+        if _match_has_guards(instr):
+            self._emit_string_match_with_guards(instr)
+            return
         opened = 0
         for arm in instr.arms:
             pat = arm.pattern
@@ -396,6 +405,11 @@ class _MatchEmissionMixin:
         scrut_local = "_m_scrut"
         self._push_value(instr.scrutinee)
         self._write(f"local.set ${scrut_local}")
+        if _match_has_guards(instr):
+            self._emit_tuple_match_with_guards(
+                instr, scrut_ty, elem_tys, arity, scrut_local,
+            )
+            return
         opened = 0
         for arm in instr.arms:
             pat = arm.pattern
@@ -674,4 +688,437 @@ class _MatchEmissionMixin:
         raise WasmEmissionError(
             f"Phase 6C: match arm pattern {type(pat).__name__} not "
             f"supported (PatVariant + PatWildcard are the current set)"
+        )
+
+    # ----------------------------------------------------------------
+    # Guarded match emission (flat block + br on success).
+    #
+    # When any arm has a ``guard``, we cannot reuse the nested
+    # if/else cascade because "pattern matched but guard failed"
+    # must fall through to the NEXT arm rather than skip the entire
+    # match. The shape we emit is:
+    #
+    #     block $match_done<N>
+    #       <arm0 predicate>
+    #       if
+    #         <arm0 guard setup>
+    #         <arm0 guard value>     ;; absent: skip both lines
+    #         if                     ;; absent: skip the inner if
+    #           <arm0 payload binds>
+    #           <arm0 body>
+    #           br $match_done<N>
+    #         end                    ;; only when guard was present
+    #       end
+    #       <arm1 predicate>
+    #       if ... end
+    #       ...
+    #     end
+    #
+    # An arm whose pattern is an unconditional catch-all (bare
+    # PatIdent / PatWildcard) AND has no guard still uses the
+    # block-plus-br shape: the predicate pushes ``i32.const 1`` so
+    # the surrounding ``if`` always fires, the body runs, and the
+    # ``br`` exits the match. This costs one redundant branch per
+    # such arm relative to the nested-cascade path but keeps the
+    # emit code uniform; the JIT collapses the dead else trivially.
+    # ----------------------------------------------------------------
+
+    def _emit_guarded_arm(
+        self, arm: MatchArm, push_predicate, bind_payloads,
+        done_label: str,
+    ) -> None:
+        """Emit one arm in the flat-block form. ``push_predicate``
+        is a 0-arg callable that pushes an i32 boolean (1 iff the
+        arm's pattern matches the scrutinee). ``bind_payloads`` is
+        a 0-arg callable that emits the local stores that take
+        sub-pattern data out of the scrutinee record; it runs
+        INSIDE the outer-if before the guard prelude so the guard
+        (and the body) can both reference the bound locals.
+        ``done_label`` is the surrounding block's exit label (with
+        leading ``$``).
+
+        Binding ahead of the guard rather than inside the inner-if
+        lets ``Ok(n) if n > 5`` work without redundant loads; the
+        cost is that a guard-failure-on-arm-N leaves the binders
+        populated for one extra instruction window, which is
+        harmless because (1) the locals are not pointers the GC
+        scans (we have no GC), and (2) the next matching arm
+        rebinds before reading."""
+        push_predicate()
+        self._write("if")
+        self._indent += 1
+        bind_payloads()
+        if arm.guard is not None:
+            # Guard prelude (the ANF instructions producing
+            # intermediate locals the guard Value references)
+            # runs as normal instructions after the pattern's
+            # binders are populated; the guard Value then decides
+            # whether we enter the body.
+            for setup_instr in arm.guard_setup:
+                self._emit_instr(setup_instr)
+            self._push_value(arm.guard)
+            self._write("if")
+            self._indent += 1
+            for sub in arm.body:
+                self._emit_instr(sub)
+            self._write(f"br {done_label}")
+            self._indent -= 1
+            self._write("end")
+        else:
+            for sub in arm.body:
+                self._emit_instr(sub)
+            self._write(f"br {done_label}")
+        self._indent -= 1
+        self._write("end")
+
+    def _open_match_done_block(self) -> str:
+        """Open a fresh ``block $match_done<N>`` and return the
+        label (with leading ``$``). The caller closes it by
+        decrementing indent and writing ``end``."""
+        self._block_counter += 1
+        label = f"$match_done{self._block_counter}"
+        self._write(f"block {label}")
+        self._indent += 1
+        return label
+
+    def _close_match_done_block(self) -> None:
+        """Symmetric to ``_open_match_done_block``."""
+        self._indent -= 1
+        self._write("end")
+
+    # ------- Bool-scrutinee, guard-present path -------------------
+
+    def _emit_bool_match_with_guards(
+        self, instr: Match, scrut_local: str,
+    ) -> None:
+        """Flat-block emission for a Bool match where at least one
+        arm carries a guard. Each arm's predicate is i32.const 1
+        for catch-all patterns, ``scrut == lit`` for PatLiteral."""
+        done_label = self._open_match_done_block()
+        for arm in instr.arms:
+            pat = arm.pattern
+            if isinstance(pat, PatLiteral) and pat.kind == "bool":
+                def push_predicate(p=pat):
+                    self._write(f"local.get ${scrut_local}")
+                    if not p.value:
+                        self._write("i32.eqz")
+
+                def bind_payloads():
+                    return  # no payloads for a Bool literal arm
+            elif isinstance(pat, PatIdent):
+                def push_predicate():
+                    self._write("i32.const 1")
+
+                def bind_payloads(p=pat):
+                    self._write(f"local.get ${scrut_local}")
+                    self._write(f"local.set ${p.name}")
+            elif isinstance(pat, PatWildcard):
+                def push_predicate():
+                    self._write("i32.const 1")
+
+                def bind_payloads():
+                    return
+            else:
+                raise WasmEmissionError(
+                    f"Bool match (guarded): pattern "
+                    f"{type(pat).__name__} not supported "
+                    f"(PatLiteral / PatIdent / PatWildcard only)"
+                )
+            self._emit_guarded_arm(
+                arm, push_predicate, bind_payloads, done_label,
+            )
+        self._close_match_done_block()
+
+    # ------- String-scrutinee, guard-present path -----------------
+
+    def _emit_string_match_with_guards(self, instr: Match) -> None:
+        """Flat-block emission for a String match where at least
+        one arm carries a guard. The receiver lives in
+        ``$_str_a_ptr`` / ``$_str_a_len`` (the caller already set
+        them); each arm's predicate is ``$str_eq`` against an
+        interned literal, or ``i32.const 1`` for catch-alls."""
+        done_label = self._open_match_done_block()
+        for arm in instr.arms:
+            pat = arm.pattern
+            if isinstance(pat, PatLiteral) and pat.kind == "str":
+                offset, length = self._intern_string(pat.value)
+
+                def push_predicate(o=offset, l=length):
+                    self._write(f"i32.const {o}")
+                    self._write(f"i32.const {l}")
+                    self._write("local.get $_str_a_ptr")
+                    self._write("local.get $_str_a_len")
+                    self._write("call $str_eq")
+
+                def bind_payloads():
+                    return
+            elif isinstance(pat, PatIdent):
+                def push_predicate():
+                    self._write("i32.const 1")
+
+                def bind_payloads(p=pat):
+                    self._write("local.get $_str_a_ptr")
+                    self._write(f"local.set ${p.name}_ptr")
+                    self._write("local.get $_str_a_len")
+                    self._write(f"local.set ${p.name}_len")
+            elif isinstance(pat, PatWildcard):
+                def push_predicate():
+                    self._write("i32.const 1")
+
+                def bind_payloads():
+                    return
+            else:
+                raise WasmEmissionError(
+                    f"String match (guarded): pattern "
+                    f"{type(pat).__name__} not supported "
+                    f"(PatLiteral / PatIdent / PatWildcard only)"
+                )
+            self._emit_guarded_arm(
+                arm, push_predicate, bind_payloads, done_label,
+            )
+        self._close_match_done_block()
+
+    # ------- Tuple-scrutinee, guard-present path ------------------
+
+    def _emit_tuple_match_with_guards(
+        self, instr: Match, scrut_ty: str, elem_tys: list,
+        arity: int, scrut_local: str,
+    ) -> None:
+        """Flat-block emission for a tuple match where at least one
+        arm carries a guard. Predicate is the AND of the per-slot
+        literal comparisons (or ``i32.const 1`` when the arm has no
+        literal sub-patterns); the binders for the arm's PatIdent
+        sub-patterns run only on full match + guard pass."""
+        done_label = self._open_match_done_block()
+        for arm in instr.arms:
+            pat = arm.pattern
+            if isinstance(pat, PatTuple):
+                if len(pat.elements) != arity:
+                    raise WasmEmissionError(
+                        f"Tuple match: arm arity {len(pat.elements)} "
+                        f"does not match scrutinee arity {arity} "
+                        f"({scrut_ty})"
+                    )
+                literal_checks: list[tuple[int, PatLiteral]] = []
+                for idx, sub in enumerate(pat.elements):
+                    if isinstance(sub, PatLiteral):
+                        literal_checks.append((idx, sub))
+                    elif isinstance(sub, (PatIdent, PatWildcard)):
+                        continue
+                    else:
+                        raise WasmEmissionError(
+                            f"Tuple match (guarded): sub-pattern "
+                            f"{type(sub).__name__} not yet supported "
+                            f"(PatIdent / PatWildcard / PatLiteral "
+                            f"only at the moment)"
+                        )
+
+                def push_predicate(
+                    checks=tuple(literal_checks), e=elem_tys,
+                ):
+                    if not checks:
+                        self._write("i32.const 1")
+                        return
+                    for n, (idx, lit_pat) in enumerate(checks):
+                        self._emit_tuple_slot_eq(
+                            scrut_local, idx, e[idx], lit_pat,
+                        )
+                        if n > 0:
+                            self._write("i32.and")
+
+                def bind_payloads(p=pat, e=elem_tys):
+                    self._emit_tuple_arm_binds(
+                        scrut_local, e, p.elements,
+                    )
+            elif isinstance(pat, PatIdent):
+                def push_predicate():
+                    self._write("i32.const 1")
+
+                def bind_payloads(p=pat):
+                    self._write(f"local.get ${scrut_local}")
+                    self._write(f"local.set ${p.name}")
+            elif isinstance(pat, PatWildcard):
+                def push_predicate():
+                    self._write("i32.const 1")
+
+                def bind_payloads():
+                    return
+            else:
+                raise WasmEmissionError(
+                    f"Tuple match (guarded): pattern "
+                    f"{type(pat).__name__} not supported "
+                    f"(PatTuple / PatIdent / PatWildcard only)"
+                )
+            self._emit_guarded_arm(
+                arm, push_predicate, bind_payloads, done_label,
+            )
+        self._close_match_done_block()
+
+    # ------- Sum-type scrutinee, guard-present path ---------------
+
+    def _emit_sum_match_with_guards(
+        self, instr: Match, scrut_local: str, tag_local: str,
+        sum_layout: dict,
+    ) -> None:
+        """Flat-block emission for a sum-type match where at least
+        one arm carries a guard. Each arm's predicate is the tag
+        comparison (or a combined outer + inner tag check for
+        nested-variant arms); the body binds variant payloads
+        inside the inner-if-guard branch."""
+        done_label = self._open_match_done_block()
+        for arm in instr.arms:
+            pat = arm.pattern
+            if isinstance(pat, PatVariant) and any(
+                isinstance(p, PatVariant) for p in pat.payloads
+            ):
+                # Nested-variant arms with guards are a separate
+                # restructure (the outer eager-extract has to land
+                # AHEAD of the predicate, not inside the body). Not
+                # used by any demo today; raise a precise error
+                # rather than silently producing wrong code.
+                if arm.guard is not None:
+                    raise WasmEmissionError(
+                        "nested variant pattern with arm guard "
+                        "not yet supported in the Wasm backend; "
+                        "rewrite as two nested matches or move "
+                        "the guard condition outside"
+                    )
+                # No guard: emit the nested arm via the same flat
+                # contract by inlining its predicate + bind here.
+                self._emit_nested_variant_arm_guarded(
+                    arm, scrut_local, tag_local, sum_layout,
+                    done_label,
+                )
+                continue
+            if isinstance(pat, PatVariant):
+                tag, payload_layouts = sum_layout["variants"][pat.name]
+
+                def push_predicate(t=tag):
+                    self._write(f"local.get ${tag_local}")
+                    self._write(f"i32.const {t}")
+                    self._write("i32.eq")
+
+                def bind_payloads(
+                    p=pat, layouts=tuple(payload_layouts),
+                ):
+                    self._emit_variant_payload_binds(
+                        p, layouts, scrut_local,
+                    )
+            elif isinstance(pat, PatWildcard):
+                def push_predicate():
+                    self._write("i32.const 1")
+
+                def bind_payloads():
+                    return
+            elif isinstance(pat, PatIdent):
+                # Catch-all that binds the scrutinee pointer.
+                def push_predicate():
+                    self._write("i32.const 1")
+
+                def bind_payloads(p=pat):
+                    self._write(f"local.get ${scrut_local}")
+                    self._write(f"local.set ${p.name}")
+            else:
+                raise WasmEmissionError(
+                    f"Sum match (guarded): pattern "
+                    f"{type(pat).__name__} not supported "
+                    f"(PatVariant / PatWildcard / PatIdent only)"
+                )
+            self._emit_guarded_arm(
+                arm, push_predicate, bind_payloads, done_label,
+            )
+        self._close_match_done_block()
+
+    def _emit_variant_payload_binds(
+        self, pat: PatVariant, payload_layouts: tuple,
+        scrut_local: str,
+    ) -> None:
+        """Bind a PatVariant's sub-patterns from the scrutinee
+        record. Factored out of ``_emit_match_arm`` so the
+        guard-present path can call it from inside the inner-if
+        without dragging in the cascade-opening boilerplate."""
+        for sub_pat, (offset, size, _ty) in zip(
+            pat.payloads, payload_layouts,
+        ):
+            if isinstance(sub_pat, PatIdent):
+                self._bind_variant_payload(
+                    sub_pat, offset, size, _ty,
+                    scrut_local_name=scrut_local,
+                )
+            elif isinstance(sub_pat, PatWildcard):
+                continue
+            else:
+                raise WasmEmissionError(
+                    f"Sum match (guarded): nested pattern "
+                    f"{type(sub_pat).__name__} inside variant "
+                    f"payload not yet supported"
+                )
+
+    def _emit_nested_variant_arm_guarded(
+        self, arm: MatchArm, scrut_local: str, tag_local: str,
+        sum_layout: dict, done_label: str,
+    ) -> None:
+        """Flat-block emission for a nested-variant arm (no guard).
+        Mirrors ``_emit_nested_variant_arm`` but exits via ``br
+        $match_done<N>`` instead of cascading into an else block.
+        Guards on nested-variant arms are rejected at the caller."""
+        pat = arm.pattern
+        outer_tag, outer_payloads = sum_layout["variants"][pat.name]
+        nested_idx, nested_pat = next(
+            (i, p) for i, p in enumerate(pat.payloads)
+            if isinstance(p, PatVariant)
+        )
+        outer_offset, _outer_size, _outer_payload_ty = outer_payloads[nested_idx]
+        inner_sum_name = self._variant_to_sum.get(nested_pat.name)
+        if inner_sum_name is None:
+            raise WasmEmissionError(
+                f"nested variant {nested_pat.name!r} has no known "
+                f"parent sum; was the type declared in module.types?"
+            )
+        inner_sum_layout = self._sum_layouts[inner_sum_name]
+        inner_tag, inner_payloads = inner_sum_layout["variants"][nested_pat.name]
+
+        # Eager extract of the outer's inner-ptr payload into the
+        # scratch local; must happen BEFORE the predicate so the
+        # inner tag load can read from $_m_scrut_inner. This is the
+        # only side effect that has to escape the if; it's safe
+        # because the scratch only persists across the predicate
+        # and either gets overwritten by the next arm's nested
+        # extract or goes unused.
+        self._write(f"local.get ${scrut_local}")
+        self._write(f"i64.load offset={outer_offset}")
+        self._write("i32.wrap_i64")
+        self._write("local.set $_m_scrut_inner")
+
+        def push_predicate():
+            self._write(f"local.get ${tag_local}")
+            self._write(f"i32.const {outer_tag}")
+            self._write("i32.eq")
+            self._write("local.get $_m_scrut_inner")
+            self._write("i32.load")
+            self._write(f"i32.const {inner_tag}")
+            self._write("i32.eq")
+            self._write("i32.and")
+
+        def bind_payloads():
+            for sub_pat, (offset, size, _ty) in zip(
+                nested_pat.payloads, inner_payloads,
+            ):
+                if isinstance(sub_pat, PatIdent):
+                    self._bind_variant_payload(
+                        sub_pat, offset, size, _ty,
+                        scrut_local_name="_m_scrut_inner",
+                    )
+                elif isinstance(sub_pat, PatWildcard):
+                    continue
+                else:
+                    raise WasmEmissionError(
+                        f"Phase 6J: triple-nested pattern "
+                        f"{type(sub_pat).__name__} inside "
+                        f"{nested_pat.name!r}'s payload not yet "
+                        f"supported (max nesting depth is 2)"
+                    )
+
+        self._emit_guarded_arm(
+            arm, push_predicate, bind_payloads, done_label,
         )

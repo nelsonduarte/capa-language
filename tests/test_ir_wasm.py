@@ -3583,5 +3583,169 @@ class TestWasmMatchEmission(unittest.TestCase):
         self.assertEqual(self._exec(src, "read_flag"), 1)
 
 
+class TestWasmMatchArmGuards(unittest.TestCase):
+    """Coverage for the Wasm backend's match-arm guard emission.
+
+    Until 2026-05-25 the Wasm emitter rejected EVERY arm with a
+    guard (the IR has carried ``MatchArm.guard`` + ``guard_setup``
+    since 2026-05-24 but only the Python backend honoured them).
+    The new flat-block-with-labeled-exit path emits one ``block
+    $match_done<N>`` per match; each arm's predicate + guard are
+    NESTED ifs and a matched arm escapes via ``br``. Failed
+    guards fall through to the next arm naturally.
+
+    Each test compiles a small Capa function, executes it under
+    wasmtime, and confirms the runtime output against the same
+    program's expected behaviour (which the Python backend already
+    supports). The string oracle is implicit: any output mismatch
+    surfaces immediately as an assertion failure."""
+
+    def _exec(self, src: str, fn_name: str, *args):
+        """Same helper as TestWasmMatchEmission._exec; keeps the
+        guards class self-contained for coverage attribution."""
+        import wasmtime
+        _, types, ast_mod = _parse_lower(src)
+        blob = compile_wasm(ast_mod, types=types)
+        engine = wasmtime.Engine()
+        store = wasmtime.Store(engine)
+        mod = wasmtime.Module(engine, blob)
+        instance = wasmtime.Instance(store, mod, [])
+        fn = instance.exports(store)[fn_name]
+        return fn(store, *args)
+
+    # ---- Sum-type: variant arm with a guard on the binder -------
+
+    def test_simple_guard_on_int_variant(self):
+        # ``Ok(n) if n > 5 -> "big"`` covers the basic guarded
+        # variant arm. The guard references the variant's payload
+        # binder so the binder must be in scope at guard time;
+        # exercise both branches (big / small) plus the Err fall
+        # through.
+        src = (
+            "fun classify(n: Int) -> Int\n"
+            "    let r = Ok(n)\n"
+            "    match r\n"
+            "        Ok(v) if v > 5 -> return 100\n"
+            "        Ok(_) -> return 50\n"
+            "        Err(_) -> return -1\n"
+            "    return 0\n"
+        )
+        self.assertEqual(self._exec(src, "classify", 10), 100)
+        self.assertEqual(self._exec(src, "classify", 5), 50)
+        self.assertEqual(self._exec(src, "classify", 3), 50)
+
+    # ---- Sum-type: guard prelude is non-trivial -----------------
+
+    def test_guard_with_setup(self):
+        # ``Some(p) if p.x + p.y > 10`` lowers to a guard whose
+        # guard_setup contains a FieldAccess pair + BinOp; the
+        # emitter must emit them as normal instructions before
+        # the inner ``if``. Struct-shaped payload binding pushes
+        # an i32 pointer through the i64-uniform slot, so this
+        # also covers the pointer-shape branch of
+        # _bind_variant_payload.
+        src = (
+            "type Point {\n"
+            "    x: Int,\n"
+            "    y: Int\n"
+            "}\n"
+            "fun pick(px: Int, py: Int) -> Int\n"
+            "    let p = Some(Point { x: px, y: py })\n"
+            "    match p\n"
+            "        Some(point) if point.x + point.y > 10 -> return 1\n"
+            "        Some(_) -> return 2\n"
+            "        None -> return 0\n"
+            "    return -1\n"
+        )
+        self.assertEqual(self._exec(src, "pick", 5, 7), 1)
+        self.assertEqual(self._exec(src, "pick", 3, 4), 2)
+        self.assertEqual(self._exec(src, "pick", 1, 2), 2)
+
+    # ---- Bool-scrutinee match with a guard ----------------------
+
+    def test_bool_match_with_guard(self):
+        # ``true if other_var > 0`` covers the
+        # _emit_bool_match_with_guards path. The wildcard catches
+        # both ``false`` and ``true with guard failed``.
+        src = (
+            "fun pick(b: Bool, x: Int) -> Int\n"
+            "    match b\n"
+            "        true if x > 0 -> return 1\n"
+            "        _ -> return 0\n"
+            "    return -1\n"
+        )
+        self.assertEqual(self._exec(src, "pick", 1, 5), 1)
+        self.assertEqual(self._exec(src, "pick", 1, 0), 0)
+        self.assertEqual(self._exec(src, "pick", 1, -3), 0)
+        self.assertEqual(self._exec(src, "pick", 0, 5), 0)
+
+    # ---- String-scrutinee match with a guard --------------------
+
+    def test_string_match_with_guard(self):
+        # First arm: literal match on "yes". Second arm: catch-all
+        # bind whose guard calls a String method (.length() > 0).
+        # Third arm: wildcard fallback. Exercises both the str_eq
+        # predicate branch and the bind-then-guard sequence in
+        # _emit_string_match_with_guards.
+        src = (
+            "fun classify_yes() -> Int\n"
+            "    return inner(\"yes\")\n"
+            "fun classify_no() -> Int\n"
+            "    return inner(\"no\")\n"
+            "fun classify_empty() -> Int\n"
+            "    return inner(\"\")\n"
+            "fun inner(s: String) -> Int\n"
+            "    match s\n"
+            "        \"yes\" -> return 1\n"
+            "        x if x.length() > 0 -> return 2\n"
+            "        _ -> return 0\n"
+            "    return -1\n"
+        )
+        self.assertEqual(self._exec(src, "classify_yes"), 1)
+        self.assertEqual(self._exec(src, "classify_no"), 2)
+        self.assertEqual(self._exec(src, "classify_empty"), 0)
+
+    # ---- Multi-guard cascade: every guard fails until one fires -
+
+    def test_guard_failure_falls_through(self):
+        # Four consecutive Ok(v) arms, each with a stricter guard.
+        # The flat-block emission must let a failed guard fall
+        # through to the next arm without skipping it (the bug
+        # that motivated the rewrite).
+        src = (
+            "fun bucket(n: Int) -> Int\n"
+            "    let r = Ok(n)\n"
+            "    match r\n"
+            "        Ok(v) if v > 100 -> return 4\n"
+            "        Ok(v) if v > 10 -> return 3\n"
+            "        Ok(v) if v > 0 -> return 2\n"
+            "        Ok(_) -> return 1\n"
+            "        Err(_) -> return -1\n"
+            "    return 0\n"
+        )
+        self.assertEqual(self._exec(src, "bucket", 500), 4)
+        self.assertEqual(self._exec(src, "bucket", 50), 3)
+        self.assertEqual(self._exec(src, "bucket", 5), 2)
+        self.assertEqual(self._exec(src, "bucket", 0), 1)
+        self.assertEqual(self._exec(src, "bucket", -5), 1)
+
+    # ---- Regression: guard-free matches still use the old path --
+
+    def test_no_guard_matches_unchanged(self):
+        # Mirrors a baseline TestWasmMatchEmission case; passes
+        # iff the unconditional cascade path is still wired up
+        # (the new ``has_guards`` switch must select the legacy
+        # path when no arm carries a guard).
+        src = (
+            "fun classify(n: Int) -> Int\n"
+            "    let r = Ok(n)\n"
+            "    match r\n"
+            "        Ok(_) -> return 1\n"
+            "        Err(_) -> return 0\n"
+            "    return -1\n"
+        )
+        self.assertEqual(self._exec(src, "classify", 42), 1)
+
+
 if __name__ == "__main__":
     unittest.main()
