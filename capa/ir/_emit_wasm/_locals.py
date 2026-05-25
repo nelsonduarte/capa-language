@@ -67,6 +67,16 @@ class _LocalsCollectionMixin:
         # canonical-ABI indirect return; drives the ``$_ret_area``
         # scratch local declaration.
         has_indirect_cap_call = False
+        # Set when any MethodCall carries a non-empty ``attenuations``
+        # list (audit C2). Drives declaration of the
+        # ``$_atten_*`` scratch locals the inline check needs.
+        # Tracked separately from ``has_indirect_cap_call`` because
+        # the Env attenuation check fires on Env.get whose ret_area
+        # is option_string (12 bytes), not the 20-byte
+        # result_string_io_error layout.
+        has_attenuation_check = False
+        has_attenuation_env_check = False
+        has_atten_fs_write_check = False
         # Maximum nesting depth of For instructions. Nested for-loops
         # need distinct iteration scratch (``$_f_list_N`` /
         # ``$_f_idx_N``) so an inner loop doesn't clobber the outer
@@ -87,6 +97,8 @@ class _LocalsCollectionMixin:
             nonlocal has_list_method, has_tuple
             nonlocal cur_for_depth, max_for_depth
             nonlocal has_indirect_cap_call
+            nonlocal has_attenuation_check, has_attenuation_env_check
+            nonlocal has_atten_fs_write_check
             for instr in instrs:
                 if isinstance(instr, Match):
                     has_match = True
@@ -228,6 +240,22 @@ class _LocalsCollectionMixin:
                         in _CANONICAL_INDIRECT_RETURN
                     ):
                         has_indirect_cap_call = True
+                    # Capability attenuation check (audit C2):
+                    # MethodCall with non-empty ``attenuations`` and
+                    # a privileged op on Fs / Net / Env triggers
+                    # ``_atten_*`` scratch local declarations.
+                    if getattr(instr, "attenuations", None):
+                        cap = instr.cap_used or ""
+                        m = instr.method
+                        if (cap == "Fs" and m in ("read", "write")) \
+                                or (cap == "Net" and m in ("get", "post")) \
+                                or (cap == "Env" and m == "get"):
+                            has_attenuation_check = True
+                            has_indirect_cap_call = True
+                            if cap == "Env":
+                                has_attenuation_env_check = True
+                            if cap == "Fs" and m == "write":
+                                has_atten_fs_write_check = True
                     if recv_ty.startswith("List"):
                         # List method calls (push / contains / get
                         # / length / is_empty / ...) reuse $_m_scrut
@@ -476,6 +504,19 @@ class _LocalsCollectionMixin:
             # by the variant_ctor / for-loop branches above.
             out.setdefault("_m_tag", "i32")
             out.setdefault("_alloc_tmp", "i32")
+        if has_attenuation_check:
+            # Capability attenuation check (audit C2). Three i32
+            # pairs: path/url/name (always), content (Fs.write only).
+            # ``_atten_ok`` is the predicate accumulator; ``_atten_match``
+            # is the per-Env-restrict_to_keys OR-chain scratch.
+            out["_atten_path_ptr"] = "i32"
+            out["_atten_path_len"] = "i32"
+            out["_atten_ok"] = "i32"
+            if has_atten_fs_write_check:
+                out["_atten_content_ptr"] = "i32"
+                out["_atten_content_len"] = "i32"
+            if has_attenuation_env_check:
+                out["_atten_match"] = "i32"
         if has_optres_method:
             # Option/Result method dispatch stashes the receiver
             # pointer in $_m_scrut so the tag check + payload load

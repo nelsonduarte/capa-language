@@ -100,6 +100,195 @@ class _RuntimeHelpersMixin:
         self._indent -= 1
         self._write(")")
 
+    def _emit_str_starts_with_function(self) -> None:
+        """Helper: ``$str_starts_with(hp, hl, np, nl) -> i32`` returns
+        1 if the haystack ``hp[..hl]`` begins with the needle
+        ``np[..nl]``, 0 otherwise. Used by the Wasm-side attenuation
+        check for ``Fs.read`` / ``Fs.write`` after ``Fs.restrict_to``:
+        the runtime check fires before the host import and must
+        return Err on prefix miss without ever crossing the trust
+        boundary.
+
+        Empty needle (``nl == 0``) returns 1, mirroring the Python
+        ``str.startswith`` semantic. A needle longer than the
+        haystack returns 0 (fast path)."""
+        self._write(
+            "(func $str_starts_with (param $hp i32) (param $hl i32) "
+            "(param $np i32) (param $nl i32) (result i32)"
+        )
+        self._indent += 1
+        self._write("(local $i i32)")
+        # Needle longer than haystack -> 0.
+        self._write("local.get $nl")
+        self._write("local.get $hl")
+        self._write("i32.gt_s")
+        self._write("if")
+        self._indent += 1
+        self._write("i32.const 0")
+        self._write("return")
+        self._indent -= 1
+        self._write("end")
+        # Reuse $str_eq on (hp, nl) vs (np, nl) by walking nl bytes.
+        self._write("i32.const 0")
+        self._write("local.set $i")
+        self._write("block $ssw_exit (result i32)")
+        self._indent += 1
+        self._write("loop $ssw_loop")
+        self._indent += 1
+        # if i >= nl: exit with 1.
+        self._write("local.get $i")
+        self._write("local.get $nl")
+        self._write("i32.ge_s")
+        self._write("if")
+        self._indent += 1
+        self._write("i32.const 1")
+        self._write("br $ssw_exit")
+        self._indent -= 1
+        self._write("end")
+        # if hp[i] != np[i]: exit with 0.
+        self._write("local.get $hp")
+        self._write("local.get $i")
+        self._write("i32.add")
+        self._write("i32.load8_u")
+        self._write("local.get $np")
+        self._write("local.get $i")
+        self._write("i32.add")
+        self._write("i32.load8_u")
+        self._write("i32.ne")
+        self._write("if")
+        self._indent += 1
+        self._write("i32.const 0")
+        self._write("br $ssw_exit")
+        self._indent -= 1
+        self._write("end")
+        # i += 1; loop.
+        self._write("local.get $i")
+        self._write("i32.const 1")
+        self._write("i32.add")
+        self._write("local.set $i")
+        self._write("br $ssw_loop")
+        self._indent -= 1
+        self._write("end")
+        self._write("unreachable")
+        self._indent -= 1
+        self._write("end")
+        self._indent -= 1
+        self._write(")")
+
+    def _emit_str_contains_function(self) -> None:
+        """Helper: ``$str_contains(hp, hl, np, nl) -> i32`` returns 1
+        if the haystack contains the needle anywhere, 0 otherwise.
+        Used by the Wasm-side attenuation check for ``Net.get`` /
+        ``Net.post`` after ``Net.restrict_to(host)``: matches if the
+        request URL contains the allow-listed host substring.
+
+        Linear scan: for each ``i`` in ``[0, hl - nl]``, walk ``nl``
+        bytes and return 1 on the first equal slice. Empty needle
+        returns 1; a needle longer than the haystack returns 0
+        (fast path)."""
+        self._write(
+            "(func $str_contains (param $hp i32) (param $hl i32) "
+            "(param $np i32) (param $nl i32) (result i32)"
+        )
+        self._indent += 1
+        self._write("(local $i i32)")
+        self._write("(local $j i32)")
+        self._write("(local $max i32)")
+        # Empty needle -> always 1.
+        self._write("local.get $nl")
+        self._write("i32.eqz")
+        self._write("if")
+        self._indent += 1
+        self._write("i32.const 1")
+        self._write("return")
+        self._indent -= 1
+        self._write("end")
+        # Needle longer than haystack -> 0.
+        self._write("local.get $nl")
+        self._write("local.get $hl")
+        self._write("i32.gt_s")
+        self._write("if")
+        self._indent += 1
+        self._write("i32.const 0")
+        self._write("return")
+        self._indent -= 1
+        self._write("end")
+        # max = hl - nl
+        self._write("local.get $hl")
+        self._write("local.get $nl")
+        self._write("i32.sub")
+        self._write("local.set $max")
+        # i = 0
+        self._write("i32.const 0")
+        self._write("local.set $i")
+        self._write("block $sc_exit (result i32)")
+        self._indent += 1
+        self._write("loop $sc_loop")
+        self._indent += 1
+        # if i > max: exit with 0.
+        self._write("local.get $i")
+        self._write("local.get $max")
+        self._write("i32.gt_s")
+        self._write("if")
+        self._indent += 1
+        self._write("i32.const 0")
+        self._write("br $sc_exit")
+        self._indent -= 1
+        self._write("end")
+        # Compare hp[i..i+nl] vs np[0..nl] via inner loop.
+        self._write("i32.const 0")
+        self._write("local.set $j")
+        self._write("block $sc_inner_exit")
+        self._indent += 1
+        self._write("loop $sc_inner_loop")
+        self._indent += 1
+        # if j >= nl: matched -> exit outer with 1.
+        self._write("local.get $j")
+        self._write("local.get $nl")
+        self._write("i32.ge_s")
+        self._write("if")
+        self._indent += 1
+        self._write("i32.const 1")
+        self._write("br $sc_exit")
+        self._indent -= 1
+        self._write("end")
+        # if hp[i + j] != np[j]: break inner.
+        self._write("local.get $hp")
+        self._write("local.get $i")
+        self._write("i32.add")
+        self._write("local.get $j")
+        self._write("i32.add")
+        self._write("i32.load8_u")
+        self._write("local.get $np")
+        self._write("local.get $j")
+        self._write("i32.add")
+        self._write("i32.load8_u")
+        self._write("i32.ne")
+        self._write("br_if $sc_inner_exit")
+        # j += 1.
+        self._write("local.get $j")
+        self._write("i32.const 1")
+        self._write("i32.add")
+        self._write("local.set $j")
+        self._write("br $sc_inner_loop")
+        self._indent -= 1
+        self._write("end")
+        self._indent -= 1
+        self._write("end")
+        # i += 1.
+        self._write("local.get $i")
+        self._write("i32.const 1")
+        self._write("i32.add")
+        self._write("local.set $i")
+        self._write("br $sc_loop")
+        self._indent -= 1
+        self._write("end")
+        self._write("unreachable")
+        self._indent -= 1
+        self._write("end")
+        self._indent -= 1
+        self._write(")")
+
     def _emit_itoa_function(self) -> None:
         """Helper: ``$itoa(n: i64) -> (i32 ptr, i32 len)`` writes
         the decimal representation of ``n`` into freshly-allocated

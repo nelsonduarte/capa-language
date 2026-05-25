@@ -64,6 +64,15 @@ class Lowerer(
         self._counter: dict = {"n": 0}
         self._instrs: list[Instr] = []
         self._locals: dict[str, str] = {}
+        # Per-function attenuation map produced by
+        # ``_build_attenuation_map`` (intra-function flow of
+        # ``restrict_to`` / ``restrict_to_keys`` /
+        # ``restrict_to_after`` / ``with_seed`` chains). Keyed by
+        # source-level binding name; consulted in
+        # ``_lower_method_call`` to tag privileged-op MethodCalls
+        # with their effective attenuation list, which the Wasm
+        # backend turns into inline runtime checks.
+        self._attenuation_map: dict[str, list] = {}
         # Parameters of the function currently being lowered, used by
         # ``_lower_ident`` to decide between ``kind="param"`` and
         # ``kind="local"``. Stored as a name->ty mapping so the
@@ -329,6 +338,14 @@ class Lowerer(
         self._params = {}
         self._cap_params = {}
         self._alias_stack = [{}]
+        # Build the intra-function attenuation map from the AST
+        # body before lowering. Keyed by source-level binding name;
+        # populated by ``_lower_method_call`` into IR MethodCall's
+        # ``attenuations`` field whenever a privileged op is dispatched
+        # on a tracked binding. Manifests / Wasm backend share the
+        # same flow analyser (see ``capa.manifest._flow``).
+        from ..manifest._flow import _build_attenuation_map
+        self._attenuation_map = _build_attenuation_map(fn.body)
 
         params: list[Param] = []
         for p in fn.params:

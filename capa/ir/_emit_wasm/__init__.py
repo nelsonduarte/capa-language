@@ -395,9 +395,24 @@ class WasmEmitter(
             # operation may run; it compares two (ptr, len) string
             # pairs byte-by-byte. Always emit when a map is in
             # play -- inlining it at every set/get call site would
-            # bloat the WAT.
-            if self._uses_map_ops(module):
+            # bloat the WAT. Capability attenuation checks
+            # (audit C2) for Env.restrict_to_keys also need
+            # ``$str_eq`` to compare the requested name against the
+            # allow-list, so we emit it unconditionally when any
+            # attenuation check is present too.
+            needs_starts_with, needs_contains = (
+                self._uses_attenuation_check(module)
+            )
+            needs_str_eq_for_atten = self._uses_env_atten_check(module)
+            if (self._uses_map_ops(module)
+                    or needs_starts_with
+                    or needs_contains
+                    or needs_str_eq_for_atten):
                 self._emit_str_eq_function()
+            if needs_starts_with:
+                self._emit_str_starts_with_function()
+            if needs_contains:
+                self._emit_str_contains_function()
             if self._uses_format_str(module):
                 self._emit_itoa_function()
                 if self._uses_float_format(module):

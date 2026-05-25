@@ -59,6 +59,12 @@ _WIT_SIGNATURES: dict[tuple[str, str], str] = {
     # Env.args returns a list<string> of program arguments. The
     # host constructs the list in linear memory via \$alloc.
     ("Env", "args"): "args: func() -> list<string>",
+    # Env.restrict_to_keys is a no-op at the Wasm host level
+    # (mirrors Fs.restrict_to). The audit C2 inline attenuation
+    # check on Env.get is what enforces the discipline; this
+    # signature exists so the import resolves when Capa source
+    # uses ``env.restrict_to_keys(["..."])``.
+    ("Env", "restrict_to_keys"): "restrict-to-keys: func(keys: list<string>)",
 
     # Fs: filesystem reads + writes. Phase 7C scope (Result<T, IoError>).
     # IoError is a Capa-side record with two String fields (message,

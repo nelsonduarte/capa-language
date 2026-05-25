@@ -126,12 +126,24 @@ class MethodCall(Instr):
     """``dst = receiver.method(args...)``. ``cap_used`` is set when
     the receiver's type is a capability; it names the capability
     class so the manifest builder can record this method invocation.
+
+    ``attenuations`` carries the list of ``restrict_to`` /
+    ``restrict_to_keys`` / ``restrict_to_after`` calls that were
+    applied to this receiver before it reached the privileged
+    method (e.g. ``let tmp = fs.restrict_to("/tmp/")`` then
+    ``tmp.read(...)`` records ``[{"method": "restrict_to",
+    "args": ["/tmp/"]}]`` here). The Wasm backend consumes this
+    field to emit an inline runtime check before the host call so
+    a guest cannot bypass attenuation by ignoring the discipline.
+    Populated by the lowerer using ``_build_attenuation_map``;
+    intra-function scope only in v1.
     """
     dst: Optional[str]
     receiver: Value
     method: str
     args: list[Value]
     cap_used: Optional[str] = None
+    attenuations: Optional[list] = None
 
 
 @dataclass

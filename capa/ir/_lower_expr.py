@@ -521,6 +521,19 @@ class _LowerExprMixin:
         return Value(kind="local", name=dst, ty="String")
 
     def _lower_method_call(self, e: A.MethodCall) -> Value:
+        # Look up attenuations on the receiver's source-level binding
+        # name BEFORE lowering. The intra-function flow analyser
+        # (``capa.manifest._flow._build_attenuation_map``) keys by the
+        # AST ``IdentPat.name``, which the lowerer's alpha-rename
+        # would erase. When the AST receiver is a bare Ident bound to
+        # a tracked attenuation chain (``let tmp = fs.restrict_to(
+        # "/tmp/")``), copy the list onto the IR MethodCall so the
+        # Wasm backend can emit a runtime check before the host call.
+        atts = None
+        if isinstance(e.receiver, A.Ident):
+            tracked = self._attenuation_map.get(e.receiver.name)
+            if tracked:
+                atts = list(tracked)
         receiver = self._lower_expr(e.receiver)
         args = [self._lower_expr(arg) for arg in e.args]
         cap_used: Optional[str] = None
@@ -551,7 +564,7 @@ class _LowerExprMixin:
         self._instrs.append(
             MethodCall(
                 dst=dst, receiver=receiver, method=e.method,
-                args=args, cap_used=cap_used,
+                args=args, cap_used=cap_used, attenuations=atts,
             )
         )
         return Value(kind="local", name=dst, ty=result_ty)

@@ -250,6 +250,87 @@ class _DiscoveryMixin:
                 return True
         return False
 
+    def _uses_env_atten_check(self, module: Module) -> bool:
+        """True if any ``Env.get`` MethodCall in the module carries a
+        non-empty ``attenuations`` list. ``Env.restrict_to_keys``
+        is enforced by a chain of ``$str_eq`` calls (OR'd together)
+        emitted in ``_emit_cap_method_call``; we lift the discovery
+        out so the helper can be unconditionally available at emit
+        site without having to round-trip the module again."""
+        def visit(instrs: list[Instr]) -> bool:
+            for instr in instrs:
+                if (isinstance(instr, MethodCall)
+                        and instr.attenuations
+                        and (instr.cap_used or "") == "Env"):
+                    return True
+                if isinstance(instr, If):
+                    if visit(instr.then_body) or visit(instr.else_body):
+                        return True
+                if isinstance(instr, While):
+                    if visit(instr.cond_setup) or visit(instr.body):
+                        return True
+                if isinstance(instr, For):
+                    if visit(instr.body):
+                        return True
+                if isinstance(instr, Match):
+                    for arm in instr.arms:
+                        if visit(arm.body):
+                            return True
+            return False
+        for fn in module.functions:
+            if visit(fn.body):
+                return True
+        for impl in module.impls:
+            for m in impl.methods:
+                if visit(m.body):
+                    return True
+        return False
+
+    def _uses_attenuation_check(self, module: Module) -> tuple[bool, bool]:
+        """Walk the module for ``MethodCall`` instructions whose
+        ``attenuations`` field is non-empty: those are the Fs / Net /
+        Env / Clock privileged ops that the Wasm backend must guard
+        with an inline runtime check (audit C2, 2026-05-25).
+
+        Returns ``(needs_starts_with, needs_contains)``:
+        - ``needs_starts_with``: Fs.read / Fs.write after restrict_to
+          require a prefix check via ``$str_starts_with``.
+        - ``needs_contains``: Net.get / Net.post after restrict_to(host)
+          require an in-string host check via ``$str_contains``.
+
+        Env.restrict_to_keys reuses ``$str_eq`` (already emitted via
+        the Map / String-method discovery branches; we don't add a
+        separate flag for it here)."""
+        needs_starts_with = False
+        needs_contains = False
+
+        def visit(instrs: list[Instr]) -> None:
+            nonlocal needs_starts_with, needs_contains
+            for instr in instrs:
+                if isinstance(instr, MethodCall) and instr.attenuations:
+                    cap = instr.cap_used or ""
+                    if cap == "Fs" and instr.method in ("read", "write"):
+                        needs_starts_with = True
+                    if cap == "Net" and instr.method in ("get", "post"):
+                        needs_contains = True
+                if isinstance(instr, If):
+                    visit(instr.then_body)
+                    visit(instr.else_body)
+                elif isinstance(instr, While):
+                    visit(instr.cond_setup)
+                    visit(instr.body)
+                elif isinstance(instr, For):
+                    visit(instr.body)
+                elif isinstance(instr, Match):
+                    for arm in instr.arms:
+                        visit(arm.body)
+        for fn in module.functions:
+            visit(fn.body)
+        for impl in module.impls:
+            for m in impl.methods:
+                visit(m.body)
+        return needs_starts_with, needs_contains
+
     def _uses_map_ops(self, module: Module) -> bool:
         """True if the module touches a Map or a String method that
         relies on byte-string equality (contains / starts_with /
@@ -347,15 +428,26 @@ class _DiscoveryMixin:
                         f"built-in set; user-defined capabilities "
                         f"land in a later phase"
                     )
-                key = (cap, instr.method)
-                if (cap, instr.method) not in _WIT_SIGNATURES:
-                    raise WasmEmissionError(
-                        f"Phase 6B: capability method {cap}.{instr.method} "
-                        f"has no WIT/Wasm encoding yet; widen the "
-                        f"signature tables in capa.ir._emit_wit and "
-                        f"capa.ir._emit_wasm together"
-                    )
-                self._used_caps.add(key)
+                # Attenuator methods (``restrict_to`` /
+                # ``restrict_to_keys`` / ``restrict_to_after``) are
+                # elided at emit time (the audit C2 inline check on
+                # the privileged op is what enforces the discipline).
+                # Skip importing them so the host doesn't need to
+                # define a matching no-op stub.
+                if instr.method in (
+                    "restrict_to", "restrict_to_keys", "restrict_to_after",
+                ):
+                    pass
+                else:
+                    key = (cap, instr.method)
+                    if (cap, instr.method) not in _WIT_SIGNATURES:
+                        raise WasmEmissionError(
+                            f"Phase 6B: capability method {cap}.{instr.method} "
+                            f"has no WIT/Wasm encoding yet; widen the "
+                            f"signature tables in capa.ir._emit_wit and "
+                            f"capa.ir._emit_wasm together"
+                        )
+                    self._used_caps.add(key)
             # parse_json / to_json used to route through a synthetic
             # ``Json`` host capability with canonical-ABI imports.
             # They now compile to ``call $__capa_parse_json`` /
