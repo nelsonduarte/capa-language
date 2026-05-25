@@ -4752,5 +4752,97 @@ class TestCapabilityFieldDiscipline(unittest.TestCase):
         self.assertTrue(r.ok, r.errors)
 
 
+class TestCapLeakViaGenericInstantiation(unittest.TestCase):
+    """Hole C from the 2026-05-25 audit: the structural check
+    ``_check_no_capability`` fires on a generic function's
+    declaration body (where ``T`` is an opaque type variable),
+    but the call site that substitutes ``T = Stdio`` was not
+    re-validated. ``id(stdio)`` and ``wrap(stdio)`` used to pass
+    silently even though no parameter in either function's
+    signature names a capability.
+
+    The fix runs ``_contains_any_capability`` on every substituted
+    parameter and on the substituted return type post-unification;
+    a cap that appears post-substitution but not pre-substitution
+    was smuggled in through a TyVar."""
+
+    def test_identity_function_with_builtin_cap_rejected(self):
+        # `id(stdio)` substitutes T = Stdio, smuggling the cap
+        # through a function whose signature does not declare it.
+        msgs = errors_of(
+            "fun id<T>(x: T) -> T\n"
+            "    return x\n"
+            "\n"
+            "fun main(stdio: Stdio)\n"
+            "    let _s = id(stdio)\n"
+        )
+        self.assertTrue(
+            any("capability 'Stdio'" in m and "generic" in m for m in msgs),
+            msgs,
+        )
+
+    def test_generic_wrap_with_builtin_cap_rejected(self):
+        # `wrap(stdio)` smuggles Stdio into Box<T>; the function's
+        # signature does not declare it as a capability parameter.
+        msgs = errors_of(
+            "type Box<T> { value: T }\n"
+            "\n"
+            "fun wrap<T>(x: T) -> Box<T>\n"
+            "    return Box { value: x }\n"
+            "\n"
+            "fun main(stdio: Stdio)\n"
+            "    let _b = wrap(stdio)\n"
+        )
+        self.assertTrue(
+            any("capability 'Stdio'" in m and "generic" in m for m in msgs),
+            msgs,
+        )
+
+    def test_generic_with_user_capability_rejected(self):
+        # The leak shape generalises: a user-defined capability
+        # (``Mailer`` here) smuggled through a TyVar is the same
+        # hole.
+        msgs = errors_of(
+            "capability Mailer\n"
+            "    fun send(self, to: String) -> Bool\n"
+            "\n"
+            "fun id<T>(x: T) -> T\n"
+            "    return x\n"
+            "\n"
+            "fun forge(m: Mailer)\n"
+            "    let _m2 = id(m)\n"
+        )
+        self.assertTrue(
+            any("capability 'Mailer'" in m and "generic" in m for m in msgs),
+            msgs,
+        )
+
+    def test_generic_with_non_capability_still_allowed(self):
+        # Sanity: non-cap T (Int) flows through generics without
+        # complaint, otherwise we'd have broken every legitimate
+        # generic call.
+        r = check(
+            "fun id<T>(x: T) -> T\n"
+            "    return x\n"
+            "\n"
+            "fun main(stdio: Stdio)\n"
+            "    let n = id(42)\n"
+            "    stdio.println(\"${n}\")\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+    def test_explicit_cap_param_still_allowed(self):
+        # Sanity: a non-generic function with a cap parameter is
+        # the legitimate flow; the new check must not fire here.
+        r = check(
+            "fun use_stdio(s: Stdio)\n"
+            "    s.println(\"ok\")\n"
+            "\n"
+            "fun main(stdio: Stdio)\n"
+            "    use_stdio(stdio)\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+
 if __name__ == "__main__":
     unittest.main()

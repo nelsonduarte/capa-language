@@ -232,23 +232,21 @@ the current Wasm critical path.
   (integer-valued JNum, non-integer JNum, non-JNum variant)
   in `TestWasmJson` lock the parity in.
 
-- [ ] **Capability-discipline hole C: generic instantiation
-  re-check** (audit 2026-05-25). The structural check
-  (`_check_no_capability`) fires on a generic struct's declaration
-  body: `type Box<T> { value: T }` is fine because `T` is a type
-  variable, not a capability. But the call site of `fun
-  store<T>(box: Box<T>, x: T)` invoked as `store(b, my_stdio)`
-  substitutes `T = Stdio` and the resulting `Box<Stdio>` never
-  gets re-validated. The fix needs a post-instantiation walk:
-  after the dispatcher resolves the type-parameter mapping
-  (`_dispatch.py` `instantiate` / `_commit_fresh_substitutions`),
-  re-run `_contains_any_capability` on every parameter type and
-  on the return type, with the substitution applied. Reject if a
-  cap shows up at a position that didn't have one pre-substitution.
-  Holes A and B (field re-bind + FieldAccess aliasing) closed in
-  rc.3+; this one stayed deferred because it sits in the generic
-  dispatch path rather than the discipline mixin proper. ⏱ 3-5h
-  plus regression tests. P1.
+- [x] **Capability-discipline hole C: generic instantiation
+  re-check** (closed 2026-05-25). New
+  `_reject_cap_leak_via_substitution` in
+  [`capa/analyzer/_discipline.py`](capa/analyzer/_discipline.py)
+  fires when a capability appears in the substituted parameter
+  or return type and was *not* there pre-substitution.
+  `_check_call_with_inference` and `_check_method_dispatch` in
+  [`capa/analyzer/_dispatch.py`](capa/analyzer/_dispatch.py)
+  call it after unification, before committing the
+  substitutions. `id(stdio)` and `wrap(stdio)` now fail with
+  "argument N substitutes capability 'Stdio' into a generic
+  type parameter"; explicit cap params (`fun use(s: Stdio)`
+  with `use(stdio)`) keep working because the check skips when
+  the pre-substitution form already names the capability.
+  Coverage: 5 tests in `TestCapLeakViaGenericInstantiation`.
 
 ---
 

@@ -302,9 +302,18 @@ class _DispatchMixin:
                     f"{ty_str(substituted)}, got {ty_str(arg_ty)}",
                     args_in_order[i].pos,
                 )
+            self._reject_cap_leak_via_substitution(
+                param_ty, substituted, name, args_in_order[i].pos,
+                slot=f"argument {i + 1}",
+            )
 
         self._commit_fresh_substitutions(mapping)
-        return instantiate(fun_ty.ret, type_params, mapping)
+        ret_substituted = instantiate(fun_ty.ret, type_params, mapping)
+        self._reject_cap_leak_via_substitution(
+            fun_ty.ret, ret_substituted, name, e.pos,
+            slot="return type",
+        )
+        return ret_substituted
 
     def _check_method_call(self, e: A.MethodCall) -> Ty:
         # Receiver + args first so their types populate
@@ -463,11 +472,19 @@ class _DispatchMixin:
                     f"{ty_str(arg_ty)}",
                     reordered_args[i].pos,
                 )
+            self._reject_cap_leak_via_substitution(
+                param_ty, substituted, f"{recv_ty.name}.{e.method!r}",
+                reordered_args[i].pos, slot=f"argument {i + 1}",
+            )
 
         self._commit_fresh_substitutions(mapping)
 
         all_type_params = type_sym.type_params + method_sym.type_params
         ret_ty = instantiate(method_fun_ty.ret, all_type_params, mapping)
+        self._reject_cap_leak_via_substitution(
+            method_fun_ty.ret, ret_ty, f"{recv_ty.name}.{e.method!r}",
+            e.pos, slot="return type",
+        )
 
         if method_sym.consuming_params:
             self._mark_consumed_args(reordered_args, method_sym.consuming_params)

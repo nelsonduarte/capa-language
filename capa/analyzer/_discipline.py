@@ -192,6 +192,48 @@ class _DisciplineMixin:
             pos,
         )
 
+    def _reject_cap_leak_via_substitution(
+        self,
+        pre_ty: Ty,
+        post_ty: Ty,
+        callee_label: str,
+        pos: Pos,
+        *,
+        slot: str,
+    ) -> None:
+        """Fire when generic-parameter substitution puts a
+        capability where the unsubstituted form had none.
+
+        Hole C from the 2026-05-25 audit: a generic function whose
+        signature uses a type variable ``T`` doesn't declare any
+        capability, but the call site that substitutes ``T = Stdio``
+        smuggles the capability through. The structural check
+        ``_check_no_capability`` only runs against the function's
+        own declaration body (where ``T`` is opaque), so without
+        this post-instantiation re-check the leak goes silent.
+
+        ``pre_ty`` is the parameter or return type as declared;
+        ``post_ty`` is the substituted version. If a capability
+        appears in ``post_ty`` and *not* in ``pre_ty``, it came
+        from a TyVar substitution and the call is rejected.
+        """
+        post_cap = self._contains_any_capability(post_ty)
+        if post_cap is None:
+            return
+        pre_cap = self._contains_any_capability(pre_ty)
+        if pre_cap is not None:
+            # The declared signature already names a capability at
+            # this slot; substitution preserving it is the legitimate
+            # flow (``fun use(s: Stdio)`` called with ``stdio``).
+            return
+        self._err(
+            f"call to {callee_label}: {slot} substitutes capability "
+            f"{post_cap.name!r} into a generic type parameter; the "
+            f"function's signature does not declare it as a capability "
+            f"flow (capabilities must appear by name in the signature)",
+            pos,
+        )
+
     def _contains_any_capability(self, ty: Ty) -> Optional[TyName]:
         """Recursive walk that returns the first capability found
         in ``ty``. Three kinds count:
