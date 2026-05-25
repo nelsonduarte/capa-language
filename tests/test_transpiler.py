@@ -2015,6 +2015,12 @@ class TestTranspileExamples(unittest.TestCase):
         # Dependency graph: chalk depends on lodash
         self.assertIn("pkg:npm/chalk@5.3.0", out)
         self.assertIn("-> pkg:npm/lodash@4.17.21", out)
+        # Vulnerabilities[] / VEX block: one entry with rating,
+        # affects, and analysis lines.
+        self.assertIn("Vulnerabilities (1):", out)
+        self.assertIn("- CVE-2024-7890 (high)", out)
+        self.assertIn("affects: pkg:npm/lodash@4.17.21", out)
+        self.assertIn("analysis: exploitable (code-uses-vulnerable-template)", out)
         self.assertIn("Validation: ok (refs resolve + acyclic)", out)
 
     def test_net_attenuation(self):

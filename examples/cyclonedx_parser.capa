@@ -23,9 +23,8 @@
 //   checksumValue}`).
 //
 // Scope limits: metadata + components + dependencies. Out of
-// scope: vulnerabilities[] / VEX, the `services[]` and
-// `compositions[]` arrays, externalReferences[], evidence[],
-// signatures. Extending is mechanical.
+// scope: `services[]`, `compositions[]`, externalReferences[],
+// evidence[], signatures. Extending is mechanical.
 
 capability SbomReader
     fun read(self, source: String) -> Result<String, String>
@@ -56,6 +55,42 @@ type CdxDependency {
     depends_on: List<String>
 }
 
+type CdxSource {
+    name: String,
+    url: String
+}
+
+type CdxRating {
+    severity: String,
+    score: Float,
+    method: String
+}
+
+type CdxAffects {
+    ref: String
+}
+
+// VEX analysis statement attached to a vulnerability.
+type CdxAnalysis {
+    state: String,
+    justification: String,
+    detail: String
+}
+
+type CdxVulnerability {
+    bom_ref: String,
+    id: String,
+    source: CdxSource,
+    ratings: List<CdxRating>,
+    cwes: List<Int>,
+    description: String,
+    recommendation: String,
+    published: String,
+    updated: String,
+    affects: List<CdxAffects>,
+    analysis: CdxAnalysis
+}
+
 type CdxMetadata {
     timestamp: String,
     tool_names: List<String>,
@@ -70,7 +105,8 @@ type CdxDocument {
     version: Int,
     metadata: CdxMetadata,
     components: List<CdxComponent>,
-    dependencies: List<CdxDependency>
+    dependencies: List<CdxDependency>,
+    vulnerabilities: List<CdxVulnerability>
 }
 
 // ---- typed-extraction helpers ----
@@ -205,6 +241,89 @@ fun parse_dependency(j: JsonValue) -> Result<CdxDependency, String>
                 depends.push(as_string_or_err(x, "Dependency.dependsOn[i]")?)
     return Ok(CdxDependency { ref: ref, depends_on: depends })
 
+// Vulnerability-record parsers. Every nested field is optional in
+// CycloneDX 1.5 except `id`; absent values fall back to empty
+// strings / empty lists / zero-valued structs.
+
+fun parse_source(j: JsonValue) -> Result<CdxSource, String>
+    return Ok(CdxSource {
+        name: string_field_or(j, "name", ""),
+        url: string_field_or(j, "url", "")
+    })
+
+fun parse_rating(j: JsonValue) -> Result<CdxRating, String>
+    let score = match optional_field(j, "score")
+        None -> 0.0
+        Some(v) -> as_num_or_err(v, "Rating.score")?
+    return Ok(CdxRating {
+        severity: string_field_or(j, "severity", ""),
+        score: score,
+        method: string_field_or(j, "method", "")
+    })
+
+fun parse_affects_entry(j: JsonValue) -> Result<CdxAffects, String>
+    return Ok(CdxAffects {
+        ref: as_string_or_err(field(j, "ref")?, "Affects.ref")?
+    })
+
+fun parse_analysis(j: JsonValue) -> Result<CdxAnalysis, String>
+    return Ok(CdxAnalysis {
+        state: string_field_or(j, "state", ""),
+        justification: string_field_or(j, "justification", ""),
+        detail: string_field_or(j, "detail", "")
+    })
+
+fun parse_vulnerability(j: JsonValue) -> Result<CdxVulnerability, String>
+    let source = match optional_field(j, "source")
+        None -> CdxSource { name: "", url: "" }
+        Some(v) -> parse_source(v)?
+
+    let ratings: List<CdxRating> = []
+    match optional_field(j, "ratings")
+        None ->
+            ()
+        Some(v) ->
+            let xs = as_array_or_err(v, "Vulnerability.ratings")?
+            for x in xs
+                ratings.push(parse_rating(x)?)
+
+    let cwes: List<Int> = []
+    match optional_field(j, "cwes")
+        None ->
+            ()
+        Some(v) ->
+            let xs = as_array_or_err(v, "Vulnerability.cwes")?
+            for x in xs
+                let n = as_num_or_err(x, "Vulnerability.cwes[i]")?
+                cwes.push(to_int(n))
+
+    let affects: List<CdxAffects> = []
+    match optional_field(j, "affects")
+        None ->
+            ()
+        Some(v) ->
+            let xs = as_array_or_err(v, "Vulnerability.affects")?
+            for x in xs
+                affects.push(parse_affects_entry(x)?)
+
+    let analysis = match optional_field(j, "analysis")
+        None -> CdxAnalysis { state: "", justification: "", detail: "" }
+        Some(v) -> parse_analysis(v)?
+
+    return Ok(CdxVulnerability {
+        bom_ref: string_field_or(j, "bom-ref", ""),
+        id: as_string_or_err(field(j, "id")?, "Vulnerability.id")?,
+        source: source,
+        ratings: ratings,
+        cwes: cwes,
+        description: string_field_or(j, "description", ""),
+        recommendation: string_field_or(j, "recommendation", ""),
+        published: string_field_or(j, "published", ""),
+        updated: string_field_or(j, "updated", ""),
+        affects: affects,
+        analysis: analysis
+    })
+
 fun extract_tool_names(tools_j: JsonValue) -> Result<List<String>, String>
     // CycloneDX 1.5 supports both the modern `tools.components[]`
     // shape (each entry a Component object) and the legacy flat
@@ -294,6 +413,15 @@ fun parse_document(j: JsonValue) -> Result<CdxDocument, String>
             for x in xs
                 dependencies.push(parse_dependency(x)?)
 
+    let vulnerabilities: List<CdxVulnerability> = []
+    match optional_field(j, "vulnerabilities")
+        None ->
+            ()
+        Some(v) ->
+            let xs = as_array_or_err(v, "vulnerabilities")?
+            for x in xs
+                vulnerabilities.push(parse_vulnerability(x)?)
+
     let metadata = parse_metadata(j)?
 
     return Ok(CdxDocument {
@@ -303,7 +431,8 @@ fun parse_document(j: JsonValue) -> Result<CdxDocument, String>
         version: to_int(version_num),
         metadata: metadata,
         components: components,
-        dependencies: dependencies
+        dependencies: dependencies,
+        vulnerabilities: vulnerabilities
     })
 
 fun parse_cyclonedx(json_text: String) -> Result<CdxDocument, String>
@@ -333,6 +462,40 @@ fun collect_bom_refs(doc: CdxDocument) -> Set<String>
             refs.add(c.bom_ref)
     return refs
 
+// Severity strings the CycloneDX 1.5 schema allows on a rating.
+fun is_valid_severity(s: String) -> Bool
+    if s == "critical"
+        return true
+    if s == "high"
+        return true
+    if s == "medium"
+        return true
+    if s == "low"
+        return true
+    if s == "info"
+        return true
+    if s == "none"
+        return true
+    if s == "unknown"
+        return true
+    return false
+
+// VEX analysis-state enum from CycloneDX 1.5.
+fun is_valid_analysis_state(s: String) -> Bool
+    if s == "resolved"
+        return true
+    if s == "resolved_with_pedigree"
+        return true
+    if s == "exploitable"
+        return true
+    if s == "in_triage"
+        return true
+    if s == "false_positive"
+        return true
+    if s == "not_affected"
+        return true
+    return false
+
 fun validate_cyclonedx(doc: CdxDocument) -> List<String>
     let refs = collect_bom_refs(doc)
     let errors: List<String> = []
@@ -342,6 +505,16 @@ fun validate_cyclonedx(doc: CdxDocument) -> List<String>
         for child in d.depends_on
             if not refs.contains(child)
                 errors.push("dependency target '${child}' is not a known bom-ref")
+    for v in doc.vulnerabilities
+        for a in v.affects
+            if not refs.contains(a.ref)
+                errors.push("vulnerability '${v.id}' affects unknown bom-ref '${a.ref}'")
+    for v in doc.vulnerabilities
+        for r in v.ratings
+            if not is_valid_severity(r.severity)
+                errors.push("vulnerability '${v.id}' has rating with invalid severity '${r.severity}'")
+        if v.analysis.state != "" and not is_valid_analysis_state(v.analysis.state)
+            errors.push("vulnerability '${v.id}' has analysis with invalid state '${v.analysis.state}'")
     match detect_cyclonedx_cycle(doc)
         None ->
             ()
@@ -415,7 +588,7 @@ fun main(stdio: Stdio)
     // dependency components (a lib + a transitive lib), and a
     // small dependency graph linking them. Mirrors the kind of
     // SBOM the Capa compiler itself emits via --cyclonedx.
-    let sample = "{\"bomFormat\": \"CycloneDX\", \"specVersion\": \"1.5\", \"serialNumber\": \"urn:uuid:11111111-2222-3333-4444-555555555555\", \"version\": 1, \"metadata\": {\"timestamp\": \"2026-05-13T10:00:00Z\", \"tools\": {\"components\": [{\"type\": \"application\", \"name\": \"capa\", \"version\": \"0.6.0-alpha\"}]}, \"component\": {\"bom-ref\": \"capa:program:demo\", \"type\": \"application\", \"name\": \"demo\", \"version\": \"1.0.0\"}}, \"components\": [{\"bom-ref\": \"pkg:npm/lodash@4.17.21\", \"type\": \"library\", \"name\": \"lodash\", \"version\": \"4.17.21\", \"purl\": \"pkg:npm/lodash@4.17.21\", \"hashes\": [{\"alg\": \"SHA-256\", \"content\": \"aaaabbbbccccddddeeeeffff0011223344556677889900aabbccddeeff001122\"}], \"licenses\": [{\"license\": {\"id\": \"MIT\"}}]}, {\"bom-ref\": \"pkg:npm/chalk@5.3.0\", \"type\": \"library\", \"name\": \"chalk\", \"version\": \"5.3.0\", \"purl\": \"pkg:npm/chalk@5.3.0\", \"licenses\": [{\"expression\": \"MIT OR Apache-2.0\"}]}], \"dependencies\": [{\"ref\": \"capa:program:demo\", \"dependsOn\": [\"pkg:npm/lodash@4.17.21\", \"pkg:npm/chalk@5.3.0\"]}, {\"ref\": \"pkg:npm/chalk@5.3.0\", \"dependsOn\": [\"pkg:npm/lodash@4.17.21\"]}]}"
+    let sample = "{\"bomFormat\": \"CycloneDX\", \"specVersion\": \"1.5\", \"serialNumber\": \"urn:uuid:11111111-2222-3333-4444-555555555555\", \"version\": 1, \"metadata\": {\"timestamp\": \"2026-05-13T10:00:00Z\", \"tools\": {\"components\": [{\"type\": \"application\", \"name\": \"capa\", \"version\": \"0.6.0-alpha\"}]}, \"component\": {\"bom-ref\": \"capa:program:demo\", \"type\": \"application\", \"name\": \"demo\", \"version\": \"1.0.0\"}}, \"components\": [{\"bom-ref\": \"pkg:npm/lodash@4.17.21\", \"type\": \"library\", \"name\": \"lodash\", \"version\": \"4.17.21\", \"purl\": \"pkg:npm/lodash@4.17.21\", \"hashes\": [{\"alg\": \"SHA-256\", \"content\": \"aaaabbbbccccddddeeeeffff0011223344556677889900aabbccddeeff001122\"}], \"licenses\": [{\"license\": {\"id\": \"MIT\"}}]}, {\"bom-ref\": \"pkg:npm/chalk@5.3.0\", \"type\": \"library\", \"name\": \"chalk\", \"version\": \"5.3.0\", \"purl\": \"pkg:npm/chalk@5.3.0\", \"licenses\": [{\"expression\": \"MIT OR Apache-2.0\"}]}], \"dependencies\": [{\"ref\": \"capa:program:demo\", \"dependsOn\": [\"pkg:npm/lodash@4.17.21\", \"pkg:npm/chalk@5.3.0\"]}, {\"ref\": \"pkg:npm/chalk@5.3.0\", \"dependsOn\": [\"pkg:npm/lodash@4.17.21\"]}], \"vulnerabilities\": [{\"bom-ref\": \"vuln-CVE-2024-7890\", \"id\": \"CVE-2024-7890\", \"source\": {\"name\": \"NVD\"}, \"ratings\": [{\"severity\": \"high\", \"score\": 7.5, \"method\": \"CVSSv3\"}], \"cwes\": [79], \"description\": \"Cross-site scripting in lodash template helper\", \"recommendation\": \"Upgrade to lodash 4.17.22\", \"published\": \"2024-09-01T00:00:00Z\", \"updated\": \"2024-09-15T00:00:00Z\", \"affects\": [{\"ref\": \"pkg:npm/lodash@4.17.21\"}], \"analysis\": {\"state\": \"exploitable\", \"justification\": \"code-uses-vulnerable-template\", \"detail\": \"lodash _.template called with user input\"}}]}"
 
     match parse_cyclonedx(sample)
         Err(msg) ->
@@ -451,6 +624,17 @@ fun main(stdio: Stdio)
                 stdio.println("  - ${d.ref}")
                 for child in d.depends_on
                     stdio.println("      -> ${child}")
+            stdio.println("")
+            stdio.println("Vulnerabilities (${doc.vulnerabilities.length()}):")
+            for v in doc.vulnerabilities
+                let severity = match v.ratings.get(0)
+                    None -> "unknown"
+                    Some(r) -> r.severity
+                stdio.println("  - ${v.id} (${severity})")
+                for a in v.affects
+                    stdio.println("      affects: ${a.ref}")
+                if v.analysis.state != ""
+                    stdio.println("      analysis: ${v.analysis.state} (${v.analysis.justification})")
             stdio.println("")
             let violations = validate_cyclonedx(doc)
             if violations.is_empty()

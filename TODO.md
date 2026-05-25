@@ -210,14 +210,18 @@ the current Wasm critical path.
   `examples/cyclonedx_parser.capa` and
   `examples/spdx_parser.capa` cover the core fields with
   validation passes. Missing: SPDX snippets /
-  has-extracted-licensing-info; CycloneDX vulnerabilities[] /
-  VEX / services[] / evidence[] / signatures; the tag-value
+  has-extracted-licensing-info; CycloneDX services[] /
+  evidence[] / signatures; the tag-value
   alternative serialisation; the "representation + validation"
   writeup tying them together. ⏱ 8-12h each. Progress
   2026-05-25: SPDX `annotations[]` parsing landed at both
   document and package scope with a per-annotation
   `kind in {REVIEW, OTHER}` validator; locked by two new
   `assertIn` lines on `test_spdx_parser`.
+  Progress 2026-05-25: CycloneDX `vulnerabilities[]` + VEX
+  `analysis` subset parsing landed with severity / analysis-state
+  enum validators and an affects-ref referential check; locked
+  by four new `assertIn` lines on `test_cyclonedx_parser`.
 
 - [x] **SBOM-capability audit example, structural policies**
   (closed 2026-05-25). `examples/sbom_capability_audit.capa`
