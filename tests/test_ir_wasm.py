@@ -1,3 +1,16 @@
+# pyright: reportCallIssue=none
+#
+# wasmtime-py types ``instance.exports(store)[name]`` as a union
+# ``Func | Global | Memory | Table | SharedMemory``. Every call site
+# in this file passes the resulting export through ``(...)``, so
+# Pyright flags each non-callable variant of the union four times
+# per call site (50+ helpers x 4 = ~200 spurious red squiggles).
+# We know the relevant export is a Func because the WAT we emit
+# always declares it as one; silencing ``reportCallIssue`` for the
+# whole file is the smallest fix that doesn't bury the test code in
+# per-line type-ignore noise. Real "not callable" errors are still
+# caught by ``python -m unittest`` -- the runtime check is sharper
+# than Pyright's union narrowing here.
 """Tests for the CIR -> WebAssembly backend (Phase 6).
 
 Phase 6A coverage: Int / Bool arithmetic, comparisons, locals,
