@@ -159,6 +159,12 @@ class WasmEmitter(
         # function so all literals are known.
         self._strings: dict[str, tuple[int, int]] = {}
         self._string_data_offset = 0
+        # Offset of the Grisu2 cached-powers-of-10 table in linear
+        # memory. Zero when no Float interpolation is reached and the
+        # table is not emitted. Populated in ``emit()`` after string
+        # interning, before heap_top is laid out, so the table sits
+        # between the string pool and the heap.
+        self._cached_powers_offset = 0
         # Set of capability classes the emitter has seen in
         # method-call receivers; drives the ``(import ...)``
         # declarations at the top of the module.
@@ -278,6 +284,7 @@ class WasmEmitter(
         self._used_caps = set()
         self._strings = {}
         self._string_data_offset = 0
+        self._cached_powers_offset = 0
         self._lifted_lambdas = []
         self._lambda_by_dst = {}
         self._closure_sig_keys = {}
@@ -299,6 +306,20 @@ class WasmEmitter(
                 self._intern_string(v.literal)
         self._discover(module)
         self._discover_lambdas(module)
+
+        # Reserve space for the Grisu2 cached-powers-of-10 table
+        # between the string pool and the heap. Only when Float
+        # interpolation is reached -- pure-Int programs skip the
+        # 1044-byte table entirely. The table is emitted as a
+        # ``(data ...)`` block alongside the string segments below.
+        if self._uses_float_format(module):
+            from ._runtime import _CACHED_POWERS_TABLE_BYTES
+            self._cached_powers_offset = _align_up(
+                self._string_data_offset, 8,
+            )
+            self._string_data_offset = (
+                self._cached_powers_offset + _CACHED_POWERS_TABLE_BYTES
+            )
 
         # Stage 1: emit the (module ... ) header with imports and
         # memory.
@@ -348,6 +369,8 @@ class WasmEmitter(
             ):
                 escaped = self._escape_wat_string(text)
                 self._write(f'(data (i32.const {offset}) "{escaped}")')
+            if self._cached_powers_offset:
+                self._emit_cached_powers_data()
         # Heap: starts just after the static data segment, aligned
         # to 8 bytes. The ``$alloc`` function below bumps the global
         # forward by the requested size, rounded up to 8.
@@ -372,6 +395,12 @@ class WasmEmitter(
             if self._uses_format_str(module):
                 self._emit_itoa_function()
                 if self._uses_float_format(module):
+                    # Grisu2 dependencies are emitted before $ftoa so
+                    # the WAT decode order is consistent: data segment
+                    # (already laid out above), helper functions, then
+                    # $ftoa itself.
+                    self._emit_mul_high_u64_function()
+                    self._emit_grisu_cached_power_function()
                     self._emit_ftoa_function()
             # parse_int / parse_float are built-in free functions
             # routed to runtime helpers. Emit only when used.

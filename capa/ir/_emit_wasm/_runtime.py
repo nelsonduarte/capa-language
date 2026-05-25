@@ -20,6 +20,133 @@ touching control flow.
 
 from __future__ import annotations
 
+import struct
+
+
+# -------------------------------------------------------------
+# Grisu2 cached powers of 10
+# -------------------------------------------------------------
+#
+# 87 entries spanning decimal exponents [-348, 340] in steps of 8.
+# Each entry is the normalised DiyFp representation of 10^k with a
+# 64-bit significand whose top bit is set. ``binary_exp`` is the
+# exponent applied to ``significand`` (10^k ~ significand * 2^bexp).
+# ``decimal_exp`` is k, the decimal exponent the entry represents.
+#
+# The numerical constants are standard across every Grisu2
+# implementation in the wild (Loitsch 2010, Google's double-
+# conversion, Rust's libcore::num::flt2dec) and are not derived
+# from anything in this codebase. They are immutable and would
+# never need to change.
+#
+# Memory layout (little-endian, 12 bytes per entry):
+#   offset 0: u64 significand
+#   offset 8: i16 binary_exp
+#   offset 10: i16 decimal_exp
+_CACHED_POWERS: list[tuple[int, int, int]] = [
+    (0xfa8fd5a0081c0288, -1220, -348),
+    (0xbaaee17fa23ebf76, -1193, -340),
+    (0x8b16fb203055ac76, -1166, -332),
+    (0xcf42894a5dce35ea, -1140, -324),
+    (0x9a6bb0aa55653b2d, -1113, -316),
+    (0xe61acf033d1a45df, -1087, -308),
+    (0xab70fe17c79ac6ca, -1060, -300),
+    (0xff77b1fcbebcdc4f, -1034, -292),
+    (0xbe5691ef416bd60c, -1007, -284),
+    (0x8dd01fad907ffc3c, -980, -276),
+    (0xd3515c2831559a83, -954, -268),
+    (0x9d71ac8fada6c9b5, -927, -260),
+    (0xea9c227723ee8bcb, -901, -252),
+    (0xaecc49914078536d, -874, -244),
+    (0x823c12795db6ce57, -847, -236),
+    (0xc21094364dfb5637, -821, -228),
+    (0x9096ea6f3848984f, -794, -220),
+    (0xd77485cb25823ac7, -768, -212),
+    (0xa086cfcd97bf97f4, -741, -204),
+    (0xef340a98172aace5, -715, -196),
+    (0xb23867fb2a35b28e, -688, -188),
+    (0x84c8d4dfd2c63f3b, -661, -180),
+    (0xc5dd44271ad3cdba, -635, -172),
+    (0x936b9fcebb25c996, -608, -164),
+    (0xdbac6c247d62a584, -582, -156),
+    (0xa3ab66580d5fdaf6, -555, -148),
+    (0xf3e2f893dec3f126, -529, -140),
+    (0xb5b5ada8aaff80b8, -502, -132),
+    (0x87625f056c7c4a8b, -475, -124),
+    (0xc9bcff6034c13053, -449, -116),
+    (0x964e858c91ba2655, -422, -108),
+    (0xdff9772470297ebd, -396, -100),
+    (0xa6dfbd9fb8e5b88f, -369, -92),
+    (0xf8a95fcf88747d94, -343, -84),
+    (0xb94470938fa89bcf, -316, -76),
+    (0x8a08f0f8bf0f156b, -289, -68),
+    (0xcdb02555653131b6, -263, -60),
+    (0x993fe2c6d07b7fac, -236, -52),
+    (0xe45c10c42a2b3b06, -210, -44),
+    (0xaa242499697392d3, -183, -36),
+    (0xfd87b5f28300ca0e, -157, -28),
+    (0xbce5086492111aeb, -130, -20),
+    (0x8cbccc096f5088cc, -103, -12),
+    (0xd1b71758e219652c, -77, -4),
+    (0x9c40000000000000, -50, 4),
+    (0xe8d4a51000000000, -24, 12),
+    (0xad78ebc5ac620000, 3, 20),
+    (0x813f3978f8940984, 30, 28),
+    (0xc097ce7bc90715b3, 56, 36),
+    (0x8f7e32ce7bea5c70, 83, 44),
+    (0xd5d238a4abe98068, 109, 52),
+    (0x9f4f2726179a2245, 136, 60),
+    (0xed63a231d4c4fb27, 162, 68),
+    (0xb0de65388cc8ada8, 189, 76),
+    (0x83c7088e1aab65db, 216, 84),
+    (0xc45d1df942711d9a, 242, 92),
+    (0x924d692ca61be758, 269, 100),
+    (0xda01ee641a708dea, 295, 108),
+    (0xa26da3999aef774a, 322, 116),
+    (0xf209787bb47d6b85, 348, 124),
+    (0xb454e4a179dd1877, 375, 132),
+    (0x865b86925b9bc5c2, 402, 140),
+    (0xc83553c5c8965d3d, 428, 148),
+    (0x952ab45cfa97a0b3, 455, 156),
+    (0xde469fbd99a05fe3, 481, 164),
+    (0xa59bc234db398c25, 508, 172),
+    (0xf6c69a72a3989f5c, 534, 180),
+    (0xb7dcbf5354e9bece, 561, 188),
+    (0x88fa513c149a3d75, 588, 196),
+    (0xcc20ce9bd35c78a5, 614, 204),
+    (0x98165af37b2153df, 641, 212),
+    (0xe2a0b5dc971f303a, 667, 220),
+    (0xa8d9d1535ce3b396, 694, 228),
+    (0xfb9b7cd9a4a7443c, 720, 236),
+    (0xbb764c4ca7a44410, 747, 244),
+    (0x8bab8eefb6409c1a, 774, 252),
+    (0xd01fef10a657842c, 800, 260),
+    (0x9b10a4e5e9913129, 827, 268),
+    (0xe7109bfba19c0c9d, 853, 276),
+    (0xac2820d9623bf429, 880, 284),
+    (0x80444b5e7aa7cf85, 907, 292),
+    (0xbf21e44003acdd2c, 933, 300),
+    (0x8e679c2f5e44ff8f, 960, 308),
+    (0xd433179d9c8cb841, 986, 316),
+    (0x9e19db92b4e31ba9, 1013, 324),
+    (0xeb96bf6ebadf77d8, 1039, 332),
+    (0xaf87023b9bf0ee6a, 1066, 340),
+]
+
+# Pre-pack as little-endian bytes so the WAT data segment can
+# emit the table verbatim. 12 bytes per entry; 87 * 12 = 1044.
+_CACHED_POWERS_BYTES: bytes = b"".join(
+    struct.pack("<Qhh", sig, bexp, dexp)
+    for sig, bexp, dexp in _CACHED_POWERS
+)
+_CACHED_POWERS_TABLE_BYTES: int = len(_CACHED_POWERS_BYTES)
+# Standard Grisu2 constant: the lowest decimal exponent the table
+# covers. ``index = (k_minus_e_minus_63_in_decimal + 348) / 8``
+# shifts the lookup so entry 0 is 10^-348.
+_CACHED_POWERS_OFFSET_K: int = 348
+# Decimal-exponent step between adjacent table entries.
+_CACHED_POWERS_STEP: int = 8
+
 
 class _RuntimeHelpersMixin:
     def _emit_str_eq_function(self) -> None:
@@ -215,6 +342,183 @@ class _RuntimeHelpersMixin:
         self._write("i32.sub")
         self._write("i32.add")
         self._write("local.get $i")
+        self._indent -= 1
+        self._write(")")
+
+    # ---------------------------------------------------------
+    # Grisu2 float-to-string support
+    # ---------------------------------------------------------
+    #
+    # Three helpers below feed the Grisu2 main routine that
+    # replaces the legacy fixed-6-decimal ``$ftoa``:
+    # the cached-powers-of-10 data segment, a 128-bit unsigned
+    # multiply, and the cached-power table lookup. The remaining
+    # pieces (``$grisu_digit_gen``, ``$grisu2``, the format
+    # dispatch, and the rewritten ``$ftoa``) follow further down.
+
+    def _emit_cached_powers_data(self) -> None:
+        """Emit the Grisu2 cached-powers-of-10 table as a
+        ``(data ...)`` segment. The 87 entries cover decimal
+        exponents [-348, +340] in steps of 8. Layout per entry:
+        i64 significand at +0, i16 binary_exp at +8, i16
+        decimal_exp at +10. Total 1044 bytes.
+
+        Called from ``WasmEmitter.emit`` after the string-pool
+        data segments; ``self._cached_powers_offset`` is the
+        base offset in linear memory that was reserved during
+        the discovery pass."""
+        escaped = "".join(f"\\{b:02x}" for b in _CACHED_POWERS_BYTES)
+        self._write(
+            f'(data (i32.const {self._cached_powers_offset}) "{escaped}")'
+        )
+
+    def _emit_mul_high_u64_function(self) -> None:
+        """``$mul_high_u64(a: i64, b: i64) -> i64`` returns the
+        high 64 bits of the 128-bit unsigned product. Wasm has no
+        native u128, so the 64x64 multiply is composed from four
+        32-bit cross products with carry propagation:
+
+            a = a_hi:2^32 + a_lo
+            b = b_hi:2^32 + b_lo
+            a*b = a_hi*b_hi:2^64
+                + (a_hi*b_lo + a_lo*b_hi):2^32
+                + a_lo*b_lo
+
+        The intermediate ``tmp`` collects the carry from the
+        low-low product plus the low halves of the cross products
+        and adds ``1 << 31`` so the final ``tmp >> 32`` round-
+        ups halfway cases (matches the reference Grisu2
+        ``DiyFp::Times`` rounding).
+        """
+        self._write("(func $mul_high_u64 (param $a i64) (param $b i64) (result i64)")
+        self._indent += 1
+        self._write("(local $a_hi i64)")
+        self._write("(local $a_lo i64)")
+        self._write("(local $b_hi i64)")
+        self._write("(local $b_lo i64)")
+        self._write("(local $ad i64)")
+        self._write("(local $bc i64)")
+        self._write("(local $tmp i64)")
+        # Split a and b into 32-bit halves.
+        self._write("local.get $a")
+        self._write("i64.const 32")
+        self._write("i64.shr_u")
+        self._write("local.set $a_hi")
+        self._write("local.get $a")
+        self._write("i64.const 0xFFFFFFFF")
+        self._write("i64.and")
+        self._write("local.set $a_lo")
+        self._write("local.get $b")
+        self._write("i64.const 32")
+        self._write("i64.shr_u")
+        self._write("local.set $b_hi")
+        self._write("local.get $b")
+        self._write("i64.const 0xFFFFFFFF")
+        self._write("i64.and")
+        self._write("local.set $b_lo")
+        # ad = a_hi * b_lo
+        self._write("local.get $a_hi")
+        self._write("local.get $b_lo")
+        self._write("i64.mul")
+        self._write("local.set $ad")
+        # bc = a_lo * b_hi
+        self._write("local.get $a_lo")
+        self._write("local.get $b_hi")
+        self._write("i64.mul")
+        self._write("local.set $bc")
+        # tmp = (a_lo*b_lo >> 32) + (ad & low32) + (bc & low32)
+        #       + 0x80000000  (round-half-up)
+        self._write("local.get $a_lo")
+        self._write("local.get $b_lo")
+        self._write("i64.mul")
+        self._write("i64.const 32")
+        self._write("i64.shr_u")
+        self._write("local.get $ad")
+        self._write("i64.const 0xFFFFFFFF")
+        self._write("i64.and")
+        self._write("i64.add")
+        self._write("local.get $bc")
+        self._write("i64.const 0xFFFFFFFF")
+        self._write("i64.and")
+        self._write("i64.add")
+        self._write("i64.const 0x80000000")
+        self._write("i64.add")
+        self._write("local.set $tmp")
+        # result = a_hi*b_hi + (ad >> 32) + (bc >> 32) + (tmp >> 32)
+        self._write("local.get $a_hi")
+        self._write("local.get $b_hi")
+        self._write("i64.mul")
+        self._write("local.get $ad")
+        self._write("i64.const 32")
+        self._write("i64.shr_u")
+        self._write("i64.add")
+        self._write("local.get $bc")
+        self._write("i64.const 32")
+        self._write("i64.shr_u")
+        self._write("i64.add")
+        self._write("local.get $tmp")
+        self._write("i64.const 32")
+        self._write("i64.shr_u")
+        self._write("i64.add")
+        self._indent -= 1
+        self._write(")")
+
+    def _emit_grisu_cached_power_function(self) -> None:
+        """``$grisu_cached_power(e: i32) -> (i64 sig, i32 bexp, i32 dexp)``
+        returns the cached power of 10 with binary exponent that,
+        combined with the input's binary exponent ``e``, produces
+        a product whose binary exponent lies in Grisu2's target
+        range [alpha=-59, gamma=-32] after the ``Times``
+        operation adds 64.
+
+        Formula:
+            k = ceil((-59 - e - 64) * log_10(2))
+            index = (k + 348) / 8
+
+        ``k`` is the decimal exponent of the cached power we
+        want. The table covers k in [-348, +340] step 8, so
+        ``index`` directly addresses the entry. Uses f64 math
+        for the multiply-by-log10(2)-then-ceil step; integer
+        approximation would need careful tuning to avoid off-
+        by-one at boundary inputs.
+        """
+        self._write(
+            "(func $grisu_cached_power (param $e i32) "
+            "(result i64 i32 i32)"
+        )
+        self._indent += 1
+        self._write("(local $index i32)")
+        self._write("(local $entry_ptr i32)")
+        # k = ceil((-59 - e - 64) * log_10(2))
+        self._write("i32.const -123")  # -59 - 64
+        self._write("local.get $e")
+        self._write("i32.sub")
+        self._write("f64.convert_i32_s")
+        self._write("f64.const 0x1.34413509f79ffp-2")  # log_10(2)
+        self._write("f64.mul")
+        self._write("f64.ceil")
+        self._write("i32.trunc_f64_s")
+        # index = (k + 348) / 8
+        self._write(f"i32.const {_CACHED_POWERS_OFFSET_K}")
+        self._write("i32.add")
+        self._write(f"i32.const {_CACHED_POWERS_STEP}")
+        self._write("i32.div_s")
+        self._write("local.set $index")
+        # entry_ptr = base + index * 12
+        self._write(f"i32.const {self._cached_powers_offset}")
+        self._write("local.get $index")
+        self._write("i32.const 12")
+        self._write("i32.mul")
+        self._write("i32.add")
+        self._write("local.tee $entry_ptr")
+        # significand (i64) at offset 0
+        self._write("i64.load offset=0")
+        # binary_exp (i32) at offset 8 (i16 sign-extended)
+        self._write("local.get $entry_ptr")
+        self._write("i32.load16_s offset=8")
+        # decimal_exp (i32) at offset 10 (i16 sign-extended)
+        self._write("local.get $entry_ptr")
+        self._write("i32.load16_s offset=10")
         self._indent -= 1
         self._write(")")
 
