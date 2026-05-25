@@ -497,9 +497,19 @@ Listed so the design space is explicit.
   both `shutil.which("wasm-tools")` and `import wasmtime`, so
   `capa --run` without the flag still pays nothing for the
   feature. Suite: 1492 tests, 0 regressions.
-- **Pure-Wasm JSON parser** (alternative to today's host
-  bridge). ~500 lines of WAT; only matters for shipping
-  truly host-independent Wasm modules. ⏱ 12-16h.
+- [x] **Pure-Wasm JSON parser** (superseded 2026-05-25). The
+  original motivation was to drop the ``capa:host/json``
+  host bridge so ``--component --run`` worked without leaking
+  the canonical-ABI boundary. That bridge no longer exists:
+  ``_builtin_json.py`` splices a pure-Capa parser /
+  serialiser (``__capa_parse_json`` / ``__capa_to_json``)
+  into every IR module that touches ``parse_json`` /
+  ``to_json``, so the JsonValue tree builds in the guest's
+  own linear memory through the regular Capa allocator. A
+  separate hand-written WAT parser would be ~500 lines for
+  no measurable gain over the Capa source the compiler
+  already lowers, so this item closes as superseded rather
+  than implemented.
 
 ---
 

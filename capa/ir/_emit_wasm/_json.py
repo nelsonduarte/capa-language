@@ -7,8 +7,12 @@ Owns Wasm lowering for the built-in ``JsonValue`` sum type:
   ``as_array``, ``as_object``). Each is a tag-compare followed by
   a fresh ``Option<T>`` allocation: ``Some(payload)`` on match,
   ``None`` otherwise.
-- The two free-function host calls ``parse_json`` and ``to_json``
-  routed through the ``capa:host/json`` capability bridge.
+- The two free-function calls ``parse_json`` and ``to_json``,
+  routed to the bundled Capa-source parser / serialiser
+  (``__capa_parse_json`` / ``__capa_to_json``) that
+  ``_builtin_json.inject_into`` splices into the IR module.
+  No ``capa:host/json`` host bridge is involved; the
+  JsonValue tree lives entirely in the guest's linear memory.
 
 JsonValue's six variants (JNull/JBool/JNum/JStr/JArr/JObj) live in
 the uniform 16-byte sum layout (tag at offset 0, payload at offset
