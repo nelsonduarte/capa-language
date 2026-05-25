@@ -23,8 +23,8 @@
 //   checksumValue}`).
 //
 // Scope limits: metadata + components + dependencies. Out of
-// scope: `services[]`, `compositions[]`, externalReferences[],
-// evidence[], signatures. Extending is mechanical.
+// scope: `compositions[]`, externalReferences[], evidence[],
+// signatures. Extending is mechanical.
 
 capability SbomReader
     fun read(self, source: String) -> Result<String, String>
@@ -91,6 +91,33 @@ type CdxVulnerability {
     analysis: CdxAnalysis
 }
 
+// Service-record types. `provider.url` is an array in 1.5 (unlike
+// `CdxSource.url` which is a single string on vulnerabilities).
+// Nested `services[]` inside a service is allowed by the spec but
+// nobody uses it; skipped here.
+type CdxProvider {
+    name: String,
+    urls: List<String>
+}
+
+type CdxDataClassification {
+    classification: String,
+    flow: String
+}
+
+type CdxService {
+    bom_ref: String,
+    provider: CdxProvider,
+    group: String,
+    name: String,
+    version: String,
+    description: String,
+    endpoints: List<String>,
+    authenticated: Bool,
+    x_trust_boundary: Bool,
+    data: List<CdxDataClassification>
+}
+
 type CdxMetadata {
     timestamp: String,
     tool_names: List<String>,
@@ -106,7 +133,8 @@ type CdxDocument {
     metadata: CdxMetadata,
     components: List<CdxComponent>,
     dependencies: List<CdxDependency>,
-    vulnerabilities: List<CdxVulnerability>
+    vulnerabilities: List<CdxVulnerability>,
+    services: List<CdxService>
 }
 
 // ---- typed-extraction helpers ----
@@ -324,6 +352,73 @@ fun parse_vulnerability(j: JsonValue) -> Result<CdxVulnerability, String>
         analysis: analysis
     })
 
+// Service-record parsers. Every nested field is optional; absent
+// values fall back to empty strings / empty lists / zero-valued
+// structs. Nested `services[]` inside a service is skipped.
+
+fun bool_field_or(j: JsonValue, name: String, fallback: Bool) -> Bool
+    return match optional_field(j, name)
+        None -> fallback
+        Some(v) -> match v.as_bool()
+            None -> fallback
+            Some(b) -> b
+
+fun parse_provider(j: JsonValue) -> Result<CdxProvider, String>
+    let urls: List<String> = []
+    match optional_field(j, "url")
+        None ->
+            ()
+        Some(v) ->
+            let xs = as_array_or_err(v, "Provider.url")?
+            for x in xs
+                urls.push(as_string_or_err(x, "Provider.url[i]")?)
+    return Ok(CdxProvider {
+        name: string_field_or(j, "name", ""),
+        urls: urls
+    })
+
+fun parse_data_classification(j: JsonValue) -> Result<CdxDataClassification, String>
+    return Ok(CdxDataClassification {
+        classification: string_field_or(j, "classification", ""),
+        flow: string_field_or(j, "flow", "")
+    })
+
+fun parse_service(j: JsonValue) -> Result<CdxService, String>
+    let provider = match optional_field(j, "provider")
+        None -> CdxProvider { name: "", urls: [] }
+        Some(v) -> parse_provider(v)?
+
+    let endpoints: List<String> = []
+    match optional_field(j, "endpoints")
+        None ->
+            ()
+        Some(v) ->
+            let xs = as_array_or_err(v, "Service.endpoints")?
+            for x in xs
+                endpoints.push(as_string_or_err(x, "Service.endpoints[i]")?)
+
+    let data: List<CdxDataClassification> = []
+    match optional_field(j, "data")
+        None ->
+            ()
+        Some(v) ->
+            let xs = as_array_or_err(v, "Service.data")?
+            for x in xs
+                data.push(parse_data_classification(x)?)
+
+    return Ok(CdxService {
+        bom_ref: string_field_or(j, "bom-ref", ""),
+        provider: provider,
+        group: string_field_or(j, "group", ""),
+        name: string_field_or(j, "name", ""),
+        version: string_field_or(j, "version", ""),
+        description: string_field_or(j, "description", ""),
+        endpoints: endpoints,
+        authenticated: bool_field_or(j, "authenticated", false),
+        x_trust_boundary: bool_field_or(j, "x-trust-boundary", false),
+        data: data
+    })
+
 fun extract_tool_names(tools_j: JsonValue) -> Result<List<String>, String>
     // CycloneDX 1.5 supports both the modern `tools.components[]`
     // shape (each entry a Component object) and the legacy flat
@@ -422,6 +517,15 @@ fun parse_document(j: JsonValue) -> Result<CdxDocument, String>
             for x in xs
                 vulnerabilities.push(parse_vulnerability(x)?)
 
+    let services: List<CdxService> = []
+    match optional_field(j, "services")
+        None ->
+            ()
+        Some(v) ->
+            let xs = as_array_or_err(v, "services")?
+            for x in xs
+                services.push(parse_service(x)?)
+
     let metadata = parse_metadata(j)?
 
     return Ok(CdxDocument {
@@ -432,7 +536,8 @@ fun parse_document(j: JsonValue) -> Result<CdxDocument, String>
         metadata: metadata,
         components: components,
         dependencies: dependencies,
-        vulnerabilities: vulnerabilities
+        vulnerabilities: vulnerabilities,
+        services: services
     })
 
 fun parse_cyclonedx(json_text: String) -> Result<CdxDocument, String>
@@ -460,6 +565,9 @@ fun collect_bom_refs(doc: CdxDocument) -> Set<String>
     for c in doc.components
         if c.bom_ref != ""
             refs.add(c.bom_ref)
+    for s in doc.services
+        if s.bom_ref != ""
+            refs.add(s.bom_ref)
     return refs
 
 // Severity strings the CycloneDX 1.5 schema allows on a rating.
@@ -496,6 +604,18 @@ fun is_valid_analysis_state(s: String) -> Bool
         return true
     return false
 
+// data[].flow enum from CycloneDX 1.5.
+fun is_valid_data_flow(s: String) -> Bool
+    if s == "inbound"
+        return true
+    if s == "outbound"
+        return true
+    if s == "bi-directional"
+        return true
+    if s == "unknown"
+        return true
+    return false
+
 fun validate_cyclonedx(doc: CdxDocument) -> List<String>
     let refs = collect_bom_refs(doc)
     let errors: List<String> = []
@@ -515,6 +635,10 @@ fun validate_cyclonedx(doc: CdxDocument) -> List<String>
                 errors.push("vulnerability '${v.id}' has rating with invalid severity '${r.severity}'")
         if v.analysis.state != "" and not is_valid_analysis_state(v.analysis.state)
             errors.push("vulnerability '${v.id}' has analysis with invalid state '${v.analysis.state}'")
+    for s in doc.services
+        for d in s.data
+            if not is_valid_data_flow(d.flow)
+                errors.push("service '${s.name}' has data classification with invalid flow '${d.flow}'")
     match detect_cyclonedx_cycle(doc)
         None ->
             ()
@@ -588,7 +712,7 @@ fun main(stdio: Stdio)
     // dependency components (a lib + a transitive lib), and a
     // small dependency graph linking them. Mirrors the kind of
     // SBOM the Capa compiler itself emits via --cyclonedx.
-    let sample = "{\"bomFormat\": \"CycloneDX\", \"specVersion\": \"1.5\", \"serialNumber\": \"urn:uuid:11111111-2222-3333-4444-555555555555\", \"version\": 1, \"metadata\": {\"timestamp\": \"2026-05-13T10:00:00Z\", \"tools\": {\"components\": [{\"type\": \"application\", \"name\": \"capa\", \"version\": \"0.6.0-alpha\"}]}, \"component\": {\"bom-ref\": \"capa:program:demo\", \"type\": \"application\", \"name\": \"demo\", \"version\": \"1.0.0\"}}, \"components\": [{\"bom-ref\": \"pkg:npm/lodash@4.17.21\", \"type\": \"library\", \"name\": \"lodash\", \"version\": \"4.17.21\", \"purl\": \"pkg:npm/lodash@4.17.21\", \"hashes\": [{\"alg\": \"SHA-256\", \"content\": \"aaaabbbbccccddddeeeeffff0011223344556677889900aabbccddeeff001122\"}], \"licenses\": [{\"license\": {\"id\": \"MIT\"}}]}, {\"bom-ref\": \"pkg:npm/chalk@5.3.0\", \"type\": \"library\", \"name\": \"chalk\", \"version\": \"5.3.0\", \"purl\": \"pkg:npm/chalk@5.3.0\", \"licenses\": [{\"expression\": \"MIT OR Apache-2.0\"}]}], \"dependencies\": [{\"ref\": \"capa:program:demo\", \"dependsOn\": [\"pkg:npm/lodash@4.17.21\", \"pkg:npm/chalk@5.3.0\"]}, {\"ref\": \"pkg:npm/chalk@5.3.0\", \"dependsOn\": [\"pkg:npm/lodash@4.17.21\"]}], \"vulnerabilities\": [{\"bom-ref\": \"vuln-CVE-2024-7890\", \"id\": \"CVE-2024-7890\", \"source\": {\"name\": \"NVD\"}, \"ratings\": [{\"severity\": \"high\", \"score\": 7.5, \"method\": \"CVSSv3\"}], \"cwes\": [79], \"description\": \"Cross-site scripting in lodash template helper\", \"recommendation\": \"Upgrade to lodash 4.17.22\", \"published\": \"2024-09-01T00:00:00Z\", \"updated\": \"2024-09-15T00:00:00Z\", \"affects\": [{\"ref\": \"pkg:npm/lodash@4.17.21\"}], \"analysis\": {\"state\": \"exploitable\", \"justification\": \"code-uses-vulnerable-template\", \"detail\": \"lodash _.template called with user input\"}}]}"
+    let sample = "{\"bomFormat\": \"CycloneDX\", \"specVersion\": \"1.5\", \"serialNumber\": \"urn:uuid:11111111-2222-3333-4444-555555555555\", \"version\": 1, \"metadata\": {\"timestamp\": \"2026-05-13T10:00:00Z\", \"tools\": {\"components\": [{\"type\": \"application\", \"name\": \"capa\", \"version\": \"0.6.0-alpha\"}]}, \"component\": {\"bom-ref\": \"capa:program:demo\", \"type\": \"application\", \"name\": \"demo\", \"version\": \"1.0.0\"}}, \"components\": [{\"bom-ref\": \"pkg:npm/lodash@4.17.21\", \"type\": \"library\", \"name\": \"lodash\", \"version\": \"4.17.21\", \"purl\": \"pkg:npm/lodash@4.17.21\", \"hashes\": [{\"alg\": \"SHA-256\", \"content\": \"aaaabbbbccccddddeeeeffff0011223344556677889900aabbccddeeff001122\"}], \"licenses\": [{\"license\": {\"id\": \"MIT\"}}]}, {\"bom-ref\": \"pkg:npm/chalk@5.3.0\", \"type\": \"library\", \"name\": \"chalk\", \"version\": \"5.3.0\", \"purl\": \"pkg:npm/chalk@5.3.0\", \"licenses\": [{\"expression\": \"MIT OR Apache-2.0\"}]}], \"dependencies\": [{\"ref\": \"capa:program:demo\", \"dependsOn\": [\"pkg:npm/lodash@4.17.21\", \"pkg:npm/chalk@5.3.0\"]}, {\"ref\": \"pkg:npm/chalk@5.3.0\", \"dependsOn\": [\"pkg:npm/lodash@4.17.21\"]}], \"vulnerabilities\": [{\"bom-ref\": \"vuln-CVE-2024-7890\", \"id\": \"CVE-2024-7890\", \"source\": {\"name\": \"NVD\"}, \"ratings\": [{\"severity\": \"high\", \"score\": 7.5, \"method\": \"CVSSv3\"}], \"cwes\": [79], \"description\": \"Cross-site scripting in lodash template helper\", \"recommendation\": \"Upgrade to lodash 4.17.22\", \"published\": \"2024-09-01T00:00:00Z\", \"updated\": \"2024-09-15T00:00:00Z\", \"affects\": [{\"ref\": \"pkg:npm/lodash@4.17.21\"}], \"analysis\": {\"state\": \"exploitable\", \"justification\": \"code-uses-vulnerable-template\", \"detail\": \"lodash _.template called with user input\"}}], \"services\": [{\"bom-ref\": \"service:stripe-api\", \"provider\": {\"name\": \"Stripe\", \"url\": [\"https://stripe.com\"]}, \"group\": \"com.stripe\", \"name\": \"payments-api\", \"version\": \"2024-06-20\", \"description\": \"Stripe charges API\", \"endpoints\": [\"https://api.stripe.com/v1/charges\"], \"authenticated\": true, \"x-trust-boundary\": true, \"data\": [{\"classification\": \"PII\", \"flow\": \"outbound\"}]}]}"
 
     match parse_cyclonedx(sample)
         Err(msg) ->
@@ -635,6 +759,20 @@ fun main(stdio: Stdio)
                     stdio.println("      affects: ${a.ref}")
                 if v.analysis.state != ""
                     stdio.println("      analysis: ${v.analysis.state} (${v.analysis.justification})")
+            stdio.println("")
+            stdio.println("Services (${doc.services.length()}):")
+            for s in doc.services
+                stdio.println("  - ${s.name} ${s.version} (${s.group})")
+                stdio.println("      provider: ${s.provider.name}")
+                if s.endpoints.length() != 0
+                    stdio.println("      endpoints: ${s.endpoints.length()}")
+                let auth_s = if s.authenticated then "true" else "false"
+                let tb_s = if s.x_trust_boundary then "true" else "false"
+                stdio.println("      authenticated: ${auth_s}; trust-boundary: ${tb_s}")
+                if s.data.length() != 0
+                    stdio.println("      data: ${s.data.length()} classification(s)")
+                    for d in s.data
+                        stdio.println("        ${d.classification} (${d.flow})")
             stdio.println("")
             let violations = validate_cyclonedx(doc)
             if violations.is_empty()

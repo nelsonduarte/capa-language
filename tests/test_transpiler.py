@@ -2021,6 +2021,13 @@ class TestTranspileExamples(unittest.TestCase):
         self.assertIn("- CVE-2024-7890 (high)", out)
         self.assertIn("affects: pkg:npm/lodash@4.17.21", out)
         self.assertIn("analysis: exploitable (code-uses-vulnerable-template)", out)
+        # services[] block: one entry with provider, data classification,
+        # and the authenticated / trust-boundary flag line.
+        self.assertIn("Services (1):", out)
+        self.assertIn("- payments-api 2024-06-20 (com.stripe)", out)
+        self.assertIn("provider: Stripe", out)
+        self.assertIn("authenticated: true; trust-boundary: true", out)
+        self.assertIn("PII (outbound)", out)
         self.assertIn("Validation: ok (refs resolve + acyclic)", out)
 
     def test_net_attenuation(self):
