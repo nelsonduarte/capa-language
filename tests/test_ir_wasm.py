@@ -353,7 +353,6 @@ class TestWitGeneration(unittest.TestCase):
         # the same used-capability set for the same module, otherwise
         # ``--component --run`` either misses a host import or
         # publishes a phantom one. Audit 2026-05-25.
-        from capa.ir._emit_wasm._discovery import _DiscoveryMixin
         from capa.ir._emit_wasm import WasmEmitter
 
         src = (
@@ -366,7 +365,6 @@ class TestWitGeneration(unittest.TestCase):
         wit_used = set(collect_used_capabilities(ir_mod).keys())
 
         emitter = WasmEmitter()
-        emitter._used_caps = set()
         for fn in ir_mod.functions:
             emitter._discover_instrs(fn.body)
         wasm_used = {cap for (cap, _method) in emitter._used_caps}
@@ -434,7 +432,8 @@ class TestWasmStdioExecutes(unittest.TestCase):
     a Python host bridge providing the ``capa:stdio`` interface."""
 
     def _run_capturing_stdout(self, src: str) -> tuple[str, str]:
-        import io, sys
+        import io
+        import sys
         from capa.runtime._wasm_host import WasmHost
         _, types, ast_mod = _parse_lower(src)
         blob = compile_wasm(ast_mod, types=types)
@@ -687,7 +686,8 @@ class TestWasmStringLocals(unittest.TestCase):
     interchangeably to capability methods and user functions."""
 
     def _run_capturing_stdout(self, src: str) -> tuple[str, str]:
-        import io, sys
+        import io
+        import sys
         from capa.runtime._wasm_host import WasmHost
         _, types, ast_mod = _parse_lower(src)
         blob = compile_wasm(ast_mod, types=types)
@@ -1182,7 +1182,8 @@ class TestWasmFloatAndClock(unittest.TestCase):
             "    else\n"
             "        stdio.println(\"clock NOT OK\")\n"
         )
-        import io, sys
+        import io
+        import sys
         _, types, ast_mod = _parse_lower(src)
         blob = compile_wasm(ast_mod, types=types)
         host = WasmHost()
@@ -1225,7 +1226,8 @@ class TestWasmEnv(unittest.TestCase):
         os.environ["CAPA_WASM_TEST_HIT"] = "found-value"
         os.environ.pop("DEFINITELY_NOT_SET_XYZ", None)
         try:
-            import io, sys
+            import io
+            import sys
             host = WasmHost()
             out = io.StringIO()
             saved = sys.stdout
@@ -1269,7 +1271,8 @@ class TestWasmFs(unittest.TestCase):
             )
             _, types, ast_mod = _parse_lower(src)
             blob = compile_wasm(ast_mod, types=types)
-            import io, sys
+            import io
+            import sys
             host = WasmHost()
             out = io.StringIO()
             saved = sys.stdout
@@ -1290,7 +1293,8 @@ class TestWasmFs(unittest.TestCase):
         )
         _, types, ast_mod = _parse_lower(src)
         blob = compile_wasm(ast_mod, types=types)
-        import io, sys
+        import io
+        import sys
         host = WasmHost()
         out = io.StringIO()
         saved = sys.stdout
@@ -1428,7 +1432,8 @@ class TestWasmJson(unittest.TestCase):
     exercised. Output is checked against the expected stdout."""
 
     def _run_capturing_stdout(self, src: str) -> str:
-        import io, sys
+        import io
+        import sys
         from capa.runtime._wasm_host import WasmHost
         _, types, ast_mod = _parse_lower(src)
         blob = compile_wasm(ast_mod, types=types)
@@ -1563,7 +1568,8 @@ class TestWasmStringSplit(unittest.TestCase):
     (literal + index + iter) that the same change unlocks."""
 
     def _run_capturing_stdout(self, src: str) -> str:
-        import io, sys
+        import io
+        import sys
         from capa.runtime._wasm_host import WasmHost
         _, types, ast_mod = _parse_lower(src)
         blob = compile_wasm(ast_mod, types=types)
@@ -1658,7 +1664,8 @@ class TestWasmOptionResult(unittest.TestCase):
     policy-eval exercises (Int / Bool / Float / String)."""
 
     def _run_capturing_stdout(self, src: str) -> str:
-        import io, sys
+        import io
+        import sys
         from capa.runtime._wasm_host import WasmHost
         _, types, ast_mod = _parse_lower(src)
         blob = compile_wasm(ast_mod, types=types)
@@ -1770,7 +1777,8 @@ class TestWasmTraitDispatch(unittest.TestCase):
     impl-typed self call inside an impl body."""
 
     def _run_capturing_stdout(self, src: str) -> str:
-        import io, sys
+        import io
+        import sys
         from capa.runtime._wasm_host import WasmHost
         _, types, ast_mod = _parse_lower(src)
         blob = compile_wasm(ast_mod, types=types)
@@ -1882,7 +1890,8 @@ class TestWasmClosureStringTypes(unittest.TestCase):
     ``--wasm --run``."""
 
     def _run_capturing_stdout(self, src: str) -> str:
-        import io, sys
+        import io
+        import sys
         from capa.runtime._wasm_host import WasmHost
         _, types, ast_mod = _parse_lower(src)
         blob = compile_wasm(ast_mod, types=types)
@@ -1955,7 +1964,8 @@ class TestWasmUserCapMethodDispatch(unittest.TestCase):
     end-to-end under ``--wasm --run``."""
 
     def _run_capturing_stdout(self, src: str) -> str:
-        import io, sys
+        import io
+        import sys
         from capa.runtime._wasm_host import WasmHost
         _, types, ast_mod = _parse_lower(src)
         blob = compile_wasm(ast_mod, types=types)
@@ -2086,7 +2096,8 @@ class TestWasmIoErrorFormatStr(unittest.TestCase):
         # message renders correctly. The actual error path uses
         # fs.read on a non-existent file which returns an
         # IoError carrying a real OS message.
-        import io, sys
+        import io
+        import sys
         from capa.runtime._wasm_host import WasmHost
         _, types, ast_mod = _parse_lower(src)
         blob = compile_wasm(ast_mod, types=types)
@@ -2138,7 +2149,8 @@ class TestWasmGenericMonomorphisationFunType(unittest.TestCase):
     the WAT. Test pins the now-working shape."""
 
     def _run_capturing_stdout(self, src: str) -> str:
-        import io, sys
+        import io
+        import sys
         from capa.runtime._wasm_host import WasmHost
         _, types, ast_mod = _parse_lower(src)
         blob = compile_wasm(ast_mod, types=types)
@@ -2191,7 +2203,8 @@ class TestWasmCapCallViaFieldAccess(unittest.TestCase):
     via its ReadOnlyFs wrapper."""
 
     def _run_capturing_stdout(self, src: str) -> str:
-        import io, sys
+        import io
+        import sys
         from capa.runtime._wasm_host import WasmHost
         _, types, ast_mod = _parse_lower(src)
         blob = compile_wasm(ast_mod, types=types)
@@ -2259,7 +2272,8 @@ class TestWasmGlobalStringConst(unittest.TestCase):
     pin both code paths."""
 
     def _run_capturing_stdout(self, src: str) -> str:
-        import io, sys
+        import io
+        import sys
         from capa.runtime._wasm_host import WasmHost
         _, types, ast_mod = _parse_lower(src)
         blob = compile_wasm(ast_mod, types=types)
@@ -2332,7 +2346,8 @@ class TestWasmGenericMonomorphisation(unittest.TestCase):
     ``--wasm --run``."""
 
     def _run_capturing_stdout(self, src: str) -> str:
-        import io, sys
+        import io
+        import sys
         from capa.runtime._wasm_host import WasmHost
         _, types, ast_mod = _parse_lower(src)
         blob = compile_wasm(ast_mod, types=types)
@@ -2428,7 +2443,8 @@ class TestWasmComponentHost(unittest.TestCase):
         return _wrap_as_component(core_blob, wit_text)
 
     def _run_capturing_stdout(self, src: str, args=()) -> str:
-        import io, sys
+        import io
+        import sys
         from capa.runtime._wasm_component_host import WasmComponentHost
         _, types, ast_mod = _parse_lower(src)
         core_blob = compile_wasm(ast_mod, types=types)
