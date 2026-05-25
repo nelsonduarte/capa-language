@@ -54,6 +54,7 @@ EOF
 esac
 
 URL="https://github.com/${REPO}/releases/latest/download/${ASSET}"
+SHA_URL="${URL}.sha256"
 DEST="${INSTALL_DIR}/capa"
 
 echo "capa-install: target  $DEST"
@@ -61,15 +62,49 @@ echo "capa-install: source  $URL"
 
 mkdir -p "$INSTALL_DIR"
 
-# Download. Prefer curl, fall back to wget.
+# Resolve fetch + hash commands once so the download and the
+# verify step agree on what is available on this machine.
 if command -v curl >/dev/null 2>&1; then
-    curl -fL --progress-bar "$URL" -o "$DEST"
+    fetch_bin() { curl -fL --progress-bar "$1" -o "$2"; }
+    fetch_text() { curl -fsSL "$1"; }
 elif command -v wget >/dev/null 2>&1; then
-    wget -q --show-progress -O "$DEST" "$URL"
+    fetch_bin() { wget -q --show-progress -O "$2" "$1"; }
+    fetch_text() { wget -q -O - "$1"; }
 else
     echo "capa-install: neither curl nor wget is available" >&2
     exit 2
 fi
+
+if command -v sha256sum >/dev/null 2>&1; then
+    compute_sha() { sha256sum "$1" | awk '{print $1}'; }
+elif command -v shasum >/dev/null 2>&1; then
+    compute_sha() { shasum -a 256 "$1" | awk '{print $1}'; }
+else
+    echo "capa-install: neither sha256sum nor shasum is available" >&2
+    exit 2
+fi
+
+# Fetch binary + the .sha256 sibling, then verify before we
+# chmod or expose anything. Aborting on mismatch leaves the
+# tampered binary on disk so the user can inspect it; remove
+# it explicitly first so a re-run starts clean.
+fetch_bin "$URL" "$DEST"
+
+EXPECTED_SHA="$(fetch_text "$SHA_URL" | awk '{print $1}')"
+if [ -z "$EXPECTED_SHA" ]; then
+    echo "capa-install: failed to fetch SHA-256 from $SHA_URL" >&2
+    rm -f "$DEST"
+    exit 2
+fi
+ACTUAL_SHA="$(compute_sha "$DEST")"
+if [ "$EXPECTED_SHA" != "$ACTUAL_SHA" ]; then
+    echo "capa-install: SHA-256 mismatch for $ASSET" >&2
+    echo "  expected: $EXPECTED_SHA" >&2
+    echo "  actual:   $ACTUAL_SHA" >&2
+    rm -f "$DEST"
+    exit 2
+fi
+echo "capa-install: sha256  $ACTUAL_SHA (verified)"
 
 chmod +x "$DEST"
 

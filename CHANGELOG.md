@@ -9,6 +9,46 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+### Supply chain: SHA-256 verification + git URL allow-list
+
+Two adjacent supply-chain holes from the 2026-05-25 audit
+(item #5) closed together.
+
+**Binary install scripts now verify SHA-256.**
+[`deploy/install.sh`](deploy/install.sh) and
+[`deploy/install.ps1`](deploy/install.ps1) used to `curl|bash`
+the latest release binary into a user-PATH directory without
+checking integrity, even though the release pipeline at
+[`.github/workflows/release-binaries.yml`](.github/workflows/release-binaries.yml)
+already publishes a `<asset>.sha256` sibling for every artefact.
+The installers now fetch the `.sha256`, hash the downloaded
+binary locally, and refuse to expose it on a mismatch (the
+tampered file is removed before exit). Confirmed end-to-end
+against `v1.0.0-rc.3`. Closes the man-in-the-middle / CDN-
+cache-poisoning surface the previous flow ignored.
+
+**`capa install` rejects dangerous git URLs at manifest-load
+time.** [`capa.pkg._manifest._parse_dep`](capa/pkg/_manifest.py)
+now calls `_validate_git_url` on every `[dependencies.X].git`
+string. The validator allow-lists `https://`, `http://`,
+`ssh://`, `git://`, `file://`, and the `git@host:path` SSH
+shortcut; everything else is refused with a `ManifestError`
+naming the rule and citing the CVE class.
+
+Two specific shapes the validator blocks:
+- ``ext::sh -c <cmd>``-style URLs that abuse the ``ext::`` git
+  transport into an RCE primitive (CVE-2017-1000117 family).
+- URLs starting with ``-``, which ``git clone`` would parse as
+  command-line options (``-uupload-pack=<cmd>``, ``--exec=...``).
+- The SSH-shortcut variant where the path segment after ``:``
+  starts with ``-`` (option injection on the remote side).
+
+Coverage: 11 new tests in `TestGitUrlAllowList`
+([`tests/test_pkg.py`](tests/test_pkg.py)), six asserting the
+allowed transports parse cleanly and five asserting each
+attack shape is rejected with a specific error string. Suite
+1364 -> 1375.
+
 ### Tests: Python<->Wasm output parity harness
 
 The README's claim that the Wasm backend produces output

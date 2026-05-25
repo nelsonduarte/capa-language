@@ -22,6 +22,7 @@ $Repo = "nelsonduarte/capa-language"
 $InstallDir = if ($env:CAPA_INSTALL_DIR) { $env:CAPA_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA "capa" }
 $Asset = "capa-windows-x86_64.exe"
 $Url = "https://github.com/$Repo/releases/latest/download/$Asset"
+$ShaUrl = "$Url.sha256"
 $Dest = Join-Path $InstallDir "capa.exe"
 
 Write-Host "capa-install: target  $Dest"
@@ -36,9 +37,27 @@ $prev = $ProgressPreference
 $ProgressPreference = "SilentlyContinue"
 try {
     Invoke-WebRequest -Uri $Url -OutFile $Dest -UseBasicParsing
+    $ShaResponse = Invoke-WebRequest -Uri $ShaUrl -UseBasicParsing
+    $ExpectedSha = ($ShaResponse.Content.Trim() -split '\s+')[0].ToLower()
 } finally {
     $ProgressPreference = $prev
 }
+
+# Verify the SHA-256 before exposing the binary. The release
+# pipeline publishes a .sha256 sibling for every artefact;
+# refusing to install on mismatch closes the man-in-the-middle
+# / CDN-cache-poisoning attack surface that the previous
+# install path silently ignored.
+if (-not $ExpectedSha) {
+    Remove-Item $Dest -ErrorAction SilentlyContinue
+    throw "capa-install: failed to read expected SHA-256 from $ShaUrl"
+}
+$ActualSha = (Get-FileHash -Algorithm SHA256 -Path $Dest).Hash.ToLower()
+if ($ActualSha -ne $ExpectedSha) {
+    Remove-Item $Dest -ErrorAction SilentlyContinue
+    throw "capa-install: SHA-256 mismatch for $Asset`n  expected: $ExpectedSha`n  actual:   $ActualSha"
+}
+Write-Host "capa-install: sha256  $ActualSha (verified)"
 
 # Verify.
 try {

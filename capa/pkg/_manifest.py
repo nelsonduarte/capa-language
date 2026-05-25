@@ -41,6 +41,15 @@ _PACKAGE_KEYS = frozenset({"name", "version", "capa"})
 _DEP_GIT_KEYS = frozenset({"git", "tag", "rev", "verify_key"})
 _DEP_PATH_KEYS = frozenset({"path"})
 
+# Allow-list of URL schemes that ``git clone`` is willing to handle
+# without triggering one of the historical RCE classes around the
+# ``ext::`` transport (CVE-2017-1000117 / CVE-2022-39253 family) or
+# the option-injection path where a URL starting with ``-`` ends up
+# parsed as a git command-line option. Anything outside this list
+# is refused at manifest-load time so a malicious capa.toml never
+# reaches ``_run_git`` in the first place.
+_ALLOWED_GIT_SCHEMES = ("https://", "http://", "ssh://", "git://", "file://")
+
 
 class ManifestError(Exception):
     """Raised on invalid ``capa.toml`` or ``capa.lock`` contents."""
@@ -168,6 +177,54 @@ def read_manifest(path: Path) -> Manifest:
     )
 
 
+def _validate_git_url(path: Path, name: str, url: str) -> None:
+    """Reject git URLs that historically gave ``git clone`` an
+    RCE primitive. The two attack shapes we close here:
+
+    - **The ``ext::`` transport** (and any non-allow-listed
+      scheme). ``git clone ext::'sh -c <command>'`` runs the
+      command as the remote-helper child. The fix is an
+      allow-list of well-known transports; if a real-world need
+      for a custom transport appears, widen the list deliberately
+      rather than letting unknown schemes through by default.
+
+    - **Option injection at the URL position**. ``git clone``
+      treats any URL starting with ``-`` as a command-line
+      option, and a few flags carry remote-side execution
+      semantics (``--upload-pack=<cmd>``, ``--exec=<cmd>``).
+      Refuse URLs that start with ``-`` outright, and refuse the
+      ``git@host:path`` SSH shortcut when the ``path`` segment
+      starts with ``-``.
+    """
+    if url.startswith("-"):
+        raise ManifestError(
+            f"{path}: dependencies.{name}.git starts with '-'; "
+            f"this would be parsed as a git command-line option, "
+            f"not a URL. Got {url!r}"
+        )
+    if url.startswith("git@"):
+        # The ``git@host:path`` SSH shortcut has no explicit scheme.
+        # Allow it but reject path segments that re-introduce the
+        # option-injection class via the ``:`` separator.
+        _, _, path_segment = url.partition(":")
+        if path_segment.startswith("-"):
+            raise ManifestError(
+                f"{path}: dependencies.{name}.git path segment after "
+                f"':' starts with '-' (would be parsed as a git "
+                f"command-line option). Got {url!r}"
+            )
+        return
+    if not any(url.startswith(s) for s in _ALLOWED_GIT_SCHEMES):
+        raise ManifestError(
+            f"{path}: dependencies.{name}.git must use one of the "
+            f"allow-listed transports "
+            f"(https://, http://, ssh://, git://, file://, or the "
+            f"git@host:path shortcut). Got {url!r}. This blocks the "
+            f"ext:: transport (CVE-2017-1000117 class), among other "
+            f"git URL injection patterns."
+        )
+
+
 def _parse_dep(path: Path, name: str, spec: dict) -> Dependency:
     """One ``[dependencies]`` entry. Exactly one source kind allowed."""
     if "git" in spec and "path" in spec:
@@ -183,6 +240,7 @@ def _parse_dep(path: Path, name: str, spec: dict) -> Dependency:
     if "git" in spec:
         _check_keys(path, f"dependencies.{name}", spec, _DEP_GIT_KEYS)
         git = _require_str(path, spec, "git", f"dependencies.{name}")
+        _validate_git_url(path, name, git)
         tag = spec.get("tag")
         rev = spec.get("rev")
         if tag is None and rev is None:

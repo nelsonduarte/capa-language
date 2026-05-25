@@ -209,6 +209,89 @@ class TestManifestParser(_TempDirMixin, unittest.TestCase):
         self.assertIn("needs a source", str(cm.exception))
 
 
+class TestGitUrlAllowList(_TempDirMixin, unittest.TestCase):
+    """Audit 2026-05-25 (item #5): close the ext:: / option-injection
+    attack surface around ``git clone <user-controlled-string>``.
+
+    Manifest-parse-time rejection of dangerous URLs keeps the
+    string from ever reaching ``_run_git`` in ``_install.py``."""
+
+    def _capa_toml_with_git(self, git: str) -> Path:
+        p = self._tmp / "capa.toml"
+        _write(p, f'''
+            [package]
+            name = "demo"
+            version = "0.1.0"
+
+            [dependencies]
+            mylib = {{ git = "{git}", tag = "v0.1" }}
+        ''')
+        return p
+
+    def test_https_allowed(self):
+        m = read_manifest(self._capa_toml_with_git("https://github.com/x/y"))
+        self.assertEqual(m.dependencies[0].git, "https://github.com/x/y")
+
+    def test_http_allowed(self):
+        m = read_manifest(self._capa_toml_with_git("http://example.invalid/x"))
+        self.assertEqual(m.dependencies[0].git, "http://example.invalid/x")
+
+    def test_ssh_scheme_allowed(self):
+        m = read_manifest(self._capa_toml_with_git("ssh://git@example.invalid/x"))
+        self.assertEqual(m.dependencies[0].git, "ssh://git@example.invalid/x")
+
+    def test_git_scheme_allowed(self):
+        m = read_manifest(self._capa_toml_with_git("git://example.invalid/x"))
+        self.assertEqual(m.dependencies[0].git, "git://example.invalid/x")
+
+    def test_file_scheme_allowed(self):
+        m = read_manifest(self._capa_toml_with_git("file:///tmp/local-repo"))
+        self.assertEqual(m.dependencies[0].git, "file:///tmp/local-repo")
+
+    def test_git_ssh_shortcut_allowed(self):
+        m = read_manifest(self._capa_toml_with_git("git@github.com:x/y.git"))
+        self.assertEqual(m.dependencies[0].git, "git@github.com:x/y.git")
+
+    def test_ext_transport_rejected(self):
+        # ``ext::sh -c <cmd>`` is the textbook RCE shape from
+        # CVE-2017-1000117 and its family.
+        with self.assertRaises(ManifestError) as cm:
+            read_manifest(self._capa_toml_with_git("ext::sh -c id"))
+        self.assertIn("allow-listed transports", str(cm.exception))
+
+    def test_url_starting_with_dash_rejected(self):
+        # ``git clone -uupload-pack=cmd`` would pass the URL through
+        # as an option. Refuse before it can land in argv.
+        with self.assertRaises(ManifestError) as cm:
+            read_manifest(self._capa_toml_with_git("--upload-pack=evil"))
+        self.assertIn("starts with '-'", str(cm.exception))
+
+    def test_git_ssh_shortcut_with_option_injection_rejected(self):
+        # The path segment after ``:`` in the SSH shortcut can also
+        # carry a ``-`` to trigger option parsing on the remote side
+        # of some git versions.
+        with self.assertRaises(ManifestError) as cm:
+            read_manifest(
+                self._capa_toml_with_git("git@host:--upload-pack=evil"),
+            )
+        self.assertIn("starts with '-'", str(cm.exception))
+
+    def test_unknown_scheme_rejected(self):
+        # rsync:// is real but not in our allow-list; bumping the
+        # allow-list should be a deliberate decision.
+        with self.assertRaises(ManifestError) as cm:
+            read_manifest(self._capa_toml_with_git("rsync://example.invalid/x"))
+        self.assertIn("allow-listed transports", str(cm.exception))
+
+    def test_bare_path_rejected(self):
+        # A naked filesystem path (no file:// prefix) bypasses the
+        # scheme check; treat it as an error so anyone who wants a
+        # local clone has to use file:// explicitly.
+        with self.assertRaises(ManifestError) as cm:
+            read_manifest(self._capa_toml_with_git("/tmp/local-repo"))
+        self.assertIn("allow-listed transports", str(cm.exception))
+
+
 class TestInstallLocal(_TempDirMixin, unittest.TestCase):
     """Path-source deps: no git required."""
 
