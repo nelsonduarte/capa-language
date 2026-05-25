@@ -133,44 +133,58 @@ class _JsonEmissionMixin:
         self._write(f"local.set ${dst}")
 
     def _emit_jv_as_int(self, recv: Value, dst):
-        """``jv.as_int() -> Option<Int>``: matches JNum then projects
-        the float payload to a signed i64 via ``i64.trunc_f64_s``.
-        Phase 6G ships the always-truncate semantics (matches Python's
-        ``int()``); the runtime ``as_int`` returns ``None`` for non-
-        integer floats, but the Wasm path is lossier here. A future
-        refinement can branch on ``f64.trunc(v) == v`` to mirror the
-        legacy behaviour faithfully -- not needed for the demos."""
+        """``jv.as_int() -> Option<Int>``: matches JNum and returns
+        ``Some(int(v))`` only when the float payload is integer-
+        valued (``f64.trunc(v) == v``); ``None`` for non-integer
+        floats or for any non-JNum variant. Mirrors the runtime
+        ``JsonValue.as_int`` in
+        [`capa/runtime/_json.py`](../../runtime/_json.py); audit
+        2026-05-25 closed the parity gap where the Wasm path used
+        to truncate unconditionally and return ``Some(3)`` for
+        ``JNum(3.14)``."""
         if dst is None:
             return
         recv_local = "_m_scrut"
         result_local = "_alloc_tmp_result"
+        f_local = "_alloc_tmp_f64"
         jnum_tag = _JSONVALUE_LAYOUT["variants"]["JNum"][0]
         self._push_value(recv)
         self._write(f"local.set ${recv_local}")
         self._write(f"i32.const {_OPTION_LAYOUT['size']}")
         self._write("call $alloc")
         self._write(f"local.set ${result_local}")
+        # Default to None; the integer-valued path below overwrites
+        # the tag to 0 and stores the payload.
+        self._write(f"local.get ${result_local}")
+        self._write("i32.const 1")
+        self._write("i32.store")
         self._write(f"local.get ${recv_local}")
         self._write("i32.load")
         self._write(f"i32.const {jnum_tag}")
         self._write("i32.eq")
         self._write("if")
         self._indent += 1
-        # Some(int(value))
+        # Read payload into f64 scratch local.
+        self._write(f"local.get ${recv_local}")
+        self._write("f64.load offset=8")
+        self._write(f"local.set ${f_local}")
+        # Integer-valued check: f64.trunc(v) == v.
+        self._write(f"local.get ${f_local}")
+        self._write("f64.trunc")
+        self._write(f"local.get ${f_local}")
+        self._write("f64.eq")
+        self._write("if")
+        self._indent += 1
+        # Some(int(value)).
         self._write(f"local.get ${result_local}")
         self._write("i32.const 0")
         self._write("i32.store")
         self._write(f"local.get ${result_local}")
-        self._write(f"local.get ${recv_local}")
-        self._write("f64.load offset=8")
+        self._write(f"local.get ${f_local}")
         self._write("i64.trunc_f64_s")
         self._write("i64.store offset=8")
         self._indent -= 1
-        self._write("else")
-        self._indent += 1
-        self._write(f"local.get ${result_local}")
-        self._write("i32.const 1")
-        self._write("i32.store")
+        self._write("end")
         self._indent -= 1
         self._write("end")
         self._write(f"local.get ${result_local}")

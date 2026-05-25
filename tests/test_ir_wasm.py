@@ -1519,6 +1519,46 @@ class TestWasmJson(unittest.TestCase):
         )
         self.assertEqual(self._run_capturing_stdout(src), "none\n")
 
+    def test_as_int_some_on_integer_valued_jnum(self):
+        # Audit 2026-05-25 parity fix: integer-valued JNum (1.0,
+        # -7.0) projects to Some(int). Both backends must agree.
+        src = (
+            'fun main(stdio: Stdio)\n'
+            '    let j = JNum(7.0)\n'
+            '    match j.as_int()\n'
+            '        Some(n) -> stdio.println("got ${n}")\n'
+            '        None    -> stdio.println("none")\n'
+        )
+        self.assertEqual(self._run_capturing_stdout(src), "got 7\n")
+
+    def test_as_int_none_on_non_integer_jnum(self):
+        # Audit 2026-05-25 parity fix: non-integer JNum (3.14)
+        # must return None on both backends. Wasm used to truncate
+        # unconditionally and return Some(3); now it checks for
+        # zero fractional first.
+        src = (
+            'fun main(stdio: Stdio)\n'
+            '    let j = JNum(3.14)\n'
+            '    match j.as_int()\n'
+            '        Some(n) -> stdio.println("got ${n}")\n'
+            '        None    -> stdio.println("none")\n'
+        )
+        self.assertEqual(self._run_capturing_stdout(src), "none\n")
+
+    def test_as_int_none_on_non_jnum_variant(self):
+        # Sanity: non-JNum variants are unconditionally None on
+        # both backends. This branch already worked but lock it in
+        # so a future refactor of the as_int dispatch doesn't
+        # regress it.
+        src = (
+            'fun main(stdio: Stdio)\n'
+            '    let j = JStr("not a number")\n'
+            '    match j.as_int()\n'
+            '        Some(n) -> stdio.println("got ${n}")\n'
+            '        None    -> stdio.println("none")\n'
+        )
+        self.assertEqual(self._run_capturing_stdout(src), "none\n")
+
     def test_parse_json_array(self):
         src = (
             'fun main(stdio: Stdio)\n'

@@ -422,10 +422,13 @@ class _LocalsCollectionMixin:
             # JsonValue method emit reuses the match scrut local for
             # the receiver pointer and needs an Option-result alloc
             # slot. _alloc_tmp_i64 is needed for the as_int /
-            # as_X paths.
+            # as_X paths. _alloc_tmp_f64 holds the f64 payload of a
+            # JNum while ``as_int`` checks whether it is integer-
+            # valued before constructing Some.
             out.setdefault("_m_scrut", "i32")
             out.setdefault("_alloc_tmp_result", "i32")
             out.setdefault("_alloc_tmp_i64", "i64")
+            out.setdefault("_alloc_tmp_f64", "f64")
         if has_format_str:
             # FormatStr scratch: per-value (ptr, len) stashes plus
             # total-length / buffer / position registers.

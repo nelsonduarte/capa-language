@@ -223,13 +223,14 @@ the current Wasm critical path.
   Fix needs a real shortest-round-trip float printer in Wasm
   (Grisu2 or Ryu). ⏱ 6-10h. P1.
 
-- [ ] **`JsonValue.as_int` parity** (audit 2026-05-25 known
-  divergence). Wasm path truncates floats unconditionally
-  ([`capa/ir/_emit_wasm/_json.py:138-142`](capa/ir/_emit_wasm/_json.py#L138));
-  Python returns `None` for non-integer floats. Same JsonValue
-  programs produce different `Option<Int>` shapes across
-  backends. Align the Wasm side with Python: return `None` (tag=1)
-  when the float has a non-zero fractional part. ⏱ 1-2h. P1.
+- [x] **`JsonValue.as_int` parity** (closed 2026-05-25). Wasm
+  `_emit_jv_as_int` now mirrors Python's
+  [`JsonValue.as_int`](capa/runtime/_json.py): wrap an i64
+  truncation only when `f64.trunc(v) == v`, else None. The
+  fix uses a new `_alloc_tmp_f64` scratch local declared in
+  the `has_json_method` block; three regression tests
+  (integer-valued JNum, non-integer JNum, non-JNum variant)
+  in `TestWasmJson` lock the parity in.
 
 - [ ] **Capability-discipline hole C: generic instantiation
   re-check** (audit 2026-05-25). The structural check
