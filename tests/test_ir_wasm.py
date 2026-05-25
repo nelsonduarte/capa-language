@@ -314,6 +314,65 @@ class TestWitGeneration(unittest.TestCase):
         with self.assertRaises(UnsupportedCapabilityMethod):
             emit_wit(ir_mod)
 
+    def test_parse_json_does_not_emit_host_json_interface(self):
+        # Audit 2026-05-25 (item #3): parse_json / to_json are
+        # bundled into the guest module via
+        # ``capa.ir._builtin_json.inject_into``; the Wasm side never
+        # imports a ``capa:host/json`` interface. The WIT emitter
+        # used to keep emitting ``interface json`` and ``import
+        # json``, contradicting what the component actually consumes.
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    let s = \"abc\"\n"
+            "    let r = parse_json(s)\n"
+            "    stdio.println(\"parsed\")\n"
+        )
+        ir_mod, _, _ = _parse_lower(src)
+        wit = emit_wit(ir_mod)
+        self.assertNotIn("interface json", wit)
+        self.assertNotIn("import json", wit)
+        self.assertIn("interface stdio", wit)
+
+    def test_to_json_does_not_emit_host_json_interface(self):
+        # Same as the parse_json case, but exercising the serialise
+        # direction as well so both bundled functions are covered.
+        src = (
+            "fun main(stdio: Stdio) -> Result<Unit, String>\n"
+            "    let jv = parse_json(\"[1,2]\")?\n"
+            "    let back = to_json(jv)\n"
+            "    stdio.println(back)\n"
+            "    return Ok(())\n"
+        )
+        ir_mod, _, _ = _parse_lower(src)
+        wit = emit_wit(ir_mod)
+        self.assertNotIn("interface json", wit)
+        self.assertNotIn("import json", wit)
+
+    def test_wit_and_wasm_discovery_agree_on_used_caps(self):
+        # Cross-side parity: the WIT and Wasm emitters must compute
+        # the same used-capability set for the same module, otherwise
+        # ``--component --run`` either misses a host import or
+        # publishes a phantom one. Audit 2026-05-25.
+        from capa.ir._emit_wasm._discovery import _DiscoveryMixin
+        from capa.ir._emit_wasm import WasmEmitter
+
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    let s = \"abc\"\n"
+            "    let r = parse_json(s)\n"
+            "    stdio.println(\"x\")\n"
+        )
+        ir_mod, _, _ = _parse_lower(src)
+        wit_used = set(collect_used_capabilities(ir_mod).keys())
+
+        emitter = WasmEmitter()
+        emitter._used_caps = set()
+        for fn in ir_mod.functions:
+            emitter._discover_instrs(fn.body)
+        wasm_used = {cap for (cap, _method) in emitter._used_caps}
+
+        self.assertEqual(wit_used, wasm_used)
+
 
 class TestWasmStdioEmission(unittest.TestCase):
     """Phase 6B Wasm-side emission of capability method calls.

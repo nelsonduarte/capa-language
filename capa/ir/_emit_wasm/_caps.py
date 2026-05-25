@@ -54,11 +54,10 @@ _CANONICAL_INDIRECT_RETURN: dict[tuple[str, str], tuple[int, str]] = {
     # result<_, io-error>: tag i32 + max(0 i32s for Ok unit,
     # 4 i32s for Err io-error) = 4 + 16 = 20 bytes flat.
     ("Fs", "write"): (20, "result_unit_io_error"),
-    # result<u32, string>: tag i32 + max(1 i32 for Ok u32,
-    # 2 i32s for Err string) = 4 + 8 = 12 bytes flat.
-    ("Json", "parse"): (12, "result_u32_string"),
-    # string: (ptr i32, len i32) = 8 bytes flat.
-    ("Json", "to_string"): (8, "string"),
+    # ``Json`` used to live here when parse_json / to_json crossed a
+    # host bridge; they now compile to local-export calls into the
+    # bundled JSON parser (see ``capa.ir._builtin_json``), so no
+    # canonical-ABI indirect return is needed on this side.
 }
 
 

@@ -9,6 +9,39 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+### Wasm CM: strip phantom `capa:host/json` from the WIT
+
+The `parse_json` / `to_json` free functions used to route through
+a synthetic `Json` capability with canonical-ABI host imports.
+They now compile to plain `call $__capa_parse_json` /
+`call $__capa_to_json` against the bundled Capa-source parser
+injected by [`capa.ir._builtin_json`](capa/ir/_builtin_json.py),
+so no host bridge is needed and the Wasm output imports nothing
+under `capa:host/json`. The Wasm-side discovery already excluded
+`Json` (comment at
+[`capa/ir/_emit_wasm/_discovery.py:358`](capa/ir/_emit_wasm/_discovery.py#L358)),
+but the WIT emitter still picked the calls up and advertised an
+`interface json` with an `import json` in the world, leaving the
+two views inconsistent. Audit 2026-05-25 (item #3).
+
+Fix: drop the `parse_json` / `to_json` detection from
+`collect_used_capabilities`, drop `Json` from
+`_KNOWN_CAPABILITIES`, drop the `(Json, ...)` rows from both
+`_WIT_SIGNATURES` and the Wasm side's `_CANONICAL_INDIRECT_RETURN`.
+After the fix the same source compiled with `capa --wit` and
+`capa --wasm` agrees on the used-cap set: only the actual host
+capabilities (`stdio`, `clock`, `env`, `fs`) appear, and
+`--component --run` for JSON-using programs no longer asks for
+a host import nothing provides.
+
+Coverage: three new tests in `TestWitGeneration`
+([`tests/test_ir_wasm.py`](tests/test_ir_wasm.py)). Two assert
+the WIT for a `parse_json` / `to_json` program does not mention
+`interface json` or `import json`; the third runs both the WIT
+and Wasm discovery passes over the same module and asserts the
+two used-cap sets are equal -- a cross-side parity test the
+audit explicitly recommended. Suite 1354 -> 1357.
+
 ### Soundness: close two capability-discipline holes surfaced by the 2026-05-25 audit
 
 Two adjacent gaps were both letting cap-bearing struct fields

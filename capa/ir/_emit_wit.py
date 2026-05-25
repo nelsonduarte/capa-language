@@ -30,7 +30,7 @@ from typing import List, Optional
 
 from ._nodes import (
     Module, Function, Instr,
-    Call, MethodCall, If, While, For, Match,
+    MethodCall, If, While, For, Match,
 )
 
 
@@ -73,18 +73,14 @@ _WIT_SIGNATURES: dict[tuple[str, str], str] = {
 
     # Net entries follow once the request/response model is stable.
 
-    # Json: a synthetic capability that wraps the built-in free
-    # functions ``parse_json`` / ``to_json``. They are not declared
-    # in source as ``json.parse(...)`` capability methods, but the
-    # Wasm import machinery treats them as a 9th capability so the
-    # host bridge can ship two functions without bespoke plumbing.
-    # JsonValue crosses the component boundary as an opaque u32
-    # handle: the host's parse builds the value in linear memory
-    # via $alloc and returns the pointer; the consumer hands it
-    # back to to-string. WIT has no raw-pointer type, so u32
-    # carries the handle the linker can validate.
-    ("Json", "parse"):     "parse: func(s: string) -> result<u32, string>",
-    ("Json", "to_string"): "to-string: func(jv: u32) -> string",
+    # ``parse_json`` / ``to_json`` used to live here as a synthetic
+    # ``Json`` capability so the Wasm import machinery had something
+    # to plumb. They now compile to plain ``call $__capa_parse_json``
+    # / ``call $__capa_to_json`` against the bundled Capa-source
+    # parser injected by ``capa.ir._builtin_json.inject_into``; no
+    # host import is produced, so no WIT interface is needed either.
+    # The Wasm-side discovery in ``capa.ir._emit_wasm._discovery``
+    # already excludes Json; this table follows.
 }
 
 
@@ -92,7 +88,7 @@ _WIT_SIGNATURES: dict[tuple[str, str], str] = {
 # in ``_WIT_SIGNATURES`` raise ``UnsupportedCapability`` at WIT
 # generation time; the Wasm emitter mirrors this so the contract
 # stays in sync.
-_KNOWN_CAPABILITIES = {"Stdio", "Clock", "Env", "Fs", "Json"}
+_KNOWN_CAPABILITIES = {"Stdio", "Clock", "Env", "Fs"}
 
 
 # Per-interface type declarations injected before the method
@@ -133,11 +129,14 @@ def collect_used_capabilities(module: Module) -> dict[str, set[str]]:
     Mirrors the Wasm emitter's discovery pass: a method call is a
     capability call when the lowerer set ``cap_used`` *or* when the
     receiver's type is a built-in capability class (impl-method-
-    internal calls do not always carry ``cap_used`` through). The
-    Json synthetic capability is also picked up from
-    ``parse_json`` / ``to_json`` free-function calls. The WIT and
-    the core wasm imports must agree on the used-cap set or the
-    Component Model linker rejects the artifact."""
+    internal calls do not always carry ``cap_used`` through).
+    ``parse_json`` / ``to_json`` are deliberately ignored here:
+    they compile to local-export calls into the bundled JSON
+    parser (see ``capa.ir._builtin_json``), so the component never
+    imports them and the WIT must not advertise an interface for
+    them. The WIT and the core wasm imports must agree on the
+    used-cap set or the Component Model linker rejects the
+    artifact."""
     out: dict[str, set[str]] = {}
 
     def visit(instrs: list[Instr]) -> None:
@@ -150,11 +149,6 @@ def collect_used_capabilities(module: Module) -> dict[str, set[str]]:
                         cap = rty
                 if cap is not None:
                     out.setdefault(cap, set()).add(instr.method)
-            elif isinstance(instr, Call):
-                if instr.callee_name == "parse_json":
-                    out.setdefault("Json", set()).add("parse")
-                elif instr.callee_name == "to_json":
-                    out.setdefault("Json", set()).add("to_string")
             # Recurse into nested instruction lists so we don't miss
             # method calls inside if/while/for/match arm bodies.
             if isinstance(instr, If):
