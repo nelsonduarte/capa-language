@@ -198,6 +198,11 @@ class WasmEmitter(
         # ``Call(callee_name="Circle", ...)`` resolves to its parent
         # ``Shape`` sum without an enclosing scope hint.
         self._variant_to_sum: dict[str, str] = {}
+        # Offset of the Grisu2 cached-powers-of-10 table in linear
+        # memory. Reserved by ``emit()`` after string interning and
+        # before the heap base when the module uses Float formatting;
+        # 0 means "table not present".
+        self._cached_powers_offset: int = 0
 
     # ----- public ------------------------------------------------
 
@@ -287,6 +292,14 @@ class WasmEmitter(
         if self._uses_format_str(module):
             self._intern_string("true")
             self._intern_string("false")
+        # Pre-intern the special-case Float literals returned by
+        # ``$ftoa`` directly (NaN / +/- inf / +/-0). These are
+        # returned as pointers into the static data segment rather
+        # than as fresh allocations, so the offsets must be known
+        # at WAT-emission time.
+        if self._uses_float_format(module):
+            for special in ("nan", "inf", "-inf", "0.0", "-0.0"):
+                self._intern_string(special)
         # Pre-intern every String-typed top-level constant. Use
         # sites walk function bodies, never ConstDecl, so a
         # bare ``pub const S: String = "..."`` referenced from
@@ -299,6 +312,22 @@ class WasmEmitter(
                 self._intern_string(v.literal)
         self._discover(module)
         self._discover_lambdas(module)
+
+        # Reserve linear-memory space for the Grisu2 cached-powers
+        # table when Float formatting is in play. Placed right after
+        # the string data segment, before the heap base. The table
+        # itself is emitted as a ``(data ...)`` block alongside the
+        # string segments below.
+        from ._runtime import _CACHED_POWERS_BYTE_SIZE
+        if self._uses_float_format(module):
+            self._cached_powers_offset = _align_up(
+                self._string_data_offset, 8,
+            )
+            self._string_data_offset = (
+                self._cached_powers_offset + _CACHED_POWERS_BYTE_SIZE
+            )
+        else:
+            self._cached_powers_offset = 0
 
         # Stage 1: emit the (module ... ) header with imports and
         # memory.
@@ -348,6 +377,10 @@ class WasmEmitter(
             ):
                 escaped = self._escape_wat_string(text)
                 self._write(f'(data (i32.const {offset}) "{escaped}")')
+            # Grisu2 cached-powers-of-10 table, emitted as a raw
+            # ``(data ...)`` block at the reserved offset.
+            if self._uses_float_format(module):
+                self._emit_cached_powers_data()
         # Heap: starts just after the static data segment, aligned
         # to 8 bytes. The ``$alloc`` function below bumps the global
         # forward by the requested size, rounded up to 8.
@@ -372,6 +405,15 @@ class WasmEmitter(
             if self._uses_format_str(module):
                 self._emit_itoa_function()
                 if self._uses_float_format(module):
+                    # Grisu2 needs four helpers in a fixed order:
+                    # pow10 (called by grisu2), mul_high (called by
+                    # grisu2), cached_power lookup (called by
+                    # grisu2), grisu2 itself, then ftoa which
+                    # dispatches to all of the above.
+                    self._emit_pow10_i32_function()
+                    self._emit_mul_high_u64_function()
+                    self._emit_grisu_cached_power_function()
+                    self._emit_grisu2_function()
                     self._emit_ftoa_function()
             # parse_int / parse_float are built-in free functions
             # routed to runtime helpers. Emit only when used.
@@ -862,7 +904,14 @@ class WasmEmitter(
     def _emit_unaryop(self, instr: UnaryOp) -> None:
         op = instr.op
         if op == "-":
-            # Wasm has no i64.neg; emit ``0 - x``.
+            # Float operand: emit ``f64.neg`` directly. Int operand:
+            # Wasm has no ``i64.neg``, so synthesise as ``0 - x``.
+            operand_ty = self._effective_value_ty(instr.operand)
+            if operand_ty == "Float":
+                self._push_value(instr.operand)
+                self._write("f64.neg")
+                self._write(f"local.set ${instr.dst}")
+                return
             self._write("i64.const 0")
             self._push_value(instr.operand)
             self._write("i64.sub")

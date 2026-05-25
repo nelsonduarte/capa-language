@@ -210,18 +210,35 @@ the current Wasm critical path.
   venues: PLAS, EuroS&P workshops, NDSS workshops. ⏱ 10-20h
   for a publishable revision; 20-40h for venue submission.
 
-- [ ] **Wasm Float formatting: bit-identical with Python `str(float)`**
-  (audit 2026-05-25 known divergence). The Wasm runtime's `$ftoa`
-  helper at [`capa/ir/_emit_wasm/_runtime.py`](capa/ir/_emit_wasm/_runtime.py)
-  prints fixed 6 decimals and truncates (no rounding). Python's
-  `str(float)` is variable-width and uses Grisu / repr-shortest.
-  Result: `${1.5}` prints as "1.500000" in Wasm vs "1.5" in
-  Python, and `${1.9999999}` prints as "1.999999" vs "1.9999999".
-  Blocks moving `examples/wasm/clock_demo.capa` and parts of
-  `examples/wasm/json_demo.capa` onto the parity list in
-  [`tests/test_ir_wasm_parity.py`](tests/test_ir_wasm_parity.py).
-  Fix needs a real shortest-round-trip float printer in Wasm
-  (Grisu2 or Ryu). ⏱ 6-10h. P1.
+- [x] **Wasm Float formatting: bit-identical with Python `str(float)`**
+  (closed 2026-05-25). The legacy fixed-6-decimal `$ftoa` is
+  replaced by a pure-WAT port of Grisu2 in
+  [`capa/ir/_emit_wasm/_runtime.py`](capa/ir/_emit_wasm/_runtime.py).
+  Five new helpers (`$grisu_mul_high` for the 64x64 -> 128-bit
+  high product with round-half-up, `$grisu_cached_power` for the
+  87-entry cached-powers-of-10 lookup, `$pow10_i32` for the
+  digit-generation divisors, `$grisu2` for the main algorithm,
+  and the rewritten `$ftoa` that handles NaN / +/-inf / +/-0
+  and dispatches to either decimal or scientific spelling
+  based on Python's `n = len(digits) + K` rule -- decimal when
+  `-3 <= n <= 16`, scientific otherwise). The cached-powers
+  table is reserved as a `(data ...)` block at a fresh offset
+  between the string segment and the heap base whenever
+  `_uses_float_format` is true; `_cached_powers_offset` tracks
+  the slot so `$grisu_cached_power` can address it.
+  Translation was kept faithful to the validated Python
+  reference at `grisu2_ref.py` (21/21 curated cases pass);
+  the WAT port adds five more curated cases for the
+  scientific-notation boundaries and special values, plus the
+  pre-existing `0.1 + 0.2` round-trip suite. Coverage: new
+  31-case `TestWasmFtoaParity` class; `json_demo.capa`
+  promoted from `_EXCLUDED` to `_PARITY_PROGRAMS` in
+  `tests/test_ir_wasm_parity.py`. Bonus fix: `_emit_unaryop`
+  for `-` on `Float` operands used to emit `i64.const 0 ;
+  i64.sub` (an Int idiom), which the Wasm verifier rejected
+  when the operand was `f64`. The branch is now type-aware:
+  `f64.neg` for Float, `0 - x` for Int. Suite: 1432 tests
+  total, 0 regressions.
 
 - [x] **`JsonValue.as_int` parity** (closed 2026-05-25). Wasm
   `_emit_jv_as_int` now mirrors Python's

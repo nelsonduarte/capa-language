@@ -1214,6 +1214,147 @@ class TestWasmFloatAndClock(unittest.TestCase):
     _has_wasm_tools() and _has_wasmtime_py(),
     "wasm-tools and/or wasmtime-py not installed",
 )
+class TestWasmFtoaParity(unittest.TestCase):
+    """Bit-identical parity of the Wasm ``$ftoa`` helper against
+    Python's ``str(float)`` for a curated set of values: common
+    decimals, hard IEEE 754 cases (0.1 + 0.2 territory), the
+    scientific-notation thresholds Python uses (``|x| < 1e-4``,
+    ``|x| >= 1e16``), and the special cases (``+/-0``, ``+/-inf``,
+    ``nan``).
+
+    Each test compiles a tiny Capa program that materialises the
+    target value (either as a literal or via arithmetic for the
+    NaN/inf cases) and asserts the ``${x}``-interpolated stdout
+    matches ``str(target)``. Grisu2's documented ~0.5% extra-digit
+    edge cases are not included; the corpus here is the corpus
+    Grisu2 is known to handle shortest."""
+
+    def _run_capturing_stdout(self, src: str) -> str:
+        import io
+        import sys
+        from capa.runtime._wasm_host import WasmHost
+        _, types, ast_mod = _parse_lower(src)
+        blob = compile_wasm(ast_mod, types=types)
+        host = WasmHost()
+        out = io.StringIO()
+        saved_out = sys.stdout
+        sys.stdout = out
+        try:
+            host.run_main(blob)
+        finally:
+            sys.stdout = saved_out
+        return out.getvalue()
+
+    def _assert_literal_parity(self, v: float) -> None:
+        """Compile a program that interpolates ``v`` as a literal
+        and asserts the Wasm output equals Python's ``str(v)``."""
+        src = (
+            "fun main(stdio: Stdio)\n"
+            f"    let x: Float = {v!r}\n"
+            "    stdio.println(\"${x}\")\n"
+        )
+        expected = str(v) + "\n"
+        self.assertEqual(self._run_capturing_stdout(src), expected)
+
+    # Plain decimals -- the bread-and-butter case.
+    def test_one_point_five(self):  self._assert_literal_parity(1.5)
+    def test_zero_five(self):       self._assert_literal_parity(0.5)
+    def test_hundred(self):         self._assert_literal_parity(100.0)
+    def test_one_two_three(self):   self._assert_literal_parity(123.0)
+    def test_pi_short(self):        self._assert_literal_parity(3.14)
+    def test_one_quarter(self):     self._assert_literal_parity(0.25)
+    def test_one(self):             self._assert_literal_parity(1.0)
+    def test_two(self):             self._assert_literal_parity(2.0)
+    def test_seven(self):           self._assert_literal_parity(7.0)
+    def test_forty_two(self):       self._assert_literal_parity(42.0)
+
+    # Hard IEEE 754 cases -- shortest-round-trip required.
+    def test_zero_one(self):        self._assert_literal_parity(0.1)
+    def test_zero_two(self):        self._assert_literal_parity(0.2)
+    def test_zero_three(self):      self._assert_literal_parity(0.3)
+    def test_one_thousandth(self):  self._assert_literal_parity(0.001)
+    def test_one_ten_thousandth(self): self._assert_literal_parity(0.0001)
+    def test_one_eighth(self):      self._assert_literal_parity(0.125)
+    def test_one_sixteenth(self):   self._assert_literal_parity(0.0625)
+
+    # Negatives.
+    def test_neg_one_five(self):    self._assert_literal_parity(-1.5)
+    def test_neg_half(self):        self._assert_literal_parity(-0.5)
+    def test_neg_hundred(self):     self._assert_literal_parity(-100.0)
+    def test_neg_pi_short(self):    self._assert_literal_parity(-3.14)
+
+    # Scientific-notation thresholds. Python's str(float) uses
+    # e-notation when ``e = n - 1 < -4`` (lower) or ``e >= 17``
+    # (upper); the values below straddle both edges.
+    def test_just_inside_decimal_low(self):
+        # 1e-4 is the smallest magnitude that stays in decimal form.
+        self._assert_literal_parity(1e-4)
+
+    def test_just_outside_decimal_low(self):
+        # 1e-5 crosses into scientific.
+        self._assert_literal_parity(1e-5)
+
+    def test_just_outside_decimal_high(self):
+        # 1e16 just crosses into scientific (n=17, e=16).
+        self._assert_literal_parity(1e16)
+
+    def test_one_quadrillion(self):
+        # Highest magnitude still in decimal form (n=16).
+        self._assert_literal_parity(1e15)
+
+    def test_scientific_negative_exponent_three_digits(self):
+        # 1e-100 exercises the three-digit-exponent branch.
+        self._assert_literal_parity(1e-100)
+
+    def test_scientific_positive_exponent_three_digits(self):
+        # 1e100 exercises the three-digit-exponent branch on the
+        # positive side.
+        self._assert_literal_parity(1e100)
+
+    # Special cases: +/-0, +/-inf, nan.
+    def test_positive_zero(self):
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    let x: Float = 0.0\n"
+            "    stdio.println(\"${x}\")\n"
+        )
+        self.assertEqual(self._run_capturing_stdout(src), "0.0\n")
+
+    def test_negative_zero(self):
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    let x: Float = -0.0\n"
+            "    stdio.println(\"${x}\")\n"
+        )
+        self.assertEqual(self._run_capturing_stdout(src), "-0.0\n")
+
+    def test_infinity_via_division(self):
+        # Capa has no literal +/-inf or nan; compute via division.
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    let zero: Float = 0.0\n"
+            "    let one: Float = 1.0\n"
+            "    let inf_val: Float = one / zero\n"
+            "    let neg_inf: Float = -one / zero\n"
+            "    stdio.println(\"${inf_val}\")\n"
+            "    stdio.println(\"${neg_inf}\")\n"
+        )
+        self.assertEqual(self._run_capturing_stdout(src), "inf\n-inf\n")
+
+    def test_nan_via_division(self):
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    let zero: Float = 0.0\n"
+            "    let nan_val: Float = zero / zero\n"
+            "    stdio.println(\"${nan_val}\")\n"
+        )
+        self.assertEqual(self._run_capturing_stdout(src), "nan\n")
+
+
+@unittest.skipUnless(
+    _has_wasm_tools() and _has_wasmtime_py(),
+    "wasm-tools and/or wasmtime-py not installed",
+)
 class TestWasmEnv(unittest.TestCase):
     """Phase 7B: Env.get returns Option<String>, with the host
     bridge allocating both the Option container and the string
@@ -1479,7 +1620,7 @@ class TestWasmJson(unittest.TestCase):
             '        _       -> stdio.println("other")\n'
         )
         self.assertEqual(
-            self._run_capturing_stdout(src), "got 3.500000\n",
+            self._run_capturing_stdout(src), "got 3.5\n",
         )
 
     def test_jnull_via_parse(self):
@@ -1777,7 +1918,7 @@ class TestWasmOptionResult(unittest.TestCase):
             '    stdio.println("${n.unwrap_or(0.0)}")\n'
         )
         self.assertEqual(
-            self._run_capturing_stdout(src), "3.140000\n0.000000\n",
+            self._run_capturing_stdout(src), "3.14\n0.0\n",
         )
 
     def test_option_unwrap_or_string(self):

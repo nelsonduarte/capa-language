@@ -36,8 +36,10 @@ from capa.ir import compile_wasm, lower
 _EXAMPLES = Path(__file__).resolve().parent.parent / "examples" / "wasm"
 
 
-# Stdio-only programs that don't use Float; these are the
-# bit-identical-parity targets the README's claim applies to.
+# Stdio-only programs that produce bit-identical output across
+# both backends. Float interpolation now goes through a Grisu2
+# port in the Wasm runtime, so JNum-bearing programs are parity-
+# clean too.
 _PARITY_PROGRAMS: list[str] = [
     "hello.capa",
     "fizzbuzz.capa",
@@ -45,6 +47,7 @@ _PARITY_PROGRAMS: list[str] = [
     "strings.capa",
     "word_count.capa",
     "closures.capa",
+    "json_demo.capa",
 ]
 
 # Programs deliberately excluded from parity and why; documented
@@ -62,11 +65,6 @@ _EXCLUDED: dict[str, str] = {
     "fs_demo.capa": (
         "Fs.read / Fs.write touch the real filesystem; parity needs a "
         "deterministic temp-dir fixture wired into both backends."
-    ),
-    "json_demo.capa": (
-        "JNum payload prints differently: Python's str(float) is "
-        "variable-width while Wasm's $ftoa fixes 6 decimals and "
-        "truncates. Tracked separately as a Wasm runtime task."
     ),
 }
 
@@ -172,6 +170,9 @@ class TestPythonWasmParity(unittest.TestCase):
 
     def test_closures(self):
         self._assert_parity("closures.capa")
+
+    def test_json_demo(self):
+        self._assert_parity("json_demo.capa")
 
     def test_inventory_matches_examples_dir(self):
         # Soundness check: every .capa under examples/wasm/ is
