@@ -1574,6 +1574,8 @@ class TestTranspileExamples(unittest.TestCase):
         self.assertIn("SHA1 = aaaabbbbcccc", out)
         self.assertIn("Relationships (1):", out)
         self.assertIn("DESCRIBES", out)
+        self.assertIn("annotations: 1", out)
+        self.assertIn("OTHER by Tool: capa-0.6: summary:total_functions=42", out)
         self.assertIn("Validation: ok (refs resolve + acyclic)", out)
 
     def test_cve_torchtriton(self):
