@@ -1,0 +1,135 @@
+// Capa equivalent of `naive.py` (an INI/config-file loader of
+// the `configparser` / `iniparse` shape). The same logic, split
+// into functions whose signatures declare exactly the
+// capabilities they need.
+//
+// The naive Python `load_ini(path)` has a single capability
+// (Fs) but still conflates pure parsing with file I/O under
+// one name. The Capa version separates them: `parse_ini_text`
+// is pure and unit-testable without any handle; `load_ini`
+// adds Fs and nothing else.
+//
+// Run with:
+//
+//   capa --cyclonedx evaluation/sbom_diff/ini_loader/capa.capa
+//
+// to get the per-function `capa:declared_capability` SBOM
+// properties this study consumes.
+
+// Local return type for `parse_kv_line`. A tuple
+// `Option<(String, String)>` would do the job, but a named
+// struct reads more clearly at call sites and matches the
+// idiom used by `examples/spdx_tag_parser.capa`'s `split_tag`.
+type KvPair {
+    key: String,
+    value: String
+}
+
+// ===============================================================
+// Pure: given a `[name]` line, return Some("name") if it parses
+// as a section header, else None. Trims whitespace inside the
+// brackets. Zero capabilities.
+// ===============================================================
+fun parse_section_header(line: String) -> Option<String>
+    let n = line.length()
+    if n < 2
+        return None
+    if not line.starts_with("[")
+        return None
+    let last = line.substring(n - 1, n)
+    if last != "]"
+        return None
+    let inner = line.substring(1, n - 1).trim()
+    return Some(inner)
+
+// ===============================================================
+// Pure: given a `key = value` line, return Some(KvPair) split
+// on the FIRST `=`, with both sides trimmed. Lines without an
+// `=` return None. Zero capabilities.
+// ===============================================================
+fun parse_kv_line(line: String) -> Option<KvPair>
+    match line.index_of("=")
+        None ->
+            return None
+        Some(idx) ->
+            let key = line.substring(0, idx).trim()
+            let value = line.substring(idx + 1, line.length()).trim()
+            return Some(KvPair { key: key, value: value })
+
+// ===============================================================
+// Pure: parse an INI text into a Map<String, Map<String,
+// String>>. Zero capabilities. Same role as the body's parse
+// loop in the naive Python version.
+//
+// Format: `[section]` opens a section; subsequent `key = value`
+// lines accumulate into the most recent section. Lines outside
+// any section are dropped (matching the naive Python's choice).
+// `#` and `;` introduce comments; blank lines are skipped.
+// ===============================================================
+fun parse_ini_text(text: String) -> Map<String, Map<String, String>>
+    let out: Map<String, Map<String, String>> = new_map()
+    var current: Option<String> = None
+    for raw in text.split("\n")
+        let line = raw.trim()
+        if line.is_empty()
+            continue
+        if line.starts_with("#")
+            continue
+        if line.starts_with(";")
+            continue
+        match parse_section_header(line)
+            Some(name) ->
+                current = Some(name)
+                match out.get(name)
+                    None ->
+                        let inner: Map<String, String> = new_map()
+                        out.set(name, inner)
+                    Some(_) ->
+                        ()
+                continue
+            None ->
+                ()
+        match current
+            None ->
+                // Key outside any section: dropped.
+                ()
+            Some(section) ->
+                match parse_kv_line(line)
+                    None ->
+                        ()
+                    Some(kv) ->
+                        match out.get(section)
+                            None ->
+                                let inner: Map<String, String> = new_map()
+                                inner.set(kv.key, kv.value)
+                                out.set(section, inner)
+                            Some(inner) ->
+                                inner.set(kv.key, kv.value)
+    return out
+
+// ===============================================================
+// Fs-only: read an INI file from disk and parse it. Signature
+// carries `Fs`, nothing else. The reviewer reading this
+// function knows the disk is the only thing touched. The naive
+// Python catches FileNotFoundError and returns {}; we surface
+// the error through Result instead.
+// ===============================================================
+fun load_ini(fs: Fs, path: String) -> Result<Map<String, Map<String, String>>, IoError>
+    let text = fs.read(path)?
+    return Ok(parse_ini_text(text))
+
+// ===============================================================
+// Entry point: demonstrates the pure parser on an inline INI
+// string. `main` holds `Stdio` only; the demo does not touch
+// the filesystem.
+// ===============================================================
+fun main(stdio: Stdio)
+    let sample = "[server]\nhost=localhost\nport=8080\n[db]\nname=app\n"
+    let parsed = parse_ini_text(sample)
+    stdio.println("Parsed ${parsed.length()} section(s) from sample INI text:")
+    for outer in parsed.pairs()
+        let (section, inner) = outer
+        stdio.println("[${section}]")
+        for kv in inner.pairs()
+            let (k, v) = kv
+            stdio.println("  ${k} = ${v}")

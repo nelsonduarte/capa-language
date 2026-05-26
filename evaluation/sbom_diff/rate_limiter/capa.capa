@@ -1,0 +1,168 @@
+// Capa equivalent of `naive.py` (a token-bucket rate limiter of
+// the AWS-SDK / Stripe-client / pyrate-limiter / ratelimit /
+// aiolimiter shape). The same logic, split into functions whose
+// signatures declare exactly the capabilities they need.
+//
+// The naive Python `make_bucket(...)` and `try_acquire(bucket)`
+// both quietly call `time.monotonic()` to seed and to refill the
+// bucket; the signatures (`dict` and `bool` respectively) say
+// nothing about the clock read. The Capa version separates the
+// pure refill arithmetic and the pure consume decision from the
+// two entry points whose signatures honestly carry `Clock`.
+//
+// What this file demonstrates:
+//
+// - `fmin`           : pure helper (Capa has no built-in min/max for Float).
+// - `refill_tokens`  : pure. Returns a NEW TokenBucket given an
+//                      explicit `now`. The arithmetic that adds
+//                      `elapsed * refill_per_sec` tokens and caps
+//                      at capacity is a pure function of the input
+//                      bucket and the input timestamp.
+// - `try_consume`    : pure. Given an already-refilled bucket,
+//                      either consumes one token (true, new bucket)
+//                      or leaves it untouched (false, same bucket).
+// - `make_bucket`    : Clock only. Reads `clock.now_monotonic()`
+//                      once to seed `last_refill_ts`.
+// - `try_acquire`    : Clock only. Reads `clock.now_monotonic()`
+//                      once, then composes the two pure functions
+//                      above.
+//
+// Run with:
+//
+//   capa --cyclonedx evaluation/sbom_diff/rate_limiter/capa.capa
+//
+// to get the per-function `capa:declared_capability` SBOM
+// properties this study consumes.
+
+// The bucket state. Capa has no ad-hoc dicts the way Python does,
+// so the four fields the naive `dict` carries become a named
+// struct. `tokens` and `last_refill_ts` are `Float` to match the
+// refill arithmetic (fractional tokens accumulate between whole
+// acquisitions).
+type TokenBucket {
+    capacity: Float,
+    refill_per_sec: Float,
+    tokens: Float,
+    last_refill_ts: Float
+}
+
+// A small named return for `try_acquire` / `try_consume`. A bare
+// tuple `(Bool, TokenBucket)` would do the job, but a named struct
+// reads more clearly at call sites (and matches the idiom used by
+// `ini_loader/capa.capa`'s `KvPair`).
+type AcquireResult {
+    ok: Bool,
+    bucket: TokenBucket
+}
+
+// ===============================================================
+// Pure: minimum of two floats. Capa has no built-in min/max for
+// Float, so the bucket cap (which has to clamp `tokens + added`
+// at `capacity`) is implemented with this one-line helper. Zero
+// capabilities.
+// ===============================================================
+fun fmin(a: Float, b: Float) -> Float
+    if a < b
+        return a
+    return b
+
+// ===============================================================
+// Pure: refill the bucket up to the given `now`. Returns a NEW
+// TokenBucket with the updated `tokens` and `last_refill_ts`;
+// the input is not mutated (Capa is functional in spirit for
+// this kind of state-update pattern). Zero capabilities.
+//
+// Same arithmetic as the naive Python `_refill(bucket, now)`:
+// elapsed = now - last_refill_ts; added = elapsed * refill_per_sec;
+// new_tokens = min(capacity, tokens + added). The signature here
+// says explicitly that the function does nothing else, in
+// particular that it does NOT read the clock itself.
+// ===============================================================
+fun refill_tokens(bucket: TokenBucket, now: Float) -> TokenBucket
+    let elapsed = now - bucket.last_refill_ts
+    let added = elapsed * bucket.refill_per_sec
+    let new_tokens = fmin(bucket.capacity, bucket.tokens + added)
+    return TokenBucket {
+        capacity: bucket.capacity,
+        refill_per_sec: bucket.refill_per_sec,
+        tokens: new_tokens,
+        last_refill_ts: now
+    }
+
+// ===============================================================
+// Pure: given an already-refilled bucket, attempt to consume one
+// token. Returns `(true, bucket with tokens -= 1)` if at least
+// one token is available, else `(false, bucket unchanged)`. Zero
+// capabilities. The decision and the new bucket are both pure
+// functions of the input.
+// ===============================================================
+fun try_consume(bucket: TokenBucket) -> AcquireResult
+    if bucket.tokens >= 1.0
+        let consumed = TokenBucket {
+            capacity: bucket.capacity,
+            refill_per_sec: bucket.refill_per_sec,
+            tokens: bucket.tokens - 1.0,
+            last_refill_ts: bucket.last_refill_ts
+        }
+        return AcquireResult { ok: true, bucket: consumed }
+    return AcquireResult { ok: false, bucket: bucket }
+
+// ===============================================================
+// Clock-only: allocate a fresh bucket. Reads
+// `clock.now_monotonic()` once to seed `last_refill_ts`; the
+// signature carries `Clock` and nothing else. The naive Python
+// `make_bucket(capacity, refill_per_sec)` hides this read behind
+// a `dict` return type; here the cap is visible to a reviewer
+// from the signature alone.
+// ===============================================================
+fun make_bucket(clock: Clock, capacity: Float, refill_per_sec: Float) -> TokenBucket
+    let now = clock.now_monotonic()
+    return TokenBucket {
+        capacity: capacity,
+        refill_per_sec: refill_per_sec,
+        tokens: capacity,
+        last_refill_ts: now
+    }
+
+// ===============================================================
+// Clock-only: attempt to acquire one token. Reads
+// `clock.now_monotonic()` once, then composes the two pure
+// functions above. The signature carries `Clock` and nothing
+// else; the type checker forbids any disk read, network read,
+// or sleep inside this body. A reviewer reading the signature
+// alone knows immediately that the clock is the only authority
+// touched.
+// ===============================================================
+fun try_acquire(clock: Clock, bucket: TokenBucket) -> AcquireResult
+    let now = clock.now_monotonic()
+    let refilled = refill_tokens(bucket, now)
+    return try_consume(refilled)
+
+// ===============================================================
+// Entry point: demonstrates the pure refill arithmetic on a
+// synthetic `now` value, without actually reading the clock.
+// `main` holds `Stdio` only; the Clock-using arms are
+// demonstrated by their declared signatures alone, the way a
+// code reviewer would read them.
+//
+// Scenario: a 10-token bucket at 5 tokens/sec, starting empty
+// at t=0. After 2 seconds of elapsed time the refill should add
+// 10 tokens (capped at the capacity of 10).
+// ===============================================================
+fun main(stdio: Stdio)
+    let empty = TokenBucket {
+        capacity: 10.0,
+        refill_per_sec: 5.0,
+        tokens: 0.0,
+        last_refill_ts: 0.0
+    }
+    stdio.println("Starting bucket: capacity=${empty.capacity}, refill=${empty.refill_per_sec}/s, tokens=${empty.tokens}")
+
+    let after_2s = refill_tokens(empty, 2.0)
+    stdio.println("After 2s elapsed: tokens=${after_2s.tokens} (cap holds at ${after_2s.capacity})")
+
+    let r1 = try_consume(after_2s)
+    stdio.println("try_consume #1: ok=${r1.ok}, tokens=${r1.bucket.tokens}")
+
+    let r2 = try_consume(r1.bucket)
+    stdio.println("try_consume #2: ok=${r2.ok}, tokens=${r2.bucket.tokens}")

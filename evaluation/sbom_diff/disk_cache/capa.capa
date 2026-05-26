@@ -1,0 +1,175 @@
+// Capa equivalent of `naive.py` (a disk cache with TTL of the
+// `requests-cache` / `diskcache` / `cachetools` shape). The same
+// logic, split into functions whose signatures declare exactly
+// the capabilities they need.
+//
+// The naive Python `cache_get(path, ttl_seconds)` conflates Fs
+// (read the file, probe its mtime) and Clock (read the wall
+// clock); `cache_set(path, value)` writes the disk. Both are
+// buried in the body; the signatures name neither. The Capa
+// version separates the pure freshness arithmetic, the pure
+// parser, the pure formatter, and the two composition points
+// whose signatures honestly carry `Fs` and `Clock`.
+//
+// Scope note: Capa's `Fs` builtin (see `capa/builtins.py`)
+// exposes `read`, `write`, `exists`, `is_dir`, `mkdir`,
+// `list_dir`, `allows`, `restrict_to`, but NO `getmtime` or
+// `stat`. The naive Python anchors freshness on the file's
+// mtime - filesystem metadata that anything with disk-write
+// access can mutate independently of the file's contents. The
+// Capa transliteration cannot rely on that anchor and instead
+// stores the timestamp INSIDE the file: cache entries have the
+// format `"<unix_ts>\n<value>"`, with the first line being the
+// unix timestamp at which the value was cached. This is a more
+// disciplined cache format than relying on filesystem metadata
+// (the freshness anchor and the cached value travel together
+// in one atomic write, and a metadata-only attack cannot
+// silently shift the apparent staleness of a cached entry).
+//
+// What this file demonstrates:
+//
+// - `is_fresh`           : pure freshness check. Zero capabilities.
+// - `parse_cached_entry` : pure parser for `<ts>\n<value>`.
+//                          Zero capabilities.
+// - `format_cache_entry` : pure formatter for `<ts>\n<value>`.
+//                          Zero capabilities.
+// - `cache_get`          : Fs + Clock. Reads the file (Fs) and the
+//                          wall clock (Clock), then defers to the
+//                          pure parser and the pure freshness
+//                          check.
+// - `cache_set`          : Fs + Clock. Reads the wall clock (Clock)
+//                          to stamp the entry, then writes the
+//                          file (Fs).
+//
+// Run with:
+//
+//   capa --cyclonedx evaluation/sbom_diff/disk_cache/capa.capa
+//
+// to get the per-function `capa:declared_capability` SBOM
+// properties this study consumes.
+
+// Local return type for `parse_cached_entry`. A tuple
+// `Option<(Float, String)>` would do the job, but a named struct
+// reads more clearly at call sites and matches the idiom used by
+// `ini_loader/capa.capa`'s `KvPair` and `rate_limiter/capa.capa`'s
+// `AcquireResult`.
+type CachedEntry {
+    ts: Float,
+    value: String
+}
+
+// ===============================================================
+// Pure: return true iff the cached entry's timestamp is younger
+// than `ttl_seconds` relative to `now`. The signature names
+// neither `Fs` nor `Clock`; the type checker forbids any disk
+// read or clock read inside this body. Same arithmetic as the
+// naive Python `is_fresh(mtime, now, ttl_seconds)`, but the
+// purity of the decision is structural here, not a comment.
+// ===============================================================
+fun is_fresh(stored_ts: Float, now: Float, ttl_seconds: Float) -> Bool
+    return now - stored_ts < ttl_seconds
+
+// ===============================================================
+// Pure: parse a cached entry of the form `"<unix_ts>\n<value>"`
+// into Some(CachedEntry) if the first line is a valid Float and
+// a newline is present, else None. The value half may itself
+// contain newlines (we only split on the FIRST one). Zero
+// capabilities.
+// ===============================================================
+fun parse_cached_entry(text: String) -> Option<CachedEntry>
+    match text.index_of("\n")
+        None ->
+            return None
+        Some(idx) ->
+            let ts_str = text.substring(0, idx)
+            let value = text.substring(idx + 1, text.length())
+            match parse_float(ts_str)
+                None ->
+                    return None
+                Some(ts) ->
+                    return Some(CachedEntry { ts: ts, value: value })
+
+// ===============================================================
+// Pure: format a (timestamp, value) pair as `"<ts>\n<value>"`.
+// The exact Float formatting (precision, trailing zeros) is
+// whatever the runtime's default string conversion produces; the
+// parser above round-trips through `parse_float`, so the format
+// only needs to be self-consistent, not canonical. Zero
+// capabilities.
+// ===============================================================
+fun format_cache_entry(now: Float, value: String) -> String
+    return "${now}\n${value}"
+
+// ===============================================================
+// Fs + Clock: look up a cached value. Reads the file if it
+// exists (Fs), reads the wall clock to decide freshness (Clock),
+// returns Some(value) if the entry parses AND is within
+// `ttl_seconds`, else None. The signature carries `Fs` AND
+// `Clock` and nothing else; a reviewer reading the signature
+// alone sees the full authority surface, and the type checker
+// forbids any environment read or network call inside this body.
+//
+// Errors during the disk read propagate via `?` (the same
+// pattern `ini_loader/capa.capa` and `dotenv/capa.capa` use); a
+// missing file is reported by `fs.exists` and returns Ok(None)
+// without raising.
+// ===============================================================
+fun cache_get(
+    fs: Fs,
+    clock: Clock,
+    path: String,
+    ttl_seconds: Float
+) -> Result<Option<String>, IoError>
+    if not fs.exists(path)
+        return Ok(None)
+    let text = fs.read(path)?
+    match parse_cached_entry(text)
+        None ->
+            return Ok(None)
+        Some(entry) ->
+            let now = clock.now_secs()
+            if is_fresh(entry.ts, now, ttl_seconds)
+                return Ok(Some(entry.value))
+            return Ok(None)
+
+// ===============================================================
+// Fs + Clock: write a new cached value, stamped with the current
+// wall-clock time. The signature carries `Fs` AND `Clock` and
+// nothing else. The pure formatter builds the on-disk shape;
+// the single `fs.write` call commits the timestamped entry
+// atomically (one filesystem write, both the freshness anchor
+// and the cached value).
+// ===============================================================
+fun cache_set(
+    fs: Fs,
+    clock: Clock,
+    path: String,
+    value: String
+) -> Result<Unit, IoError>
+    let now = clock.now_secs()
+    let entry = format_cache_entry(now, value)
+    return fs.write(path, entry)
+
+// ===============================================================
+// Entry point: demonstrates the pure freshness check and the
+// pure formatter/parser round-trip on synthetic inputs, without
+// actually touching the filesystem or the clock. `main` holds
+// `Stdio` only; the Fs + Clock arms are demonstrated by their
+// declared signatures alone, the way a code reviewer would
+// read them.
+// ===============================================================
+fun main(stdio: Stdio)
+    let fresh = is_fresh(100.0, 105.0, 10.0)
+    stdio.println("is_fresh(stored=100.0, now=105.0, ttl=10.0) = ${fresh}")
+
+    let stale = is_fresh(100.0, 200.0, 10.0)
+    stdio.println("is_fresh(stored=100.0, now=200.0, ttl=10.0) = ${stale}")
+
+    let entry = format_cache_entry(1700000000.0, "hello")
+    stdio.println("format_cache_entry(1700000000.0, \"hello\") = ${entry}")
+
+    match parse_cached_entry(entry)
+        None ->
+            stdio.println("parse round-trip: None (unexpected)")
+        Some(parsed) ->
+            stdio.println("parse round-trip: ts=${parsed.ts}, value=${parsed.value}")

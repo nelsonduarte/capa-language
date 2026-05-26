@@ -52,6 +52,14 @@ class _ExpressionsMixin:
             op = _BINOP_MAP.get(e.op)
             if op is None:
                 raise TranspilerError(f"unsupported binop: {e.op}")
+            if e.op == "/":
+                from ..typesys import TyName
+                lt = self.types.get(id(e.left))
+                rt = self.types.get(id(e.right))
+                lt_is_int = isinstance(lt, TyName) and lt.name == "Int"
+                rt_is_int = isinstance(rt, TyName) and rt.name == "Int"
+                if lt_is_int and rt_is_int:
+                    op = "//"
             return f"({l} {op} {r})"
         if isinstance(e, A.UnaryOp):
             op = _UNARY_MAP.get(e.op)

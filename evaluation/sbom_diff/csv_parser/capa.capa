@@ -1,0 +1,196 @@
+// Capa equivalent of `naive.py` (a CSV parser of the stdlib
+// `csv` shape). The same logic, split into pure helpers whose
+// signatures declare exactly zero capabilities.
+//
+// This pair sits alongside `slugify/`, `tabulate/`, `textwrap/`
+// and `humanize/` as a pure-case in the SBOM-diff study. The
+// structural point is the same as `textwrap/`: the naive Python
+// imports nothing capability-bearing at all, so a PURL-based
+// SBOM emitted by syft / pip-licenses for that file says
+// nothing useful. The Capa version makes the per-function
+// purity machine-checked: every helper below declares zero
+// capabilities and the compiler enforces it.
+//
+// What this pair adds to the pure-case set is shape, not
+// authority. Where `slugify` / `textwrap` / `humanize` are
+// single-pass string transformations and `tabulate` walks a
+// pre-built nested list, this parser is a character-by-character
+// state machine whose output is itself a `List<List<String>>`.
+// That exercises Capa's nested-collection handling on the
+// output side and `String.substring`-based char-by-char
+// scanning on the input side, neither of which the other pure
+// pairs cover.
+//
+// Two scope cuts vs. the Python original:
+//
+//  - `delimiter: String` is a required argument rather than
+//    defaulting to `","`. Capa does not yet support default
+//    parameter values at the function-signature level; `main`
+//    exercises the typical default.
+//
+//  - Capa's `String` indexing is via `substring(i, i + 1)`
+//    rather than `text[i]`. `char_at_pos` wraps that idiom and
+//    returns `""` past the end so the state-machine loop can
+//    peek without bounds-check branching at every call site.
+//
+// Trailing `\r` is stripped from each cell before push so that
+// Windows `\r\n` line endings collapse cleanly to `\n`. An
+// empty trailing line (the text ended with `\n`) is dropped
+// rather than emitting a row of one empty cell.
+//
+// Run with:
+//
+//   capa --cyclonedx evaluation/sbom_diff/csv_parser/capa.capa
+//
+// to get the per-function `capa:declared_capability` SBOM
+// properties this study consumes.
+
+// Local return type for `scan_unquoted` / `scan_quoted`. A
+// `(String, Int)` tuple would do the job, but a named struct
+// reads more clearly at call sites and matches the idiom used
+// by `ini_loader/`'s `KvPair`.
+type CellScan {
+    cell: String,
+    next_index: Int
+}
+
+// ===============================================================
+// Pure helper: bounds check for the state-machine loop. Zero
+// capabilities.
+// ===============================================================
+fun is_at_end(text: String, i: Int) -> Bool
+    return i >= text.length()
+
+// ===============================================================
+// Pure helper: return the 1-character substring at position `i`,
+// or `""` if `i` is out of bounds. Stands in for Python's
+// `text[i]`, with the past-the-end case folded in so callers
+// can peek without a guard at every site. Zero capabilities.
+// ===============================================================
+fun char_at_pos(text: String, i: Int) -> String
+    if is_at_end(text, i)
+        return ""
+    return text.substring(i, i + 1)
+
+// ===============================================================
+// Pure: scan an unquoted cell starting at `start`. Walk forward
+// until we hit `delimiter`, `\n`, or end of text. Returns the
+// cell content and the index pointing AT the terminator (or at
+// `text.length()`); the caller decides what to do with it. Zero
+// capabilities.
+// ===============================================================
+fun scan_unquoted(text: String, start: Int, delimiter: String) -> CellScan
+    var i = start
+    while not is_at_end(text, i)
+        let c = char_at_pos(text, i)
+        if c == delimiter
+            return CellScan { cell: text.substring(start, i), next_index: i }
+        if c == "\n"
+            return CellScan { cell: text.substring(start, i), next_index: i }
+        i = i + 1
+    return CellScan { cell: text.substring(start, i), next_index: i }
+
+// ===============================================================
+// Pure: scan a quoted cell. `start` points at the first content
+// character (the opening `"` has already been consumed). A `""`
+// pair is a literal quote inside the cell; a lone `"` ends the
+// field. Returns the unescaped cell content and the index just
+// AFTER the closing quote. An unterminated quoted field returns
+// whatever has been accumulated so far (permissive, matching
+// the naive Python). Zero capabilities.
+// ===============================================================
+fun scan_quoted(text: String, start: Int) -> CellScan
+    var out = ""
+    var i = start
+    while not is_at_end(text, i)
+        let c = char_at_pos(text, i)
+        if c == "\""
+            let next = char_at_pos(text, i + 1)
+            if next == "\""
+                out = out + "\""
+                i = i + 2
+                continue
+            return CellScan { cell: out, next_index: i + 1 }
+        out = out + c
+        i = i + 1
+    return CellScan { cell: out, next_index: i }
+
+// ===============================================================
+// Pure helper: strip a trailing `\r` from a cell so Windows
+// `\r\n` line endings collapse cleanly to `\n`. Zero
+// capabilities.
+// ===============================================================
+fun strip_trailing_cr(s: String) -> String
+    if s.ends_with("\r")
+        return s.substring(0, s.length() - 1)
+    return s
+
+// ===============================================================
+// Pure: parse a CSV text into rows of cells. The main state
+// machine. `delimiter` is a required argument (typically `","`);
+// `main` exercises the conventional default. Zero capabilities.
+//
+// Lines outside any cell are terminated by `\n`; the empty
+// trailing row produced by a file ending with `\n` is dropped
+// rather than emitting `[""]`. Capa's `List` builtin has `push`
+// but no clear/reset, so `current_row` is freshly bound to `[]`
+// after each row flush.
+// ===============================================================
+fun parse_csv(text: String, delimiter: String) -> List<List<String>>
+    let rows: List<List<String>> = []
+    var current_row: List<String> = []
+    var i = 0
+    while not is_at_end(text, i)
+        let c = char_at_pos(text, i)
+        var scan = CellScan { cell: "", next_index: i }
+        if c == "\""
+            // Opening `"` is consumed; the scan starts at the
+            // first content character.
+            scan = scan_quoted(text, i + 1)
+        else
+            scan = scan_unquoted(text, i, delimiter)
+        current_row.push(strip_trailing_cr(scan.cell))
+        i = scan.next_index
+        if is_at_end(text, i)
+            // Final cell of the final row; the flush below the
+            // loop handles it.
+            ()
+        else
+            let term = char_at_pos(text, i)
+            if term == delimiter
+                i = i + 1
+            else
+                // term == "\n"
+                rows.push(current_row)
+                current_row = []
+                i = i + 1
+    // Drop the empty trailing row produced by a trailing `\n`;
+    // flush any in-progress final row otherwise.
+    if not current_row.is_empty()
+        rows.push(current_row)
+    return rows
+
+// ===============================================================
+// Entry point: exercises the pure pipeline on a small CSV with a
+// header row and two data rows, the second of which contains a
+// quoted cell with an embedded comma. Holds `Stdio` only; none
+// of the helpers above are reachable through any authority
+// other than the `stdio.println` calls in this body.
+// ===============================================================
+fun main(stdio: Stdio)
+    let sample = "name,age,note\nalice,30,\"hello, world\"\nbob,25,plain\n"
+    let parsed = parse_csv(sample, ",")
+    stdio.println("Parsed ${parsed.length()} row(s) from sample CSV text:")
+    var row_index = 0
+    for row in parsed
+        var rendered = "["
+        var first = true
+        for cell in row
+            if first
+                rendered = rendered + cell
+                first = false
+            else
+                rendered = rendered + ", " + cell
+        rendered = rendered + "]"
+        stdio.println("Row ${row_index}: ${rendered}")
+        row_index = row_index + 1

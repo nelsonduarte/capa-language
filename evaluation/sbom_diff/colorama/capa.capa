@@ -1,0 +1,154 @@
+// Capa equivalent of `naive.py` (an ANSI colour wrapper of the
+// PyPI `colorama` shape). The same logic, split into pure helpers
+// whose signatures declare exactly zero capabilities, plus one
+// `Stdio`-only `main` that actually prints.
+//
+// This pair sits alongside `slugify/`, `tabulate/`, `textwrap/`,
+// `humanize/`, and `csv_parser/` as a pure-case in the SBOM-diff
+// study. What it adds is an asymmetry that none of the other
+// pure-cases surface: a casual reader will file colorama under
+// "Stdio" because the strings it produces are almost always
+// `print()`-ed by the caller. The folk-summary is wrong at the
+// per-function level. `colored`, `bold`, and `strip_ansi` only
+// construct and parse strings; the `print` lives at the call
+// site. Capa's per-function attribution makes that crisp; a PURL
+// SBOM listing `pkg:pypi/colorama` in a downstream dependency
+// tree cannot tell whether the consumer ever emits the coloured
+// strings or just builds them.
+//
+// Two scope cuts vs. the Python original:
+//
+//  - Capa's string escape syntax accepts `\n \r \t \\ \" \' \0`
+//    and `\u{...}`, but NOT the C-style octal `\033` for the ESC
+//    byte (the lexer interprets `\033` as `\0` followed by the
+//    literal characters `33`). The codes below use `\u{1b}`,
+//    which produces the same byte (0x1B / 27 decimal / ESC). The
+//    rendered escape sequence is byte-identical to what the
+//    Python module emits; only the source spelling differs.
+//
+//  - The Python module exposes the colour codes as module-level
+//    `RED = "\033[31m"` constants. Capa's module level holds
+//    `fun` / `type` items, not `let` bindings, so the codes here
+//    are zero-arg pure functions: `fg_red()`, `fg_green()`,
+//    `reset()`, `bold_code()`. The call-site cost is one extra
+//    pair of parentheses; the capability-attribution point is
+//    unchanged.
+//
+// Run with:
+//
+//   capa --cyclonedx evaluation/sbom_diff/colorama/capa.capa
+//
+// to get the per-function `capa:declared_capability` SBOM
+// properties this study consumes.
+
+// ===============================================================
+// Pure: the ESC '[' 31 'm' SGR sequence (foreground red). Stands
+// in for the Python module-level constant `RED = "\033[31m"`.
+// Zero capabilities.
+// ===============================================================
+fun fg_red() -> String
+    return "\u{1b}[31m"
+
+// ===============================================================
+// Pure: the ESC '[' 32 'm' SGR sequence (foreground green). Zero
+// capabilities.
+// ===============================================================
+fun fg_green() -> String
+    return "\u{1b}[32m"
+
+// ===============================================================
+// Pure: the ESC '[' 34 'm' SGR sequence (foreground blue). Zero
+// capabilities.
+// ===============================================================
+fun fg_blue() -> String
+    return "\u{1b}[34m"
+
+// ===============================================================
+// Pure: the ESC '[' 0 'm' SGR reset sequence. Every coloured run
+// emitted by `colored` / `bold` ends with this so subsequent
+// output is not stained. Zero capabilities.
+// ===============================================================
+fun reset() -> String
+    return "\u{1b}[0m"
+
+// ===============================================================
+// Pure: the ESC '[' 1 'm' SGR "bold" (increased-intensity)
+// sequence. Zero capabilities.
+// ===============================================================
+fun bold_code() -> String
+    return "\u{1b}[1m"
+
+// ===============================================================
+// Pure: wrap `text` in the foreground colour `fg` and a reset.
+// Empty `fg` means "no colour wrap"; callers can write
+// `colored(msg, if is_error then fg_red() else "")` without a
+// conditional at every call site. Returns a string; does NOT
+// print it. Zero capabilities.
+// ===============================================================
+fun colored(text: String, fg: String) -> String
+    if fg == ""
+        return text
+    return fg + text + reset()
+
+// ===============================================================
+// Pure: wrap `text` in the bold SGR and a reset. Same role as
+// `colored` for a colour: produces a string, does not print it.
+// Zero capabilities.
+// ===============================================================
+fun bold(text: String) -> String
+    return bold_code() + text + reset()
+
+// ===============================================================
+// Pure: remove the ANSI escape sequences emitted by `colored` and
+// `bold` (the SGR subset this library produces). Char-by-char
+// state machine: copy characters through, but on ESC (0x1B) drop
+// everything until and including the next `m`. Returns the
+// unstyled string. Zero capabilities.
+// ===============================================================
+fun strip_ansi(text: String) -> String
+    let esc = "\u{1b}"
+    let n = text.length()
+    var out = ""
+    var i = 0
+    while i < n
+        let c = text.substring(i, i + 1)
+        if c == esc
+            // Skip up to and including the next `m`.
+            i = i + 1
+            while i < n and text.substring(i, i + 1) != "m"
+                i = i + 1
+            if i < n
+                i = i + 1  // consume the `m`
+        else
+            out = out + c
+            i = i + 1
+    return out
+
+// ===============================================================
+// Entry point: exercises the producer functions and prints the
+// results. Holds `Stdio` only; none of the helpers above are
+// reachable through any authority other than the `stdio.println`
+// calls in this body. This is the per-function attribution point
+// of the pair: the producers are pure, only the caller emits.
+//
+// Note: when this demo is piped through a redirector or captured
+// to a file, the ANSI codes will appear literally (e.g.
+// `^[[31mhello^[[0m`) rather than rendering as colour. That is
+// expected; the library's job is to emit the escape sequence,
+// not to detect whether the sink is a terminal.
+// ===============================================================
+fun main(stdio: Stdio)
+    // Foreground colour: produces a string, then prints it.
+    let red_hello = colored("hello", fg_red())
+    stdio.println(red_hello)
+
+    // Bold: same pattern, different escape.
+    let bold_imp = bold("important")
+    stdio.println(bold_imp)
+
+    // Round-trip: strip_ansi over a coloured string returns the
+    // plain payload. Asserts the producer / parser pair is closed
+    // over the SGR subset this library emits.
+    let dressed = colored("plain", fg_green())
+    let undressed = strip_ansi(dressed)
+    stdio.println("round-trip: '${undressed}'")

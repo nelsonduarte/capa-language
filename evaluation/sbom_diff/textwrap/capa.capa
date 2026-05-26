@@ -1,0 +1,117 @@
+// Capa equivalent of `naive.py` (a paragraph wrapper of the
+// stdlib `textwrap` shape). The same logic, split into pure
+// helpers whose signatures declare exactly zero capabilities.
+//
+// This pair sits alongside `slugify/` and `tabulate/` as a
+// pure-case in the SBOM-diff study. The structural point is
+// the same as `tabulate/`: the naive Python imports nothing
+// capability-bearing at all, so a PURL-based SBOM emitted by
+// syft / pip-licenses for that file says nothing useful. The
+// Capa version makes the per-function purity machine-checked:
+// every helper below declares zero capabilities and the
+// compiler enforces it.
+//
+// Two scope cuts vs. the Python original:
+//
+//  - `width: Int` is a required argument rather than defaulting
+//    to 70. Capa does not yet support default parameter values
+//    at the function-signature level; `main` exercises the
+//    typical width of 40 as the demo input.
+//
+//  - The naive Python relies on `str.split()` with no argument
+//    to collapse runs of any whitespace (spaces, tabs, newlines)
+//    into single separators. Capa's `String.split` takes a
+//    required delimiter, so `split_words` normalises tabs and
+//    newlines to spaces first and then splits on a single
+//    space, filtering empty tokens to mirror Python's behaviour.
+//
+// Single-word-longer-than-width inputs get their own line
+// rather than being split mid-word, matching the stdlib's
+// default `break_long_words=False` mode.
+//
+// Run with:
+//
+//   capa --cyclonedx evaluation/sbom_diff/textwrap/capa.capa
+//
+// to get the per-function `capa:declared_capability` SBOM
+// properties this study consumes.
+
+// ===============================================================
+// Pure: split a paragraph into words on any whitespace. Tabs and
+// newlines are first folded down to spaces, then the result is
+// split on the single-space delimiter and empty tokens (which
+// arise from runs of spaces) are dropped. Stands in for Python's
+// argument-less `str.split()`. Zero capabilities.
+// ===============================================================
+fun split_words(text: String) -> List<String>
+    let normalised = text.replace("\n", " ").replace("\t", " ")
+    let out: List<String> = []
+    for token in normalised.split(" ")
+        if not token.is_empty()
+            out.push(token)
+    return out
+
+// ===============================================================
+// Pure: greedily pack words into lines no wider than `width`. If
+// a single word is wider than `width`, it gets its own line
+// rather than being split mid-word, matching the stdlib's
+// default `break_long_words=False` mode. Zero capabilities.
+// ===============================================================
+fun wrap(text: String, width: Int) -> List<String>
+    let lines: List<String> = []
+    let words = split_words(text)
+    if words.is_empty()
+        return lines
+    var current = ""
+    for word in words
+        if current.is_empty()
+            current = word
+        else
+            // The `+ 1` accounts for the single space that would
+            // be inserted between `current` and `word` on the
+            // same line.
+            if current.length() + 1 + word.length() <= width
+                current = current + " " + word
+            else
+                lines.push(current)
+                current = word
+    if not current.is_empty()
+        lines.push(current)
+    return lines
+
+// ===============================================================
+// Pure: newline-joined sibling of `wrap`. Same role as the
+// stdlib `textwrap.fill`: callers usually want one form or the
+// other and should not have to build the join themselves. Zero
+// capabilities.
+// ===============================================================
+fun fill(text: String, width: Int) -> String
+    let lines = wrap(text, width)
+    var out = ""
+    var first = true
+    for line in lines
+        if first
+            out = line
+            first = false
+        else
+            out = out + "\n" + line
+    return out
+
+// ===============================================================
+// Entry point: exercises the pure pipeline. Holds `Stdio` only;
+// none of the helpers above are reachable through any authority
+// other than the `stdio.println` calls in this body.
+// ===============================================================
+fun main(stdio: Stdio)
+    // Paragraph 1: a long sentence wrapped at width 40. Exercises
+    // the multi-line greedy-pack path.
+    let para = "The quick brown fox jumps over the lazy dog and runs through the meadow at dawn looking for breakfast."
+    stdio.println("Paragraph 1 (wrapped at 40):")
+    stdio.println(fill(para, 40))
+
+    // Paragraph 2: a short input that fits in one line at the
+    // same width. Asserts the no-split path: `wrap` returns a
+    // single-element list and `fill` returns the input unchanged.
+    let short = "capa wraps text."
+    stdio.println("Paragraph 2 (wrapped at 40):")
+    stdio.println(fill(short, 40))

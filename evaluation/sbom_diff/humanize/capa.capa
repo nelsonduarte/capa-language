@@ -1,0 +1,142 @@
+// Capa equivalent of `naive.py` (a human-friendly number /
+// duration / size formatter of the PyPI `humanize` shape). The
+// same logic, split into pure helpers whose signatures declare
+// exactly zero capabilities.
+//
+// This pair sits alongside `slugify/`, `tabulate/`, and
+// `textwrap/` as a pure-case in the SBOM-diff study. The
+// structural point is the same as `textwrap/`: the naive Python
+// imports nothing capability-bearing at all, so a PURL-based
+// SBOM emitted by syft / pip-licenses for that file says nothing
+// useful. The distinguishing point vs. the other pure cases is
+// shape: the work here is arithmetic-heavy (integer division,
+// modulo, unit-scale branching, pluralisation) rather than
+// string-shape, which exercises Capa's number-to-string and
+// branching paths in a way slugify / textwrap do not.
+//
+// Two scope cuts vs. the Python original:
+//
+//  - `format_count` takes an explicit `plural: String` argument
+//    rather than the Python's `plural: str | None = None`. Capa
+//    does not yet support default parameter values or
+//    `Option<String>` defaulting at the function-signature
+//    level; callers pass the plural form explicitly (the typical
+//    `"${singular}s"` is one string interpolation at the call
+//    site).
+//
+//  - `format_bytes` formats the fractional digit using integer
+//    arithmetic only: `tenths = (size * 10) / divisor` gives
+//    tenths of the unit as an `Int`, and the output is built as
+//    `"${tenths / 10}.${tenths % 10} ${unit}"`. The naive Python
+//    uses the same trick.
+//
+// Run with:
+//
+//   capa --cyclonedx evaluation/sbom_diff/humanize/capa.capa
+//
+// to get the per-function `capa:declared_capability` SBOM
+// properties this study consumes.
+
+// ===============================================================
+// Pure: English-style pluralisation. `${n} ${singular}` when
+// `n == 1`, else `${n} ${plural}`. Stands in for the naive
+// Python's `format_count` with the `plural` default expanded at
+// the call site. Zero capabilities.
+// ===============================================================
+fun format_count(n: Int, singular: String, plural: String) -> String
+    if n == 1
+        return "${n} ${singular}"
+    return "${n} ${plural}"
+
+// ===============================================================
+// Pure helper: format one binary unit scale. Given `size` in
+// bytes and the divisor for the target unit (`1024` for KB,
+// `1024 * 1024` for MB, etc.), build `"X.Y ${unit}"` using only
+// integer arithmetic: `tenths` is `size` measured in tenths of
+// the unit. Zero capabilities.
+// ===============================================================
+fun format_scale(size: Int, divisor: Int, unit: String) -> String
+    let tenths = (size * 10) / divisor
+    let whole = tenths / 10
+    let frac = tenths % 10
+    return "${whole}.${frac} ${unit}"
+
+// ===============================================================
+// Pure: human-friendly byte count using binary (1024-based)
+// units with one decimal place. Sub-KB sizes are reported as raw
+// bytes; KB / MB / GB scales each use `format_scale`. Stands in
+// for `humanize.naturalsize(size, binary=True)`. Zero
+// capabilities.
+// ===============================================================
+fun format_bytes(size: Int) -> String
+    if size < 1024
+        return "${size} B"
+    if size < 1024 * 1024
+        return format_scale(size, 1024, "KB")
+    if size < 1024 * 1024 * 1024
+        return format_scale(size, 1024 * 1024, "MB")
+    return format_scale(size, 1024 * 1024 * 1024, "GB")
+
+// ===============================================================
+// Pure: join a list of non-empty part strings with `", "`. Capa's
+// prelude does not expose a generic `String.join`, so this is the
+// hand-coded equivalent of Python's `", ".join(parts)` used by
+// `format_duration`. Zero capabilities.
+// ===============================================================
+fun join_commas(parts: List<String>) -> String
+    var out = ""
+    var first = true
+    for part in parts
+        if first
+            out = part
+            first = false
+        else
+            out = out + ", " + part
+    return out
+
+// ===============================================================
+// Pure: human-friendly duration as a comma-separated list of
+// hours / minutes / seconds, omitting any zero parts. The total
+// case `seconds == 0` returns `"0 seconds"` rather than the
+// empty string so the formatter is total over the non-negative
+// integers. Stands in for `humanize.precisedelta`. Zero
+// capabilities.
+// ===============================================================
+fun format_duration(seconds: Int) -> String
+    if seconds == 0
+        return "0 seconds"
+    let hours = seconds / 3600
+    let remainder = seconds % 3600
+    let minutes = remainder / 60
+    let secs = remainder % 60
+
+    let parts: List<String> = []
+    if hours > 0
+        parts.push(format_count(hours, "hour", "hours"))
+    if minutes > 0
+        parts.push(format_count(minutes, "minute", "minutes"))
+    if secs > 0
+        parts.push(format_count(secs, "second", "seconds"))
+    return join_commas(parts)
+
+// ===============================================================
+// Entry point: exercises the pure pipeline. Holds `Stdio` only;
+// none of the helpers above are reachable through any authority
+// other than the `stdio.println` calls in this body.
+// ===============================================================
+fun main(stdio: Stdio)
+    // format_bytes: sub-KB, KB scale with fractional digit, MB
+    // scale with fractional digit.
+    stdio.println("format_bytes(512)     = ${format_bytes(512)}")
+    stdio.println("format_bytes(1536)    = ${format_bytes(1536)}")
+    stdio.println("format_bytes(1500000) = ${format_bytes(1500000)}")
+
+    // format_duration: zero case, sub-minute, multi-part.
+    stdio.println("format_duration(0)    = ${format_duration(0)}")
+    stdio.println("format_duration(90)   = ${format_duration(90)}")
+    stdio.println("format_duration(3600) = ${format_duration(3600)}")
+    stdio.println("format_duration(3661) = ${format_duration(3661)}")
+
+    // format_count: singular and plural branches.
+    stdio.println("format_count(1, ...)  = ${format_count(1, \"file\", \"files\")}")
+    stdio.println("format_count(3, ...)  = ${format_count(3, \"file\", \"files\")}")

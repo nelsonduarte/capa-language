@@ -1,0 +1,163 @@
+// Capa equivalent of `naive.py` (a URL slug normaliser of the
+// python-slugify shape). The same logic, split into pure helpers
+// whose signatures declare exactly zero capabilities.
+//
+// This pair is the asymmetry case in the SBOM-diff study: the
+// naive Python imports `re` and `unicodedata`, and any PURL-
+// based SBOM lists those as opaque dependencies. Neither is
+// actually exercising a capability surface (no Fs, no Env, no
+// Net, no Stdio); both are pure stdlib helpers. The Capa
+// version makes the purity machine-checked: every helper below
+// declares zero capabilities and the compiler enforces it.
+//
+// Two scope cuts vs. the Python original:
+//
+//  - Capa's `String` builtin does not expose a Unicode-normaliser
+//    equivalent of `unicodedata.normalize("NFKD", s)`. The
+//    `strip_accents` helper below substitutes a hand-coded
+//    `replace`-based table covering the common Latin accents
+//    (acute, grave, tilde, cedilla, umlaut) in upper and lower
+//    case. The structural point (the function is pure and the
+//    SBOM says so) is independent of the table's coverage.
+//
+//  - `max_length: Int` is used instead of an `Option<Int>`; the
+//    caller passes `0` to mean "no truncation". `main` exercises
+//    both modes.
+//
+// Run with:
+//
+//   capa --cyclonedx evaluation/sbom_diff/slugify/capa.capa
+//
+// to get the per-function `capa:declared_capability` SBOM
+// properties this study consumes.
+
+// ===============================================================
+// Pure: strip a fixed set of accented Latin characters down to
+// their unaccented forms. Stands in for `unicodedata.normalize`
+// + combining-mark filter in the naive Python. Zero capabilities.
+// ===============================================================
+fun strip_accents(text: String) -> String
+    var s = text
+    // Lowercase vowels with the common diacritics.
+    s = s.replace("à", "a")
+    s = s.replace("á", "a")
+    s = s.replace("â", "a")
+    s = s.replace("ã", "a")
+    s = s.replace("ä", "a")
+    s = s.replace("è", "e")
+    s = s.replace("é", "e")
+    s = s.replace("ê", "e")
+    s = s.replace("ë", "e")
+    s = s.replace("ì", "i")
+    s = s.replace("í", "i")
+    s = s.replace("î", "i")
+    s = s.replace("ï", "i")
+    s = s.replace("ò", "o")
+    s = s.replace("ó", "o")
+    s = s.replace("ô", "o")
+    s = s.replace("õ", "o")
+    s = s.replace("ö", "o")
+    s = s.replace("ù", "u")
+    s = s.replace("ú", "u")
+    s = s.replace("û", "u")
+    s = s.replace("ü", "u")
+    // Other Latin marks that appear frequently in slug inputs.
+    s = s.replace("ç", "c")
+    s = s.replace("ñ", "n")
+    // Uppercase variants.
+    s = s.replace("À", "A")
+    s = s.replace("Á", "A")
+    s = s.replace("Â", "A")
+    s = s.replace("Ã", "A")
+    s = s.replace("Ä", "A")
+    s = s.replace("È", "E")
+    s = s.replace("É", "E")
+    s = s.replace("Ê", "E")
+    s = s.replace("Ë", "E")
+    s = s.replace("Ì", "I")
+    s = s.replace("Í", "I")
+    s = s.replace("Î", "I")
+    s = s.replace("Ï", "I")
+    s = s.replace("Ò", "O")
+    s = s.replace("Ó", "O")
+    s = s.replace("Ô", "O")
+    s = s.replace("Õ", "O")
+    s = s.replace("Ö", "O")
+    s = s.replace("Ù", "U")
+    s = s.replace("Ú", "U")
+    s = s.replace("Û", "U")
+    s = s.replace("Ü", "U")
+    s = s.replace("Ç", "C")
+    s = s.replace("Ñ", "N")
+    return s
+
+// ===============================================================
+// Pure: lowercase the input and map every non-alphanumeric run
+// to a dash. Stands in for `re.sub(r"[^a-z0-9]+", "-", lowered)`
+// in the naive Python. Zero capabilities.
+// ===============================================================
+fun to_slug_chars(text: String) -> String
+    let lowered = text.to_lower()
+    let n = lowered.length()
+    var out = ""
+    var i = 0
+    while i < n
+        let c = lowered.substring(i, i + 1)
+        let is_lower = c >= "a" and c <= "z"
+        let is_digit = c >= "0" and c <= "9"
+        if is_lower or is_digit
+            out = out + c
+        else
+            out = out + "-"
+        i = i + 1
+    return out
+
+// ===============================================================
+// Pure: collapse runs of dashes into a single dash and trim any
+// leading or trailing dashes. Stands in for the implicit run-
+// collapsing that the `+` in the Python regex performs, plus
+// the `.strip("-")` step. Zero capabilities.
+// ===============================================================
+fun collapse_dashes(text: String) -> String
+    var s = text
+    // Replace `--` with `-` until no double-dash remains. The
+    // loop terminates because each iteration strictly shortens
+    // the string.
+    while s.contains("--")
+        s = s.replace("--", "-")
+    // Trim leading and trailing dashes.
+    while s.starts_with("-")
+        s = s.substring(1, s.length())
+    while s.ends_with("-")
+        s = s.substring(0, s.length() - 1)
+    return s
+
+// ===============================================================
+// Pure: compose the three helpers into the public API. The
+// `max_length` argument is a hard cap; `0` means "no cap". When
+// truncating, any trailing dash introduced by the cut is
+// trimmed so the slug never ends on a dangling separator. Zero
+// capabilities.
+// ===============================================================
+fun slugify(text: String, max_length: Int) -> String
+    let unaccented = strip_accents(text)
+    let dashed = to_slug_chars(unaccented)
+    var slug = collapse_dashes(dashed)
+    if max_length > 0 and slug.length() > max_length
+        slug = slug.substring(0, max_length)
+        while slug.ends_with("-")
+            slug = slug.substring(0, slug.length() - 1)
+    return slug
+
+// ===============================================================
+// Entry point: exercises the pure pipeline. Holds `Stdio` only;
+// none of the helpers above are reachable through any authority
+// other than the `stdio.println` calls in this body.
+// ===============================================================
+fun main(stdio: Stdio)
+    let a = slugify("Olá, Mundo!", 0)
+    stdio.println("'Olá, Mundo!' -> '${a}'")
+    let b = slugify("Capa  Language!!", 0)
+    stdio.println("'Capa  Language!!' -> '${b}'")
+    let c = slugify("A Café in São Paulo", 12)
+    stdio.println("'A Café in São Paulo' (cap 12) -> '${c}'")

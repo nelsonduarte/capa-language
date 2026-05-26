@@ -185,6 +185,90 @@ class TestTranspileBasic(unittest.TestCase):
         self.assertEqual(out, "Olá, Capa!\n")
 
 
+class TestIntegerDivision(unittest.TestCase):
+    """Regression tests for the Int/Int `/` lowering.
+
+    The analyzer types `Int / Int -> Int` (see
+    capa/analyzer/_expressions.py around the binop section) and the
+    Wasm backend already lowered it to `i64.div_s`. The Python
+    transpiler used to emit Python's `/` (true division) for every
+    `BinOp("/")`, which silently returned a Float at runtime, so
+    `${10 / 3}` printed `3.3333333333333335` instead of `3`. The fix
+    in capa/transpiler/_expressions.py inspects the typer's recorded
+    operand types and emits `//` when both sides are Int.
+    """
+
+    def test_int_div_int_runtime_is_integer(self):
+        rc, out, err = run_capa(
+            'fun main(stdio: Stdio)\n'
+            '    stdio.println("${10 / 3}")\n'
+            '    stdio.println("${20 / 4}")\n'
+            '    stdio.println("${7 / 2}")\n'
+        )
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out, "3\n5\n3\n")
+
+    def test_int_div_int_emits_floor_division(self):
+        code = transpile_only(
+            'fun main(stdio: Stdio)\n'
+            '    stdio.println("${10 / 3}")\n'
+        )
+        self.assertIn("10 // 3", code)
+        self.assertNotIn("(10 / 3)", code)
+
+    def test_int_div_int_via_let_bindings(self):
+        # Ensure the type-lookup also works when the operands are
+        # Ident nodes referring to Int-typed locals (not just
+        # IntLits). The typer must have populated `types[id(left)]`
+        # / `types[id(right)]` for the BinOp branch to fire.
+        rc, out, err = run_capa(
+            'fun main(stdio: Stdio)\n'
+            '    let a = 17\n'
+            '    let b = 5\n'
+            '    stdio.println("${a / b}")\n'
+        )
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out, "3\n")
+
+    def test_float_div_float_runtime_is_float(self):
+        # The fix must NOT have broken Float/Float, which should
+        # still go through Python's true division.
+        rc, out, err = run_capa(
+            'fun main(stdio: Stdio)\n'
+            '    stdio.println("${10.0 / 4.0}")\n'
+        )
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out, "2.5\n")
+
+    def test_float_div_float_emits_true_division(self):
+        code = transpile_only(
+            'fun main(stdio: Stdio)\n'
+            '    stdio.println("${10.0 / 4.0}")\n'
+        )
+        # Single slash, not floor division.
+        self.assertIn("10.0 / 4.0", code)
+        self.assertNotIn("10.0 // 4.0", code)
+
+    def test_mixed_int_float_div_rejected_by_analyzer(self):
+        # The analyzer rejects mixed Int/Float for `/` per its
+        # binop rule. Confirm the error is recorded so the typer-
+        # driven `//` lowering only fires for genuine Int/Int.
+        src = (
+            'fun main(stdio: Stdio)\n'
+            '    let a: Int = 10\n'
+            '    let b: Float = 3.0\n'
+            '    stdio.println("${a / b}")\n'
+        )
+        tokens = Lexer(src).lex()
+        module = Parser(tokens, source=src).parse_module()
+        result = analyze(module, source=src)
+        self.assertFalse(result.ok)
+        joined = "\n".join(str(e) for e in result.errors)
+        self.assertIn("operator '/'", joined)
+        self.assertIn("Int", joined)
+        self.assertIn("Float", joined)
+
+
 class TestTranspileTypes(unittest.TestCase):
     def test_struct_creation(self):
         rc, out, err = run_capa(

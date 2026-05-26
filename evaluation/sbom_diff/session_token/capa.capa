@@ -1,0 +1,193 @@
+// Capa equivalent of `naive.py` (a session-token mint-and-
+// validate pair of the itsdangerous / pyjwt / flask-login /
+// django.core.signing shape). The same logic, split into
+// functions whose signatures declare exactly the capabilities
+// they need.
+//
+// The naive Python `generate_token(ttl_seconds)` and
+// `is_token_valid(token)` together exercise Random (the CSPRNG
+// draws) AND Clock (the wall-clock reads that build the expiry
+// and that decide freshness). Both signatures are silent on
+// authority; even the validator, which a reviewer might assume
+// is pure parsing, quietly calls `time.time()`. The Capa version
+// separates the pure token format, parser, and expiry comparator
+// from the three entry points whose signatures honestly carry
+// `Random`, `Clock`, or both.
+//
+// What this file demonstrates:
+//
+// - `default_alphabet`: pure. The 57-char visually-unambiguous alphabet.
+// - `format_token`    : pure. `"${rid}.${expiry_ts}"`.
+// - `parse_token`     : pure. Split on the last `.`, parse the
+//                       suffix to Int. Returns `Option<ParsedToken>`.
+// - `is_expired`      : pure. `parsed.expiry_ts <= now`.
+// - `random_id`       : Random only. Draws `length` chars.
+// - `generate_token`  : Random + Clock. Composition point.
+//                       Signature honestly carries BOTH.
+// - `is_token_valid`  : Clock only. Reads the clock, parses,
+//                       compares.
+//
+// Run with:
+//
+//   capa --cyclonedx evaluation/sbom_diff/session_token/capa.capa
+//
+// to get the per-function `capa:declared_capability` SBOM
+// properties this study consumes.
+
+// The parsed-token shape. Capa has no ad-hoc tuples-with-named-
+// fields the way Python's `(rid, expiry_ts)` plus a destructuring
+// assignment does, so the parser's success payload becomes a
+// named struct. Matches the idiom used by `ini_loader/capa.capa`'s
+// `KvPair` and `rate_limiter/capa.capa`'s `AcquireResult`.
+type ParsedToken {
+    rid: String,
+    expiry_ts: Int
+}
+
+// ===============================================================
+// Pure: the 57-character visually-unambiguous alphabet, identical
+// to the one used by `short_uuid/capa.capa`. Excludes `0`, `1`,
+// `O`, `I`, and `l` because those collide when a user reads an ID
+// off a screen, and conveniently also excludes `.` so the dotted
+// token format is unambiguous to parse. Zero capabilities.
+// ===============================================================
+fun default_alphabet() -> String
+    return "23456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+
+// ===============================================================
+// Pure: format the token as `"${rid}.${expiry_ts}"`. The
+// arithmetic of joining the two halves with a `.` is total over
+// any (rid, expiry_ts); there is no failure mode here. Zero
+// capabilities.
+// ===============================================================
+fun format_token(rid: String, expiry_ts: Int) -> String
+    return "${rid}.${expiry_ts}"
+
+// ===============================================================
+// Pure: parse a token of the form `"<rid>.<expiry_ts>"` into
+// Some(ParsedToken) if a `.` is present AND the suffix parses as
+// an Int, else None. Splits on the LAST `.` so a rid that
+// somehow contains a `.` would still round-trip (the default
+// alphabet excludes `.`, but the parser is total over arbitrary
+// strings). Capa has no `String.rfind`, so the split-on-`.` plus
+// "rejoin all-but-last as rid, parse last as expiry" idiom is
+// used here. Zero capabilities.
+// ===============================================================
+fun parse_token(token: String) -> Option<ParsedToken>
+    let parts = token.split(".")
+    let n = parts.length()
+    if n < 2
+        return None
+    // Last part is the expiry suffix; everything before it is the
+    // rid, rejoined with `.` (preserving any embedded dots).
+    var rid = ""
+    var i = 0
+    while i < n - 1
+        if i == 0
+            rid = parts.get(i).unwrap_or("")
+        else
+            rid = rid + "." + parts.get(i).unwrap_or("")
+        i = i + 1
+    let suffix = parts.get(n - 1).unwrap_or("")
+    match parse_int(suffix)
+        None ->
+            return None
+        Some(ts) ->
+            return Some(ParsedToken { rid: rid, expiry_ts: ts })
+
+// ===============================================================
+// Pure: a token is expired iff its embedded expiry timestamp is
+// at or before the supplied `now`. Total over any (parsed, now);
+// the comparison is one integer `<=`. Zero capabilities. The
+// caller threads the wall clock in; this function does not read
+// it.
+// ===============================================================
+fun is_expired(parsed: ParsedToken, now: Int) -> Bool
+    return parsed.expiry_ts <= now
+
+// ===============================================================
+// Random-only: draw `length` characters from the default alphabet
+// using the supplied `Random` handle. Same body as
+// `short_uuid/capa.capa`'s `generate`; pulled out here so the
+// composition point below stays focused on the Random + Clock
+// interplay. Signature carries `Random`, nothing else.
+// ===============================================================
+fun random_id(rand: Random, length: Int) -> String
+    let alphabet = default_alphabet()
+    let n = alphabet.length()
+    var out = ""
+    for i in 0..length
+        let idx = rand.int_range(0, n)
+        let ch = alphabet.substring(idx, idx + 1)
+        out = out + ch
+    return out
+
+// ===============================================================
+// Random + Clock: the composition point. Reads
+// `clock.now_secs()` once to compute the expiry timestamp, draws
+// a random id, formats. The signature honestly carries BOTH
+// authorities; a reviewer reading the signature alone knows
+// immediately that the function exercises the CSPRNG AND reads
+// the wall clock, and the type checker forbids any disk read,
+// network read, or sleep inside this body.
+//
+// `clock.now_secs()` returns a Float (unix seconds with sub-
+// second precision); the conversion to Int via `to_int` matches
+// the naive Python's `int(time.time())`. The expiry is `now +
+// ttl_seconds`.
+// ===============================================================
+fun generate_token(rand: Random, clock: Clock, ttl_seconds: Int) -> String
+    let now = to_int(clock.now_secs())
+    let expiry_ts = now + ttl_seconds
+    let rid = random_id(rand, 16)
+    return format_token(rid, expiry_ts)
+
+// ===============================================================
+// Clock-only: validate a token. Reads `clock.now_secs()` once,
+// parses the token, returns true iff the parse succeeded AND the
+// embedded expiry timestamp is still in the future. Signature
+// carries `Clock` and nothing else; the type checker forbids any
+// disk read, network read, randomness draw, or sleep inside this
+// body. A reviewer reading the signature alone sees that the
+// only authority touched is the wall clock; the parsing +
+// comparison are pure given the parsed token and the now.
+// ===============================================================
+fun is_token_valid(clock: Clock, token: String) -> Bool
+    let now = to_int(clock.now_secs())
+    match parse_token(token)
+        None ->
+            return false
+        Some(parsed) ->
+            return not is_expired(parsed, now)
+
+// ===============================================================
+// Entry point: demonstrates the pure pipeline without actually
+// reading the clock or drawing from the CSPRNG. `main` holds
+// `Stdio` only; the Random and Clock arms are demonstrated by
+// their declared signatures alone, the way a code reviewer would
+// read them. Matches the `rate_limiter/capa.capa` and
+// `config_loader/capa.capa` idiom of Stdio-only main.
+// ===============================================================
+fun main(stdio: Stdio)
+    // format_token: total over any (rid, expiry_ts).
+    let formatted = format_token("abc123", 1700000000)
+    stdio.println("format_token(\"abc123\", 1700000000) = ${formatted}")
+
+    // parse_token: well-formed input round-trips.
+    match parse_token("abc123.1700000000")
+        None ->
+            stdio.println("parse_token(\"abc123.1700000000\") = None (unexpected)")
+        Some(parsed) ->
+            stdio.println("parse_token(\"abc123.1700000000\") = rid=${parsed.rid} expiry_ts=${parsed.expiry_ts}")
+
+    // parse_token: malformed input returns None.
+    match parse_token("no-dot-here")
+        None ->
+            stdio.println("parse_token(\"no-dot-here\") = None (expected)")
+        Some(_) ->
+            stdio.println("parse_token(\"no-dot-here\") = Some(...) (unexpected)")
+
+    // is_expired: false when the expiry is in the future.
+    let p = ParsedToken { rid: "abc123", expiry_ts: 1700000000 }
+    stdio.println("is_expired(expiry=1700000000, now=1699999999) = ${is_expired(p, 1699999999)}")
+    stdio.println("is_expired(expiry=1700000000, now=1700000001) = ${is_expired(p, 1700000001)}")

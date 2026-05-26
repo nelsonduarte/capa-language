@@ -1,0 +1,110 @@
+// Capa equivalent of `naive.py` (a fetch-with-exponential-
+// backoff helper of the urllib3.Retry / tenacity / backoff /
+// httpx-transport-retry shape). The same logic, split into
+// functions whose signatures declare exactly the capabilities
+// they need.
+//
+// The naive Python `fetch_with_retry(url, max_retries,
+// base_delay)` conflates Net (open the URL) and Clock (sleep
+// between attempts). Both are buried in the body; the signature
+// names neither. The Capa version separates them: the pure
+// schedule computation, the Net-only single fetch, the Clock-
+// only backoff wait, and a composition point whose signature
+// honestly carries both `Net` and `Clock`.
+//
+// What this file demonstrates:
+//
+// - `compute_backoff_seconds`: pure exponential schedule. Zero capabilities.
+// - `fetch_once`: one network read. Declares only `Net`.
+// - `wait_backoff`: one sleep. Declares only `Clock`.
+// - `fetch_with_retry`: composes all three. The signature
+//   honestly carries `Net` AND `Clock`. A reviewer reading
+//   only the signature can see the full authority surface.
+//
+// Run with:
+//
+//   capa --cyclonedx evaluation/sbom_diff/http_retry/capa.capa
+//
+// to get the per-function `capa:declared_capability` SBOM
+// properties this study consumes.
+
+// ===============================================================
+// Pure: compute the delay (in seconds) for a given retry
+// attempt. Zero capabilities. Same role as the
+// `base_delay * (2 ** attempt)` expression in the naive Python
+// body, but the signature here says explicitly that the function
+// does nothing else. Capa has no `**` operator, so the
+// exponentiation is unrolled into a doubling loop; the result is
+// identical (attempt 0 -> base_delay, attempt 1 -> 2*base_delay,
+// attempt 2 -> 4*base_delay, ...).
+// ===============================================================
+fun compute_backoff_seconds(attempt: Int, base_delay: Float) -> Float
+    var factor = 1.0
+    for i in 0..attempt
+        factor = factor * 2.0
+    return base_delay * factor
+
+// ===============================================================
+// Net-only: perform a single HTTP fetch. Signature carries
+// `Net`, nothing else. A reviewer who sees this function in a
+// code review knows immediately that the network is the only
+// thing touched; the type checker forbids any disk read,
+// environment read, or sleep inside this body.
+// ===============================================================
+fun fetch_once(net: Net, url: String) -> Result<String, IoError>
+    return net.get(url)
+
+// ===============================================================
+// Clock-only: sleep for the given number of seconds. Signature
+// carries `Clock`, nothing else. The naive Python `time.sleep`
+// is a global side effect with no declared authority; here the
+// sleep can only happen when a `Clock` cap has been threaded in,
+// and the attenuation primitive `Clock.restrict_to_after` lets a
+// caller dormant-ise the cap if they wish.
+// ===============================================================
+fun wait_backoff(clock: Clock, seconds: Float) -> Unit
+    clock.sleep(seconds)
+
+// ===============================================================
+// The composition point. The signature honestly carries the
+// full authority surface: `Net` (to open the URL) and `Clock`
+// (to sleep between attempts). A reviewer reading the signature
+// alone knows immediately the function opens the network and
+// sleeps the process; there is no way to hide a file read inside
+// this body because no `Fs` parameter is in scope.
+// ===============================================================
+fun fetch_with_retry(
+    net: Net,
+    clock: Clock,
+    url: String,
+    max_retries: Int,
+    base_delay: Float
+) -> Result<String, IoError>
+    var last: Result<String, IoError> = fetch_once(net, url)
+    var attempt = 1
+    while attempt < max_retries
+        match last
+            Ok(body) ->
+                return Ok(body)
+            Err(_) ->
+                let delay = compute_backoff_seconds(attempt, base_delay)
+                wait_backoff(clock, delay)
+                last = fetch_once(net, url)
+                attempt = attempt + 1
+    return last
+
+// ===============================================================
+// Entry point: demonstrates the layered authority surface
+// without actually opening the network or sleeping. Only the
+// pure backoff computation is exercised here; the Net and Clock
+// arms are demonstrated by their declared signatures alone, the
+// way a code reviewer would read them.
+// ===============================================================
+fun main(stdio: Stdio)
+    stdio.println("Backoff schedule for base_delay = 1.0s:")
+    let d0 = compute_backoff_seconds(0, 1.0)
+    let d1 = compute_backoff_seconds(1, 1.0)
+    let d2 = compute_backoff_seconds(2, 1.0)
+    stdio.println("  attempt 0 -> ${d0}s")
+    stdio.println("  attempt 1 -> ${d1}s")
+    stdio.println("  attempt 2 -> ${d2}s")

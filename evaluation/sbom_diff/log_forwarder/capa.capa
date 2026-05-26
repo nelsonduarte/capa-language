@@ -1,0 +1,157 @@
+// Capa equivalent of `naive.py` (a tail-and-forward log
+// shipper of the Datadog-Agent / Filebeat / Splunk-forwarder
+// shape). The same logic, split into functions whose signatures
+// declare exactly the capabilities they need.
+//
+// The naive Python `forward_log(path, url, max_lines)`
+// conflates Fs (read the file) and Net (post the payload). Both
+// are buried in the body; the signature names neither. The Capa
+// version separates them: the pure JSON formatting, the Fs-only
+// tail read, the Net-only outbound send, and a composition
+// point whose signature honestly carries both `Fs` and `Net`.
+//
+// Scope note: Capa's `Net` builtin (see `capa/builtins.py`)
+// exposes only `get`, not `post`. The naive Python POSTs the
+// payload; the Capa transliteration uses a callback-URL GET
+// instead (the count of forwarded lines is folded into the
+// query string), which is the closest faithful representation
+// of "this function sends data outward" available inside the
+// current Net surface. The semantic point - the function
+// exercises Net - is preserved; the wire shape is more
+// disciplined than an arbitrary-body POST.
+//
+// What this file demonstrates:
+//
+// - `escape_for_json`: pure string escape helper. Zero capabilities.
+// - `format_as_json`: pure JSON-array formatter. Zero capabilities.
+// - `read_tail`: tail of a log file. Declares only `Fs`.
+// - `send_lines`: outbound callback. Declares only `Net`.
+// - `forward_log`: composes all three. The signature honestly
+//   carries `Fs` AND `Net`. A reviewer reading only the
+//   signature can see the full authority surface.
+//
+// Run with:
+//
+//   capa --cyclonedx evaluation/sbom_diff/log_forwarder/capa.capa
+//
+// to get the per-function `capa:declared_capability` SBOM
+// properties this study consumes.
+
+// ===============================================================
+// Pure: escape a single string for inclusion inside a JSON
+// string literal. Replaces `\` with `\\` first (so the second
+// pass does not double-escape the backslashes introduced for
+// `"`), then `"` with `\"`. Zero capabilities. Newlines and
+// control characters are passed through unchanged; the
+// illustrative scope is the two structurally significant
+// characters, matching the role `json.dumps` plays for a flat
+// string list in the naive Python version.
+// ===============================================================
+fun escape_for_json(s: String) -> String
+    let backslash_escaped = s.replace("\\", "\\\\")
+    return backslash_escaped.replace("\"", "\\\"")
+
+// ===============================================================
+// Pure: format a list of log lines as a JSON array literal.
+// Same role as `json.dumps(lines)` does on a flat str list in
+// the naive Python version, but the signature here says
+// explicitly that the function does nothing else. Built by hand
+// to mirror the by-hand Python helper and to keep the function
+// free of any capability dependency.
+// ===============================================================
+fun format_as_json(lines: List<String>) -> String
+    var out = "["
+    var first = true
+    for line in lines
+        if first
+            first = false
+        else
+            out = out + ","
+        out = out + "\"" + escape_for_json(line) + "\""
+    return out + "]"
+
+// ===============================================================
+// Fs-only: read the file and return its last `max_lines` lines.
+// Signature carries `Fs`, nothing else. A reviewer who sees
+// this function in a code review knows immediately that the
+// disk is the only thing touched. A production forwarder would
+// seek from the end for efficiency; the illustrative shape
+// reads the whole file (the Capa `Fs.read` surface, like the
+// Python `open().read()` in the naive version, is whole-file)
+// and slices the tail by hand. List slicing has no `xs[-N:]`
+// shorthand in Capa, so the tail is built with an explicit
+// counted loop.
+// ===============================================================
+fun read_tail(fs: Fs, path: String, max_lines: Int) -> Result<List<String>, IoError>
+    let text = fs.read(path)?
+    let lines = text.split("\n")
+    let total = lines.length()
+    var start = total - max_lines
+    if start < 0
+        start = 0
+    let out: List<String> = []
+    for i in start..total
+        match lines.get(i)
+            Some(line) ->
+                out.push(line)
+            None ->
+                ()
+    return Ok(out)
+
+// ===============================================================
+// Net-only: send the outbound signal. Signature carries `Net`,
+// nothing else. The naive Python POSTs the JSON payload as the
+// request body; Capa's `Net` builtin exposes only `get`, so the
+// transliteration uses a callback-URL GET instead (the caller
+// folds the count or a digest into the query string). The
+// semantic point - this function exercises Net to send data
+// outward - is preserved; the wire shape is more disciplined.
+// The type checker forbids any disk read, environment read, or
+// sleep inside this body.
+// ===============================================================
+fun send_lines(net: Net, url: String) -> Result<String, IoError>
+    return net.get(url)
+
+// ===============================================================
+// The composition point. The signature honestly carries the
+// full authority surface: `Fs` (to read the file) and `Net` (to
+// send the outbound signal). A reviewer reading the signature
+// alone knows immediately the function reads the disk and opens
+// the network; there is no way to hide an environment read or a
+// sleep inside this body because no `Env` or `Clock` parameter
+// is in scope.
+// ===============================================================
+fun forward_log(
+    fs: Fs,
+    net: Net,
+    path: String,
+    url: String,
+    max_lines: Int
+) -> Result<Int, IoError>
+    let tail = read_tail(fs, path, max_lines)?
+    // Pure: format the payload. The result is not transmitted in
+    // the request body (Capa's Net has no `post`); it is still
+    // computed so a real deployment could log or hash it.
+    let _payload = format_as_json(tail)
+    let count = tail.length()
+    let callback = url + "?count=${count}"
+    send_lines(net, callback)?
+    return Ok(count)
+
+// ===============================================================
+// Entry point: demonstrates the pure JSON formatter on an
+// inline 3-line sample. `main` holds `Stdio` only; the demo
+// does not touch the filesystem or the network, matching the
+// pattern used by the other pairs in this study (the Fs and Net
+// arms are demonstrated by their declared signatures alone, the
+// way a code reviewer would read them).
+// ===============================================================
+fun main(stdio: Stdio)
+    let sample: List<String> = [
+        "2026-05-26T08:00:00 INFO  startup complete",
+        "2026-05-26T08:00:01 WARN  cache miss for key \"user:42\"",
+        "2026-05-26T08:00:02 ERROR upstream timeout"
+    ]
+    let payload = format_as_json(sample)
+    stdio.println("forward_log demo - JSON payload for ${sample.length()} line(s):")
+    stdio.println(payload)

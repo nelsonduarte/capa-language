@@ -1,0 +1,171 @@
+// Capa equivalent of `naive.py` (a gitignore-style path matcher
+// of the PyPI `pathspec` shape). The same logic, split into pure
+// helpers whose signatures declare exactly zero capabilities.
+//
+// This pair sits alongside `slugify/`, `tabulate/`, `textwrap/`,
+// `humanize/`, and `csv_parser/` as a pure-case in the SBOM-diff
+// study. It is the first pair in the corpus that does glob-style
+// path matching (the user-facing semantic of pathspec, black's
+// `--exclude`, isort's skip globs, mypy's exclude patterns).
+//
+// The naive Python imports `re` and compiles the gitignore glob
+// to a regex. Capa has no regex library, so the Capa version
+// implements glob matching DIRECTLY via recursion. The user-
+// facing semantic is identical; the per-function purity claim
+// holds for both shapes, machine-checked on the Capa side.
+//
+// Three scope cuts vs. the Python original:
+//
+//  - Only `*` and `?` are supported, plus literal characters.
+//    The naive Python distinguishes `*` (any chars except `/`)
+//    from `**` (any chars including `/`); the Capa version
+//    treats `*` as a generic any-run wildcard. No `[abc]` char
+//    classes, no `{a,b}` alternates. Full gitignore is a
+//    substantial undertaking; the simplified shape proves the
+//    function-purity claim equally well.
+//
+//  - The recursive matcher runs in exponential time on
+//    adversarial inputs. For the demo inputs (short paths and
+//    patterns) it is instantaneous. Production glob engines
+//    convert to NFA / DFA up front; the pedagogical naive
+//    recursion suffices to demonstrate purity attribution.
+//
+//  - `matches_any` is single-pass and stops at the first hit.
+//    Real gitignore semantics let a later `!pat` re-include a
+//    path that an earlier `pat` excluded; for the SBOM-diff
+//    study the simple shape captures the capability surface.
+//
+// Run with:
+//
+//   capa --cyclonedx evaluation/sbom_diff/pathspec/capa.capa
+//
+// to get the per-function `capa:declared_capability` SBOM
+// properties this study consumes.
+
+// ===============================================================
+// Pure: strip the anchor markers gitignore patterns carry. A
+// leading `/` anchors to the repository root and a trailing `/`
+// means "directory only"; for this simplified subset both are
+// dropped so the matcher works on plain glob strings. Zero
+// capabilities.
+// ===============================================================
+fun strip_anchors(pattern: String) -> String
+    var s = pattern
+    if s.starts_with("/")
+        s = s.substring(1, s.length())
+    if s.ends_with("/")
+        s = s.substring(0, s.length() - 1)
+    return s
+
+// ===============================================================
+// Pure: a leading `!` flips the match result. Single-character
+// predicate; the negation handling lives in `matches_pattern`.
+// Zero capabilities.
+// ===============================================================
+fun is_negation(pattern: String) -> Bool
+    return pattern.starts_with("!")
+
+// ===============================================================
+// Pure: drop the leading `!` from a negated pattern. Returns the
+// input unchanged when no `!` is present. Zero capabilities.
+// ===============================================================
+fun strip_negation(pattern: String) -> String
+    if pattern.starts_with("!")
+        return pattern.substring(1, pattern.length())
+    return pattern
+
+// ===============================================================
+// Pure: the recursive glob matcher. Walks `pattern` and `path` in
+// lockstep, with `pat_i` and `path_i` as the current offsets.
+//
+//  - End of pattern: match iff path is also exhausted.
+//  - `*` in pattern: either consume zero path chars (advance
+//    pat_i) or consume one path char (advance path_i and keep
+//    pat_i on the star); whichever branch returns true wins.
+//  - `?` in pattern: require one path char and advance both.
+//  - literal in pattern: require equality with the current path
+//    char and advance both.
+//
+// Capa has no regex library; this is the user-facing semantic
+// expressed directly. Zero capabilities.
+// ===============================================================
+fun glob_match(path: String, pattern: String, path_i: Int, pat_i: Int) -> Bool
+    let plen = path.length()
+    let qlen = pattern.length()
+    if pat_i >= qlen
+        return path_i >= plen
+    let p = pattern.substring(pat_i, pat_i + 1)
+    if p == "*"
+        // Branch 1: the star matches zero more chars; commit and
+        // advance the pattern.
+        if glob_match(path, pattern, path_i, pat_i + 1)
+            return true
+        // Branch 2: the star eats one more path char; keep the
+        // pattern on the star.
+        if path_i < plen
+            return glob_match(path, pattern, path_i + 1, pat_i)
+        return false
+    if path_i >= plen
+        return false
+    if p == "?"
+        return glob_match(path, pattern, path_i + 1, pat_i + 1)
+    let c = path.substring(path_i, path_i + 1)
+    if c == p
+        return glob_match(path, pattern, path_i + 1, pat_i + 1)
+    return false
+
+// ===============================================================
+// Pure: the public single-pattern API. Peels the `!` negation,
+// strips anchors, runs the recursive matcher from offset zero,
+// and inverts when negated. Zero capabilities.
+// ===============================================================
+fun matches_pattern(path: String, pattern: String) -> Bool
+    let negated = is_negation(pattern)
+    let body = strip_anchors(strip_negation(pattern))
+    let raw = glob_match(path, body, 0, 0)
+    if negated
+        return not raw
+    return raw
+
+// ===============================================================
+// Pure: greedy multi-pattern API. Returns true on the first
+// matching pattern, false if none match. Zero capabilities.
+// ===============================================================
+fun matches_any(path: String, patterns: List<String>) -> Bool
+    for pattern in patterns
+        if matches_pattern(path, pattern)
+            return true
+    return false
+
+// ===============================================================
+// Entry point: exercises the pure pipeline. Holds `Stdio` only;
+// none of the helpers above are reachable through any authority
+// other than the `stdio.println` calls in this body.
+// ===============================================================
+fun main(stdio: Stdio)
+    // Case 1: a literal-suffix glob hits a flat file. True.
+    let r1 = matches_pattern("foo.py", "*.py")
+    stdio.println("matches_pattern('foo.py', '*.py') = ${r1}")
+
+    // Case 2: the simplified `*` is a generic wildcard in this
+    // subset, so the nested path matches the same glob (the
+    // naive Python distinguishes `*` from `**` and would return
+    // false here; the scope cut is documented at the top of the
+    // file).
+    let r2 = matches_pattern("src/foo.py", "*.py")
+    stdio.println("matches_pattern('src/foo.py', '*.py') = ${r2}")
+
+    // Case 3: a middle-segment wildcard. True.
+    let r3 = matches_pattern("a/b/c", "a/*/c")
+    stdio.println("matches_pattern('a/b/c', 'a/*/c') = ${r3}")
+
+    // Case 4: multi-pattern fan-out. The first pattern misses,
+    // the second hits, so the answer is true.
+    let patterns: List<String> = ["*.txt", "*.md"]
+    let r4 = matches_any("README.md", patterns)
+    stdio.println("matches_any('README.md', ['*.txt', '*.md']) = ${r4}")
+
+    // Case 5: negation. The bare pattern matches; the `!` flips
+    // the result to false.
+    let r5 = matches_pattern("foo.py", "!*.py")
+    stdio.println("matches_pattern('foo.py', '!*.py') = ${r5}")

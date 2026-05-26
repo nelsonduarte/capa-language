@@ -1,0 +1,204 @@
+// Capa equivalent of `naive.py` (an ASCII-table formatter of
+// the PyPI `tabulate` shape). The same logic, split into pure
+// helpers whose signatures declare exactly zero capabilities.
+//
+// This pair sits alongside `slugify/` as a pure-case in the
+// SBOM-diff study. The structural point is different, though:
+// the naive Python imports nothing capability-bearing at all
+// (just `typing`), so a PURL-based SBOM emitted by syft / pip-
+// licenses for that file says nothing useful. The Capa version
+// makes the per-function purity machine-checked: every helper
+// below declares zero capabilities and the compiler enforces it.
+//
+// Two scope cuts vs. the Python original:
+//
+//  - `headers` is a `List<String>` rather than an
+//    `Option<List<String>>`. The convention here is that an
+//    empty `headers` list means "no header row"; the naive
+//    Python uses `None` for the same intent. `main` exercises
+//    both modes.
+//
+//  - Capa's `String` builtin does not expose `ljust` / `rjust`
+//    or a string-repeat. `pad_right` and `repeat_char` below are
+//    hand-coded loops; the structural point (the function is
+//    pure and the SBOM says so) is independent of the helper
+//    being a builtin vs. a loop.
+//
+// Empty `rows` AND empty `headers` returns the empty string,
+// matching the Python.
+//
+// Run with:
+//
+//   capa --cyclonedx evaluation/sbom_diff/tabulate/capa.capa
+//
+// to get the per-function `capa:declared_capability` SBOM
+// properties this study consumes.
+
+// ===============================================================
+// Pure helper: integer max. Capa's prelude does not expose a
+// generic `max`, so the column-width loop uses this. Zero
+// capabilities.
+// ===============================================================
+fun max_int(a: Int, b: Int) -> Int
+    if a > b
+        return a
+    return b
+
+// ===============================================================
+// Pure helper: pad a string on the right with spaces up to the
+// requested width. Stands in for Python's `str.ljust(width)`.
+// Zero capabilities.
+// ===============================================================
+fun pad_right(s: String, width: Int) -> String
+    var out = s
+    while out.length() < width
+        out = out + " "
+    return out
+
+// ===============================================================
+// Pure helper: build a string of `n` copies of a single
+// character. Stands in for Python's `"-" * n`. Zero capabilities.
+// ===============================================================
+fun repeat_char(c: String, n: Int) -> String
+    var out = ""
+    var i = 0
+    while i < n
+        out = out + c
+        i = i + 1
+    return out
+
+// ===============================================================
+// Pure: compute the per-column width of the table. The width of
+// column `i` is the maximum length of any cell in column `i`,
+// across both `rows` and `headers`. An empty `headers` list is
+// treated as "no header row" and contributes nothing. Zero
+// capabilities.
+//
+// Capa's `List` builtin has `push` / `get` but no `set`, so the
+// widths list is built once by scanning each column index in
+// turn rather than initialised-then-mutated.
+// ===============================================================
+fun compute_widths(rows: List<List<String>>, headers: List<String>) -> List<Int>
+    // First pass: determine the column count. The widest row
+    // (including the header row, if present) sets it.
+    var n_cols = 0
+    if not headers.is_empty()
+        n_cols = headers.length()
+    for r in rows
+        n_cols = max_int(n_cols, r.length())
+    // Second pass: for each column index, scan the header (if
+    // any) and every row to find the widest cell at that column.
+    let widths: List<Int> = []
+    var i = 0
+    while i < n_cols
+        var w = 0
+        if not headers.is_empty()
+            match headers.get(i)
+                None ->
+                    ()
+                Some(cell) ->
+                    w = max_int(w, cell.length())
+        for r in rows
+            match r.get(i)
+                None ->
+                    ()
+                Some(cell) ->
+                    w = max_int(w, cell.length())
+        widths.push(w)
+        i = i + 1
+    return widths
+
+// ===============================================================
+// Pure: format a single row given the column widths. Each cell
+// is padded to its column width with `pad_right` and joined with
+// `| ... |` separators. Missing cells (rows shorter than the
+// width list) are padded as empty strings. Zero capabilities.
+// ===============================================================
+fun format_row(cells: List<String>, widths: List<Int>) -> String
+    var out = "|"
+    var i = 0
+    while i < widths.length()
+        let w = widths.get(i).unwrap_or(0)
+        var cell = ""
+        match cells.get(i)
+            None ->
+                ()
+            Some(c) ->
+                cell = c
+        out = out + " " + pad_right(cell, w) + " |"
+        i = i + 1
+    return out
+
+// ===============================================================
+// Pure: format the `+---+---+...+` separator line. Each segment
+// is `column_width + 2` dashes wide, accounting for the single
+// space of padding inside each cell on either side. Zero
+// capabilities.
+// ===============================================================
+fun format_separator(widths: List<Int>) -> String
+    var out = "+"
+    var i = 0
+    while i < widths.length()
+        let w = widths.get(i).unwrap_or(0)
+        out = out + repeat_char("-", w + 2) + "+"
+        i = i + 1
+    return out
+
+// ===============================================================
+// Pure: compose the helpers into the public API. An empty
+// `headers` list means "no header row"; an empty `rows` AND
+// empty `headers` returns the empty string. Zero capabilities.
+// ===============================================================
+fun tabulate(rows: List<List<String>>, headers: List<String>) -> String
+    let widths = compute_widths(rows, headers)
+    if widths.is_empty()
+        return ""
+    let sep = format_separator(widths)
+    var out = sep
+    if not headers.is_empty()
+        out = out + "\n" + format_row(headers, widths)
+        out = out + "\n" + sep
+    for r in rows
+        out = out + "\n" + format_row(r, widths)
+    out = out + "\n" + sep
+    return out
+
+// ===============================================================
+// Pure helper used by `main` only: build a one-row table input
+// from three cell strings. Keeps the demo body readable. Zero
+// capabilities.
+// ===============================================================
+fun row3(a: String, b: String, c: String) -> List<String>
+    let r: List<String> = []
+    r.push(a)
+    r.push(b)
+    r.push(c)
+    return r
+
+// ===============================================================
+// Entry point: exercises the pure pipeline. Holds `Stdio` only;
+// none of the helpers above are reachable through any authority
+// other than the `stdio.println` calls in this body.
+// ===============================================================
+fun main(stdio: Stdio)
+    // Table 1: with headers.
+    let headers: List<String> = []
+    headers.push("name")
+    headers.push("kind")
+    headers.push("downloads")
+    let rows: List<List<String>> = []
+    rows.push(row3("tabulate", "lib", "50M"))
+    rows.push(row3("slugify", "lib", "6M"))
+    rows.push(row3("dotenv", "lib", "3M"))
+    let t1 = tabulate(rows, headers)
+    stdio.println("Table 1 (with headers):")
+    stdio.println(t1)
+
+    // Table 2: no headers (empty headers list).
+    let no_headers: List<String> = []
+    let rows2: List<List<String>> = []
+    rows2.push(row3("a", "b", "c"))
+    rows2.push(row3("xx", "yy", "zz"))
+    let t2 = tabulate(rows2, no_headers)
+    stdio.println("Table 2 (no headers):")
+    stdio.println(t2)

@@ -1,0 +1,116 @@
+// Capa equivalent of `naive.py` (a .env loader of the
+// python-dotenv shape). The same logic, split into functions
+// whose signatures declare exactly the capabilities they need.
+//
+// The naive Python `load_dotenv(path)` conflates Fs (read the
+// file) and Env (mutate `os.environ`). Capa's Env capability is
+// read-only by design (`env.get` exists; there is no `env.set`),
+// so the equivalent here is structurally different: instead of
+// mutating global state, it returns a Map<String, String> that
+// the caller threads forward. The merging step that decides
+// whether to override existing values is split out into a
+// separate Env-only function, exactly mirroring the Python
+// `override` flag's read-side intent without the write-side
+// global-state effect.
+//
+// Run with:
+//
+//   capa --cyclonedx evaluation/sbom_diff/dotenv/capa.capa
+//
+// to get the per-function `capa:declared_capability` SBOM
+// properties this study consumes.
+
+// ===============================================================
+// Pure: parse a .env text into a Map<String, String>. Zero
+// capabilities. Same role as the body's parse loop in the naive
+// Python version.
+// ===============================================================
+fun parse_env_text(text: String) -> Map<String, String>
+    let out: Map<String, String> = new_map()
+    for raw in text.split("\n")
+        let line = raw.trim()
+        if line.is_empty()
+            continue
+        if line.starts_with("#")
+            continue
+        match line.index_of("=")
+            None ->
+                ()
+            Some(idx) ->
+                let key = line.substring(0, idx).trim()
+                let value_raw = line.substring(idx + 1, line.length()).trim()
+                let value = strip_surrounding_quotes(value_raw)
+                out.set(key, value)
+    return out
+
+// Helper: strip a single pair of matching surrounding quotes.
+fun strip_surrounding_quotes(s: String) -> String
+    if s.length() < 2
+        return s
+    let first = s.substring(0, 1)
+    let last = s.substring(s.length() - 1, s.length())
+    if first != last
+        return s
+    if first == "\"" or first == "'"
+        return s.substring(1, s.length() - 1)
+    return s
+
+// ===============================================================
+// Fs-only: read a .env file from disk and parse it. Signature
+// carries `Fs`, nothing else. The reviewer reading this function
+// knows the disk is the only thing touched. Returns an empty
+// Map on read failure (the naive Python catches FileNotFoundError
+// and returns {}; we surface the error through Result instead).
+// ===============================================================
+fun load_dotenv_file(fs: Fs, path: String) -> Result<Map<String, String>, IoError>
+    let text = fs.read(path)?
+    return Ok(parse_env_text(text))
+
+// ===============================================================
+// Env-only: overlay a parsed Map<String,String> on top of the
+// process environment, honouring an `override` flag. Read-side
+// only (Capa's Env capability has no `set`); the function returns
+// the merged Map that the caller can thread forward through the
+// rest of the program. Signature carries `Env`, nothing else.
+// ===============================================================
+fun merge_with_env(env: Env, parsed: Map<String, String>, override: Bool) -> Map<String, String>
+    let merged: Map<String, String> = new_map()
+    for pair in parsed.pairs()
+        let (k, v) = pair
+        if override
+            merged.set(k, v)
+        else
+            match env.get(k)
+                Some(existing) ->
+                    merged.set(k, existing)
+                None ->
+                    merged.set(k, v)
+    return merged
+
+// ===============================================================
+// The composition point. The signature honestly carries the
+// full authority surface: `Fs` (to read the file) and `Env` (to
+// resolve overrides). A reviewer reading the signature alone
+// knows immediately the function reads the disk and reads the
+// environment; there is no way to hide a Net call inside this
+// body because no `Net` parameter is in scope.
+// ===============================================================
+fun load_dotenv(
+    fs: Fs,
+    env: Env,
+    path: String,
+    override: Bool
+) -> Result<Map<String, String>, IoError>
+    let parsed = load_dotenv_file(fs, path)?
+    return Ok(merge_with_env(env, parsed, override))
+
+// ===============================================================
+// Entry point: demonstrates the layered authority surface.
+// ===============================================================
+fun main(stdio: Stdio)
+    let sample = "# A comment\nNAME=capa\nPORT=\"8080\"\n\nEMPTY=\n"
+    let parsed = parse_env_text(sample)
+    stdio.println("Parsed ${parsed.length()} entries from sample .env text:")
+    for pair in parsed.pairs()
+        let (k, v) = pair
+        stdio.println("  ${k} = ${v}")

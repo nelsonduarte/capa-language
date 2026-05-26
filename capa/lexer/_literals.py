@@ -211,6 +211,16 @@ class _LiteralsMixin:
             "\\": "\\", '"': '"', "'": "'",
             "0": "\0",
         }
+        if c == "0":
+            self._advance()
+            nxt = self._peek()
+            if nxt is not None and nxt.isdigit():
+                raise self._error(
+                    f"octal escape '\\0{nxt}...' is not supported; "
+                    "use '\\u{HEX}' for arbitrary code points, "
+                    "or '\\0' alone for NUL"
+                )
+            return "\0"
         if c in simple:
             self._advance()
             return simple[c]

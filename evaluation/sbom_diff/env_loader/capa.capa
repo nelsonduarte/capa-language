@@ -1,0 +1,100 @@
+// Capa equivalent of `naive.py` (a "settings from environment"
+// loader of the `environs` / `python-decouple` /
+// `pydantic-settings` shape). The same logic, split into
+// functions whose signatures declare exactly the capabilities
+// they need.
+//
+// The naive Python `load_settings(prefix, required)` conflates
+// Env (reading the whole process environment) with pure
+// validation (checking that required keys are present in the
+// already-loaded dict). The Capa version separates them, and
+// also narrows the API surface: there is NO call here that
+// scans the entire environment. Capa's `Env.get` takes one key
+// at a time, and `Env` exposes no full-iteration entry point
+// by design - full env iteration is a tampering-friendly
+// authority that would let any holder of `Env` enumerate
+// secrets it never asked about. The Capa caller therefore
+// passes an explicit list of keys of interest; this is itself
+// a security narrowing the Capa SBOM exposes.
+//
+// Run with:
+//
+//   capa --cyclonedx evaluation/sbom_diff/env_loader/capa.capa
+//
+// to get the per-function `capa:declared_capability` SBOM
+// properties this study consumes.
+
+// ===============================================================
+// Pure: strip a prefix from a key and lowercase the remainder.
+// Zero capabilities. Same role as the `_strip_prefix` helper in
+// the naive Python version.
+// ===============================================================
+fun strip_prefix(key: String, prefix: String) -> String
+    return key.substring(prefix.length(), key.length()).to_lower()
+
+// ===============================================================
+// Env-only: read an explicit list of prefixed keys from the
+// process environment, returning a Map<String, String> keyed by
+// the stripped/lowercased suffix. Signature carries `Env`,
+// nothing else. The reviewer reading this function knows the
+// environment is the only thing touched - and, because Capa's
+// `Env.get` takes one key at a time, knows exactly which keys
+// it can touch (the `keys` argument is the upper bound).
+// ===============================================================
+fun load_settings(env: Env, keys: List<String>, prefix: String) -> Map<String, String>
+    let out: Map<String, String> = new_map()
+    for key in keys
+        let prefixed = "${prefix}${key}"
+        match env.get(prefixed)
+            Some(value) ->
+                out.set(strip_prefix(prefixed, prefix), value)
+            None ->
+                ()
+    return out
+
+// ===============================================================
+// Pure: check that every required key is present in the loaded
+// settings map. Zero capabilities. Operates on the already-
+// loaded Map and the caller-supplied list; logically unrelated
+// to the Env-reading step above, which is why it lives in its
+// own function with its own (empty) capability surface.
+// ===============================================================
+fun validate_required(
+    settings: Map<String, String>,
+    required: List<String>
+) -> Result<Map<String, String>, String>
+    for req in required
+        if not settings.contains_key(req)
+            return Err("missing required setting: ${req}")
+    return Ok(settings)
+
+// ===============================================================
+// Env-only: compose `load_settings` and `validate_required`.
+// The signature honestly carries `Env` (inherited from
+// `load_settings`) and nothing else. A reviewer reading the
+// signature alone knows immediately the function reads the
+// environment and does no other I/O; there is no way to hide
+// a Fs or Net call inside this body because no such parameter
+// is in scope.
+// ===============================================================
+fun load_validated(
+    env: Env,
+    keys: List<String>,
+    required: List<String>,
+    prefix: String
+) -> Result<Map<String, String>, String>
+    let settings = load_settings(env, keys, prefix)
+    return validate_required(settings, required)
+
+// ===============================================================
+// Entry point: demonstrates the layered authority surface.
+// `main` holds `Stdio` and `Env`; the demo loads a small set
+// of realistic 12-factor keys and prints what was found.
+// ===============================================================
+fun main(stdio: Stdio, env: Env)
+    let keys = ["APP_NAME", "APP_PORT", "APP_LOG_LEVEL"]
+    let settings = load_settings(env, keys, "APP_")
+    stdio.println("Loaded ${settings.length()} setting(s) from the environment:")
+    for pair in settings.pairs()
+        let (k, v) = pair
+        stdio.println("  ${k} = ${v}")

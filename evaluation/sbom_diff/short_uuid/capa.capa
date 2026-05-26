@@ -1,0 +1,72 @@
+// Capa equivalent of `naive.py` (a short-ID generator of the
+// shortuuid / nanoid shape). The same logic, split into functions
+// whose signatures declare exactly the capabilities they need.
+//
+// The naive Python `generate(length)` conflates Random (the
+// CSPRNG draws) with two pure concerns (the alphabet definition
+// and the length validation). A PURL-based SBOM for the Python
+// version lists `secrets` as an opaque dependency with no
+// per-function attribution. The Capa version names `Random` on
+// the one function that uses it and leaves the alphabet helper
+// and the validator with zero capabilities, machine-checked.
+//
+// Run with:
+//
+//   capa --cyclonedx evaluation/sbom_diff/short_uuid/capa.capa
+//
+// to get the per-function `capa:declared_capability` SBOM
+// properties this study consumes.
+
+// ===============================================================
+// Pure: the 57-character visually-unambiguous alphabet used by
+// the shortuuid default. Excludes `0`, `1`, `O`, `I`, and `l`
+// because those collide when a user reads an ID off a screen and
+// types it into a form. Zero capabilities.
+// ===============================================================
+fun default_alphabet() -> String
+    return "23456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+
+// ===============================================================
+// Pure: reject obviously bad lengths before the caller burns
+// CSPRNG draws on them. Returns `true` iff the request is valid.
+// Zero capabilities.
+// ===============================================================
+fun is_valid_length(length: Int) -> Bool
+    return length >= 1
+
+// ===============================================================
+// Random-only: draw `length` characters from the default alphabet
+// using the supplied `Random` handle. Signature carries `Random`,
+// nothing else. A reviewer reading the signature alone knows
+// immediately that the function exercises the CSPRNG and nothing
+// else; there is no way to hide an Fs or Net call inside this
+// body because no `Fs` or `Net` parameter is in scope.
+// ===============================================================
+fun generate(rand: Random, length: Int) -> String
+    let alphabet = default_alphabet()
+    let n = alphabet.length()
+    var out = ""
+    for i in 0..length
+        let idx = rand.int_range(0, n)
+        let ch = alphabet.substring(idx, idx + 1)
+        out = out + ch
+    return out
+
+// ===============================================================
+// Entry point: demonstrates the layered authority surface.
+// Carries `Stdio` for the demo prints and `Random` for the
+// generator calls. The Random handle is seeded with a fixed
+// constant first so the demo output is deterministic across runs.
+// ===============================================================
+fun main(stdio: Stdio, rand: Random)
+    let alphabet = default_alphabet()
+    stdio.println("alphabet (${alphabet.length()} chars): ${alphabet}")
+    stdio.println("is_valid_length(0) = ${is_valid_length(0)}")
+    stdio.println("is_valid_length(8) = ${is_valid_length(8)}")
+    let rand_seeded = rand.with_seed(42)
+    let id_a = generate(rand_seeded, 8)
+    let id_b = generate(rand_seeded, 8)
+    let id_c = generate(rand_seeded, 8)
+    stdio.println("id 1: ${id_a}")
+    stdio.println("id 2: ${id_b}")
+    stdio.println("id 3: ${id_c}")

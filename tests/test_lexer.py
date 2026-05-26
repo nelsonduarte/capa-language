@@ -164,6 +164,21 @@ class TestStringLiterals(unittest.TestCase):
         with self.assertRaises(LexerError):
             lex(r'"\x"')
 
+    def test_escape_nul(self):
+        toks = lex(r'"\0"')
+        self.assertEqual(toks[0].value, "\0")
+
+    def test_octal_escape_rejected(self):
+        with self.assertRaises(LexerError) as ctx:
+            lex(r'"\033"')
+        msg = str(ctx.exception).lower()
+        self.assertIn("octal", msg)
+        self.assertIn("\\u{", msg)
+
+    def test_octal_escape_rejected_inside_string(self):
+        with self.assertRaises(LexerError):
+            lex(r'"\033[31mred\033[0m"')
+
     def test_unterminated_string_rejected(self):
         with self.assertRaises(LexerError) as ctx:
             lex('"hello')

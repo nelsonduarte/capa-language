@@ -146,13 +146,139 @@ the current Wasm critical path.
   Same citable invariant as Phase 3:
   `wasm_runtime_classes ⊆ manifest_classes`. Suite: 1295 → 1296.
 
-- [~] **Empirical study at scale**. Four design-pattern CVE
-  case studies landed in `examples/cve_*.capa` + `docs/cve_*.md`
-  (PyYAML, Jinja2 SSTI, lxml XXE, pickle). Bug-class taxonomy
-  is structurally complete. **Pending**: the quantitative study,
-  transliterate 10-20 real libraries, measure SBOM-diff against
-  hand-Python equivalents, report aggregates. Multi-session
-  arc. ⏱ 20-30h.
+- [x] **Empirical study at scale** (closed 2026-05-26). Target
+  reached at the upper bound: 20 library pairs, all `--check`
+  + `--cyclonedx` + `--run` green, end-to-end harness +
+  summary at [`evaluation/sbom_diff/`](evaluation/sbom_diff/).
+  Final aggregates: **122 total functions (73 pure / 49
+  with caps); 6 distinct cap axes (Clock, Env, Fs, Net,
+  Random, Stdio); 61 per_fn_info_bits ((function, capability)
+  declaration facts that have no counterpart in a PURL
+  SBOM)**. Axis-alone coverage matrix complete for the 5
+  Capa-exposed transliterable axes; pair-combination matrix
+  covers Fs+Env, Fs+Clock, Fs+Net, Net+Clock, Env+Clock,
+  Random+Clock, plus the Fs+Env+Net triple. Four design-
+  pattern CVE case studies in `examples/cve_*.capa` +
+  `docs/cve_*.md` (PyYAML, Jinja2 SSTI, lxml XXE, pickle)
+  continue to anchor the bug-class taxonomy side.
+  Slice 1 landed 2026-05-26: study scaffold at
+  [`evaluation/sbom_diff/`](evaluation/sbom_diff/) (README +
+  harness.py + summary.py, stdlib-only). Three library pairs
+  in the corpus: `config_loader/` (Fs+Env+Net, ported from
+  `examples/empirical_config*`), `dotenv/` (Fs+Env,
+  python-dotenv shape; surfaces a structural finding that
+  Capa's read-only Env capability cannot mirror the naive
+  Python's `os.environ` mutation, which is a stronger
+  asymmetry than per-function attribution alone), `slugify/`
+  (pure, asymmetry case where PURL would list `re` +
+  `unicodedata` but Capa proves 4 of 5 functions hold zero
+  authority). Harness extracts per-function
+  `capa:declared_capability` properties via subprocess
+  `capa --cyclonedx`, scans naive.py AST for top-level
+  imports, intersects with a 30-entry capability-bearing
+  module allowlist; emits `results.csv`. Summary renders a
+  paper-ready table + asymmetry analysis. Aggregate metric
+  `per_fn_info_bits` (count of (function, capability)
+  declarations) sat at 13 across 3 pairs.
+  Slice 2 landed 2026-05-26: five additional library pairs
+  delegated in parallel to sub-agents and joined into the
+  corpus. `tabulate/` (pure, ASCII-table formatter; PyPI
+  ~50M downloads/month), `http_retry/` (Net + Clock, the
+  exponential-backoff fetch pattern present in
+  `urllib3.Retry`, `requests`, `tenacity`, `backoff`,
+  `httpx`; first Clock-bearing pair), `ini_loader/` (Fs
+  alone, `configparser` shape; first single-Fs pair),
+  `short_uuid/` (Random; first Random-bearing pair, shortuuid
+  shape ~3M downloads/month), `textwrap/` (pure, stdlib
+  shape, cleanest 1:1 pure-case parity with no Unicode-
+  normalisation gap). Corpus now at **8 pairs / 46 functions
+  (26 pure / 20 with caps) / 6 distinct cap axes (Clock,
+  Env, Fs, Net, Random, Stdio) / 25 per_fn_info_bits**.
+  Asymmetry section now enumerates 6 pairs (every pair with
+  non-empty naive imports).
+  Slice 3 landed 2026-05-26: five more pairs delegated in
+  parallel. `env_loader/` (Env alone, 12-factor settings
+  pattern; first Env-only pair; surfaces an additional
+  structural narrowing since Capa's Env has no full-iteration
+  API so the Capa version takes an explicit `keys` list, an
+  upper bound on what the function can ever read),
+  `log_forwarder/` (Fs + Net, tail-log + POST pattern;
+  Capa Net has no `post` so the version uses callback-URL
+  GETs - itself a more disciplined wire shape than
+  arbitrary-body POST), `rate_limiter/` (Clock alone, token-
+  bucket pattern; first Clock-only pair; refill arithmetic
+  is purely functional given an elapsed time so 3 of 6
+  functions are compiler-verified pure), `glob_walker/` (Fs
+  alone, recursive directory walk; second Fs-only pair but
+  exercises `list_dir` + `is_dir` rather than `read`),
+  `humanize/` (pure, byte/duration/count formatter; PyPI
+  ~30M downloads/month). Corpus now at **13 pairs / 75
+  functions (42 pure / 33 with caps) / 6 distinct cap axes /
+  40 per_fn_info_bits**. Slice 3 surfaced a pre-existing
+  Capa typer-vs-transpiler mismatch: analyzer types `Int /
+  Int -> Int` (per `capa/analyzer/_expressions.py:489`) but
+  the transpiler used to map `/` to Python true division
+  (Float) per `capa/transpiler/__init__.py:143`. Fixed
+  2026-05-26 in `capa/transpiler/_expressions.py`: BinOp
+  emit now consults `self.types.get(id(e.left))` /
+  `self.types.get(id(e.right))` and emits `//` when both
+  are `TyName("Int")`. Wasm backend was already correct
+  (`i64.div_s`). 6 regression tests in
+  `tests/test_transpiler.py::TestIntegerDivision`. The
+  `idiv` workaround was dropped from `humanize/capa.capa`
+  (3 call sites + the helper) and replaced by direct `/`.
+  Slice 4 landed 2026-05-26: five more pairs delegated in
+  parallel, closing remaining cap-axes combinations.
+  `url_fetch/` (Net alone, GET-and-JSON-parse pattern; first
+  Net-only pair - completes the axis-alone coverage matrix
+  alongside ini_loader Fs / env_loader Env / rate_limiter
+  Clock / short_uuid Random), `disk_cache/` (Fs + Clock,
+  memoise-with-TTL pattern; first Fs+Clock combination;
+  surfaces another structural narrowing - Capa Fs has no
+  `getmtime` so the version stores the timestamp inside the
+  file, a more disciplined format than mutable filesystem
+  metadata), `csv_parser/` (pure, stdlib csv shape;
+  state-machine parser, exercises Capa's nested-collection
+  handling), `pathspec/` (pure, gitignore matching via
+  direct recursion since Capa has no regex; PyPI ~50M
+  downloads/month), `colorama/` (pure, ANSI codes; first
+  pair making the explicit point that a casually-Stdio-
+  associated lib is actually pure - the colored strings
+  are produced; printing is the caller's responsibility;
+  Capa's per-function attribution makes this crisp).
+  Corpus now at **18 pairs / 109 functions (67 pure / 42
+  with caps) / 6 distinct cap axes / 51 per_fn_info_bits**.
+  Axis-alone coverage matrix is now COMPLETE for the 5
+  Capa-exposed-axes that can be transliterated (Clock, Env,
+  Fs, Net, Random; Stdio is the universal demo-print
+  surface; Db and Proc are out-of-scope by Capa design).
+  Slice 4 surfaced a real Capa lexer bug: `\033` parsed
+  silently as `\0` + literal `33` (greedy `\0` consumption
+  followed by literal characters). Fixed 2026-05-26 in
+  `capa/lexer/_literals.py` `_read_escape`: after consuming
+  `\0`, peek at the next char; if it is a digit, raise
+  `octal escape '\\0X...' is not supported; use '\\u{HEX}'
+  for arbitrary code points, or '\\0' alone for NUL`. Bare
+  `\0` (NUL) still works. 3 regression tests in
+  `tests/test_lexer.py::TestStringLiterals`
+  (`test_escape_nul`, `test_octal_escape_rejected`,
+  `test_octal_escape_rejected_inside_string`). `colorama/`
+  was already using `\u{1b}` so no update needed.
+  Slice 5 landed 2026-05-26: closing 2 pairs to hit the
+  upper target. `session_token/` (Random + Clock; first
+  Random+Clock combination; shape of `itsdangerous`,
+  `pyjwt`, `flask-login` core; 4 pure helpers + 2 cap-bearing
+  composition functions), `secret_rotator/` (Env + Clock;
+  first Env+Clock combination; shape of `python-keyring`,
+  `aws-secretsmanager-caching`, `vaultenv` shape; 2 pure
+  helpers + 2 cap-bearing functions). Corpus closes at
+  **20 pairs / 122 functions (73 pure / 49 with caps) /
+  6 distinct cap axes / 61 per_fn_info_bits**. Pair-
+  combination matrix covers Fs+Env, Fs+Clock, Fs+Net,
+  Net+Clock, Env+Clock, Random+Clock, plus the Fs+Env+Net
+  triple. Reproduce via
+  `.venv/Scripts/python -m evaluation.sbom_diff.harness &&
+  .venv/Scripts/python -m evaluation.sbom_diff.summary`.
 
 - [~] **Formatter v3, AST round-trip**. v1 (line-level) and v2
   (intra-line spaces / comma fixup) landed. v3 needs expression

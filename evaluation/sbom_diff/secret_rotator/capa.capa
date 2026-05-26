@@ -1,0 +1,175 @@
+// Capa equivalent of `naive.py` (a "secret with TTL" rotator of
+// the python-keyring / aws-secretsmanager-caching /
+// pydantic-settings / vaultenv shape). The same logic, split
+// into functions whose signatures declare exactly the
+// capabilities they need.
+//
+// The naive Python `make_rotator(env_key, ttl_seconds)` conflates
+// Env (reading the secret out of the process environment) and
+// Clock (stamping `cached_at`); `get_secret(rotator)` reads the
+// clock on every call AND re-reads the env on every cache miss.
+// Both are buried in the body; the `dict` and `str | None`
+// signatures name neither. The Capa version separates the pure
+// freshness arithmetic and the pure state-update from the two
+// entry points whose signatures honestly carry `Env` AND `Clock`.
+//
+// What this file demonstrates:
+//
+// - `is_fresh`      : pure freshness check. Zero capabilities.
+// - `refresh_state` : pure. Returns a NEW RotatorState with an
+//                     updated `cached_value` and `cached_at`; the
+//                     input is not mutated (mirrors the
+//                     functional state-update style of
+//                     `rate_limiter`'s `refill_tokens`).
+// - `make_rotator`  : Env + Clock. Reads `env.get(env_key)` once
+//                     to seed the cache and `clock.now_secs()`
+//                     once to stamp `cached_at`.
+// - `get_secret`    : Env + Clock. Reads `clock.now_secs()` once;
+//                     on a cache miss, also reads
+//                     `env.get(state.env_key)` and composes
+//                     `refresh_state` to build the new state.
+//
+// Run with:
+//
+//   capa --cyclonedx evaluation/sbom_diff/secret_rotator/capa.capa
+//
+// to get the per-function `capa:declared_capability` SBOM
+// properties this study consumes.
+
+// The rotator state. Capa has no ad-hoc dicts the way Python does,
+// so the four fields the naive `dict` carries become a named
+// struct. `cached_value` is `Option<String>` because the env may
+// be unset (the secret is genuinely absent, not the empty string);
+// `ttl_seconds` and `cached_at` are `Float` to match the
+// freshness arithmetic.
+type RotatorState {
+    env_key: String,
+    ttl_seconds: Float,
+    cached_value: Option<String>,
+    cached_at: Float
+}
+
+// A small named return for `get_secret`. A bare tuple
+// `(Option<String>, RotatorState)` would do the job, but a named
+// struct reads more clearly at call sites (and matches the idiom
+// used by `rate_limiter/capa.capa`'s `AcquireResult` and
+// `disk_cache/capa.capa`'s `CachedEntry`).
+type SecretResult {
+    value: Option<String>,
+    state: RotatorState
+}
+
+// ===============================================================
+// Pure: return true iff the cached secret is younger than
+// `ttl_seconds` relative to `now`. The signature names neither
+// `Env` nor `Clock`; the type checker forbids any env read or
+// clock read inside this body. Same arithmetic as the naive
+// Python `_is_fresh(cached_at, now, ttl_seconds)`, but the
+// purity of the decision is structural here, not a comment.
+// ===============================================================
+fun is_fresh(cached_at: Float, now: Float, ttl_seconds: Float) -> Bool
+    return now - cached_at < ttl_seconds
+
+// ===============================================================
+// Pure: return a NEW RotatorState with `cached_value` and
+// `cached_at` overwritten by the freshly-read pair, and the
+// other fields (`env_key`, `ttl_seconds`) carried over from the
+// input. The input is not mutated (Capa is functional in spirit
+// for this kind of state-update pattern; mirrors
+// `rate_limiter`'s `refill_tokens`). Zero capabilities.
+// ===============================================================
+fun refresh_state(
+    state: RotatorState,
+    fresh_value: Option<String>,
+    now: Float
+) -> RotatorState
+    return RotatorState {
+        env_key: state.env_key,
+        ttl_seconds: state.ttl_seconds,
+        cached_value: fresh_value,
+        cached_at: now
+    }
+
+// ===============================================================
+// Env + Clock: allocate a fresh rotator. Reads `env.get(env_key)`
+// once to seed the cache and `clock.now_secs()` once to stamp
+// `cached_at`; the signature carries `Env` AND `Clock` and
+// nothing else. The naive Python `make_rotator(env_key,
+// ttl_seconds)` hides both reads behind a `dict` return type;
+// here both caps are visible to a reviewer from the signature
+// alone.
+// ===============================================================
+fun make_rotator(
+    env: Env,
+    clock: Clock,
+    env_key: String,
+    ttl_seconds: Float
+) -> RotatorState
+    let value = env.get(env_key)
+    let now = clock.now_secs()
+    return RotatorState {
+        env_key: env_key,
+        ttl_seconds: ttl_seconds,
+        cached_value: value,
+        cached_at: now
+    }
+
+// ===============================================================
+// Env + Clock: return the cached secret if still fresh, else
+// re-read the env and return the updated state along with the
+// new value. Reads `clock.now_secs()` once; on a cache miss,
+// also reads `env.get(state.env_key)` and defers to the pure
+// `refresh_state` to build the new state. The signature carries
+// `Env` AND `Clock` and nothing else; the type checker forbids
+// any disk read or network call inside this body.
+//
+// Returns a `SecretResult` carrying both the (possibly
+// refreshed) value and the (possibly updated) state. The caller
+// is responsible for threading the new state back into the
+// rotator slot it lives in - Capa's functional style here means
+// the state is by-value, not mutated in place the way the naive
+// Python dict is.
+// ===============================================================
+fun get_secret(env: Env, clock: Clock, state: RotatorState) -> SecretResult
+    let now = clock.now_secs()
+    if is_fresh(state.cached_at, now, state.ttl_seconds)
+        return SecretResult { value: state.cached_value, state: state }
+    let fresh = env.get(state.env_key)
+    let new_state = refresh_state(state, fresh, now)
+    return SecretResult { value: new_state.cached_value, state: new_state }
+
+// ===============================================================
+// Entry point: demonstrates the pure freshness check and the
+// pure state-update on synthetic inputs, without actually
+// touching the env or the clock. `main` holds `Stdio` only; the
+// Env + Clock arms are demonstrated by their declared signatures
+// alone, the way a code reviewer would read them.
+//
+// Scenario: a rotator seeded with `Some("super-secret")` at
+// t=100.0, ttl=60.0. The first freshness probe at t=105.0 is
+// inside the TTL window; the second at t=200.0 is outside it.
+// Then we simulate an env-cleared refresh by calling
+// `refresh_state` with `None` and confirm the cached_value
+// flips to None.
+// ===============================================================
+fun main(stdio: Stdio)
+    let fresh = is_fresh(100.0, 105.0, 10.0)
+    stdio.println("is_fresh(cached_at=100.0, now=105.0, ttl=10.0) = ${fresh}")
+
+    let stale = is_fresh(100.0, 200.0, 10.0)
+    stdio.println("is_fresh(cached_at=100.0, now=200.0, ttl=10.0) = ${stale}")
+
+    let seeded = RotatorState {
+        env_key: "MY_SECRET",
+        ttl_seconds: 60.0,
+        cached_value: Some("super-secret"),
+        cached_at: 100.0
+    }
+    stdio.println("seeded state: cached_at=${seeded.cached_at}, ttl=${seeded.ttl_seconds}")
+
+    let cleared = refresh_state(seeded, None, 300.0)
+    match cleared.cached_value
+        Some(v) ->
+            stdio.println("after refresh_state(None): Some(${v}) (unexpected)")
+        None ->
+            stdio.println("after refresh_state(None): None at cached_at=${cleared.cached_at}")

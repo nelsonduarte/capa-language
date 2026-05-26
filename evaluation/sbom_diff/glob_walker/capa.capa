@@ -1,0 +1,116 @@
+// Capa equivalent of `naive.py` (a recursive file walker of
+// the `glob.glob("**/*.py", recursive=True)` / `Path.rglob` /
+// `pathspec` shape). The same logic, split into functions whose
+// signatures declare exactly the capabilities they need.
+//
+// The naive Python `find_files(root, suffix)` has a single
+// capability (Fs) but still conflates pure path-string handling
+// with directory I/O under one name. The Capa version separates
+// them: `matches_suffix`, `basename`, and `join_path` are pure
+// and unit-testable without any handle; `walk_dir` adds Fs and
+// nothing else, and is the single function in the file the
+// reviewer must audit for filesystem access.
+//
+// This is the second Fs-only pair in the corpus alongside
+// `ini_loader/`. Both attribute the same `capa:declared_capability=Fs`
+// string, but they exercise different Fs methods: `ini_loader`
+// uses `fs.read` (file-content side); this pair uses
+// `fs.list_dir` + `fs.is_dir` (directory-walk side). The same
+// `Fs.restrict_to` attenuation gives the caller a way to bound
+// either pattern.
+//
+// Run with:
+//
+//   capa --cyclonedx evaluation/sbom_diff/glob_walker/capa.capa
+//
+// to get the per-function `capa:declared_capability` SBOM
+// properties this study consumes.
+
+// ===============================================================
+// Pure: string predicate. Returns true iff `name` ends with
+// `suffix`. Zero capabilities.
+// ===============================================================
+fun matches_suffix(name: String, suffix: String) -> Bool
+    return name.ends_with(suffix)
+
+// ===============================================================
+// Pure: take everything after the last path separator. Handles
+// both `/` and `\` so the same helper works for inputs that
+// arrive from either Posix or Windows callers. Zero capabilities.
+// ===============================================================
+fun basename(path: String) -> String
+    let parts = path.split("/")
+    let tail = parts.get(parts.length() - 1)
+    match tail
+        None ->
+            return path
+        Some(after_slash) ->
+            let bs_parts = after_slash.split("\\")
+            let bs_tail = bs_parts.get(bs_parts.length() - 1)
+            match bs_tail
+                None ->
+                    return after_slash
+                Some(name) ->
+                    return name
+
+// ===============================================================
+// Pure: join a parent directory and a child name with a single
+// `/` separator. If `parent` already ends with `/` or `\`, the
+// helper just concatenates so we do not double the separator.
+// Uses `/` as the separator on insertion; the Fs builtin accepts
+// either on Windows. Zero capabilities.
+// ===============================================================
+fun join_path(parent: String, child: String) -> String
+    if parent.is_empty()
+        return child
+    if parent.ends_with("/")
+        return "${parent}${child}"
+    if parent.ends_with("\\")
+        return "${parent}${child}"
+    return "${parent}/${child}"
+
+// ===============================================================
+// Fs-only: walk the directory tree rooted at `root` and return
+// the full paths of every file whose basename matches `suffix`.
+// Signature carries `Fs`, nothing else. Recurses through
+// subdirectories via a direct self-call; the recursion
+// propagates the same `fs` handle so attenuation applied at the
+// top of the call chain (e.g. `fs.restrict_to("/tmp/")`) bounds
+// the entire walk. Surfaces `list_dir` errors through Result;
+// the naive Python silently skips unreadable subtrees instead.
+// ===============================================================
+fun walk_dir(fs: Fs, root: String, suffix: String) -> Result<List<String>, IoError>
+    let out: List<String> = []
+    let children = fs.list_dir(root)?
+    for child in children
+        let full = join_path(root, child)
+        if fs.is_dir(full)
+            let nested = walk_dir(fs, full, suffix)?
+            for hit in nested
+                out.push(hit)
+        else
+            if matches_suffix(child, suffix)
+                out.push(full)
+    return Ok(out)
+
+// ===============================================================
+// Entry point: demonstrates the pure helpers on inline inputs.
+// `main` holds `Stdio` only; the demo does not touch the
+// filesystem (the `walk_dir` capability surface is proved by its
+// signature, not by exercising it at runtime here).
+// ===============================================================
+fun main(stdio: Stdio)
+    let py_hit = matches_suffix("loader.py", ".py")
+    let rs_hit = matches_suffix("loader.py", ".rs")
+    let posix_base = basename("src/capa/loader.py")
+    let win_base = basename("C:\\Users\\n\\file.py")
+    let join_no_sep = join_path("src/capa", "loader.py")
+    let join_with_sep = join_path("src/capa/", "loader.py")
+    let join_empty = join_path("", "loader.py")
+    stdio.println("matches_suffix(\"loader.py\", \".py\") = ${py_hit}")
+    stdio.println("matches_suffix(\"loader.py\", \".rs\") = ${rs_hit}")
+    stdio.println("basename(\"src/capa/loader.py\")      = ${posix_base}")
+    stdio.println("basename(windows-style path)         = ${win_base}")
+    stdio.println("join_path(\"src/capa\", \"loader.py\")  = ${join_no_sep}")
+    stdio.println("join_path(\"src/capa/\", \"loader.py\") = ${join_with_sep}")
+    stdio.println("join_path(\"\", \"loader.py\")          = ${join_empty}")

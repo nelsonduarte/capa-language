@@ -1,0 +1,103 @@
+// Capa equivalent of `naive.py` (a `fetch a URL and parse the
+// JSON response` helper of the `requests.get(url).json()` /
+// `httpx.get(url).json()` / explicit `urlopen + json.loads`
+// shape). The same logic, split into functions whose signatures
+// declare exactly the capabilities they need.
+//
+// The naive Python `fetch_json(url)` conflates Net (open the
+// URL) and pure JSON parsing + field extraction. Both live in
+// the same signature; the import block lists `urllib.request`
+// and `json` with no per-function attribution. The Capa version
+// separates them: the URL validator is pure, the field
+// extractor is pure, only `fetch_text` and `fetch_json` carry
+// `Net`.
+//
+// What this file demonstrates:
+//
+// - `is_https_url`: pure URL shape check. Zero capabilities.
+// - `extract_field`: pure JSON field pull with fallback. Zero capabilities.
+// - `fetch_text`: one network read. Declares only `Net`.
+// - `fetch_json`: composes validation + fetch + parse. Declares only `Net`.
+//
+// Run with:
+//
+//   capa --cyclonedx evaluation/sbom_diff/url_fetch/capa.capa
+//
+// to get the per-function `capa:declared_capability` SBOM
+// properties this study consumes.
+
+// ===============================================================
+// Pure: structural check that the URL is HTTPS and has at least
+// some host body after the scheme. Zero capabilities. Same role
+// as the `url.startswith("https://")` guard in the naive Python
+// body, but the signature here says explicitly that the function
+// does nothing else.
+// ===============================================================
+fun is_https_url(url: String) -> Bool
+    if not url.starts_with("https://")
+        return false
+    return url.length() > 8
+
+// ===============================================================
+// Pure: safely pull a string field out of a parsed JSON object
+// with a typed fallback. Zero capabilities. Mirrors the
+// `optional_field` + `string_field_or` pattern from
+// `examples/sbom_diff.capa`. A reviewer reading this signature
+// knows immediately that no network or disk access can happen
+// inside the body.
+// ===============================================================
+fun extract_field(obj: JsonValue, key: String, default: String) -> String
+    return match obj.as_object()
+        None -> default
+        Some(m) -> match m.get(key)
+            None -> default
+            Some(v) -> match v.as_string()
+                None -> default
+                Some(s) -> s
+
+// ===============================================================
+// Net-only: perform a single HTTP fetch and return the response
+// body as text. Signature carries `Net`, nothing else. A
+// reviewer who sees this function in a code review knows
+// immediately that the network is the only thing touched; the
+// type checker forbids any disk read, environment read, or
+// sleep inside this body.
+// ===============================================================
+fun fetch_text(net: Net, url: String) -> Result<String, IoError>
+    return net.get(url)
+
+// ===============================================================
+// The composition point. The signature still carries only `Net`:
+// the URL validation and JSON parsing are pure, so they add no
+// authority. A reviewer reading the signature alone knows
+// exactly the authority surface; there is no way to hide a file
+// read inside this body because no `Fs` parameter is in scope.
+//
+// On a malformed URL we synthesise an `IoError` rather than
+// opening the network; on a JSON parse failure we wrap the
+// stdlib parser's `String` error inside an `IoError` so the
+// caller sees a uniform error channel.
+// ===============================================================
+fun fetch_json(net: Net, url: String) -> Result<JsonValue, IoError>
+    if not is_https_url(url)
+        return Err(IoError("refusing to fetch non-HTTPS URL: ${url}"))
+    let body = fetch_text(net, url)?
+    return match parse_json(body)
+        Err(msg) -> Err(IoError("json parse: ${msg}"))
+        Ok(v) -> Ok(v)
+
+// ===============================================================
+// Entry point: demonstrates the layered authority surface
+// without actually opening the network. Only the pure URL
+// validator is exercised here; the Net arm is demonstrated by
+// its declared signature alone, the way a code reviewer would
+// read it.
+// ===============================================================
+fun main(stdio: Stdio)
+    stdio.println("URL validation demo (no network touched):")
+    let a = is_https_url("https://example.com/data.json")
+    let b = is_https_url("http://insecure.com")
+    let c = is_https_url("ftp://nope")
+    stdio.println("  https://example.com/data.json -> ${a}")
+    stdio.println("  http://insecure.com           -> ${b}")
+    stdio.println("  ftp://nope                    -> ${c}")
