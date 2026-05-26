@@ -213,6 +213,29 @@ the current Wasm critical path.
     misses are the KeyboardInterrupt arms (outer prompt + both
     continuation gathers) and the subprocess-timeout /
     runtime-failure paths inside `_try_compile_and_run`.
+  - 2026-05-26 (6): `capa/cli.py` lifted 10% -> 77% via 56
+    `TestCliInProcess` cases driving `main()` in-process with
+    monkey-patched `sys.argv` + captured stdout/stderr.
+    `--check` / `--transpile` / `--run` / `--manifest` /
+    `--cyclonedx` / `--spdx` / `--vex` / `--provenance` /
+    `--doc` / `--wit` / `--ir` / `--fmt` (+ `--fmt-check`,
+    stdin path) / `init` subcommand / `--version` / `--help` /
+    `--prefer-wasm` (both flag + env-var + forced-fallback
+    paths) / `install` subcommand (success + InstallError +
+    ImportError) / `CAPA_PATH` + `capa.toml` path-dep + broken
+    `capa.toml` warning / `--ir` `UnsupportedInIR` legacy
+    fallback / `--wit` exception path / `--run` SystemExit
+    int + string code shapes / coloured token-dump branch
+    (via `_TtyBuf(io.StringIO)`) / default token-dump + 
+    `--no-layout` / `--watch` no-file error / unknown flag /
+    `repl` + `lsp` subcommand dispatch all exercised.
+    `--wasm` cases (`--transpile`, `-o` core, `-o --component`,
+    `--run`, `--run --component`) skip when wasm-tools /
+    wasmtime are missing. Remaining misses are mostly the
+    `--watch` polling loop (intentionally skipped, ~88 lines)
+    plus a handful of colour-branch error paths and the
+    `--wasm` failure arms that need a synthetic CIR-rejection
+    fixture. Suite: 1528 -> 1584.
 
 - [x] **CycloneDX / SPDX parsers, pending optional fields**
   (closed 2026-05-26). Three parser examples
