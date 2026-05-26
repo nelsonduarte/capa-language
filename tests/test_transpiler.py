@@ -1580,6 +1580,11 @@ class TestTranspileExamples(unittest.TestCase):
         self.assertIn("- LicenseRef-AcmeProprietary", out)
         self.assertIn("name:     Acme Proprietary License", out)
         self.assertIn("https://example.org/acme-license", out)
+        self.assertIn("Snippets (1):", out)
+        self.assertIn("- SPDXRef-Snippet-1 (GPL helper)", out)
+        self.assertIn("file:      SPDXRef-File-vendored-kernel-h", out)
+        self.assertIn("range:     310-420", out)
+        self.assertIn("copyright: Copyright Linus Torvalds", out)
         self.assertIn("Validation: ok (refs resolve + acyclic)", out)
 
     def test_cve_torchtriton(self):

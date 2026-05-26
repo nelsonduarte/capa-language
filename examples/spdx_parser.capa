@@ -19,8 +19,8 @@
 // - Building typed Capa structs from the unstructured tree.
 //
 // Scope limits: only the SPDX fields needed to demonstrate the
-// approach. SPDX has dozens of optional fields (snippets,
-// external document refs); extending this to the full spec is
+// approach. SPDX has dozens of optional fields (external
+// document refs); extending this to the full spec is
 // mechanical.
 
 capability SbomReader
@@ -76,6 +76,26 @@ type ExtractedLicense {
     comment: String
 }
 
+// SPDX 2.3 snippet: a sub-region of a file with its own
+// license / copyright provenance, addressed by a range over
+// the parent file.
+type Range {
+    start_offset: Int,
+    end_offset: Int,
+    reference: String
+}
+
+type Snippet {
+    spdx_id: String,
+    snippet_from_file: String,
+    ranges: List<Range>,
+    license_concluded: String,
+    license_info_in_snippets: List<String>,
+    name: String,
+    comment: String,
+    copyright_text: String
+}
+
 type SpdxDocument {
     spdx_version: String,
     data_license: String,
@@ -86,7 +106,8 @@ type SpdxDocument {
     packages: List<Package>,
     relationships: List<Relationship>,
     annotations: List<Annotation>,
-    extracted_licenses: List<ExtractedLicense>
+    extracted_licenses: List<ExtractedLicense>,
+    snippets: List<Snippet>
 }
 
 // ---- typed-extraction helpers ----
@@ -234,6 +255,66 @@ fun parse_relationship(j: JsonValue) -> Result<Relationship, String>
         target: as_string_or_err(field(j, "relatedSpdxElement")?, "Relationship.relatedSpdxElement")?
     })
 
+// SPDX 2.3 ranges carry a ByteOffsetPointer or a LineCharPointer.
+// This parser only supports the byte-offset shape; pointers
+// with 'lineNumber' instead of 'offset' are rejected at parse
+// time. Extending to line-pointers is mechanical.
+
+fun parse_offset_pointer(j: JsonValue, context: String) -> Result<Int, String>
+    return match optional_field(j, "offset")
+        None -> Err("${context} pointer must carry 'offset' (line-pointer shape not supported)")
+        Some(v) -> match v.as_num()
+            None -> Err("${context} pointer 'offset' must be a number")
+            Some(n) -> Ok(to_int(n))
+
+fun parse_range(j: JsonValue) -> Result<Range, String>
+    let start_p = field(j, "startPointer")?
+    let end_p = field(j, "endPointer")?
+    let start_offset = parse_offset_pointer(start_p, "startPointer")?
+    let end_offset = parse_offset_pointer(end_p, "endPointer")?
+    let reference = match optional_field(start_p, "reference")
+        None -> ""
+        Some(v) -> match v.as_string()
+            None -> ""
+            Some(s) -> s
+    return Ok(Range {
+        start_offset: start_offset,
+        end_offset: end_offset,
+        reference: reference
+    })
+
+fun parse_snippet(j: JsonValue) -> Result<Snippet, String>
+    let ranges_arr = as_array_or_err(field(j, "ranges")?, "Snippet.ranges")?
+    let ranges: List<Range> = []
+    for r in ranges_arr
+        ranges.push(parse_range(r)?)
+
+    let license_info: List<String> = []
+    match optional_field(j, "licenseInfoInSnippets")
+        None ->
+            ()
+        Some(v) ->
+            let xs = as_array_or_err(v, "Snippet.licenseInfoInSnippets")?
+            for x in xs
+                license_info.push(as_string_or_err(x, "licenseInfoInSnippets entry")?)
+
+    return Ok(Snippet {
+        spdx_id: as_string_or_err(field(j, "SPDXID")?, "Snippet.SPDXID")?,
+        snippet_from_file: as_string_or_err(field(j, "snippetFromFile")?, "Snippet.snippetFromFile")?,
+        ranges: ranges,
+        license_concluded: as_string_or_err(field(j, "licenseConcluded")?, "Snippet.licenseConcluded")?,
+        license_info_in_snippets: license_info,
+        name: string_field_or(j, "name", ""),
+        comment: string_field_or(j, "comment", ""),
+        copyright_text: as_string_or_err(field(j, "copyrightText")?, "Snippet.copyrightText")?
+    })
+
+fun parse_snippets(items: List<JsonValue>) -> Result<List<Snippet>, String>
+    let result: List<Snippet> = []
+    for item in items
+        result.push(parse_snippet(item)?)
+    return Ok(result)
+
 fun parse_creation_info(j: JsonValue) -> Result<CreationInfo, String>
     let info = field(j, "creationInfo")?
     let created = as_string_or_err(field(info, "created")?, "creationInfo.created")?
@@ -282,6 +363,16 @@ fun parse_document(j: JsonValue) -> Result<SpdxDocument, String>
             for el in parsed
                 extracted_licenses.push(el)
 
+    let snippets: List<Snippet> = []
+    match optional_field(j, "snippets")
+        None ->
+            ()
+        Some(v) ->
+            let xs = as_array_or_err(v, "document.snippets")?
+            let parsed = parse_snippets(xs)?
+            for s in parsed
+                snippets.push(s)
+
     return Ok(SpdxDocument {
         spdx_version: as_string_or_err(field(j, "spdxVersion")?, "spdxVersion")?,
         data_license: as_string_or_err(field(j, "dataLicense")?, "dataLicense")?,
@@ -292,7 +383,8 @@ fun parse_document(j: JsonValue) -> Result<SpdxDocument, String>
         packages: packages,
         relationships: relationships,
         annotations: annotations,
-        extracted_licenses: extracted_licenses
+        extracted_licenses: extracted_licenses,
+        snippets: snippets
     })
 
 fun parse_spdx(json_text: String) -> Result<SpdxDocument, String>
@@ -343,6 +435,20 @@ fun validate_spdx(doc: SpdxDocument) -> List<String>
             errors.push("extracted license '${el.license_id}' must start with 'LicenseRef-'")
         if el.extracted_text == ""
             errors.push("extracted license '${el.license_id}' has empty extractedText")
+    // Snippet validation: SPDXID prefix, at least one range, and
+    // monotonic non-negative byte offsets. Note: snippet_from_file
+    // is recorded but NOT checked against known SPDXIDs because
+    // files[] parsing is a separate sub-item.
+    for s in doc.snippets
+        if not s.spdx_id.starts_with("SPDXRef-")
+            errors.push("snippet '${s.spdx_id}' SPDXID must start with 'SPDXRef-'")
+        if s.ranges.is_empty()
+            errors.push("snippet '${s.spdx_id}' must have at least one range")
+        for r in s.ranges
+            if r.start_offset < 0 or r.end_offset < 0
+                errors.push("snippet '${s.spdx_id}' has range with negative offset")
+            if r.start_offset > r.end_offset
+                errors.push("snippet '${s.spdx_id}' has range with start > end (${r.start_offset} > ${r.end_offset})")
     let cycle = detect_spdx_cycle(doc)
     match cycle
         None ->
@@ -428,7 +534,7 @@ fun main(stdio: Stdio)
     // DESCRIBES relationship. Capa string literals do not span
     // newlines in v1, so this is on a single line; in real
     // pipelines the SBOM comes from an Fs.read.
-    let sample = "{\"spdxVersion\": \"SPDX-2.3\", \"dataLicense\": \"CC0-1.0\", \"SPDXID\": \"SPDXRef-DOCUMENT\", \"name\": \"capa-demo-sbom\", \"documentNamespace\": \"https://example.org/sbom/capa-demo-001\", \"creationInfo\": {\"created\": \"2026-05-13T10:00:00Z\", \"creators\": [\"Tool: capa-0.6\", \"Person: Nelson Duarte\"]}, \"packages\": [{\"SPDXID\": \"SPDXRef-Package-capa\", \"name\": \"capa\", \"versionInfo\": \"0.6.0-alpha\", \"downloadLocation\": \"https://github.com/nelsonduarte/capa-language\", \"licenseConcluded\": \"Apache-2.0\", \"licenseDeclared\": \"Apache-2.0\", \"filesAnalyzed\": true, \"checksums\": [{\"algorithm\": \"SHA1\", \"checksumValue\": \"aaaabbbbccccddddeeeeffffaaaabbbbccccdddd\"}, {\"algorithm\": \"SHA256\", \"checksumValue\": \"0011223344556677889900aabbccddeeff0011223344556677889900aabbccdd\"}], \"annotations\": [{\"annotator\": \"Tool: capa-0.6\", \"annotationDate\": \"2026-05-13T10:00:00Z\", \"annotationType\": \"OTHER\", \"comment\": \"summary:total_functions=42\"}]}], \"relationships\": [{\"spdxElementId\": \"SPDXRef-DOCUMENT\", \"relationshipType\": \"DESCRIBES\", \"relatedSpdxElement\": \"SPDXRef-Package-capa\"}], \"annotations\": [{\"annotator\": \"Tool: capa-0.6\", \"annotationDate\": \"2026-05-13T10:00:00Z\", \"annotationType\": \"OTHER\", \"comment\": \"document-level note\"}], \"hasExtractedLicensingInfos\": [{\"licenseId\": \"LicenseRef-AcmeProprietary\", \"extractedText\": \"Copyright (c) Acme Corp. All rights reserved. Redistribution requires written permission.\", \"name\": \"Acme Proprietary License\", \"seeAlsos\": [\"https://example.org/acme-license\"], \"comment\": \"Bundled in vendored third-party tarball\"}]}"
+    let sample = "{\"spdxVersion\": \"SPDX-2.3\", \"dataLicense\": \"CC0-1.0\", \"SPDXID\": \"SPDXRef-DOCUMENT\", \"name\": \"capa-demo-sbom\", \"documentNamespace\": \"https://example.org/sbom/capa-demo-001\", \"creationInfo\": {\"created\": \"2026-05-13T10:00:00Z\", \"creators\": [\"Tool: capa-0.6\", \"Person: Nelson Duarte\"]}, \"packages\": [{\"SPDXID\": \"SPDXRef-Package-capa\", \"name\": \"capa\", \"versionInfo\": \"0.6.0-alpha\", \"downloadLocation\": \"https://github.com/nelsonduarte/capa-language\", \"licenseConcluded\": \"Apache-2.0\", \"licenseDeclared\": \"Apache-2.0\", \"filesAnalyzed\": true, \"checksums\": [{\"algorithm\": \"SHA1\", \"checksumValue\": \"aaaabbbbccccddddeeeeffffaaaabbbbccccdddd\"}, {\"algorithm\": \"SHA256\", \"checksumValue\": \"0011223344556677889900aabbccddeeff0011223344556677889900aabbccdd\"}], \"annotations\": [{\"annotator\": \"Tool: capa-0.6\", \"annotationDate\": \"2026-05-13T10:00:00Z\", \"annotationType\": \"OTHER\", \"comment\": \"summary:total_functions=42\"}]}], \"relationships\": [{\"spdxElementId\": \"SPDXRef-DOCUMENT\", \"relationshipType\": \"DESCRIBES\", \"relatedSpdxElement\": \"SPDXRef-Package-capa\"}], \"annotations\": [{\"annotator\": \"Tool: capa-0.6\", \"annotationDate\": \"2026-05-13T10:00:00Z\", \"annotationType\": \"OTHER\", \"comment\": \"document-level note\"}], \"hasExtractedLicensingInfos\": [{\"licenseId\": \"LicenseRef-AcmeProprietary\", \"extractedText\": \"Copyright (c) Acme Corp. All rights reserved. Redistribution requires written permission.\", \"name\": \"Acme Proprietary License\", \"seeAlsos\": [\"https://example.org/acme-license\"], \"comment\": \"Bundled in vendored third-party tarball\"}], \"snippets\": [{\"SPDXID\": \"SPDXRef-Snippet-1\", \"snippetFromFile\": \"SPDXRef-File-vendored-kernel-h\", \"ranges\": [{\"startPointer\": {\"offset\": 310, \"reference\": \"SPDXRef-File-vendored-kernel-h\"}, \"endPointer\": {\"offset\": 420, \"reference\": \"SPDXRef-File-vendored-kernel-h\"}}], \"licenseConcluded\": \"GPL-2.0-only\", \"licenseInfoInSnippets\": [\"GPL-2.0-only\"], \"name\": \"GPL helper\", \"comment\": \"Reused from a vendored kernel header\", \"copyrightText\": \"Copyright Linus Torvalds\"}]}"
 
     match parse_spdx(sample)
         Err(msg) ->
@@ -467,6 +573,20 @@ fun main(stdio: Stdio)
             stdio.println("Relationships (${doc.relationships.length()}):")
             for r in doc.relationships
                 stdio.println("  - ${r.source} -[${r.kind}]-> ${r.target}")
+            stdio.println("")
+            stdio.println("Snippets (${doc.snippets.length()}):")
+            for s in doc.snippets
+                if s.name != ""
+                    stdio.println("  - ${s.spdx_id} (${s.name})")
+                else
+                    stdio.println("  - ${s.spdx_id}")
+                stdio.println("      file:      ${s.snippet_from_file}")
+                for r in s.ranges
+                    stdio.println("      range:     ${r.start_offset}-${r.end_offset}")
+                stdio.println("      license:   ${s.license_concluded}")
+                stdio.println("      copyright: ${s.copyright_text}")
+                if s.comment != ""
+                    stdio.println("      comment:   ${s.comment}")
             stdio.println("")
             let violations = validate_spdx(doc)
             if violations.is_empty()
