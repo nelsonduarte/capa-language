@@ -1585,6 +1585,10 @@ class TestTranspileExamples(unittest.TestCase):
         self.assertIn("file:      SPDXRef-File-vendored-kernel-h", out)
         self.assertIn("range:     310-420", out)
         self.assertIn("copyright: Copyright Linus Torvalds", out)
+        self.assertIn("External document refs (1):", out)
+        self.assertIn("- DocumentRef-spdx-tools-1.2", out)
+        self.assertIn("uri:    https://spdx.org/spdxdocs", out)
+        self.assertIn("SHA1 =  d6a770ba38583ed4bb4525bd96e50461655d2759", out)
         self.assertIn("Validation: ok (refs resolve + acyclic)", out)
 
     def test_cve_torchtriton(self):
