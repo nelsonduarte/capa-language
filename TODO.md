@@ -201,10 +201,18 @@ the current Wasm critical path.
     fallback. Final 5 missed lines are 3 trivial early-returns
     + the 2-line `start_io()` blocking loop -- not worth
     chasing. Suite: 1318 → 1345.
-  Still open:
-  `capa/repl.py` (30%, needs an interactive-IO harness; a
-  meaningful infrastructure investment on top of writing
-  tests, so belongs in its own slice). ⏱ ~4-6h.
+  - 2026-05-26 (5): `capa/repl.py` lifted 30% -> 87% via 32
+    `TestReplInProcess` cases driving `serve()` through a
+    monkey-patched `builtins.input` plus a captured
+    stdout/stderr. Helper functions, `_ReplState`,
+    `_try_compile_and_run`, `_typeof_expr`, `_find_probe_value`,
+    and every dot-command branch (.exit / .quit / EOF / .help /
+    .show / .reset / .types) are exercised, along with the
+    bare-expression / let / top-level-fun / block-statement
+    routing branches and the output-delta logic. Remaining
+    misses are the KeyboardInterrupt arms (outer prompt + both
+    continuation gathers) and the subprocess-timeout /
+    runtime-failure paths inside `_try_compile_and_run`.
 
 - [x] **CycloneDX / SPDX parsers, pending optional fields**
   (closed 2026-05-26). Three parser examples

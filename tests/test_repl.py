@@ -5,20 +5,37 @@ repl``) with scripted stdin so we can verify end-to-end
 behaviour. Lower-level helpers (``_is_top_level_form``,
 ``_is_bare_expression``, etc.) get focused unit tests in the
 same file.
+
+``TestReplInProcess`` drives ``serve()`` in-process by
+monkey-patching ``builtins.input`` plus capturing
+``sys.stdout`` / ``sys.stderr``; that path actually exercises
+the REPL's branches under the test runner's coverage instance,
+where the subprocess-based ``TestReplEndToEnd`` cases do not.
 """
 
 from __future__ import annotations
 
+import builtins
+import io
 import subprocess
 import sys
 import unittest
+from unittest import mock
 
 from capa.repl import (
     _ReplState,
+    _find_probe_value,
     _is_bare_expression,
     _is_top_level_form,
     _is_unit_typed_call,
+    _starts_block_statement,
+    _try_compile_and_run,
+    _typeof_expr,
+    serve,
 )
+from capa import capa_ast as A
+from capa.lexer import Lexer
+from capa.parser import Parser
 
 
 class TestReplHelpers(unittest.TestCase):
@@ -350,6 +367,325 @@ class TestReplEndToEnd(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         # Floats in [0, 1) print with a decimal point.
         self.assertRegex(result.stdout, r"\d+\.\d+")
+
+
+class _ScriptedInput:
+    """Feeds a fixed list of lines into ``builtins.input``,
+    raising ``EOFError`` once exhausted. Mirrors how the LSP
+    harness drives a stubbed workspace.
+    """
+
+    def __init__(self, lines):
+        self._iter = iter(lines)
+
+    def __call__(self, prompt=""):
+        try:
+            return next(self._iter)
+        except StopIteration:
+            raise EOFError
+
+
+def _run_repl(inputs):
+    """Drive ``serve()`` through the scripted input list.
+    Returns ``(rc, stdout, stderr)``.
+    """
+    out = io.StringIO()
+    err = io.StringIO()
+    with mock.patch.object(builtins, "input", _ScriptedInput(inputs)), \
+         mock.patch.object(sys, "stdout", out), \
+         mock.patch.object(sys, "stderr", err):
+        rc = serve()
+    return rc, out.getvalue(), err.getvalue()
+
+
+class TestReplInProcess(unittest.TestCase):
+    """In-process coverage for ``capa.repl``. The existing
+    end-to-end suite drives the REPL via subprocess, which does
+    not register against the parent's coverage instance. These
+    cases monkey-patch ``builtins.input`` plus ``sys.stdout`` /
+    ``sys.stderr`` so the real ``serve()`` loop runs under the
+    test runner's coverage.
+    """
+
+    # --- _ReplState direct tests -------------------------------------
+
+    def test_state_reset_clears_all_fields(self):
+        s = _ReplState()
+        s.top_lines.append("fun foo() -> Int\n    return 1")
+        s.main_lines.append("    let x = 1")
+        s.last_output = "old output"
+        s.reset()
+        self.assertEqual(s.top_lines, [])
+        self.assertEqual(s.main_lines, [])
+        self.assertEqual(s.last_output, "")
+
+    def test_state_assemble_empty_parses(self):
+        s = _ReplState()
+        src = s.assemble()
+        # The synthesised skeleton must parse cleanly via the
+        # real parser, since every REPL turn feeds it through.
+        tokens = Lexer(src, filename="<test>").lex()
+        module = Parser(tokens, source=src, filename="<test>").parse_module()
+        # main is the only item.
+        funs = [it for it in module.items
+                if isinstance(it, A.FunDecl) and it.name == "main"]
+        self.assertEqual(len(funs), 1)
+
+    def test_state_assemble_with_top_and_main_parses(self):
+        s = _ReplState()
+        s.top_lines.append("fun double(n: Int) -> Int\n    return n * 2")
+        s.main_lines.append("    let x = double(3)")
+        src = s.assemble()
+        tokens = Lexer(src, filename="<test>").lex()
+        module = Parser(tokens, source=src, filename="<test>").parse_module()
+        names = sorted(
+            it.name for it in module.items if isinstance(it, A.FunDecl)
+        )
+        self.assertEqual(names, ["double", "main"])
+
+    # --- _try_compile_and_run paths ---------------------------------
+
+    def test_try_compile_and_run_success(self):
+        src = 'fun main(stdio: Stdio)\n    stdio.println("hi")\n'
+        ok, out, err = _try_compile_and_run(src)
+        self.assertTrue(ok, err)
+        self.assertEqual(out, "hi\n")
+        self.assertEqual(err, "")
+
+    def test_try_compile_and_run_parse_error(self):
+        ok, out, err = _try_compile_and_run("fun broken(\n")
+        self.assertFalse(ok)
+        self.assertIn("error", err.lower())
+
+    def test_try_compile_and_run_analyse_error(self):
+        # Undefined identifier referenced inside main.
+        src = (
+            'fun main(stdio: Stdio)\n'
+            '    stdio.println("${undefined_var}")\n'
+        )
+        ok, out, err = _try_compile_and_run(src)
+        self.assertFalse(ok)
+        self.assertIn("undefined", err.lower())
+
+    # --- _typeof_expr paths -----------------------------------------
+
+    def test_typeof_expr_primitive(self):
+        ok, msg = _typeof_expr("1 + 2", _ReplState())
+        self.assertTrue(ok, msg)
+        self.assertIn("Int", msg)
+
+    def test_typeof_expr_capability(self):
+        ok, msg = _typeof_expr("stdio", _ReplState())
+        self.assertTrue(ok, msg)
+        self.assertIn("Stdio", msg)
+
+    def test_typeof_expr_uses_state_scope(self):
+        s = _ReplState()
+        s.main_lines.append('    let greeting = "hello"')
+        ok, msg = _typeof_expr("greeting", s)
+        self.assertTrue(ok, msg)
+        self.assertIn("String", msg)
+
+    def test_typeof_expr_unknown_identifier(self):
+        ok, msg = _typeof_expr("nope_no_such_name", _ReplState())
+        self.assertFalse(ok)
+        self.assertIn("undefined", msg.lower())
+
+    def test_typeof_expr_parse_error(self):
+        # Malformed expression: the inner parser raises and the
+        # error gets surfaced through the (False, msg) tuple.
+        ok, msg = _typeof_expr("1 +", _ReplState())
+        self.assertFalse(ok)
+        self.assertIn("error", msg.lower())
+
+    # --- _find_probe_value -----------------------------------------
+
+    def test_find_probe_value_returns_last_expr(self):
+        s = _ReplState()
+        s.main_lines.append("    1 + 2")
+        src = s.assemble()
+        tokens = Lexer(src, filename="<test>").lex()
+        module = Parser(tokens, source=src, filename="<test>").parse_module()
+        probe = _find_probe_value(module)
+        self.assertIsNotNone(probe)
+        # The trailing main_line is a BinOp; that's what should
+        # come back as the probe value.
+        self.assertIsInstance(probe, A.BinOp)
+
+    def test_find_probe_value_no_main_returns_none(self):
+        src = "fun foo() -> Int\n    return 1\n"
+        tokens = Lexer(src, filename="<test>").lex()
+        module = Parser(tokens, source=src, filename="<test>").parse_module()
+        self.assertIsNone(_find_probe_value(module))
+
+    def test_find_probe_value_last_stmt_not_exprstmt(self):
+        # If main's last stmt is a return (or any non-ExprStmt),
+        # _find_probe_value returns None.
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    let x = 1\n"
+            "    return\n"
+        )
+        tokens = Lexer(src, filename="<test>").lex()
+        module = Parser(tokens, source=src, filename="<test>").parse_module()
+        self.assertIsNone(_find_probe_value(module))
+
+    def test_find_probe_value_main_with_empty_body_returns_none(self):
+        # A main with no body statements (e.g. empty body) hits
+        # the early "not stmts" branch. The Capa parser would
+        # reject a literally empty main body, so we construct
+        # the AST shape directly.
+        from capa.tokens import Pos
+        pos = Pos(1, 1, 0, "<test>")
+        fun = A.FunDecl(
+            pos=pos, name="main", params=[],
+            body=A.Block(pos=pos, stmts=[]),
+        )
+
+        class _Mod:
+            items = [fun]
+        self.assertIsNone(_find_probe_value(_Mod()))
+
+    # --- serve(): exits and EOF -------------------------------------
+
+    def test_serve_exit_command(self):
+        rc, out, err = _run_repl([".exit"])
+        self.assertEqual(rc, 0)
+        self.assertIn("Capa REPL", out)
+        self.assertEqual(err, "")
+
+    def test_serve_quit_command(self):
+        rc, out, err = _run_repl([".quit"])
+        self.assertEqual(rc, 0)
+        self.assertIn("Capa REPL", out)
+
+    def test_serve_eof_clean_exit(self):
+        # No inputs at all: the first input() raises EOFError.
+        rc, out, err = _run_repl([])
+        self.assertEqual(rc, 0)
+        self.assertIn("Capa REPL", out)
+
+    # --- serve(): meta commands -------------------------------------
+
+    def test_serve_help_command(self):
+        rc, out, _ = _run_repl([".help", ".exit"])
+        self.assertEqual(rc, 0)
+        self.assertIn(".exit", out)
+        self.assertIn(".reset", out)
+        self.assertIn(".types", out)
+
+    def test_serve_show_empty_state(self):
+        rc, out, _ = _run_repl([".show", ".exit"])
+        self.assertEqual(rc, 0)
+        self.assertIn("fun main(stdio: Stdio", out)
+
+    def test_serve_reset_clears_accumulated_state(self):
+        rc, out, err = _run_repl([
+            "let x = 1", ".reset", ".show", ".exit",
+        ])
+        self.assertEqual(rc, 0)
+        self.assertIn("REPL state cleared.", out)
+        # The reset must have wiped the let from the program;
+        # .show must not echo it back.
+        post_reset = out.split("REPL state cleared.", 1)[1]
+        self.assertNotIn("let x = 1", post_reset)
+
+    def test_serve_empty_line_ignored(self):
+        rc, out, err = _run_repl(["", "   ", ".exit"])
+        self.assertEqual(rc, 0)
+        # Banner only, no errors.
+        self.assertEqual(err, "")
+        self.assertIn("Capa REPL", out)
+
+    # --- serve(): .types branch --------------------------------------
+
+    def test_serve_types_primitive(self):
+        rc, out, _ = _run_repl([".types 1 + 2", ".exit"])
+        self.assertEqual(rc, 0)
+        self.assertIn(": Int", out)
+
+    def test_serve_types_no_expression_usage(self):
+        rc, out, _ = _run_repl([".types", ".exit"])
+        self.assertEqual(rc, 0)
+        self.assertIn("usage", out)
+
+    def test_serve_types_invalid_expression(self):
+        rc, out, err = _run_repl(
+            [".types undefined_xyz", ".exit"]
+        )
+        self.assertEqual(rc, 0)
+        self.assertIn("undefined", err.lower())
+
+    # --- serve(): evaluation paths -----------------------------------
+
+    def test_serve_bare_expression_printed(self):
+        rc, out, err = _run_repl(["1 + 2", ".exit"])
+        self.assertEqual(rc, 0, err)
+        self.assertIn("3", out)
+
+    def test_serve_let_then_use(self):
+        rc, out, err = _run_repl(["let x = 5", "x", ".exit"])
+        self.assertEqual(rc, 0, err)
+        self.assertIn("5", out)
+
+    def test_serve_stdio_println_not_double_wrapped(self):
+        # _is_unit_typed_call must short-circuit the auto-wrap;
+        # we expect a single "hello" in stdout, not interpolation
+        # noise or duplicates.
+        rc, out, err = _run_repl([
+            'stdio.println("hello")', ".exit",
+        ])
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out.count("hello"), 1)
+
+    def test_serve_top_level_function_declaration(self):
+        rc, out, err = _run_repl([
+            "fun double(n: Int) -> Int",
+            "    return n * 2",
+            "",                # blank line terminates the block
+            "double(7)",
+            ".exit",
+        ])
+        self.assertEqual(rc, 0, err)
+        self.assertIn("14", out)
+
+    def test_serve_for_loop_block_statement(self):
+        # Exercises the _starts_block_statement gather path.
+        rc, out, err = _run_repl([
+            "for i in 1..4",
+            '    stdio.println("tick")',
+            "",
+            ".exit",
+        ])
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out.count("tick"), 3)
+
+    def test_serve_compile_error_keeps_loop_alive(self):
+        # The first input is a parse error; the loop must keep
+        # accepting input so the second bare expression prints 9.
+        rc, out, err = _run_repl([
+            "fun broken(",
+            "",                # close the multi-line gather
+            "let y = 9",
+            "y",
+            ".exit",
+        ])
+        self.assertEqual(rc, 0)
+        self.assertIn("error", err.lower())
+        self.assertIn("9", out)
+
+    def test_serve_output_delta_no_double_print(self):
+        # After the first println, the second turn should only
+        # add the new "beta" line to stdout; the delta logic must
+        # not re-emit "alpha".
+        rc, out, err = _run_repl([
+            'stdio.println("alpha")',
+            'stdio.println("beta")',
+            ".exit",
+        ])
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out.count("alpha"), 1)
+        self.assertEqual(out.count("beta"), 1)
 
 
 if __name__ == "__main__":
