@@ -12,6 +12,23 @@ incremental analyzer state and exec each input into a persistent
 Python namespace; that is a substantial change and out of MVP
 scope.
 
+REPL v2 (2026-05) keeps the recompile-on-every-turn model but
+swaps two coupled pieces:
+
+- **Line editing + persistent history**: ``readline`` (Unix) or
+  ``pyreadline3`` (Windows) is loaded best-effort at startup,
+  with history read from / written to ``~/.capa_repl_history``
+  (capped at 1000 entries). If neither implementation is
+  available the REPL still works via plain ``input()``.
+- **In-process execution**: the transpiled Python runs via
+  ``exec`` into a fresh namespace per turn, with stdout captured
+  by :func:`contextlib.redirect_stdout`. The pre-v2 path forked
+  ``python <tempfile>`` per turn, paying 30-200 ms of process
+  startup on every input. The 10 s hard timeout survives on
+  POSIX (via :func:`signal.alarm`); Windows has no
+  ``signal.SIGALRM`` and v2 drops the hard cap there. See
+  :func:`_exec_in_process`.
+
 What the REPL accepts on each input:
 
 - **Top-level items** (``fun``, ``type``, ``trait``,
@@ -50,12 +67,11 @@ Limitations:
 
 from __future__ import annotations
 
+import contextlib
 import io
-import os
-import subprocess
 import sys
-import tempfile
-from typing import Optional
+import traceback
+from pathlib import Path
 
 from . import capa_ast as A
 from .analyzer import analyze
@@ -63,6 +79,23 @@ from .lexer import Lexer, LexerError
 from .parser import Parser
 from .transpiler import transpile
 from .typesys import ty_str
+
+
+# Persistent history file for line editing across REPL sessions.
+# Lives in the user's home directory; created on first successful
+# write, never causes the REPL to crash if it cannot be read or
+# written (permission errors, read-only home, etc. are swallowed).
+_HISTORY_FILE: Path = Path.home() / ".capa_repl_history"
+
+# Maximum number of history entries kept on disk. ``readline`` will
+# truncate the in-memory ring buffer on write; keeps the file from
+# growing without bound across long-lived shell habits.
+_HISTORY_LENGTH: int = 1000
+
+# Flipped to ``True`` when ``serve`` successfully imports a readline
+# implementation. Tests inspect it to verify the import-failure path
+# stays silent and harmless.
+_HISTORY_LOADED: bool = False
 
 
 # Synthesised main's signature. Every standard built-in capability
@@ -231,42 +264,81 @@ def _try_compile_and_run(source: str) -> tuple[bool, str, str]:
     if not result.ok:
         return False, "", "\n".join(e.format() for e in result.errors)
     code = transpile(module, types=result.types)
-    # Run the transpiled Python as a subprocess so its stdout is
-    # cleanly captured and so the REPL process's own state (sys
-    # modules, runtime trace, etc.) is not polluted by the user's
-    # program.
-    with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".py", delete=False, encoding="utf-8",
-    ) as f:
-        f.write(code)
-        py_path = f.name
+    return _exec_in_process(code)
+
+
+def _exec_in_process(code: str) -> tuple[bool, str, str]:
+    """Execute transpiled Capa-as-Python in this process.
+
+    Returns ``(ok, stdout, stderr_or_error)``. ``stdout`` is
+    captured via :func:`contextlib.redirect_stdout` into a
+    ``StringIO``; the runtime's ``Stdio`` capability writes to
+    ``sys.stdout`` (both ``print`` and ``sys.stdout.write``), so
+    everything the user program prints ends up in that buffer.
+
+    The transpiled file ends with an ``if __name__ == "__main__":``
+    block that instantiates capabilities and invokes ``main``; the
+    namespace's ``__name__`` is set to ``"__main__"`` so that
+    bootstrap fires under ``exec``.
+
+    Timeout behaviour:
+
+    - On POSIX systems Python ships ``signal.SIGALRM``; we wire
+      :func:`signal.alarm` to raise ``TimeoutError`` after 10 s,
+      matching the prior subprocess hard cap.
+    - On Windows ``signal.SIGALRM`` does not exist and there is
+      no equivalent synchronous interruption in the stdlib; the
+      function therefore runs without a hard timeout. A runaway
+      program must be stopped with Ctrl-C. The pre-v2 subprocess
+      path enforced 10 s on every platform; the in-process v2
+      gives up that guarantee on Windows for a 30-200 ms wins
+      per turn.
+
+    A fresh namespace dict is built every call so module-level
+    state from a previous turn never leaks across runs. The REPL
+    state lives in the ``_ReplState`` accumulator, not in the exec
+    namespace.
+    """
+    captured_out = io.StringIO()
+    captured_err = io.StringIO()
+    namespace: dict = {"__name__": "__main__"}
+
+    timeout_handler_installed = False
     try:
-        env = os.environ.copy()
-        env["PYTHONIOENCODING"] = "utf-8"
-        # Ensure the capa package is importable from the venv that
-        # is running the REPL; matches the convention used by
-        # tests/test_transpiler.run_capa.
-        from pathlib import Path
-        capa_root = Path(__file__).resolve().parent.parent
-        existing = env.get("PYTHONPATH", "")
-        env["PYTHONPATH"] = (
-            str(capa_root) + (os.pathsep + existing if existing else "")
-        )
-        proc = subprocess.run(
-            [sys.executable, py_path],
-            capture_output=True, text=True, encoding="utf-8",
-            env=env, timeout=10,
-        )
-    except subprocess.TimeoutExpired:
-        return False, "", "REPL execution timed out (10 s)"
+        import signal
+        if hasattr(signal, "SIGALRM"):
+            def _on_timeout(signum, frame):  # noqa: ARG001
+                raise TimeoutError("REPL execution timed out (10 s)")
+            signal.signal(signal.SIGALRM, _on_timeout)
+            signal.alarm(10)
+            timeout_handler_installed = True
+    except (ImportError, AttributeError):
+        pass
+
+    try:
+        with contextlib.redirect_stdout(captured_out), \
+                contextlib.redirect_stderr(captured_err):
+            try:
+                exec(code, namespace, namespace)
+            except TimeoutError as e:
+                return False, captured_out.getvalue(), str(e)
+            except SystemExit:
+                # The transpiler does not emit sys.exit, but a user
+                # program (or a py_invoke into stdlib) could. Treat
+                # a clean exit as success and surface stdout.
+                pass
+            except BaseException:
+                tb = traceback.format_exc()
+                return False, captured_out.getvalue(), tb
     finally:
-        try:
-            os.unlink(py_path)
-        except OSError:
-            pass
-    if proc.returncode != 0:
-        return False, proc.stdout, proc.stderr or "exited non-zero"
-    return True, proc.stdout, ""
+        if timeout_handler_installed:
+            try:
+                import signal
+                signal.alarm(0)
+            except Exception:
+                pass
+
+    return True, captured_out.getvalue(), ""
 
 
 def _typeof_expr(
@@ -355,15 +427,68 @@ takes Unsafe and call it from the REPL when you really mean it.
 """
 
 
+def _init_readline() -> "object | None":
+    """Best-effort line-editing setup.
+
+    Tries the stdlib ``readline`` first (Unix); falls back to
+    ``pyreadline3`` if it is installed (Windows). Returns the
+    imported module on success, ``None`` if neither is available.
+    Any failure here is silent: a REPL without arrow-key history
+    is degraded, not broken, so the user should never see an
+    error from this code path.
+
+    Side effects on success: loads :data:`_HISTORY_FILE` if it
+    exists and caps the in-memory ring buffer at
+    :data:`_HISTORY_LENGTH` so the on-disk file cannot grow
+    without bound. Also flips :data:`_HISTORY_LOADED` for tests.
+    """
+    global _HISTORY_LOADED
+    try:
+        import readline  # type: ignore[import-not-found]
+    except ImportError:
+        try:
+            import pyreadline3 as readline  # type: ignore[import-not-found]
+        except ImportError:
+            return None
+    try:
+        readline.set_history_length(_HISTORY_LENGTH)
+    except Exception:
+        pass
+    if _HISTORY_FILE.exists():
+        try:
+            readline.read_history_file(str(_HISTORY_FILE))
+        except Exception:
+            pass
+    _HISTORY_LOADED = True
+    return readline
+
+
+def _save_readline(readline_mod: "object | None") -> None:
+    """Persist the in-memory history ring to :data:`_HISTORY_FILE`.
+
+    No-op if line editing was not initialised. All errors are
+    swallowed: a read-only home directory or a full disk must
+    not turn a clean ``.exit`` into a non-zero return.
+    """
+    if readline_mod is None:
+        return
+    try:
+        readline_mod.write_history_file(str(_HISTORY_FILE))  # type: ignore[attr-defined]
+    except Exception:
+        pass
+
+
 def serve(prompt: str = "capa> ") -> int:
     """Run the REPL until EOF or .exit. Returns 0 on clean exit."""
     state = _ReplState()
+    readline_mod = _init_readline()
     print(f"Capa REPL. Type .help for commands, .exit to leave.")
     while True:
         try:
             line = input(prompt)
         except EOFError:
             print()
+            _save_readline(readline_mod)
             return 0
         except KeyboardInterrupt:
             print()
@@ -372,6 +497,7 @@ def serve(prompt: str = "capa> ") -> int:
         if not stripped:
             continue
         if stripped in (".exit", ".quit"):
+            _save_readline(readline_mod)
             return 0
         if stripped == ".reset":
             state.reset()

@@ -651,6 +651,31 @@ right primitives. Listed at the top of this section accordingly.
 - [~] **REPL v2**. MVP at `capa/repl.py` re-runs everything on
   each input (no incremental state). v2 needs incremental
   analyzer state and readline / history. ⏱ 8-12h.
+  Slices A + B landed 2026-05-26. Slice A: readline-style
+  line editing + persistent history file at
+  `~/.capa_repl_history` (1000-entry cap). Tries stdlib
+  `readline` first, falls back to `pyreadline3` on Windows,
+  silent skip if neither is present. All history-I/O errors
+  swallowed so the REPL never crashes on a non-writable
+  home dir. Slice B: in-process `exec()` replaces the
+  `subprocess.run` path in `_try_compile_and_run`. New
+  `_exec_in_process` builds a fresh namespace per turn
+  (`__name__ = "__main__"` so the transpiler's bootstrap
+  fires), captures stdout/stderr via
+  `contextlib.redirect_stdout`, formats Python tracebacks
+  into the error channel. POSIX gets a 10s hard timeout via
+  `signal.SIGALRM`; Windows has no `SIGALRM` so the hard
+  timeout is lost (Ctrl-C still works; documented in the
+  function docstring and module-level v2 notes). Net win:
+  per-turn time drops from ~30-200ms (subprocess fork+exec
+  on Windows) to ~1.2ms in-process measured locally, a
+  ~100x speedup. 4 new tests (`TestReplReadline` x 2,
+  `TestReplInProcessExec` x 2) plus all 63 existing repl
+  tests stay green. Full suite 1734 / 5 skipped / 0 fail.
+  Slice C (persistent namespace + true incremental analyzer
+  state across turns - exec each NEW chunk into a kept
+  namespace, skip the full re-analyse + re-exec) remains
+  open as the bigger architectural piece.
 
 - [ ] **VSCode marketplace publication**. Grammar lives in
   `vscode/`; install today is manual symlink/junction. Publish

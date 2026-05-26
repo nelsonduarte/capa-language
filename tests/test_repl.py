@@ -22,7 +22,12 @@ import sys
 import unittest
 from unittest import mock
 
+from pathlib import Path
+
+from capa import repl as _repl_module
 from capa.repl import (
+    _exec_in_process,
+    _HISTORY_FILE,
     _ReplState,
     _find_probe_value,
     _is_bare_expression,
@@ -36,6 +41,8 @@ from capa.repl import (
 from capa import capa_ast as A
 from capa.lexer import Lexer
 from capa.parser import Parser
+from capa.transpiler import transpile
+from capa.analyzer import analyze
 
 
 class TestReplHelpers(unittest.TestCase):
@@ -686,6 +693,82 @@ class TestReplInProcess(unittest.TestCase):
         self.assertEqual(rc, 0, err)
         self.assertEqual(out.count("alpha"), 1)
         self.assertEqual(out.count("beta"), 1)
+
+
+class TestReplReadline(unittest.TestCase):
+    """Coverage for the readline / history bootstrap added in v2.
+
+    The REPL must boot cleanly whether or not a line-editing
+    implementation is importable; both branches are exercised
+    here.
+    """
+
+    def test_serve_does_not_crash_without_readline(self):
+        # Simulate ``import readline`` failing by stashing a None
+        # entry in ``sys.modules``; the import statement then
+        # raises ``ImportError`` and ``_init_readline`` falls
+        # through. ``pyreadline3`` is masked the same way so the
+        # Windows fallback path is also forced shut.
+        with mock.patch.dict(sys.modules, {
+            "readline": None, "pyreadline3": None,
+        }):
+            rc, out, err = _run_repl([".exit"])
+        self.assertEqual(rc, 0)
+        self.assertIn("Capa REPL", out)
+
+    def test_history_file_path_default(self):
+        # The on-disk history must live under the user's home so a
+        # session persists across invocations; the constant is the
+        # contract that future config (env override, --history flag)
+        # will hang off of.
+        self.assertEqual(_HISTORY_FILE, Path.home() / ".capa_repl_history")
+
+
+class TestReplInProcessExec(unittest.TestCase):
+    """Coverage for the in-process ``exec`` path that replaced the
+    pre-v2 subprocess fork.
+    """
+
+    def _transpile(self, source: str) -> str:
+        tokens = Lexer(source, filename="<test>").lex()
+        module = Parser(
+            tokens, source=source, filename="<test>",
+        ).parse_module()
+        result = analyze(module, source=source, filename="<test>")
+        self.assertTrue(result.ok, result.errors)
+        return transpile(module, types=result.types)
+
+    def test_in_process_exec_captures_stdout_like_subprocess(self):
+        # ``println("hello")`` should land in the captured stdout
+        # buffer the same way the old subprocess capture surfaced
+        # ``proc.stdout``. We compare against the unified
+        # ``_try_compile_and_run`` contract: (True, "hello\n", "").
+        src = 'fun main(stdio: Stdio)\n    stdio.println("hello")\n'
+        code = self._transpile(src)
+        ok, out, err = _exec_in_process(code)
+        self.assertTrue(ok, err)
+        self.assertEqual(out, "hello\n")
+        self.assertEqual(err, "")
+
+    def test_in_process_exec_surfaces_python_traceback(self):
+        # A runtime panic in the Capa program lowers to a Python
+        # ``raise``; the in-process path must catch ``BaseException``
+        # and route the formatted traceback into the error channel,
+        # preserving any stdout the program had already printed
+        # before the failure.
+        src = (
+            'fun main(stdio: Stdio)\n'
+            '    stdio.println("before")\n'
+            '    let _ = 1 / 0\n'
+        )
+        code = self._transpile(src)
+        ok, out, err = _exec_in_process(code)
+        self.assertFalse(ok)
+        # Stdout up to the failure must survive.
+        self.assertIn("before", out)
+        # The Python traceback (or at least the error noun) made
+        # it through the redirect.
+        self.assertIn("ZeroDivisionError", err)
 
 
 if __name__ == "__main__":
