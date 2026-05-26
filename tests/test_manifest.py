@@ -270,5 +270,305 @@ class TestExports(unittest.TestCase):
             self.assertTrue(callable(fn))
 
 
+from capa import capa_ast as A
+from capa.manifest._strings import (
+    _quote_string,
+    _root_type_name,
+    _stringify_expr,
+    _stringify_expr_full,
+    _ty_text,
+)
+from capa.tokens import Pos
+
+
+_P = Pos(line=1, col=1, offset=0)
+
+
+def _ident(name: str) -> A.Ident:
+    return A.Ident(pos=_P, name=name)
+
+
+def _int(n: int) -> A.IntLit:
+    return A.IntLit(pos=_P, value=n)
+
+
+class TestManifestStringHelpers(unittest.TestCase):
+    """Direct unit coverage of the small AST-to-string helpers in
+    ``capa.manifest._strings``. One method per Expr/TypeExpr branch,
+    so coverage tracks every isinstance check in the cascade."""
+
+    # -- _stringify_expr (the truncating wrapper) ----------------
+
+    def test_stringify_expr_short_passes_through(self):
+        self.assertEqual(_stringify_expr(_ident("abc")), "abc")
+
+    def test_stringify_expr_long_is_truncated_with_ellipsis(self):
+        long_name = "x" * 200
+        out = _stringify_expr(_ident(long_name))
+        self.assertEqual(len(out), 80)
+        self.assertTrue(out.endswith("..."))
+        self.assertEqual(out, "x" * 77 + "...")
+
+    # -- _stringify_expr_full per node shape ---------------------
+
+    def test_full_none_returns_empty(self):
+        self.assertEqual(_stringify_expr_full(None), "")
+
+    def test_full_ident(self):
+        self.assertEqual(_stringify_expr_full(_ident("foo")), "foo")
+
+    def test_full_int_lit(self):
+        self.assertEqual(_stringify_expr_full(_int(42)), "42")
+
+    def test_full_float_lit(self):
+        self.assertEqual(
+            _stringify_expr_full(A.FloatLit(pos=_P, value=1.5)),
+            repr(1.5),
+        )
+
+    def test_full_string_lit_quoted(self):
+        self.assertEqual(
+            _stringify_expr_full(A.StringLit(pos=_P, value="hi")),
+            '"hi"',
+        )
+
+    def test_full_interpolated_string(self):
+        # parts: literal "a", expr Ident("x"), literal "b"
+        node = A.InterpolatedString(pos=_P, parts=["a", _ident("x"), "b"])
+        self.assertEqual(_stringify_expr_full(node), '"a${...}b"')
+
+    def test_full_char_lit(self):
+        self.assertEqual(
+            _stringify_expr_full(A.CharLit(pos=_P, value="z")),
+            "'z'",
+        )
+
+    def test_full_bool_lit_true(self):
+        self.assertEqual(
+            _stringify_expr_full(A.BoolLit(pos=_P, value=True)),
+            "true",
+        )
+
+    def test_full_bool_lit_false(self):
+        self.assertEqual(
+            _stringify_expr_full(A.BoolLit(pos=_P, value=False)),
+            "false",
+        )
+
+    def test_full_unit_lit(self):
+        self.assertEqual(_stringify_expr_full(A.UnitLit(pos=_P)), "()")
+
+    def test_full_binop(self):
+        node = A.BinOp(pos=_P, op="+", left=_int(1), right=_int(2))
+        self.assertEqual(_stringify_expr_full(node), "1 + 2")
+
+    def test_full_unary_op_symbolic_no_space(self):
+        node = A.UnaryOp(pos=_P, op="-", operand=_int(3))
+        self.assertEqual(_stringify_expr_full(node), "-3")
+
+    def test_full_unary_op_alpha_inserts_space(self):
+        node = A.UnaryOp(pos=_P, op="not", operand=A.BoolLit(pos=_P, value=True))
+        self.assertEqual(_stringify_expr_full(node), "not true")
+
+    def test_full_call(self):
+        node = A.Call(pos=_P, callee=_ident("f"), args=[_int(1), _int(2)])
+        self.assertEqual(_stringify_expr_full(node), "f(1, 2)")
+
+    def test_full_method_call(self):
+        node = A.MethodCall(
+            pos=_P, receiver=_ident("x"), method="bar", args=[_int(7)]
+        )
+        self.assertEqual(_stringify_expr_full(node), "x.bar(7)")
+
+    def test_full_field_access(self):
+        node = A.FieldAccess(pos=_P, receiver=_ident("rec"), field_name="f")
+        self.assertEqual(_stringify_expr_full(node), "rec.f")
+
+    def test_full_index(self):
+        node = A.Index(pos=_P, receiver=_ident("a"), index=_int(0))
+        self.assertEqual(_stringify_expr_full(node), "a[0]")
+
+    def test_full_try(self):
+        node = A.Try(pos=_P, expr=_ident("res"))
+        self.assertEqual(_stringify_expr_full(node), "res?")
+
+    def test_full_list_lit(self):
+        node = A.ListLit(pos=_P, elements=[_int(1), _int(2), _int(3)])
+        self.assertEqual(_stringify_expr_full(node), "[1, 2, 3]")
+
+    def test_full_tuple_lit(self):
+        node = A.TupleLit(pos=_P, elements=[_int(1), _ident("x")])
+        self.assertEqual(_stringify_expr_full(node), "(1, x)")
+
+    def test_full_struct_lit(self):
+        node = A.StructLit(
+            pos=_P,
+            type_name="Point",
+            fields=[("x", _int(1)), ("y", _int(2))],
+        )
+        self.assertEqual(
+            _stringify_expr_full(node),
+            "Point { x: 1, y: 2 }",
+        )
+
+    def test_full_range_expr_exclusive(self):
+        node = A.RangeExpr(pos=_P, start=_int(0), end=_int(10), inclusive=False)
+        self.assertEqual(_stringify_expr_full(node), "0..10")
+
+    def test_full_range_expr_inclusive(self):
+        node = A.RangeExpr(pos=_P, start=_int(0), end=_int(10), inclusive=True)
+        self.assertEqual(_stringify_expr_full(node), "0..=10")
+
+    def test_full_lambda_expr(self):
+        node = A.LambdaExpr(pos=_P, params=[], body=_int(1))
+        self.assertEqual(_stringify_expr_full(node), "fun(...) => ...")
+
+    def test_full_if_expr(self):
+        node = A.IfExpr(
+            pos=_P,
+            cond=A.BoolLit(pos=_P, value=True),
+            then_expr=_int(1),
+            else_expr=_int(2),
+        )
+        self.assertEqual(
+            _stringify_expr_full(node),
+            "if true then ... else ...",
+        )
+
+    def test_full_match_expr(self):
+        node = A.MatchExpr(pos=_P, scrutinee=_ident("v"), arms=[])
+        self.assertEqual(_stringify_expr_full(node), "match v { ... }")
+
+    def test_full_unknown_node_falls_back_to_class_name(self):
+        # AssignStmt is a Stmt, not an Expr; the cascade should miss
+        # every isinstance check and hit the final fallback.
+        stmt = A.AssignStmt(
+            pos=_P, target=_ident("x"), op="=", value=_int(1),
+        )
+        self.assertEqual(_stringify_expr_full(stmt), "<AssignStmt>")
+
+    # -- _quote_string -------------------------------------------
+
+    def test_quote_string_empty(self):
+        self.assertEqual(_quote_string(""), '""')
+
+    def test_quote_string_simple_ascii(self):
+        self.assertEqual(_quote_string("hello"), '"hello"')
+
+    def test_quote_string_escapes_double_quote(self):
+        self.assertEqual(_quote_string('say "hi"'), '"say \\"hi\\""')
+
+    def test_quote_string_escapes_backslash(self):
+        self.assertEqual(_quote_string("a\\b"), '"a\\\\b"')
+
+    def test_quote_string_escapes_newline(self):
+        self.assertEqual(_quote_string("a\nb"), '"a\\nb"')
+
+    def test_quote_string_escapes_tab(self):
+        self.assertEqual(_quote_string("a\tb"), '"a\\tb"')
+
+    def test_quote_string_other_control_char_passes_through(self):
+        # The function only special-cases \\, ", \n, \t. Other control
+        # characters are kept verbatim inside the literal.
+        self.assertEqual(_quote_string("a\x01b"), '"a\x01b"')
+
+    def test_quote_string_backslash_n_literal_not_double_escaped(self):
+        # Input is the two-char sequence backslash + 'n'. The backslash
+        # is escaped first, so the result is \\n (four chars). The 'n'
+        # is not interpreted as the newline-escape replacement.
+        self.assertEqual(_quote_string("\\n"), '"\\\\n"')
+
+    # -- _ty_text -------------------------------------------------
+
+    def test_ty_text_none_is_unit_string(self):
+        self.assertEqual(_ty_text(None), "()")
+
+    def test_ty_text_bare_type_name(self):
+        self.assertEqual(_ty_text(A.TypeName(pos=_P, name="Int")), "Int")
+
+    def test_ty_text_generic_type_name(self):
+        node = A.TypeName(
+            pos=_P, name="List", args=[A.TypeName(pos=_P, name="Int")],
+        )
+        self.assertEqual(_ty_text(node), "List<Int>")
+
+    def test_ty_text_generic_type_name_two_args(self):
+        node = A.TypeName(
+            pos=_P,
+            name="Result",
+            args=[
+                A.TypeName(pos=_P, name="Int"),
+                A.TypeName(pos=_P, name="String"),
+            ],
+        )
+        self.assertEqual(_ty_text(node), "Result<Int, String>")
+
+    def test_ty_text_fun_type(self):
+        node = A.FunType(
+            pos=_P,
+            param_types=[A.TypeName(pos=_P, name="Int")],
+            return_type=A.TypeName(pos=_P, name="String"),
+        )
+        self.assertEqual(_ty_text(node), "Fun(Int) -> String")
+
+    def test_ty_text_fun_type_no_params(self):
+        node = A.FunType(
+            pos=_P,
+            param_types=[],
+            return_type=A.UnitType(pos=_P),
+        )
+        self.assertEqual(_ty_text(node), "Fun() -> ()")
+
+    def test_ty_text_tuple_type(self):
+        node = A.TupleType(
+            pos=_P,
+            elements=[
+                A.TypeName(pos=_P, name="Int"),
+                A.TypeName(pos=_P, name="String"),
+            ],
+        )
+        self.assertEqual(_ty_text(node), "(Int, String)")
+
+    def test_ty_text_unit_type(self):
+        self.assertEqual(_ty_text(A.UnitType(pos=_P)), "()")
+
+    def test_ty_text_unknown_falls_back_to_class_name(self):
+        # Pass a TypeExpr subclass the cascade does not handle. We do
+        # not have one in the codebase today, so we synthesize a minimal
+        # subclass to hit the final fallback line.
+        from dataclasses import dataclass
+
+        @dataclass(kw_only=True)
+        class _Mystery(A.TypeExpr):
+            pass
+
+        self.assertEqual(_ty_text(_Mystery(pos=_P)), "<_Mystery>")
+
+    # -- _root_type_name -----------------------------------------
+
+    def test_root_type_name_none(self):
+        self.assertIsNone(_root_type_name(None))
+
+    def test_root_type_name_bare(self):
+        self.assertEqual(
+            _root_type_name(A.TypeName(pos=_P, name="Int")),
+            "Int",
+        )
+
+    def test_root_type_name_generic_keeps_head(self):
+        node = A.TypeName(
+            pos=_P, name="List", args=[A.TypeName(pos=_P, name="Int")],
+        )
+        self.assertEqual(_root_type_name(node), "List")
+
+    def test_root_type_name_non_type_name_returns_none(self):
+        self.assertIsNone(_root_type_name(A.UnitType(pos=_P)))
+        tup = A.TupleType(
+            pos=_P,
+            elements=[A.TypeName(pos=_P, name="Int")],
+        )
+        self.assertIsNone(_root_type_name(tup))
+
+
 if __name__ == "__main__":
     unittest.main()

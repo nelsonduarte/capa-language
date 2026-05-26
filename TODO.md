@@ -236,6 +236,11 @@ the current Wasm critical path.
     plus a handful of colour-branch error paths and the
     `--wasm` failure arms that need a synthetic CIR-rejection
     fixture. Suite: 1528 -> 1584.
+  - 2026-05-26 (7): `capa/manifest/_strings.py` lifted 56% -> 100%
+    via 50 `TestManifestStringHelpers` cases hitting every
+    Expr-render and TypeExpr-render branch directly. Truncation,
+    quote-string escape rules, and the _root_type_name fallback
+    paths all exercised.
 
 - [x] **CycloneDX / SPDX parsers, pending optional fields**
   (closed 2026-05-26). Three parser examples
