@@ -2032,6 +2032,14 @@ class TestTranspileExamples(unittest.TestCase):
         self.assertIn("provider: Stripe", out)
         self.assertIn("authenticated: true; trust-boundary: true", out)
         self.assertIn("PII (outbound)", out)
+        # evidence sub-block on the lodash component: identity + a
+        # single manifest-analysis method, plus an occurrence and a
+        # copyright line. chalk stays evidence-free.
+        self.assertIn("evidence:", out)
+        self.assertIn("identity: purl @ 1.0", out)
+        self.assertIn("method: manifest-analysis @ 1.0 (package-lock.json)", out)
+        self.assertIn("node_modules/lodash/index.js", out)
+        self.assertIn("Copyright OpenJS Foundation and contributors", out)
         self.assertIn("Validation: ok (refs resolve + acyclic)", out)
 
     def test_net_attenuation(self):

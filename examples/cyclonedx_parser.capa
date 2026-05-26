@@ -23,8 +23,8 @@
 //   checksumValue}`).
 //
 // Scope limits: metadata + components + dependencies. Out of
-// scope: `compositions[]`, externalReferences[], evidence[],
-// signatures. Extending is mechanical.
+// scope: `compositions[]`, externalReferences[], signatures.
+// Extending is mechanical.
 
 capability SbomReader
     fun read(self, source: String) -> Result<String, String>
@@ -40,6 +40,36 @@ type CdxLicense {
     expression: String
 }
 
+type CdxIdentityMethod {
+    technique: String,
+    confidence: Float,
+    value: String
+}
+
+type CdxIdentity {
+    field: String,
+    confidence: Float,
+    methods: List<CdxIdentityMethod>
+}
+
+type CdxOccurrence {
+    bom_ref: String,
+    location: String
+}
+
+type CdxCopyright {
+    text: String
+}
+
+// Evidence sub-block on a component: how the component was
+// identified and where its source / artefact was found.
+type CdxEvidence {
+    has_identity: Bool,
+    identity: CdxIdentity,
+    occurrences: List<CdxOccurrence>,
+    copyright: List<CdxCopyright>
+}
+
 type CdxComponent {
     bom_ref: String,
     kind: String,
@@ -47,7 +77,9 @@ type CdxComponent {
     version: String,
     purl: String,
     hashes: List<CdxHash>,
-    licenses: List<CdxLicense>
+    licenses: List<CdxLicense>,
+    has_evidence: Bool,
+    evidence: CdxEvidence
 }
 
 type CdxDependency {
@@ -228,6 +260,84 @@ fun parse_licenses(j: JsonValue) -> Result<List<CdxLicense>, String>
         result.push(parse_license_entry(x)?)
     return Ok(result)
 
+// Evidence sub-block parsers. `evidence.identity` is a single
+// object in CycloneDX 1.5 (the 1.6 array form is out of scope).
+// `licenses` + `callstack` under evidence are skipped too.
+
+fun parse_identity_method(j: JsonValue) -> Result<CdxIdentityMethod, String>
+    let confidence = match optional_field(j, "confidence")
+        None -> 0.0
+        Some(v) -> as_num_or_err(v, "Identity.method.confidence")?
+    return Ok(CdxIdentityMethod {
+        technique: string_field_or(j, "technique", ""),
+        confidence: confidence,
+        value: string_field_or(j, "value", "")
+    })
+
+fun parse_identity(j: JsonValue) -> Result<CdxIdentity, String>
+    let confidence = match optional_field(j, "confidence")
+        None -> 0.0
+        Some(v) -> as_num_or_err(v, "Identity.confidence")?
+    let methods: List<CdxIdentityMethod> = []
+    match optional_field(j, "methods")
+        None ->
+            ()
+        Some(v) ->
+            let xs = as_array_or_err(v, "Identity.methods")?
+            for x in xs
+                methods.push(parse_identity_method(x)?)
+    return Ok(CdxIdentity {
+        field: string_field_or(j, "field", ""),
+        confidence: confidence,
+        methods: methods
+    })
+
+fun parse_occurrence(j: JsonValue) -> Result<CdxOccurrence, String>
+    return Ok(CdxOccurrence {
+        bom_ref: string_field_or(j, "bom-ref", ""),
+        location: as_string_or_err(field(j, "location")?, "Occurrence.location")?
+    })
+
+fun parse_copyright_entry(j: JsonValue) -> Result<CdxCopyright, String>
+    return Ok(CdxCopyright {
+        text: as_string_or_err(field(j, "text")?, "Copyright.text")?
+    })
+
+fun parse_evidence(j: JsonValue) -> Result<CdxEvidence, String>
+    var has_identity = false
+    var identity = CdxIdentity { field: "", confidence: 0.0, methods: [] }
+    match optional_field(j, "identity")
+        None ->
+            ()
+        Some(v) ->
+            has_identity = true
+            identity = parse_identity(v)?
+
+    let occurrences: List<CdxOccurrence> = []
+    match optional_field(j, "occurrences")
+        None ->
+            ()
+        Some(v) ->
+            let xs = as_array_or_err(v, "Evidence.occurrences")?
+            for x in xs
+                occurrences.push(parse_occurrence(x)?)
+
+    let copyright: List<CdxCopyright> = []
+    match optional_field(j, "copyright")
+        None ->
+            ()
+        Some(v) ->
+            let xs = as_array_or_err(v, "Evidence.copyright")?
+            for x in xs
+                copyright.push(parse_copyright_entry(x)?)
+
+    return Ok(CdxEvidence {
+        has_identity: has_identity,
+        identity: identity,
+        occurrences: occurrences,
+        copyright: copyright
+    })
+
 fun parse_component(j: JsonValue) -> Result<CdxComponent, String>
     let hashes: List<CdxHash> = []
     match optional_field(j, "hashes")
@@ -247,6 +357,20 @@ fun parse_component(j: JsonValue) -> Result<CdxComponent, String>
             for l in parsed
                 licenses.push(l)
 
+    var has_evidence = false
+    var evidence = CdxEvidence {
+        has_identity: false,
+        identity: CdxIdentity { field: "", confidence: 0.0, methods: [] },
+        occurrences: [],
+        copyright: []
+    }
+    match optional_field(j, "evidence")
+        None ->
+            ()
+        Some(v) ->
+            has_evidence = true
+            evidence = parse_evidence(v)?
+
     return Ok(CdxComponent {
         bom_ref: string_field_or(j, "bom-ref", ""),
         kind: as_string_or_err(field(j, "type")?, "Component.type")?,
@@ -254,7 +378,9 @@ fun parse_component(j: JsonValue) -> Result<CdxComponent, String>
         version: string_field_or(j, "version", ""),
         purl: string_field_or(j, "purl", ""),
         hashes: hashes,
-        licenses: licenses
+        licenses: licenses,
+        has_evidence: has_evidence,
+        evidence: evidence
     })
 
 fun parse_dependency(j: JsonValue) -> Result<CdxDependency, String>
@@ -616,6 +742,52 @@ fun is_valid_data_flow(s: String) -> Bool
         return true
     return false
 
+// evidence.identity.field enum from CycloneDX 1.5.
+fun is_valid_identity_field(s: String) -> Bool
+    if s == "group"
+        return true
+    if s == "name"
+        return true
+    if s == "version"
+        return true
+    if s == "purl"
+        return true
+    if s == "cpe"
+        return true
+    if s == "swid"
+        return true
+    if s == "hash"
+        return true
+    if s == "omniborId"
+        return true
+    if s == "swhid"
+        return true
+    return false
+
+// evidence.identity.methods[].technique enum from CycloneDX 1.5.
+fun is_valid_identity_technique(s: String) -> Bool
+    if s == "source-code-analysis"
+        return true
+    if s == "binary-analysis"
+        return true
+    if s == "manifest-analysis"
+        return true
+    if s == "ast-fingerprint"
+        return true
+    if s == "hash-comparison"
+        return true
+    if s == "instrumentation"
+        return true
+    if s == "dynamic-analysis"
+        return true
+    if s == "filename"
+        return true
+    if s == "attestation"
+        return true
+    if s == "other"
+        return true
+    return false
+
 fun validate_cyclonedx(doc: CdxDocument) -> List<String>
     let refs = collect_bom_refs(doc)
     let errors: List<String> = []
@@ -639,6 +811,18 @@ fun validate_cyclonedx(doc: CdxDocument) -> List<String>
         for d in s.data
             if not is_valid_data_flow(d.flow)
                 errors.push("service '${s.name}' has data classification with invalid flow '${d.flow}'")
+    for c in doc.components
+        if c.has_evidence
+            if c.evidence.has_identity
+                if c.evidence.identity.field != "" and not is_valid_identity_field(c.evidence.identity.field)
+                    errors.push("component '${c.name}' has evidence.identity.field with invalid value '${c.evidence.identity.field}'")
+                if c.evidence.identity.confidence < 0.0 or c.evidence.identity.confidence > 1.0
+                    errors.push("component '${c.name}' has evidence.identity.confidence out of [0.0, 1.0]")
+                for m in c.evidence.identity.methods
+                    if not is_valid_identity_technique(m.technique)
+                        errors.push("component '${c.name}' has identity method with invalid technique '${m.technique}'")
+                    if m.confidence < 0.0 or m.confidence > 1.0
+                        errors.push("component '${c.name}' has identity method confidence out of [0.0, 1.0]")
     match detect_cyclonedx_cycle(doc)
         None ->
             ()
@@ -712,7 +896,7 @@ fun main(stdio: Stdio)
     // dependency components (a lib + a transitive lib), and a
     // small dependency graph linking them. Mirrors the kind of
     // SBOM the Capa compiler itself emits via --cyclonedx.
-    let sample = "{\"bomFormat\": \"CycloneDX\", \"specVersion\": \"1.5\", \"serialNumber\": \"urn:uuid:11111111-2222-3333-4444-555555555555\", \"version\": 1, \"metadata\": {\"timestamp\": \"2026-05-13T10:00:00Z\", \"tools\": {\"components\": [{\"type\": \"application\", \"name\": \"capa\", \"version\": \"0.6.0-alpha\"}]}, \"component\": {\"bom-ref\": \"capa:program:demo\", \"type\": \"application\", \"name\": \"demo\", \"version\": \"1.0.0\"}}, \"components\": [{\"bom-ref\": \"pkg:npm/lodash@4.17.21\", \"type\": \"library\", \"name\": \"lodash\", \"version\": \"4.17.21\", \"purl\": \"pkg:npm/lodash@4.17.21\", \"hashes\": [{\"alg\": \"SHA-256\", \"content\": \"aaaabbbbccccddddeeeeffff0011223344556677889900aabbccddeeff001122\"}], \"licenses\": [{\"license\": {\"id\": \"MIT\"}}]}, {\"bom-ref\": \"pkg:npm/chalk@5.3.0\", \"type\": \"library\", \"name\": \"chalk\", \"version\": \"5.3.0\", \"purl\": \"pkg:npm/chalk@5.3.0\", \"licenses\": [{\"expression\": \"MIT OR Apache-2.0\"}]}], \"dependencies\": [{\"ref\": \"capa:program:demo\", \"dependsOn\": [\"pkg:npm/lodash@4.17.21\", \"pkg:npm/chalk@5.3.0\"]}, {\"ref\": \"pkg:npm/chalk@5.3.0\", \"dependsOn\": [\"pkg:npm/lodash@4.17.21\"]}], \"vulnerabilities\": [{\"bom-ref\": \"vuln-CVE-2024-7890\", \"id\": \"CVE-2024-7890\", \"source\": {\"name\": \"NVD\"}, \"ratings\": [{\"severity\": \"high\", \"score\": 7.5, \"method\": \"CVSSv3\"}], \"cwes\": [79], \"description\": \"Cross-site scripting in lodash template helper\", \"recommendation\": \"Upgrade to lodash 4.17.22\", \"published\": \"2024-09-01T00:00:00Z\", \"updated\": \"2024-09-15T00:00:00Z\", \"affects\": [{\"ref\": \"pkg:npm/lodash@4.17.21\"}], \"analysis\": {\"state\": \"exploitable\", \"justification\": \"code-uses-vulnerable-template\", \"detail\": \"lodash _.template called with user input\"}}], \"services\": [{\"bom-ref\": \"service:stripe-api\", \"provider\": {\"name\": \"Stripe\", \"url\": [\"https://stripe.com\"]}, \"group\": \"com.stripe\", \"name\": \"payments-api\", \"version\": \"2024-06-20\", \"description\": \"Stripe charges API\", \"endpoints\": [\"https://api.stripe.com/v1/charges\"], \"authenticated\": true, \"x-trust-boundary\": true, \"data\": [{\"classification\": \"PII\", \"flow\": \"outbound\"}]}]}"
+    let sample = "{\"bomFormat\": \"CycloneDX\", \"specVersion\": \"1.5\", \"serialNumber\": \"urn:uuid:11111111-2222-3333-4444-555555555555\", \"version\": 1, \"metadata\": {\"timestamp\": \"2026-05-13T10:00:00Z\", \"tools\": {\"components\": [{\"type\": \"application\", \"name\": \"capa\", \"version\": \"0.6.0-alpha\"}]}, \"component\": {\"bom-ref\": \"capa:program:demo\", \"type\": \"application\", \"name\": \"demo\", \"version\": \"1.0.0\"}}, \"components\": [{\"bom-ref\": \"pkg:npm/lodash@4.17.21\", \"type\": \"library\", \"name\": \"lodash\", \"version\": \"4.17.21\", \"purl\": \"pkg:npm/lodash@4.17.21\", \"hashes\": [{\"alg\": \"SHA-256\", \"content\": \"aaaabbbbccccddddeeeeffff0011223344556677889900aabbccddeeff001122\"}], \"licenses\": [{\"license\": {\"id\": \"MIT\"}}], \"evidence\": {\"identity\": {\"field\": \"purl\", \"confidence\": 1.0, \"methods\": [{\"technique\": \"manifest-analysis\", \"confidence\": 1.0, \"value\": \"package-lock.json\"}]}, \"occurrences\": [{\"bom-ref\": \"occ-lodash-1\", \"location\": \"node_modules/lodash/index.js\"}], \"copyright\": [{\"text\": \"Copyright OpenJS Foundation and contributors\"}]}}, {\"bom-ref\": \"pkg:npm/chalk@5.3.0\", \"type\": \"library\", \"name\": \"chalk\", \"version\": \"5.3.0\", \"purl\": \"pkg:npm/chalk@5.3.0\", \"licenses\": [{\"expression\": \"MIT OR Apache-2.0\"}]}], \"dependencies\": [{\"ref\": \"capa:program:demo\", \"dependsOn\": [\"pkg:npm/lodash@4.17.21\", \"pkg:npm/chalk@5.3.0\"]}, {\"ref\": \"pkg:npm/chalk@5.3.0\", \"dependsOn\": [\"pkg:npm/lodash@4.17.21\"]}], \"vulnerabilities\": [{\"bom-ref\": \"vuln-CVE-2024-7890\", \"id\": \"CVE-2024-7890\", \"source\": {\"name\": \"NVD\"}, \"ratings\": [{\"severity\": \"high\", \"score\": 7.5, \"method\": \"CVSSv3\"}], \"cwes\": [79], \"description\": \"Cross-site scripting in lodash template helper\", \"recommendation\": \"Upgrade to lodash 4.17.22\", \"published\": \"2024-09-01T00:00:00Z\", \"updated\": \"2024-09-15T00:00:00Z\", \"affects\": [{\"ref\": \"pkg:npm/lodash@4.17.21\"}], \"analysis\": {\"state\": \"exploitable\", \"justification\": \"code-uses-vulnerable-template\", \"detail\": \"lodash _.template called with user input\"}}], \"services\": [{\"bom-ref\": \"service:stripe-api\", \"provider\": {\"name\": \"Stripe\", \"url\": [\"https://stripe.com\"]}, \"group\": \"com.stripe\", \"name\": \"payments-api\", \"version\": \"2024-06-20\", \"description\": \"Stripe charges API\", \"endpoints\": [\"https://api.stripe.com/v1/charges\"], \"authenticated\": true, \"x-trust-boundary\": true, \"data\": [{\"classification\": \"PII\", \"flow\": \"outbound\"}]}]}"
 
     match parse_cyclonedx(sample)
         Err(msg) ->
@@ -742,6 +926,20 @@ fun main(stdio: Stdio)
                         stdio.println("      license: ${l.id} (SPDX id)")
                     if l.name != ""
                         stdio.println("      license: ${l.name} (name)")
+                if c.has_evidence
+                    stdio.println("      evidence:")
+                    if c.evidence.has_identity
+                        stdio.println("        identity: ${c.evidence.identity.field} @ ${c.evidence.identity.confidence}")
+                        for m in c.evidence.identity.methods
+                            stdio.println("          method: ${m.technique} @ ${m.confidence} (${m.value})")
+                    if c.evidence.occurrences.length() != 0
+                        stdio.println("        occurrences: ${c.evidence.occurrences.length()}")
+                        for o in c.evidence.occurrences
+                            stdio.println("          ${o.location}")
+                    if c.evidence.copyright.length() != 0
+                        stdio.println("        copyright: ${c.evidence.copyright.length()}")
+                        for cp in c.evidence.copyright
+                            stdio.println("          ${cp.text}")
             stdio.println("")
             stdio.println("Dependency edges (${doc.dependencies.length()}):")
             for d in doc.dependencies
