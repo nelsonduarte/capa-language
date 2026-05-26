@@ -204,9 +204,9 @@ def _is_unit_typed_call(line: str) -> bool:
     at the end of the line.
     """
     stripped = line.lstrip()
+    # ``"println("`` matches ``eprintln(...)`` too because "eprintln"
+    # contains "println"; no separate check needed.
     if "println(" in stripped or stripped.startswith("print("):
-        return True
-    if "eprintln(" in stripped:
         return True
     return False
 
