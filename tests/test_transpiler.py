@@ -2055,6 +2055,14 @@ class TestTranspileExamples(unittest.TestCase):
         self.assertIn("algorithm: RS256", out)
         self.assertIn("key-id:    build-key-2024", out)
         self.assertIn("MEUCIQDXample", out)
+        # externalReferences[] block on the lodash component: two
+        # entries (website + vcs); chalk stays externalReferences-free
+        # to exercise the absent-array branch.
+        self.assertIn("external refs (2):", out)
+        self.assertIn("[website]", out)
+        self.assertIn("https://lodash.com", out)
+        self.assertIn("[vcs]", out)
+        self.assertIn("https://github.com/lodash/lodash", out)
         self.assertIn("Validation: ok (refs resolve + acyclic)", out)
 
     def test_net_attenuation(self):
