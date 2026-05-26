@@ -305,11 +305,46 @@ the current Wasm critical path.
   the one real risk (interleaving with `///` doc comments
   before items) and prescribes a 9th test plus a one-helper
   adjustment to de-risk before Phase 3.
-  Phase 3 (pretty-printer that consumes the CommentMap) and
-  Phase 4 (wiring to `--fmt`) remain. The design doc proposes
-  promoting `capa/formatter.py` to a `capa/formatter/` package
-  split into `_lines.py` / `_comments.py` / `_emit.py` for the
-  bigger surface.
+  Phase 2 landed 2026-05-26: `CommentMap` implementation at
+  [`capa/formatter/_comments.py`](capa/formatter/_comments.py)
+  (588 LOC). Implements the locked design verbatim: side-table
+  keyed by `id(node)` with four slots (`leading`, `trailing`,
+  `trailing_header`, `interior`); trailing-vs-standalone-vs-
+  floating triage via the positional rule; section-divider regex
+  + doc-comment-adjacency triage for the de-risk case from
+  design 7. 10 unit tests in
+  `tests/test_comment_map.py::TestCommentMap` cover every shape
+  from the design. Invariant `len(cmap) == len(lexer.comments)`
+  holds on 3 sampled corpora files (68 / 69 / 66 comments).
+  Phase 3 landed 2026-05-26: AST pretty-printer at
+  [`capa/formatter/_emit.py`](capa/formatter/_emit.py) (entry +
+  `_Emitter`, 242 LOC) plus per-category emitters
+  `_emit_items.py` (329), `_emit_stmts.py` (394),
+  `_emit_exprs.py` (466). Total 1431 LOC. Handles all 50+ AST
+  node types with precedence-based parenthesisation; emits all
+  4 type expressions and all 7 patterns; escapes string
+  literals canonically (including `\u{1b}` for ESC per the
+  Capa lexer constraint). 66 tests in
+  `tests/test_pretty_printer.py`: `TestPrettyPrinterStructure`
+  (64 targeted snippets), `TestPrettyPrinterRoundtrip` (the
+  key invariant: parse -> emit -> parse produces a structurally
+  equivalent AST on 71 corpus files: 51 examples + 20
+  sbom_diff), `TestPrettyPrinterIdempotence` (byte-exact
+  `fmt(fmt(src)) == fmt(src)`). Package layout follows the
+  design's split:
+  `capa/formatter/{__init__,_lines,_comments,_emit,_emit_*}.py`.
+  Phase 4 partially landed 2026-05-26: AST roundtrip pipeline
+  is reachable via `format_source_emit` (re-exported from
+  `capa.formatter`), but is NOT the default for `--fmt` yet.
+  A corpus smoke run surfaced comment-ordering quirks - when
+  multiple `//` comments attach as `leading` on the same node,
+  the emit order can diverge from source order in section-
+  divider-wrapped blocks. The structural AST roundtrip is
+  unaffected (71/71 files pass), but cosmetic output is wrong
+  for the wrapped-divider shape. The fix lands before Phase 4
+  promotes the pipeline to default; tracking as the residual
+  v3 work below. Full suite stays at 1729 passed / 5 skipped
+  / 0 fail.
 
 - [~] **Test-coverage review**. Three passes landed:
   - 2026-05-25 (1): `capa/runtime/_wasm_component_host.py`
