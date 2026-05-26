@@ -1,0 +1,440 @@
+// SPDX 2.3 tag-value parser, the text-format companion to
+// examples/spdx_parser.capa. Together they show that Capa can
+// read both blessed SPDX serialisations: the JSON tree handled
+// by the JSON parser and the line-oriented "tag-value" form
+// emitted by the SPDX tools chain (`Tag:Value` per line, blank
+// lines and `## section` headers as cosmetic separators).
+//
+// What this demo shows:
+//
+// - A stateful, line-by-line parser distinct from the JSON
+//   tree-walker. State lives in `var` accumulators and a pair of
+//   `pkg_open` / `ann_open` flags; package and annotation
+//   records are flushed on the next boundary tag and on EOF.
+// - A second style of typed-error reporting on Result, with
+//   parse-time rejection (pointing the user at the JSON parser)
+//   for the SPDX features that v1 does not cover.
+// - String walking with `substring(i, i+1)`, the same idiom used
+//   by `capa/ir/_builtin_json.capa` for its number formatter:
+//   `index_of` exists but is flagged as not yet wired in the
+//   Wasm backend, so substring scanning keeps both backends
+//   parity-clean.
+//
+// Scope (v1):
+//   - document fields: SPDXVersion, DataLicense, SPDXID,
+//     DocumentName, DocumentNamespace
+//   - creation info: Creator (multi), Created
+//   - packages: PackageName, SPDXID, PackageVersion,
+//     PackageDownloadLocation, PackageLicenseConcluded,
+//     PackageLicenseDeclared, FilesAnalyzed, PackageChecksum
+//     (multi)
+//   - document-level annotations: Annotator, AnnotationDate,
+//     AnnotationType, AnnotationComment (4-tag groups)
+//   - relationships
+//   - validation: refs resolve + annotation-kind enum
+//
+// Out of scope (rejected at parse time with a clear error
+// pointing the user at the JSON parser):
+//   - multi-line `<text>...</text>` value blocks
+//   - snippets (SnippetSPDXID, SnippetByteRange, ...)
+//   - extracted licensing info (LicenseID, ExtractedText, ...)
+//   - external document refs (ExternalDocumentRef)
+//   - per-package annotations
+//   - CreatorComment
+
+capability SbomReader
+    fun read(self, source: String) -> Result<String, String>
+
+type Checksum {
+    algorithm: String,
+    value: String
+}
+
+type Package {
+    spdx_id: String,
+    name: String,
+    version: String,
+    download_location: String,
+    license_concluded: String,
+    license_declared: String,
+    files_analyzed: Bool,
+    checksums: List<Checksum>
+}
+
+// SPDX 2.3 annotation: machine-readable comment attached to the
+// document. `type` is a Capa keyword, so the AnnotationType tag
+// is stored as `kind` (mirrors Relationship and the JSON
+// parser).
+type Annotation {
+    annotator: String,
+    date: String,
+    kind: String,
+    comment: String
+}
+
+type Relationship {
+    source: String,
+    kind: String,
+    target: String
+}
+
+type CreationInfo {
+    created: String,
+    creators: List<String>
+}
+
+type SpdxDocument {
+    spdx_version: String,
+    data_license: String,
+    spdx_id: String,
+    name: String,
+    document_namespace: String,
+    creation_info: CreationInfo,
+    packages: List<Package>,
+    relationships: List<Relationship>,
+    annotations: List<Annotation>
+}
+
+// Local return type for split_tag. An anonymous tuple
+// `Option<(String, String)>` would do the job, but tuple
+// `Option` shape isn't exercised in any current example and a
+// named struct ?-chains cleanly through the parser body.
+type TagValue {
+    tag: String,
+    value: String
+}
+
+// ---- tag-value tokenisation ----
+//
+// `Tag: Value` splits on the FIRST `:`. The value is trimmed;
+// the tag is taken verbatim (SPDX tag identifiers are letters
+// only). Lines without a colon and unknown tags are surfaced as
+// errors by the caller.
+
+fun split_tag(line: String) -> Option<TagValue>
+    let n = line.length()
+    var i = 0
+    while i < n and line.substring(i, i + 1) != ":"
+        i = i + 1
+    if i >= n
+        return None
+    let tag = line.substring(0, i)
+    let value = line.substring(i + 1, n).trim()
+    return Some(TagValue { tag: tag, value: value })
+
+// PackageChecksum values are themselves "ALGO: HEX" pairs;
+// split on the first `:` again.
+fun split_checksum_value(raw: String) -> Result<Checksum, String>
+    let n = raw.length()
+    var i = 0
+    while i < n and raw.substring(i, i + 1) != ":"
+        i = i + 1
+    if i >= n
+        return Err("PackageChecksum value '${raw}' missing ALGO:VALUE separator")
+    let algo = raw.substring(0, i).trim()
+    let hex = raw.substring(i + 1, n).trim()
+    if algo == "" or hex == ""
+        return Err("PackageChecksum value '${raw}' has empty algorithm or hash")
+    return Ok(Checksum { algorithm: algo, value: hex })
+
+// Relationship values are space-separated triples
+// "SOURCE TYPE TARGET". `split(" ")` is enough; the SPDX
+// element ids never contain whitespace.
+fun split_relationship(raw: String) -> Result<Relationship, String>
+    let parts = raw.split(" ")
+    let cleaned: List<String> = []
+    for p in parts
+        if not p.is_empty()
+            cleaned.push(p)
+    if cleaned.length() != 3
+        return Err("Relationship value '${raw}' must be 'SOURCE TYPE TARGET'")
+    return Ok(Relationship {
+        source: cleaned.get(0).unwrap_or(""),
+        kind: cleaned.get(1).unwrap_or(""),
+        target: cleaned.get(2).unwrap_or("")
+    })
+
+// ---- state-machine parser ----
+//
+// One linear pass over `source.split("\n")`, accumulating into
+// `var` locals. A package opens on its first `PackageName:`
+// tag; subsequent Package* tags fold into the open package; the
+// package is flushed (built and pushed) on the next
+// `PackageName:`, the first `Relationship:`, or EOF.
+// Annotations follow the same flush pattern across their 4-tag
+// group (Annotator, AnnotationDate, AnnotationType,
+// AnnotationComment).
+
+fun parse_spdx_tag(source: String) -> Result<SpdxDocument, String>
+    var spdx_version: String = ""
+    var data_license: String = ""
+    var spdx_id: String = ""
+    var name: String = ""
+    var document_namespace: String = ""
+    var created: String = ""
+    let creators: List<String> = []
+    let packages: List<Package> = []
+    let relationships: List<Relationship> = []
+    let annotations: List<Annotation> = []
+
+    var pkg_open: Bool = false
+    var pkg_spdx_id: String = ""
+    var pkg_name: String = ""
+    var pkg_version: String = ""
+    var pkg_download: String = "NOASSERTION"
+    var pkg_lic_concluded: String = "NOASSERTION"
+    var pkg_lic_declared: String = "NOASSERTION"
+    var pkg_files_analyzed: Bool = true
+    var pkg_checksums: List<Checksum> = []
+
+    var ann_open: Bool = false
+    var ann_annotator: String = ""
+    var ann_date: String = ""
+    var ann_kind: String = ""
+    var ann_comment: String = ""
+
+    let lines = source.split("\n")
+    for raw in lines
+        let line = raw.trim()
+        if line == ""
+            continue
+        if line.starts_with("#")
+            continue
+        if line.contains("<text>") or line.contains("</text>")
+            return Err("multi-line <text>...</text> values are not supported in v1; use the JSON parser")
+
+        let tv = match split_tag(line)
+            None -> return Err("malformed tag-value line (missing ':'): '${line}'")
+            Some(t) -> t
+        let tag = tv.tag
+        let value = tv.value
+
+        // Document-level fields.
+        if tag == "SPDXVersion"
+            spdx_version = value
+            continue
+        if tag == "DataLicense"
+            data_license = value
+            continue
+        if tag == "DocumentName"
+            name = value
+            continue
+        if tag == "DocumentNamespace"
+            document_namespace = value
+            continue
+        if tag == "Creator"
+            creators.push(value)
+            continue
+        if tag == "Created"
+            created = value
+            continue
+        // SPDXID is context-sensitive: inside an open package it
+        // is that package's id; otherwise it is the document's.
+        if tag == "SPDXID"
+            if pkg_open
+                pkg_spdx_id = value
+            else
+                spdx_id = value
+            continue
+
+        // Package boundary: flush the open package (if any),
+        // reset accumulators, open a new one.
+        if tag == "PackageName"
+            if pkg_open
+                packages.push(Package {
+                    spdx_id: pkg_spdx_id,
+                    name: pkg_name,
+                    version: pkg_version,
+                    download_location: pkg_download,
+                    license_concluded: pkg_lic_concluded,
+                    license_declared: pkg_lic_declared,
+                    files_analyzed: pkg_files_analyzed,
+                    checksums: pkg_checksums
+                })
+            pkg_open = true
+            pkg_spdx_id = ""
+            pkg_name = value
+            pkg_version = ""
+            pkg_download = "NOASSERTION"
+            pkg_lic_concluded = "NOASSERTION"
+            pkg_lic_declared = "NOASSERTION"
+            pkg_files_analyzed = true
+            pkg_checksums = []
+            continue
+        if tag == "PackageVersion"
+            pkg_version = value
+            continue
+        if tag == "PackageDownloadLocation"
+            pkg_download = value
+            continue
+        if tag == "PackageLicenseConcluded"
+            pkg_lic_concluded = value
+            continue
+        if tag == "PackageLicenseDeclared"
+            pkg_lic_declared = value
+            continue
+        if tag == "FilesAnalyzed"
+            pkg_files_analyzed = value == "true"
+            continue
+        if tag == "PackageChecksum"
+            let cs = split_checksum_value(value)?
+            pkg_checksums.push(cs)
+            continue
+
+        // Annotation 4-tag groups, flushed at each new Annotator.
+        if tag == "Annotator"
+            if ann_open
+                annotations.push(Annotation {
+                    annotator: ann_annotator,
+                    date: ann_date,
+                    kind: ann_kind,
+                    comment: ann_comment
+                })
+            ann_open = true
+            ann_annotator = value
+            ann_date = ""
+            ann_kind = ""
+            ann_comment = ""
+            continue
+        if tag == "AnnotationDate"
+            ann_date = value
+            continue
+        if tag == "AnnotationType"
+            ann_kind = value
+            continue
+        if tag == "AnnotationComment"
+            ann_comment = value
+            continue
+
+        // Relationship: any open package or annotation group is
+        // flushed first, then the triple is pushed.
+        if tag == "Relationship"
+            if pkg_open
+                packages.push(Package {
+                    spdx_id: pkg_spdx_id,
+                    name: pkg_name,
+                    version: pkg_version,
+                    download_location: pkg_download,
+                    license_concluded: pkg_lic_concluded,
+                    license_declared: pkg_lic_declared,
+                    files_analyzed: pkg_files_analyzed,
+                    checksums: pkg_checksums
+                })
+                pkg_open = false
+            if ann_open
+                annotations.push(Annotation {
+                    annotator: ann_annotator,
+                    date: ann_date,
+                    kind: ann_kind,
+                    comment: ann_comment
+                })
+                ann_open = false
+            let rel = split_relationship(value)?
+            relationships.push(rel)
+            continue
+
+        // Out-of-scope tags: point the user at the JSON parser.
+        if tag == "SnippetSPDXID" or tag == "LicenseID" or tag == "ExtractedText" or tag == "ExternalDocumentRef" or tag == "CreatorComment"
+            return Err("tag '${tag}' is out of scope for v1; use the JSON parser")
+
+        return Err("unknown SPDX tag '${tag}'")
+
+    if pkg_open
+        packages.push(Package {
+            spdx_id: pkg_spdx_id,
+            name: pkg_name,
+            version: pkg_version,
+            download_location: pkg_download,
+            license_concluded: pkg_lic_concluded,
+            license_declared: pkg_lic_declared,
+            files_analyzed: pkg_files_analyzed,
+            checksums: pkg_checksums
+        })
+    if ann_open
+        annotations.push(Annotation {
+            annotator: ann_annotator,
+            date: ann_date,
+            kind: ann_kind,
+            comment: ann_comment
+        })
+
+    return Ok(SpdxDocument {
+        spdx_version: spdx_version,
+        data_license: data_license,
+        spdx_id: spdx_id,
+        name: name,
+        document_namespace: document_namespace,
+        creation_info: CreationInfo { created: created, creators: creators },
+        packages: packages,
+        relationships: relationships,
+        annotations: annotations
+    })
+
+// ---- validation: referential integrity ----
+//
+// Mirrors the v1 subset of the JSON parser's `validate_spdx`:
+// every Relationship's source and target must point at a
+// declared SPDXID, and document annotations must use a known
+// AnnotationType. Cycle detection is intentionally dropped from
+// the tag-value v1; that didactic point lives in the JSON
+// parser.
+
+fun collect_spdx_ids(doc: SpdxDocument) -> Set<String>
+    let ids: Set<String> = new_set()
+    ids.add(doc.spdx_id)
+    for p in doc.packages
+        ids.add(p.spdx_id)
+    return ids
+
+fun validate_spdx(doc: SpdxDocument) -> List<String>
+    let ids = collect_spdx_ids(doc)
+    let errors: List<String> = []
+    for r in doc.relationships
+        if not ids.contains(r.source)
+            errors.push("relationship source '${r.source}' is not a known SPDXID")
+        if not ids.contains(r.target)
+            errors.push("relationship target '${r.target}' is not a known SPDXID")
+    for a in doc.annotations
+        if a.kind != "REVIEW" and a.kind != "OTHER"
+            errors.push("document has annotation with invalid type '${a.kind}'")
+    return errors
+
+// ---- demo ----
+
+fun main(stdio: Stdio)
+    // SPDX 2.3 tag-value sample exercising every supported tag.
+    // Capa string literals do not span newlines in v1, so the
+    // sample is a single string with `\n` escapes; in real
+    // pipelines the SBOM comes from an Fs.read.
+    let sample = "SPDXVersion: SPDX-2.3\nDataLicense: CC0-1.0\nSPDXID: SPDXRef-DOCUMENT\nDocumentName: capa-demo-sbom\nDocumentNamespace: https://example.org/sbom/capa-demo-001\n\n## Creation Information\nCreator: Tool: capa-0.6\nCreator: Person: Nelson Duarte\nCreated: 2026-05-13T10:00:00Z\n\n## Package: capa\nPackageName: capa\nSPDXID: SPDXRef-Package-capa\nPackageVersion: 0.6.0-alpha\nPackageDownloadLocation: https://github.com/nelsonduarte/capa-language\nPackageLicenseConcluded: Apache-2.0\nPackageLicenseDeclared: Apache-2.0\nFilesAnalyzed: true\nPackageChecksum: SHA1: aaaabbbbccccddddeeeeffffaaaabbbbccccdddd\nPackageChecksum: SHA256: 0011223344556677889900aabbccddeeff0011223344556677889900aabbccdd\n\n## Annotations\nAnnotator: Tool: capa-0.6\nAnnotationDate: 2026-05-13T10:00:00Z\nAnnotationType: OTHER\nAnnotationComment: summary:total_functions=42\n\n## Relationships\nRelationship: SPDXRef-DOCUMENT DESCRIBES SPDXRef-Package-capa"
+
+    match parse_spdx_tag(sample)
+        Err(msg) ->
+            stdio.eprintln("SPDX tag-value parse failed: ${msg}")
+        Ok(doc) ->
+            stdio.println("SPDX document (tag-value): ${doc.name}")
+            stdio.println("  version:   ${doc.spdx_version}")
+            stdio.println("  namespace: ${doc.document_namespace}")
+            stdio.println("  created:   ${doc.creation_info.created}")
+            stdio.println("  creators:  ${doc.creation_info.creators.length()} entries")
+            stdio.println("  annotations: ${doc.annotations.length()}")
+            stdio.println("")
+            stdio.println("Packages (${doc.packages.length()}):")
+            for p in doc.packages
+                stdio.println("  - ${p.name} ${p.version}")
+                stdio.println("      license: ${p.license_concluded}")
+                stdio.println("      checksums: ${p.checksums.length()}")
+                for c in p.checksums
+                    stdio.println("        ${c.algorithm} = ${c.value}")
+            stdio.println("")
+            stdio.println("Relationships (${doc.relationships.length()}):")
+            for r in doc.relationships
+                stdio.println("  - ${r.source} -[${r.kind}]-> ${r.target}")
+            stdio.println("")
+            let violations = validate_spdx(doc)
+            if violations.is_empty()
+                stdio.println("Validation: ok (refs resolve)")
+            else
+                stdio.println("Validation: ${violations.length()} issue(s)")
+                for v in violations
+                    stdio.println("  - ${v}")

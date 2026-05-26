@@ -1591,6 +1591,26 @@ class TestTranspileExamples(unittest.TestCase):
         self.assertIn("SHA1 =  d6a770ba38583ed4bb4525bd96e50461655d2759", out)
         self.assertIn("Validation: ok (refs resolve + acyclic)", out)
 
+    def test_spdx_tag_parser(self):
+        # SPDX 2.3 tag-value (text format) parsing in Capa: the
+        # text-format companion to test_spdx_parser. Reads a
+        # line-oriented `Tag: Value` SBOM, accumulates a typed
+        # Capa AST via a stateful one-pass parser distinct from
+        # the JSON tree-walker, then validates referential
+        # integrity. Exercises substring-scan tokenisation and
+        # the package / annotation flush state machine.
+        rc, out, err = self._run_example("examples/spdx_tag_parser.capa")
+        self.assertEqual(rc, 0, err)
+        self.assertIn("SPDX document (tag-value): capa-demo-sbom", out)
+        self.assertIn("version:   SPDX-2.3", out)
+        self.assertIn("Packages (1):", out)
+        self.assertIn("capa 0.6.0-alpha", out)
+        self.assertIn("SHA1 = aaaabbbbcccc", out)
+        self.assertIn("Relationships (1):", out)
+        self.assertIn("DESCRIBES", out)
+        self.assertIn("annotations: 1", out)
+        self.assertIn("Validation: ok (refs resolve)", out)
+
     def test_cve_torchtriton(self):
         # Fifth CVE walkthrough: the PyTorch nightly typosquat that
         # exfiltrated SSH keys + env via Fs/Net/Env abuse from a

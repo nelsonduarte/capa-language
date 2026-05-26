@@ -209,9 +209,8 @@ the current Wasm critical path.
 - [~] **CycloneDX / SPDX parsers, pending optional fields**.
   `examples/cyclonedx_parser.capa` and
   `examples/spdx_parser.capa` cover the core fields with
-  validation passes. Missing: the tag-value alternative
-  serialisation; the "representation + validation" writeup
-  tying them together. ⏱ 8-12h each.
+  validation passes. Missing: the "representation + validation"
+  writeup tying them together. ⏱ 8-12h each.
   Progress 2026-05-25: SPDX `annotations[]` parsing landed at both
   document and package scope with a per-annotation
   `kind in {REVIEW, OTHER}` validator; locked by two new
@@ -228,6 +227,7 @@ the current Wasm critical path.
   Progress 2026-05-26: SPDX externalDocumentRefs[] parsing landed with DocumentRef- prefix + non-empty URI + complete-checksum validators; locked by four new assertIn lines on test_spdx_parser.
   Progress 2026-05-26: CycloneDX externalReferences[] per-component parsing landed with the 39-entry type enum + non-empty URL validator; locked by 5 new assertIn lines on test_cyclonedx_parser.
   Progress 2026-05-26: CycloneDX compositions[] parsing landed with 10-value aggregate enum + assembly/dependency/vulnerability ref-resolution validators; locked by five new assertIn lines on test_cyclonedx_parser.
+  Progress 2026-05-26: SPDX tag-value (text format) parser landed as a new self-contained example examples/spdx_tag_parser.capa with state-machine line-by-line parsing covering document headers + creation info + packages (with checksums) + document-level annotations + relationships. Multi-line <text>...</text> blocks, snippets, extracted licenses, external doc refs, and per-package annotations are deferred to v2 with an explicit parse-time error. Locked by 9 assertIn lines on a new test_spdx_tag_parser.
 
 - [x] **SBOM-capability audit example, structural policies**
   (closed 2026-05-25). `examples/sbom_capability_audit.capa`
