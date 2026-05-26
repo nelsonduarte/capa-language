@@ -70,6 +70,51 @@ No remaining work in this priority.
 Strengthens the capability + supply-chain claim, but isn't on
 the current Wasm critical path.
 
+- [ ] **Compiler bugs surfaced by capa_governance_pack stress
+  test 2026-05-26**. Five findings from writing the first
+  real-world ~900-LOC downstream Capa program
+  ([nelsonduarte/capa_governance_pack](https://github.com/nelsonduarte/capa_governance_pack)):
+  1. **MEDIUM. Variant name collision shadows built-in
+     `Result::Ok`.** Declaring `pub type S = Ok | Bad` makes
+     every subsequent `Ok(value)` in a `Result`-returning
+     function resolve to the user's nullary variant, producing
+     `error: variant 'Ok' takes no payload`. Repro:
+     ```
+     pub type S = Ok | Bad
+     fun probe() -> Result<Int, String>
+         return Ok(1)
+     ```
+     Fix: resolver should consult the expected type (a la GHC
+     type-directed name resolution), OR the parser should
+     reject user-declared variants whose unqualified name
+     collides with `Ok` / `Err` / `Some` / `None`. Workaround
+     used in capa_governance_pack: rename to `Compliant`.
+  2. **LOW (cosmetic). Formatter v3 orphans trailing `//`
+     comment on a `match` arm body.** A `// tolerate` comment
+     on a `Some(v) -> as_string_or_err(v, "x")? // tolerate`
+     arm body gets hoisted to its own line one indent up after
+     `--fmt`. Idempotent at fixpoint but reads as a top-level
+     note rather than an arm-body note.
+  3. **LOW (cosmetic). Formatter v3 glues `// =====` divider
+     to `///` doc block.** A blank line between a section
+     divider and the next function's doc comment is stripped,
+     producing a visually noisy header. Output still
+     well-formed; idempotent.
+  4. **LOW (diagnostic clarity). Top-of-file `///` errors
+     unhelpfully on next `import`.** `/// module doc\nimport x`
+     produces `error: doc comments are not valid on 'import'`.
+     Better: accept `///` at file top as module doc, OR
+     improve the message to suggest `//` for module headers.
+  5. **OBSERVATION. `--cyclonedx` emits mangled cross-module
+     non-pub names** (`_capa_m2__as_object_or_err`). Regulator-
+     visible names should be source-level. The governance pack
+     itself works around this when consuming its own SBOM
+     would be wanted; ideally a de-mangling pass before
+     emission.
+  These were all caught by writing the first real-world Capa
+  program of substantial size end-to-end; none broke the
+  stress test (all 5 had inline workarounds), but each is a
+  real polish item before pitching Capa to enterprise users.
 
 - [x] **Wasm backend: FormatStr on arbitrary user struct types**
   (closed 2026-05-24). Design decision: opt-in Display protocol
