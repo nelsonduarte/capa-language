@@ -206,11 +206,19 @@ the current Wasm critical path.
   meaningful infrastructure investment on top of writing
   tests, so belongs in its own slice). ⏱ ~4-6h.
 
-- [~] **CycloneDX / SPDX parsers, pending optional fields**.
-  `examples/cyclonedx_parser.capa` and
-  `examples/spdx_parser.capa` cover the core fields with
-  validation passes. Missing: the "representation + validation"
-  writeup tying them together. ⏱ 8-12h each.
+- [x] **CycloneDX / SPDX parsers, pending optional fields**
+  (closed 2026-05-26). Three parser examples
+  (`examples/spdx_parser.capa`, `examples/spdx_tag_parser.capa`,
+  `examples/cyclonedx_parser.capa`) cover the JSON-schema
+  surface of both SPDX 2.3 and CycloneDX 1.5 plus the
+  alternative tag-value serialisation for SPDX. The
+  "representation + validation" writeup tying them together is
+  at [`docs/sbom-parsers.md`](docs/sbom-parsers.md), explaining
+  the split between `parse_*` (typed AST) and `validate_*`
+  (semantic checks on top of the AST), cataloguing every
+  validator across the three parsers, and connecting them to
+  the downstream `examples/sbom_capability_audit.capa`
+  consumer. Sub-item progress journal below kept for reference.
   Progress 2026-05-25: SPDX `annotations[]` parsing landed at both
   document and package scope with a per-annotation
   `kind in {REVIEW, OTHER}` validator; locked by two new
