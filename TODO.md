@@ -209,11 +209,11 @@ the current Wasm critical path.
 - [~] **CycloneDX / SPDX parsers, pending optional fields**.
   `examples/cyclonedx_parser.capa` and
   `examples/spdx_parser.capa` cover the core fields with
-  validation passes. Missing: CycloneDX
-  signatures; the tag-value
-  alternative serialisation; the "representation + validation"
-  writeup tying them together. ⏱ 8-12h each. Progress
-  2026-05-25: SPDX `annotations[]` parsing landed at both
+  validation passes. Missing: SPDX external document refs;
+  CycloneDX `compositions[]`; CycloneDX `externalReferences[]`;
+  the tag-value alternative serialisation; the "representation
+  + validation" writeup tying them together. ⏱ 8-12h each.
+  Progress 2026-05-25: SPDX `annotations[]` parsing landed at both
   document and package scope with a per-annotation
   `kind in {REVIEW, OTHER}` validator; locked by two new
   `assertIn` lines on `test_spdx_parser`.
@@ -225,6 +225,7 @@ the current Wasm critical path.
   Progress 2026-05-25: SPDX hasExtractedLicensingInfos[] parsing landed with LicenseRef- prefix + non-empty extractedText validators; locked by four new assertIn lines on test_spdx_parser.
   Progress 2026-05-26: CycloneDX evidence (identity + occurrences + copyright) per-component landed with field / technique enum validators + confidence-bounds check; locked by five new assertIn lines on test_cyclonedx_parser.
   Progress 2026-05-26: SPDX snippets[] parsing landed with SPDXRef- prefix + non-empty-ranges + monotonic-offset validators (byte-offset pointer shape only; line-pointer pointer rejected at parse time); locked by five new assertIn lines on test_spdx_parser.
+  Progress 2026-05-26: CycloneDX JSF signature parsing landed with algorithm enum + non-empty value validators; verification crypto stays out of scope. Locked by four new assertIn lines on test_cyclonedx_parser.
 
 - [x] **SBOM-capability audit example, structural policies**
   (closed 2026-05-25). `examples/sbom_capability_audit.capa`

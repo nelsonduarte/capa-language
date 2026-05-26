@@ -2045,6 +2045,12 @@ class TestTranspileExamples(unittest.TestCase):
         self.assertIn("method: manifest-analysis @ 1.0 (package-lock.json)", out)
         self.assertIn("node_modules/lodash/index.js", out)
         self.assertIn("Copyright OpenJS Foundation and contributors", out)
+        # signature block: JSF header with algorithm + keyId + value.
+        # value is matched as a prefix to keep the truncation idiom free.
+        self.assertIn("Signature: present", out)
+        self.assertIn("algorithm: RS256", out)
+        self.assertIn("key-id:    build-key-2024", out)
+        self.assertIn("MEUCIQDXample", out)
         self.assertIn("Validation: ok (refs resolve + acyclic)", out)
 
     def test_net_attenuation(self):
