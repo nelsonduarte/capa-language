@@ -43,7 +43,7 @@ lexer.
 from typing import Optional
 
 from ..errors import LexerError
-from ..tokens import KEYWORDS, Pos, Token, TokenKind
+from ..tokens import KEYWORDS, Comment, Pos, Token, TokenKind
 
 from ._comments import _CommentsMixin
 from ._indent import _IndentMixin
@@ -137,6 +137,12 @@ class Lexer(
 
         # Token accumulator.
         self.tokens: list[Token] = []
+
+        # Sidecar list of plain comments (// and /* ... */) for the
+        # formatter's AST round-trip. The token stream itself does
+        # not contain these; doc comments (/// and /**) still emit
+        # DOC_COMMENT tokens through the existing path.
+        self.comments: list[Comment] = []
 
     # ===========================================================
     # Cursor helpers

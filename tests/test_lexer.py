@@ -10,6 +10,7 @@ via parentheses and via backslash, and error detection with position.
 import unittest
 
 from capa import Lexer, LexerError, TokenKind
+from capa.tokens import CommentKind
 
 
 def lex(source: str) -> list:
@@ -432,6 +433,133 @@ class TestComments(unittest.TestCase):
     def test_unterminated_block_comment_rejected(self):
         with self.assertRaises(LexerError):
             lex("/* never ends")
+
+
+# =============================================================
+# Comment sidecar (formatter v3 Phase 1)
+# =============================================================
+
+class TestCommentSidecar(unittest.TestCase):
+    def test_line_comment_captured(self):
+        # Confirm a single // comment lands in lexer.comments,
+        # the token stream does NOT contain it, and the position
+        # + text round-trip the source.
+        lexer = Lexer("// hello\nx = 1\n")
+        lexer.lex()
+        self.assertEqual(len(lexer.comments), 1)
+        c = lexer.comments[0]
+        self.assertEqual(c.kind, CommentKind.LINE)
+        self.assertEqual(c.text, "// hello")
+        self.assertEqual(c.start.line, 1)
+        self.assertEqual(c.start.col, 1)
+        # end sits just before the newline.
+        self.assertEqual(c.end.line, 1)
+        self.assertEqual(c.end.col, 9)
+        # Token stream contains no DOC_COMMENT and no COMMENT marker.
+        kinds_seen = [t.kind for t in lexer.tokens]
+        self.assertNotIn(TokenKind.DOC_COMMENT, kinds_seen)
+
+    def test_block_comment_captured(self):
+        # Confirm /* ... */ lands in lexer.comments and text
+        # includes the markers.
+        lexer = Lexer("/* hello world */\nx = 1\n")
+        lexer.lex()
+        self.assertEqual(len(lexer.comments), 1)
+        c = lexer.comments[0]
+        self.assertEqual(c.kind, CommentKind.BLOCK)
+        self.assertEqual(c.text, "/* hello world */")
+        self.assertEqual(c.start.line, 1)
+        self.assertEqual(c.start.col, 1)
+        # Round-trip: source slice equals text.
+        self.assertEqual(lexer.source[c.start.offset:c.end.offset], c.text)
+
+    def test_nested_block_comment_captured_once(self):
+        # /* outer /* inner */ outer */ produces ONE comment with
+        # the full text, matching the depth-tracking behaviour.
+        src = "/* outer /* inner */ outer */ x"
+        lexer = Lexer(src)
+        lexer.lex()
+        self.assertEqual(len(lexer.comments), 1)
+        c = lexer.comments[0]
+        self.assertEqual(c.kind, CommentKind.BLOCK)
+        self.assertEqual(c.text, "/* outer /* inner */ outer */")
+
+    def test_doc_comment_not_in_sidecar(self):
+        # /// and /** still go through the existing DOC_COMMENT
+        # token path; they MUST NOT appear in lexer.comments.
+        lexer = Lexer("/// doc\nx = 1\n")
+        lexer.lex()
+        self.assertEqual(len(lexer.comments), 0)
+        kinds_seen = [t.kind for t in lexer.tokens]
+        self.assertIn(TokenKind.DOC_COMMENT, kinds_seen)
+
+    def test_doc_block_comment_not_in_sidecar(self):
+        # /** ... */ also stays out of the sidecar.
+        lexer = Lexer("/** doc */\nx = 1\n")
+        lexer.lex()
+        self.assertEqual(len(lexer.comments), 0)
+        kinds_seen = [t.kind for t in lexer.tokens]
+        self.assertIn(TokenKind.DOC_COMMENT, kinds_seen)
+
+    def test_comment_position_after_other_tokens(self):
+        # `x = 1 // trailing` should record the comment at the
+        # column of the first `/`.
+        lexer = Lexer("x = 1 // trailing\n")
+        lexer.lex()
+        self.assertEqual(len(lexer.comments), 1)
+        c = lexer.comments[0]
+        self.assertEqual(c.kind, CommentKind.LINE)
+        self.assertEqual(c.text, "// trailing")
+        # `x = 1 ` is 6 chars, so `/` is at column 7.
+        self.assertEqual(c.start.col, 7)
+        self.assertEqual(c.start.line, 1)
+
+    def test_multiple_line_comments(self):
+        # Multiple // lines stack up in order.
+        src = "// first\n// second\n// third\nx = 1\n"
+        lexer = Lexer(src)
+        lexer.lex()
+        self.assertEqual(len(lexer.comments), 3)
+        texts = [c.text for c in lexer.comments]
+        self.assertEqual(texts, ["// first", "// second", "// third"])
+        # Each subsequent comment has a higher line number.
+        lines = [c.start.line for c in lexer.comments]
+        self.assertEqual(lines, [1, 2, 3])
+
+    def test_multiline_block_comment_position(self):
+        # A block comment that spans multiple lines: end.line should
+        # be greater than start.line, and the text round-trip must
+        # cover the full span including markers.
+        src = "/* line 1\nline 2\nline 3 */\nx = 1\n"
+        lexer = Lexer(src)
+        lexer.lex()
+        self.assertEqual(len(lexer.comments), 1)
+        c = lexer.comments[0]
+        self.assertEqual(c.kind, CommentKind.BLOCK)
+        self.assertEqual(c.start.line, 1)
+        self.assertEqual(c.end.line, 3)
+        self.assertEqual(c.text, "/* line 1\nline 2\nline 3 */")
+        # Source slice matches text exactly.
+        self.assertEqual(lexer.source[c.start.offset:c.end.offset], c.text)
+
+    def test_token_stream_unchanged_with_comments(self):
+        # The PRESENCE of plain comments must NOT change the
+        # produced token stream. Lex `x = 1` twice, once with
+        # `// hello` prefixed and once without. The token stream
+        # (by kind + value) must be identical.
+        bare = Lexer("x = 1\n").lex()
+        with_comment = Lexer("// hello\nx = 1\n").lex()
+        bare_sig = [(t.kind, t.text, t.value) for t in bare]
+        commented_sig = [(t.kind, t.text, t.value) for t in with_comment]
+        self.assertEqual(bare_sig, commented_sig)
+
+    def test_token_stream_unchanged_with_trailing_block(self):
+        # Same invariant for a trailing block comment.
+        bare = Lexer("x = 1\n").lex()
+        with_block = Lexer("x = 1 /* hi */\n").lex()
+        bare_sig = [(t.kind, t.text, t.value) for t in bare]
+        block_sig = [(t.kind, t.text, t.value) for t in with_block]
+        self.assertEqual(bare_sig, block_sig)
 
 
 # =============================================================

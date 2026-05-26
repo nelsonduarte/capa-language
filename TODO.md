@@ -285,6 +285,31 @@ the current Wasm critical path.
   re-emission from the AST and `//` comment preservation through
   the AST round-trip. Comment-preservation design comes first;
   no AST round-trip is safe without it. ⏱ 8-12h, design-heavy.
+  Phase 1 landed 2026-05-26: lexer sidecar for plain comments.
+  `capa/tokens.py` gains `CommentKind` (LINE / BLOCK) and a
+  frozen `Comment` dataclass (kind, start, end, text);
+  `capa/lexer/__init__.py` gains `self.comments: list[Comment]`;
+  `_skip_line_comment` and `_skip_block_comment` in
+  `capa/lexer/_comments.py` now record into the sidecar before
+  consuming. Token stream is unchanged, so parser / analyzer /
+  transpiler / Wasm emitter see no difference. Full suite green
+  at 1653 / 5 skipped / 0 fail (10 new tests in
+  `TestCommentSidecar`).
+  Phase 2 design locked in
+  [`docs/formatter-v3-comment-map-design.md`](docs/formatter-v3-comment-map-design.md):
+  CommentMap as a side-table keyed by `id(node)` (matches
+  `analyzer.types` / `transpiler.types` convention); attachment
+  rules for trailing / standalone / floating per category;
+  separate slots `leading` / `trailing` / `trailing_header` /
+  `interior`; O((T+N) + C log(T+N)) algorithm. Doc identifies
+  the one real risk (interleaving with `///` doc comments
+  before items) and prescribes a 9th test plus a one-helper
+  adjustment to de-risk before Phase 3.
+  Phase 3 (pretty-printer that consumes the CommentMap) and
+  Phase 4 (wiring to `--fmt`) remain. The design doc proposes
+  promoting `capa/formatter.py` to a `capa/formatter/` package
+  split into `_lines.py` / `_comments.py` / `_emit.py` for the
+  bigger surface.
 
 - [~] **Test-coverage review**. Three passes landed:
   - 2026-05-25 (1): `capa/runtime/_wasm_component_host.py`

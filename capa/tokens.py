@@ -225,3 +225,31 @@ class Token:
         if self.value is not None and self.value != self.text:
             return f"Token({self.kind.name}, {self.text!r}, value={self.value!r}, {self.start})"
         return f"Token({self.kind.name}, {self.text!r}, {self.start})"
+
+
+class CommentKind(Enum):
+    LINE = "line"      # // ...
+    BLOCK = "block"    # /* ... */
+
+
+@dataclass(frozen=True)
+class Comment:
+    """A plain (non-doc) comment captured by the lexer.
+
+    Plain comments do not participate in parsing: they are
+    discarded from the token stream and instead collected into the
+    Lexer's ``comments`` sidecar list. The formatter consults this
+    sidecar to preserve comments through an AST round-trip.
+
+    - kind: LINE for ``// ...``, BLOCK for ``/* ... */``.
+    - start, end: positions in the source (start is at the first
+      ``/``; end is one past the last character of the comment:
+      for LINE that is just before the newline; for BLOCK that is
+      one past the closing ``/``).
+    - text: the exact source slice from ``start.offset`` to
+      ``end.offset``, including the opening and closing markers.
+    """
+    kind: CommentKind
+    start: Pos
+    end: Pos
+    text: str

@@ -16,17 +16,30 @@ its text content as ``value``.
 
 from __future__ import annotations
 
-from ..tokens import TokenKind
+from ..tokens import Comment, CommentKind, TokenKind
 
 
 class _CommentsMixin:
     def _skip_line_comment(self) -> None:
-        """Skips // ... until the newline (without consuming the newline)."""
+        """Skips // ... until the newline (without consuming the newline).
+
+        The comment is also recorded in ``self.comments`` so the
+        formatter can preserve it across an AST round-trip; the
+        token stream itself is unaffected.
+        """
         # We are already at '/'; the second '/' is at peek(1).
+        start = self._pos()
         self._advance()  # /
         self._advance()  # /
         while not self._at_end() and self._peek() != "\n":
             self._advance()
+        end = self._pos()
+        self.comments.append(Comment(
+            kind=CommentKind.LINE,
+            start=start,
+            end=end,
+            text=self.source[start.offset - self._offset_delta:end.offset - self._offset_delta],
+        ))
 
     def _lex_doc_line_comment(self) -> None:
         """Emits a DOC_COMMENT token for ``/// text...`` up to (but not
@@ -95,7 +108,15 @@ class _CommentsMixin:
                 self._advance()
 
     def _skip_block_comment(self) -> None:
-        """Skips /* ... */, supporting nesting."""
+        """Skips /* ... */, supporting nesting.
+
+        The comment is also recorded in ``self.comments`` so the
+        formatter can preserve it across an AST round-trip; the
+        token stream itself is unaffected. Nested ``/* ... */``
+        pairs are collapsed into a single Comment whose text spans
+        from the outermost opening ``/*`` to the matching closing
+        ``*/``.
+        """
         start = self._pos()
         self._advance()  # /
         self._advance()  # *
@@ -113,3 +134,10 @@ class _CommentsMixin:
                 depth -= 1
             else:
                 self._advance()
+        end = self._pos()
+        self.comments.append(Comment(
+            kind=CommentKind.BLOCK,
+            start=start,
+            end=end,
+            text=self.source[start.offset - self._offset_delta:end.offset - self._offset_delta],
+        ))
