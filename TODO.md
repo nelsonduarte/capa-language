@@ -644,9 +644,32 @@ right primitives. Listed at the top of this section accordingly.
 - [~] **LSP server v2 polish**. v1 covers diagnostics, hover,
   go-to-definition, find-references, documentSymbol, code
   actions, rename, completion (floor + module scope + receiver
-  methods), semantic tokens. Pending items: none currently
-  identified at the LSP level. Re-evaluate after a real-user
-  session. ⏱ depends on what surfaces.
+  methods), semantic tokens.
+  Polish pass landed 2026-05-26: three more LSP features added
+  in parallel via sub-agents. (1) `textDocument/documentHighlight`
+  at [`capa/lsp/document_highlight.py`](capa/lsp/document_highlight.py)
+  (54 LOC): thin adapter over `compute_references` so the editor
+  highlights every in-file occurrence of the identifier under
+  the cursor; v1 emits `Text` kind only (read / write split
+  deferred). (2) `textDocument/foldingRange` at
+  [`capa/lsp/folding.py`](capa/lsp/folding.py) (153 LOC):
+  AST walk emitting gutter +/- regions for FunDecl, TypeStruct,
+  TypeSum, ImplBlock, TraitDecl, IfStmt, ForStmt, WhileStmt,
+  MatchExpr, LambdaExpr bodies; returns empty on parse failure
+  so a mid-edit file does not confuse the editor. (3)
+  `textDocument/formatting` + `textDocument/rangeFormatting`
+  at [`capa/lsp/formatting.py`](capa/lsp/formatting.py) (75
+  LOC): hooks the v3 formatter (`capa.formatter.format_source`)
+  to the editor's Format Document / Format Selection commands;
+  rangeFormatting falls back to whole-document since v3 is
+  parse-then-emit; never raises (the formatter has v1+v2
+  textual fallback). 11 new compute-level tests + 4 new
+  server-handler integration tests. Full suite 1770 / 5
+  skipped / 0 fail (was 1734 + 36 new).
+  Remaining v2 polish (not yet identified as user-blocking;
+  re-evaluate after a real-user session): signatureHelp,
+  inlayHint, workspace/symbol, codeLens, selectionRange.
+  ⏱ depends on what surfaces.
 
 - [~] **REPL v2**. MVP at `capa/repl.py` re-runs everything on
   each input (no incremental state). v2 needs incremental

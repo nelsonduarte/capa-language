@@ -405,6 +405,175 @@ class TestLspServerHandlersInProcess(unittest.TestCase):
 
 
 @unittest.skipUnless(
+    _HAVE_LSP,
+    "requires lsprotocol (pip install '.[lsp]')",
+)
+class TestLspDocumentHighlightHandlers(unittest.TestCase):
+    """Coverage for ``compute_document_highlights``: the
+    same-binding occurrence walker that backs
+    ``textDocument/documentHighlight``. We exercise the compute
+    helper directly rather than the wire handler because the
+    handler in ``server.py`` is a thin translation layer; the
+    interesting logic lives in this module.
+    """
+
+    def setUp(self):
+        from capa.lsp.document_highlight import (
+            compute_document_highlights,
+        )
+        self.highlight = compute_document_highlights
+
+    def test_highlight_on_identifier_returns_all_occurrences(self):
+        src = (
+            "fun foo(x: Int) -> Int\n"
+            "    let y = x + x\n"
+            "    return y + x\n"
+        )
+        # Cursor on the first body-occurrence of `x` (line 2, col 13).
+        hits = self.highlight(src, "t.capa", 2, 13)
+        self.assertIsNotNone(hits)
+        # Param decl + three uses = four highlights.
+        self.assertEqual(len(hits), 4)
+        self.assertTrue(all(h.name == "x" for h in hits))
+
+    def test_highlight_on_whitespace_returns_none(self):
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"hi\")\n"
+        )
+        # Column 1 of line 2 is whitespace inside the indent.
+        self.assertIsNone(self.highlight(src, "t.capa", 2, 1))
+
+    def test_highlight_on_function_name_returns_decl_plus_calls(self):
+        src = (
+            "fun foo() -> Int\n"
+            "    return 1\n"
+            "fun main(stdio: Stdio)\n"
+            "    let a = foo()\n"
+            "    let b = foo()\n"
+            "    stdio.println(\"${a}\")\n"
+            "    stdio.println(\"${b}\")\n"
+        )
+        # Cursor on `foo` in the declaration `fun foo()` (line 1, col 5).
+        hits = self.highlight(src, "t.capa", 1, 5)
+        self.assertIsNotNone(hits)
+        self.assertTrue(all(h.name == "foo" for h in hits))
+        # Decl on line 1 + two call sites on lines 4 and 5.
+        lines = sorted({h.line for h in hits})
+        self.assertEqual(lines, [1, 4, 5])
+
+    def test_highlight_kind_is_text_in_v1(self):
+        from lsprotocol import types as lsp
+        src = (
+            "fun foo(x: Int) -> Int\n"
+            "    return x + x\n"
+        )
+        hits = self.highlight(src, "t.capa", 2, 12)
+        self.assertIsNotNone(hits)
+        # v1: no read/write split, every kind is the wire `Text`.
+        # The handler's mapping is `"text" -> DocumentHighlightKind.Text`,
+        # so the module-level string must round-trip to that constant.
+        kind_map = {
+            "text":  lsp.DocumentHighlightKind.Text,
+            "read":  lsp.DocumentHighlightKind.Read,
+            "write": lsp.DocumentHighlightKind.Write,
+        }
+        for h in hits:
+            self.assertEqual(h.kind, "text")
+            self.assertEqual(
+                kind_map[h.kind], lsp.DocumentHighlightKind.Text,
+            )
+
+
+@unittest.skipUnless(
+    _HAVE_LSP and _HAVE_PYGLS,
+    "requires pygls + lsprotocol (pip install '.[lsp]')",
+)
+class TestLspFormattingHandlers(unittest.TestCase):
+    """Coverage for ``capa.lsp.formatting.compute_formatting`` and
+    ``compute_range_formatting``. The handlers are not yet wired
+    into ``_build_server()`` (that's a separate merge step), so
+    these tests exercise the pure functions directly. They follow
+    the same shape as ``TestLspServerHandlersInProcess`` so the
+    handler-wired versions can drop in later without churn.
+    """
+
+    def _compute_formatting(self):
+        from capa.lsp.formatting import compute_formatting
+        return compute_formatting
+
+    def _compute_range_formatting(self):
+        from capa.lsp.formatting import compute_range_formatting
+        return compute_range_formatting
+
+    def test_formatting_canonical_source_returns_no_edits(self):
+        from capa.formatter import format_source
+        canonical = format_source(
+            "fun main(stdio: Stdio)\n    let x = 1\n"
+        )
+        # Sanity: the formatter is idempotent on its own output.
+        self.assertEqual(format_source(canonical), canonical)
+        edits = self._compute_formatting()(canonical)
+        self.assertEqual(edits, [])
+
+    def test_formatting_non_canonical_source_returns_one_edit(self):
+        from capa.formatter import format_source
+        source = "fun main(stdio: Stdio)\n    let x  =  1\n"
+        expected = format_source(source)
+        self.assertNotEqual(source, expected)  # guard: input is non-canonical
+        edits = self._compute_formatting()(source)
+        self.assertEqual(len(edits), 1)
+        edit = edits[0]
+        self.assertEqual(edit.start_line, 1)
+        self.assertEqual(edit.start_col, 1)
+        # Range covers the whole document up to the past-end position.
+        lines = source.split("\n")
+        self.assertEqual(edit.end_line, len(lines))
+        self.assertEqual(edit.end_col, len(lines[-1]) + 1)
+        self.assertEqual(edit.new_text, expected)
+
+    def test_formatting_invalid_source_falls_back_safely(self):
+        # ``fun foo(`` is unterminated; the v3 AST round-trip will
+        # raise on parse, the formatter falls back to v1+v2 line-
+        # level, and the handler must surface whatever that returns
+        # without raising.
+        source = "fun foo("
+        from capa.formatter import format_source
+        expected = format_source(source)
+        # The line-level fallback at minimum adds a trailing newline,
+        # so the source is not canonical and we expect an edit.
+        self.assertNotEqual(source, expected)
+        try:
+            edits = self._compute_formatting()(source)
+        except Exception as exc:
+            self.fail(
+                f"compute_formatting must never raise; got {exc!r}"
+            )
+        self.assertEqual(len(edits), 1)
+        self.assertEqual(edits[0].new_text, expected)
+
+    def test_range_formatting_falls_back_to_whole_document(self):
+        # Asking for lines 1-2 only still produces a whole-document
+        # edit, per the scope cut documented in capa/lsp/formatting.py.
+        from capa.formatter import format_source
+        source = "fun main(stdio: Stdio)\n    let x  =  1\n"
+        expected = format_source(source)
+        edits = self._compute_range_formatting()(
+            source,
+            start_line=1, start_col=1,
+            end_line=2, end_col=1,
+        )
+        self.assertEqual(len(edits), 1)
+        edit = edits[0]
+        self.assertEqual(edit.start_line, 1)
+        self.assertEqual(edit.start_col, 1)
+        lines = source.split("\n")
+        self.assertEqual(edit.end_line, len(lines))
+        self.assertEqual(edit.end_col, len(lines[-1]) + 1)
+        self.assertEqual(edit.new_text, expected)
+
+
+@unittest.skipUnless(
     _HAVE_LSP and _HAVE_PYGLS,
     "requires pygls + lsprotocol (pip install '.[lsp]')",
 )
@@ -2070,6 +2239,122 @@ class TestLspModuleAwareness(unittest.TestCase):
                     str(Path(ident_file).resolve()), this,
                     f"ident from a different file leaked: {ident.name}",
                 )
+
+
+@unittest.skipUnless(_HAVE_LSP, "requires `pygls` extra (pip install '.[lsp]')")
+class TestFoldingRanges(unittest.TestCase):
+    """``textDocument/foldingRange`` produces the gutter +/-
+    regions the editor uses to collapse function bodies, type
+    bodies, control-flow blocks, and match-arm lists. Computed
+    from an AST walk; on lex / parse failure the result is an
+    empty list so a mid-edit buffer never shows spurious folds."""
+
+    def setUp(self):
+        from capa.lsp.folding import compute_folding_ranges
+        self.fold = compute_folding_ranges
+
+    def test_folding_function_body(self):
+        src = "fun foo()\n    let x = 1\n    return x\n"
+        ranges = self.fold(src)
+        self.assertTrue(
+            any(r.start_line == 1 and r.end_line >= 3 for r in ranges),
+            ranges,
+        )
+
+    def test_folding_type_struct(self):
+        src = "type Point {\n    x: Int,\n    y: Int\n}\n"
+        ranges = self.fold(src)
+        # Struct body fold starts at the `type` line and reaches
+        # the last field; the trailing `}` line is not tracked in
+        # the AST so end_line may be the last-field line.
+        self.assertTrue(
+            any(r.start_line == 1 and r.end_line >= 3 for r in ranges),
+            ranges,
+        )
+
+    def test_folding_type_sum_multi_line(self):
+        src = "type Color =\n    Red\n    Green\n    Blue\n"
+        ranges = self.fold(src)
+        self.assertTrue(
+            any(r.start_line == 1 and r.end_line >= 4 for r in ranges),
+            ranges,
+        )
+
+    def test_folding_nested_if(self):
+        src = (
+            "fun foo()\n"
+            "    if x > 0\n"
+            "        return 1\n"
+            "    return 0\n"
+        )
+        ranges = self.fold(src)
+        # One fold for the function body, one for the if branch.
+        self.assertGreaterEqual(len(ranges), 2)
+        starts = {r.start_line for r in ranges}
+        self.assertIn(1, starts)  # function body
+        self.assertIn(2, starts)  # if body
+
+    def test_folding_single_line_construct_not_folded(self):
+        src = "fun foo() = 1\n"
+        ranges = self.fold(src)
+        self.assertEqual(ranges, [])
+
+    def test_folding_match_expression(self):
+        src = (
+            "fun foo() -> Int\n"
+            "    match x\n"
+            "        1 -> 1\n"
+            "        _ -> 0\n"
+        )
+        ranges = self.fold(src)
+        # At least one fold whose span covers the match arms
+        # (start at the `match` line, ending at the last arm).
+        self.assertTrue(
+            any(r.start_line == 2 and r.end_line >= 4 for r in ranges),
+            ranges,
+        )
+
+    def test_folding_invalid_source_returns_empty(self):
+        src = "fun foo(\n"
+        self.assertEqual(self.fold(src), [])
+
+
+@unittest.skipUnless(
+    _HAVE_LSP and _HAVE_PYGLS,
+    "requires pygls + lsprotocol (pip install '.[lsp]')",
+)
+class TestLspFoldingHandler(TestLspServerHandlersInProcess):
+    """Integration check: when the registered ``textDocument/foldingRange``
+    handler is wired in ``server.py``, it must translate the
+    Capa-native ranges to 0-based LSP wire types. Skipped (per
+    test) until that handler exists so this file can ship before
+    the server wiring lands."""
+
+    def test_folding_handler_emits_zero_based_lsp_ranges(self):
+        from lsprotocol import types as lsp
+        method = lsp.TEXT_DOCUMENT_FOLDING_RANGE
+        if method not in self.server.protocol.fm.features:
+            self.skipTest("foldingRange handler not yet registered")
+        self._set_source(
+            "fun foo()\n    let x = 1\n    return x\n"
+        )
+        params = lsp.FoldingRangeParams(text_document=self._text_doc_id())
+        result = self._handler(method)(params)
+        self.assertIsNotNone(result)
+        self.assertTrue(
+            any(r.start_line == 0 and r.end_line >= 2 for r in result),
+            result,
+        )
+
+    def test_folding_handler_returns_none_on_invalid_source(self):
+        from lsprotocol import types as lsp
+        method = lsp.TEXT_DOCUMENT_FOLDING_RANGE
+        if method not in self.server.protocol.fm.features:
+            self.skipTest("foldingRange handler not yet registered")
+        self._set_source("fun foo(\n")
+        params = lsp.FoldingRangeParams(text_document=self._text_doc_id())
+        result = self._handler(method)(params)
+        self.assertIsNone(result)
 
 
 if __name__ == "__main__":

@@ -21,7 +21,10 @@ from .code_actions import compute_code_actions
 from .completion import compute_completions
 from .definition import compute_definition
 from .diagnostics import compute_diagnostics
+from .document_highlight import compute_document_highlights
 from .document_symbols import compute_document_symbols
+from .folding import compute_folding_ranges
+from .formatting import compute_formatting, compute_range_formatting
 from .hover import compute_hover
 from .references import compute_references
 from .rename import compute_prepare_rename, compute_rename
@@ -211,6 +214,122 @@ def _build_server():
             )
             for i in idents
         ]
+
+    # -----------------------------------------------------------
+    # Document highlight (textDocument/documentHighlight). When
+    # the cursor sits on an identifier, highlight every occurrence
+    # of the same binding in this document. Distinct from
+    # textDocument/references which spans the workspace.
+    # -----------------------------------------------------------
+
+    _highlight_kind = {
+        "text":  lsp.DocumentHighlightKind.Text,
+        "read":  lsp.DocumentHighlightKind.Read,
+        "write": lsp.DocumentHighlightKind.Write,
+    }
+
+    @server.feature(lsp.TEXT_DOCUMENT_DOCUMENT_HIGHLIGHT)
+    def document_highlight(ls, params: "lsp.DocumentHighlightParams"):
+        doc = ls.workspace.get_text_document(params.text_document.uri)
+        line = params.position.line + 1
+        col = params.position.character + 1
+        hits = compute_document_highlights(
+            doc.source, params.text_document.uri, line, col,
+        )
+        if hits is None:
+            return None
+        return [
+            lsp.DocumentHighlight(
+                range=lsp.Range(
+                    start=lsp.Position(line=h.line - 1, character=h.col - 1),
+                    end=lsp.Position(
+                        line=h.line - 1,
+                        character=h.col - 1 + len(h.name),
+                    ),
+                ),
+                kind=_highlight_kind.get(h.kind, lsp.DocumentHighlightKind.Text),
+            )
+            for h in hits
+        ]
+
+    # -----------------------------------------------------------
+    # Folding ranges (textDocument/foldingRange). Gutter +/-
+    # regions for collapsible blocks. Backed by an AST walk that
+    # returns empty on parse failure so a mid-edit file does not
+    # confuse the editor.
+    # -----------------------------------------------------------
+
+    @server.feature(lsp.TEXT_DOCUMENT_FOLDING_RANGE)
+    def folding_range(ls, params: "lsp.FoldingRangeParams"):
+        doc = ls.workspace.get_text_document(params.text_document.uri)
+        ranges = compute_folding_ranges(doc.source)
+        if not ranges:
+            return None
+        return [
+            lsp.FoldingRange(
+                start_line=r.start_line - 1,
+                end_line=r.end_line - 1,
+                kind={
+                    "region":  lsp.FoldingRangeKind.Region,
+                    "comment": lsp.FoldingRangeKind.Comment,
+                    "imports": lsp.FoldingRangeKind.Imports,
+                }.get(r.kind, lsp.FoldingRangeKind.Region),
+            )
+            for r in ranges
+        ]
+
+    # -----------------------------------------------------------
+    # Formatting (textDocument/formatting + rangeFormatting).
+    # Backed by capa.formatter.format_source (the v3 AST round-
+    # trip pipeline with v1+v2 line-level fallback on parse error).
+    # -----------------------------------------------------------
+
+    @server.feature(lsp.TEXT_DOCUMENT_FORMATTING)
+    def formatting(ls, params: "lsp.DocumentFormattingParams"):
+        doc = ls.workspace.get_text_document(params.text_document.uri)
+        edits = compute_formatting(doc.source)
+        return [
+            lsp.TextEdit(
+                range=lsp.Range(
+                    start=lsp.Position(
+                        line=e.start_line - 1,
+                        character=e.start_col - 1,
+                    ),
+                    end=lsp.Position(
+                        line=e.end_line - 1,
+                        character=e.end_col - 1,
+                    ),
+                ),
+                new_text=e.new_text,
+            )
+            for e in edits
+        ] or None
+
+    @server.feature(lsp.TEXT_DOCUMENT_RANGE_FORMATTING)
+    def range_formatting(ls, params: "lsp.DocumentRangeFormattingParams"):
+        doc = ls.workspace.get_text_document(params.text_document.uri)
+        rng = params.range
+        edits = compute_range_formatting(
+            doc.source,
+            rng.start.line + 1, rng.start.character + 1,
+            rng.end.line + 1, rng.end.character + 1,
+        )
+        return [
+            lsp.TextEdit(
+                range=lsp.Range(
+                    start=lsp.Position(
+                        line=e.start_line - 1,
+                        character=e.start_col - 1,
+                    ),
+                    end=lsp.Position(
+                        line=e.end_line - 1,
+                        character=e.end_col - 1,
+                    ),
+                ),
+                new_text=e.new_text,
+            )
+            for e in edits
+        ] or None
 
     # -----------------------------------------------------------
     # Document symbols (outline).
