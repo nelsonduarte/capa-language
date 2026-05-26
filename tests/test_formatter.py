@@ -88,7 +88,14 @@ class TestBlockCommentPreservation(unittest.TestCase):
     keep their original indentation, so Javadoc-style ``*``
     continuation lines (typically sitting at column 1) survive."""
 
-    def test_javadoc_star_lines_preserved(self):
+    def test_javadoc_block_canonicalised_to_line_form(self):
+        # v3 round-trips block doc comments through the AST (the
+        # parser stores them as ``FunDecl.doc: str`` regardless of
+        # source form), and the emitter writes them in the canonical
+        # ``///`` line form. The Javadoc-style ``*`` left margin is
+        # stripped by the lexer's ``_strip_block_doc_margins`` helper
+        # before the doc text reaches the AST, so the re-emitted form
+        # has no ``*`` decoration. Same semantics, canonical shape.
         src = (
             "/** First line.\n"
             " *\n"
@@ -97,7 +104,14 @@ class TestBlockCommentPreservation(unittest.TestCase):
             "fun f()\n"
             "    return\n"
         )
-        self.assertEqual(format_source(src), src)
+        expected = (
+            "/// First line.\n"
+            "///\n"
+            "/// Second paragraph.\n"
+            "fun f()\n"
+            "    return\n"
+        )
+        self.assertEqual(format_source(src), expected)
 
     def test_non_doc_block_comment_preserved(self):
         src = (

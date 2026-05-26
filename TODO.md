@@ -280,11 +280,12 @@ the current Wasm critical path.
   `.venv/Scripts/python -m evaluation.sbom_diff.harness &&
   .venv/Scripts/python -m evaluation.sbom_diff.summary`.
 
-- [~] **Formatter v3, AST round-trip**. v1 (line-level) and v2
-  (intra-line spaces / comma fixup) landed. v3 needs expression
-  re-emission from the AST and `//` comment preservation through
-  the AST round-trip. Comment-preservation design comes first;
-  no AST round-trip is safe without it. ⏱ 8-12h, design-heavy.
+- [x] **Formatter v3, AST round-trip** (closed 2026-05-26).
+  v1 (line-level) and v2 (intra-line spaces / comma fixup) are
+  the safe textual fallback. v3 adds expression re-emission
+  from the AST and `//` comment preservation through the AST
+  round-trip. `format_source` defaults to v3 with graceful
+  fallback to v1+v2 on lex / parse / emit failure.
   Phase 1 landed 2026-05-26: lexer sidecar for plain comments.
   `capa/tokens.py` gains `CommentKind` (LINE / BLOCK) and a
   frozen `Comment` dataclass (kind, start, end, text);
@@ -333,18 +334,37 @@ the current Wasm critical path.
   `fmt(fmt(src)) == fmt(src)`). Package layout follows the
   design's split:
   `capa/formatter/{__init__,_lines,_comments,_emit,_emit_*}.py`.
-  Phase 4 partially landed 2026-05-26: AST roundtrip pipeline
-  is reachable via `format_source_emit` (re-exported from
-  `capa.formatter`), but is NOT the default for `--fmt` yet.
-  A corpus smoke run surfaced comment-ordering quirks - when
-  multiple `//` comments attach as `leading` on the same node,
-  the emit order can diverge from source order in section-
-  divider-wrapped blocks. The structural AST roundtrip is
-  unaffected (71/71 files pass), but cosmetic output is wrong
-  for the wrapped-divider shape. The fix lands before Phase 4
-  promotes the pipeline to default; tracking as the residual
-  v3 work below. Full suite stays at 1729 passed / 5 skipped
-  / 0 fail.
+  Phase 4 fully landed 2026-05-26: `format_source` defaults to
+  the AST roundtrip pipeline, with graceful fallback to v1+v2
+  on any lex / parse / emit failure (mid-edit sources, syntax
+  errors, broken constructs all get the safe textual cleanup).
+  Two CommentMap fixes shipped alongside the promotion:
+  (1) block-aware file-header heuristic. A standalone comment
+  attaches to `Module.leading` only when its contiguous comment
+  block has no section divider AND is separated from the first
+  item by at least one blank line. Without this, a section-
+  divider-wrapped block above the first item was getting split
+  (dividers on FunDecl, body on Module), reversing source order
+  in the emitter's leading list. Block bookkeeping is
+  precomputed in `build_comment_map` (single right-to-left
+  pass per block). (2) Token-aware end offsets in
+  `_build_node_index`. The old bottom-up `max(start, recursive
+  max of children's ends)` underestimated leaf spans (IntLit /
+  FloatLit / Ident leaves had end = start), so a `let x = 1
+  // trailing` style comment's `_smallest_containing_node`
+  lookup landed on the enclosing `Block` instead of the
+  `LetStmt`, with every trailing comment in a function body
+  bunching up on the `FunDecl`. The new pass refines each
+  entry's end to the end offset of the last token whose start
+  falls in `[entry.start, next_sibling_at_same_or_shallower_
+  depth.start)`. Two small follow-ups (test_javadoc rename to
+  reflect `/** */` -> `///` canonicalisation; init template
+  drops blank line between doc and `fun main`; `format_source`
+  guard against degenerate lone-`\` line-continuation sources
+  that lex to empty token streams). Corpus idempotence is
+  71/71 via the promoted `format_source` path. Full suite at
+  1730 passed / 5 skipped / 0 fail. Downstream `sbom-watch`
+  smoke verified.
 
 - [~] **Test-coverage review**. Three passes landed:
   - 2026-05-25 (1): `capa/runtime/_wasm_component_host.py`

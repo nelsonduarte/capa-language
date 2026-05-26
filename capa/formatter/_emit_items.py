@@ -34,11 +34,37 @@ class _ItemsEmitterMixin:
     def emit_module(self, module: A.Module) -> None:
         """Emit a whole module: leading comments, every item with one
         blank line between, trailing comments.
+
+        If ``module`` has any ``leading`` comments AND any items,
+        emit a blank line between the comment block and the first
+        item. This separates a file-header comment block from the
+        item it precedes, matching the canonical Capa style where
+        file headers sit one blank line above the first item.
+        Comments classified as ``leading`` on an item itself (the
+        much more common case for narrative comments adjacent to a
+        function definition) are emitted inside :meth:`_emit_item`
+        WITHOUT the separator, so the section-divider-wrapped
+        block
+
+            // =====
+            // body
+            // =====
+            fun foo
+
+        re-emits intact.
         """
+        att_module = self._attached(module)
+        has_module_leading = (
+            att_module is not None
+            and bool(getattr(att_module, "leading", []) or [])
+        )
         self._emit_leading(module)
         first = True
         for item in module.items:
-            if not first:
+            if first and has_module_leading:
+                # Blank line between file header and first item.
+                self._newline()
+            elif not first:
                 # One blank line between every top-level item.
                 self._newline()
             self._emit_item(item)

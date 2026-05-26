@@ -37,7 +37,6 @@ _MAIN_TEMPLATE = """\
 ///
 /// Type-check and verify capability use:
 ///   capa --check main.capa
-
 fun main(stdio: Stdio)
     stdio.println("Hello from Capa!")
 """

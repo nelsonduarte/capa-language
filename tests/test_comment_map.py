@@ -38,9 +38,12 @@ def _only_entry(cmap: CommentMap):
 
 class TestCommentMap(unittest.TestCase):
 
-    # 1. Module leading
+    # 1. Module leading (file header, separated from first item by
+    # a blank line). A narrative comment that is NOT separated by a
+    # blank line is treated as leading on the item, not on the
+    # module - see test_adjacent_narrative_attaches_to_item below.
     def test_module_leading_comment(self):
-        src = "// hello\nfun foo()\n    let x = 1\n"
+        src = "// hello\n\nfun foo()\n    let x = 1\n"
         module, tokens, comments = _parse(src)
         cmap = build_comment_map(module, tokens, comments)
         self.assertEqual(len(comments), 1)
@@ -51,6 +54,22 @@ class TestCommentMap(unittest.TestCase):
         # The FunDecl itself must have nothing attached.
         fun = module.items[0]
         self.assertNotIn(fun, cmap)
+
+    # 1b. Adjacent narrative (no blank line) attaches to the item,
+    # not the module. The blank-line test in
+    # ``_attach_standalone`` is what keeps section-divider-wrapped
+    # comment blocks intact above the first item.
+    def test_adjacent_narrative_attaches_to_item(self):
+        src = "// hello\nfun foo()\n    let x = 1\n"
+        module, tokens, comments = _parse(src)
+        cmap = build_comment_map(module, tokens, comments)
+        fun = module.items[0]
+        attached = cmap.get(fun)
+        self.assertIsNotNone(attached)
+        self.assertEqual(len(attached.leading), 1)
+        self.assertEqual(attached.leading[0].text, "// hello")
+        # Module itself gets nothing in this case.
+        self.assertNotIn(module, cmap)
 
     # 2. Item leading (section divider)
     def test_item_leading_section_divider(self):

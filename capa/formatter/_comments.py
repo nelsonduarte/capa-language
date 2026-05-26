@@ -154,22 +154,33 @@ def _iter_children(node: A.Node):
                     yield sub
 
 
-def _build_node_index(module: A.Module) -> list[_NodeEntry]:
+def _build_node_index(
+    module: A.Module, tokens: list[Token],
+) -> list[_NodeEntry]:
     """Walk the module, returning a flat list of node entries
     sorted by ``start`` offset (stable, so ties preserve source
     order).
 
-    End offsets are computed bottom-up as ``max(start, recursive
-    max of children's ends)``. This is an approximation: it does
-    not account for the closing token after the last child (e.g.
-    the ``)`` of a call), but it is correct for the only thing
-    we need it for: the smallest-containing-node lookup, which
-    only requires that a node's [start, end] interval cover its
-    children.
+    End offsets are computed in two passes:
+
+    1. Bottom-up over the AST: ``end = max(start, recursive max of
+       children's ends)``. This anchors each node to at least the
+       start offset of its last child.
+    2. Token-aware refinement: after sorting by start offset, walk
+       each entry left-to-right and extend its end to the end of
+       the LAST token whose start falls in
+       ``[entry.start, next_entry_at_same_or_shallower_depth.start)``.
+       This is what catches ``let x = 1 // ...`` style trailing
+       comments: the bottom-up pass leaves ``LetStmt.end`` at the
+       offset where the literal ``1`` STARTS (leaves have no
+       children to expand the bound), but the trailing-comment
+       attachment logic needs the end of the literal itself (and
+       the closing ``)`` of a call, etc.). The token-end refinement
+       is conservative: it never extends an entry past its next
+       sibling at the same depth, so a sibling's leading still
+       resolves correctly.
     """
     entries: list[_NodeEntry] = []
-    # Bottom-up end-offset memo, keyed by id(node).
-    ends: dict[int, int] = {}
 
     def visit(node: A.Node, parent: Optional[A.Node], depth: int) -> int:
         if not isinstance(node, A.Node):
@@ -182,7 +193,6 @@ def _build_node_index(module: A.Module) -> list[_NodeEntry]:
             child_end = visit(child, node, depth + 1)
             if child_end > end:
                 end = child_end
-        ends[id(node)] = end
         entries.append(_NodeEntry(
             start=start, end=end, node=node, parent=parent, depth=depth,
         ))
@@ -190,6 +200,34 @@ def _build_node_index(module: A.Module) -> list[_NodeEntry]:
 
     visit(module, None, 0)
     entries.sort(key=lambda e: e.start)
+
+    # Token-aware refinement pass.
+    if tokens:
+        token_starts = [t.start.offset for t in tokens]
+        for i, e in enumerate(entries):
+            # The boundary stop: the next entry at the same or
+            # shallower depth (i.e. the next sibling or ancestor's
+            # next sibling). Past that, tokens belong to other
+            # subtrees.
+            next_start: int = tokens[-1].end.offset + 1
+            for j in range(i + 1, len(entries)):
+                if entries[j].depth <= e.depth:
+                    next_start = entries[j].start
+                    break
+            # Largest token end whose start is in
+            # [e.start, next_start).
+            from bisect import bisect_left
+            lo_idx = bisect_left(token_starts, e.start)
+            hi_idx = bisect_left(token_starts, next_start)
+            if hi_idx > lo_idx:
+                # Scan the slice for the maximum end.offset.
+                max_end = e.end
+                for k in range(lo_idx, hi_idx):
+                    if tokens[k].end.offset > max_end:
+                        max_end = tokens[k].end.offset
+                if max_end > e.end:
+                    e.end = max_end
+
     return entries
 
 
@@ -355,10 +393,37 @@ def build_comment_map(
     if not comments:
         return cmap
 
-    entries = _build_node_index(module)
+    entries = _build_node_index(module, tokens)
     entries_by_id = {id(e.node): e for e in entries}
 
-    for c in comments:
+    # Per-comment block bookkeeping. A "block" is a maximal run of
+    # comments where each pair of neighbours has no blank line
+    # between them (``next.start.line == prev.end.line + 1``). We
+    # need two things per block, attached to every member comment
+    # for O(1) lookup inside ``_attach_standalone``:
+    #
+    # - ``block_end_line[i]``: line of the LAST comment in i's
+    #   block. Used to test "is the block separated from the next
+    #   AST item by a blank line".
+    # - ``block_has_divider[i]``: True iff any comment in i's block
+    #   is a section-divider (``// ====`` etc.). Section dividers
+    #   ALWAYS bind the whole block to the following item, even if
+    #   the block would otherwise look like a file header.
+    #
+    # Both arrays are computed in a single right-to-left pass per
+    # block; left-to-right would have to walk forward repeatedly.
+    block_end_line: list[int] = [c.end.line for c in comments]
+    block_has_divider: list[bool] = [
+        _is_section_divider(c) for c in comments
+    ]
+    for i in range(len(comments) - 2, -1, -1):
+        if comments[i + 1].start.line == comments[i].end.line + 1:
+            block_end_line[i] = block_end_line[i + 1]
+            block_has_divider[i] = (
+                block_has_divider[i] or block_has_divider[i + 1]
+            )
+
+    for i, c in enumerate(comments):
         prev = _find_prev_token(tokens, c.start.offset)
         is_trailing = (
             prev is not None
@@ -371,6 +436,7 @@ def build_comment_map(
         else:
             _attach_standalone(
                 cmap, entries, entries_by_id, c, tokens, module,
+                block_end_line[i], block_has_divider[i],
             )
 
     return cmap
@@ -436,6 +502,8 @@ def _attach_standalone(
     c: Comment,
     tokens: list[Token],
     module: A.Module,
+    block_end_line: int,
+    block_has_divider: bool,
 ) -> None:
     """Place a standalone comment.
 
@@ -446,14 +514,27 @@ def _attach_standalone(
     ``Block`` ``trailing``.
 
     Standalone with a follower: usually ``leading`` on the
-    follower, with two exceptions for top-of-file comments. A
-    plain narrative comment immediately above the FIRST item of a
-    Module (no preceding AST node at all, no doc comment between
-    the comment and the item, and the comment is not a section
-    divider) attaches to the ``Module`` ``leading`` (the
-    "file-header" case). Section dividers (``// =====``) and any
-    comment immediately followed by a ``/// doc`` for the same
-    item always attach to the item.
+    follower. File-header exception: a plain narrative comment
+    that lives strictly before the first item of a Module, whose
+    contiguous comment block (1) contains no section divider, (2)
+    is not bound by a following ``/// doc`` comment, AND (3) is
+    separated from the first item by at least one blank line,
+    attaches to the ``Module`` ``leading``. The blank-line check
+    is what keeps a divider-wrapped block
+
+        // =====
+        // body
+        // =====
+        fun foo
+
+    intact: without it, the dividers attach to ``foo`` while the
+    body lands on ``Module``, reversing source order in the
+    emitter's leading list.
+
+    ``block_end_line`` is the line of the LAST comment in this
+    comment's contiguous block; ``block_has_divider`` is True iff
+    any comment in the block is a section divider. Both are
+    precomputed in :func:`build_comment_map`.
     """
     follower = _smallest_node_after(entries, c.end.offset)
     if follower is None:
@@ -470,16 +551,13 @@ def _attach_standalone(
     # classified as a Module file-header.
     doc_bound = _follower_has_preceding_doc(follower.node, c, tokens)
 
-    # File-header case: a comment that lives strictly before the
-    # first item, is not a section divider, and is not followed
-    # by a doc comment, binds to the Module. The first-item check
-    # is "no AST node ends before this comment starts" (i.e. the
-    # comment really is at the top of the file).
-    if (
+    is_file_header = (
         not doc_bound
-        and not _is_section_divider(c)
+        and not block_has_divider
         and _is_before_first_item(entries, c)
-    ):
+        and follower.node.pos.line > block_end_line + 1
+    )
+    if is_file_header:
         cmap.attach(module, "leading", c)
         return
 
