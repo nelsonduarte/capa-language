@@ -2063,6 +2063,15 @@ class TestTranspileExamples(unittest.TestCase):
         self.assertIn("https://lodash.com", out)
         self.assertIn("[vcs]", out)
         self.assertIn("https://github.com/lodash/lodash", out)
+        # compositions[] block: one entry exercising every sub-array
+        # (assemblies + dependencies + vulnerabilities). The vuln
+        # bom-ref entry uses the unique vuln- prefix so it doesn't
+        # collide with the lodash component assertion above.
+        self.assertIn("Compositions (1):", out)
+        self.assertIn("- composition-1 (incomplete)", out)
+        self.assertIn("assemblies (1):", out)
+        self.assertIn("vulnerabilities (1):", out)
+        self.assertIn("- vuln-CVE-2024-7890", out)
         self.assertIn("Validation: ok (refs resolve + acyclic)", out)
 
     def test_net_attenuation(self):

@@ -22,13 +22,15 @@
 //   `{alg, content}` pairs (vs SPDX's `{algorithm,
 //   checksumValue}`).
 //
-// Scope limits: metadata + components + dependencies. Out of
-// scope: `compositions[]`. Signature verification (the crypto
-// part) is intentionally not in scope; this parser captures
-// the JSF metadata only. `externalReferences[]` is parsed only
-// on components; the spec also allows it on metadata.component,
-// services[], vulnerabilities[], and the document root, but
-// extending the parser to those locations is mechanical.
+// This parser now covers every optional array CycloneDX 1.5
+// publishes in the JSON schema; the only deferred shape is the
+// XML alternative serialisation, tracked in TODO.md. Signature
+// verification (the crypto part) is intentionally not in scope;
+// this parser captures the JSF metadata only.
+// `externalReferences[]` is parsed only on components; the spec
+// also allows it on metadata.component, services[],
+// vulnerabilities[], and the document root, but extending the
+// parser to those locations is mechanical.
 
 capability SbomReader
     fun read(self, source: String) -> Result<String, String>
@@ -186,6 +188,19 @@ type CdxSignature {
     value: String
 }
 
+// CycloneDX 1.5 compositions[]: declarations of how complete
+// the BOM's view of the world is for a given subset of
+// components / dependencies / vulnerabilities. Useful when an
+// SBOM is being built incrementally and the auditor needs to
+// know what's deliberately omitted.
+type CdxComposition {
+    bom_ref: String,
+    aggregate: String,
+    assemblies: List<String>,
+    dependencies: List<String>,
+    vulnerabilities: List<String>
+}
+
 type CdxDocument {
     bom_format: String,
     spec_version: String,
@@ -197,7 +212,8 @@ type CdxDocument {
     vulnerabilities: List<CdxVulnerability>,
     services: List<CdxService>,
     has_signature: Bool,
-    signature: CdxSignature
+    signature: CdxSignature,
+    compositions: List<CdxComposition>
 }
 
 // ---- typed-extraction helpers ----
@@ -621,6 +637,45 @@ fun parse_signature(j: JsonValue) -> Result<CdxSignature, String>
         value: string_field_or(j, "value", "")
     })
 
+// Composition parser. All three ref-bearing arrays are optional;
+// `aggregate` is the only required field. The validator handles
+// enum + cross-array referential-integrity checks.
+fun parse_composition(j: JsonValue) -> Result<CdxComposition, String>
+    let assemblies: List<String> = []
+    match optional_field(j, "assemblies")
+        None ->
+            ()
+        Some(v) ->
+            let xs = as_array_or_err(v, "Composition.assemblies")?
+            for x in xs
+                assemblies.push(as_string_or_err(x, "Composition.assemblies[i]")?)
+
+    let dependencies: List<String> = []
+    match optional_field(j, "dependencies")
+        None ->
+            ()
+        Some(v) ->
+            let xs = as_array_or_err(v, "Composition.dependencies")?
+            for x in xs
+                dependencies.push(as_string_or_err(x, "Composition.dependencies[i]")?)
+
+    let vulnerabilities: List<String> = []
+    match optional_field(j, "vulnerabilities")
+        None ->
+            ()
+        Some(v) ->
+            let xs = as_array_or_err(v, "Composition.vulnerabilities")?
+            for x in xs
+                vulnerabilities.push(as_string_or_err(x, "Composition.vulnerabilities[i]")?)
+
+    return Ok(CdxComposition {
+        bom_ref: string_field_or(j, "bom-ref", ""),
+        aggregate: as_string_or_err(field(j, "aggregate")?, "Composition.aggregate")?,
+        assemblies: assemblies,
+        dependencies: dependencies,
+        vulnerabilities: vulnerabilities
+    })
+
 fun extract_tool_names(tools_j: JsonValue) -> Result<List<String>, String>
     // CycloneDX 1.5 supports both the modern `tools.components[]`
     // shape (each entry a Component object) and the legacy flat
@@ -737,6 +792,15 @@ fun parse_document(j: JsonValue) -> Result<CdxDocument, String>
             has_signature = true
             signature = parse_signature(v)?
 
+    let compositions: List<CdxComposition> = []
+    match optional_field(j, "compositions")
+        None ->
+            ()
+        Some(v) ->
+            let xs = as_array_or_err(v, "compositions")?
+            for x in xs
+                compositions.push(parse_composition(x)?)
+
     let metadata = parse_metadata(j)?
 
     return Ok(CdxDocument {
@@ -750,7 +814,8 @@ fun parse_document(j: JsonValue) -> Result<CdxDocument, String>
         vulnerabilities: vulnerabilities,
         services: services,
         has_signature: has_signature,
-        signature: signature
+        signature: signature,
+        compositions: compositions
     })
 
 fun parse_cyclonedx(json_text: String) -> Result<CdxDocument, String>
@@ -907,6 +972,30 @@ fun is_valid_signature_algorithm(alg: String) -> Bool
         return true
     return false
 
+// compositions[].aggregate enum from CycloneDX 1.5.
+fun is_valid_aggregate(a: String) -> Bool
+    if a == "complete"
+        return true
+    if a == "incomplete"
+        return true
+    if a == "incomplete_first_party_only"
+        return true
+    if a == "incomplete_first_party_proprietary_only"
+        return true
+    if a == "incomplete_first_party_opensource_only"
+        return true
+    if a == "incomplete_third_party_only"
+        return true
+    if a == "incomplete_third_party_proprietary_only"
+        return true
+    if a == "incomplete_third_party_opensource_only"
+        return true
+    if a == "not_specified"
+        return true
+    if a == "unknown"
+        return true
+    return false
+
 // externalReferences[].type enum from CycloneDX 1.5.
 fun is_valid_external_ref_type(t: String) -> Bool
     if t == "vcs"
@@ -1035,6 +1124,22 @@ fun validate_cyclonedx(doc: CdxDocument) -> List<String>
             errors.push("signature.algorithm '${doc.signature.algorithm}' is not a supported JSF algorithm")
         if doc.signature.value == ""
             errors.push("signature.value is empty (signature must carry a base64-encoded value)")
+    let known_vuln_refs: Set<String> = new_set()
+    for v in doc.vulnerabilities
+        if v.bom_ref != ""
+            known_vuln_refs.add(v.bom_ref)
+    for comp in doc.compositions
+        if not is_valid_aggregate(comp.aggregate)
+            errors.push("composition has aggregate with invalid value '${comp.aggregate}'")
+        for a in comp.assemblies
+            if not refs.contains(a)
+                errors.push("composition assembly '${a}' is not a known bom-ref")
+        for d in comp.dependencies
+            if not refs.contains(d)
+                errors.push("composition dependency '${d}' is not a known bom-ref")
+        for vref in comp.vulnerabilities
+            if not known_vuln_refs.contains(vref)
+                errors.push("composition vulnerability '${vref}' is not a known vulnerability bom-ref")
     match detect_cyclonedx_cycle(doc)
         None ->
             ()
@@ -1119,7 +1224,7 @@ fun main(stdio: Stdio)
     // dependency components (a lib + a transitive lib), and a
     // small dependency graph linking them. Mirrors the kind of
     // SBOM the Capa compiler itself emits via --cyclonedx.
-    let sample = "{\"bomFormat\": \"CycloneDX\", \"specVersion\": \"1.5\", \"serialNumber\": \"urn:uuid:11111111-2222-3333-4444-555555555555\", \"version\": 1, \"metadata\": {\"timestamp\": \"2026-05-13T10:00:00Z\", \"tools\": {\"components\": [{\"type\": \"application\", \"name\": \"capa\", \"version\": \"0.6.0-alpha\"}]}, \"component\": {\"bom-ref\": \"capa:program:demo\", \"type\": \"application\", \"name\": \"demo\", \"version\": \"1.0.0\"}}, \"components\": [{\"bom-ref\": \"pkg:npm/lodash@4.17.21\", \"type\": \"library\", \"name\": \"lodash\", \"version\": \"4.17.21\", \"purl\": \"pkg:npm/lodash@4.17.21\", \"hashes\": [{\"alg\": \"SHA-256\", \"content\": \"aaaabbbbccccddddeeeeffff0011223344556677889900aabbccddeeff001122\"}], \"licenses\": [{\"license\": {\"id\": \"MIT\"}}], \"externalReferences\": [{\"type\": \"website\", \"url\": \"https://lodash.com\", \"comment\": \"Project homepage\"}, {\"type\": \"vcs\", \"url\": \"https://github.com/lodash/lodash\"}], \"evidence\": {\"identity\": {\"field\": \"purl\", \"confidence\": 1.0, \"methods\": [{\"technique\": \"manifest-analysis\", \"confidence\": 1.0, \"value\": \"package-lock.json\"}]}, \"occurrences\": [{\"bom-ref\": \"occ-lodash-1\", \"location\": \"node_modules/lodash/index.js\"}], \"copyright\": [{\"text\": \"Copyright OpenJS Foundation and contributors\"}]}}, {\"bom-ref\": \"pkg:npm/chalk@5.3.0\", \"type\": \"library\", \"name\": \"chalk\", \"version\": \"5.3.0\", \"purl\": \"pkg:npm/chalk@5.3.0\", \"licenses\": [{\"expression\": \"MIT OR Apache-2.0\"}]}], \"dependencies\": [{\"ref\": \"capa:program:demo\", \"dependsOn\": [\"pkg:npm/lodash@4.17.21\", \"pkg:npm/chalk@5.3.0\"]}, {\"ref\": \"pkg:npm/chalk@5.3.0\", \"dependsOn\": [\"pkg:npm/lodash@4.17.21\"]}], \"vulnerabilities\": [{\"bom-ref\": \"vuln-CVE-2024-7890\", \"id\": \"CVE-2024-7890\", \"source\": {\"name\": \"NVD\"}, \"ratings\": [{\"severity\": \"high\", \"score\": 7.5, \"method\": \"CVSSv3\"}], \"cwes\": [79], \"description\": \"Cross-site scripting in lodash template helper\", \"recommendation\": \"Upgrade to lodash 4.17.22\", \"published\": \"2024-09-01T00:00:00Z\", \"updated\": \"2024-09-15T00:00:00Z\", \"affects\": [{\"ref\": \"pkg:npm/lodash@4.17.21\"}], \"analysis\": {\"state\": \"exploitable\", \"justification\": \"code-uses-vulnerable-template\", \"detail\": \"lodash _.template called with user input\"}}], \"services\": [{\"bom-ref\": \"service:stripe-api\", \"provider\": {\"name\": \"Stripe\", \"url\": [\"https://stripe.com\"]}, \"group\": \"com.stripe\", \"name\": \"payments-api\", \"version\": \"2024-06-20\", \"description\": \"Stripe charges API\", \"endpoints\": [\"https://api.stripe.com/v1/charges\"], \"authenticated\": true, \"x-trust-boundary\": true, \"data\": [{\"classification\": \"PII\", \"flow\": \"outbound\"}]}], \"signature\": {\"algorithm\": \"RS256\", \"keyId\": \"build-key-2024\", \"value\": \"MEUCIQDXamplebase64encodedsignaturebytesgoeshere1234567890\"}}"
+    let sample = "{\"bomFormat\": \"CycloneDX\", \"specVersion\": \"1.5\", \"serialNumber\": \"urn:uuid:11111111-2222-3333-4444-555555555555\", \"version\": 1, \"metadata\": {\"timestamp\": \"2026-05-13T10:00:00Z\", \"tools\": {\"components\": [{\"type\": \"application\", \"name\": \"capa\", \"version\": \"0.6.0-alpha\"}]}, \"component\": {\"bom-ref\": \"capa:program:demo\", \"type\": \"application\", \"name\": \"demo\", \"version\": \"1.0.0\"}}, \"components\": [{\"bom-ref\": \"pkg:npm/lodash@4.17.21\", \"type\": \"library\", \"name\": \"lodash\", \"version\": \"4.17.21\", \"purl\": \"pkg:npm/lodash@4.17.21\", \"hashes\": [{\"alg\": \"SHA-256\", \"content\": \"aaaabbbbccccddddeeeeffff0011223344556677889900aabbccddeeff001122\"}], \"licenses\": [{\"license\": {\"id\": \"MIT\"}}], \"externalReferences\": [{\"type\": \"website\", \"url\": \"https://lodash.com\", \"comment\": \"Project homepage\"}, {\"type\": \"vcs\", \"url\": \"https://github.com/lodash/lodash\"}], \"evidence\": {\"identity\": {\"field\": \"purl\", \"confidence\": 1.0, \"methods\": [{\"technique\": \"manifest-analysis\", \"confidence\": 1.0, \"value\": \"package-lock.json\"}]}, \"occurrences\": [{\"bom-ref\": \"occ-lodash-1\", \"location\": \"node_modules/lodash/index.js\"}], \"copyright\": [{\"text\": \"Copyright OpenJS Foundation and contributors\"}]}}, {\"bom-ref\": \"pkg:npm/chalk@5.3.0\", \"type\": \"library\", \"name\": \"chalk\", \"version\": \"5.3.0\", \"purl\": \"pkg:npm/chalk@5.3.0\", \"licenses\": [{\"expression\": \"MIT OR Apache-2.0\"}]}], \"dependencies\": [{\"ref\": \"capa:program:demo\", \"dependsOn\": [\"pkg:npm/lodash@4.17.21\", \"pkg:npm/chalk@5.3.0\"]}, {\"ref\": \"pkg:npm/chalk@5.3.0\", \"dependsOn\": [\"pkg:npm/lodash@4.17.21\"]}], \"vulnerabilities\": [{\"bom-ref\": \"vuln-CVE-2024-7890\", \"id\": \"CVE-2024-7890\", \"source\": {\"name\": \"NVD\"}, \"ratings\": [{\"severity\": \"high\", \"score\": 7.5, \"method\": \"CVSSv3\"}], \"cwes\": [79], \"description\": \"Cross-site scripting in lodash template helper\", \"recommendation\": \"Upgrade to lodash 4.17.22\", \"published\": \"2024-09-01T00:00:00Z\", \"updated\": \"2024-09-15T00:00:00Z\", \"affects\": [{\"ref\": \"pkg:npm/lodash@4.17.21\"}], \"analysis\": {\"state\": \"exploitable\", \"justification\": \"code-uses-vulnerable-template\", \"detail\": \"lodash _.template called with user input\"}}], \"services\": [{\"bom-ref\": \"service:stripe-api\", \"provider\": {\"name\": \"Stripe\", \"url\": [\"https://stripe.com\"]}, \"group\": \"com.stripe\", \"name\": \"payments-api\", \"version\": \"2024-06-20\", \"description\": \"Stripe charges API\", \"endpoints\": [\"https://api.stripe.com/v1/charges\"], \"authenticated\": true, \"x-trust-boundary\": true, \"data\": [{\"classification\": \"PII\", \"flow\": \"outbound\"}]}], \"signature\": {\"algorithm\": \"RS256\", \"keyId\": \"build-key-2024\", \"value\": \"MEUCIQDXamplebase64encodedsignaturebytesgoeshere1234567890\"}, \"compositions\": [{\"bom-ref\": \"composition-1\", \"aggregate\": \"incomplete\", \"assemblies\": [\"pkg:npm/lodash@4.17.21\"], \"dependencies\": [\"pkg:npm/chalk@5.3.0\"], \"vulnerabilities\": [\"vuln-CVE-2024-7890\"]}]}"
 
     match parse_cyclonedx(sample)
         Err(msg) ->
@@ -1212,6 +1317,25 @@ fun main(stdio: Stdio)
                 stdio.println("  value:     ${shown}")
             else
                 stdio.println("Signature: none")
+            stdio.println("")
+            stdio.println("Compositions (${doc.compositions.length()}):")
+            for comp in doc.compositions
+                if comp.bom_ref == ""
+                    stdio.println("  - (${comp.aggregate})")
+                else
+                    stdio.println("  - ${comp.bom_ref} (${comp.aggregate})")
+                if comp.assemblies.length() != 0
+                    stdio.println("      assemblies (${comp.assemblies.length()}):")
+                    for a in comp.assemblies
+                        stdio.println("        - ${a}")
+                if comp.dependencies.length() != 0
+                    stdio.println("      dependencies (${comp.dependencies.length()}):")
+                    for d in comp.dependencies
+                        stdio.println("        - ${d}")
+                if comp.vulnerabilities.length() != 0
+                    stdio.println("      vulnerabilities (${comp.vulnerabilities.length()}):")
+                    for vref in comp.vulnerabilities
+                        stdio.println("        - ${vref}")
             stdio.println("")
             let violations = validate_cyclonedx(doc)
             if violations.is_empty()
