@@ -501,6 +501,26 @@ the current Wasm critical path.
   LaTeX when targeting a specific venue submission. Target
   venues: PLAS, EuroS&P workshops, NDSS workshops. ⏱ 10-20h
   for a publishable revision; 20-40h for venue submission.
+  Revision pass 2026-05-26: incorporated the now-closed
+  20-pair SBOM-diff study (P1 #1) into the paper draft.
+  Three surgical edits: (1) abstract phrase "an SBOM-diff
+  case-study against an idiomatic Python equivalent" replaced
+  with "a 20-library SBOM-diff study (122 transliterated
+  functions across 6 capability axes; 61 (function,
+  capability) attribution facts unrecoverable from a PURL-only
+  SBOM)"; (2) §5.3 rewritten from a 45-line single-pair
+  illustration to a 132-line / 989-word quantitative section
+  with the per-pair table, the 6-axis aggregate, the two
+  asymmetry shapes (PURL-narrowing via pure-function proof +
+  PURL over-attribution), the axis-combination coverage
+  matrix, and the three explicit honest-disclosure caveats
+  surfaced from `summary.md`; (3) §8 future-work item 2
+  (the "Empirical study at scale" item) removed since done,
+  subsequent items renumbered. Side effect: 3 pre-existing
+  em-dashes flagged and removed during the verification sweep.
+  Paper now at v1.9 in `docs/paper-draft.md` (gitignored,
+  local-only per commit 900318e). Remaining: targeted venue
+  conversion to LaTeX when ready to submit.
 
 - [x] **Wasm Float formatting: bit-identical with Python `str(float)`**
   (closed 2026-05-25). The legacy fixed-6-decimal `$ftoa` is
