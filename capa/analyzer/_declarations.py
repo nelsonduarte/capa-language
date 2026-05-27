@@ -35,6 +35,37 @@ from ..typesys import (
 )
 
 
+_RESERVED_VARIANT_NAMES = frozenset({
+    "Ok",    # built-in Result variant
+    "Err",   # built-in Result variant
+    "Some",  # built-in Option variant
+    "None",  # built-in Option variant
+})
+
+_RESERVED_VARIANT_HINTS = {
+    "Ok": (
+        "Result::Ok",
+        "Rename this variant. Common alternatives: "
+        "Compliant, Success, Hit, Ready.",
+    ),
+    "Err": (
+        "Result::Err",
+        "Rename this variant. Common alternatives: "
+        "Failure, Bad, Reject, Error.",
+    ),
+    "Some": (
+        "Option::Some",
+        "Rename this variant. Common alternatives: "
+        "Present, Hit, Just, Filled.",
+    ),
+    "None": (
+        "Option::None",
+        "Rename this variant. Common alternatives: "
+        "Empty, Absent, Missing, Null.",
+    ),
+}
+
+
 class _DeclarationsMixin:
     def _collect_globals(self, module: A.Module) -> None:
         from . import Symbol, SymbolKind
@@ -72,10 +103,23 @@ class _DeclarationsMixin:
                 )
                 self._declare_global(sym)
                 for v in item.variants:
+                    if v.name in _RESERVED_VARIANT_NAMES:
+                        # Hard-ban the four universal sum-type
+                        # variant names. Silently overwriting them
+                        # broke every subsequent use of the built-in
+                        # Result / Option constructor in the same
+                        # module.
+                        builtin, hint = _RESERVED_VARIANT_HINTS[v.name]
+                        self._err(
+                            f"variant {v.name!r} is reserved (collides with "
+                            f"the built-in {builtin} constructor). {hint}",
+                            v.pos,
+                        )
+                        continue
                     if v.name in self.global_scope.symbols:
                         existing = self.global_scope.symbols[v.name]
                         # Collisions with built-ins are silently
-                        # ignored (a user variant named ``None``
+                        # ignored (a user variant named ``JNull``
                         # is fine as long as it is not used in
                         # the same context); collisions between
                         # user types are reported.

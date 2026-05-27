@@ -70,25 +70,31 @@ No remaining work in this priority.
 Strengthens the capability + supply-chain claim, but isn't on
 the current Wasm critical path.
 
-- [ ] **Compiler bugs surfaced by capa_governance_pack stress
+- [~] **Compiler bugs surfaced by capa_governance_pack stress
   test 2026-05-26**. Five findings from writing the first
   real-world ~900-LOC downstream Capa program
   ([nelsonduarte/capa_governance_pack](https://github.com/nelsonduarte/capa_governance_pack)):
-  1. **MEDIUM. Variant name collision shadows built-in
-     `Result::Ok`.** Declaring `pub type S = Ok | Bad` makes
-     every subsequent `Ok(value)` in a `Result`-returning
-     function resolve to the user's nullary variant, producing
-     `error: variant 'Ok' takes no payload`. Repro:
-     ```
-     pub type S = Ok | Bad
-     fun probe() -> Result<Int, String>
-         return Ok(1)
-     ```
-     Fix: resolver should consult the expected type (a la GHC
-     type-directed name resolution), OR the parser should
-     reject user-declared variants whose unqualified name
-     collides with `Ok` / `Err` / `Some` / `None`. Workaround
-     used in capa_governance_pack: rename to `Compliant`.
+  1. **[x] MEDIUM. Variant name collision shadows built-in
+     `Result::Ok`** (closed 2026-05-27). Fix: hard-ban
+     `Ok` / `Err` / `Some` / `None` as user-declared variant
+     names with an actionable diagnostic that suggests
+     common alternatives (`Compliant` / `Success` / `Hit` /
+     `Ready` for `Ok`, etc.). New `_RESERVED_VARIANT_NAMES`
+     constant + small if-block at the top of the variant-
+     registration loop in `capa/analyzer/_declarations.py`,
+     before the existing generic "conflicts with another
+     declaration" branch (whose message references
+     `_BUILTIN_POS` and reads poorly). Now the original
+     repro emits exactly one error pointing at the user's
+     `Ok` declaration; `Result::Ok(1)` in the function body
+     stays accessible. Five regression tests in
+     `TestReservedVariantNames` (one per reserved name plus
+     a positive control). JsonValue variants (JNull /
+     JBool / ...) intentionally NOT in the reserved set;
+     they are domain-specific and unlikely to collide.
+     Workaround used in `capa_governance_pack` (rename to
+     `Compliant`) remains the canonical idiom under the
+     new rule. Full suite 1775 / 5 skipped / 0 fail.
   2. **LOW (cosmetic). Formatter v3 orphans trailing `//`
      comment on a `match` arm body.** A `// tolerate` comment
      on a `Some(v) -> as_string_or_err(v, "x")? // tolerate`
@@ -111,10 +117,8 @@ the current Wasm critical path.
      itself works around this when consuming its own SBOM
      would be wanted; ideally a de-mangling pass before
      emission.
-  These were all caught by writing the first real-world Capa
-  program of substantial size end-to-end; none broke the
-  stress test (all 5 had inline workarounds), but each is a
-  real polish item before pitching Capa to enterprise users.
+  Four of five remain open (3 LOW + 1 OBSERVATION); each is
+  a polish item before pitching Capa to enterprise users.
 
 - [x] **Wasm backend: FormatStr on arbitrary user struct types**
   (closed 2026-05-24). Design decision: opt-in Display protocol

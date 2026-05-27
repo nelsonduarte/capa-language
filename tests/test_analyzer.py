@@ -4921,5 +4921,97 @@ class TestCapLeakViaGenericInstantiation(unittest.TestCase):
         self.assertTrue(r.ok, r.errors)
 
 
+# =============================================================
+# Reserved sum-type variant names (Ok / Err / Some / None)
+# =============================================================
+
+class TestReservedVariantNames(unittest.TestCase):
+    """A user-declared variant named Ok / Err / Some / None used to
+    silently overwrite the built-in Result / Option constructor in
+    the global scope, breaking every subsequent use of the built-in.
+    The analyzer now rejects such declarations at declaration time
+    with a clear, rename-oriented diagnostic."""
+
+    def test_user_variant_named_ok_rejected(self):
+        msgs = errors_of(
+            "pub type S =\n"
+            "    Ok\n"
+            "    Bad\n"
+            "fun probe() -> Result<Int, String>\n"
+            "    return Ok(1)\n"
+        )
+        reserved = [
+            m for m in msgs
+            if "'Ok'" in m and "reserved" in m and "Result::Ok" in m
+        ]
+        self.assertEqual(len(reserved), 1, msgs)
+        # The built-in Result::Ok must still resolve at the call
+        # site (the user variant was rejected, not registered), so
+        # we should NOT see a "takes no payload" error from Ok(1).
+        self.assertFalse(
+            any("takes no payload" in m for m in msgs), msgs,
+        )
+
+    def test_user_variant_named_err_rejected(self):
+        msgs = errors_of(
+            "pub type S =\n"
+            "    Err\n"
+            "    Good\n"
+            "fun probe() -> Result<Int, String>\n"
+            "    return Err(\"bad\")\n"
+        )
+        reserved = [
+            m for m in msgs
+            if "'Err'" in m and "reserved" in m and "Result::Err" in m
+        ]
+        self.assertEqual(len(reserved), 1, msgs)
+        self.assertFalse(
+            any("takes no payload" in m for m in msgs), msgs,
+        )
+
+    def test_user_variant_named_some_rejected(self):
+        msgs = errors_of(
+            "pub type S =\n"
+            "    Some\n"
+            "    Other\n"
+            "fun probe() -> Option<Int>\n"
+            "    return Some(1)\n"
+        )
+        reserved = [
+            m for m in msgs
+            if "'Some'" in m and "reserved" in m and "Option::Some" in m
+        ]
+        self.assertEqual(len(reserved), 1, msgs)
+        self.assertFalse(
+            any("takes no payload" in m for m in msgs), msgs,
+        )
+
+    def test_user_variant_named_none_rejected(self):
+        msgs = errors_of(
+            "pub type S =\n"
+            "    None\n"
+            "    Other\n"
+            "fun probe() -> Option<Int>\n"
+            "    return None\n"
+        )
+        reserved = [
+            m for m in msgs
+            if "'None'" in m and "reserved" in m and "Option::None" in m
+        ]
+        self.assertEqual(len(reserved), 1, msgs)
+
+    def test_non_reserved_variant_name_still_works(self):
+        # Positive control: the canonical rename suggested by the
+        # diagnostic must analyse cleanly.
+        r = check(
+            "pub type S =\n"
+            "    Compliant\n"
+            "    Bad\n"
+            "fun probe() -> S\n"
+            "    return Compliant\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+
 if __name__ == "__main__":
     unittest.main()
