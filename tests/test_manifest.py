@@ -24,10 +24,15 @@ by exercising the manifest's *structural* surface:
 Attribute-driven cases stay in ``test_attributes.py``.
 """
 
+import json
+import re
+import shutil
+import tempfile
 import unittest
+from pathlib import Path
 
 from capa import Lexer, Parser, analyze
-from capa.manifest import SCHEMA_VERSION, build_manifest
+from capa.manifest import SCHEMA_VERSION, build_cyclonedx, build_manifest, build_spdx
 
 
 def _analysed(source: str):
@@ -141,8 +146,257 @@ class TestTopLevelShape(unittest.TestCase):
             "params", "return_type",
             "declared_capabilities", "provably_excluded_capabilities",
             "has_unsafe", "attributes", "calls",
+            # Source-level identifiers + import-module disclosure for
+            # SBOM emission. ``name`` and ``container`` stay as the
+            # loader-time (possibly mangled) identifiers so internal
+            # call resolution + bom-ref keying remain stable; the
+            # ``source_*`` fields are what the regulator-facing SBOM
+            # displays.
+            "source_name", "source_container", "source_module_index",
         }
         self.assertEqual(set(fn.keys()), required)
+
+
+class TestSourceNameDemangle(unittest.TestCase):
+    """The loader prefixes non-pub items imported from another module
+    with ``_capa_m{N}__`` for collision-avoidance. The manifest must
+    surface the source-level name (so a regulator-facing SBOM reads
+    as the user wrote it) while still preserving the loader-time
+    name on ``name`` / ``container`` so internal call-resolution and
+    bom-ref keying stay collision-stable.
+
+    Two of the three cases drive the real loader through tmpdir
+    source files: this is the same harness ``tests/test_loader.py``
+    uses, and it exercises the full
+    ``ModuleLoader._mangle_private_items`` -> ``_demangle`` pipeline
+    end-to-end. The single-module no-mangle case stays inline because
+    no loader work is needed.
+    """
+
+    _MANGLE_RE = re.compile(r"^_capa_m(\d+)__(.+)$")
+
+    def _link_and_build(self, root: Path):
+        from capa.loader import ModuleLoader
+        loader = ModuleLoader()
+        linked = loader.load_root(
+            root.read_text(encoding="utf-8"), str(root),
+        )
+        result = analyze(
+            linked.module,
+            source=root.read_text(encoding="utf-8"),
+        )
+        if not result.ok:
+            raise AssertionError(
+                f"analyser errors: {[e.format() for e in result.errors]}"
+            )
+        return build_manifest(linked.module, filename=str(root))
+
+    def _tmpdir(self) -> Path:
+        d = Path(tempfile.mkdtemp(prefix="capa_demangle_test_"))
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        return d
+
+    def _write(self, root: Path, name: str, body: str) -> Path:
+        p = root / name
+        p.write_text(body, encoding="utf-8")
+        return p
+
+    def _find_fn(self, manifest: dict, source_name: str) -> dict:
+        for fn in manifest["functions"]:
+            if fn["source_name"] == source_name:
+                return fn
+        raise AssertionError(
+            f"no function with source_name={source_name!r}; "
+            f"present: {[f['source_name'] for f in manifest['functions']]}"
+        )
+
+    def test_root_module_function_has_no_demangle(self):
+        m = build_manifest(_analysed("fun f()\n    return\n"))
+        fn = m["functions"][0]
+        self.assertEqual(fn["name"], "f")
+        self.assertEqual(fn["source_name"], "f")
+        self.assertIsNone(fn["source_module_index"])
+        self.assertIsNone(fn["container"])
+        self.assertIsNone(fn["source_container"])
+
+    def test_imported_non_pub_function_gets_demangled(self):
+        d = self._tmpdir()
+        self._write(
+            d, "util.capa",
+            "fun helper(x: Int) -> Int\n"
+            "    return x + 1\n"
+            "pub fun via_helper(n: Int) -> Int\n"
+            "    return helper(n)\n",
+        )
+        root = self._write(
+            d, "root.capa",
+            "import util\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"hi\")\n",
+        )
+        m = self._link_and_build(root)
+        # The loader assigns the mangle counter sequentially; rather
+        # than hard-coding it, parse the index out of the mangled
+        # name itself with the same regex the source uses.
+        candidates = [
+            fn for fn in m["functions"]
+            if fn["source_name"] == "helper"
+        ]
+        self.assertEqual(len(candidates), 1, candidates)
+        fn = candidates[0]
+        match = self._MANGLE_RE.match(fn["name"])
+        self.assertIsNotNone(
+            match,
+            f"expected mangled name on imported non-pub helper; got {fn['name']!r}",
+        )
+        expected_index = int(match.group(1))
+        self.assertEqual(match.group(2), "helper")
+        self.assertEqual(fn["source_name"], "helper")
+        self.assertEqual(fn["source_module_index"], expected_index)
+
+    def test_imported_pub_function_is_not_mangled(self):
+        d = self._tmpdir()
+        self._write(
+            d, "util.capa",
+            "pub fun helper(x: Int) -> Int\n"
+            "    return x + 1\n",
+        )
+        root = self._write(
+            d, "root.capa",
+            "import util\n"
+            "fun main(stdio: Stdio)\n"
+            "    let n = helper(3)\n"
+            "    stdio.println(\"hi\")\n",
+        )
+        m = self._link_and_build(root)
+        fn = self._find_fn(m, "helper")
+        self.assertEqual(fn["name"], "helper")
+        self.assertEqual(fn["source_name"], "helper")
+        self.assertIsNone(fn["source_module_index"])
+
+
+class TestSourceNameInSboms(unittest.TestCase):
+    """The CycloneDX / SPDX wrappers must display the source-level
+    name on each function component (so the SBOM reads as a
+    regulator expects) while keeping the loader-time name on the
+    bom-ref / SPDXID so cross-module references still resolve.
+
+    To keep these tests independent of any specific loader-counter
+    allocation we build a single-module AST programmatically and
+    hand-set a function's ``.name`` to a simulated mangle
+    (``_capa_m3__as_object_or_err``). The de-mangle helper lives on
+    the manifest builder and is unaware of how the mangle arrived,
+    so this is faithful to the real pipeline; the alternative
+    (driving a real multi-module program) would only add I/O without
+    exercising any extra code under test.
+    """
+
+    _MANGLED = "_capa_m3__as_object_or_err"
+    _SOURCE = "as_object_or_err"
+    _INDEX = 3
+
+    def _module_with_mangled_fn(self):
+        # Round-trip a tiny program through the parser, then
+        # rename the FunDecl in place to simulate what the loader's
+        # ``_mangle_private_items`` would have produced for a non-pub
+        # imported helper.
+        src = "fun as_object_or_err() -> Int\n    return 0\n"
+        tokens = Lexer(src).lex()
+        module = Parser(tokens, source=src).parse_module()
+        result = analyze(module, source=src)
+        if not result.ok:
+            raise AssertionError(
+                f"analyser errors: {[e.format() for e in result.errors]}"
+            )
+        for item in module.items:
+            if getattr(item, "name", None) == self._SOURCE:
+                item.name = self._MANGLED
+                break
+        else:
+            raise AssertionError("test setup: target function not found")
+        return module
+
+    def test_cyclonedx_shows_source_name_with_source_module_index_property(self):
+        module = self._module_with_mangled_fn()
+        doc = build_cyclonedx(
+            module,
+            filename="program.capa",
+            timestamp="2026-01-01T00:00:00Z",
+        )
+        # Round-trip through JSON to mirror the wire shape consumers
+        # will see; catches any non-serialisable value sneaking in.
+        doc = json.loads(json.dumps(doc))
+
+        targets = [
+            c for c in doc["components"]
+            if c.get("bom-ref", "").endswith(self._MANGLED)
+        ]
+        self.assertEqual(len(targets), 1, targets)
+        comp = targets[0]
+        self.assertEqual(
+            comp["name"], self._SOURCE,
+            "displayed component name must be the source-level identifier",
+        )
+        self.assertIn(
+            self._MANGLED, comp["bom-ref"],
+            "bom-ref must keep the loader-time name so cross-module"
+            " references still resolve",
+        )
+        props = {p["name"]: p["value"] for p in comp.get("properties", [])}
+        self.assertEqual(
+            props.get("capa:source_module_index"), str(self._INDEX),
+        )
+        # Sanity: no still-mangled name leaked into the displayed
+        # component-name surface anywhere in the document.
+        self.assertFalse(
+            any(
+                c.get("name", "").startswith("_capa_m")
+                for c in doc["components"]
+            ),
+            "no component should display a still-mangled name",
+        )
+
+    def test_spdx_shows_source_name_with_source_module_index_annotation(self):
+        module = self._module_with_mangled_fn()
+        doc = build_spdx(
+            module,
+            filename="program.capa",
+            timestamp="2026-01-01T00:00:00Z",
+        )
+        doc = json.loads(json.dumps(doc))
+
+        # SPDXIDs sanitise non-conforming characters (the allowed
+        # alphabet is [a-zA-Z0-9.-]; underscores become dashes via
+        # ``_spdx_id``). Match by source-name and then assert the
+        # sanitised mangle survives, which is what cross-module
+        # references rely on inside SPDX-land.
+        sanitised_mangle = "capa-m3--as-object-or-err"
+        targets = [
+            p for p in doc["packages"]
+            if p.get("name") == self._SOURCE
+        ]
+        self.assertEqual(len(targets), 1, targets)
+        pkg = targets[0]
+        self.assertIn(
+            sanitised_mangle, pkg["SPDXID"],
+            "SPDXID must keep the (sanitised) loader-time name so"
+            " cross-module references still resolve",
+        )
+        annot_comments = [
+            a["comment"] for a in pkg.get("annotations", [])
+        ]
+        self.assertIn(
+            f"capa:source_module_index={self._INDEX}",
+            annot_comments,
+        )
+        # Sanity: no still-mangled name leaked into any package name.
+        self.assertFalse(
+            any(
+                p.get("name", "").startswith("_capa_m")
+                for p in doc["packages"]
+            ),
+            "no package should display a still-mangled name",
+        )
 
 
 class TestDeterminism(unittest.TestCase):

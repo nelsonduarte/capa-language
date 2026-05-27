@@ -12,6 +12,7 @@ recognise.
 
 from __future__ import annotations
 
+import re
 from typing import Any, Optional
 
 from .. import capa_ast as A
@@ -23,6 +24,25 @@ from ._strings import _root_type_name, _ty_text
 
 
 SCHEMA_VERSION = 1
+
+
+# Loader-generated mangle prefix on non-pub items imported from
+# another module: ``_capa_m{N}__<source_name>`` (see
+# ``capa/loader.py::_mangle_private_items``). The manifest displays
+# the source-level name so regulator-facing SBOMs read as the user
+# wrote them; the module index ``N`` is preserved as a separate
+# field so the auditor still sees which import the symbol came from.
+_MANGLE_RE = re.compile(r"^_capa_m(\d+)__(.+)$")
+
+
+def _demangle(name: str) -> tuple[str, Optional[int]]:
+    """Return ``(source_name, module_index)`` for a possibly-mangled
+    identifier. ``module_index`` is None when the name carried no
+    loader prefix (root-module item or pub-exported import)."""
+    m = _MANGLE_RE.match(name)
+    if m is None:
+        return name, None
+    return m.group(2), int(m.group(1))
 
 
 def build_manifest(
@@ -183,9 +203,24 @@ def _fun_record(
     calls: list[dict[str, Any]] = []
     _collect_calls(fn.body, calls, attenuation_map=attenuation_map)
 
+    # Surface the source-level identifier (the loader's
+    # ``_capa_m{N}__<source>`` mangle is for collision-avoidance
+    # at analysis / transpile time, not for regulator-facing
+    # output). The ``name`` field stays as the loader-time
+    # identifier so internal call-resolution + bom-ref keying
+    # do not collide on demangling; ``source_name`` is the
+    # display form; ``source_module_index`` is the import
+    # counter, preserved so SBOM consumers can still tell two
+    # same-named helpers from different modules apart.
+    source_name, module_index = _demangle(fn.name)
+    source_container, _ = _demangle(container) if container is not None else (None, None)
+
     return {
         "name": fn.name,
+        "source_name": source_name,
         "container": container,
+        "source_container": source_container,
+        "source_module_index": module_index,
         "pos": f"{filename}:{fn.pos.line}:{fn.pos.col}",
         "is_pub": fn.is_pub,
         "doc": fn.doc,

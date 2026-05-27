@@ -195,11 +195,18 @@ def build_spdx(
             fn_ids[fn["name"]] = _spdx_id("Fn", bom_basename, fn["name"])
 
     for fn in inner["functions"]:
+        # SPDXID keyed on the loader-time name (collision-stable);
+        # display name uses the source-level identifier so the SBOM
+        # reads as a regulator expects. See _funrec.py for the
+        # demangle helper that produces source_name / source_container.
         if fn["container"]:
-            qualname = f"{fn['container']}::{fn['name']}"
+            qualname = (
+                f"{fn['source_container'] or fn['container']}"
+                f"::{fn['source_name']}"
+            )
             fn_id = _spdx_id("Fn", bom_basename, fn["container"], fn["name"])
         else:
-            qualname = fn["name"]
+            qualname = fn["source_name"]
             fn_id = fn_ids[fn["name"]]
 
         annots = [
@@ -209,10 +216,18 @@ def build_spdx(
             _annot(timestamp, "has_unsafe", str(fn["has_unsafe"]).lower()),
             _annot(timestamp, "is_pub", str(fn["is_pub"]).lower()),
         ]
+        if fn.get("source_module_index") is not None:
+            annots.append(_annot(
+                timestamp, "source_module_index",
+                str(fn["source_module_index"]),
+            ))
         if fn.get("doc"):
             annots.append(_annot(timestamp, "doc", fn["doc"]))
         if fn["container"]:
-            annots.append(_annot(timestamp, "container", fn["container"]))
+            annots.append(_annot(
+                timestamp, "container",
+                fn["source_container"] or fn["container"],
+            ))
         for cap_type in fn["declared_capabilities"]:
             annots.append(_annot(timestamp, "declared_capability", cap_type))
         for cap_type in fn.get("provably_excluded_capabilities", []):

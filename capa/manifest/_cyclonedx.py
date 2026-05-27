@@ -168,11 +168,21 @@ def build_cyclonedx(
     # Functions
     program_depends_on: list[str] = list(user_cap_refs.values())
     for fn in inner["functions"]:
+        # bom-ref keyed on the loader-time name to keep
+        # collision-resolution stable (two same-source-named helpers
+        # imported from different modules get distinct refs). The
+        # displayed ``name`` field uses the source-level identifier
+        # so the SBOM reads as a regulator expects.
         if fn["container"]:
-            qualname = f"{fn['container']}::{fn['name']}"
+            qualname_ref = f"{fn['container']}::{fn['name']}"
+            qualname_display = (
+                f"{fn['source_container'] or fn['container']}"
+                f"::{fn['source_name']}"
+            )
         else:
-            qualname = fn["name"]
-        fn_ref = f"capa:fn:{bom_basename}:{qualname}"
+            qualname_ref = fn["name"]
+            qualname_display = fn["source_name"]
+        fn_ref = f"capa:fn:{bom_basename}:{qualname_ref}"
         program_depends_on.append(fn_ref)
 
         props = [
@@ -182,12 +192,21 @@ def build_cyclonedx(
             {"name": "capa:has_unsafe", "value": str(fn["has_unsafe"]).lower()},
             {"name": "capa:is_pub", "value": str(fn["is_pub"]).lower()},
         ]
+        # Disclose the source-module import index when the function
+        # came from a non-pub-imported declaration. Lets the auditor
+        # tell two source-name-equal helpers apart even though the
+        # displayed name has been de-mangled.
+        if fn.get("source_module_index") is not None:
+            props.append({
+                "name": "capa:source_module_index",
+                "value": str(fn["source_module_index"]),
+            })
         if fn.get("doc"):
             props.append({"name": "capa:doc", "value": fn["doc"]})
         if fn["container"]:
             props.append({
                 "name": "capa:container",
-                "value": fn["container"],
+                "value": fn["source_container"] or fn["container"],
             })
         for cap_type in fn["declared_capabilities"]:
             props.append({
@@ -223,7 +242,7 @@ def build_cyclonedx(
         components.append({
             "bom-ref": fn_ref,
             "type": "library",
-            "name": qualname,
+            "name": qualname_display,
             "scope": "required",
             **_CDX_COMPONENT_COMPLIANCE_FIELDS,
             "properties": props,

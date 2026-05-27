@@ -70,9 +70,10 @@ No remaining work in this priority.
 Strengthens the capability + supply-chain claim, but isn't on
 the current Wasm critical path.
 
-- [~] **Compiler bugs surfaced by capa_governance_pack stress
-  test 2026-05-26**. Five findings from writing the first
-  real-world ~900-LOC downstream Capa program
+- [x] **Compiler bugs surfaced by capa_governance_pack stress
+  test 2026-05-26** (closed 2026-05-27). All five findings
+  from writing the first real-world ~900-LOC downstream
+  Capa program
   ([nelsonduarte/capa_governance_pack](https://github.com/nelsonduarte/capa_governance_pack)):
   1. **[x] MEDIUM. Variant name collision shadows built-in
      `Result::Ok`** (closed 2026-05-27). Fix: hard-ban
@@ -129,15 +130,39 @@ the current Wasm critical path.
      not valid on 'import'. Use a plain comment (\`//\`)
      for module-level headers, or move the doc above the
      next declaration."
-  5. **OBSERVATION. `--cyclonedx` emits mangled cross-module
-     non-pub names** (`_capa_m2__as_object_or_err`). Regulator-
-     visible names should be source-level. The governance pack
-     itself works around this when consuming its own SBOM
-     would be wanted; ideally a de-mangling pass before
-     emission.
-  Four of five fixed (bugs 1-4); bug 5 (mangling) remains
-  open as the design-heavier residual. Full suite 1778
-  passed / 5 skipped / 0 fail; corpus idempotence 71/71.
+  5. **[x] OBSERVATION. `--cyclonedx` emits mangled cross-
+     module non-pub names** (closed 2026-05-27). Root cause:
+     loader's `_mangle_private_items` rewrites every non-pub
+     top-level identifier in an imported module to
+     `_capa_m{N}__<source>` to keep the merged AST flat
+     without name collisions; the manifest builder copied
+     `fn.name` directly into the SBOM, so the auditor saw
+     `_capa_m2__as_object_or_err` instead of `as_object_or_err`.
+     Fix: new `_demangle` helper in `capa/manifest/_funrec.py`
+     that parses the prefix back into
+     `(source_name, module_index)`; the function record now
+     carries `source_name`, `source_container`, and
+     `source_module_index` alongside the existing (loader-
+     time, possibly-mangled) `name` and `container`. The
+     loader-time fields stay because internal call-resolution
+     + bom-ref / SPDXID keying rely on them for cross-module
+     collision stability. The CycloneDX and SPDX emitters
+     now display `source_name` (and `source_container`) on
+     the public `name` / `qualname` field and surface the
+     import index as a `capa:source_module_index` property
+     (CycloneDX) / annotation (SPDX) so an auditor can still
+     tell two same-source-named helpers from different
+     modules apart. Verified end-to-end on
+     capa_governance_pack: `still-mangled: 0` across all 40
+     components (was substantial pre-fix). 5 regression
+     tests (`TestSourceNameDemangle` x 3 covering root /
+     non-pub-imported / pub-imported shapes via the real
+     loader harness;
+     `TestSourceNameInSboms` x 2 covering CycloneDX and
+     SPDX integration). Full suite 1783 / 5 skipped / 0
+     fail.
+  All five bugs from the capa_governance_pack stress test
+  are now closed.
 
 - [x] **Wasm backend: FormatStr on arbitrary user struct types**
   (closed 2026-05-24). Design decision: opt-in Display protocol
