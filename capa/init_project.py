@@ -59,6 +59,16 @@ capa --run main.capa
 capa --check main.capa
 ```
 
+## Dependencies
+
+Declared in `capa.toml`, vendored into `vendor/`:
+
+```
+capa search <query>   # find a package in the registry
+capa add <name>       # resolve via the registry, fetch, lock, verify
+capa install          # re-fetch everything from capa.toml
+```
+
 ## Learn more
 
 - Language tour: <https://capa-language.com/tour.html>
@@ -73,6 +83,9 @@ __pycache__/
 *.pyc
 *.pyo
 
+# Vendored dependencies (re-fetched by `capa install`)
+vendor/
+
 # Editor
 .vscode/
 .idea/
@@ -82,6 +95,19 @@ __pycache__/
 # OS
 .DS_Store
 Thumbs.db
+"""
+
+
+# Package manifest. A scaffolded project ships with an empty
+# dependency set; `capa add <name>` appends [dependencies.<name>]
+# blocks and `capa install` vendors them into vendor/ and writes
+# capa.lock. Without this file `capa add` / `capa install` have
+# nothing to read, so it is part of the default scaffold.
+_CAPA_TOML_TEMPLATE = """\
+[package]
+name = "{name}"
+version = "0.1.0"
+capa = ">={capa_version}"
 """
 
 
@@ -151,6 +177,9 @@ def init_project(
 
     files: list[tuple[str, str]] = [
         ("main.capa", _MAIN_TEMPLATE.format(name=name)),
+        ("capa.toml", _CAPA_TOML_TEMPLATE.format(
+            name=name, capa_version=capa_version,
+        )),
         ("README.md", _README_TEMPLATE.format(name=name)),
         (".gitignore", _GITIGNORE_TEMPLATE),
         (".capa-version", capa_version + "\n"),

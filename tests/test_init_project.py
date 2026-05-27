@@ -19,9 +19,33 @@ class TestInitProject(unittest.TestCase):
         rc = init_project(target, capa_version="0.8.2")
         self.assertEqual(rc, 0)
         self.assertTrue((target / "main.capa").is_file())
+        self.assertTrue((target / "capa.toml").is_file())
         self.assertTrue((target / "README.md").is_file())
         self.assertTrue((target / ".gitignore").is_file())
         self.assertTrue((target / ".capa-version").is_file())
+
+    def test_capa_toml_is_parseable_and_supports_add(self):
+        # The scaffold must ship a capa.toml so `capa add` / `capa
+        # install` work immediately after `capa init`; without it
+        # the first `capa add` failed with "no capa.toml; run
+        # capa init" even though the user just ran capa init.
+        from capa.pkg import read_manifest, add_dependency
+        root = self._tmpdir()
+        target = root / "proj"
+        init_project(target, capa_version="0.8.2")
+        toml = (target / "capa.toml").read_text(encoding="utf-8")
+        self.assertIn("[package]", toml)
+        self.assertIn('name = "proj"', toml)
+        # The manifest parses, and a dependency can be added on top
+        # of the fresh scaffold (no install, just the capa.toml edit).
+        manifest = read_manifest(target / "capa.toml")
+        self.assertEqual(manifest.name, "proj")
+        add_dependency(
+            target, "capa_http",
+            "https://github.com/nelsonduarte/capa_http", tag="v0.1.3",
+        )
+        updated = (target / "capa.toml").read_text(encoding="utf-8")
+        self.assertIn("[dependencies.capa_http]", updated)
 
     def test_main_capa_uses_project_name(self):
         root = self._tmpdir()
