@@ -95,30 +95,49 @@ the current Wasm critical path.
      Workaround used in `capa_governance_pack` (rename to
      `Compliant`) remains the canonical idiom under the
      new rule. Full suite 1775 / 5 skipped / 0 fail.
-  2. **LOW (cosmetic). Formatter v3 orphans trailing `//`
-     comment on a `match` arm body.** A `// tolerate` comment
-     on a `Some(v) -> as_string_or_err(v, "x")? // tolerate`
-     arm body gets hoisted to its own line one indent up after
-     `--fmt`. Idempotent at fixpoint but reads as a top-level
-     note rather than an arm-body note.
-  3. **LOW (cosmetic). Formatter v3 glues `// =====` divider
-     to `///` doc block.** A blank line between a section
-     divider and the next function's doc comment is stripped,
-     producing a visually noisy header. Output still
-     well-formed; idempotent.
-  4. **LOW (diagnostic clarity). Top-of-file `///` errors
-     unhelpfully on next `import`.** `/// module doc\nimport x`
-     produces `error: doc comments are not valid on 'import'`.
-     Better: accept `///` at file top as module doc, OR
-     improve the message to suggest `//` for module headers.
+  2. **[x] LOW (cosmetic). Formatter v3 orphans trailing
+     `//` on `match` arm body** (closed 2026-05-27). Root
+     cause: `MatchArm` is an `A.Node` but not `A.Stmt` /
+     `A.Item`, so `_enclosing_stmt_or_item` walked past it
+     up to the enclosing `LetStmt`. Fix: new
+     `_enclosing_match_arm_on_line` short-circuit in
+     `_attach_trailing` that owns the comment on the arm
+     when the arm body is a single `Expr` on the same line.
+     `_emit_match_arm` in `_emit_stmts.py` now calls
+     `_emit_trailing(arm)` for both single-line arm shapes.
+     `Some(v) -> v  // tolerate` round-trips byte-exact.
+  3. **[x] LOW (cosmetic). Formatter v3 glues `// =====`
+     divider to `///` doc block** (closed 2026-05-27). Root
+     cause: `_emit_item` writes the leading comments
+     (CommentMap) immediately followed by `_emit_doc` with
+     no separator. Fix: `_emit_item` now inserts one blank
+     line whenever the item has BOTH a non-empty `leading`
+     comment block AND a `///` doc string. Generic
+     `_item_doc(item)` helper reads `getattr(item, "doc",
+     None)` so the rule applies uniformly to `FunDecl`,
+     `TypeStruct`, `TypeSum`, `TraitDecl`. The AST doesn't
+     carry the doc's source-line, so this is a deliberate
+     canonical choice (always a blank between a non-empty
+     leading block and the doc) rather than a
+     position-preserving heuristic.
+  4. **[x] LOW (diagnostic clarity). Top-of-file `///`
+     diagnostic** (closed 2026-05-27). Three "doc comments
+     are not valid on X" messages (`import`, `const`,
+     `impl`) in `capa/parser/_items.py` rewritten to name
+     the `///` syntax and suggest the `//` alternative:
+     "doc comments (\`///\`) attach to declarations and are
+     not valid on 'import'. Use a plain comment (\`//\`)
+     for module-level headers, or move the doc above the
+     next declaration."
   5. **OBSERVATION. `--cyclonedx` emits mangled cross-module
      non-pub names** (`_capa_m2__as_object_or_err`). Regulator-
      visible names should be source-level. The governance pack
      itself works around this when consuming its own SBOM
      would be wanted; ideally a de-mangling pass before
      emission.
-  Four of five remain open (3 LOW + 1 OBSERVATION); each is
-  a polish item before pitching Capa to enterprise users.
+  Four of five fixed (bugs 1-4); bug 5 (mangling) remains
+  open as the design-heavier residual. Full suite 1778
+  passed / 5 skipped / 0 fail; corpus idempotence 71/71.
 
 - [x] **Wasm backend: FormatStr on arbitrary user struct types**
   (closed 2026-05-24). Design decision: opt-in Display protocol

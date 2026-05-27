@@ -81,6 +81,16 @@ class _ItemsEmitterMixin:
 
     def _emit_item(self, item: A.Item) -> None:
         self._emit_leading(item)
+        # Canonical separation between a leading-comment block (a
+        # section divider like ``// =====`` is the typical case) and
+        # the item's own ``///`` doc block: insert one blank line so
+        # the visual ranking ``section header > item doc > item``
+        # survives the round-trip. The AST does not record the doc
+        # comment's source line, so we always insert the blank when
+        # both blocks are non-empty rather than gating on the
+        # original spacing.
+        if self._has_leading(item) and _item_doc(item):
+            self._newline()
         if isinstance(item, A.Import):
             self._emit_import(item)
         elif isinstance(item, A.ConstDecl):
@@ -99,6 +109,12 @@ class _ItemsEmitterMixin:
             raise AssertionError(
                 f"unsupported top-level item: {type(item).__name__}"
             )
+
+    def _has_leading(self, node: A.Node) -> bool:
+        att = self._attached(node)
+        if att is None:
+            return False
+        return bool(getattr(att, "leading", []) or [])
 
     # ------------------------------------------------------------
     # Doc comments / attributes / pub
@@ -320,6 +336,21 @@ class _ItemsEmitterMixin:
 # ----------------------------------------------------------------
 # Module-level helpers
 # ----------------------------------------------------------------
+def _item_doc(item: A.Item) -> Optional[str]:
+    """Return the doc string carried on ``item`` (None if the item
+    kind has no doc field, or the field is empty / None).
+
+    Only ``fun``, ``type``, ``trait`` and ``capability`` declarations
+    are doc-bearing in the surface language; ``import``, ``const``
+    and ``impl`` are not. Mirrors the parser's accept-set in
+    :class:`_ItemsMixin._parse_item`.
+    """
+    doc = getattr(item, "doc", None)
+    if doc:
+        return doc
+    return None
+
+
 def _type_params_str(params: list[str]) -> str:
     if not params:
         return ""

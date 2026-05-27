@@ -476,6 +476,57 @@ class TestPrettyPrinterStructure(unittest.TestCase):
 
 
 # ----------------------------------------------------------------
+# Comment-placement regressions
+# ----------------------------------------------------------------
+class TestPrettyPrinterCommentPlacement(unittest.TestCase):
+    """Targeted regressions for comment-placement bugs surfaced by
+    the capa_governance_pack stress test (2026-05-26)."""
+
+    def test_trailing_comment_on_match_arm_body_stays_on_arm(self):
+        """Bug 2: a trailing ``//`` on a ``Some(v) -> v`` arm body
+        used to be orphaned onto its own line one indent above the
+        match. It must now stay attached to the arm body line."""
+        from capa.formatter import format_source
+        src = (
+            "fun probe(x: Option<Int>) -> Int\n"
+            "    let y = match x\n"
+            "        None -> 0\n"
+            "        Some(v) -> v   // tolerate\n"
+            "    return y\n"
+        )
+        out = format_source(src)
+        self.assertIn("Some(v) -> v  // tolerate\n", out)
+        # The comment must not appear hoisted to a standalone line.
+        self.assertNotIn("\n  // tolerate\n", out)
+        self.assertNotIn("\n// tolerate\n", out)
+
+    def test_blank_line_preserved_between_divider_and_doc(self):
+        """Bug 3: a blank line between a ``// =====`` section divider
+        block and the following ``///`` doc comment used to be
+        stripped. It must now survive the round-trip."""
+        from capa.formatter import format_source
+        src = (
+            "// =========================================================\n"
+            "// Generic JsonValue extractors\n"
+            "// =========================================================\n"
+            "\n"
+            "/// Typed extraction of a JsonValue as an object map.\n"
+            "fun as_object_or_err(j: JsonValue) -> "
+            "Result<Map<String, JsonValue>, String>\n"
+            '    return Err("nope")\n'
+        )
+        out = format_source(src)
+        # The divider's closing line must be followed by a blank line
+        # before the doc comment, not glued directly to it.
+        self.assertIn(
+            "// =========================================================\n"
+            "\n"
+            "/// Typed extraction of a JsonValue as an object map.\n",
+            out,
+        )
+
+
+# ----------------------------------------------------------------
 # Corpus round-trip: every example survives parse + emit + parse
 # ----------------------------------------------------------------
 def _corpus_files() -> list[str]:

@@ -51,7 +51,12 @@ class _ItemsMixin:
             if attributes:
                 raise self._error("attributes are not valid on 'import'")
             if doc:
-                raise self._error("doc comments are not valid on 'import'")
+                raise self._error(
+                    "doc comments (`///`) attach to declarations and "
+                    "are not valid on 'import'. Use a plain comment "
+                    "(`//`) for module-level headers, or move the doc "
+                    "above the next declaration."
+                )
             return self._parse_import()
         if self._check(T.KW_CONST):
             if attributes:
@@ -61,8 +66,11 @@ class _ItemsMixin:
                 )
             if doc:
                 raise self._error(
-                    "doc comments are not valid on 'const' "
-                    "(v1 supports them on fun / type / trait / capability)"
+                    "doc comments (`///`) are not valid on 'const' "
+                    "(v1 supports them on fun / type / trait / "
+                    "capability). Use a plain comment (`//`) for a "
+                    "constant-level note, or move the doc above the "
+                    "next declaration."
                 )
             return self._parse_const(is_pub)
         if self._check(T.KW_TYPE):
@@ -96,8 +104,9 @@ class _ItemsMixin:
                 )
             if doc:
                 raise self._error(
-                    "doc comments are not valid on 'impl' "
-                    "(attach to its methods instead)"
+                    "doc comments (`///`) are not valid on 'impl' "
+                    "(attach to its methods instead, or use a plain "
+                    "comment `//` for an impl-block-level note)."
                 )
             return self._parse_impl()
         if self._check(T.KW_FUN):

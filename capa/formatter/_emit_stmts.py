@@ -254,6 +254,7 @@ class _StmtsEmitterMixin:
                 # Single-line divergent arm: keep on one line.
                 self._write(" -> ")
                 self._write(_render_divergent_stmt_inline(self, stmts[0]))
+                self._emit_trailing(arm)
                 self._newline()
                 return
             # Multi-statement (or other) block: header + indented body.
@@ -278,6 +279,7 @@ class _StmtsEmitterMixin:
             self._pop_indent()
             return
         self._write(f" -> {self._emit_expr(arm.body)}")
+        self._emit_trailing(arm)
         self._newline()
 
     # ------------------------------------------------------------

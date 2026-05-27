@@ -353,6 +353,36 @@ def _enclosing_block_or_module(
     return entry
 
 
+def _enclosing_match_arm_on_line(
+    entries_by_id: dict[int, _NodeEntry],
+    entry: _NodeEntry,
+    line: int,
+) -> Optional[_NodeEntry]:
+    """Walk up parent links looking for an enclosing :class:`A.MatchArm`
+    whose ``pos.line`` equals ``line`` and whose body is a single
+    ``Expr`` (i.e. the inline ``pat -> expr`` shape). Stops at the
+    first enclosing :class:`A.Stmt` / :class:`A.Item` / :class:`A.Module`
+    that is NOT a MatchArm container, since past that boundary the
+    comment no longer trails the arm body in the same source line.
+    Returns ``None`` when no such MatchArm exists on the chain.
+    """
+    cur = entry
+    while cur is not None:
+        node = cur.node
+        if (
+            isinstance(node, A.MatchArm)
+            and node.pos.line == line
+            and not isinstance(node.body, A.Block)
+        ):
+            return cur
+        if isinstance(node, (A.Stmt, A.Item, A.Module)):
+            return None
+        if cur.parent is None:
+            return None
+        cur = entries_by_id.get(id(cur.parent))
+    return None
+
+
 def _header_line(node: A.Node) -> int:
     """The line where the compound node's *header* sits. For most
     compound nodes that is ``node.pos.line``; for :class:`A.FunDecl`
@@ -483,6 +513,19 @@ def _attach_trailing(
     ):
         owner = _enclosing_expr(entries_by_id, inner)
         cmap.attach(owner.node, "interior", c)
+        return
+
+    # Single-line match arm: ``Some(v) -> v  // tolerate``. The arm
+    # body is buried inside the enclosing ``let`` / ``return`` /
+    # ``ExprStmt`` (which owns the whole ``match`` expression), so
+    # ``_enclosing_stmt_or_item`` would otherwise drag the trailing
+    # comment up to that statement and orphan it onto its own line
+    # one indent above the arm. Preferring the closest enclosing
+    # MatchArm whose source line matches keeps the comment on the
+    # arm body line.
+    arm = _enclosing_match_arm_on_line(entries_by_id, inner, c.start.line)
+    if arm is not None:
+        cmap.attach(arm.node, "trailing", c)
         return
 
     owner = _enclosing_stmt_or_item(entries_by_id, inner)

@@ -499,6 +499,16 @@ class TestErrors(unittest.TestCase):
             parse("class Foo\n    1\n")
         self.assertIn("'type'", str(ctx.exception))
 
+    def test_doc_comment_on_import_suggests_plain_comment(self):
+        """A ``///`` line directly above ``import`` is the typical
+        newcomer mistake (treating ``///`` as a module-header
+        comment). The diagnostic must point at the ``//`` fix."""
+        with self.assertRaises(ParserError) as ctx:
+            parse("/// foo.capa, my module\nimport x\n")
+        msg = str(ctx.exception)
+        self.assertIn("doc comments", msg)
+        self.assertIn("`//`", msg)
+
 
 # =============================================================
 # Documented restrictions (block-body inside parentheses)
