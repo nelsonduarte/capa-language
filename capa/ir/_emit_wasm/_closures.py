@@ -882,7 +882,9 @@ class _ClosureEmissionMixin:
         - String: closure returns two i32s (ptr, len). Pop into
           ``$_str_a_ptr`` / ``$_str_a_len`` then pack as
           ``ptr | (len << 32)`` and store as i64.
-        - pointer-shape: i64.extend_i32_u + i64.store.
+        - pointer-shape: ``i32.store`` into a 4-byte slot (the
+          closure result is already an i32 pointer, no extend);
+          ``i64.extend_i32_u + i64.store`` into an 8-byte slot.
         """
         if out_ty == "Int":
             # Stack: [..., addr, val_i64]; flip so i64.store sees
@@ -931,9 +933,15 @@ class _ClosureEmissionMixin:
             self._write("i64.store")
             return
         if self._is_pointer_shape_ty(out_ty):
-            # Stack: [..., addr, val_i32]; widen to i64.
-            self._write("i64.extend_i32_u")
-            self._write("i64.store")
+            # Stack: [..., addr, val_i32]. The closure result is
+            # already an i32 pointer. For a 4-byte slot store it
+            # directly; for an 8-byte slot widen to i64 first so the
+            # upper 4 bytes are written too (mirrors the Bool branch).
+            if slot_size == 4:
+                self._write("i32.store")
+            else:
+                self._write("i64.extend_i32_u")
+                self._write("i64.store")
             return
         raise WasmEmissionError(
             f"List HOF: cannot store closure result of type "
@@ -964,9 +972,13 @@ class _ClosureEmissionMixin:
         self._write(f"call_indirect (type $sig_{sig_idx})")
 
     def _hof_elem_slot_size(self, elem_ty: str) -> int:
-        """Slot size on the data array. Bool elements stride 4
-        bytes; everything else 8."""
-        return 4 if elem_ty == "Bool" else 8
+        """Slot size on the data array for a HOF element. Delegates to
+        ``_size_of`` so the HOF path and the base list path
+        (make_list / push / index / for-iter) share one stride
+        decision and cannot diverge: Int / Float / String / Fun are 8
+        bytes, Bool and pointer-shape (struct / tuple / sum / nested
+        collection, stored as a single i32 pointer) are 4 bytes."""
+        return self._size_of(elem_ty)
 
     # ----- map --------------------------------------------------
 
@@ -987,14 +999,6 @@ class _ClosureEmissionMixin:
                 f"List.map: dst {dst!r} has non-List type {dst_ty!r}"
             )
         out_elem_ty = dst_ty[5:-1].strip()
-        if (self._is_pointer_shape_ty(out_elem_ty)
-                or self._is_pointer_shape_ty(elem_ty)):
-            raise WasmEmissionError(
-                f"List<{elem_ty}>.map -> List<{out_elem_ty}>: "
-                f"pointer-shape element types in HOF arguments / "
-                f"results are not supported by the Wasm backend. "
-                f"Workaround: use the Python backend (``capa --run``)."
-            )
         sig_key = self._closure_sig_key_for([elem_ty], out_elem_ty)
         if sig_key not in self._closure_sig_keys:
             raise WasmEmissionError(
@@ -1159,11 +1163,6 @@ class _ClosureEmissionMixin:
         dst = instr.dst
         if dst is None:
             return
-        if self._is_pointer_shape_ty(elem_ty):
-            raise WasmEmissionError(
-                f"List<{elem_ty}>.filter: pointer-shape elements not "
-                f"supported. Use the Python backend (``capa --run``)."
-            )
         sig_key = self._closure_sig_key_for([elem_ty], "Bool")
         if sig_key not in self._closure_sig_keys:
             raise WasmEmissionError(
@@ -1221,10 +1220,11 @@ class _ClosureEmissionMixin:
         # Stash the slot address so we can re-read after the
         # predicate call without recomputing.
         self._write("local.tee $_lam_new_data")
-        # Load the raw slot bytes into $_alloc_tmp_i64. Bool slots
-        # are 4 bytes wide; widen to i64 so the downstream push /
-        # decode paths can share the same scratch local.
-        if elem_ty == "Bool":
+        # Load the raw slot bytes into $_alloc_tmp_i64. 4-byte-stride
+        # slots (Bool and pointer-shape) are loaded as i32 then
+        # widened to i64 so the downstream push / decode paths can
+        # share the same scratch local; 8-byte slots load directly.
+        if self._hof_elem_slot_size(elem_ty) == 4:
             self._write("i32.load")
             self._write("i64.extend_i32_u")
         else:
@@ -1378,13 +1378,6 @@ class _ClosureEmissionMixin:
         if dst is None:
             return
         acc_ty = self._dst_capa_ty(dst) or "Int"
-        if (self._is_pointer_shape_ty(acc_ty)
-                or self._is_pointer_shape_ty(elem_ty)):
-            raise WasmEmissionError(
-                f"List<{elem_ty}>.fold -> {acc_ty}: pointer-shape "
-                f"types not supported in HOF args/result. Workaround: "
-                f"use the Python backend (``capa --run``)."
-            )
         sig_key = self._closure_sig_key_for([acc_ty, elem_ty], acc_ty)
         if sig_key not in self._closure_sig_keys:
             raise WasmEmissionError(
@@ -1430,9 +1423,10 @@ class _ClosureEmissionMixin:
         self._write(f"i32.const {elem_stride}")
         self._write("i32.mul")
         self._write("i32.add")
-        # Bool elements occupy 4-byte slots; widen to i64 so the
-        # decode helper can share the scratch local.
-        if elem_ty == "Bool":
+        # 4-byte-stride elements (Bool and pointer-shape) occupy
+        # 4-byte slots; widen to i64 so the decode helper can share
+        # the scratch local. 8-byte slots load directly.
+        if self._hof_elem_slot_size(elem_ty) == 4:
             self._write("i32.load")
             self._write("i64.extend_i32_u")
         else:

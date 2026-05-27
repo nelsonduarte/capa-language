@@ -99,6 +99,37 @@ class TestWasmEmissionShape(unittest.TestCase):
         self.assertIn('(func $is_pos (export "is_pos") (param $n i64) (result i32)', wat)
         self.assertIn("i64.gt_s", wat)
 
+    def test_list_struct_map_uses_4byte_pointer_slot(self):
+        # Pointer-shape (struct) elements occupy a single 4-byte i32
+        # slot driven by _size_of, both for the source list and the
+        # mapped result. Pin the slot-size decision so a regression
+        # back to an 8-byte pointer slot (which would diverge from
+        # the base list path) is caught at the WAT level: the map
+        # driver must stride by ``i32.const 4`` and store the closure
+        # result pointer with ``i32.store`` (no i64.extend widening).
+        src = (
+            "type Point {\n"
+            "    x: Int,\n"
+            "    y: Int\n"
+            "}\n"
+            "fun doubled(pts: List<Point>) -> List<Point>\n"
+            "    return pts.map(fun (p: Point) -> Point => "
+            "Point { x: p.x * 2, y: p.y })\n"
+        )
+        import re
+        ir_mod, _, _ = _parse_lower(src)
+        wat = emit_wat(ir_mod)
+        self.assertIn("i32.const 4", wat)
+        self.assertIn("i32.store", wat)
+        # The pointer-shape store path must NOT widen the closure
+        # result to i64 before storing into the 4-byte slot. This
+        # module is String-free, so the only i64.extend->i64.store
+        # adjacency that could appear is the old 8-byte pointer slot
+        # we are pinning against; assert it is gone.
+        self.assertIsNone(
+            re.search(r"i64\.extend_i32_u\s*\n\s*i64\.store", wat)
+        )
+
     def test_unsupported_phase_construct_raises(self):
         # Set methods land in a later 6D sub-phase; pin the gap.
         src = (

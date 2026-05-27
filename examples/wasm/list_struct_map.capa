@@ -1,0 +1,16 @@
+// List<Point>.map producing a freshly allocated struct per element
+// (struct in, struct out, new allocation in the lambda body).
+// Verifies the closure result pointer is stored into the 4-byte slot
+// and that the fresh records survive past the loop. Int fields only.
+
+type Point {
+    x: Int,
+    y: Int
+}
+
+fun main(stdio: Stdio)
+    let pts = [Point { x: 1, y: 2 }, Point { x: 3, y: 4 }, Point { x: 5, y: 6 }]
+    let scaled = pts.map(fun (p: Point) -> Point => Point { x: p.x * 2, y: p.y + 1 })
+    stdio.println("scaled[0] = (${scaled[0].x}, ${scaled[0].y})")
+    stdio.println("scaled[1] = (${scaled[1].x}, ${scaled[1].y})")
+    stdio.println("scaled[2] = (${scaled[2].x}, ${scaled[2].y})")

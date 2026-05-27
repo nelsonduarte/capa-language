@@ -1,0 +1,18 @@
+// List<Point>.fold with a struct accumulator (Acc). The closure
+// returns a freshly allocated Acc each step; the result pointer is
+// rebound into the acc local across iterations. Verifies pointer-
+// shape acc round-trips through the HOF call frame. Int fields only.
+
+type Point {
+    x: Int,
+    y: Int
+}
+
+type Acc {
+    sum: Int
+}
+
+fun main(stdio: Stdio)
+    let pts = [Point { x: 1, y: 0 }, Point { x: 2, y: 0 }, Point { x: 3, y: 0 }, Point { x: 4, y: 0 }]
+    let acc = pts.fold(Acc { sum: 0 }, fun (acc: Acc, p: Point) -> Acc => Acc { sum: acc.sum + p.x })
+    stdio.println("acc.sum = ${acc.sum}")

@@ -1,0 +1,26 @@
+// Map<String, Point> (pointer-shape value). Slice D: verify set /
+// get(Option payload) / pairs round-trip a struct value through the
+// uniform 8-byte map value slot (the i32 pointer is i64-extended on
+// set and narrowed back on materialization). Int fields only.
+
+type Point {
+    x: Int,
+    y: Int
+}
+
+fun main(stdio: Stdio)
+    let m: Map<String, Point> = new_map()
+    m.set("a", Point { x: 1, y: 2 })
+    m.set("b", Point { x: 3, y: 4 })
+
+    match m.get("a")
+        Some(p) -> stdio.println("a -> (${p.x}, ${p.y})")
+        None -> stdio.println("a missing")
+
+    match m.get("z")
+        Some(p) -> stdio.println("z -> (${p.x}, ${p.y})")
+        None -> stdio.println("z missing")
+
+    for pair in m.pairs()
+        let (k, v) = pair
+        stdio.println("${k} = (${v.x}, ${v.y})")

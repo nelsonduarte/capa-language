@@ -71,6 +71,19 @@ class _ListEmissionMixin:
                                 instr.dst)
             return
         if method == "contains":
+            # contains on a pointer-shape element would compare the
+            # i32 pointers, i.e. reference identity, not the Python
+            # backend's structural equality. Reject rather than emit a
+            # silently-wrong answer; structural equality on
+            # struct/tuple/sum elements is a separate, later piece.
+            if self._is_pointer_shape_ty(elem_ty):
+                raise WasmEmissionError(
+                    f"List<{elem_ty}>.contains: structural equality on "
+                    f"pointer-shape elements is not supported by the "
+                    f"Wasm backend (it would compare references, not "
+                    f"values). Workaround: use the Python backend "
+                    f"(``capa --run``)."
+                )
             self._emit_list_contains(recv, instr.args[0], elem_size, elem_ty)
             if instr.dst is not None:
                 self._write(f"local.set ${instr.dst}")

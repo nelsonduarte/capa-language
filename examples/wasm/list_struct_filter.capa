@@ -1,0 +1,20 @@
+// List<Point>.filter over a list longer than the initial capacity of
+// 8, forcing the data array to grow during the build. The predicate
+// keeps even-x points. Exercises the 4-byte-stride raw-slot load
+// (i32.load + widen) and the inline packed push at slot_size 4.
+
+type Point {
+    x: Int,
+    y: Int
+}
+
+fun main(stdio: Stdio)
+    let pts: List<Point> = []
+    var i = 0
+    while i < 12
+        pts.push(Point { x: i, y: i * 10 })
+        i += 1
+    let evens = pts.filter(fun (p: Point) -> Bool => p.x % 2 == 0)
+    stdio.println("survivors = ${evens.length()}")
+    stdio.println("evens[0] = (${evens[0].x}, ${evens[0].y})")
+    stdio.println("evens[3] = (${evens[3].x}, ${evens[3].y})")

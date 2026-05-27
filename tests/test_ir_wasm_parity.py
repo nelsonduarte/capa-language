@@ -48,6 +48,14 @@ _PARITY_PROGRAMS: list[str] = [
     "word_count.capa",
     "closures.capa",
     "json_demo.capa",
+    "list_struct_basics.capa",
+    "list_struct_map_identity.capa",
+    "list_struct_map.capa",
+    "list_struct_filter.capa",
+    "list_struct_fold.capa",
+    "list_scalar_to_struct.capa",
+    "map_struct.capa",
+    "list_nested.capa",
 ]
 
 # Programs deliberately excluded from parity and why; documented
@@ -173,6 +181,30 @@ class TestPythonWasmParity(unittest.TestCase):
 
     def test_json_demo(self):
         self._assert_parity("json_demo.capa")
+
+    def test_list_struct_basics(self):
+        self._assert_parity("list_struct_basics.capa")
+
+    def test_list_struct_map_identity(self):
+        self._assert_parity("list_struct_map_identity.capa")
+
+    def test_list_struct_map(self):
+        self._assert_parity("list_struct_map.capa")
+
+    def test_list_struct_filter(self):
+        self._assert_parity("list_struct_filter.capa")
+
+    def test_list_struct_fold(self):
+        self._assert_parity("list_struct_fold.capa")
+
+    def test_list_scalar_to_struct(self):
+        self._assert_parity("list_scalar_to_struct.capa")
+
+    def test_map_struct(self):
+        self._assert_parity("map_struct.capa")
+
+    def test_list_nested(self):
+        self._assert_parity("list_nested.capa")
 
     def test_inventory_matches_examples_dir(self):
         # Soundness check: every .capa under examples/wasm/ is

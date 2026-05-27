@@ -948,6 +948,35 @@ Listed so the design space is explicit.
 
 ### Wasm-specific gaps that are not P0
 
+- [x] **Pointer-shape element types in collections + HOFs**
+  (closed 2026-05-27). `List` / `Map` / the map / filter / fold
+  HOFs now carry struct / tuple / sum (incl. Option/Result) /
+  nested-collection elements on the Wasm backend, not just
+  scalars + String. Root cause was a slot-size divergence: the
+  base list path strides pointer-shape elements at 4 bytes (i32
+  pointer, via `_layout._size_of`) but the HOF path
+  (`_closures._hof_elem_slot_size`) hardcoded 8 for everything
+  but Bool, so a `List<Point>` built at 4-byte stride was
+  read/written at 8-byte stride and stomped neighbours. Fix:
+  `_hof_elem_slot_size` now delegates to `_size_of` (single
+  stride source for base + HOF), the closure-result store honours
+  the 4-byte slot (`i32.store`, mirroring the Bool branch), the
+  three pointer-shape HOF rejection guards (map/filter/fold) are
+  removed, and the filter/fold raw-slot width branch is broadened
+  from `elem_ty == "Bool"` to `stride == 4`. The base `List`
+  path, the closure ABI (`_wasm_type` already returns i32 for
+  pointer-shape), and `Map<String, pointer-shape V>` needed no
+  change (verified by parity). `List.contains` on pointer-shape
+  is rejected with a clear error (it would compare references,
+  not values; structural equality is a separate piece). 8 new
+  tests (7 Python-vs-Wasm parity programs in `examples/wasm/`:
+  struct map/filter/fold, scalar<->struct both directions,
+  `Map<String, Point>`, `List<List<Int>>`; plus 1 WAT slot-size
+  pin). Full suite 1831 -> 1840 / 5 skipped / 0 fail. First slice
+  of the broader "full language coverage" arc. Deferred:
+  structural contains/equality, `Set<T>` of pointer-shape,
+  `Map<Int, V>`, Float-bearing parity.
+
 - [x] **List<T>.map / filter / fold for non-Int element types**
   (closed 2026-05-25). `List<Int>`, `List<String>`,
   `List<Float>`, and `List<Bool>` HOFs are now supported by

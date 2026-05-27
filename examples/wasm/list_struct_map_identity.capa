@@ -1,0 +1,14 @@
+// Smallest pointer-out HOF case: List<Point>.map with an identity
+// lambda (struct in, same struct out). Exercises the 4-byte i32-slot
+// store path in the map driver. Int fields only -> parity-clean.
+
+type Point {
+    x: Int,
+    y: Int
+}
+
+fun main(stdio: Stdio)
+    let pts = [Point { x: 1, y: 2 }, Point { x: 3, y: 4 }]
+    let same = pts.map(fun (p: Point) -> Point => p)
+    stdio.println("same[0].x = ${same[0].x}")
+    stdio.println("same[1].y = ${same[1].y}")

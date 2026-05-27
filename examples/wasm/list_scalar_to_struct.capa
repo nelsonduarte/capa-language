@@ -1,0 +1,22 @@
+// Mixed-stride map directions in one program:
+//   - scalar in, struct out: List<Int>.map -> List<Point> (8-byte
+//     element loaded, 4-byte pointer stored).
+//   - struct in, scalar out: List<Point>.map -> List<Int> (4-byte
+//     pointer loaded, 8-byte Int stored).
+// Exercises both store-side and load-side stride branches. Int only.
+
+type Point {
+    x: Int,
+    y: Int
+}
+
+fun main(stdio: Stdio)
+    let ns = [1, 2, 3]
+    let pts = ns.map(fun (n: Int) -> Point => Point { x: n, y: n * n })
+    stdio.println("pts[0] = (${pts[0].x}, ${pts[0].y})")
+    stdio.println("pts[2] = (${pts[2].x}, ${pts[2].y})")
+
+    let sums = pts.map(fun (p: Point) -> Int => p.x + p.y)
+    stdio.println("sums[0] = ${sums[0]}")
+    stdio.println("sums[1] = ${sums[1]}")
+    stdio.println("sums[2] = ${sums[2]}")

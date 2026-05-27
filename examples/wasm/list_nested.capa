@@ -1,0 +1,24 @@
+// List<List<Int>> (nested pointer-shape element: each inner list is
+// stored as a 4-byte i32 pointer). Exercises nested indexing,
+// for-iteration over the outer list binding inner lists, and a
+// .map producing scalars from pointer-shape inputs.
+
+fun main(stdio: Stdio)
+    let outer = [[1, 2, 3], [4, 5], [6, 7, 8, 9]]
+
+    // Nested index: outer[i][j].
+    stdio.println("outer[0][2] = ${outer[0][2]}")
+    stdio.println("outer[2][3] = ${outer[2][3]}")
+
+    // For-iterate the outer binding inner lists, sum each inner.
+    var grand = 0
+    for inner in outer
+        var s = 0
+        for n in inner
+            s += n
+        grand += s
+    stdio.println("grand total = ${grand}")
+
+    // map: List<List<Int>> -> List<Int> of inner lengths.
+    let lens = outer.map(fun (inner: List<Int>) -> Int => inner.length())
+    stdio.println("lens = [${lens[0]}, ${lens[1]}, ${lens[2]}]")

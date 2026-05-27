@@ -1,0 +1,33 @@
+// Slice 0 baseline: List<Point> base operations (literal, index,
+// for-iteration, push/grow) with no HOFs. Confirms the base list
+// path already handles pointer-shape (struct) elements via the
+// 4-byte i32-pointer slot driven by _size_of. Int fields only, so
+// the output is parity-clean against the Python backend.
+
+type Point {
+    x: Int,
+    y: Int
+}
+
+fun main(stdio: Stdio)
+    let pts = [Point { x: 1, y: 2 }, Point { x: 3, y: 4 }, Point { x: 5, y: 6 }]
+
+    // Indexing + field access on a struct element.
+    stdio.println("pts[0].x = ${pts[0].x}")
+    stdio.println("pts[2].y = ${pts[2].y}")
+
+    // For-iteration binding a struct element each turn.
+    var total = 0
+    for p in pts
+        total += p.x + p.y
+    stdio.println("sum of all coords = ${total}")
+
+    // Push past the initial capacity to exercise the grow path with
+    // a 4-byte-stride element data array.
+    let more: List<Point> = []
+    var i = 0
+    while i < 10
+        more.push(Point { x: i, y: i * 2 })
+        i += 1
+    stdio.println("more.length = ${more.length()}")
+    stdio.println("more[7].y = ${more[7].y}")
