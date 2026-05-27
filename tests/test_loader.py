@@ -911,6 +911,93 @@ class TestSearchPathResolution(_TempDirMixin, unittest.TestCase):
         self.assertEqual(result.stdout, "1\n")
 
 
+class TestBarePackageImportHint(_TempDirMixin, unittest.TestCase):
+    """A bare ``import pkg`` where ``pkg`` is a directory of modules
+    (the ``capa add`` vendor layout) gets a self-correcting hint
+    listing the importable ``pkg.module`` names instead of the raw
+    tried-paths dump.
+    """
+
+    def test_bare_import_of_package_dir_lists_modules(self):
+        vendor = self._tmp / "vendor"
+        (vendor / "mypkg").mkdir(parents=True, exist_ok=True)
+        (vendor / "mypkg" / "alpha.capa").write_text(
+            "pub fun a() -> Int\n    return 1\n", encoding="utf-8",
+        )
+        (vendor / "mypkg" / "beta.capa").write_text(
+            "pub fun b() -> Int\n    return 2\n", encoding="utf-8",
+        )
+        root = self._write(
+            "root.capa",
+            "import mypkg\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"hi\")\n"
+        )
+        loader = ModuleLoader(search_paths=[vendor])
+        with self.assertRaises(LoaderError) as ctx:
+            loader.load_root(root.read_text(), str(root))
+        msg = ctx.exception.message
+        self.assertIn("package directory", msg)
+        self.assertIn("mypkg.alpha", msg)
+        self.assertIn("mypkg.beta", msg)
+        # Sorted: alpha before beta.
+        self.assertLess(msg.index("mypkg.alpha"), msg.index("mypkg.beta"))
+
+    def test_bare_import_genuinely_missing_keeps_tried_message(self):
+        root = self._write(
+            "root.capa",
+            "import nosuchthing\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"hi\")\n"
+        )
+        loader = ModuleLoader()
+        with self.assertRaises(LoaderError) as ctx:
+            loader.load_root(root.read_text(), str(root))
+        msg = ctx.exception.message
+        self.assertIn("tried", msg)
+        self.assertNotIn("package directory", msg)
+
+    def test_package_dir_with_no_capa_files_falls_back(self):
+        vendor = self._tmp / "vendor"
+        (vendor / "empty").mkdir(parents=True, exist_ok=True)
+        (vendor / "empty" / "README.md").write_text(
+            "not a module\n", encoding="utf-8",
+        )
+        root = self._write(
+            "root.capa",
+            "import empty\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"hi\")\n"
+        )
+        loader = ModuleLoader(search_paths=[vendor])
+        with self.assertRaises(LoaderError) as ctx:
+            loader.load_root(root.read_text(), str(root))
+        msg = ctx.exception.message
+        self.assertIn("tried", msg)
+        self.assertNotIn("package directory", msg)
+
+    def test_dotted_import_still_resolves(self):
+        vendor = self._tmp / "vendor"
+        (vendor / "mypkg").mkdir(parents=True, exist_ok=True)
+        (vendor / "mypkg" / "alpha.capa").write_text(
+            "pub fun a() -> Int\n    return 1\n", encoding="utf-8",
+        )
+        root = self._write(
+            "root.capa",
+            "import mypkg.alpha\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"${a()}\")\n"
+        )
+        loader = ModuleLoader(search_paths=[vendor])
+        linked = loader.load_root(root.read_text(), str(root))
+        names = {
+            item.name for item in linked.module.items
+            if isinstance(item, A.FunDecl)
+        }
+        self.assertIn("a", names)
+        self.assertIn("main", names)
+
+
 class TestPubVisibility(_TempDirMixin, unittest.TestCase):
     """The loader enforces ``pub`` by name-mangling every private
     top-level item of every imported module. Importers see only the

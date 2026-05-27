@@ -230,6 +230,28 @@ class ModuleLoader:
                 return c.resolve()
         return None
 
+    def _package_modules(self, pkg_name: str, from_dir: Path) -> list[str]:
+        """If ``pkg_name`` names a directory of modules under the
+        importer dir or any search root, return its importable
+        ``<pkg>.<stem>`` names, sorted and de-duped across roots.
+        Returns ``[]`` when no such package directory exists or it
+        holds no top-level ``.capa`` files. Subdirectories are not
+        recursed; only direct ``*.capa`` children are modules.
+        """
+        stems: set[str] = set()
+        found_dir = False
+        for root in [from_dir, *self._search_paths]:
+            pkg_dir = root / pkg_name
+            if not pkg_dir.is_dir():
+                continue
+            found_dir = True
+            for f in pkg_dir.glob("*.capa"):
+                if f.is_file():
+                    stems.add(f.stem)
+        if not found_dir or not stems:
+            return []
+        return sorted(f"{pkg_name}.{s}" for s in stems)
+
     def _link(
         self,
         module: A.Module,
@@ -293,10 +315,24 @@ class ModuleLoader:
         target = self._resolve(imp.path, module_dir)
 
         if target is None:
+            joined = ".".join(imp.path)
+            # A bare ``import pkg`` that names a package *directory*
+            # (not a module file) is a common slip. Point at the
+            # modules it actually offers instead of the raw paths.
+            if len(imp.path) == 1:
+                modules = self._package_modules(imp.path[0], module_dir)
+                if modules:
+                    raise LoaderError(
+                        f"cannot resolve 'import {joined}': "
+                        f"'{joined}' is a package directory, not a "
+                        f"module. Import one of its modules: "
+                        f"{', '.join(modules)}",
+                        pos=imp.pos,
+                        filename=str(module_path),
+                    )
             # No candidate matched. Report every path that was
             # tried so the user can tell whether they need to
             # adjust CAPA_PATH or the import statement itself.
-            joined = ".".join(imp.path)
             tried = self._candidate_paths(imp.path, module_dir)
             tried_msg = "; ".join(str(p) for p in tried)
             raise LoaderError(
