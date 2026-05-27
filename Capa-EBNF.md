@@ -207,14 +207,16 @@ string_char = any_char_except_quote_or_backslash
             | escape_seq
             | interpolation
 
-escape_seq = "\\" ( "n" | "r" | "t" | "\\" | "\"" | "0" | unicode_esc )
+escape_seq = "\\" ( "n" | "r" | "t" | "\\" | "\"" | "'" | "0" | unicode_esc )
 
-unicode_esc = "u" "{" hex_digit { hex_digit } "}"   (* up to 6 hex digits *)
+unicode_esc = "u" "{" hex_digit { hex_digit } "}"   (* up to 6 hex digits, codepoint <= U+10FFFF *)
 
 interpolation = "${" expression "}"
 ```
 
-Valid examples: `"hello"`, `"line 1\nline 2"`, `"emoji: \u{1F600}"`, `"x = ${x}, y = ${y}"`.
+The complete set of simple escapes is `\n`, `\r`, `\t`, `\\`, `\"`, `\'`, and `\0` (NUL). Arbitrary code points are written with the `\u{HEX}` form (one to six hex digits; the codepoint must not exceed `U+10FFFF`). C-style octal escapes (`\033`) and `\x` byte escapes (`\x1b`) are **not** part of the language: `\0` followed by a digit is rejected at lex time with a diagnostic pointing at `\u{...}`, so a programmer reaching for an ANSI escape writes `\u{1b}` rather than `\033`. Any other character after `\` is an "unknown escape sequence" error.
+
+Valid examples: `"hello"`, `"line 1\nline 2"`, `"emoji: \u{1F600}"`, `"ansi: \u{1b}[31m"`, `"x = ${x}, y = ${y}"`.
 
 #### 3.4.4 Raw string literals
 
@@ -444,6 +446,8 @@ variant_payload = "(" variant_field { "," variant_field } [ "," ] ")"
 
 variant_field = type
 ```
+
+The variant name is syntactically any `IDENT`, but four names are **reserved** and rejected at semantic-analysis time: `Ok`, `Err`, `Some`, and `None`. These are the constructors of the built-in `Result<T, E>` and `Option<T>` sum types; a user-declared variant reusing one of them would silently shadow the built-in constructor at every later use site. The compiler refuses the declaration with a diagnostic that names the colliding built-in and suggests an alternative (for example `Compliant` / `Success` in place of `Ok`). This is a name-resolution constraint, not a grammar rule, so it is noted here rather than encoded in the production above. The built-in JSON variants (`JNull`, `JBool`, `JNum`, `JStr`, `JArr`, `JObj`) are not reserved.
 
 > **DECISION: CLEAR SEPARATION BETWEEN STRUCT AND SUM**
 >
