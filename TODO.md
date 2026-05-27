@@ -798,11 +798,17 @@ right primitives. Listed at the top of this section accordingly.
   to Marketplace for one-click install. ⏱ 1-2h once the
   Marketplace account + publisher are set up.
 
-- [ ] **Migration path from Python**. Today's interop is one-way
-  via `Unsafe`. A "gradual hardening" mode (start with
-  everything `Unsafe`, then narrow function by function) would
-  lower the entry barrier significantly. ⏱ design-heavy,
-  weeks not hours.
+- [~] **Migration path from Python** (slice 1 closed 2026-05-27).
+  Interop is one-way via `Unsafe`; the gradual-hardening *pattern*
+  already shipped (`examples/migrate_logfetcher_step{1,2,3}` +
+  `docs/migration.md`). New `capa migrate <file>` tooling
+  (`capa/migrate.py`) now reports progress: % Unsafe-free,
+  removable-`Unsafe` detection (silenced-but-dead `_u: Unsafe`),
+  and next-candidate ranking by bridge-call count; `--json` for
+  CI. Deferred: warning/info diagnostic severity in analyzer+LSP
+  for inline editor nudges, transitive call-graph analysis for
+  removable detection, and a website "Migrating from Python"
+  chapter.
 
 - [x] **Package manager + minimal registry** (closed
   2026-05-27). Core install flow ships (`capa.toml` +

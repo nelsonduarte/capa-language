@@ -215,3 +215,37 @@ need a `config.json` next to where you run it and a `LOGS_API_KEY` env
 var set. The full setup is in
 [`migrate_logfetcher_naive.py`](../examples/migrate_logfetcher_naive.py)'s
 docstring.
+
+## Track your progress
+
+`capa migrate <file.capa>` reports how far a gradual hardening has come,
+so you do not have to read manifests by eye:
+
+```bash
+capa migrate examples/migrate_logfetcher_step2_mixed.capa
+```
+
+```
+Migration progress for examples/migrate_logfetcher_step2_mixed.capa
+  [########----------------] 33% Unsafe-free
+  1/3 function(s) are Unsafe-free; 2 still use Unsafe.
+
+Next, consider hardening (fewest bridge calls first):
+  - bootstrap_path  ...:26:1  (5 bridge calls)
+  - main            ...:39:1  (9 bridge calls)
+```
+
+It surfaces three things:
+
+- **Progress.** The share of functions that no longer touch `Unsafe`.
+  Step 1 reports 0%, step 3 reports 100%.
+- **Removable `Unsafe`.** Functions that still declare an `Unsafe`
+  parameter but no longer exercise it. (The analyser already rejects a
+  capability parameter referenced *nowhere*, so this specifically catches
+  the param you silenced with a leading underscore, `_u: Unsafe`, and
+  then left behind once its last `py_invoke` was migrated away.)
+- **Next candidates.** The still-`Unsafe` functions ranked by how few
+  bridge calls they make, so you tackle the cheapest hardening step next.
+
+Add `--json` for the machine-readable form (useful in a CI gate that
+watches the percentage trend upward over a migration).

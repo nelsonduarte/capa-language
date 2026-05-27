@@ -392,6 +392,79 @@ def _dispatch_search(argv: list[str]) -> int:
     return 0
 
 
+def _dispatch_migrate(argv: list[str]) -> int:
+    """Handle ``python -m capa migrate <file.capa>``.
+
+    Reports gradual-hardening progress: what fraction of functions are
+    already Unsafe-free, which functions declare an Unsafe they never
+    exercise (and can drop it now), and which still-Unsafe functions are
+    cheapest to harden next. See :mod:`capa.migrate`.
+    """
+    sub = argparse.ArgumentParser(
+        prog="capa migrate",
+        description=(
+            "Report Python->Capa gradual-hardening progress for a .capa "
+            "file: how far the migration has come and which Unsafe to "
+            "drop next."
+        ),
+    )
+    sub.add_argument("file", help=".capa file to analyse")
+    sub.add_argument(
+        "--json",
+        action="store_true",
+        help="emit the report as JSON instead of human-readable text",
+    )
+    args = sub.parse_args(argv)
+
+    path = Path(args.file)
+    try:
+        source = path.read_text(encoding="utf-8")
+    except OSError as e:
+        print(f"capa migrate: cannot read {path}: {e}", file=sys.stderr)
+        return 2
+    filename = str(path)
+
+    # Lex + link (multi-file aware) + analyse, mirroring the --manifest
+    # path so a mid-migration multi-file project reports correctly.
+    from capa.loader import ModuleLoader, LoaderError
+    try:
+        tokens = Lexer(source, filename=filename).lex()
+        del tokens  # lexing validates; the loader re-lexes the root
+        loader = ModuleLoader(search_paths=_capa_search_paths())
+        linked = loader.load_root(source, filename)
+    except LexerError as e:
+        print(e.format(), file=sys.stderr)
+        return 1
+    except LoaderError as le:
+        print(le.format(), file=sys.stderr)
+        return 1
+
+    result = analyze(
+        linked.module, source=source, filename=filename,
+        sources=linked.sources,
+        module_privates=linked.module_privates,
+    )
+    if not result.ok:
+        for err in result.errors:
+            print(err.format(), file=sys.stderr)
+        n = len(result.errors)
+        print(
+            f"capa migrate: {filename}: {n} error{'s' if n != 1 else ''}; "
+            "fix analysis errors before checking migration progress.",
+            file=sys.stderr,
+        )
+        return 1
+
+    from capa.migrate import migrate_report, render_report
+    report = migrate_report(linked.module, filename=filename)
+    if args.json:
+        import json
+        print(json.dumps(report, indent=2))
+    else:
+        print(render_report(report))
+    return 0
+
+
 def main() -> int:
     # Subcommand dispatch happens before argparse so the rest of
     # the CLI can stay flag-based without complicating help output.
@@ -403,6 +476,8 @@ def main() -> int:
         return _dispatch_add(sys.argv[2:])
     if len(sys.argv) >= 2 and sys.argv[1] == "search":
         return _dispatch_search(sys.argv[2:])
+    if len(sys.argv) >= 2 and sys.argv[1] == "migrate":
+        return _dispatch_migrate(sys.argv[2:])
     if len(sys.argv) >= 2 and sys.argv[1] == "lsp":
         from capa.lsp_server import serve
         return serve()
