@@ -420,11 +420,19 @@ class TestReplInProcess(unittest.TestCase):
         s = _ReplState()
         s.top_lines.append("fun foo() -> Int\n    return 1")
         s.main_lines.append("    let x = 1")
-        s.last_output = "old output"
+        s.namespace["x"] = 1
+        s.initialized = True
+        s.executed_item_count = 1
+        s.executed_stmt_count = 1
         s.reset()
         self.assertEqual(s.top_lines, [])
         self.assertEqual(s.main_lines, [])
-        self.assertEqual(s.last_output, "")
+        # Slice C: the persistent execution state must reset too so a
+        # fresh session does not inherit prior bindings or counts.
+        self.assertEqual(s.namespace, {})
+        self.assertFalse(s.initialized)
+        self.assertEqual(s.executed_item_count, 0)
+        self.assertEqual(s.executed_stmt_count, 0)
 
     def test_state_assemble_empty_parses(self):
         s = _ReplState()
@@ -682,17 +690,16 @@ class TestReplInProcess(unittest.TestCase):
         self.assertIn("9", out)
 
     def test_serve_output_delta_no_double_print(self):
-        # After the first println, the second turn should only
-        # add the new "beta" line to stdout; the delta logic must
-        # not re-emit "alpha".
+        # Slice C: incremental execution runs only each turn's new
+        # statement, so a prior turn's output is never re-emitted.
+        # `let x = 1` produces no output; the bare `x` prints 1 once.
         rc, out, err = _run_repl([
-            'stdio.println("alpha")',
-            'stdio.println("beta")',
+            "let x = 1",
+            "x",
             ".exit",
         ])
         self.assertEqual(rc, 0, err)
-        self.assertEqual(out.count("alpha"), 1)
-        self.assertEqual(out.count("beta"), 1)
+        self.assertEqual(out.count("1"), 1)
 
 
 class TestReplReadline(unittest.TestCase):
@@ -769,6 +776,109 @@ class TestReplInProcessExec(unittest.TestCase):
         # The Python traceback (or at least the error noun) made
         # it through the redirect.
         self.assertIn("ZeroDivisionError", err)
+
+
+class TestReplIncremental(unittest.TestCase):
+    """Slice C: persistent namespace + incremental execution.
+
+    These drive ``serve()`` in-process and assert the wins the model
+    change buys: bindings persist, side effects fire once, ``?`` works
+    at module scope, ``return`` is rejected, and a function defined in
+    one turn is callable later.
+    """
+
+    def test_var_mutation_persists_across_turns(self):
+        # Mutating a prior `var` must stick: the bound global is the
+        # same object across turns, not reconstructed.
+        rc, out, err = _run_repl([
+            "var c = 0",
+            "c = c + 1",
+            "c",
+            ".exit",
+        ])
+        self.assertEqual(rc, 0, err)
+        self.assertIn("1", out)
+
+    def test_side_effect_fires_once(self):
+        # If a turn's statement re-ran every turn, the increments
+        # would compound. Two `n = n + 1` turns must leave n == 2.
+        rc, out, err = _run_repl([
+            "var n = 0",
+            "n = n + 1",
+            "n = n + 1",
+            "n",
+            ".exit",
+        ])
+        self.assertEqual(rc, 0, err)
+        self.assertIn("2", out)
+        # And a print from an earlier turn is not re-emitted later.
+        rc, out, err = _run_repl([
+            'stdio.println("once")',
+            "let z = 5",
+            ".exit",
+        ])
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out.count("once"), 1)
+
+    def test_try_operator_ok_path_at_prompt(self):
+        # A statement-position `?` at module scope routes through
+        # _capa_try; on the Ok path it unwraps and binds, REPL alive.
+        rc, out, err = _run_repl([
+            "fun half(x: Int) -> Result<Int, String>",
+            "    return Ok(x / 2)",
+            "",
+            "let h = half(10)?",
+            "h",
+            ".exit",
+        ])
+        self.assertEqual(rc, 0, err)
+        self.assertIn("5", out)
+
+    def test_try_operator_err_path_keeps_repl_alive(self):
+        # On the Err path, `?` raises _CapaTryEarlyReturn; the REPL
+        # catches it at the exec boundary, reports the propagation,
+        # and stays alive so the next input still runs.
+        rc, out, err = _run_repl([
+            "fun fail(x: Int) -> Result<Int, String>",
+            '    return Err("nope")',
+            "",
+            "let bad = fail(3)?",
+            "let after = 42",
+            "after",
+            ".exit",
+        ])
+        self.assertEqual(rc, 0, err)
+        self.assertIn("propagated", out)
+        self.assertIn("nope", out)
+        # REPL stayed alive: the later turn printed 42.
+        self.assertIn("42", out)
+
+    def test_return_at_prompt_is_rejected(self):
+        # A bare `return` at module scope is meaningless; reject it
+        # with a message and keep the REPL alive.
+        rc, out, err = _run_repl([
+            "return 1",
+            "let ok = 7",
+            "ok",
+            ".exit",
+        ])
+        self.assertEqual(rc, 0)
+        self.assertIn("return", err.lower())
+        # REPL stayed alive.
+        self.assertIn("7", out)
+
+    def test_function_defined_one_turn_callable_later(self):
+        # A top-level fun defined in one turn persists in the
+        # namespace and is callable in a later turn.
+        rc, out, err = _run_repl([
+            "fun triple(n: Int) -> Int",
+            "    return n * 3",
+            "",
+            "triple(4)",
+            ".exit",
+        ])
+        self.assertEqual(rc, 0, err)
+        self.assertIn("12", out)
 
 
 if __name__ == "__main__":

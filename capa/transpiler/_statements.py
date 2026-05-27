@@ -42,7 +42,7 @@ class _StatementsMixin:
         if isinstance(s, A.LetStmt):
             self._emit_let(s)
         elif isinstance(s, A.VarStmt):
-            if isinstance(s.value, A.Try):
+            if isinstance(s.value, A.Try) and not self.repl_toplevel:
                 # ``var x = expr?`` lowers inline, same as LetStmt:
                 # hoist expr to a temp, return early on the Err /
                 # None_ path, bind the unwrapped payload. Skips the
@@ -58,7 +58,7 @@ class _StatementsMixin:
                 value = self._emit_expr(s.value)
                 self.em.write(f"{_safe_ident(s.name)} = {value}")
         elif isinstance(s, A.AssignStmt):
-            if isinstance(s.value, A.Try):
+            if isinstance(s.value, A.Try) and not self.repl_toplevel:
                 # ``target op= expr?`` for any op (``=``, ``+=``,
                 # ``-=``, etc). Hoist the RHS to a temp, propagate
                 # Err / None_ early, and apply the op to the unwrapped
@@ -101,7 +101,7 @@ class _StatementsMixin:
             # without needing a temporary variable - the value is discarded.
             if isinstance(s.expr, A.MatchExpr):
                 self._emit_match_stmt(s.expr)
-            elif isinstance(s.expr, A.Try):
+            elif isinstance(s.expr, A.Try) and not self.repl_toplevel:
                 # ``expr?`` as a discarded statement: still propagate
                 # Err / None_ early. The unwrapped payload is dropped.
                 self._emit_try_check(s.expr.expr)
@@ -158,7 +158,7 @@ class _StatementsMixin:
         self.em.dedent()
 
     def _emit_let(self, s: A.LetStmt) -> None:
-        if isinstance(s.value, A.Try):
+        if isinstance(s.value, A.Try) and not self.repl_toplevel:
             # ``let pat = expr?`` lowers inline: hoist expr to a
             # temp, return early on Err / None_, bind the
             # unwrapped payload to the pattern. No exception, no

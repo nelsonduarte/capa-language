@@ -764,9 +764,9 @@ right primitives. Listed at the top of this section accordingly.
   inlayHint, workspace/symbol, codeLens, selectionRange.
   ⏱ depends on what surfaces.
 
-- [~] **REPL v2**. MVP at `capa/repl.py` re-runs everything on
-  each input (no incremental state). v2 needs incremental
-  analyzer state and readline / history. ⏱ 8-12h.
+- [x] **REPL v2** (closed 2026-05-27). MVP at `capa/repl.py`
+  re-ran everything on each input (no incremental state). v2
+  needed incremental state and readline / history. ⏱ 8-12h.
   Slices A + B landed 2026-05-26. Slice A: readline-style
   line editing + persistent history file at
   `~/.capa_repl_history` (1000-entry cap). Tries stdlib
@@ -788,10 +788,21 @@ right primitives. Listed at the top of this section accordingly.
   ~100x speedup. 4 new tests (`TestReplReadline` x 2,
   `TestReplInProcessExec` x 2) plus all 63 existing repl
   tests stay green. Full suite 1734 / 5 skipped / 0 fail.
-  Slice C (persistent namespace + true incremental analyzer
-  state across turns - exec each NEW chunk into a kept
-  namespace, skip the full re-analyse + re-exec) remains
-  open as the bigger architectural piece.
+  Slice C landed 2026-05-27: persistent namespace +
+  incremental execution. New statements now exec at Python
+  module scope into a kept `_ReplState.namespace` (so `let` /
+  `var` bindings persist as globals and prior-`var` mutation
+  works), executing only each turn's NEW items + statements
+  via `transpile_repl` (`capa/transpiler`). Side effects now
+  fire exactly once and the stdout-diffing hack is gone. The
+  `?` operator routes through the `_capa_try` exception path
+  (new `Transpiler.repl_toplevel` flag) and is caught at the
+  exec boundary; `return` at the prompt is rejected. Full
+  re-analysis is RETAINED each turn deliberately: it is
+  microseconds and enforces the capability discipline, whereas
+  true incremental analyzer state is high-risk for negligible
+  gain, so it stays out of scope. 6 new incremental tests;
+  full suite 1827 / 5 skipped / 0 fail.
 
 - [ ] **VSCode marketplace publication**. Grammar lives in
   `vscode/`; install today is manual symlink/junction. Publish

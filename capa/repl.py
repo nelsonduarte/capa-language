@@ -2,32 +2,50 @@
 
 Interactive read-eval-print loop. Each user input is appended to
 the running program; the full accumulated program is re-lexed,
-re-parsed, re-analysed, re-transpiled and re-executed on every
-turn, with stdout diffed so the user only sees the *new* output.
+re-parsed and re-analysed every turn (analysis is microseconds and
+guarantees Capa's capability discipline + types), but only the
+turn's NEW code is transpiled and EXECUTED, once, into a persistent
+Python namespace.
 
-This is the MVP REPL: pragmatic, not optimised. Re-running the
-whole program on every input is wasteful but stays correct as
-state accumulates. A future iteration could maintain an
-incremental analyzer state and exec each input into a persistent
-Python namespace; that is a substantial change and out of MVP
-scope.
+REPL v2 Slice C (2026-05) makes EXECUTION incremental:
 
-REPL v2 (2026-05) keeps the recompile-on-every-turn model but
-swaps two coupled pieces:
+- **Persistent namespace + incremental execution**: new statements
+  run at Python MODULE SCOPE in a kept namespace dict, not inside a
+  re-synthesised ``def main`` re-run every turn. A ``let x = ...``
+  therefore becomes a real module global that persists, reassigning
+  a prior ``var`` Just Works, and side effects fire exactly once.
+  Capabilities are bound once as module globals (``stdio = Stdio()``
+  etc., names matching the synthesised main's params). The old
+  whole-program re-exec plus stdout-diffing is gone: incremental
+  exec produces only the new output, so there is nothing to diff.
+  See :func:`_run_turn`.
+
+- Incremental ANALYSIS is deliberately NOT done. It is high risk
+  (an incremental analyzer state machine) for negligible gain
+  (analysis is already microseconds). Every turn still analyses the
+  full function-wrapped program via :meth:`_ReplState.assemble`;
+  only execution is incremental.
+
+The crux of incremental execution is that the same accumulated
+source parses to the same statement/item counts every turn. After
+a turn commits, the REPL records how many user items / main-body
+statements have been executed; next turn's tail slice past those
+counts is exactly the new code. See :func:`_run_turn`.
+
+Two pieces carried over from REPL v2 unchanged:
 
 - **Line editing + persistent history**: ``readline`` (Unix) or
   ``pyreadline3`` (Windows) is loaded best-effort at startup,
   with history read from / written to ``~/.capa_repl_history``
   (capped at 1000 entries). If neither implementation is
   available the REPL still works via plain ``input()``.
-- **In-process execution**: the transpiled Python runs via
-  ``exec`` into a fresh namespace per turn, with stdout captured
-  by :func:`contextlib.redirect_stdout`. The pre-v2 path forked
-  ``python <tempfile>`` per turn, paying 30-200 ms of process
-  startup on every input. The 10 s hard timeout survives on
-  POSIX (via :func:`signal.alarm`); Windows has no
-  ``signal.SIGALRM`` and v2 drops the hard cap there. See
-  :func:`_exec_in_process`.
+- **One-shot in-process execution**: :func:`_exec_in_process` and
+  :func:`_try_compile_and_run` keep their pre-Slice-C contract
+  (fresh namespace, whole-program exec). They are no longer on the
+  REPL's per-turn path but remain useful for one-shot execution and
+  are exercised directly by tests. The 10 s hard timeout survives
+  on POSIX (via :func:`signal.alarm`); Windows has no
+  ``signal.SIGALRM`` and drops the hard cap there.
 
 What the REPL accepts on each input:
 
@@ -77,7 +95,7 @@ from . import capa_ast as A
 from .analyzer import analyze
 from .lexer import Lexer, LexerError
 from .parser import Parser
-from .transpiler import transpile
+from .transpiler import transpile, transpile_repl, _PRELUDE, _TRY_HELPER
 from .typesys import ty_str
 
 
@@ -123,8 +141,27 @@ _REPL_SILENCERS = [
 ]
 
 
+# Capability instantiations bound once as module globals in the
+# persistent namespace. Names match the synthesised main's params so
+# the analysed (function-wrapped) program and the executed
+# (module-scope) program agree on which name refers to which
+# capability. ``Unsafe`` is intentionally absent (see module
+# docstring). These are exec'd once, lazily, on the first committed
+# turn; see :func:`_run_turn`.
+_REPL_CAPABILITY_INIT = "\n".join([
+    "stdio = Stdio()",
+    "fs = Fs()",
+    "net = Net()",
+    "env = Env()",
+    "clock = Clock()",
+    "random = Random()",
+])
+
+
 class _ReplState:
-    """Persistent state across REPL turns. Two buckets:
+    """Persistent state across REPL turns.
+
+    Source-line buckets (drive full-program ANALYSIS each turn):
 
     - ``top_lines``: top-level declarations (functions, types,
       etc.) in the order entered.
@@ -132,33 +169,66 @@ class _ReplState:
       ``main`` body, in order. Each line is already indented one
       level so the assembled program is canonical Capa.
 
-    ``last_output`` is the captured stdout from the most recent
-    successful run, used to show only the *new* output to the
-    user.
+    Incremental EXECUTION state (Slice C):
+
+    - ``namespace``: the persistent Python exec namespace. New code
+      is exec'd into it at module scope, so ``let`` / ``var``
+      bindings persist as globals and side effects fire once.
+    - ``initialized``: ``False`` until the prelude + ``?`` helper +
+      capability instantiations have been exec'd into ``namespace``
+      once (done lazily on the first committed turn).
+    - ``executed_item_count``: number of user top-level items
+      already exec'd (EXCLUDING the synthesised ``main``).
+    - ``executed_stmt_count``: number of user main-body statements
+      already exec'd (EXCLUDING the leading capability silencers).
     """
 
     def __init__(self) -> None:
         self.top_lines: list[str] = []
         self.main_lines: list[str] = []
-        self.last_output: str = ""
+        self.namespace: dict = {}
+        self.initialized: bool = False
+        self.executed_item_count: int = 0
+        self.executed_stmt_count: int = 0
 
     def reset(self) -> None:
         self.top_lines = []
         self.main_lines = []
-        self.last_output = ""
+        self.namespace = {}
+        self.initialized = False
+        self.executed_item_count = 0
+        self.executed_stmt_count = 0
 
-    def assemble(self) -> str:
+    def assemble(self, for_exec: bool = False) -> str:
         """Assemble the full Capa program from the accumulated
         state. Always synthesises a ``main`` function whose body
         starts with one read-only probe per pre-bound capability
         (so the analyzer's "declared but never used" check passes
         even before the user touches a given cap), then any
         user-entered statements.
+
+        ``for_exec`` selects the variant the incremental executor
+        analyses (see :func:`_run_turn`). It gives ``main`` a
+        ``-> Result<(), String>`` return type and appends a trailing
+        ``return Ok(())`` so a statement-position ``?`` at the prompt
+        type-checks (``?`` requires an enclosing function that returns
+        ``Result`` / ``Option``). The trailing ``return`` is
+        analysis-only: the executor slices it off and never runs it
+        (a ``return`` at module scope would be invalid Python). The
+        default (``for_exec=False``) keeps the plain Unit-returning,
+        no-trailing-return shape that ``.show`` and the ``.types``
+        probe (:func:`_find_probe_value`) depend on.
         """
         top = "\n".join(self.top_lines)
+        header = (
+            _REPL_MAIN_HEADER + " -> Result<(), String>"
+            if for_exec else _REPL_MAIN_HEADER
+        )
         body_lines = [f"    {s}" for s in _REPL_SILENCERS] + self.main_lines
+        if for_exec:
+            body_lines = body_lines + ["    return Ok(())"]
         body = "\n".join(body_lines)
-        program = (top + "\n\n" if top else "") + _REPL_MAIN_HEADER + "\n" + body + "\n"
+        program = (top + "\n\n" if top else "") + header + "\n" + body + "\n"
         return program
 
 
@@ -330,6 +400,228 @@ def _exec_in_process(code: str) -> tuple[bool, str, str]:
             except BaseException:
                 tb = traceback.format_exc()
                 return False, captured_out.getvalue(), tb
+    finally:
+        if timeout_handler_installed:
+            try:
+                import signal
+                signal.alarm(0)
+            except Exception:
+                pass
+
+    return True, captured_out.getvalue(), ""
+
+
+def _contains_return(node) -> bool:
+    """Whether the subtree contains a ``ReturnStmt`` anywhere.
+
+    A ``return`` at the REPL prompt is meaningless: the new
+    statements run at module scope, not inside a function, so there
+    is nothing to return from. (The analyzer wraps the prompt in a
+    synthesised ``main`` and so accepts ``return``; the REPL has to
+    reject it explicitly.) We stop at function boundaries so a
+    ``return`` inside a user-typed ``fun`` in the same chunk does
+    not count.
+    """
+    if isinstance(node, A.ReturnStmt):
+        return True
+    if isinstance(node, (A.FunDecl, A.LambdaExpr)):
+        return False  # nested function: its own scope
+    if isinstance(node, list):
+        return any(_contains_return(x) for x in node)
+    if isinstance(node, tuple):
+        return any(_contains_return(x) for x in node)
+    if hasattr(node, "__dataclass_fields__"):
+        for f in node.__dataclass_fields__:
+            if f == "pos":
+                continue
+            if _contains_return(getattr(node, f)):
+                return True
+    return False
+
+
+def _contains_loose_loop_jump(node) -> bool:
+    """Whether the subtree has a ``break`` / ``continue`` that is NOT
+    enclosed by a ``for`` / ``while`` in the same chunk.
+
+    A loop jump inside a loop the user typed this turn is fine (it
+    is lowered inside that loop's Python ``for`` / ``while``). A bare
+    ``break`` / ``continue`` at the prompt is invalid Python at
+    module scope, so reject it. We recurse into everything except the
+    bodies of loops (those legitimately contain jumps) and nested
+    functions (their own scope).
+    """
+    if isinstance(node, (A.BreakStmt, A.ContinueStmt)):
+        return True
+    if isinstance(node, (A.FunDecl, A.LambdaExpr, A.ForStmt, A.WhileStmt)):
+        # Loop bodies and nested functions can hold jumps legally; do
+        # not descend (a break/continue found there is bound to that
+        # construct, not loose at the prompt).
+        return False
+    if isinstance(node, list):
+        return any(_contains_loose_loop_jump(x) for x in node)
+    if isinstance(node, tuple):
+        return any(_contains_loose_loop_jump(x) for x in node)
+    if hasattr(node, "__dataclass_fields__"):
+        for f in node.__dataclass_fields__:
+            if f == "pos":
+                continue
+            if _contains_loose_loop_jump(getattr(node, f)):
+                return True
+    return False
+
+
+def _reject_loose_control_flow(new_stmts: list) -> "str | None":
+    """Return a user-facing message if ``new_stmts`` contains a
+    control-flow statement that is meaningless at the module-scope
+    prompt, else ``None``. See :func:`_contains_return` and
+    :func:`_contains_loose_loop_jump`.
+    """
+    for s in new_stmts:
+        if _contains_return(s):
+            return "`return` is not meaningful at the REPL prompt"
+    for s in new_stmts:
+        if _contains_loose_loop_jump(s):
+            return (
+                "`break` / `continue` outside a loop is not "
+                "meaningful at the REPL prompt"
+            )
+    return None
+
+
+def _run_turn(
+    state: "_ReplState",
+    candidate_top: list[str],
+    candidate_main: list[str],
+) -> tuple[bool, str, str]:
+    """Analyse the full candidate program, then execute only this
+    turn's NEW items / statements into ``state.namespace``.
+
+    Returns ``(ok, stdout, err)``. On any lexer / parser / analysis
+    error, or a rejected control-flow statement, returns
+    ``(False, "", message)`` and does NOT touch the namespace or
+    counts. On a clean run returns ``(True, new_stdout, "")``.
+
+    This function does NOT commit: it leaves ``state.top_lines`` /
+    ``main_lines`` and the executed-counts as they were. The caller
+    (:func:`serve`) commits on success by adopting the candidate
+    buckets and recomputing the counts from the just-analysed module.
+    The reason commit lives in the caller is so the counts are
+    derived from the SAME module that was analysed here (see step 7
+    in the caller), keeping the next turn's tail slice exact.
+    """
+    # 1. Analyse the full function-wrapped program. Analysis stays
+    #    whole-program every turn (cheap, and it is what enforces
+    #    Capa's capability discipline + types); only execution is
+    #    incremental.
+    tentative = _ReplState()
+    tentative.top_lines = candidate_top
+    tentative.main_lines = candidate_main
+    source = tentative.assemble(for_exec=True)
+    try:
+        tokens = Lexer(source, filename="<repl>").lex()
+    except LexerError as e:
+        return False, "", e.format()
+    try:
+        module = Parser(tokens, source=source, filename="<repl>").parse_module()
+    except LexerError as e:
+        return False, "", e.format()
+    result = analyze(module, source=source, filename="<repl>")
+    if not result.ok:
+        return False, "", "\n".join(e.format() for e in result.errors)
+
+    # 2. Slice out the new items / statements. ``main``'s body is the
+    #    6 capability silencers, then all committed user statements,
+    #    then the analysis-only trailing ``return Ok(())`` that
+    #    ``for_exec`` appended. The tail past (silencers +
+    #    already-executed) up to (but not including) that trailing
+    #    return is exactly this turn's new statements. Likewise for
+    #    items.
+    main_decl = next(
+        (
+            it for it in module.items
+            if isinstance(it, A.FunDecl) and it.name == "main"
+        ),
+        None,
+    )
+    if main_decl is None:
+        return False, "", "internal error: synthesised main not found"
+    n_silencers = len(_REPL_SILENCERS)
+    new_stmts = main_decl.body.stmts[
+        n_silencers + state.executed_stmt_count : -1
+    ]
+    user_items = [
+        it for it in module.items
+        if not (isinstance(it, A.FunDecl) and it.name == "main")
+    ]
+    new_items = user_items[state.executed_item_count:]
+
+    # 3. Reject control flow that cannot run at module scope.
+    rejection = _reject_loose_control_flow(new_stmts)
+    if rejection is not None:
+        return False, "", rejection
+
+    # 4. Lazily initialise the namespace once: prelude (runtime
+    #    imports), the ? helper, then the capability instantiations.
+    #    `from __future__ import annotations` heads _PRELUDE and stays
+    #    valid because it precedes every other statement in the
+    #    combined init string.
+    if not state.initialized:
+        init_code = (
+            _PRELUDE.format(filename="<repl>")
+            + "\n" + _TRY_HELPER
+            + "\n" + _REPL_CAPABILITY_INIT + "\n"
+        )
+        exec(init_code, state.namespace, state.namespace)
+        state.initialized = True
+
+    # 5. Render only the new code (no prelude/helper; already in ns).
+    code = transpile_repl(
+        module, new_items, new_stmts,
+        types=result.types, bindings=result.bindings,
+    )
+
+    # 6. Execute the new code into the persistent namespace, capturing
+    #    stdout/stderr. Mirrors _exec_in_process's POSIX SIGALRM
+    #    timeout (no hard cap on Windows). The ? helper's
+    #    _CapaTryEarlyReturn is looked up by name from the namespace
+    #    (it was defined by the exec'd _TRY_HELPER); a propagated
+    #    Err / None_ reported to the user keeps the REPL alive.
+    captured_out = io.StringIO()
+    captured_err = io.StringIO()
+    early_return = state.namespace.get("_CapaTryEarlyReturn", ())
+
+    timeout_handler_installed = False
+    try:
+        import signal
+        if hasattr(signal, "SIGALRM"):
+            def _on_timeout(signum, frame):  # noqa: ARG001
+                raise TimeoutError("REPL execution timed out (10 s)")
+            signal.signal(signal.SIGALRM, _on_timeout)
+            signal.alarm(10)
+            timeout_handler_installed = True
+    except (ImportError, AttributeError):
+        pass
+
+    try:
+        with contextlib.redirect_stdout(captured_out), \
+                contextlib.redirect_stderr(captured_err):
+            try:
+                exec(code, state.namespace, state.namespace)
+            except TimeoutError as e:
+                return False, captured_out.getvalue(), str(e)
+            except early_return as e:  # type: ignore[misc]
+                # A statement-position ? hit an Err / None_ at module
+                # scope. There is no function to propagate to, so
+                # report the value and keep the REPL alive.
+                out = captured_out.getvalue()
+                out += f"propagated: {e.value!r}\n"
+                return True, out, ""
+            except SystemExit:
+                # A user program (or py_invoke into stdlib) could call
+                # sys.exit; treat a clean exit as success.
+                pass
+            except BaseException:
+                return False, captured_out.getvalue(), traceback.format_exc()
     finally:
         if timeout_handler_installed:
             try:
@@ -581,23 +873,46 @@ def serve(prompt: str = "capa> ") -> int:
             candidate_top = state.top_lines
             candidate_main = state.main_lines + [rendered]
 
-        # Assemble + run.
-        tentative = _ReplState()
-        tentative.top_lines = candidate_top
-        tentative.main_lines = candidate_main
-        ok, stdout, err = _try_compile_and_run(tentative.assemble())
+        # Analyse the full program, then execute only the new code
+        # into the persistent namespace. No diffing: incremental exec
+        # produces only the new output.
+        ok, stdout, err = _run_turn(state, candidate_top, candidate_main)
         if not ok:
             sys.stderr.write(err.rstrip() + "\n")
             continue
-        # Show only the delta since the last successful run.
-        if stdout.startswith(state.last_output):
-            delta = stdout[len(state.last_output):]
-        else:
-            delta = stdout
-        if delta:
-            sys.stdout.write(delta)
-            if not delta.endswith("\n"):
+        if stdout:
+            sys.stdout.write(stdout)
+            if not stdout.endswith("\n"):
                 sys.stdout.write("\n")
+        # Commit. Re-derive the executed-counts from the program that
+        # was just analysed: its main body is the 6 silencers plus all
+        # committed user statements, so executed_stmt_count is the body
+        # length minus the silencers. The same accumulated source
+        # parses to the same counts every turn, so next turn's tail
+        # slice is exactly the next batch of new code. This is the
+        # crux of incremental execution.
         state.top_lines = candidate_top
         state.main_lines = candidate_main
-        state.last_output = stdout
+        tentative = _ReplState()
+        tentative.top_lines = candidate_top
+        tentative.main_lines = candidate_main
+        committed = tentative.assemble(for_exec=True)
+        tokens = Lexer(committed, filename="<repl>").lex()
+        module = Parser(
+            tokens, source=committed, filename="<repl>",
+        ).parse_module()
+        main_decl = next(
+            it for it in module.items
+            if isinstance(it, A.FunDecl) and it.name == "main"
+        )
+        user_items = [
+            it for it in module.items
+            if not (isinstance(it, A.FunDecl) and it.name == "main")
+        ]
+        state.executed_item_count = len(user_items)
+        # main body = silencers + user statements + trailing return;
+        # subtract the silencers and the one trailing return so the
+        # count is just the user statements executed so far.
+        state.executed_stmt_count = (
+            len(main_decl.body.stmts) - len(_REPL_SILENCERS) - 1
+        )

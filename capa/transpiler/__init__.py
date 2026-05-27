@@ -237,6 +237,16 @@ class Transpiler(
         # ``_mark`` at each statement-emit boundary; the module-level
         # ``transpile`` rebases these onto the final file's numbering.
         self.line_map: dict[int, Pos] = {}
+        # REPL module-scope mode. When the REPL executes a turn's new
+        # statements at Python module scope (not inside a function), a
+        # ``?`` cannot lower to the usual ``return``-hoist: there is no
+        # enclosing function to return from. With this flag set, the
+        # statement-position ``?`` is routed through the always-correct
+        # ``_capa_try`` expression path instead (it raises
+        # ``_CapaTryEarlyReturn``, which the REPL catches at the exec
+        # boundary). Off everywhere except the REPL's incremental
+        # executor; see :func:`capa.repl`.
+        self.repl_toplevel: bool = False
 
     def _mark(self, node) -> None:
         """Record the Capa ``Pos`` of ``node`` against the Python line
@@ -392,6 +402,79 @@ def _uses_exception_try(node) -> bool:
     ``_CapaTryEarlyReturn`` at runtime.
     """
     return _uses_try(node)
+
+
+def transpile_repl(
+    module: A.Module,
+    new_items: list,
+    new_stmts: list,
+    types: Optional[dict[int, Ty]] = None,
+    bindings: Optional[dict[int, "object"]] = None,
+) -> str:
+    """Render REPL turn code (new top-level items + new main-body
+    statements) as Python for module-scope exec into the REPL's
+    persistent namespace. No prelude/helper (already in the namespace).
+    Statements are emitted at module scope with repl_toplevel=True so
+    `?` routes through the _capa_try exception path; the REPL catches
+    _CapaTryEarlyReturn at the exec boundary. Items keep normal
+    function-scoped lowering (their own @_capa_wrap + return-hoist).
+
+    The two context pre-passes that ``Transpiler.transpile`` runs over
+    the whole module are repeated here over the FULL ``module`` (not
+    just the new slice) so emission has the context it needs: the
+    Display-protocol set (``_display_types``) and the sum-type variant
+    map (``_sum_variant_names``). Without them a new ``impl`` block on
+    a sum type declared in a prior turn could not find the variant
+    classes to attach its methods to, and ``${value}`` interpolation
+    of a prior-turn struct would miss its ``to_string()``.
+    """
+    t = Transpiler(filename="<repl>", types=types, bindings=bindings)
+
+    # Pre-pass (a): Display protocol. Mirror transpile()'s loop so a
+    # ${value} of a type with `fun to_string(self) -> String` routes
+    # through value.to_string() instead of the dataclass repr, even
+    # when that impl block was committed in an earlier turn.
+    for item in module.items:
+        if not isinstance(item, A.ImplBlock):
+            continue
+        for method in item.methods:
+            if method.name != "to_string":
+                continue
+            non_self = [p for p in method.params if p.name != "self"]
+            if non_self:
+                continue
+            ret = getattr(method, "return_type", None)
+            if (
+                ret is not None
+                and isinstance(ret, A.TypeName)
+                and ret.name == "String"
+            ):
+                t._display_types.add(item.type_name)
+
+    # Pre-pass (b): sum-type variant names. A new impl block on a sum
+    # type declared in a prior turn needs the variant class names so
+    # its methods attach to the right classes.
+    if not hasattr(t, "_sum_variant_names"):
+        t._sum_variant_names = {}
+    for item in module.items:
+        if isinstance(item, A.TypeSum):
+            t._sum_variant_names[item.name] = [v.name for v in item.variants]
+
+    # New top-level items keep normal function-scoped lowering
+    # (repl_toplevel stays False here).
+    for item in new_items:
+        t._emit_item(item)
+        t.em.blank()
+
+    # New main-body statements run at module scope: flip the flag so a
+    # statement-position ? routes through _capa_try (the REPL catches
+    # _CapaTryEarlyReturn at the exec boundary).
+    if new_stmts:
+        t.repl_toplevel = True
+        for s in new_stmts:
+            t._emit_stmt(s)
+
+    return t.em.get()
 
 
 def transpile(
