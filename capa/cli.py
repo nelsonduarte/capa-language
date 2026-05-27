@@ -1087,7 +1087,17 @@ def main() -> int:
             return 1
         except BaseException:
             traceback.print_exc(file=sys.stderr)
-            summary = _rewrite_traceback(sys.exc_info(), line_map)
+            # Resolve per-file source text so each Capa frame can show
+            # its source line and caret. The root file is always
+            # available; the linker's sources map (when present) covers
+            # imported modules in a multi-file program.
+            sources = {filename: source}
+            if linked is not None:
+                sources.update(linked.sources)
+            summary = _rewrite_traceback(
+                sys.exc_info(), line_map,
+                sources=sources, default_source=source,
+            )
             if summary:
                 print(summary, file=sys.stderr)
             return 1

@@ -871,11 +871,20 @@ right primitives. Listed at the top of this section accordingly.
   `capa/_debug.py` `_rewrite_traceback` helper; 7 tests in
   `tests/test_sourcemap.py`. Verified end-to-end: a
   divide-by-zero in a 4-line program now names the Capa
-  line that threw. **Still pending**: per-expression
-  granularity (statement-level covers "which line", not
-  "which sub-expression"); a real stepping debugger (DAP
-  adapter) is a separate, larger arc. ⏱ remaining is
-  open-ended.
+  line that threw.
+  Caret snippets landed 2026-05-27: each Capa-traceback frame
+  now renders `file:line:col` plus the offending Capa source
+  line and a `^` caret, matching `errors.py` compile-error
+  style (same gutter/caret math). `_rewrite_traceback` takes
+  `sources` (multi-file map) + `default_source`; `capa --run`
+  passes the linked sources. 4 new tests (suite 1831 / 5
+  skipped / 0 fail). **Still pending**: per-expression
+  granularity (the caret points at the statement start, not
+  the failing sub-expression; true sub-expression mapping
+  needs the expression emitter reworked to track generated-
+  Python column ranges, deliberately deferred as high-effort /
+  fragile); a real stepping debugger (DAP adapter) is a
+  separate, larger arc. ⏱ remaining is open-ended.
 
 - [x] **Analyzer performance benchmarks** (closed 2026-05-25).
   New runner at [`benchmarks/compile_bench.py`](benchmarks/compile_bench.py)
