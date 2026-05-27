@@ -39,6 +39,7 @@ from ._manifest import (
     MANIFEST_FILENAME,
 )
 from ._install import InstallError, LockMismatchError, VerificationError, install
+from ._add import add_dependency
 
 __all__ = [
     "Dependency",
@@ -50,6 +51,7 @@ __all__ = [
     "read_manifest",
     "read_lock",
     "install",
+    "add_dependency",
     "MANIFEST_FILENAME",
     "LOCK_FILENAME",
 ]

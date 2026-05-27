@@ -56,6 +56,7 @@ from __future__ import annotations
 from typing import Optional
 
 from .. import capa_ast as A
+from ..tokens import Pos
 from ..typesys import Ty
 
 from ._expressions import _ExpressionsMixin
@@ -122,6 +123,14 @@ class Emitter:
     def dedent(self) -> None:
         self._indent -= 1
         assert self._indent >= 0
+
+    def current_line(self) -> int:
+        # 1-based number of the most recently emitted physical line.
+        # The next ``write`` lands on ``current_line() + 1``. Counts
+        # embedded newlines because some entries (notably the prelude)
+        # are appended as a single multi-line string rather than one
+        # call to ``write`` per line.
+        return sum(entry.count("\n") + 1 for entry in self.lines)
 
     def get(self) -> str:
         # Ensures the file ends with a newline and has no trailing
@@ -222,6 +231,19 @@ class Transpiler(
         # default ``{value}`` which falls through to dataclass repr.
         # Populated in ``transpile()`` once the module is in hand.
         self._display_types: set[str] = set()
+        # Statement-level source map: generated Python line (1-based,
+        # as it sits in ``self.em.lines`` before the ``?`` helper is
+        # spliced in) -> originating Capa ``Pos``. Populated by
+        # ``_mark`` at each statement-emit boundary; the module-level
+        # ``transpile`` rebases these onto the final file's numbering.
+        self.line_map: dict[int, Pos] = {}
+
+    def _mark(self, node) -> None:
+        """Record the Capa ``Pos`` of ``node`` against the Python line
+        the next ``write`` will occupy. Called at the top of each
+        statement emit so a runtime traceback frame can be traced back
+        to the Capa statement that produced it."""
+        self.line_map[self.em.current_line() + 1] = node.pos
 
     def transpile(self, module: A.Module) -> str:
         self.em.lines.append(_PRELUDE.format(filename=self.filename).rstrip())
@@ -377,6 +399,7 @@ def transpile(
     filename: str = "<input>",
     types: Optional[dict[int, Ty]] = None,
     bindings: Optional[dict[int, "object"]] = None,
+    out_line_map: Optional[dict[int, Pos]] = None,
 ) -> str:
     """Transpiles a Capa Module to a Python source string.
 
@@ -385,6 +408,12 @@ def transpile(
     for type-aware dispatch on method calls. ``bindings`` (from
     AnalyzeResult) lets the emitter tell payload-less variants from
     UPPERCASE constants when both appear as bare identifiers.
+
+    Side channel: if ``out_line_map`` is passed (a dict), it is filled
+    in place with a ``python_line -> Pos`` statement-level source map
+    keyed by 1-based line numbers in the *returned* string. Callers
+    that do not need it pass nothing and see no change; the return
+    type is always ``str``.
     """
     t = Transpiler(filename=filename, types=types, bindings=bindings)
     code = t.transpile(module)
@@ -402,5 +431,17 @@ def transpile(
             break
     if insert_at == 0:
         insert_at = len(lines)
-    new_lines = lines[:insert_at] + _TRY_HELPER.split("\n") + lines[insert_at:]
+    helper_lines = _TRY_HELPER.split("\n")
+    new_lines = lines[:insert_at] + helper_lines + lines[insert_at:]
+    if out_line_map is not None:
+        # Rebase the transpiler's pre-splice line numbers onto the
+        # final file. A line whose 1-based number L sits at list index
+        # L-1; lines at index >= insert_at shift down by the helper
+        # length once the helper is spliced in.
+        shift = len(helper_lines)
+        for py_line, pos in t.line_map.items():
+            if py_line - 1 >= insert_at:
+                out_line_map[py_line + shift] = pos
+            else:
+                out_line_map[py_line] = pos
     return "\n".join(new_lines)

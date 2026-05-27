@@ -29,6 +29,7 @@ from capa.manifest import (
 from capa.docgen import build_html as build_doc_html
 from capa.formatter import format_source, is_formatted
 from capa.init_project import init_project
+from capa._debug import _rewrite_traceback
 
 
 # ANSI colors for terminal highlighting
@@ -235,6 +236,76 @@ def _dispatch_install(argv: list[str]) -> int:
     return 0
 
 
+def _dispatch_add(argv: list[str]) -> int:
+    """Handle ``python -m capa add <name> --git <url> ...``.
+
+    Declares ``[dependencies.<name>]`` in capa.toml, then (unless
+    ``--no-install``) runs the existing install flow so the new dep
+    is vendored + locked immediately.
+    """
+    sub = argparse.ArgumentParser(
+        prog="capa add",
+        description=(
+            "Declare a new dependency in capa.toml and (by default) "
+            "install it into vendor/."
+        ),
+    )
+    sub.add_argument("name", help="dependency name (used as vendor/<name>)")
+    sub.add_argument(
+        "--git", required=True, metavar="URL",
+        help="git URL of the dependency",
+    )
+    pin = sub.add_mutually_exclusive_group()
+    pin.add_argument("--tag", metavar="TAG", help="pin to a git tag")
+    pin.add_argument("--rev", metavar="SHA", help="pin to a git commit")
+    pin.add_argument("--branch", metavar="NAME", help="pin to a git branch")
+    sub.add_argument(
+        "--verify-key", metavar="FINGERPRINT", dest="verify_key",
+        help="40-char GPG fingerprint the dep's tag/commit must be signed by",
+    )
+    sub.add_argument(
+        "--force", action="store_true",
+        help="overwrite an existing [dependencies.<name>] block",
+    )
+    sub.add_argument(
+        "--no-install", action="store_true", dest="no_install",
+        help="edit capa.toml only; do not fetch the dependency",
+    )
+    args = sub.parse_args(argv)
+    project_dir = Path(".").resolve()
+    try:
+        from capa.pkg import (
+            add_dependency, install, InstallError, ManifestError,
+        )
+    except ImportError as e:
+        print(f"capa add: {e}", file=sys.stderr)
+        return 2
+    try:
+        pin_desc = add_dependency(
+            project_dir, args.name, args.git,
+            tag=args.tag, rev=args.rev, branch=args.branch,
+            verify_key=args.verify_key, force=args.force,
+        )
+    except ManifestError as e:
+        print(f"capa add: {e}", file=sys.stderr)
+        return 2
+    print(f"added {args.name} ({pin_desc}) to capa.toml")
+    if args.no_install:
+        return 0
+    try:
+        manifest = install(project_dir)
+    except (InstallError, ManifestError) as e:
+        print(f"capa add: {e}", file=sys.stderr)
+        return 2
+    n_git = sum(1 for d in manifest.dependencies if d.is_git)
+    n_path = sum(1 for d in manifest.dependencies if d.is_path)
+    print(
+        f"capa install: {manifest.name} {manifest.version} "
+        f"({n_git} git, {n_path} path)"
+    )
+    return 0
+
+
 def main() -> int:
     # Subcommand dispatch happens before argparse so the rest of
     # the CLI can stay flag-based without complicating help output.
@@ -242,6 +313,8 @@ def main() -> int:
         return _dispatch_init(sys.argv[2:])
     if len(sys.argv) >= 2 and sys.argv[1] == "install":
         return _dispatch_install(sys.argv[2:])
+    if len(sys.argv) >= 2 and sys.argv[1] == "add":
+        return _dispatch_add(sys.argv[2:])
     if len(sys.argv) >= 2 and sys.argv[1] == "lsp":
         from capa.lsp_server import serve
         return serve()
@@ -774,6 +847,11 @@ def main() -> int:
         if result is None:
             result = analyze(module, source=source, filename=filename)
         code = None
+        # Statement-level source map (python_line -> Capa Pos), filled
+        # by the legacy transpiler. Stays empty on the --ir path, in
+        # which case _rewrite_traceback falls back to the plain
+        # Python traceback.
+        line_map: dict = {}
         if args.ir:
             # Opt-in CIR pipeline. UnsupportedInIR drops back to the
             # legacy transpiler so an --ir invocation still produces
@@ -798,6 +876,7 @@ def main() -> int:
                 module, filename=filename,
                 types=result.types if result is not None else None,
                 bindings=result.bindings if result is not None else None,
+                out_line_map=line_map,
             )
 
     if args.transpile and not args.run:
@@ -845,6 +924,9 @@ def main() -> int:
             return 1
         except BaseException:
             traceback.print_exc(file=sys.stderr)
+            summary = _rewrite_traceback(sys.exc_info(), line_map)
+            if summary:
+                print(summary, file=sys.stderr)
             return 1
         finally:
             sys.argv = saved_argv

@@ -30,6 +30,7 @@ from capa.pkg import (
     InstallError,
     Manifest,
     ManifestError,
+    add_dependency,
     install,
     read_manifest,
     read_lock,
@@ -1194,6 +1195,130 @@ class TestLoaderIntegration(_TempDirMixin, unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout, "hooray\n")
+
+
+class TestCapaAdd(_TempDirMixin, unittest.TestCase):
+
+    _BASE = '''\
+        # my project
+        [package]
+        name = "demo"
+        version = "0.1.0"
+        capa = ">=0.8.4"
+    '''
+
+    def _project(self, manifest: str = None) -> Path:
+        p = self._tmp / "capa.toml"
+        _write(p, manifest if manifest is not None else self._BASE)
+        return self._tmp
+
+    def test_add_writes_dependency_block(self):
+        project = self._project()
+        original = (project / "capa.toml").read_text(encoding="utf-8")
+        pin = add_dependency(
+            project, "foo",
+            "https://github.com/example/foo", tag="v1.0.0",
+        )
+        text = (project / "capa.toml").read_text(encoding="utf-8")
+        self.assertIn("[dependencies.foo]", text)
+        self.assertIn('git = "https://github.com/example/foo"', text)
+        self.assertIn('tag = "v1.0.0"', text)
+        # Original content (comments + package table) preserved.
+        self.assertIn("# my project", text)
+        self.assertIn('name = "demo"', text)
+        self.assertTrue(text.startswith(original.rstrip() + "\n"))
+        self.assertEqual(pin, "git=https://github.com/example/foo, tag=v1.0.0")
+        # And it parses back cleanly.
+        m = read_manifest(project / "capa.toml")
+        self.assertEqual([d.name for d in m.dependencies], ["foo"])
+        self.assertEqual(m.dependencies[0].tag, "v1.0.0")
+
+    def test_add_rev_pin(self):
+        project = self._project()
+        add_dependency(
+            project, "foo", "https://github.com/example/foo",
+            rev="abc123def456",
+        )
+        m = read_manifest(project / "capa.toml")
+        self.assertEqual(m.dependencies[0].rev, "abc123def456")
+        self.assertIsNone(m.dependencies[0].tag)
+
+    def test_add_branch_pin_written_as_tag(self):
+        project = self._project()
+        pin = add_dependency(
+            project, "foo", "https://github.com/example/foo",
+            branch="main",
+        )
+        text = (project / "capa.toml").read_text(encoding="utf-8")
+        self.assertIn('tag = "main"', text)
+        self.assertEqual(pin, "git=https://github.com/example/foo, tag=main")
+
+    def test_add_rejects_duplicate_without_force(self):
+        project = self._project('''\
+            [package]
+            name = "demo"
+            version = "0.1.0"
+
+            [dependencies.foo]
+            git = "https://github.com/example/foo"
+            tag = "v0.1.0"
+        ''')
+        with self.assertRaises(ManifestError) as ctx:
+            add_dependency(
+                project, "foo", "https://github.com/example/foo",
+                tag="v2.0.0",
+            )
+        # Error states the existing pin.
+        self.assertIn("tag=v0.1.0", str(ctx.exception))
+        # With force=True it overwrites.
+        add_dependency(
+            project, "foo", "https://github.com/example/foo",
+            tag="v2.0.0", force=True,
+        )
+        m = read_manifest(project / "capa.toml")
+        foo = [d for d in m.dependencies if d.name == "foo"]
+        self.assertEqual(len(foo), 1)
+        self.assertEqual(foo[0].tag, "v2.0.0")
+
+    def test_add_rejects_dangerous_git_url(self):
+        project = self._project()
+        with self.assertRaises(ManifestError):
+            add_dependency(
+                project, "foo", "ext::sh -c evil", tag="v1.0.0",
+            )
+        # The file must be untouched after a rejected add.
+        text = (project / "capa.toml").read_text(encoding="utf-8")
+        self.assertNotIn("dependencies.foo", text)
+
+    def test_add_requires_exactly_one_pin(self):
+        project = self._project()
+        with self.assertRaises(ManifestError):
+            add_dependency(project, "foo", "https://github.com/example/foo")
+        with self.assertRaises(ManifestError):
+            add_dependency(
+                project, "foo", "https://github.com/example/foo",
+                tag="v1.0.0", rev="abc123",
+            )
+
+    def test_add_with_verify_key(self):
+        project = self._project()
+        key = "6C1D222D491FB88031E041A536CFB426101AA24B"
+        add_dependency(
+            project, "foo", "https://github.com/example/foo",
+            tag="v1.0.0", verify_key=key,
+        )
+        text = (project / "capa.toml").read_text(encoding="utf-8")
+        self.assertIn(f'verify_key = "{key}"', text)
+        m = read_manifest(project / "capa.toml")
+        self.assertEqual(m.dependencies[0].verify_key, key)
+
+    def test_add_missing_capa_toml(self):
+        with self.assertRaises(ManifestError) as ctx:
+            add_dependency(
+                self._tmp, "foo", "https://github.com/example/foo",
+                tag="v1.0.0",
+            )
+        self.assertIn("capa init", str(ctx.exception))
 
 
 if __name__ == "__main__":

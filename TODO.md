@@ -804,15 +804,42 @@ right primitives. Listed at the top of this section accordingly.
   lower the entry barrier significantly. ⏱ design-heavy,
   weeks not hours.
 
-- [ ] **Package manager + minimal registry**. Listed elsewhere
-  as P3 ecosystem work. Without it there's no "install Capa,
-  run a real program from a real library" path. Chicken-and-egg
-  with libraries. ⏱ months as a real product; days as a
-  manifest-only MVP.
+- [~] **Package manager + minimal registry**. Core install
+  flow ships (`capa.toml` + `capa install` + `capa.lock` +
+  SLSA L2 verify). `capa add <name> --git <url> [--tag |
+  --rev | --branch] [--verify-key] [--force] [--no-install]`
+  landed 2026-05-27: edits `capa.toml` to declare a
+  `[dependencies.<name>]` block (comments + existing tables
+  preserved verbatim), validates the git URL through the
+  same `_validate_git_url` allow-list the install path uses
+  (rejects `ext::`, leading-`-`, etc. at add time), then
+  runs the existing install flow unless `--no-install`. Core
+  in `capa/pkg/_add.py` (~165 LOC), 10 tests in
+  `TestCapaAdd`. **Still pending**: the minimal *registry*
+  (a GitHub-backed or JSON index so `capa add <name>`
+  without `--git` can resolve a name to a URL). That part
+  needs a product decision on where the index lives and is
+  chicken-and-egg with the library ecosystem. ⏱ days-to-
+  months for the registry.
 
-- [ ] **Debugger integration**. Python debugger works on the
-  transpiled output but maps poorly. Source maps would help.
-  ⏱ 8-16h depending on Python debug-info granularity.
+- [~] **Debugger integration**. Statement-level source maps
+  landed 2026-05-27. The transpiler records a
+  `python_line -> Capa Pos` map at statement-emit boundaries
+  (one `_mark(node)` hook at the top of `_emit_stmt`,
+  rebased past the spliced `?` helper); `transpile()` fills
+  an optional `out_line_map` dict. `capa --run` now rewrites
+  a runtime traceback: the plain Python traceback still
+  prints (power users keep it), followed by a `Capa
+  traceback (most recent last)` summary mapping each
+  `<transpiled>` frame to the originating `file:line`. New
+  `capa/_debug.py` `_rewrite_traceback` helper; 7 tests in
+  `tests/test_sourcemap.py`. Verified end-to-end: a
+  divide-by-zero in a 4-line program now names the Capa
+  line that threw. **Still pending**: per-expression
+  granularity (statement-level covers "which line", not
+  "which sub-expression"); a real stepping debugger (DAP
+  adapter) is a separate, larger arc. ⏱ remaining is
+  open-ended.
 
 - [x] **Analyzer performance benchmarks** (closed 2026-05-25).
   New runner at [`benchmarks/compile_bench.py`](benchmarks/compile_bench.py)

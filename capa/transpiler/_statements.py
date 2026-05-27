@@ -33,6 +33,12 @@ class _StatementsMixin:
 
     def _emit_stmt(self, s: A.Stmt) -> None:
         from . import _safe_ident, TranspilerError
+        # Statement-level source map: bind the Python line this
+        # statement is about to emit to its Capa Pos. One hook here
+        # covers every statement form (each one's first ``write``
+        # lands on the marked line); nested blocks recurse through
+        # ``_emit_stmt`` again, so inner statements are marked too.
+        self._mark(s)
         if isinstance(s, A.LetStmt):
             self._emit_let(s)
         elif isinstance(s, A.VarStmt):
