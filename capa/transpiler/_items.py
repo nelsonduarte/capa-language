@@ -63,7 +63,15 @@ class _ItemsMixin:
 
     def _emit_struct(self, t: A.TypeStruct) -> None:
         from . import _safe_ident
-        self.em.write("@dataclass")
+        # ``unsafe_hash=True`` generates a value-based ``__hash__``
+        # (from the field values) while keeping the class mutable, so
+        # a struct can be a ``Set`` element / ``Map`` key yet still
+        # support ``var p = P{...}; p.x = 5`` field assignment. A
+        # frozen dataclass would hash but forbid mutation; a plain
+        # ``@dataclass`` is mutable but unhashable (cannot go in a
+        # Set). This matches the Wasm backend, which dedups Set
+        # elements by structural value at add-time.
+        self.em.write("@dataclass(unsafe_hash=True)")
         if t.fields:
             self.em.write(f"class {t.name}:")
             self.em.indent()

@@ -115,6 +115,16 @@ class _EqualityMixin:
                     elem = self._list_elem_ty(instr.receiver.ty or "")
                     if elem and self._is_pointer_shape_ty(elem):
                         add(elem)
+                elif (isinstance(instr, MethodCall)
+                        and instr.method in ("add", "contains", "remove")
+                        and (instr.receiver.ty or "").startswith("Set")):
+                    # Set<pointer-shape> dedup / membership / removal
+                    # scans compare elements via the element's $eq_*
+                    # helper, so pull it into the discovery set just
+                    # like List.contains does.
+                    elem = self._set_elem_ty(instr.receiver.ty or "")
+                    if elem and self._is_pointer_shape_ty(elem):
+                        add(elem)
                 # Recurse into nested instruction bodies (mirrors the
                 # traversal in _discovery / _locals).
                 if isinstance(instr, If):
@@ -164,6 +174,11 @@ class _EqualityMixin:
     def _list_elem_ty(self, ty: str) -> str:
         if ty.startswith("List<") and ty.endswith(">"):
             return ty[5:-1].strip()
+        return ""
+
+    def _set_elem_ty(self, ty: str) -> str:
+        if ty.startswith("Set<") and ty.endswith(">"):
+            return ty[4:-1].strip()
         return ""
 
     def _generic_args(self, ty: str) -> list[str]:

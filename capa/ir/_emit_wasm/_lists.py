@@ -684,14 +684,23 @@ class _ListEmissionMixin:
         Uses the function's match-helper locals (``$_m_scrut`` and
         ``$_m_tag``) as scratch space for the iterator pointer and
         index, plus the bind name's own local for the element."""
-        iter_ty = instr.iter.ty
-        if not iter_ty.startswith("List"):
+        iter_ty = self._effective_value_ty(instr.iter)
+        # Sets share the List in-memory layout (len@0, cap@4,
+        # data_ptr@8) and store each element identically, so the
+        # same counted-loop body iterates a Set's element array in
+        # insertion order. The only difference is how the element
+        # type is parsed out of the receiver type string.
+        if iter_ty.startswith("List"):
+            elem_ty = _element_type_of_list(iter_ty)
+        elif iter_ty.startswith("Set"):
+            from ._layout import _element_type_of_set
+            elem_ty = _element_type_of_set(iter_ty)
+        else:
             raise WasmEmissionError(
-                f"For-iter over type {iter_ty!r}: only List iteration "
-                f"is supported in Phase 6D-2 (range iteration lands "
-                f"in a later phase)"
+                f"For-iter over type {iter_ty!r}: only List and Set "
+                f"iteration are supported (range iteration lands in a "
+                f"later phase)"
             )
-        elem_ty = _element_type_of_list(iter_ty)
         elem_size = self._size_of(elem_ty)
         # Float elements need ``f64.load`` (the bind local is f64);
         # other types take the size-dispatched i32/i64 load.

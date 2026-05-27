@@ -54,8 +54,9 @@ from ._layout import (
     _LIST_HEADER_SIZE, _LIST_LEN_OFFSET, _LIST_CAP_OFFSET, _LIST_DATA_OFFSET,
     _MAP_HEADER_SIZE, _MAP_LEN_OFFSET, _MAP_CAP_OFFSET, _MAP_DATA_OFFSET,
     _MAP_PAIR_SIZE, _MAP_PAIR_KEY_PTR_OFFSET, _MAP_PAIR_KEY_LEN_OFFSET, _MAP_PAIR_VALUE_OFFSET,
+    _SET_HEADER_SIZE, _SET_LEN_OFFSET, _SET_CAP_OFFSET, _SET_DATA_OFFSET,
     _OPTION_LAYOUT, _RESULT_LAYOUT, _IOERROR_LAYOUT, _JSONVALUE_LAYOUT,
-    _map_value_type, _element_type_of_list,
+    _map_value_type, _element_type_of_list, _element_type_of_set,
     _size_of, _store_op_for_size, _load_op_for_size, _align_up,
     compute_struct_layout, compute_sum_layout,
 )
@@ -65,6 +66,7 @@ from ._match import _MatchEmissionMixin
 from ._strings import _StringEmissionMixin
 from ._maps import _MapEmissionMixin
 from ._lists import _ListEmissionMixin
+from ._sets import _SetEmissionMixin
 from ._closures import _ClosureEmissionMixin
 from ._json import _JsonEmissionMixin
 from ._option import _OptionEmissionMixin
@@ -125,6 +127,7 @@ class WasmEmitter(
     _StringEmissionMixin,
     _MapEmissionMixin,
     _ListEmissionMixin,
+    _SetEmissionMixin,
     _ClosureEmissionMixin,
     _CapDispatchMixin,
     _JsonEmissionMixin,

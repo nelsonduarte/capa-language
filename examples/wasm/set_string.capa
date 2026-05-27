@@ -1,0 +1,35 @@
+// Set<String> exercise for the Wasm backend, parity-clean against
+// the insertion-ordered Python CapaSet. Strings dedup by byte value
+// (via $str_eq on the Wasm side, == on the Python side) and iterate
+// in first-insertion order.
+
+fun show(stdio: Stdio, tag: String, flag: Bool)
+    if flag
+        stdio.println("${tag}: yes")
+    else
+        stdio.println("${tag}: no")
+
+fun main(stdio: Stdio)
+    let s: Set<String> = new_set()
+    s.add("apple")
+    s.add("banana")
+    s.add("cherry")
+    // Structural duplicate (same bytes): must not grow or reorder.
+    s.add("banana")
+
+    stdio.println("length ${s.length()}")
+    show(stdio, "contains banana", s.contains("banana"))
+    show(stdio, "contains durian", s.contains("durian"))
+
+    stdio.println("iterate:")
+    for w in s
+        stdio.println("  ${w}")
+
+    let words = s.to_list()
+    stdio.println("to_list length ${words.length()}")
+
+    s.remove("banana")
+    show(stdio, "contains banana after remove", s.contains("banana"))
+    stdio.println("after remove:")
+    for w in s
+        stdio.println("  ${w}")

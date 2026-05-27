@@ -357,7 +357,10 @@ class _ExpressionsMixin:
             if e.callee.name == "new_map" and not e.args:
                 return "{}"
             if e.callee.name == "new_set" and not e.args:
-                return "set()"
+                # CapaSet is an insertion-ordered set (dict-backed), not
+                # a raw Python ``set`` (hash order); the latter would
+                # diverge from the Wasm backend's linear element array.
+                return "CapaSet()"
         callee = self._emit_call_callee(e.callee)
         args = self._emit_call_arg_list(e.args, e.arg_names)
         return f"{callee}({args})"

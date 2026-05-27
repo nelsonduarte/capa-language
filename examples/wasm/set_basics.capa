@@ -1,0 +1,49 @@
+// Set<Int> exercise for the Wasm backend's Set emitter, kept
+// parity-clean against the Python backend (insertion-ordered
+// CapaSet). Bool results from contains / is_empty are branched
+// into yes/no strings rather than interpolated directly (bare Bool
+// interpolation diverges between backends); see struct_eq.capa for
+// the same pattern.
+
+fun show(stdio: Stdio, tag: String, flag: Bool)
+    if flag
+        stdio.println("${tag}: yes")
+    else
+        stdio.println("${tag}: no")
+
+fun main(stdio: Stdio)
+    let s: Set<Int> = new_set()
+    show(stdio, "empty", s.is_empty())
+
+    s.add(10)
+    s.add(20)
+    s.add(30)
+    // Duplicate add: must not grow the set and must not move 20.
+    s.add(20)
+
+    stdio.println("length ${s.length()}")
+    show(stdio, "empty after adds", s.is_empty())
+    show(stdio, "contains 20", s.contains(20))
+    show(stdio, "contains 99", s.contains(99))
+
+    // Iterate in insertion order: 10, 20, 30.
+    stdio.println("iterate:")
+    for x in s
+        stdio.println("  ${x}")
+
+    // to_list preserves insertion order.
+    let xs = s.to_list()
+    stdio.println("to_list length ${xs.length()}")
+    for x in xs
+        stdio.println("  list ${x}")
+
+    // remove present element, then absent element (no-op).
+    s.remove(20)
+    show(stdio, "contains 20 after remove", s.contains(20))
+    s.remove(99)
+    stdio.println("length after removes ${s.length()}")
+
+    // Order after removing the middle element: 10, 30.
+    stdio.println("after remove:")
+    for x in s
+        stdio.println("  ${x}")

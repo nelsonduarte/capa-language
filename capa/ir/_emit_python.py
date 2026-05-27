@@ -102,7 +102,15 @@ class PythonEmitter:
         )
 
     def _emit_struct(self, t: StructDecl) -> None:
-        self._write("@dataclass")
+        # ``unsafe_hash=True`` generates a value-based ``__hash__``
+        # (from the field values) while keeping the class mutable, so
+        # a struct can be a ``Set`` element / ``Map`` key yet still
+        # support ``var p = P{...}; p.x = 5`` field assignment. A
+        # frozen dataclass would hash but forbid mutation; a plain
+        # ``@dataclass`` is mutable but unhashable (cannot go in a
+        # Set). This matches the Wasm backend, which dedups Set
+        # elements by structural value at add-time.
+        self._write("@dataclass(unsafe_hash=True)")
         if not t.fields:
             self._write(f"class {t.name}:")
             self._indent += 1
@@ -354,7 +362,10 @@ class PythonEmitter:
             self._write(f"{instr.dst} = {{}}")
             return
         if isinstance(instr, MakeSet):
-            self._write(f"{instr.dst} = set()")
+            # CapaSet is insertion-ordered (dict-backed); a raw Python
+            # ``set`` iterates in hash order and would diverge from the
+            # Wasm backend's linear element array.
+            self._write(f"{instr.dst} = CapaSet()")
             return
         if isinstance(instr, MakeTuple):
             elems = ", ".join(self._format_value(v) for v in instr.elements)
@@ -669,12 +680,13 @@ class PythonEmitter:
         return None
 
     def _set_method(self, m: str, r: str, a: list[str]) -> str | None:
+        # Receiver is a CapaSet (insertion-ordered, dict-backed).
         if m == "length":   return f"len({r})"
         if m == "contains": return f"({a[0]} in {r})"
         if m == "add":      return f"{r}.add({a[0]})"
-        if m == "remove":   return f"{r}.discard({a[0]})"
+        if m == "remove":   return f"{r}.remove({a[0]})"  # discard-safe
         if m == "is_empty": return f"(len({r}) == 0)"
-        if m == "to_list":  return f"CapaList({r})"
+        if m == "to_list":  return f"{r}.to_list()"
         return None
 
     def _format_pattern(self, p: Pattern) -> str:

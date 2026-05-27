@@ -35,7 +35,9 @@ from .._nodes import (
 )
 from .._capa_types import BUILTIN_CAPS
 from .._emit_wit import _WIT_SIGNATURES
-from ._layout import _element_type_of_list, WasmEmissionError
+from ._layout import (
+    _element_type_of_list, _element_type_of_set, WasmEmissionError,
+)
 
 
 class _DiscoveryMixin:
@@ -61,6 +63,10 @@ class _DiscoveryMixin:
                     if recv_ty.startswith("Map") and instr.method in ("set", "get"):
                         return True
                     if recv_ty.startswith("List") and instr.method in ("map", "filter", "fold"):
+                        return True
+                    # Set.add grows / appends, Set.to_list allocates a
+                    # fresh List<T>; both need the heap.
+                    if recv_ty.startswith("Set") and instr.method in ("add", "to_list"):
                         return True
                 if isinstance(instr, If):
                     if visit(instr.then_body) or visit(instr.else_body):
@@ -353,6 +359,12 @@ class _DiscoveryMixin:
                     if (recv_ty.startswith("List")
                             and instr.method == "contains"
                             and _element_type_of_list(recv_ty) == "String"):
+                        return True
+                    # Set<String> add / contains / remove compare the
+                    # needle to each element via $str_eq.
+                    if (recv_ty.startswith("Set")
+                            and instr.method in ("add", "contains", "remove")
+                            and _element_type_of_set(recv_ty) == "String"):
                         return True
                 if isinstance(instr, If):
                     if visit(instr.then_body) or visit(instr.else_body):

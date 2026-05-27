@@ -80,6 +80,9 @@ class _InstrDispatchMixin:
             if recv_ty.startswith("Map"):
                 self._emit_map_method_call(instr)
                 return
+            if recv_ty.startswith("Set"):
+                self._emit_set_method_call(instr)
+                return
             if recv_ty == "String":
                 self._emit_string_method_call(instr)
                 return
@@ -95,8 +98,8 @@ class _InstrDispatchMixin:
                 return
             raise WasmEmissionError(
                 f"MethodCall on receiver of type {recv_ty!r} "
-                f"(method {instr.method!r}); Set methods land in "
-                f"a later 6D sub-phase"
+                f"(method {instr.method!r}) is not supported by the "
+                f"Wasm backend"
             )
         if isinstance(instr, MakeStruct):
             self._emit_make_struct(instr)
@@ -106,6 +109,9 @@ class _InstrDispatchMixin:
             return
         if isinstance(instr, MakeMap):
             self._emit_make_map(instr)
+            return
+        if isinstance(instr, MakeSet):
+            self._emit_make_set(instr)
             return
         if isinstance(instr, MakeTuple):
             self._emit_make_tuple(instr)

@@ -130,11 +130,26 @@ class TestWasmEmissionShape(unittest.TestCase):
             re.search(r"i64\.extend_i32_u\s*\n\s*i64\.store", wat)
         )
 
-    def test_unsupported_phase_construct_raises(self):
-        # Set methods land in a later 6D sub-phase; pin the gap.
+    def test_set_methods_now_supported(self):
+        # Set<T> add / contains / remove / length / is_empty / to_list
+        # are emitted by the _sets mixin; this used to raise (the gap
+        # is now closed). Pinning it asserts the dispatcher routes Set
+        # receivers rather than rejecting them.
         src = (
             "fun has(s: Set<Int>, n: Int) -> Bool\n"
             "    return s.contains(n)\n"
+        )
+        ir_mod, _, _ = _parse_lower(src)
+        wat = emit_wat(ir_mod)
+        self.assertIn("$has", wat)
+
+    def test_unsupported_phase_construct_raises(self):
+        # Map.keys / values need a List of K / V the emitter cannot
+        # build yet; pin the remaining gap so a future contributor
+        # who closes it updates this test deliberately.
+        src = (
+            "fun ks(m: Map<String, Int>) -> List<String>\n"
+            "    return m.keys()\n"
         )
         ir_mod, _, _ = _parse_lower(src)
         with self.assertRaises(WasmEmissionError):
@@ -1000,6 +1015,112 @@ class TestWasmMapStringInt(unittest.TestCase):
         store, exp = self._instantiate(src)
         self.assertEqual(exp["empty_at_start"](store), 1)
         self.assertEqual(exp["empty_after_insert"](store), 0)
+
+
+@unittest.skipUnless(
+    _has_wasm_tools() and _has_wasmtime_py(),
+    "wasm-tools and/or wasmtime-py not installed",
+)
+class TestWasmSetInt(unittest.TestCase):
+    """Set<Int> backed by the List 16-byte header + grow-able
+    element array, with add deduping and remove preserving
+    insertion order via a tail-shift. Mirrors the List<Int> /
+    Map<String, Int> execution coverage; the full byte-for-byte
+    parity against the Python backend lives in
+    tests/test_ir_wasm_parity.py."""
+
+    def _instantiate(self, src: str):
+        import wasmtime
+        _, types, ast_mod = _parse_lower(src)
+        blob = compile_wasm(ast_mod, types=types)
+        engine = wasmtime.Engine()
+        mod = wasmtime.Module(engine, blob)
+        store = wasmtime.Store(engine)
+        linker = wasmtime.Linker(engine)
+        instance = linker.instantiate(store, mod)
+        return store, instance.exports(store)
+
+    def test_add_dedups_length(self):
+        # Adding a duplicate must not grow the set.
+        src = (
+            "fun count() -> Int\n"
+            "    let s: Set<Int> = new_set()\n"
+            "    s.add(1)\n"
+            "    s.add(2)\n"
+            "    s.add(2)\n"
+            "    s.add(3)\n"
+            "    return s.length()\n"
+        )
+        store, exp = self._instantiate(src)
+        self.assertEqual(exp["count"](store), 3)
+
+    def test_contains_hit_and_miss(self):
+        src = (
+            "fun has(x: Int) -> Bool\n"
+            "    let s: Set<Int> = new_set()\n"
+            "    s.add(10)\n"
+            "    s.add(20)\n"
+            "    return s.contains(x)\n"
+        )
+        store, exp = self._instantiate(src)
+        self.assertEqual(exp["has"](store, 20), 1)
+        self.assertEqual(exp["has"](store, 99), 0)
+
+    def test_remove_preserves_order_and_is_discard_safe(self):
+        # Remove the middle element; the survivors keep insertion
+        # order (10 then 30), so summing 10*1 + 30*1000 distinguishes
+        # an order-preserving shift from a reordering swap-remove.
+        src = (
+            "fun fingerprint() -> Int\n"
+            "    let s: Set<Int> = new_set()\n"
+            "    s.add(10)\n"
+            "    s.add(20)\n"
+            "    s.add(30)\n"
+            "    s.remove(20)\n"
+            "    s.remove(99)\n"
+            "    var acc = 0\n"
+            "    var mult = 1\n"
+            "    for x in s\n"
+            "        acc = acc + x * mult\n"
+            "        mult = mult * 1000\n"
+            "    return acc\n"
+        )
+        store, exp = self._instantiate(src)
+        # 10*1 + 30*1000 = 30010.
+        self.assertEqual(exp["fingerprint"](store), 30010)
+
+    def test_add_grows_beyond_initial_capacity(self):
+        # Initial cap is 8; adding 50 distinct elements forces a grow
+        # via memory.copy. Pins the grow path against clobbering.
+        src = (
+            "fun build_big() -> Int\n"
+            "    let s: Set<Int> = new_set()\n"
+            "    var i = 0\n"
+            "    while i < 50\n"
+            "        s.add(i)\n"
+            "        i = i + 1\n"
+            "    var total = 0\n"
+            "    for x in s\n"
+            "        total = total + x\n"
+            "    return total\n"
+        )
+        store, exp = self._instantiate(src)
+        # 0 + 1 + ... + 49 = 1225.
+        self.assertEqual(exp["build_big"](store), 1225)
+
+    def test_is_empty_before_and_after_add(self):
+        src = (
+            "fun empty_at_start() -> Bool\n"
+            "    let s: Set<Int> = new_set()\n"
+            "    return s.is_empty()\n"
+            "fun empty_after_add() -> Bool\n"
+            "    let s: Set<Int> = new_set()\n"
+            "    s.add(1)\n"
+            "    return s.is_empty()\n"
+        )
+        store, exp = self._instantiate(src)
+        self.assertEqual(exp["empty_at_start"](store), 1)
+        self.assertEqual(exp["empty_after_add"](store), 0)
 
 
 @unittest.skipUnless(

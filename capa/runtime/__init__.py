@@ -71,6 +71,7 @@ from ._json import (
     to_json,
 )
 from ._list import CapaList, CapaRange
+from ._set import CapaSet
 from ._pyinterop import _require_unsafe, py_import, py_invoke
 from ._result import (
     Err,

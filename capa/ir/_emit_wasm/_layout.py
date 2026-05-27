@@ -66,6 +66,19 @@ _MAP_PAIR_KEY_LEN_OFFSET = 4
 _MAP_PAIR_VALUE_OFFSET = 8
 
 
+# Memory layout of a Set<T>: same 16-byte header as List (len, cap,
+# data_ptr, padding) followed by a separately-allocated element
+# array. A Set is just a List that dedups on insert and preserves
+# first-insertion order (the linear element array iterates in
+# insertion order, matching the dict-backed Python ``CapaSet``).
+# The element data array stride is ``_size_of(elem_ty)`` exactly as
+# List uses.
+_SET_HEADER_SIZE = 16
+_SET_LEN_OFFSET = 0
+_SET_CAP_OFFSET = 4
+_SET_DATA_OFFSET = 8
+
+
 # Memory layout of Capa's built-in Option<T>: a sum type with two
 # variants (Some with one payload, None with none). Pre-registered
 # in the emitter so ``match`` against Option<T> works without the
@@ -165,6 +178,20 @@ def _element_type_of_list(list_ty: str) -> str:
     will obsolete this fallback."""
     if list_ty.startswith("List<") and list_ty.endswith(">"):
         inner = list_ty[5:-1].strip()
+        if inner.startswith("?"):
+            return "Int"
+        return inner
+    return "Int"
+
+
+def _element_type_of_set(set_ty: str) -> str:
+    """Extract T from ``Set<T>``. Mirrors ``_element_type_of_list``:
+    defaults to ``Int`` when the string lacks a type argument or the
+    inner type is an unresolved type variable (``?elem_0``), which is
+    the most common element type in practice and keeps the emitter
+    moving when the analyzer leaves a bare ``Set``."""
+    if set_ty.startswith("Set<") and set_ty.endswith(">"):
+        inner = set_ty[4:-1].strip()
         if inner.startswith("?"):
             return "Int"
         return inner

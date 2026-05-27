@@ -1,0 +1,32 @@
+// Set<Point> exercise: struct elements dedup *structurally* (two
+// separately built Point{1,2} count as one), proving the Wasm
+// backend routes add / contains through the element's $eq_Point
+// helper, matching the Python backend's frozen-dataclass ==/hash.
+// Bool results are branched into yes/no strings to stay parity-clean.
+
+type Point {
+    x: Int,
+    y: Int
+}
+
+fun show(stdio: Stdio, tag: String, flag: Bool)
+    if flag
+        stdio.println("${tag}: yes")
+    else
+        stdio.println("${tag}: no")
+
+fun main(stdio: Stdio)
+    let s: Set<Point> = new_set()
+    s.add(Point { x: 1, y: 2 })
+    s.add(Point { x: 3, y: 4 })
+    // Structural duplicate: a fresh Point with the same fields.
+    s.add(Point { x: 1, y: 2 })
+
+    stdio.println("length ${s.length()}")
+    show(stdio, "contains (1,2)", s.contains(Point { x: 1, y: 2 }))
+    show(stdio, "contains (9,9)", s.contains(Point { x: 9, y: 9 }))
+
+    // Iterate in insertion order, printing each point's fields.
+    stdio.println("iterate:")
+    for p in s
+        stdio.println("  (${p.x}, ${p.y})")

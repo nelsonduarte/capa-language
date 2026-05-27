@@ -948,6 +948,28 @@ Listed so the design space is explicit.
 
 ### Wasm-specific gaps that are not P0
 
+- [x] **Set<T> on the Wasm backend, insertion-ordered both
+  backends** (closed 2026-05-27). `Set<T>` (add / remove /
+  contains / length / is_empty / to_list / for-iteration) now
+  compiles on the Wasm backend; previously all Set methods were
+  rejected. Decision: Set is now **insertion-ordered on both
+  backends** (was a raw hash-ordered Python `set()`, which would
+  diverge from a Wasm linear-scan array on `for` / `to_list`).
+  Python side: new `capa/runtime/_set.py` `CapaSet` backed by an
+  insertion-ordered dict (structural dedup via value `==`/hash;
+  structs became `@dataclass(unsafe_hash=True)` so they hash while
+  staying mutable for field assignment); wired into both Python
+  emitters (`new_set()` -> `CapaSet()`). Wasm side: new
+  `capa/ir/_emit_wasm/_sets.py` mirroring the List/Map emitters
+  (16-byte header + `_size_of`-strided element array); add dedups
+  and remove shifts the tail down (not swap-remove) to preserve
+  insertion order; add/contains/remove dedup via slice-3 structural
+  equality (`$eq_*` / `$str_eq` / scalar eq), discovered by
+  extending `_collect_eq_types` for Set element types. 9 new tests
+  (3 Python-vs-Wasm parity programs: Set<Int>/Set<String>/Set<Point>
+  with dedup + ordered for/to_list). Full suite 1860 -> 1869 / 5
+  skipped / 0 fail. Slice 4 of full language coverage.
+
 - [x] **Structural equality on compound types** (closed
   2026-05-27). `==` / `!=` on struct / sum (incl. Option/Result) /
   tuple / `List<T>` now compile to deep, by-value comparison on the

@@ -176,8 +176,11 @@ class _MethodsMixin:
     ) -> str:
         """Maps a Capa Set method to a Python construct.
 
-        Set is represented as a Python ``set``. ``add`` and ``remove``
-        exist with the same names.
+        Set is represented at runtime by ``CapaSet``, an
+        insertion-ordered (dict-backed) set whose method names match
+        the Capa surface, so most calls map straight through. We keep
+        membership / length as ``in`` / ``len`` expressions because
+        they are expression-position-clean and read better.
         """
         from . import _safe_ident
         if method == "length":
@@ -187,9 +190,9 @@ class _MethodsMixin:
         if method == "add":
             return f"{recv}.add({args[0]})"
         if method == "remove":
-            return f"{recv}.discard({args[0]})"  # discard is safe (does not raise)
+            return f"{recv}.remove({args[0]})"  # CapaSet.remove is discard-safe
         if method == "to_list":
-            return f"CapaList({recv})"
+            return f"{recv}.to_list()"
         if method == "is_empty":
             return f"(len({recv}) == 0)"
         return f"{recv}.{_safe_ident(method)}({', '.join(args)})"
