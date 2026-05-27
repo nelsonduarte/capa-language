@@ -9,6 +9,58 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+## [1.0.0-rc.5], 2026-05-27
+
+### Manifest: source-level names in SBOM emission
+
+The loader rewrites every non-pub item in an imported module
+to `_capa_m{N}__<source>` so the merged AST stays flat without
+name collisions. Before rc.5, the manifest builder copied
+`fn.name` straight into the SBOM, so an auditor reading the
+CycloneDX or SPDX output for a multi-module program saw
+entries like `_capa_m2__as_object_or_err` where the source
+identifier was `as_object_or_err`. The fix surfaces source-
+level names in regulator-facing output while keeping the
+loader-time identifiers for internal cross-module
+collision-stability.
+
+New [`_demangle`](capa/manifest/_funrec.py) helper parses the
+prefix back into `(source_name, module_index)`. Each function
+record now carries `source_name`, `source_container`, and
+`source_module_index` alongside the existing (loader-time)
+`name` and `container`. The loader-time fields stay because
+bom-ref / SPDXID keying and the call-resolution map rely on
+them for two-same-source-named helpers from different imports
+not collapsing into one entry.
+
+CycloneDX emitter ([`capa/manifest/_cyclonedx.py`](capa/manifest/_cyclonedx.py))
+displays `source_name` and `source_container` on the public
+`name` / `qualname` field; a new `capa:source_module_index`
+property is added when the function came from a non-pub
+imported module so the auditor can still tell two same-source-
+named helpers apart.
+
+SPDX emitter ([`capa/manifest/_spdx.py`](capa/manifest/_spdx.py))
+gets the same treatment, with a `source_module_index`
+annotation in place of the CycloneDX property.
+
+Verified end-to-end on the
+[capa_governance_pack](https://github.com/nelsonduarte/capa_governance_pack)
+downstream: `still-mangled: 0` across all 40 components in
+its `--cyclonedx` output (pre-fix the count was substantial).
+The downstream program still runs end-to-end; the audit pack
+content is unchanged because the program does not consume
+its own SBOM.
+
+5 regression tests in [`tests/test_manifest.py`](tests/test_manifest.py):
+`TestSourceNameDemangle` exercises root-module no-op,
+imported non-pub demangled with `module_index` set, imported
+pub kept as-is via the real loader harness;
+`TestSourceNameInSboms` covers CycloneDX + SPDX integration.
+
+Closes the fifth and last of the five bugs surfaced by the
+capa_governance_pack stress test in rc.4.
+
 ## [1.0.0-rc.4], 2026-05-27
 
 ### Empirical study at scale: 20-library SBOM-diff corpus
