@@ -804,23 +804,42 @@ right primitives. Listed at the top of this section accordingly.
   lower the entry barrier significantly. ⏱ design-heavy,
   weeks not hours.
 
-- [~] **Package manager + minimal registry**. Core install
-  flow ships (`capa.toml` + `capa install` + `capa.lock` +
-  SLSA L2 verify). `capa add <name> --git <url> [--tag |
-  --rev | --branch] [--verify-key] [--force] [--no-install]`
-  landed 2026-05-27: edits `capa.toml` to declare a
-  `[dependencies.<name>]` block (comments + existing tables
-  preserved verbatim), validates the git URL through the
-  same `_validate_git_url` allow-list the install path uses
-  (rejects `ext::`, leading-`-`, etc. at add time), then
-  runs the existing install flow unless `--no-install`. Core
-  in `capa/pkg/_add.py` (~165 LOC), 10 tests in
-  `TestCapaAdd`. **Still pending**: the minimal *registry*
-  (a GitHub-backed or JSON index so `capa add <name>`
-  without `--git` can resolve a name to a URL). That part
-  needs a product decision on where the index lives and is
-  chicken-and-egg with the library ecosystem. ⏱ days-to-
-  months for the registry.
+- [x] **Package manager + minimal registry** (closed
+  2026-05-27). Core install flow ships (`capa.toml` +
+  `capa install` + `capa.lock` + SLSA L2 verify).
+  `capa add <name> --git <url> [--tag | --rev | --branch]
+  [--verify-key] [--force] [--no-install]` edits `capa.toml`
+  to declare a `[dependencies.<name>]` block (comments +
+  existing tables preserved verbatim), validates the git URL
+  through the same `_validate_git_url` allow-list the install
+  path uses (rejects `ext::`, leading-`-`, etc. at add time),
+  then runs install unless `--no-install`. Core in
+  `capa/pkg/_add.py` (~165 LOC), 10 tests.
+  Minimal registry landed: dedicated public repo
+  [nelsonduarte/capa-registry](https://github.com/nelsonduarte/capa-registry)
+  with an `index.json` mapping `<name>` to git URL +
+  `verify_key` + `latest` tag, seeded with the 4 seed libs
+  (capa_cli / capa_datetime / capa_http / capa_log).
+  `capa add <name>` WITHOUT `--git` now resolves via
+  `capa/pkg/_registry.py::resolve_name` (stdlib urllib fetch
+  of the index, `CAPA_REGISTRY_URL` override, `~/.capa/`
+  cache with 1-hour TTL + stale-cache fallback on fetch
+  failure, refuses an index whose `registry_version` exceeds
+  the toolchain's, re-validates the resolved git URL through
+  `_validate_git_url`). Defaults the pin to the index's
+  `latest` tag and the `verify_key` to the index entry's
+  when the user omits them. Unknown name gives an actionable
+  error listing the known packages and suggesting `--git`.
+  7 registry tests (file:// fetch + cache-fallback +
+  future-version refusal + poisoned-URL rejection +
+  malformed-index). Full suite 1805 / 5 skipped / 0 fail.
+  The registry is a name-to-URL convenience; the three-layer
+  trust model (lockfile SHA + GPG tag signature + SLSA L2
+  provenance) is unchanged and the index carrying `verify_key`
+  means resolving a name also pins the expected signer.
+  Remaining (not blocking): `capa search`, a `capa publish`
+  PR-to-registry flow, third-party-namespace governance - all
+  ecosystem-growth work, not core mechanism.
 
 - [~] **Debugger integration**. Statement-level source maps
   landed 2026-05-27. The transpiler records a

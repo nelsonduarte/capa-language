@@ -22,6 +22,7 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import time
 import unittest
 from pathlib import Path
 
@@ -30,10 +31,13 @@ from capa.pkg import (
     InstallError,
     Manifest,
     ManifestError,
+    RegistryEntry,
+    RegistryError,
     add_dependency,
     install,
     read_manifest,
     read_lock,
+    resolve_name,
 )
 
 
@@ -1319,6 +1323,188 @@ class TestCapaAdd(_TempDirMixin, unittest.TestCase):
                 tag="v1.0.0",
             )
         self.assertIn("capa init", str(ctx.exception))
+
+
+class TestRegistryResolve(_TempDirMixin, unittest.TestCase):
+    """``resolve_name`` against an index served from a ``file://`` URL.
+
+    The fetch is made testable without a live server by writing the
+    index to a temp file and pointing ``registry_url`` at its
+    ``file://`` URL: ``urllib.request.urlopen`` (which ``_fetch_index``
+    uses) handles ``file://`` natively, so the real fetch + parse +
+    cache path runs end to end. A separate ``cache_dir`` keeps each
+    test's cache isolated from ``~/.capa``.
+    """
+
+    _KEY = "6C1D222D491FB88031E041A536CFB426101AA24B"
+
+    def _index_url(self, body: str) -> str:
+        p = self._tmp / "index.json"
+        p.write_text(textwrap.dedent(body), encoding="utf-8")
+        return p.as_uri()
+
+    def _cache_dir(self) -> Path:
+        d = self._tmp / "cache"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    def _good_index(self) -> str:
+        return f'''\
+            {{
+              "registry_version": 1,
+              "updated": "2026-05-27",
+              "packages": {{
+                "capa_http": {{
+                  "git": "https://github.com/nelsonduarte/capa_http",
+                  "verify_key": "{self._KEY}",
+                  "latest": "v0.1.3",
+                  "description": "HTTP client"
+                }}
+              }}
+            }}
+        '''
+
+    def test_resolve_known_name(self):
+        url = self._index_url(self._good_index())
+        entry = resolve_name(
+            "capa_http", registry_url=url, cache_dir=self._cache_dir(),
+        )
+        self.assertIsInstance(entry, RegistryEntry)
+        self.assertEqual(entry.name, "capa_http")
+        self.assertEqual(entry.git, "https://github.com/nelsonduarte/capa_http")
+        self.assertEqual(entry.verify_key, self._KEY)
+        self.assertEqual(entry.latest, "v0.1.3")
+        self.assertEqual(entry.description, "HTTP client")
+
+    def test_resolve_unknown_name(self):
+        url = self._index_url(self._good_index())
+        with self.assertRaises(RegistryError) as ctx:
+            resolve_name(
+                "nope", registry_url=url, cache_dir=self._cache_dir(),
+            )
+        self.assertIn("nope", str(ctx.exception))
+
+    def test_resolve_rejects_future_registry_version(self):
+        url = self._index_url('''\
+            {
+              "registry_version": 999,
+              "packages": {}
+            }
+        ''')
+        with self.assertRaises(RegistryError) as ctx:
+            resolve_name(
+                "capa_http", registry_url=url, cache_dir=self._cache_dir(),
+            )
+        self.assertIn("upgrade", str(ctx.exception).lower())
+
+    def test_resolve_rejects_dangerous_git_in_index(self):
+        url = self._index_url('''\
+            {
+              "registry_version": 1,
+              "packages": {
+                "evil": { "git": "ext::sh -c evil", "latest": "v1" }
+              }
+            }
+        ''')
+        with self.assertRaises(RegistryError) as ctx:
+            resolve_name(
+                "evil", registry_url=url, cache_dir=self._cache_dir(),
+            )
+        # The message surfaces the shared validator's allow-list reason.
+        self.assertIn("disallowed git URL", str(ctx.exception))
+
+    def test_resolve_uses_cache_on_fetch_failure(self):
+        cache_dir = self._cache_dir()
+        # Prime the cache with a valid index.
+        cache_file = cache_dir / "registry-index.json"
+        cache_file.write_text(
+            textwrap.dedent(self._good_index()), encoding="utf-8"
+        )
+        # Make the cache look stale so the network is attempted, then
+        # fails, forcing the stale-cache fallback.
+        old = time.time() - 7200
+        os.utime(cache_file, (old, old))
+        unreachable = "file:///no/such/registry/index.json"
+        entry = resolve_name(
+            "capa_http", registry_url=unreachable, cache_dir=cache_dir,
+        )
+        self.assertEqual(entry.git, "https://github.com/nelsonduarte/capa_http")
+
+    def test_resolve_malformed_index(self):
+        # Not valid JSON.
+        bad_json = self._index_url("{ this is not json ")
+        with self.assertRaises(RegistryError):
+            resolve_name(
+                "capa_http", registry_url=bad_json,
+                cache_dir=self._cache_dir(),
+            )
+        # Valid JSON but no 'packages' table.
+        no_packages = self._index_url('''\
+            { "registry_version": 1 }
+        ''')
+        with self.assertRaises(RegistryError) as ctx:
+            resolve_name(
+                "capa_http", registry_url=no_packages,
+                cache_dir=self._cache_dir(),
+            )
+        self.assertIn("packages", str(ctx.exception))
+
+
+class TestCapaAddRegistry(_TempDirMixin, unittest.TestCase):
+    """``capa add <name>`` with no ``--git`` resolves via the registry."""
+
+    _BASE = '''\
+        [package]
+        name = "demo"
+        version = "0.1.0"
+    '''
+
+    def test_add_resolves_name_from_registry_when_no_git(self):
+        import io
+        import contextlib
+        from unittest.mock import patch
+        from capa import cli
+
+        _write(self._tmp / "capa.toml", self._BASE)
+        key = "6C1D222D491FB88031E041A536CFB426101AA24B"
+        fake = RegistryEntry(
+            name="capa_http",
+            git="https://github.com/nelsonduarte/capa_http",
+            verify_key=key,
+            latest="v0.1.3",
+            description="HTTP client",
+        )
+
+        cwd = os.getcwd()
+        os.chdir(self._tmp)
+        try:
+            buf = io.StringIO()
+            with patch("capa.pkg.resolve_name", return_value=fake), \
+                    contextlib.redirect_stdout(buf):
+                rc = cli._dispatch_add(["capa_http", "--no-install"])
+        finally:
+            os.chdir(cwd)
+
+        self.assertEqual(rc, 0)
+        out = buf.getvalue()
+        self.assertIn(
+            "resolved capa_http -> "
+            "https://github.com/nelsonduarte/capa_http (latest v0.1.3) "
+            "via registry",
+            out,
+        )
+        text = (self._tmp / "capa.toml").read_text(encoding="utf-8")
+        self.assertIn("[dependencies.capa_http]", text)
+        self.assertIn(
+            'git = "https://github.com/nelsonduarte/capa_http"', text
+        )
+        self.assertIn('tag = "v0.1.3"', text)
+        self.assertIn(f'verify_key = "{key}"', text)
+        m = read_manifest(self._tmp / "capa.toml")
+        dep = m.dependencies[0]
+        self.assertEqual(dep.name, "capa_http")
+        self.assertEqual(dep.tag, "v0.1.3")
+        self.assertEqual(dep.verify_key, key)
 
 
 if __name__ == "__main__":

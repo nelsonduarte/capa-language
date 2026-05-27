@@ -252,8 +252,11 @@ def _dispatch_add(argv: list[str]) -> int:
     )
     sub.add_argument("name", help="dependency name (used as vendor/<name>)")
     sub.add_argument(
-        "--git", required=True, metavar="URL",
-        help="git URL of the dependency",
+        "--git", metavar="URL",
+        help=(
+            "git URL of the dependency. Omit to resolve the name "
+            "through the public registry index."
+        ),
     )
     pin = sub.add_mutually_exclusive_group()
     pin.add_argument("--tag", metavar="TAG", help="pin to a git tag")
@@ -276,15 +279,47 @@ def _dispatch_add(argv: list[str]) -> int:
     try:
         from capa.pkg import (
             add_dependency, install, InstallError, ManifestError,
+            RegistryError, resolve_name,
         )
     except ImportError as e:
         print(f"capa add: {e}", file=sys.stderr)
         return 2
+
+    git_url = args.git
+    tag, rev, branch = args.tag, args.rev, args.branch
+    verify_key = args.verify_key
+    if git_url is None:
+        # No explicit --git: resolve the name through the registry.
+        try:
+            entry = resolve_name(args.name)
+        except RegistryError as e:
+            print(f"capa add: {e}", file=sys.stderr)
+            return 2
+        git_url = entry.git
+        if verify_key is None:
+            verify_key = entry.verify_key
+        if tag is None and rev is None and branch is None:
+            if entry.latest is None:
+                print(
+                    f"capa add: registry has no latest tag for "
+                    f"{args.name!r}; pass --tag / --rev / --branch "
+                    f"explicitly",
+                    file=sys.stderr,
+                )
+                return 2
+            tag = entry.latest
+        latest_note = (
+            f" (latest {entry.latest})" if entry.latest is not None else ""
+        )
+        print(
+            f"resolved {args.name} -> {git_url}{latest_note} via registry"
+        )
+
     try:
         pin_desc = add_dependency(
-            project_dir, args.name, args.git,
-            tag=args.tag, rev=args.rev, branch=args.branch,
-            verify_key=args.verify_key, force=args.force,
+            project_dir, args.name, git_url,
+            tag=tag, rev=rev, branch=branch,
+            verify_key=verify_key, force=args.force,
         )
     except ManifestError as e:
         print(f"capa add: {e}", file=sys.stderr)
