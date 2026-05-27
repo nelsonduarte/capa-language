@@ -9,6 +9,248 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+## [1.0.0-rc.4], 2026-05-27
+
+### Empirical study at scale: 20-library SBOM-diff corpus
+
+Closes P1 #1 (the "quantitative validation" item from §5 of
+the paper draft). Twenty library pairs at
+[`evaluation/sbom_diff/`](evaluation/sbom_diff/) compare a
+PURL-style "naive" SBOM (Python imports of the transliterated
+source) against Capa's per-function capability-aware SBOM
+(`capa --cyclonedx` over the Capa rewrite). Every pair carries
+`naive.py`, `capa.capa`, and `README.md`.
+
+The harness extracts per-function `capa:declared_capability`
+properties via a subprocess `capa --cyclonedx` call, scans the
+naive Python file's `import` statements, and intersects against
+a 30-entry cap-bearing allowlist. Aggregate metrics over the
+corpus: 122 transliterated functions (73 pure / 49 with caps),
+6 distinct capability axes
+(`Clock`, `Env`, `Fs`, `Net`, `Random`, `Stdio`), and 61
+per-function (function, capability) attribution facts. The
+pair-combination coverage matrix spans `Fs+Env`, `Fs+Clock`,
+`Fs+Net`, `Net+Clock`, `Env+Clock`, `Random+Clock`, and the
+`Fs+Env+Net` triple.
+
+The corpus also surfaced two pre-existing soundness bugs in
+the compiler, both fixed in the same release: an `Int/Int`
+transpiler-vs-typer mismatch (Python true-division emitted
+where the type system promised `Int`) and a silent
+octal-escape miscompile (`\033` lexed to `\0` + literal `33`).
+
+See [`evaluation/sbom_diff/summary.md`](evaluation/sbom_diff/summary.md)
+for the full per-pair table.
+
+### Formatter v3: AST round-trip with comment preservation
+
+`capa --fmt` now defaults to a full AST round-trip pipeline
+(lex + parse + walk + emit), with the v1+v2 line-level
+pipeline as a graceful fallback on any lex / parse / emit
+failure (mid-edit sources, syntax errors). Comments survive
+the round-trip via a new `CommentMap` side-table keyed by
+`id(node)`, matching the `analyzer.types` / `transpiler.types`
+convention; each entry has four slots
+(`leading`, `trailing`, `trailing_header`, `interior`).
+
+Four phases shipped together:
+- **Phase 1 (lexer sidecar)**: new `CommentKind` enum + frozen
+  `Comment` dataclass in [`capa/tokens.py`](capa/tokens.py);
+  `Lexer.comments` populated as plain `//` and `/* */` are
+  consumed. Token stream unchanged.
+- **Phase 2 (CommentMap attachment)**:
+  [`capa/formatter/_comments.py`](capa/formatter/_comments.py)
+  (~588 LOC). Block-aware file-header heuristic plus
+  token-aware end-offset refinement keep attachment correct
+  inside section-divider-wrapped blocks and on trailing
+  comments on the last token of a statement.
+- **Phase 3 (pretty-printer)**:
+  [`capa/formatter/_emit.py`](capa/formatter/_emit.py) plus
+  `_emit_items.py` / `_emit_stmts.py` / `_emit_exprs.py`
+  (~1431 LOC across four files, per the 700-line-per-file
+  ceiling). Every AST node type is handled with
+  precedence-based parenthesisation and canonical
+  string-literal escaping (uses `\u{1b}` for ESC since the
+  Capa lexer rejects octal).
+- **Phase 4 (dispatch)**: wired into the existing
+  `format_source` entry point with the `_lines` pipeline as
+  fallback.
+
+Two comment-ordering fixes shipped alongside the promotion: a
+block-aware file-header heuristic (a standalone comment
+attaches to `Module.leading` only when its contiguous block
+has no section divider AND is separated from the first item
+by a blank line; otherwise the whole block attaches to the
+next item's `leading`), and token-aware end offsets in
+`_build_node_index` (so a `let x = 1 // trailing`-style
+comment's `_smallest_containing_node` lookup lands on the
+`LetStmt` rather than the enclosing `Block`).
+
+Three follow-ups required by the promotion:
+`test_formatter::test_javadoc_block_canonicalised_to_line_form`
+reflects the new `/** */` -> `///` canonicalisation;
+`init_project._MAIN_TEMPLATE` drops a blank line so the
+scaffolded project is in canonical form; `format_source`
+guards against degenerate lone-`\` line-continuation sources
+that lex to empty token streams.
+
+Tests: 10 lexer-sidecar (`TestCommentSidecar`) + 10
+attachment (`TestCommentMap`) + 66 pretty-printer
+(`TestPrettyPrinterStructure` + `TestPrettyPrinterRoundtrip` +
+`TestPrettyPrinterIdempotence`). Structural AST round-trip
+green on 71 corpus files (51 examples + 20 sbom_diff);
+byte-exact idempotence 71/71 via the promoted `format_source`
+path. Design doc at
+[`docs/formatter-v3-comment-map-design.md`](docs/formatter-v3-comment-map-design.md).
+
+### REPL v2: readline / history + in-process exec
+
+Two slices land together, giving ~100x speedup per turn
+(subprocess fork + exec was 30-200ms on Windows; in-process
+is ~1.2ms measured locally) plus persistent line editing /
+history.
+
+**Slice A (readline + history)**: `_init_readline` tries the
+stdlib `readline` module first (POSIX), falls back to
+`pyreadline3` (Windows), and silently skips when neither is
+present. `~/.capa_repl_history` (exposed as `_HISTORY_FILE`
+module constant) is read on startup, written on clean exit
+(`.exit` / `.quit` / EOF), and capped at 1000 entries. All
+history-I/O is wrapped in `try / except` so the REPL never
+crashes on a read-only home dir.
+
+**Slice B (in-process exec)**: `_try_compile_and_run` no
+longer fork-execs `python` on the transpiled output. The new
+`_exec_in_process` builds a fresh namespace per turn
+(`__name__ = "__main__"` so the transpiler bootstrap fires),
+captures stdout / stderr via `contextlib.redirect_stdout`,
+and formats Python tracebacks into the error channel. POSIX
+gets the same 10s hard timeout the subprocess path had, via
+`signal.SIGALRM`. Windows loses the hard timeout (no
+`SIGALRM` in stdlib); documented in the function docstring
+and the module-level v2 notes. Ctrl-C still works.
+
+Tests: 4 new (`TestReplReadline` x 2, `TestReplInProcessExec`
+x 2) plus all 63 pre-v2 REPL tests stay green. Slice C
+(persistent namespace + true incremental analyzer state
+across turns) remains the bigger architectural piece, still
+open.
+
+### LSP v2 polish: documentHighlight + foldingRange + formatting
+
+Three new LSP features alongside the existing v1 surface
+(diagnostics, hover, definition, references, documentSymbol,
+code actions, rename, completion, semantic tokens). All
+three follow the established pattern: a pure `compute_*`
+helper returning Capa-native types in a sibling module, then
+a thin handler in [`capa/lsp/server.py`](capa/lsp/server.py)
+translating LSP wire types both ways.
+
+- `textDocument/documentHighlight` at
+  [`capa/lsp/document_highlight.py`](capa/lsp/document_highlight.py)
+  (54 LOC): thin adapter over `compute_references` so the
+  editor highlights every in-file occurrence of the
+  identifier under the cursor. v1 emits
+  `DocumentHighlightKind.Text` uniformly; read / write
+  distinction deferred.
+- `textDocument/foldingRange` at
+  [`capa/lsp/folding.py`](capa/lsp/folding.py) (153 LOC):
+  AST walk emitting gutter +/- regions for `FunDecl`,
+  `TypeStruct`, `TypeSum`, `ImplBlock`, `TraitDecl`,
+  `IfStmt`, `ForStmt`, `WhileStmt`, `MatchExpr`, `LambdaExpr`
+  bodies. Returns empty on parse failure so a mid-edit file
+  does not confuse the editor.
+- `textDocument/formatting` + `textDocument/rangeFormatting`
+  at [`capa/lsp/formatting.py`](capa/lsp/formatting.py) (75
+  LOC): hooks `capa.formatter.format_source` (the v3 AST
+  round-trip pipeline) to the editor's Format Document /
+  Format Selection commands. `rangeFormatting` falls back to
+  whole-document since v3 is parse-then-emit. The formatter
+  never raises (v1+v2 fallback) so the handlers never raise
+  either.
+
+Full circle: the Format Document command in VSCode now calls
+the v3 AST round-trip pipeline this release ships.
+
+Tests: 17 new (11 compute-level + 6 server-handler
+integration via the existing `TestLspServerHandlersInProcess`
+harness). Remaining v2 polish (signatureHelp, inlayHint,
+workspace/symbol, codeLens, selectionRange) is deferred until
+a real-user session surfaces a specific need.
+
+### Compiler: reserve Ok/Err/Some/None as un-redeclarable variant names
+
+Bug found by writing a real-world ~900-LOC downstream Capa
+program ([nelsonduarte/capa_governance_pack](https://github.com/nelsonduarte/capa_governance_pack)).
+A user-declared sum variant named
+`Ok` / `Err` / `Some` / `None` used to silently overwrite the
+built-in `Result` / `Option` constructor in the global scope,
+with the declaration site's behaviour explicitly commented as
+"Collisions with built-ins are silently ignored". Subsequent
+calls like `return Ok(1)` from a `Result`-returning function
+then resolved to the user's nullary variant and produced the
+misleading error `variant 'Ok' takes no payload`.
+
+Fix: hard-ban the four reserved names at declaration time in
+[`capa/analyzer/_declarations.py`](capa/analyzer/_declarations.py)
+with an actionable diagnostic that names the colliding
+built-in and suggests common alternatives:
+
+```
+variant 'Ok' is reserved (collides with the built-in
+Result::Ok constructor). Rename this variant. Common
+alternatives: Compliant, Success, Hit, Ready.
+```
+
+The user's variant is dropped (no global-scope overwrite);
+the built-in remains accessible at every call site. Scope:
+the four universal `Result` / `Option` names only.
+`JsonValue` variants (`JNull`, `JBool`, ...) are
+domain-specific and not reserved.
+
+5 regression tests in `TestReservedVariantNames`.
+
+### Formatter + parser: three polish fixes from real-world stress test
+
+Three smaller bugs surfaced by the same real-world ~900-LOC
+program:
+
+- **Formatter v3: trailing `//` on a `match` arm body no
+  longer hoisted onto its own line.** `MatchArm` is an
+  `A.Node` but not `A.Stmt` / `A.Item`, so the
+  trailing-comment attacher walked past it to the enclosing
+  `LetStmt`. `_attach_trailing` in
+  [`capa/formatter/_comments.py`](capa/formatter/_comments.py)
+  now short-circuits to a containing `MatchArm` whose
+  `pos.line == c.start.line` and whose body is a single
+  `Expr`; `_emit_match_arm` in `_emit_stmts.py` calls
+  `_emit_trailing(arm)` on both single-line arm shapes.
+  `Some(v) -> v  // tolerate` round-trips byte-exact.
+- **Formatter v3: blank line preserved between a `// =====`
+  section divider and the following `///` doc block.**
+  `_emit_item` in `_emit_items.py` now inserts one blank
+  line whenever the item has BOTH a non-empty leading-comment
+  block AND a `///` doc string. Applies uniformly to
+  `FunDecl`, `TypeStruct`, `TypeSum`, `TraitDecl`. The AST
+  does not carry the doc's source-line so this is a
+  deliberate canonical choice rather than position-preserving.
+- **Parser: `doc comments are not valid on X` diagnostic now
+  names the `///` syntax and suggests the `//` alternative.**
+  Three sites in
+  [`capa/parser/_items.py`](capa/parser/_items.py) (import,
+  const, impl). New message: "doc comments (`///`) attach to
+  declarations and are not valid on 'import'. Use a plain
+  comment (`//`) for module-level headers, or move the doc
+  above the next declaration."
+
+3 regression tests
+(`tests/test_pretty_printer.py::TestPrettyPrinterCommentPlacement`
+x 2; `tests/test_parser.py::TestErrors::test_doc_comment_on_import_suggests_plain_comment`).
+
+A fifth bug from the same stress test (`--cyclonedx` mangles
+cross-module non-pub function names) remains open as the
+design-heavier residual.
+
 ### Supply chain: SHA-256 verification + git URL allow-list
 
 Two adjacent supply-chain holes from the 2026-05-25 audit
