@@ -948,6 +948,26 @@ Listed so the design space is explicit.
 
 ### Wasm-specific gaps that are not P0
 
+- [x] **Int pattern matching** (closed 2026-05-27). `match` on an
+  `Int` scrutinee (literal arms + wildcard/identifier-bind default
+  + guards) now compiles on the Wasm backend; previously rejected
+  in `_emit_match` ("Int match lands in a later phase"). Lowering,
+  CIR, and analyzer were already complete (Int literal arms lower
+  to `PatLiteral(kind="int")`; the analyzer enforces the default
+  arm), so the change is confined to `capa/ir/_emit_wasm/_match.py`:
+  a dispatch clause plus `_emit_int_match` (N-arm nested-if cascade,
+  `i64.eq` per literal, scrutinee-bind tail) and
+  `_emit_int_match_with_guards` (flat-block, reusing the generic
+  guarded-arm helpers), modeled on the Bool/String emitters. The
+  i64 scrutinee is stashed in a dedicated `$_m_scrut_i64` local
+  (the shared `$_m_scrut` is i32) gated by a new `has_int_match`
+  flag in `_locals.py`. 4 new tests (1 Python-vs-Wasm parity
+  program `int_match.capa` + 3 execution/guard tests). Full suite
+  1840 -> 1844 / 5 skipped / 0 fail. Slice 2 of full language
+  coverage. Note: negative-literal patterns (`-1 -> ...`) are a
+  separate parser-surface gap (`expected pattern, got MINUS`), not
+  an emitter gap; negatives route through the catch-all today.
+
 - [x] **Pointer-shape element types in collections + HOFs**
   (closed 2026-05-27). `List` / `Map` / the map / filter / fold
   HOFs now carry struct / tuple / sum (incl. Option/Result) /

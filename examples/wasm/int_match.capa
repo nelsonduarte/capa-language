@@ -1,0 +1,44 @@
+// Int-scrutinee match in Wasm: exercises the i64 match cascade,
+// guarded arms, identifier-bind catch-alls, and an expression
+// -position match bound to a let. Stdio + Int only (no Float
+// printing) so the Python and Wasm backends produce byte-identical
+// output.
+
+// Deep literal cascade (5+ arms) plus an identifier-bind default
+// that uses the bound value.
+fun describe(stdio: Stdio, n: Int)
+    match n
+        0 -> stdio.println("zero")
+        1 -> stdio.println("one")
+        2 -> stdio.println("two")
+        3 -> stdio.println("three")
+        4 -> stdio.println("four")
+        5 -> stdio.println("five")
+        other -> stdio.println("got ${other}")
+
+// Guarded arm: a literal arm with a guard, plus a wildcard guard
+// arm, plus a plain wildcard default.
+fun sign(stdio: Stdio, n: Int)
+    match n
+        0 -> stdio.println("sign: zero")
+        x if x > 0 -> stdio.println("sign: positive")
+        _ -> stdio.println("sign: negative")
+
+// Expression-position match bound to a let, then printed.
+fun label_for(n: Int) -> String
+    let label = match n
+        0 -> "zero"
+        _ -> "other"
+    return label
+
+fun main(stdio: Stdio)
+    describe(stdio, 0)
+    describe(stdio, 3)
+    describe(stdio, 5)
+    describe(stdio, 42)
+    describe(stdio, -7)
+    sign(stdio, 0)
+    sign(stdio, 9)
+    sign(stdio, -3)
+    stdio.println(label_for(0))
+    stdio.println(label_for(99))

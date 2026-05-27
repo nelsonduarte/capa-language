@@ -63,6 +63,11 @@ class _LocalsCollectionMixin:
         has_optres_method = False
         has_list_method = False
         has_tuple = False
+        # Set when any Match in this function has an Int scrutinee.
+        # Int values are i64, so the i32 ``$_m_scrut`` cannot hold
+        # them; the Int match path stashes the scrutinee in a
+        # dedicated i64 local instead.
+        has_int_match = False
         # Set when any capability method in this function uses
         # canonical-ABI indirect return; drives the ``$_ret_area``
         # scratch local declaration.
@@ -94,7 +99,7 @@ class _LocalsCollectionMixin:
             nonlocal has_format_str, has_make_lambda, has_list_hof
             nonlocal has_json_method, has_json_parse
             nonlocal has_list_string, has_optres_method
-            nonlocal has_list_method, has_tuple
+            nonlocal has_list_method, has_tuple, has_int_match
             nonlocal cur_for_depth, max_for_depth
             nonlocal has_indirect_cap_call
             nonlocal has_attenuation_check, has_attenuation_env_check
@@ -106,6 +111,11 @@ class _LocalsCollectionMixin:
                     # reuses the String-method scratch (_str_a_*).
                     if (instr.scrutinee.ty or "") == "String":
                         has_string_method = True
+                    # Int-scrutinee match stashes the i64 scrutinee in
+                    # ``$_m_scrut_i64`` (the i32 ``$_m_scrut`` cannot
+                    # hold an i64).
+                    if (instr.scrutinee.ty or "") == "Int":
+                        has_int_match = True
                     # Refine binder types from the variant's payload
                     # layout. The analyzer's pattern-side type
                     # inference is incomplete for builtin sum types
@@ -418,6 +428,11 @@ class _LocalsCollectionMixin:
             # Nested PatVariant arms (depth 1) stash the inner
             # scrutinee pointer here; flat arms never touch it.
             out["_m_scrut_inner"] = "i32"
+        if has_int_match:
+            # Int-scrutinee match: the scrutinee is an i64 and cannot
+            # live in the i32 ``$_m_scrut``, so it gets a dedicated
+            # i64 stash local.
+            out["_m_scrut_i64"] = "i64"
         if has_variant_ctor or has_list or has_map or has_indirect_cap_call:
             out["_alloc_tmp"] = "i32"
         if has_indirect_cap_call:

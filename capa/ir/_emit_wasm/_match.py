@@ -63,6 +63,9 @@ class _MatchEmissionMixin:
         if scrut_ty == "String":
             self._emit_string_match(instr)
             return
+        if scrut_ty == "Int":
+            self._emit_int_match(instr)
+            return
         # Tuple scrutinee: ``match pair; (a, b) -> ...``. The
         # scrutinee is an i32 pointer to a tuple heap record (16
         # bytes for arity 2); each arm's pattern is either a
@@ -153,6 +156,78 @@ class _MatchEmissionMixin:
             raise WasmEmissionError(
                 f"Bool match: pattern {type(pat).__name__} not "
                 f"supported (PatLiteral / PatIdent / PatWildcard only)"
+            )
+        for _ in range(opened):
+            self._indent -= 1
+            self._write("end")
+
+    def _emit_int_match(self, instr: Match) -> None:
+        """Lower an Int-scrutinee match. The scrutinee is an i64;
+        each arm pattern is ``PatLiteral(kind="int")`` (compare the
+        scrutinee against the literal via ``i64.eq``), ``PatIdent``
+        (catch-all that binds the scrutinee to a name), or
+        ``PatWildcard`` (catch-all that ignores the value). The arms
+        cascade through nested if/else exactly like the Bool path,
+        but - like the String path - over an arbitrary number of
+        literal arms (Bool maxes out at two distinct values, Int
+        does not). The analyzer guarantees a default (ident/wildcard)
+        arm is present, so the cascade always terminates.
+
+        The i64 scrutinee is stashed in the dedicated ``$_m_scrut_i64``
+        local; the shared ``$_m_scrut`` is i32 and cannot hold it.
+        When any arm carries a guard we switch to the flat-block
+        -with-labeled-exit form so a failed guard falls through to
+        the next arm naturally.
+
+        Expression-form (``let x = match n ...``) and statement-form
+        both work without special-casing here: the lowering already
+        appends the assignment to the result local at the tail of
+        each arm body, so emitting the arm bodies verbatim is
+        sufficient."""
+        scrut_local = "_m_scrut_i64"
+        self._push_value(instr.scrutinee)
+        self._write(f"local.set ${scrut_local}")
+        if _match_has_guards(instr):
+            self._emit_int_match_with_guards(instr, scrut_local)
+            return
+        opened = 0
+        for arm in instr.arms:
+            pat = arm.pattern
+            if isinstance(pat, PatLiteral) and pat.kind == "int":
+                # Compare scrutinee against the literal. ``int()`` is
+                # defensive: lowering stores the literal as a Python
+                # int already, but a stray str would otherwise emit a
+                # malformed ``i64.const``. Negative literals are
+                # valid (``i64.const -1``).
+                self._write(f"local.get ${scrut_local}")
+                self._write(f"i64.const {int(pat.value)}")
+                self._write("i64.eq")
+                self._write("if")
+                self._indent += 1
+                for sub in arm.body:
+                    self._emit_instr(sub)
+                self._indent -= 1
+                self._write("else")
+                self._indent += 1
+                opened += 1
+                continue
+            if isinstance(pat, PatIdent):
+                # Catch-all that binds the scrutinee to a name. Bind
+                # then run the body inline; subsequent arms are dead
+                # but the IR/analyzer guarantees this is the last arm
+                # in practice.
+                self._write(f"local.get ${scrut_local}")
+                self._write(f"local.set ${pat.name}")
+                for sub in arm.body:
+                    self._emit_instr(sub)
+                break
+            if isinstance(pat, PatWildcard):
+                for sub in arm.body:
+                    self._emit_instr(sub)
+                break
+            raise WasmEmissionError(
+                f"Int match: pattern {type(pat).__name__} not "
+                f"supported; literal / identifier / wildcard only"
             )
         for _ in range(opened):
             self._indent -= 1
@@ -823,6 +898,53 @@ class _MatchEmissionMixin:
                     f"Bool match (guarded): pattern "
                     f"{type(pat).__name__} not supported "
                     f"(PatLiteral / PatIdent / PatWildcard only)"
+                )
+            self._emit_guarded_arm(
+                arm, push_predicate, bind_payloads, done_label,
+            )
+        self._close_match_done_block()
+
+    # ------- Int-scrutinee, guard-present path --------------------
+
+    def _emit_int_match_with_guards(
+        self, instr: Match, scrut_local: str,
+    ) -> None:
+        """Flat-block emission for an Int match where at least one
+        arm carries a guard. The scrutinee (i64) lives in
+        ``$_m_scrut_i64`` (the caller already set it); each arm's
+        predicate is ``scrut == lit`` (``i64.eq``) for a PatLiteral,
+        or ``i32.const 1`` (always true) for a catch-all. An ident
+        catch-all binds the scrutinee in ``bind_payloads`` so the
+        guard and body can reference it."""
+        done_label = self._open_match_done_block()
+        for arm in instr.arms:
+            pat = arm.pattern
+            if isinstance(pat, PatLiteral) and pat.kind == "int":
+                def push_predicate(p=pat):
+                    self._write(f"local.get ${scrut_local}")
+                    self._write(f"i64.const {int(p.value)}")
+                    self._write("i64.eq")
+
+                def bind_payloads():
+                    return  # no payloads for an Int literal arm
+            elif isinstance(pat, PatIdent):
+                def push_predicate():
+                    self._write("i32.const 1")
+
+                def bind_payloads(p=pat):
+                    self._write(f"local.get ${scrut_local}")
+                    self._write(f"local.set ${p.name}")
+            elif isinstance(pat, PatWildcard):
+                def push_predicate():
+                    self._write("i32.const 1")
+
+                def bind_payloads():
+                    return
+            else:
+                raise WasmEmissionError(
+                    f"Int match (guarded): pattern "
+                    f"{type(pat).__name__} not supported; "
+                    f"literal / identifier / wildcard only"
                 )
             self._emit_guarded_arm(
                 arm, push_predicate, bind_payloads, done_label,

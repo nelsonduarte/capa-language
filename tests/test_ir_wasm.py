@@ -3863,6 +3863,66 @@ class TestWasmMatchArmGuards(unittest.TestCase):
         self.assertEqual(self._exec(src, "pick", 1, -3), 0)
         self.assertEqual(self._exec(src, "pick", 0, 5), 0)
 
+    # ---- Int-scrutinee match: literal arms + ident catch-all ----
+
+    def test_int_match_with_literals_and_ident_catch_all(self):
+        # Deep literal cascade (i64.eq per arm) closing on an
+        # identifier-bind default that USES the bound value, so the
+        # ``local.set $other`` + body-uses-binding path is covered.
+        # (Negative literal PATTERNS are not accepted by the surface
+        # parser, so we drive negative scrutinees through the
+        # catch-all instead; the emitter itself handles negative
+        # ``i64.const`` fine.)
+        src = (
+            "fun pick(n: Int) -> Int\n"
+            "    match n\n"
+            "        0 -> return 100\n"
+            "        1 -> return 101\n"
+            "        2 -> return 102\n"
+            "        3 -> return 103\n"
+            "        4 -> return 104\n"
+            "        other -> return other + 1000\n"
+        )
+        self.assertEqual(self._exec(src, "pick", 0), 100)
+        self.assertEqual(self._exec(src, "pick", 1), 101)
+        self.assertEqual(self._exec(src, "pick", 2), 102)
+        self.assertEqual(self._exec(src, "pick", 4), 104)
+        # Falls through to the ident catch-all, which adds 1000.
+        self.assertEqual(self._exec(src, "pick", 7), 1007)
+        # Negative scrutinee also routes through the catch-all.
+        self.assertEqual(self._exec(src, "pick", -3), 997)
+
+    def test_int_match_with_wildcard_catch_all(self):
+        # ``_`` matches without binding; emitter emits the body then
+        # ``break``s out of the arm loop.
+        src = (
+            "fun pick(n: Int) -> Int\n"
+            "    match n\n"
+            "        0 -> return 0\n"
+            "        _ -> return 1\n"
+        )
+        self.assertEqual(self._exec(src, "pick", 0), 0)
+        self.assertEqual(self._exec(src, "pick", 5), 1)
+
+    # ---- Int-scrutinee match with a guard -----------------------
+
+    def test_int_match_with_guard(self):
+        # First arm: literal match on 0. Second arm: ident catch-all
+        # whose guard is ``x > 0``. Third arm: wildcard fallback.
+        # Exercises both the ``i64.eq`` predicate branch and the
+        # bind-then-guard sequence in _emit_int_match_with_guards.
+        src = (
+            "fun pick(n: Int) -> Int\n"
+            "    match n\n"
+            "        0 -> return 0\n"
+            "        x if x > 0 -> return 1\n"
+            "        _ -> return -1\n"
+            "    return -2\n"
+        )
+        self.assertEqual(self._exec(src, "pick", 0), 0)
+        self.assertEqual(self._exec(src, "pick", 9), 1)
+        self.assertEqual(self._exec(src, "pick", -3), -1)
+
     # ---- String-scrutinee match with a guard --------------------
 
     def test_string_match_with_guard(self):
