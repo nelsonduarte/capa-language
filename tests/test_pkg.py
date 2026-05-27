@@ -38,6 +38,7 @@ from capa.pkg import (
     read_manifest,
     read_lock,
     resolve_name,
+    search_packages,
 )
 
 
@@ -1448,6 +1449,81 @@ class TestRegistryResolve(_TempDirMixin, unittest.TestCase):
                 cache_dir=self._cache_dir(),
             )
         self.assertIn("packages", str(ctx.exception))
+
+
+class TestRegistrySearch(_TempDirMixin, unittest.TestCase):
+    """``search_packages`` against an index served from a ``file://`` URL.
+
+    Same ``file://`` index pattern as ``TestRegistryResolve``: the real
+    fetch + parse + cache path runs end to end against a temp file, with
+    a per-test ``cache_dir`` isolated from ``~/.capa``. A synthetic
+    multi-package index keeps the assertions deterministic.
+    """
+
+    def _index_url(self, body: str) -> str:
+        p = self._tmp / "index.json"
+        p.write_text(textwrap.dedent(body), encoding="utf-8")
+        return p.as_uri()
+
+    def _cache_dir(self) -> Path:
+        d = self._tmp / "cache"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    def _multi_index(self) -> str:
+        return '''\
+            {
+              "registry_version": 1,
+              "updated": "2026-05-27",
+              "packages": {
+                "capa_http": {
+                  "git": "https://github.com/nelsonduarte/capa_http",
+                  "latest": "v0.1.3",
+                  "description": "HTTP client over the Net capability"
+                },
+                "capa_log": {
+                  "git": "https://github.com/nelsonduarte/capa_log",
+                  "latest": "v0.1.2",
+                  "description": "Structured logging with levels"
+                },
+                "capa_datetime": {
+                  "git": "https://github.com/nelsonduarte/capa_datetime",
+                  "latest": "v0.1.0",
+                  "description": "Calendar and clock helpers"
+                }
+              }
+            }
+        '''
+
+    def _search(self, query: str) -> list:
+        return search_packages(
+            query,
+            registry_url=self._index_url(self._multi_index()),
+            cache_dir=self._cache_dir(),
+        )
+
+    def test_search_by_name(self):
+        results = self._search("http")
+        self.assertEqual([e.name for e in results], ["capa_http"])
+
+    def test_search_by_description(self):
+        # "logging" appears in capa_log's description but in no name.
+        results = self._search("logging")
+        self.assertEqual([e.name for e in results], ["capa_log"])
+
+    def test_search_case_insensitive(self):
+        results = self._search("HTTP")
+        self.assertEqual([e.name for e in results], ["capa_http"])
+
+    def test_search_empty_query_lists_all(self):
+        results = self._search("")
+        self.assertEqual(
+            [e.name for e in results],
+            ["capa_datetime", "capa_http", "capa_log"],
+        )
+
+    def test_search_no_match(self):
+        self.assertEqual(self._search("zzznope"), [])
 
 
 class TestCapaAddRegistry(_TempDirMixin, unittest.TestCase):

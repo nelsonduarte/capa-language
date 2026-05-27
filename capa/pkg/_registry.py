@@ -153,24 +153,22 @@ def _load_index(url: str, cache_path: Path) -> dict:
     return index
 
 
-def resolve_name(
-    name: str,
-    *,
-    registry_url: Optional[str] = None,
-    cache_dir: Optional[Path] = None,
-) -> RegistryEntry:
-    """Resolve a package name to its registry entry.
+def _load_packages(
+    registry_url: Optional[str],
+    cache_dir: Optional[Path],
+) -> tuple[str, dict]:
+    """Fetch + cache + validate the index, returning ``(url, packages)``.
 
-    Fetches the registry index JSON, looks up ``name``, and returns a
-    ``RegistryEntry`` (git URL plus optional verify_key and latest
-    tag). Raises ``RegistryError`` on an unknown name, an index whose
-    ``registry_version`` exceeds this toolchain's support, a malformed
-    index, a fetch failure with no usable cache, or a git URL in the
-    index that fails the shared allow-list.
+    The single code path both ``resolve_name`` and ``search_packages``
+    use to get the index: it resolves the index URL, loads it (cache /
+    network / stale fallback via ``_load_index``), checks the
+    ``registry_version`` against this toolchain's support, and returns
+    the validated ``packages`` table. Raises ``RegistryError`` on a
+    malformed index, an unsupported version, or a fetch failure with no
+    usable cache.
 
-    The index URL is, in priority order: the ``registry_url``
-    argument, the ``CAPA_REGISTRY_URL`` env var, then
-    ``DEFAULT_REGISTRY_URL``.
+    The index URL is, in priority order: the ``registry_url`` argument,
+    the ``CAPA_REGISTRY_URL`` env var, then ``DEFAULT_REGISTRY_URL``.
     """
     import os
 
@@ -211,14 +209,16 @@ def resolve_name(
             f"a JSON object"
         )
 
-    spec = packages.get(name)
-    if spec is None:
-        available = ", ".join(sorted(packages)) or "(none)"
-        raise RegistryError(
-            f"package {name!r} is not in the registry. Known packages: "
-            f"{available}. Pass --git <url> to add an unregistered "
-            f"dependency."
-        )
+    return url, packages
+
+
+def _entry_from_spec(name: str, spec: object) -> RegistryEntry:
+    """Validate one registry ``spec`` and build a ``RegistryEntry``.
+
+    Raises ``RegistryError`` when the spec is not an object, has no
+    usable git URL, or carries a git URL that fails the shared
+    allow-list a hand-written capa.toml is held to.
+    """
     if not isinstance(spec, dict):
         raise RegistryError(
             f"registry entry for {name!r} is malformed: expected a JSON "
@@ -251,6 +251,75 @@ def resolve_name(
         latest=_opt_str(spec.get("latest")),
         description=_opt_str(spec.get("description")),
     )
+
+
+def resolve_name(
+    name: str,
+    *,
+    registry_url: Optional[str] = None,
+    cache_dir: Optional[Path] = None,
+) -> RegistryEntry:
+    """Resolve a package name to its registry entry.
+
+    Fetches the registry index JSON, looks up ``name``, and returns a
+    ``RegistryEntry`` (git URL plus optional verify_key and latest
+    tag). Raises ``RegistryError`` on an unknown name, an index whose
+    ``registry_version`` exceeds this toolchain's support, a malformed
+    index, a fetch failure with no usable cache, or a git URL in the
+    index that fails the shared allow-list.
+
+    The index URL is, in priority order: the ``registry_url``
+    argument, the ``CAPA_REGISTRY_URL`` env var, then
+    ``DEFAULT_REGISTRY_URL``.
+    """
+    _url, packages = _load_packages(registry_url, cache_dir)
+
+    spec = packages.get(name)
+    if spec is None:
+        available = ", ".join(sorted(packages)) or "(none)"
+        raise RegistryError(
+            f"package {name!r} is not in the registry. Known packages: "
+            f"{available}. Pass --git <url> to add an unregistered "
+            f"dependency."
+        )
+
+    return _entry_from_spec(name, spec)
+
+
+def search_packages(
+    query: str,
+    *,
+    registry_url: Optional[str] = None,
+    cache_dir: Optional[Path] = None,
+) -> list[RegistryEntry]:
+    """Return registry entries matching ``query``, sorted by name.
+
+    Matches case-insensitively on a substring of either the package
+    name or its description. An empty / whitespace-only query returns
+    every package in the registry, so ``capa search`` with no term
+    lists the whole index. Shares the fetch + cache + version-check
+    code path with ``resolve_name`` via ``_load_packages``.
+
+    Malformed individual entries (a poisoned git URL, a non-object
+    spec) are skipped rather than aborting the whole search: a single
+    bad entry should not blind a user to the rest of the registry.
+    """
+    _url, packages = _load_packages(registry_url, cache_dir)
+
+    needle = query.strip().lower()
+    results: list[RegistryEntry] = []
+    for name in sorted(packages):
+        try:
+            entry = _entry_from_spec(name, packages[name])
+        except RegistryError:
+            continue
+        if not needle:
+            results.append(entry)
+            continue
+        haystack = f"{entry.name}\n{entry.description or ''}".lower()
+        if needle in haystack:
+            results.append(entry)
+    return results
 
 
 def _opt_str(value: object) -> Optional[str]:

@@ -341,6 +341,57 @@ def _dispatch_add(argv: list[str]) -> int:
     return 0
 
 
+def _dispatch_search(argv: list[str]) -> int:
+    """Handle ``python -m capa search [query]``.
+
+    Searches the registry index by name and description and prints the
+    matching packages as a compact table. With no query term it lists
+    the whole registry.
+    """
+    sub = argparse.ArgumentParser(
+        prog="capa search",
+        description=(
+            "Search the package registry by name and description. "
+            "With no query, list every package in the registry."
+        ),
+    )
+    sub.add_argument(
+        "query",
+        nargs="?",
+        default="",
+        help="substring to match against package names and descriptions",
+    )
+    args = sub.parse_args(argv)
+    try:
+        from capa.pkg import search_packages, RegistryError
+    except ImportError as e:
+        print(f"capa search: {e}", file=sys.stderr)
+        return 2
+    try:
+        results = search_packages(args.query)
+    except RegistryError as e:
+        print(f"capa search: {e}", file=sys.stderr)
+        return 2
+
+    query = args.query.strip()
+    if not results:
+        print(f"no packages match {query!r}", file=sys.stderr)
+        return 1
+
+    name_w = max(len(e.name) for e in results)
+    latest_w = max(len(e.latest or "-") for e in results)
+    for e in results:
+        desc = e.description or ""
+        if len(desc) > 60:
+            desc = desc[:60] + "..."
+        print(f"{e.name:<{name_w}}  {(e.latest or '-'):<{latest_w}}  {desc}")
+    if query:
+        print(f"{len(results)} package(s) matching {query!r}")
+    else:
+        print(f"{len(results)} package(s) in registry")
+    return 0
+
+
 def main() -> int:
     # Subcommand dispatch happens before argparse so the rest of
     # the CLI can stay flag-based without complicating help output.
@@ -350,6 +401,8 @@ def main() -> int:
         return _dispatch_install(sys.argv[2:])
     if len(sys.argv) >= 2 and sys.argv[1] == "add":
         return _dispatch_add(sys.argv[2:])
+    if len(sys.argv) >= 2 and sys.argv[1] == "search":
+        return _dispatch_search(sys.argv[2:])
     if len(sys.argv) >= 2 and sys.argv[1] == "lsp":
         from capa.lsp_server import serve
         return serve()

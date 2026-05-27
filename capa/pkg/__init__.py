@@ -40,7 +40,12 @@ from ._manifest import (
 )
 from ._install import InstallError, LockMismatchError, VerificationError, install
 from ._add import add_dependency
-from ._registry import RegistryEntry, RegistryError, resolve_name
+from ._registry import (
+    RegistryEntry,
+    RegistryError,
+    resolve_name,
+    search_packages,
+)
 
 __all__ = [
     "Dependency",
@@ -56,6 +61,7 @@ __all__ = [
     "RegistryEntry",
     "RegistryError",
     "resolve_name",
+    "search_packages",
     "MANIFEST_FILENAME",
     "LOCK_FILENAME",
 ]
