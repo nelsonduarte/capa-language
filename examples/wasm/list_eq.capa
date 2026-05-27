@@ -1,0 +1,32 @@
+// Structural equality on lists: List<Int> (equal, different length,
+// same length different element) and List<Point> (list of structs,
+// equal and differing). Bool results branch into "yes"/"no" strings;
+// see struct_eq.capa.
+
+type Point {
+    x: Int,
+    y: Int
+}
+
+fun show(stdio: Stdio, tag: String, flag: Bool)
+    if flag
+        stdio.println("${tag}: yes")
+    else
+        stdio.println("${tag}: no")
+
+fun main(stdio: Stdio)
+    let a: List<Int> = [1, 2, 3]
+    let b: List<Int> = [1, 2, 3]
+    let c: List<Int> = [1, 2]
+    let d: List<Int> = [1, 2, 4]
+    show(stdio, "a == b", a == b)
+    show(stdio, "a == c diff length", a == c)
+    show(stdio, "a == d diff element", a == d)
+    show(stdio, "a != d", a != d)
+
+    // List of structs.
+    let p1: List<Point> = [Point { x: 0, y: 0 }, Point { x: 1, y: 1 }]
+    let p2: List<Point> = [Point { x: 0, y: 0 }, Point { x: 1, y: 1 }]
+    let p3: List<Point> = [Point { x: 0, y: 0 }, Point { x: 1, y: 2 }]
+    show(stdio, "p1 == p2", p1 == p2)
+    show(stdio, "p1 == p3 struct differs", p1 == p3)

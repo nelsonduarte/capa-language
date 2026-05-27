@@ -3991,5 +3991,219 @@ class TestWasmMatchArmGuards(unittest.TestCase):
         self.assertEqual(self._exec(src, "classify", 42), 1)
 
 
+@unittest.skipUnless(
+    _has_wasm_tools() and _has_wasmtime_py(),
+    "wasm-tools and/or wasmtime-py not installed",
+)
+class TestWasmStructuralEquality(unittest.TestCase):
+    """Structural ``==`` / ``!=`` on compound types compiles to the
+    generated ``$eq_*`` helpers and executes by-value on wasmtime,
+    matching the Python backend's deep equality. The execution tests
+    here exercise the helpers directly (an eq fn returns the i32 0/1);
+    the end-to-end parity is covered in test_ir_wasm_parity.py."""
+
+    def _exec(self, src: str, fn_name: str, *args):
+        import wasmtime
+        _, types, ast_mod = _parse_lower(src)
+        blob = compile_wasm(ast_mod, types=types)
+        engine = wasmtime.Engine()
+        mod = wasmtime.Module(engine, blob)
+        store = wasmtime.Store(engine)
+        linker = wasmtime.Linker(engine)
+        instance = linker.instantiate(store, mod)
+        return instance.exports(store)[fn_name](store, *args)
+
+    def test_sum_eq_option_payload(self):
+        # Some(1) == Some(1) is True; Some(1) == Some(2) is False;
+        # Some vs None differ on the tag.
+        src = (
+            "fun same() -> Bool\n"
+            "    let a: Option<Int> = Some(1)\n"
+            "    let b: Option<Int> = Some(1)\n"
+            "    return a == b\n"
+            "fun diff_payload() -> Bool\n"
+            "    let a: Option<Int> = Some(1)\n"
+            "    let b: Option<Int> = Some(2)\n"
+            "    return a == b\n"
+            "fun diff_tag() -> Bool\n"
+            "    let a: Option<Int> = Some(1)\n"
+            "    let b: Option<Int> = None\n"
+            "    return a == b\n"
+        )
+        self.assertEqual(self._exec(src, "same"), 1)
+        self.assertEqual(self._exec(src, "diff_payload"), 0)
+        self.assertEqual(self._exec(src, "diff_tag"), 0)
+
+    def test_sum_eq_result_string_payload(self):
+        # Err("bad") == Err("bad") routes the String payload through
+        # $str_eq; Err("bad") == Err("worse") is False.
+        src = (
+            "fun same() -> Bool\n"
+            "    let a: Result<Int, String> = Err(\"bad\")\n"
+            "    let b: Result<Int, String> = Err(\"bad\")\n"
+            "    return a == b\n"
+            "fun diff() -> Bool\n"
+            "    let a: Result<Int, String> = Err(\"bad\")\n"
+            "    let b: Result<Int, String> = Err(\"worse\")\n"
+            "    return a == b\n"
+        )
+        self.assertEqual(self._exec(src, "same"), 1)
+        self.assertEqual(self._exec(src, "diff"), 0)
+
+    def test_sum_eq_payloadless_variant(self):
+        # Payloadless variants compare structurally: a tag match means
+        # equal (a value equals itself). This exercises the
+        # tag-equal-no-payload path the other sum tests never hit
+        # (they compare payload-bearing variants or mismatched tags).
+        # The payloadless-only ``Color`` binders are typed by the
+        # analyzer as the variant name (``Red``); the emitter must
+        # normalise that to the ``Color`` sum so the compound-eq
+        # dispatch fires instead of an i64 pointer compare (the
+        # invalid-wasm bug this regresses against).
+        src = (
+            "type Color =\n"
+            "    Red\n"
+            "    Green\n"
+            "type Shape =\n"
+            "    Circle(Int)\n"
+            "    Unit\n"
+            "fun red_eq_red() -> Bool\n"
+            "    let a = Red\n"
+            "    let b = Red\n"
+            "    return a == b\n"
+            "fun red_eq_green() -> Bool\n"
+            "    let a = Red\n"
+            "    let b = Green\n"
+            "    return a == b\n"
+            "fun unit_eq_unit() -> Bool\n"
+            "    let a: Shape = Unit\n"
+            "    let b: Shape = Unit\n"
+            "    return a == b\n"
+            "fun unit_eq_circle() -> Bool\n"
+            "    let a: Shape = Unit\n"
+            "    let b: Shape = Circle(5)\n"
+            "    return a == b\n"
+        )
+        self.assertEqual(self._exec(src, "red_eq_red"), 1)
+        self.assertEqual(self._exec(src, "red_eq_green"), 0)
+        self.assertEqual(self._exec(src, "unit_eq_unit"), 1)
+        self.assertEqual(self._exec(src, "unit_eq_circle"), 0)
+
+    def test_tuple_eq(self):
+        src = (
+            "fun same() -> Bool\n"
+            "    let a: (Int, String) = (1, \"hi\")\n"
+            "    let b: (Int, String) = (1, \"hi\")\n"
+            "    return a == b\n"
+            "fun diff() -> Bool\n"
+            "    let a: (Int, String) = (1, \"hi\")\n"
+            "    let b: (Int, String) = (1, \"bye\")\n"
+            "    return a == b\n"
+        )
+        self.assertEqual(self._exec(src, "same"), 1)
+        self.assertEqual(self._exec(src, "diff"), 0)
+
+    def test_list_eq_int(self):
+        src = (
+            "fun same() -> Bool\n"
+            "    let a: List<Int> = [1, 2, 3]\n"
+            "    let b: List<Int> = [1, 2, 3]\n"
+            "    return a == b\n"
+            "fun diff_len() -> Bool\n"
+            "    let a: List<Int> = [1, 2, 3]\n"
+            "    let b: List<Int> = [1, 2]\n"
+            "    return a == b\n"
+            "fun diff_elem() -> Bool\n"
+            "    let a: List<Int> = [1, 2, 3]\n"
+            "    let b: List<Int> = [1, 2, 4]\n"
+            "    return a == b\n"
+        )
+        self.assertEqual(self._exec(src, "same"), 1)
+        self.assertEqual(self._exec(src, "diff_len"), 0)
+        self.assertEqual(self._exec(src, "diff_elem"), 0)
+
+    def test_list_eq_struct(self):
+        # List<Point> compares each element via $eq_Point, so two
+        # distinct records with equal fields match.
+        src = (
+            "type Point {\n"
+            "    x: Int,\n"
+            "    y: Int\n"
+            "}\n"
+            "fun same() -> Bool\n"
+            "    let a: List<Point> = [Point { x: 0, y: 0 }, Point { x: 1, y: 1 }]\n"
+            "    let b: List<Point> = [Point { x: 0, y: 0 }, Point { x: 1, y: 1 }]\n"
+            "    return a == b\n"
+            "fun diff() -> Bool\n"
+            "    let a: List<Point> = [Point { x: 0, y: 0 }]\n"
+            "    let b: List<Point> = [Point { x: 0, y: 1 }]\n"
+            "    return a == b\n"
+        )
+        self.assertEqual(self._exec(src, "same"), 1)
+        self.assertEqual(self._exec(src, "diff"), 0)
+
+    def test_list_contains_struct(self):
+        # contains on a pointer-shape element is a structural scan: a
+        # fresh Point equal by value to an element is found.
+        src = (
+            "type Point {\n"
+            "    x: Int,\n"
+            "    y: Int\n"
+            "}\n"
+            "fun present() -> Bool\n"
+            "    let pts: List<Point> = [Point { x: 1, y: 2 }, Point { x: 3, y: 4 }]\n"
+            "    return pts.contains(Point { x: 3, y: 4 })\n"
+            "fun absent() -> Bool\n"
+            "    let pts: List<Point> = [Point { x: 1, y: 2 }, Point { x: 3, y: 4 }]\n"
+            "    return pts.contains(Point { x: 5, y: 6 })\n"
+        )
+        self.assertEqual(self._exec(src, "present"), 1)
+        self.assertEqual(self._exec(src, "absent"), 0)
+
+    def test_nested_cross_kind_eq(self):
+        # A struct whose fields span String + Option<Int> + List<Int>
+        # recurses into the sum and List helpers.
+        src = (
+            "type Holder {\n"
+            "    tag: String,\n"
+            "    maybe: Option<Int>,\n"
+            "    items: List<Int>\n"
+            "}\n"
+            "fun same() -> Bool\n"
+            "    let a: Holder = Holder { tag: \"h\", maybe: Some(1), items: [1, 2] }\n"
+            "    let b: Holder = Holder { tag: \"h\", maybe: Some(1), items: [1, 2] }\n"
+            "    return a == b\n"
+            "fun diff_option() -> Bool\n"
+            "    let a: Holder = Holder { tag: \"h\", maybe: Some(1), items: [1, 2] }\n"
+            "    let b: Holder = Holder { tag: \"h\", maybe: Some(2), items: [1, 2] }\n"
+            "    return a == b\n"
+        )
+        self.assertEqual(self._exec(src, "same"), 1)
+        self.assertEqual(self._exec(src, "diff_option"), 0)
+
+    def test_map_equality_rejected(self):
+        # Map / Set structural == is deliberately unsupported on the
+        # Wasm backend: it would fall through to a pointer compare.
+        # Pin the clean reject (mirrors the other reject tests).
+        src = (
+            "fun cmp(a: Map<String, Int>, b: Map<String, Int>) -> Bool\n"
+            "    return a == b\n"
+        )
+        ir_mod, _, _ = _parse_lower(src)
+        with self.assertRaises(WasmEmissionError) as ctx:
+            emit_wat(ir_mod)
+        self.assertIn("Map/Set", str(ctx.exception))
+
+    def test_set_equality_rejected(self):
+        src = (
+            "fun cmp(a: Set<Int>, b: Set<Int>) -> Bool\n"
+            "    return a == b\n"
+        )
+        ir_mod, _, _ = _parse_lower(src)
+        with self.assertRaises(WasmEmissionError) as ctx:
+            emit_wat(ir_mod)
+        self.assertIn("Map/Set", str(ctx.exception))
+
+
 if __name__ == "__main__":
     unittest.main()

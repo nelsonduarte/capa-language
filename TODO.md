@@ -948,6 +948,32 @@ Listed so the design space is explicit.
 
 ### Wasm-specific gaps that are not P0
 
+- [x] **Structural equality on compound types** (closed
+  2026-05-27). `==` / `!=` on struct / sum (incl. Option/Result) /
+  tuple / `List<T>` now compile to deep, by-value comparison on the
+  Wasm backend, matching the Python backend (dataclass / list /
+  tuple `__eq__`); previously compound `==` fell through to an
+  i64.eq on the heap pointers (reference compare / invalid wasm).
+  Also unblocks `List.contains` on pointer-shape elements (rejected
+  since the slice-1 guard). New `capa/ir/_emit_wasm/_equality.py`
+  generates one `$eq_<Type>(a, b) -> i32` helper per compound type
+  reached transitively under a `==` / pointer-shape `contains`;
+  helpers mutually recurse by name (WAT resolves `call $name`
+  module-wide, no ordering needed). Leaves reuse `i64.eq` / `f64.eq`
+  / `i32.eq` / `$str_eq`; container-specific loads (struct two-i32
+  String, sum/tuple/list packed-i64) feed a shared
+  `_emit_leaf_compare`. Map/Set equality is rejected with a clear
+  error (deferred). Also fixed a latent **both-backend** bug:
+  payloadless variants (`Red == Red`) compared by identity (Python
+  plain class -> False; Wasm invalid); now structural (`True`) via
+  frozen-empty-dataclass on the Python side + variant-name->sum
+  normalisation on the Wasm side. 16 new tests (6 Python-vs-Wasm
+  parity programs: struct/sum/tuple/list/contains/nested, plus
+  execution + Map/Set-reject tests). Full suite 1844 -> 1860 / 5
+  skipped / 0 fail. Slice 3 of full language coverage. Note: bare
+  Bool interpolation (`${flag}`) still diverges True/true between
+  backends, orthogonal to equality, deferred.
+
 - [x] **Int pattern matching** (closed 2026-05-27). `match` on an
   `Int` scrutinee (literal arms + wildcard/identifier-bind default
   + guards) now compiles on the Wasm backend; previously rejected

@@ -1,0 +1,66 @@
+// Structural equality on sum types: built-in Option / Result and a
+// user-defined sum with both a payload-carrying and a payloadless
+// variant. Bool results branch into "yes"/"no" strings (bare Bool
+// interpolation diverges between backends); see struct_eq.capa.
+
+type Shape =
+    Circle(Int)
+    Unit
+
+type Color =
+    Red
+    Green
+
+fun show(stdio: Stdio, tag: String, flag: Bool)
+    if flag
+        stdio.println("${tag}: yes")
+    else
+        stdio.println("${tag}: no")
+
+fun main(stdio: Stdio)
+    // Option<Int>.
+    let s1: Option<Int> = Some(1)
+    let s2: Option<Int> = Some(1)
+    let s3: Option<Int> = Some(2)
+    let n1: Option<Int> = None
+    let n2: Option<Int> = None
+    show(stdio, "Some(1) == Some(1)", s1 == s2)
+    show(stdio, "Some(1) == Some(2)", s1 == s3)
+    show(stdio, "Some(1) == None", s1 == n1)
+    show(stdio, "None == None", n1 == n2)
+
+    // Result<Int, String>.
+    let ok1: Result<Int, String> = Ok(10)
+    let ok2: Result<Int, String> = Ok(10)
+    let er1: Result<Int, String> = Err("bad")
+    let er2: Result<Int, String> = Err("bad")
+    let er3: Result<Int, String> = Err("worse")
+    show(stdio, "Ok(10) == Ok(10)", ok1 == ok2)
+    show(stdio, "Ok(10) == Err(bad)", ok1 == er1)
+    show(stdio, "Err(bad) == Err(bad)", er1 == er2)
+    show(stdio, "Err(bad) == Err(worse)", er1 == er3)
+
+    // User sum with a payload variant and a payloadless variant.
+    // Payloadless variants compare structurally on both backends: a
+    // tag match means equal, so two separately-constructed Units are
+    // equal (a value equals itself). The Python backend lowers a
+    // payloadless variant to a frozen dataclass for the same reason.
+    let c1: Shape = Circle(5)
+    let c2: Shape = Circle(5)
+    let c3: Shape = Circle(6)
+    let u1: Shape = Unit
+    let u2: Shape = Unit
+    show(stdio, "Circle(5) == Circle(5)", c1 == c2)
+    show(stdio, "Circle(5) == Circle(6)", c1 == c3)
+    show(stdio, "Circle(5) == Unit", c1 == u1)
+    show(stdio, "Unit == Circle(5)", u1 == c1)
+    show(stdio, "Unit == Unit", u1 == u2)
+
+    // Payloadless-only sum: tag-equal/tag-mismatch on a variant that
+    // never carries a payload, exercising the tag-match-no-payload
+    // path directly.
+    let r1: Color = Red
+    let r2: Color = Red
+    let g1: Color = Green
+    show(stdio, "Red == Red", r1 == r2)
+    show(stdio, "Red == Green", r1 == g1)

@@ -1,0 +1,33 @@
+// Structural equality on tuples. Covers (Int, String) equal and
+// differing in each position, plus a tuple containing a struct.
+// Bool results branch into "yes"/"no" strings rather than being
+// interpolated directly (bare Bool interpolation diverges True/true
+// between backends independently of equality); see struct_eq.capa.
+
+type Point {
+    x: Int,
+    y: Int
+}
+
+fun show(stdio: Stdio, tag: String, flag: Bool)
+    if flag
+        stdio.println("${tag}: yes")
+    else
+        stdio.println("${tag}: no")
+
+fun main(stdio: Stdio)
+    let a: (Int, String) = (1, "hi")
+    let b: (Int, String) = (1, "hi")
+    let c: (Int, String) = (2, "hi")
+    let d: (Int, String) = (1, "bye")
+    show(stdio, "a == b", a == b)
+    show(stdio, "a == c int differs", a == c)
+    show(stdio, "a == d string differs", a == d)
+    show(stdio, "a != c", a != c)
+
+    // Tuple containing a struct.
+    let p: (Point, Int) = (Point { x: 0, y: 0 }, 7)
+    let q: (Point, Int) = (Point { x: 0, y: 0 }, 7)
+    let r: (Point, Int) = (Point { x: 0, y: 1 }, 7)
+    show(stdio, "p == q", p == q)
+    show(stdio, "p == r struct differs", p == r)

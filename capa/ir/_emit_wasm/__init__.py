@@ -77,6 +77,7 @@ from ._structs import _StructEmissionMixin
 from ._values import _ValueEmissionMixin
 from ._locals import _LocalsCollectionMixin
 from ._discovery import _DiscoveryMixin
+from ._equality import _EqualityMixin
 
 
 # Comparison ops produce i32 (0 or 1) in Wasm; arithmetic ops
@@ -136,6 +137,7 @@ class WasmEmitter(
     _ValueEmissionMixin,
     _LocalsCollectionMixin,
     _DiscoveryMixin,
+    _EqualityMixin,
 ):
     def __init__(self, indent_unit: str = "  "):
         self._lines: List[str] = []
@@ -407,7 +409,8 @@ class WasmEmitter(
             if (self._uses_map_ops(module)
                     or needs_starts_with
                     or needs_contains
-                    or needs_str_eq_for_atten):
+                    or needs_str_eq_for_atten
+                    or self._eq_needs_str_eq(module)):
                 self._emit_str_eq_function()
             if needs_starts_with:
                 self._emit_str_starts_with_function()
@@ -432,6 +435,12 @@ class WasmEmitter(
                 self._emit_parse_int_function()
             if self._uses_parse_float(module):
                 self._emit_parse_float_function()
+            # Generated structural-equality helpers ($eq_<Type>) for
+            # any compound type compared with == / != (or used as a
+            # pointer-shape List.contains element). Emitted here, at
+            # module level before user functions, so they can mutually
+            # recurse by name.
+            self._emit_equality_helpers(module)
         # Closure infrastructure: function table + (type) decls +
         # each lifted lambda is a top-level function below.
         if self._lifted_lambdas:
@@ -697,6 +706,12 @@ class WasmEmitter(
         # types so binders typed Unknown route via fn.locals.
         left_ty = self._effective_value_ty(instr.left)
         right_ty = self._effective_value_ty(instr.right)
+        # A payloadless variant binder (``let a = Red``) is typed as
+        # the variant name; normalise to its owning sum type so the
+        # compound-equality dispatch below recognises it as a sum
+        # value rather than falling through to the i64 pointer compare.
+        left_ty = self._normalize_eq_ty(left_ty)
+        right_ty = self._normalize_eq_ty(right_ty)
         if op in _CMP_BINOP and (left_ty == "Bool" or right_ty == "Bool"):
             if op not in ("==", "!="):
                 raise WasmEmissionError(
@@ -708,6 +723,29 @@ class WasmEmitter(
             self._write("i32.eq" if op == "==" else "i32.ne")
             self._write(f"local.set ${instr.dst}")
             return
+        # Compound == / != : structural (deep, by-value) equality via a
+        # generated $eq_<Type> helper, matching the Python backend's
+        # dataclass / tuple / list equality. Scalars and String are
+        # handled above; only struct / sum / tuple / List reach here.
+        if op in ("==", "!="):
+            # Map / Set are deliberately excluded from
+            # _is_compound_eq_ty, so a Map / Set == / != would
+            # otherwise fall through to the _CMP_BINOP pointer
+            # compare below (reference identity, not the Python
+            # backend's by-value equality). Reject cleanly instead.
+            if left_ty.split("<", 1)[0] in ("Map", "Set") or \
+                    right_ty.split("<", 1)[0] in ("Map", "Set"):
+                raise WasmEmissionError(
+                    "structural equality on Map/Set is not supported "
+                    "by the Wasm backend yet; use the Python backend"
+                )
+            cmp_ty = (
+                left_ty if self._is_compound_eq_ty(left_ty)
+                else right_ty
+            )
+            if self._is_compound_eq_ty(cmp_ty):
+                self._emit_compound_eq(instr, op, cmp_ty)
+                return
         if op in _CMP_BINOP:
             self._push_value(instr.left)
             self._push_value(instr.right)

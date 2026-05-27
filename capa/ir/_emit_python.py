@@ -120,14 +120,18 @@ class PythonEmitter:
         self._indent -= 1
 
     def _emit_sum(self, t: SumDecl) -> None:
-        # One class per variant. Zero payloads -> bare class with
-        # ``pass``; one payload -> dataclass with ``value: object``;
-        # N payloads -> dataclass with ``f0, f1, ...`` matching the
-        # positional field convention the legacy emitter uses.
+        # One class per variant. Zero payloads -> empty frozen
+        # dataclass (so ``Red == Red`` is True by value, matching the
+        # Wasm backend's structural sum equality; a plain ``class Red:
+        # pass`` would compare by identity); one payload -> dataclass
+        # with ``value: object``; N payloads -> dataclass with ``f0,
+        # f1, ...`` matching the positional field convention the
+        # legacy emitter uses.
         self._sum_variants[t.name] = [v.name for v in t.variants]
         for v in t.variants:
             n = len(v.payload_tys)
             if n == 0:
+                self._write("@dataclass(frozen=True)")
                 self._write(f"class {v.name}:")
                 self._indent += 1
                 self._write("pass")

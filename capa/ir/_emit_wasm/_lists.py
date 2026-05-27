@@ -71,20 +71,20 @@ class _ListEmissionMixin:
                                 instr.dst)
             return
         if method == "contains":
-            # contains on a pointer-shape element would compare the
-            # i32 pointers, i.e. reference identity, not the Python
-            # backend's structural equality. Reject rather than emit a
-            # silently-wrong answer; structural equality on
-            # struct/tuple/sum elements is a separate, later piece.
+            # Pointer-shape elements (struct / sum / tuple / nested
+            # List) compare structurally via the element's generated
+            # ``$eq_*`` helper (collected by ``_collect_eq_types``
+            # when it sees a pointer-shape ``List.contains``), matching
+            # the Python backend's by-value semantics. Scalars and
+            # String keep their existing identity / byte-compare paths.
             if self._is_pointer_shape_ty(elem_ty):
-                raise WasmEmissionError(
-                    f"List<{elem_ty}>.contains: structural equality on "
-                    f"pointer-shape elements is not supported by the "
-                    f"Wasm backend (it would compare references, not "
-                    f"values). Workaround: use the Python backend "
-                    f"(``capa --run``)."
+                self._emit_list_pointer_contains(
+                    recv, instr.args[0], elem_size, elem_ty,
                 )
-            self._emit_list_contains(recv, instr.args[0], elem_size, elem_ty)
+            else:
+                self._emit_list_contains(
+                    recv, instr.args[0], elem_size, elem_ty,
+                )
             if instr.dst is not None:
                 self._write(f"local.set ${instr.dst}")
             return
@@ -371,6 +371,81 @@ class _ListEmissionMixin:
         # Loop body always exits via br; the outer block's i32 result
         # is satisfied by an unreachable terminator the validator
         # treats as polymorphic.
+        self._write("unreachable")
+        self._indent -= 1
+        self._write("end")
+
+    def _emit_list_pointer_contains(
+        self, recv: Value, needle: Value, elem_size: int, elem_ty: str,
+    ) -> None:
+        """Emit a linear-scan ``recv.contains(needle)`` for a
+        pointer-shape element type (struct / sum / tuple / nested
+        List). Each element is a 4-byte i32 heap pointer; the compare
+        is the element type's generated ``$eq_<key>`` helper (deep,
+        by-value), so two distinct records with the same contents
+        match - mirroring the Python backend's structural ``in``.
+        Leaves an i32 0/1 on the stack.
+
+        Uses ``$_m_scrut`` (list pointer), ``$_m_tag`` (index), and
+        ``$_alloc_tmp`` (the needle pointer), all declared by
+        ``_collect_locals``."""
+        from ._equality import _eq_key
+        list_local = "_m_scrut"
+        idx_local = "_m_tag"
+        # Stash the needle pointer once so the inner loop does not
+        # re-evaluate the needle expression each iteration.
+        self._push_value(needle)
+        self._write("local.set $_alloc_tmp")
+        self._push_value(recv)
+        self._write(f"local.set ${list_local}")
+        self._write("i32.const 0")
+        self._write(f"local.set ${idx_local}")
+        self._block_counter += 1
+        loop_label = f"$C{self._block_counter}_loop"
+        exit_label = f"$C{self._block_counter}_exit"
+        self._write(f"block {exit_label} (result i32)")
+        self._indent += 1
+        self._write(f"loop {loop_label}")
+        self._indent += 1
+        # Guard: idx >= len -> push 0 and exit.
+        self._write(f"local.get ${idx_local}")
+        self._write(f"local.get ${list_local}")
+        self._write(f"i32.load offset={_LIST_LEN_OFFSET}")
+        self._write("i32.ge_s")
+        self._write("if")
+        self._indent += 1
+        self._write("i32.const 0")
+        self._write(f"br {exit_label}")
+        self._indent -= 1
+        self._write("end")
+        # Compare element pointer vs needle pointer via the element's
+        # structural eq helper. Element address = data_ptr + idx *
+        # elem_size; load the 4-byte i32 pointer there.
+        self._write(f"local.get ${list_local}")
+        self._write(f"i32.load offset={_LIST_DATA_OFFSET}")
+        self._write(f"local.get ${idx_local}")
+        self._write(f"i32.const {elem_size}")
+        self._write("i32.mul")
+        self._write("i32.add")
+        self._write("i32.load")
+        self._write("local.get $_alloc_tmp")
+        self._write(f"call $eq_{_eq_key(elem_ty)}")
+        self._write("if")
+        self._indent += 1
+        self._write("i32.const 1")
+        self._write(f"br {exit_label}")
+        self._indent -= 1
+        self._write("end")
+        # Advance index and loop.
+        self._write(f"local.get ${idx_local}")
+        self._write("i32.const 1")
+        self._write("i32.add")
+        self._write(f"local.set ${idx_local}")
+        self._write(f"br {loop_label}")
+        self._indent -= 1
+        self._write("end")
+        # Loop never falls through; satisfy the block's i32 result
+        # with an unreachable terminator.
         self._write("unreachable")
         self._indent -= 1
         self._write("end")

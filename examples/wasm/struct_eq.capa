@@ -1,0 +1,39 @@
+// Slice 3 framework check: structural equality on structs (scalar
+// fields, String field, nested struct), == and !=. Bool results are
+// branched into "yes"/"no" strings rather than interpolated directly,
+// because bare Bool interpolation (True vs true) diverges between
+// backends independently of equality; see TODO. This keeps the
+// program parity-clean while still exercising the eq helpers.
+
+type Point {
+    x: Int,
+    y: Int
+}
+
+type Named {
+    label: String,
+    at: Point
+}
+
+fun show(stdio: Stdio, tag: String, flag: Bool)
+    if flag
+        stdio.println("${tag}: yes")
+    else
+        stdio.println("${tag}: no")
+
+fun main(stdio: Stdio)
+    let a = Point { x: 1, y: 2 }
+    let b = Point { x: 1, y: 2 }
+    let c = Point { x: 1, y: 3 }
+    show(stdio, "a == b", a == b)
+    show(stdio, "a == c", a == c)
+    show(stdio, "a != c", a != c)
+
+    // String field + nested struct.
+    let n1 = Named { label: "origin", at: Point { x: 0, y: 0 } }
+    let n2 = Named { label: "origin", at: Point { x: 0, y: 0 } }
+    let n3 = Named { label: "origin", at: Point { x: 0, y: 1 } }
+    let n4 = Named { label: "other", at: Point { x: 0, y: 0 } }
+    show(stdio, "n1 == n2", n1 == n2)
+    show(stdio, "n1 == n3 nested", n1 == n3)
+    show(stdio, "n1 == n4 string", n1 == n4)

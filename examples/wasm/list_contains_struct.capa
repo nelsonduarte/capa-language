@@ -1,0 +1,24 @@
+// List<Point>.contains(p) on a pointer-shape element: structural
+// membership, so a distinct Point record with matching fields is
+// found. Bool results branch into "yes"/"no" strings; see
+// struct_eq.capa.
+
+type Point {
+    x: Int,
+    y: Int
+}
+
+fun show(stdio: Stdio, tag: String, flag: Bool)
+    if flag
+        stdio.println("${tag}: yes")
+    else
+        stdio.println("${tag}: no")
+
+fun main(stdio: Stdio)
+    let pts: List<Point> = [Point { x: 1, y: 2 }, Point { x: 3, y: 4 }]
+    // Present: a freshly-built Point equal by value to an element.
+    let here: Point = Point { x: 3, y: 4 }
+    // Absent: no element has these fields.
+    let gone: Point = Point { x: 5, y: 6 }
+    show(stdio, "contains present", pts.contains(here))
+    show(stdio, "contains absent", pts.contains(gone))

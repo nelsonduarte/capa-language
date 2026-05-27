@@ -78,7 +78,12 @@ class _ItemsMixin:
 
     def _emit_sum(self, t: A.TypeSum) -> None:
         # For each variant: a class.
-        # - Zero payloads: empty class, instantiated as Variant().
+        # - Zero payloads: empty frozen dataclass, instantiated as
+        #   Variant(). Frozen makes every instance compare equal by
+        #   value (and stay hashable), so ``Red == Red`` is True -- a
+        #   value must equal itself. A plain ``class Red: pass`` would
+        #   compare by identity, contradicting the Wasm backend's
+        #   structural sum equality (tag match => equal).
         # - One payload: dataclass with a single ``value`` field.
         # - N payloads: dataclass with ``f0``, ``f1``, ... fields.
         # We also remember the sum type's variant names so a later
@@ -91,6 +96,7 @@ class _ItemsMixin:
         for v in t.variants:
             n = len(v.payloads)
             if n == 0:
+                self.em.write("@dataclass(frozen=True)")
                 self.em.write(f"class {v.name}:")
                 self.em.indent()
                 self.em.write("pass")

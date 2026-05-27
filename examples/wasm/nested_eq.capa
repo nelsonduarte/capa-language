@@ -1,0 +1,27 @@
+// Recursion across kinds: a struct whose fields are an Option<Int>
+// and a List<Int>, compared structurally. Proves the struct eq
+// helper recurses into sum and List eq helpers. Bool results branch
+// into "yes"/"no" strings; see struct_eq.capa.
+
+type Holder {
+    tag: String,
+    maybe: Option<Int>,
+    items: List<Int>
+}
+
+fun show(stdio: Stdio, tag: String, flag: Bool)
+    if flag
+        stdio.println("${tag}: yes")
+    else
+        stdio.println("${tag}: no")
+
+fun main(stdio: Stdio)
+    let a: Holder = Holder { tag: "h", maybe: Some(1), items: [1, 2] }
+    let b: Holder = Holder { tag: "h", maybe: Some(1), items: [1, 2] }
+    let c: Holder = Holder { tag: "h", maybe: Some(2), items: [1, 2] }
+    let d: Holder = Holder { tag: "h", maybe: Some(1), items: [1, 3] }
+    let e: Holder = Holder { tag: "h", maybe: None, items: [1, 2] }
+    show(stdio, "a == b", a == b)
+    show(stdio, "a == c option differs", a == c)
+    show(stdio, "a == d list differs", a == d)
+    show(stdio, "a == e some vs none", a == e)

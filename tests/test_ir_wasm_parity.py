@@ -57,6 +57,12 @@ _PARITY_PROGRAMS: list[str] = [
     "map_struct.capa",
     "list_nested.capa",
     "int_match.capa",
+    "struct_eq.capa",
+    "tuple_eq.capa",
+    "sum_eq.capa",
+    "list_eq.capa",
+    "list_contains_struct.capa",
+    "nested_eq.capa",
 ]
 
 # Programs deliberately excluded from parity and why; documented
@@ -209,6 +215,24 @@ class TestPythonWasmParity(unittest.TestCase):
 
     def test_int_match(self):
         self._assert_parity("int_match.capa")
+
+    def test_struct_eq(self):
+        self._assert_parity("struct_eq.capa")
+
+    def test_tuple_eq(self):
+        self._assert_parity("tuple_eq.capa")
+
+    def test_sum_eq(self):
+        self._assert_parity("sum_eq.capa")
+
+    def test_list_eq(self):
+        self._assert_parity("list_eq.capa")
+
+    def test_list_contains_struct(self):
+        self._assert_parity("list_contains_struct.capa")
+
+    def test_nested_eq(self):
+        self._assert_parity("nested_eq.capa")
 
     def test_inventory_matches_examples_dir(self):
         # Soundness check: every .capa under examples/wasm/ is
