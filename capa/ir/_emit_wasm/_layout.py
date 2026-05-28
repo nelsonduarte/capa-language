@@ -150,15 +150,42 @@ _IOERROR_LAYOUT = {
 }
 
 
+def _split_top_level_commas(s: str) -> list[str]:
+    """Split ``s`` on commas that are not nested inside ``<...>`` or
+    ``(...)``. Used by the Map K / V extractors so a tuple-key
+    ``Map<(Int, String), Int>`` does not get sliced at the comma
+    inside the tuple."""
+    out: list[str] = []
+    depth = 0
+    buf = ""
+    for ch in s:
+        if ch in "<(":
+            depth += 1
+        elif ch in ">)":
+            depth -= 1
+        if ch == "," and depth == 0:
+            out.append(buf.strip())
+            buf = ""
+            continue
+        buf += ch
+    if buf.strip():
+        out.append(buf.strip())
+    return out
+
+
 def _map_value_type(map_ty: str) -> str:
     """Extract V from ``Map<K, V>``. Returning V drives method
     dispatch for value encoding (Int / Bool / String / pointer).
     Defaults to ``Int`` if the type string lacks args (consistent
-    with the List analogue)."""
+    with the List analogue). Depth-aware split so tuple / generic
+    keys (``Map<(Int, String), Bool>`` / ``Map<Option<Int>, V>``)
+    do not get cut at a comma inside the K position."""
     if map_ty.startswith("Map<") and map_ty.endswith(">"):
         inner = map_ty[4:-1].strip()
-        _k, _, v = inner.partition(",")
-        v = v.strip()
+        parts = _split_top_level_commas(inner)
+        if len(parts) < 2:
+            return "Int"
+        v = parts[1]
         if v.startswith("?") or not v:
             return "Int"
         return v
@@ -169,19 +196,24 @@ def _map_key_type(map_ty: str) -> str:
     """Extract K from ``Map<K, V>``. Drives the per-key dispatch in
     ``_emit_push_map_key_canonical`` and ``_emit_compare_pair_key_to``:
     Int / Bool use scalar slots, String uses the existing (ptr, len)
-    pair shape.
+    pair shape, pointer-shape (struct / sum / tuple) uses
+    ``$_alloc_tmp_key_ptr`` + ``call $eq_<TypeName>``.
 
     Defaults to ``String`` when the type string lacks args or the
     key position is an unresolved type variable, so the legacy
     String-key code paths stay reachable for type-erased call sites
     (e.g. the bare ``new_map()`` return type before inference fills
     in K). The analyzer rejects unsupported K (Float / nested
-    collections / structs / sums) at declaration time, so any K
-    surviving to this point is one of the three accepted scalars."""
+    collections / Fun) at declaration time, so any K surviving to
+    this point is one of: String / Int / Bool / struct / sum / tuple.
+    Depth-aware split so a tuple key ``Map<(Int, String), Bool>``
+    is not cut at the comma inside the tuple."""
     if map_ty.startswith("Map<") and map_ty.endswith(">"):
         inner = map_ty[4:-1].strip()
-        k, _, _v = inner.partition(",")
-        k = k.strip()
+        parts = _split_top_level_commas(inner)
+        if not parts:
+            return "String"
+        k = parts[0]
         if not k or k.startswith("?"):
             return "String"
         return k

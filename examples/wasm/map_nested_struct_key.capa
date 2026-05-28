@@ -1,0 +1,36 @@
+// Map<Wrap, Int> where Wrap wraps a Point. Exercises transitive
+// freeze (declaring Map<Wrap, Int> alone forces Wrap AND Point
+// frozen) and the recursive $eq_* helper emission ($eq_Wrap
+// calls $eq_Point on the inner field). Build + look up.
+
+type Point {
+    x: Int,
+    y: Int
+}
+
+type Wrap {
+    p: Point
+}
+
+fun main(stdio: Stdio)
+    let w1 = Wrap { p: Point { x: 1, y: 2 } }
+    let w2 = Wrap { p: Point { x: 3, y: 4 } }
+    let m: Map<Wrap, Int> = new_map()
+    m.set(w1, 10)
+    m.set(w2, 20)
+
+    stdio.println("length = ${m.length()}")
+    // Fresh Wrap values with the same fields must hit (transitive
+    // structural equality via $eq_Wrap -> $eq_Point).
+    let q1 = Wrap { p: Point { x: 1, y: 2 } }
+    let q2 = Wrap { p: Point { x: 3, y: 4 } }
+    let q_miss = Wrap { p: Point { x: 9, y: 9 } }
+    match m.get(q1)
+        Some(v) -> stdio.println("hit (1,2) -> ${v}")
+        None -> stdio.println("(1,2) miss")
+    match m.get(q2)
+        Some(v) -> stdio.println("hit (3,4) -> ${v}")
+        None -> stdio.println("(3,4) miss")
+    match m.get(q_miss)
+        Some(v) -> stdio.println("hit (9,9) -> ${v}")
+        None -> stdio.println("(9,9) miss")

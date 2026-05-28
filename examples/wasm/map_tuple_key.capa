@@ -1,0 +1,30 @@
+// Map<(Int, String), Int>: pointer-shape tuple keys. Exercises
+// the per-key dispatch that calls $eq_T_Int_String for the
+// linear scan plus the $_alloc_tmp_key_ptr stash. Tuples are
+// immutable from Capa source so H2 does not need to extend.
+
+fun main(stdio: Stdio)
+    let m: Map<(Int, String), Int> = new_map()
+    m.set((1, "alpha"), 10)
+    m.set((2, "beta"), 20)
+    m.set((3, "gamma"), 30)
+
+    stdio.println("length = ${m.length()}")
+    match m.get((1, "alpha"))
+        Some(v) -> stdio.println("(1, alpha) -> ${v}")
+        None -> stdio.println("(1, alpha) miss")
+    match m.get((2, "beta"))
+        Some(v) -> stdio.println("(2, beta) -> ${v}")
+        None -> stdio.println("(2, beta) miss")
+    match m.get((1, "beta"))
+        Some(v) -> stdio.println("(1, beta) -> ${v}")
+        None -> stdio.println("(1, beta) miss")
+
+    if m.contains_key((3, "gamma"))
+        stdio.println("has (3, gamma)")
+    else
+        stdio.println("no (3, gamma)")
+    if m.contains_key((3, "delta"))
+        stdio.println("has (3, delta)")
+    else
+        stdio.println("no (3, delta)")

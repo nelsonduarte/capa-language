@@ -61,6 +61,10 @@ _PARITY_PROGRAMS: list[str] = [
     "map_int_struct.capa",
     "map_int_update.capa",
     "map_bool_int.capa",
+    "map_point_key.capa",
+    "map_tuple_key.capa",
+    "map_option_key.capa",
+    "map_nested_struct_key.capa",
     "list_nested.capa",
     "int_match.capa",
     "struct_eq.capa",
@@ -239,6 +243,18 @@ class TestPythonWasmParity(unittest.TestCase):
 
     def test_map_bool_int(self):
         self._assert_parity("map_bool_int.capa")
+
+    def test_map_point_key(self):
+        self._assert_parity("map_point_key.capa")
+
+    def test_map_tuple_key(self):
+        self._assert_parity("map_tuple_key.capa")
+
+    def test_map_option_key(self):
+        self._assert_parity("map_option_key.capa")
+
+    def test_map_nested_struct_key(self):
+        self._assert_parity("map_nested_struct_key.capa")
 
     def test_list_nested(self):
         self._assert_parity("list_nested.capa")

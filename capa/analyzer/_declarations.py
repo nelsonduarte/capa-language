@@ -448,9 +448,11 @@ class _DeclarationsMixin:
         return TyUnknown
 
     def _reject_unsupported_map_key(self, key_te: A.TypeExpr) -> None:
-        """Emit an analyzer diagnostic if ``key_te`` is not one
-        of the three Map-key types the Wasm backend supports
-        (String / Int / Bool). Audit finding M4 (2026-05).
+        """Emit an analyzer diagnostic if ``key_te`` is not a
+        Map-key type the Wasm backend supports. Audit finding M4
+        (2026-05); extended in the follow-up slice to cover
+        struct / tuple / sum keys via the ``$eq_*`` helper
+        machinery (slice 3) and H2 frozen-struct rule (slice 4).
 
         The check is structural (works on the AST type expression,
         not the resolved Ty) so the position attached to the error
@@ -461,29 +463,35 @@ class _DeclarationsMixin:
         Rules:
 
         - String / Int / Bool: accepted, no diagnostic.
+        - Struct / Sum (Option / Result included) / Tuple: accepted.
+          ``$eq_<TypeName>`` already exists for any compound type
+          that participates in ``==`` / List.contains / Set.contains
+          (slice 3, ``capa/ir/_emit_wasm/_equality.py``); the Map
+          per-key dispatch in ``_emit_wasm/_maps.py`` reuses those
+          helpers. H2's frozen-struct rule freezes any struct that
+          appears as a Map key, including transitively through
+          tuple / sum payloads.
         - Float: rejected with a NaN-as-key explanation.
         - List / Map / Set: rejected as nested-collection key.
-        - Tuple / function types: rejected as nested-collection key.
-        - Any user-defined struct / sum: rejected as
-          not-yet-supported, with a parity-divergence callout.
-        - Anything else (Unknown, generic type vars, JsonValue,
-          Range, ...) is left alone: the existing analyzer paths
-          handle the bogus uses; this check is conservative.
+        - Function types: rejected (no value-equality for functions).
+        - Built-in nominal types that lack value-equality
+          (JsonValue / Range / Task / Self / Unit / IoError): rejected.
+        - Anything else (Unknown, generic type vars, ...) is left
+          alone: the existing analyzer paths handle the bogus uses;
+          this check is conservative.
         """
         from . import SymbolKind
 
         if isinstance(key_te, A.TupleType):
-            self._err(
-                "Map keys of nested-collection types are not "
-                "supported (the Wasm backend's per-key dispatch "
-                "covers only String / Int / Bool)",
-                key_te.pos,
-            )
+            # Tuples are immutable from Capa source (no surface for
+            # ``t.0 = x``), so Map<(K1, K2), V> is safe without
+            # extending H2 beyond its current Map-key freeze. The
+            # per-key dispatch reuses ``$eq_T_K1_K2`` from slice 3.
             return
         if isinstance(key_te, A.FunType):
             self._err(
                 "Map keys of function types are not supported "
-                "(only String / Int / Bool are valid Map keys)",
+                "(only structural / scalar types are valid Map keys)",
                 key_te.pos,
             )
             return
@@ -495,54 +503,47 @@ class _DeclarationsMixin:
         if name == "Float":
             self._err(
                 "Map keys of type Float are not supported because "
-                "NaN-as-key is fragile (only String / Int / Bool "
-                "are valid Map keys)",
+                "NaN-as-key is fragile (use Int / String / Bool or "
+                "a struct / sum / tuple key instead)",
                 key_te.pos,
             )
             return
         if name in ("List", "Map", "Set"):
             self._err(
                 "Map keys of nested-collection types are not "
-                "supported (the Wasm backend's per-key dispatch "
-                "covers only String / Int / Bool)",
+                "supported (Map keys must compare by value; the "
+                "Wasm backend's per-key dispatch covers String / "
+                "Int / Bool / struct / sum / tuple)",
                 key_te.pos,
             )
             return
-        # Built-in nominal types that are neither a valid Map key
-        # nor a user-defined struct / sum: Option / Result / Range
-        # / JsonValue / IoError / Task / Self / Unit. Reject them
-        # as nested-collection so the diagnostic stays uniform with
-        # the explicit List / Map / Set case above.
+        # Built-in nominal sums whose ``$eq_*`` helper is wired up
+        # (Option / Result) are accepted: they ride on the same
+        # slice-3 machinery as user sums. JsonValue / Range / Task
+        # / IoError / Self / Unit are rejected explicitly because
+        # they either carry collection payloads with no structural
+        # equality (JsonValue) or are not meaningful as keys.
+        if name in ("Option", "Result"):
+            return
         from ._frozen import _BUILTIN_TYPE_NAMES
         if name in _BUILTIN_TYPE_NAMES:
             self._err(
                 f"Map keys of type {name!r} are not supported "
-                f"(only String / Int / Bool are valid Map keys)",
+                f"(use String / Int / Bool or a user struct / sum / "
+                f"tuple key instead)",
                 key_te.pos,
             )
             return
-        # Look up the user-defined-type case via the global scope so
-        # struct / sum diagnostics fire only on real type names
-        # (typos still flow through the standard ``undefined type``
-        # error path emitted by the surrounding ``_resolve_type``).
+        # Look up the user-defined-type case via the global scope.
+        # Struct + sum names resolve here; typos still flow through
+        # the standard ``undefined type`` error path emitted by the
+        # surrounding ``_resolve_type``.
         sym = self.global_scope.lookup(name)
         if sym is None:
             return
-        if sym.kind == SymbolKind.TYPE_STRUCT:
-            self._err(
-                f"Map keys of struct types are not supported yet by "
-                f"the Wasm backend (the Python backend may accept "
-                f"{name!r} but parity is not preserved); only "
-                f"String / Int / Bool are valid Map keys",
-                key_te.pos,
-            )
-            return
-        if sym.kind == SymbolKind.TYPE_SUM:
-            self._err(
-                f"Map keys of sum types are not supported yet by "
-                f"the Wasm backend (the Python backend may accept "
-                f"{name!r} but parity is not preserved); only "
-                f"String / Int / Bool are valid Map keys",
-                key_te.pos,
-            )
+        if sym.kind in (SymbolKind.TYPE_STRUCT, SymbolKind.TYPE_SUM):
+            # Accepted: $eq_<TypeName> is emitted by the slice-3
+            # equality machinery (discovery extended for Map-key
+            # use sites). H2 freezes struct keys (directly + via
+            # tuple / sum payloads).
             return

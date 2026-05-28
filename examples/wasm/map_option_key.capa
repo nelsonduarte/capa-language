@@ -1,0 +1,29 @@
+// Map<Option<Int>, String>: pointer-shape sum keys (built-in
+// Option<T>). Exercises the per-key dispatch that calls
+// $eq_Option_Int for the linear scan and reuses Some / None as
+// keys side by side.
+
+fun main(stdio: Stdio)
+    let m: Map<Option<Int>, String> = new_map()
+    m.set(Some(1), "one")
+    m.set(Some(2), "two")
+    m.set(None, "nothing")
+
+    stdio.println("length = ${m.length()}")
+    match m.get(Some(1))
+        Some(v) -> stdio.println("Some(1) -> ${v}")
+        None -> stdio.println("Some(1) miss")
+    match m.get(Some(2))
+        Some(v) -> stdio.println("Some(2) -> ${v}")
+        None -> stdio.println("Some(2) miss")
+    match m.get(None)
+        Some(v) -> stdio.println("None -> ${v}")
+        None -> stdio.println("None miss")
+    match m.get(Some(99))
+        Some(v) -> stdio.println("Some(99) -> ${v}")
+        None -> stdio.println("Some(99) miss")
+
+    if m.contains_key(Some(2))
+        stdio.println("has Some(2)")
+    if m.contains_key(None)
+        stdio.println("has None")

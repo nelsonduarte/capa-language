@@ -30,6 +30,7 @@ from .._nodes import BinOp, MethodCall, If, While, For, Match
 from ._layout import (
     WasmEmissionError,
     _LIST_LEN_OFFSET, _LIST_DATA_OFFSET,
+    _map_key_type,
 )
 
 
@@ -125,6 +126,17 @@ class _EqualityMixin:
                     elem = self._set_elem_ty(instr.receiver.ty or "")
                     if elem and self._is_pointer_shape_ty(elem):
                         add(elem)
+                elif (isinstance(instr, MethodCall)
+                        and instr.method in ("get", "set", "contains_key")
+                        and (instr.receiver.ty or "").startswith("Map")):
+                    # Map<pointer-shape, V> set / get / contains_key
+                    # compares keys via the key's $eq_* helper, so
+                    # pull it into the discovery set just like Set's
+                    # add / contains / remove branch above. Scalar
+                    # (String / Int / Bool) keys never need a helper.
+                    key_ty = _map_key_type(instr.receiver.ty or "")
+                    if key_ty and self._is_pointer_shape_ty(key_ty):
+                        add(key_ty)
                 # Recurse into nested instruction bodies (mirrors the
                 # traversal in _discovery / _locals).
                 if isinstance(instr, If):

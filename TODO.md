@@ -948,6 +948,33 @@ Listed so the design space is explicit.
 
 ### Wasm-specific gaps that are not P0
 
+- [x] **Map<K, V> with Struct / Tuple / Sum keys on Wasm**
+  (closed 2026-05-28). Continuation of the prior Int+Bool slice.
+  Pointer-shape Map keys (Struct, Tuple, Sum incl. Option / Result,
+  nested struct via transitive freeze) now work end to end via the
+  slice-3 `$eq_*` structural-equality helpers and the slice-4 H2
+  frozen rule, both of which were already in place. This slice is
+  purely additive: lifts three analyzer rejections, adds four
+  pointer-shape branches to the slice-6 `_maps.py` helpers, adds
+  one branch to `_collect_eq_types`, and one new `$_alloc_tmp_key_ptr`
+  scratch local. Pair layout uniform 16 bytes (key i32 @0, pad i32
+  @4, value i64 @8) identical to Bool's layout; allocator + grow
+  loop unchanged. H2 already covered struct keys, now starts firing
+  in practice (`p.x = 5` after `Map<Point, Int>` is rejected with
+  the locked diagnostic). Tuples and sums are immutable from Capa
+  source (parser has no `t.0 = x` / `Some(x).value = y` surface),
+  so they need no H2 extension. Latent bug fix: `_map_key_type` /
+  `_map_value_type` were splitting `Map<(Int, String), V>` on the
+  inner comma; replaced with depth-aware `_split_top_level_commas`.
+  5 new tests (4 parity programs: `map_point_key`, `map_tuple_key`,
+  `map_option_key`, `map_nested_struct_key`; 1 H2-interaction test).
+  3 slice-6 rejection tests flipped to acceptance. Full suite
+  1967 -> 1972 / 5 skipped / 0 fail. Accepted Map key set is now
+  String, Int, Bool, Struct, Tuple, Sum (incl. Option / Result);
+  rejected: Float (NaN), List / Map / Set (nested collection),
+  Fun. Deferred: Map equality (`==`) - same machinery now available,
+  next slice candidate.
+
 - [x] **Map<K, V> with Int and Bool keys on Wasm** (closed
   2026-05-28). Map was String-key-only on the Wasm backend per the
   audit's M4 finding (analyzer accepted `Map<Int, V>`, Wasm

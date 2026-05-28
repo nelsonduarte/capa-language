@@ -29,7 +29,8 @@ from .._nodes import (
 )
 from .._capa_types import BUILTIN_CAPS
 from ._layout import (
-    _element_type_of_list, _element_type_of_set, WasmEmissionError,
+    _element_type_of_list, _element_type_of_set, _map_key_type,
+    WasmEmissionError,
 )
 from ._caps import _CANONICAL_INDIRECT_RETURN
 
@@ -55,6 +56,13 @@ class _LocalsCollectionMixin:
         has_for = False
         has_list_contains_i64 = False
         has_map = False
+        # Map with a pointer-shape key (struct / sum / tuple) needs
+        # the dedicated $_alloc_tmp_key_ptr scratch so the linear
+        # scan can stash the canonical i32 key pointer without
+        # clobbering the value-packing $_alloc_tmp_i64 or the
+        # generic $_alloc_tmp slot the data-array initialisation
+        # already consumes.
+        has_map_pointer_key = False
         has_string_method = False
         has_format_str = False
         has_make_lambda = False
@@ -137,6 +145,7 @@ class _LocalsCollectionMixin:
             nonlocal has_attenuation_check, has_attenuation_env_check
             nonlocal has_atten_fs_write_check
             nonlocal has_list_index_bounds
+            nonlocal has_map_pointer_key
             for instr in instrs:
                 if isinstance(instr, Match):
                     has_match = True
@@ -342,6 +351,14 @@ class _LocalsCollectionMixin:
                     recv_ty = instr.receiver.ty or ""
                     if recv_ty.startswith("Map"):
                         has_map = True
+                        # Pointer-shape key (struct / sum / tuple)
+                        # uses $_alloc_tmp_key_ptr as the canonical
+                        # i32 key stash. Mirrors the $_alloc_tmp_key_i64
+                        # gate for Int keys: declared only when needed
+                        # so scalar-key Map programs stay slim.
+                        key_ty = _map_key_type(recv_ty)
+                        if key_ty and self._is_pointer_shape_ty(key_ty):
+                            has_map_pointer_key = True
                     if recv_ty == "String":
                         has_string_method = True
                     if instr.cap_used and (
@@ -628,6 +645,15 @@ class _LocalsCollectionMixin:
             # operation can pack the String value without clobbering
             # the key before the scan compare.
             out["_alloc_tmp_key_i64"] = "i64"
+        if has_map_pointer_key:
+            # Dedicated pointer-key canonical stash. The pointer-
+            # shape key path (Map<Point, V> / Map<(Int, Int), V> /
+            # Map<Option<Int>, V>) writes the i32 key pointer into
+            # $_alloc_tmp_key_ptr so the linear-scan $eq_* helper
+            # can read the same operand from a stable local without
+            # clobbering $_alloc_tmp (data-array base pointer) or
+            # $_alloc_tmp_set_value (the packed-i64 value stash).
+            out["_alloc_tmp_key_ptr"] = "i32"
         if has_json_method:
             # JsonValue method emit reuses the match scrut local for
             # the receiver pointer and needs an Option-result alloc

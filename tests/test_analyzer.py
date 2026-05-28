@@ -5094,6 +5094,33 @@ class TestFrozenStructTypes(unittest.TestCase):
             any("'Point' is frozen" in m for m in msgs), msgs,
         )
 
+    def test_map_struct_key_freezes_struct(self):
+        # Follow-up slice (Map struct keys): declaring
+        # ``Map<Point, Int>`` alone is enough to mark Point frozen,
+        # so a subsequent ``p.x = 5`` on a locally-constructed
+        # Point value must trigger the H2 frozen-struct diagnostic.
+        # Exercises the locked-design promise that the slice does
+        # not need to extend H2: the existing frozen-struct rule
+        # walks every ``Map<T, V>`` type expression and adds T.
+        msgs = errors_of(
+            "type Point {\n"
+            "    x: Int,\n"
+            "    y: Int\n"
+            "}\n"
+            "fun main(stdio: Stdio)\n"
+            "    let m: Map<Point, Int> = new_map()\n"
+            "    var p = Point{x: 1, y: 2}\n"
+            "    p.x = 5\n"
+        )
+        self.assertTrue(
+            any(
+                "'Point' is frozen" in m
+                and "'x' of struct 'Point'" in m
+                for m in msgs
+            ),
+            msgs,
+        )
+
     def test_map_value_does_not_freeze_struct(self):
         # Map values are not part of the hash key; mutating
         # them is safe and must remain allowed.
@@ -5219,12 +5246,13 @@ class TestFrozenStructTypes(unittest.TestCase):
 
 
 class TestMapKeyTypeRestrictions(unittest.TestCase):
-    """Audit M4 (2026-05): the Wasm backend supports only String /
-    Int / Bool as Map keys. The analyzer rejects unsupported key
-    types at the type-expression resolution site (declaration time)
-    so the user sees the error at ``let m: Map<Float, ...>`` rather
-    than at first method call. See ``_reject_unsupported_map_key``
-    in ``capa/analyzer/_declarations.py``."""
+    """Audit M4 (2026-05): the Wasm backend supports String / Int /
+    Bool plus pointer-shape (struct / sum / tuple) Map keys. The
+    analyzer rejects unsupported key types at the type-expression
+    resolution site (declaration time) so the user sees the error
+    at ``let m: Map<Float, ...>`` rather than at first method call.
+    See ``_reject_unsupported_map_key`` in
+    ``capa/analyzer/_declarations.py``."""
 
     def test_map_string_key_accepted(self):
         r = check(
@@ -5287,52 +5315,44 @@ class TestMapKeyTypeRestrictions(unittest.TestCase):
             any("nested-collection" in m for m in msgs), msgs,
         )
 
-    def test_map_struct_key_rejected(self):
-        msgs = errors_of(
+    def test_map_struct_key_accepted(self):
+        # Struct keys are accepted: the per-key dispatch reuses the
+        # slice-3 ``$eq_<TypeName>`` helper, and H2 freezes Point so
+        # ``p.x = 5`` is rejected wherever Point appears as a Map key.
+        r = check(
             "type Point {\n"
             "    x: Int,\n"
             "    y: Int\n"
             "}\n"
-            "fun main(stdio: Stdio)\n"
+            "fun main()\n"
             "    let m: Map<Point, Int> = new_map()\n"
+            "    m.set(Point{x: 1, y: 2}, 42)\n"
         )
-        self.assertTrue(
-            any(
-                "Map keys of struct types" in m
-                and "not supported yet" in m
-                and "'Point'" in m
-                for m in msgs
-            ),
-            msgs,
-        )
+        self.assertTrue(r.ok, r.errors)
 
-    def test_map_sum_key_rejected(self):
-        msgs = errors_of(
+    def test_map_sum_key_accepted(self):
+        # User sum keys are accepted alongside Option / Result. The
+        # per-key dispatch reuses ``$eq_<SumName>``.
+        r = check(
             "type Color =\n"
             "    Red\n"
             "    Green\n"
             "    Blue\n"
-            "fun main(stdio: Stdio)\n"
+            "fun main()\n"
             "    let m: Map<Color, Int> = new_map()\n"
+            "    m.set(Red, 1)\n"
         )
-        self.assertTrue(
-            any(
-                "Map keys of sum types" in m
-                and "not supported yet" in m
-                and "'Color'" in m
-                for m in msgs
-            ),
-            msgs,
-        )
+        self.assertTrue(r.ok, r.errors)
 
-    def test_map_tuple_key_rejected(self):
-        msgs = errors_of(
-            "fun main(stdio: Stdio)\n"
+    def test_map_tuple_key_accepted(self):
+        # Tuple keys are accepted; tuples are immutable from Capa
+        # source so no extension to H2 is needed.
+        r = check(
+            "fun main()\n"
             "    let m: Map<(Int, Int), Int> = new_map()\n"
+            "    m.set((1, 2), 3)\n"
         )
-        self.assertTrue(
-            any("nested-collection" in m for m in msgs), msgs,
-        )
+        self.assertTrue(r.ok, r.errors)
 
     def test_map_function_key_rejected(self):
         msgs = errors_of(
@@ -5354,8 +5374,10 @@ class TestMapKeyTypeRestrictions(unittest.TestCase):
             any("Float" in m and "NaN" in m for m in msgs), msgs,
         )
 
-    def test_map_struct_key_in_return_type_rejected(self):
-        msgs = errors_of(
+    def test_map_struct_key_in_return_type_accepted(self):
+        # Struct keys are accepted wherever a Map<K, V> type
+        # expression appears, including in function return types.
+        r = check(
             "type Point {\n"
             "    x: Int,\n"
             "    y: Int\n"
@@ -5363,13 +5385,7 @@ class TestMapKeyTypeRestrictions(unittest.TestCase):
             "fun make() -> Map<Point, Int>\n"
             "    return new_map()\n"
         )
-        self.assertTrue(
-            any(
-                "Map keys of struct types" in m and "'Point'" in m
-                for m in msgs
-            ),
-            msgs,
-        )
+        self.assertTrue(r.ok, r.errors)
 
 
 if __name__ == "__main__":

@@ -133,14 +133,23 @@ class _MapEmissionMixin:
         locals the rest of the emitter consults during the linear
         scan. Per-type:
 
-        - Int: push i64, stash into ``$_alloc_tmp_i64``.
-        - Bool: push i32, stash into ``$_alloc_tmp`` (i32 slot).
         - String: push ptr/len via the existing string helper, stash
           into ``$_alloc_tmp`` (ptr) and ``$_alloc_tmp_key_len`` (len).
+        - Int: push i64, stash into ``$_alloc_tmp_key_i64``.
+        - Bool: push i32, stash into ``$_alloc_tmp`` (i32 slot).
+        - Pointer-shape (struct / sum / tuple): push i32 pointer,
+          stash into ``$_alloc_tmp_key_ptr`` so the linear scan can
+          pass it as the second operand of ``call $eq_<TypeName>``
+          without re-evaluating the key Value.
 
         The compare helper reads the same scratch locals back, so
         the pair (canonical-push, pair-key-compare) is the only
         pair of calls a Map-method emitter needs to make."""
+        if key_ty == "String":
+            self._push_string_value_as_ptr_len(key_value)
+            self._write("local.set $_alloc_tmp_key_len")
+            self._write("local.set $_alloc_tmp")
+            return
         if key_ty == "Int":
             # Dedicated key local: $_alloc_tmp_i64 is also used by
             # the String-value packing dance and by Map.set's value
@@ -153,10 +162,14 @@ class _MapEmissionMixin:
             self._push_value(key_value)
             self._write("local.set $_alloc_tmp")
             return
-        # String (default, including the legacy path).
-        self._push_string_value_as_ptr_len(key_value)
-        self._write("local.set $_alloc_tmp_key_len")
-        self._write("local.set $_alloc_tmp")
+        if self._is_pointer_shape_ty(key_ty):
+            self._push_value(key_value)
+            self._write("local.set $_alloc_tmp_key_ptr")
+            return
+        raise WasmEmissionError(
+            f"Map key type {key_ty!r} not supported on the Wasm backend "
+            f"(supported: String / Int / Bool / struct / sum / tuple)"
+        )
 
     def _emit_compare_pair_key_to(self, key_ty: str, pair_addr_local: str) -> None:
         """Push an i32 0/1 onto the stack that compares the map
@@ -165,10 +178,22 @@ class _MapEmissionMixin:
 
         Per-type:
 
+        - String: ``$str_eq(pair.key_ptr, pair.key_len, canon_ptr, canon_len)``
         - Int: ``pair.key_i64 == canonical_i64``
         - Bool: ``pair.key_i32 == canonical_i32``
-        - String: ``$str_eq(pair.key_ptr, pair.key_len, canon_ptr, canon_len)``
+        - Pointer-shape: ``$eq_<TypeName>(pair.key_ptr, canonical_ptr)``
+          (the slice-3 structural-equality helper compares the two
+          heap records by value).
         """
+        if key_ty == "String":
+            self._write(f"local.get ${pair_addr_local}")
+            self._write(f"i32.load offset={_MAP_PAIR_KEY_PTR_OFFSET}")
+            self._write(f"local.get ${pair_addr_local}")
+            self._write(f"i32.load offset={_MAP_PAIR_KEY_LEN_OFFSET}")
+            self._write("local.get $_alloc_tmp")
+            self._write("local.get $_alloc_tmp_key_len")
+            self._write("call $str_eq")
+            return
         if key_ty == "Int":
             self._write(f"local.get ${pair_addr_local}")
             self._write("i64.load offset=0")
@@ -181,14 +206,17 @@ class _MapEmissionMixin:
             self._write("local.get $_alloc_tmp")
             self._write("i32.eq")
             return
-        # String.
-        self._write(f"local.get ${pair_addr_local}")
-        self._write(f"i32.load offset={_MAP_PAIR_KEY_PTR_OFFSET}")
-        self._write(f"local.get ${pair_addr_local}")
-        self._write(f"i32.load offset={_MAP_PAIR_KEY_LEN_OFFSET}")
-        self._write("local.get $_alloc_tmp")
-        self._write("local.get $_alloc_tmp_key_len")
-        self._write("call $str_eq")
+        if self._is_pointer_shape_ty(key_ty):
+            from ._equality import _eq_key
+            self._write(f"local.get ${pair_addr_local}")
+            self._write("i32.load offset=0")
+            self._write("local.get $_alloc_tmp_key_ptr")
+            self._write(f"call $eq_{_eq_key(key_ty)}")
+            return
+        raise WasmEmissionError(
+            f"Map key type {key_ty!r} not supported on the Wasm backend "
+            f"(supported: String / Int / Bool / struct / sum / tuple)"
+        )
 
     def _emit_store_pair_key(self, key_ty: str, pair_addr_local: str) -> None:
         """Write the canonical key into the pair at ``pair_addr_local``.
@@ -196,11 +224,21 @@ class _MapEmissionMixin:
         of ``_emit_map_set``: the canonical key is in the same
         scratch locals; the per-type layout determines the store.
 
+        - String: ``pair.key_ptr = canon_ptr; pair.key_len = canon_len``
         - Int: ``pair[0..8] = canonical_i64``
         - Bool: ``pair[0..4] = canonical_i32`` (4-byte pad at offset 4
           left untouched, matches the uniform 16-byte stride)
-        - String: ``pair.key_ptr = canon_ptr; pair.key_len = canon_len``
+        - Pointer-shape: ``pair[0..4] = canonical_i32`` (the key
+          slot holds the heap pointer; same 4-byte pad as Bool).
         """
+        if key_ty == "String":
+            self._write(f"local.get ${pair_addr_local}")
+            self._write("local.get $_alloc_tmp")
+            self._write(f"i32.store offset={_MAP_PAIR_KEY_PTR_OFFSET}")
+            self._write(f"local.get ${pair_addr_local}")
+            self._write("local.get $_alloc_tmp_key_len")
+            self._write(f"i32.store offset={_MAP_PAIR_KEY_LEN_OFFSET}")
+            return
         if key_ty == "Int":
             self._write(f"local.get ${pair_addr_local}")
             self._write("local.get $_alloc_tmp_key_i64")
@@ -211,13 +249,15 @@ class _MapEmissionMixin:
             self._write("local.get $_alloc_tmp")
             self._write("i32.store offset=0")
             return
-        # String.
-        self._write(f"local.get ${pair_addr_local}")
-        self._write("local.get $_alloc_tmp")
-        self._write(f"i32.store offset={_MAP_PAIR_KEY_PTR_OFFSET}")
-        self._write(f"local.get ${pair_addr_local}")
-        self._write("local.get $_alloc_tmp_key_len")
-        self._write(f"i32.store offset={_MAP_PAIR_KEY_LEN_OFFSET}")
+        if self._is_pointer_shape_ty(key_ty):
+            self._write(f"local.get ${pair_addr_local}")
+            self._write("local.get $_alloc_tmp_key_ptr")
+            self._write("i32.store offset=0")
+            return
+        raise WasmEmissionError(
+            f"Map key type {key_ty!r} not supported on the Wasm backend "
+            f"(supported: String / Int / Bool / struct / sum / tuple)"
+        )
 
     def _emit_load_pair_key_for_tuple(
         self, key_ty: str, pair_addr_local: str, tuple_addr_local: str,
@@ -232,7 +272,26 @@ class _MapEmissionMixin:
         - Bool: store the i32 key at ``tuple[0]`` (the tuple slot is
           4-byte wide for a Bool element; this matches the layout
           the for-loop's tuple-destructure code expects).
+        - Pointer-shape (struct / sum / tuple): copy the i32 heap
+          pointer at ``pair[0]`` into ``tuple[0]``. Per slice 1,
+          pointer-shape tuple elements occupy 4 bytes at offset 0.
         """
+        if key_ty == "String":
+            self._write(f"local.get ${tuple_addr_local}")
+            self._write(f"local.get ${pair_addr_local}")
+            self._write(f"i32.load offset={_MAP_PAIR_KEY_LEN_OFFSET}")
+            self._write("i64.extend_i32_u")
+            self._write("i64.const 32")
+            self._write("i64.shl")
+            self._write("local.tee $_alloc_tmp_i64")
+            self._write("drop")
+            self._write(f"local.get ${pair_addr_local}")
+            self._write(f"i32.load offset={_MAP_PAIR_KEY_PTR_OFFSET}")
+            self._write("i64.extend_i32_u")
+            self._write("local.get $_alloc_tmp_i64")
+            self._write("i64.or")
+            self._write("i64.store offset=0")
+            return
         if key_ty == "Int":
             self._write(f"local.get ${tuple_addr_local}")
             self._write(f"local.get ${pair_addr_local}")
@@ -245,21 +304,16 @@ class _MapEmissionMixin:
             self._write("i32.load offset=0")
             self._write("i32.store offset=0")
             return
-        # String: pack (key_ptr, key_len) into i64 and store.
-        self._write(f"local.get ${tuple_addr_local}")
-        self._write(f"local.get ${pair_addr_local}")
-        self._write(f"i32.load offset={_MAP_PAIR_KEY_LEN_OFFSET}")
-        self._write("i64.extend_i32_u")
-        self._write("i64.const 32")
-        self._write("i64.shl")
-        self._write("local.tee $_alloc_tmp_i64")
-        self._write("drop")
-        self._write(f"local.get ${pair_addr_local}")
-        self._write(f"i32.load offset={_MAP_PAIR_KEY_PTR_OFFSET}")
-        self._write("i64.extend_i32_u")
-        self._write("local.get $_alloc_tmp_i64")
-        self._write("i64.or")
-        self._write("i64.store offset=0")
+        if self._is_pointer_shape_ty(key_ty):
+            self._write(f"local.get ${tuple_addr_local}")
+            self._write(f"local.get ${pair_addr_local}")
+            self._write("i32.load offset=0")
+            self._write("i32.store offset=0")
+            return
+        raise WasmEmissionError(
+            f"Map key type {key_ty!r} not supported on the Wasm backend "
+            f"(supported: String / Int / Bool / struct / sum / tuple)"
+        )
 
     def _emit_map_pairs(
         self, recv: Value, key_ty: str, value_ty: str, dst,

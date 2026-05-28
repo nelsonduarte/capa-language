@@ -1,0 +1,49 @@
+// Map<Point, Int>: pointer-shape struct keys. Exercises the
+// per-key dispatch that calls $eq_Point for the linear scan, the
+// $_alloc_tmp_key_ptr stash for the canonical key, and the
+// i32.store at offset 0 of the 16-byte pair slot (high 4 bytes
+// of the key half stay zero from the bump allocator). H2 freezes
+// Point because of the Map<Point, ...> declaration: a downstream
+// p.x = 5 would be analyzer-rejected, but build-and-look-up paths
+// stay green.
+
+type Point {
+    x: Int,
+    y: Int
+}
+
+fun main(stdio: Stdio)
+    let p1 = Point { x: 1, y: 2 }
+    let p2 = Point { x: 3, y: 4 }
+    let p3 = Point { x: 5, y: 6 }
+    let m: Map<Point, Int> = new_map()
+    m.set(p1, 100)
+    m.set(p2, 300)
+    m.set(p3, 500)
+
+    stdio.println("length = ${m.length()}")
+    // Fresh Point values with the same fields must hit (structural
+    // equality via $eq_Point).
+    let q1 = Point { x: 1, y: 2 }
+    let q2 = Point { x: 3, y: 4 }
+    let q_miss = Point { x: 9, y: 9 }
+    match m.get(q1)
+        Some(v) -> stdio.println("(1,2) -> ${v}")
+        None -> stdio.println("(1,2) miss")
+    match m.get(q2)
+        Some(v) -> stdio.println("(3,4) -> ${v}")
+        None -> stdio.println("(3,4) miss")
+    match m.get(q_miss)
+        Some(v) -> stdio.println("(9,9) -> ${v}")
+        None -> stdio.println("(9,9) miss")
+
+    let q_hit = Point { x: 5, y: 6 }
+    let q_no = Point { x: 7, y: 8 }
+    if m.contains_key(q_hit)
+        stdio.println("has (5,6)")
+    else
+        stdio.println("no (5,6)")
+    if m.contains_key(q_no)
+        stdio.println("has (7,8)")
+    else
+        stdio.println("no (7,8)")
