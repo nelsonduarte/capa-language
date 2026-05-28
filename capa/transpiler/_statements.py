@@ -73,6 +73,30 @@ class _StatementsMixin:
             else:
                 target = self._emit_expr(s.target)
                 value = self._emit_expr(s.value)
+                # Safety: augmented assignment on an Int target (``+=``,
+                # ``-=``, ``*=``, ``<<=``, ``>>=``) routes through the
+                # overflow-checking runtime helpers so the Python backend
+                # raises ``OverflowError`` at the same input the Wasm
+                # backend traps on (audit fixes C2 and C3). Mirrors the
+                # plain-BinOp rewrite in ``_emit_expr``.
+                if s.op in ("+=", "-=", "*=", "<<=", ">>="):
+                    from ..typesys import TyName
+                    tt = self.types.get(id(s.target))
+                    vt = self.types.get(id(s.value))
+                    tt_is_int = isinstance(tt, TyName) and tt.name == "Int"
+                    vt_is_int = isinstance(vt, TyName) and vt.name == "Int"
+                    if tt_is_int and vt_is_int:
+                        helper = {
+                            "+=": "_capa_iadd",
+                            "-=": "_capa_isub",
+                            "*=": "_capa_imul",
+                            "<<=": "_capa_shl",
+                            ">>=": "_capa_shr",
+                        }[s.op]
+                        self.em.write(
+                            f"{target} = {helper}({target}, {value})"
+                        )
+                        return
                 self.em.write(f"{target} {s.op} {value}")
         elif isinstance(s, A.IfStmt):
             self._emit_if(s)

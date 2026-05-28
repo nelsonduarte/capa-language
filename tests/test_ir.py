@@ -1114,9 +1114,13 @@ class TestPythonEmission(unittest.TestCase):
         py = compile(module, types=types)
         # The emitted Python is parseable.
         pyast.parse(py)
-        # Both the parameter names and the operator are present.
+        # Both the parameter names and the addition are present.
+        # Audit fix C2: Int ``+`` now routes through ``_capa_iadd`` so
+        # the Python backend raises ``OverflowError`` at the same input
+        # the Wasm backend traps on; asserting the literal ``+`` token
+        # would regress to silent wraparound.
         self.assertIn("def add(a, b):", py)
-        self.assertIn("+", py)
+        self.assertIn("_capa_iadd", py)
         self.assertIn("return", py)
 
     def test_emitted_python_executes_with_expected_result(self):

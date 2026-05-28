@@ -2303,5 +2303,112 @@ class TestNetRuntime(unittest.TestCase):
         self.assertIn("evil.example.com", str(result.error))
 
 
+class TestSafetyTrapsRaise(unittest.TestCase):
+    """Audit 2026-05 safety fixes: assert the Python backend raises
+    at the same input the Wasm backend traps on. Pairs with
+    ``tests/test_ir_wasm.py::TestWasmSafetyTraps``; together they
+    pin "both backends fail loud at the same point".
+
+    These tests run the transpiled Capa code as a subprocess (same
+    machinery as the rest of this file) and check the non-zero exit
+    code + the expected exception name in stderr."""
+
+    # ---- Fix C3: shift count out of [0, 64) raises ----------------
+
+    def test_shift_left_count_64_raises(self):
+        # ``a << 64`` on Int routes through ``_capa_shl``; the
+        # helper raises ``OverflowError`` when the count is outside
+        # ``[0, 64)``.
+        rc, out, err = run_capa(
+            'fun main(stdio: Stdio)\n'
+            '    let n = 1 << 64\n'
+            '    stdio.println("${n}")\n'
+        )
+        self.assertNotEqual(rc, 0)
+        self.assertIn("OverflowError", err)
+
+    def test_shift_left_count_negative_raises(self):
+        rc, out, err = run_capa(
+            'fun main(stdio: Stdio)\n'
+            '    let n = 1 << -1\n'
+            '    stdio.println("${n}")\n'
+        )
+        self.assertNotEqual(rc, 0)
+        self.assertIn("OverflowError", err)
+
+    def test_shift_right_count_64_raises(self):
+        rc, out, err = run_capa(
+            'fun main(stdio: Stdio)\n'
+            '    let n = 1024 >> 64\n'
+            '    stdio.println("${n}")\n'
+        )
+        self.assertNotEqual(rc, 0)
+        self.assertIn("OverflowError", err)
+
+    # ---- Fix C6: Float % zero raises ZeroDivisionError ------------
+
+    def test_float_modulo_zero_raises(self):
+        # Python's float ``%`` 0 already raises ``ZeroDivisionError``
+        # natively; the test pins the raise so a future change that
+        # silently swaps for a no-trap fast path can't slip past.
+        rc, out, err = run_capa(
+            'fun main(stdio: Stdio)\n'
+            '    let r = 7.5 % 0.0\n'
+            '    stdio.println("${r}")\n'
+        )
+        self.assertNotEqual(rc, 0)
+        self.assertIn("ZeroDivisionError", err)
+
+    # ---- Fix C2: Int +/-/* overflow raises OverflowError ----------
+
+    def test_int_add_overflow_raises(self):
+        # ``(1 << 62) + (1 << 62) + (1 << 62)``: well past i64::MAX.
+        # ``_capa_iadd`` raises on the result-out-of-window check.
+        rc, out, err = run_capa(
+            'fun main(stdio: Stdio)\n'
+            '    let a = (1 << 62) + (1 << 62)\n'
+            '    let b = a + a\n'
+            '    stdio.println("${b}")\n'
+        )
+        self.assertNotEqual(rc, 0)
+        self.assertIn("OverflowError", err)
+
+    def test_int_mul_overflow_raises(self):
+        rc, out, err = run_capa(
+            'fun main(stdio: Stdio)\n'
+            '    let n = 3000000000 * 4000000000\n'
+            '    stdio.println("${n}")\n'
+        )
+        self.assertNotEqual(rc, 0)
+        self.assertIn("OverflowError", err)
+
+    def test_int_sub_overflow_raises(self):
+        # ``i64::MIN - 1`` overflows below the signed window.
+        # The construction ``-(1 << 62) - (1 << 62) - 1`` reaches the
+        # bottom of the window plus one extra subtract.
+        rc, out, err = run_capa(
+            'fun main(stdio: Stdio)\n'
+            '    let lo = -(1 << 62) - (1 << 62)\n'
+            '    let n = lo - 1\n'
+            '    stdio.println("${n}")\n'
+        )
+        self.assertNotEqual(rc, 0)
+        self.assertIn("OverflowError", err)
+
+    # ---- Fix C5: parse_int overflow returns None ------------------
+
+    def test_parse_int_too_big_returns_none(self):
+        # ``parse_int`` on an out-of-window string returns ``None``
+        # (not Some(wrapped-value)); the Capa match prints "None".
+        rc, out, err = run_capa(
+            'fun main(stdio: Stdio)\n'
+            '    match parse_int("99999999999999999999")\n'
+            '        Some(n) -> stdio.println("Some(${n})")\n'
+            '        None -> stdio.println("None")\n'
+        )
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out, "None\n")
+
+
 if __name__ == "__main__":
     unittest.main()

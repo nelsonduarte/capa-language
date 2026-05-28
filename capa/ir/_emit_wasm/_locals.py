@@ -81,6 +81,12 @@ class _LocalsCollectionMixin:
         # corrects ``i64.rem_s`` to Python's floored modulo via a
         # scratch ``$_alloc_tmp_i64`` slot; declare it on demand.
         has_int_modulo = False
+        # Set when any Int ``a + b`` / ``a - b`` / ``a * b`` BinOp
+        # appears. The Wasm emitter's overflow-detecting variant
+        # (audit fix C2) stashes both operands and the candidate
+        # result in three dedicated i64 scratch locals; declare them
+        # on demand so functions without arithmetic stay slim.
+        has_int_overflow_check = False
         # Set when any capability method in this function uses
         # canonical-ABI indirect return; drives the ``$_ret_area``
         # scratch local declaration.
@@ -115,6 +121,7 @@ class _LocalsCollectionMixin:
             nonlocal has_list_method, has_set_method
             nonlocal has_set_string, has_set_pointer
             nonlocal has_tuple, has_int_match, has_int_modulo
+            nonlocal has_int_overflow_check
             nonlocal cur_for_depth, max_for_depth
             nonlocal has_indirect_cap_call
             nonlocal has_attenuation_check, has_attenuation_env_check
@@ -203,6 +210,14 @@ class _LocalsCollectionMixin:
                         # other String-producing instruction.
                         has_tuple = True
                     for arm in instr.arms:
+                        # Guard preludes can introduce BinOps too
+                        # (audit fix C2 lowers Int +/-/* through the
+                        # overflow-detecting variant which needs
+                        # ``$_ovf_*`` scratch locals); the guard runs
+                        # before the arm body so its instructions must
+                        # be swept along with the body.
+                        if getattr(arm, "guard_setup", None):
+                            visit(arm.guard_setup)
                         visit(arm.body)
                 if isinstance(instr, MakeTuple):
                     # MakeTuple's String-element path packs (ptr,
@@ -294,6 +309,17 @@ class _LocalsCollectionMixin:
                     if (instr.left.ty == "String"
                             or instr.right.ty == "String"):
                         has_string_method = True
+                if isinstance(instr, BinOp) and instr.op in ("+", "-", "*"):
+                    # Int +/-/* lower through the overflow-detecting
+                    # variant (audit fix C2), which needs three i64
+                    # scratch locals ($_ovf_a / $_ovf_b / $_ovf_r).
+                    # Float arithmetic stays on the plain f64 path
+                    # without the check; String + is detected above.
+                    lt = (instr.left.ty or "")
+                    rt = (instr.right.ty or "")
+                    if (lt != "Float" and rt != "Float"
+                            and lt != "String" and rt != "String"):
+                        has_int_overflow_check = True
                 if isinstance(instr, MethodCall):
                     recv_ty = instr.receiver.ty or ""
                     if recv_ty.startswith("Map"):
@@ -544,6 +570,15 @@ class _LocalsCollectionMixin:
             # area; the materialiser reads flat fields from it. One
             # local serves every call site (calls do not overlap).
             out["_ret_area"] = "i32"
+        if has_int_overflow_check:
+            # Audit fix C2: the overflow-detecting +/-/* path stashes
+            # both operands and the candidate result in three
+            # dedicated i64 scratch locals so the predicate
+            # (((a^r) & (b^r)) < 0 etc.) can be evaluated purely
+            # against locals while the stack stays well-formed.
+            out["_ovf_a"] = "i64"
+            out["_ovf_b"] = "i64"
+            out["_ovf_r"] = "i64"
         if (has_list_contains_i64 or has_map or has_match or has_for
                 or has_variant_ctor or has_json_method or has_list_string
                 or has_optres_method or has_tuple or has_int_modulo):

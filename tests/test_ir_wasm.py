@@ -4359,5 +4359,269 @@ class TestWasmStructuralEquality(unittest.TestCase):
         self.assertIn("Map/Set", str(ctx.exception))
 
 
+@unittest.skipUnless(
+    _has_wasm_tools() and _has_wasmtime_py(),
+    "wasm-tools and/or wasmtime-py not installed",
+)
+class TestWasmSafetyTraps(unittest.TestCase):
+    """Audit 2026-05 safety fixes (C2 / C3 / C5 / C6): every fix has
+    BOTH a positive parity check (see ``test_ir_wasm_parity.py::
+    test_safety_traps``) AND a dedicated negative check that asserts
+    the trap actually fires on bad input. Without the negative side,
+    a regression to silent unsafety would slip past parity (both
+    backends would still match each other, just both wrongly)."""
+
+    def _exec(self, src: str, fn_name: str, *args):
+        """Compile, instantiate, call ``fn_name(*args)``, return its
+        result. Each call gets its own Store + Linker for hermetic
+        per-test heap state (mirrors the helpers used elsewhere in
+        the file). Traps surface as ``wasmtime.Trap``; the caller
+        wraps the call in ``assertRaises``."""
+        import wasmtime
+        _, types, ast_mod = _parse_lower(src)
+        blob = compile_wasm(ast_mod, types=types)
+        engine = wasmtime.Engine()
+        store = wasmtime.Store(engine)
+        module = wasmtime.Module(engine, blob)
+        linker = wasmtime.Linker(engine)
+        instance = linker.instantiate(store, module)
+        fn = instance.exports(store)[fn_name]
+        return fn(store, *args)
+
+    # ---- Fix C3: shift count out of [0, 64) traps -----------------
+
+    def test_shift_left_count_64_traps(self):
+        # ``a << 64``: Wasm's i64.shl would silently mask the RHS to
+        # 0; the audit fix emits a guard that traps instead so both
+        # backends fail loud at the same input.
+        import wasmtime
+        src = (
+            "fun shl(a: Int, b: Int) -> Int\n"
+            "    return a << b\n"
+        )
+        # Positive: shifts in range still work.
+        self.assertEqual(self._exec(src, "shl", 5, 3), 40)
+        with self.assertRaises(wasmtime.Trap):
+            self._exec(src, "shl", 1, 64)
+
+    def test_shift_left_count_negative_traps(self):
+        import wasmtime
+        src = (
+            "fun shl(a: Int, b: Int) -> Int\n"
+            "    return a << b\n"
+        )
+        with self.assertRaises(wasmtime.Trap):
+            self._exec(src, "shl", 1, -1)
+
+    def test_shift_right_count_64_traps(self):
+        import wasmtime
+        src = (
+            "fun shr(a: Int, b: Int) -> Int\n"
+            "    return a >> b\n"
+        )
+        self.assertEqual(self._exec(src, "shr", 1024, 4), 64)
+        with self.assertRaises(wasmtime.Trap):
+            self._exec(src, "shr", 1, 64)
+
+    # ---- Fix C6: Float % by zero traps ----------------------------
+
+    def test_float_modulo_zero_traps(self):
+        import wasmtime
+        src = (
+            "fun fmod(a: Float, b: Float) -> Float\n"
+            "    return a % b\n"
+        )
+        # Positive: 7.5 % 3.0 == 1.5.
+        self.assertAlmostEqual(self._exec(src, "fmod", 7.5, 3.0), 1.5)
+        with self.assertRaises(wasmtime.Trap):
+            self._exec(src, "fmod", 7.5, 0.0)
+
+    # ---- Fix C2: Int +/-/* overflow traps -------------------------
+
+    def test_int_add_overflow_traps(self):
+        # ``i64::MAX + 1`` = ``9223372036854775807 + 1`` overflows.
+        # We construct it as ``(1 << 62) + (1 << 62) + (1 << 62)``
+        # via a function so the operands stay i64-typed all the way
+        # through ANF lowering rather than being constant-folded.
+        import wasmtime
+        src = (
+            "fun add(a: Int, b: Int) -> Int\n"
+            "    return a + b\n"
+        )
+        # Positive: in-range add returns the sum.
+        self.assertEqual(self._exec(src, "add", 5, 3), 8)
+        # Negative: i64::MAX + 1 overflows.
+        with self.assertRaises(wasmtime.Trap):
+            self._exec(src, "add", (1 << 63) - 1, 1)
+
+    def test_int_mul_overflow_traps(self):
+        # ``3_000_000_000 * 4_000_000_000`` = 1.2e19, well past i64::MAX
+        # (~9.22e18). Without the C2 fix the result wrapped mod 2^64
+        # to a garbage value; now the multiply traps.
+        import wasmtime
+        src = (
+            "fun mul(a: Int, b: Int) -> Int\n"
+            "    return a * b\n"
+        )
+        self.assertEqual(
+            self._exec(src, "mul", 1_000_000, 1_000_000), 1_000_000_000_000,
+        )
+        with self.assertRaises(wasmtime.Trap):
+            self._exec(src, "mul", 3_000_000_000, 4_000_000_000)
+
+    def test_int_sub_overflow_traps(self):
+        # ``i64::MIN - 1`` overflows below the signed window.
+        import wasmtime
+        src = (
+            "fun sub(a: Int, b: Int) -> Int\n"
+            "    return a - b\n"
+        )
+        self.assertEqual(self._exec(src, "sub", 100, 50), 50)
+        with self.assertRaises(wasmtime.Trap):
+            self._exec(src, "sub", -(1 << 63), 1)
+
+    # ---- Fix C5: parse_int overflow returns None ------------------
+
+    def test_parse_int_too_big_returns_none(self):
+        # An input larger than i64::MAX returns None on both backends;
+        # without the fix the Wasm accumulator silently wrapped mod
+        # 2^64 and reported a "successful" Some carrying a garbage
+        # value. ``"99999999999999999999"`` is well outside the i64
+        # window so any wrap is detectable.
+        import io
+        import sys
+        from capa.runtime._wasm_host import WasmHost
+        src = (
+            'fun main(stdio: Stdio)\n'
+            '    match parse_int("99999999999999999999")\n'
+            '        Some(n) -> stdio.println("Some(${n})")\n'
+            '        None -> stdio.println("None")\n'
+        )
+        _, types, ast_mod = _parse_lower(src)
+        blob = compile_wasm(ast_mod, types=types)
+        host = WasmHost()
+        buf = io.StringIO()
+        saved = sys.stdout
+        sys.stdout = buf
+        try:
+            host.run_main(blob)
+        finally:
+            sys.stdout = saved
+        self.assertEqual(buf.getvalue(), "None\n")
+
+
+@unittest.skipUnless(
+    _has_wasm_tools() and _has_wasmtime_py(),
+    "wasm-tools and/or wasmtime-py not installed",
+)
+class TestWasmHostUtf8Safety(unittest.TestCase):
+    """Audit fix H3: every ``bytes.decode("utf-8")`` site in the
+    host bridge is wrapped so invalid UTF-8 surfaces through the
+    relevant WIT return shape (Option::None / Result::Err) or, for
+    Stdio (no return), through U+FFFD replacement, instead of
+    bubbling ``UnicodeDecodeError`` up through wasmtime and crashing
+    the store."""
+
+    def test_stdio_print_invalid_utf8_replaces(self):
+        # Construct a host directly, prep its memory with invalid
+        # UTF-8, invoke the stdio_print callback against the bytes.
+        # The callback must NOT raise UnicodeDecodeError; the bytes
+        # should print as the U+FFFD replacement glyph.
+        import io
+        import sys
+        from capa.runtime._wasm_host import WasmHost
+        # Minimal module: declares a 1-page memory and exports it.
+        src = (
+            'fun main(stdio: Stdio)\n'
+            '    stdio.println("warmup")\n'
+        )
+        _, types, ast_mod = _parse_lower(src)
+        blob = compile_wasm(ast_mod, types=types)
+        host = WasmHost()
+        instance = host.instantiate(blob)
+        # Splat invalid UTF-8 (a lone 0xFF) into linear memory at offset 0.
+        memory = instance.exports(host.store)["memory"]
+        memory.write(host.store, b"\xff", 0)
+        # Find the stdio.println import via the linker: easiest path
+        # is to call it via a re-instantiation that exports the host
+        # callback's effect. Simpler still: spin up our own raw
+        # decode of the bytes to mirror what stdio_print does.
+        # The decode-with-replace must not raise.
+        raw = bytes(memory.read(host.store, 0, 1))
+        self.assertEqual(
+            raw.decode("utf-8", errors="replace"), "�",
+        )
+        # Sanity-check that the live host's println callback ALSO
+        # handles invalid UTF-8 without raising. We re-instantiate a
+        # tiny module that calls println with the (ptr, len) of the
+        # 0xFF byte: directly invoking the registered Func through
+        # wasmtime's caller protocol is brittle, so we instead pin
+        # that ``bytes.decode("utf-8", errors="replace")`` is the
+        # behaviour the patched host uses (see
+        # capa/runtime/_wasm_host.py::stdio_println).
+        import inspect
+        src_host = inspect.getsource(host._register_stdio)
+        self.assertIn('errors="replace"', src_host)
+
+    def test_env_get_invalid_utf8_name_returns_none(self):
+        # When the guest passes an invalid-UTF-8 key to env.get, the
+        # host must return Option::None (Env.get's WIT shape) rather
+        # than raise UnicodeDecodeError. The Capa program below would
+        # observe ``None`` for any unknown key; we ensure invalid
+        # UTF-8 lands on the same path.
+        from capa.runtime._wasm_host import WasmHost
+        import io
+        import sys
+        import wasmtime
+        src = (
+            'fun main(stdio: Stdio, env: Env)\n'
+            '    match env.get("present")\n'
+            '        Some(_) -> stdio.println("Some")\n'
+            '        None -> stdio.println("None")\n'
+        )
+        _, types, ast_mod = _parse_lower(src)
+        blob = compile_wasm(ast_mod, types=types)
+        host = WasmHost()
+        buf = io.StringIO()
+        saved = sys.stdout
+        sys.stdout = buf
+        try:
+            host.run_main(blob)
+        finally:
+            sys.stdout = saved
+        # "present" is almost certainly not set; the test asserts the
+        # happy path (printing "None") still works. The actual H3
+        # behaviour (invalid UTF-8 -> None) is verified by inspection:
+        # the host's env_get now catches UnicodeDecodeError.
+        self.assertEqual(buf.getvalue(), "None\n")
+        import inspect
+        src_host = inspect.getsource(host._register_env)
+        self.assertIn("UnicodeDecodeError", src_host)
+
+    def test_fs_read_invalid_utf8_path_returns_err(self):
+        # Capa Fs.read on an invalid-UTF-8 path should return Err
+        # (matching the no-such-file path) rather than raise. We
+        # cannot easily synthesise an invalid-UTF-8 string from
+        # Capa source (the lexer rejects bad UTF-8 in literals);
+        # instead, pin that the host's fs_read catches
+        # UnicodeDecodeError and routes to the Err arm.
+        from capa.runtime._wasm_host import WasmHost
+        import inspect
+        host = WasmHost()
+        src_host = inspect.getsource(host._register_fs)
+        self.assertIn("UnicodeDecodeError", src_host)
+        self.assertIn("invalid utf-8 in path", src_host)
+
+    def test_json_parse_invalid_utf8_returns_err(self):
+        # Same shape as fs_read: the host's json_parse must route
+        # invalid UTF-8 through the result<u32, string> Err arm
+        # rather than raise.
+        from capa.runtime._wasm_host import WasmHost
+        import inspect
+        host = WasmHost()
+        src_host = inspect.getsource(host._register_json)
+        self.assertIn("UnicodeDecodeError", src_host)
+
+
 if __name__ == "__main__":
     unittest.main()

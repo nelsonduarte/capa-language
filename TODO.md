@@ -948,6 +948,52 @@ Listed so the design space is explicit.
 
 ### Wasm-specific gaps that are not P0
 
+- [x] **Security hardening pass 1 - 5 critical safety gaps closed**
+  (closed 2026-05-28). Five concrete unsafety / silent-divergence
+  gaps surfaced by the backend security audit (also 2026-05-28), all
+  fixed to "both backends fail loud at the same input" rather than
+  silent miscompile. Capa is a security-focused language and the audit
+  found these were the highest-leverage items to close before
+  shipping more language features.
+  (1) **C2 Int overflow** (i64 wrap was the one observable silent
+  divergence today): `+` / `-` / `*` / `+=` / `-=` / `*=` on Int now
+  trap on signed overflow on Wasm (overflow-detection emit:
+  `((a^r) & (b^r)) < 0` for add, equivalent for sub, `b!=0 AND r/b!=a`
+  for mul; gated by a new `has_int_overflow_check` flag in
+  `_locals.py`) and raise `OverflowError` on Python via runtime
+  helpers `_capa_iadd` / `_capa_isub` / `_capa_imul` (new
+  `capa/runtime/_safety.py`). Both transpilers wrap Int+/-/\* into
+  the helpers when types resolve to Int. (Acknowledged perf hit on
+  the Python side, accepted for security correctness.)
+  (2) **C3 Shift count** (`<<` / `>>` and `<<=` / `>>=`) now traps on
+  Wasm when RHS not in `[0, 64)` (unsigned compare catches both
+  negative and >=64), and raises `OverflowError` on Python via
+  `_capa_shl` / `_capa_shr`. Same "both fail loud" contract.
+  (3) **C5 parse_int overflow** now returns `None` instead of
+  silently wrapping on both backends. Wasm `$parse_int` adds a
+  pre-multiply threshold check (`acc > 922337203685477580` or `==`
+  with next-digit `> '7'`); Python `parse_int` returns `None_` when
+  the parsed value escapes the i64 window.
+  (4) **C6 Float `%` by zero** now traps on Wasm via an explicit
+  `f64.eqz` guard before the floored-modulo lowering (was silently
+  producing NaN by the chain `a/0 = inf, floor(inf) = inf, inf*0 =
+  nan, a - nan = nan`). Python already raised `ZeroDivisionError`.
+  (5) **H3 UTF-8 host crash** - the host bridge previously crashed
+  the Python process on malformed UTF-8 in guest-supplied strings.
+  Stdio uses `errors="replace"` (no return channel to signal failure;
+  prints U+FFFD); Env.get / Fs.read / Fs.write / json.parse return
+  the appropriate Err / None variant via the WIT result types.
+  21 new tests (8 wasm safety-trap tests, 4 host-bridge UTF-8 tests,
+  8 Python-side trap-raise tests, 1 parity program covering all five
+  fixes' valid inputs). One pre-existing test assertion adjusted
+  (`tests/test_ir.py` arithmetic-emission text check now expects the
+  `_capa_iadd` helper call instead of a bare `+`). Full suite 1888
+  -> 1909 / 5 skipped / 0 fail. Audit findings deferred to follow-up:
+  C1 bounds checks on collection indexing (defense in depth),
+  C4 to_int out-of-range docs, H1 allocator GC, H2 Set/Map-key
+  mutation effect tracking (design-heavy, own slice), M1-M4 supply-
+  chain manifest in `.wasm`.
+
 - [x] **Bitwise operators on Int** (closed 2026-05-28). `& | ^ << >>`
   now work end to end on `Int` with parity-clean output between the
   Python and Wasm backends; previously unsupported across the whole

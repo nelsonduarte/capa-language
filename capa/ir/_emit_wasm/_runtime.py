@@ -509,6 +509,40 @@ class _RuntimeHelpersMixin:
         self._write("return")
         self._indent -= 1
         self._write("end")
+        # Overflow check (audit fix C5): before ``acc = acc * 10 +
+        # digit``, reject inputs that would push ``acc`` past
+        # ``i64::MAX``. Threshold is ``i64::MAX / 10 ==
+        # 922337203685477580``; if ``acc`` already exceeds it, the
+        # multiply overflows. If ``acc`` equals it and ``digit > 7``,
+        # the add overflows. Either case returns None so the Wasm
+        # backend mirrors the Python helper's
+        # ``-(2**63) <= n < 2**63`` window check; without this the
+        # accumulator silently wrapped mod 2^64.
+        self._write("local.get $acc")
+        self._write("i64.const 922337203685477580")
+        self._write("i64.gt_s")
+        self._write("if")
+        self._indent += 1
+        self._write("local.get $result")
+        self._write("return")
+        self._indent -= 1
+        self._write("end")
+        self._write("local.get $acc")
+        self._write("i64.const 922337203685477580")
+        self._write("i64.eq")
+        self._write("if")
+        self._indent += 1
+        self._write("local.get $byte")
+        self._write("i32.const 55")  # '7'
+        self._write("i32.gt_u")
+        self._write("if")
+        self._indent += 1
+        self._write("local.get $result")
+        self._write("return")
+        self._indent -= 1
+        self._write("end")
+        self._indent -= 1
+        self._write("end")
         # acc = acc * 10 + (byte - '0')
         self._write("local.get $acc")
         self._write("i64.const 10")

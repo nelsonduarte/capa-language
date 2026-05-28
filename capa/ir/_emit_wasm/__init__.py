@@ -94,13 +94,13 @@ _INT_BINOP = {
     "%": "i64.rem_s",
     # Bitwise. Signed shift-right (``i64.shr_s``) is the right
     # match for Capa Int because Python's ``>>`` on signed ints is
-    # also arithmetic (sign-extending). Note the shift-count
-    # corner: ``i64.shl`` / ``i64.shr_s`` mask the RHS to the low
-    # 6 bits, so ``a << 64`` is ``a << 0`` at the Wasm level. The
-    # Python backend instead raises on a negative shift count and
-    # produces 0 on a non-negative count >= 64. For correctly typed,
-    # non-negative shifts in [0, 63] the two backends agree byte for
-    # byte; we deliberately do not add a runtime guard.
+    # also arithmetic (sign-extending). Shift counts outside the
+    # range ``[0, 64)`` trap on both backends (audit fix C3); the
+    # ``<<`` / ``>>`` branches in ``_emit_binop`` emit the inline
+    # guard before dispatching through this table. ``i64.shl`` /
+    # ``i64.shr_s`` would otherwise mask the RHS to the low 6 bits,
+    # silently turning ``a << 64`` into ``a << 0``; that masking is
+    # a silent-unsafety hole the runtime check closes.
     "&": "i64.and",
     "|": "i64.or",
     "^": "i64.xor",
@@ -704,6 +704,17 @@ class WasmEmitter(
                 # b`` for floats. Using ``f64.trunc`` instead would
                 # match C semantics (sign of dividend) and diverge for
                 # mixed-sign operands.
+                # Safety (audit fix C6): trap on ``b == 0`` so the
+                # backend mirrors Python's ``ZeroDivisionError`` instead
+                # of silently producing NaN through ``0/0 * 0 - a``.
+                self._push_value(instr.right)
+                self._write("f64.const 0")
+                self._write("f64.eq")
+                self._write("if")
+                self._indent += 1
+                self._write("unreachable")
+                self._indent -= 1
+                self._write("end")
                 self._push_value(instr.left)
                 self._push_value(instr.left)
                 self._push_value(instr.right)
@@ -755,6 +766,32 @@ class WasmEmitter(
             self._indent -= 1
             self._write("end")
             self._write(f"local.set ${instr.dst}")
+            return
+        if op in ("<<", ">>") and op in _INT_BINOP and not is_float:
+            # Safety (audit fix C3): trap when the shift count is
+            # outside ``[0, 64)``. ``i64.shl`` / ``i64.shr_s`` would
+            # otherwise silently mask the RHS to its low 6 bits,
+            # so ``a << 64`` becomes ``a << 0`` rather than the
+            # OverflowError Python now raises on the same input.
+            self._push_value(instr.right)
+            self._write("i64.const 64")
+            self._write("i64.ge_u")  # unsigned: negative => huge => true
+            self._write("if")
+            self._indent += 1
+            self._write("unreachable")
+            self._indent -= 1
+            self._write("end")
+            self._push_value(instr.left)
+            self._push_value(instr.right)
+            self._write(_INT_BINOP[op])
+            self._write(f"local.set ${instr.dst}")
+            return
+        if op in ("+", "-", "*") and op in _INT_BINOP and not is_float:
+            # Safety (audit fix C2): trap on signed 64-bit overflow so
+            # the Wasm backend mirrors Python's ``OverflowError`` (raised
+            # by the ``_capa_iadd`` / ``_capa_isub`` / ``_capa_imul``
+            # runtime helpers) instead of wrapping mod 2^64.
+            self._emit_int_overflow_check(instr, op)
             return
         if op in _INT_BINOP:
             self._push_value(instr.left)
@@ -824,6 +861,94 @@ class WasmEmitter(
             f"short-circuited at the IR level and should not reach "
             f"the Wasm emitter)"
         )
+
+    def _emit_int_overflow_check(self, instr: BinOp, op: str) -> None:
+        """Emit a signed 64-bit overflow-detecting variant of ``+``,
+        ``-`` or ``*`` (audit fix C2).
+
+        Strategy: stash the two operands and the proposed result in
+        three i64 scratch locals (``$_ovf_a``, ``$_ovf_b``, ``$_ovf_r``),
+        then evaluate the overflow predicate purely against the locals
+        so the stack stays well-formed. On overflow, emit
+        ``unreachable``; otherwise, push the stashed result and bind
+        it to the destination. The Python backend reaches the same
+        observable failure mode via ``_capa_iadd`` / ``_capa_isub`` /
+        ``_capa_imul`` (see ``capa.runtime._safety``).
+
+        Predicates (signed two's-complement, 64-bit):
+        - ``+``: overflow iff ``((a ^ r) & (b ^ r)) < 0``
+          (sign of a and b agree, sign of r differs from both).
+        - ``-``: overflow iff ``((a ^ b) & (a ^ r)) < 0``
+          (sign of a and b differ, and sign of a differs from r).
+        - ``*``: overflow iff ``b != 0 AND (r div_s b) != a``.
+          The extra divide is the simplest correct check; the
+          cheaper Hacker's-Delight form needs i128 to be precise.
+        """
+        # Stash operands.
+        self._push_value(instr.left)
+        self._write("local.set $_ovf_a")
+        self._push_value(instr.right)
+        self._write("local.set $_ovf_b")
+        # Compute candidate result.
+        self._write("local.get $_ovf_a")
+        self._write("local.get $_ovf_b")
+        if op == "+":
+            self._write("i64.add")
+        elif op == "-":
+            self._write("i64.sub")
+        else:  # op == "*"
+            self._write("i64.mul")
+        self._write("local.set $_ovf_r")
+        # Build the overflow predicate (leaves an i32 on the stack).
+        if op == "+":
+            # (a ^ r) & (b ^ r) < 0
+            self._write("local.get $_ovf_a")
+            self._write("local.get $_ovf_r")
+            self._write("i64.xor")
+            self._write("local.get $_ovf_b")
+            self._write("local.get $_ovf_r")
+            self._write("i64.xor")
+            self._write("i64.and")
+            self._write("i64.const 0")
+            self._write("i64.lt_s")
+        elif op == "-":
+            # (a ^ b) & (a ^ r) < 0
+            self._write("local.get $_ovf_a")
+            self._write("local.get $_ovf_b")
+            self._write("i64.xor")
+            self._write("local.get $_ovf_a")
+            self._write("local.get $_ovf_r")
+            self._write("i64.xor")
+            self._write("i64.and")
+            self._write("i64.const 0")
+            self._write("i64.lt_s")
+        else:  # op == "*"
+            # b != 0 AND (r / b) != a
+            self._write("local.get $_ovf_b")
+            self._write("i64.const 0")
+            self._write("i64.ne")
+            self._write("if (result i32)")
+            self._indent += 1
+            self._write("local.get $_ovf_r")
+            self._write("local.get $_ovf_b")
+            self._write("i64.div_s")
+            self._write("local.get $_ovf_a")
+            self._write("i64.ne")
+            self._indent -= 1
+            self._write("else")
+            self._indent += 1
+            self._write("i32.const 0")
+            self._indent -= 1
+            self._write("end")
+        # Trap on overflow.
+        self._write("if")
+        self._indent += 1
+        self._write("unreachable")
+        self._indent -= 1
+        self._write("end")
+        # Bind result.
+        self._write("local.get $_ovf_r")
+        self._write(f"local.set ${instr.dst}")
 
     def _emit_unaryop(self, instr: UnaryOp) -> None:
         op = instr.op

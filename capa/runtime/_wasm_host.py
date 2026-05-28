@@ -68,13 +68,24 @@ class WasmHost:
         # the host still capture output. Eager capture at host-
         # construction time would freeze the file objects to the
         # values they had then.
+        # Stdio has no return value, so it cannot signal failure
+        # back to the guest the way Fs / Env do. Audit fix H3: print
+        # invalid UTF-8 with the Unicode replacement character (U+FFFD)
+        # in place of unparseable bytes rather than raising
+        # ``UnicodeDecodeError`` out of the host callback (which would
+        # crash the whole wasmtime store). Choice rationale: silent
+        # corruption is unacceptable for a security-oriented language,
+        # but the alternative (trapping the guest) would propagate a
+        # purely cosmetic encoding bug into a hard crash. Replacement
+        # is the well-known middle ground that the guest can detect by
+        # comparing its outgoing bytes against the observed output.
         def stdio_print(caller, ptr, length):
             if self._memory is None:
                 raise RuntimeError(
                     "stdio called before instance memory was set"
                 )
             data = self._memory.read(caller, ptr, ptr + length)
-            sys.stdout.write(bytes(data).decode("utf-8"))
+            sys.stdout.write(bytes(data).decode("utf-8", errors="replace"))
             sys.stdout.flush()
 
         def stdio_println(caller, ptr, length):
@@ -83,7 +94,9 @@ class WasmHost:
                     "stdio called before instance memory was set"
                 )
             data = self._memory.read(caller, ptr, ptr + length)
-            sys.stdout.write(bytes(data).decode("utf-8") + "\n")
+            sys.stdout.write(
+                bytes(data).decode("utf-8", errors="replace") + "\n"
+            )
             sys.stdout.flush()
 
         def stdio_eprintln(caller, ptr, length):
@@ -92,7 +105,9 @@ class WasmHost:
                     "stdio called before instance memory was set"
                 )
             data = self._memory.read(caller, ptr, ptr + length)
-            sys.stderr.write(bytes(data).decode("utf-8") + "\n")
+            sys.stderr.write(
+                bytes(data).decode("utf-8", errors="replace") + "\n"
+            )
             sys.stderr.flush()
 
         self.linker.define_func(
@@ -166,8 +181,19 @@ class WasmHost:
                     "env.get called before instance memory + $alloc set"
                 )
             data = self._memory.read(caller, name_ptr, name_ptr + name_len)
-            name = bytes(data).decode("utf-8")
-            value = os.environ.get(name)
+            # Audit fix H3: invalid UTF-8 in the lookup key cannot match
+            # any real env var (env names are well-formed strings on every
+            # OS we target); return None cleanly instead of bubbling
+            # ``UnicodeDecodeError`` up through wasmtime and crashing the
+            # store. The WIT shape (``option<string>``) already carries
+            # the "no such key" path, so the guest sees the same value
+            # it would for a typo.
+            try:
+                name = bytes(data).decode("utf-8")
+            except UnicodeDecodeError:
+                value = None
+            else:
+                value = os.environ.get(name)
             if value is None:
                 # tag = 1 (None); ptr/len fields undefined per WIT,
                 # write zeros so memory stays deterministic.
@@ -349,9 +375,20 @@ class WasmHost:
                 raise RuntimeError(
                     "fs.read called before memory + $alloc set"
                 )
-            path = bytes(
-                self._memory.read(caller, path_ptr, path_ptr + path_len)
-            ).decode("utf-8")
+            # Audit fix H3: invalid UTF-8 in the path argument is
+            # a guest-side bug, not a host-process crash. Surface it
+            # through the WIT result<_, io-error> channel so the guest
+            # can pattern-match on Err the same way it would for a
+            # permission-denied or no-such-file failure.
+            try:
+                path = bytes(
+                    self._memory.read(caller, path_ptr, path_ptr + path_len)
+                ).decode("utf-8")
+            except UnicodeDecodeError as e:
+                _write_result_err_ioerror(
+                    caller, ret_area, f"invalid utf-8 in path: {e}",
+                )
+                return
             try:
                 content = open(path, encoding="utf-8").read()
                 s_ptr, s_len = _alloc_utf8(caller, content)
@@ -364,12 +401,27 @@ class WasmHost:
                 raise RuntimeError(
                     "fs.write called before memory + $alloc set"
                 )
-            path = bytes(
-                self._memory.read(caller, p_ptr, p_ptr + p_len)
-            ).decode("utf-8")
-            content = bytes(
-                self._memory.read(caller, c_ptr, c_ptr + c_len)
-            ).decode("utf-8")
+            # Audit fix H3: same as fs.read, but two strings can each
+            # be invalid; surface both in the Err message so the guest
+            # can tell which arg was malformed.
+            try:
+                path = bytes(
+                    self._memory.read(caller, p_ptr, p_ptr + p_len)
+                ).decode("utf-8")
+            except UnicodeDecodeError as e:
+                _write_result_err_ioerror(
+                    caller, ret_area, f"invalid utf-8 in path: {e}",
+                )
+                return
+            try:
+                content = bytes(
+                    self._memory.read(caller, c_ptr, c_ptr + c_len)
+                ).decode("utf-8")
+            except UnicodeDecodeError as e:
+                _write_result_err_ioerror(
+                    caller, ret_area, f"invalid utf-8 in content: {e}",
+                )
+                return
             try:
                 with open(path, "w", encoding="utf-8") as f:
                     f.write(content)
@@ -617,6 +669,13 @@ class WasmHost:
                 raise RuntimeError(
                     "json.parse called before memory + $alloc set"
                 )
+            # Audit fix H3: invalid UTF-8 in the source bytes is the
+            # same shape of guest-side bug as malformed JSON; route it
+            # through the WIT result<u32, string> Err arm so the guest
+            # sees the same observable failure mode (a parseable Err
+            # message) it would for any other unparseable input,
+            # instead of bubbling ``UnicodeDecodeError`` up through
+            # wasmtime and crashing the store.
             try:
                 text = _read_string(caller, s_ptr, s_len)
                 py_val = _stdlib_json.loads(text)
@@ -624,7 +683,10 @@ class WasmHost:
                 _write_u32(caller, ret_area, 0)            # tag Ok
                 _write_u32(caller, ret_area + 4, jv_ptr)   # u32 handle
                 _write_u32(caller, ret_area + 8, 0)        # pad
-            except (ValueError, _stdlib_json.JSONDecodeError) as e:
+            except (
+                ValueError, UnicodeDecodeError,
+                _stdlib_json.JSONDecodeError,
+            ) as e:
                 err_ptr, err_len = _alloc_string(caller, str(e))
                 _write_u32(caller, ret_area, 1)            # tag Err
                 _write_u32(caller, ret_area + 4, err_ptr)

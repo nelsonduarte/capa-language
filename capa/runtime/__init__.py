@@ -82,6 +82,13 @@ from ._result import (
     Some,
     _NoneType,
 )
+from ._safety import (
+    _capa_iadd,
+    _capa_imul,
+    _capa_isub,
+    _capa_shl,
+    _capa_shr,
+)
 
 
 __all__ = [
@@ -106,4 +113,9 @@ __all__ = [
     "to_float",
     "to_int",
     "_propagate_err",
+    "_capa_iadd",
+    "_capa_isub",
+    "_capa_imul",
+    "_capa_shl",
+    "_capa_shr",
 ]

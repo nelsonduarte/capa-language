@@ -52,14 +52,30 @@ class _ExpressionsMixin:
             op = _BINOP_MAP.get(e.op)
             if op is None:
                 raise TranspilerError(f"unsupported binop: {e.op}")
+            from ..typesys import TyName
+            lt = self.types.get(id(e.left))
+            rt = self.types.get(id(e.right))
+            lt_is_int = isinstance(lt, TyName) and lt.name == "Int"
+            rt_is_int = isinstance(rt, TyName) and rt.name == "Int"
             if e.op == "/":
-                from ..typesys import TyName
-                lt = self.types.get(id(e.left))
-                rt = self.types.get(id(e.right))
-                lt_is_int = isinstance(lt, TyName) and lt.name == "Int"
-                rt_is_int = isinstance(rt, TyName) and rt.name == "Int"
                 if lt_is_int and rt_is_int:
                     op = "//"
+            # Safety: route Int +/-/* and <</>> through the
+            # overflow-checking runtime helpers so the Python backend
+            # raises ``OverflowError`` at the same input the Wasm
+            # backend traps on (audit fixes C2 and C3). Float and
+            # mixed-type arithmetic stays on the plain operator path.
+            both_int = lt_is_int and rt_is_int
+            if both_int and e.op in ("+", "-", "*"):
+                helper = {
+                    "+": "_capa_iadd",
+                    "-": "_capa_isub",
+                    "*": "_capa_imul",
+                }[e.op]
+                return f"{helper}({l}, {r})"
+            if both_int and e.op in ("<<", ">>"):
+                helper = "_capa_shl" if e.op == "<<" else "_capa_shr"
+                return f"{helper}({l}, {r})"
             return f"({l} {op} {r})"
         if isinstance(e, A.UnaryOp):
             op = _UNARY_MAP.get(e.op)

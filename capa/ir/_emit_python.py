@@ -48,11 +48,31 @@ _PY_BINOPS = {
 }
 
 
+# Map from a Capa source op to the runtime safety helper that wraps
+# it on the Python backend. The helpers (in ``capa.runtime._safety``)
+# raise ``OverflowError`` at the same input the Wasm backend traps
+# on, so both backends fail loud at the same point (audit fixes C2
+# and C3). Only Int operands route through these; Float / String /
+# Bool stay on the plain Python operator path.
+_CAPA_INT_HELPERS = {
+    "+": "_capa_iadd",
+    "-": "_capa_isub",
+    "*": "_capa_imul",
+    "<<": "_capa_shl",
+    ">>": "_capa_shr",
+}
+
+
 class PythonEmitter:
     def __init__(self, indent_unit: str = "    "):
         self._lines: List[str] = []
         self._indent = 0
         self._unit = indent_unit
+        # Toggled by ``_format_binop`` the first time it routes an
+        # Int op through a safety helper. ``emit()`` consults this
+        # after walking the module so the import line lands at the
+        # top alongside ``from dataclasses import dataclass``.
+        self._needs_safety = False
 
     # ----- public ------------------------------------------------
 
@@ -63,8 +83,22 @@ class PythonEmitter:
         # source is self-contained. Tests / pipelines that mix the IR
         # with the legacy prelude already have ``dataclass`` in scope,
         # so the import is harmless when redundant.
+        # Decide the safety-helper import up front by scanning every
+        # function / impl / const body for an Int +/-/* / <</>> BinOp;
+        # the matching ``from capa.runtime import _capa_iadd, ...``
+        # line then lands at the top alongside ``from dataclasses
+        # import dataclass``. The legacy transpiler's prelude already
+        # imports the same names, so this is harmless when the IR
+        # output is concatenated with the legacy prelude.
+        self._needs_safety = _module_uses_int_safety(module)
         if module.types:
             self._write("from dataclasses import dataclass")
+            self._lines.append("")
+        if self._needs_safety:
+            self._write(
+                "from capa.runtime import "
+                "_capa_iadd, _capa_isub, _capa_imul, _capa_shl, _capa_shr"
+            )
             self._lines.append("")
         for imp in module.imports:
             self._emit_import(imp)
@@ -529,6 +563,18 @@ class PythonEmitter:
         l = self._format_value(left)
         r = self._format_value(right)
         if op in _PY_BINOPS:
+            # Safety (audit fixes C2 + C3): Int +/-/* and <</>> route
+            # through the overflow / shift-count runtime helpers so
+            # the Python backend raises ``OverflowError`` at the same
+            # input the Wasm backend traps on. Float / String / Bool
+            # arithmetic stays on the plain operator path. Cf. the
+            # legacy transpiler's matching rewrite in
+            # ``capa/transpiler/_expressions.py``.
+            if left.ty == "Int" and right.ty == "Int":
+                helper = _CAPA_INT_HELPERS.get(op)
+                if helper is not None:
+                    self._needs_safety = True
+                    return f"{helper}({l}, {r})"
             return f"({l} {op} {r})"
         raise NotImplementedError(f"IR Python emitter: binop {op!r}")
 
@@ -757,3 +803,62 @@ class PythonEmitter:
             self._lines.append("")
         else:
             self._lines.append(self._unit * self._indent + line)
+
+
+def _module_uses_int_safety(module: Module) -> bool:
+    """Whether any function / impl / const body contains an Int
+    +/-/* or <</>> BinOp. Drives the ``from capa.runtime import
+    _capa_iadd, ...`` line at the top of the emitted Python so the
+    safety helpers resolve at exec time without leaking the import
+    into modules that have no Int arithmetic.
+
+    Walks every instruction list reachable from the module: top-level
+    function bodies, impl method bodies, const bodies, and the nested
+    bodies of If / While / For / Match / MakeLambda. Returns ``True``
+    on the first match for short-circuiting; structural recursion is
+    intentional rather than reusing a generic walker because the
+    Match arm shape is bespoke.
+    """
+    def walk_value(v) -> bool:
+        return (
+            v is not None
+            and isinstance(v, Value)
+            and getattr(v, "ty", "") == "Int"
+        )
+
+    def walk_instrs(instrs) -> bool:
+        for ins in instrs or []:
+            if isinstance(ins, BinOp) and ins.op in _CAPA_INT_HELPERS:
+                if walk_value(ins.left) and walk_value(ins.right):
+                    return True
+            if isinstance(ins, If):
+                if walk_instrs(ins.then_body) or walk_instrs(ins.else_body):
+                    return True
+            if isinstance(ins, While):
+                if walk_instrs(ins.cond_setup) or walk_instrs(ins.body):
+                    return True
+            if isinstance(ins, For):
+                if walk_instrs(ins.body):
+                    return True
+            if isinstance(ins, MakeLambda):
+                if walk_instrs(ins.body):
+                    return True
+            if isinstance(ins, Match):
+                for arm in ins.arms:
+                    if walk_instrs(arm.body):
+                        return True
+                    if arm.guard_setup and walk_instrs(arm.guard_setup):
+                        return True
+        return False
+
+    for fn in module.functions:
+        if walk_instrs(fn.body):
+            return True
+    for impl in module.impls:
+        for m in impl.methods:
+            if walk_instrs(m.body):
+                return True
+    for c in module.consts:
+        if walk_instrs(c.body):
+            return True
+    return False

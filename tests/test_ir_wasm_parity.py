@@ -68,6 +68,7 @@ _PARITY_PROGRAMS: list[str] = [
     "set_struct.capa",
     "numeric_parity.capa",
     "bitwise.capa",
+    "safety_traps.capa",
 ]
 
 # Programs deliberately excluded from parity and why; documented
@@ -253,6 +254,15 @@ class TestPythonWasmParity(unittest.TestCase):
 
     def test_bitwise(self):
         self._assert_parity("bitwise.capa")
+
+    def test_safety_traps(self):
+        # Audit 2026-05: pin that the five secure-by-default fixes
+        # (shift count, UTF-8 host decode, Float % by zero, Int
+        # overflow, parse_int overflow) did NOT change the
+        # observable output for well-behaved inputs. Negative cases
+        # are tested separately so the trap / raise check is direct
+        # rather than vacuous-identical.
+        self._assert_parity("safety_traps.capa")
 
     def test_inventory_matches_examples_dir(self):
         # Soundness check: every .capa under examples/wasm/ is

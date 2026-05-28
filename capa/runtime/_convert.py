@@ -15,13 +15,27 @@ from __future__ import annotations
 from ._result import Err, None_, Ok, Some
 
 
+_I64_MIN = -(1 << 63)
+_I64_MAX = (1 << 63) - 1
+
+
 def parse_int(s):
     """Tries to convert ``s`` to Int. Returns ``Some(n)`` on success,
-    ``None_`` on failure (non-numeric, empty, etc.)."""
+    ``None_`` on failure (non-numeric, empty, or outside the signed
+    64-bit window).
+
+    Audit fix C5: out-of-range inputs (e.g. ``"99999999999999999999"``)
+    used to return a ``Some`` carrying a Python-arbitrary-precision int,
+    which then silently wrapped on the Wasm backend's i64 accumulator;
+    both backends now reject the value loudly by returning ``None_``.
+    Same observable failure shape as a typo or an empty string."""
     try:
-        return Some(int(s.strip()))
+        n = int(s.strip())
     except (ValueError, AttributeError):
         return None_
+    if n < _I64_MIN or n > _I64_MAX:
+        return None_
+    return Some(n)
 
 
 def parse_float(s):
