@@ -1,0 +1,28 @@
+// Tuples of arity > 2. Pre-slice-5 (2026-05) the Wasm emitter
+// rejected MakeTuple unless arity == 2; the uniform 8-byte slot
+// stride covers any arity, so the cap was just defensive. The
+// mixed Int/String/Bool tuple exercises the index decoder for
+// every slot offset.
+
+fun show(stdio: Stdio, label: String, value: Int)
+    stdio.println("${label}: ${value}")
+
+fun main(stdio: Stdio)
+    let triple: (Int, String, Bool) = (7, "ok", true)
+    let i = triple[0]
+    let s = triple[1]
+    let b = triple[2]
+    show(stdio, "triple int", i)
+    stdio.println("triple str: ${s}")
+    if b
+        stdio.println("triple bool: true")
+    else
+        stdio.println("triple bool: false")
+
+    let quad: (Int, Int, Int, Int) = (1, 2, 3, 4)
+    var total = 0
+    total = total + quad[0]
+    total = total + quad[1]
+    total = total + quad[2]
+    total = total + quad[3]
+    show(stdio, "quad sum", total)

@@ -33,6 +33,8 @@ from typing import Any, Iterable, Optional
 import wasmtime
 import wasmtime.component as wc
 
+from ._capabilities import _write_safe
+
 
 class IoErrorRecord(wc.Record):
     """Record subclass matching the WIT ``io-error`` shape with
@@ -76,9 +78,23 @@ class WasmComponentHost:
 
     def _register_stdio(self, root: wc.LinkerInstance) -> None:
         stdio = root.add_instance("capa:host/stdio")
-        stdio.add_func("print",    lambda _store, msg: sys.stdout.write(msg))
-        stdio.add_func("println",  lambda _store, msg: print(msg))
-        stdio.add_func("eprintln", lambda _store, msg: print(msg, file=sys.stderr))
+        # Wrap each writer in ``_write_safe`` so a non-cp1252 char on a
+        # Windows console falls back to replacement instead of crashing
+        # the program. Same convention applied to the Python runtime
+        # and the core Wasm host so the three backends print identical
+        # bytes on a terminal that cannot encode the source character.
+        stdio.add_func(
+            "print",
+            lambda _store, msg: _write_safe(sys.stdout, msg),
+        )
+        stdio.add_func(
+            "println",
+            lambda _store, msg: _write_safe(sys.stdout, msg + "\n"),
+        )
+        stdio.add_func(
+            "eprintln",
+            lambda _store, msg: _write_safe(sys.stderr, msg + "\n"),
+        )
 
         def stdio_read_line(_store):
             # result<string, io-error>: dispatch by Python type.

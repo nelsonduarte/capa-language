@@ -76,7 +76,17 @@ class _MethodsMixin:
         if method == "split":
             return f"CapaList({recv}.split({args[0]}))"
         if method == "replace":
-            return f"{recv}.replace({args[0]}, {args[1]})"
+            # Empty-needle policy (D3 slice 4, 2026-05): both backends
+            # return the receiver unchanged when ``old`` is empty,
+            # rather than Python's native ``"abc".replace("", "X") ==
+            # "XaXbXcX"``. Avoids the empty-needle inf-loop trap and
+            # keeps the Wasm and Python paths bit-identical. The
+            # one-shot ``lambda`` evaluates ``old`` once even when the
+            # IR Value is a complex expression.
+            return (
+                f"(lambda _o, _n: {recv}.replace(_o, _n) if _o else {recv})"
+                f"({args[0]}, {args[1]})"
+            )
         if method == "is_empty":
             return f"({recv} == '')"
         if method == "char_at":

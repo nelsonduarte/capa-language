@@ -1,0 +1,44 @@
+// Map.keys() / Map.values() across the supported key + value
+// type matrix. Pre-slice-5 (2026-05) the Wasm emitter rejected
+// both; the implementations walk the pair table and copy into a
+// fresh List<K> / List<V> with per-type slot encoding.
+//
+// Output is deterministic on both backends because Map iteration
+// is insertion-ordered (CapaMap on Python is a dict, the Wasm
+// emitter walks the pair array in insertion order).
+
+fun show(stdio: Stdio, label: String, n: Int)
+    stdio.println("${label}: ${n}")
+
+fun main(stdio: Stdio)
+    var m: Map<String, Int> = new_map()
+    m.set("a", 1)
+    m.set("b", 2)
+    m.set("c", 3)
+
+    // .length() on a List<String> derived from keys()
+    let ks = m.keys()
+    show(stdio, "keys len", ks.length())
+    for k in ks
+        stdio.println("key: ${k}")
+
+    // .length() + sum on a List<Int> derived from values()
+    let vs = m.values()
+    show(stdio, "vals len", vs.length())
+    var sum = 0
+    for v in vs
+        sum = sum + v
+    show(stdio, "vals sum", sum)
+
+    // Int-keyed map exercises the i64-keyed slot decode.
+    var im: Map<Int, String> = new_map()
+    im.set(10, "ten")
+    im.set(20, "twenty")
+    let iks = im.keys()
+    show(stdio, "ikeys len", iks.length())
+    var ksum = 0
+    for ik in iks
+        ksum = ksum + ik
+    show(stdio, "ikeys sum", ksum)
+    for iv in im.values()
+        stdio.println("ival: ${iv}")

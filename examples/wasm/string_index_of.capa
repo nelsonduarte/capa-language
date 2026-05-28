@@ -1,0 +1,26 @@
+// String.index_of parity (D3 slice 4, 2026-05). Covers a normal
+// hit, a miss, a needle longer than the receiver, and the empty
+// needle (matches Python's ``str.find("")`` which returns 0 for
+// any receiver). The return shape is ``Option<Int>`` -- the legacy
+// ``-1`` sentinel is gone.
+
+fun main(stdio: Stdio)
+    let s = "hello world"
+    match s.index_of("world")
+        Some(i) -> stdio.println("hit at ${i}")
+        None    -> stdio.println("miss")
+    match s.index_of("xyz")
+        Some(i) -> stdio.println("hit at ${i}")
+        None    -> stdio.println("miss")
+    match "ab".index_of("abcdef")
+        Some(i) -> stdio.println("hit at ${i}")
+        None    -> stdio.println("miss")
+    match s.index_of("")
+        Some(i) -> stdio.println("empty at ${i}")
+        None    -> stdio.println("empty miss")
+    match "".index_of("")
+        Some(i) -> stdio.println("empty/empty at ${i}")
+        None    -> stdio.println("empty/empty miss")
+    match s.index_of("hello")
+        Some(i) -> stdio.println("prefix at ${i}")
+        None    -> stdio.println("prefix miss")

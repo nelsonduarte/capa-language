@@ -19,7 +19,7 @@ is invoked from ``_emit_list_method_call`` when the method is
 
 from __future__ import annotations
 
-from .._nodes import For, Index, MakeList, MethodCall, Value
+from .._nodes import For, Index, MakeList, MakeRange, MethodCall, Value
 from ._layout import (
     WasmEmissionError,
     _LIST_HEADER_SIZE, _LIST_LEN_OFFSET, _LIST_CAP_OFFSET, _LIST_DATA_OFFSET,
@@ -699,8 +699,8 @@ class _ListEmissionMixin:
         self._write(f"local.set ${instr.dst}")
 
     def _emit_for(self, instr: For) -> None:
-        """Lower ``for x in xs`` for a List iterator. Emits a
-        counted loop:
+        """Lower ``for x in xs`` for a List / Set / Range iterator.
+        Emits a counted loop:
         ``i = 0; while i < len(xs) { x = xs[i]; ...body...; i += 1 }``
         Uses the function's match-helper locals (``$_m_scrut`` and
         ``$_m_tag``) as scratch space for the iterator pointer and
@@ -716,11 +716,18 @@ class _ListEmissionMixin:
         elif iter_ty.startswith("Set"):
             from ._layout import _element_type_of_set
             elem_ty = _element_type_of_set(iter_ty)
+        elif iter_ty.startswith("Range"):
+            # ``for i in a..b`` / ``for i in a..=b``: the Range
+            # record stores (start_i64@0, end_i64@8, inclusive_i32@16).
+            # Counted loop reads them directly, bumps i by 1 per
+            # iteration, exits on inclusive ? i > end : i >= end.
+            # No data array, no materialised List<Int>.
+            self._emit_for_range(instr)
+            return
         else:
             raise WasmEmissionError(
-                f"For-iter over type {iter_ty!r}: only List and Set "
-                f"iteration are supported (range iteration lands in a "
-                f"later phase)"
+                f"For-iter over type {iter_ty!r}: only List, Set, and "
+                f"Range iteration are supported"
             )
         elem_size = self._size_of(elem_ty)
         # Float elements need ``f64.load`` (the bind local is f64);
@@ -823,6 +830,109 @@ class _ListEmissionMixin:
         self._write("i32.const 1")
         self._write("i32.add")
         self._write(f"local.set ${idx_local}")
+        self._write(f"br {loop_label}")
+        self._indent -= 1
+        self._write("end")
+        self._indent -= 1
+        self._write("end")
+        self._loop_labels.pop()
+
+    def _emit_make_range(self, instr: MakeRange) -> None:
+        """Allocate a Range record: 24 bytes laid out as
+        ``{ start_i64 @0, end_i64 @8, inclusive_i32 @16 }``.
+        The For-iter fast-path reads all three fields directly
+        without ever materialising the integer sequence."""
+        self._write("i32.const 24")
+        self._write("call $alloc")
+        self._write(f"local.set ${instr.dst}")
+        # start @0
+        self._write(f"local.get ${instr.dst}")
+        self._push_value(instr.start)
+        self._write("i64.store offset=0")
+        # end @8
+        self._write(f"local.get ${instr.dst}")
+        self._push_value(instr.end)
+        self._write("i64.store offset=8")
+        # inclusive @16
+        self._write(f"local.get ${instr.dst}")
+        self._write(f"i32.const {1 if instr.inclusive else 0}")
+        self._write("i32.store offset=16")
+
+    def _emit_for_range(self, instr: For) -> None:
+        """``for i in Range`` fast-path. Reads start / end / inclusive
+        out of the Range record once into depth-indexed scratch
+        locals, then runs ``i = start; while inclusive ? i <= end :
+        i < end: body; i += 1``.
+
+        The induction variable ``i`` lives in the bind name's own
+        i64 local (Int convention). End and inclusive scratch are
+        keyed by ``_for_depth`` so nested ``for o in 1..=3: for p
+        in 0..o`` doesn't have the inner loop's end-compare clobber
+        the outer's (manifested before the fix as the outer loop
+        running only one iteration's worth of inner work, e.g. 1
+        pair total instead of 6)."""
+        depth = self._for_depth
+        list_local = f"_f_list_{depth}"
+        end_local = f"_range_end_i64_{depth}"
+        incl_local = f"_range_incl_i32_{depth}"
+        # Stash the range pointer.
+        self._push_value(instr.iter)
+        self._write(f"local.set ${list_local}")
+        # Read end (i64 @8) into the depth-indexed i64 scratch.
+        self._write(f"local.get ${list_local}")
+        self._write("i64.load offset=8")
+        self._write(f"local.set ${end_local}")
+        # Read inclusive (i32 @16) into the depth-indexed i32 scratch.
+        self._write(f"local.get ${list_local}")
+        self._write("i32.load offset=16")
+        self._write(f"local.set ${incl_local}")
+        # Initialise i = start (i64 @0) into the bind's own local.
+        self._write(f"local.get ${list_local}")
+        self._write("i64.load offset=0")
+        self._write(f"local.set ${instr.name}")
+        self._block_counter += 1
+        loop_label = f"$FR{self._block_counter}_loop"
+        exit_label = f"$FR{self._block_counter}_exit"
+        cont_label = f"$FR{self._block_counter}_cont"
+        self._loop_labels.append((cont_label, exit_label))
+        self._write(f"block {exit_label}")
+        self._indent += 1
+        self._write(f"loop {loop_label}")
+        self._indent += 1
+        # Loop guard: inclusive ? i > end : i >= end -> exit.
+        # Branch on inclusive: if-then-else picks the right compare.
+        self._write(f"local.get ${incl_local}")
+        self._write("if")
+        self._indent += 1
+        self._write(f"local.get ${instr.name}")
+        self._write(f"local.get ${end_local}")
+        self._write("i64.gt_s")
+        self._write(f"br_if {exit_label}")
+        self._indent -= 1
+        self._write("else")
+        self._indent += 1
+        self._write(f"local.get ${instr.name}")
+        self._write(f"local.get ${end_local}")
+        self._write("i64.ge_s")
+        self._write(f"br_if {exit_label}")
+        self._indent -= 1
+        self._write("end")
+        # Body in an inner block so ``continue`` falls through to
+        # the increment site. ``_for_depth`` bumped per loop, same
+        # convention as the List path.
+        self._write(f"block {cont_label}")
+        self._indent += 1
+        self._for_depth += 1
+        for sub in instr.body:
+            self._emit_instr(sub)
+        self._for_depth -= 1
+        self._indent -= 1
+        self._write("end")
+        # i += 1
+        self._write(f"local.get ${instr.name}")
+        self._write("i64.const 1")
+        self._write("i64.add")
+        self._write(f"local.set ${instr.name}")
         self._write(f"br {loop_label}")
         self._indent -= 1
         self._write("end")

@@ -281,6 +281,22 @@ class For(Instr):
 
 
 @dataclass
+class MakeRange(Instr):
+    """``dst = start..end`` (exclusive) or ``dst = start..=end``
+    (inclusive). Mirrors :class:`capa.capa_ast.RangeExpr` at the
+    IR level. The Python emitter renders this as a
+    ``CapaRange(start, stop)`` wrapper; the Wasm emitter allocates
+    a 24-byte heap record { start: i64, end: i64, inclusive: i32 }
+    and, when consumed by a ``For`` iter whose type starts with
+    ``Range``, emits a counted-loop fast-path without
+    materialising the integer sequence."""
+    dst: str
+    start: Value
+    end: Value
+    inclusive: bool
+
+
+@dataclass
 class Pattern:
     """Base IR pattern. Concrete shapes below. Each backend's emitter
     decides how to render the pattern (Python ``match`` / ``case``

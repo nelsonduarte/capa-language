@@ -413,6 +413,7 @@ class _DiscoveryMixin:
                             return True
                     if recv_ty == "String" and instr.method in (
                         "contains", "starts_with", "ends_with",
+                        "index_of", "replace",
                     ):
                         return True
                     # List<String>.contains compares the needle to

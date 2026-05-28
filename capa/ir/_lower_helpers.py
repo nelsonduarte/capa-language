@@ -10,9 +10,26 @@ share them without a circular import back to ``_lower.py``:
 - ``_ty_to_str`` -- typesys Ty -> string, mirroring ``_type_name``.
 
 All four are pure; no shared state, no emitter dependencies.
+
+Also hosts ``UnsupportedInIR`` for the same reason: every
+``_lower_*`` mixin raises it, so it must live below them in the
+import graph. ``_lower.py`` re-exports it so the public
+``capa.ir.UnsupportedInIR`` surface keeps working.
 """
 
 from __future__ import annotations
+
+
+class UnsupportedInIR(Exception):
+    """Raised when the lowerer hits an AST node it does not yet
+    handle. The caller (typically ``capa.ir.compile`` or a test) is
+    expected to catch this and fall back to the legacy transpiler.
+    The message identifies the unsupported shape so coverage can be
+    extended incrementally."""
+
+    def __init__(self, shape: str):
+        super().__init__(f"CIR lowering does not yet support: {shape}")
+        self.shape = shape
 
 
 def _type_name(te: object) -> str:

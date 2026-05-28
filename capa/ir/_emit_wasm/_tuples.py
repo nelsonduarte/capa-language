@@ -21,9 +21,10 @@ Result / variant payloads:
 - ``String`` -> packed (ptr | (len << 32)) as i64
 - pointer-shaped (struct / sum / List / Map) -> i32 extended to i64
 
-Phase 6K scope: 2-arity tuples only. Larger arities would extend
-the layout linearly (offset = idx * 8, size = arity * 8) but no
-demo program needs them.
+Arity: any positive integer. The 8-byte uniform slot stride
+covers any element shape, so a tuple of arity N is just an
+``N * 8``-byte heap record. ``_emit_make_tuple`` allocates that
+many bytes; ``_emit_tuple_index`` reads slot ``i * 8``.
 """
 
 from __future__ import annotations
@@ -96,10 +97,9 @@ class _TupleEmissionMixin:
         if len(elem_types) != len(instr.elements):
             elem_types = [e.ty or "Unknown" for e in instr.elements]
         arity = len(instr.elements)
-        if arity != 2:
+        if arity < 1:
             raise WasmEmissionError(
-                f"Phase 6K: only 2-arity tuples are supported in "
-                f"the Wasm backend, got arity {arity}"
+                "MakeTuple requires at least one element"
             )
         total_size = arity * 8
         self._write(f"i32.const {total_size}")

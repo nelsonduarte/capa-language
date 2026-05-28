@@ -214,6 +214,12 @@ class _ValueEmissionMixin:
         # i32 pointers identical to structs.
         if head in ("List", "Map", "Set"):
             return "i32"
+        # ``Range<Int>`` is a 24-byte heap record allocated by
+        # MakeRange; the value-shape is an i32 pointer identical to
+        # other collection types. The for-iter fast-path reads
+        # start / end / inclusive out of the record directly.
+        if head == "Range":
+            return "i32"
         # Closures are packed i64: (fn_idx << 32) | env_ptr.
         if capa_ty.startswith("Fun"):
             return "i64"

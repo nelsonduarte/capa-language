@@ -25,7 +25,7 @@ from ._nodes import (
     Module, Function, Value, Instr,
     AssignConst, Reassign, BinOp, UnaryOp, Call, MethodCall,
     If, While, Break, Continue, Return,
-    MakeStruct, MakeList, MakeTuple, MakeMap, MakeSet,
+    MakeStruct, MakeList, MakeTuple, MakeMap, MakeRange, MakeSet,
     FieldAccess, Index, FormatStr, For,
     TryUnwrap, MakeLambda,
     Pattern, PatWildcard, PatIdent, PatLiteral, PatVariant, PatTuple, Match,
@@ -413,6 +413,18 @@ class PythonEmitter:
         if isinstance(instr, MakeMap):
             self._write(f"{instr.dst} = {{}}")
             return
+        if isinstance(instr, MakeRange):
+            # ``CapaRange`` is the runtime wrapper that mirrors the
+            # legacy transpiler's ``CapaRange(start, stop)`` shape so
+            # ``for i in 0..N`` / ``for i in a..=b`` iterates the
+            # same integer sequence on both backends. Inclusive
+            # ranges add 1 to ``end`` to align with Python's
+            # half-open ``range(...)`` convention.
+            start = self._format_value(instr.start)
+            end = self._format_value(instr.end)
+            stop = f"({end}) + 1" if instr.inclusive else end
+            self._write(f"{instr.dst} = CapaRange({start}, {stop})")
+            return
         if isinstance(instr, MakeSet):
             # CapaSet is insertion-ordered (dict-backed); a raw Python
             # ``set`` iterates in hash order and would diverge from the
@@ -719,7 +731,16 @@ class PythonEmitter:
         if m == "trim_end":    return f"{r}.rstrip()"
         if m == "is_empty":    return f"({r} == '')"
         if m == "split":       return f"CapaList({r}.split({a[0]}))"
-        if m == "replace":     return f"{r}.replace({a[0]}, {a[1]})"
+        if m == "replace":
+            # Empty-needle policy (D3 slice 4, 2026-05): both backends
+            # return the receiver unchanged when ``old`` is empty,
+            # rather than Python's native ``"abc".replace("", "X") ==
+            # "XaXbXcX"``. Avoids the empty-needle inf-loop trap and
+            # keeps the Wasm and Python paths bit-identical.
+            return (
+                f"(lambda _o, _n: {r}.replace(_o, _n) if _o else {r})"
+                f"({a[0]}, {a[1]})"
+            )
         if m == "substring":
             # Safety (audit fix C1): route through ``_capa_substring``
             # so the Python backend raises ``ValueError`` at the same

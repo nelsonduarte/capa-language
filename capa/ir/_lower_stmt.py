@@ -7,7 +7,7 @@ control flow, ``_lower_return`` / ``_lower_expr_stmt`` /
 ``_lower_assign`` for value-producing tails. Each method
 appends to ``self._instrs`` (the current function's
 instruction list) and returns ``None``; expressions return
-``Value``\s and live in ``_lower_expr.py``.
+``Value``-s and live in ``_lower_expr.py``.
 
 Audit P1 refactor: split per AST family.
 """
@@ -15,7 +15,9 @@ Audit P1 refactor: split per AST family.
 from __future__ import annotations
 
 from .. import capa_ast as A
-from ._lower_helpers import _type_name, _split_tuple_elem_types
+from ._lower_helpers import (
+    _type_name, _split_tuple_elem_types, UnsupportedInIR,
+)
 from ._nodes import (
     AssignConst, Reassign, BinOp, Call, MethodCall,
     Break, Continue, For, If, Match, MatchArm, Return, TryUnwrap,
@@ -55,11 +57,31 @@ class _LowerStmtMixin:
 
     def _lower_let(self, s: A.LetStmt) -> None:
         # Ident pattern: ``let x = expr``. Tuple pattern:
-        # ``let (a, b) = expr`` destructures positionally. Other
+        # ``let (a, b) = expr`` destructures positionally. Wildcard
+        # ``let _ = expr`` lowers to an evaluate-and-discard (binds a
+        # throwaway local so RHS side effects still happen). Other
         # pattern shapes (Variant, Struct, Or) on the LHS of a let
         # are still deferred (they would need a one-arm match
         # lowering with an exhaustiveness check the analyzer has
         # already done).
+        if isinstance(s.pattern, A.WildcardPat):
+            # ``let _ = expr``: evaluate the RHS for its effects (or
+            # for its types, in ``reserved for future`` placeholders
+            # like render.capa's ``let _ = sbom``) and drop the value
+            # into a fresh local that nothing reads. Binding into the
+            # locals map keeps the emitter's type-aware dispatch
+            # consistent with how ``let x = expr`` would have been
+            # treated, even though no source name resolves here.
+            value = self._lower_expr(s.value)
+            ann_ty = _type_name(s.type_expr) if s.type_expr else None
+            local_ty = (
+                ann_ty if ann_ty and ann_ty != "Unknown"
+                else value.ty
+            )
+            wild = fresh_local(self._counter, prefix="wild")
+            self._locals[wild] = local_ty
+            self._instrs.append(AssignConst(dst=wild, src=value))
+            return
         if isinstance(s.pattern, A.IdentPat):
             value = self._lower_expr(s.value)
             # Prefer the explicit type annotation when present and
@@ -84,6 +106,10 @@ class _LowerStmtMixin:
             # narrow it), fall back to ``Unknown`` per element.
             elem_types = _split_tuple_elem_types(value.ty)
             for idx, sub in enumerate(s.pattern.elements):
+                # ``let (a, _) = pair``: skip the wildcard slot, no
+                # binding emitted.
+                if isinstance(sub, A.WildcardPat):
+                    continue
                 if not isinstance(sub, A.IdentPat):
                     raise UnsupportedInIR(
                         f"nested let-pattern {type(sub).__name__}"

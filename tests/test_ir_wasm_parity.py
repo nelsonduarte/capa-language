@@ -85,6 +85,12 @@ _PARITY_PROGRAMS: list[str] = [
     "random_seeded.capa",
     "net_get.capa",
     "net_restrict.capa",
+    "string_replace.capa",
+    "string_char_at.capa",
+    "string_index_of.capa",
+    "tuple_arity_n.capa",
+    "map_keys_values.capa",
+    "range_iter.capa",
 ]
 
 # Programs deliberately excluded from parity and why; documented
@@ -350,6 +356,54 @@ class TestPythonWasmParity(unittest.TestCase):
         # are tested separately so the trap / raise check is direct
         # rather than vacuous-identical.
         self._assert_parity("safety_traps.capa")
+
+    def test_string_replace(self):
+        # Slice 4 (2026-05): ``String.replace`` lands on the Wasm
+        # backend. Empty-needle policy is "return receiver unchanged"
+        # on both backends (Python's native ``"abc".replace("", "X")
+        # == "XaXbXcX"`` is suppressed by the Python emitter's
+        # lambda guard); see _emit_string_replace.
+        self._assert_parity("string_replace.capa")
+
+    def test_string_char_at(self):
+        # Slice 4 (2026-05): ``String.char_at`` returns
+        # ``Option<String>`` with per-codepoint indexing. The Wasm
+        # emitter walks UTF-8 leading bytes (1/2/3/4 byte
+        # codepoints) to match Python's per-codepoint ``s[idx]``.
+        self._assert_parity("string_char_at.capa")
+
+    def test_string_index_of(self):
+        # Slice 4 (2026-05): ``String.index_of`` returns
+        # ``Option<Int>`` (byte offset). D3 retired the legacy -1
+        # sentinel; the Python emitter wraps ``.find()`` in a
+        # ``Some/None_`` lambda, the Wasm emitter writes the
+        # Option record directly.
+        self._assert_parity("string_index_of.capa")
+
+    def test_tuple_arity_n(self):
+        # Slice 5 (2026-05): the 2-arity tuple cap was lifted; the
+        # uniform 8-byte slot stride covers arity-3 / arity-4.
+        # Co-shipped with the Index lowering type-recovery fix that
+        # parses elem types out of the receiver's tuple shape when
+        # the analyzer didn't carry a precise type for the slot.
+        self._assert_parity("tuple_arity_n.capa")
+
+    def test_map_keys_values(self):
+        # Slice 5 (2026-05): ``Map.keys()`` / ``Map.values()`` walk
+        # the pair table into a fresh List<K> / List<V> with per-K
+        # / per-V slot encoding (mirroring how MakeList writes the
+        # respective element shape).
+        self._assert_parity("map_keys_values.capa")
+
+    def test_range_iter(self):
+        # Slice 5 (2026-05): ``for i in a..b`` / ``for j in a..=b``
+        # via a new ``MakeRange`` CIR node + a counted-loop Wasm
+        # fast-path that reads start / end / inclusive out of the
+        # 24-byte Range record without materialising the integer
+        # sequence. Nested range loops use depth-indexed scratch
+        # locals so an inner loop's end-compare doesn't clobber the
+        # outer's.
+        self._assert_parity("range_iter.capa")
 
     def test_inventory_matches_examples_dir(self):
         # Soundness check: every .capa under examples/wasm/ is

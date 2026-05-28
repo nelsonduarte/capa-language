@@ -948,6 +948,91 @@ Listed so the design space is explicit.
 
 ### Wasm-specific gaps that are not P0
 
+- [x] **"Fully functional Wasm" slice 5 - tuple arity > 2,
+  Map.keys / Map.values, range iteration, and four IR / emit
+  bug-fixes surfaced by `capa_governance_pack` on pure `--wasm`**
+  (closed 2026-05-28). Verification: `capa --run --wasm
+  governance.capa` (with and without `GOV_PACK_INCLUDE_CVE=1`)
+  produces output byte-identical to the Python backend (modulo
+  timestamps), where previously the program rejected on five
+  separate gaps in sequence. Six landed:
+  - **Tuple arity > 2**: the `arity != 2` cap in `_emit_make_tuple`
+    was defensive only; the uniform 8-byte slot stride covers any
+    arity. Comment relocated, check relaxed.
+  - **Map.keys() / Map.values()**: walks the map's pair table
+    into a fresh List<K> / List<V> with per-K / per-V slot
+    encoding (mirrors how `_emit_make_list` writes the respective
+    element shape). Shared header-setup + per-slot-emit loop
+    factored out so a future Set.to_list could reuse it.
+    `test_unsupported_phase_construct_raises` flipped to a
+    success canary (`test_map_keys_and_values_now_supported`).
+  - **Range iteration** (`for i in 0..N`, `for j in a..=b`): new
+    `MakeRange` CIR node + 24-byte heap record { start_i64,
+    end_i64, inclusive_i32 } + counted-loop fast-path in
+    `_emit_for` that reads start / end / inclusive directly
+    without materialising List<Int>. Depth-indexed scratch
+    locals (`$_range_end_i64_N`, `$_range_incl_i32_N`) so
+    nested `for o in 1..=3: for p in 0..o` doesn't have the
+    inner loop's end-compare clobber the outer's (caught by the
+    nested-pairs parity case: would've reported 1 pair instead
+    of 6). Python emitter renders as `CapaRange(start, stop)`
+    so parity is preserved.
+  - **Wildcard let-pattern** (`let _ = expr`): the CIR lowerer
+    rejected this with `UnsupportedInIR("let-pattern WildcardPat")`;
+    now lowers as an evaluate-and-discard into a fresh `wild_*`
+    local. Also handles `let (a, _) = pair` (tuple wildcard
+    slot skipped during destructure). Surfaced via
+    `render.capa:148` (`let _ = sbom // reserved placeholder`).
+  - **String dst <- String param**: `_emit_string_assign` only
+    handled `lit_str` / `local` / `lit_unit` / `global` sources
+    but not `param`; a `let m = fallback` aliasing a String
+    function parameter tripped `cannot bind String dst`. Added
+    the `param` case routing through `${name}_ptr` / `${name}_len`.
+  - **Tuple-element type-recovery in CIR Index**: the analyzer
+    didn't always carry a precise type for `tuple[lit_int]`
+    (arity > 2 in particular), so destructured slots landed as
+    i64 locals in Wasm even for String / Bool elements,
+    tripping the wasm verifier with i32-vs-i64 mismatches. The
+    lowerer now parses the receiver's tuple-type string and
+    picks the slot's authoritative element type when the
+    receiver is `(T1, T2, ...)` and the index is a literal int.
+  Bonus pre-existing bug fixed along the way: `_lower_stmt.py`,
+  `_lower_expr.py`, `_lower_pattern.py` all raised
+  `UnsupportedInIR(...)` without importing the class (since the
+  audit P1 mixin split), so every legitimate rejection surfaced
+  as `NameError: name 'UnsupportedInIR' is not defined`. The
+  class moved to `_lower_helpers.py` (leaf module already
+  imported by every mixin) and `_lower.py` re-exports it for
+  the public `capa.ir.UnsupportedInIR` surface. Three new
+  parity programs (`tuple_arity_n.capa`, `map_keys_values.capa`,
+  `range_iter.capa`). Suite 2010 -> 2013 / 5 skipped / 0 fail.
+
+- [x] **"Fully functional Wasm" slice 4 - String.replace /
+  char_at / index_of + Stdio terminal-encoding robustness**
+  (closed 2026-05-28). Per D3: `char_at(idx) -> Option<String>`
+  (UTF-8 codepoint decode, multi-byte safe), `index_of(needle) ->
+  Option<Int>` (byte offset, None on miss), `replace(old, new) ->
+  String` (two-pass: count occurrences + copy with substitution).
+  Empty-needle rule for both `replace` and the rest: receiver
+  unchanged (avoids Python's `"abc".replace("", "X") -> "XaXbXcX"`
+  empty-needle inf-loop trap; documented and applied identically
+  on both backends via a small guard in the Python emitters).
+  4 new tests (3 parity programs covering ASCII + multi-byte
+  UTF-8 + edge cases + 1 pre-existing canary test repointed
+  since the three methods are no longer deferred).
+  Caught + fixed a real Windows-terminal robustness bug while
+  verifying: `Stdio.print/println/eprintln` on both backends
+  crashed (`UnicodeEncodeError`) when writing chars the terminal
+  codec (e.g. cp1252) cannot encode (e.g. 🦊). Added a shared
+  `_write_safe(stream, text)` helper in `capa/runtime/_capabilities.py`
+  that catches `UnicodeEncodeError` and re-encodes with
+  `errors="replace"` for the stream's declared encoding. Wired
+  Python `Stdio` + Wasm host + Component host all through it so
+  parity holds (both sides produce identical bytes on the same
+  terminal). Pre-existing harness test was insensitive because
+  `io.StringIO` has no codec limit; the bug only surfaced on real
+  terminals. Full suite 2007 -> 2010 / 5 skipped / 0 fail.
+
 - [x] **"Fully functional Wasm" slice 3 - Net.get end-to-end**
   (closed 2026-05-28). Per D2: urllib mirror, Net.post deferred.
   `Net.get(url: String) -> Result<String, IoError>` now works on

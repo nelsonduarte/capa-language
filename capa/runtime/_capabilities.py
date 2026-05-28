@@ -49,21 +49,49 @@ class IoError:
         return self.message
 
 
+def _write_safe(stream, text: str) -> None:
+    """Write ``text`` to ``stream``, falling back to replacement
+    characters if the terminal codec cannot encode it.
+
+    Windows consoles default to cp1252 (or another non-UTF-8 OEM
+    codec); writing e.g. the fox emoji raises ``UnicodeEncodeError``
+    out of the runtime. To avoid crashing a Capa program on an
+    encoding mismatch, we re-encode with ``errors="replace"`` and
+    write the surrogated form. Same convention as the Wasm host's
+    UTF-8 decode side (audit fix H3): silent crashes are worse than
+    a visible replacement character.
+
+    Both backends share this helper so a program that prints a
+    non-cp1252 character produces byte-identical output on the
+    Python and Wasm paths.
+    """
+    try:
+        stream.write(text)
+    except UnicodeEncodeError:
+        encoding = getattr(stream, "encoding", None) or "ascii"
+        safe = text.encode(encoding, errors="replace").decode(
+            encoding, errors="replace",
+        )
+        stream.write(safe)
+
+
 class Stdio:
     """Capability for standard input and output."""
 
     def print(self, text: str) -> None:
         """Prints without trailing newline."""
-        sys.stdout.write(text)
+        _write_safe(sys.stdout, text)
         sys.stdout.flush()
 
     def println(self, text: str) -> None:
         """Prints with trailing newline."""
-        print(text)
+        _write_safe(sys.stdout, text + "\n")
+        sys.stdout.flush()
 
     def eprintln(self, text: str) -> None:
         """Prints to stderr with newline."""
-        print(text, file=sys.stderr)
+        _write_safe(sys.stderr, text + "\n")
+        sys.stderr.flush()
 
     def read_line(self) -> "Result[str, IoError]":
         """Reads a line from stdin (without the trailing newline)."""

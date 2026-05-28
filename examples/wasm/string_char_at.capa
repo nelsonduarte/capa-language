@@ -1,0 +1,36 @@
+// String.char_at parity (D3 slice 4, 2026-05). Covers ASCII,
+// multi-byte UTF-8 (e accent = 2 bytes, Euro = 3 bytes, fox emoji
+// = 4 bytes), and out-of-range -> None. The Wasm path walks UTF-8
+// leading bytes (0xxxxxxx / 110xxxxx / 1110xxxx / 11110xxx) to
+// match Python's per-codepoint indexing.
+
+fun main(stdio: Stdio)
+    let ascii = "hello"
+    match ascii.char_at(0)
+        Some(c) -> stdio.println("ascii[0] = ${c}")
+        None    -> stdio.println("ascii[0] = none")
+    match ascii.char_at(4)
+        Some(c) -> stdio.println("ascii[4] = ${c}")
+        None    -> stdio.println("ascii[4] = none")
+    match ascii.char_at(5)
+        Some(c) -> stdio.println("ascii[5] = ${c}")
+        None    -> stdio.println("ascii[5] = none")
+    let mixed = "aéb€c🦊d"
+    match mixed.char_at(0)
+        Some(c) -> stdio.println("mixed[0] = ${c}")
+        None    -> stdio.println("mixed[0] = none")
+    match mixed.char_at(1)
+        Some(c) -> stdio.println("mixed[1] = ${c}")
+        None    -> stdio.println("mixed[1] = none")
+    match mixed.char_at(3)
+        Some(c) -> stdio.println("mixed[3] = ${c}")
+        None    -> stdio.println("mixed[3] = none")
+    match mixed.char_at(5)
+        Some(c) -> stdio.println("mixed[5] = ${c}")
+        None    -> stdio.println("mixed[5] = none")
+    match mixed.char_at(6)
+        Some(c) -> stdio.println("mixed[6] = ${c}")
+        None    -> stdio.println("mixed[6] = none")
+    match mixed.char_at(7)
+        Some(c) -> stdio.println("mixed[7] = ${c}")
+        None    -> stdio.println("mixed[7] = none")

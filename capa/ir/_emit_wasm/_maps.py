@@ -121,9 +121,14 @@ class _MapEmissionMixin:
         if method == "pairs":
             self._emit_map_pairs(recv, key_ty, value_ty, instr.dst)
             return
+        if method == "keys":
+            self._emit_map_keys(recv, key_ty, instr.dst)
+            return
+        if method == "values":
+            self._emit_map_values(recv, value_ty, instr.dst)
+            return
         raise WasmEmissionError(
-            f"Map method {method!r} not yet supported on the Wasm backend "
-            f"(keys / values need List of K / V tuples)"
+            f"Map method {method!r} not yet supported on the Wasm backend"
         )
 
     # ----- per-key canonical push + compare helpers -----------
@@ -425,6 +430,243 @@ class _MapEmissionMixin:
         self._write("end")
         self._indent -= 1
         self._write("end")
+
+    def _emit_map_keys(self, recv: Value, key_ty: str, dst) -> None:
+        """``m.keys() -> List<K>``. Walks the pair table in insertion
+        order, copying each key into a fresh List<K> data slot. The
+        slot encoding mirrors what ``_emit_make_list`` writes for a
+        literal List<K>, so the returned list is interchangeable with
+        any other List<K> the program might build.
+
+        Per-K dispatch:
+        - String: pack pair's (ptr@0, len@4) into the list's 8-byte
+          packed-i64 slot, identical to List<String> elem encoding.
+        - Int: pair's i64 key @0 copies straight to the 8-byte slot.
+        - Bool: pair's i32 key @0 copies straight to the 4-byte slot.
+        - Pointer-shape: pair's i32 key @0 copies to the 4-byte slot.
+        """
+        if dst is None:
+            return
+        from ._layout import (
+            _LIST_HEADER_SIZE, _LIST_LEN_OFFSET, _LIST_CAP_OFFSET,
+            _LIST_DATA_OFFSET,
+        )
+        elem_size = self._size_of(key_ty)
+        self._emit_map_collect_list_setup(recv, elem_size, dst)
+        self._emit_map_collect_loop(
+            dst, "_alloc_tmp", elem_size,
+            slot_emit=lambda: self._emit_load_pair_key_to_list_slot(
+                key_ty, "_alloc_tmp_pair", elem_size,
+            ),
+        )
+
+    def _emit_map_values(self, recv: Value, value_ty: str, dst) -> None:
+        """``m.values() -> List<V>``. Same shape as ``keys()`` but
+        copies pair.value (i64 @8) into the list slot, re-encoded for
+        the list's per-V layout convention.
+
+        Per-V dispatch:
+        - String / Int: stored as 8-byte packed i64; copy verbatim.
+        - Float: stored as i64 bit pattern in pair, the list keeps
+          the same 8-byte slot (HOFs that read it back as f64 see
+          the IEEE-754 bytes unchanged).
+        - Bool: ``_push_map_value_as_i64`` extended an i32 to i64;
+          here we wrap back to i32 for the 4-byte list slot.
+        - Pointer-shape: extended-to-i64 in pair; wrap to i32 for
+          the 4-byte list slot.
+        """
+        if dst is None:
+            return
+        from ._layout import (
+            _LIST_HEADER_SIZE, _LIST_LEN_OFFSET, _LIST_CAP_OFFSET,
+            _LIST_DATA_OFFSET,
+        )
+        elem_size = self._size_of(value_ty)
+        self._emit_map_collect_list_setup(recv, elem_size, dst)
+        self._emit_map_collect_loop(
+            dst, "_alloc_tmp", elem_size,
+            slot_emit=lambda: self._emit_load_pair_value_to_list_slot(
+                value_ty, "_alloc_tmp_pair", elem_size,
+            ),
+        )
+
+    def _emit_map_collect_list_setup(
+        self, recv: Value, elem_size: int, dst,
+    ) -> None:
+        """Shared header allocation for keys()/values(). Allocates a
+        List<T> header sized to the map's len/cap, then a data array
+        of ``cap * elem_size`` bytes. Leaves the map pointer in
+        ``$_m_scrut`` and the data-array pointer in ``$_alloc_tmp``
+        so the per-slot loop can index without reloading them."""
+        from ._layout import (
+            _LIST_HEADER_SIZE, _LIST_LEN_OFFSET, _LIST_CAP_OFFSET,
+            _LIST_DATA_OFFSET,
+        )
+        map_local = "_m_scrut"
+        self._push_value(recv)
+        self._write(f"local.set ${map_local}")
+        # Allocate list header.
+        self._write(f"i32.const {_LIST_HEADER_SIZE}")
+        self._write("call $alloc")
+        self._write(f"local.set ${dst}")
+        # Copy len + cap from map into the list header.
+        self._write(f"local.get ${dst}")
+        self._write(f"local.get ${map_local}")
+        self._write(f"i32.load offset={_MAP_LEN_OFFSET}")
+        self._write(f"i32.store offset={_LIST_LEN_OFFSET}")
+        self._write(f"local.get ${dst}")
+        self._write(f"local.get ${map_local}")
+        self._write(f"i32.load offset={_MAP_CAP_OFFSET}")
+        self._write(f"i32.store offset={_LIST_CAP_OFFSET}")
+        # Allocate data array of cap * elem_size bytes.
+        self._write(f"local.get ${map_local}")
+        self._write(f"i32.load offset={_MAP_CAP_OFFSET}")
+        self._write(f"i32.const {elem_size}")
+        self._write("i32.mul")
+        self._write("call $alloc")
+        self._write("local.set $_alloc_tmp")
+        self._write(f"local.get ${dst}")
+        self._write("local.get $_alloc_tmp")
+        self._write(f"i32.store offset={_LIST_DATA_OFFSET}")
+
+    def _emit_map_collect_loop(
+        self, dst, data_local: str, elem_size: int, *, slot_emit,
+    ) -> None:
+        """Loop over the map's pair table, calling ``slot_emit`` once
+        per slot to push the value to store into the list. ``slot_emit``
+        is responsible for writing the per-slot value with the right
+        store opcode (i64.store / i32.store) at offset 0 of the
+        operand on top of the stack, since the address is pre-pushed
+        here as ``list.data + i * elem_size``."""
+        idx_local = "_m_tag"
+        map_local = "_m_scrut"
+        self._write("i32.const 0")
+        self._write(f"local.set ${idx_local}")
+        self._block_counter += 1
+        loop = f"$Mcol{self._block_counter}_loop"
+        exit_ = f"$Mcol{self._block_counter}_exit"
+        self._write(f"block {exit_}")
+        self._indent += 1
+        self._write(f"loop {loop}")
+        self._indent += 1
+        # if idx >= len: break
+        self._write(f"local.get ${idx_local}")
+        self._write(f"local.get ${map_local}")
+        self._write(f"i32.load offset={_MAP_LEN_OFFSET}")
+        self._write("i32.ge_s")
+        self._write(f"br_if {exit_}")
+        # pair_addr = map.data + idx * 16
+        self._write(f"local.get ${map_local}")
+        self._write(f"i32.load offset={_MAP_DATA_OFFSET}")
+        self._write(f"local.get ${idx_local}")
+        self._write(f"i32.const {_MAP_PAIR_SIZE}")
+        self._write("i32.mul")
+        self._write("i32.add")
+        self._write("local.set $_alloc_tmp_pair")
+        # slot_addr = list.data + idx * elem_size
+        self._write(f"local.get ${data_local}")
+        self._write(f"local.get ${idx_local}")
+        self._write(f"i32.const {elem_size}")
+        self._write("i32.mul")
+        self._write("i32.add")
+        # Now the slot's address is on the operand stack; per-type
+        # callback pushes the value + emits the store at offset=0.
+        slot_emit()
+        # idx++
+        self._write(f"local.get ${idx_local}")
+        self._write("i32.const 1")
+        self._write("i32.add")
+        self._write(f"local.set ${idx_local}")
+        self._write(f"br {loop}")
+        self._indent -= 1
+        self._write("end")
+        self._indent -= 1
+        self._write("end")
+
+    def _emit_load_pair_key_to_list_slot(
+        self, key_ty: str, pair_addr_local: str, elem_size: int,
+    ) -> None:
+        """With the destination slot address on the operand stack,
+        load the pair's key and emit the store at offset 0. Mirrors
+        ``_emit_load_pair_key_for_tuple`` but writes into a List<K>
+        slot (which is size-dispatched) rather than a tuple slot
+        (uniform 8 bytes)."""
+        if key_ty == "String":
+            # Pack pair (ptr, len) into list's packed-i64 slot.
+            self._write(f"local.get ${pair_addr_local}")
+            self._write(f"i32.load offset={_MAP_PAIR_KEY_LEN_OFFSET}")
+            self._write("i64.extend_i32_u")
+            self._write("i64.const 32")
+            self._write("i64.shl")
+            self._write("local.tee $_alloc_tmp_i64")
+            self._write("drop")
+            self._write(f"local.get ${pair_addr_local}")
+            self._write(f"i32.load offset={_MAP_PAIR_KEY_PTR_OFFSET}")
+            self._write("i64.extend_i32_u")
+            self._write("local.get $_alloc_tmp_i64")
+            self._write("i64.or")
+            self._write("i64.store offset=0")
+            return
+        if key_ty == "Int":
+            self._write(f"local.get ${pair_addr_local}")
+            self._write("i64.load offset=0")
+            self._write("i64.store offset=0")
+            return
+        if key_ty == "Bool":
+            self._write(f"local.get ${pair_addr_local}")
+            self._write("i32.load offset=0")
+            self._write("i32.store offset=0")
+            return
+        if self._is_pointer_shape_ty(key_ty):
+            self._write(f"local.get ${pair_addr_local}")
+            self._write("i32.load offset=0")
+            self._write("i32.store offset=0")
+            return
+        raise WasmEmissionError(
+            f"Map.keys: key type {key_ty!r} not supported on the Wasm backend"
+        )
+
+    def _emit_load_pair_value_to_list_slot(
+        self, value_ty: str, pair_addr_local: str, elem_size: int,
+    ) -> None:
+        """With the destination slot address on the operand stack,
+        load the pair's value (i64 @8 in pair) and emit the store
+        with the right encoding for the list's per-V slot layout."""
+        if value_ty in ("Int", "String"):
+            # Same 8-byte packed encoding in pair and in list slot.
+            self._write(f"local.get ${pair_addr_local}")
+            self._write(f"i64.load offset={_MAP_PAIR_VALUE_OFFSET}")
+            self._write("i64.store offset=0")
+            return
+        if value_ty == "Float":
+            # The pair stores f64 bits as i64; the list's 8-byte
+            # slot keeps the same bit pattern (HOFs that load it
+            # via f64.load read the same IEEE-754 bytes).
+            self._write(f"local.get ${pair_addr_local}")
+            self._write(f"i64.load offset={_MAP_PAIR_VALUE_OFFSET}")
+            self._write("i64.store offset=0")
+            return
+        if value_ty == "Bool":
+            # Pair stored Bool as i64.extend_i32_s; list slot is 4
+            # bytes, so wrap back to i32.
+            self._write(f"local.get ${pair_addr_local}")
+            self._write(f"i64.load offset={_MAP_PAIR_VALUE_OFFSET}")
+            self._write("i32.wrap_i64")
+            self._write("i32.store offset=0")
+            return
+        # Pointer-shape values: pair has i32-extended-to-i64; list
+        # slot is 4 bytes, wrap back to i32.
+        if (value_ty.split("<", 1)[0] in self._struct_layouts
+                or value_ty.split("<", 1)[0] in self._sum_layouts
+                or value_ty.startswith(("List", "Map", "Set"))):
+            self._write(f"local.get ${pair_addr_local}")
+            self._write(f"i64.load offset={_MAP_PAIR_VALUE_OFFSET}")
+            self._write("i32.wrap_i64")
+            self._write("i32.store offset=0")
+            return
+        raise WasmEmissionError(
+            f"Map.values: value type {value_ty!r} not supported on the Wasm backend"
+        )
 
     def _push_map_value_as_i64(self, v: Value, value_ty: str) -> None:
         """Push a Map value onto the stack as a 64-bit packed slot.

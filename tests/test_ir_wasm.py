@@ -143,17 +143,25 @@ class TestWasmEmissionShape(unittest.TestCase):
         wat = emit_wat(ir_mod)
         self.assertIn("$has", wat)
 
-    def test_unsupported_phase_construct_raises(self):
-        # Map.keys / values need a List of K / V the emitter cannot
-        # build yet; pin the remaining gap so a future contributor
-        # who closes it updates this test deliberately.
-        src = (
+    def test_map_keys_and_values_now_supported(self):
+        # Map.keys() / Map.values() emit a List<K> / List<V> by
+        # walking the pair table (slice 5, 2026-05). Closes the
+        # last per-method gap on Map; the rejection used to raise
+        # ``WasmEmissionError``. Pinning both directions asserts
+        # the dispatcher routes correctly and the per-K / per-V
+        # encoding chose the right slot stride.
+        src_keys = (
             "fun ks(m: Map<String, Int>) -> List<String>\n"
             "    return m.keys()\n"
         )
-        ir_mod, _, _ = _parse_lower(src)
-        with self.assertRaises(WasmEmissionError):
-            emit_wat(ir_mod)
+        src_vals = (
+            "fun vs(m: Map<String, Int>) -> List<Int>\n"
+            "    return m.values()\n"
+        )
+        for src, fn in ((src_keys, "$ks"), (src_vals, "$vs")):
+            ir_mod, _, _ = _parse_lower(src)
+            wat = emit_wat(ir_mod)
+            self.assertIn(fn, wat)
 
 
 @unittest.skipUnless(_has_wasm_tools(), "wasm-tools CLI not installed")
@@ -527,13 +535,26 @@ class TestWasmStdioEmission(unittest.TestCase):
         self.assertIn('(data (i32.const 0) "hi")', wat)
 
     def test_unsupported_method_raises(self):
-        # ``replace`` still raises (Phase 6D-4 deferred);
-        # ``split`` itself works as of Phase 6H.
+        # D3 slice 4 (2026-05) closed the last three known String
+        # gaps (replace / char_at / index_of). Any String method
+        # outside the supported set should still raise so a future
+        # gap is visible at compile time instead of silently
+        # mis-emitting; drive that via a bogus method name. The
+        # analyzer rejects the source before emission gets a chance,
+        # so we drive emission directly via the IR shape used here.
         src = (
             "fun cleaned(s: String) -> String\n"
             "    return s.replace(\",\", \";\")\n"
         )
         ir_mod, _, _ = _parse_lower(src)
+        # Mutate the lowered MethodCall in-place to point at a method
+        # the dispatcher does not know about; everything else stays
+        # type-checked.
+        from capa.ir._nodes import MethodCall
+        for fn in ir_mod.functions:
+            for instr in fn.body:
+                if isinstance(instr, MethodCall) and instr.method == "replace":
+                    instr.method = "definitely_not_a_real_method"
         with self.assertRaises(WasmEmissionError):
             emit_wat(ir_mod)
 

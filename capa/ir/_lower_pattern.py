@@ -16,7 +16,9 @@ Audit P1 refactor: split per AST family.
 from __future__ import annotations
 
 from .. import capa_ast as A
-from ._lower_helpers import _split_tuple_elem_types, _split_top_level_comma
+from ._lower_helpers import (
+    _split_tuple_elem_types, _split_top_level_comma, UnsupportedInIR,
+)
 from ._nodes import (
     PatIdent, PatLiteral, PatTuple, PatVariant, PatWildcard, Pattern, Value,
 )

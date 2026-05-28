@@ -33,24 +33,19 @@ from ._nodes import (
 
 
 from ._capa_types import BUILTIN_CAPS
-from ._lower_expr import _LowerExprMixin
 from ._lower_helpers import (
     _type_name, _split_tuple_elem_types, _split_top_level_comma, _ty_to_str,
+    UnsupportedInIR,
 )
+from ._lower_expr import _LowerExprMixin
 from ._lower_pattern import _LowerPatternMixin
 from ._lower_stmt import _LowerStmtMixin
 
-
-class UnsupportedInIR(Exception):
-    """Raised when the lowerer hits an AST node it does not yet
-    handle. The caller (typically ``capa.ir.compile`` or a test) is
-    expected to catch this and fall back to the legacy transpiler.
-    The message identifies the unsupported shape so coverage can be
-    extended incrementally."""
-
-    def __init__(self, shape: str):
-        super().__init__(f"CIR lowering does not yet support: {shape}")
-        self.shape = shape
+# Re-export so the legacy ``from capa.ir._lower import UnsupportedInIR``
+# surface that ``capa/ir/__init__.py`` and the per-AST-family mixins
+# rely on stays intact after the helper got relocated to
+# ``_lower_helpers`` to break a circular import.
+__all__ = ["UnsupportedInIR", "Lowerer"]
 
 
 class Lowerer(

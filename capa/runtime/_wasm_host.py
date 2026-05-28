@@ -43,6 +43,8 @@ from typing import Optional
 
 import wasmtime
 
+from ._capabilities import _write_safe
+
 
 class WasmHost:
     """A wasmtime-based host that wires Capa's built-in capabilities
@@ -104,7 +106,9 @@ class WasmHost:
                     "stdio called before instance memory was set"
                 )
             data = self._memory.read(caller, ptr, ptr + length)
-            sys.stdout.write(bytes(data).decode("utf-8", errors="replace"))
+            _write_safe(
+                sys.stdout, bytes(data).decode("utf-8", errors="replace"),
+            )
             sys.stdout.flush()
 
         def stdio_println(caller, ptr, length):
@@ -113,8 +117,9 @@ class WasmHost:
                     "stdio called before instance memory was set"
                 )
             data = self._memory.read(caller, ptr, ptr + length)
-            sys.stdout.write(
-                bytes(data).decode("utf-8", errors="replace") + "\n"
+            _write_safe(
+                sys.stdout,
+                bytes(data).decode("utf-8", errors="replace") + "\n",
             )
             sys.stdout.flush()
 
@@ -124,8 +129,9 @@ class WasmHost:
                     "stdio called before instance memory was set"
                 )
             data = self._memory.read(caller, ptr, ptr + length)
-            sys.stderr.write(
-                bytes(data).decode("utf-8", errors="replace") + "\n"
+            _write_safe(
+                sys.stderr,
+                bytes(data).decode("utf-8", errors="replace") + "\n",
             )
             sys.stderr.flush()
 

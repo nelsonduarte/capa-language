@@ -1,0 +1,16 @@
+// String.replace parity (D3 slice 4, 2026-05). Covers a single
+// substitution, a multi-occurrence substitution, a no-match case,
+// and the empty-needle edge case: per D3 both backends return the
+// receiver unchanged when ``old`` is empty (Python's native
+// ``"abc".replace("", "X")`` would produce ``"XaXbXcX"``; we
+// deliberately differ to avoid the empty-needle inf-loop trap and
+// keep the two backends bit-identical).
+
+fun main(stdio: Stdio)
+    let s = "hello world"
+    stdio.println(s.replace("world", "Capa"))
+    stdio.println("ababab".replace("a", "Z"))
+    stdio.println("abcabc".replace("b", "BB"))
+    stdio.println("abc".replace("x", "y"))
+    stdio.println("hello".replace("", "X"))
+    stdio.println("".replace("a", "b"))

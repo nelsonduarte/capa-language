@@ -17,10 +17,10 @@ from __future__ import annotations
 
 from .. import capa_ast as A
 from ._capa_types import BUILTIN_CAPS
-from ._lower_helpers import _type_name, _ty_to_str
+from ._lower_helpers import _type_name, _ty_to_str, UnsupportedInIR
 from ._nodes import (
     AssignConst, BinOp, Call, FieldAccess, FormatStr, If, Index, MakeLambda,
-    MakeList, MakeMap, MakeSet, MakeStruct, MakeTuple, Match,
+    MakeList, MakeMap, MakeRange, MakeSet, MakeStruct, MakeTuple, Match,
     MatchArm, MethodCall, Param, Reassign, Return,
     TryUnwrap, UnaryOp, Value, fresh_local,
 )
@@ -74,7 +74,26 @@ class _LowerExprMixin:
             return self._lower_match_expr(e)
         if isinstance(e, A.IfExpr):
             return self._lower_if_expr(e)
+        if isinstance(e, A.RangeExpr):
+            return self._lower_range(e)
         raise UnsupportedInIR(f"expression {type(e).__name__}")
+
+    def _lower_range(self, e: A.RangeExpr) -> Value:
+        """Lower ``a..b`` / ``a..=b`` to a ``MakeRange`` IR
+        instruction. The Python emitter renders this as
+        ``CapaRange(start, stop)``; the Wasm emitter allocates a
+        24-byte Range record + emits a counted loop when the
+        ``For`` iterator's type is ``Range<Int>``."""
+        start = self._lower_expr(e.start)
+        end = self._lower_expr(e.end)
+        dst = fresh_local(self._counter, prefix="rng")
+        self._locals[dst] = "Range<Int>"
+        self._instrs.append(
+            MakeRange(
+                dst=dst, start=start, end=end, inclusive=e.inclusive,
+            )
+        )
+        return Value(kind="local", name=dst, ty="Range<Int>")
 
     def _lower_if_expr(self, e: A.IfExpr) -> Value:
         """Lower ``if cond then a else b`` (ternary expression form).
@@ -450,6 +469,25 @@ class _LowerExprMixin:
             t = self.types.get(id(e))
             if t is not None:
                 result_ty = _ty_to_str(t)
+        # Tuple-element type recovery: when the receiver is a known
+        # tuple shape and the index is a compile-time literal, the
+        # tuple type string carries the authoritative per-slot type.
+        # Prefer that over whatever the analyzer recorded for the
+        # whole ``tuple[i]`` expression (which for arity > 2 may be
+        # missing or have collapsed to ``Int``). Without this the
+        # dst lands as i64 in Wasm even for String / Bool slots,
+        # tripping the wasm verifier with an i32-vs-i64 type
+        # mismatch at the next consumer.
+        if (recv.ty and recv.ty.startswith("(")
+                and recv.ty.endswith(")")
+                and idx.kind == "lit_int"):
+            from ._lower_helpers import _split_tuple_elem_types
+            elems = _split_tuple_elem_types(recv.ty)
+            i = int(idx.literal)
+            if 0 <= i < len(elems):
+                cand = elems[i]
+                if cand and cand not in ("Unknown", "?"):
+                    result_ty = cand
         dst = fresh_local(self._counter)
         self._locals[dst] = result_ty
         self._instrs.append(Index(dst=dst, receiver=recv, index=idx))

@@ -30,6 +30,7 @@ from .._nodes import BinOp, FormatStr, MethodCall, Value
 from ._layout import (
     WasmEmissionError,
     _LIST_HEADER_SIZE, _LIST_LEN_OFFSET, _LIST_CAP_OFFSET, _LIST_DATA_OFFSET,
+    _OPTION_LAYOUT,
 )
 
 
@@ -106,11 +107,13 @@ class _StringEmissionMixin:
         from the receiver, optionally allocate a fresh buffer, and
         bind the result to ``instr.dst``.
 
-        Methods supported in Phase 6D-4: length, is_empty,
-        contains, starts_with, ends_with, substring, to_upper,
-        to_lower, trim, trim_start, trim_end, char_at, index_of.
-        ``split`` and ``replace`` are deferred until List<String>
-        support arrives in a later sub-phase."""
+        Methods supported: length, is_empty, contains, starts_with,
+        ends_with, substring, to_upper, to_lower, trim, trim_start,
+        trim_end, split, replace, char_at, index_of. The last three
+        landed in slice 4 (2026-05); replace allocates a fresh buffer
+        sized by an upfront occurrence count, char_at walks UTF-8
+        codepoints to assemble an ``Option<String>``, and index_of
+        returns an ``Option<Int>`` byte offset (no ``-1`` sentinel)."""
         method = instr.method
         recv = instr.receiver
         dst = instr.dst
@@ -167,9 +170,18 @@ class _StringEmissionMixin:
         if method == "split":
             self._emit_string_split(recv, instr.args[0], dst)
             return
+        if method == "replace":
+            self._emit_string_replace(recv, instr.args[0], instr.args[1], dst)
+            return
+        if method == "char_at":
+            self._emit_string_char_at(recv, instr.args[0], dst)
+            return
+        if method == "index_of":
+            self._emit_string_index_of(recv, instr.args[0], dst)
+            return
         raise WasmEmissionError(
-            f"Phase 6D-4: String method {method!r} not supported "
-            f"(replace / char_at / index_of land later)"
+            f"String method {method!r} is not implemented on the Wasm "
+            f"backend"
         )
 
     def _push_string_len_only(self, v: Value) -> None:
@@ -782,6 +794,475 @@ class _StringEmissionMixin:
         self._write("i32.add")
         self._write("local.set $_m_tag")
 
+    def _emit_string_replace(
+        self, recv: Value, old: Value, new: Value, dst,
+    ) -> None:
+        """``recv.replace(old, new) -> String``. Two-pass: scan the
+        receiver counting occurrences of ``old`` to size the result
+        buffer (``recv.len + count * (new.len - old.len)``), then
+        scan again, copying ``new`` at every match position and
+        passing the in-between bytes through unchanged.
+
+        Empty ``old`` (D3 slice 4, 2026-05): returns the receiver
+        unchanged. Python's ``"abc".replace("", "X")`` produces
+        ``"XaXbXcX"``; we deliberately differ on both backends to
+        avoid the empty-needle inf-loop trap, and the Python
+        emitter's lowering applies the same guard so parity holds.
+        """
+        if dst is None:
+            return
+        # Stash receiver, old needle, and new replacement pairs.
+        self._push_string_value_as_ptr_len(recv)
+        self._write("local.set $_str_a_len")
+        self._write("local.set $_str_a_ptr")
+        self._push_string_value_as_ptr_len(old)
+        self._write("local.set $_str_b_len")
+        self._write("local.set $_str_b_ptr")
+        self._push_string_value_as_ptr_len(new)
+        self._write("local.set $_str_c_len")
+        self._write("local.set $_str_c_ptr")
+        # Empty-needle fast path: bind dst to (recv.ptr, recv.len)
+        # and skip every scan / alloc. Mirrors the Python lambda
+        # guard in capa/ir/_emit_python.py::_string_method.
+        self._block_counter += 1
+        empty_exit = f"$Sr{self._block_counter}_empty_exit"
+        self._write(f"block {empty_exit}")
+        self._indent += 1
+        self._write("local.get $_str_b_len")
+        self._write("i32.eqz")
+        self._write("if")
+        self._indent += 1
+        self._write("local.get $_str_a_ptr")
+        self._write(f"local.set ${dst}_ptr")
+        self._write("local.get $_str_a_len")
+        self._write(f"local.set ${dst}_len")
+        self._write(f"br {empty_exit}")
+        self._indent -= 1
+        self._write("end")
+        # Pass 1: count occurrences of ``old`` in receiver. Linear
+        # scan; on match advance ``i`` by old.len to skip the matched
+        # region (so overlapping matches don't double-count, matching
+        # Python's ``str.replace`` semantics).
+        self._write("i32.const 0")
+        self._write("local.set $_str_i")
+        self._write("i32.const 0")
+        self._write("local.set $_str_count")
+        self._block_counter += 1
+        c_loop = f"$Sr{self._block_counter}_cloop"
+        c_exit = f"$Sr{self._block_counter}_cexit"
+        self._write(f"block {c_exit}")
+        self._indent += 1
+        self._write(f"loop {c_loop}")
+        self._indent += 1
+        # if i + old.len > recv.len: done counting.
+        self._write("local.get $_str_i")
+        self._write("local.get $_str_b_len")
+        self._write("i32.add")
+        self._write("local.get $_str_a_len")
+        self._write("i32.gt_s")
+        self._write(f"br_if {c_exit}")
+        # str_eq(recv.ptr + i, old.len, old.ptr, old.len)
+        self._write("local.get $_str_a_ptr")
+        self._write("local.get $_str_i")
+        self._write("i32.add")
+        self._write("local.get $_str_b_len")
+        self._write("local.get $_str_b_ptr")
+        self._write("local.get $_str_b_len")
+        self._write("call $str_eq")
+        self._write("if")
+        self._indent += 1
+        # Match: count++, i += old.len.
+        self._write("local.get $_str_count")
+        self._write("i32.const 1")
+        self._write("i32.add")
+        self._write("local.set $_str_count")
+        self._write("local.get $_str_i")
+        self._write("local.get $_str_b_len")
+        self._write("i32.add")
+        self._write("local.set $_str_i")
+        self._indent -= 1
+        self._write("else")
+        self._indent += 1
+        # No match: i++.
+        self._write("local.get $_str_i")
+        self._write("i32.const 1")
+        self._write("i32.add")
+        self._write("local.set $_str_i")
+        self._indent -= 1
+        self._write("end")
+        self._write(f"br {c_loop}")
+        self._indent -= 1
+        self._write("end")
+        self._indent -= 1
+        self._write("end")
+        # result_len = recv.len + count * (new.len - old.len).
+        self._write("local.get $_str_a_len")
+        self._write("local.get $_str_count")
+        self._write("local.get $_str_c_len")
+        self._write("local.get $_str_b_len")
+        self._write("i32.sub")
+        self._write("i32.mul")
+        self._write("i32.add")
+        self._write("local.set $_str_new_len")
+        # Allocate result buffer.
+        self._write("local.get $_str_new_len")
+        self._write("call $alloc")
+        self._write("local.set $_str_new_ptr")
+        # Pass 2: copy recv to result, substituting ``new`` at each
+        # match. ``i`` walks the receiver; ``end`` doubles as the
+        # write offset into the result buffer.
+        self._write("i32.const 0")
+        self._write("local.set $_str_i")
+        self._write("i32.const 0")
+        self._write("local.set $_str_end")
+        self._block_counter += 1
+        w_loop = f"$Sr{self._block_counter}_wloop"
+        w_exit = f"$Sr{self._block_counter}_wexit"
+        self._write(f"block {w_exit}")
+        self._indent += 1
+        self._write(f"loop {w_loop}")
+        self._indent += 1
+        # if i >= recv.len: done writing.
+        self._write("local.get $_str_i")
+        self._write("local.get $_str_a_len")
+        self._write("i32.ge_s")
+        self._write(f"br_if {w_exit}")
+        # Match check: i + old.len <= recv.len AND
+        # str_eq(recv.ptr+i, old.len, old.ptr, old.len).
+        self._write("local.get $_str_i")
+        self._write("local.get $_str_b_len")
+        self._write("i32.add")
+        self._write("local.get $_str_a_len")
+        self._write("i32.le_s")
+        self._write("local.get $_str_a_ptr")
+        self._write("local.get $_str_i")
+        self._write("i32.add")
+        self._write("local.get $_str_b_len")
+        self._write("local.get $_str_b_ptr")
+        self._write("local.get $_str_b_len")
+        self._write("call $str_eq")
+        self._write("i32.and")
+        self._write("if")
+        self._indent += 1
+        # Match: memory.copy(new_ptr+end, new_str.ptr, new_str.len).
+        self._write("local.get $_str_new_ptr")
+        self._write("local.get $_str_end")
+        self._write("i32.add")
+        self._write("local.get $_str_c_ptr")
+        self._write("local.get $_str_c_len")
+        self._write("memory.copy")
+        # end += new.len, i += old.len.
+        self._write("local.get $_str_end")
+        self._write("local.get $_str_c_len")
+        self._write("i32.add")
+        self._write("local.set $_str_end")
+        self._write("local.get $_str_i")
+        self._write("local.get $_str_b_len")
+        self._write("i32.add")
+        self._write("local.set $_str_i")
+        self._indent -= 1
+        self._write("else")
+        self._indent += 1
+        # No match: copy one byte from recv[i] to result[end].
+        self._write("local.get $_str_new_ptr")
+        self._write("local.get $_str_end")
+        self._write("i32.add")
+        self._write("local.get $_str_a_ptr")
+        self._write("local.get $_str_i")
+        self._write("i32.add")
+        self._write("i32.load8_u")
+        self._write("i32.store8")
+        self._write("local.get $_str_end")
+        self._write("i32.const 1")
+        self._write("i32.add")
+        self._write("local.set $_str_end")
+        self._write("local.get $_str_i")
+        self._write("i32.const 1")
+        self._write("i32.add")
+        self._write("local.set $_str_i")
+        self._indent -= 1
+        self._write("end")
+        self._write(f"br {w_loop}")
+        self._indent -= 1
+        self._write("end")
+        self._indent -= 1
+        self._write("end")
+        # Bind dst (ptr, len) for the non-empty-needle path.
+        self._write("local.get $_str_new_ptr")
+        self._write(f"local.set ${dst}_ptr")
+        self._write("local.get $_str_new_len")
+        self._write(f"local.set ${dst}_len")
+        # Close the empty-needle short-circuit block.
+        self._indent -= 1
+        self._write("end")
+
+    def _emit_string_char_at(
+        self, recv: Value, idx: Value, dst,
+    ) -> None:
+        """``recv.char_at(idx) -> Option<String>``. Walks the
+        receiver byte-by-byte, decoding the UTF-8 leading byte at
+        each step (``0xxxxxxx`` = 1 byte, ``110xxxxx`` = 2 bytes,
+        ``1110xxxx`` = 3 bytes, ``11110xxx`` = 4 bytes). Counts
+        codepoints; on the ``idx``-th codepoint, copies the
+        codepoint's bytes into a fresh String and wraps it in
+        ``Some``. Returns ``None`` when ``idx`` is out of range
+        (codepoint count), matching the Python emitter's
+        ``Some(s[idx]) if 0 <= idx < len(s) else None_`` semantics
+        (Python ``str`` indexes per-codepoint, not per-byte)."""
+        if dst is None:
+            return
+        # Stash receiver and target codepoint index.
+        self._push_string_value_as_ptr_len(recv)
+        self._write("local.set $_str_a_len")
+        self._write("local.set $_str_a_ptr")
+        self._push_value(idx)
+        self._write("i32.wrap_i64")
+        self._write("local.set $_str_start")
+        # Allocate the Option<String> record up front; tag/payload
+        # are filled in by the branches below.
+        self._write(f"i32.const {_OPTION_LAYOUT['size']}")
+        self._write("call $alloc")
+        self._write("local.set $_alloc_tmp_result")
+        # Out-of-bounds short-circuit on negative ``idx``: Python's
+        # ``0 <= idx`` would return None_ for a negative index, so
+        # mirror that without scanning the receiver.
+        self._block_counter += 1
+        done = f"$Sca{self._block_counter}_done"
+        self._write(f"block {done}")
+        self._indent += 1
+        self._write("local.get $_str_start")
+        self._write("i32.const 0")
+        self._write("i32.lt_s")
+        self._write("if")
+        self._indent += 1
+        self._write("local.get $_alloc_tmp_result")
+        self._write("i32.const 1")
+        self._write("i32.store")
+        self._write(f"br {done}")
+        self._indent -= 1
+        self._write("end")
+        # Walk the receiver, counting codepoints. _str_i = byte cursor,
+        # _str_end = codepoint cursor, _str_byte = current leading byte,
+        # _str_new_len = codepoint byte length (1/2/3/4).
+        self._write("i32.const 0")
+        self._write("local.set $_str_i")
+        self._write("i32.const 0")
+        self._write("local.set $_str_end")
+        self._block_counter += 1
+        loop = f"$Sca{self._block_counter}_loop"
+        exit_ = f"$Sca{self._block_counter}_exit"
+        self._write(f"block {exit_}")
+        self._indent += 1
+        self._write(f"loop {loop}")
+        self._indent += 1
+        # if i >= recv.len: exhausted, return None.
+        self._write("local.get $_str_i")
+        self._write("local.get $_str_a_len")
+        self._write("i32.ge_s")
+        self._write(f"br_if {exit_}")
+        # leading = recv.ptr[i]. UTF-8 byte-length classification:
+        # 0xxxxxxx -> 1, 110xxxxx -> 2, 1110xxxx -> 3, 11110xxx -> 4.
+        # Use successive ``and`` masks so the cheapest case (ASCII)
+        # exits first; the order keeps the inner loop tight for
+        # typical mostly-ASCII strings.
+        self._write("local.get $_str_a_ptr")
+        self._write("local.get $_str_i")
+        self._write("i32.add")
+        self._write("i32.load8_u")
+        self._write("local.tee $_str_byte")
+        self._write("i32.const 0x80")
+        self._write("i32.and")
+        self._write("i32.eqz")
+        self._write("if (result i32)")
+        self._indent += 1
+        self._write("i32.const 1")
+        self._indent -= 1
+        self._write("else")
+        self._indent += 1
+        self._write("local.get $_str_byte")
+        self._write("i32.const 0xe0")
+        self._write("i32.and")
+        self._write("i32.const 0xc0")
+        self._write("i32.eq")
+        self._write("if (result i32)")
+        self._indent += 1
+        self._write("i32.const 2")
+        self._indent -= 1
+        self._write("else")
+        self._indent += 1
+        self._write("local.get $_str_byte")
+        self._write("i32.const 0xf0")
+        self._write("i32.and")
+        self._write("i32.const 0xe0")
+        self._write("i32.eq")
+        self._write("if (result i32)")
+        self._indent += 1
+        self._write("i32.const 3")
+        self._indent -= 1
+        self._write("else")
+        self._indent += 1
+        self._write("i32.const 4")
+        self._indent -= 1
+        self._write("end")
+        self._indent -= 1
+        self._write("end")
+        self._indent -= 1
+        self._write("end")
+        self._write("local.set $_str_new_len")
+        # If this is the target codepoint, capture + emit Some.
+        self._write("local.get $_str_end")
+        self._write("local.get $_str_start")
+        self._write("i32.eq")
+        self._write("if")
+        self._indent += 1
+        # Allocate a fresh String of cp_len bytes; memory.copy from
+        # recv.ptr+i.
+        self._write("local.get $_str_new_len")
+        self._write("call $alloc")
+        self._write("local.set $_str_new_ptr")
+        self._write("local.get $_str_new_ptr")
+        self._write("local.get $_str_a_ptr")
+        self._write("local.get $_str_i")
+        self._write("i32.add")
+        self._write("local.get $_str_new_len")
+        self._write("memory.copy")
+        # Build Some(cp_string) in the Option record.
+        self._write("local.get $_alloc_tmp_result")
+        self._write("i32.const 0")
+        self._write("i32.store")
+        # Pack (new_ptr, new_len) into the payload i64 slot
+        # (low 32 bits = ptr, high 32 bits = len).
+        self._write("local.get $_alloc_tmp_result")
+        self._write("local.get $_str_new_ptr")
+        self._write("i64.extend_i32_u")
+        self._write("local.get $_str_new_len")
+        self._write("i64.extend_i32_u")
+        self._write("i64.const 32")
+        self._write("i64.shl")
+        self._write("i64.or")
+        self._write("i64.store offset=8")
+        self._write(f"br {done}")
+        self._indent -= 1
+        self._write("end")
+        # Advance: i += cp_len, codepoint_idx++.
+        self._write("local.get $_str_i")
+        self._write("local.get $_str_new_len")
+        self._write("i32.add")
+        self._write("local.set $_str_i")
+        self._write("local.get $_str_end")
+        self._write("i32.const 1")
+        self._write("i32.add")
+        self._write("local.set $_str_end")
+        self._write(f"br {loop}")
+        self._indent -= 1
+        self._write("end")
+        self._indent -= 1
+        self._write("end")
+        # Loop fell through without hitting the target: idx >=
+        # codepoint count. Emit None.
+        self._write("local.get $_alloc_tmp_result")
+        self._write("i32.const 1")
+        self._write("i32.store")
+        self._indent -= 1
+        self._write("end")
+        # Bind dst.
+        self._write("local.get $_alloc_tmp_result")
+        self._write(f"local.set ${dst}")
+
+    def _emit_string_index_of(
+        self, recv: Value, needle: Value, dst,
+    ) -> None:
+        """``recv.index_of(needle) -> Option<Int>``. Naive
+        substring scan; on first match writes ``Some(byte_offset)``
+        and exits, otherwise the loop exhausts to the fall-through
+        and writes ``None``. D3 slice 4 (2026-05) changed the
+        contract from the legacy ``-1`` sentinel to ``Option<Int>``;
+        the Python emitter in ``capa/ir/_emit_python.py`` and the
+        legacy transpiler both produce the same shape so the
+        backends stay in lockstep.
+
+        Empty-needle behaviour matches Python's ``str.find("")``:
+        the empty needle is found at offset 0 for any receiver
+        (including the empty receiver), so the scan's first
+        iteration always emits ``Some(0)``."""
+        if dst is None:
+            return
+        self._push_string_value_as_ptr_len(recv)
+        self._write("local.set $_str_a_len")
+        self._write("local.set $_str_a_ptr")
+        self._push_string_value_as_ptr_len(needle)
+        self._write("local.set $_str_b_len")
+        self._write("local.set $_str_b_ptr")
+        # Allocate Option<Int> record up front.
+        self._write(f"i32.const {_OPTION_LAYOUT['size']}")
+        self._write("call $alloc")
+        self._write("local.set $_alloc_tmp_result")
+        # Scan: i in [0, recv.len - needle.len]. On match write
+        # Some(i) into the Option record and ``br`` past the
+        # None-write tail. On loop exhaustion fall through to the
+        # tail which writes None.
+        self._write("i32.const 0")
+        self._write("local.set $_str_i")
+        self._block_counter += 1
+        outer = f"$Sio{self._block_counter}_outer"
+        loop = f"$Sio{self._block_counter}_loop"
+        self._write(f"block {outer}")
+        self._indent += 1
+        # Inner block + loop for the scan.
+        self._block_counter += 1
+        scan_exit = f"$Sio{self._block_counter}_scan_exit"
+        self._write(f"block {scan_exit}")
+        self._indent += 1
+        self._write(f"loop {loop}")
+        self._indent += 1
+        # if i + needle.len > recv.len: not found, exit scan.
+        self._write("local.get $_str_i")
+        self._write("local.get $_str_b_len")
+        self._write("i32.add")
+        self._write("local.get $_str_a_len")
+        self._write("i32.gt_s")
+        self._write(f"br_if {scan_exit}")
+        # str_eq(recv.ptr + i, needle.len, needle.ptr, needle.len)
+        self._write("local.get $_str_a_ptr")
+        self._write("local.get $_str_i")
+        self._write("i32.add")
+        self._write("local.get $_str_b_len")
+        self._write("local.get $_str_b_ptr")
+        self._write("local.get $_str_b_len")
+        self._write("call $str_eq")
+        self._write("if")
+        self._indent += 1
+        # Match: write Some(i) and bail past the None-write tail.
+        self._write("local.get $_alloc_tmp_result")
+        self._write("i32.const 0")
+        self._write("i32.store")
+        self._write("local.get $_alloc_tmp_result")
+        self._write("local.get $_str_i")
+        self._write("i64.extend_i32_s")
+        self._write("i64.store offset=8")
+        self._write(f"br {outer}")
+        self._indent -= 1
+        self._write("end")
+        # i++; continue.
+        self._write("local.get $_str_i")
+        self._write("i32.const 1")
+        self._write("i32.add")
+        self._write("local.set $_str_i")
+        self._write(f"br {loop}")
+        self._indent -= 1
+        self._write("end")
+        self._indent -= 1
+        self._write("end")
+        # Not found: write None (tag = 1).
+        self._write("local.get $_alloc_tmp_result")
+        self._write("i32.const 1")
+        self._write("i32.store")
+        self._indent -= 1
+        self._write("end")
+        # Bind dst.
+        self._write("local.get $_alloc_tmp_result")
+        self._write(f"local.set ${dst}")
+
     def _emit_byte_is_whitespace(self) -> None:
         """Consume an i32 byte on the stack; push i32 1 if it is
         ASCII whitespace (space, tab, LF, CR), else 0. Used by
@@ -1051,6 +1532,18 @@ class _StringEmissionMixin:
             self._write(f"local.set ${dst}_len")
             return
         if src.kind == "local" and self._is_string_local(src.name):
+            self._write(f"local.get ${src.name}_ptr")
+            self._write(f"local.set ${dst}_ptr")
+            self._write(f"local.get ${src.name}_len")
+            self._write(f"local.set ${dst}_len")
+            return
+        if src.kind == "param" and self._param_is_string(src.name):
+            # String params arrive as the same (ptr, len) pair shape
+            # as String locals; only the local name differs. Surfaces
+            # when a let-binding aliases a String param directly,
+            # e.g. ``let m = fallback`` where ``fallback: String`` is
+            # a function parameter (capa_governance_pack/render.capa
+            # hit this in the prefer-wasm path).
             self._write(f"local.get ${src.name}_ptr")
             self._write(f"local.set ${dst}_ptr")
             self._write(f"local.get ${src.name}_len")

@@ -20,7 +20,7 @@ from .._capa_types import BUILTIN_CAPS
 from .._nodes import (
     AssignConst, Reassign, BinOp, UnaryOp, Call, MethodCall,
     If, While, Break, Continue, Return, TryUnwrap,
-    MakeStruct, MakeList, MakeMap, MakeSet, MakeTuple,
+    MakeStruct, MakeList, MakeMap, MakeRange, MakeSet, MakeTuple,
     FieldAccess, Index, For,
     FormatStr, MakeLambda, Match,
 )
@@ -115,6 +115,9 @@ class _InstrDispatchMixin:
             return
         if isinstance(instr, MakeTuple):
             self._emit_make_tuple(instr)
+            return
+        if isinstance(instr, MakeRange):
+            self._emit_make_range(instr)
             return
         if isinstance(instr, MakeLambda):
             self._emit_make_lambda(instr)

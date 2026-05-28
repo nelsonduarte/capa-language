@@ -24,7 +24,7 @@ from .._nodes import (
     Function, Instr, Value,
     BinOp, Call, MethodCall, TryUnwrap, For, FormatStr,
     If, While, Match, Index,
-    MakeLambda, MakeList, MakeMap, MakeSet, MakeTuple,
+    MakeLambda, MakeList, MakeMap, MakeRange, MakeSet, MakeTuple,
     PatIdent, PatVariant,
 )
 from .._capa_types import BUILTIN_CAPS
@@ -54,6 +54,7 @@ class _LocalsCollectionMixin:
         has_variant_ctor = False
         has_list = False
         has_for = False
+        has_range = False
         has_list_contains_i64 = False
         has_map = False
         # Map with a pointer-shape key (struct / sum / tuple) needs
@@ -131,7 +132,7 @@ class _LocalsCollectionMixin:
             return v is not None and v.kind == "variant_ctor"
 
         def visit(instrs: list[Instr]) -> None:
-            nonlocal has_match, has_variant_ctor, has_list, has_for
+            nonlocal has_match, has_variant_ctor, has_list, has_for, has_range
             nonlocal has_list_contains_i64, has_map, has_string_method
             nonlocal has_format_str, has_make_lambda, has_list_hof
             nonlocal has_json_method, has_json_parse
@@ -290,6 +291,12 @@ class _LocalsCollectionMixin:
                         iter_elem = _element_type_of_list(iter_ty)
                     elif iter_ty.startswith("Set"):
                         iter_elem = _element_type_of_set(iter_ty)
+                    elif iter_ty.startswith("Range"):
+                        # Range iter's bind is the induction var,
+                        # always Int; declare the per-loop scratch
+                        # locals once via the has_range flag below.
+                        iter_elem = "Int"
+                        has_range = True
                     if iter_elem == "String":
                         has_list_string = True
                     # Refine the for-binder's type from the iter's
@@ -310,6 +317,10 @@ class _LocalsCollectionMixin:
                         max_for_depth = cur_for_depth
                     visit(instr.body)
                     cur_for_depth -= 1
+                if isinstance(instr, MakeRange):
+                    # The Range record is allocated through ``$alloc``;
+                    # no per-instruction scratch beyond $_alloc_tmp.
+                    has_range = True
                 if isinstance(instr, FormatStr):
                     has_format_str = True
                 if isinstance(instr, TryUnwrap):
@@ -439,6 +450,17 @@ class _LocalsCollectionMixin:
                         # split returns List<String>; uses _alloc_tmp_i64
                         # for the per-chunk packing dance.
                         has_list_string = True
+                    if (instr.method in ("index_of", "char_at")
+                            and recv_ty == "String"):
+                        # D3 slice 4 (2026-05): index_of returns
+                        # Option<Int> and char_at returns Option<String>.
+                        # Both allocate a fresh 16-byte Option record
+                        # in $_alloc_tmp_result; char_at additionally
+                        # packs the (ptr, len) payload via the same
+                        # $_alloc_tmp_i64 dance List<String> uses.
+                        has_optres_method = True
+                        if instr.method == "char_at":
+                            has_list_string = True
                     if (instr.method == "push"
                             and recv_ty.startswith("List")
                             and _element_type_of_list(recv_ty) == "String"):
@@ -588,6 +610,24 @@ class _LocalsCollectionMixin:
             for d in range(max_for_depth):
                 out[f"_f_list_{d}"] = "i32"
                 out[f"_f_idx_{d}"] = "i32"
+        if has_range:
+            # Range iter / MakeRange: scratch for the for-loop's
+            # exit-compare (loaded once at loop top) and for the
+            # MakeRange allocation. The induction variable itself
+            # lives in the bind name's own i64 local (declared by
+            # the analyzer / lowerer's locals map). Depth-indexed
+            # so nested ``for o in 1..=3 { for p in 0..o { ... } }``
+            # doesn't have the inner loop's end-compare clobber
+            # the outer's (manifested as the outer loop running
+            # only its first iteration's worth of inner work).
+            depth = max(max_for_depth, 1)
+            for d in range(depth):
+                out[f"_range_end_i64_{d}"] = "i64"
+                out[f"_range_incl_i32_{d}"] = "i32"
+            # MakeRange uses $alloc; declare $_alloc_tmp so the
+            # struct allocation has somewhere to stash the result
+            # ptr alongside other linear-memory writes.
+            out.setdefault("_alloc_tmp", "i32")
         if has_match:
             # Nested PatVariant arms (depth 1) stash the inner
             # scrutinee pointer here; flat arms never touch it.
@@ -711,14 +751,16 @@ class _LocalsCollectionMixin:
         if has_string_method:
             # Scratch locals for the String method handlers. All i32:
             # one pair of (ptr, len) for the receiver, one for the
-            # second operand (needle / prefix / suffix), plus index,
-            # start, end, new_ptr, new_len, byte registers.
+            # second operand (needle / prefix / suffix), one for a
+            # third operand (replace's ``new`` argument), plus index,
+            # start, end, new_ptr, new_len, byte, and count registers.
             for name in (
                 "_str_a_ptr", "_str_a_len",
                 "_str_b_ptr", "_str_b_len",
+                "_str_c_ptr", "_str_c_len",
                 "_str_i", "_str_start", "_str_end",
                 "_str_new_ptr", "_str_new_len",
-                "_str_byte",
+                "_str_byte", "_str_count",
             ):
                 out.setdefault(name, "i32")
         if has_list_string:
