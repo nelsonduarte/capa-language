@@ -75,3 +75,26 @@ class CapaSet:
 
     def __repr__(self) -> str:
         return f"CapaSet({list(self._d)!r})"
+
+    def __eq__(self, other):
+        # Order-independent structural equality: two ``CapaSet``s
+        # are equal iff they hold the same elements, regardless of
+        # the order they were inserted. The backing ``dict`` already
+        # implements ``__eq__`` as multiset-with-keys-only equality
+        # (values are compared too, but every value is ``None`` so
+        # the keys are the only discriminant), giving us the right
+        # semantics for free. Mirrors the order-independent set
+        # equality of Python's native ``set``; the Wasm backend's
+        # ``$eq_<key>`` helper for ``Set<T>`` matches by walking
+        # ``a`` and looking each element up in ``b``.
+        if not isinstance(other, CapaSet):
+            return NotImplemented
+        return self._d == other._d
+
+    # ``CapaSet`` mirrors Python's mutable ``set``: equality compares
+    # by contents (not identity), so the object is not hashable.
+    # Explicitly setting ``__hash__ = None`` makes ``hash(capa_set)``
+    # raise ``TypeError`` the same way ``hash(set())`` does, instead
+    # of silently inheriting ``object.__hash__`` (identity-based) and
+    # giving a non-sensical hash for an equal-comparable value.
+    __hash__ = None

@@ -30,7 +30,11 @@ from .._nodes import BinOp, MethodCall, If, While, For, Match
 from ._layout import (
     WasmEmissionError,
     _LIST_LEN_OFFSET, _LIST_DATA_OFFSET,
-    _map_key_type,
+    _MAP_LEN_OFFSET, _MAP_DATA_OFFSET, _MAP_PAIR_SIZE,
+    _MAP_PAIR_KEY_PTR_OFFSET, _MAP_PAIR_KEY_LEN_OFFSET,
+    _MAP_PAIR_VALUE_OFFSET,
+    _SET_LEN_OFFSET, _SET_DATA_OFFSET,
+    _map_key_type, _map_value_type,
 )
 
 
@@ -75,15 +79,20 @@ class _EqualityMixin:
 
     def _is_compound_eq_ty(self, ty: str) -> bool:
         """True iff ``==`` on this type needs a generated structural
-        helper (struct / sum / tuple / List). Map and Set are
-        deferred; scalars and String are handled inline in
-        ``_emit_binop``."""
+        helper (struct / sum / tuple / List / Map / Set). Scalars
+        and String are handled inline in ``_emit_binop``.
+
+        Map and Set go through generated helpers like List does: the
+        helper iterates one operand and looks each key / element up
+        in the other, so equality is order-independent in line with
+        the Python backend (``dict`` equality is set-of-pairs and
+        ``CapaSet.__eq__`` compares the backing dicts)."""
         head = ty.split("<", 1)[0]
         return (
             head in self._struct_layouts
             or head in self._sum_layouts
             or self._is_tuple_ty(ty)
-            or head == "List"
+            or head in ("List", "Map", "Set")
         )
 
     # ----- discovery -------------------------------------------------
@@ -181,6 +190,19 @@ class _EqualityMixin:
             subs.extend(_tuple_elem_types(ty))
         elif head == "List":
             subs.append(self._list_elem_ty(ty))
+        elif head == "Map":
+            # ``$eq_Map_*`` compares keys via the canonical pair-key
+            # compare (which calls ``$eq_<K>`` for pointer-shape K)
+            # and values via the leaf compare (which calls
+            # ``$eq_<V>`` for pointer-shape V). Both need to be
+            # transitively reachable from the discovery walk so
+            # their helpers are emitted before this one is called.
+            subs.append(_map_key_type(ty))
+            subs.append(_map_value_type(ty))
+        elif head == "Set":
+            # ``$eq_Set_*`` compares elements via the leaf compare,
+            # which calls ``$eq_<elem>`` for pointer-shape elements.
+            subs.append(self._set_elem_ty(ty))
         return [s for s in subs if self._is_compound_eq_ty(s)]
 
     def _list_elem_ty(self, ty: str) -> str:
@@ -285,6 +307,16 @@ class _EqualityMixin:
             elif head == "List":
                 if self._list_elem_ty(ty) == "String":
                     return True
+            elif head == "Map":
+                # Map<String, _> compares keys via ``$str_eq``;
+                # Map<_, String> compares values via ``$str_eq``.
+                if (_map_key_type(ty) == "String"
+                        or _map_value_type(ty) == "String"):
+                    return True
+            elif head == "Set":
+                # Set<String> compares elements via ``$str_eq``.
+                if self._set_elem_ty(ty) == "String":
+                    return True
         return False
 
     # ----- emission --------------------------------------------------
@@ -305,6 +337,10 @@ class _EqualityMixin:
             self._emit_tuple_eq(ty)
         elif head == "List":
             self._emit_list_eq(ty)
+        elif head == "Map":
+            self._emit_map_eq(ty)
+        elif head == "Set":
+            self._emit_set_eq(ty)
         else:
             raise WasmEmissionError(
                 f"structural equality for {ty!r} is not supported"
@@ -392,12 +428,14 @@ class _EqualityMixin:
         if ty == "String":
             self._write("call $str_eq")
             return
-        if head in ("Map", "Set"):
-            raise WasmEmissionError(
-                f"structural equality reaching a {head} value ({ty!r}) "
-                f"is not supported by the Wasm backend yet"
-            )
         if self._is_compound_eq_ty(ty):
+            # All compound leaves (struct / sum / tuple / List /
+            # Map / Set) route through their generated ``$eq_*``
+            # helper. The dispatch in ``_emit_eq_helper`` produces
+            # the helper; the discovery walk in ``_eq_subtypes``
+            # transitively pulls in nested compound types (e.g.
+            # a Map<K, V> with a pointer-shape V) so the helper
+            # call always resolves.
             self._write(f"call $eq_{_eq_key(ty)}")
             return
         raise WasmEmissionError(
@@ -714,3 +752,482 @@ class _EqualityMixin:
         self._write("i64.const 32")
         self._write("i64.shr_u")
         self._write("i32.wrap_i64")
+
+    # ----- Map / Set equality ----------------------------------------
+
+    def _emit_map_eq(self, ty: str) -> None:
+        """``$eq_<key>(a, b) -> i32`` for ``Map<K, V>``: order-
+        independent equality. A length mismatch is an instant 0.
+        Otherwise walk ``a``'s pairs in insertion order; for each
+        ``pair_a`` stash its key in the canonical key-scratch slots
+        (so the existing ``_emit_compare_pair_key_to`` helper from
+        ``_maps`` can compare it against any pair in ``b``), then
+        inner-loop over ``b``'s pairs looking for a matching key.
+        On match, compare values via ``_emit_map_pair_value_compare``;
+        a value mismatch is an instant 0. Falling off the inner loop
+        without finding the key is an instant 0. Surviving the outer
+        loop is 1.
+
+        Map values are uniform 8-byte slots at
+        ``_MAP_PAIR_VALUE_OFFSET``; the value decoder loads both
+        pair-slot i64s, decodes them per V (bit-reinterpret to f64
+        for Float, wrap to i32 for Bool / pointer-shape, unpack to
+        (ptr, len) for String), and routes through
+        ``_emit_leaf_compare``."""
+        name = _eq_key(ty)
+        key_ty = _map_key_type(ty)
+        value_ty = _map_value_type(ty)
+        self._write(
+            f"(func $eq_{name} (param $a i32) (param $b i32) (result i32)"
+        )
+        self._indent += 1
+        # Outer / inner indices and pair-base scratch (i32). Plus the
+        # i64 scratch used by the value-decode dance (Float / String).
+        # The canonical-key scratch slots ($_alloc_tmp_key_i64 etc.)
+        # are declared so this helper is self-contained even when the
+        # enclosing function has no other Map / Set use.
+        self._write("(local $_eq_map_i_a i32)")
+        self._write("(local $_eq_map_i_b i32)")
+        self._write("(local $_eq_map_pair_a i32)")
+        self._write("(local $_eq_map_pair_b i32)")
+        self._write("(local $_alloc_tmp i32)")
+        self._write("(local $_alloc_tmp_key_len i32)")
+        self._write("(local $_alloc_tmp_key_ptr i32)")
+        self._write("(local $_alloc_tmp_key_i64 i64)")
+        self._write("(local $_alloc_tmp_i64 i64)")
+        self._write("(local $_eq_map_val_a i64)")
+        self._write("(local $_eq_map_val_b i64)")
+        self._write("block $eq_done (result i32)")
+        self._indent += 1
+        # Length mismatch -> 0.
+        self._write("local.get $a")
+        self._write(f"i32.load offset={_MAP_LEN_OFFSET}")
+        self._write("local.get $b")
+        self._write(f"i32.load offset={_MAP_LEN_OFFSET}")
+        self._write("i32.ne")
+        self._write("if")
+        self._indent += 1
+        self._write("i32.const 0")
+        self._write("br $eq_done")
+        self._indent -= 1
+        self._write("end")
+        # Outer loop: i_a in [0, len_a).
+        self._write("i32.const 0")
+        self._write("local.set $_eq_map_i_a")
+        self._block_counter += 1
+        outer_loop = f"$EQM{self._block_counter}_outer"
+        outer_exit = f"$EQM{self._block_counter}_outer_exit"
+        inner_loop = f"$EQM{self._block_counter}_inner"
+        inner_exit = f"$EQM{self._block_counter}_inner_exit"
+        self._write(f"block {outer_exit}")
+        self._indent += 1
+        self._write(f"loop {outer_loop}")
+        self._indent += 1
+        # if i_a >= len_a -> outer done.
+        self._write("local.get $_eq_map_i_a")
+        self._write("local.get $a")
+        self._write(f"i32.load offset={_MAP_LEN_OFFSET}")
+        self._write("i32.ge_s")
+        self._write(f"br_if {outer_exit}")
+        # pair_a = a.data + i_a * pair_size
+        self._write("local.get $a")
+        self._write(f"i32.load offset={_MAP_DATA_OFFSET}")
+        self._write("local.get $_eq_map_i_a")
+        self._write(f"i32.const {_MAP_PAIR_SIZE}")
+        self._write("i32.mul")
+        self._write("i32.add")
+        self._write("local.set $_eq_map_pair_a")
+        # Stash pair_a's key into the canonical key scratch slots so
+        # _emit_compare_pair_key_to can dispatch against it.
+        self._emit_map_stash_pair_key(key_ty, "_eq_map_pair_a")
+        # Inner loop: i_b in [0, len_b). Need a match.
+        self._write("i32.const 0")
+        self._write("local.set $_eq_map_i_b")
+        self._write(f"block {inner_exit}")
+        self._indent += 1
+        self._write(f"loop {inner_loop}")
+        self._indent += 1
+        # if i_b >= len_b -> key not found in b -> 0.
+        self._write("local.get $_eq_map_i_b")
+        self._write("local.get $b")
+        self._write(f"i32.load offset={_MAP_LEN_OFFSET}")
+        self._write("i32.ge_s")
+        self._write("if")
+        self._indent += 1
+        self._write("i32.const 0")
+        self._write("br $eq_done")
+        self._indent -= 1
+        self._write("end")
+        # pair_b = b.data + i_b * pair_size
+        self._write("local.get $b")
+        self._write(f"i32.load offset={_MAP_DATA_OFFSET}")
+        self._write("local.get $_eq_map_i_b")
+        self._write(f"i32.const {_MAP_PAIR_SIZE}")
+        self._write("i32.mul")
+        self._write("i32.add")
+        self._write("local.set $_eq_map_pair_b")
+        # Compare pair_b's key against the stashed canonical key.
+        self._emit_compare_pair_key_to(key_ty, "_eq_map_pair_b")
+        self._write("if")
+        self._indent += 1
+        # Key match. Compare values; mismatch -> 0, match -> break
+        # inner loop and advance outer.
+        self._emit_map_pair_value_compare(
+            value_ty, "_eq_map_pair_a", "_eq_map_pair_b",
+        )
+        self._write("i32.eqz")
+        self._write("if")
+        self._indent += 1
+        self._write("i32.const 0")
+        self._write("br $eq_done")
+        self._indent -= 1
+        self._write("end")
+        # Values matched: leave the inner loop.
+        self._write(f"br {inner_exit}")
+        self._indent -= 1
+        self._write("end")
+        # i_b++, continue inner.
+        self._write("local.get $_eq_map_i_b")
+        self._write("i32.const 1")
+        self._write("i32.add")
+        self._write("local.set $_eq_map_i_b")
+        self._write(f"br {inner_loop}")
+        self._indent -= 1
+        self._write("end")  # loop inner
+        self._indent -= 1
+        self._write("end")  # block inner_exit
+        # i_a++, continue outer.
+        self._write("local.get $_eq_map_i_a")
+        self._write("i32.const 1")
+        self._write("i32.add")
+        self._write("local.set $_eq_map_i_a")
+        self._write(f"br {outer_loop}")
+        self._indent -= 1
+        self._write("end")  # loop outer
+        self._indent -= 1
+        self._write("end")  # block outer_exit
+        # Outer loop completed without mismatch -> 1.
+        self._write("i32.const 1")
+        self._indent -= 1
+        self._write("end")  # block eq_done
+        self._indent -= 1
+        self._write(")")
+
+    def _emit_map_stash_pair_key(
+        self, key_ty: str, pair_addr_local: str,
+    ) -> None:
+        """Stash the key of the pair at ``$pair_addr_local`` into the
+        canonical key-scratch slots that ``_emit_compare_pair_key_to``
+        reads. This is the pair-address-sourced analogue of
+        ``_emit_push_map_key_canonical`` (which sources from a Capa
+        ``Value``): same slots, same per-type dispatch, but the
+        load issues ``i32.load`` / ``i64.load`` at the pair offset
+        rather than evaluating an IR Value.
+
+        - String: ``$_alloc_tmp`` = key_ptr; ``$_alloc_tmp_key_len``
+          = key_len (two adjacent i32s at offsets 0 / 4).
+        - Int: ``$_alloc_tmp_key_i64`` = key (i64 at offset 0).
+        - Bool: ``$_alloc_tmp`` = key (i32 at offset 0).
+        - Pointer-shape: ``$_alloc_tmp_key_ptr`` = key pointer (i32
+          at offset 0).
+        """
+        if key_ty == "String":
+            self._write(f"local.get ${pair_addr_local}")
+            self._write(f"i32.load offset={_MAP_PAIR_KEY_PTR_OFFSET}")
+            self._write("local.set $_alloc_tmp")
+            self._write(f"local.get ${pair_addr_local}")
+            self._write(f"i32.load offset={_MAP_PAIR_KEY_LEN_OFFSET}")
+            self._write("local.set $_alloc_tmp_key_len")
+            return
+        if key_ty == "Int":
+            self._write(f"local.get ${pair_addr_local}")
+            self._write("i64.load offset=0")
+            self._write("local.set $_alloc_tmp_key_i64")
+            return
+        if key_ty == "Bool":
+            self._write(f"local.get ${pair_addr_local}")
+            self._write("i32.load offset=0")
+            self._write("local.set $_alloc_tmp")
+            return
+        if self._is_pointer_shape_ty(key_ty):
+            self._write(f"local.get ${pair_addr_local}")
+            self._write("i32.load offset=0")
+            self._write("local.set $_alloc_tmp_key_ptr")
+            return
+        raise WasmEmissionError(
+            f"Map key type {key_ty!r} not supported by structural "
+            f"equality (supported: String / Int / Bool / struct / "
+            f"sum / tuple)"
+        )
+
+    def _emit_map_pair_value_compare(
+        self, value_ty: str,
+        pair_a_local: str, pair_b_local: str,
+    ) -> None:
+        """Compare the value slots of two pairs and leave an i32 0/1
+        on the stack. The slot is uniform 8 bytes at
+        ``_MAP_PAIR_VALUE_OFFSET``; the load yields an i64 which we
+        decode per V before invoking ``_emit_leaf_compare``:
+
+        - Int: raw i64s -> ``_emit_leaf_compare("Int")`` (i64.eq).
+        - Float: ``f64.reinterpret_i64`` twice -> Float compare.
+        - Bool: ``i32.wrap_i64`` twice -> Bool compare.
+        - String: each packed i64 unpacks to (ptr, len); push the
+          four operands in canonical ``$str_eq`` order.
+        - Pointer-shape: ``i32.wrap_i64`` twice -> ``$eq_<V>``.
+
+        Uses ``$_eq_map_val_a`` / ``$_eq_map_val_b`` (i64) to stash
+        the raw value slots when we need them twice (String unpack).
+        """
+        # Read both value slots once into scratch i64s; every branch
+        # consumes them from there. This avoids re-loading and keeps
+        # operand-stack ordering deterministic across kinds.
+        self._write(f"local.get ${pair_a_local}")
+        self._write(f"i64.load offset={_MAP_PAIR_VALUE_OFFSET}")
+        self._write("local.set $_eq_map_val_a")
+        self._write(f"local.get ${pair_b_local}")
+        self._write(f"i64.load offset={_MAP_PAIR_VALUE_OFFSET}")
+        self._write("local.set $_eq_map_val_b")
+        if value_ty == "Int":
+            self._write("local.get $_eq_map_val_a")
+            self._write("local.get $_eq_map_val_b")
+            self._emit_leaf_compare("Int")
+            return
+        if value_ty == "Float":
+            # Slot holds the f64 bit pattern (see
+            # ``_push_map_value_as_i64``); reinterpret back to f64.
+            self._write("local.get $_eq_map_val_a")
+            self._write("f64.reinterpret_i64")
+            self._write("local.get $_eq_map_val_b")
+            self._write("f64.reinterpret_i64")
+            self._emit_leaf_compare("Float")
+            return
+        if value_ty == "Bool":
+            self._write("local.get $_eq_map_val_a")
+            self._write("i32.wrap_i64")
+            self._write("local.get $_eq_map_val_b")
+            self._write("i32.wrap_i64")
+            self._emit_leaf_compare("Bool")
+            return
+        if value_ty == "String":
+            # Packed-i64 -> (ptr_a, len_a, ptr_b, len_b).
+            # ``$_alloc_tmp_i64`` is reused as the shift scratch for
+            # each unpack (it is declared in this helper).
+            self._write("local.get $_eq_map_val_a")
+            self._write("local.tee $_alloc_tmp_i64")
+            self._write("i32.wrap_i64")
+            self._write("local.get $_alloc_tmp_i64")
+            self._write("i64.const 32")
+            self._write("i64.shr_u")
+            self._write("i32.wrap_i64")
+            self._write("local.get $_eq_map_val_b")
+            self._write("local.tee $_alloc_tmp_i64")
+            self._write("i32.wrap_i64")
+            self._write("local.get $_alloc_tmp_i64")
+            self._write("i64.const 32")
+            self._write("i64.shr_u")
+            self._write("i32.wrap_i64")
+            self._emit_leaf_compare("String")
+            return
+        if self._is_pointer_shape_ty(value_ty):
+            # i64-extended i32 pointer; wrap back to i32 and dispatch
+            # to the V-specific structural helper.
+            self._write("local.get $_eq_map_val_a")
+            self._write("i32.wrap_i64")
+            self._write("local.get $_eq_map_val_b")
+            self._write("i32.wrap_i64")
+            self._emit_leaf_compare(value_ty)
+            return
+        raise WasmEmissionError(
+            f"Map value type {value_ty!r} not supported by structural "
+            f"equality on the Wasm backend"
+        )
+
+    def _emit_set_eq(self, ty: str) -> None:
+        """``$eq_<key>(a, b) -> i32`` for ``Set<T>``: order-
+        independent equality. A length mismatch is an instant 0.
+        Otherwise walk ``a``'s elements in insertion order; for
+        each element stash its needle in the per-kind scratch slots
+        (mirroring ``Set.contains`` from ``_sets``) and inner-loop
+        over ``b`` looking for a match. A missing element is an
+        instant 0; surviving the outer loop is 1.
+
+        Reuses ``_emit_set_compare_at`` and ``_emit_set_stash_element``
+        from the Set emission mixin so the per-element-kind unpack /
+        compare logic stays in one place."""
+        from ._layout import _element_type_of_set
+        name = _eq_key(ty)
+        elem_ty = _element_type_of_set(ty)
+        elem_size = self._size_of(elem_ty)
+        self._write(
+            f"(func $eq_{name} (param $a i32) (param $b i32) (result i32)"
+        )
+        self._indent += 1
+        # Loop indices, plus the per-kind needle scratch slots so the
+        # stash + compare helpers in _sets can dispatch against any
+        # element kind without depending on the enclosing function's
+        # local declarations.
+        self._write("(local $_eq_set_i_a i32)")
+        self._write("(local $_eq_set_i_b i32)")
+        self._write("(local $_alloc_tmp i32)")
+        self._write("(local $_alloc_tmp_i64 i64)")
+        self._write("(local $_str_a_ptr i32)")
+        self._write("(local $_str_a_len i32)")
+        self._write("(local $_str_b_ptr i32)")
+        self._write("(local $_str_b_len i32)")
+        self._write("block $eq_done (result i32)")
+        self._indent += 1
+        # Length mismatch -> 0.
+        self._write("local.get $a")
+        self._write(f"i32.load offset={_SET_LEN_OFFSET}")
+        self._write("local.get $b")
+        self._write(f"i32.load offset={_SET_LEN_OFFSET}")
+        self._write("i32.ne")
+        self._write("if")
+        self._indent += 1
+        self._write("i32.const 0")
+        self._write("br $eq_done")
+        self._indent -= 1
+        self._write("end")
+        # Outer loop: i_a in [0, len_a).
+        self._write("i32.const 0")
+        self._write("local.set $_eq_set_i_a")
+        self._block_counter += 1
+        outer_loop = f"$EQS{self._block_counter}_outer"
+        outer_exit = f"$EQS{self._block_counter}_outer_exit"
+        inner_loop = f"$EQS{self._block_counter}_inner"
+        inner_exit = f"$EQS{self._block_counter}_inner_exit"
+        self._write(f"block {outer_exit}")
+        self._indent += 1
+        self._write(f"loop {outer_loop}")
+        self._indent += 1
+        # if i_a >= len_a -> outer done.
+        self._write("local.get $_eq_set_i_a")
+        self._write("local.get $a")
+        self._write(f"i32.load offset={_SET_LEN_OFFSET}")
+        self._write("i32.ge_s")
+        self._write(f"br_if {outer_exit}")
+        # Stash a[i_a] as the needle.
+        needle_scalar = self._emit_set_stash_element_at(
+            "$a", "_eq_set_i_a", elem_size, elem_ty,
+        )
+        # Inner loop: i_b in [0, len_b). Need a match.
+        self._write("i32.const 0")
+        self._write("local.set $_eq_set_i_b")
+        self._write(f"block {inner_exit}")
+        self._indent += 1
+        self._write(f"loop {inner_loop}")
+        self._indent += 1
+        # if i_b >= len_b -> not found -> 0.
+        self._write("local.get $_eq_set_i_b")
+        self._write("local.get $b")
+        self._write(f"i32.load offset={_SET_LEN_OFFSET}")
+        self._write("i32.ge_s")
+        self._write("if")
+        self._indent += 1
+        self._write("i32.const 0")
+        self._write("br $eq_done")
+        self._indent -= 1
+        self._write("end")
+        # Compare b[i_b] vs needle.
+        self._emit_set_compare_at(
+            "b", "_eq_set_i_b", elem_size, elem_ty, needle_scalar,
+        )
+        self._write("if")
+        self._indent += 1
+        # Match: leave inner loop and advance outer.
+        self._write(f"br {inner_exit}")
+        self._indent -= 1
+        self._write("end")
+        # i_b++, continue inner.
+        self._write("local.get $_eq_set_i_b")
+        self._write("i32.const 1")
+        self._write("i32.add")
+        self._write("local.set $_eq_set_i_b")
+        self._write(f"br {inner_loop}")
+        self._indent -= 1
+        self._write("end")  # loop inner
+        self._indent -= 1
+        self._write("end")  # block inner_exit
+        # i_a++, continue outer.
+        self._write("local.get $_eq_set_i_a")
+        self._write("i32.const 1")
+        self._write("i32.add")
+        self._write("local.set $_eq_set_i_a")
+        self._write(f"br {outer_loop}")
+        self._indent -= 1
+        self._write("end")  # loop outer
+        self._indent -= 1
+        self._write("end")  # block outer_exit
+        # Outer loop completed without mismatch -> 1.
+        self._write("i32.const 1")
+        self._indent -= 1
+        self._write("end")  # block eq_done
+        self._indent -= 1
+        self._write(")")
+
+    def _emit_set_stash_element_at(
+        self, set_local: str, idx_local: str,
+        elem_size: int, elem_ty: str,
+    ) -> str | None:
+        """Stash the element at ``$set_local[$idx_local]`` into the
+        per-kind needle scratch slots that
+        ``_emit_set_compare_at`` consults. Returns the scalar needle
+        local name for scalar kinds (so the compare helper can read
+        it back) or ``None`` for kinds that use the dedicated
+        ``$_str_b_*`` / ``$_alloc_tmp`` slots.
+
+        Mirrors ``_emit_set_stash_needle`` from ``_sets`` but sources
+        from a set + index pair (not a Capa Value), so the map / set
+        equality helpers can use it on the heap-loaded ``a[i_a]``
+        needle without re-evaluating an IR Value.
+        """
+        # element address: set.data + idx * elem_size
+        if elem_ty == "String":
+            # Load packed i64, unpack into ($_str_b_ptr, $_str_b_len)
+            # so the symmetric compare in _emit_set_compare_at
+            # reads from $_str_b_* against the scanned $_str_a_*.
+            self._write(f"local.get {set_local}")
+            self._write(f"i32.load offset={_SET_DATA_OFFSET}")
+            self._write(f"local.get ${idx_local}")
+            self._write(f"i32.const {elem_size}")
+            self._write("i32.mul")
+            self._write("i32.add")
+            self._write("i64.load")
+            self._write("local.set $_alloc_tmp_i64")
+            self._write("local.get $_alloc_tmp_i64")
+            self._write("i32.wrap_i64")
+            self._write("local.set $_str_b_ptr")
+            self._write("local.get $_alloc_tmp_i64")
+            self._write("i64.const 32")
+            self._write("i64.shr_u")
+            self._write("i32.wrap_i64")
+            self._write("local.set $_str_b_len")
+            return None
+        if self._is_pointer_shape_ty(elem_ty):
+            # Element slot is an i32 pointer; stash in $_alloc_tmp.
+            self._write(f"local.get {set_local}")
+            self._write(f"i32.load offset={_SET_DATA_OFFSET}")
+            self._write(f"local.get ${idx_local}")
+            self._write(f"i32.const {elem_size}")
+            self._write("i32.mul")
+            self._write("i32.add")
+            self._write("i32.load")
+            self._write("local.set $_alloc_tmp")
+            return None
+        # Scalar (Int 8-byte, Bool 4-byte). Load the element and
+        # stash in the size-appropriate scratch.
+        from ._layout import _load_op_for_size
+        load_op = _load_op_for_size(elem_size)
+        self._write(f"local.get {set_local}")
+        self._write(f"i32.load offset={_SET_DATA_OFFSET}")
+        self._write(f"local.get ${idx_local}")
+        self._write(f"i32.const {elem_size}")
+        self._write("i32.mul")
+        self._write("i32.add")
+        self._write(load_op)
+        if elem_size == 8:
+            self._write("local.set $_alloc_tmp_i64")
+            return "_alloc_tmp_i64"
+        self._write("local.set $_alloc_tmp")
+        return "_alloc_tmp"

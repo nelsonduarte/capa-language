@@ -1,0 +1,69 @@
+// Structural equality on Map<K, V>: order-independent equality
+// (Python's dict and the Wasm $eq_Map_* helper both compare as a
+// set-of-pairs). Bool results branch into "yes"/"no" strings so
+// bare-Bool interpolation differences do not contaminate the
+// parity check; see struct_eq.capa for the same pattern.
+
+type Point {
+    x: Int,
+    y: Int
+}
+
+fun show(stdio: Stdio, tag: String, flag: Bool)
+    if flag
+        stdio.println("${tag}: yes")
+    else
+        stdio.println("${tag}: no")
+
+fun main(stdio: Stdio)
+    // Map<Int, Int>: insertion order differs, equality holds.
+    let m1: Map<Int, Int> = new_map()
+    m1.set(1, 10)
+    m1.set(2, 20)
+    let m2: Map<Int, Int> = new_map()
+    m2.set(2, 20)
+    m2.set(1, 10)
+    show(stdio, "m1 == m2 reversed", m1 == m2)
+    show(stdio, "m1 != m2 reversed", m1 != m2)
+
+    // Same keys, value mismatch.
+    let m3: Map<Int, Int> = new_map()
+    m3.set(1, 10)
+    m3.set(2, 21)
+    show(stdio, "m1 == m3 value differs", m1 == m3)
+    show(stdio, "m1 != m3 value differs", m1 != m3)
+
+    // Different lengths.
+    let m4: Map<Int, Int> = new_map()
+    m4.set(1, 10)
+    show(stdio, "m1 == m4 short", m1 == m4)
+
+    // Map<String, Int>: order-independent.
+    let s1: Map<String, Int> = new_map()
+    s1.set("a", 1)
+    s1.set("b", 2)
+    let s2: Map<String, Int> = new_map()
+    s2.set("b", 2)
+    s2.set("a", 1)
+    show(stdio, "s1 == s2 string reversed", s1 == s2)
+    let s3: Map<String, Int> = new_map()
+    s3.set("a", 1)
+    s3.set("c", 2)
+    show(stdio, "s1 == s3 string diff key", s1 == s3)
+
+    // Map<Point, Int>: struct key, order-independent. H2 freezes
+    // Point because of the Map<Point, ...> declaration so the
+    // structural-equality helper sees stable field values.
+    let p1 = Point { x: 1, y: 2 }
+    let p2 = Point { x: 3, y: 4 }
+    let pk1: Map<Point, Int> = new_map()
+    pk1.set(p1, 100)
+    pk1.set(p2, 200)
+    let pk2: Map<Point, Int> = new_map()
+    pk2.set(p2, 200)
+    pk2.set(p1, 100)
+    show(stdio, "pk1 == pk2 struct keys reversed", pk1 == pk2)
+    let pk3: Map<Point, Int> = new_map()
+    pk3.set(p1, 100)
+    pk3.set(Point { x: 9, y: 9 }, 200)
+    show(stdio, "pk1 == pk3 struct key differs", pk1 == pk3)

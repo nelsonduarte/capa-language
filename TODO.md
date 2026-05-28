@@ -948,6 +948,43 @@ Listed so the design space is explicit.
 
 ### Wasm-specific gaps that are not P0
 
+- [x] **Map and Set structural equality (`==`/`!=`)** (closed
+  2026-05-28). Both deferred at slice 3 ("Map and Set are deferred";
+  `_emit_leaf_compare` raised on reach). This slice ships both as
+  order-independent structural equality (`{1:"a", 2:"b"} ==
+  {2:"b", 1:"a"}` is True; `{1,2,3} == {3,2,1}` is True), matching
+  Python `dict == dict` / `set == set` semantics. Reuses the slice-3
+  `$eq_*` machinery for nested keys/values and the slice-6/7
+  per-key-type Map dispatch (`_emit_compare_pair_key_to`,
+  `_emit_push_map_key_canonical`).
+  Algorithm (O(N*M), naive nested scan): length-mismatch fast-fail,
+  outer loop over `a`'s pairs/elements, inner loop scans `b` for a
+  match; on key match compare values via per-type decode + leaf
+  compare; outer completes -> equal. Two new emitters in
+  `capa/ir/_emit_wasm/_equality.py` (`_emit_map_eq`,
+  `_emit_set_eq`) + three helpers (`_emit_map_stash_pair_key`,
+  `_emit_map_pair_value_compare`, `_emit_set_stash_element_at`).
+  Value-decode handles Int (raw i64), Float (`f64.reinterpret_i64`),
+  Bool (`i32.wrap_i64`), String (packed-i64 unpack -> `$str_eq`),
+  pointer-shape (`i32.wrap_i64` -> `$eq_<V>`, transitively).
+  Also closed a latent Python-oracle gap: `CapaSet` had no `__eq__`
+  (identity-only), so `CapaSet({1,2}) == CapaSet({2,1})` returned
+  False on Python. Added `CapaSet.__eq__` that compares the
+  underlying insertion-ordered dicts (which Python dict-equality
+  already orders independently of insertion order) + `__hash__ =
+  None` to mirror native `set`. Both backends now agree on Set
+  structural equality. Same class of latent bug fix as the slice-4
+  payloadless-variant identity issue.
+  6 new tests: 2 parity programs (`map_eq.capa` covering Map<Int,Int>,
+  Map<String,Int>, Map<Point,Int> all order-independent + mismatch
+  cases; `set_eq.capa` covering Set<Int>, Set<String>, Set<Point>),
+  4 CapaSet-equality runtime tests, plus 2 existing
+  `test_map_equality_rejected` / `test_set_equality_rejected` tests
+  flipped to positive `test_*_order_independent` cases. Full suite
+  1972 -> 1978 / 5 skipped / 0 fail. With this slice the equality
+  story is complete across all compound types (struct, sum, tuple,
+  List, Map, Set, nested).
+
 - [x] **Map<K, V> with Struct / Tuple / Sum keys on Wasm**
   (closed 2026-05-28). Continuation of the prior Int+Bool slice.
   Pointer-shape Map keys (Struct, Tuple, Sum incl. Option / Result,

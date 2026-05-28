@@ -889,19 +889,12 @@ class WasmEmitter(
         # Compound == / != : structural (deep, by-value) equality via a
         # generated $eq_<Type> helper, matching the Python backend's
         # dataclass / tuple / list equality. Scalars and String are
-        # handled above; only struct / sum / tuple / List reach here.
+        # handled above; struct / sum / tuple / List / Map / Set all
+        # reach here and route through ``_emit_compound_eq``. Map /
+        # Set equality is order-independent: the helper iterates one
+        # operand and looks each key / element up in the other, in
+        # line with Python's ``dict`` / ``CapaSet`` semantics.
         if op in ("==", "!="):
-            # Map / Set are deliberately excluded from
-            # _is_compound_eq_ty, so a Map / Set == / != would
-            # otherwise fall through to the _CMP_BINOP pointer
-            # compare below (reference identity, not the Python
-            # backend's by-value equality). Reject cleanly instead.
-            if left_ty.split("<", 1)[0] in ("Map", "Set") or \
-                    right_ty.split("<", 1)[0] in ("Map", "Set"):
-                raise WasmEmissionError(
-                    "structural equality on Map/Set is not supported "
-                    "by the Wasm backend yet; use the Python backend"
-                )
             cmp_ty = (
                 left_ty if self._is_compound_eq_ty(left_ty)
                 else right_ty

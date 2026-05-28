@@ -1,0 +1,71 @@
+// Structural equality on Set<T>: order-independent equality
+// (Python's CapaSet.__eq__ compares the backing dicts; the Wasm
+// $eq_Set_* helper walks one operand and looks each element up
+// in the other). Bool results branch into "yes"/"no" strings so
+// bare-Bool interpolation differences do not contaminate the
+// parity check.
+
+type Point {
+    x: Int,
+    y: Int
+}
+
+fun show(stdio: Stdio, tag: String, flag: Bool)
+    if flag
+        stdio.println("${tag}: yes")
+    else
+        stdio.println("${tag}: no")
+
+fun main(stdio: Stdio)
+    // Set<Int>: insertion order differs, equality holds.
+    let a: Set<Int> = new_set()
+    a.add(1)
+    a.add(2)
+    a.add(3)
+    let b: Set<Int> = new_set()
+    b.add(3)
+    b.add(2)
+    b.add(1)
+    show(stdio, "a == b reversed", a == b)
+    show(stdio, "a != b reversed", a != b)
+
+    // Different lengths.
+    let c: Set<Int> = new_set()
+    c.add(1)
+    show(stdio, "a == c short", a == c)
+
+    // Same length, different element.
+    let d: Set<Int> = new_set()
+    d.add(1)
+    d.add(2)
+    d.add(4)
+    show(stdio, "a == d diff element", a == d)
+
+    // Set<String>: order-independent.
+    let s1: Set<String> = new_set()
+    s1.add("alpha")
+    s1.add("beta")
+    let s2: Set<String> = new_set()
+    s2.add("beta")
+    s2.add("alpha")
+    show(stdio, "s1 == s2 string reversed", s1 == s2)
+    let s3: Set<String> = new_set()
+    s3.add("alpha")
+    s3.add("gamma")
+    show(stdio, "s1 == s3 string diff", s1 == s3)
+
+    // Set<Point>: structural element compare. H2 freezes Point
+    // because of the Set<Point> declaration.
+    let p1 = Point { x: 1, y: 2 }
+    let p2 = Point { x: 3, y: 4 }
+    let ps1: Set<Point> = new_set()
+    ps1.add(p1)
+    ps1.add(p2)
+    let ps2: Set<Point> = new_set()
+    ps2.add(p2)
+    ps2.add(p1)
+    show(stdio, "ps1 == ps2 struct reversed", ps1 == ps2)
+    let ps3: Set<Point> = new_set()
+    ps3.add(p1)
+    ps3.add(Point { x: 9, y: 9 })
+    show(stdio, "ps1 == ps3 struct diff", ps1 == ps3)

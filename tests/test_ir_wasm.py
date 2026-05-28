@@ -4338,28 +4338,80 @@ class TestWasmStructuralEquality(unittest.TestCase):
         self.assertEqual(self._exec(src, "same"), 1)
         self.assertEqual(self._exec(src, "diff_option"), 0)
 
-    def test_map_equality_rejected(self):
-        # Map / Set structural == is deliberately unsupported on the
-        # Wasm backend: it would fall through to a pointer compare.
-        # Pin the clean reject (mirrors the other reject tests).
+    def test_map_eq_order_independent(self):
+        # ``Map<K, V> == Map<K, V>`` is order-independent on the Wasm
+        # backend: two maps built by inserting the same pairs in
+        # different orders compare equal, matching Python's dict
+        # equality. The generated ``$eq_Map_*`` helper walks ``a``'s
+        # pairs and looks each key up in ``b`` (then value-compares),
+        # so insertion order is irrelevant. End-to-end parity for
+        # ``main`` is in test_ir_wasm_parity.py::test_map_eq; this
+        # focused test exercises the helper directly via a ``cmp``
+        # function returning the i32 0/1.
         src = (
-            "fun cmp(a: Map<String, Int>, b: Map<String, Int>) -> Bool\n"
+            "fun same() -> Bool\n"
+            "    let a: Map<String, Int> = new_map()\n"
+            "    a.set(\"x\", 1)\n"
+            "    a.set(\"y\", 2)\n"
+            "    let b: Map<String, Int> = new_map()\n"
+            "    b.set(\"y\", 2)\n"
+            "    b.set(\"x\", 1)\n"
+            "    return a == b\n"
+            "fun diff_value() -> Bool\n"
+            "    let a: Map<String, Int> = new_map()\n"
+            "    a.set(\"x\", 1)\n"
+            "    let b: Map<String, Int> = new_map()\n"
+            "    b.set(\"x\", 2)\n"
+            "    return a == b\n"
+            "fun diff_length() -> Bool\n"
+            "    let a: Map<String, Int> = new_map()\n"
+            "    a.set(\"x\", 1)\n"
+            "    let b: Map<String, Int> = new_map()\n"
+            "    b.set(\"x\", 1)\n"
+            "    b.set(\"y\", 2)\n"
             "    return a == b\n"
         )
-        ir_mod, _, _ = _parse_lower(src)
-        with self.assertRaises(WasmEmissionError) as ctx:
-            emit_wat(ir_mod)
-        self.assertIn("Map/Set", str(ctx.exception))
+        self.assertEqual(self._exec(src, "same"), 1)
+        self.assertEqual(self._exec(src, "diff_value"), 0)
+        self.assertEqual(self._exec(src, "diff_length"), 0)
 
-    def test_set_equality_rejected(self):
+    def test_set_eq_order_independent(self):
+        # ``Set<T> == Set<T>`` is order-independent on the Wasm
+        # backend: two sets built by adding the same elements in
+        # different orders compare equal, matching Python's
+        # ``CapaSet.__eq__`` (which compares the backing dicts).
+        # The generated ``$eq_Set_*`` helper walks ``a`` and looks
+        # each element up in ``b``.
         src = (
-            "fun cmp(a: Set<Int>, b: Set<Int>) -> Bool\n"
+            "fun same() -> Bool\n"
+            "    let a: Set<Int> = new_set()\n"
+            "    a.add(1)\n"
+            "    a.add(2)\n"
+            "    a.add(3)\n"
+            "    let b: Set<Int> = new_set()\n"
+            "    b.add(3)\n"
+            "    b.add(1)\n"
+            "    b.add(2)\n"
+            "    return a == b\n"
+            "fun diff_element() -> Bool\n"
+            "    let a: Set<Int> = new_set()\n"
+            "    a.add(1)\n"
+            "    a.add(2)\n"
+            "    let b: Set<Int> = new_set()\n"
+            "    b.add(1)\n"
+            "    b.add(3)\n"
+            "    return a == b\n"
+            "fun diff_length() -> Bool\n"
+            "    let a: Set<Int> = new_set()\n"
+            "    a.add(1)\n"
+            "    let b: Set<Int> = new_set()\n"
+            "    b.add(1)\n"
+            "    b.add(2)\n"
             "    return a == b\n"
         )
-        ir_mod, _, _ = _parse_lower(src)
-        with self.assertRaises(WasmEmissionError) as ctx:
-            emit_wat(ir_mod)
-        self.assertIn("Map/Set", str(ctx.exception))
+        self.assertEqual(self._exec(src, "same"), 1)
+        self.assertEqual(self._exec(src, "diff_element"), 0)
+        self.assertEqual(self._exec(src, "diff_length"), 0)
 
 
 @unittest.skipUnless(

@@ -76,6 +76,8 @@ _PARITY_PROGRAMS: list[str] = [
     "set_basics.capa",
     "set_string.capa",
     "set_struct.capa",
+    "map_eq.capa",
+    "set_eq.capa",
     "numeric_parity.capa",
     "bitwise.capa",
     "safety_traps.capa",
@@ -288,6 +290,12 @@ class TestPythonWasmParity(unittest.TestCase):
 
     def test_set_struct(self):
         self._assert_parity("set_struct.capa")
+
+    def test_map_eq(self):
+        self._assert_parity("map_eq.capa")
+
+    def test_set_eq(self):
+        self._assert_parity("set_eq.capa")
 
     def test_numeric_parity(self):
         self._assert_parity("numeric_parity.capa")

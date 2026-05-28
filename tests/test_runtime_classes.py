@@ -15,6 +15,7 @@ from __future__ import annotations
 import unittest
 
 from capa.runtime._list import CapaList, CapaRange
+from capa.runtime._set import CapaSet
 from capa.runtime._result import Some, None_, Ok, Err
 from capa.runtime._convert import (
     parse_int, parse_float, to_float, to_int, _propagate_err,
@@ -74,6 +75,44 @@ class TestCapaList(unittest.TestCase):
         self.assertEqual(idx_hit.value, 2)
         idx_miss = xs.find_index(lambda x: x > 1000)
         self.assertTrue(idx_miss.is_none())
+
+
+class TestCapaSetEquality(unittest.TestCase):
+    """``CapaSet`` mirrors Python's native ``set`` for ``==`` /
+    ``!=``: two sets are equal iff they hold the same elements,
+    regardless of insertion order. The transpiler relies on this
+    because Capa's structural ``Set<T> == Set<T>`` lowers to a
+    Python ``==`` on ``CapaSet`` for the Python backend (and to a
+    generated ``$eq_Set_*`` helper on the Wasm backend); the two
+    backends must agree byte-for-byte."""
+
+    def test_order_independent_equality(self):
+        self.assertEqual(
+            CapaSet([1, 2, 3]),
+            CapaSet([3, 2, 1]),
+        )
+
+    def test_different_contents_unequal(self):
+        self.assertNotEqual(
+            CapaSet([1]),
+            CapaSet([1, 2]),
+        )
+
+    def test_unequal_to_non_capaset(self):
+        # Comparison against a non-CapaSet returns NotImplemented,
+        # which Python turns into False (per the data model). A
+        # plain ``set`` is not a ``CapaSet`` even with the same
+        # elements; equality is by class as well as by contents.
+        self.assertNotEqual(CapaSet([1]), 5)
+        self.assertNotEqual(CapaSet([1]), {1})
+
+    def test_unhashable(self):
+        # Like ``set``, ``CapaSet`` is mutable + equality-by-value,
+        # so hashing must raise ``TypeError`` rather than fall back
+        # to identity hashing (which would give two equal instances
+        # different hashes).
+        with self.assertRaises(TypeError):
+            hash(CapaSet([1]))
 
 
 class TestCapaRange(unittest.TestCase):
