@@ -1,0 +1,24 @@
+// Net.get returns Result<String, IoError>. The host bridge mirrors
+// Python's ``urllib.request.urlopen`` exactly, so a ``file://`` URL
+// reads the same bytes on both backends and produces byte-identical
+// output. The body decode uses ``errors="replace"`` so non-UTF-8
+// responses do not crash either side.
+//
+// Parity strategy: the program writes a small text fixture via
+// ``Fs.write`` first, then ``net.get(file:///...)`` reads it back
+// through the network capability. Both backends end up touching the
+// same on-disk bytes, so the run is deterministic without needing
+// a pre-existing fixture or any HTTP server. The fixture path lives
+// under ``/tmp/`` (the conventional ``Fs`` write target reused by
+// ``fs_demo.capa``).
+
+fun main(stdio: Stdio, fs: Fs, net: Net)
+    let path = "/tmp/capa_wasm_net_get_fixture.txt"
+    let body = "hello from a fixture file"
+    match fs.write(path, body)
+        Ok(_) -> stdio.println("wrote fixture")
+        Err(_) -> stdio.eprintln("BUG: could not write fixture")
+
+    match net.get("file:///tmp/capa_wasm_net_get_fixture.txt")
+        Ok(text) -> stdio.println("got: ${text}")
+        Err(_) -> stdio.eprintln("BUG: file:// read failed")

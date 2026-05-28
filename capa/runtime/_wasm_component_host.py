@@ -69,6 +69,7 @@ class WasmComponentHost:
         self._register_fs(root)
         self._register_json(root)
         self._register_random(root)
+        self._register_net(root)
         root.close()
 
     # ---- per-interface registration ----------------------------
@@ -223,6 +224,39 @@ class WasmComponentHost:
             ),
         )
         random_ifc.close()
+
+    def _register_net(self, root: wc.LinkerInstance) -> None:
+        """Register the ``capa:host/net`` interface (slice 3 scope).
+
+        Mirrors the core-host bridge byte-for-byte: ``Net.get``
+        runs through ``urllib.request.urlopen`` with a 10-second
+        timeout and decodes the body UTF-8 with
+        ``errors="replace"`` for non-UTF-8 responses. Failures
+        (URLError, OSError, ValueError) return an
+        ``IoErrorRecord`` so the component-side
+        ``result<string, io-error>`` lowers to Err with the same
+        message shape the core host produces. ``Net.post`` is
+        deferred (design decision D2); ``net.restrict-to`` is a
+        no-op like ``fs.restrict-to``."""
+        from urllib.request import Request, urlopen
+        from urllib.error import URLError
+        net_ifc = root.add_instance("capa:host/net")
+
+        def net_get(_store, url: str):
+            try:
+                with urlopen(Request(url), timeout=10) as resp:
+                    return resp.read().decode("utf-8", errors="replace")
+            except (URLError, OSError, ValueError) as e:
+                return IoErrorRecord(
+                    message="HTTP GET failed", cause=str(e),
+                )
+
+        def net_restrict_to(_store, _host: str):
+            return None
+
+        net_ifc.add_func("get",         net_get)
+        net_ifc.add_func("restrict-to", net_restrict_to)
+        net_ifc.close()
 
     def _register_json(self, root: wc.LinkerInstance) -> None:
         json_ifc = root.add_instance("capa:host/json")

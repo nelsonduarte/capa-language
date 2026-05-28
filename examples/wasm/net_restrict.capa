@@ -1,0 +1,27 @@
+// Net.restrict_to attenuation: a scoped Net cap denies any URL
+// whose host falls outside the allow-set. Both backends short-
+// circuit to Err before touching the network, so the test stays
+// hermetic.
+//
+// Wasm side (audit C2): the emitter inlines a $str_contains
+// check around ``Net.get`` whose argument is the literal host
+// passed to ``restrict_to``. A failing check writes a canonical
+// Err(IoError) into the result area without ever calling the
+// host bridge.
+//
+// Python side: ``Net.get`` calls ``urlparse(url).hostname`` and
+// checks membership in the frozen ``_allowed`` set; a miss
+// returns Err(IoError) with a parallel diagnostic.
+//
+// We restrict to a host neither call below names, so both denials
+// fire and the program never reaches the network. The two
+// backends print identical denial output.
+
+fun main(stdio: Stdio, net: Net)
+    let scoped = net.restrict_to("only.allowed.invalid")
+    match scoped.get("https://api.example.com/path")
+        Ok(_) -> stdio.println("api: ok")
+        Err(_) -> stdio.println("api: denied")
+    match scoped.get("https://evil.example.com/path")
+        Ok(_) -> stdio.println("evil: ok")
+        Err(_) -> stdio.println("evil: denied")

@@ -83,6 +83,8 @@ _PARITY_PROGRAMS: list[str] = [
     "safety_traps.capa",
     "allows_inline.capa",
     "random_seeded.capa",
+    "net_get.capa",
+    "net_restrict.capa",
 ]
 
 # Programs deliberately excluded from parity and why; documented
@@ -311,6 +313,25 @@ class TestPythonWasmParity(unittest.TestCase):
         # backend inlines the same chain at emit time (D4 Option B).
         # Both backends must agree on every literal-arg case.
         self._assert_parity("allows_inline.capa")
+
+    def test_net_get(self):
+        # Slice 3 (2026-05): ``Net.get`` end-to-end. The example
+        # writes a deterministic fixture via ``Fs.write`` then
+        # reads it back via ``net.get("file:///...")``. Both
+        # backends touch the same on-disk bytes through Python's
+        # ``urllib.request.urlopen``, so the round-trip is byte-
+        # identical without needing an HTTP fixture.
+        self._assert_parity("net_get.capa")
+
+    def test_net_restrict(self):
+        # Slice 3 (2026-05): ``Net.restrict_to`` attenuation. The
+        # allow-set excludes every URL the example fetches, so the
+        # Wasm-side inline ``$str_contains`` check (audit C2) and
+        # the Python runtime's ``urlparse(url).hostname not in
+        # _allowed`` short-circuit fire in lockstep. No network
+        # call is made on either backend; the parity is purely on
+        # the canonical Err diagnostic shape.
+        self._assert_parity("net_restrict.capa")
 
     def test_random_seeded(self):
         # D1 (2026-05): SplitMix64 PRNG runs guest-side in linear

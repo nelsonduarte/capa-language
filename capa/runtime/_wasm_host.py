@@ -70,6 +70,7 @@ class WasmHost:
         self._register_fs()
         self._register_json()
         self._register_random()
+        self._register_net()
 
     def _register_stdio(self) -> None:
         """Register the ``capa:stdio`` interface methods. Each
@@ -772,6 +773,141 @@ class WasmHost:
         self.linker.define_func(
             "capa:host/random", "system-seed", ft_seed,
             random_system_seed,
+        )
+
+    def _register_net(self) -> None:
+        """Register the ``capa:host/net`` interface methods.
+
+        Phase 6 slice 3 scope: ``Net.get`` only. The host mirrors
+        ``capa.runtime._capabilities.Net.get`` exactly so a
+        ``file://`` URL produces byte-identical output on both
+        backends: ``urllib.request.urlopen(url)`` with a 10-second
+        timeout, body bytes decoded UTF-8 with ``errors="replace"``
+        so non-UTF-8 responses produce a deterministic
+        ``U+FFFD``-substituted string rather than a host-side trap.
+
+        Attenuation enforcement (``net.restrict_to(host)``) is
+        inlined at emit time via ``$str_contains(url, host)`` in
+        the Wasm backend (audit C2); a denied URL never reaches
+        this host bridge. The Python ``Net.get`` does the same
+        check against the parsed ``urlparse(url).hostname``. Both
+        backends therefore agree on which URLs make it to the
+        network layer, and this method only handles the unrestricted
+        / already-allowed path.
+
+        ``Net.post`` is deferred per design decision D2 (slice 3
+        ships ``get`` parity only); ``net.restrict-to`` is a host
+        no-op like ``fs.restrict-to`` since capabilities carry no
+        runtime value at the Wasm level."""
+        from urllib.request import Request, urlopen
+        from urllib.error import URLError
+        # Canonical ABI: result<string, io-error> returns indirectly
+        # via a 20-byte caller area. Same shape as Fs.read. Layout:
+        #   tag i32  @ 0
+        #   Ok arm (string): ptr @ 4, len @ 8
+        #   Err arm (io-error): m_ptr @ 4, m_len @ 8, c_ptr @ 12,
+        #                       c_len @ 16
+        ft_net_get_indirect = wasmtime.FuncType(
+            [
+                wasmtime.ValType.i32(),  # url_ptr
+                wasmtime.ValType.i32(),  # url_len
+                wasmtime.ValType.i32(),  # ret_area
+            ],
+            [],
+        )
+
+        def _alloc_utf8(caller, text: str) -> tuple[int, int]:
+            encoded = text.encode("utf-8")
+            if not encoded:
+                return 0, 0
+            ptr = self._alloc_export(caller, len(encoded))
+            self._memory.write(caller, encoded, ptr)
+            return ptr, len(encoded)
+
+        def _write_result_ok_string(caller, ret_area, ptr, length):
+            self._memory.write(caller, (0).to_bytes(4, "little"), ret_area)
+            self._memory.write(
+                caller, ptr.to_bytes(4, "little"), ret_area + 4,
+            )
+            self._memory.write(
+                caller, length.to_bytes(4, "little"), ret_area + 8,
+            )
+            self._memory.write(
+                caller, (0).to_bytes(8, "little"), ret_area + 12,
+            )
+
+        def _write_result_err_ioerror(caller, ret_area, message, cause=""):
+            m_ptr, m_len = _alloc_utf8(caller, message)
+            c_ptr, c_len = _alloc_utf8(caller, cause)
+            self._memory.write(caller, (1).to_bytes(4, "little"), ret_area)
+            self._memory.write(
+                caller, m_ptr.to_bytes(4, "little"), ret_area + 4,
+            )
+            self._memory.write(
+                caller, m_len.to_bytes(4, "little"), ret_area + 8,
+            )
+            self._memory.write(
+                caller, c_ptr.to_bytes(4, "little"), ret_area + 12,
+            )
+            self._memory.write(
+                caller, c_len.to_bytes(4, "little"), ret_area + 16,
+            )
+
+        def net_get(caller, url_ptr, url_len, ret_area):
+            if self._memory is None or self._alloc_export is None:
+                raise RuntimeError(
+                    "net.get called before memory + $alloc set"
+                )
+            # Audit H3 convention: invalid UTF-8 in the URL bytes
+            # is a guest-side bug; route it through the WIT
+            # result<_, io-error> Err arm so the guest pattern-
+            # matches it the same way it would a real network
+            # failure, instead of trapping the host.
+            try:
+                url = bytes(
+                    self._memory.read(caller, url_ptr, url_ptr + url_len)
+                ).decode("utf-8")
+            except UnicodeDecodeError as e:
+                _write_result_err_ioerror(
+                    caller, ret_area, "invalid URL", str(e),
+                )
+                return
+            # Mirror ``capa.runtime._capabilities.Net.get`` exactly:
+            # any URLError / OSError / ValueError from urlopen lowers
+            # to the same Err shape the Python runtime produces, so
+            # the two backends' failure messages stay aligned. The
+            # body decode uses ``errors="replace"`` so non-UTF-8
+            # responses do not surface a UnicodeDecodeError.
+            try:
+                with urlopen(Request(url), timeout=10) as resp:
+                    data = resp.read().decode("utf-8", errors="replace")
+                s_ptr, s_len = _alloc_utf8(caller, data)
+                _write_result_ok_string(caller, ret_area, s_ptr, s_len)
+            except (URLError, OSError, ValueError) as e:
+                _write_result_err_ioerror(
+                    caller, ret_area, "HTTP GET failed", str(e),
+                )
+
+        self.linker.define_func(
+            "capa:host/net", "get", ft_net_get_indirect,
+            net_get, access_caller=True,
+        )
+
+        # net.restrict_to is a no-op at the Wasm level (mirrors
+        # fs.restrict_to). Static capability discipline is enforced
+        # by the analyzer + the audit C2 inline ``$str_contains``
+        # check the Wasm emitter wraps around ``Net.get``; this
+        # callback only exists so the import resolves.
+        ft_string_to_unit = wasmtime.FuncType(
+            [wasmtime.ValType.i32(), wasmtime.ValType.i32()], [],
+        )
+
+        def net_restrict_to(caller, host_ptr, host_len):
+            return None
+
+        self.linker.define_func(
+            "capa:host/net", "restrict-to", ft_string_to_unit,
+            net_restrict_to, access_caller=True,
         )
 
     def _register_json(self) -> None:

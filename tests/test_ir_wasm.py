@@ -3884,6 +3884,35 @@ class TestWasmComponentHost(unittest.TestCase):
             self._run_capturing_stdout(src), "positive\n",
         )
 
+    def test_net_get_file_url_under_component_host(self):
+        # Slice 3: ``Net.get`` through the Component Model bridge.
+        # Same hermetic ``file://`` round-trip as the core-host
+        # test; the component host lifts result<string, io-error>
+        # via Python type dispatch (str -> Ok, IoErrorRecord ->
+        # Err) and must agree on the Ok-arm bytes.
+        import os
+        import tempfile
+        from pathlib import Path
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".txt", delete=False, encoding="utf-8",
+        ) as f:
+            f.write("body bytes from a fixture")
+            fixture = f.name
+        try:
+            uri = Path(fixture).as_uri()
+            src = (
+                "fun main(stdio: Stdio, net: Net)\n"
+                f"    match net.get(\"{uri}\")\n"
+                "        Ok(text) -> stdio.println(\"got: ${text}\")\n"
+                "        Err(_) -> stdio.eprintln(\"BUG: read failed\")\n"
+            )
+            self.assertEqual(
+                self._run_capturing_stdout(src),
+                "got: body bytes from a fixture\n",
+            )
+        finally:
+            os.unlink(fixture)
+
 
 @unittest.skipUnless(
     _has_wasm_tools() and _has_wasmtime_py(),
@@ -5432,6 +5461,86 @@ class TestWasmRandomExecutes(unittest.TestCase):
         from capa.runtime._capabilities import Random as _PyRandom
         expected = f"{_PyRandom(2).int_range(0, 100)}\n"
         self.assertEqual(out, expected)
+
+
+@unittest.skipUnless(
+    _has_wasm_tools() and _has_wasmtime_py(),
+    "wasm-tools and/or wasmtime-py not installed",
+)
+class TestWasmNetExecutes(unittest.TestCase):
+    """Slice 3 of the "Wasm backend fully functional" arc: ``Net.get``
+    end-to-end through the ``capa:host/net`` interface. The host
+    bridge mirrors ``capa.runtime._capabilities.Net.get`` exactly
+    (``urllib.request.urlopen`` + ``decode("utf-8", errors="replace")``);
+    these tests pin the round-trip on hermetic ``file://`` URLs so
+    the suite never hits a network.
+    """
+
+    def _run_capturing_stdout(self, src: str) -> str:
+        import io
+        import sys
+        from capa.runtime._wasm_host import WasmHost
+        _, types, ast_mod = _parse_lower(src)
+        blob = compile_wasm(ast_mod, types=types)
+        host = WasmHost()
+        out = io.StringIO()
+        saved = sys.stdout
+        sys.stdout = out
+        try:
+            host.run_main(blob)
+        finally:
+            sys.stdout = saved
+        return out.getvalue()
+
+    def test_net_get_file_url_round_trip(self):
+        # Hermetic round-trip via a ``file://`` URL. Both backends
+        # call ``urllib.request.urlopen`` against the same on-disk
+        # bytes; the Wasm host's ``errors="replace"`` UTF-8 decode
+        # path agrees with the Python runtime's. We pre-stage the
+        # fixture from the test (rather than from the Capa source)
+        # so the assertion isolates the Net path from the Fs path.
+        import os
+        import tempfile
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".txt", delete=False, encoding="utf-8",
+        ) as f:
+            f.write("body bytes from a fixture")
+            fixture = f.name
+        try:
+            # ``file://`` URL needs forward slashes regardless of
+            # the host OS. ``pathlib.Path.as_uri`` does the right
+            # thing on Windows (where ``tempfile`` returns a
+            # backslash-form path) and on POSIX (no-op).
+            from pathlib import Path
+            uri = Path(fixture).as_uri()
+            src = (
+                "fun main(stdio: Stdio, net: Net)\n"
+                f"    match net.get(\"{uri}\")\n"
+                "        Ok(text) -> stdio.println(\"got: ${text}\")\n"
+                "        Err(_) -> stdio.eprintln(\"BUG: read failed\")\n"
+            )
+            out = self._run_capturing_stdout(src)
+            self.assertEqual(out, "got: body bytes from a fixture\n")
+        finally:
+            os.unlink(fixture)
+
+    def test_net_get_restrict_denies_outside_host(self):
+        # Inline attenuation check (audit C2): a Net cap scoped to a
+        # host string that the URL does not contain must short-
+        # circuit to Err without ever calling the host bridge. The
+        # restriction host (``unreachable.invalid``) names a URL no
+        # real DNS resolves, so even if the check accidentally fell
+        # through, a 10-second timeout would surface here as a test
+        # hang -- the assertion below catches the silent-pass case.
+        src = (
+            "fun main(stdio: Stdio, net: Net)\n"
+            "    let scoped = net.restrict_to(\"only.allowed.invalid\")\n"
+            "    match scoped.get(\"https://api.example.com/path\")\n"
+            "        Ok(_) -> stdio.println(\"BUG: leaked\")\n"
+            "        Err(_) -> stdio.println(\"denied\")\n"
+        )
+        out = self._run_capturing_stdout(src)
+        self.assertEqual(out, "denied\n")
 
 
 if __name__ == "__main__":

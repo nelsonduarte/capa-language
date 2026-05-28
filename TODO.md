@@ -948,6 +948,28 @@ Listed so the design space is explicit.
 
 ### Wasm-specific gaps that are not P0
 
+- [x] **"Fully functional Wasm" slice 3 - Net.get end-to-end**
+  (closed 2026-05-28). Per D2: urllib mirror, Net.post deferred.
+  `Net.get(url: String) -> Result<String, IoError>` now works on
+  Wasm with full parity to Python's `urllib.request.urlopen`.
+  New `capa:host/net.get` WIT interface (reuses
+  `result_string_io_error` materialiser, same shape as Fs.read).
+  Host bridge wraps `urllib.request.urlopen(url, timeout=10)`,
+  decodes with `errors="replace"`, lowers URLError/OSError/ValueError
+  into the canonical IoError record. Attenuation pipeline was
+  already half-wired; required only adding `("Net", "get")` to
+  `_CANONICAL_INDIRECT_RETURN` and extending `_cap_method_wasm_sig`
+  to recognise the `url:` arg name. 5 new tests: 2 parity programs
+  (`net_get.capa` round-trips a tempfile via `fs.write` +
+  `net.get("file:///...")` for deterministic oracle; `net_restrict.capa`
+  exercises the attenuation-deny path with both backends
+  short-circuiting to Err without touching the network), 2 direct
+  Net execute tests (Windows-portable via `Path.as_uri()`), 1
+  Component Model host test. Full suite 2002 -> 2007 / 5 skipped /
+  0 fail. Net.post remains rejected by the analyzer (pre-wired in
+  `_ATTENUATION_PRIVILEGED_OPS` but absent from `builtins.py`).
+  Closes audit I1.
+
 - [x] **"Fully functional Wasm" slice 2 - Random capability**
   (closed 2026-05-28). Per D1 = SplitMix64. Both backends use
   the same PRNG so seeded output is byte-identical. Python:

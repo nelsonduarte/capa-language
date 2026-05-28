@@ -171,6 +171,12 @@ _CANONICAL_INDIRECT_RETURN: dict[tuple[str, str], tuple[int, str]] = {
     # Stdio.read_line: result<string, io-error>. Same 20-byte shape
     # and materialiser as Fs.read.
     ("Stdio", "read_line"): (20, "result_string_io_error"),
+    # Net.get: same canonical-ABI shape as Fs.read. The attenuation
+    # branch in ``_emit_indirect_with_attenuation_check`` already
+    # handles Net.get / Net.post via the receiver-host check; the
+    # ``("Net", "post")`` entry stays out of this table per design
+    # decision D2 (post deferred to a follow-up slice).
+    ("Net", "get"): (20, "result_string_io_error"),
     # ``Json`` used to live here when parse_json / to_json crossed a
     # host bridge; they now compile to local-export calls into the
     # bundled JSON parser (see ``capa.ir._builtin_json``), so no
@@ -216,12 +222,16 @@ class _CapDispatchMixin:
             # rebuilds a Capa Option<String> (16-byte record:
             # tag@0, packed (ptr|len<<32) i64 payload@8).
             return (["i32", "i32", "i32"], "")
-        if "func(path: string) -> result<string, io-error>" in wit:
-            # Canonical ABI indirect return: path (ptr, len) + a
-            # caller-allocated 20-byte return area for tag + Ok
-            # string (ptr, len) or Err io-error (m_ptr, m_len,
-            # c_ptr, c_len). Materialiser rebuilds a Capa
-            # Result<String, IoError>.
+        if ("func(path: string) -> result<string, io-error>" in wit
+                or "func(url: string) -> result<string, io-error>" in wit):
+            # Canonical ABI indirect return: single-string arg
+            # (ptr, len) + a caller-allocated 20-byte return area
+            # for tag + Ok string (ptr, len) or Err io-error
+            # (m_ptr, m_len, c_ptr, c_len). Materialiser rebuilds
+            # a Capa Result<String, IoError>. ``url:`` is the
+            # Net.get arg-name; ``path:`` is Fs.read's. The Wasm
+            # core signature is identical for both (the WIT arg
+            # name is documentation-only at this layer).
             return (["i32", "i32", "i32"], "")
         if "func() -> result<string, io-error>" in wit:
             # Stdio.read_line: no string arg, just the ret area.
@@ -271,10 +281,14 @@ class _CapDispatchMixin:
             # materialises a Capa List<String> header (16 bytes)
             # from the flat fields after the call.
             return (["i32"], "")
-        if "func(prefix: string)" in wit and "->" not in wit:
-            # Fs.restrict_to: a string-arg, no-result no-op at the
-            # Wasm level. The capability discipline is enforced
-            # by the analyzer; at runtime the import is shared.
+        if (("func(prefix: string)" in wit
+                or "func(host: string)" in wit)
+                and "->" not in wit):
+            # Fs.restrict_to / Net.restrict_to: a string-arg,
+            # no-result no-op at the Wasm level. The capability
+            # discipline is enforced by the analyzer; at runtime
+            # the import is shared. ``prefix:`` is the Fs arg
+            # name; ``host:`` is Net's. Both lower identically.
             return (["i32", "i32"], "")
         if "func(keys: list<string>)" in wit and "->" not in wit:
             # Env.restrict_to_keys: list<string> arg (ptr, len), no
