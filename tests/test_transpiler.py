@@ -2028,7 +2028,7 @@ class TestTranspileExamples(unittest.TestCase):
         rc, out, err = self._run_example("examples/cve_xz_utils.capa")
         self.assertEqual(rc, 0, err)
         self.assertIn("compressed 5 bytes -> 5 -> 5", out)
-        self.assertIn("authentication result for alice: True", out)
+        self.assertIn("authentication result for alice: true", out)
 
     def test_cve_node_ipc(self):
         # The third CVE case study, deliberately picked because it
@@ -2183,19 +2183,19 @@ class TestTranspileExamples(unittest.TestCase):
         self.assertEqual(rc, 0, err)
         # Baseline: unrestricted Net allows everything.
         self.assertIn("=== before attenuation ===", out)
-        self.assertIn("api.example.com allowed?   True", out)
+        self.assertIn("api.example.com allowed?   true", out)
         # After restrict_to: only the named host.
         self.assertIn("=== after net.restrict_to(api.example.com) ===", out)
         self.assertRegex(
-            out, r"api\.example\.com allowed\?\s+True"
+            out, r"api\.example\.com allowed\?\s+true"
         )
         self.assertRegex(
-            out, r"evil\.example\.com allowed\?\s+False"
+            out, r"evil\.example\.com allowed\?\s+false"
         )
         # Monotonic narrowing: intersecting two disjoint single-host
         # restrictions leaves nothing allowed.
-        self.assertIn("narrower allows 'api.example.com'? False", out)
-        self.assertIn("narrower allows 'other.example.com'? False", out)
+        self.assertIn("narrower allows 'api.example.com'? false", out)
+        self.assertIn("narrower allows 'other.example.com'? false", out)
 
 
     def _manifest_caps(self, example_path):

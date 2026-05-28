@@ -77,6 +77,10 @@ class _LocalsCollectionMixin:
         # them; the Int match path stashes the scrutinee in a
         # dedicated i64 local instead.
         has_int_match = False
+        # Set when any Int ``a % b`` BinOp appears. The Wasm emitter
+        # corrects ``i64.rem_s`` to Python's floored modulo via a
+        # scratch ``$_alloc_tmp_i64`` slot; declare it on demand.
+        has_int_modulo = False
         # Set when any capability method in this function uses
         # canonical-ABI indirect return; drives the ``$_ret_area``
         # scratch local declaration.
@@ -110,7 +114,7 @@ class _LocalsCollectionMixin:
             nonlocal has_list_string, has_optres_method
             nonlocal has_list_method, has_set_method
             nonlocal has_set_string, has_set_pointer
-            nonlocal has_tuple, has_int_match
+            nonlocal has_tuple, has_int_match, has_int_modulo
             nonlocal cur_for_depth, max_for_depth
             nonlocal has_indirect_cap_call
             nonlocal has_attenuation_check, has_attenuation_env_check
@@ -272,6 +276,16 @@ class _LocalsCollectionMixin:
                     # for String payload unpacking. Both locals are
                     # declared via has_match + the i64-scratch group.
                     has_match = True
+                if isinstance(instr, BinOp) and instr.op == "%":
+                    # Int ``%`` lowers to a floored-modulo correction
+                    # (``i64.rem_s`` then sign-adjust against the
+                    # divisor) that needs ``$_alloc_tmp_i64`` as scratch.
+                    # Skip when either operand is Float (that path emits
+                    # the f64.floor formula without the i64 stash).
+                    lt = (instr.left.ty or "")
+                    rt = (instr.right.ty or "")
+                    if lt != "Float" and rt != "Float":
+                        has_int_modulo = True
                 if isinstance(instr, BinOp) and instr.op == "+":
                     # String concatenation reuses the same _str_*
                     # scratch locals as the String methods. The
@@ -532,7 +546,7 @@ class _LocalsCollectionMixin:
             out["_ret_area"] = "i32"
         if (has_list_contains_i64 or has_map or has_match or has_for
                 or has_variant_ctor or has_json_method or has_list_string
-                or has_optres_method or has_tuple):
+                or has_optres_method or has_tuple or has_int_modulo):
             # The i64 scratch is shared by: List.contains for i64
             # elements, Map scan (value packing), match-arm String
             # unpacking, for-iter over List<String> (packed i64

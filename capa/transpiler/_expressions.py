@@ -458,7 +458,15 @@ class _ExpressionsMixin:
             else:
                 expr_code = self._emit_expr(part)
                 ty = self.types.get(id(part))
-                if (
+                if isinstance(ty, TyName) and ty.name == "Bool":
+                    # Python's f-string formats a bool as ``True`` /
+                    # ``False`` (capitalised); the Wasm backend uses
+                    # ``true`` / ``false`` (lowercase, matching JSON and
+                    # most modern languages). Force the lowercase form
+                    # here so ``${flag}`` is parity-clean across
+                    # backends.
+                    expr_code = f"('true' if ({expr_code}) else 'false')"
+                elif (
                     isinstance(ty, TyName)
                     and ty.name in self._display_types
                 ):

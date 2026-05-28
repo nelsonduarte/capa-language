@@ -948,6 +948,32 @@ Listed so the design space is explicit.
 
 ### Wasm-specific gaps that are not P0
 
+- [x] **Numeric + Bool interpolation parity** (closed 2026-05-28).
+  Three small parity fixes that cleaned up known divergences /
+  rejects between the Python and Wasm backends:
+  (1) **Int `%` is now floored** on Wasm (matches Python): the raw
+  `i64.rem_s` gives C-style truncated remainder (sign of dividend)
+  while Python's `%` is floored (sign of divisor), so `-7 % 3` was
+  Wasm `-1` / Python `2`; the emitter now corrects `r = a rem_s b`
+  by adding `b` when `r != 0 and (r ^ b) < 0`. Gated by a new
+  `has_int_modulo` flag in `_locals.py` that pulls in
+  `$_alloc_tmp_i64`.
+  (2) **Float `%` is implemented** on Wasm (was a hard reject): `a
+  - floor(a/b) * b`, also floored to match Python.
+  (3) **`${flag}` Bool interpolation is now lowercase on both
+  backends** (`true`/`false`). Wasm already used lowercase; the two
+  Python backends (`transpiler/_expressions.py` and
+  `ir/_emit_python.py`) wrapped Bool interpolations as
+  `('true' if x else 'false')`. One new parity program
+  (`examples/wasm/numeric_parity.capa`) covers mixed-sign Int / Float
+  modulo + Bool interpolation. Three pre-existing test assertions
+  updated from `True` / `False` to `true` / `false`. Full suite 1869
+  -> 1870 / 5 skipped / 0 fail. Slice 5 of full language coverage.
+  Bitwise operators (`& | ^ << >>`) on `Int` are deliberately NOT in
+  this slice: they have no lexer tokens today, so they are a
+  frontend addition (lexer + parser + analyzer + both backends), not
+  a Wasm-coverage gap.
+
 - [x] **Set<T> on the Wasm backend, insertion-ordered both
   backends** (closed 2026-05-27). `Set<T>` (add / remove /
   contains / length / is_empty / to_list / for-iteration) now

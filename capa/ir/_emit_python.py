@@ -396,7 +396,14 @@ class PythonEmitter:
                 if isinstance(p, str):
                     buf.append(p.replace("{", "{{").replace("}", "}}"))
                 else:
-                    buf.append("{" + self._format_value(p) + "}")
+                    val = self._format_value(p)
+                    # Match the legacy transpiler: a Bool prints as
+                    # ``true`` / ``false`` (lowercase), not Python's
+                    # default ``True`` / ``False``, so the Wasm and
+                    # Python backends emit the same text.
+                    if (p.ty or "") == "Bool":
+                        val = f"('true' if ({val}) else 'false')"
+                    buf.append("{" + val + "}")
             body = "".join(buf)
             # Use the same string-literal repr the legacy transpiler
             # uses for consistency; escape backslashes and quotes.

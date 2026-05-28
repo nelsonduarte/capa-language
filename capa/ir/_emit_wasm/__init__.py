@@ -684,12 +684,62 @@ class WasmEmitter(
         is_float = instr.left.ty == "Float" or instr.right.ty == "Float"
         if op in _INT_BINOP and is_float:
             if op == "%":
-                raise WasmEmissionError(
-                    "Float modulo not supported at the Wasm level"
-                )
+                # f64 has no remainder opcode. Emit Python's floored
+                # modulo (``a - floor(a/b) * b``) so the sign of the
+                # result matches the divisor, matching Python's ``a %
+                # b`` for floats. Using ``f64.trunc`` instead would
+                # match C semantics (sign of dividend) and diverge for
+                # mixed-sign operands.
+                self._push_value(instr.left)
+                self._push_value(instr.left)
+                self._push_value(instr.right)
+                self._write("f64.div")
+                self._write("f64.floor")
+                self._push_value(instr.right)
+                self._write("f64.mul")
+                self._write("f64.sub")
+                self._write(f"local.set ${instr.dst}")
+                return
             self._push_value(instr.left)
             self._push_value(instr.right)
             self._write(_FLOAT_BINOP[op])
+            self._write(f"local.set ${instr.dst}")
+            return
+        if op == "%" and op in _INT_BINOP and not is_float:
+            # Wasm's ``i64.rem_s`` is C-style truncated remainder (the
+            # sign of the result follows the dividend), but Python's
+            # ``a % b`` for ints is floored (the sign follows the
+            # divisor). Emit a correction: compute ``r = a rem_s b``,
+            # then add ``b`` to ``r`` iff the signs of ``r`` and ``b``
+            # differ (i.e. ``r != 0 and (r ^ b) < 0``). This matches
+            # Python and the Python backend on every operand pair,
+            # including the previously-divergent mixed-sign cases
+            # (``-7 % 3`` was wasm ``-1`` / py ``2``, now both ``2``).
+            self._push_value(instr.left)
+            self._push_value(instr.right)
+            self._write("i64.rem_s")
+            self._write("local.set $_alloc_tmp_i64")
+            # Predicate: r != 0 AND (r XOR b) < 0.
+            self._write("local.get $_alloc_tmp_i64")
+            self._write("i64.const 0")
+            self._write("i64.ne")
+            self._write("local.get $_alloc_tmp_i64")
+            self._push_value(instr.right)
+            self._write("i64.xor")
+            self._write("i64.const 0")
+            self._write("i64.lt_s")
+            self._write("i32.and")
+            self._write("if (result i64)")
+            self._indent += 1
+            self._write("local.get $_alloc_tmp_i64")
+            self._push_value(instr.right)
+            self._write("i64.add")
+            self._indent -= 1
+            self._write("else")
+            self._indent += 1
+            self._write("local.get $_alloc_tmp_i64")
+            self._indent -= 1
+            self._write("end")
             self._write(f"local.set ${instr.dst}")
             return
         if op in _INT_BINOP:

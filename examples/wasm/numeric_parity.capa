@@ -1,0 +1,32 @@
+// Slice 5: numeric + Bool interpolation parity.
+//
+// Exercises three fixes that previously diverged between the Python
+// and Wasm backends:
+// - Int modulo with mixed-sign operands (Python is floored, sign of
+//   divisor; wasm i64.rem_s alone is C-style, sign of dividend). The
+//   Wasm emitter now adds the floor correction.
+// - Float modulo (was rejected outright at the Wasm level; now emits
+//   ``a - floor(a/b) * b``, matching Python's floored ``%``).
+// - Bool interpolation ("True"/"False" on the Python f-string vs
+//   "true"/"false" on Wasm). Python now emits the lowercase form.
+
+fun main(stdio: Stdio)
+    // Int modulo, sign coverage.
+    stdio.println("${(-7) % 3}")
+    stdio.println("${7 % 3}")
+    stdio.println("${(-7) % (-3)}")
+    stdio.println("${7 % (-3)}")
+    stdio.println("${0 % 3}")
+
+    // Float modulo, sign coverage.
+    stdio.println("${(-7.5) % 3.0}")
+    stdio.println("${7.5 % 3.0}")
+    stdio.println("${(-7.5) % (-3.0)}")
+
+    // Bool interpolation: lowercase on both backends.
+    let t = true
+    let f = false
+    stdio.println("${t}")
+    stdio.println("${f}")
+    stdio.println("${1 == 1}")
+    stdio.println("${1 == 2}")
