@@ -134,6 +134,30 @@ class _StatementsMixin:
                     f"cannot assign to parameter {sym.name!r}", s.pos,
                 )
         elif isinstance(s.target, (A.FieldAccess, A.Index)):
+            # Frozen-struct check: writing to a field of a struct
+            # that flows (directly or transitively) into a
+            # ``Set<...>`` or ``Map<...K, V>`` key would break the
+            # data structure's hash invariant (the Wasm linear
+            # scan misses entries; the Python ``CapaSet`` dict
+            # corrupts its bucket). The set is computed once per
+            # module in ``_compute_frozen_types``; here we just
+            # consult it against the receiver type of the field
+            # access. Indexed receivers (``xs[i].x = 5``) are
+            # caught too, because the FieldAccess.receiver type
+            # resolves to the struct after List/Map element
+            # extraction.
+            if isinstance(s.target, A.FieldAccess):
+                recv_ty = self.types.get(id(s.target.receiver))
+                if recv_ty is not None and self._is_frozen(recv_ty):
+                    from ..typesys import TyName
+                    tname = recv_ty.name if isinstance(recv_ty, TyName) else "?"
+                    self._err(
+                        f"field {s.target.field_name!r} of struct {tname!r} "
+                        f"cannot be assigned: type {tname!r} is frozen "
+                        f"(appears in Set or Map keys; mutating fields "
+                        f"would break the structure)",
+                        s.pos,
+                    )
             cap = self._contains_any_capability(target_ty)
             if cap is not None:
                 self._err(

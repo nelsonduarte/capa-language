@@ -948,6 +948,36 @@ Listed so the design space is explicit.
 
 ### Wasm-specific gaps that are not P0
 
+- [x] **Security hardening pass 4 - H2 frozen struct types as Set
+  / Map keys** (closed 2026-05-28). Final audit follow-up.
+  Mutating a struct used as a Set element or Map key broke the
+  data-structure invariant on both backends (Wasm linear-scan misses
+  entries; Python `CapaSet` dict corrupts its hash bucket). Closed
+  with a conservative type-level analyzer rule: **if a struct type
+  T is referenced (transitively via fields, sum payloads, nested
+  collections) from any `Set<...T...>` or `Map<...T..., V>` position
+  anywhere in the program, then `p.field = value` on any value of
+  type T is rejected at analysis time** with a clear diagnostic
+  ("field 'x' of struct 'Point' cannot be assigned: type 'Point' is
+  frozen (appears in Set or Map keys; mutating fields would break
+  the structure)"). Map VALUES stay mutable (only keys need
+  freezing). Whole-value rebinding (`p = Point{...}`) stays allowed;
+  only post-construction field writes are rejected. Catches `=`,
+  `+=`, `xs[i].x = y` and other indexed-receiver forms by walking
+  the FieldAccess target uniformly. New
+  `capa/analyzer/_frozen.py` mixin (~250 LOC) computes the
+  frozen-type set via a module-walk + transitive closure pre-pass
+  run after `_collect_globals`. One new branch (~10 LOC) in
+  `_check_assign`. 9 new tests covering direct freeze, Map-key
+  freeze, Map-value not frozen, transitive via struct field, nested
+  collection, constructor still works, var rebinding still works,
+  augmented assignment caught, indexed receiver caught. Zero
+  existing test or example used a mutate-then-Set pattern, so the
+  rule lands with zero corpus breakage. Full suite 1939 -> 1948 / 5
+  skipped / 0 fail.
+  **All audit follow-ups closed.** No known silent unsafety or
+  parity divergence between the Python and Wasm backends today.
+
 - [x] **Security hardening pass 3 - C4 + M1 + M4 + H1**
   (closed 2026-05-28). Four audit follow-ups closed in one slice.
   (C4) `to_int(huge_float)` now raises `OverflowError` on Python when

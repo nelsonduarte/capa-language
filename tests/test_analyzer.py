@@ -5052,5 +5052,171 @@ class TestReservedVariantNames(unittest.TestCase):
         self.assertTrue(r.ok, r.errors)
 
 
+class TestFrozenStructTypes(unittest.TestCase):
+    """Struct types that flow into a ``Set<...>`` or
+    ``Map<...K, V>`` key position cannot have their fields
+    mutated: doing so breaks the data-structure invariant on
+    both backends (the Wasm linear scan misses entries; the
+    Python ``CapaSet`` dict corrupts its hash bucket). The
+    analyzer rejects field assignments on any value of a frozen
+    type at analysis time. See ``capa/analyzer/_frozen.py`` for
+    the rule and the H2 audit trail (2026-05)."""
+
+    def test_direct_freeze_set_argument_rejects_field_write(self):
+        msgs = errors_of(
+            "type Point {\n"
+            "    x: Int,\n"
+            "    y: Int\n"
+            "}\n"
+            "fun use_set(s: Set<Point>) -> Int\n"
+            "    return 0\n"
+            "fun mutate(p: Point)\n"
+            "    p.x = 5\n"
+        )
+        hits = [
+            m for m in msgs
+            if "'Point' is frozen" in m and "'x' of struct 'Point'" in m
+        ]
+        self.assertEqual(len(hits), 1, msgs)
+
+    def test_map_key_freezes_struct(self):
+        msgs = errors_of(
+            "type Point {\n"
+            "    x: Int,\n"
+            "    y: Int\n"
+            "}\n"
+            "fun lookup(m: Map<Point, Int>) -> Int\n"
+            "    return 0\n"
+            "fun mutate(p: Point)\n"
+            "    p.x = 5\n"
+        )
+        self.assertTrue(
+            any("'Point' is frozen" in m for m in msgs), msgs,
+        )
+
+    def test_map_value_does_not_freeze_struct(self):
+        # Map values are not part of the hash key; mutating
+        # them is safe and must remain allowed.
+        r = check(
+            "type Point {\n"
+            "    x: Int,\n"
+            "    y: Int\n"
+            "}\n"
+            "fun lookup(m: Map<String, Point>) -> Int\n"
+            "    return 0\n"
+            "fun mutate(p: Point)\n"
+            "    p.x = 5\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+    def test_transitive_freeze_via_struct_field(self):
+        # Wrap contains a Point. Set<Wrap> freezes Wrap, and
+        # the transitive closure pulls Point in too.
+        msgs = errors_of(
+            "type Point {\n"
+            "    x: Int,\n"
+            "    y: Int\n"
+            "}\n"
+            "type Wrap {\n"
+            "    p: Point\n"
+            "}\n"
+            "fun use_set(s: Set<Wrap>) -> Int\n"
+            "    return 0\n"
+            "fun mutate(p: Point)\n"
+            "    p.x = 5\n"
+        )
+        self.assertTrue(
+            any("'Point' is frozen" in m for m in msgs), msgs,
+        )
+
+    def test_nested_collection_set_of_list_of_struct(self):
+        # Set<List<Point>> still extracts Point as a frozen key
+        # base (the List is part of the key position; its element
+        # type is what hashing ultimately depends on).
+        msgs = errors_of(
+            "type Point {\n"
+            "    x: Int,\n"
+            "    y: Int\n"
+            "}\n"
+            "fun use_set(s: Set<List<Point>>) -> Int\n"
+            "    return 0\n"
+            "fun mutate(p: Point)\n"
+            "    p.x = 5\n"
+        )
+        self.assertTrue(
+            any("'Point' is frozen" in m for m in msgs), msgs,
+        )
+
+    def test_construction_of_frozen_type_still_allowed(self):
+        # The rule only forbids field mutation; constructing a
+        # frozen struct (and reading its fields) is fine.
+        r = check(
+            "type Point {\n"
+            "    x: Int,\n"
+            "    y: Int\n"
+            "}\n"
+            "fun use_set(s: Set<Point>) -> Int\n"
+            "    return 0\n"
+            "fun build() -> Point\n"
+            "    let p = Point{x: 1, y: 2}\n"
+            "    return p\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+    def test_whole_value_rebinding_of_var_still_allowed(self):
+        # ``p = Point{...}`` on a ``var`` is whole-value
+        # rebinding: target is an Ident, not a FieldAccess, so
+        # the rule does not (and must not) fire.
+        r = check(
+            "type Point {\n"
+            "    x: Int,\n"
+            "    y: Int\n"
+            "}\n"
+            "fun use_set(s: Set<Point>) -> Int\n"
+            "    return 0\n"
+            "fun swap()\n"
+            "    var p = Point{x: 1, y: 2}\n"
+            "    p = Point{x: 3, y: 4}\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+    def test_augmented_assignment_caught(self):
+        # ``p.x += 1`` is parsed as AssignStmt(op='+=') with
+        # target = FieldAccess; the rule must fire regardless
+        # of the operator.
+        msgs = errors_of(
+            "type Point {\n"
+            "    x: Int,\n"
+            "    y: Int\n"
+            "}\n"
+            "fun use_set(s: Set<Point>) -> Int\n"
+            "    return 0\n"
+            "fun mutate(p: Point)\n"
+            "    p.x += 1\n"
+        )
+        self.assertTrue(
+            any("'Point' is frozen" in m for m in msgs), msgs,
+        )
+
+    def test_indexed_receiver_field_write_caught(self):
+        # ``xs[i].x = 5`` where ``xs: List<Point>`` and Point
+        # is frozen: target is FieldAccess(Index(xs, i), 'x'),
+        # the FieldAccess receiver's type resolves to Point,
+        # so the rule fires.
+        msgs = errors_of(
+            "type Point {\n"
+            "    x: Int,\n"
+            "    y: Int\n"
+            "}\n"
+            "fun use_set(s: Set<Point>) -> Int\n"
+            "    return 0\n"
+            "fun mutate(xs: List<Point>)\n"
+            "    xs[0].x = 5\n"
+        )
+        self.assertTrue(
+            any("'Point' is frozen" in m for m in msgs), msgs,
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

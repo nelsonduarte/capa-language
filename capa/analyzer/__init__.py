@@ -233,6 +233,7 @@ from ._declarations import _DeclarationsMixin
 from ._discipline import _DisciplineMixin
 from ._dispatch import _DispatchMixin
 from ._expressions import _ExpressionsMixin
+from ._frozen import _FrozenTypesMixin
 from ._items import _ItemsMixin
 from ._patterns import _PatternsMixin
 from ._statements import _StatementsMixin
@@ -241,8 +242,8 @@ from ._typing import _TypingMixin
 
 class Analyzer(
     _TypingMixin, _DisciplineMixin, _DispatchMixin,
-    _PatternsMixin, _DeclarationsMixin, _StatementsMixin,
-    _ExpressionsMixin, _ItemsMixin,
+    _PatternsMixin, _DeclarationsMixin, _FrozenTypesMixin,
+    _StatementsMixin, _ExpressionsMixin, _ItemsMixin,
 ):
     """Performs the semantic analysis of a Module.
 
@@ -312,6 +313,16 @@ class Analyzer(
         # the same symbol, ``_resolve_ty`` applies it.
         self._ty_subs: dict[str, Ty] = {}
         self._fresh_counter: int = 0
+        # Names of user-defined struct types whose values must
+        # not be field-mutated, because the type appears
+        # (directly or transitively) in a ``Set<...>`` or
+        # ``Map<...K..., V>`` key position somewhere in the
+        # program. Populated by ``_compute_frozen_types`` once
+        # per ``analyze`` call. Consulted by ``_check_assign``
+        # when the target is a ``FieldAccess`` on a value whose
+        # type resolves to one of these names. See ``_frozen.py``
+        # for the rule and the audit trail (H2, 2026-05).
+        self._frozen_types: set[str] = set()
 
     # Type-substitution machinery (_fresh_ty_var, _resolve_ty,
     # _commit_fresh_substitutions, _apply_mapping) lives in
@@ -326,6 +337,13 @@ class Analyzer(
         self._install_builtins()
         # Phase 1: register all top-level declarations (forward refs).
         self._collect_globals(module)
+        # Phase 1b: compute the set of frozen struct types
+        # (those reachable from any ``Set<...>`` / ``Map<...K, V>``
+        # key position). Must run after ``_collect_globals``
+        # populates struct field types so the transitive closure
+        # can walk them, and before statement checking so
+        # ``_check_assign`` sees a fully populated set.
+        self._frozen_types = self._compute_frozen_types(module)
         # Phase 2: visit bodies of functions, impls, etc.
         for item in module.items:
             self._check_item(item)
