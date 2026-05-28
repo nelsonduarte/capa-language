@@ -37,8 +37,13 @@ from ._lower import UnsupportedInIR
 # Source-level operators that translate verbatim into Python. The few
 # that need a rewrite (``and``/``or`` are the same, ``not`` adds a
 # space) are handled in ``_format_binop`` / ``_format_unary``.
+# Bitwise / shift ops pass through unchanged: Python's ``& | ^ << >>``
+# on ``int`` line up with Capa's Int semantics (analyzer-gated to Int
+# operands only, so no float-bit-pattern surprises).
 _PY_BINOPS = {
-    "+", "-", "*", "/", "%", "==", "!=", "<", "<=", ">", ">=",
+    "+", "-", "*", "/", "%",
+    "&", "|", "^", "<<", ">>",
+    "==", "!=", "<", "<=", ">", ">=",
     "and", "or",
 }
 

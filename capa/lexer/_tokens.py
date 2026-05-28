@@ -24,7 +24,13 @@ _SINGLE_CHAR_TOKENS: dict[str, TokenKind] = {
     ":": TokenKind.COLON,
     ";": TokenKind.SEMI,
     "?": TokenKind.QUESTION,
+    # Bitwise & and ^ have no compound forms (no `&=` / `^=` in v1),
+    # so they live here alongside the other no-lookahead punct. PIPE
+    # also sits here; reused as bitwise-or in expression position
+    # (the parser routes by context, not token identity).
     "|": TokenKind.PIPE,
+    "&": TokenKind.AMPERSAND,
+    "^": TokenKind.CARET,
     "@": TokenKind.AT,
     "(": TokenKind.LPAREN,
     ")": TokenKind.RPAREN,
@@ -122,7 +128,13 @@ class _TokensMixin:
 
         if c == "<":
             self._advance()
-            if self._consume("="):
+            # Check the doubled form (<<) before the augmented form (<=)
+            # so the maximal-munch tie goes to LSHIFT vs LT followed by
+            # EQ. Both are distinct trailing characters so order here is
+            # informational, not load-bearing.
+            if self._consume("<"):
+                self._emit(TokenKind.LSHIFT, "<<", start)
+            elif self._consume("="):
                 self._emit(TokenKind.LT_EQ, "<=", start)
             else:
                 self._emit(TokenKind.LT, "<", start)
@@ -130,7 +142,18 @@ class _TokensMixin:
 
         if c == ">":
             self._advance()
-            if self._consume("="):
+            # RSHIFT lookahead. Maximal-munch consumes both ``>>``
+            # characters as one token even in nested-generics
+            # contexts like ``List<List<Int>>``; the type-argument
+            # parser (``_parse_type_args``) compensates by treating a
+            # leading RSHIFT as "close inner, leave outer GT pending"
+            # (the standard rustc/scalac split). Keeping the split out
+            # of the lexer means expression-level ``a >> b`` always
+            # lands as one token, which the precedence-climbing parser
+            # expects.
+            if self._consume(">"):
+                self._emit(TokenKind.RSHIFT, ">>", start)
+            elif self._consume("="):
                 self._emit(TokenKind.GT_EQ, ">=", start)
             else:
                 self._emit(TokenKind.GT, ">", start)

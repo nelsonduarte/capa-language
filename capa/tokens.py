@@ -93,6 +93,15 @@ class TokenKind(Enum):
     SLASH = auto()
     PERCENT = auto()
 
+    # Bitwise operators on Int. PIPE (defined further down with the
+    # structural tokens) doubles as the bitwise-or operator at
+    # expression position; the parser disambiguates from its
+    # match-pattern role by context.
+    AMPERSAND = auto()    # &   (bitwise and)
+    CARET = auto()        # ^   (bitwise xor)
+    LSHIFT = auto()       # <<  (arithmetic shift left)
+    RSHIFT = auto()       # >>  (arithmetic shift right, signed)
+
     # Comparison operators
     EQ_EQ = auto()
     BANG_EQ = auto()

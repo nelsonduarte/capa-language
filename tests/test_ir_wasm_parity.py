@@ -67,6 +67,7 @@ _PARITY_PROGRAMS: list[str] = [
     "set_string.capa",
     "set_struct.capa",
     "numeric_parity.capa",
+    "bitwise.capa",
 ]
 
 # Programs deliberately excluded from parity and why; documented
@@ -249,6 +250,9 @@ class TestPythonWasmParity(unittest.TestCase):
 
     def test_numeric_parity(self):
         self._assert_parity("numeric_parity.capa")
+
+    def test_bitwise(self):
+        self._assert_parity("bitwise.capa")
 
     def test_inventory_matches_examples_dir(self):
         # Soundness check: every .capa under examples/wasm/ is

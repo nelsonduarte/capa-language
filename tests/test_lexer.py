@@ -401,6 +401,40 @@ class TestOperators(unittest.TestCase):
         with self.assertRaises(LexerError):
             lex("!x")
 
+    def test_bitwise_operators(self):
+        # & | ^ are single-char; << >> are maximal-munch over two
+        # ``<`` / ``>`` characters. Pinning the kinds here guards
+        # the lookahead in ``_lex_punct`` (LSHIFT must beat LT_EQ
+        # / LT; RSHIFT must beat GT_EQ / GT).
+        self.assertEqual(kinds_no_layout("&"), [TokenKind.AMPERSAND])
+        self.assertEqual(kinds_no_layout("|"), [TokenKind.PIPE])
+        self.assertEqual(kinds_no_layout("^"), [TokenKind.CARET])
+        self.assertEqual(kinds_no_layout("<<"), [TokenKind.LSHIFT])
+        self.assertEqual(kinds_no_layout(">>"), [TokenKind.RSHIFT])
+        self.assertEqual(
+            kinds_no_layout("& | ^ << >>"),
+            [
+                TokenKind.AMPERSAND, TokenKind.PIPE, TokenKind.CARET,
+                TokenKind.LSHIFT, TokenKind.RSHIFT,
+            ],
+        )
+
+    def test_shift_does_not_eat_compound(self):
+        # ``<=`` and ``>=`` must still tokenise; the LSHIFT / RSHIFT
+        # lookahead only fires on a doubled ``<`` / ``>``.
+        self.assertEqual(kinds_no_layout("<="), [TokenKind.LT_EQ])
+        self.assertEqual(kinds_no_layout(">="), [TokenKind.GT_EQ])
+        # ``< <`` (with whitespace) stays as two LT tokens; the
+        # double-char fusion is contiguous-only.
+        self.assertEqual(
+            kinds_no_layout("< <"),
+            [TokenKind.LT, TokenKind.LT],
+        )
+        self.assertEqual(
+            kinds_no_layout("> >"),
+            [TokenKind.GT, TokenKind.GT],
+        )
+
 
 # =============================================================
 # Comments

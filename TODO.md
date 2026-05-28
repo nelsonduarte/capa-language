@@ -948,6 +948,34 @@ Listed so the design space is explicit.
 
 ### Wasm-specific gaps that are not P0
 
+- [x] **Bitwise operators on Int** (closed 2026-05-28). `& | ^ << >>`
+  now work end to end on `Int` with parity-clean output between the
+  Python and Wasm backends; previously unsupported across the whole
+  stack (no lexer tokens, no parser precedence, no analyzer rule,
+  no emit-table entries). Five layers touched: lexer (new
+  `AMPERSAND` / `CARET` / `LSHIFT` / `RSHIFT` tokens + `<<` / `>>`
+  lookahead mirroring `<=` / `>=`), parser (4 new precedence
+  methods + 4 op-set constants, rewired into the existing cascade),
+  analyzer (one `_check_binop` branch requiring Int / Int -> Int,
+  rejecting Float / String), and both emit tables (`_BINOP_MAP` /
+  `_PY_BINOPS` / `_INT_BINOP`). Standard C / Rust / Python
+  precedence: `or < and < not < cmp < range < | < ^ < & < + - < << >> < * / %`.
+  `PIPE` token is reused: match-pattern or-patterns parse via a
+  distinct entry point, no conflict. The `>>` lexer change broke
+  `List<List<Int>>` (RSHIFT swallowed both closers); fix is the
+  standard rustc/scalac in-place token split in
+  `_parse_type_args._close_type_args` (RSHIFT rewritten to GT with
+  position shifted by one column). 18 new tests (2 lexer, 7 parser,
+  3 analyzer, 5 ir-wasm, 1 parity program covering all ops +
+  precedence corners + a nested-generics regression check). Full
+  suite 1870 -> 1888 / 5 skipped / 0 fail. Slice 6 of full language
+  coverage. Note: `i64.shr_s` is the signed shift right (matches
+  Python's sign-extending `>>` on int); Wasm masks shift amount to
+  low 6 bits while Python raises on negative shift, but the analyzer
+  enforces Int operands and well-typed non-negative shifts agree
+  byte for byte. Bitwise on `Bool` deliberately rejected (`and` /
+  `or` are the bool ops).
+
 - [x] **Numeric + Bool interpolation parity** (closed 2026-05-28).
   Three small parity fixes that cleaned up known divergences /
   rejects between the Python and Wasm backends:

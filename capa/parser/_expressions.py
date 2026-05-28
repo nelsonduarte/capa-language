@@ -1,10 +1,29 @@
 """Expression-parsing mixin.
 
 Implements the precedence-climbing parser for the expression
-grammar. From lowest to highest precedence:
+grammar. From lowest to highest precedence (each level delegates
+to the next in its recursive-descent body):
 
-``expr -> or -> and -> not -> comparison -> range -> additive ->
-multiplicative -> unary -> postfix -> primary``
+``expr -> or -> and -> not -> comparison -> range ->
+bitwise_or -> bitwise_xor -> bitwise_and -> shift ->
+additive -> multiplicative -> unary -> postfix -> primary``
+
+The bitwise band sits ABOVE comparison and BELOW arithmetic, so:
+
+- ``a + b & c`` groups as ``(a + b) & c`` (additive tighter than ``&``)
+- ``a << b + c`` groups as ``a << (b + c)`` (additive tighter than shift)
+- ``a & b << c`` groups as ``a & (b << c)`` (shift tighter than ``&``)
+- ``a & b == c`` is rejected at the comparison level: comparison is
+  non-associative and its operand is the range/bitwise band, which
+  binds tighter than ``==``, so the analyzer sees ``a & b`` (Int) on
+  the left of ``==`` -- valid -- but a single bitwise expression
+  cannot be combined with a comparison without parentheses by virtue
+  of the comparison precedence; chained comparisons remain rejected.
+
+Order inside the bitwise band, lowest to highest: ``|``, ``^``,
+``&`` (matches C/Rust). ``|`` is the existing PIPE token, reused
+here because it only ever appears in match-pattern position via the
+distinct ``_parse_match_arm`` entry point.
 
 - ``_parse_if_expr``: ``if cond then e1 else e2`` (note the
   required ``then`` keyword; without it ``if`` parses as a
@@ -39,6 +58,16 @@ _COMPARISON_OPS = {
 }
 _ADDITIVE_OPS = {T.PLUS: "+", T.MINUS: "-"}
 _MULTIPLICATIVE_OPS = {T.STAR: "*", T.SLASH: "/", T.PERCENT: "%"}
+
+# Bitwise / shift operator sets. Each level has its own table so
+# the precedence-climbing methods can stay one-line-per-level.
+# Defined as single-entry maps for ``|``, ``^``, ``&`` to keep the
+# ``op = _xxx_OPS[op_tok.kind]`` shape identical to the other
+# binary levels in this file.
+_BITWISE_OR_OPS = {T.PIPE: "|"}
+_BITWISE_XOR_OPS = {T.CARET: "^"}
+_BITWISE_AND_OPS = {T.AMPERSAND: "&"}
+_SHIFT_OPS = {T.LSHIFT: "<<", T.RSHIFT: ">>"}
 
 
 class _ExpressionsMixin:
@@ -114,22 +143,70 @@ class _ExpressionsMixin:
         """Range expression: ``start..end`` (exclusive) or
         ``start..=end`` (inclusive). Non-associative, chained ranges
         like ``a..b..c`` are not allowed and would be a syntax error.
-        Sits between comparison and addition in the precedence ladder,
-        so ``1+2..5+3`` parses as ``(1+2)..(5+3)``.
+        Sits between comparison and the bitwise/arithmetic band in the
+        precedence ladder, so ``1+2..5+3`` parses as ``(1+2)..(5+3)``
+        and ``a | b .. c`` as ``(a | b) .. c``.
         """
-        left = self._parse_additive()
+        left = self._parse_bitwise_or()
         if self._check(T.DOT_DOT):
             start_tok = self._advance()
-            end = self._parse_additive()
+            end = self._parse_bitwise_or()
             return A.RangeExpr(
                 pos=start_tok.start, start=left, end=end, inclusive=False,
             )
         if self._check(T.DOT_DOT_EQ):
             start_tok = self._advance()
-            end = self._parse_additive()
+            end = self._parse_bitwise_or()
             return A.RangeExpr(
                 pos=start_tok.start, start=left, end=end, inclusive=True,
             )
+        return left
+
+    def _parse_bitwise_or(self) -> A.Expr:
+        # Lowest of the three bitwise levels; left-associative. See
+        # the module docstring for the full precedence diagram.
+        left = self._parse_bitwise_xor()
+        while self._peek().kind in _BITWISE_OR_OPS:
+            op_tok = self._advance()
+            op = _BITWISE_OR_OPS[op_tok.kind]
+            right = self._parse_bitwise_xor()
+            left = A.BinOp(pos=left.pos, op=op, left=left, right=right)
+        return left
+
+    def _parse_bitwise_xor(self) -> A.Expr:
+        left = self._parse_bitwise_and()
+        while self._peek().kind in _BITWISE_XOR_OPS:
+            op_tok = self._advance()
+            op = _BITWISE_XOR_OPS[op_tok.kind]
+            right = self._parse_bitwise_and()
+            left = A.BinOp(pos=left.pos, op=op, left=left, right=right)
+        return left
+
+    def _parse_bitwise_and(self) -> A.Expr:
+        # Highest of the bitwise levels. Its operands are parsed via
+        # the shift level (so ``a & b << c`` groups as ``a & (b << c)``
+        # in line with C / Rust), and arithmetic flows in through
+        # shift -> additive -> multiplicative below.
+        left = self._parse_shift()
+        while self._peek().kind in _BITWISE_AND_OPS:
+            op_tok = self._advance()
+            op = _BITWISE_AND_OPS[op_tok.kind]
+            right = self._parse_shift()
+            left = A.BinOp(pos=left.pos, op=op, left=left, right=right)
+        return left
+
+    def _parse_shift(self) -> A.Expr:
+        # Shift sits between the bitwise band and additive: tighter
+        # than ``& | ^`` but looser than ``+ -``. That gives
+        # ``a << b + c`` = ``a << (b + c)`` (additive folded first
+        # into the right operand) and ``a & b << c`` = ``a & (b << c)``
+        # (shift wraps before bitwise sees it). Left associative.
+        left = self._parse_additive()
+        while self._peek().kind in _SHIFT_OPS:
+            op_tok = self._advance()
+            op = _SHIFT_OPS[op_tok.kind]
+            right = self._parse_additive()
+            left = A.BinOp(pos=left.pos, op=op, left=left, right=right)
         return left
 
     def _parse_additive(self) -> A.Expr:

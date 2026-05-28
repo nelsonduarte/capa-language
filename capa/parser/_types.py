@@ -16,7 +16,7 @@ expression mixin (turbofish-style type arguments on calls).
 from __future__ import annotations
 
 from .. import capa_ast as A
-from ..tokens import TokenKind as T
+from ..tokens import Pos, TokenKind as T
 
 
 class _TypesMixin:
@@ -79,5 +79,41 @@ class _TypesMixin:
         args = [self._parse_type()]
         while self._match(T.COMMA):
             args.append(self._parse_type())
-        self._expect(T.GT, "expected '>' to close type argument list")
+        self._close_type_args()
         return args
+
+    def _close_type_args(self) -> None:
+        """Consume the closing ``>`` of a type-argument list.
+
+        Maximal-munch lexing fuses two consecutive ``>>`` into a single
+        RSHIFT token (needed so expression-level ``a >> b`` is one
+        token). In a nested generic context like ``List<List<Int>>``
+        the inner ``_parse_type_args`` therefore meets RSHIFT, not GT,
+        when it tries to close. We split it in place: consume one
+        ``>`` and rewrite the slot to a fresh GT positioned one column
+        to the right, leaving the outer ``_parse_type_args`` to close
+        normally. The same split applies to ``>=``: a future
+        ``List<List<Int>>=`` would need similar handling, but ``>=``
+        cannot appear as a type-arg closer today (the grammar has no
+        type-arg = production), so we restrict the split to RSHIFT.
+        """
+        tok = self._peek()
+        if tok.kind == T.GT:
+            self._advance()
+            return
+        if tok.kind == T.RSHIFT:
+            # Rewrite the RSHIFT slot to a single ``>`` token starting
+            # at the second character so the outer closer sees the
+            # right position. The ``end`` shrinks by one too.
+            new_start = Pos(
+                line=tok.start.line,
+                col=tok.start.col + 1,
+                offset=tok.start.offset + 1,
+                filename=tok.start.filename,
+            )
+            tok.kind = T.GT
+            tok.text = ">"
+            tok.start = new_start
+            return
+        # Reuse the standard "expected" diagnostic for anything else.
+        self._expect(T.GT, "expected '>' to close type argument list")

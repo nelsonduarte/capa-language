@@ -1,0 +1,35 @@
+// Bitwise + shift operators on Int. Covers each of ``& | ^ << >>``
+// at least once and pins the precedence corners that the parser
+// design is meant to lock in. Parity-clean: only Stdio, only Int
+// interpolation (``${i}`` is byte-identical between the Python and
+// Wasm backends for integers).
+//
+// A nested generic (``List<List<Int>>``) is constructed and indexed
+// at the bottom to keep the ``>>`` lexer change honest at the
+// example level too; the parser regression test pins it more
+// directly.
+
+fun main(stdio: Stdio)
+    // Each operator once. Comment to the right names the expected
+    // value so a diff in the parity test points at the offending
+    // op without re-deriving the math.
+    stdio.println("${5 & 3}")       // 1
+    stdio.println("${5 | 3}")       // 7
+    stdio.println("${5 ^ 3}")       // 6
+    stdio.println("${1 << 3}")      // 8
+    stdio.println("${8 >> 1}")      // 4
+
+    // Precedence corners. The first three pin the LOCKED precedence
+    // ladder: ``|`` lower than ``&``, ``&`` lower than ``+``, ``+``
+    // tighter than ``<<``.
+    stdio.println("${1 | 6 & 3}")   // 1 | (6 & 3) = 1 | 2 = 3
+    stdio.println("${1 + 2 & 3}")   // (1 + 2) & 3 = 3 & 3 = 3
+    stdio.println("${1 << 1 + 2}")  // 1 << (1 + 2) = 1 << 3 = 8
+
+    // Left-associativity of shift: ``a >> b >> c`` = ``(a >> b) >> c``.
+    stdio.println("${8 >> 1 >> 1}") // (8 >> 1) >> 1 = 4 >> 1 = 2
+
+    // Nested generic regression: ensures ``>>`` in type-arg-close
+    // position still parses after the lexer fused ``>>`` into RSHIFT.
+    let grid: List<List<Int>> = [[1, 2], [3, 4]]
+    stdio.println("${grid[0][0] & grid[1][1]}") // 1 & 4 = 0

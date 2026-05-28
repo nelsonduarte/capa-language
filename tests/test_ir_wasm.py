@@ -239,6 +239,39 @@ class TestWasmExecutes(unittest.TestCase):
         # 17 / 5 = 3, 17 % 5 = 2 -> 3002
         self.assertEqual(self._exec(src, "divmod", 17, 5), 3002)
 
+    def test_bitwise_and(self):
+        src = "fun bw(a: Int, b: Int) -> Int\n    return a & b\n"
+        self.assertEqual(self._exec(src, "bw", 5, 3), 1)
+        self.assertEqual(self._exec(src, "bw", 0xFF, 0x0F), 0x0F)
+        self.assertEqual(self._exec(src, "bw", 0, 12345), 0)
+
+    def test_bitwise_or(self):
+        src = "fun bw(a: Int, b: Int) -> Int\n    return a | b\n"
+        self.assertEqual(self._exec(src, "bw", 5, 3), 7)
+        self.assertEqual(self._exec(src, "bw", 0x0F, 0xF0), 0xFF)
+        self.assertEqual(self._exec(src, "bw", 0, 0), 0)
+
+    def test_bitwise_xor(self):
+        src = "fun bw(a: Int, b: Int) -> Int\n    return a ^ b\n"
+        self.assertEqual(self._exec(src, "bw", 5, 3), 6)
+        # ``a ^ a == 0`` is the canonical identity.
+        self.assertEqual(self._exec(src, "bw", 12345, 12345), 0)
+        self.assertEqual(self._exec(src, "bw", 0xFF, 0x0F), 0xF0)
+
+    def test_shift_left(self):
+        src = "fun bw(a: Int, b: Int) -> Int\n    return a << b\n"
+        self.assertEqual(self._exec(src, "bw", 1, 3), 8)
+        self.assertEqual(self._exec(src, "bw", 5, 1), 10)
+        self.assertEqual(self._exec(src, "bw", 0, 10), 0)
+
+    def test_shift_right_signed(self):
+        # ``>>`` is arithmetic (sign-extending) to match Python's
+        # signed-int ``>>``. Negative inputs stay negative.
+        src = "fun bw(a: Int, b: Int) -> Int\n    return a >> b\n"
+        self.assertEqual(self._exec(src, "bw", 8, 1), 4)
+        self.assertEqual(self._exec(src, "bw", -8, 1), -4)
+        self.assertEqual(self._exec(src, "bw", 1024, 10), 1)
+
     def test_comparison_returns_bool(self):
         src = "fun is_pos(n: Int) -> Bool\n    return n > 0\n"
         # Wasm returns i32 0/1; wasmtime maps that to Python int.

@@ -145,12 +145,24 @@ class Emitter:
 
 
 # Capa operators -> Python (most are the same, a few need mapping).
+# Bitwise / shift ops are pass-through: Python's ``& | ^ << >>`` on
+# ``int`` match Capa's Int semantics, including signed arbitrary-
+# precision arithmetic. The Wasm side is fixed-width i64, so for
+# values that overflow i64 the two backends diverge by overflow
+# semantics (Wasm wraps mod 2^64, Python doesn't), but every Capa
+# Int the analyzer types is conceptually 64-bit, so a well-typed
+# program stays in range.
 _BINOP_MAP = {
     "+": "+",
     "-": "-",
     "*": "*",
     "/": "/",
     "%": "%",
+    "&": "&",
+    "|": "|",
+    "^": "^",
+    "<<": "<<",
+    ">>": ">>",
     "==": "==",
     "!=": "!=",
     "<": "<",

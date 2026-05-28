@@ -92,6 +92,20 @@ _INT_BINOP = {
     "*": "i64.mul",
     "/": "i64.div_s",
     "%": "i64.rem_s",
+    # Bitwise. Signed shift-right (``i64.shr_s``) is the right
+    # match for Capa Int because Python's ``>>`` on signed ints is
+    # also arithmetic (sign-extending). Note the shift-count
+    # corner: ``i64.shl`` / ``i64.shr_s`` mask the RHS to the low
+    # 6 bits, so ``a << 64`` is ``a << 0`` at the Wasm level. The
+    # Python backend instead raises on a negative shift count and
+    # produces 0 on a non-negative count >= 64. For correctly typed,
+    # non-negative shifts in [0, 63] the two backends agree byte for
+    # byte; we deliberately do not add a runtime guard.
+    "&": "i64.and",
+    "|": "i64.or",
+    "^": "i64.xor",
+    "<<": "i64.shl",
+    ">>": "i64.shr_s",
 }
 
 _FLOAT_BINOP = {

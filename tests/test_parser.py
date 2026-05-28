@@ -361,6 +361,76 @@ class TestExpressions(unittest.TestCase):
             parse_expr("1 < x < 10")
         self.assertIn("non-associative", str(ctx.exception))
 
+    def test_bitwise_precedence_or_xor_and(self):
+        # ``a | b & c`` = ``a | (b & c)`` because ``&`` binds tighter
+        # than ``|``. Matches C / Rust.
+        e = parse_expr("a | b & c")
+        self.assertIsInstance(e, A.BinOp)
+        self.assertEqual(e.op, "|")
+        self.assertEqual(e.left.name, "a")
+        self.assertIsInstance(e.right, A.BinOp)
+        self.assertEqual(e.right.op, "&")
+
+    def test_bitwise_lower_than_additive(self):
+        # ``a + b & c`` = ``(a + b) & c``: ``+`` binds tighter than ``&``.
+        e = parse_expr("a + b & c")
+        self.assertEqual(e.op, "&")
+        self.assertIsInstance(e.left, A.BinOp)
+        self.assertEqual(e.left.op, "+")
+        self.assertEqual(e.right.name, "c")
+
+    def test_shift_lower_than_additive(self):
+        # ``a << b + c`` = ``a << (b + c)``: ``+`` binds tighter than ``<<``.
+        e = parse_expr("a << b + c")
+        self.assertEqual(e.op, "<<")
+        self.assertEqual(e.left.name, "a")
+        self.assertIsInstance(e.right, A.BinOp)
+        self.assertEqual(e.right.op, "+")
+
+    def test_shift_higher_than_bitwise(self):
+        # ``a & b << c`` = ``a & (b << c)``: shift binds tighter than ``&``.
+        e = parse_expr("a & b << c")
+        self.assertEqual(e.op, "&")
+        self.assertEqual(e.left.name, "a")
+        self.assertIsInstance(e.right, A.BinOp)
+        self.assertEqual(e.right.op, "<<")
+
+    def test_bitwise_left_associative(self):
+        # ``a & b & c`` = ``(a & b) & c``.
+        e = parse_expr("a & b & c")
+        self.assertEqual(e.op, "&")
+        self.assertIsInstance(e.left, A.BinOp)
+        self.assertEqual(e.left.op, "&")
+        self.assertEqual(e.right.name, "c")
+
+    def test_shift_left_associative(self):
+        # ``8 >> 1 >> 1`` = ``((8 >> 1) >> 1)``.
+        e = parse_expr("8 >> 1 >> 1")
+        self.assertEqual(e.op, ">>")
+        self.assertIsInstance(e.left, A.BinOp)
+        self.assertEqual(e.left.op, ">>")
+
+    def test_nested_generic_with_rshift(self):
+        # Regression gate for the ``>>`` lexer change: nested generics
+        # like ``List<List<Int>>`` must still parse. The lexer fuses
+        # the trailing ``>>`` into a single RSHIFT token; the
+        # type-argument parser splits it back into two ``>`` closers.
+        m = parse(
+            "fun f(xs: List<List<Int>>) -> List<List<Int>>\n"
+            "    return xs\n"
+        )
+        fn = m.items[0]
+        self.assertIsInstance(fn, A.FunDecl)
+        # Param type is List<List<Int>>; walk through and confirm.
+        param_ty = fn.params[0].type_expr
+        self.assertIsInstance(param_ty, A.TypeName)
+        self.assertEqual(param_ty.name, "List")
+        self.assertEqual(len(param_ty.args), 1)
+        inner = param_ty.args[0]
+        self.assertIsInstance(inner, A.TypeName)
+        self.assertEqual(inner.name, "List")
+        self.assertEqual(inner.args[0].name, "Int")
+
     def test_function_call(self):
         e = parse_expr("f(1, 2, 3)")
         self.assertIsInstance(e, A.Call)

@@ -71,6 +71,21 @@ class TestValidPrograms(unittest.TestCase):
         )
         self.assertTrue(r.ok, r.errors)
 
+    def test_bitwise_int_int_ok(self):
+        # All five bitwise ops on Int operands type-check to Int.
+        # Covered in one function so a single failure surfaces every
+        # offending op rather than the first one only.
+        r = check(
+            "fun bits(a: Int, b: Int) -> Int\n"
+            "    let _and = a & b\n"
+            "    let _or = a | b\n"
+            "    let _xor = a ^ b\n"
+            "    let _shl = a << b\n"
+            "    let _shr = a >> b\n"
+            "    return _and + _or + _xor + _shl + _shr\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
     def test_string_concat(self):
         r = check(
             "fun saudar(nome: String) -> String\n"
@@ -397,6 +412,30 @@ class TestTypeChecking(unittest.TestCase):
             "    return 1 + \"a\"\n"
         )
         self.assertTrue(any("incompatible operand types" in m for m in msgs))
+
+    def test_bitwise_float_rejected(self):
+        # Bitwise on Float is rejected: the bit pattern of an IEEE-754
+        # double is not a meaningful operand for ``& | ^``.
+        msgs = errors_of(
+            "fun f() -> Int\n"
+            "    return 1.5 & 2.0\n"
+        )
+        self.assertTrue(
+            any("bitwise operators require Int operands" in m for m in msgs),
+            msgs,
+        )
+
+    def test_shift_string_rejected(self):
+        # Shift with a String operand should be rejected at the
+        # analyzer; the error names the offending types.
+        msgs = errors_of(
+            "fun f() -> Int\n"
+            "    return 1 << \"two\"\n"
+        )
+        self.assertTrue(
+            any("bitwise operators require Int operands" in m for m in msgs),
+            msgs,
+        )
 
     def test_unary_minus_on_string(self):
         msgs = errors_of(

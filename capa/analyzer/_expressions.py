@@ -498,6 +498,25 @@ class _ExpressionsMixin:
                 e.pos,
             )
             return TyUnknown
+        if op in ("&", "|", "^", "<<", ">>"):
+            # Bitwise operators are Int-only. We deliberately do NOT
+            # accept Float (the bit pattern of an IEEE-754 double is
+            # not what users mean when they write ``f & g``) or Bool
+            # (Capa's Bool is logical, not a 1-bit integer; use
+            # ``and`` / ``or`` for boolean combinators). The shift
+            # operators inherit the same restriction: shift amounts
+            # are Int. Negative-RHS behaviour for shifts diverges
+            # between backends (Python raises; Wasm masks the count
+            # to 6 bits), but that's a runtime corner of correctly
+            # typed code, not a type error.
+            if compatible(TyInt, lt) and compatible(TyInt, rt):
+                return TyInt
+            self._err(
+                f"operator {op!r}: bitwise operators require Int operands; "
+                f"got {ty_str(lt)} and {ty_str(rt)}",
+                e.pos,
+            )
+            return TyUnknown
         if op in ("==", "!="):
             if not compatible(lt, rt) and not compatible(rt, lt):
                 self._err(
