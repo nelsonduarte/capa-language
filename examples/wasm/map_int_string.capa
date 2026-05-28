@@ -1,0 +1,32 @@
+// Map<Int, String>: set / get / contains_key / pairs. Stresses
+// the cross-product of the new Int-key path with the existing
+// String-value packing (ptr | (len << 32) into the 8-byte slot).
+
+fun main(stdio: Stdio)
+    let m: Map<Int, String> = new_map()
+    m.set(1, "one")
+    m.set(2, "two")
+    m.set(7, "seven")
+
+    stdio.println("length = ${m.length()}")
+
+    match m.get(1)
+        Some(s) -> stdio.println("1 -> ${s}")
+        None -> stdio.println("1 missing")
+    match m.get(7)
+        Some(s) -> stdio.println("7 -> ${s}")
+        None -> stdio.println("7 missing")
+    match m.get(3)
+        Some(s) -> stdio.println("3 -> ${s}")
+        None -> stdio.println("3 missing")
+
+    if m.contains_key(2)
+        stdio.println("has 2")
+    if m.contains_key(99)
+        stdio.println("has 99")
+    else
+        stdio.println("no 99")
+
+    for pair in m.pairs()
+        let (k, v) = pair
+        stdio.println("${k} = ${v}")

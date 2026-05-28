@@ -5218,5 +5218,159 @@ class TestFrozenStructTypes(unittest.TestCase):
         )
 
 
+class TestMapKeyTypeRestrictions(unittest.TestCase):
+    """Audit M4 (2026-05): the Wasm backend supports only String /
+    Int / Bool as Map keys. The analyzer rejects unsupported key
+    types at the type-expression resolution site (declaration time)
+    so the user sees the error at ``let m: Map<Float, ...>`` rather
+    than at first method call. See ``_reject_unsupported_map_key``
+    in ``capa/analyzer/_declarations.py``."""
+
+    def test_map_string_key_accepted(self):
+        r = check(
+            "fun main()\n"
+            "    let m: Map<String, Int> = new_map()\n"
+            "    m.set(\"a\", 1)\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+    def test_map_int_key_accepted(self):
+        r = check(
+            "fun main()\n"
+            "    let m: Map<Int, Int> = new_map()\n"
+            "    m.set(1, 2)\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+    def test_map_bool_key_accepted(self):
+        r = check(
+            "fun main()\n"
+            "    let m: Map<Bool, Int> = new_map()\n"
+            "    m.set(true, 1)\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+    def test_map_float_key_rejected(self):
+        msgs = errors_of(
+            "fun main(stdio: Stdio)\n"
+            "    let m: Map<Float, Int> = new_map()\n"
+        )
+        self.assertTrue(
+            any("Float" in m and "Map keys" in m and "NaN" in m for m in msgs),
+            msgs,
+        )
+
+    def test_map_list_key_rejected(self):
+        msgs = errors_of(
+            "fun main(stdio: Stdio)\n"
+            "    let m: Map<List<Int>, Int> = new_map()\n"
+        )
+        self.assertTrue(
+            any("nested-collection" in m for m in msgs), msgs,
+        )
+
+    def test_map_map_key_rejected(self):
+        msgs = errors_of(
+            "fun main(stdio: Stdio)\n"
+            "    let m: Map<Map<Int, Int>, Int> = new_map()\n"
+        )
+        self.assertTrue(
+            any("nested-collection" in m for m in msgs), msgs,
+        )
+
+    def test_map_set_key_rejected(self):
+        msgs = errors_of(
+            "fun main(stdio: Stdio)\n"
+            "    let m: Map<Set<Int>, Int> = new_map()\n"
+        )
+        self.assertTrue(
+            any("nested-collection" in m for m in msgs), msgs,
+        )
+
+    def test_map_struct_key_rejected(self):
+        msgs = errors_of(
+            "type Point {\n"
+            "    x: Int,\n"
+            "    y: Int\n"
+            "}\n"
+            "fun main(stdio: Stdio)\n"
+            "    let m: Map<Point, Int> = new_map()\n"
+        )
+        self.assertTrue(
+            any(
+                "Map keys of struct types" in m
+                and "not supported yet" in m
+                and "'Point'" in m
+                for m in msgs
+            ),
+            msgs,
+        )
+
+    def test_map_sum_key_rejected(self):
+        msgs = errors_of(
+            "type Color =\n"
+            "    Red\n"
+            "    Green\n"
+            "    Blue\n"
+            "fun main(stdio: Stdio)\n"
+            "    let m: Map<Color, Int> = new_map()\n"
+        )
+        self.assertTrue(
+            any(
+                "Map keys of sum types" in m
+                and "not supported yet" in m
+                and "'Color'" in m
+                for m in msgs
+            ),
+            msgs,
+        )
+
+    def test_map_tuple_key_rejected(self):
+        msgs = errors_of(
+            "fun main(stdio: Stdio)\n"
+            "    let m: Map<(Int, Int), Int> = new_map()\n"
+        )
+        self.assertTrue(
+            any("nested-collection" in m for m in msgs), msgs,
+        )
+
+    def test_map_function_key_rejected(self):
+        msgs = errors_of(
+            "fun main(stdio: Stdio)\n"
+            "    let m: Map<Fun(Int) -> Int, Int> = new_map()\n"
+        )
+        self.assertTrue(
+            any("function types" in m for m in msgs), msgs,
+        )
+
+    def test_map_float_key_in_function_param_rejected(self):
+        # The check fires regardless of where the Map<K, V> type
+        # expression lives; function parameter type counts too.
+        msgs = errors_of(
+            "fun take(m: Map<Float, Int>)\n"
+            "    return\n"
+        )
+        self.assertTrue(
+            any("Float" in m and "NaN" in m for m in msgs), msgs,
+        )
+
+    def test_map_struct_key_in_return_type_rejected(self):
+        msgs = errors_of(
+            "type Point {\n"
+            "    x: Int,\n"
+            "    y: Int\n"
+            "}\n"
+            "fun make() -> Map<Point, Int>\n"
+            "    return new_map()\n"
+        )
+        self.assertTrue(
+            any(
+                "Map keys of struct types" in m and "'Point'" in m
+                for m in msgs
+            ),
+            msgs,
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

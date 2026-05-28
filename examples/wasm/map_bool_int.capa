@@ -1,0 +1,29 @@
+// Map<Bool, Int>: degenerate two-entry case. set true=1, false=0,
+// lookup both, iterate. Verifies the Bool-key path's i32 compare
+// + the 4-byte pad at offset 4 leaves the value slot at offset 8
+// undisturbed.
+
+fun main(stdio: Stdio)
+    let m: Map<Bool, Int> = new_map()
+    m.set(true, 1)
+    m.set(false, 0)
+
+    stdio.println("length = ${m.length()}")
+    match m.get(true)
+        Some(v) -> stdio.println("true -> ${v}")
+        None -> stdio.println("true missing")
+    match m.get(false)
+        Some(v) -> stdio.println("false -> ${v}")
+        None -> stdio.println("false missing")
+
+    if m.contains_key(true)
+        stdio.println("has true")
+    if m.contains_key(false)
+        stdio.println("has false")
+
+    for pair in m.pairs()
+        let (k, v) = pair
+        if k
+            stdio.println("k=true v=${v}")
+        else
+            stdio.println("k=false v=${v}")

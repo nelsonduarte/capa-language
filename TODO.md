@@ -948,6 +948,35 @@ Listed so the design space is explicit.
 
 ### Wasm-specific gaps that are not P0
 
+- [x] **Map<K, V> with Int and Bool keys on Wasm** (closed
+  2026-05-28). Map was String-key-only on the Wasm backend per the
+  audit's M4 finding (analyzer accepted `Map<Int, V>`, Wasm
+  silently miscompiled). This slice extends key types to **Int and
+  Bool**, with the analyzer now loudly rejecting genuinely
+  unsupported key types (`Float`, struct, sum, tuple, nested
+  collections, functions) up-front with clear diagnostics. String
+  keys unchanged.
+  Locked design: **uniform 16-byte pair layout for all key types**
+  (String: ptr/len/value; Int: i64/value; Bool: i32/pad/value), so
+  the allocator + grow loop stay generic. Per-key-type dispatch
+  factored into `_emit_push_map_key_canonical`,
+  `_emit_compare_pair_key_to`, `_emit_store_pair_key`,
+  `_emit_load_pair_key_for_tuple` in `_maps.py`; new
+  `_map_key_type` companion to `_map_value_type` in `_layout.py`.
+  `$str_eq` now only emitted when the module actually uses String
+  keys (cleaner; existing benign-but-noisy unconditional emit
+  removed). New `$_alloc_tmp_key_i64` scratch local for Int-key
+  Maps so Int-key + String-value programs do not collide on
+  `$_alloc_tmp_i64`. 18 new tests (6 Map parity programs covering
+  Int->Int, Int->String, Int->Struct, Int->update/dedup,
+  Bool->Int, String->Int regression; 13 analyzer-rejection tests
+  for Float / List / Map / Set / Tuple / Fun / Struct / Sum keys
+  + the three accepted scalar types). Full suite 1948 -> 1967 / 5
+  skipped / 0 fail. Closes audit's M4 silent-divergence vector.
+  Deferred to follow-ups: struct / tuple / sum keys (need
+  integration with slice-3 `$eq_*` helpers; ride on the H2 frozen
+  rule), Map equality (`==`).
+
 - [x] **Security hardening pass 4 - H2 frozen struct types as Set
   / Map keys** (closed 2026-05-28). Final audit follow-up.
   Mutating a struct used as a Set element or Map key broke the

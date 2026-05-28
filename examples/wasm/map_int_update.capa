@@ -1,0 +1,22 @@
+// Map<Int, Int>: dedup-on-set semantics. Insert key=10 twice
+// with different values; length must stay 1 and the stored
+// value must be the second one (overwrite). Mirrors the
+// linear-scan overwrite branch in _emit_map_set.
+
+fun main(stdio: Stdio)
+    let m: Map<Int, Int> = new_map()
+    m.set(10, 100)
+    stdio.println("after first set: length=${m.length()}")
+    match m.get(10)
+        Some(v) -> stdio.println("get(10) = ${v}")
+        None -> stdio.println("get(10) miss")
+
+    m.set(10, 999)
+    stdio.println("after second set: length=${m.length()}")
+    match m.get(10)
+        Some(v) -> stdio.println("get(10) = ${v}")
+        None -> stdio.println("get(10) miss")
+
+    // Sanity: a fresh distinct key extends length.
+    m.set(20, 200)
+    stdio.println("after third set: length=${m.length()}")

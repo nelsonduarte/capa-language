@@ -1,0 +1,34 @@
+// Map<Int, Int>: set / get hit + miss / contains_key / length /
+// pairs iteration. Audit M4 (2026-05): the analyzer accepts
+// Map<Int, V> but Phase 6D-3 silently miscompiled non-String
+// keys; the per-key dispatch in _emit_wasm/_maps.py closes that.
+
+fun main(stdio: Stdio)
+    let m: Map<Int, Int> = new_map()
+    m.set(1, 100)
+    m.set(2, 200)
+    m.set(3, 300)
+
+    stdio.println("length = ${m.length()}")
+    match m.get(1)
+        Some(v) -> stdio.println("get(1) = ${v}")
+        None -> stdio.println("get(1) miss")
+    match m.get(2)
+        Some(v) -> stdio.println("get(2) = ${v}")
+        None -> stdio.println("get(2) miss")
+    match m.get(99)
+        Some(v) -> stdio.println("get(99) = ${v}")
+        None -> stdio.println("get(99) miss")
+
+    if m.contains_key(2)
+        stdio.println("has 2")
+    else
+        stdio.println("no 2")
+    if m.contains_key(42)
+        stdio.println("has 42")
+    else
+        stdio.println("no 42")
+
+    for pair in m.pairs()
+        let (k, v) = pair
+        stdio.println("${k} -> ${v}")

@@ -151,8 +151,8 @@ _IOERROR_LAYOUT = {
 
 
 def _map_value_type(map_ty: str) -> str:
-    """Extract V from ``Map<K, V>``. Phase 6D-3 only supports K =
-    String, so we ignore K; returning V drives method dispatch.
+    """Extract V from ``Map<K, V>``. Returning V drives method
+    dispatch for value encoding (Int / Bool / String / pointer).
     Defaults to ``Int`` if the type string lacks args (consistent
     with the List analogue)."""
     if map_ty.startswith("Map<") and map_ty.endswith(">"):
@@ -163,6 +163,29 @@ def _map_value_type(map_ty: str) -> str:
             return "Int"
         return v
     return "Int"
+
+
+def _map_key_type(map_ty: str) -> str:
+    """Extract K from ``Map<K, V>``. Drives the per-key dispatch in
+    ``_emit_push_map_key_canonical`` and ``_emit_compare_pair_key_to``:
+    Int / Bool use scalar slots, String uses the existing (ptr, len)
+    pair shape.
+
+    Defaults to ``String`` when the type string lacks args or the
+    key position is an unresolved type variable, so the legacy
+    String-key code paths stay reachable for type-erased call sites
+    (e.g. the bare ``new_map()`` return type before inference fills
+    in K). The analyzer rejects unsupported K (Float / nested
+    collections / structs / sums) at declaration time, so any K
+    surviving to this point is one of the three accepted scalars."""
+    if map_ty.startswith("Map<") and map_ty.endswith(">"):
+        inner = map_ty[4:-1].strip()
+        k, _, _v = inner.partition(",")
+        k = k.strip()
+        if not k or k.startswith("?"):
+            return "String"
+        return k
+    return "String"
 
 
 def _element_type_of_list(list_ty: str) -> str:

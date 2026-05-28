@@ -1,0 +1,30 @@
+// Map<String, Int>: smoke test for the legacy String-key path
+// after the per-key dispatch refactor. The audit M4 work moved
+// the String compare into _emit_compare_pair_key_to; this
+// program pins that the refactor stays bit-identical between
+// backends for the original shape.
+
+fun main(stdio: Stdio)
+    let m: Map<String, Int> = new_map()
+    m.set("alpha", 1)
+    m.set("beta", 2)
+    m.set("gamma", 3)
+
+    stdio.println("length = ${m.length()}")
+    match m.get("alpha")
+        Some(v) -> stdio.println("alpha = ${v}")
+        None -> stdio.println("alpha missing")
+    match m.get("delta")
+        Some(v) -> stdio.println("delta = ${v}")
+        None -> stdio.println("delta missing")
+
+    if m.contains_key("beta")
+        stdio.println("has beta")
+    if m.contains_key("zeta")
+        stdio.println("has zeta")
+    else
+        stdio.println("no zeta")
+
+    for pair in m.pairs()
+        let (k, v) = pair
+        stdio.println("${k} -> ${v}")

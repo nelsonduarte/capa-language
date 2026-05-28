@@ -435,5 +435,114 @@ class _DeclarationsMixin:
                 )
                 return TyUnknown
             args = tuple(self._resolve_type(a) for a in te.args)
+            # Audit M4 (2026-05): only String / Int / Bool are
+            # supported as Map keys on the Wasm backend. Reject
+            # the unsupported shapes at type-expression resolution
+            # time so the user sees the error at declaration site
+            # (let m: Map<Float, ...>) rather than at first method
+            # call. The Python backend may accept arbitrary
+            # hashable keys, but parity is the source of truth.
+            if name == "Map" and te.args:
+                self._reject_unsupported_map_key(te.args[0])
             return TyName(name, args)
         return TyUnknown
+
+    def _reject_unsupported_map_key(self, key_te: A.TypeExpr) -> None:
+        """Emit an analyzer diagnostic if ``key_te`` is not one
+        of the three Map-key types the Wasm backend supports
+        (String / Int / Bool). Audit finding M4 (2026-05).
+
+        The check is structural (works on the AST type expression,
+        not the resolved Ty) so the position attached to the error
+        points at the offending type argument, and so unresolved
+        / forward-declared types still produce an error rather
+        than slipping through as TyUnknown.
+
+        Rules:
+
+        - String / Int / Bool: accepted, no diagnostic.
+        - Float: rejected with a NaN-as-key explanation.
+        - List / Map / Set: rejected as nested-collection key.
+        - Tuple / function types: rejected as nested-collection key.
+        - Any user-defined struct / sum: rejected as
+          not-yet-supported, with a parity-divergence callout.
+        - Anything else (Unknown, generic type vars, JsonValue,
+          Range, ...) is left alone: the existing analyzer paths
+          handle the bogus uses; this check is conservative.
+        """
+        from . import SymbolKind
+
+        if isinstance(key_te, A.TupleType):
+            self._err(
+                "Map keys of nested-collection types are not "
+                "supported (the Wasm backend's per-key dispatch "
+                "covers only String / Int / Bool)",
+                key_te.pos,
+            )
+            return
+        if isinstance(key_te, A.FunType):
+            self._err(
+                "Map keys of function types are not supported "
+                "(only String / Int / Bool are valid Map keys)",
+                key_te.pos,
+            )
+            return
+        if not isinstance(key_te, A.TypeName):
+            return
+        name = key_te.name
+        if name in ("String", "Int", "Bool"):
+            return
+        if name == "Float":
+            self._err(
+                "Map keys of type Float are not supported because "
+                "NaN-as-key is fragile (only String / Int / Bool "
+                "are valid Map keys)",
+                key_te.pos,
+            )
+            return
+        if name in ("List", "Map", "Set"):
+            self._err(
+                "Map keys of nested-collection types are not "
+                "supported (the Wasm backend's per-key dispatch "
+                "covers only String / Int / Bool)",
+                key_te.pos,
+            )
+            return
+        # Built-in nominal types that are neither a valid Map key
+        # nor a user-defined struct / sum: Option / Result / Range
+        # / JsonValue / IoError / Task / Self / Unit. Reject them
+        # as nested-collection so the diagnostic stays uniform with
+        # the explicit List / Map / Set case above.
+        from ._frozen import _BUILTIN_TYPE_NAMES
+        if name in _BUILTIN_TYPE_NAMES:
+            self._err(
+                f"Map keys of type {name!r} are not supported "
+                f"(only String / Int / Bool are valid Map keys)",
+                key_te.pos,
+            )
+            return
+        # Look up the user-defined-type case via the global scope so
+        # struct / sum diagnostics fire only on real type names
+        # (typos still flow through the standard ``undefined type``
+        # error path emitted by the surrounding ``_resolve_type``).
+        sym = self.global_scope.lookup(name)
+        if sym is None:
+            return
+        if sym.kind == SymbolKind.TYPE_STRUCT:
+            self._err(
+                f"Map keys of struct types are not supported yet by "
+                f"the Wasm backend (the Python backend may accept "
+                f"{name!r} but parity is not preserved); only "
+                f"String / Int / Bool are valid Map keys",
+                key_te.pos,
+            )
+            return
+        if sym.kind == SymbolKind.TYPE_SUM:
+            self._err(
+                f"Map keys of sum types are not supported yet by "
+                f"the Wasm backend (the Python backend may accept "
+                f"{name!r} but parity is not preserved); only "
+                f"String / Int / Bool are valid Map keys",
+                key_te.pos,
+            )
+            return

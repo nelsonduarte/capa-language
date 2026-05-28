@@ -36,7 +36,8 @@ from .._nodes import (
 from .._capa_types import BUILTIN_CAPS
 from .._emit_wit import _WIT_SIGNATURES
 from ._layout import (
-    _element_type_of_list, _element_type_of_set, WasmEmissionError,
+    _element_type_of_list, _element_type_of_set, _map_key_type,
+    WasmEmissionError,
 )
 
 
@@ -338,18 +339,30 @@ class _DiscoveryMixin:
         return needs_starts_with, needs_contains
 
     def _uses_map_ops(self, module: Module) -> bool:
-        """True if the module touches a Map or a String method that
-        relies on byte-string equality (contains / starts_with /
-        ends_with). Drives whether the ``$str_eq`` helper is
-        emitted."""
+        """True if the module needs the ``$str_eq`` helper. After
+        the M4 key generalisation, the Map gate is restricted to
+        Map<String, V>: Int/Bool key maps compare with native
+        ``i64.eq`` / ``i32.eq`` and never call ``$str_eq``. The
+        helper is still emitted for any String-method that relies
+        on byte-string equality (contains / starts_with /
+        ends_with) and for List<String>.contains /
+        Set<String>.{add,contains,remove}."""
         def visit(instrs: list[Instr]) -> bool:
             for instr in instrs:
-                if isinstance(instr, MakeMap):
-                    return True
+                # MakeMap alone never calls ``$str_eq`` (the allocator
+                # just zero-initialises the header and data array);
+                # the per-key compare emitted by ``_emit_map_*``
+                # method handlers is what may need it. So the gate
+                # is keyed off the MethodCall recv type below: a
+                # String-key receiver triggers, an Int / Bool key
+                # never does. Constructing an empty Map<Int, V> and
+                # never calling .set / .get on it is therefore zero-
+                # helper-emit, matching the locked design.
                 if isinstance(instr, MethodCall):
                     recv_ty = instr.receiver.ty or ""
                     if recv_ty.startswith("Map"):
-                        return True
+                        if _map_key_type(recv_ty) == "String":
+                            return True
                     if recv_ty == "String" and instr.method in (
                         "contains", "starts_with", "ends_with",
                     ):

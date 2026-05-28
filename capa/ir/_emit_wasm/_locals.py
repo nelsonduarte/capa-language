@@ -617,6 +617,17 @@ class _LocalsCollectionMixin:
             out["_alloc_tmp_newcap"] = "i32"
             out["_alloc_tmp_new_data"] = "i32"
             out["_alloc_tmp_result"] = "i32"
+            # Map.set's value stash. The key generalisation lets Int
+            # keys live in $_alloc_tmp_key_i64, so the value cannot
+            # share $_alloc_tmp_i64 (the String-value packing dance
+            # consumes that slot). A dedicated i64 local keeps the
+            # (key, value) pair co-resident across the linear scan.
+            out["_alloc_tmp_set_value"] = "i64"
+            # Dedicated Int-key canonical stash. Distinct from
+            # $_alloc_tmp_i64 so a Map<Int, String> set / get
+            # operation can pack the String value without clobbering
+            # the key before the scan compare.
+            out["_alloc_tmp_key_i64"] = "i64"
         if has_json_method:
             # JsonValue method emit reuses the match scrut local for
             # the receiver pointer and needs an Option-result alloc

@@ -1,0 +1,26 @@
+// Map<Int, Point>: pointer-shape value with non-String key. The
+// value i32 pointer is i64-extended on set and narrowed back on
+// match-arm Some payload extraction (same path map_struct.capa
+// exercises for String keys).
+
+type Point {
+    x: Int,
+    y: Int
+}
+
+fun main(stdio: Stdio)
+    let m: Map<Int, Point> = new_map()
+    m.set(1, Point { x: 1, y: 2 })
+    m.set(2, Point { x: 3, y: 4 })
+
+    match m.get(1)
+        Some(p) -> stdio.println("1 -> (${p.x}, ${p.y})")
+        None -> stdio.println("1 missing")
+
+    match m.get(5)
+        Some(p) -> stdio.println("5 -> (${p.x}, ${p.y})")
+        None -> stdio.println("5 missing")
+
+    for pair in m.pairs()
+        let (k, v) = pair
+        stdio.println("${k} = (${v.x}, ${v.y})")
