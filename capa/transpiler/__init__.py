@@ -85,6 +85,7 @@ from capa.runtime import (
     JNull, JBool, JNum, JStr, JArr, JObj, JsonValue,
     parse_json, to_json,
     _capa_iadd, _capa_isub, _capa_imul, _capa_shl, _capa_shr,
+    _capa_list_get, _capa_substring,
 )
 '''
 

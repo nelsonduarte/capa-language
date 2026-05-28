@@ -1,19 +1,22 @@
-"""Runtime safety helpers for arithmetic on Int.
+"""Runtime safety helpers for arithmetic and collection indexing.
 
 Capa's stance is that silent unsafety is a security hole: a program
-that overflows a 64-bit add must trap, not wrap. The Wasm backend
-emits inline overflow-detection bytecode (audit fix C2 / C3); the
-Python backend reaches the same observable failure mode by routing
-Int arithmetic through these helpers, which raise ``OverflowError``
-when the result leaves the signed 64-bit window or when a shift
-count sits outside ``[0, 64)``.
+that overflows a 64-bit add must trap, not wrap, and a program that
+indexes past the end of a list must raise, not read random heap
+bytes. The Wasm backend emits inline overflow-detection bytecode
+(audit fix C2 / C3) and inline bounds-check traps (audit fix C1);
+the Python backend reaches the same observable failure mode by
+routing arithmetic and indexing through these helpers, which raise
+``OverflowError`` / ``IndexError`` / ``ValueError`` at the same
+input the Wasm backend traps on.
 
 This adds a real per-op call cost on the Python side. That cost
-is the price of "secure language" semantics: every Int op gets
-the same loud failure on both backends at the same input, no
-exceptions. Float arithmetic is unaffected (Float ops have their
-own quiet domain via IEEE-754 NaN / Inf; the Float ``%`` zero-check
-is a separate fix on the Wasm side and is already loud in Python).
+is the price of "secure language" semantics: every Int op and
+every collection index gets the same loud failure on both backends
+at the same input, no exceptions. Float arithmetic is unaffected
+(Float ops have their own quiet domain via IEEE-754 NaN / Inf; the
+Float ``%`` zero-check is a separate fix on the Wasm side and is
+already loud in Python).
 
 Helpers exported:
 - ``_capa_iadd(a, b)`` / ``_capa_isub(a, b)`` / ``_capa_imul(a, b)``:
@@ -24,6 +27,16 @@ Helpers exported:
   ``[0, 64)``. ``_capa_shl`` additionally traps when the shifted
   result leaves the i64 window (Wasm's ``i64.shl`` discards bits
   silently; we surface the loss).
+- ``_capa_list_get(xs, i)``: bounds-checked ``xs[i]``. Raises
+  ``IndexError`` on ``i < 0`` (Capa is non-negative-index-only on
+  both backends) or ``i >= len(xs)``. Matches the Wasm backend's
+  inline trap on the same input.
+- ``_capa_substring(s, start, end)``: bounds-checked
+  ``s[start:end]``. Raises ``ValueError`` on negative bounds,
+  ``start > end``, or ``end > len(s)``. Python's slice operator
+  silently clamps; this helper refuses, so a "substring that
+  returned less than asked" cannot slip past a parser as a
+  silently-shortened token.
 """
 
 from __future__ import annotations
@@ -101,3 +114,46 @@ def _capa_shr(a: int, b: int) -> int:
             f"shift count out of range [0, 64): {b}"
         )
     return a >> b
+
+
+def _capa_list_get(xs, i):
+    """Bounds-checked ``xs[i]`` for ``List<T>``. Raises
+    ``IndexError`` on ``i < 0`` or ``i >= len(xs)``.
+
+    Capa indices are non-negative-only on both backends: Python's
+    native negative-index semantics (``xs[-1]`` -> last element) is
+    rejected here so the Python and Wasm backends agree on the same
+    inputs. The Wasm backend's ``_emit_index`` emits an equivalent
+    inline bounds check that traps via ``unreachable`` on the same
+    inputs (the unsigned compare ``i32.ge_u`` also catches negative
+    indices, because ``i32.wrap_i64`` of a negative i64 is a huge
+    u32 that exceeds any list's length).
+    """
+    n = len(xs)
+    if i < 0 or i >= n:
+        raise IndexError(
+            f"list index out of range: i={i}, len={n}"
+        )
+    return xs[i]
+
+
+def _capa_substring(s: str, start: int, end: int) -> str:
+    """Bounds-checked ``s[start:end]`` for ``String``. Raises
+    ``ValueError`` on negative bounds, ``start > end``, or
+    ``end > len(s)``.
+
+    Python's slice operator clamps silently (``"ab"[0:99]`` returns
+    ``"ab"``), but for a parser / tokeniser a substring that
+    returned less than asked is a footgun: callers downstream may
+    treat the shortened token as if it were the full requested
+    range. The Wasm backend's ``_emit_string_substring`` emits an
+    equivalent inline guard that traps via ``unreachable`` on the
+    same inputs, so both backends now refuse the request rather
+    than quietly returning a truncated slice.
+    """
+    n = len(s)
+    if start < 0 or end < 0 or start > end or end > n:
+        raise ValueError(
+            f"substring out of range: start={start}, end={end}, len={n}"
+        )
+    return s[start:end]

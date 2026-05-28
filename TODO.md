@@ -948,6 +948,36 @@ Listed so the design space is explicit.
 
 ### Wasm-specific gaps that are not P0
 
+- [x] **Security hardening pass 2 - C1 bounds checks on collection
+  indexing** (closed 2026-05-28). The C1 audit finding turned out
+  more serious than "defense in depth": `xs[i]` with `i >= len`
+  raised `IndexError` on Python but silently read junk memory on
+  Wasm (real silent divergence + data-leak vector). Same for
+  negative indices (`xs[-1]`) and `String.substring(s, 0, 1000)`.
+  Closed in the "both fail loud at same input" stance of pass 1.
+  Wasm: `_emit_index` in `_lists.py` prepends `i >= len` unsigned
+  compare + `unreachable` (one check catches negatives too because
+  `i32.wrap_i64` of a negative i64 is a huge u32); `_emit_string_substring`
+  in `_strings.py` adds equivalent `start > end OR end > len` guard.
+  Python: new `_capa_list_get(xs, i)` and `_capa_substring(s, start, end)`
+  in `capa/runtime/_safety.py` raise `IndexError` / `ValueError` on
+  out-of-range, called by both transpilers via the Index / substring
+  emit paths. Capa indices are now explicitly non-negative on both
+  backends (matches the "fail loud, deterministic across backends"
+  contract; no `xs[-1]` usage in tests / examples to migrate; one
+  pre-existing `test_string_substring_clamps` renamed to
+  `test_string_substring_raises_on_oob` since the clamp contract is
+  replaced). `_emit_for` for-iter already structurally bounded
+  (`for i in 0..len`); Map / Set linear scans already capped by the
+  header `len`; tuple indices analyzer-verified at compile time. New
+  scratch local `$_bounds_idx` (i32) gated by `has_list_index_bounds`
+  flag. 10 new tests (5 wasm bounds-trap, 5 Python bounds-raise);
+  parity program `safety_traps.capa` extended with positive cases.
+  Full suite 1909 -> 1919 / 5 skipped / 0 fail. Audit followups
+  remaining: H1 allocator GC, H2 Set/Map-key mutation effect tracking
+  (own slice), C4 to_int out-of-range docs, M1-M4 supply-chain
+  manifest in `.wasm`.
+
 - [x] **Security hardening pass 1 - 5 critical safety gaps closed**
   (closed 2026-05-28). Five concrete unsafety / silent-divergence
   gaps surfaced by the backend security audit (also 2026-05-28), all

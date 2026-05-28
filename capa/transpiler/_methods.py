@@ -86,9 +86,14 @@ class _MethodsMixin:
                 f"if 0 <= {args[0]} < len({recv}) else None_)"
             )
         if method == "substring":
-            # Python slice semantics: forgiving on out-of-range; the
-            # Capa surface mirrors that.
-            return f"{recv}[{args[0]}:{args[1]}]"
+            # Safety (audit fix C1): route through ``_capa_substring``
+            # so the Python backend raises ``ValueError`` at the same
+            # input the Wasm backend traps on (negative bounds,
+            # ``start > end``, ``end > len(s)``). Python's native
+            # slice clamps silently; a parser fed a "substring that
+            # returned less than asked" is a footgun, so the Capa
+            # surface refuses instead of quietly truncating.
+            return f"_capa_substring({recv}, {args[0]}, {args[1]})"
         if method == "index_of":
             # Option<Int>: Some(idx) if found, None_ otherwise. Hoist
             # the .find() call into a one-shot lambda so it executes

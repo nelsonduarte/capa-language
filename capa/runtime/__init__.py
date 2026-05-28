@@ -86,8 +86,10 @@ from ._safety import (
     _capa_iadd,
     _capa_imul,
     _capa_isub,
+    _capa_list_get,
     _capa_shl,
     _capa_shr,
+    _capa_substring,
 )
 
 
@@ -118,4 +120,6 @@ __all__ = [
     "_capa_imul",
     "_capa_shl",
     "_capa_shr",
+    "_capa_list_get",
+    "_capa_substring",
 ]

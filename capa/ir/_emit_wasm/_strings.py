@@ -333,9 +333,21 @@ class _StringEmissionMixin:
     def _emit_string_substring(
         self, recv: Value, start: Value, end: Value, dst: Optional[str],
     ) -> None:
-        """``recv.substring(start, end)``: allocate ``end-start``
-        bytes, memory.copy from ``recv.ptr + start``, leave the
-        result in dst's (ptr, len) locals."""
+        """``recv.substring(start, end)``: bounds-check the range,
+        allocate ``end-start`` bytes, memory.copy from
+        ``recv.ptr + start``, leave the result in dst's (ptr, len)
+        locals.
+
+        Bounds check (audit fix C1): trap if ``start > end`` or
+        ``end > recv.len``. Both compares are unsigned so a
+        negative IR-level ``start`` or ``end`` (an i64 the IR
+        narrows to i32 via ``i32.wrap_i64``, which sign-extends to
+        a huge u32) also trips the guard. Capa is non-negative-
+        bounds-only on both backends; the Python helper
+        ``_capa_substring`` in ``capa.runtime._safety`` raises
+        ``ValueError`` on the same inputs. Python's native
+        ``s[start:end]`` clamps silently; we refuse so a parser
+        downstream can't be fed a quietly-shortened token."""
         if dst is None:
             return
         # Save receiver ptr + len.
@@ -350,6 +362,21 @@ class _StringEmissionMixin:
         self._push_value(end)
         self._write("i32.wrap_i64")
         self._write("local.set $_str_end")
+        # Bounds check: trap on start > end OR end > recv.len.
+        # Unsigned compares also catch negative inputs (a negative
+        # i64 wrapped to i32 is a huge u32 that exceeds recv.len).
+        self._write("local.get $_str_start")
+        self._write("local.get $_str_end")
+        self._write("i32.gt_u")
+        self._write("local.get $_str_end")
+        self._write("local.get $_str_a_len")
+        self._write("i32.gt_u")
+        self._write("i32.or")
+        self._write("if")
+        self._indent += 1
+        self._write("unreachable")
+        self._indent -= 1
+        self._write("end")
         # new_len = end - start
         self._write("local.get $_str_end")
         self._write("local.get $_str_start")

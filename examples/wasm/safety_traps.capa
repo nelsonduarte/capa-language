@@ -1,9 +1,10 @@
-// Positive-case parity for the five safety traps closed by the
+// Positive-case parity for the safety traps closed by the
 // 2026-05 security audit. Each section pairs valid inputs whose
 // observable output is byte-identical between the Python and Wasm
-// backends; the negative cases (overflow, shift out of range, etc.)
-// live in tests/test_ir_wasm.py and tests/test_transpiler.py, where
-// each backend can assert its trap / raise fires at the same input.
+// backends; the negative cases (overflow, shift out of range,
+// out-of-bounds index, etc.) live in tests/test_ir_wasm.py and
+// tests/test_transpiler.py, where each backend can assert its
+// trap / raise fires at the same input.
 //
 // Both backends now fail loud at the same point on the negative
 // cases; this file pins that the loud-failure check did NOT regress
@@ -32,3 +33,18 @@ fun main(stdio: Stdio)
     match parse_int("not a number")
         Some(n) -> stdio.println("${n}")
         None -> stdio.println("None")           // None
+
+    // Fix C1: List indexing inside [0, len) returns the element on
+    // both backends. The OOB / negative-index trap cases live in
+    // tests/test_ir_wasm.py::TestWasmBoundsChecks and
+    // tests/test_transpiler.py::TestBoundsRaise (they cannot share
+    // this happy-path parity file because the program would abort
+    // before printing).
+    let xs = [10, 20, 30]
+    stdio.println("${xs[0]}")                   // 10
+    stdio.println("${xs[2]}")                   // 30
+
+    // Fix C1: String.substring with start <= end <= len works.
+    let word = "abcdef"
+    stdio.println("${word.substring(1, 4)}")    // bcd
+    stdio.println("${word.substring(0, 6)}")    // abcdef

@@ -73,6 +73,13 @@ class PythonEmitter:
         # after walking the module so the import line lands at the
         # top alongside ``from dataclasses import dataclass``.
         self._needs_safety = False
+        # Toggled by ``_emit_instr`` (Index over List) and the
+        # ``substring`` rewrite the first time they emit a call to
+        # the bounds-check runtime helpers (audit fix C1). Drives
+        # the ``from capa.runtime import _capa_list_get,
+        # _capa_substring`` line in ``emit()`` so the emitted
+        # module is self-contained.
+        self._needs_bounds = False
 
     # ----- public ------------------------------------------------
 
@@ -91,6 +98,7 @@ class PythonEmitter:
         # imports the same names, so this is harmless when the IR
         # output is concatenated with the legacy prelude.
         self._needs_safety = _module_uses_int_safety(module)
+        self._needs_bounds = _module_uses_bounds_safety(module)
         if module.types:
             self._write("from dataclasses import dataclass")
             self._lines.append("")
@@ -98,6 +106,11 @@ class PythonEmitter:
             self._write(
                 "from capa.runtime import "
                 "_capa_iadd, _capa_isub, _capa_imul, _capa_shl, _capa_shr"
+            )
+            self._lines.append("")
+        if self._needs_bounds:
+            self._write(
+                "from capa.runtime import _capa_list_get, _capa_substring"
             )
             self._lines.append("")
         for imp in module.imports:
@@ -422,6 +435,19 @@ class PythonEmitter:
         if isinstance(instr, Index):
             recv = self._format_value(instr.receiver)
             idx = self._format_value(instr.index)
+            # Safety (audit fix C1): List indexing routes through
+            # ``_capa_list_get`` so the Python backend raises
+            # ``IndexError`` at the same input the Wasm backend traps
+            # on. Tuple / Map / String indexing keeps the native ``[]``
+            # (tuple arity is statically checked by the analyzer; Map
+            # raises KeyError natively; String indexing is not surface
+            # syntax). Cf. the legacy transpiler's matching rewrite in
+            # ``capa/transpiler/_expressions.py``.
+            recv_head = (instr.receiver.ty or "").split("<", 1)[0]
+            if recv_head == "List":
+                self._needs_bounds = True
+                self._write(f"{instr.dst} = _capa_list_get({recv}, {idx})")
+                return
             self._write(f"{instr.dst} = {recv}[{idx}]")
             return
         if isinstance(instr, FormatStr):
@@ -694,7 +720,13 @@ class PythonEmitter:
         if m == "is_empty":    return f"({r} == '')"
         if m == "split":       return f"CapaList({r}.split({a[0]}))"
         if m == "replace":     return f"{r}.replace({a[0]}, {a[1]})"
-        if m == "substring":   return f"{r}[{a[0]}:{a[1]}]"
+        if m == "substring":
+            # Safety (audit fix C1): route through ``_capa_substring``
+            # so the Python backend raises ``ValueError`` at the same
+            # input the Wasm backend traps on. Cf. the legacy
+            # transpiler's matching rewrite in ``_methods.py``.
+            self._needs_bounds = True
+            return f"_capa_substring({r}, {a[0]}, {a[1]})"
         if m == "char_at":
             # Option<String>: Some(s[i]) when 0 <= i < len(s).
             return (
@@ -830,6 +862,70 @@ def _module_uses_int_safety(module: Module) -> bool:
         for ins in instrs or []:
             if isinstance(ins, BinOp) and ins.op in _CAPA_INT_HELPERS:
                 if walk_value(ins.left) and walk_value(ins.right):
+                    return True
+            if isinstance(ins, If):
+                if walk_instrs(ins.then_body) or walk_instrs(ins.else_body):
+                    return True
+            if isinstance(ins, While):
+                if walk_instrs(ins.cond_setup) or walk_instrs(ins.body):
+                    return True
+            if isinstance(ins, For):
+                if walk_instrs(ins.body):
+                    return True
+            if isinstance(ins, MakeLambda):
+                if walk_instrs(ins.body):
+                    return True
+            if isinstance(ins, Match):
+                for arm in ins.arms:
+                    if walk_instrs(arm.body):
+                        return True
+                    if arm.guard_setup and walk_instrs(arm.guard_setup):
+                        return True
+        return False
+
+    for fn in module.functions:
+        if walk_instrs(fn.body):
+            return True
+    for impl in module.impls:
+        for m in impl.methods:
+            if walk_instrs(m.body):
+                return True
+    for c in module.consts:
+        if walk_instrs(c.body):
+            return True
+    return False
+
+
+def _module_uses_bounds_safety(module: Module) -> bool:
+    """Whether any function / impl / const body needs the
+    bounds-check runtime helpers ``_capa_list_get`` /
+    ``_capa_substring`` (audit fix C1). Drives the matching
+    ``from capa.runtime import ...`` line in ``PythonEmitter.emit``
+    so the emitted module is self-contained.
+
+    Matches:
+    - ``Index`` over a ``List<...>`` receiver, which the emitter
+      lowers to ``_capa_list_get(recv, idx)``.
+    - ``MethodCall`` of ``substring`` on a ``String`` receiver,
+      which the emitter lowers to ``_capa_substring(recv, start,
+      end)``.
+
+    Walks the same set of instruction lists as
+    ``_module_uses_int_safety`` (function bodies, impl method
+    bodies, const bodies, and the nested bodies of If / While /
+    For / Match / MakeLambda) and short-circuits on the first
+    match. Tuple / Map / String / Range indexing keep the native
+    ``[]`` and do not need the helpers.
+    """
+    def walk_instrs(instrs) -> bool:
+        for ins in instrs or []:
+            if isinstance(ins, Index):
+                recv_head = (ins.receiver.ty or "").split("<", 1)[0]
+                if recv_head == "List":
+                    return True
+            if isinstance(ins, MethodCall):
+                recv_head = (ins.receiver.ty or "").split("<", 1)[0]
+                if recv_head == "String" and ins.method == "substring":
                     return True
             if isinstance(ins, If):
                 if walk_instrs(ins.then_body) or walk_instrs(ins.else_body):

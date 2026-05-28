@@ -93,6 +93,19 @@ class _ExpressionsMixin:
         if isinstance(e, A.Index):
             recv = self._emit_expr(e.receiver)
             idx = self._emit_expr(e.index)
+            # Safety (audit fix C1): List indexing routes through
+            # ``_capa_list_get`` so the Python backend raises
+            # ``IndexError`` at the same input the Wasm backend
+            # traps on (negative index OR out-of-range). Tuple /
+            # Map / String indexing falls through to native Python
+            # ``[]``: tuples are statically arity-checked by the
+            # analyzer, Map[key] raises KeyError natively, and
+            # source-level String indexing is not surface syntax in
+            # Capa (use ``s.substring(...)`` / ``s.char_at(...)``).
+            from ..typesys import TyName
+            recv_ty = self.types.get(id(e.receiver))
+            if isinstance(recv_ty, TyName) and recv_ty.name == "List":
+                return f"_capa_list_get({recv}, {idx})"
             return f"{recv}[{idx}]"
         if isinstance(e, A.Try):
             return self._emit_try(e)

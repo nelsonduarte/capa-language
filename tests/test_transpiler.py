@@ -142,15 +142,21 @@ class TestTranspileBasic(unittest.TestCase):
         self.assertEqual(rc, 0, err)
         self.assertEqual(out, "world\n")
 
-    def test_string_substring_clamps(self):
-        # Python slice semantics: forgiving on OOB. We mirror that.
+    def test_string_substring_raises_on_oob(self):
+        # Audit fix C1: ``s.substring(start, end)`` traps on
+        # ``end > len(s)`` instead of clamping. The pre-C1 contract
+        # mirrored Python's silent slice clamp; both backends now
+        # refuse so a "substring that returned less than asked"
+        # can't slip past a parser as a quietly-shortened token. The
+        # full negative-side coverage lives in
+        # ``TestBoundsRaise::test_substring_out_of_bounds_raises``.
         rc, out, err = run_capa(
             'fun main(stdio: Stdio)\n'
             '    let s = "hi"\n'
             '    stdio.println(s.substring(0, 100))\n'
         )
-        self.assertEqual(rc, 0, err)
-        self.assertEqual(out, "hi\n")
+        self.assertNotEqual(rc, 0)
+        self.assertIn("ValueError", err)
 
     def test_string_index_of_found(self):
         rc, out, err = run_capa(
@@ -2408,6 +2414,76 @@ class TestSafetyTrapsRaise(unittest.TestCase):
         )
         self.assertEqual(rc, 0, err)
         self.assertEqual(out, "None\n")
+
+
+class TestBoundsRaise(unittest.TestCase):
+    """Audit fix C1: List indexing and String.substring route through
+    the bounds-check runtime helpers so the Python backend raises at
+    the same input the Wasm backend traps on (see
+    ``tests/test_ir_wasm.py::TestWasmBoundsChecks``).
+
+    Capa indices are non-negative-only on both backends; the helper
+    rejects negative indices that Python's native ``[]`` would
+    otherwise resolve to "from the end". The clamp-vs-trap call for
+    substring is trap: a "substring that returned less than asked"
+    is a security footgun for parsers / tokenisers."""
+
+    # ---- xs[i] -----------------------------------------------------
+
+    def test_list_index_in_bounds_works(self):
+        # Positive parity: a valid index prints the element.
+        rc, out, err = run_capa(
+            'fun main(stdio: Stdio)\n'
+            '    let xs = [10, 20, 30]\n'
+            '    stdio.println("${xs[1]}")\n'
+        )
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out, "20\n")
+
+    def test_list_index_out_of_bounds_raises(self):
+        rc, out, err = run_capa(
+            'fun main(stdio: Stdio)\n'
+            '    let xs = [10, 20, 30]\n'
+            '    stdio.println("${xs[100]}")\n'
+        )
+        self.assertNotEqual(rc, 0)
+        self.assertIn("IndexError", err)
+
+    def test_list_index_negative_raises(self):
+        # ``xs[0 - 1]`` resolves to ``xs[-1]``: Python's native list
+        # semantics would return the last element; the helper rejects
+        # it so both backends agree (Wasm traps on the same input).
+        rc, out, err = run_capa(
+            'fun main(stdio: Stdio)\n'
+            '    let xs = [10, 20, 30]\n'
+            '    let neg = 0 - 1\n'
+            '    stdio.println("${xs[neg]}")\n'
+        )
+        self.assertNotEqual(rc, 0)
+        self.assertIn("IndexError", err)
+
+    # ---- s.substring(start, end) -----------------------------------
+
+    def test_substring_in_bounds_works(self):
+        rc, out, err = run_capa(
+            'fun main(stdio: Stdio)\n'
+            '    let s = "abcdef"\n'
+            '    stdio.println("${s.substring(1, 4)}")\n'
+        )
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out, "bcd\n")
+
+    def test_substring_out_of_bounds_raises(self):
+        # ``s.substring(0, 100)`` on a 6-byte string: Python's native
+        # slice would clamp to ``s[0:6]``; the helper refuses so the
+        # Wasm backend's trap is mirrored loudly.
+        rc, out, err = run_capa(
+            'fun main(stdio: Stdio)\n'
+            '    let s = "abcdef"\n'
+            '    stdio.println("${s.substring(0, 100)}")\n'
+        )
+        self.assertNotEqual(rc, 0)
+        self.assertIn("ValueError", err)
 
 
 if __name__ == "__main__":

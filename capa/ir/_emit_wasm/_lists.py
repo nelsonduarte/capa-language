@@ -627,10 +627,21 @@ class _ListEmissionMixin:
         # so the stack is balanced at this point.
 
     def _emit_index(self, instr: Index) -> None:
-        """Lower ``xs[i]`` for a List receiver. Loads
-        ``data_ptr + i * elem_size`` from memory. The bounds
-        check is the analyzer's job (or the IR's; the Wasm path
-        trusts that the index is valid).
+        """Lower ``xs[i]`` for a List receiver. Bounds-check ``i``
+        against the list header's len, then load
+        ``data_ptr + i * elem_size`` from memory.
+
+        Bounds check (audit fix C1): the wrapped-i32 index is
+        stashed in ``$_bounds_idx`` via ``local.tee`` so the check
+        (``idx i32.ge_u len`` -> trap on out-of-range) and the
+        subsequent address compute can both read it without re-
+        evaluating the IR Value. The unsigned compare also catches
+        negative IR-level indices: ``i32.wrap_i64`` of a negative
+        i64 is a huge u32, which exceeds any list's length and so
+        traps via the same path. Capa is non-negative-index-only
+        on both backends; the Python helper ``_capa_list_get`` in
+        ``capa.runtime._safety`` raises ``IndexError`` on the same
+        inputs.
 
         String elements are stored as packed i64 (ptr in low 32,
         len in high 32). After the i64.load we unpack into the
@@ -651,14 +662,24 @@ class _ListEmissionMixin:
             load_op = "f64.load"
         else:
             load_op = _load_op_for_size(elem_size)
+        # Bounds check (audit fix C1): trap if idx >= len (unsigned
+        # compare also catches negative IR indices). Stash the
+        # wrapped idx so the address compute below can reuse it.
+        self._push_value(instr.index)
+        self._write("i32.wrap_i64")
+        self._write("local.tee $_bounds_idx")
+        self._push_value(instr.receiver)
+        self._write(f"i32.load offset={_LIST_LEN_OFFSET}")
+        self._write("i32.ge_u")
+        self._write("if")
+        self._indent += 1
+        self._write("unreachable")
+        self._indent -= 1
+        self._write("end")
         # Compute address: data_ptr + index * elem_size.
         self._push_value(instr.receiver)
         self._write(f"i32.load offset={_LIST_DATA_OFFSET}")
-        # Index needs to be an i32 offset; the IR's Value for the
-        # index is typically lit_int (i64) or local Int (i64).
-        # Cast i64 -> i32 with ``i32.wrap_i64``.
-        self._push_value(instr.index)
-        self._write("i32.wrap_i64")
+        self._write("local.get $_bounds_idx")
         self._write(f"i32.const {elem_size}")
         self._write("i32.mul")
         self._write("i32.add")
@@ -750,7 +771,11 @@ class _ListEmissionMixin:
         self._indent += 1
         self._write(f"loop {loop_label}")
         self._indent += 1
-        # Loop guard: if idx >= len(list), exit.
+        # Loop guard: if idx >= len(list), exit. Audit C1: this is
+        # the only path into the data array for ``for x in xs``, so
+        # the index is structurally bounded by the loop's own
+        # ``idx < len`` invariant. No extra runtime bounds check is
+        # needed beyond this guard.
         self._write(f"local.get ${idx_local}")
         self._write(f"local.get ${list_local}")
         self._write(f"i32.load offset={_LIST_LEN_OFFSET}")

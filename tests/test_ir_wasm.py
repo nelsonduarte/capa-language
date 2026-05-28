@@ -4514,6 +4514,123 @@ class TestWasmSafetyTraps(unittest.TestCase):
     _has_wasm_tools() and _has_wasmtime_py(),
     "wasm-tools and/or wasmtime-py not installed",
 )
+class TestWasmBoundsChecks(unittest.TestCase):
+    """Audit fix C1: List indexing and String.substring emit inline
+    bounds-check traps. Pairs with
+    ``tests/test_transpiler.py::TestBoundsRaise`` for the Python
+    backend; together they pin "both backends fail loud at the same
+    input" for collection access.
+
+    Negative IR-level indices (a Capa source expression like
+    ``0 - 1`` evaluates to ``-1`` an i64) are caught by the unsigned
+    compare: ``i32.wrap_i64`` of a negative i64 is a huge u32 that
+    exceeds any list's length, so ``i32.ge_u`` returns 1 and the
+    trap fires on the same input that Python's ``_capa_list_get``
+    rejects.
+    """
+
+    def _exec_main(self, src: str) -> str:
+        """Compile, run ``main`` via the host bridge, return captured
+        stdout. Used by positive-case tests where the program prints
+        a value and exits cleanly."""
+        import io
+        import sys
+        from capa.runtime._wasm_host import WasmHost
+        _, types, ast_mod = _parse_lower(src)
+        blob = compile_wasm(ast_mod, types=types)
+        host = WasmHost()
+        buf = io.StringIO()
+        saved = sys.stdout
+        sys.stdout = buf
+        try:
+            host.run_main(blob)
+        finally:
+            sys.stdout = saved
+        return buf.getvalue()
+
+    def _exec_main_expect_trap(self, src: str) -> None:
+        """Compile, run ``main`` via the host bridge, expect a
+        ``wasmtime.Trap`` to fire. Used by the negative-case tests
+        where the program indexes out of range or substrings past
+        the end. We swallow stdout to keep the test output clean."""
+        import io
+        import sys
+        import wasmtime
+        from capa.runtime._wasm_host import WasmHost
+        _, types, ast_mod = _parse_lower(src)
+        blob = compile_wasm(ast_mod, types=types)
+        host = WasmHost()
+        buf = io.StringIO()
+        saved = sys.stdout
+        sys.stdout = buf
+        try:
+            with self.assertRaises(wasmtime.Trap):
+                host.run_main(blob)
+        finally:
+            sys.stdout = saved
+
+    # ---- List indexing --------------------------------------------
+
+    def test_list_index_in_bounds_works(self):
+        # Positive parity: a valid index returns the element.
+        src = (
+            'fun main(stdio: Stdio)\n'
+            '    let xs = [10, 20, 30]\n'
+            '    stdio.println("${xs[1]}")\n'
+        )
+        self.assertEqual(self._exec_main(src), "20\n")
+
+    def test_list_index_out_of_bounds_traps(self):
+        # ``xs[5]`` on a 3-element list: idx >= len -> i32.ge_u
+        # returns 1 -> unreachable trap.
+        src = (
+            'fun main(stdio: Stdio)\n'
+            '    let xs = [10, 20, 30]\n'
+            '    stdio.println("${xs[5]}")\n'
+        )
+        self._exec_main_expect_trap(src)
+
+    def test_list_index_negative_traps(self):
+        # ``xs[0 - 1]`` evaluates to ``xs[-1]`` an i64; i32.wrap_i64
+        # of -1 is 0xFFFFFFFF (4294967295), well above any list's
+        # length, so i32.ge_u traps. The 0 - 1 construction keeps
+        # the analyzer from folding to a literal that some future
+        # change might constant-evaluate.
+        src = (
+            'fun main(stdio: Stdio)\n'
+            '    let xs = [10, 20, 30]\n'
+            '    let neg = 0 - 1\n'
+            '    stdio.println("${xs[neg]}")\n'
+        )
+        self._exec_main_expect_trap(src)
+
+    # ---- String substring -----------------------------------------
+
+    def test_substring_in_bounds_works(self):
+        # Positive parity: an in-range slice copies the requested bytes.
+        src = (
+            'fun main(stdio: Stdio)\n'
+            '    let s = "abcdef"\n'
+            '    stdio.println("${s.substring(1, 4)}")\n'
+        )
+        self.assertEqual(self._exec_main(src), "bcd\n")
+
+    def test_substring_out_of_bounds_traps(self):
+        # ``s.substring(0, 100)`` on a 6-byte string: end > recv.len
+        # -> i32.gt_u returns 1 -> unreachable trap. Without the C1
+        # fix the emitter would memory.copy past the buffer.
+        src = (
+            'fun main(stdio: Stdio)\n'
+            '    let s = "abcdef"\n'
+            '    stdio.println("${s.substring(0, 100)}")\n'
+        )
+        self._exec_main_expect_trap(src)
+
+
+@unittest.skipUnless(
+    _has_wasm_tools() and _has_wasmtime_py(),
+    "wasm-tools and/or wasmtime-py not installed",
+)
 class TestWasmHostUtf8Safety(unittest.TestCase):
     """Audit fix H3: every ``bytes.decode("utf-8")`` site in the
     host bridge is wrapped so invalid UTF-8 surfaces through the

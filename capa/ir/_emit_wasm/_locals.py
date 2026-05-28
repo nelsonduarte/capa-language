@@ -101,6 +101,16 @@ class _LocalsCollectionMixin:
         has_attenuation_check = False
         has_attenuation_env_check = False
         has_atten_fs_write_check = False
+        # Audit fix C1: List indexing emits an inline ``i32.ge_u``
+        # bounds-check trap; the wrapped-i32 idx is stashed in
+        # ``$_bounds_idx`` so the check and the subsequent address
+        # compute can both read it without re-evaluating the IR
+        # Value. String.substring emits an equivalent guard against
+        # ``start > end`` / ``end > recv.len`` / negative bounds
+        # (the latter via the unsigned compare). No extra scratch is
+        # needed for substring beyond what _str_start / _str_end
+        # already provide.
+        has_list_index_bounds = False
         # Maximum nesting depth of For instructions. Nested for-loops
         # need distinct iteration scratch (``$_f_list_N`` /
         # ``$_f_idx_N``) so an inner loop doesn't clobber the outer
@@ -126,6 +136,7 @@ class _LocalsCollectionMixin:
             nonlocal has_indirect_cap_call
             nonlocal has_attenuation_check, has_attenuation_env_check
             nonlocal has_atten_fs_write_check
+            nonlocal has_list_index_bounds
             for instr in instrs:
                 if isinstance(instr, Match):
                     has_match = True
@@ -242,6 +253,13 @@ class _LocalsCollectionMixin:
                         has_list_string = True
                     if recv_ty.startswith("(") and recv_ty.endswith(")"):
                         has_tuple = True
+                    if recv_ty.startswith("List"):
+                        # Audit fix C1: List indexing emits an inline
+                        # bounds check before the address compute; the
+                        # wrapped i32 idx is stashed in $_bounds_idx so
+                        # the check and the address compute can both
+                        # read it without re-evaluating the IR Value.
+                        has_list_index_bounds = True
                 if isinstance(instr, MakeMap):
                     has_map = True
                 if isinstance(instr, MakeSet):
@@ -686,6 +704,14 @@ class _LocalsCollectionMixin:
                 out["_atten_content_len"] = "i32"
             if has_attenuation_env_check:
                 out["_atten_match"] = "i32"
+        if has_list_index_bounds:
+            # Audit fix C1: ``$_bounds_idx`` holds the wrapped-i32
+            # index for the inline bounds check in ``_emit_index``.
+            # Stashing lets the check (``i32.ge_u`` against len) and
+            # the address compute (``data_ptr + idx * elem_size``)
+            # both consume the same wrapped value without
+            # re-evaluating the IR ``Value`` for the index.
+            out["_bounds_idx"] = "i32"
         if has_optres_method:
             # Option/Result method dispatch stashes the receiver
             # pointer in $_m_scrut so the tag check + payload load
