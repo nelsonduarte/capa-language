@@ -212,6 +212,29 @@ class Env:
     cap from leaking the existence of variables outside its allowed
     set. Callers that need to distinguish denied from absent can
     consult ``allows(name)``.
+
+    .. warning::
+        **Leak-by-default.** A fresh, unrestricted ``Env`` reads from
+        the host's ``os.environ`` verbatim: a Capa program that holds
+        an unrestricted ``Env`` sees every environment variable on
+        the host, including secrets (``OPENAI_API_KEY``, ``AWS_*``,
+        ``GITHUB_TOKEN``, the shell's ``PATH``, ...). The trust
+        boundary is the cap itself; the attenuation system narrows
+        it. **For any production / untrusted-code use, call
+        ``env.restrict_to_keys([...])`` to project the cap down to
+        the allow-list the program actually needs before passing it
+        on.** The audit recommendation (audit item M1, 2026-05) is
+        that any handler crossing a trust boundary must restrict
+        first; the analyzer enforces monotonic narrowing so the
+        restriction cannot be widened downstream.
+
+        The Wasm host bridges (``capa.runtime._wasm_host`` and
+        ``capa.runtime._wasm_component_host``) carry the same
+        leak-by-default property: ``env.get`` on a wasm-side
+        unrestricted cap reads ``os.environ.get(name)`` unfiltered.
+        The Wasm attenuation enforcement (audit C2) closes the gap
+        for restrictions Capa can statically resolve to a literal
+        allow-list; unrestricted caps still pass through.
     """
 
     __slots__ = ("_allowed_keys",)

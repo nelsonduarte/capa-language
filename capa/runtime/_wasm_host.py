@@ -17,6 +17,23 @@ capabilities live (stdio printing to real stdout, etc.).
 Phase 6B scope: ``capa:stdio`` interface (print / println / eprintln)
 only. Subsequent phases add Fs / Env / Clock / Net via the same
 pattern.
+
+Trust-boundary notes (audit items M1 / H1, 2026-05):
+
+- ``env.get`` is leak-by-default. An unrestricted ``Env`` cap reads
+  ``os.environ`` verbatim, so a Capa program with the cap sees every
+  environment variable on the host (including secrets). The
+  attenuation system narrows it: a program that calls
+  ``env.restrict_to_keys([...])`` on a literal allow-list is enforced
+  inline by the Wasm emitter (audit C2). Production hosts handing a
+  ``.wasm`` blob to untrusted code must restrict first.
+- The bump allocator's ``memory.grow`` call is bounded by the
+  module's declared ``(memory ... <max>)`` upper-page limit. The
+  Wasm emitter ships a sane default (see
+  ``capa.ir._emit_wasm.MEMORY_CAP_DEFAULT_PAGES`` = 256 pages = 16
+  MiB) so a runaway allocator traps predictably rather than at some
+  host-dependent OOM point. Override on the CLI with
+  ``--wasm-memory-cap <pages>`` (1 page = 64 KiB).
 """
 
 from __future__ import annotations
@@ -159,7 +176,20 @@ class WasmHost:
         the Option container and the string buffer. That side-
         channel keeps the WIT contract clean (``option<string>``)
         and ties allocations to the module's bump heap so memory
-        stays linear and traceable."""
+        stays linear and traceable.
+
+        **Trust boundary (audit M1, 2026-05).** This host bridge
+        reads ``os.environ.get(name)`` without filtering: an
+        unrestricted ``Env`` cap held by the wasm guest sees every
+        host env var (including secrets like ``OPENAI_API_KEY``,
+        ``AWS_*``, ``GITHUB_TOKEN``, ``PATH``). Capa's discipline is
+        that the Env cap is itself the trust boundary; the
+        attenuation system narrows it. Programs that statically call
+        ``env.restrict_to_keys([...])`` on a literal allow-list get
+        the restriction enforced inline by the emitter (audit C2);
+        unrestricted caps still see the full host environment. Hosts
+        wrapping a third-party ``.wasm`` blob should refuse to grant
+        an unrestricted Env cap unless they have audited the guest."""
         import os
         # Canonical ABI lowering: ``option<string>`` returns through
         # a 12-byte caller-allocated area (tag i32 @ 0, ptr i32 @ 4,

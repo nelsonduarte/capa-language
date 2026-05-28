@@ -12,6 +12,8 @@
 
 from __future__ import annotations
 
+import math
+
 from ._result import Err, None_, Ok, Some
 
 
@@ -56,9 +58,34 @@ def to_float(i):
 
 
 def to_int(f):
-    """Truncate a Float to an Int (toward zero). Total. The fractional
-    part is discarded; for round-to-nearest use a different primitive
-    when one is added."""
+    """Truncate a Float to an Int (toward zero).
+
+    Matches the Wasm backend's ``i64.trunc_f64_s`` semantics: returns
+    the truncated integer when the result fits in the signed 64-bit
+    window, otherwise raises ``OverflowError``. ``NaN`` and the
+    positive / negative infinities also raise ``OverflowError`` (the
+    Wasm opcode traps on the same inputs).
+
+    Audit fix C4: ``int(1e20)`` used to return a Python-arbitrary-
+    precision int on the Python backend while the Wasm backend trapped
+    on the same input; that was the last silent observable divergence
+    on the conversion surface. Both backends now fail loud at the same
+    input. The fractional part is discarded; for round-to-nearest use
+    a different primitive when one is added.
+    """
+    if math.isnan(f):
+        raise OverflowError("to_int: NaN cannot be converted to Int")
+    if math.isinf(f):
+        raise OverflowError("to_int: infinity cannot be converted to Int")
+    # i64.trunc_f64_s traps when the truncated value is outside
+    # ``[-2**63, 2**63)``. The boundary on the positive side is the
+    # exact float ``2**63``: any f64 value >= that traps. The negative
+    # boundary is ``-2**63 - 1`` (any f64 strictly less than -2**63
+    # would trap once truncated; -2**63 itself is representable).
+    if f >= 9223372036854775808.0 or f < -9223372036854775808.0:
+        raise OverflowError(
+            f"to_int: {f!r} out of signed 64-bit range"
+        )
     return int(f)
 
 

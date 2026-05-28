@@ -63,6 +63,7 @@ __all__ = [
     "compile_wat",
     "compile_wasm",
     "compile_wit",
+    "read_wasm_manifest",
 ]
 
 
@@ -121,18 +122,47 @@ def compile_program(
     return "\n".join(parts).rstrip() + "\n"
 
 
-def emit_wat(ir_module: Module) -> str:
+def emit_wat(
+    ir_module: Module,
+    *,
+    memory_cap_pages: int | None = ...,  # type: ignore[assignment]
+    manifest_json: str | None = None,
+) -> str:
     """Emit WebAssembly text format (WAT) from a CIR module.
 
     Phase 6A scope: integer / boolean functions only. Any CIR
     construct outside this subset raises ``WasmEmissionError`` with
     a precise reason. The output is valid WAT that ``wasm-tools
     parse`` accepts; see :func:`compile_wasm` for an assemble-to-
-    bytes convenience wrapper."""
-    return WasmEmitter().emit(ir_module)
+    bytes convenience wrapper.
+
+    ``memory_cap_pages`` (audit H1, 2026-05): caps the emitted
+    ``(memory ...)`` declaration at the given page count (1 page =
+    64 KiB). Defaults to ``MEMORY_CAP_DEFAULT_PAGES`` (256 pages =
+    16 MiB). Pass ``None`` to skip the cap (host decides).
+
+    ``manifest_json`` (audit M4, 2026-05): when non-None, embeds the
+    string into a ``capa-manifest`` Wasm custom section so per-
+    function capability declarations travel with the artefact.
+    Runtimes ignore custom sections; ``wasm-tools dump`` and any
+    Wasm parser can read them."""
+    from ._emit_wasm import MEMORY_CAP_DEFAULT_PAGES
+    if memory_cap_pages is ...:
+        memory_cap_pages = MEMORY_CAP_DEFAULT_PAGES
+    return WasmEmitter(
+        memory_cap_pages=memory_cap_pages,
+        manifest_json=manifest_json,
+    ).emit(ir_module)
 
 
-def compile_wat(module: A.Module, types: dict | None = None) -> str:
+def compile_wat(
+    module: A.Module,
+    types: dict | None = None,
+    *,
+    memory_cap_pages: int | None = ...,  # type: ignore[assignment]
+    filename: str = "<input>",
+    embed_manifest: bool = True,
+) -> str:
     """End-to-end AST -> CIR -> WAT convenience helper. Mirrors
     :func:`compile` but targets the Wasm Component Model text form
     instead of Python source.
@@ -144,9 +174,19 @@ def compile_wat(module: A.Module, types: dict | None = None) -> str:
     instead of importing ``capa:host/json``. That keeps the
     JsonValue tree inside the component's own linear memory so
     ``--component --run`` works without any host-side memory
-    access."""
+    access.
+
+    ``memory_cap_pages`` (audit H1): forwarded to :func:`emit_wat`.
+
+    ``embed_manifest`` (audit M4): when True (default), builds a
+    capability manifest from ``module`` and embeds it into a
+    ``capa-manifest`` custom section. Off only for tests where the
+    extra section would noisily change byte-level snapshots."""
     from ._builtin_json import inject_into
     from ._monomorphise import monomorphise
+    from ._emit_wasm import MEMORY_CAP_DEFAULT_PAGES
+    if memory_cap_pages is ...:
+        memory_cap_pages = MEMORY_CAP_DEFAULT_PAGES
     ir_mod = lower(module, types=types)
     inject_into(ir_mod)
     # Specialise every generic free function per concrete
@@ -156,7 +196,65 @@ def compile_wat(module: A.Module, types: dict | None = None) -> str:
     # ``type_params`` left to confuse it. Pass is a no-op on
     # programs without generics.
     monomorphise(ir_mod)
-    return emit_wat(ir_mod)
+    manifest_json: str | None = None
+    if embed_manifest:
+        manifest_json = _build_wasm_capa_manifest_json(
+            module, filename=filename,
+        )
+    return emit_wat(
+        ir_mod,
+        memory_cap_pages=memory_cap_pages,
+        manifest_json=manifest_json,
+    )
+
+
+def _build_wasm_capa_manifest_json(
+    module: A.Module,
+    *,
+    filename: str = "<input>",
+) -> str:
+    """Build the JSON payload for the ``capa-manifest`` custom
+    section (audit M4, 2026-05).
+
+    Reuses :func:`capa.manifest.build_manifest` so per-function
+    ``declared_capabilities`` are computed in exactly one place,
+    then projects the relevant subset (name + declared caps) so
+    the artefact stays compact. Format v1::
+
+        {
+          "capa_manifest_version": 1,
+          "capa_version": "<rc version>",
+          "functions": [
+            {"name": "main",    "declared_capabilities": ["Stdio"]},
+            {"name": "compute", "declared_capabilities": []},
+            ...
+          ]
+        }
+    """
+    import json
+    from .. import __version__ as _capa_version
+    from ..manifest._funrec import build_manifest
+    from ._emit_wasm import CAPA_MANIFEST_SCHEMA_VERSION
+
+    full = build_manifest(
+        module, filename=filename, capa_version=_capa_version,
+    )
+    functions = [
+        {
+            "name": f["name"],
+            "declared_capabilities": list(f["declared_capabilities"]),
+        }
+        for f in full["functions"]
+    ]
+    payload = {
+        "capa_manifest_version": CAPA_MANIFEST_SCHEMA_VERSION,
+        "capa_version": _capa_version,
+        "functions": functions,
+    }
+    # Compact separators keep the custom-section payload as small as
+    # we can without losing JSON readability; consumers can re-pretty
+    # the output if they want.
+    return json.dumps(payload, separators=(",", ":"), sort_keys=False)
 
 
 def compile_wit(
@@ -177,6 +275,10 @@ def compile_wasm(
     module: A.Module,
     types: dict | None = None,
     wasm_tools_path: str = "wasm-tools",
+    *,
+    memory_cap_pages: int | None = ...,  # type: ignore[assignment]
+    filename: str = "<input>",
+    embed_manifest: bool = True,
 ) -> bytes:
     """End-to-end AST -> CIR -> WAT -> binary Wasm assembly.
 
@@ -187,9 +289,17 @@ def compile_wasm(
     ``FileNotFoundError`` if ``wasm-tools`` is not on PATH, and
     ``subprocess.CalledProcessError`` if the assembly itself fails
     (the WAT it complained about is in ``.stderr``).
+
+    ``memory_cap_pages`` (audit H1) and ``embed_manifest`` /
+    ``filename`` (audit M4) are forwarded to :func:`compile_wat`.
     """
     import subprocess
-    wat = compile_wat(module, types=types)
+    wat = compile_wat(
+        module, types=types,
+        memory_cap_pages=memory_cap_pages,
+        filename=filename,
+        embed_manifest=embed_manifest,
+    )
     proc = subprocess.run(
         [wasm_tools_path, "parse", "-"],
         input=wat.encode("utf-8"),
@@ -203,6 +313,59 @@ def compile_wasm(
             f"--- WAT input ---\n{wat}"
         )
     return proc.stdout
+
+
+def read_wasm_manifest(blob: bytes) -> dict | None:
+    """Read the embedded ``capa-manifest`` custom section from a
+    Wasm binary (audit M4, 2026-05).
+
+    Returns the decoded JSON dict, or ``None`` when the binary
+    carries no ``capa-manifest`` section. Raises ``ValueError`` on
+    a malformed Wasm header.
+
+    Implemented as a tiny custom-section parser so callers do not
+    need to pull in ``wasmtime`` or shell out to ``wasm-tools``:
+    every Wasm module starts with the 8-byte preamble (magic +
+    version) followed by sections of the form ``(section_id: u8,
+    size: leb128, payload: bytes)``. Custom sections have id 0 and
+    their payload starts with a ``(name_len: leb128, name: utf-8)``
+    pair, followed by the section's data.
+    """
+    import json
+    if len(blob) < 8 or blob[:4] != b"\x00asm":
+        raise ValueError("not a Wasm binary (bad preamble)")
+    i = 8
+    while i < len(blob):
+        section_id = blob[i]
+        i += 1
+        size, i = _read_uleb128(blob, i)
+        end = i + size
+        if section_id == 0:
+            name_len, name_start = _read_uleb128(blob, i)
+            name_end = name_start + name_len
+            name = blob[name_start:name_end].decode("utf-8", errors="replace")
+            if name == "capa-manifest":
+                payload = blob[name_end:end]
+                return json.loads(payload.decode("utf-8"))
+        i = end
+    return None
+
+
+def _read_uleb128(buf: bytes, start: int) -> tuple[int, int]:
+    """Read an unsigned LEB128 integer at ``buf[start:]``. Returns
+    ``(value, next_index)``. Internal helper for
+    :func:`read_wasm_manifest`."""
+    result = 0
+    shift = 0
+    i = start
+    while True:
+        byte = buf[i]
+        i += 1
+        result |= (byte & 0x7F) << shift
+        if (byte & 0x80) == 0:
+            break
+        shift += 7
+    return result, i
 
 
 def _emit_main_bootstrap(main_fn) -> str:

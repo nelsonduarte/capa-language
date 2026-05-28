@@ -13,6 +13,14 @@ The two hosts share semantics. Capa Wasm artifacts built with
 through ``WasmHost``; artifacts built with
 ``capa --wasm --component --output app.wasm`` are components
 and load through ``WasmComponentHost``.
+
+Trust-boundary note (audit M1, 2026-05): ``env.get`` here reads
+``os.environ.get(name)`` without filtering, identical to the core
+host. Unrestricted Env caps see every host env var, including
+secrets. The attenuation system narrows the cap; the recommendation
+for any production / untrusted-guest use is to call
+``env.restrict_to_keys([...])`` on a literal allow-list before
+handing the cap on. See ``_wasm_host.py`` for the full discussion.
 """
 
 from __future__ import annotations
@@ -79,6 +87,14 @@ class WasmComponentHost:
         clock.close()
 
     def _register_env(self, root: wc.LinkerInstance) -> None:
+        # Audit M1 (2026-05): leak-by-default. ``os.environ.get`` is
+        # unfiltered on the host, so an unrestricted Env cap held by
+        # the guest sees every host env var (including secrets).
+        # Attenuation via ``env.restrict_to_keys([...])`` is enforced
+        # inline by the Wasm emitter (audit C2) for literal allow-
+        # lists; unrestricted caps still pass through. See
+        # ``_wasm_host.py`` and ``capa.runtime._capabilities.Env``
+        # for the full discussion.
         env = root.add_instance("capa:host/env")
         env.add_func("args", lambda _store: list(self._args))
         env.add_func(

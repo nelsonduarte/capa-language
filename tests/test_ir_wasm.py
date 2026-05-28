@@ -500,7 +500,10 @@ class TestWasmStdioEmission(unittest.TestCase):
         )
         ir_mod, _, _ = _parse_lower(src)
         wat = emit_wat(ir_mod)
-        self.assertIn('(memory (export "memory") 1)', wat)
+        # The memory limits clause now carries a default upper-page
+        # cap (audit H1, 2026-05); use a tolerant match that fires on
+        # any ``(memory (export "memory") 1 ...)`` prefix.
+        self.assertIn('(memory (export "memory") 1', wat)
         self.assertIn('(data (i32.const 0) "hi")', wat)
 
     def test_unsupported_method_raises(self):
@@ -4480,6 +4483,50 @@ class TestWasmSafetyTraps(unittest.TestCase):
         with self.assertRaises(wasmtime.Trap):
             self._exec(src, "sub", -(1 << 63), 1)
 
+    # ---- Fix C4: to_int out-of-range traps ------------------------
+
+    def test_to_int_in_range_works(self):
+        # Positive parity: a value inside the signed 64-bit window
+        # truncates toward zero on both backends.
+        src = (
+            "fun trunc(f: Float) -> Int\n"
+            "    return to_int(f)\n"
+        )
+        self.assertEqual(self._exec(src, "trunc", 1.5), 1)
+        self.assertEqual(self._exec(src, "trunc", -2.7), -2)
+        # i64::MIN as a float is exactly representable and trunc-safe.
+        self.assertEqual(
+            self._exec(src, "trunc", -9223372036854775808.0),
+            -9223372036854775808,
+        )
+
+    def test_to_int_overflow_traps(self):
+        import wasmtime
+        src = (
+            "fun trunc(f: Float) -> Int\n"
+            "    return to_int(f)\n"
+        )
+        with self.assertRaises(wasmtime.Trap):
+            self._exec(src, "trunc", 1e20)
+
+    def test_to_int_nan_traps(self):
+        import wasmtime
+        src = (
+            "fun trunc(f: Float) -> Int\n"
+            "    return to_int(f)\n"
+        )
+        with self.assertRaises(wasmtime.Trap):
+            self._exec(src, "trunc", float("nan"))
+
+    def test_to_int_inf_traps(self):
+        import wasmtime
+        src = (
+            "fun trunc(f: Float) -> Int\n"
+            "    return to_int(f)\n"
+        )
+        with self.assertRaises(wasmtime.Trap):
+            self._exec(src, "trunc", float("inf"))
+
     # ---- Fix C5: parse_int overflow returns None ------------------
 
     def test_parse_int_too_big_returns_none(self):
@@ -4625,6 +4672,169 @@ class TestWasmBoundsChecks(unittest.TestCase):
             '    stdio.println("${s.substring(0, 100)}")\n'
         )
         self._exec_main_expect_trap(src)
+
+
+@unittest.skipUnless(
+    _has_wasm_tools(),
+    "wasm-tools not installed",
+)
+class TestWasmCapaManifestCustomSection(unittest.TestCase):
+    """Audit fix M4 (2026-05): per-function capability manifest
+    embedded in a Wasm custom section named ``capa-manifest`` so the
+    discipline travels with the artefact. Runtimes ignore custom
+    sections by definition; ``wasm-tools dump`` and the helper
+    ``capa.ir.read_wasm_manifest`` surface them."""
+
+    def test_manifest_section_present_and_parses(self):
+        from capa.ir import compile_wasm, read_wasm_manifest
+        src = (
+            'fun helper() -> Int\n'
+            '    return 42\n'
+            'fun main(stdio: Stdio)\n'
+            '    stdio.println("${helper()}")\n'
+        )
+        _, types, ast_mod = _parse_lower(src)
+        blob = compile_wasm(ast_mod, types=types, filename='m4_test.capa')
+        manifest = read_wasm_manifest(blob)
+        self.assertIsNotNone(manifest)
+        self.assertEqual(manifest["capa_manifest_version"], 1)
+        self.assertIn("capa_version", manifest)
+        names = {f["name"]: f["declared_capabilities"]
+                 for f in manifest["functions"]}
+        # ``main`` declares ``Stdio`` via its capability param;
+        # ``helper`` declares nothing.
+        self.assertIn("main", names)
+        self.assertEqual(names["main"], ["Stdio"])
+        self.assertIn("helper", names)
+        self.assertEqual(names["helper"], [])
+
+    def test_manifest_off_via_embed_manifest_false(self):
+        # Tests / regression scenarios where the extra custom section
+        # would noisily change byte-level snapshots can pass
+        # ``embed_manifest=False`` to suppress it.
+        from capa.ir import compile_wasm, read_wasm_manifest
+        src = (
+            'fun main(stdio: Stdio)\n'
+            '    stdio.println("hi")\n'
+        )
+        _, types, ast_mod = _parse_lower(src)
+        blob = compile_wasm(ast_mod, types=types, embed_manifest=False)
+        self.assertIsNone(read_wasm_manifest(blob))
+
+    @unittest.skipUnless(
+        _has_wasmtime_py(),
+        "wasmtime-py not installed",
+    )
+    def test_manifest_does_not_break_wasmtime_load(self):
+        # Custom sections are by definition ignored by runtimes; verify
+        # the resulting binary still loads + runs cleanly. The check
+        # would catch a future regression where the emitter put the
+        # ``(@custom ...)`` in a position wasm-tools accepts but a
+        # runtime rejects.
+        import io
+        import sys
+        from capa.ir import compile_wasm
+        from capa.runtime._wasm_host import WasmHost
+        src = (
+            'fun main(stdio: Stdio)\n'
+            '    stdio.println("manifest-ok")\n'
+        )
+        _, types, ast_mod = _parse_lower(src)
+        blob = compile_wasm(ast_mod, types=types)
+        host = WasmHost()
+        buf = io.StringIO()
+        saved = sys.stdout
+        sys.stdout = buf
+        try:
+            host.run_main(blob)
+        finally:
+            sys.stdout = saved
+        self.assertEqual(buf.getvalue(), "manifest-ok\n")
+
+
+@unittest.skipUnless(
+    _has_wasm_tools() and _has_wasmtime_py(),
+    "wasm-tools and/or wasmtime-py not installed",
+)
+class TestWasmMemoryCap(unittest.TestCase):
+    """Audit fix H1 (2026-05): the emitted ``(memory ...)``
+    declaration carries a page-count upper bound (default
+    ``MEMORY_CAP_DEFAULT_PAGES`` = 256 pages = 16 MiB; configurable
+    via the CLI ``--wasm-memory-cap`` flag). The bump allocator's
+    ``memory.grow`` then traps via ``unreachable`` at a
+    deterministic ceiling instead of a host-dependent OOM point."""
+
+    def test_default_cap_baked_into_memory_decl(self):
+        # The WAT shape carries ``(memory (export "memory") 1 256)``
+        # by default. Pinning the textual form catches a regression
+        # that would silently drop the cap.
+        from capa.ir import compile_wat
+        from capa.ir._emit_wasm import MEMORY_CAP_DEFAULT_PAGES
+        src = (
+            'fun main(stdio: Stdio)\n'
+            '    stdio.println("hi")\n'
+        )
+        _, types, ast_mod = _parse_lower(src)
+        wat = compile_wat(ast_mod, types=types)
+        self.assertIn(
+            f'(memory (export "memory") 1 {MEMORY_CAP_DEFAULT_PAGES})',
+            wat,
+        )
+
+    def test_explicit_cap_baked_into_memory_decl(self):
+        from capa.ir import compile_wat
+        src = (
+            'fun main(stdio: Stdio)\n'
+            '    stdio.println("hi")\n'
+        )
+        _, types, ast_mod = _parse_lower(src)
+        wat = compile_wat(ast_mod, types=types, memory_cap_pages=7)
+        self.assertIn('(memory (export "memory") 1 7)', wat)
+
+    def test_no_cap_omits_max(self):
+        # Passing ``None`` lets the host decide; the WAT has no upper
+        # bound in the memory limits clause.
+        from capa.ir import compile_wat
+        src = (
+            'fun main(stdio: Stdio)\n'
+            '    stdio.println("hi")\n'
+        )
+        _, types, ast_mod = _parse_lower(src)
+        wat = compile_wat(ast_mod, types=types, memory_cap_pages=None)
+        self.assertIn('(memory (export "memory") 1)', wat)
+
+    def test_low_cap_traps_on_runaway_alloc(self):
+        # A list-push loop allocates header + growing data array;
+        # with ``memory_cap_pages=1`` (64 KiB total) the bump
+        # allocator's ``memory.grow`` returns -1 once the heap
+        # outgrows the cap and the helper traps via ``unreachable``.
+        import io
+        import sys
+        import wasmtime
+        from capa.ir import compile_wasm
+        from capa.runtime._wasm_host import WasmHost
+        src = (
+            'fun main(stdio: Stdio)\n'
+            '    var xs: List<Int> = []\n'
+            '    var i = 0\n'
+            '    while i < 100000\n'
+            '        xs.push(i)\n'
+            '        i = i + 1\n'
+            '    stdio.println("${xs.length()}")\n'
+        )
+        _, types, ast_mod = _parse_lower(src)
+        blob = compile_wasm(
+            ast_mod, types=types, memory_cap_pages=1,
+        )
+        host = WasmHost()
+        buf = io.StringIO()
+        saved = sys.stdout
+        sys.stdout = buf
+        try:
+            with self.assertRaises(wasmtime.Trap):
+                host.run_main(blob)
+        finally:
+            sys.stdout = saved
 
 
 @unittest.skipUnless(

@@ -48,3 +48,10 @@ fun main(stdio: Stdio)
     let word = "abcdef"
     stdio.println("${word.substring(1, 4)}")    // bcd
     stdio.println("${word.substring(0, 6)}")    // abcdef
+
+    // Fix C4: to_int on values inside the signed 64-bit window
+    // truncates toward zero on both backends. The NaN / inf / out-
+    // of-range trap cases live in the negative tests; here we only
+    // pin the happy path so the loud-failure check did not regress.
+    stdio.println("${to_int(1.5)}")             // 1
+    stdio.println("${to_int(-2.7)}")            // -2

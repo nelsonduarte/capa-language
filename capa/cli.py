@@ -692,6 +692,20 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--wasm-memory-cap",
+        type=int,
+        default=None,
+        metavar="<pages>",
+        help=(
+            "with --wasm, cap the emitted linear memory at this many "
+            "64 KiB pages. The bump allocator's memory.grow then "
+            "traps via 'unreachable' at a deterministic ceiling "
+            "instead of at a host-dependent OOM point (audit fix H1). "
+            "Default: 256 pages (16 MiB). Use 0 to skip the cap "
+            "(host decides)."
+        ),
+    )
+    parser.add_argument(
         "--no-color",
         action="store_true",
         help="disable ANSI colors in the output",
@@ -913,6 +927,17 @@ def main() -> int:
         args.prefer_wasm
         or os.environ.get("CAPA_PREFER_WASM") == "1"
     )
+    # Audit H1 (2026-05): translate the CLI's ``--wasm-memory-cap``
+    # to the (page-count | None) shape the emitter wants. ``0``
+    # opts out of the cap; any positive int is the limit; absence
+    # falls back to the emitter's default.
+    if args.wasm_memory_cap is None:
+        wasm_memory_cap: int | None = ...  # type: ignore[assignment]
+    elif args.wasm_memory_cap <= 0:
+        wasm_memory_cap = None
+    else:
+        wasm_memory_cap = args.wasm_memory_cap
+
     if (
         args.run and not args.wasm and prefer_wasm
         and _wasm_tooling_available()
@@ -922,7 +947,11 @@ def main() -> int:
         try:
             from capa.ir import compile_wasm
             from capa.runtime._wasm_host import WasmHost
-            blob = compile_wasm(module, types=result.types)
+            blob = compile_wasm(
+                module, types=result.types,
+                memory_cap_pages=wasm_memory_cap,
+                filename=filename,
+            )
             host = WasmHost(args=program_args)
             host.run_main(blob)
             return 0
@@ -942,10 +971,18 @@ def main() -> int:
             result = analyze(module, source=source, filename=filename)
         try:
             if args.transpile:
-                wat = compile_wat(module, types=result.types)
+                wat = compile_wat(
+                    module, types=result.types,
+                    memory_cap_pages=wasm_memory_cap,
+                    filename=filename,
+                )
                 print(wat)
                 return 0
-            blob = compile_wasm(module, types=result.types)
+            blob = compile_wasm(
+                module, types=result.types,
+                memory_cap_pages=wasm_memory_cap,
+                filename=filename,
+            )
         except Exception as e:
             msg = f"capa: --wasm: {e}"
             if use_color:

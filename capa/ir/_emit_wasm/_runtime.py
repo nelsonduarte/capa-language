@@ -824,7 +824,17 @@ class _RuntimeHelpersMixin:
 
         Exported so host bridges (capa:host/env etc.) can allocate
         Option / Result wrappers in linear memory before handing
-        them back to the wasm code."""
+        them back to the wasm code.
+
+        Audit H1 (2026-05): the ``memory.grow`` -> ``i32.const -1``
+        check below covers the host-refuses-to-grow path. The host
+        refuses when the requested page count exceeds the limits
+        clause baked into the module's ``(memory ...)`` declaration.
+        ``WasmEmitter.__init__(memory_cap_pages=...)`` sets that
+        ceiling (default 256 pages = 16 MiB), exposed via the CLI
+        as ``--wasm-memory-cap <pages>``. A runaway allocator thus
+        traps at the deterministic, source-declared ceiling instead
+        of at some host-dependent OOM point."""
         self._write('(func $alloc (export "alloc") (param $size i32) (result i32)')
         self._indent += 1
         self._write("(local $ret i32)")

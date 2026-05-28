@@ -134,6 +134,25 @@ _FLOAT_CMP_BINOP = {
 }
 
 
+# Audit H1 (2026-05): default memory cap on the emitted linear
+# memory. 256 pages = 16 MiB. Caps the bump allocator's
+# ``memory.grow`` so a runaway program traps predictably rather
+# than at a host-dependent OOM point. Override on the CLI with
+# ``--wasm-memory-cap <pages>`` (1 page = 64 KiB). The ``$alloc``
+# helper's grow-on-failure path already emits ``unreachable``;
+# this cap just shrinks the ``memory.grow`` return-(-1) threshold
+# to a value the user controls.
+MEMORY_CAP_DEFAULT_PAGES = 256
+
+# Audit M4 (2026-05): manifest schema version embedded in the
+# ``capa-manifest`` custom section. v1 is ``{name, declared_capabilities}``
+# per function plus a top-level ``capa_version``. Consumers should
+# refuse a manifest whose ``capa_manifest_version`` they do not
+# recognise.
+CAPA_MANIFEST_SCHEMA_VERSION = 1
+CAPA_MANIFEST_SECTION = "capa-manifest"
+
+
 class WasmEmitter(
     _RuntimeHelpersMixin,
     _GrisuEmissionMixin,
@@ -156,10 +175,28 @@ class WasmEmitter(
     _DiscoveryMixin,
     _EqualityMixin,
 ):
-    def __init__(self, indent_unit: str = "  "):
+    def __init__(
+        self,
+        indent_unit: str = "  ",
+        *,
+        memory_cap_pages: Optional[int] = MEMORY_CAP_DEFAULT_PAGES,
+        manifest_json: Optional[str] = None,
+    ):
         self._lines: List[str] = []
         self._indent = 0
         self._unit = indent_unit
+        # Audit H1 (2026-05): page cap on the emitted ``(memory ...)``
+        # declaration. ``None`` skips the cap (host decides); an int
+        # bakes ``<max>`` into the memory limits. The bump allocator's
+        # ``memory.grow`` then traps deterministically rather than at
+        # a host-dependent OOM point.
+        self._memory_cap_pages: Optional[int] = memory_cap_pages
+        # Audit M4 (2026-05): JSON manifest bytes embedded in a Wasm
+        # custom section named ``capa-manifest``. ``None`` skips
+        # emission; a string emits ``(@custom "capa-manifest" "...")``
+        # at the end of the module. Runtimes ignore custom sections
+        # by definition, so this is purely a supply-chain audit aid.
+        self._manifest_json: Optional[str] = manifest_json
         # Stack of (loop_label, exit_label) tuples so ``break`` and
         # ``continue`` know which loop they target. Wasm has no
         # implicit "innermost loop" branch; every branch names its
@@ -386,7 +423,18 @@ class WasmEmitter(
             or self._uses_heap_alloc(module)
         )
         if needs_memory:
-            self._write('(memory (export "memory") 1)')
+            # Audit H1 (2026-05): bake the per-module memory cap
+            # into the limits clause so ``$alloc``'s ``memory.grow``
+            # traps at a deterministic page count rather than at
+            # whatever the host happens to OOM at. ``None`` skips
+            # the cap (host decides). 1 page = 64 KiB; default cap
+            # is ``MEMORY_CAP_DEFAULT_PAGES`` (256 pages = 16 MiB).
+            if self._memory_cap_pages is not None:
+                self._write(
+                    f'(memory (export "memory") 1 {self._memory_cap_pages})'
+                )
+            else:
+                self._write('(memory (export "memory") 1)')
             for text, (offset, _len) in sorted(
                 self._strings.items(), key=lambda kv: kv[1][0],
             ):
@@ -471,6 +519,17 @@ class WasmEmitter(
         for fn in module.functions:
             self._emit_function(fn)
         self._emit_impl_methods(module)
+        # Audit M4 (2026-05): embed the per-function capability
+        # manifest in a Wasm custom section so the discipline travels
+        # with the artefact. Runtimes ignore custom sections by
+        # definition; ``wasm-tools dump`` and any wasm parser can
+        # surface them. Emitted last so it sits at module end where
+        # consumers expect optional metadata.
+        if self._manifest_json is not None:
+            escaped = self._escape_wat_string(self._manifest_json)
+            self._write(
+                f'(@custom "{CAPA_MANIFEST_SECTION}" "{escaped}")'
+            )
         self._indent -= 1
         self._write(")")
         return "\n".join(self._lines) + "\n"

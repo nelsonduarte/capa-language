@@ -227,6 +227,35 @@ class TestConverts(unittest.TestCase):
         self.assertEqual(to_int(3.7), 3)
         self.assertEqual(to_int(-0.9), 0)  # truncates toward zero
 
+    def test_to_int_at_i64_min_boundary_works(self):
+        # ``-2**63`` is exactly representable as f64 AND fits in i64.
+        # Both backends accept it; ``i64.trunc_f64_s`` returns
+        # ``-9223372036854775808``.
+        self.assertEqual(to_int(float(-(1 << 63))), -(1 << 63))
+
+    def test_to_int_above_i64_max_raises(self):
+        # Audit fix C4: ``int(1e20)`` returned an arbitrary-precision
+        # int silently on Python while Wasm trapped on the same input.
+        # Both now raise / trap at the same value.
+        with self.assertRaises(OverflowError):
+            to_int(1e20)
+
+    def test_to_int_below_i64_min_raises(self):
+        with self.assertRaises(OverflowError):
+            to_int(-1e20)
+
+    def test_to_int_nan_raises(self):
+        with self.assertRaises(OverflowError):
+            to_int(float("nan"))
+
+    def test_to_int_pos_inf_raises(self):
+        with self.assertRaises(OverflowError):
+            to_int(float("inf"))
+
+    def test_to_int_neg_inf_raises(self):
+        with self.assertRaises(OverflowError):
+            to_int(float("-inf"))
+
     def test_propagate_err_legacy_helper(self):
         # Legacy two-tuple return shape (value, should_propagate).
         v, prop = _propagate_err(Ok(11))

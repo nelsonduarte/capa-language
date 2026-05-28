@@ -948,6 +948,36 @@ Listed so the design space is explicit.
 
 ### Wasm-specific gaps that are not P0
 
+- [x] **Security hardening pass 3 - C4 + M1 + M4 + H1**
+  (closed 2026-05-28). Four audit follow-ups closed in one slice.
+  (C4) `to_int(huge_float)` now raises `OverflowError` on Python when
+  the result is outside the signed i64 window (also on NaN / inf),
+  matching the existing Wasm trap. Both backends fail loud at the
+  same input.
+  (M1) Env capability docs: prominent "leaks all host env vars
+  by default; use restrict_to_keys to narrow" notes added to the
+  Env runtime class, the WIT host bridges (`_wasm_host.py` /
+  `_wasm_component_host.py`), and the `_register_env` docstrings.
+  Documentation only.
+  (M4) Capability manifest embedded in the `.wasm` artefact via a
+  `capa-manifest` custom section. Schema v1: `{capa_manifest_version,
+  capa_version, functions: [{name, declared_capabilities}]}`. Built
+  from the existing `manifest.build_manifest` data, embedded via WAT
+  `(@custom "capa-manifest" "...")` directive (no new wasm-tools
+  version needed). New `capa.ir.read_wasm_manifest(blob) -> dict |
+  None` is a tiny LEB128 parser so third-party auditors can inspect
+  per-function capabilities directly from the artefact without
+  wasmtime / wasm-tools.
+  (H1) Memory budget cap: deterministic upper bound on Wasm linear
+  memory at emit time, defaulting to 256 pages (16 MiB), exposed via
+  the new `--wasm-memory-cap <pages>` CLI flag (`0` opts out).
+  Out-of-budget allocations trap loud via the existing
+  `memory.grow` -> `unreachable` path; the cap just makes the trap
+  predictable across hosts.
+  20 new tests; full suite 1919 -> 1939 / 5 skipped / 0 fail. Audit
+  follow-ups remaining: **H2 effect tracking for "struct as Set
+  element ⇒ fields read-only"** (design-heavy, own slice next).
+
 - [x] **Security hardening pass 2 - C1 bounds checks on collection
   indexing** (closed 2026-05-28). The C1 audit finding turned out
   more serious than "defense in depth": `xs[i]` with `i >= len`

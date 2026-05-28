@@ -2401,6 +2401,42 @@ class TestSafetyTrapsRaise(unittest.TestCase):
         self.assertNotEqual(rc, 0)
         self.assertIn("OverflowError", err)
 
+    # ---- Fix C4: to_int out-of-range raises -----------------------
+
+    def test_to_int_in_range_works(self):
+        # Positive parity: ``to_int(1.5)`` truncates to 1 on both
+        # backends.
+        rc, out, err = run_capa(
+            'fun main(stdio: Stdio)\n'
+            '    let n = to_int(1.5)\n'
+            '    stdio.println("${n}")\n'
+        )
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out, "1\n")
+
+    def test_to_int_overflow_raises(self):
+        # ``1e20`` lies far outside the signed 64-bit window. Wasm
+        # traps via ``i64.trunc_f64_s``; Python's ``to_int`` raises
+        # ``OverflowError`` to match.
+        rc, out, err = run_capa(
+            'fun main(stdio: Stdio)\n'
+            '    let n = to_int(1.0e20)\n'
+            '    stdio.println("${n}")\n'
+        )
+        self.assertNotEqual(rc, 0)
+        self.assertIn("OverflowError", err)
+
+    def test_to_int_negative_overflow_raises(self):
+        # Below the signed 64-bit window: same trap on Wasm, same
+        # ``OverflowError`` on Python.
+        rc, out, err = run_capa(
+            'fun main(stdio: Stdio)\n'
+            '    let n = to_int(-1.0e20)\n'
+            '    stdio.println("${n}")\n'
+        )
+        self.assertNotEqual(rc, 0)
+        self.assertIn("OverflowError", err)
+
     # ---- Fix C5: parse_int overflow returns None ------------------
 
     def test_parse_int_too_big_returns_none(self):
