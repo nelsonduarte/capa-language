@@ -1,0 +1,47 @@
+// Capability ``allows`` queries: parity between the Python runtime
+// (which carries the live attenuation set on the cap value) and the
+// Wasm backend (which inlines the same chain at emit time, per
+// design decision D4 Option B). No IO, so the example is parity-
+// clean by construction.
+//
+// The Wasm-side check walks the static restrict_to chain and
+// answers true / false from a literal-string argument; the Python
+// runtime walks the runtime attenuation set. Both must agree.
+// ``Clock.allows`` on the unrestricted cap is trivially true on
+// both backends (no ``restrict_to_after`` is in scope).
+
+fun main(stdio: Stdio, fs: Fs, env: Env, clock: Clock)
+    let scoped = fs.restrict_to("/tmp/")
+    if scoped.allows("/tmp/file.txt")
+        stdio.println("fs scoped in: allowed")
+    else
+        stdio.println("fs scoped in: denied")
+    if scoped.allows("/etc/passwd")
+        stdio.println("fs scoped out: allowed")
+    else
+        stdio.println("fs scoped out: denied")
+
+    if fs.allows("/anywhere")
+        stdio.println("fs unrestricted: allowed")
+    else
+        stdio.println("fs unrestricted: denied")
+
+    let scoped_env = env.restrict_to_keys(["HOME", "USER"])
+    if scoped_env.allows("HOME")
+        stdio.println("env in: allowed")
+    else
+        stdio.println("env in: denied")
+    if scoped_env.allows("SECRET")
+        stdio.println("env out: allowed")
+    else
+        stdio.println("env out: denied")
+
+    if env.allows("ANYTHING")
+        stdio.println("env unrestricted: allowed")
+    else
+        stdio.println("env unrestricted: denied")
+
+    if clock.allows()
+        stdio.println("clock unrestricted: allowed")
+    else
+        stdio.println("clock unrestricted: denied")

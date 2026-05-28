@@ -393,16 +393,36 @@ class TestWitGeneration(unittest.TestCase):
         self.assertEqual(used, {"Stdio": {"println", "eprintln"}})
 
     def test_unsupported_cap_method_raises_at_wit_gen(self):
-        # ``read_line`` is a real Stdio method but Phase 6B does not
-        # yet have a WIT signature for it (returns Result<String, IoError>
-        # which needs Phase 6C+ to encode). The WIT generator must
-        # surface the gap as a precise error rather than emit a
-        # half-defined interface.
-        src = (
-            "fun main(stdio: Stdio)\n"
-            "    let line = stdio.read_line()\n"
+        # ``UnsupportedCapabilityMethod`` is the precise error the WIT
+        # generator raises when a CIR ``MethodCall`` references a
+        # capability method that has no signature in ``_WIT_SIGNATURES``.
+        # ``Stdio.read_line`` used to be the canary here; slice 1 of
+        # the Wasm-fully-functional arc closed that gap, so we drive
+        # the error path via a synthetic ``MethodCall`` instead. This
+        # keeps the contract (raise loudly, never silently emit a
+        # half-defined interface) under test even as the supported set
+        # grows toward full coverage.
+        from capa.ir._nodes import (
+            Module, Function, MethodCall, Value, Param,
         )
-        ir_mod, _, _ = _parse_lower(src)
+        # Hand-build a one-instr module that calls a non-existent
+        # method. ``cap_used="Stdio"`` makes the WIT walker classify
+        # the receiver as the built-in cap; the method name is novel
+        # so the lookup misses and the exception fires.
+        recv = Value(kind="param", name="stdio", ty="Stdio")
+        fake = MethodCall(
+            dst=None, receiver=recv,
+            method="not_a_real_method", args=[],
+            cap_used="Stdio",
+        )
+        fn = Function(
+            name="main",
+            params=[Param(name="stdio", ty="Stdio", is_capability=True)],
+            return_type="",
+            declared_caps=["Stdio"],
+            body=[fake],
+        )
+        ir_mod = Module(types=[], functions=[fn])
         with self.assertRaises(UnsupportedCapabilityMethod):
             emit_wit(ir_mod)
 
@@ -1646,6 +1666,299 @@ class TestWasmFs(unittest.TestCase):
         finally:
             sys.stdout = saved
         self.assertEqual(out.getvalue(), "missing\n")
+
+
+@unittest.skipUnless(
+    _has_wasm_tools() and _has_wasmtime_py(),
+    "wasm-tools and/or wasmtime-py not installed",
+)
+class TestWasmSlice1HostBridges(unittest.TestCase):
+    """Slice 1 of the Wasm-fully-functional arc (2026-05): close
+    the host-bridge pile (Fs.exists / is_dir / mkdir / list_dir,
+    Stdio.read_line, Clock.sleep, Clock.allows). Each method gets
+    a runtime test with a deterministic fixture so the Wasm side
+    matches the Python runtime byte-for-byte (or behaviourally
+    equivalent for time-dependent calls like Clock.sleep).
+    """
+
+    def _run(self, src: str, stdin_text: str | None = None) -> str:
+        from capa.runtime._wasm_host import WasmHost
+        import io
+        import sys
+        _, types, ast_mod = _parse_lower(src)
+        blob = compile_wasm(ast_mod, types=types)
+        host = WasmHost()
+        out = io.StringIO()
+        saved_out = sys.stdout
+        sys.stdout = out
+        saved_in = None
+        if stdin_text is not None:
+            saved_in = sys.stdin
+            sys.stdin = io.StringIO(stdin_text)
+        try:
+            host.run_main(blob)
+        finally:
+            sys.stdout = saved_out
+            if saved_in is not None:
+                sys.stdin = saved_in
+        return out.getvalue()
+
+    def test_fs_exists_true_and_false(self):
+        import os
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            real = os.path.join(td, "real.txt").replace("\\", "/")
+            with open(real, "w", encoding="utf-8") as f:
+                f.write("x")
+            missing = os.path.join(td, "missing.txt").replace("\\", "/")
+            src = (
+                "fun main(stdio: Stdio, fs: Fs)\n"
+                f"    if fs.exists(\"{real}\")\n"
+                "        stdio.println(\"real: yes\")\n"
+                "    else\n"
+                "        stdio.println(\"real: no\")\n"
+                f"    if fs.exists(\"{missing}\")\n"
+                "        stdio.println(\"missing: yes\")\n"
+                "    else\n"
+                "        stdio.println(\"missing: no\")\n"
+            )
+            self.assertEqual(
+                self._run(src), "real: yes\nmissing: no\n",
+            )
+
+    def test_fs_is_dir_dir_and_file(self):
+        import os
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            target = td.replace("\\", "/")
+            f_path = os.path.join(td, "f.txt").replace("\\", "/")
+            with open(f_path, "w", encoding="utf-8") as f:
+                f.write("x")
+            src = (
+                "fun main(stdio: Stdio, fs: Fs)\n"
+                f"    if fs.is_dir(\"{target}\")\n"
+                "        stdio.println(\"dir: yes\")\n"
+                "    else\n"
+                "        stdio.println(\"dir: no\")\n"
+                f"    if fs.is_dir(\"{f_path}\")\n"
+                "        stdio.println(\"file: yes\")\n"
+                "    else\n"
+                "        stdio.println(\"file: no\")\n"
+            )
+            self.assertEqual(
+                self._run(src), "dir: yes\nfile: no\n",
+            )
+
+    def test_fs_mkdir_creates_and_is_idempotent(self):
+        import os
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            target = os.path.join(td, "nested", "sub").replace("\\", "/")
+            src = (
+                "fun main(stdio: Stdio, fs: Fs)\n"
+                f"    match fs.mkdir(\"{target}\")\n"
+                "        Ok(_) -> stdio.println(\"first ok\")\n"
+                "        Err(_) -> stdio.println(\"first err\")\n"
+                # Second call must succeed (exist_ok=True mirrors
+                # the Python runtime).
+                f"    match fs.mkdir(\"{target}\")\n"
+                "        Ok(_) -> stdio.println(\"second ok\")\n"
+                "        Err(_) -> stdio.println(\"second err\")\n"
+            )
+            self.assertEqual(
+                self._run(src), "first ok\nsecond ok\n",
+            )
+            self.assertTrue(os.path.isdir(target))
+
+    def test_fs_mkdir_err_on_file_collision(self):
+        # mkdir on a path that exists as a regular file is an OS
+        # error even with ``exist_ok=True``; surfaced as Err.
+        import os
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            target = os.path.join(td, "f.txt").replace("\\", "/")
+            with open(target, "w", encoding="utf-8") as f:
+                f.write("x")
+            src = (
+                "fun main(stdio: Stdio, fs: Fs)\n"
+                f"    match fs.mkdir(\"{target}\")\n"
+                "        Ok(_) -> stdio.println(\"unexpected ok\")\n"
+                "        Err(_) -> stdio.println(\"expected err\")\n"
+            )
+            self.assertEqual(self._run(src), "expected err\n")
+
+    def test_fs_list_dir_sorted_entries(self):
+        import os
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            for name in ("z.txt", "a.txt", "m.txt"):
+                with open(os.path.join(td, name), "w") as f:
+                    f.write("")
+            target = td.replace("\\", "/")
+            src = (
+                "fun main(stdio: Stdio, fs: Fs)\n"
+                f"    match fs.list_dir(\"{target}\")\n"
+                "        Ok(items) -> \n"
+                "            for item in items\n"
+                "                stdio.println(item)\n"
+                "        Err(_) -> stdio.println(\"err\")\n"
+            )
+            self.assertEqual(
+                self._run(src), "a.txt\nm.txt\nz.txt\n",
+            )
+
+    def test_fs_list_dir_err_on_missing(self):
+        src = (
+            "fun main(stdio: Stdio, fs: Fs)\n"
+            "    match fs.list_dir(\"/no/such/path/zzz_capa_test_98765\")\n"
+            "        Ok(_) -> stdio.println(\"unexpected ok\")\n"
+            "        Err(_) -> stdio.println(\"expected err\")\n"
+        )
+        self.assertEqual(self._run(src), "expected err\n")
+
+    def test_fs_list_dir_empty_dir(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            target = td.replace("\\", "/")
+            src = (
+                "fun main(stdio: Stdio, fs: Fs)\n"
+                f"    match fs.list_dir(\"{target}\")\n"
+                "        Ok(items) -> stdio.println(\"len: ${items.length()}\")\n"
+                "        Err(_) -> stdio.println(\"err\")\n"
+            )
+            self.assertEqual(self._run(src), "len: 0\n")
+
+    def test_stdio_read_line_returns_input(self):
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    match stdio.read_line()\n"
+            "        Ok(line) -> stdio.println(\"got: ${line}\")\n"
+            "        Err(_) -> stdio.println(\"err\")\n"
+        )
+        self.assertEqual(
+            self._run(src, stdin_text="hello\n"), "got: hello\n",
+        )
+
+    def test_stdio_read_line_eof_returns_err(self):
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    match stdio.read_line()\n"
+            "        Ok(_) -> stdio.println(\"unexpected ok\")\n"
+            "        Err(_) -> stdio.println(\"eof\")\n"
+        )
+        self.assertEqual(self._run(src, stdin_text=""), "eof\n")
+
+    def test_clock_sleep_does_not_error(self):
+        # Don't assert on timing (would be flaky); just confirm a
+        # short sleep returns to the caller cleanly.
+        src = (
+            "fun main(stdio: Stdio, clock: Clock)\n"
+            "    clock.sleep(0.001)\n"
+            "    stdio.println(\"after sleep\")\n"
+        )
+        self.assertEqual(self._run(src), "after sleep\n")
+
+    def test_clock_sleep_negative_is_noop(self):
+        # Negative sleeps should not crash the host (the bridge
+        # guards against ``time.sleep(negative)`` which would
+        # otherwise raise ValueError).
+        src = (
+            "fun main(stdio: Stdio, clock: Clock)\n"
+            "    clock.sleep(-1.0)\n"
+            "    stdio.println(\"survived\")\n"
+        )
+        self.assertEqual(self._run(src), "survived\n")
+
+    def test_clock_allows_unrestricted_returns_true(self):
+        # Unrestricted Clock at the host returns true; matches the
+        # Python runtime's ``self._not_before is None`` branch.
+        src = (
+            "fun main(stdio: Stdio, clock: Clock)\n"
+            "    if clock.allows()\n"
+            "        stdio.println(\"allowed\")\n"
+            "    else\n"
+            "        stdio.println(\"denied\")\n"
+        )
+        self.assertEqual(self._run(src), "allowed\n")
+
+
+class TestWasmAllowsInlineEmit(unittest.TestCase):
+    """Slice 1 D4: ``Fs.allows`` / ``Env.allows`` lower to inline
+    static checks at emit time; ``Clock.allows`` stays on the host
+    bridge. These tests pin the emit-time contract independent of
+    the runtime so the rejection / inlining behaviour is visible
+    even on machines without the Wasm toolchain.
+    """
+
+    def test_fs_allows_literal_no_host_import(self):
+        src = (
+            "fun main(stdio: Stdio, fs: Fs)\n"
+            "    if fs.allows(\"/x\")\n"
+            "        stdio.println(\"y\")\n"
+            "    else\n"
+            "        stdio.println(\"n\")\n"
+        )
+        ir_mod, _, _ = _parse_lower(src)
+        wat = emit_wat(ir_mod)
+        # No host import generated for Fs.allows (we inline). The
+        # Stdio.println import is still present.
+        self.assertNotIn("\"capa:host/fs\" \"allows\"", wat)
+        self.assertIn("\"capa:host/stdio\" \"println\"", wat)
+
+    def test_env_allows_literal_no_host_import(self):
+        src = (
+            "fun main(stdio: Stdio, env: Env)\n"
+            "    if env.allows(\"HOME\")\n"
+            "        stdio.println(\"y\")\n"
+            "    else\n"
+            "        stdio.println(\"n\")\n"
+        )
+        ir_mod, _, _ = _parse_lower(src)
+        wat = emit_wat(ir_mod)
+        self.assertNotIn("\"capa:host/env\" \"allows\"", wat)
+
+    def test_fs_allows_dynamic_arg_rejected(self):
+        # Per D4: non-literal arg on Wasm raises WasmEmissionError
+        # with an actionable diagnostic.
+        src = (
+            "fun main(stdio: Stdio, fs: Fs)\n"
+            "    let p = \"/x\"\n"
+            "    if fs.allows(p)\n"
+            "        stdio.println(\"y\")\n"
+            "    else\n"
+            "        stdio.println(\"n\")\n"
+        )
+        ir_mod, _, _ = _parse_lower(src)
+        with self.assertRaises(WasmEmissionError) as cm:
+            emit_wat(ir_mod)
+        self.assertIn("literal string", str(cm.exception))
+
+    def test_env_allows_dynamic_arg_rejected(self):
+        src = (
+            "fun main(stdio: Stdio, env: Env)\n"
+            "    let n = \"HOME\"\n"
+            "    if env.allows(n)\n"
+            "        stdio.println(\"y\")\n"
+            "    else\n"
+            "        stdio.println(\"n\")\n"
+        )
+        ir_mod, _, _ = _parse_lower(src)
+        with self.assertRaises(WasmEmissionError):
+            emit_wat(ir_mod)
+
+    def test_clock_allows_stays_on_host_bridge(self):
+        # Clock.allows depends on the live wall clock; per D4 we
+        # keep it as a host import rather than inlining.
+        src = (
+            "fun main(stdio: Stdio, clock: Clock)\n"
+            "    if clock.allows()\n"
+            "        stdio.println(\"y\")\n"
+            "    else\n"
+            "        stdio.println(\"n\")\n"
+        )
+        ir_mod, _, _ = _parse_lower(src)
+        wat = emit_wat(ir_mod)
+        self.assertIn("\"capa:host/clock\" \"allows\"", wat)
 
 
 class TestWasmAttenuationEnforcement(unittest.TestCase):

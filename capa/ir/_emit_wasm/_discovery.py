@@ -463,6 +463,14 @@ class _DiscoveryMixin:
                     "restrict_to", "restrict_to_keys", "restrict_to_after",
                 ):
                     pass
+                elif (cap in ("Fs", "Env")
+                      and instr.method == "allows"):
+                    # Fs.allows / Env.allows lower to inline-attenuation
+                    # checks at emit time (D4 Option B): no host import,
+                    # no WIT signature needed. ``Clock.allows`` is the
+                    # exception (no string arg, needs the live wall
+                    # clock) and still uses the host bridge.
+                    pass
                 else:
                     key = (cap, instr.method)
                     if (cap, instr.method) not in _WIT_SIGNATURES:

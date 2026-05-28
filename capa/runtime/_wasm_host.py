@@ -140,6 +140,81 @@ class WasmHost:
             stdio_eprintln, access_caller=True,
         )
 
+        # Stdio.read_line: canonical-ABI result<string, io-error>.
+        # Same 20-byte indirect-return shape as Fs.read; the host
+        # writes the tag + Ok (ptr, len) or Err (m_ptr, m_len, c_ptr,
+        # c_len) into the caller-allocated area. Mirrors the Python
+        # runtime: empty input (EOF) becomes Err("end of input");
+        # invalid UTF-8 becomes Err with the decode exception in the
+        # cause field (audit H3 convention).
+        ft_read_line = wasmtime.FuncType(
+            [wasmtime.ValType.i32()], [],
+        )
+
+        def _write_rsio_ok_string(caller, ret_area, ptr, length):
+            self._memory.write(caller, (0).to_bytes(4, "little"), ret_area)
+            self._memory.write(
+                caller, ptr.to_bytes(4, "little"), ret_area + 4,
+            )
+            self._memory.write(
+                caller, length.to_bytes(4, "little"), ret_area + 8,
+            )
+            self._memory.write(
+                caller, (0).to_bytes(8, "little"), ret_area + 12,
+            )
+
+        def _alloc_utf8_local(caller, text: str) -> tuple[int, int]:
+            encoded = text.encode("utf-8")
+            if not encoded:
+                return 0, 0
+            ptr = self._alloc_export(caller, len(encoded))
+            self._memory.write(caller, encoded, ptr)
+            return ptr, len(encoded)
+
+        def _write_rsio_err(caller, ret_area, message, cause=""):
+            m_ptr, m_len = _alloc_utf8_local(caller, message)
+            c_ptr, c_len = _alloc_utf8_local(caller, cause)
+            self._memory.write(caller, (1).to_bytes(4, "little"), ret_area)
+            self._memory.write(
+                caller, m_ptr.to_bytes(4, "little"), ret_area + 4,
+            )
+            self._memory.write(
+                caller, m_len.to_bytes(4, "little"), ret_area + 8,
+            )
+            self._memory.write(
+                caller, c_ptr.to_bytes(4, "little"), ret_area + 12,
+            )
+            self._memory.write(
+                caller, c_len.to_bytes(4, "little"), ret_area + 16,
+            )
+
+        def stdio_read_line(caller, ret_area):
+            if self._memory is None or self._alloc_export is None:
+                raise RuntimeError(
+                    "stdio.read_line called before memory + $alloc set"
+                )
+            try:
+                line = sys.stdin.readline()
+            except OSError as e:
+                _write_rsio_err(caller, ret_area, "read failed", str(e))
+                return
+            except UnicodeDecodeError as e:
+                _write_rsio_err(
+                    caller, ret_area, "invalid utf-8 on stdin", str(e),
+                )
+                return
+            if not line:
+                _write_rsio_err(caller, ret_area, "end of input")
+                return
+            stripped = line.rstrip("\n")
+            s_ptr, s_len = _alloc_utf8_local(caller, stripped)
+            _write_rsio_ok_string(caller, ret_area, s_ptr, s_len)
+
+        self.linker.define_func(
+            "capa:host/stdio", "read-line", ft_read_line,
+            stdio_read_line, access_caller=True,
+        )
+
     def _register_clock(self) -> None:
         """Register the ``capa:host/clock`` interface methods.
         ``now_secs`` returns Unix epoch seconds as f64;
@@ -161,6 +236,42 @@ class WasmHost:
         )
         self.linker.define_func(
             "capa:host/clock", "now-monotonic", ft_to_f64, now_monotonic,
+        )
+
+        # Clock.sleep(secs: f64). The Python runtime treats a denied
+        # Clock as a silent no-op; this host bridge mirrors that by
+        # always calling ``time.sleep`` (the Wasm side carries no
+        # ``restrict_to_after`` state, just like Fs.restrict_to and
+        # Env.restrict_to_keys are no-ops at this layer). Static
+        # attenuation discipline still applies. Guard against
+        # negative durations (``time.sleep`` raises ValueError) so
+        # the guest can't crash the host with a bad literal.
+        ft_sleep = wasmtime.FuncType([wasmtime.ValType.f64()], [])
+
+        def clock_sleep(secs):
+            if secs < 0:
+                return
+            time.sleep(secs)
+
+        self.linker.define_func(
+            "capa:host/clock", "sleep", ft_sleep, clock_sleep,
+        )
+
+        # Clock.allows: queries the cap's ``restrict_to_after``
+        # threshold against the wall clock. Wasm caps carry no
+        # runtime state, so unrestricted is the only answer the
+        # host can give; mirrors the Python runtime's
+        # ``self._not_before is None or time.time() >= self._not_before``
+        # for the unrestricted case (returns true). Static
+        # attenuation chains that the analyzer can resolve are
+        # the responsibility of source-level discipline.
+        ft_allows = wasmtime.FuncType([], [wasmtime.ValType.i32()])
+
+        def clock_allows():
+            return 1
+
+        self.linker.define_func(
+            "capa:host/clock", "allows", ft_allows, clock_allows,
         )
 
     def _register_env(self) -> None:
@@ -483,6 +594,156 @@ class WasmHost:
         self.linker.define_func(
             "capa:host/fs", "restrict-to", ft_string_to_unit,
             fs_restrict_to, access_caller=True,
+        )
+
+        # Fs.exists / Fs.is_dir: (path_ptr, path_len) -> i32 (bool).
+        # Mirror the Python runtime's fail-closed-as-absent
+        # convention: invalid UTF-8 in the path returns false (the
+        # host can't even attempt the syscall), matching what the
+        # Python side would do for a path that genuinely does not
+        # exist.
+        ft_path_to_bool = wasmtime.FuncType(
+            [wasmtime.ValType.i32(), wasmtime.ValType.i32()],
+            [wasmtime.ValType.i32()],
+        )
+
+        import os as _os_mod
+
+        def fs_exists(caller, path_ptr, path_len):
+            if self._memory is None:
+                raise RuntimeError(
+                    "fs.exists called before memory was set"
+                )
+            try:
+                path = bytes(
+                    self._memory.read(caller, path_ptr, path_ptr + path_len)
+                ).decode("utf-8")
+            except UnicodeDecodeError:
+                return 0
+            return 1 if _os_mod.path.exists(path) else 0
+
+        def fs_is_dir(caller, path_ptr, path_len):
+            if self._memory is None:
+                raise RuntimeError(
+                    "fs.is_dir called before memory was set"
+                )
+            try:
+                path = bytes(
+                    self._memory.read(caller, path_ptr, path_ptr + path_len)
+                ).decode("utf-8")
+            except UnicodeDecodeError:
+                return 0
+            return 1 if _os_mod.path.isdir(path) else 0
+
+        self.linker.define_func(
+            "capa:host/fs", "exists", ft_path_to_bool,
+            fs_exists, access_caller=True,
+        )
+        self.linker.define_func(
+            "capa:host/fs", "is-dir", ft_path_to_bool,
+            fs_is_dir, access_caller=True,
+        )
+
+        # Fs.mkdir: (path_ptr, path_len, ret_area) -> ()
+        # Same canonical-ABI shape as Fs.write Ok-Unit branch (20-byte
+        # area). Idempotent via ``exist_ok=True`` to match the Python
+        # runtime's contract; failures (e.g. EACCES, ENOTDIR on a
+        # path component) become Err(IoError).
+        ft_mkdir = wasmtime.FuncType(
+            [
+                wasmtime.ValType.i32(),
+                wasmtime.ValType.i32(),
+                wasmtime.ValType.i32(),
+            ],
+            [],
+        )
+
+        def fs_mkdir(caller, path_ptr, path_len, ret_area):
+            if self._memory is None or self._alloc_export is None:
+                raise RuntimeError(
+                    "fs.mkdir called before memory + $alloc set"
+                )
+            try:
+                path = bytes(
+                    self._memory.read(caller, path_ptr, path_ptr + path_len)
+                ).decode("utf-8")
+            except UnicodeDecodeError as e:
+                _write_result_err_ioerror(
+                    caller, ret_area, f"invalid utf-8 in path: {e}",
+                )
+                return
+            try:
+                _os_mod.makedirs(path, exist_ok=True)
+                _write_result_ok_unit(caller, ret_area)
+            except OSError as e:
+                _write_result_err_ioerror(caller, ret_area, str(e))
+
+        self.linker.define_func(
+            "capa:host/fs", "mkdir", ft_mkdir,
+            fs_mkdir, access_caller=True,
+        )
+
+        # Fs.list_dir: (path_ptr, path_len, ret_area) -> ()
+        # Canonical-ABI result<list<string>, io-error>. ret_area is
+        # 20 bytes: tag i32 @ 0; Ok arm (data_ptr i32 @ 4, len i32 @ 8);
+        # Err arm (m_ptr @ 4, m_len @ 8, c_ptr @ 12, c_len @ 16).
+        # Host allocates the list data buffer (n*8 packed (ptr, len)
+        # slots, same layout as Env.args produces); the IR
+        # materialiser wraps it in a List<String> header. Entries are
+        # sorted to match the Python runtime's
+        # ``sorted(os.listdir(path))``.
+        def fs_list_dir(caller, path_ptr, path_len, ret_area):
+            if self._memory is None or self._alloc_export is None:
+                raise RuntimeError(
+                    "fs.list_dir called before memory + $alloc set"
+                )
+            try:
+                path = bytes(
+                    self._memory.read(caller, path_ptr, path_ptr + path_len)
+                ).decode("utf-8")
+            except UnicodeDecodeError as e:
+                _write_result_err_ioerror(
+                    caller, ret_area, f"invalid utf-8 in path: {e}",
+                )
+                return
+            try:
+                entries = sorted(_os_mod.listdir(path))
+            except OSError as e:
+                _write_result_err_ioerror(caller, ret_area, str(e))
+                return
+            n = len(entries)
+            data_ptr = self._alloc_export(caller, n * 8) if n else 0
+            for i, entry in enumerate(entries):
+                encoded = entry.encode("utf-8")
+                if encoded:
+                    s_ptr = self._alloc_export(caller, len(encoded))
+                    self._memory.write(caller, encoded, s_ptr)
+                else:
+                    s_ptr = 0
+                slot = data_ptr + i * 8
+                self._memory.write(
+                    caller, s_ptr.to_bytes(4, "little"), slot,
+                )
+                self._memory.write(
+                    caller, len(encoded).to_bytes(4, "little"), slot + 4,
+                )
+            # Ok tag + (data_ptr, len) into the area; zero the unused
+            # Err c_ptr / c_len bytes so the layout stays
+            # deterministic.
+            self._memory.write(caller, (0).to_bytes(4, "little"), ret_area)
+            self._memory.write(
+                caller, data_ptr.to_bytes(4, "little"), ret_area + 4,
+            )
+            self._memory.write(
+                caller, n.to_bytes(4, "little"), ret_area + 8,
+            )
+            self._memory.write(
+                caller, (0).to_bytes(8, "little"), ret_area + 12,
+            )
+
+        self.linker.define_func(
+            "capa:host/fs", "list-dir", ft_mkdir,
+            fs_list_dir, access_caller=True,
         )
 
     def _register_json(self) -> None:

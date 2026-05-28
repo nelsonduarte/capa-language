@@ -160,6 +160,17 @@ _CANONICAL_INDIRECT_RETURN: dict[tuple[str, str], tuple[int, str]] = {
     # result<_, io-error>: tag i32 + max(0 i32s for Ok unit,
     # 4 i32s for Err io-error) = 4 + 16 = 20 bytes flat.
     ("Fs", "write"): (20, "result_unit_io_error"),
+    # Fs.mkdir shares the result_unit_io_error shape with Fs.write.
+    ("Fs", "mkdir"): (20, "result_unit_io_error"),
+    # Fs.list_dir: result<list<string>, io-error>. tag i32 +
+    # max(2 i32s for Ok list-string flat (data_ptr, len),
+    # 4 i32s for Err io-error) = 4 + 16 = 20 bytes. Host writes
+    # data_ptr+len into the Ok arm; the materialiser allocates a
+    # 16-byte List<String> header around the buffer.
+    ("Fs", "list_dir"): (20, "result_list_string_io_error"),
+    # Stdio.read_line: result<string, io-error>. Same 20-byte shape
+    # and materialiser as Fs.read.
+    ("Stdio", "read_line"): (20, "result_string_io_error"),
     # ``Json`` used to live here when parse_json / to_json crossed a
     # host bridge; they now compile to local-export calls into the
     # bundled JSON parser (see ``capa.ir._builtin_json``), so no
@@ -205,12 +216,45 @@ class _CapDispatchMixin:
             # c_ptr, c_len). Materialiser rebuilds a Capa
             # Result<String, IoError>.
             return (["i32", "i32", "i32"], "")
+        if "func() -> result<string, io-error>" in wit:
+            # Stdio.read_line: no string arg, just the ret area.
+            # Same 20-byte indirect-return shape as Fs.read.
+            return (["i32"], "")
         if "func(path: string, content: string) -> result<_, io-error>" in wit:
             # Canonical ABI indirect return: path + content +
             # 20-byte ret area for the result. Same layout as
             # Fs.read's Err branch; Ok carries unit (no flat
             # fields).
             return (["i32", "i32", "i32", "i32", "i32"], "")
+        if "func(path: string) -> result<_, io-error>" in wit:
+            # Fs.mkdir: single-string arg version of Fs.write's
+            # result<_, io-error> shape. Path (ptr, len) + 20-byte
+            # ret area.
+            return (["i32", "i32", "i32"], "")
+        if "func(path: string) -> result<list<string>, io-error>" in wit:
+            # Fs.list_dir: same call shape as Fs.read (path + ret
+            # area) but the Ok arm carries a list<string> instead
+            # of a string. The 20-byte ret area is sized off the
+            # Err arm (still the bigger of the two: 4 i32s for
+            # io-error vs 2 i32s for the list flat fields).
+            return (["i32", "i32", "i32"], "")
+        if "func(path: string) -> bool" in wit:
+            # Fs.exists / Fs.is_dir: simple string -> i32 (Bool is
+            # i32 on the Wasm side). Direct return, no canonical-
+            # ABI indirect dance.
+            return (["i32", "i32"], "i32")
+        if "func() -> bool" in wit:
+            # Clock.allows: no-arg query returning a bool. Wasm
+            # caps carry no runtime ``not_before`` state so the
+            # host always returns 1 (mirrors the unrestricted
+            # Python case); static attenuation discipline still
+            # applies at the analyzer level.
+            return ([], "i32")
+        if "func(secs: f64)" in wit and "->" not in wit:
+            # Clock.sleep: one f64 arg, no return. Host calls
+            # ``time.sleep``; on a denied-by-source Clock the
+            # call is a silent no-op (matches Python).
+            return (["f64"], "")
         if "func() -> list<string>" in wit:
             # Canonical ABI: ``list<string>`` lowers to two flat i32
             # values (data_ptr, len). Two flats exceeds the default
@@ -263,6 +307,16 @@ class _CapDispatchMixin:
         # List<String> arg of Env.restrict_to_keys).
         if method in ("restrict_to", "restrict_to_keys",
                       "restrict_to_after"):
+            return
+        # ``allows`` on Fs / Env is inlined at emit time (D4 Option B).
+        # For a literal-string argument we collapse the attenuation
+        # chain to a static i32 result; for a non-literal argument
+        # we raise WasmEmissionError so the user moves to the
+        # Python backend or to a literal call. ``Clock.allows`` has
+        # no string arg and depends on the live wall clock, so it
+        # stays on the host bridge path.
+        if method == "allows" and cap in ("Fs", "Env"):
+            self._emit_atten_allows(instr, cap)
             return
         # Canonical ABI lowering for indirect-return methods: the
         # caller allocates a return area, passes its pointer as the
@@ -588,6 +642,99 @@ class _CapDispatchMixin:
             f"not implemented"
         )
 
+    def _emit_atten_allows(
+        self, instr: MethodCall, cap: str,
+    ) -> None:
+        """Emit a ``Fs.allows(path)`` / ``Env.allows(name)`` call
+        inline (D4 Option B). With no attenuations the call is
+        trivially true (matches the Python ``self._allowed is None``
+        branch); otherwise we walk the chain at emit time and AND
+        each predicate into the result, mirroring the runtime
+        check the privileged op (Fs.read / Env.get) already uses
+        via ``_emit_indirect_with_attenuation_check``.
+
+        The argument must be a literal string at the Wasm level
+        (same constraint as the rest of the inline attenuation
+        machinery). A non-literal argument cannot be checked
+        statically and raises ``WasmEmissionError`` directing the
+        user to either pass a literal or compile to Python.
+        """
+        attenuations = getattr(instr, "attenuations", None) or []
+        # No-arg form would be a bug; both Fs and Env.allows take
+        # a single string. Defensive check so a future analyzer
+        # change surfaces here rather than producing wrong code.
+        if len(instr.args) != 1:
+            raise WasmEmissionError(
+                f"{cap}.allows expected 1 string arg, got "
+                f"{len(instr.args)} -- analyzer should have rejected"
+            )
+        arg = instr.args[0]
+        # Resolve the literal-string form. Locals and params come
+        # through with ``arg.kind in {"local", "param"}``; these
+        # cannot be checked at emit time because the attenuation
+        # chain (also literal) is matched byte-by-byte against the
+        # runtime string the local holds. A future slice can lift
+        # this restriction by emitting the same inline check the
+        # privileged-op path uses; for now we reject loudly.
+        if arg.kind != "lit_str":
+            raise WasmEmissionError(
+                f"{cap}.allows on Wasm requires a literal string "
+                f"argument; got a dynamic value. For dynamic paths "
+                f"use the privileged op directly (e.g. ``fs.read(p)`` "
+                f"and pattern-match on the ``Err`` arm), or compile "
+                f"to the Python backend where the runtime carries "
+                f"the attenuation set."
+            )
+        literal: str = arg.literal
+        # Compute the static answer. No attenuations -> always true
+        # (mirrors ``self._allowed_prefixes is None`` /
+        # ``self._allowed_keys is None`` in the Python runtime).
+        if not attenuations:
+            result = True
+        elif cap == "Fs":
+            # AND over each restrict_to(prefix): literal must
+            # str-start with every prefix in the chain. Anything
+            # else (a different attenuation method, a non-literal
+            # prefix) is a structural error -- the analyzer should
+            # have rejected it on the privileged op already, so
+            # we mirror that loudness here.
+            result = True
+            for att in attenuations:
+                if att.get("method") != "restrict_to":
+                    raise WasmEmissionError(
+                        f"unsupported Fs attenuation on .allows: "
+                        f"{att.get('method')!r}"
+                    )
+                args = att.get("args", [])
+                if not args:
+                    raise WasmEmissionError(
+                        "Fs.restrict_to attenuation with no arg"
+                    )
+                prefix = _unquote_attenuation_arg(args[0])
+                if not literal.startswith(prefix):
+                    result = False
+                    break
+        else:  # cap == "Env"
+            # AND over each restrict_to_keys: literal must appear
+            # in EVERY key list (intersection semantics, matching
+            # the runtime's ``self._allowed_keys is None`` /
+            # ``name in self._allowed_keys`` walk through the
+            # chain). An empty key list means nothing matches.
+            result = True
+            for att in attenuations:
+                if att.get("method") != "restrict_to_keys":
+                    raise WasmEmissionError(
+                        f"unsupported Env attenuation on .allows: "
+                        f"{att.get('method')!r}"
+                    )
+                keys = _parse_attenuation_key_list(att.get("args", []))
+                if literal not in keys:
+                    result = False
+                    break
+        self._write(f"i32.const {1 if result else 0}")
+        if instr.dst is not None:
+            self._write(f"local.set ${instr.dst}")
+
     def _emit_clock_with_attenuation_check(
         self, instr: MethodCall, cap: str, method: str,
         attenuations: list,
@@ -762,6 +909,91 @@ class _CapDispatchMixin:
             self._write("i32.load offset=16")           # c_len
             self._write("i32.store offset=12")
             # dst[8] = i64(IoError ptr)
+            self._write(f"local.get ${dst_local}")
+            self._write("local.get $_alloc_tmp")
+            self._write("i64.extend_i32_u")
+            self._write("i64.store offset=8")
+            self._indent -= 1
+            self._write("end")
+            return
+        if ret_kind == "result_list_string_io_error":
+            # ret_area layout (20 bytes):
+            #   tag i32 @ 0
+            #   Ok arm (list<string>): data_ptr i32 @ 4, len i32 @ 8
+            #   Err arm (io-error): m_ptr i32 @ 4, m_len i32 @ 8,
+            #                       c_ptr i32 @ 12, c_len i32 @ 16
+            # Capa Result<List<String>, IoError>: tag@0, payload@8
+            # (16-byte record). Ok payload is an i32 pointer (i64-
+            # extended) to a freshly-allocated 16-byte List<String>
+            # header (len@0, cap@4, data_ptr@8, pad@12) wrapping the
+            # data buffer the host wrote. Err payload mirrors the
+            # ``result_string_io_error`` Err arm.
+            dst_local = dst if dst is not None else "_alloc_tmp"
+            self._write("i32.const 16")
+            self._write("call $alloc")
+            self._write(f"local.set ${dst_local}")
+            # Copy tag.
+            self._write(f"local.get ${dst_local}")
+            self._write("local.get $_ret_area")
+            self._write("i32.load offset=0")
+            self._write("i32.store offset=0")
+            # Branch on tag.
+            self._write("local.get $_ret_area")
+            self._write("i32.load offset=0")
+            self._write("i32.eqz")
+            self._write("if")
+            self._indent += 1
+            # Ok<List<String>>: alloc 16-byte header, fill in
+            # (len, cap, data_ptr, pad); store the header pointer
+            # (i64-extended) into dst+8. cap = len so a subsequent
+            # ``.push`` triggers grow on the second insert; matches
+            # the convention ``list_string`` materialiser uses.
+            self._write("i32.const 16")
+            self._write("call $alloc")
+            self._write("local.set $_alloc_tmp")
+            # header.len = ret_area.len (offset 8)
+            self._write("local.get $_alloc_tmp")
+            self._write("local.get $_ret_area")
+            self._write("i32.load offset=8")
+            self._write("i32.store offset=0")
+            # header.cap = ret_area.len
+            self._write("local.get $_alloc_tmp")
+            self._write("local.get $_ret_area")
+            self._write("i32.load offset=8")
+            self._write("i32.store offset=4")
+            # header.data_ptr = ret_area.data_ptr (offset 4)
+            self._write("local.get $_alloc_tmp")
+            self._write("local.get $_ret_area")
+            self._write("i32.load offset=4")
+            self._write("i32.store offset=8")
+            # dst[8] = i64(header pointer)
+            self._write(f"local.get ${dst_local}")
+            self._write("local.get $_alloc_tmp")
+            self._write("i64.extend_i32_u")
+            self._write("i64.store offset=8")
+            self._indent -= 1
+            self._write("else")
+            self._indent += 1
+            # Err<io-error>: same as result_string_io_error Err arm.
+            self._write("i32.const 16")
+            self._write("call $alloc")
+            self._write("local.set $_alloc_tmp")
+            self._write("local.get $_alloc_tmp")
+            self._write("local.get $_ret_area")
+            self._write("i32.load offset=4")            # m_ptr
+            self._write("i32.store offset=0")
+            self._write("local.get $_alloc_tmp")
+            self._write("local.get $_ret_area")
+            self._write("i32.load offset=8")            # m_len
+            self._write("i32.store offset=4")
+            self._write("local.get $_alloc_tmp")
+            self._write("local.get $_ret_area")
+            self._write("i32.load offset=12")           # c_ptr
+            self._write("i32.store offset=8")
+            self._write("local.get $_alloc_tmp")
+            self._write("local.get $_ret_area")
+            self._write("i32.load offset=16")           # c_len
+            self._write("i32.store offset=12")
             self._write(f"local.get ${dst_local}")
             self._write("local.get $_alloc_tmp")
             self._write("i64.extend_i32_u")

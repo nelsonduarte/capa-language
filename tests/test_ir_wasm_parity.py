@@ -81,6 +81,7 @@ _PARITY_PROGRAMS: list[str] = [
     "numeric_parity.capa",
     "bitwise.capa",
     "safety_traps.capa",
+    "allows_inline.capa",
 ]
 
 # Programs deliberately excluded from parity and why; documented
@@ -302,6 +303,13 @@ class TestPythonWasmParity(unittest.TestCase):
 
     def test_bitwise(self):
         self._assert_parity("bitwise.capa")
+
+    def test_allows_inline(self):
+        # Capability ``allows`` queries: the Python runtime carries
+        # the live attenuation set on the cap value; the Wasm
+        # backend inlines the same chain at emit time (D4 Option B).
+        # Both backends must agree on every literal-arg case.
+        self._assert_parity("allows_inline.capa")
 
     def test_safety_traps(self):
         # Audit 2026-05: pin that the five secure-by-default fixes

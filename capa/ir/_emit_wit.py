@@ -45,6 +45,13 @@ _WIT_SIGNATURES: dict[tuple[str, str], str] = {
     ("Stdio", "print"):    "print: func(msg: string)",
     ("Stdio", "println"):  "println: func(msg: string)",
     ("Stdio", "eprintln"): "eprintln: func(msg: string)",
+    # Stdio.read_line: reads a line from stdin. Same canonical-ABI
+    # result<string, io-error> shape as Fs.read; reuses the
+    # ``result_string_io_error`` materialiser. The host strips the
+    # trailing newline (mirrors the Python runtime's
+    # ``sys.stdin.readline().rstrip("\n")``) and returns Err on
+    # empty input (EOF) or invalid UTF-8.
+    ("Stdio", "read_line"): "read-line: func() -> result<string, io-error>",
 
     # Clock: monotonic + wall time. Phase 7A scope (Float type).
     # WIT identifiers are kebab-case; Capa keys keep snake_case so
@@ -53,6 +60,17 @@ _WIT_SIGNATURES: dict[tuple[str, str], str] = {
     # method-name component to kebab-case to match this WIT.
     ("Clock", "now_secs"):      "now-secs: func() -> f64",
     ("Clock", "now_monotonic"): "now-monotonic: func() -> f64",
+    # Clock.sleep: trivial f64 arg, no return. The Python runtime
+    # treats a denied Clock (``restrict_to_after`` threshold in the
+    # future) as a silent no-op; the host bridge mirrors that.
+    ("Clock", "sleep"):         "sleep: func(secs: f64)",
+    # Clock.allows queries the cap's ``restrict_to_after`` deadline
+    # against the current host clock. Kept as a host bridge rather
+    # than an inline-attenuation check because the literal threshold
+    # is a Float, not a String, and the comparison needs the live
+    # ``time.time()`` reading anyway. Static (analyzer-known)
+    # attenuations cannot collapse this without a clock source.
+    ("Clock", "allows"):        "allows: func() -> bool",
 
     # Env: process environment + argv. Phase 7B scope (Option<String>).
     ("Env", "get"):  "get: func(name: string) -> option<string>",
@@ -71,6 +89,21 @@ _WIT_SIGNATURES: dict[tuple[str, str], str] = {
     # cause). The host constructs it via $alloc on error.
     ("Fs", "read"):        "read: func(path: string) -> result<string, io-error>",
     ("Fs", "write"):       "write: func(path: string, content: string) -> result<_, io-error>",
+    # Fs.exists / Fs.is_dir: queries returning bool. Mirror Python's
+    # fail-closed-as-absent convention: a denied path reports false
+    # so the cap doesn't leak existence outside its allowed
+    # prefixes (the host bridge cannot enforce the cap's prefix
+    # set; static attenuation discipline still applies).
+    ("Fs", "exists"):      "exists: func(path: string) -> bool",
+    ("Fs", "is_dir"):      "is-dir: func(path: string) -> bool",
+    # Fs.mkdir: same canonical-ABI shape as Fs.write Ok-Unit
+    # branch. Host uses ``os.makedirs(path, exist_ok=True)`` to
+    # match the Python runtime's idempotent behaviour.
+    ("Fs", "mkdir"):       "mkdir: func(path: string) -> result<_, io-error>",
+    # Fs.list_dir: new canonical-ABI shape with a
+    # ``list<string>`` Ok arm. Host returns sorted entry basenames
+    # to match the Python runtime's deterministic ordering.
+    ("Fs", "list_dir"):    "list-dir: func(path: string) -> result<list<string>, io-error>",
     # restrict_to is a no-op at the Wasm level: capabilities carry
     # no runtime value (their methods are imports by name), so an
     # attenuation that returns another Fs has nothing to thread.
@@ -102,13 +135,33 @@ _KNOWN_CAPABILITIES = {"Stdio", "Clock", "Env", "Fs"}
 # (``IoError``) that have no WIT primitive equivalent; we declare
 # them inline so the WIT spec is self-contained and the Component
 # Model linker can resolve every name.
+_IO_ERROR_RECORD: list[str] = [
+    "record io-error {",
+    "  message: string,",
+    "  cause: string,",
+    "}",
+]
+
 _INTERFACE_TYPE_PRELUDE: dict[str, list[str]] = {
-    "Fs": [
-        "record io-error {",
-        "  message: string,",
-        "  cause: string,",
-        "}",
-    ],
+    "Fs": _IO_ERROR_RECORD,
+    # Stdio.read_line returns result<string, io-error>; declare the
+    # record locally so the interface stays self-contained (WIT
+    # interfaces cannot cross-reference each other's type
+    # declarations without an explicit ``use`` clause, which the
+    # core-wasm pathway does not produce).
+    "Stdio": _IO_ERROR_RECORD,
+}
+
+
+# Some capability methods reference ``io-error`` only conditionally
+# (Stdio.read_line is the only Stdio method that does). When the
+# program uses Stdio but never calls read_line, the prelude would
+# inject a dead record declaration; the Wasm host doesn't care, but
+# the WIT spec is less noisy if we elide it. ``_methods_needing_io_error``
+# is consulted by ``emit_wit`` to decide whether to inject the
+# prelude.
+_METHODS_NEEDING_IO_ERROR: dict[str, frozenset[str]] = {
+    "Stdio": frozenset({"read_line"}),
 }
 
 
@@ -208,9 +261,17 @@ def emit_wit(module: Module, world_name: str = "program") -> str:
         # The Fs interface uses ``io-error`` as the result-error
         # arm of ``read`` / ``write``; declare it inline so
         # ``wasm-tools component embed`` can resolve the name.
-        for type_line in _INTERFACE_TYPE_PRELUDE.get(cap, []):
-            lines.append(f"  {type_line}")
-        if cap in _INTERFACE_TYPE_PRELUDE:
+        # For Stdio the prelude is gated: only inject the io-error
+        # record when a method that actually references it is in
+        # use, so plain Stdio programs (the overwhelming majority)
+        # don't pay the prelude tax.
+        gated = _METHODS_NEEDING_IO_ERROR.get(cap)
+        emit_prelude = cap in _INTERFACE_TYPE_PRELUDE and (
+            gated is None or bool(used[cap] & gated)
+        )
+        if emit_prelude:
+            for type_line in _INTERFACE_TYPE_PRELUDE.get(cap, []):
+                lines.append(f"  {type_line}")
             lines.append("")
         for method in sorted(used[cap]):
             key = (cap, method)

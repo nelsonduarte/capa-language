@@ -77,6 +77,23 @@ class WasmComponentHost:
         stdio.add_func("print",    lambda _store, msg: sys.stdout.write(msg))
         stdio.add_func("println",  lambda _store, msg: print(msg))
         stdio.add_func("eprintln", lambda _store, msg: print(msg, file=sys.stderr))
+
+        def stdio_read_line(_store):
+            # result<string, io-error>: dispatch by Python type.
+            # Return str on Ok, IoErrorRecord on Err (EOF, OS
+            # error). Mirrors the Python runtime's
+            # ``sys.stdin.readline().rstrip("\n")`` shape.
+            try:
+                line = sys.stdin.readline()
+            except OSError as e:
+                return IoErrorRecord(
+                    message="read failed", cause=str(e),
+                )
+            if not line:
+                return IoErrorRecord(message="end of input")
+            return line.rstrip("\n")
+
+        stdio.add_func("read-line", stdio_read_line)
         stdio.close()
 
     def _register_clock(self, root: wc.LinkerInstance) -> None:
@@ -84,6 +101,22 @@ class WasmComponentHost:
         import time
         clock.add_func("now-secs",      lambda _store: time.time())
         clock.add_func("now-monotonic", lambda _store: time.monotonic())
+
+        def clock_sleep(_store, secs: float):
+            # Guard against negative durations same as the core
+            # host (``time.sleep`` raises ValueError otherwise).
+            if secs < 0:
+                return None
+            time.sleep(secs)
+            return None
+
+        def clock_allows(_store):
+            # Wasm caps carry no ``not_before`` state at this layer;
+            # mirror the unrestricted Python case (always true).
+            return True
+
+        clock.add_func("sleep",  clock_sleep)
+        clock.add_func("allows", clock_allows)
         clock.close()
 
     def _register_env(self, root: wc.LinkerInstance) -> None:
@@ -137,9 +170,39 @@ class WasmComponentHost:
             # do not trap.
             return None
 
+        def fs_exists(_store, path: str) -> bool:
+            return os.path.exists(path)
+
+        def fs_is_dir(_store, path: str) -> bool:
+            return os.path.isdir(path)
+
+        def fs_mkdir(_store, path: str):
+            try:
+                os.makedirs(path, exist_ok=True)
+                return None
+            except OSError as e:
+                return IoErrorRecord(
+                    message=str(e), cause=type(e).__name__,
+                )
+
+        def fs_list_dir(_store, path: str):
+            # result<list<string>, io-error>: dispatch by Python type.
+            # Return a list[str] on Ok (sorted to match the Python
+            # runtime), IoErrorRecord on Err.
+            try:
+                return sorted(os.listdir(path))
+            except OSError as e:
+                return IoErrorRecord(
+                    message=str(e), cause=type(e).__name__,
+                )
+
         fs.add_func("read",         fs_read)
         fs.add_func("write",        fs_write)
         fs.add_func("restrict-to",  fs_restrict_to)
+        fs.add_func("exists",       fs_exists)
+        fs.add_func("is-dir",       fs_is_dir)
+        fs.add_func("mkdir",        fs_mkdir)
+        fs.add_func("list-dir",     fs_list_dir)
         fs.close()
 
     def _register_json(self, root: wc.LinkerInstance) -> None:

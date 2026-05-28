@@ -948,6 +948,34 @@ Listed so the design space is explicit.
 
 ### Wasm-specific gaps that are not P0
 
+- [x] **"Fully functional Wasm" slice 1 - host-bridge pile**
+  (closed 2026-05-28). First slice of the multi-slice arc to close
+  the "demos only" gap and let real programs run on Wasm. 9
+  capability methods added: `Stdio.read_line` (canonical-ABI
+  result<string, io-error>, EOF -> Err, UTF-8-bad -> Err),
+  `Clock.sleep` (f64 -> unit, guards negative duration),
+  `Clock.allows` (host-bridged; depends on wall clock so inline
+  static-check would need attenuation state across the WIT boundary,
+  deferred per locked D4 adjustment), `Fs.exists` / `Fs.is_dir`
+  (bool, UTF-8-bad path -> false), `Fs.mkdir` (idempotent via
+  `exist_ok=True`, `result_unit_io_error` shape), `Fs.list_dir`
+  (NEW canonical-ABI shape `result_list_string_io_error`,
+  20-byte indirect-return area, Ok arm allocates a List<String>
+  header around the host-allocated data buffer, sorted entries),
+  `Fs.allows` / `Env.allows` (inline-attenuation per D4: literal
+  arg evaluated at emit time against the attenuation chain
+  producing a static i32; non-literal arg raises
+  `WasmEmissionError` with actionable diagnostic). 18 new tests
+  (11 runtime host-bridge tests + 5 emit-time `allows` tests +
+  1 `allows_inline.capa` parity program + 1 existing canary
+  test repointed since `Stdio.read_line` is now supported). Full
+  suite 1978 -> 1996 / 5 skipped / 0 fail. Files: `_emit_wit.py`
+  (gated `_METHODS_NEEDING_IO_ERROR` so io-error injects only when
+  needed), `_wasm_host.py`, `_wasm_component_host.py`, `_caps.py`
+  (new `_emit_atten_allows` helper + new `result_list_string_io_error`
+  materialiser), `_discovery.py` (elide `allows` from imports).
+  Next: Random capability (slice 2, gated D1 = SplitMix64).
+
 - [x] **Map and Set structural equality (`==`/`!=`)** (closed
   2026-05-28). Both deferred at slice 3 ("Map and Set are deferred";
   `_emit_leaf_compare` raised on reach). This slice ships both as
