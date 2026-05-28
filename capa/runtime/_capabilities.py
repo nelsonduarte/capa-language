@@ -27,7 +27,6 @@ Classes:
 from __future__ import annotations
 
 import os
-import random
 import sys
 import time
 from dataclasses import dataclass
@@ -308,38 +307,94 @@ class Random:
     """Capability for generating random numbers, with first-class
     seeding.
 
-    The unrestricted form ``Random()`` is seeded from system entropy.
-    ``with_seed(seed)`` returns a fresh ``Random`` whose sequence is
-    a deterministic function of the integer ``seed``. Chained calls
-    (``r.with_seed(a).with_seed(b)``) simply re-seed; the last seed
-    wins. The manifest tracks the calls in source order so an
-    auditor sees that an RNG was made deterministic before being
-    handed onward.
+    The unrestricted form ``Random()`` is seeded from system entropy
+    (``os.urandom(8)``). ``with_seed(seed)`` returns a fresh
+    ``Random`` whose sequence is a deterministic function of the
+    integer ``seed``. Chained calls (``r.with_seed(a).with_seed(b)``)
+    simply re-seed via fresh instances; the last seed wins. The
+    manifest tracks the calls in source order so an auditor sees that
+    an RNG was made deterministic before being handed onward.
 
     Unlike ``Net``, ``Fs``, ``Env``, and ``Clock``, ``Random`` has
     no "denied" state. A seeded Random still generates numbers; it
     just generates them reproducibly. The narrowing semantic is
     over the *space of possible sequences*, not over the
     *authority to generate*.
+
+    PRNG algorithm (D1, 2026-05): **SplitMix64**. Tiny (one i64 of
+    state), fast, and crucially it is the same algorithm the Wasm
+    backend ships in linear memory, so a seeded ``Random(42)``
+    produces a byte-identical sequence on both backends. The
+    previous implementation delegated to Python's ``random.Random``
+    (Mersenne Twister); seeded outputs changed when this switch
+    landed.
     """
 
-    __slots__ = ("_rng", "_seed")
+    __slots__ = ("_state",)
+
+    _SPLITMIX_INCREMENT = 0x9E3779B97F4A7C15
+    _SPLITMIX_MIX_1 = 0xBF58476D1CE4E5B9
+    _SPLITMIX_MIX_2 = 0x94D049BB133111EB
+    _U64_MASK = 0xFFFFFFFFFFFFFFFF
 
     def __init__(self, seed: int | None = None):
-        self._rng = random.Random(seed)
-        self._seed = seed
+        if seed is None:
+            # Draw 8 bytes of OS entropy as the initial state; matches
+            # the Wasm-side ``system-seed`` host import.
+            self._state = int.from_bytes(os.urandom(8), "little")
+        else:
+            self._state = seed & self._U64_MASK
+
+    def _next_u64(self) -> int:
+        """SplitMix64 step. Updates ``self._state`` and returns the
+        mixed 64-bit value."""
+        self._state = (self._state + self._SPLITMIX_INCREMENT) & self._U64_MASK
+        z = self._state
+        z = ((z ^ (z >> 30)) * self._SPLITMIX_MIX_1) & self._U64_MASK
+        z = ((z ^ (z >> 27)) * self._SPLITMIX_MIX_2) & self._U64_MASK
+        return z ^ (z >> 31)
 
     def with_seed(self, seed: int) -> "Random":
         return Random(seed=seed)
 
     def int_range(self, low: int, high: int) -> int:
-        return self._rng.randrange(low, high)
+        """Return a value in ``[low, high)`` (half-open).
+
+        Uses Lemire-style rejection sampling for an unbiased
+        distribution: reject any draw that falls in the partial
+        "tail" of the u64 range that would otherwise fold unevenly
+        across the bound. Bias for typical small ranges (e.g.
+        ``int_range(0, 100)``) over a u64 is vanishingly small in
+        practice; the rejection loop keeps the contract honest
+        without measurable cost.
+        """
+        bound = high - low
+        if bound <= 0:
+            # Mirrors Python's ``random.randrange`` which raises on
+            # an empty range; surfacing the same shape keeps the
+            # programmer-visible contract identical.
+            raise ValueError(
+                f"int_range bounds must satisfy low < high; "
+                f"got low={low}, high={high}"
+            )
+        # Largest multiple of bound that fits in u64 (exclusive
+        # upper limit for the accepted region). The Wasm side
+        # mirrors this exactly.
+        limit = ((1 << 64) // bound) * bound
+        rng = self._next_u64()
+        while rng >= limit:
+            rng = self._next_u64()
+        return low + (rng % bound)
 
     def float_unit(self) -> float:
-        return self._rng.random()
+        """Return a value in ``[0.0, 1.0)``.
 
-    def choice(self, items: list) -> Any:
-        return self._rng.choice(items)
+        Standard 53-bit-mantissa trick: shift the u64 down to the
+        top 53 bits, divide by 2**53. Same operation the Wasm side
+        performs with ``i64.shr_u`` + ``f64.convert_i64_u`` + a
+        constant ``f64.div``.
+        """
+        return (self._next_u64() >> 11) * (1.0 / (1 << 53))
 
 
 # Stubs for capabilities not yet implemented; instantiating them yields a

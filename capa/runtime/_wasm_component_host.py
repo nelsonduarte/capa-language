@@ -68,6 +68,7 @@ class WasmComponentHost:
         self._register_env(root)
         self._register_fs(root)
         self._register_json(root)
+        self._register_random(root)
         root.close()
 
     # ---- per-interface registration ----------------------------
@@ -204,6 +205,24 @@ class WasmComponentHost:
         fs.add_func("mkdir",        fs_mkdir)
         fs.add_func("list-dir",     fs_list_dir)
         fs.close()
+
+    def _register_random(self, root: wc.LinkerInstance) -> None:
+        """Register the ``capa:host/random`` interface.
+
+        Only ``system-seed`` crosses the boundary, returning 8 bytes
+        of OS entropy as a u64 the guest uses to lazy-init its
+        SplitMix64 state on an unseeded ``Random()``. Mirrors the
+        core-host bridge byte-for-byte so seeded sequences are
+        identical between ``--wasm --run`` and
+        ``--wasm --component --run``."""
+        random_ifc = root.add_instance("capa:host/random")
+        random_ifc.add_func(
+            "system-seed",
+            lambda _store: int.from_bytes(
+                os.urandom(8), "little", signed=False,
+            ),
+        )
+        random_ifc.close()
 
     def _register_json(self, root: wc.LinkerInstance) -> None:
         json_ifc = root.add_instance("capa:host/json")

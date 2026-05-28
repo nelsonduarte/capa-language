@@ -82,6 +82,7 @@ _PARITY_PROGRAMS: list[str] = [
     "bitwise.capa",
     "safety_traps.capa",
     "allows_inline.capa",
+    "random_seeded.capa",
 ]
 
 # Programs deliberately excluded from parity and why; documented
@@ -310,6 +311,15 @@ class TestPythonWasmParity(unittest.TestCase):
         # backend inlines the same chain at emit time (D4 Option B).
         # Both backends must agree on every literal-arg case.
         self._assert_parity("allows_inline.capa")
+
+    def test_random_seeded(self):
+        # D1 (2026-05): SplitMix64 PRNG runs guest-side in linear
+        # memory on the Wasm side, byte-identical to the Python
+        # runtime's ``Random.int_range``. Pinning the parity is the
+        # only check that the two i64-arithmetic paths agree to the
+        # last bit; if Grisu2 float rendering re-diverges, that's a
+        # separate concern handled by other parity tests.
+        self._assert_parity("random_seeded.capa")
 
     def test_safety_traps(self):
         # Audit 2026-05: pin that the five secure-by-default fixes

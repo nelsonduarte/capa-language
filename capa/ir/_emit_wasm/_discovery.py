@@ -257,6 +257,54 @@ class _DiscoveryMixin:
                 return True
         return False
 
+    def _uses_random(self, module: Module) -> bool:
+        """True if the module needs the SplitMix64 helpers + the
+        ``$rand_state`` global. Triggered by either a ``Random()``
+        constructor call (``Call(callee_name="Random")``) or a
+        ``MethodCall`` on a Random-typed receiver (``with_seed``,
+        ``int_range``, ``float_unit``). Walks every function body
+        plus impl-method bodies so a Random use inside an impl
+        method still flips the gate.
+
+        Mirrors the WIT-side rule in
+        ``capa.ir._emit_wit.collect_used_capabilities``: any Random
+        touch-point pulls in the ``system-seed`` host import via
+        the lazy-init path."""
+        def visit(instrs: list[Instr]) -> bool:
+            for instr in instrs:
+                if isinstance(instr, Call) and instr.callee_name == "Random":
+                    return True
+                if isinstance(instr, MethodCall):
+                    cap = instr.cap_used
+                    if cap is None:
+                        rty = instr.receiver.ty or ""
+                        if rty in BUILTIN_CAPS:
+                            cap = rty
+                    if cap == "Random":
+                        return True
+                if isinstance(instr, If):
+                    if visit(instr.then_body) or visit(instr.else_body):
+                        return True
+                if isinstance(instr, While):
+                    if visit(instr.cond_setup) or visit(instr.body):
+                        return True
+                if isinstance(instr, For):
+                    if visit(instr.body):
+                        return True
+                if isinstance(instr, Match):
+                    for arm in instr.arms:
+                        if visit(arm.body):
+                            return True
+            return False
+        for fn in module.functions:
+            if visit(fn.body):
+                return True
+        for impl in module.impls:
+            for m in impl.methods:
+                if visit(m.body):
+                    return True
+        return False
+
     def _uses_env_atten_check(self, module: Module) -> bool:
         """True if any ``Env.get`` MethodCall in the module carries a
         non-empty ``attenuations`` list. ``Env.restrict_to_keys``
@@ -471,6 +519,15 @@ class _DiscoveryMixin:
                     # exception (no string arg, needs the live wall
                     # clock) and still uses the host bridge.
                     pass
+                elif cap == "Random" and instr.method in (
+                    "with_seed", "int_range", "float_unit",
+                ):
+                    # SplitMix64 runs entirely guest-side; no WIT
+                    # signature, no host import for the user-facing
+                    # methods. The lazy ``system-seed`` import is
+                    # registered separately below so the host bridge
+                    # is reachable for unseeded ``Random()``.
+                    self._used_caps.add(("Random", "system_seed"))
                 else:
                     key = (cap, instr.method)
                     if (cap, instr.method) not in _WIT_SIGNATURES:
@@ -481,6 +538,17 @@ class _DiscoveryMixin:
                             f"capa.ir._emit_wasm together"
                         )
                     self._used_caps.add(key)
+            # ``Random()`` constructor: source uses it as a Call
+            # (``let r = Random()``). It carries no runtime value at
+            # the Wasm level but still pulls the SplitMix64 helpers
+            # in via _uses_random, and the lazy host-seed import via
+            # the Random use here. Register ``system_seed`` so the
+            # core wasm import survives the discovery pass even when
+            # the program only ever constructs Random without
+            # calling a method on it.
+            if (isinstance(instr, Call)
+                    and instr.callee_name == "Random"):
+                self._used_caps.add(("Random", "system_seed"))
             # parse_json / to_json used to route through a synthetic
             # ``Json`` host capability with canonical-ABI imports.
             # They now compile to ``call $__capa_parse_json`` /

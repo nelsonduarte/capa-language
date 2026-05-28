@@ -5315,5 +5315,124 @@ class TestWasmHostUtf8Safety(unittest.TestCase):
         self.assertIn("UnicodeDecodeError", src_host)
 
 
+@unittest.skipUnless(
+    _has_wasm_tools() and _has_wasmtime_py(),
+    "wasm-tools and/or wasmtime-py not installed",
+)
+class TestWasmRandomExecutes(unittest.TestCase):
+    """Slice 2 of the "Wasm backend fully functional" arc: Random
+    capability lowering through the SplitMix64 helpers in
+    ``capa.ir._emit_wasm._random``. Seeded sequences must be
+    byte-identical with the Python ``Random`` runtime; unseeded
+    sequences must at minimum stay inside the requested range.
+    """
+
+    def _run_capturing_stdout(self, src: str) -> str:
+        import io
+        import sys
+        from capa.runtime._wasm_host import WasmHost
+        _, types, ast_mod = _parse_lower(src)
+        blob = compile_wasm(ast_mod, types=types)
+        host = WasmHost()
+        out = io.StringIO()
+        saved = sys.stdout
+        sys.stdout = out
+        try:
+            host.run_main(blob)
+        finally:
+            sys.stdout = saved
+        return out.getvalue()
+
+    def test_seeded_int_range_matches_python_oracle(self):
+        # SplitMix64 starting from state=42, drawing int_range(0, 100)
+        # ten times in sequence. The Python runtime's
+        # ``Random(42).int_range(0, 100)`` produces this exact
+        # sequence (Lemire rejection sampling never rejects for any
+        # of these draws within the first 10 calls, so the body of
+        # the loop runs straight-through).
+        src = (
+            "fun main(stdio: Stdio, rng: Random)\n"
+            "    let r = rng.with_seed(42)\n"
+            "    var i = 0\n"
+            "    while i < 10\n"
+            "        stdio.println(\"${r.int_range(0, 100)}\")\n"
+            "        i = i + 1\n"
+        )
+        out = self._run_capturing_stdout(src)
+        expected = "\n".join(
+            ["13", "91", "58", "64", "50", "62", "25", "8", "5", "74"]
+        ) + "\n"
+        self.assertEqual(out, expected)
+
+    def test_seeded_int_range_signed_low(self):
+        # Negative ``low`` is parsed as ``0 - 50`` in Capa source
+        # (no unary-negative-literal support at the moment); pin that
+        # the i64 subtraction passes through unchanged so the
+        # signed-add path lands the correct values.
+        src = (
+            "fun main(stdio: Stdio, rng: Random)\n"
+            "    let r = rng.with_seed(42)\n"
+            "    stdio.println(\"${r.int_range(0 - 50, 50)}\")\n"
+            "    stdio.println(\"${r.int_range(0 - 50, 50)}\")\n"
+            "    stdio.println(\"${r.int_range(0 - 50, 50)}\")\n"
+        )
+        out = self._run_capturing_stdout(src)
+        # Bound 100, same draws as the (0, 100) test: 13 - 50, 91 - 50,
+        # 58 - 50. Equivalent to ``low + (rng % bound)`` where the rng
+        # bytes match.
+        self.assertEqual(out, "-37\n41\n8\n")
+
+    def test_with_seed_overrides_unseeded(self):
+        # An incoming Random (which lazy-inits state on first draw)
+        # plus a subsequent ``with_seed(42)`` must land
+        # deterministically on the seed=42 sequence. The init guard
+        # the helpers flip after with_seed should prevent the
+        # entropy path from clobbering the state. We trigger lazy
+        # init by drawing a throwaway value before reseeding so the
+        # init-then-reseed order is exercised, not just the
+        # reseed-only order other tests cover.
+        src = (
+            "fun main(stdio: Stdio, rng: Random)\n"
+            "    let _throwaway = rng.int_range(0, 100)\n"
+            "    let s = rng.with_seed(42)\n"
+            "    stdio.println(\"${s.int_range(0, 100)}\")\n"
+        )
+        out = self._run_capturing_stdout(src)
+        self.assertEqual(out, "13\n")
+
+    def test_unseeded_in_range(self):
+        # Unseeded Random pulls entropy from the host
+        # (``capa:host/random/system-seed``). We can't pin the
+        # value, but we can assert the draw lands in the requested
+        # half-open range.
+        src = (
+            "fun main(stdio: Stdio, rng: Random)\n"
+            "    let n = rng.int_range(0, 100)\n"
+            "    if n >= 0\n"
+            "        if n < 100\n"
+            "            stdio.println(\"ok\")\n"
+        )
+        out = self._run_capturing_stdout(src)
+        self.assertEqual(out, "ok\n")
+
+    def test_chained_with_seed_last_wins(self):
+        # Per the Python runtime semantic
+        # (``Random.with_seed(1).with_seed(2)`` is two fresh
+        # instances; the second seed wins), the Wasm-side last-write
+        # to ``$rand_state`` must produce the same draw as a single
+        # ``with_seed(2)``.
+        src = (
+            "fun main(stdio: Stdio, rng: Random)\n"
+            "    let s = rng.with_seed(1).with_seed(2)\n"
+            "    stdio.println(\"${s.int_range(0, 100)}\")\n"
+        )
+        out = self._run_capturing_stdout(src)
+        # Recompute via the Python oracle so any future PRNG tweak
+        # surfaces here too.
+        from capa.runtime._capabilities import Random as _PyRandom
+        expected = f"{_PyRandom(2).int_range(0, 100)}\n"
+        self.assertEqual(out, expected)
+
+
 if __name__ == "__main__":
     unittest.main()

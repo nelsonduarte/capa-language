@@ -80,6 +80,7 @@ from ._values import _ValueEmissionMixin
 from ._locals import _LocalsCollectionMixin
 from ._discovery import _DiscoveryMixin
 from ._equality import _EqualityMixin
+from ._random import _RandomEmissionMixin
 
 
 # Comparison ops produce i32 (0 or 1) in Wasm; arithmetic ops
@@ -174,6 +175,7 @@ class WasmEmitter(
     _LocalsCollectionMixin,
     _DiscoveryMixin,
     _EqualityMixin,
+    _RandomEmissionMixin,
 ):
     def __init__(
         self,
@@ -506,6 +508,15 @@ class WasmEmitter(
             # module level before user functions, so they can mutually
             # recurse by name.
             self._emit_equality_helpers(module)
+        # Random capability: SplitMix64 helpers + the two
+        # ``$rand_state`` / ``$rand_state_inited`` globals. Emitted
+        # outside the heap conditional because the PRNG runs in pure
+        # i64 / f64 ops (no allocator dependency); a Random-only
+        # program with no Stdio or compound types would still
+        # otherwise miss the helpers. Discovery in ``_uses_random``
+        # gates the emission so a Random-free program pays zero cost.
+        if self._uses_random(module):
+            self._emit_random_globals_and_helpers()
         # Closure infrastructure: function table + (type) decls +
         # each lifted lambda is a top-level function below.
         if self._lifted_lambdas:
@@ -1046,6 +1057,16 @@ class WasmEmitter(
         through module-level imports, not as values)."""
         if instr.callee_name in self._variant_to_sum:
             self._emit_variant_construction(instr)
+            return
+        # ``Random()`` source-level constructor. The dst is a Random
+        # cap (BUILTIN_CAPS dsts are erased at the Wasm level) so
+        # there's no value to bind; the SplitMix64 state lazy-inits
+        # on the first ``int_range`` / ``float_unit`` call. Keep
+        # this branch above the ordinary-call path so we don't try
+        # to ``call $Random`` (no such function exists in the
+        # emitted module).
+        if instr.callee_name == "Random":
+            self._emit_random_constructor(instr)
             return
         # Built-in free functions that route through host bridges.
         # parse_json / to_json take String / JsonValue and would

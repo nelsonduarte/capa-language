@@ -1,0 +1,27 @@
+// Seeded Random parity demo. Verifies that both backends produce
+// byte-identical draws when seeded, which depends on the D1
+// SplitMix64 algorithm running guest-side in linear memory on the
+// Wasm side and inside the Python runtime on the legacy side.
+//
+// The Random capability flows in via `main` and is re-seeded to a
+// fixed value so the test harness can pin the expected output. We
+// only print int_range draws (Float interpolation has a separate
+// Grisu2 rendering subtlety that is unrelated to the PRNG slice).
+
+fun main(stdio: Stdio, rng: Random)
+    let seeded = rng.with_seed(42)
+    stdio.println("--- int_range(0, 100) x 10 ---")
+    var i = 0
+    while i < 10
+        stdio.println("${seeded.int_range(0, 100)}")
+        i = i + 1
+    stdio.println("--- int_range(-50, 50) x 5 ---")
+    var j = 0
+    while j < 5
+        stdio.println("${seeded.int_range(0 - 50, 50)}")
+        j = j + 1
+    stdio.println("--- int_range(0, 2) x 8 (bit-shaped) ---")
+    var k = 0
+    while k < 8
+        stdio.println("${seeded.int_range(0, 2)}")
+        k = k + 1

@@ -202,6 +202,13 @@ class _CapDispatchMixin:
             return ([], "f64")
         if "func() -> s64" in wit or "func() -> i64" in wit:
             return ([], "i64")
+        if "func() -> u64" in wit:
+            # WIT ``u64`` lowers to Wasm core ``i64``; sign
+            # interpretation is the caller's problem. Used by
+            # ``capa:host/random/system-seed`` to deliver 8 bytes of
+            # OS entropy as a single i64 the guest stashes into
+            # ``$rand_state`` for the SplitMix64 PRNG.
+            return ([], "i64")
         if "func(name: string) -> option<string>" in wit:
             # Canonical ABI: ``option<string>`` lowers to three flat
             # i32s (tag, ptr, len). Indirect return through a
@@ -317,6 +324,15 @@ class _CapDispatchMixin:
         # stays on the host bridge path.
         if method == "allows" and cap in ("Fs", "Env"):
             self._emit_atten_allows(instr, cap)
+            return
+        # Random method calls route to the guest-side SplitMix64
+        # helpers in ``_random.py``. The single host crossing
+        # (``system-seed`` for unseeded entropy) is lazy and lives
+        # inside ``$rand_state_init_if_needed``; the source-level
+        # ``with_seed`` / ``int_range`` / ``float_unit`` never call
+        # into the host directly.
+        if cap == "Random":
+            self._emit_random_method_call(instr)
             return
         # Canonical ABI lowering for indirect-return methods: the
         # caller allocates a return area, passes its pointer as the

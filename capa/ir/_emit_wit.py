@@ -110,6 +110,14 @@ _WIT_SIGNATURES: dict[tuple[str, str], str] = {
     # The analyzer's static check is what enforces the discipline.
     ("Fs", "restrict_to"): "restrict-to: func(prefix: string)",
 
+    # Random: entropy source only. The actual SplitMix64 PRNG runs
+    # guest-side (see ``capa.ir._emit_wasm._random``); the only thing
+    # the host provides is a 64-bit seed when the program constructs
+    # an unseeded ``Random()``. ``with_seed`` / ``int_range`` /
+    # ``float_unit`` all stay in linear memory, so seeded sequences
+    # are byte-identical with the Python backend.
+    ("Random", "system_seed"): "system-seed: func() -> u64",
+
     # Net entries follow once the request/response model is stable.
 
     # ``parse_json`` / ``to_json`` used to live here as a synthetic
@@ -127,7 +135,7 @@ _WIT_SIGNATURES: dict[tuple[str, str], str] = {
 # in ``_WIT_SIGNATURES`` raise ``UnsupportedCapability`` at WIT
 # generation time; the Wasm emitter mirrors this so the contract
 # stays in sync.
-_KNOWN_CAPABILITIES = {"Stdio", "Clock", "Env", "Fs"}
+_KNOWN_CAPABILITIES = {"Stdio", "Clock", "Env", "Fs", "Random"}
 
 
 # Per-interface type declarations injected before the method
@@ -162,6 +170,18 @@ _INTERFACE_TYPE_PRELUDE: dict[str, list[str]] = {
 # prelude.
 _METHODS_NEEDING_IO_ERROR: dict[str, frozenset[str]] = {
     "Stdio": frozenset({"read_line"}),
+}
+
+
+# Methods that the source program may name but that produce no WIT
+# entry (and no host import) because the implementation lives entirely
+# guest-side. ``Random.with_seed`` / ``int_range`` / ``float_unit``
+# run on a SplitMix64 PRNG in linear memory; only ``system_seed``
+# crosses the host boundary. Anything in here is silently skipped by
+# ``emit_wit`` and by the Wasm-side import emission so the WIT and
+# the core-wasm imports stay in lockstep.
+_GUEST_ONLY_METHODS: dict[str, frozenset[str]] = {
+    "Random": frozenset({"with_seed", "int_range", "float_unit"}),
 }
 
 
@@ -224,6 +244,17 @@ def collect_used_capabilities(module: Module) -> dict[str, set[str]]:
 
     for fn in module.functions:
         visit(fn.body)
+    # ``Random`` is special: source-level methods (``with_seed``,
+    # ``int_range``, ``float_unit``) all run guest-side in pure WAT
+    # (SplitMix64 over a module-local i64 state). The only host
+    # touch-point is ``system_seed``, called once at lazy init to
+    # draw entropy for an unseeded ``Random()``. The lowerer never
+    # emits a MethodCall for ``system_seed`` because the source
+    # doesn't name it, so we synthesise the import here whenever the
+    # program reaches for Random at all. The Wasm-side discovery
+    # ``_uses_random`` agrees with this rule.
+    if "Random" in out:
+        out["Random"].add("system_seed")
     return out
 
 
@@ -273,7 +304,14 @@ def emit_wit(module: Module, world_name: str = "program") -> str:
             for type_line in _INTERFACE_TYPE_PRELUDE.get(cap, []):
                 lines.append(f"  {type_line}")
             lines.append("")
+        guest_only = _GUEST_ONLY_METHODS.get(cap, frozenset())
         for method in sorted(used[cap]):
+            # Guest-side methods (Random.int_range etc.) run entirely
+            # in linear memory; they don't show up in WIT and they
+            # don't pull host imports. Skip cleanly so the WIT and
+            # the core-wasm imports agree on the import set.
+            if method in guest_only:
+                continue
             key = (cap, method)
             if key not in _WIT_SIGNATURES:
                 raise UnsupportedCapabilityMethod(cap, method)

@@ -69,6 +69,7 @@ class WasmHost:
         self._register_env()
         self._register_fs()
         self._register_json()
+        self._register_random()
 
     def _register_stdio(self) -> None:
         """Register the ``capa:stdio`` interface methods. Each
@@ -744,6 +745,33 @@ class WasmHost:
         self.linker.define_func(
             "capa:host/fs", "list-dir", ft_mkdir,
             fs_list_dir, access_caller=True,
+        )
+
+    def _register_random(self) -> None:
+        """Register the ``capa:host/random`` interface methods.
+
+        Only one method crosses the host boundary: ``system-seed``
+        returns 8 bytes of entropy (as a u64) at the moment an
+        unseeded guest ``Random()`` lazy-initialises its PRNG state.
+        Every subsequent draw runs guest-side in pure WAT (SplitMix64
+        over a module-local i64), so seeded sequences are byte-
+        identical with the Python backend.
+        """
+        import os
+        ft_seed = wasmtime.FuncType([], [wasmtime.ValType.i64()])
+
+        def random_system_seed():
+            # ``os.urandom(8)`` -> little-endian unsigned u64. Matches
+            # the Python ``Random.__init__`` entropy path exactly so
+            # both backends seed off the same byte-shape on an
+            # unseeded construction. Wasmtime's i64 type carries the
+            # full 64 bits regardless of Python's signed-int rendering
+            # at the binding boundary.
+            return int.from_bytes(os.urandom(8), "little", signed=False)
+
+        self.linker.define_func(
+            "capa:host/random", "system-seed", ft_seed,
+            random_system_seed,
         )
 
     def _register_json(self) -> None:

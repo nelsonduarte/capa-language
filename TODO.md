@@ -948,6 +948,43 @@ Listed so the design space is explicit.
 
 ### Wasm-specific gaps that are not P0
 
+- [x] **"Fully functional Wasm" slice 2 - Random capability**
+  (closed 2026-05-28). Per D1 = SplitMix64. Both backends use
+  the same PRNG so seeded output is byte-identical. Python:
+  replaced `random.Random` internals in
+  `capa/runtime/_capabilities.py` with SplitMix64 (one-i64 state,
+  unbiased rejection-sampling `int_range`, 53-bit mantissa
+  `float_unit`, `os.urandom(8)` for unseeded entropy). Wasm: new
+  `capa/ir/_emit_wasm/_random.py` (~290 LOC) with module-globals
+  `$rand_state` + `$rand_state_inited` and helpers
+  `$rand_next_u64`, `$rand_int_range`, `$rand_float_unit`, plus
+  lazy init from a single `capa:host/random.system-seed -> u64`
+  host call. New `capa:host/random` WIT interface (one host
+  method); the three guest-only methods (`with_seed`, `int_range`,
+  `float_unit`) are elided via a new `_GUEST_ONLY_METHODS`
+  table in `_emit_wit.py`. `Random.choice` deferred (not in
+  `builtins.py`).
+  Subtle correctness fix during impl: the textbook Lemire
+  rejection limit `(2^64 // bound) * bound` overflows in i64 for
+  bounds that divide 2^64 (e.g. `int_range(0, 2)` -> infinite
+  rejection loop). Replaced with `bias = (0 - bound) % bound`
+  (unsigned arithmetic, never overflows). Mirrors Python's
+  distribution exactly; documented inline + tested via the
+  `int_range(0, 2)` x 8 section of the parity program.
+  `with_seed` returns a fresh Random instance on Python; on
+  Wasm it writes the per-module shared `$rand_state` global -
+  observably equivalent for any well-formed Capa program (no
+  source has two Randoms held in parallel), documented in
+  `_random.py` module docstring. 6 new tests (5 wasm Random
+  execution tests + 1 `random_seeded.capa` parity program
+  exercising `int_range(0, 100)`, `int_range(-50, 50)`,
+  `int_range(0, 2)` power-of-two bound, `with_seed` re-seed).
+  All three backends (py / wasm core / wasm component) produce
+  byte-identical `Random(42).int_range(0, 100)` sequence:
+  `[13, 91, 58, 64, 50, 62, 25, 8, 5, 74]`. Full suite 1996 ->
+  2002 / 5 skipped / 0 fail. No pre-existing tests adjusted
+  (existing Random tests are relational not value-pinned).
+
 - [x] **"Fully functional Wasm" slice 1 - host-bridge pile**
   (closed 2026-05-28). First slice of the multi-slice arc to close
   the "demos only" gap and let real programs run on Wasm. 9
