@@ -20,6 +20,7 @@ from ..typesys import CAPABILITY_NAMES
 
 from ._calls import _collect_calls
 from ._flow import _build_attenuation_map
+from ._reachability import caps_reachable_via_sig, compute_reachability
 from ._strings import _contains_fun_type, _root_type_name, _ty_text
 
 
@@ -116,6 +117,19 @@ def build_manifest(
                 impls.extend(_demangle(t)[0] for t in types)
         uc["implementors"] = sorted(impls)
 
+    # Audit slice 21 closure (2026-05-29): compute per-impl
+    # reachability so the regulator-facing exclusion list reflects
+    # what each function can *transitively* exercise via user-cap
+    # impls and cap-bearing struct field caps — not just what it
+    # names in its signature. ``user_cap_names_mangled`` is the
+    # analyzer-internal name set (loader-prefixed); the
+    # reachability machinery stays in that namespace to line up
+    # with ``ImplBlock.trait_name`` and ``TypeName.name``.
+    user_cap_names_mangled: set[str] = cap_names - frozenset(CAPABILITY_NAMES)
+    reachable, unprovable = compute_reachability(
+        module, user_cap_names=user_cap_names_mangled,
+    )
+
     # Build per-function records. Walks both top-level funs and
     # methods inside impl blocks (which are nested FunDecl nodes).
     # For impl methods, when the impl is *of* a capability trait
@@ -131,6 +145,7 @@ def build_manifest(
             functions.append(_fun_record(
                 item, cap_names, filename,
                 container=None, implicit_cap=None,
+                reachable=reachable, unprovable=unprovable,
             ))
         elif isinstance(item, A.ImplBlock):
             implicit = (
@@ -143,6 +158,7 @@ def build_manifest(
                     m, cap_names, filename,
                     container=item.type_name,
                     implicit_cap=implicit,
+                    reachable=reachable, unprovable=unprovable,
                 ))
 
     summary = {
@@ -175,7 +191,13 @@ def _fun_record(
     *,
     container: Optional[str],
     implicit_cap: Optional[str] = None,
+    reachable: Optional[dict[str, set[str]]] = None,
+    unprovable: Optional[set[str]] = None,
 ) -> dict[str, Any]:
+    if reachable is None:
+        reachable = {}
+    if unprovable is None:
+        unprovable = set()
     param_records: list[dict[str, Any]] = []
     for p in fn.params:
         if p.name == "self":
@@ -244,14 +266,42 @@ def _fun_record(
     has_fun_in_sig = any(
         _contains_fun_type(p.type_expr) for p in fn.params if p.type_expr
     ) or _contains_fun_type(fn.return_type)
-    if has_unsafe or has_fun_in_sig:
+
+    # 3. Audit slice 21 closure (2026-05-29): walk the function's
+    #    signature through the per-impl reachability map. A
+    #    function ``use_logger(lg: FileLogger)`` where
+    #    ``FileLogger { out: Stdio }`` and the user-cap impl
+    #    method does ``self.out.println(msg)`` exercises Stdio at
+    #    runtime even though Stdio isn't named in the signature;
+    #    pre-fix the manifest claimed Stdio was provably excluded.
+    #    The reachability map gives the conservative closed-world
+    #    bound: union over all in-scope impls of caps each impl
+    #    can transitively reach. The function's effective declared
+    #    set for the exclusion subtraction is its named caps plus
+    #    that reachable set; surface the union separately as
+    #    ``transitively_reachable_capabilities`` so auditors can
+    #    see *why* a cap is or isn't excluded.
+    extra_caps, sig_unprovable = caps_reachable_via_sig(
+        fn, container=container, reachable=reachable, unprovable=unprovable,
+    )
+    extra_caps_demangled = {_demangle(c)[0] for c in extra_caps}
+    if "Unsafe" in extra_caps_demangled:
+        # Unsafe reachable via an impl is the same regulatory risk
+        # as Unsafe in the signature: the escape hatch is in play.
+        has_unsafe = True
+
+    transitively_reachable: list[str] = sorted(
+        set(declared_caps) | extra_caps_demangled
+    )
+
+    if has_unsafe or has_fun_in_sig or sig_unprovable:
         provably_excluded_caps: list[str] = []
     else:
         # Compare in the demangled namespace so non-pub imported
         # capability types (loader-prefixed ``_capa_m{N}__Foo``)
         # don't appear in the regulator-facing exclusion list
         # (audit slice 20, 2026-05-29).
-        declared_set = set(declared_caps)
+        declared_set = set(transitively_reachable)
         cap_names_demangled = {_demangle(n)[0] for n in cap_names}
         provably_excluded_caps = sorted(cap_names_demangled - declared_set)
     attrs = [
@@ -291,6 +341,7 @@ def _fun_record(
         "params": param_records,
         "return_type": _demangle_type_text(_ty_text(fn.return_type)) if fn.return_type else "()",
         "declared_capabilities": declared_caps,
+        "transitively_reachable_capabilities": transitively_reachable,
         "provably_excluded_capabilities": provably_excluded_caps,
         "has_unsafe": has_unsafe,
         "attributes": attrs,

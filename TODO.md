@@ -948,14 +948,80 @@ Listed so the design space is explicit.
 
 ### Wasm-specific gaps that are not P0
 
-- [~] **"Fully functional Wasm" slice 21 - analyzer audit
-  (user-cap impl reachability for manifest exclusion)**
-  (audit-only, no code change, 2026-05-29). A seventh audit
-  pass (this one on `capa/analyzer/`) found one **P0
-  manifest-soundness gap** plus one P2; the P0 fix collided
-  with the LLM-demo regulatory pitch and needs a per-impl
-  reachability design before it can be made safely. Slice
-  closes audit-only; design follow-up tracked below.
+- [x] **"Fully functional Wasm" slice 21 - analyzer audit
+  + per-impl reachability closure** (audit opened audit-
+  only, closed via the per-impl reachability machinery
+  same day, 2026-05-29). A seventh audit pass found one
+  **P0 manifest-soundness gap**; the closure implements
+  the honest fix and updates the regulator-facing tests
+  to honest semantics.
+
+  **The closure (per-impl reachability):** new file
+  `capa/manifest/_reachability.py` computes, for each
+  user-cap and each cap-bearing struct, the set of
+  built-in caps values of that type can transitively
+  cause to be exercised. Closed-world fixpoint over (a)
+  struct field types and (b) the union over all impls of
+  each user-cap (impl's struct caps + impl method sig
+  caps). A new manifest field
+  `transitively_reachable_capabilities` surfaces this
+  union (alongside the unchanged signature-only
+  `declared_capabilities`); `provably_excluded_capabilities`
+  is now computed against the transitive set, so an
+  auditor reading the SBOM sees a sound exclusion claim.
+
+  **Honest semantics, demo test updates.** The
+  `agent_loop` / `process_request` / `run_chat` demos no
+  longer claim Unsafe-exclusion when an in-scope impl
+  holds Unsafe in a struct field (AnthropicLlmClient).
+  Four tests updated to assert the honest shape: the
+  signature surface is unchanged (declared = exactly the
+  caps in the function signature), the transitive
+  surface adds caps the impls bring along, and the
+  exclusion is computed against the transitive set.
+  Where Net is reachable through tool impls
+  (StubSearch / StubMailer hold `net: Net`), tests no
+  longer assert Net is excluded; they assert it's in
+  the transitively-reachable set and that RunCode /
+  Unsafe stay excluded because no impl in the function's
+  reach carries them. The demos' positioning ("discipline
+  contains Unsafe to where it lives") is retracted for
+  the AnthropicLlmClient case; the honest reading is
+  "Unsafe is in the LlmClient's reach via the Anthropic
+  impl, surfaced explicitly in the manifest."
+
+  **New regression tests** in `TestPerImplReachability`
+  (5 cases) covering the audit reproducer
+  (`use_logger(lg: FileLogger)` where
+  `FileLogger { out: Stdio }`), the user-cap-trait
+  variant, Unsafe-via-impl-field propagation,
+  zero-impl-no-extras correctness, and the impl-method
+  `self`-carries-wrapped-caps case.
+
+  **Audit P2 still deferred** (not in scope here):
+  `impl <BuiltinCap> for <UserStruct>` (e.g.
+  `impl Stdio for FakeStdio`) accepted by the analyzer.
+  Reject at `capa/analyzer/_items.py:_check_impl` when
+  `item.trait_name in CAPABILITY_NAMES`.
+
+  **Audit CLEAN areas** (skip on future passes):
+  consuming-cap match/loop merge logic, tuple/struct
+  field laundering when struct does NOT impl a user-
+  cap, generic instantiation cap-leakage (caught by
+  `_reject_cap_leak_via_substitution`), aliasing within
+  a call, `Option<Stdio>` construction
+  (`_check_no_capability` on variant payloads), let-
+  binding a cap from a bare Ident (vs MethodCall), free
+  function declaring `-> BuiltinCap` (caught by
+  `_check_no_builtin_capability` on return types).
+
+  Suite 2051 -> 2057 / 5 skipped / 0 fail. Gov pack +
+  audit-trail-reporter + sbom-watch all still run
+  end-to-end on `--wasm`.
+
+  --- Original audit-only entry (superseded by the
+  closure above) follows; kept for the design rationale
+  it captures. ---
   - **The finding.** A function whose signature includes a
     cap-bearing struct or a user-defined capability claims
     in its `provably_excluded_capabilities` that built-in

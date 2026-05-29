@@ -30,6 +30,7 @@ import shutil
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any
 
 from capa import Lexer, Parser, analyze
 from capa.manifest import SCHEMA_VERSION, build_cyclonedx, build_manifest, build_spdx
@@ -144,7 +145,9 @@ class TestTopLevelShape(unittest.TestCase):
         required = {
             "name", "container", "pos", "is_pub", "doc",
             "params", "return_type",
-            "declared_capabilities", "provably_excluded_capabilities",
+            "declared_capabilities",
+            "transitively_reachable_capabilities",
+            "provably_excluded_capabilities",
             "has_unsafe", "attributes", "calls",
             # Source-level identifiers + import-module disclosure for
             # SBOM emission. ``name`` and ``container`` stay as the
@@ -340,6 +343,139 @@ class TestSourceNameDemangle(unittest.TestCase):
                 leak_re.search(str(field)),
                 f"unexpected mangled cap name leaked: {field!r}",
             )
+
+
+class TestPerImplReachability(unittest.TestCase):
+    """Audit slice 21 closure (2026-05-29): the
+    ``provably_excluded_capabilities`` field is computed against
+    the per-impl reachability closure, not the signature alone.
+    Before the closure a function ``use_logger(lg: FileLogger)``
+    where ``FileLogger { out: Stdio }`` and the impl method
+    ``log(self, msg) { self.out.println(msg) }`` falsely claimed
+    Stdio was provably excluded; running the function in fact
+    printed via Stdio. The fix walks every in-scope impl of each
+    user-cap and every cap-bearing struct's field types, unions
+    the built-in caps reachable through them, and surfaces the
+    union as ``transitively_reachable_capabilities``."""
+
+    def _build(self, src: str) -> dict[str, Any]:
+        return build_manifest(_analysed(src))
+
+    def _find(self, m: dict[str, Any], name: str) -> dict[str, Any]:
+        for fn in m["functions"]:
+            if fn["source_name"] == name:
+                return fn
+        raise AssertionError(
+            f"no function {name!r}; present: "
+            f"{[f['source_name'] for f in m['functions']]}"
+        )
+
+    def test_struct_param_reaches_wrapped_builtin_cap(self):
+        m = self._build(
+            "capability Logger\n"
+            "    fun log(self, msg: String)\n"
+            "type FileLogger { out: Stdio }\n"
+            "impl Logger for FileLogger\n"
+            "    fun log(self, msg: String)\n"
+            "        self.out.println(msg)\n"
+            "fun new_logger(s: Stdio) -> FileLogger\n"
+            "    return FileLogger { out: s }\n"
+            "fun use_logger(lg: FileLogger)\n"
+            "    lg.log(\"x\")\n"
+            "fun main(stdio: Stdio)\n"
+            "    use_logger(new_logger(stdio))\n"
+        )
+        use = self._find(m, "use_logger")
+        # Signature declares nothing (FileLogger isn't a cap).
+        self.assertEqual(use["declared_capabilities"], [])
+        # Transitive reachable includes Stdio via the impl chain.
+        self.assertIn("Stdio", use["transitively_reachable_capabilities"])
+        # Exclusion must NOT claim Stdio is unreachable.
+        self.assertNotIn(
+            "Stdio", use["provably_excluded_capabilities"]
+        )
+
+    def test_user_cap_param_reaches_wrapped_builtin_cap(self):
+        # Same shape via the user-cap trait param. Logger's only
+        # impl in scope is FileLogger which holds Stdio; passing
+        # any Logger to use_logger therefore reaches Stdio.
+        m = self._build(
+            "capability Logger\n"
+            "    fun log(self, msg: String)\n"
+            "type FileLogger { out: Stdio }\n"
+            "impl Logger for FileLogger\n"
+            "    fun log(self, msg: String)\n"
+            "        self.out.println(msg)\n"
+            "fun new_logger(s: Stdio) -> FileLogger\n"
+            "    return FileLogger { out: s }\n"
+            "fun use_logger(lg: Logger)\n"
+            "    lg.log(\"x\")\n"
+            "fun main(stdio: Stdio)\n"
+            "    use_logger(new_logger(stdio))\n"
+        )
+        use = self._find(m, "use_logger")
+        self.assertIn("Logger", use["declared_capabilities"])
+        self.assertIn("Stdio", use["transitively_reachable_capabilities"])
+        self.assertNotIn(
+            "Stdio", use["provably_excluded_capabilities"]
+        )
+
+    def test_user_cap_unsafe_in_impl_propagates_has_unsafe(self):
+        # A user-cap whose impl holds Unsafe makes any function
+        # taking the user-cap reach Unsafe; ``has_unsafe`` flips
+        # to True and exclusion is empty (Unsafe is the
+        # universal escape hatch).
+        m = self._build(
+            "capability Client\n"
+            "    fun do_it(self) -> Int\n"
+            "type RealClient { u: Unsafe }\n"
+            "impl Client for RealClient\n"
+            "    fun do_it(self) -> Int\n"
+            "        return 0\n"
+            "fun use_it(c: Client) -> Int\n"
+            "    return c.do_it()\n"
+        )
+        use = self._find(m, "use_it")
+        self.assertIn("Unsafe", use["transitively_reachable_capabilities"])
+        self.assertTrue(use["has_unsafe"])
+        self.assertEqual(use["provably_excluded_capabilities"], [])
+
+    def test_no_impl_means_no_extras(self):
+        # A user-cap with no in-scope impls reaches no caps;
+        # functions taking it claim a strong exclusion.
+        m = self._build(
+            "capability Empty\n"
+            "    fun ping(self)\n"
+            "fun take(e: Empty)\n"
+            "    e.ping()\n"
+        )
+        take = self._find(m, "take")
+        self.assertEqual(
+            take["transitively_reachable_capabilities"], ["Empty"],
+        )
+        # All built-in caps remain provably excluded.
+        for cap in ("Stdio", "Fs", "Net", "Unsafe", "Clock"):
+            self.assertIn(
+                cap, take["provably_excluded_capabilities"],
+            )
+
+    def test_impl_method_self_carries_wrapped_caps(self):
+        # An impl method on a cap-bearing struct sees its
+        # wrapped caps through ``self``. The method itself
+        # cannot claim Stdio is excluded.
+        m = self._build(
+            "capability Logger\n"
+            "    fun log(self, msg: String)\n"
+            "type FileLogger { out: Stdio }\n"
+            "impl Logger for FileLogger\n"
+            "    fun log(self, msg: String)\n"
+            "        self.out.println(msg)\n"
+        )
+        log = self._find(m, "log")
+        self.assertIn("Stdio", log["transitively_reachable_capabilities"])
+        self.assertNotIn(
+            "Stdio", log["provably_excluded_capabilities"],
+        )
 
 
 class TestSourceNameInSboms(unittest.TestCase):

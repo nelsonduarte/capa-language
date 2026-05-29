@@ -1837,11 +1837,20 @@ class TestTranspileExamples(unittest.TestCase):
         self.assertIn("assistant: Done.", out)
 
     def test_llm_agent_runner_manifest_agent_loop_excludes_net(self):
-        # The agent_loop function provably cannot touch Net, Fs,
-        # Env, Unsafe, etc.  It only declares (Stdio, LlmClient,
-        # SearchWeb, SendEmail). This is the headline audit claim:
-        # whatever the LLM tells the agent to do, the runner cannot
-        # escalate beyond its declared tool surface.
+        # The agent_loop function's signature names four caps
+        # (Stdio, LlmClient, SearchWeb, SendEmail). Under per-impl
+        # reachability (audit slice 21 closure, 2026-05-29) the
+        # ``transitively_reachable_capabilities`` field adds caps
+        # the named user-cap impls can transitively exercise, and
+        # ``provably_excluded_capabilities`` is computed against
+        # the transitive set. The AnthropicLlmClient impl in this
+        # file holds ``u: Unsafe`` in its struct, so LlmClient
+        # transitively reaches Unsafe — agent_loop therefore
+        # honestly cannot claim to provably exclude Unsafe (any
+        # built-in cap). The headline claim survives in the
+        # weaker form: ``declared_capabilities`` is exactly the
+        # four-cap surface the agent asked for; nothing the LLM
+        # says lets the agent acquire a fifth cap at runtime.
         import json
         import subprocess
         import sys
@@ -1855,13 +1864,24 @@ class TestTranspileExamples(unittest.TestCase):
         loop = next(
             f for f in m["functions"] if f["name"] == "agent_loop"
         )
-        # Declared: the four caps in the agent's signature.
-        for cap in ("Stdio", "LlmClient", "SearchWeb", "SendEmail"):
-            self.assertIn(cap, loop["declared_capabilities"])
-        # Excluded: everything else, including Unsafe.
-        for cap in ("Net", "Fs", "Env", "Unsafe"):
-            self.assertIn(cap, loop["provably_excluded_capabilities"])
-        self.assertFalse(loop["has_unsafe"])
+        # Declared: exactly the four caps in the agent's signature,
+        # nothing more.
+        self.assertEqual(
+            sorted(loop["declared_capabilities"]),
+            sorted(["Stdio", "LlmClient", "SearchWeb", "SendEmail"]),
+        )
+        # Transitively reachable: declared + Unsafe (from
+        # AnthropicLlmClient.u). The honest SBOM surfaces the
+        # ambient authority the impl chain carries.
+        for cap in ("Stdio", "LlmClient", "SearchWeb", "SendEmail", "Unsafe"):
+            self.assertIn(cap, loop["transitively_reachable_capabilities"])
+        # Exclusion is empty because Unsafe is reachable; once an
+        # Unsafe path exists no cap can be honestly excluded.
+        self.assertEqual(loop["provably_excluded_capabilities"], [])
+        # ``has_unsafe`` is True under the new semantics because
+        # the signature transitively reaches Unsafe via the
+        # AnthropicLlmClient impl.
+        self.assertTrue(loop["has_unsafe"])
 
     def test_llm_anthropic_real_compiles_and_handles_missing_key(self):
         # The real-API demo: cannot exercise the HTTP round-trip in
@@ -1916,12 +1936,16 @@ class TestTranspileExamples(unittest.TestCase):
         self.assertIn("ANTHROPIC_API_KEY is empty", r.stderr)
 
     def test_llm_anthropic_agent_manifest_agent_loop_caps(self):
-        # The headline audit claim of the full end-to-end demo: even
-        # though a real LLM is in the loop deciding which tools to
-        # call, the agent_loop function provably excludes Net, Fs,
-        # Env, Unsafe, and anything else it did not declare. The
-        # discipline is preserved through both the dispatch string-
-        # matching and the LLM-as-capability indirection.
+        # The headline audit claim of the full end-to-end demo,
+        # restated under per-impl reachability (audit slice 21
+        # closure, 2026-05-29): ``declared_capabilities`` is the
+        # exact narrow surface the agent asked for at the
+        # signature level. The LLM cannot grow that set at runtime;
+        # the dispatch string-matching only fires for tool names
+        # the agent was given. The ``transitively_reachable``
+        # surface adds Unsafe because the LlmClient impl holds an
+        # Unsafe (the urllib bridge into Anthropic's API). The
+        # honest SBOM surfaces that authority chain.
         import json
         import subprocess
         import sys
@@ -1937,9 +1961,11 @@ class TestTranspileExamples(unittest.TestCase):
         )
         for cap in ("Stdio", "LlmClient", "SearchWeb"):
             self.assertIn(cap, loop["declared_capabilities"])
-        for cap in ("Net", "Fs", "Env", "Unsafe"):
-            self.assertIn(cap, loop["provably_excluded_capabilities"])
-        self.assertFalse(loop["has_unsafe"])
+        # Unsafe is transitively reachable via the LlmClient impl;
+        # the regulator-facing exclusion is therefore empty.
+        self.assertIn("Unsafe", loop["transitively_reachable_capabilities"])
+        self.assertEqual(loop["provably_excluded_capabilities"], [])
+        self.assertTrue(loop["has_unsafe"])
 
     # capa_cli / capa_datetime / capa_log / capa_http are no longer
     # vendored in this repo; they live in their own standalone
@@ -1949,12 +1975,17 @@ class TestTranspileExamples(unittest.TestCase):
     # downstream demos (audit-trail-reporter, sbom-watch,
     # policy-eval) and via each library's own CI.
 
-    def test_llm_anthropic_real_manifest_run_chat_unsafe_free(self):
-        # The agent-equivalent function `run_chat` is Unsafe-free
-        # in the manifest, even though the program as a whole
-        # uses Unsafe (for the network call inside the
-        # AnthropicClient implementor). The capability discipline
-        # has contained the Unsafe to where it actually lives.
+    def test_llm_anthropic_real_manifest_run_chat_caps(self):
+        # ``run_chat`` declares Stdio + LlmClient at the signature
+        # level — Unsafe is NOT in the declared list. Under per-
+        # impl reachability (audit slice 21 closure, 2026-05-29)
+        # the manifest also surfaces what the user-cap impls
+        # transitively bring along: AnthropicClient holds Unsafe
+        # for the urllib bridge, so LlmClient transitively
+        # reaches Unsafe. The honest SBOM disclosure: the
+        # *signature* contains Unsafe to the impl module, but the
+        # function CAN reach Unsafe through the LlmClient call;
+        # exclusion is empty, ``has_unsafe`` is True.
         import json
         import subprocess
         import sys
@@ -1968,18 +1999,29 @@ class TestTranspileExamples(unittest.TestCase):
         run_chat = next(
             f for f in m["functions"] if f["name"] == "run_chat"
         )
-        # run_chat declares Stdio + LlmClient, no Unsafe.
+        # Signature surface: just Stdio + LlmClient.
         self.assertIn("Stdio", run_chat["declared_capabilities"])
         self.assertIn("LlmClient", run_chat["declared_capabilities"])
         self.assertNotIn("Unsafe", run_chat["declared_capabilities"])
-        self.assertFalse(run_chat["has_unsafe"])
-        self.assertIn("Unsafe", run_chat["provably_excluded_capabilities"])
+        # Transitive surface: Unsafe joins via the AnthropicClient
+        # impl's struct field.
+        self.assertIn("Unsafe", run_chat["transitively_reachable_capabilities"])
+        # Exclusion: empty, because Unsafe is reachable.
+        self.assertEqual(run_chat["provably_excluded_capabilities"], [])
+        self.assertTrue(run_chat["has_unsafe"])
 
     def test_llm_tool_sandbox_manifest_excludes_runcode(self):
         # The headline audit claim: process_request provably
-        # excludes RunCode. If this assertion ever fails it means
-        # the discipline regressed for user-defined capabilities,
-        # which would be a real soundness bug.
+        # excludes RunCode. Per-impl reachability (audit slice
+        # 21 closure, 2026-05-29) sharpens this — it now also
+        # surfaces Net in the transitive reachable set because
+        # the SearchWeb / SendEmail impls hold ``net: Net`` for
+        # the actual HTTP/SMTP calls. RunCode and Unsafe stay
+        # excluded because no in-scope impl holds either: the
+        # only RunCode impl is StubRunner, but process_request
+        # doesn't take a RunCode and never reaches its impl
+        # chain. The auditor reads the SBOM as: "uses Net via
+        # the tools, provably cannot run arbitrary code."
         import json
         import subprocess
         import sys
@@ -1998,12 +2040,15 @@ class TestTranspileExamples(unittest.TestCase):
         self.assertIn("SearchWeb", process["declared_capabilities"])
         self.assertIn("SendEmail", process["declared_capabilities"])
         self.assertNotIn("RunCode", process["declared_capabilities"])
-        # And it provably cannot reach RunCode, Unsafe, or any
-        # other built-in cap it did not declare.
+        # Transitive: also Net (via the tools' Net field).
+        self.assertIn("Net", process["transitively_reachable_capabilities"])
+        # RunCode and Unsafe remain provably excluded — no impl
+        # in this function's reach holds either.
         excluded = process["provably_excluded_capabilities"]
         self.assertIn("RunCode", excluded)
         self.assertIn("Unsafe", excluded)
-        self.assertIn("Net", excluded)
+        # Net is NOT excluded — it's transitively reachable.
+        self.assertNotIn("Net", excluded)
         self.assertFalse(process["has_unsafe"])
 
     def test_cve_ua_parser_js(self):
