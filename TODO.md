@@ -948,6 +948,44 @@ Listed so the design space is explicit.
 
 ### Wasm-specific gaps that are not P0
 
+- [x] **"Fully functional Wasm" slice 10 - Component Model
+  parity harness + `Fs.allows` / `Env.allows` WIT-mismatch
+  fix** (closed 2026-05-29). Two deliverables:
+  - **CM parity harness**: new
+    `TestPythonWasmComponentParity` class in
+    `tests/test_ir_wasm_parity.py` that pivots the
+    Python <-> Wasm parity assertion on the Component Model
+    path (`wasm-tools component new` + `WasmComponentHost`)
+    instead of the core `WasmHost`. Bound to a 7-program
+    subset that exercises host-bridge data flow: `hello`,
+    `env_demo` (option<T> regression net), `fs_demo`,
+    `net_get`, `net_post`, `net_restrict`, `allows_inline`.
+    Pure-guest programs (closures, sets, struct equality,
+    etc.) trust the core-host parity test; the CM wrapping
+    doesn't touch guest-only WAT, so re-running all 50+
+    entries would waste CI time for zero new coverage. Also
+    adds 4 new `TestWasmComponentHost` cases for the slice 1
+    host bridges (`Fs.mkdir`, `Fs.list_dir`,
+    `Stdio.read_line` EOF path, `Random` seeded sequence
+    cross-checked against the core host).
+  - **Second latent CM bug fixed**: `Fs.allows` and
+    `Env.allows` were missing from `_GUEST_ONLY_METHODS`,
+    so the WIT generator demanded a host signature for them
+    even though the Wasm emitter inlines the check at emit
+    time (D4 inline-attenuation Option B, slice 1).
+    Core-host runs worked because no WIT generation
+    happened; the `--component --run` path failed at
+    `compile_wit` with `capability method 'allows' has no
+    WIT signature`. Surfaced by the new CM parity test for
+    `allows_inline.capa`. Fixed by adding `Fs` and `Env`
+    `allows` entries to `_GUEST_ONLY_METHODS`;
+    `Clock.allows` deliberately stays a host call (it needs
+    the live wall clock against a `restrict_to_after`
+    deadline, no static collapse possible).
+  Suite 2022 -> 2033 / 5 skipped / 0 fail.
+  `capa_governance_pack` on pure `--wasm --component --run`
+  also matches Python byte-for-byte.
+
 - [x] **"Fully functional Wasm" slice 9 - parity-list cleanup +
   Component Model `option<T>` discriminant bug-fix** (closed
   2026-05-29). Three deliverables in one slice:

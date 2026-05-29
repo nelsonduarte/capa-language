@@ -206,6 +206,19 @@ _METHODS_NEEDING_IO_ERROR: dict[str, frozenset[str]] = {
 # the core-wasm imports stay in lockstep.
 _GUEST_ONLY_METHODS: dict[str, frozenset[str]] = {
     "Random": frozenset({"with_seed", "int_range", "float_unit"}),
+    # Slice 1 (2026-05): ``Fs.allows`` / ``Env.allows`` are
+    # inlined at emit time (D4 inline-attenuation Option B). The
+    # Wasm emitter walks the attenuation chain and produces a
+    # static i32 Bool result without ever crossing the host
+    # boundary; the WIT generator must therefore not produce a
+    # signature for them either, or the Component Model wrap
+    # will demand a host import that the runtime never
+    # registers. ``Clock.allows`` is the exception: it takes no
+    # string arg and queries the live wall clock against a
+    # ``restrict_to_after`` deadline, so it stays a host call
+    # (see _WIT_SIGNATURES).
+    "Fs":  frozenset({"allows"}),
+    "Env": frozenset({"allows"}),
 }
 
 

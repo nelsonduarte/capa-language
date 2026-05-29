@@ -4042,6 +4042,108 @@ class TestWasmComponentHost(unittest.TestCase):
         finally:
             os.environ.pop("CAPA_CM_FIXTURE", None)
 
+    def test_fs_mkdir_and_list_dir_under_component_host(self):
+        # Slice 1 host bridges: ``Fs.mkdir`` returns
+        # ``Result<Unit, IoError>`` (a result with an empty Ok
+        # arm); ``Fs.list_dir`` returns ``Result<List<String>,
+        # IoError>``. Both exercise canonical-ABI return shapes
+        # with custom-record + list-of-string lift paths that
+        # nothing else in the CM test suite hits.
+        import os
+        import tempfile
+        base = tempfile.mkdtemp(prefix="capa_cm_listdir_")
+        with open(os.path.join(base, "a.txt"), "w") as f:
+            f.write("a")
+        with open(os.path.join(base, "b.txt"), "w") as f:
+            f.write("b")
+        target = os.path.join(base, "newdir")
+        base_lit = base.replace("\\", "\\\\")
+        target_lit = target.replace("\\", "\\\\")
+        try:
+            src = (
+                "fun main(stdio: Stdio, fs: Fs)\n"
+                f"    match fs.mkdir(\"{target_lit}\")\n"
+                "        Ok(_) -> stdio.println(\"made dir\")\n"
+                "        Err(_) -> stdio.eprintln(\"BUG: mkdir failed\")\n"
+                f"    match fs.list_dir(\"{base_lit}\")\n"
+                "        Ok(names) -> stdio.println(\"count: ${names.length()}\")\n"
+                "        Err(_) -> stdio.eprintln(\"BUG: list_dir failed\")\n"
+            )
+            # Three entries: a.txt, b.txt, newdir. Order is OS-
+            # dependent so we only assert the count; that's
+            # enough to validate the list<string> lift path
+            # produced a length-3 list rather than 0 or trash.
+            self.assertEqual(
+                self._run_capturing_stdout(src),
+                "made dir\ncount: 3\n",
+            )
+        finally:
+            import shutil
+            shutil.rmtree(base, ignore_errors=True)
+
+    def test_stdio_read_line_eof_under_component_host(self):
+        # Slice 1 host bridge: ``Stdio.read_line`` returns
+        # ``Result<String, IoError>``; on EOF the bridge produces
+        # Err with a known message. Validates both that the
+        # bridge is wired into the CM linker and that the Err
+        # arm's IoError record lifts through correctly.
+        import io
+        import sys
+        saved_in = sys.stdin
+        sys.stdin = io.StringIO("")
+        try:
+            src = (
+                "fun main(stdio: Stdio)\n"
+                "    match stdio.read_line()\n"
+                "        Ok(line) -> stdio.println(\"got: ${line}\")\n"
+                "        Err(_) -> stdio.println(\"eof\")\n"
+            )
+            self.assertEqual(
+                self._run_capturing_stdout(src),
+                "eof\n",
+            )
+        finally:
+            sys.stdin = saved_in
+
+    def test_random_seeded_sequence_under_component_host(self):
+        # Slice 2: the ``Random`` capability uses a pure-WAT
+        # SplitMix64 PRNG that runs entirely guest-side; the only
+        # host call is ``random.system-seed`` for entropy when
+        # the program constructs a fresh ``Random()`` without a
+        # seed. With ``Random.with_seed(seed)`` the host bridge
+        # never fires, so the sequence is byte-identical across
+        # backends. This test pins that property under the CM
+        # path to catch any future regression in either the
+        # PRNG lowering or the CM wiring.
+        src = (
+            "fun main(stdio: Stdio, r: Random)\n"
+            "    let rng = r.with_seed(42)\n"
+            "    let a = rng.int_range(0, 1000)\n"
+            "    let b = rng.int_range(0, 1000)\n"
+            "    let c = rng.int_range(0, 1000)\n"
+            "    stdio.println(\"a=${a} b=${b} c=${c}\")\n"
+        )
+        out_cm = self._run_capturing_stdout(src)
+        # Cross-check: the core host produces the same line. Any
+        # divergence means either the PRNG lowering or the CM
+        # wiring of ``random.system-seed`` diverged from the
+        # core path; the body lives in linear memory in either
+        # case and shouldn't care which host wraps it.
+        from capa.runtime._wasm_host import WasmHost
+        import io
+        import sys
+        _, types, ast_mod = _parse_lower(src)
+        core_blob = compile_wasm(ast_mod, types=types)
+        host = WasmHost()
+        core_out = io.StringIO()
+        saved = sys.stdout
+        sys.stdout = core_out
+        try:
+            host.run_main(core_blob)
+        finally:
+            sys.stdout = saved
+        self.assertEqual(out_cm, core_out.getvalue())
+
 
 @unittest.skipUnless(
     _has_wasm_tools() and _has_wasmtime_py(),

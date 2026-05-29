@@ -174,6 +174,25 @@ def _run_wasm(src: str) -> str:
     return ""  # output already captured by caller's redirect
 
 
+def _run_wasm_component(src: str) -> str:
+    """Compile to .wasm, wrap via ``wasm-tools component new``, and
+    run under ``WasmComponentHost``; capture stdout. Targets the
+    full ``--component --run`` shipping path so latent
+    canonical-ABI mismatches (e.g. the slice 9 ``option<T>``
+    discriminant fix) fail this harness rather than slipping
+    through to downstream consumers."""
+    from capa.cli import _wrap_as_component
+    from capa.ir import compile_wit
+    from capa.runtime._wasm_component_host import WasmComponentHost
+    module, result = _parse_and_analyze(src)
+    core_blob = compile_wasm(module, types=result.types)
+    wit = compile_wit(module, types=result.types)
+    component_blob = _wrap_as_component(core_blob, wit)
+    host = WasmComponentHost()
+    host.run_main(component_blob)
+    return ""  # output already captured by caller's redirect
+
+
 @unittest.skipUnless(
     _has_wasm_tools() and _has_wasmtime_py(),
     "wasm-tools and/or wasmtime-py not installed",
@@ -198,6 +217,27 @@ class TestPythonWasmParity(unittest.TestCase):
                 f"Python/Wasm output divergence for {filename}.\n"
                 f"--- python ---\n{py_out}\n"
                 f"--- wasm ---\n{wasm_out}"
+            ),
+        )
+
+    def _assert_cm_parity(self, filename: str) -> None:
+        """Same shape as :meth:`_assert_parity` but pivots on the
+        Component Model path (``WasmComponentHost``) instead of
+        the core ``WasmHost``. Used by the CM-host-bridge subset
+        below to catch canonical-ABI mismatches that the core
+        path would silently fake-match (see slice 9's
+        ``option<T>`` discriminant fix)."""
+        path = _EXAMPLES / filename
+        src = path.read_text(encoding="utf-8")
+        py_out = _capture_stdout(lambda: _run_python(src))
+        cm_out = _capture_stdout(lambda: _run_wasm_component(src))
+        self.assertEqual(
+            py_out, cm_out,
+            msg=(
+                f"Python/Wasm-Component output divergence for "
+                f"{filename}.\n"
+                f"--- python ---\n{py_out}\n"
+                f"--- wasm-component ---\n{cm_out}"
             ),
         )
 
@@ -486,6 +526,98 @@ class TestPythonWasmParity(unittest.TestCase):
                 "one-line rationale."
             ),
         )
+
+
+# Programs that exercise a host bridge whose canonical-ABI
+# lift / lower can diverge between the core ``WasmHost`` path and
+# the Component Model adapter path (the discrepancy that produced
+# the slice 9 ``option<T>`` discriminant bug). Each entry here gets
+# a CM-pivot parity assertion alongside the existing core-host one
+# above. Programs that live entirely in the guest (no host bridge
+# data flow beyond ``Stdio.println``) trust the core-host parity
+# test and don't need CM coverage -- the CM wrapping doesn't touch
+# guest-only WAT.
+_CM_HOST_BRIDGE_SUBSET: list[str] = [
+    "hello.capa",          # trivial CM sanity (Stdio.println)
+    "env_demo.capa",       # option<string> lift (the slice 9 bug shape)
+    "fs_demo.capa",        # result<string, io-error> + result<unit, io-error>
+    "net_get.capa",        # Fs.write + Net.get duo
+    "net_post.capa",       # Net.post two-string-arg variant
+    "net_restrict.capa",   # attenuation-deny short-circuit
+    "allows_inline.capa",  # Fs.allows / Env.allows / Clock.allows inline
+]
+
+
+@unittest.skipUnless(
+    _has_wasm_tools() and _has_wasmtime_py(),
+    "wasm-tools and/or wasmtime-py not installed",
+)
+class TestPythonWasmComponentParity(unittest.TestCase):
+    """Companion to :class:`TestPythonWasmParity` that pivots on
+    the Component Model path instead of the core ``WasmHost``.
+
+    Wraps each host-bridge-exercising program via ``wasm-tools
+    component new`` + runs through ``WasmComponentHost`` (the
+    ``capa --wasm --component --run`` shipping path). The slice 9
+    ``option<T>`` discriminant fix surfaced a real bug here that
+    the core-host pivot had been silently fake-matching; this
+    class is the regression net for the next such canonical-ABI
+    mismatch."""
+
+    def _assert_cm_parity(self, filename: str) -> None:
+        path = _EXAMPLES / filename
+        src = path.read_text(encoding="utf-8")
+        py_out = _capture_stdout(lambda: _run_python(src))
+        cm_out = _capture_stdout(lambda: _run_wasm_component(src))
+        self.assertEqual(
+            py_out, cm_out,
+            msg=(
+                f"Python/Wasm-Component output divergence for "
+                f"{filename}.\n"
+                f"--- python ---\n{py_out}\n"
+                f"--- wasm-component ---\n{cm_out}"
+            ),
+        )
+
+    def test_hello_under_cm(self):
+        self._assert_cm_parity("hello.capa")
+
+    def test_env_demo_under_cm(self):
+        # Slice 9 bug shape: option<T> discriminant convention
+        # mismatch between WIT (none=0, some=1) and Capa internal
+        # (Some=0, None=1). This test would have failed pre-fix.
+        self._assert_cm_parity("env_demo.capa")
+
+    def test_fs_demo_under_cm(self):
+        self._assert_cm_parity("fs_demo.capa")
+
+    def test_net_get_under_cm(self):
+        self._assert_cm_parity("net_get.capa")
+
+    def test_net_post_under_cm(self):
+        self._assert_cm_parity("net_post.capa")
+
+    def test_net_restrict_under_cm(self):
+        self._assert_cm_parity("net_restrict.capa")
+
+    def test_allows_inline_under_cm(self):
+        self._assert_cm_parity("allows_inline.capa")
+
+    def test_subset_membership(self):
+        # Soundness check: every entry in _CM_HOST_BRIDGE_SUBSET
+        # must already be in the core parity list (otherwise we'd
+        # be silently relaxing standards), and the file must
+        # exist on disk.
+        on_disk = {p.name for p in _EXAMPLES.glob("*.capa")}
+        for name in _CM_HOST_BRIDGE_SUBSET:
+            self.assertIn(
+                name, _PARITY_PROGRAMS,
+                msg=f"CM subset entry {name!r} is not in _PARITY_PROGRAMS",
+            )
+            self.assertIn(
+                name, on_disk,
+                msg=f"CM subset entry {name!r} not present on disk",
+            )
 
 
 if __name__ == "__main__":
