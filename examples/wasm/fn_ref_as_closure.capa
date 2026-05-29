@@ -1,0 +1,58 @@
+// Top-level functions passed as ``Fun(...)`` values. Pre-this
+// slice the Wasm emitter rejected ``xs.map(double_int)`` with
+// "value kind 'global' not supported"; only inline lambdas
+// (``xs.map(fun (x: Int) -> Int => x * 2)``) worked.
+//
+// The fix synthesises a per-(fn, sig) thunk that adapts the
+// closure ABI (``env_ptr, args..., result``) to the underlying
+// function (``args..., result``). One thunk per call site
+// signature; the table grows by N entries for N distinct
+// (fn, sig) combinations in the module.
+
+fun double_int(n: Int) -> Int
+    return n * 2
+
+fun stringify(n: Int) -> String
+    return "v=${n}"
+
+fun keep_positive(n: Int) -> Bool
+    return n > 0
+
+fun apply_int(f: Fun(Int) -> Int, x: Int) -> Int
+    return f(x)
+
+fun apply_str(f: Fun(Int) -> String, x: Int) -> String
+    return f(x)
+
+fun show(stdio: Stdio, label: String, n: Int)
+    stdio.println("${label}: ${n}")
+
+fun main(stdio: Stdio)
+    // Plain top-level fn passed by name to a HOF.
+    show(stdio, "apply(double, 5)", apply_int(double_int, 5))
+    show(stdio, "apply(double, 7)", apply_int(double_int, 7))
+
+    // Same fn referenced twice -> single thunk.
+    let xs: List<Int> = [1, 2, 3, 4]
+    let doubled = xs.map(double_int)
+    show(stdio, "doubled[0]", doubled[0])
+    show(stdio, "doubled[3]", doubled[3])
+
+    // Different signature -> separate thunk.
+    let labelled = xs.map(stringify)
+    stdio.println("labelled[0]: ${labelled[0]}")
+    stdio.println("labelled[3]: ${labelled[3]}")
+
+    // Bool-returning predicate via filter.
+    let positives = ([-2, -1, 0, 3, 5]).filter(keep_positive)
+    show(stdio, "positives.len", positives.length())
+    show(stdio, "positives[0]", positives[0])
+    show(stdio, "positives[1]", positives[1])
+
+    // Free fn into Option HOFs (slice 6 surface).
+    let some_5: Option<Int> = Some(5)
+    let none_i: Option<Int> = None
+    let mapped = some_5.map(double_int)
+    let mapped_none = none_i.map(double_int)
+    stdio.println("Some(5).map(double_int): ${mapped.unwrap_or(-1)}")
+    stdio.println("None.map(double_int): ${mapped_none.unwrap_or(-1)}")

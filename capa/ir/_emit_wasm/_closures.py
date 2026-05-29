@@ -48,8 +48,9 @@ class _ClosureEmissionMixin:
         """Emit the ``(type $sig_N ...)`` declarations for every
         unique closure signature, then a single ``(table $fnref
         N N funcref)`` + ``(elem ...)`` to populate the function
-        table with the lifted lambda names. The order of elem
-        entries matches each lambda's ``fn_idx``."""
+        table with the lifted lambda names followed by the
+        function-ref thunks. The order of elem entries matches
+        each entry's ``fn_idx`` (lambdas first, then thunks)."""
         # Sort by sig_idx for determinism.
         sig_pairs = sorted(self._closure_sig_keys.items(), key=lambda kv: kv[1])
         for sig_key, sig_idx in sig_pairs:
@@ -68,10 +69,198 @@ class _ClosureEmissionMixin:
             self._write(
                 f"(type $sig_{sig_idx} (func{param_clauses}{result_clause}))"
             )
-        n = len(self._lifted_lambdas)
+        n = len(self._lifted_lambdas) + len(self._fn_ref_thunks)
         self._write(f"(table $fnref {n} {n} funcref)")
-        names = " ".join(f"${l['name']}" for l in self._lifted_lambdas)
+        lambda_names = [f"${l['name']}" for l in self._lifted_lambdas]
+        thunk_names = [
+            f"${t['name']}" for t in self._fn_ref_thunks.values()
+        ]
+        names = " ".join(lambda_names + thunk_names)
         self._write(f"(elem (i32.const 0) {names})")
+
+    def _register_fn_ref_thunks(self, module) -> None:
+        """Walk every IR instruction in the module and, for each
+        ``Value(kind='global', ty='Fun(...)')`` found in an
+        argument position, register a thunk that wraps the named
+        free function so it can be passed as a closure value.
+
+        Idempotent per (fn_name, sig_key): repeated references to
+        the same function with the same target signature share a
+        single thunk. fn_idx assignment is contiguous after the
+        lifted lambdas so the closure table layout stays linear:
+        ``[lambda_0, ..., lambda_M, thunk_<name1>_<sig1>, ...]``.
+
+        Runs before the closure table is emitted so ``_push_value``
+        can resolve the fn_idx for a global Fun reference without
+        having to grow the table on the fly during body emit."""
+        from .._nodes import (
+            Call, MethodCall, For, If, While, Match, MakeLambda,
+            AssignConst, Reassign, BinOp, UnaryOp, Index, FieldAccess,
+            Return, TryUnwrap, FormatStr, Value as IrValue,
+        )
+
+        # Map global-fun callee names to their Function for sig
+        # lookup. Used by the thunk emitter to know the underlying
+        # function's param + return types.
+        fn_by_name = {fn.name: fn for fn in module.functions}
+
+        def visit_value(v) -> None:
+            if v is None or not isinstance(v, IrValue):
+                return
+            if v.kind != "global":
+                return
+            if not (v.ty and v.ty.startswith("Fun")):
+                return
+            target = fn_by_name.get(v.name)
+            if target is None:
+                # ``v.name`` is something other than a top-level
+                # function (e.g. a constant whose type happens to
+                # be Fun). Leave it for _push_value to surface as
+                # an error -- this discovery pass only handles
+                # actual function references.
+                return
+            arg_capa_tys = [p.ty for p in target.params if p.ty not in BUILTIN_CAPS]
+            ret_capa_ty = target.return_type or "Unit"
+            try:
+                sig_key = self._closure_sig_key_for(arg_capa_tys, ret_capa_ty)
+            except WasmEmissionError:
+                # The function's signature contains a type the
+                # closure ABI can't encode (e.g. Unit param). Leave
+                # it for emit-time so the error message names the
+                # call site.
+                return
+            key = (v.name, sig_key)
+            if key in self._fn_ref_thunks:
+                return
+            # Register sig in the closure sig table if not yet.
+            if sig_key not in self._closure_sig_keys:
+                self._closure_sig_keys[sig_key] = len(self._closure_sig_keys)
+            sig_idx = self._closure_sig_keys[sig_key]
+            # fn_idx starts after the lifted lambdas + any
+            # already-registered thunks; the table elem list is
+            # emitted in (lambdas, thunks) order.
+            fn_idx = len(self._lifted_lambdas) + len(self._fn_ref_thunks)
+            self._fn_ref_thunks[key] = {
+                "name": f"thunk_{v.name}_{sig_idx}",
+                "fn_idx": fn_idx,
+                "sig_idx": sig_idx,
+                "sig_key": sig_key,
+                "underlying": v.name,
+                "params": list(target.params),
+                "return_type": ret_capa_ty,
+            }
+
+        def visit_instrs(instrs) -> None:
+            for instr in instrs:
+                # Sweep every IR field that may carry a Value.
+                if isinstance(instr, Call):
+                    for a in instr.args:
+                        visit_value(a)
+                elif isinstance(instr, MethodCall):
+                    visit_value(instr.receiver)
+                    for a in instr.args:
+                        visit_value(a)
+                elif isinstance(instr, AssignConst):
+                    visit_value(instr.src)
+                elif isinstance(instr, Reassign):
+                    visit_value(instr.src)
+                elif isinstance(instr, BinOp):
+                    visit_value(instr.left)
+                    visit_value(instr.right)
+                elif isinstance(instr, UnaryOp):
+                    visit_value(instr.operand)
+                elif isinstance(instr, Index):
+                    visit_value(instr.receiver)
+                    visit_value(instr.index)
+                elif isinstance(instr, FieldAccess):
+                    visit_value(instr.receiver)
+                elif isinstance(instr, Return):
+                    visit_value(instr.value)
+                elif isinstance(instr, TryUnwrap):
+                    visit_value(instr.src)
+                elif isinstance(instr, FormatStr):
+                    for part in instr.parts:
+                        if isinstance(part, IrValue):
+                            visit_value(part)
+                # Recurse into nested instruction lists.
+                if isinstance(instr, If):
+                    visit_value(instr.cond)
+                    visit_instrs(instr.then_body)
+                    visit_instrs(instr.else_body)
+                elif isinstance(instr, While):
+                    visit_instrs(instr.cond_setup)
+                    visit_value(instr.cond)
+                    visit_instrs(instr.body)
+                elif isinstance(instr, For):
+                    visit_value(instr.iter)
+                    visit_instrs(instr.body)
+                elif isinstance(instr, Match):
+                    visit_value(instr.scrutinee)
+                    for arm in instr.arms:
+                        visit_instrs(arm.body)
+                elif isinstance(instr, MakeLambda):
+                    visit_instrs(instr.body)
+
+        for fn in module.functions:
+            visit_instrs(fn.body)
+        for impl in module.impls:
+            for method in impl.methods:
+                visit_instrs(method.body)
+
+    def _emit_fn_ref_thunk(self, thunk: dict) -> None:
+        """Emit the thunk function for a global Fun reference.
+        Body: drop ``$env`` (always 0 for thunks), forward each
+        user arg verbatim, ``call $<underlying>``, return.
+
+        String args / return are split across two i32 slots (ptr,
+        len) per the existing Wasm String ABI; the thunk threads
+        them through unchanged. Other types use the size-dispatched
+        single-slot encoding."""
+        name = thunk["name"]
+        params = thunk["params"]
+        ret_ty = thunk["return_type"]
+        underlying = thunk["underlying"]
+        # Header.
+        param_clauses = ["(param $env i32)"]
+        for p in params:
+            if p.ty in BUILTIN_CAPS:
+                # The thunk's wasm sig has no cap params (closure
+                # ABI omits them); the underlying function would
+                # take cap args via its declared-caps mechanism,
+                # which isn't possible from a closure-call. We
+                # silently skip cap params: a Fun-typed value
+                # cannot legally carry a cap (the analyzer's type
+                # check rejects it earlier), so this never fires
+                # in well-typed code. Keeps the loop simple.
+                continue
+            if p.ty == "String":
+                param_clauses.append(f"(param ${p.name}_ptr i32)")
+                param_clauses.append(f"(param ${p.name}_len i32)")
+            else:
+                param_clauses.append(f"(param ${p.name} {self._wasm_type(p.ty)})")
+        result_str = ""
+        if ret_ty == "String":
+            # String result lowers to (i32 i32) multi-value.
+            result_str = " (result i32) (result i32)"
+        elif ret_ty and ret_ty != "Unit":
+            result_str = f" (result {self._wasm_type(ret_ty)})"
+        self._write(
+            f"(func ${name} {' '.join(param_clauses)}{result_str}"
+        )
+        self._indent += 1
+        # Forward each user arg to the underlying function. ``$env``
+        # is intentionally ignored: thunks have no captured state.
+        for p in params:
+            if p.ty in BUILTIN_CAPS:
+                continue
+            if p.ty == "String":
+                self._write(f"local.get ${p.name}_ptr")
+                self._write(f"local.get ${p.name}_len")
+            else:
+                self._write(f"local.get ${p.name}")
+        self._write(f"call ${underlying}")
+        self._indent -= 1
+        self._write(")")
 
     def _emit_lifted_lambda(self, lifted: dict) -> None:
         """Emit a top-level Wasm function for a lifted lambda.

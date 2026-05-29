@@ -340,6 +340,17 @@ class WasmEmitter(
         self._lifted_lambdas = []
         self._lambda_by_dst = {}
         self._closure_sig_keys = {}
+        # Thunks generated when a top-level function is passed as a
+        # ``Fun(...)`` value (e.g. ``xs.map(double_int)``). Each
+        # thunk is a tiny Wasm function with the closure ABI
+        # ``(env_ptr, args...) -> result`` that ignores ``env_ptr``
+        # and delegates to the named top-level function. Keyed by
+        # (fn_name, sig_key); the value carries the table slot
+        # index assigned to that (fn, sig) combination.
+        self._fn_ref_thunks: dict[tuple[str, str], dict] = {}
+        # Module reference, used by ``_push_value`` to look up a
+        # global function's signature when synthesising a thunk.
+        self._module = module
         # Pre-intern "true" / "false" if any FormatStr might consume
         # a Bool value at runtime; the data-segment offsets are
         # referenced via i32.const in the dispatch.
@@ -517,12 +528,27 @@ class WasmEmitter(
         # gates the emission so a Random-free program pays zero cost.
         if self._uses_random(module):
             self._emit_random_globals_and_helpers()
+        # Pre-register thunks for any top-level function used as a
+        # ``Fun(...)`` value (e.g. ``xs.map(double_int)`` where the
+        # closure arg is a global function reference rather than an
+        # inline lambda). The thunk has the same shape as a lifted
+        # lambda's wasm sig: it takes ``(env_ptr, args...)`` and
+        # delegates to the original function dropping the env. By
+        # registering them here, before the closure table is
+        # emitted, the fn_idx values are stable for ``_push_value``
+        # to use when it encounters a global ``Fun`` value in a
+        # call argument.
+        self._register_fn_ref_thunks(module)
         # Closure infrastructure: function table + (type) decls +
-        # each lifted lambda is a top-level function below.
-        if self._lifted_lambdas:
+        # each lifted lambda is a top-level function below. Thunks
+        # appended to the table after the lambdas so existing fn_idx
+        # values stay stable.
+        if self._lifted_lambdas or self._fn_ref_thunks:
             self._emit_closure_types_and_table()
             for lifted in self._lifted_lambdas:
                 self._emit_lifted_lambda(lifted)
+            for thunk in self._fn_ref_thunks.values():
+                self._emit_fn_ref_thunk(thunk)
         # Stage 2: emit each function. Impl methods are emitted as
         # additional top-level functions with mangled names
         # (<TypeName>_<method_name>) so MethodCall dispatch on a

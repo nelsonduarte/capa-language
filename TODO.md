@@ -948,6 +948,32 @@ Listed so the design space is explicit.
 
 ### Wasm-specific gaps that are not P0
 
+- [x] **"Fully functional Wasm" slice 6.1 - free top-level
+  functions usable as `Fun(...)` values on Wasm** (closed
+  2026-05-29). Pre-fix `xs.map(double_int)` (where `double_int`
+  is a top-level function rather than an inline lambda)
+  rejected with `value kind 'global' not supported`; only
+  inline `fun (...) => ...` lambdas worked. The fix is a
+  per-(fn, sig) thunk synthesised at emit time: a tiny Wasm
+  function whose sig matches the closure ABI
+  (`(env_ptr, args...) -> result`), body drops the env and
+  forwards to the underlying function. Thunks live in the
+  closure function table immediately after the lifted lambdas
+  so existing fn_idx values stay stable. Pre-emit discovery
+  pass walks every IR instruction (including lambda bodies,
+  match arms, all control-flow) to find global Fun references
+  and pre-register the thunks before the table is sized, so
+  `_push_value` can look up the fn_idx during body emission
+  without growing the table on the fly. One new parity program
+  (`fn_ref_as_closure.capa`, ~10 assertions covering
+  apply-style HOFs, List.map / List.filter on free fns, the
+  same fn passed twice with the same sig sharing a thunk,
+  different sigs allocating distinct thunks, and Option.map
+  with a free fn arg). Suite 2014 -> 2015 / 5 skipped / 0
+  fail. `capa_governance_pack` on pure `--wasm` still
+  matches Python byte-for-byte. Closes the "pre-existing gap"
+  noted at the end of slice 6.
+
 - [x] **"Fully functional Wasm" slices 6 + 7 - Option/Result HOFs
   + Unsafe rejection + stale docstrings + two discovery-walker
   bug-fixes** (closed 2026-05-29). Closes the master plan's

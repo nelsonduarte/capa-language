@@ -135,6 +135,32 @@ class _ValueEmissionMixin:
             # cases below handle the actual emission.
             self._push_value(self._const_values[v.name])
             return
+        if (v.kind == "global" and v.ty
+                and v.ty.startswith("Fun")):
+            # Top-level function reference used as a ``Fun(...)``
+            # value (e.g. ``xs.map(double_int)``). The thunk pass
+            # in ``_register_fn_ref_thunks`` already registered a
+            # closure-ABI wrapper for this (fn_name, sig_key); look
+            # it up to get the table slot and pack the closure
+            # value as ``(fn_idx << 32) | 0`` (env_ptr is 0 for
+            # zero-capture thunks). Mirrors the layout
+            # ``_emit_make_lambda`` writes for a captureless
+            # lifted lambda.
+            sig_key = self._fun_type_to_sig_key(v.ty)
+            key = (v.name, sig_key)
+            thunk = self._fn_ref_thunks.get(key)
+            if thunk is None:
+                raise WasmEmissionError(
+                    f"top-level function {v.name!r} used as "
+                    f"Fun(...) value, but no thunk was registered "
+                    f"for sig {sig_key!r}. The pre-emit thunk "
+                    f"discovery pass may have missed this site or "
+                    f"the function's signature contains a type "
+                    f"the closure ABI cannot encode."
+                )
+            fn_idx = thunk["fn_idx"]
+            self._write(f"i64.const {fn_idx << 32}")
+            return
         if v.kind in ("local", "param"):
             self._write(f"local.get ${v.name}")
             return

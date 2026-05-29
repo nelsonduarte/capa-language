@@ -92,6 +92,7 @@ _PARITY_PROGRAMS: list[str] = [
     "map_keys_values.capa",
     "range_iter.capa",
     "option_result_hofs.capa",
+    "fn_ref_as_closure.capa",
 ]
 
 # Programs deliberately excluded from parity and why; documented
@@ -418,6 +419,19 @@ class TestPythonWasmParity(unittest.TestCase):
         # existing has_list_hof declarations via the locals-
         # collection extension shipped in the same slice.
         self._assert_parity("option_result_hofs.capa")
+
+    def test_fn_ref_as_closure(self):
+        # Slice 6.1 (2026-05): top-level functions used as
+        # ``Fun(...)`` values (e.g. ``xs.map(double_int)`` where
+        # ``double_int`` is a free function, not an inline lambda).
+        # Pre-fix the Wasm emitter rejected with "value kind
+        # 'global' not supported"; the fix synthesises a per-(fn,
+        # sig) thunk that adapts the closure ABI to the
+        # underlying function. Same call site shape across both
+        # backends; Python passes the Python function object
+        # natively, Wasm dispatches via call_indirect through the
+        # thunk.
+        self._assert_parity("fn_ref_as_closure.capa")
 
     def test_inventory_matches_examples_dir(self):
         # Soundness check: every .capa under examples/wasm/ is
