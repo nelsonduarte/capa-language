@@ -948,6 +948,31 @@ Listed so the design space is explicit.
 
 ### Wasm-specific gaps that are not P0
 
+- [x] **"Fully functional Wasm" slice 8 - `Net.post` end-to-end
+  on Wasm** (closed 2026-05-29). Closes the deferred slice 3
+  follow-up (D2 was deliberate to ship `Net.get` parity first).
+  Surface: `Net.post(url: String, body: String) -> Result<String,
+  IoError>`. Both backends call `urllib.request.urlopen(Request(
+  url, data=body.encode("utf-8"), headers={"Content-Type":
+  "application/octet-stream"}))` with a 10-second timeout and
+  decode the response body UTF-8 with `errors="replace"`, so
+  ASCII-only payloads round-trip byte-for-byte. WIT signature +
+  io-error gating + `_CANONICAL_INDIRECT_RETURN` entry +
+  `_cap_method_wasm_sig` pattern for `func(url, body) -> result
+  <string, io-error>` all landed. Attenuation-path
+  `_emit_indirect_with_attenuation_check` now stashes both
+  String args (url + body) and re-pushes them in the host-call
+  branch; the deny-arm short-circuits without touching the
+  network. New parity program (`net_post.capa`, deny-only so the
+  harness stays hermetic) + new execution test
+  `test_net_post_round_trip_against_loopback` that spins up an
+  in-process `http.server` whose handler echoes the request body
+  verbatim, validates the happy path end-to-end (Wasm bridge
+  reads body bytes from linear memory, builds urllib Request,
+  loopback echoes, Ok arm carries the response). Suite 2015 ->
+  2017 / 5 skipped / 0 fail. `capa_governance_pack` on pure
+  `--wasm` still matches Python byte-for-byte.
+
 - [x] **"Fully functional Wasm" slice 6.1 - free top-level
   functions usable as `Fun(...)` values on Wasm** (closed
   2026-05-29). Pre-fix `xs.map(double_int)` (where `double_int`

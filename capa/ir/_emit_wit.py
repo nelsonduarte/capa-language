@@ -118,19 +118,22 @@ _WIT_SIGNATURES: dict[tuple[str, str], str] = {
     # are byte-identical with the Python backend.
     ("Random", "system_seed"): "system-seed: func() -> u64",
 
-    # Net: HTTP GET against a URL. Same canonical-ABI shape as
-    # Fs.read (result<string, io-error>): a 20-byte caller-allocated
-    # return area for tag + Ok string (ptr, len) or Err io-error
-    # (m_ptr, m_len, c_ptr, c_len). The host mirrors the Python
-    # runtime's ``urllib.request.urlopen`` + ``decode("utf-8",
+    # Net: HTTP GET / POST against a URL. Same canonical-ABI shape
+    # as Fs.read (result<string, io-error>): a 20-byte caller-
+    # allocated return area for tag + Ok string (ptr, len) or Err
+    # io-error (m_ptr, m_len, c_ptr, c_len). The host mirrors the
+    # Python runtime's ``urllib.request.urlopen`` + ``decode("utf-8",
     # errors="replace")`` exactly so a ``file://`` URL produces
-    # byte-identical output on both backends. ``Net.post`` is
-    # deferred per design decision D2; only ``get`` lands in slice 3.
+    # byte-identical output on both backends. ``post`` adds a second
+    # string argument (the body) and sets Content-Type
+    # ``application/octet-stream`` on both backends.
     ("Net", "get"): "get: func(url: string) -> result<string, io-error>",
+    ("Net", "post"): "post: func(url: string, body: string) -> result<string, io-error>",
     # restrict_to is a no-op at the Wasm level: capabilities carry
     # no runtime value (their methods are imports by name). The
     # attenuation discipline is enforced inline at the privileged
-    # op (``Net.get``) via the audit C2 ``$str_contains`` check.
+    # op (``Net.get`` / ``Net.post``) via the audit C2
+    # ``$str_contains`` check.
     ("Net", "restrict_to"): "restrict-to: func(host: string)",
 
     # ``parse_json`` / ``to_json`` used to live here as a synthetic
@@ -186,11 +189,11 @@ _INTERFACE_TYPE_PRELUDE: dict[str, list[str]] = {
 # prelude.
 _METHODS_NEEDING_IO_ERROR: dict[str, frozenset[str]] = {
     "Stdio": frozenset({"read_line"}),
-    # Net.restrict_to is an attenuator (no io-error); Net.get is
-    # the only privileged op that references the record. A program
-    # that only calls restrict_to (vanishingly rare; the analyzer
-    # would flag the cap as unused) skips the prelude.
-    "Net": frozenset({"get"}),
+    # Net.restrict_to is an attenuator (no io-error); Net.get /
+    # Net.post are the privileged ops that reference the record.
+    # A program that only calls restrict_to (vanishingly rare; the
+    # analyzer would flag the cap as unused) skips the prelude.
+    "Net": frozenset({"get", "post"}),
 }
 
 

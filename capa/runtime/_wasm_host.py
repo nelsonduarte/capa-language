@@ -784,27 +784,29 @@ class WasmHost:
     def _register_net(self) -> None:
         """Register the ``capa:host/net`` interface methods.
 
-        Phase 6 slice 3 scope: ``Net.get`` only. The host mirrors
-        ``capa.runtime._capabilities.Net.get`` exactly so a
-        ``file://`` URL produces byte-identical output on both
-        backends: ``urllib.request.urlopen(url)`` with a 10-second
-        timeout, body bytes decoded UTF-8 with ``errors="replace"``
-        so non-UTF-8 responses produce a deterministic
-        ``U+FFFD``-substituted string rather than a host-side trap.
+        Methods: ``get(url) -> Result<String, IoError>`` and
+        ``post(url, body) -> Result<String, IoError>``. Both host
+        callbacks mirror ``capa.runtime._capabilities.Net.{get,post}``
+        exactly so a ``file://`` URL (get) or a same-process loopback
+        (post) produces byte-identical output on both backends:
+        ``urllib.request.urlopen(Request(url[, data=body]))`` with a
+        10-second timeout, body bytes decoded UTF-8 with
+        ``errors="replace"`` so non-UTF-8 responses produce a
+        deterministic ``U+FFFD``-substituted string rather than a
+        host-side trap.
 
         Attenuation enforcement (``net.restrict_to(host)``) is
         inlined at emit time via ``$str_contains(url, host)`` in
         the Wasm backend (audit C2); a denied URL never reaches
-        this host bridge. The Python ``Net.get`` does the same
-        check against the parsed ``urlparse(url).hostname``. Both
-        backends therefore agree on which URLs make it to the
-        network layer, and this method only handles the unrestricted
-        / already-allowed path.
+        this host bridge. The Python ``Net.{get,post}`` does the
+        same check against the parsed ``urlparse(url).hostname``.
+        Both backends therefore agree on which URLs make it to the
+        network layer, and these methods only handle the
+        unrestricted / already-allowed path.
 
-        ``Net.post`` is deferred per design decision D2 (slice 3
-        ships ``get`` parity only); ``net.restrict-to`` is a host
-        no-op like ``fs.restrict-to`` since capabilities carry no
-        runtime value at the Wasm level."""
+        ``net.restrict-to`` is a host no-op like ``fs.restrict-to``
+        since capabilities carry no runtime value at the Wasm
+        level."""
         from urllib.request import Request, urlopen
         from urllib.error import URLError
         # Canonical ABI: result<string, io-error> returns indirectly
@@ -897,6 +899,61 @@ class WasmHost:
         self.linker.define_func(
             "capa:host/net", "get", ft_net_get_indirect,
             net_get, access_caller=True,
+        )
+
+        # net.post: same indirect-return shape as net.get plus a
+        # second String arg (the request body).
+        ft_net_post_indirect = wasmtime.FuncType(
+            [
+                wasmtime.ValType.i32(),  # url_ptr
+                wasmtime.ValType.i32(),  # url_len
+                wasmtime.ValType.i32(),  # body_ptr
+                wasmtime.ValType.i32(),  # body_len
+                wasmtime.ValType.i32(),  # ret_area
+            ],
+            [],
+        )
+
+        def net_post(caller, url_ptr, url_len, body_ptr, body_len, ret_area):
+            if self._memory is None or self._alloc_export is None:
+                raise RuntimeError(
+                    "net.post called before memory + $alloc set"
+                )
+            # Same UTF-8 decode policy as net.get for the URL; the
+            # body is treated as opaque bytes (we don't decode +
+            # re-encode it to preserve byte-for-byte semantics with
+            # the Python runtime, which calls body.encode("utf-8")
+            # on a Capa String -- always valid UTF-8 at the source
+            # level since Capa Strings are unicode-safe).
+            try:
+                url = bytes(
+                    self._memory.read(caller, url_ptr, url_ptr + url_len)
+                ).decode("utf-8")
+            except UnicodeDecodeError as e:
+                _write_result_err_ioerror(
+                    caller, ret_area, "invalid URL", str(e),
+                )
+                return
+            body_bytes = bytes(
+                self._memory.read(caller, body_ptr, body_ptr + body_len)
+            )
+            try:
+                req = Request(
+                    url, data=body_bytes,
+                    headers={"Content-Type": "application/octet-stream"},
+                )
+                with urlopen(req, timeout=10) as resp:
+                    data = resp.read().decode("utf-8", errors="replace")
+                s_ptr, s_len = _alloc_utf8(caller, data)
+                _write_result_ok_string(caller, ret_area, s_ptr, s_len)
+            except (URLError, OSError, ValueError) as e:
+                _write_result_err_ioerror(
+                    caller, ret_area, "HTTP POST failed", str(e),
+                )
+
+        self.linker.define_func(
+            "capa:host/net", "post", ft_net_post_indirect,
+            net_post, access_caller=True,
         )
 
         # net.restrict_to is a no-op at the Wasm level (mirrors

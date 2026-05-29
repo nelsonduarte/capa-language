@@ -5563,6 +5563,55 @@ class TestWasmNetExecutes(unittest.TestCase):
         out = self._run_capturing_stdout(src)
         self.assertEqual(out, "denied\n")
 
+    def test_net_post_round_trip_against_loopback(self):
+        # Hermetic POST round-trip: spin up an in-process http.server
+        # whose handler echoes the request body verbatim, then have
+        # the Capa program POST a known body and assert the response
+        # equals it. Validates the body-bytes path end-to-end (Wasm
+        # bridge reads the body bytes from linear memory, builds the
+        # urllib Request, the loopback server echoes them back, the
+        # Ok arm carries the response into the program). Bound to
+        # 127.0.0.1 on an ephemeral port so it never collides with
+        # CI workers.
+        import http.server
+        import threading
+
+        body_text = "hello-post-body"
+
+        class EchoHandler(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                length = int(self.headers.get("Content-Length", "0"))
+                payload = self.rfile.read(length)
+                self.send_response(200)
+                self.send_header("Content-Type", "application/octet-stream")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+            def log_message(self, *args, **kwargs):
+                # Silence the default access log so the test output
+                # stays scoped to the assertion.
+                pass
+
+        server = http.server.HTTPServer(("127.0.0.1", 0), EchoHandler)
+        port = server.server_address[1]
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            url = f"http://127.0.0.1:{port}/echo"
+            src = (
+                "fun main(stdio: Stdio, net: Net)\n"
+                f"    match net.post(\"{url}\", \"{body_text}\")\n"
+                "        Ok(text) -> stdio.println(\"echo: ${text}\")\n"
+                "        Err(_) -> stdio.eprintln(\"BUG: post failed\")\n"
+            )
+            out = self._run_capturing_stdout(src)
+            self.assertEqual(out, f"echo: {body_text}\n")
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
 
 if __name__ == "__main__":
     unittest.main()

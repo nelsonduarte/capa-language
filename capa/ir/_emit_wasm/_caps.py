@@ -171,12 +171,14 @@ _CANONICAL_INDIRECT_RETURN: dict[tuple[str, str], tuple[int, str]] = {
     # Stdio.read_line: result<string, io-error>. Same 20-byte shape
     # and materialiser as Fs.read.
     ("Stdio", "read_line"): (20, "result_string_io_error"),
-    # Net.get: same canonical-ABI shape as Fs.read. The attenuation
-    # branch in ``_emit_indirect_with_attenuation_check`` already
-    # handles Net.get / Net.post via the receiver-host check; the
-    # ``("Net", "post")`` entry stays out of this table per design
-    # decision D2 (post deferred to a follow-up slice).
+    # Net.get / Net.post: same canonical-ABI shape as Fs.read /
+    # Fs.write respectively. The attenuation branch in
+    # ``_emit_indirect_with_attenuation_check`` already handles
+    # both via the receiver-host check; Net.post adds a second
+    # String arg (the body) and uses the same 20-byte result
+    # area as Net.get.
     ("Net", "get"): (20, "result_string_io_error"),
+    ("Net", "post"): (20, "result_string_io_error"),
     # ``Json`` used to live here when parse_json / to_json crossed a
     # host bridge; they now compile to local-export calls into the
     # bundled JSON parser (see ``capa.ir._builtin_json``), so no
@@ -242,6 +244,14 @@ class _CapDispatchMixin:
             # 20-byte ret area for the result. Same layout as
             # Fs.read's Err branch; Ok carries unit (no flat
             # fields).
+            return (["i32", "i32", "i32", "i32", "i32"], "")
+        if "func(url: string, body: string) -> result<string, io-error>" in wit:
+            # Net.post: url (ptr, len) + body (ptr, len) + 20-byte
+            # ret area for Result<String, IoError>. Same Ok arm
+            # shape as Net.get (ptr, len for the response body)
+            # plus the Err io-error 4-i32 fallback. The host's
+            # write into the ret area is independent of the body
+            # arg (which is read once and consumed by urlopen).
             return (["i32", "i32", "i32", "i32", "i32"], "")
         if "func(path: string) -> result<_, io-error>" in wit:
             # Fs.mkdir: single-string arg version of Fs.write's
@@ -479,10 +489,22 @@ class _CapDispatchMixin:
             self._push_string_arg(instr.args[1])
             self._write("local.set $_atten_content_len")
             self._write("local.set $_atten_content_ptr")
-        elif cap == "Net" and method in ("get", "post"):
+        elif cap == "Net" and method == "get":
             self._push_string_arg(instr.args[0])
             self._write("local.set $_atten_path_len")
             self._write("local.set $_atten_path_ptr")
+        elif cap == "Net" and method == "post":
+            # Net.post(url, body): two String args. Stash both
+            # before the predicate check so the host-call branch
+            # can re-push them without re-evaluating either IR
+            # Value (which would matter if the body is a function
+            # call with side effects).
+            self._push_string_arg(instr.args[0])
+            self._write("local.set $_atten_path_len")
+            self._write("local.set $_atten_path_ptr")
+            self._push_string_arg(instr.args[1])
+            self._write("local.set $_atten_content_len")
+            self._write("local.set $_atten_content_ptr")
         elif cap == "Env" and method == "get":
             self._push_string_arg(instr.args[0])
             self._write("local.set $_atten_path_len")
@@ -519,9 +541,17 @@ class _CapDispatchMixin:
             self._write("local.get $_atten_path_len")
             self._write("local.get $_atten_content_ptr")
             self._write("local.get $_atten_content_len")
-        elif cap == "Net" and method in ("get", "post"):
+        elif cap == "Net" and method == "get":
             self._write("local.get $_atten_path_ptr")
             self._write("local.get $_atten_path_len")
+        elif cap == "Net" and method == "post":
+            # Push url + body in the order the host's
+            # ``net.post(url_ptr, url_len, body_ptr, body_len,
+            # ret_area)`` signature expects.
+            self._write("local.get $_atten_path_ptr")
+            self._write("local.get $_atten_path_len")
+            self._write("local.get $_atten_content_ptr")
+            self._write("local.get $_atten_content_len")
         elif cap == "Env" and method == "get":
             self._write("local.get $_atten_path_ptr")
             self._write("local.get $_atten_path_len")

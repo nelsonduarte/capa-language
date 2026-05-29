@@ -452,11 +452,14 @@ class Net:
     stdlib. Restriction is enforced *before* any system call, so a
     rejected host never reaches the network layer.
 
-    Capa code uses the capability through three methods:
+    Capa code uses the capability through four methods:
     - ``restrict_to(host: String) -> Net``, attenuation
     - ``allows(host: String) -> Bool``, query, without performing IO
     - ``get(url: String) -> Result<String, IoError>``, real HTTP GET,
       gated by the current restriction set
+    - ``post(url: String, body: String) -> Result<String, IoError>``,
+      HTTP POST with a UTF-8 body (Content-Type
+      ``application/octet-stream``); same attenuation gate as ``get``
     """
 
     __slots__ = ("_allowed",)
@@ -499,6 +502,46 @@ class Net:
                 return Ok(data)
         except (OSError, ValueError) as e:
             return Err(IoError("HTTP GET failed", str(e)))
+
+    def post(self, url: str, body: str):
+        """HTTP POST: same attenuation gate as ``get``, sends ``body``
+        as a UTF-8 byte string with Content-Type
+        ``application/octet-stream``. Errors lower into the same
+        ``IoError`` shape as ``get`` so both backends agree on the
+        diagnostic when the request fails (network, host-deny, or
+        URL-parse).
+
+        ``urllib.request.urlopen`` triggers a POST automatically when
+        ``data`` is supplied; the Wasm host bridge mirrors that
+        exactly via ``Request(url, data=body.encode(\"utf-8\"))``."""
+        from urllib.parse import urlparse
+        from urllib.request import Request, urlopen
+
+        try:
+            host = urlparse(url).hostname or ""
+        except ValueError as e:
+            return Err(IoError("invalid URL", str(e)))
+
+        if not self.allows(host):
+            allowed_repr = (
+                sorted(self._allowed) if self._allowed is not None else "unrestricted"
+            )
+            return Err(IoError(
+                f"Net capability does not permit access to host {host!r}",
+                f"current restrictions: {allowed_repr}",
+            ))
+
+        try:
+            body_bytes = body.encode("utf-8")
+            req = Request(
+                url, data=body_bytes,
+                headers={"Content-Type": "application/octet-stream"},
+            )
+            with urlopen(req, timeout=10) as resp:
+                data = resp.read().decode("utf-8", errors="replace")
+                return Ok(data)
+        except (OSError, ValueError) as e:
+            return Err(IoError("HTTP POST failed", str(e)))
 
 
 class Proc(_StubCapability):

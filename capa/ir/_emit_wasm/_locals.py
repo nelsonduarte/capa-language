@@ -393,6 +393,13 @@ class _LocalsCollectionMixin:
                                 has_attenuation_env_check = True
                             if cap == "Fs" and m == "write":
                                 has_atten_fs_write_check = True
+                            if cap == "Net" and m == "post":
+                                # Net.post threads a second String
+                                # (the body) into the host call;
+                                # the attenuation-stash dance reuses
+                                # the same _atten_content_* locals
+                                # Fs.write uses.
+                                has_atten_fs_write_check = True
                     if recv_ty.startswith("List"):
                         # List method calls (push / contains / get
                         # / length / is_empty / ...) reuse $_m_scrut

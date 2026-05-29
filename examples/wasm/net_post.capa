@@ -1,0 +1,22 @@
+// Net.post returns Result<String, IoError>. Symmetric with Net.get
+// for parity purposes: a Net restricted to "example.org" attempts a
+// POST to "http://other.com/...", and both backends short-circuit
+// to Err via the inline attenuation check the Wasm emitter inlines
+// (audit C2). Output is byte-identical without needing a real HTTP
+// endpoint.
+//
+// The happy path (a POST that reaches a server) is exercised by
+// TestWasmNet in tests/test_ir_wasm.py via a Python loopback
+// http.server fixture; parity-checking that needs both sides to
+// reach the same server which would be too flaky for the harness.
+
+fun main(stdio: Stdio, net: Net)
+    let safe = net.restrict_to("example.org")
+    match safe.post("http://other.com/api", "payload=42")
+        Ok(_) -> stdio.eprintln("BUG: denied POST returned Ok")
+        Err(_) -> stdio.println("denied as expected")
+
+    // Empty body still goes through the same attenuation path.
+    match safe.post("http://elsewhere.invalid/x", "")
+        Ok(_) -> stdio.eprintln("BUG: denied POST returned Ok")
+        Err(_) -> stdio.println("empty-body denial: ok")

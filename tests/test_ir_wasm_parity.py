@@ -93,6 +93,7 @@ _PARITY_PROGRAMS: list[str] = [
     "range_iter.capa",
     "option_result_hofs.capa",
     "fn_ref_as_closure.capa",
+    "net_post.capa",
 ]
 
 # Programs deliberately excluded from parity and why; documented
@@ -432,6 +433,16 @@ class TestPythonWasmParity(unittest.TestCase):
         # natively, Wasm dispatches via call_indirect through the
         # thunk.
         self._assert_parity("fn_ref_as_closure.capa")
+
+    def test_net_post(self):
+        # Slice 8 (2026-05): ``Net.post(url, body)`` lands on the
+        # Wasm backend. The parity program exercises only the
+        # attenuation-deny path so the harness stays hermetic
+        # (both backends short-circuit to Err before the
+        # network bridge runs). The happy path uses a loopback
+        # http.server fixture and lives in
+        # ``test_net_post_round_trip_against_loopback``.
+        self._assert_parity("net_post.capa")
 
     def test_inventory_matches_examples_dir(self):
         # Soundness check: every .capa under examples/wasm/ is

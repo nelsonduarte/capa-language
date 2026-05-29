@@ -209,6 +209,7 @@ METHODS: dict[str, list[tuple[str, TyFun, list[str]]]] = {
         ("restrict_to", fun(TyString, TyName("Net")),                              []),
         ("allows",      fun(TyString, TyBool),                                     []),
         ("get",         fun(TyString, _str_res),                                   []),
+        ("post",        fun(TyString, TyString, _str_res),                         []),
     ],
     "Random": [
         ("with_seed",  fun(TyInt, TyName("Random")),                               []),

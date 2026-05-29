@@ -242,18 +242,17 @@ class WasmComponentHost:
         random_ifc.close()
 
     def _register_net(self, root: wc.LinkerInstance) -> None:
-        """Register the ``capa:host/net`` interface (slice 3 scope).
+        """Register the ``capa:host/net`` interface.
 
-        Mirrors the core-host bridge byte-for-byte: ``Net.get``
-        runs through ``urllib.request.urlopen`` with a 10-second
-        timeout and decodes the body UTF-8 with
+        Mirrors the core-host bridge byte-for-byte: ``Net.get`` /
+        ``Net.post`` run through ``urllib.request.urlopen`` with a
+        10-second timeout and decode the body UTF-8 with
         ``errors="replace"`` for non-UTF-8 responses. Failures
         (URLError, OSError, ValueError) return an
         ``IoErrorRecord`` so the component-side
         ``result<string, io-error>`` lowers to Err with the same
-        message shape the core host produces. ``Net.post`` is
-        deferred (design decision D2); ``net.restrict-to`` is a
-        no-op like ``fs.restrict-to``."""
+        message shape the core host produces. ``net.restrict-to``
+        is a no-op like ``fs.restrict-to``."""
         from urllib.request import Request, urlopen
         from urllib.error import URLError
         net_ifc = root.add_instance("capa:host/net")
@@ -267,10 +266,24 @@ class WasmComponentHost:
                     message="HTTP GET failed", cause=str(e),
                 )
 
+        def net_post(_store, url: str, body: str):
+            try:
+                req = Request(
+                    url, data=body.encode("utf-8"),
+                    headers={"Content-Type": "application/octet-stream"},
+                )
+                with urlopen(req, timeout=10) as resp:
+                    return resp.read().decode("utf-8", errors="replace")
+            except (URLError, OSError, ValueError) as e:
+                return IoErrorRecord(
+                    message="HTTP POST failed", cause=str(e),
+                )
+
         def net_restrict_to(_store, _host: str):
             return None
 
         net_ifc.add_func("get",         net_get)
+        net_ifc.add_func("post",        net_post)
         net_ifc.add_func("restrict-to", net_restrict_to)
         net_ifc.close()
 
