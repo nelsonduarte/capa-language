@@ -159,6 +159,22 @@ class _ExpressionsMixin:
           nested function's stmts appear at the correct indentation
           level.
 
+        Captures are bound by VALUE at lambda-definition time
+        (audit slice 19, 2026-05-29). Without this, Python's
+        late-binding closure semantics make
+        ``for i in 0..3: handlers.push(fun () => i)`` produce
+        three lambdas that all return ``2`` (the loop var's
+        final value), while the Wasm backend captures each
+        iteration's ``i`` at ``MakeLambda`` time and produces
+        ``[0, 1, 2]``. The fix emits captures as Python default
+        arguments (``lambda x, _i=i: ...``) which binds the
+        value at the lambda's creation site, matching Wasm.
+        Reference-typed captures (lists, maps, strings) still
+        share the same object — default args bind the reference,
+        not a copy, which is also what the Wasm side does (it
+        captures the i32 pointer to the heap record, not a
+        deep copy).
+
         Lambdas whose body contains ``?`` get the ``@_capa_wrap``
         decorator (block-bodied) or are wrapped via ``_capa_wrap(...)``
         (expression-bodied) so that ``_CapaTryEarlyReturn`` raised by
@@ -168,23 +184,177 @@ class _ExpressionsMixin:
         """
         from . import _safe_ident, _uses_exception_try
         needs_wrap = _uses_exception_try(e.body)
+        own_param_names = {p.name for p in e.params}
+        captures = self._collect_lambda_captures(e.body, own_param_names)
+        own_param_str = ", ".join(_safe_ident(p.name) for p in e.params)
+        capture_param_str = ", ".join(
+            f"{_safe_ident(name)}={_safe_ident(name)}"
+            for name in captures
+        )
+        # Join own params + capture defaults with a single comma
+        # when both are present; either alone needs no comma.
+        if own_param_str and capture_param_str:
+            full_params = f"{own_param_str}, {capture_param_str}"
+        else:
+            full_params = own_param_str or capture_param_str
         if isinstance(e.body, A.Block):
             name = f"_lambda_{self._tmp_counter}"
             self._tmp_counter += 1
-            params = ", ".join(_safe_ident(p.name) for p in e.params)
             if needs_wrap:
                 self.em.write("@_capa_wrap")
-            self.em.write(f"def {name}({params}):")
+            self.em.write(f"def {name}({full_params}):")
             self.em.indent()
             self._emit_block_body(e.body)
             self.em.dedent()
             return name
-        param_names = ", ".join(_safe_ident(p.name) for p in e.params)
         body = self._emit_expr(e.body)
-        expr = f"(lambda {param_names}: {body})"
+        expr = f"(lambda {full_params}: {body})" if full_params else f"(lambda: {body})"
         if needs_wrap:
             expr = f"_capa_wrap({expr})"
         return expr
+
+    def _collect_lambda_captures(
+        self, body, own_param_names: set[str],
+    ) -> list[str]:
+        """Walk ``body`` and return the deduplicated list of names
+        that are referenced inside but bound in an enclosing scope
+        (parameter / let / var). Module-level symbols
+        (FUNCTION, CONSTANT, VARIANT, TYPE_*, CAPABILITY, TRAIT)
+        are excluded -- they would change semantics if rebound as
+        default args (a top-level fn name would shadow).
+        Capability params are included (Wasm captures the cap
+        pointer). Identifiers we cannot resolve via
+        ``self.bindings`` are skipped conservatively. Names
+        bound INSIDE the body (let / var / for / match pattern)
+        are also excluded -- they're locals of the lambda, not
+        captures from the outer scope.
+        """
+        from ..analyzer import SymbolKind
+        captures: dict[str, None] = {}  # insertion-ordered dedup
+        # Pre-walk: collect names bound INSIDE the body so we
+        # don't mis-attribute their use-sites as captures from the
+        # outer scope. ``let x = ... ; ... x ...`` should not
+        # capture x.
+        inner_bound: set[str] = set()
+        self._collect_body_bound_names(body, inner_bound)
+        excludes = own_param_names | inner_bound
+
+        _LOCAL_KINDS = {
+            SymbolKind.PARAM, SymbolKind.LOCAL, SymbolKind.LOCAL_VAR,
+        }
+
+        def visit(node):
+            if node is None:
+                return
+            if isinstance(node, A.Ident):
+                if node.name in excludes:
+                    return
+                sym = self.bindings.get(id(node))
+                if sym is None or sym.kind not in _LOCAL_KINDS:
+                    return
+                captures.setdefault(node.name, None)
+                return
+            if isinstance(node, A.LambdaExpr):
+                # Nested lambda: its own captures get rebound at
+                # ITS emit site. Free names in its body that ALSO
+                # need to come from OUR outer scope must still
+                # be captured here. Recurse with the inner
+                # lambda's own params added to the exclude set so
+                # the inner's params aren't reported as captures
+                # of ours.
+                inner_excludes = excludes | {p.name for p in node.params}
+                inner_caps = self._collect_lambda_captures(
+                    node.body, inner_excludes,
+                )
+                for c in inner_caps:
+                    if c not in excludes:
+                        captures.setdefault(c, None)
+                return
+            # Generic walk: visit every field that holds an Expr,
+            # a Stmt, a Block, or a list of any of them.
+            from dataclasses import fields as _fields
+            if hasattr(node, "__dataclass_fields__"):
+                for f in _fields(node):
+                    val = getattr(node, f.name, None)
+                    if isinstance(val, list):
+                        for item in val:
+                            visit(item)
+                    elif isinstance(val, tuple):
+                        for item in val:
+                            visit(item)
+                    else:
+                        visit(val)
+        visit(body)
+        return list(captures.keys())
+
+    def _collect_body_bound_names(self, node, out: set[str]) -> None:
+        """Recursively collect every identifier the body binds via
+        let / var / for-binder / match-pattern. Used by
+        ``_collect_lambda_captures`` to exclude names that the
+        lambda binds internally (so a ``let x = ...`` inside the
+        body isn't mistaken for a capture of an outer ``x``).
+        Names bound inside a NESTED lambda are NOT collected --
+        each lambda has its own scope and that inner lambda
+        handles its own captures on emit."""
+        if node is None:
+            return
+        if isinstance(node, A.LambdaExpr):
+            # Don't peek inside nested lambdas; their bound names
+            # live in their own scope.
+            return
+        if isinstance(node, A.LetStmt):
+            self._collect_pattern_names(node.pattern, out)
+            self._collect_body_bound_names(node.value, out)
+            return
+        if isinstance(node, A.VarStmt):
+            out.add(node.name)
+            self._collect_body_bound_names(node.value, out)
+            return
+        if isinstance(node, A.ForStmt):
+            out.add(node.name)
+            self._collect_body_bound_names(node.iter, out)
+            for s in node.body.stmts:
+                self._collect_body_bound_names(s, out)
+            return
+        if isinstance(node, A.MatchExpr) or (
+            hasattr(A, "MatchStmt") and isinstance(node, A.MatchStmt)
+        ):
+            self._collect_body_bound_names(node.scrutinee, out)
+            for arm in node.arms:
+                self._collect_pattern_names(arm.pattern, out)
+                self._collect_body_bound_names(arm.body, out)
+            return
+        # Generic walk.
+        from dataclasses import fields as _fields
+        if hasattr(node, "__dataclass_fields__"):
+            for f in _fields(node):
+                val = getattr(node, f.name, None)
+                if isinstance(val, list):
+                    for item in val:
+                        self._collect_body_bound_names(item, out)
+                elif isinstance(val, tuple):
+                    for item in val:
+                        self._collect_body_bound_names(item, out)
+                else:
+                    self._collect_body_bound_names(val, out)
+
+    def _collect_pattern_names(self, pat, out: set[str]) -> None:
+        """Collect every name a pattern binds (IdentPat,
+        VariantPat payloads, TuplePat elements). WildcardPat and
+        LiteralPat bind nothing."""
+        if pat is None:
+            return
+        if isinstance(pat, A.IdentPat):
+            out.add(pat.name)
+            return
+        if hasattr(A, "VariantPat") and isinstance(pat, A.VariantPat):
+            for sub in pat.payloads:
+                self._collect_pattern_names(sub, out)
+            return
+        if hasattr(A, "TuplePat") and isinstance(pat, A.TuplePat):
+            for sub in pat.elements:
+                self._collect_pattern_names(sub, out)
+            return
 
     def _emit_match_expr(self, m: A.MatchExpr) -> str:
         """Emits a MatchExpr used in expression position.

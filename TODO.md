@@ -948,6 +948,57 @@ Listed so the design space is explicit.
 
 ### Wasm-specific gaps that are not P0
 
+- [x] **"Fully functional Wasm" slice 19 - transpiler audit
+  (Python closure-over-loop-var capture parity)** (closed
+  2026-05-29). A fifth audit pass (this one on the
+  `capa/transpiler/` Python emit path) found one **P1 silent
+  parity divergence** that no parity test exercised. The
+  audit also flagged 5 lower-severity P2 issues, none of
+  which were reproducible from realistic source.
+  - **The bug.** `for i in 0..N { handlers.push(fun () => i) }`
+    on the Python backend produced lambdas that all returned
+    the loop's final value (Python late-binding closure
+    semantics — `lambda: i` looks up `i` at call time, after
+    the loop has finished). The Wasm backend captured each
+    iteration's `i` at `MakeLambda` time (the env record is
+    allocated fresh per closure construction), so its
+    lambdas returned `[0, 1, 2, ...]`. Two backends, two
+    different wrong answers; no parity test ever exercised a
+    captured loop variable. Caught by the audit.
+  - **The fix.** Transpiler's `_emit_lambda` now walks the
+    body to collect free variable references that resolve to
+    enclosing-scope locals (PARAM / LOCAL / LOCAL_VAR symbol
+    kinds, excluding names bound inside the body itself via
+    let / var / for / match patterns + nested lambdas'
+    params). Each is emitted as a Python default arg:
+    `lambda i=i: i`. Default args bind values at lambda-
+    creation time, matching Wasm's MakeLambda-time snapshot.
+    Reference-typed captures (lists, strings) still share
+    the same object — default args bind references, not deep
+    copies, same as Wasm capturing the i32 heap pointer.
+  - **Audit P2s deferred** (lower severity, all confirmed
+    not exploitable from realistic source): `${...}`
+    splicing in `_emit_string_lit` is dead code on parser-
+    produced ASTs (no production path); Bool-format fallback
+    only fires when types dict is missing (production paths
+    pass it); inclusive-range Wasm overflow trap (edge case,
+    deferred in slice 16); `?` on Option in Result-returning
+    fn (analyzer rejects); `new_map` / `new_set` shadow
+    (analyzer reserves).
+  - **Structural finding**: the auditor noted that every
+    per-method lowering in `_methods.py` is hand-written
+    Python idiom with no static cross-link to the Wasm
+    side; future slice-17-shaped silent divergences will
+    keep slipping through unless each method gets a
+    deliberate fuzz-style parity test. Flagged for a future
+    slice.
+  - New parity program `closure_loop_capture.capa` covers
+    flat for-loop captures, let-bound captures, and nested
+    for-loop captures (i*10 + j across 9 closures). Suite
+    2050 -> 2051 / 5 skipped / 0 fail.
+    `capa_governance_pack` still works end-to-end on
+    `--wasm`.
+
 - [x] **"Fully functional Wasm" slice 18 - manifest soundness
   fix (closure-laundering of capabilities)** (closed
   2026-05-29). A fourth audit (this one on the analyzer /

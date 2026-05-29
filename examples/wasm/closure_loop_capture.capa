@@ -1,0 +1,42 @@
+// Slice 19 (2026-05-29): for-loop lambda capture parity.
+//
+// Pre-fix: Python emit produced ``lambda: i`` which uses
+// late-binding closure semantics. After the loop ``i`` held the
+// final value, so every captured lambda returned the same
+// number (the loop's last value). The Wasm backend captures
+// each iteration's ``i`` at MakeLambda time (the env record is
+// allocated fresh per closure construction), so its lambdas
+// returned [0, 1, 2, ...]. Two backends, two wrong answers, no
+// parity test exercising the shape.
+//
+// The fix: the Python emit now rebinds every captured name as
+// a default arg (``lambda i=i: i``), which binds at lambda-
+// definition time, matching Wasm. Reference-typed captures
+// (lists, strings) still share the same object since default
+// args bind references, not deep copies -- same semantic as
+// Wasm capturing the i32 pointer.
+
+fun main(stdio: Stdio)
+    var handlers: List<Fun() -> Int> = []
+    for i in 0..5
+        handlers.push(fun () -> Int => i)
+    for h in handlers
+        stdio.println("${h()}")
+
+    // Same pattern with a let-bound capture (immutable so the
+    // Python late-binding bug never fires for let, but the fix
+    // is uniform). Should still work cleanly.
+    let factor = 10
+    let scale = fun (x: Int) -> Int => x * factor
+    stdio.println("scale(3)=${scale(3)}")
+    stdio.println("scale(7)=${scale(7)}")
+
+    // Nested-loop captures: each (i, j) pair captured by value
+    // gives 9 distinct closures returning i*10 + j. Pre-fix
+    // Python would have returned 22 for all 9 (final i=2, j=2).
+    var pairs: List<Fun() -> Int> = []
+    for i in 0..3
+        for j in 0..3
+            pairs.push(fun () -> Int => i * 10 + j)
+    for p in pairs
+        stdio.println("${p()}")

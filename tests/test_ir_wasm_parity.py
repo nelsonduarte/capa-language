@@ -146,6 +146,13 @@ _PARITY_PROGRAMS: list[str] = [
     # returned 4 (code-point count); substring returned partial
     # UTF-8 mid-codepoint on Wasm.
     "string_unicode.capa",
+    # Slice 19 (2026-05-29): for-loop lambda capture parity.
+    # Pre-fix Python emit captured loop vars by reference
+    # (lambda: i), Wasm captured by value at MakeLambda time.
+    # Both wrong on their own, no parity test exercised the
+    # shape. Now Python emits ``lambda i=i: ...`` to bind by
+    # value, matching Wasm.
+    "closure_loop_capture.capa",
 ]
 
 # Programs deliberately excluded from parity and why; documented
@@ -612,6 +619,16 @@ class TestPythonWasmParity(unittest.TestCase):
         # argument"; now both backends emit the same yes/no per
         # cap-mediated query for a runtime String arg.
         self._assert_parity("allows_dynamic.capa")
+
+    def test_closure_loop_capture(self):
+        # Slice 19 (2026-05-29): for-loop lambda captures bind
+        # by value at lambda-creation time on both backends.
+        # Pre-fix Python's late-binding closure semantics made
+        # every lambda in a ``for i in 0..N { ... fun () => i }``
+        # loop return the same final value; Wasm captured per-
+        # iteration. Real divergence undetected by every prior
+        # parity test (none exercised a captured loop var).
+        self._assert_parity("closure_loop_capture.capa")
 
     def test_string_unicode(self):
         # Slice 17 (2026-05-29): String.length and substring now
