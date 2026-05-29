@@ -948,6 +948,85 @@ Listed so the design space is explicit.
 
 ### Wasm-specific gaps that are not P0
 
+- [x] **"Fully functional Wasm" slice 12 - audit-pass security
+  hardening (capability escapes on Wasm)** (closed
+  2026-05-29). Audit of slices 4-11 surfaced **two real
+  capability escapes** in the Wasm backend that this slice
+  closes. Both bugs let a program with a path-attenuated `Fs` /
+  `Db` cap reach paths outside its allowed prefix. The Python
+  runtime had always gated correctly; the Wasm host bridges
+  trusted the guest entirely.
+  - **P0: `Fs.{exists,is_dir,mkdir,list_dir}` bypassed
+    attenuation on Wasm.** Pre-fix a `Fs.restrict_to("/tmp/")`
+    cap could `fs.mkdir("/etc/foo")` / `fs.list_dir("/etc")`
+    on Wasm and the host happily complied. Fix:
+    - `mkdir` / `list_dir` (return `Result<...>`) added to
+      `_ATTENUATION_PRIVILEGED_OPS`; routed through
+      `_emit_indirect_with_attenuation_check` with the
+      single-string-arg shape.
+    - `exists` / `is_dir` (return `Bool`) get a new inline-
+      wrapper helper `_emit_bool_query_with_attenuation_check`
+      that calls the host on pass and pushes `i32.const 0`
+      on deny (fail-closed-as-absent, matches Python's
+      "denied paths report False so the cap doesn't leak
+      out-of-prefix existence").
+    - New `result_list_string_io_error` Err materialiser
+      (was latent: missing branch would have crashed emit
+      once `list_dir` got added to the privileged set).
+  - **P1: path-prefix boundary bug.**
+    `Fs.restrict_to("/tmp")` (no trailing slash) admitted
+    `/tmproot/secret` on both Python and Wasm. Naive
+    `str.startswith` / `$str_starts_with` doesn't respect
+    component boundaries. Fix: new emit-time
+    `_emit_path_prefix_check` helper that emits
+    `path == prefix OR path.startswith(prefix + '/')` as a
+    combined check; Python's `Db.allows` and the inline
+    `_emit_atten_allows` for `Fs.allows` / `Db.allows`
+    apply the same component-boundary rule. Python's
+    `Fs.allows` already canonicalises via
+    `Path.is_relative_to` (strictly stronger; resolves
+    symlinks / `..`), so it was already correct; the
+    boundary fix only adjusted `Db.allows` (which copied
+    Fs's naive prefix shape) and the Wasm-side inline
+    checks.
+  - **Discovery walker**: `_uses_attenuation_check` now
+    recognises all six `Fs` attenuated ops (read / write /
+    exists / is_dir / mkdir / list_dir) so the
+    `$str_starts_with` (and transitively `$str_eq`)
+    helpers are emitted when any one of them fires.
+  - **Audit findings NOT fixed this slice**, with
+    rationale:
+    - `Db.exec` accepts `ATTACH DATABASE 'foo.db'` to
+      bypass path attenuation. Already documented as a v1
+      limitation in the `Db` docstring; mitigations
+      require Python 3.11+ (`setlimit(SQLITE_LIMIT_ATTACHED,
+      0)`) or SQL-string parsing both of which are more
+      involved than the audit-fix scope. Tracked for Db v2.
+    - `Clock.sleep` on a `restrict_to_after(future)` cap is
+      a silent no-op in Python but currently runs on Wasm
+      (no inline check around the host call). Real
+      divergence; fix needs either an inline
+      `clock.allows()` call before `clock.sleep` or a
+      widened WIT sig threading the deadline to the host.
+      Both designs land in a follow-up; flagged but not
+      blocked here.
+    - `_emit_atten_allows` rejects non-literal `path` args
+      at emit time (user-facing limitation, documented in
+      the diagnostic message).
+  - New parity program
+    `examples/wasm/fs_attenuation_audit.capa` exercises every
+    fixed surface (exists / is_dir / mkdir / list_dir on
+    out-of-prefix paths, plus the `/tmp` vs `/tmproot/x`
+    boundary). Would fail loudly on the pre-fix Wasm
+    backend. Suite 2035 -> 2036 / 5 skipped / 0 fail.
+  - **Performance profile** (informational, no code
+    change): governance pack end-to-end Python 309ms /
+    Wasm core 500ms / Wasm CM 560ms; pure execution with
+    pre-built `.wasm` Python 8ms / Wasm 14-18ms (~2x
+    overhead is acceptable for sandbox isolation).
+    `wasm-tools parse` is ~150ms of the per-run overhead;
+    cacheable via `--output app.wasm`.
+
 - [x] **"Fully functional Wasm" slice 11 - `Db` capability v1
   (SQLite-backed, path-prefix attenuation)** (closed
   2026-05-29). The `Db` cap moves from documented-deferral

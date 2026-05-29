@@ -364,7 +364,13 @@ class _DiscoveryMixin:
             for instr in instrs:
                 if isinstance(instr, MethodCall) and instr.attenuations:
                     cap = instr.cap_used or ""
-                    if cap == "Fs" and instr.method in ("read", "write"):
+                    if cap == "Fs" and instr.method in (
+                        # Audit 2026-05-29 (slice 12): every Fs op
+                        # that crosses the trust boundary gates
+                        # through the prefix check now.
+                        "read", "write", "exists", "is_dir",
+                        "mkdir", "list_dir",
+                    ):
                         needs_starts_with = True
                     if cap == "Net" and instr.method in ("get", "post"):
                         needs_contains = True

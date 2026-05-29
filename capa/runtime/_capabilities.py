@@ -580,6 +580,23 @@ class Db:
       stringified (caller parses + casts as needed). JSON is the
       cheapest cross-backend wire shape; Capa's
       ``parse_json`` makes consumption ergonomic.
+
+    Known v1 limitation (audit 2026-05-29): the SQL string is
+    passed verbatim to ``sqlite3.executescript`` / ``execute``,
+    so a malicious or compromised Capa program holding a Db cap
+    scoped to ``/tmp/`` could use ``ATTACH DATABASE
+    '/etc/secret.db' AS evil; SELECT * FROM evil.x`` to bypass
+    the path prefix restriction. Capa's threat model treats the
+    *program* as trusted code; the cap's purpose is to constrain
+    *which file* the program touches when the program itself is
+    well-intentioned. For hardened sandbox-the-guest scenarios,
+    v2 should either:
+    - reject SQL containing ``ATTACH`` / ``DETACH`` at the
+      runtime, or
+    - call ``connection.setlimit(SQLITE_LIMIT_ATTACHED, 0)``
+      (Python 3.11+; not portable to 3.10), or
+    - expose a parameterized-only API surface that rejects
+      multi-statement strings entirely.
     """
 
     __slots__ = ("_allowed",)
@@ -596,10 +613,20 @@ class Db:
     def allows(self, path: str) -> bool:
         if self._allowed is None:
             return True
-        # Prefix match (mirrors Fs.allows): a restriction to
-        # "/var/data/" permits "/var/data/users.db" but denies
-        # "/etc/shadow".
-        return any(path.startswith(p) for p in self._allowed)
+        # Boundary-aware prefix match (audit 2026-05-29): a
+        # naive ``path.startswith(p)`` would admit
+        # ``/var/data_evil/secrets.db`` when restricted to
+        # ``/var/data``. Require either an exact match or a
+        # following ``/`` so the prefix lines up with a path
+        # component boundary. Mirrors the Wasm-side
+        # ``_emit_path_prefix_check`` semantics.
+        for p in self._allowed:
+            if path == p:
+                return True
+            sep = p if p.endswith("/") else p + "/"
+            if path.startswith(sep):
+                return True
+        return False
 
     def _deny(self, path: str, op: str):
         allowed_repr = (

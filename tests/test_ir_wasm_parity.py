@@ -109,6 +109,11 @@ _PARITY_PROGRAMS: list[str] = [
     # and exercises exec + query + restrict_to; both backends route
     # through ``sqlite3`` (Python directly; Wasm via host bridge).
     "db_demo.capa",
+    # Slice 12 (2026-05-29): regression net for the audit findings
+    # that Fs.{exists,is_dir,mkdir,list_dir} bypassed attenuation
+    # on the Wasm backend, and that the path-prefix check admitted
+    # ``/tmproot`` lookalikes when restricted to ``/tmp``.
+    "fs_attenuation_audit.capa",
 ]
 
 # Programs deliberately excluded from parity and why; documented
@@ -530,6 +535,16 @@ class TestPythonWasmParity(unittest.TestCase):
         finally:
             if os.path.exists(path):
                 os.unlink(path)
+
+    def test_fs_attenuation_audit(self):
+        # Slice 12 (2026-05-29): pin the audit-bug-fix surface.
+        # Pre-fix the Wasm Fs host bridges for exists / is_dir /
+        # mkdir / list_dir bypassed attenuation entirely (a cap
+        # scoped to /tmp/ could fs.mkdir("/etc/foo") on Wasm);
+        # the path-prefix check also admitted /tmproot/x when
+        # restricted to /tmp. Both holes now closed. This test
+        # would fail on the pre-fix Wasm backend.
+        self._assert_parity("fs_attenuation_audit.capa")
 
     def test_inventory_matches_examples_dir(self):
         # Soundness check: every .capa under examples/wasm/ is

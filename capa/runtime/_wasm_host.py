@@ -1066,17 +1066,6 @@ class WasmHost:
                 caller, c_len.to_bytes(4, "little"), ret_area + 16,
             )
 
-        def _read_string_arg(caller, ptr, length, slot_name):
-            try:
-                return bytes(
-                    self._memory.read(caller, ptr, ptr + length)
-                ).decode("utf-8")
-            except UnicodeDecodeError as e:
-                _write_result_err_ioerror(
-                    caller, 0, f"invalid UTF-8 in {slot_name}", str(e),
-                )
-                raise
-
         def db_exec(caller, path_ptr, path_len, sql_ptr, sql_len, ret_area):
             if self._memory is None or self._alloc_export is None:
                 raise RuntimeError(

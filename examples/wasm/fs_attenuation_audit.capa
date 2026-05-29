@@ -1,0 +1,48 @@
+// Slice 12 (2026-05-29): post-audit regression net for the
+// Fs.{exists, is_dir, mkdir, list_dir} attenuation bypass that
+// the Wasm backend shipped pre-fix. A Fs cap scoped to "/tmp/"
+// must deny operations on out-of-prefix paths on BOTH backends
+// (Python already gated; Wasm now does too via the inline
+// attenuation check). Output is hermetic: every assertion
+// branches on the cap's response, never on real filesystem
+// state.
+//
+// Also exercises the boundary fix: a restriction to "/tmp"
+// (without trailing slash) must deny a path that starts with
+// "/tmproot/..." -- a classic prefix-bypass that the naive
+// $str_starts_with check used to admit.
+
+fun show(stdio: Stdio, label: String, flag: Bool)
+    if flag
+        stdio.println("${label}: yes")
+    else
+        stdio.println("${label}: no")
+
+fun main(stdio: Stdio, fs: Fs)
+    // Scope to /tmp/ (trailing slash); valid in-scope paths
+    // should still work.
+    let in_scope = fs.restrict_to("/tmp/")
+    show(stdio, "in_scope allows /tmp/foo", in_scope.allows("/tmp/foo"))
+    show(stdio, "in_scope allows /etc/foo", in_scope.allows("/etc/foo"))
+
+    // Bool-returning ops must fail-closed-as-absent on denial.
+    show(stdio, "in_scope.exists(/etc/passwd)", in_scope.exists("/etc/passwd"))
+    show(stdio, "in_scope.is_dir(/etc)", in_scope.is_dir("/etc"))
+
+    // mkdir + list_dir on an out-of-prefix path must return Err.
+    match in_scope.mkdir("/etc/capa_should_not_exist")
+        Ok(_) -> stdio.eprintln("BUG: mkdir leaked")
+        Err(_) -> stdio.println("mkdir denied")
+    match in_scope.list_dir("/etc")
+        Ok(_) -> stdio.eprintln("BUG: list_dir leaked")
+        Err(_) -> stdio.println("list_dir denied")
+
+    // Boundary fix: restrict to "/tmp" (no trailing slash). The
+    // prefix attenuation must NOT admit "/tmproot/..." paths.
+    let boundary = fs.restrict_to("/tmp")
+    show(stdio, "boundary allows /tmp", boundary.allows("/tmp"))
+    show(stdio, "boundary allows /tmp/foo", boundary.allows("/tmp/foo"))
+    show(stdio, "boundary allows /tmproot/x", boundary.allows("/tmproot/x"))
+    match boundary.mkdir("/tmproot/capa_bypass")
+        Ok(_) -> stdio.eprintln("BUG: boundary mkdir leaked")
+        Err(_) -> stdio.println("boundary mkdir denied")

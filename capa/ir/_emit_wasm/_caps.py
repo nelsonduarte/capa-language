@@ -52,6 +52,16 @@ from ._layout import WasmEmissionError
 _ATTENUATION_PRIVILEGED_OPS: frozenset[tuple[str, str]] = frozenset({
     ("Fs", "read"),
     ("Fs", "write"),
+    # Audit 2026-05-29 (slice 12): Fs.exists / Fs.is_dir / Fs.mkdir
+    # / Fs.list_dir all observe or mutate the filesystem and so
+    # must respect the cap's prefix attenuation just like read /
+    # write. Pre-fix a Db cap scoped to "/tmp/" could
+    # ``fs.mkdir("/etc/foo")`` on Wasm; the Python runtime
+    # already gated all four through ``self.allows(path)``.
+    ("Fs", "exists"),
+    ("Fs", "is_dir"),
+    ("Fs", "mkdir"),
+    ("Fs", "list_dir"),
     ("Net", "get"),
     ("Net", "post"),
     ("Env", "get"),
@@ -416,6 +426,23 @@ class _CapDispatchMixin:
                 instr, cap, method, attenuations,
             )
             return
+        if (attenuations and priv_op
+                and cap == "Fs" and method in ("exists", "is_dir")):
+            # Bool-returning queries. The Python runtime fails-
+            # closed-as-absent: a denied path reports False so the
+            # cap doesn't leak the existence of paths outside its
+            # allowed prefixes. Mirror that on Wasm by wrapping
+            # the host call with an inline allows check; on deny
+            # we push 0 (Bool false) without ever touching the
+            # host. Pre-fix the host bridge was called
+            # unconditionally; a Fs cap scoped to "/tmp/" could
+            # ``fs.exists("/etc/shadow")`` on Wasm and the host
+            # answered honestly, leaking out-of-prefix existence
+            # information.
+            self._emit_bool_query_with_attenuation_check(
+                instr, cap, method, attenuations,
+            )
+            return
         # Push each argument. String args (literals or locals)
         # expand to (ptr, len) i32 pairs; scalar args use the
         # regular push path.
@@ -543,6 +570,14 @@ class _CapDispatchMixin:
             self._push_string_arg(instr.args[0])
             self._write("local.set $_atten_path_len")
             self._write("local.set $_atten_path_ptr")
+        elif cap == "Fs" and method in ("mkdir", "list_dir"):
+            # Single-string-arg Fs ops that mutate (mkdir) or
+            # observe (list_dir). Same path-prefix attenuation as
+            # Fs.read / write; the inline check fires on the
+            # path arg.
+            self._push_string_arg(instr.args[0])
+            self._write("local.set $_atten_path_len")
+            self._write("local.set $_atten_path_ptr")
         else:
             raise WasmEmissionError(
                 f"attenuation check for {cap}.{method} not "
@@ -597,6 +632,10 @@ class _CapDispatchMixin:
         elif cap == "Env" and method == "get":
             self._write("local.get $_atten_path_ptr")
             self._write("local.get $_atten_path_len")
+        elif cap == "Fs" and method in ("mkdir", "list_dir"):
+            # Single-string-arg push, parallel to Fs.read.
+            self._write("local.get $_atten_path_ptr")
+            self._write("local.get $_atten_path_len")
         self._write("local.get $_ret_area")
         self._write(f"call ${cap}_{method}")
         self._indent -= 1
@@ -630,18 +669,7 @@ class _CapDispatchMixin:
                     f"with args {args!r}"
                 )
             prefix = _unquote_attenuation_arg(args[0])
-            offset, length = self._intern_string(prefix)
-            # str_starts_with(path_ptr, path_len, prefix_ptr,
-            # prefix_len) -> i32
-            self._write("local.get $_atten_path_ptr")
-            self._write("local.get $_atten_path_len")
-            self._write(f"i32.const {offset}")
-            self._write(f"i32.const {length}")
-            self._write("call $str_starts_with")
-            # ok = ok AND check
-            self._write("local.get $_atten_ok")
-            self._write("i32.and")
-            self._write("local.set $_atten_ok")
+            self._emit_path_prefix_check(prefix)
             return
         if cap == "Net":
             if att_method != "restrict_to" or not args:
@@ -662,8 +690,8 @@ class _CapDispatchMixin:
             return
         if cap == "Db":
             # Db attenuation mirrors Fs: ``restrict_to(prefix)``
-            # collapses to a ``str_starts_with`` check on the
-            # path arg. Same machinery, same scratch locals
+            # collapses to a path-prefix check on the path arg.
+            # Same machinery, same scratch locals
             # (``$_atten_path_*``).
             if att_method != "restrict_to" or not args:
                 raise WasmEmissionError(
@@ -671,15 +699,7 @@ class _CapDispatchMixin:
                     f"with args {args!r}"
                 )
             prefix = _unquote_attenuation_arg(args[0])
-            offset, length = self._intern_string(prefix)
-            self._write("local.get $_atten_path_ptr")
-            self._write("local.get $_atten_path_len")
-            self._write(f"i32.const {offset}")
-            self._write(f"i32.const {length}")
-            self._write("call $str_starts_with")
-            self._write("local.get $_atten_ok")
-            self._write("i32.and")
-            self._write("local.set $_atten_ok")
+            self._emit_path_prefix_check(prefix)
             return
         if cap == "Env":
             if att_method != "restrict_to_keys":
@@ -717,6 +737,94 @@ class _CapDispatchMixin:
         raise WasmEmissionError(
             f"attenuation enforcement for cap {cap!r} not implemented"
         )
+
+    def _emit_path_prefix_check(self, prefix: str) -> None:
+        """Emit a path-prefix attenuation check that respects path
+        component boundaries: ``path == prefix`` OR ``path``
+        starts with ``prefix + '/'``. The combined check rejects
+        the classic boundary bypass ``Fs.restrict_to("/tmp")``
+        admitting ``/tmproot/secret`` that a naive
+        ``$str_starts_with(path, "/tmp")`` would accept.
+
+        The Python ``Fs.allows`` uses ``Path.is_relative_to``
+        after ``os.path.realpath`` canonicalisation, which is
+        strictly stronger (resolves ``..`` / symlinks). We can't
+        realpath at emit time, but the component-boundary check
+        closes the simple lexical bypass and matches Python's
+        semantics for the common case of well-formed paths
+        without traversal.
+
+        The prefix is interned once with and once without a
+        trailing slash to avoid emitting the canonicalisation
+        logic at runtime. ``prefix + '/'`` is the slash-suffixed
+        form used for the ``startswith`` arm; ``prefix`` is the
+        exact-match arm. Result: ok &&= (eq OR starts_with_slash).
+        """
+        # exact-match arm: $str_eq(path, prefix)
+        offset_eq, length_eq = self._intern_string(prefix)
+        self._write("local.get $_atten_path_ptr")
+        self._write("local.get $_atten_path_len")
+        self._write(f"i32.const {offset_eq}")
+        self._write(f"i32.const {length_eq}")
+        self._write("call $str_eq")
+        # boundary-aware startswith arm: $str_starts_with(path,
+        # prefix + '/'). The trailing slash forces the next char
+        # of ``path`` (if any) to be a separator, blocking the
+        # ``/tmproot`` lookalike.
+        prefix_with_slash = prefix if prefix.endswith("/") else prefix + "/"
+        offset_sw, length_sw = self._intern_string(prefix_with_slash)
+        self._write("local.get $_atten_path_ptr")
+        self._write("local.get $_atten_path_len")
+        self._write(f"i32.const {offset_sw}")
+        self._write(f"i32.const {length_sw}")
+        self._write("call $str_starts_with")
+        # combine: eq OR starts_with_slash
+        self._write("i32.or")
+        # ok &= combined
+        self._write("local.get $_atten_ok")
+        self._write("i32.and")
+        self._write("local.set $_atten_ok")
+
+    def _emit_bool_query_with_attenuation_check(
+        self, instr, cap: str, method: str, attenuations: list,
+    ) -> None:
+        """Wrap a Bool-returning Fs query (``exists`` / ``is_dir``)
+        in an inline attenuation check. On pass we call the host
+        and bind its i32 result to ``instr.dst``; on deny we push
+        0 (Bool false) directly, never touching the host. This
+        mirrors the Python runtime's fail-closed-as-absent rule
+        (``Fs.allows()`` returns False, ``Fs.exists()`` returns
+        False without leaking the existence of out-of-prefix
+        paths).
+
+        Uses the same ``$_atten_path_*`` + ``$_atten_ok`` scratch
+        as the indirect-return path; the locals collector already
+        declares them when any attenuated op is present."""
+        # Stash the path arg.
+        self._push_string_arg(instr.args[0])
+        self._write("local.set $_atten_path_len")
+        self._write("local.set $_atten_path_ptr")
+        # Build the predicate: 1 = all attenuations passed, 0 = at
+        # least one failed. Stash in $_atten_ok.
+        self._write("i32.const 1")
+        self._write("local.set $_atten_ok")
+        for att in attenuations:
+            self._emit_one_attenuation(cap, method, att)
+        # if (ok) call host(path) else push 0 -> bind to dst.
+        self._write("local.get $_atten_ok")
+        self._write("if (result i32)")
+        self._indent += 1
+        self._write("local.get $_atten_path_ptr")
+        self._write("local.get $_atten_path_len")
+        self._write(f"call ${cap}_{method}")
+        self._indent -= 1
+        self._write("else")
+        self._indent += 1
+        self._write("i32.const 0")
+        self._indent -= 1
+        self._write("end")
+        if instr.dst is not None:
+            self._write(f"local.set ${instr.dst}")
 
     def _emit_attenuation_err_into_ret_area(
         self, cap: str, method: str, ret_kind: str,
@@ -763,6 +871,30 @@ class _CapDispatchMixin:
             self._write("local.get $_ret_area")
             self._write("i32.const 0")
             self._write("i32.store offset=8")
+            return
+        if ret_kind == "result_list_string_io_error":
+            # 20-byte ret area: tag i32 @ 0, then either the Ok
+            # arm's flat (data_ptr, len) at @4 / @8 or the Err
+            # arm's (m_ptr, m_len, c_ptr, c_len) at @4 / @8 / @12
+            # / @16. The Err arm has the same shape as
+            # ``result_string_io_error`` (4 i32s for io-error);
+            # the only difference is what the Ok arm carries, and
+            # we're writing an Err, so the layout matches.
+            self._write("local.get $_ret_area")
+            self._write("i32.const 1")
+            self._write("i32.store offset=0")
+            self._write("local.get $_ret_area")
+            self._write(f"i32.const {m_offset}")
+            self._write("i32.store offset=4")
+            self._write("local.get $_ret_area")
+            self._write(f"i32.const {m_length}")
+            self._write("i32.store offset=8")
+            self._write("local.get $_ret_area")
+            self._write("i32.const 0")
+            self._write("i32.store offset=12")
+            self._write("local.get $_ret_area")
+            self._write("i32.const 0")
+            self._write("i32.store offset=16")
             return
         raise WasmEmissionError(
             f"attenuation Err materialisation for {ret_kind!r} "
@@ -818,27 +950,34 @@ class _CapDispatchMixin:
         # ``self._allowed_keys is None`` in the Python runtime).
         if not attenuations:
             result = True
-        elif cap == "Fs":
+        elif cap in ("Fs", "Db"):
             # AND over each restrict_to(prefix): literal must
-            # str-start with every prefix in the chain. Anything
+            # match every prefix in the chain at a component
+            # boundary (exact match OR followed by '/'). Anything
             # else (a different attenuation method, a non-literal
             # prefix) is a structural error -- the analyzer should
             # have rejected it on the privileged op already, so
-            # we mirror that loudness here.
+            # we mirror that loudness here. Audit 2026-05-29:
+            # pre-fix the check used a naive ``startswith`` which
+            # admitted ``/tmproot/x`` when restricted to ``/tmp``;
+            # the boundary-aware check now matches the Python
+            # runtime's ``Path.is_relative_to`` semantics for
+            # well-formed lexical paths.
             result = True
             for att in attenuations:
                 if att.get("method") != "restrict_to":
                     raise WasmEmissionError(
-                        f"unsupported Fs attenuation on .allows: "
+                        f"unsupported {cap} attenuation on .allows: "
                         f"{att.get('method')!r}"
                     )
                 args = att.get("args", [])
                 if not args:
                     raise WasmEmissionError(
-                        "Fs.restrict_to attenuation with no arg"
+                        f"{cap}.restrict_to attenuation with no arg"
                     )
                 prefix = _unquote_attenuation_arg(args[0])
-                if not literal.startswith(prefix):
+                sep = prefix if prefix.endswith("/") else prefix + "/"
+                if not (literal == prefix or literal.startswith(sep)):
                     result = False
                     break
         else:  # cap == "Env"

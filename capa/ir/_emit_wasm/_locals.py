@@ -384,7 +384,19 @@ class _LocalsCollectionMixin:
                     if getattr(instr, "attenuations", None):
                         cap = instr.cap_used or ""
                         m = instr.method
-                        if (cap == "Fs" and m in ("read", "write")) \
+                        # Bool-returning Fs queries (exists / is_dir)
+                        # also gate through an inline attenuation
+                        # check (audit 2026-05-29) but use the
+                        # direct-return path, not the indirect ret-
+                        # area dance. They still need the
+                        # ``$_atten_path_*`` + ``$_atten_ok`` scratch
+                        # locals declared, so flag
+                        # ``has_attenuation_check`` without setting
+                        # ``has_indirect_cap_call``.
+                        if (cap == "Fs"
+                                and m in ("exists", "is_dir")):
+                            has_attenuation_check = True
+                        if (cap == "Fs" and m in ("read", "write", "mkdir", "list_dir")) \
                                 or (cap == "Net" and m in ("get", "post")) \
                                 or (cap == "Env" and m == "get") \
                                 or (cap == "Db" and m in ("exec", "query")):
