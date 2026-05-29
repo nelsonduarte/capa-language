@@ -74,6 +74,7 @@ class WasmHost:
         self._register_random()
         self._register_net()
         self._register_db()
+        self._register_proc()
 
     def _register_stdio(self) -> None:
         """Register the ``capa:stdio`` interface methods. Each
@@ -1163,6 +1164,161 @@ class WasmHost:
         self.linker.define_func(
             "capa:host/db", "restrict-to", ft_string_to_unit,
             db_restrict_to, access_caller=True,
+        )
+
+    def _register_proc(self) -> None:
+        """Register the ``capa:host/proc`` interface methods.
+
+        Slice 15 (2026-05): Proc is a sandboxed subprocess
+        capability. ``exec`` takes ``(cmd: string, args_json:
+        string)`` and returns the canonical-ABI
+        ``result<string, io-error>`` shape (same 20-byte ret
+        area as Db.query / Fs.read). args_json is a JSON-encoded
+        array of strings consumed as the argv tail (e.g.
+        ``["status", "--short"]``).
+
+        Execution semantics mirror the Python runtime exactly:
+        ``subprocess.run(argv, capture_output=True, timeout=30,
+        shell=False)``. Non-zero exit / timeout / malformed
+        argv JSON all surface as Err. Stdout is decoded as
+        UTF-8 with ``errors='replace'`` to match the rest of
+        the host-bridge convention.
+
+        Attenuation (``Proc.restrict_to(prefix)``) is enforced
+        inline at the guest by the ``$proc_allows`` runtime
+        helper (basename + suffix-boundary check), so a denied
+        cmd never reaches this bridge. ``proc.restrict-to`` is
+        a host no-op like ``fs.restrict-to``.
+        """
+        import json
+        import subprocess
+
+        ft_two_string_indirect = wasmtime.FuncType(
+            [
+                wasmtime.ValType.i32(),  # cmd_ptr
+                wasmtime.ValType.i32(),  # cmd_len
+                wasmtime.ValType.i32(),  # args_ptr
+                wasmtime.ValType.i32(),  # args_len
+                wasmtime.ValType.i32(),  # ret_area
+            ],
+            [],
+        )
+
+        def _alloc_utf8(caller, text: str) -> tuple[int, int]:
+            encoded = text.encode("utf-8")
+            if not encoded:
+                return 0, 0
+            ptr = self._alloc_export(caller, len(encoded))
+            self._memory.write(caller, encoded, ptr)
+            return ptr, len(encoded)
+
+        def _write_result_ok_string(caller, ret_area, ptr, length):
+            self._memory.write(caller, (0).to_bytes(4, "little"), ret_area)
+            self._memory.write(
+                caller, ptr.to_bytes(4, "little"), ret_area + 4,
+            )
+            self._memory.write(
+                caller, length.to_bytes(4, "little"), ret_area + 8,
+            )
+            self._memory.write(
+                caller, (0).to_bytes(8, "little"), ret_area + 12,
+            )
+
+        def _write_result_err_ioerror(caller, ret_area, message, cause=""):
+            m_ptr, m_len = _alloc_utf8(caller, message)
+            c_ptr, c_len = _alloc_utf8(caller, cause)
+            self._memory.write(caller, (1).to_bytes(4, "little"), ret_area)
+            self._memory.write(
+                caller, m_ptr.to_bytes(4, "little"), ret_area + 4,
+            )
+            self._memory.write(
+                caller, m_len.to_bytes(4, "little"), ret_area + 8,
+            )
+            self._memory.write(
+                caller, c_ptr.to_bytes(4, "little"), ret_area + 12,
+            )
+            self._memory.write(
+                caller, c_len.to_bytes(4, "little"), ret_area + 16,
+            )
+
+        def proc_exec(caller, cmd_ptr, cmd_len, args_ptr, args_len, ret_area):
+            if self._memory is None or self._alloc_export is None:
+                raise RuntimeError(
+                    "proc.exec called before memory + $alloc set"
+                )
+            try:
+                cmd = bytes(
+                    self._memory.read(caller, cmd_ptr, cmd_ptr + cmd_len)
+                ).decode("utf-8")
+                args_json = bytes(
+                    self._memory.read(caller, args_ptr, args_ptr + args_len)
+                ).decode("utf-8")
+            except UnicodeDecodeError as e:
+                _write_result_err_ioerror(
+                    caller, ret_area, "invalid UTF-8", str(e),
+                )
+                return
+            try:
+                tail = json.loads(args_json)
+            except (ValueError, TypeError) as e:
+                _write_result_err_ioerror(
+                    caller, ret_area,
+                    "Proc.exec args_json parse failed", str(e),
+                )
+                return
+            if not isinstance(tail, list) or not all(
+                    isinstance(x, str) for x in tail):
+                _write_result_err_ioerror(
+                    caller, ret_area,
+                    "Proc.exec args_json parse failed",
+                    "expected a JSON array of strings",
+                )
+                return
+            argv = [cmd, *tail]
+            try:
+                completed = subprocess.run(
+                    argv,
+                    capture_output=True,
+                    timeout=30,
+                    shell=False,
+                )
+            except subprocess.TimeoutExpired:
+                _write_result_err_ioerror(
+                    caller, ret_area, "timed out", "30s elapsed",
+                )
+                return
+            except (OSError, ValueError) as e:
+                _write_result_err_ioerror(
+                    caller, ret_area, "Proc.exec spawn failed", str(e),
+                )
+                return
+            if completed.returncode != 0:
+                stderr = completed.stderr.decode("utf-8", errors="replace")
+                _write_result_err_ioerror(
+                    caller, ret_area, "non-zero exit",
+                    f"code={completed.returncode} stderr={stderr!r}",
+                )
+                return
+            stdout = completed.stdout.decode("utf-8", errors="replace")
+            s_ptr, s_len = _alloc_utf8(caller, stdout)
+            _write_result_ok_string(caller, ret_area, s_ptr, s_len)
+
+        self.linker.define_func(
+            "capa:host/proc", "exec", ft_two_string_indirect,
+            proc_exec, access_caller=True,
+        )
+
+        # proc.restrict-to: host no-op like fs.restrict-to.
+        ft_string_to_unit = wasmtime.FuncType(
+            [wasmtime.ValType.i32(), wasmtime.ValType.i32()], [],
+        )
+
+        def proc_restrict_to(caller, prefix_ptr, prefix_len):
+            return None
+
+        self.linker.define_func(
+            "capa:host/proc", "restrict-to", ft_string_to_unit,
+            proc_restrict_to, access_caller=True,
         )
 
     def _register_json(self) -> None:

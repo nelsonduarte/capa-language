@@ -341,26 +341,33 @@ class _DiscoveryMixin:
                     return True
         return False
 
-    def _uses_attenuation_check(self, module: Module) -> tuple[bool, bool]:
+    def _uses_attenuation_check(
+        self, module: Module,
+    ) -> tuple[bool, bool, bool]:
         """Walk the module for ``MethodCall`` instructions whose
         ``attenuations`` field is non-empty: those are the Fs / Net /
-        Env / Clock privileged ops that the Wasm backend must guard
-        with an inline runtime check (audit C2, 2026-05-25).
+        Env / Clock / Db / Proc privileged ops that the Wasm backend
+        must guard with an inline runtime check (audit C2, 2026-05-25).
 
-        Returns ``(needs_starts_with, needs_contains)``:
+        Returns ``(needs_starts_with, needs_contains, needs_proc_allows)``:
         - ``needs_starts_with``: Fs.read / Fs.write after restrict_to
           require a prefix check via ``$str_starts_with``.
         - ``needs_contains``: Net.get / Net.post after restrict_to(host)
           require an in-string host check via ``$str_contains``.
+        - ``needs_proc_allows``: Proc.exec after restrict_to(prefix)
+          (or any Proc.allows source-level call) requires a basename
+          + suffix-boundary check via ``$proc_allows`` (slice 15).
 
         Env.restrict_to_keys reuses ``$str_eq`` (already emitted via
         the Map / String-method discovery branches; we don't add a
         separate flag for it here)."""
         needs_starts_with = False
         needs_contains = False
+        needs_proc_allows = False
 
         def visit(instrs: list[Instr]) -> None:
             nonlocal needs_starts_with, needs_contains
+            nonlocal needs_proc_allows
             for instr in instrs:
                 if isinstance(instr, MethodCall) and instr.attenuations:
                     cap = instr.cap_used or ""
@@ -378,6 +385,15 @@ class _DiscoveryMixin:
                         # Db attenuation mirrors Fs: path-prefix
                         # check via ``$str_starts_with``.
                         needs_starts_with = True
+                    if cap == "Proc" and instr.method == "exec":
+                        # Slice 15 (2026-05): Proc.exec attenuation
+                        # uses ``$proc_allows`` (basename +
+                        # suffix-boundary check at runtime). The
+                        # helper itself uses ``$str_eq``; the
+                        # ``needs_starts_with`` flag is left alone
+                        # since Proc doesn't reuse the prefix
+                        # check.
+                        needs_proc_allows = True
                     # Slice 14 (2026-05-29): dynamic-arg
                     # ``Fs.allows`` / ``Db.allows`` lowers to the
                     # same path-prefix runtime check the
@@ -393,6 +409,13 @@ class _DiscoveryMixin:
                     if (cap in ("Fs", "Db")
                             and instr.method == "allows"):
                         needs_starts_with = True
+                    # Slice 15 (2026-05): ``Proc.allows`` (literal
+                    # or dynamic arg) lowers to ``$proc_allows``
+                    # at runtime when the receiver carries any
+                    # attenuation. Same conservative flagging as
+                    # Fs.allows / Db.allows.
+                    if cap == "Proc" and instr.method == "allows":
+                        needs_proc_allows = True
                 if isinstance(instr, If):
                     visit(instr.then_body)
                     visit(instr.else_body)
@@ -409,7 +432,7 @@ class _DiscoveryMixin:
         for impl in module.impls:
             for m in impl.methods:
                 visit(m.body)
-        return needs_starts_with, needs_contains
+        return needs_starts_with, needs_contains, needs_proc_allows
 
     def _uses_map_ops(self, module: Module) -> bool:
         """True if the module needs the ``$str_eq`` helper. After
@@ -611,11 +634,11 @@ class _DiscoveryMixin:
                     "restrict_to", "restrict_to_keys", "restrict_to_after",
                 ):
                     pass
-                elif (cap in ("Fs", "Env", "Db")
+                elif (cap in ("Fs", "Env", "Db", "Proc")
                       and instr.method == "allows"):
-                    # Fs.allows / Env.allows / Db.allows lower to
-                    # inline-attenuation checks at emit time (D4
-                    # Option B): no host import, no WIT signature
+                    # Fs.allows / Env.allows / Db.allows / Proc.allows
+                    # lower to inline-attenuation checks at emit time
+                    # (D4 Option B): no host import, no WIT signature
                     # needed. ``Clock.allows`` is the exception
                     # (no string arg, needs the live wall clock)
                     # and still uses the host bridge.

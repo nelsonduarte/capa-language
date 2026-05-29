@@ -948,6 +948,64 @@ Listed so the design space is explicit.
 
 ### Wasm-specific gaps that are not P0
 
+- [x] **"Fully functional Wasm" slice 15 - `Proc` capability v1
+  (sandboxed subprocess, basename-prefix attenuation)** (closed
+  2026-05-29). `Proc` moves from documented-stub
+  (`_StubCapability("Proc")`) to a fully functional capability
+  across all three backends (Python, core Wasm, Component Model).
+  - **Surface** (3 methods, mirrors `Db` v1):
+    - `restrict_to(cmd_prefix: String) -> Proc` - intersect-style
+      attenuation
+    - `allows(cmd: String) -> Bool` - membership query
+      (inline-attenuation at emit time, D4 Option B)
+    - `exec(cmd: String, args_json: String) -> Result<String,
+      IoError>` - runs `subprocess.run(argv, capture_output=True,
+      timeout=30, shell=False)` with `json.loads(args_json)` as
+      the argv tail. Returns captured stdout in the Ok arm;
+      non-zero exit / timeout / malformed argv JSON / denial
+      surface as Err. Reuses the existing
+      `result<string, io-error>` wire shape so no new
+      canonical-ABI materialiser is needed.
+  - **Attenuation rule**: basename + suffix-boundary check
+    (not path-prefix like Fs/Db). `restrict_to("git")` admits
+    `git` and `git-lfs` (a git plugin) but rejects `gitlab`;
+    a fully-qualified `/usr/bin/git` still gates against
+    `restrict_to("git")` because the basename normalisation
+    (Python's `os.path.basename`, Wasm's `$proc_allows` helper)
+    runs before the compare.
+  - **Backend wiring**: Python runtime uses `subprocess.run`
+    per call (cap is stateless). Wasm host bridge mirrors
+    exactly (`_register_proc` in both core and CM hosts,
+    self-contained `_alloc_utf8` / `_write_result_*` helpers).
+    WIT signatures land alongside the existing
+    `result<string, io-error>` shapes.
+    `_emit_indirect_with_attenuation_check` gained a Proc
+    branch (two-String args, same shape as Db.exec / Net.post).
+    `_emit_one_attenuation` gained a `cap == "Proc"` branch
+    that emits a call to the new `$proc_allows` runtime helper
+    rather than reusing the path-prefix machinery.
+  - **New runtime helper**: `$proc_allows(cp, cl, pp, pl) ->
+    i32` in `_runtime.py`. Walks the command string from end
+    to start to find the last `/`, extracts the basename, then
+    AND-checks `basename == prefix OR
+    basename.startswith(prefix + '-')`. Single helper covers
+    both Proc.exec attenuation enforcement and Proc.allows
+    dynamic-arg path. Gated on a new `needs_proc_allows` flag
+    threaded out of `_uses_attenuation_check` as a third
+    return value.
+  - **Component Model**: `_wasm_component_host._register_proc`
+    parallels the core bridge; the WIT signature uses
+    `args-json` (kebab-case) per WIT identifier rules. Works
+    under `--component --run`.
+  - **Verification**: new parity program
+    `examples/wasm/proc_demo.capa` shells out to `python -c
+    "print('hello')"` (deterministic output, present on every
+    CI matrix entry) and covers unrestricted exec, scoped
+    pass, scoped deny, and Proc.allows on both arms.
+    Registered in `_PARITY_PROGRAMS` (core parity) and
+    `_CM_HOST_BRIDGE_SUBSET` (CM parity). Suite 2042 -> 2044 /
+    5 skipped / 0 fail.
+
 - [x] **"Fully functional Wasm" slice 14 - lift the last
   audit-P2 restriction (dynamic-arg `allows`)** (closed
   2026-05-29). Pre-slice the Wasm emitter rejected

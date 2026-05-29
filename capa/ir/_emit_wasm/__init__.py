@@ -480,20 +480,31 @@ class WasmEmitter(
             # ``$str_eq`` to compare the requested name against the
             # allow-list, so we emit it unconditionally when any
             # attenuation check is present too.
-            needs_starts_with, needs_contains = (
+            needs_starts_with, needs_contains, needs_proc_allows = (
                 self._uses_attenuation_check(module)
             )
             needs_str_eq_for_atten = self._uses_env_atten_check(module)
             if (self._uses_map_ops(module)
                     or needs_starts_with
                     or needs_contains
+                    or needs_proc_allows
                     or needs_str_eq_for_atten
                     or self._eq_needs_str_eq(module)):
+                # ``$proc_allows`` calls ``$str_eq`` for the exact-
+                # match arm of its basename + suffix-boundary check,
+                # so any program reaching for Proc attenuation pulls
+                # the equality helper in too.
                 self._emit_str_eq_function()
             if needs_starts_with:
                 self._emit_str_starts_with_function()
             if needs_contains:
                 self._emit_str_contains_function()
+            if needs_proc_allows:
+                # Slice 15 (2026-05): ``$proc_allows`` does the
+                # basename + suffix-boundary check Proc.allows /
+                # Proc.exec attenuations require. Emitted only when
+                # the discovery walker flips on the gate.
+                self._emit_proc_allows_function()
             if self._uses_format_str(module):
                 self._emit_itoa_function()
                 if self._uses_float_format(module):

@@ -76,6 +76,13 @@ _ATTENUATION_PRIVILEGED_OPS: frozenset[tuple[str, str]] = frozenset({
     ("Clock", "sleep"),
     ("Db", "exec"),
     ("Db", "query"),
+    # Slice 15 (2026-05): Proc.exec is the privileged op that
+    # crosses the trust boundary. ``restrict_to`` is the
+    # attenuator; ``allows`` is inlined (D4 Option B). Same
+    # two-String-arg shape as Db.exec / Net.post but the
+    # attenuation predicate is basename + suffix-boundary
+    # (``$proc_allows``) rather than path-prefix.
+    ("Proc", "exec"),
 })
 
 
@@ -166,6 +173,8 @@ def _atten_err_message(cap: str, method: str) -> str:
         return f"Env capability does not permit access to this name"
     if cap == "Db":
         return f"Db capability does not permit {method}"
+    if cap == "Proc":
+        return f"Proc capability does not permit {method}"
     return f"capability does not permit {cap}.{method}"
 
 
@@ -206,6 +215,11 @@ _CANONICAL_INDIRECT_RETURN: dict[tuple[str, str], tuple[int, str]] = {
     # returns result<string, io-error> (also 20 bytes).
     ("Db", "exec"):  (20, "result_unit_io_error"),
     ("Db", "query"): (20, "result_string_io_error"),
+    # Proc.exec: same shape as Db.query. Two String args (cmd,
+    # args_json); returns result<string, io-error> with the
+    # captured stdout in the Ok arm. Reuses the existing 20-byte
+    # result_string_io_error materialiser.
+    ("Proc", "exec"): (20, "result_string_io_error"),
     # ``Json`` used to live here when parse_json / to_json crossed a
     # host bridge; they now compile to local-export calls into the
     # bundled JSON parser (see ``capa.ir._builtin_json``), so no
@@ -291,6 +305,13 @@ class _CapDispatchMixin:
             # names are (path, sql) so the pattern match needs
             # its own entry. Returns the rows as a JSON-encoded
             # string in the Ok arm.
+            return (["i32", "i32", "i32", "i32", "i32"], "")
+        if "func(cmd: string, args-json: string) -> result<string, io-error>" in wit:
+            # Proc.exec: same two-String-arg shape as Db.query /
+            # Net.post. The WIT arg names are (cmd, args-json)
+            # (kebab-case per WIT identifier rules) so the
+            # pattern match needs its own entry; the wire
+            # signature is identical.
             return (["i32", "i32", "i32", "i32", "i32"], "")
         if "func(path: string) -> result<_, io-error>" in wit:
             # Fs.mkdir: single-string arg version of Fs.write's
@@ -385,7 +406,7 @@ class _CapDispatchMixin:
         # Python backend or to a literal call. ``Clock.allows`` has
         # no string arg and depends on the live wall clock, so it
         # stays on the host bridge path.
-        if method == "allows" and cap in ("Fs", "Env", "Db"):
+        if method == "allows" and cap in ("Fs", "Env", "Db", "Proc"):
             self._emit_atten_allows(instr, cap)
             return
         # Random method calls route to the guest-side SplitMix64
@@ -573,6 +594,22 @@ class _CapDispatchMixin:
             self._push_string_arg(instr.args[1])
             self._write("local.set $_atten_content_len")
             self._write("local.set $_atten_content_ptr")
+        elif cap == "Proc" and method == "exec":
+            # Proc.exec(cmd, args_json): same two-String-arg
+            # shape as Db.exec. The attenuation check fires on
+            # the cmd arg (basename + suffix-boundary match via
+            # ``$proc_allows``); args_json is opaque to the cap
+            # and is passed through to the host bridge as-is.
+            # Stash-local names stay ``_atten_path_*`` /
+            # ``_atten_content_*`` (the locals walker declares
+            # them once when any two-String-arg attenuated op is
+            # present in the function).
+            self._push_string_arg(instr.args[0])
+            self._write("local.set $_atten_path_len")
+            self._write("local.set $_atten_path_ptr")
+            self._push_string_arg(instr.args[1])
+            self._write("local.set $_atten_content_len")
+            self._write("local.set $_atten_content_ptr")
         elif cap == "Env" and method == "get":
             self._push_string_arg(instr.args[0])
             self._write("local.set $_atten_path_len")
@@ -632,6 +669,14 @@ class _CapDispatchMixin:
             # Push path + sql in the order the host's
             # ``db.{exec,query}(path_ptr, path_len, sql_ptr,
             # sql_len, ret_area)`` signature expects.
+            self._write("local.get $_atten_path_ptr")
+            self._write("local.get $_atten_path_len")
+            self._write("local.get $_atten_content_ptr")
+            self._write("local.get $_atten_content_len")
+        elif cap == "Proc" and method == "exec":
+            # Push cmd + args_json in the order the host's
+            # ``proc.exec(cmd_ptr, cmd_len, args_ptr, args_len,
+            # ret_area)`` signature expects.
             self._write("local.get $_atten_path_ptr")
             self._write("local.get $_atten_path_len")
             self._write("local.get $_atten_content_ptr")
@@ -707,6 +752,33 @@ class _CapDispatchMixin:
                 )
             prefix = _unquote_attenuation_arg(args[0])
             self._emit_path_prefix_check(prefix)
+            return
+        if cap == "Proc":
+            # Proc attenuation is a basename + suffix-boundary
+            # check, not a path-prefix one. ``restrict_to("git")``
+            # admits ``git`` and ``git-lfs`` but rejects
+            # ``gitlab`` and ``/usr/bin/git`` is normalised to
+            # ``git`` before the compare. The ``$proc_allows``
+            # runtime helper does the walk at runtime so the
+            # check works for both literal and dynamic cmd args
+            # (it reads from ``$_atten_path_*`` like the other
+            # attenuation checks).
+            if att_method != "restrict_to" or not args:
+                raise WasmEmissionError(
+                    f"unsupported Proc attenuation: {att_method!r} "
+                    f"with args {args!r}"
+                )
+            prefix = _unquote_attenuation_arg(args[0])
+            offset, length = self._intern_string(prefix)
+            self._write("local.get $_atten_path_ptr")
+            self._write("local.get $_atten_path_len")
+            self._write(f"i32.const {offset}")
+            self._write(f"i32.const {length}")
+            self._write("call $proc_allows")
+            # ok &= predicate
+            self._write("local.get $_atten_ok")
+            self._write("i32.and")
+            self._write("local.set $_atten_ok")
             return
         if cap == "Env":
             if att_method != "restrict_to_keys":
@@ -986,6 +1058,35 @@ class _CapDispatchMixin:
                 if not (literal == prefix or literal.startswith(sep)):
                     result = False
                     break
+        elif cap == "Proc":
+            # AND over each restrict_to(prefix): the literal cmd
+            # must satisfy every prefix in the chain at a basename
+            # + suffix boundary (basename == prefix OR
+            # basename.startswith(prefix + '-')). Mirrors the
+            # Python runtime's ``Proc.allows`` rule and the
+            # ``$proc_allows`` runtime helper used on the
+            # dynamic-arg path. ``os.path.basename`` is computed
+            # at emit time so ``/usr/bin/git`` gates against
+            # ``restrict_to("git")``.
+            import os as _os
+            base = _os.path.basename(literal)
+            result = True
+            for att in attenuations:
+                if att.get("method") != "restrict_to":
+                    raise WasmEmissionError(
+                        f"unsupported Proc attenuation on .allows: "
+                        f"{att.get('method')!r}"
+                    )
+                args = att.get("args", [])
+                if not args:
+                    raise WasmEmissionError(
+                        "Proc.restrict_to attenuation with no arg"
+                    )
+                prefix = _unquote_attenuation_arg(args[0])
+                if not (base == prefix
+                        or base.startswith(prefix + "-")):
+                    result = False
+                    break
         else:  # cap == "Env"
             # AND over each restrict_to_keys: literal must appear
             # in EVERY key list (intersection semantics, matching
@@ -1024,6 +1125,9 @@ class _CapDispatchMixin:
         - ``cap == Env``: per-attenuation OR-chain of name-equality
           against the keys in that restrict_to_keys list, AND-
           combined across the chain. Empty key list -> ok=0.
+        - ``cap == Proc``: per-attenuation call to ``$proc_allows``
+          with the prefix literal; basename + suffix-boundary
+          match runs at runtime.
         - No attenuations: push 1 (unrestricted, matches
           ``self._allowed_prefixes is None`` /
           ``self._allowed_keys is None``).

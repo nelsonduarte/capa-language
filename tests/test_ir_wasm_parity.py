@@ -124,6 +124,14 @@ _PARITY_PROGRAMS: list[str] = [
     # Fs/Env/Db.allows so programs can pass a runtime String
     # argument and get the cap-mediated answer on both backends.
     "allows_dynamic.capa",
+    # Slice 15 (2026-05): Proc v1 (sandboxed subprocess) with
+    # basename + suffix-boundary attenuation. proc_demo shells
+    # out to ``python`` (present on every CI matrix entry) with
+    # a fixed string so the captured stdout is deterministic;
+    # both backends run subprocess.run(argv, capture_output=True,
+    # timeout=30, shell=False) and decode UTF-8 with
+    # errors='replace'.
+    "proc_demo.capa",
 ]
 
 # Programs deliberately excluded from parity and why; documented
@@ -591,6 +599,15 @@ class TestPythonWasmParity(unittest.TestCase):
         # cap-mediated query for a runtime String arg.
         self._assert_parity("allows_dynamic.capa")
 
+    def test_proc_demo(self):
+        # Slice 15 (2026-05): Proc v1 sandboxed subprocess
+        # capability with basename + suffix-boundary attenuation.
+        # Both backends run ``subprocess.run(argv,
+        # capture_output=True, timeout=30, shell=False)`` against
+        # the same ``python -c "..."`` invocation, so captured
+        # stdout + attenuation-deny diagnostics match exactly.
+        self._assert_parity("proc_demo.capa")
+
     def test_inventory_matches_examples_dir(self):
         # Soundness check: every .capa under examples/wasm/ is
         # either in the parity list or in the documented-excluded
@@ -636,6 +653,11 @@ _CM_HOST_BRIDGE_SUBSET: list[str] = [
     # ATTACH block runs through the standard Db host bridge.
     "clock_sleep_attenuation.capa",
     "db_attach_blocked.capa",
+    # Slice 15 (2026-05): Proc.exec two-String-arg + attenuation
+    # short-circuit under CM, plus the ``$proc_allows`` runtime
+    # helper exercised by both Proc.exec's attenuation check and
+    # Proc.allows on a scoped cap.
+    "proc_demo.capa",
 ]
 
 
@@ -731,6 +753,17 @@ class TestPythonWasmComponentParity(unittest.TestCase):
         finally:
             if os.path.exists(path):
                 os.unlink(path)
+
+    def test_proc_demo_under_cm(self):
+        # Slice 15 (2026-05): Proc v1 sandboxed subprocess
+        # capability under the Component Model. Same shape as
+        # the core parity test - both backends run
+        # ``subprocess.run`` against the same python invocation
+        # so captured stdout matches byte-for-byte. The CM
+        # canonical-ABI lift for ``result<string, io-error>``
+        # already had Db / Fs / Net coverage; this case adds
+        # Proc to the matrix.
+        self._assert_cm_parity("proc_demo.capa")
 
     def test_subset_membership(self):
         # Soundness check: every entry in _CM_HOST_BRIDGE_SUBSET

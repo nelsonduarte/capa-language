@@ -1,0 +1,43 @@
+// Proc v1: sandboxed subprocess execution with basename + suffix-
+// boundary attenuation. ``exec`` runs the command with ``shell=False``
+// and a JSON-encoded argv tail, captures stdout, and returns it. The
+// allow-set is intersected on every ``restrict_to``; a denied cmd
+// never reaches the host bridge on either backend.
+//
+// Parity strategy: shell out to ``python`` (present on every CI
+// matrix entry) with a deterministic body. No timestamps, no
+// hostnames, no env-dependent output - just a fixed string.
+
+fun main(stdio: Stdio, proc: Proc)
+    // Unrestricted exec: ``print('hello')`` writes "hello\n" to
+    // stdout; both backends decode UTF-8 with errors='replace'.
+    match proc.exec("python", "[\"-c\", \"print('hello')\"]")
+        Ok(out) -> stdio.print("ok: ${out}")
+        Err(_) -> stdio.println("BUG: unrestricted exec failed")
+
+    // Attenuation pass: restrict to "python", then exec python.
+    let scoped_py = proc.restrict_to("python")
+    match scoped_py.exec("python", "[\"-c\", \"print('scoped')\"]")
+        Ok(out) -> stdio.print("scoped-ok: ${out}")
+        Err(_) -> stdio.println("BUG: scoped python exec failed")
+
+    // Attenuation deny: restrict to "git", then try python. The
+    // ``$proc_allows`` runtime helper (Wasm) and ``Proc.allows``
+    // (Python) both short-circuit to the canonical Err.
+    let scoped_git = proc.restrict_to("git")
+    match scoped_git.exec("python", "[\"-c\", \"print(1)\"]")
+        Ok(_) -> stdio.println("BUG: denied exec returned Ok")
+        Err(_) -> stdio.println("denied: ok")
+
+    // Proc.allows on a scoped cap: both arms covered. The Wasm
+    // backend collapses the literal-arg cases to constants at emit
+    // time; Python walks the live attenuation set.
+    if scoped_py.allows("python")
+        stdio.println("allows python: true")
+    else
+        stdio.println("BUG: allows python should be true")
+
+    if scoped_py.allows("git")
+        stdio.println("BUG: allows git should be false")
+    else
+        stdio.println("allows git: false")

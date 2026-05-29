@@ -228,6 +228,20 @@ METHODS: dict[str, list[tuple[str, TyFun, list[str]]]] = {
         ("exec",        fun(TyString, TyString, _unit_res),                        []),
         ("query",       fun(TyString, TyString, _str_res),                         []),
     ],
+    "Proc": [
+        # Sandboxed subprocess execution with basename-prefix attenuation
+        # (slice 15, 2026-05). ``exec`` takes the command and a JSON-
+        # encoded argv tail (``["status", "--short"]``-style) so the
+        # cross-backend wire shape stays a single ``result<string,
+        # io-error>`` reusing Fs.read / Db.query's materialiser.
+        # ``allows`` does a basename + suffix-boundary check
+        # (``restrict_to("git")`` admits ``git`` and ``git-lfs`` but
+        # not ``gitlab``); the same rule runs in the Python runtime,
+        # the core Wasm host, and the Component Model host.
+        ("restrict_to", fun(TyString, TyName("Proc")),                             []),
+        ("allows",      fun(TyString, TyBool),                                     []),
+        ("exec",        fun(TyString, TyString, _str_res),                         []),
+    ],
     "JsonValue": [
         ("is_null",   fun(TyBool),                                                 []),
         ("as_bool",   fun(opt(TyBool)),                                            []),

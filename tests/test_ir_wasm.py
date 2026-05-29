@@ -2240,7 +2240,7 @@ class TestWasmAttenuationEnforcement(unittest.TestCase):
         # gate fires.
         from capa.ir._emit_wasm import WasmEmitter
         emitter = WasmEmitter()
-        s, c = emitter._uses_attenuation_check(mod)
+        s, c, _p = emitter._uses_attenuation_check(mod)
         self.assertTrue(c)
 
     @unittest.skipUnless(

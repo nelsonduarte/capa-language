@@ -289,6 +289,169 @@ class _RuntimeHelpersMixin:
         self._indent -= 1
         self._write(")")
 
+    def _emit_proc_allows_function(self) -> None:
+        """Helper: ``$proc_allows(cp, cl, pp, pl) -> i32`` returns
+        1 if the command at ``cp[..cl]`` is admitted by the prefix
+        at ``pp[..pl]``, 0 otherwise. Mirrors the Python runtime's
+        ``Proc.allows`` rule on the Wasm side so all three backends
+        agree on attenuation outcomes for any (cmd, prefix) pair.
+
+        Algorithm:
+        - basename = substring of cmd after the last '/'; if cmd
+          contains no '/', basename = cmd. Walk from the end so
+          we find the LAST slash (e.g. ``/usr/local/bin/git`` ->
+          ``git``).
+        - Return 1 if basename == prefix OR
+          basename.startswith(prefix + '-'). The second arm uses an
+          inline byte-by-byte compare against the prefix bytes
+          (admitting ``git-lfs`` for prefix ``git``) followed by a
+          single ``-`` boundary byte test (rejecting ``gitlab``).
+
+        Used by:
+        - ``Proc.exec`` attenuation enforcement (literal or
+          dynamic cmd args via the ``_emit_indirect_with_
+          attenuation_check`` path),
+        - ``Proc.allows`` dynamic-arg path (slice 14-style
+          runtime check)."""
+        self._write(
+            "(func $proc_allows (param $cp i32) (param $cl i32) "
+            "(param $pp i32) (param $pl i32) (result i32)"
+        )
+        self._indent += 1
+        self._write("(local $i i32)")        # scan index
+        self._write("(local $bs i32)")       # basename start (cp + offset)
+        self._write("(local $bl i32)")       # basename length
+        self._write("(local $j i32)")        # byte-cmp index
+        # Find the last '/' in cmd. Walk i from cl - 1 down to 0;
+        # break on the first match. ``bs`` defaults to cp + 0 (no
+        # slash found -> basename = full cmd).
+        self._write("local.get $cp")
+        self._write("local.set $bs")
+        self._write("local.get $cl")
+        self._write("local.set $bl")
+        self._write("local.get $cl")
+        self._write("i32.const 1")
+        self._write("i32.sub")
+        self._write("local.set $i")
+        self._write("block $scan_exit")
+        self._indent += 1
+        self._write("loop $scan_loop")
+        self._indent += 1
+        # If i < 0: exit (no slash found, defaults stand).
+        self._write("local.get $i")
+        self._write("i32.const 0")
+        self._write("i32.lt_s")
+        self._write("br_if $scan_exit")
+        # If cp[i] == '/': basename = cp + i + 1, bl = cl - i - 1; exit.
+        self._write("local.get $cp")
+        self._write("local.get $i")
+        self._write("i32.add")
+        self._write("i32.load8_u")
+        self._write("i32.const 47")  # '/'
+        self._write("i32.eq")
+        self._write("if")
+        self._indent += 1
+        # bs = cp + i + 1
+        self._write("local.get $cp")
+        self._write("local.get $i")
+        self._write("i32.add")
+        self._write("i32.const 1")
+        self._write("i32.add")
+        self._write("local.set $bs")
+        # bl = cl - i - 1
+        self._write("local.get $cl")
+        self._write("local.get $i")
+        self._write("i32.sub")
+        self._write("i32.const 1")
+        self._write("i32.sub")
+        self._write("local.set $bl")
+        self._write("br $scan_exit")
+        self._indent -= 1
+        self._write("end")
+        # i -= 1; continue.
+        self._write("local.get $i")
+        self._write("i32.const 1")
+        self._write("i32.sub")
+        self._write("local.set $i")
+        self._write("br $scan_loop")
+        self._indent -= 1
+        self._write("end")
+        self._indent -= 1
+        self._write("end")
+        # Arm 1: basename == prefix via $str_eq(bs, bl, pp, pl).
+        self._write("local.get $bs")
+        self._write("local.get $bl")
+        self._write("local.get $pp")
+        self._write("local.get $pl")
+        self._write("call $str_eq")
+        self._write("if")
+        self._indent += 1
+        self._write("i32.const 1")
+        self._write("return")
+        self._indent -= 1
+        self._write("end")
+        # Arm 2: basename.startswith(prefix + '-'). Need
+        # bl >= pl + 1 AND basename[0..pl] == prefix AND
+        # basename[pl] == '-'. Skip the arm if bl < pl + 1.
+        self._write("local.get $bl")
+        self._write("local.get $pl")
+        self._write("i32.const 1")
+        self._write("i32.add")
+        self._write("i32.lt_s")
+        self._write("if")
+        self._indent += 1
+        self._write("i32.const 0")
+        self._write("return")
+        self._indent -= 1
+        self._write("end")
+        # Byte-by-byte compare basename[0..pl] vs prefix[0..pl].
+        self._write("i32.const 0")
+        self._write("local.set $j")
+        self._write("block $pref_exit")
+        self._indent += 1
+        self._write("loop $pref_loop")
+        self._indent += 1
+        # if j >= pl: exit (prefix matched).
+        self._write("local.get $j")
+        self._write("local.get $pl")
+        self._write("i32.ge_s")
+        self._write("br_if $pref_exit")
+        # if basename[j] != prefix[j]: return 0.
+        self._write("local.get $bs")
+        self._write("local.get $j")
+        self._write("i32.add")
+        self._write("i32.load8_u")
+        self._write("local.get $pp")
+        self._write("local.get $j")
+        self._write("i32.add")
+        self._write("i32.load8_u")
+        self._write("i32.ne")
+        self._write("if")
+        self._indent += 1
+        self._write("i32.const 0")
+        self._write("return")
+        self._indent -= 1
+        self._write("end")
+        # j += 1; loop.
+        self._write("local.get $j")
+        self._write("i32.const 1")
+        self._write("i32.add")
+        self._write("local.set $j")
+        self._write("br $pref_loop")
+        self._indent -= 1
+        self._write("end")
+        self._indent -= 1
+        self._write("end")
+        # Boundary byte: basename[pl] must be '-'.
+        self._write("local.get $bs")
+        self._write("local.get $pl")
+        self._write("i32.add")
+        self._write("i32.load8_u")
+        self._write("i32.const 45")  # '-'
+        self._write("i32.eq")
+        self._indent -= 1
+        self._write(")")
+
     def _emit_itoa_function(self) -> None:
         """Helper: ``$itoa(n: i64) -> (i32 ptr, i32 len)`` writes
         the decimal representation of ``n`` into freshly-allocated

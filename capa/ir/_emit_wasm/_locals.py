@@ -404,11 +404,13 @@ class _LocalsCollectionMixin:
                             has_attenuation_check = True
                         # Slice 14 (2026-05-29): the dynamic-arg
                         # path of ``Fs.allows`` / ``Env.allows`` /
-                        # ``Db.allows`` emits a runtime check that
-                        # stashes the path / name in ``$_atten_path_*``
-                        # and accumulates into ``$_atten_ok``. The
+                        # ``Db.allows`` / ``Proc.allows`` (slice 15)
+                        # emits a runtime check that stashes the
+                        # path / name in ``$_atten_path_*`` and
+                        # accumulates into ``$_atten_ok``. The
                         # literal-arg fast-path doesn't need them.
-                        if (cap in ("Fs", "Env", "Db") and m == "allows"
+                        if (cap in ("Fs", "Env", "Db", "Proc")
+                                and m == "allows"
                                 and instr.args
                                 and instr.args[0].kind != "lit_str"):
                             has_attenuation_check = True
@@ -426,7 +428,8 @@ class _LocalsCollectionMixin:
                         if (cap == "Fs" and m in ("read", "write", "mkdir", "list_dir")) \
                                 or (cap == "Net" and m in ("get", "post")) \
                                 or (cap == "Env" and m == "get") \
-                                or (cap == "Db" and m in ("exec", "query")):
+                                or (cap == "Db" and m in ("exec", "query")) \
+                                or (cap == "Proc" and m == "exec"):
                             has_attenuation_check = True
                             has_indirect_cap_call = True
                             if cap == "Env":
@@ -444,6 +447,13 @@ class _LocalsCollectionMixin:
                                 # Same two-String-arg shape; reuse
                                 # the Fs.write attenuation-stash
                                 # locals.
+                                has_atten_fs_write_check = True
+                            if cap == "Proc" and m == "exec":
+                                # Slice 15 (2026-05): Proc.exec
+                                # threads cmd + args_json; reuse
+                                # the same ``_atten_content_*``
+                                # locals as the other two-String
+                                # ops.
                                 has_atten_fs_write_check = True
                     if recv_ty.startswith("List"):
                         # List method calls (push / contains / get

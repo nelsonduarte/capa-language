@@ -19,7 +19,11 @@ Classes:
 - ``Env`` - environment variables with key-set attenuation.
 - ``Clock`` - time with a not-before threshold.
 - ``Random`` - RNG with optional seeding.
-- ``_StubCapability`` / ``Proc`` / ``Db`` - placeholders.
+- ``_StubCapability`` - placeholder for not-yet-implemented caps.
+- ``Db`` - SQLite-backed key-value + tabular store with prefix-set
+  attenuation (slice 11, 2026-05).
+- ``Proc`` - sandboxed subprocess execution with basename-prefix
+  attenuation (slice 15, 2026-05).
 - ``Net`` - HTTP GET with host-set attenuation.
 - ``Unsafe`` - the Python-interop trust boundary (method-less).
 """
@@ -544,9 +548,120 @@ class Net:
             return Err(IoError("HTTP POST failed", str(e)))
 
 
-class Proc(_StubCapability):
-    def __init__(self):
-        super().__init__("Proc")
+class Proc:
+    """Capability for sandboxed subprocess execution, with first-
+    class attenuation that mirrors :class:`Net` (the underlying
+    membership predicate is a basename + suffix-boundary check
+    rather than a host substring search, but the intersect-style
+    monotonic-attenuation shape is identical).
+
+    An instance carries either ``None`` (unrestricted authority,
+    the fresh capability supplied by ``main``) or a frozen set of
+    allowed command basename prefixes. ``restrict_to`` returns a
+    new ``Proc`` whose authority is the *intersection* of the
+    current restrictions with the newly requested prefix:
+    attenuation is monotonic by construction (restrictions can
+    only narrow, never widen).
+
+    The actual execution is via ``subprocess.run(argv,
+    capture_output=True, timeout=30, shell=False)``. ``shell=False``
+    is always enforced -- a ``Proc.exec("rm -rf /")`` call would
+    pass ``"rm -rf /"`` as ``argv[0]`` and fail with ENOENT rather
+    than spawning a shell that interprets the string. The cap is
+    stateless from the program's POV (no persistent subprocess
+    handle); each call spawns a fresh child and waits for it.
+
+    Methods:
+    - ``restrict_to(cmd_prefix: String) -> Proc``: attenuation
+    - ``allows(cmd: String) -> Bool``: query without IO
+    - ``exec(cmd: String, args_json: String) -> Result<String, IoError>``:
+      run the command. ``args_json`` is a JSON-encoded array of
+      strings consumed as the argv tail (so
+      ``Proc.exec("git", '["status", "--short"]')`` runs
+      ``git status --short``). Returns ``Ok(stdout)`` on zero
+      exit; ``Err(IoError(...))`` on non-zero exit, timeout,
+      malformed argv JSON, or denial.
+
+    Attenuation rule (matches the Wasm-side ``$proc_allows``
+    runtime helper): match on ``os.path.basename(cmd)`` so a
+    fully-qualified ``/usr/bin/git`` still gates correctly
+    against a ``restrict_to("git")`` cap. The boundary is the
+    basename plus a ``-`` suffix: ``restrict_to("git")`` admits
+    ``git`` and ``git-lfs`` (a git plugin) but rejects
+    ``gitlab`` (a different binary that happens to share a
+    prefix). The same rule lives in both backends so a
+    ``Proc.allows(cmd)`` query returns the same Bool on Python,
+    core Wasm, and the Component Model.
+    """
+
+    __slots__ = ("_allowed",)
+
+    def __init__(self, _allowed=None):
+        self._allowed = _allowed
+
+    def restrict_to(self, cmd_prefix: str) -> "Proc":
+        new = frozenset({cmd_prefix})
+        if self._allowed is not None:
+            new = new & self._allowed
+        return Proc(_allowed=new)
+
+    def allows(self, cmd: str) -> bool:
+        if self._allowed is None:
+            return True
+        import os
+        base = os.path.basename(cmd)
+        for p in self._allowed:
+            if base == p:
+                return True
+            if base.startswith(p + "-"):
+                return True
+        return False
+
+    def _deny(self, cmd: str):
+        allowed_repr = (
+            sorted(self._allowed) if self._allowed is not None else "unrestricted"
+        )
+        return Err(IoError(
+            f"Proc capability does not permit exec of {cmd!r}",
+            f"current restrictions: {allowed_repr}",
+        ))
+
+    def exec(self, cmd: str, args_json: str):
+        import json
+        import subprocess
+        if not self.allows(cmd):
+            return self._deny(cmd)
+        try:
+            tail = json.loads(args_json)
+        except (ValueError, TypeError) as e:
+            return Err(IoError(
+                "Proc.exec args_json parse failed", str(e),
+            ))
+        if not isinstance(tail, list) or not all(
+                isinstance(x, str) for x in tail):
+            return Err(IoError(
+                "Proc.exec args_json parse failed",
+                "expected a JSON array of strings",
+            ))
+        argv = [cmd, *tail]
+        try:
+            completed = subprocess.run(
+                argv,
+                capture_output=True,
+                timeout=30,
+                shell=False,
+            )
+        except subprocess.TimeoutExpired:
+            return Err(IoError("timed out", "30s elapsed"))
+        except (OSError, ValueError) as e:
+            return Err(IoError("Proc.exec spawn failed", str(e)))
+        if completed.returncode != 0:
+            stderr = completed.stderr.decode("utf-8", errors="replace")
+            return Err(IoError(
+                "non-zero exit",
+                f"code={completed.returncode} stderr={stderr!r}",
+            ))
+        return Ok(completed.stdout.decode("utf-8", errors="replace"))
 
 
 # SQLite authorizer action codes (stable across SQLite versions;

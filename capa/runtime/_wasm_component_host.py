@@ -73,6 +73,7 @@ class WasmComponentHost:
         self._register_random(root)
         self._register_net(root)
         self._register_db(root)
+        self._register_proc(root)
         root.close()
 
     # ---- per-interface registration ----------------------------
@@ -347,6 +348,66 @@ class WasmComponentHost:
         db_ifc.add_func("query",       db_query)
         db_ifc.add_func("restrict-to", db_restrict_to)
         db_ifc.close()
+
+    def _register_proc(self, root: wc.LinkerInstance) -> None:
+        """Register the ``capa:host/proc`` interface (slice 15).
+
+        Mirrors the core-host bridge byte-for-byte:
+        ``subprocess.run(argv, capture_output=True, timeout=30,
+        shell=False)`` with ``json.loads(args_json)`` as the argv
+        tail. Stdout decoded with ``errors='replace'``. Non-zero
+        exit / timeout / malformed JSON surface as ``IoErrorRecord``.
+        ``proc.restrict-to`` is a host no-op like ``fs.restrict-to``;
+        attenuation is enforced inline at the guest via the
+        ``$proc_allows`` runtime helper."""
+        import json as _stdlib_json_proc
+        import subprocess
+        proc_ifc = root.add_instance("capa:host/proc")
+
+        def proc_exec(_store, cmd: str, args_json: str):
+            try:
+                tail = _stdlib_json_proc.loads(args_json)
+            except (ValueError, TypeError) as e:
+                return IoErrorRecord(
+                    message="Proc.exec args_json parse failed",
+                    cause=str(e),
+                )
+            if not isinstance(tail, list) or not all(
+                    isinstance(x, str) for x in tail):
+                return IoErrorRecord(
+                    message="Proc.exec args_json parse failed",
+                    cause="expected a JSON array of strings",
+                )
+            argv = [cmd, *tail]
+            try:
+                completed = subprocess.run(
+                    argv,
+                    capture_output=True,
+                    timeout=30,
+                    shell=False,
+                )
+            except subprocess.TimeoutExpired:
+                return IoErrorRecord(
+                    message="timed out", cause="30s elapsed",
+                )
+            except (OSError, ValueError) as e:
+                return IoErrorRecord(
+                    message="Proc.exec spawn failed", cause=str(e),
+                )
+            if completed.returncode != 0:
+                stderr = completed.stderr.decode("utf-8", errors="replace")
+                return IoErrorRecord(
+                    message="non-zero exit",
+                    cause=f"code={completed.returncode} stderr={stderr!r}",
+                )
+            return completed.stdout.decode("utf-8", errors="replace")
+
+        def proc_restrict_to(_store, _prefix: str):
+            return None
+
+        proc_ifc.add_func("exec",        proc_exec)
+        proc_ifc.add_func("restrict-to", proc_restrict_to)
+        proc_ifc.close()
 
     def _register_json(self, root: wc.LinkerInstance) -> None:
         json_ifc = root.add_instance("capa:host/json")

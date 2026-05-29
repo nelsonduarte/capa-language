@@ -152,6 +152,20 @@ _WIT_SIGNATURES: dict[tuple[str, str], str] = {
     ("Db", "query"):       "query: func(path: string, sql: string) -> result<string, io-error>",
     ("Db", "restrict_to"): "restrict-to: func(prefix: string)",
 
+    # Proc: sandboxed subprocess execution (slice 15, 2026-05).
+    # ``exec`` takes the command path + a JSON-encoded argv tail
+    # (``["status", "--short"]``-style) and returns the captured
+    # stdout in the Ok arm. Reuses the existing
+    # ``result<string, io-error>`` materialiser; no new canonical-
+    # ABI shape needed. The host runs ``subprocess.run(argv,
+    # capture_output=True, timeout=30, shell=False)``. Non-zero
+    # exit, timeout, malformed argv JSON all surface as Err.
+    # ``restrict_to`` is a host no-op (the basename + suffix-
+    # boundary check is enforced inline at the guest via the
+    # ``$proc_allows`` runtime helper).
+    ("Proc", "exec"):        "exec: func(cmd: string, args-json: string) -> result<string, io-error>",
+    ("Proc", "restrict_to"): "restrict-to: func(prefix: string)",
+
     # ``parse_json`` / ``to_json`` used to live here as a synthetic
     # ``Json`` capability so the Wasm import machinery had something
     # to plumb. They now compile to plain ``call $__capa_parse_json``
@@ -167,7 +181,7 @@ _WIT_SIGNATURES: dict[tuple[str, str], str] = {
 # in ``_WIT_SIGNATURES`` raise ``UnsupportedCapability`` at WIT
 # generation time; the Wasm emitter mirrors this so the contract
 # stays in sync.
-_KNOWN_CAPABILITIES = {"Stdio", "Clock", "Env", "Fs", "Random", "Net", "Db"}
+_KNOWN_CAPABILITIES = {"Stdio", "Clock", "Env", "Fs", "Random", "Net", "Db", "Proc"}
 
 
 # Per-interface type declarations injected before the method
@@ -196,6 +210,9 @@ _INTERFACE_TYPE_PRELUDE: dict[str, list[str]] = {
     # Db.exec / Db.query both reference io-error; same self-
     # contained rationale.
     "Db":  _IO_ERROR_RECORD,
+    # Proc.exec returns result<string, io-error>; same self-
+    # contained rationale.
+    "Proc": _IO_ERROR_RECORD,
 }
 
 
@@ -216,6 +233,9 @@ _METHODS_NEEDING_IO_ERROR: dict[str, frozenset[str]] = {
     # Db.exec / Db.query both return io-error-bearing results;
     # restrict_to is the attenuator (no io-error).
     "Db":  frozenset({"exec", "query"}),
+    # Proc.exec returns result<string, io-error>; restrict_to
+    # is the attenuator (no io-error).
+    "Proc": frozenset({"exec"}),
 }
 
 
@@ -242,6 +262,11 @@ _GUEST_ONLY_METHODS: dict[str, frozenset[str]] = {
     "Fs":  frozenset({"allows"}),
     "Env": frozenset({"allows"}),
     "Db":  frozenset({"allows"}),
+    # Proc.allows is inlined at emit time too (slice 15): the
+    # basename + suffix-boundary check runs entirely in the
+    # guest via the ``$proc_allows`` runtime helper, so no
+    # host import / WIT signature is produced.
+    "Proc": frozenset({"allows"}),
 }
 
 
