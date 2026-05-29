@@ -948,6 +948,54 @@ Listed so the design space is explicit.
 
 ### Wasm-specific gaps that are not P0
 
+- [x] **"Fully functional Wasm" slice 20 - loader audit
+  (mangled cap names leaking into manifest)** (closed
+  2026-05-29). A sixth audit pass (this one on
+  `capa/loader.py` + the mangling pipeline) found one
+  **P2 regulator-facing surface bug** plus four lower-
+  severity issues, all deferred.
+  - **The bug.** A non-pub capability defined in an
+    imported module (e.g. `capability LocalCap` inside
+    `mod_cap.capa`, imported from a root file) had its
+    loader-time prefix leak through the manifest's
+    regulator-facing fields: `user_defined_capabilities[].name`,
+    `user_defined_capabilities[].implementors`, per-param
+    `type`, `declared_capabilities`,
+    `provably_excluded_capabilities`, and `return_type`
+    all rendered as `_capa_m1__LocalCap` / `_capa_m1__LocalImpl`
+    instead of the source-level identifier the user wrote.
+    Internal fields (`name`, `container`) stay mangled by
+    design - they're the stable collision-safe ids that
+    bom-ref keying and call-resolution depend on - and a
+    sibling `source_name` / `source_container` already
+    surfaced the human-readable form. The leak was just
+    the cap- and type-typed surfaces missing the same
+    demangling treatment.
+  - **The fix.** `capa/manifest/_funrec.py` grew a
+    `_demangle_type_text` helper (regex sub on rendered
+    `_ty_text` strings, anchored at a word boundary) and
+    now demangles: every per-param `type` field, the
+    return type, the implicit-cap entry, and the
+    `provably_excluded_caps` computation (done by
+    comparing demangled-cap-names against demangled-
+    declared set so the subtraction lives in one
+    namespace). The `_funkey.py` upstream collector for
+    `user_defined_capabilities[].name` + `[].implementors`
+    was demangled in the same slice.
+  - **Audit findings deferred** (lower severity, none
+    user-facing): same-alias collision when two imports
+    share the exact same pub export set (diagnostic
+    quality only); cyclic-import re-parses root file
+    (wasted work + misleading cycle message); fall-through
+    on `getattr(it, "is_pub", False)` for new item types
+    (latent); discipline-across-imports CLEAN; path-
+    traversal safety CLEAN.
+  - New regression test
+    `TestSourceNameDemangle.test_imported_non_pub_capability_is_demangled_in_user_surfaces`
+    covers every regulator-facing field. Suite 2050 ->
+    2051 / 6 skipped / 0 fail. `capa_governance_pack`
+    still runs end-to-end on `--wasm`.
+
 - [x] **"Fully functional Wasm" slice 19 - transpiler audit
   (Python closure-over-loop-var capture parity)** (closed
   2026-05-29). A fifth audit pass (this one on the

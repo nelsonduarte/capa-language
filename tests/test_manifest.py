@@ -274,6 +274,73 @@ class TestSourceNameDemangle(unittest.TestCase):
         self.assertEqual(fn["source_name"], "helper")
         self.assertIsNone(fn["source_module_index"])
 
+    def test_imported_non_pub_capability_is_demangled_in_user_surfaces(self):
+        """Audit slice 20 (2026-05-29) regression: a non-pub capability
+        defined in an imported module used to leak its loader prefix
+        (``_capa_m{N}__LocalCap``) into ``user_defined_capabilities``,
+        the per-param ``type`` field, ``declared_capabilities``,
+        ``provably_excluded_capabilities``, and the implementor list -
+        every regulator-facing surface. The fix demangles all of these
+        while keeping ``name`` / ``container`` mangled for stable
+        internal bom-ref keying."""
+        d = self._tmpdir()
+        self._write(
+            d, "mod_cap.capa",
+            "capability LocalCap\n"
+            "    fun describe(self) -> String\n"
+            "\n"
+            "type LocalImpl {\n"
+            "    label: String\n"
+            "}\n"
+            "\n"
+            "impl LocalCap for LocalImpl\n"
+            "    fun describe(self) -> String\n"
+            "        return self.label\n"
+            "\n"
+            "pub fun use_it(c: LocalCap) -> String\n"
+            "    return c.describe()\n",
+        )
+        root = self._write(
+            d, "root.capa",
+            "import mod_cap\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"hi\")\n",
+        )
+        m = self._link_and_build(root)
+        rendered = json.dumps(m)
+        # The user-facing capability list must read as the user wrote
+        # it, with no loader prefix anywhere in the cap record.
+        caps = [c for c in m["user_defined_capabilities"] if c["name"] == "LocalCap"]
+        self.assertEqual(len(caps), 1, m["user_defined_capabilities"])
+        cap = caps[0]
+        self.assertNotIn("_capa_m", cap["name"])
+        for impl in cap["implementors"]:
+            self.assertNotIn("_capa_m", impl)
+        self.assertIn("LocalImpl", cap["implementors"])
+
+        fn = self._find_fn(m, "use_it")
+        # Parameter type, declared cap list, and the (empty here)
+        # exclusion list must all be in the source-level namespace.
+        self.assertEqual(fn["params"][0]["type"], "LocalCap")
+        self.assertIn("LocalCap", fn["declared_capabilities"])
+        for excluded in fn["provably_excluded_capabilities"]:
+            self.assertNotIn("_capa_m", excluded)
+        self.assertNotIn("LocalCap", fn["provably_excluded_capabilities"])
+        # Catch-all guard: no regulator-facing field anywhere on this
+        # function record carries the prefix.
+        leak_re = re.compile(r"_capa_m\d+__LocalCap")
+        for field in (
+            "source_name", "source_container",
+            "return_type",
+            *(p["type"] for p in fn["params"]),
+            *fn["declared_capabilities"],
+            *fn["provably_excluded_capabilities"],
+        ):
+            self.assertIsNone(
+                leak_re.search(str(field)),
+                f"unexpected mangled cap name leaked: {field!r}",
+            )
+
 
 class TestSourceNameInSboms(unittest.TestCase):
     """The CycloneDX / SPDX wrappers must display the source-level

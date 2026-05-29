@@ -33,6 +33,10 @@ SCHEMA_VERSION = 1
 # wrote them; the module index ``N`` is preserved as a separate
 # field so the auditor still sees which import the symbol came from.
 _MANGLE_RE = re.compile(r"^_capa_m(\d+)__(.+)$")
+# Inline form for rewriting mangled identifiers that appear inside
+# a type-text string (``List<_capa_m1__Foo>``) — anchored at a
+# word boundary so it doesn't munge unrelated names.
+_MANGLE_INLINE_RE = re.compile(r"\b_capa_m\d+__([A-Za-z_]\w*)")
 
 
 def _demangle(name: str) -> tuple[str, Optional[int]]:
@@ -43,6 +47,15 @@ def _demangle(name: str) -> tuple[str, Optional[int]]:
     if m is None:
         return name, None
     return m.group(2), int(m.group(1))
+
+
+def _demangle_type_text(s: str) -> str:
+    """Rewrite every mangled identifier inside a rendered
+    ``_ty_text`` string back to its source-level form. Used so
+    the manifest's per-param ``type`` fields read as the user
+    wrote them rather than carrying the loader's
+    ``_capa_m{N}__`` prefix from a non-pub imported type."""
+    return _MANGLE_INLINE_RE.sub(r"\1", s)
 
 
 def build_manifest(
@@ -64,14 +77,26 @@ def build_manifest(
     # CAPABILITY_NAMES; we extend that set so that struct parameters
     # of user-defined caps are correctly classified.
     user_caps: list[dict[str, Any]] = []
+    # ``cap_names`` is the analyzer-internal set of cap-typed names
+    # (built-ins + user-defined). For the discipline check we need
+    # the MANGLED names (because that's what carries through the
+    # module after loader-rewrites). For the human-facing manifest
+    # fields below we demangle. Slice 20 (2026-05-29): pre-fix the
+    # ``user_defined_capabilities`` / ``provably_excluded_capabilities``
+    # / ``implementors`` surfaces leaked the ``_capa_m{N}__`` prefix
+    # of any non-pub cap defined in an imported module; downstream
+    # SBOM / regulator tooling reads cap names as strings and would
+    # render them as e.g. ``_capa_m1__SmtpMailer`` rather than the
+    # source-level ``SmtpMailer``.
     cap_names: set[str] = set(CAPABILITY_NAMES)
     impl_map: dict[str, list[str]] = {}
 
     for item in module.items:
         if isinstance(item, A.TraitDecl) and item.is_capability:
             cap_names.add(item.name)
+            source_cap_name, _idx = _demangle(item.name)
             user_caps.append({
-                "name": item.name,
+                "name": source_cap_name,
                 "methods": [m.name for m in item.methods],
                 "implementors": [],  # populated below
                 "doc": item.doc,
@@ -80,7 +105,16 @@ def build_manifest(
             impl_map.setdefault(item.trait_name, []).append(item.type_name)
 
     for uc in user_caps:
-        uc["implementors"] = sorted(impl_map.get(uc["name"], []))
+        # impl_map keys are mangled trait names (analyzer-internal);
+        # find by re-mangling uc["name"] back. Since uc["name"] is
+        # already source-level, we look up by walking impl_map
+        # entries whose mangled key demangles to uc["name"].
+        impls: list[str] = []
+        for mangled_trait, types in impl_map.items():
+            demangled_trait, _ = _demangle(mangled_trait)
+            if demangled_trait == uc["name"]:
+                impls.extend(_demangle(t)[0] for t in types)
+        uc["implementors"] = sorted(impls)
 
     # Build per-function records. Walks both top-level funs and
     # methods inside impl blocks (which are nested FunDecl nodes).
@@ -147,7 +181,11 @@ def _fun_record(
         if p.name == "self":
             ty_text = "Self"
         else:
-            ty_text = _ty_text(p.type_expr) if p.type_expr else "?"
+            # Demangle the rendered type-text so the manifest's
+            # per-param ``type`` field reads as the user wrote it
+            # rather than carrying ``_capa_m{N}__`` prefixes from
+            # non-pub imported types (audit slice 20, 2026-05-29).
+            ty_text = _demangle_type_text(_ty_text(p.type_expr)) if p.type_expr else "?"
         is_cap = _root_type_name(p.type_expr) in cap_names if p.type_expr else False
         param_records.append({
             "name": p.name,
@@ -166,7 +204,9 @@ def _fun_record(
     # the method can exercise; this also keeps the ineligibility
     # proof below from falsely excluding the trait.
     if implicit_cap is not None and implicit_cap not in declared_caps:
-        declared_caps.append(implicit_cap)
+        implicit_demangled, _ = _demangle(implicit_cap)
+        if implicit_demangled not in declared_caps:
+            declared_caps.append(implicit_demangled)
     has_unsafe = (
         any(
             _root_type_name(p.type_expr) == "Unsafe"
@@ -207,8 +247,13 @@ def _fun_record(
     if has_unsafe or has_fun_in_sig:
         provably_excluded_caps: list[str] = []
     else:
+        # Compare in the demangled namespace so non-pub imported
+        # capability types (loader-prefixed ``_capa_m{N}__Foo``)
+        # don't appear in the regulator-facing exclusion list
+        # (audit slice 20, 2026-05-29).
         declared_set = set(declared_caps)
-        provably_excluded_caps = sorted(cap_names - declared_set)
+        cap_names_demangled = {_demangle(n)[0] for n in cap_names}
+        provably_excluded_caps = sorted(cap_names_demangled - declared_set)
     attrs = [
         {"name": a.name, "args": dict(a.args)}
         for a in fn.attributes
@@ -244,7 +289,7 @@ def _fun_record(
         "is_pub": fn.is_pub,
         "doc": fn.doc,
         "params": param_records,
-        "return_type": _ty_text(fn.return_type) if fn.return_type else "()",
+        "return_type": _demangle_type_text(_ty_text(fn.return_type)) if fn.return_type else "()",
         "declared_capabilities": declared_caps,
         "provably_excluded_capabilities": provably_excluded_caps,
         "has_unsafe": has_unsafe,
