@@ -57,6 +57,8 @@ _ATTENUATION_PRIVILEGED_OPS: frozenset[tuple[str, str]] = frozenset({
     ("Env", "get"),
     ("Clock", "now_secs"),
     ("Clock", "now_monotonic"),
+    ("Db", "exec"),
+    ("Db", "query"),
 })
 
 
@@ -145,6 +147,8 @@ def _atten_err_message(cap: str, method: str) -> str:
         return f"Net capability does not permit {method}"
     if cap == "Env":
         return f"Env capability does not permit access to this name"
+    if cap == "Db":
+        return f"Db capability does not permit {method}"
     return f"capability does not permit {cap}.{method}"
 
 
@@ -179,6 +183,12 @@ _CANONICAL_INDIRECT_RETURN: dict[tuple[str, str], tuple[int, str]] = {
     # area as Net.get.
     ("Net", "get"): (20, "result_string_io_error"),
     ("Net", "post"): (20, "result_string_io_error"),
+    # Db.exec / Db.query: same canonical-ABI shapes as Fs.write /
+    # Fs.read respectively. Both take (path, sql) as two String
+    # args. exec returns result<_, io-error> (20 bytes); query
+    # returns result<string, io-error> (also 20 bytes).
+    ("Db", "exec"):  (20, "result_unit_io_error"),
+    ("Db", "query"): (20, "result_string_io_error"),
     # ``Json`` used to live here when parse_json / to_json crossed a
     # host bridge; they now compile to local-export calls into the
     # bundled JSON parser (see ``capa.ir._builtin_json``), so no
@@ -245,6 +255,12 @@ class _CapDispatchMixin:
             # Fs.read's Err branch; Ok carries unit (no flat
             # fields).
             return (["i32", "i32", "i32", "i32", "i32"], "")
+        if "func(path: string, sql: string) -> result<_, io-error>" in wit:
+            # Db.exec: same two-string-arg shape as Fs.write with a
+            # Result<Unit, IoError> return. Separate pattern entry
+            # because the WIT arg names are (path, sql) rather than
+            # (path, content); the wire signature is identical.
+            return (["i32", "i32", "i32", "i32", "i32"], "")
         if "func(url: string, body: string) -> result<string, io-error>" in wit:
             # Net.post: url (ptr, len) + body (ptr, len) + 20-byte
             # ret area for Result<String, IoError>. Same Ok arm
@@ -252,6 +268,12 @@ class _CapDispatchMixin:
             # plus the Err io-error 4-i32 fallback. The host's
             # write into the ret area is independent of the body
             # arg (which is read once and consumed by urlopen).
+            return (["i32", "i32", "i32", "i32", "i32"], "")
+        if "func(path: string, sql: string) -> result<string, io-error>" in wit:
+            # Db.query: same shape as Net.post but the WIT arg
+            # names are (path, sql) so the pattern match needs
+            # its own entry. Returns the rows as a JSON-encoded
+            # string in the Ok arm.
             return (["i32", "i32", "i32", "i32", "i32"], "")
         if "func(path: string) -> result<_, io-error>" in wit:
             # Fs.mkdir: single-string arg version of Fs.write's
@@ -346,7 +368,7 @@ class _CapDispatchMixin:
         # Python backend or to a literal call. ``Clock.allows`` has
         # no string arg and depends on the live wall clock, so it
         # stays on the host bridge path.
-        if method == "allows" and cap in ("Fs", "Env"):
+        if method == "allows" and cap in ("Fs", "Env", "Db"):
             self._emit_atten_allows(instr, cap)
             return
         # Random method calls route to the guest-side SplitMix64
@@ -505,6 +527,18 @@ class _CapDispatchMixin:
             self._push_string_arg(instr.args[1])
             self._write("local.set $_atten_content_len")
             self._write("local.set $_atten_content_ptr")
+        elif cap == "Db" and method in ("exec", "query"):
+            # Db.exec(path, sql) / Db.query(path, sql): same
+            # two-String-arg shape as Net.post + Fs.write. The
+            # attenuation check fires on the path arg (prefix
+            # match); sql is opaque to the cap and is passed
+            # through to the host bridge as-is.
+            self._push_string_arg(instr.args[0])
+            self._write("local.set $_atten_path_len")
+            self._write("local.set $_atten_path_ptr")
+            self._push_string_arg(instr.args[1])
+            self._write("local.set $_atten_content_len")
+            self._write("local.set $_atten_content_ptr")
         elif cap == "Env" and method == "get":
             self._push_string_arg(instr.args[0])
             self._write("local.set $_atten_path_len")
@@ -548,6 +582,14 @@ class _CapDispatchMixin:
             # Push url + body in the order the host's
             # ``net.post(url_ptr, url_len, body_ptr, body_len,
             # ret_area)`` signature expects.
+            self._write("local.get $_atten_path_ptr")
+            self._write("local.get $_atten_path_len")
+            self._write("local.get $_atten_content_ptr")
+            self._write("local.get $_atten_content_len")
+        elif cap == "Db" and method in ("exec", "query"):
+            # Push path + sql in the order the host's
+            # ``db.{exec,query}(path_ptr, path_len, sql_ptr,
+            # sql_len, ret_area)`` signature expects.
             self._write("local.get $_atten_path_ptr")
             self._write("local.get $_atten_path_len")
             self._write("local.get $_atten_content_ptr")
@@ -614,6 +656,27 @@ class _CapDispatchMixin:
             self._write(f"i32.const {offset}")
             self._write(f"i32.const {length}")
             self._write("call $str_contains")
+            self._write("local.get $_atten_ok")
+            self._write("i32.and")
+            self._write("local.set $_atten_ok")
+            return
+        if cap == "Db":
+            # Db attenuation mirrors Fs: ``restrict_to(prefix)``
+            # collapses to a ``str_starts_with`` check on the
+            # path arg. Same machinery, same scratch locals
+            # (``$_atten_path_*``).
+            if att_method != "restrict_to" or not args:
+                raise WasmEmissionError(
+                    f"unsupported Db attenuation: {att_method!r} "
+                    f"with args {args!r}"
+                )
+            prefix = _unquote_attenuation_arg(args[0])
+            offset, length = self._intern_string(prefix)
+            self._write("local.get $_atten_path_ptr")
+            self._write("local.get $_atten_path_len")
+            self._write(f"i32.const {offset}")
+            self._write(f"i32.const {length}")
+            self._write("call $str_starts_with")
             self._write("local.get $_atten_ok")
             self._write("i32.and")
             self._write("local.set $_atten_ok")

@@ -104,6 +104,11 @@ _PARITY_PROGRAMS: list[str] = [
     # to the parity list 2026-05-29.
     "fs_demo.capa",
     "env_demo.capa",
+    # Slice 11 (2026-05): Db v1 (SQLite-backed) with path-prefix
+    # attenuation. db_demo writes to a fresh ``/tmp/`` sqlite file
+    # and exercises exec + query + restrict_to; both backends route
+    # through ``sqlite3`` (Python directly; Wasm via host bridge).
+    "db_demo.capa",
 ]
 
 # Programs deliberately excluded from parity and why; documented
@@ -507,6 +512,25 @@ class TestPythonWasmParity(unittest.TestCase):
         # inspection shows none was actually required.
         self._assert_parity("env_demo.capa")
 
+    def test_db_demo(self):
+        # Slice 11 (2026-05): Db v1 SQLite-backed capability with
+        # path-prefix attenuation. Both backends route through
+        # Python's ``sqlite3`` module (Python directly; Wasm via
+        # the host bridge) against the same on-disk file, so query
+        # output + attenuation-deny diagnostics match.
+        # Delete the fixture first so back-to-back runs both see
+        # the same starting state (empty database).
+        import os
+        path = "/tmp/capa_db_demo.db"
+        for _ in range(2):  # paranoia: ensure full reset
+            if os.path.exists(path):
+                os.unlink(path)
+        try:
+            self._assert_parity("db_demo.capa")
+        finally:
+            if os.path.exists(path):
+                os.unlink(path)
+
     def test_inventory_matches_examples_dir(self):
         # Soundness check: every .capa under examples/wasm/ is
         # either in the parity list or in the documented-excluded
@@ -545,6 +569,7 @@ _CM_HOST_BRIDGE_SUBSET: list[str] = [
     "net_post.capa",       # Net.post two-string-arg variant
     "net_restrict.capa",   # attenuation-deny short-circuit
     "allows_inline.capa",  # Fs.allows / Env.allows / Clock.allows inline
+    "db_demo.capa",        # Db.exec / Db.query two-string-arg + attenuation
 ]
 
 
@@ -602,6 +627,21 @@ class TestPythonWasmComponentParity(unittest.TestCase):
 
     def test_allows_inline_under_cm(self):
         self._assert_cm_parity("allows_inline.capa")
+
+    def test_db_demo_under_cm(self):
+        # Slice 11 (2026-05): Db v1 SQLite-backed capability under
+        # the Component Model. Same reset-fixture dance as the
+        # core parity test so back-to-back Python + CM runs both
+        # see an empty database.
+        import os
+        path = "/tmp/capa_db_demo.db"
+        if os.path.exists(path):
+            os.unlink(path)
+        try:
+            self._assert_cm_parity("db_demo.capa")
+        finally:
+            if os.path.exists(path):
+                os.unlink(path)
 
     def test_subset_membership(self):
         # Soundness check: every entry in _CM_HOST_BRIDGE_SUBSET

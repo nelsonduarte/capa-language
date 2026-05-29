@@ -73,6 +73,7 @@ class WasmHost:
         self._register_json()
         self._register_random()
         self._register_net()
+        self._register_db()
 
     def _register_stdio(self) -> None:
         """Register the ``capa:stdio`` interface methods. Each
@@ -981,6 +982,194 @@ class WasmHost:
         self.linker.define_func(
             "capa:host/net", "restrict-to", ft_string_to_unit,
             net_restrict_to, access_caller=True,
+        )
+
+    def _register_db(self) -> None:
+        """Register the ``capa:host/db`` interface methods.
+
+        Slice 11 (2026-05): Db is a SQLite-backed capability. Both
+        ``exec`` and ``query`` take ``(path: string, sql: string)``
+        and return canonical-ABI ``result<...>`` shapes via a
+        20-byte caller-allocated return area:
+
+        - ``exec`` returns ``result<_, io-error>`` (same Err arm
+          shape as Fs.write; Ok arm carries unit).
+        - ``query`` returns ``result<string, io-error>`` (same
+          Ok/Err arm shapes as Fs.read; the Ok string is a
+          JSON-encoded ``[[col1, col2, ...], ...]`` array of
+          arrays of stringified cell values).
+
+        The host opens a fresh ``sqlite3.connect`` per call; the
+        cap is stateless from the program's POV. Attenuation
+        (``Db.restrict_to(prefix)``) is inlined at the guest
+        side by the audit C2 ``$str_contains`` check around the
+        privileged op, so a denied path never reaches this
+        bridge. ``db.restrict-to`` is a host no-op like
+        ``fs.restrict-to``.
+        """
+        import json
+        import sqlite3
+
+        ft_two_string_indirect = wasmtime.FuncType(
+            [
+                wasmtime.ValType.i32(),  # path_ptr
+                wasmtime.ValType.i32(),  # path_len
+                wasmtime.ValType.i32(),  # sql_ptr
+                wasmtime.ValType.i32(),  # sql_len
+                wasmtime.ValType.i32(),  # ret_area
+            ],
+            [],
+        )
+
+        def _alloc_utf8(caller, text: str) -> tuple[int, int]:
+            encoded = text.encode("utf-8")
+            if not encoded:
+                return 0, 0
+            ptr = self._alloc_export(caller, len(encoded))
+            self._memory.write(caller, encoded, ptr)
+            return ptr, len(encoded)
+
+        def _write_result_ok_string(caller, ret_area, ptr, length):
+            self._memory.write(caller, (0).to_bytes(4, "little"), ret_area)
+            self._memory.write(
+                caller, ptr.to_bytes(4, "little"), ret_area + 4,
+            )
+            self._memory.write(
+                caller, length.to_bytes(4, "little"), ret_area + 8,
+            )
+            self._memory.write(
+                caller, (0).to_bytes(8, "little"), ret_area + 12,
+            )
+
+        def _write_result_ok_unit(caller, ret_area):
+            # tag=0 (Ok), Ok payload has no flat fields. Zero the
+            # remaining 16 bytes so the slot stays deterministic.
+            self._memory.write(caller, (0).to_bytes(4, "little"), ret_area)
+            self._memory.write(
+                caller, (0).to_bytes(16, "little"), ret_area + 4,
+            )
+
+        def _write_result_err_ioerror(caller, ret_area, message, cause=""):
+            m_ptr, m_len = _alloc_utf8(caller, message)
+            c_ptr, c_len = _alloc_utf8(caller, cause)
+            self._memory.write(caller, (1).to_bytes(4, "little"), ret_area)
+            self._memory.write(
+                caller, m_ptr.to_bytes(4, "little"), ret_area + 4,
+            )
+            self._memory.write(
+                caller, m_len.to_bytes(4, "little"), ret_area + 8,
+            )
+            self._memory.write(
+                caller, c_ptr.to_bytes(4, "little"), ret_area + 12,
+            )
+            self._memory.write(
+                caller, c_len.to_bytes(4, "little"), ret_area + 16,
+            )
+
+        def _read_string_arg(caller, ptr, length, slot_name):
+            try:
+                return bytes(
+                    self._memory.read(caller, ptr, ptr + length)
+                ).decode("utf-8")
+            except UnicodeDecodeError as e:
+                _write_result_err_ioerror(
+                    caller, 0, f"invalid UTF-8 in {slot_name}", str(e),
+                )
+                raise
+
+        def db_exec(caller, path_ptr, path_len, sql_ptr, sql_len, ret_area):
+            if self._memory is None or self._alloc_export is None:
+                raise RuntimeError(
+                    "db.exec called before memory + $alloc set"
+                )
+            try:
+                path = bytes(
+                    self._memory.read(caller, path_ptr, path_ptr + path_len)
+                ).decode("utf-8")
+                sql = bytes(
+                    self._memory.read(caller, sql_ptr, sql_ptr + sql_len)
+                ).decode("utf-8")
+            except UnicodeDecodeError as e:
+                _write_result_err_ioerror(
+                    caller, ret_area, "invalid UTF-8", str(e),
+                )
+                return
+            try:
+                conn = sqlite3.connect(path)
+                try:
+                    conn.executescript(sql)
+                    conn.commit()
+                finally:
+                    conn.close()
+                _write_result_ok_unit(caller, ret_area)
+            except (sqlite3.Error, OSError, ValueError) as e:
+                _write_result_err_ioerror(
+                    caller, ret_area, "SQLite exec failed", str(e),
+                )
+
+        def db_query(caller, path_ptr, path_len, sql_ptr, sql_len, ret_area):
+            if self._memory is None or self._alloc_export is None:
+                raise RuntimeError(
+                    "db.query called before memory + $alloc set"
+                )
+            try:
+                path = bytes(
+                    self._memory.read(caller, path_ptr, path_ptr + path_len)
+                ).decode("utf-8")
+                sql = bytes(
+                    self._memory.read(caller, sql_ptr, sql_ptr + sql_len)
+                ).decode("utf-8")
+            except UnicodeDecodeError as e:
+                _write_result_err_ioerror(
+                    caller, ret_area, "invalid UTF-8", str(e),
+                )
+                return
+            try:
+                conn = sqlite3.connect(path)
+                try:
+                    cur = conn.execute(sql)
+                    rows = cur.fetchall()
+                finally:
+                    conn.close()
+                # Same stringify-every-cell policy as the Python
+                # runtime so both backends produce identical JSON
+                # for the same query against the same on-disk DB.
+                stringified = [
+                    [
+                        "null" if v is None else
+                        v if isinstance(v, str) else str(v)
+                        for v in row
+                    ]
+                    for row in rows
+                ]
+                payload = json.dumps(stringified)
+                s_ptr, s_len = _alloc_utf8(caller, payload)
+                _write_result_ok_string(caller, ret_area, s_ptr, s_len)
+            except (sqlite3.Error, OSError, ValueError) as e:
+                _write_result_err_ioerror(
+                    caller, ret_area, "SQLite query failed", str(e),
+                )
+
+        self.linker.define_func(
+            "capa:host/db", "exec", ft_two_string_indirect,
+            db_exec, access_caller=True,
+        )
+        self.linker.define_func(
+            "capa:host/db", "query", ft_two_string_indirect,
+            db_query, access_caller=True,
+        )
+
+        # db.restrict-to: host no-op like fs.restrict-to.
+        ft_string_to_unit = wasmtime.FuncType(
+            [wasmtime.ValType.i32(), wasmtime.ValType.i32()], [],
+        )
+
+        def db_restrict_to(caller, prefix_ptr, prefix_len):
+            return None
+
+        self.linker.define_func(
+            "capa:host/db", "restrict-to", ft_string_to_unit,
+            db_restrict_to, access_caller=True,
         )
 
     def _register_json(self) -> None:

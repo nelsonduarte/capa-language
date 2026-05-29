@@ -386,7 +386,8 @@ class _LocalsCollectionMixin:
                         m = instr.method
                         if (cap == "Fs" and m in ("read", "write")) \
                                 or (cap == "Net" and m in ("get", "post")) \
-                                or (cap == "Env" and m == "get"):
+                                or (cap == "Env" and m == "get") \
+                                or (cap == "Db" and m in ("exec", "query")):
                             has_attenuation_check = True
                             has_indirect_cap_call = True
                             if cap == "Env":
@@ -399,6 +400,11 @@ class _LocalsCollectionMixin:
                                 # the attenuation-stash dance reuses
                                 # the same _atten_content_* locals
                                 # Fs.write uses.
+                                has_atten_fs_write_check = True
+                            if cap == "Db" and m in ("exec", "query"):
+                                # Same two-String-arg shape; reuse
+                                # the Fs.write attenuation-stash
+                                # locals.
                                 has_atten_fs_write_check = True
                     if recv_ty.startswith("List"):
                         # List method calls (push / contains / get

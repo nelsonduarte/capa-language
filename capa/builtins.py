@@ -216,6 +216,18 @@ METHODS: dict[str, list[tuple[str, TyFun, list[str]]]] = {
         ("int_range",  fun(TyInt, TyInt, TyInt),                                   []),
         ("float_unit", fun(TyFloat),                                               []),
     ],
+    "Db": [
+        # SQLite-backed Db with path-prefix attenuation (mirrors Fs).
+        # ``query`` returns a JSON-encoded ``[[col1, col2, ...], ...]``
+        # string so the cross-backend wire format stays a single shape;
+        # callers parse with ``parse_json`` and project columns
+        # explicitly. ``exec`` runs DDL / DML; multiple statements via
+        # ``;`` are supported through SQLite's ``executescript``.
+        ("restrict_to", fun(TyString, TyName("Db")),                               []),
+        ("allows",      fun(TyString, TyBool),                                     []),
+        ("exec",        fun(TyString, TyString, _unit_res),                        []),
+        ("query",       fun(TyString, TyString, _str_res),                         []),
+    ],
     "JsonValue": [
         ("is_null",   fun(TyBool),                                                 []),
         ("as_bool",   fun(opt(TyBool)),                                            []),

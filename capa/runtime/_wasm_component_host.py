@@ -72,6 +72,7 @@ class WasmComponentHost:
         self._register_json(root)
         self._register_random(root)
         self._register_net(root)
+        self._register_db(root)
         root.close()
 
     # ---- per-interface registration ----------------------------
@@ -286,6 +287,62 @@ class WasmComponentHost:
         net_ifc.add_func("post",        net_post)
         net_ifc.add_func("restrict-to", net_restrict_to)
         net_ifc.close()
+
+    def _register_db(self, root: wc.LinkerInstance) -> None:
+        """Register the ``capa:host/db`` interface (slice 11).
+
+        Mirrors the core-host bridge byte-for-byte: both ``exec``
+        and ``query`` open a fresh ``sqlite3.connect`` per call;
+        ``query`` returns a JSON-encoded ``[[col, col, ...], ...]``
+        string with every cell stringified, so the cross-backend
+        wire format stays a single shape. ``db.restrict-to`` is a
+        no-op like ``fs.restrict-to``."""
+        import sqlite3
+        db_ifc = root.add_instance("capa:host/db")
+
+        def db_exec(_store, path: str, sql: str):
+            try:
+                conn = sqlite3.connect(path)
+                try:
+                    conn.executescript(sql)
+                    conn.commit()
+                finally:
+                    conn.close()
+                return None
+            except (sqlite3.Error, OSError, ValueError) as e:
+                return IoErrorRecord(
+                    message="SQLite exec failed", cause=str(e),
+                )
+
+        def db_query(_store, path: str, sql: str):
+            try:
+                conn = sqlite3.connect(path)
+                try:
+                    cur = conn.execute(sql)
+                    rows = cur.fetchall()
+                finally:
+                    conn.close()
+                stringified = [
+                    [
+                        "null" if v is None else
+                        v if isinstance(v, str) else str(v)
+                        for v in row
+                    ]
+                    for row in rows
+                ]
+                return _stdlib_json.dumps(stringified)
+            except (sqlite3.Error, OSError, ValueError) as e:
+                return IoErrorRecord(
+                    message="SQLite query failed", cause=str(e),
+                )
+
+        def db_restrict_to(_store, _prefix: str):
+            return None
+
+        db_ifc.add_func("exec",        db_exec)
+        db_ifc.add_func("query",       db_query)
+        db_ifc.add_func("restrict-to", db_restrict_to)
+        db_ifc.close()
 
     def _register_json(self, root: wc.LinkerInstance) -> None:
         json_ifc = root.add_instance("capa:host/json")

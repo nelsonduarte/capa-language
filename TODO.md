@@ -948,6 +948,52 @@ Listed so the design space is explicit.
 
 ### Wasm-specific gaps that are not P0
 
+- [x] **"Fully functional Wasm" slice 11 - `Db` capability v1
+  (SQLite-backed, path-prefix attenuation)** (closed
+  2026-05-29). The `Db` cap moves from documented-deferral
+  stub to a fully functional capability across all three
+  backends (Python, core Wasm, Component Model).
+  - **Surface** (4 methods, mirrors Fs):
+    - `restrict_to(prefix: String) -> Db` - intersect-style
+      attenuation
+    - `allows(path: String) -> Bool` - membership query
+      (inline-attenuation at emit time, D4 Option B)
+    - `exec(path: String, sql: String) -> Result<Unit,
+      IoError>` - runs DDL / DML (SQLite `executescript`,
+      so multiple `;`-separated statements work)
+    - `query(path: String, sql: String) -> Result<String,
+      IoError>` - runs SELECT and returns a JSON-encoded
+      `[[col1, col2, ...], ...]` string with every cell
+      stringified. Cross-backend wire shape is a single
+      `result<string, io-error>` so no new canonical-ABI
+      materialiser is needed; consumers use `parse_json`.
+  - **Backend wiring**: Python runtime uses `sqlite3.connect`
+    per call (cap is stateless). Wasm host bridge mirrors
+    exactly. WIT signatures land alongside the existing
+    `result<...>` shapes. `_emit_indirect_with_attenuation_check`
+    gained a Db branch (two-string args, same shape as
+    Fs.write / Net.post). `_emit_one_attenuation` gained a
+    `cap == "Db"` branch that emits the same `$str_starts_with`
+    prefix check as Fs.
+  - **Component Model**: `_wasm_component_host._register_db`
+    parallels the core bridge; the wire-level lift/lower goes
+    through `result<string, io-error>` and `result<_, io-error>`
+    which already had CM coverage in slice 10. Db works
+    under `--component --run`.
+  - **Verification**: new parity program `examples/wasm/db_demo.capa`
+    (CREATE -> INSERT -> SELECT -> attenuation-deny) hits all
+    four methods. Registered in `_PARITY_PROGRAMS` (core
+    parity) and `_CM_HOST_BRIDGE_SUBSET` (CM parity). Suite
+    2033 -> 2035 / 5 skipped / 0 fail. `db_demo` under
+    `--component --run` also matches the Python backend
+    byte-for-byte.
+  - **Deferred**: `Db` v2 surface (typed result columns,
+    persistent connection caching, transactions, prepared
+    statements). v1 is the minimum useful surface; the
+    JSON-encoded wire shape leaves room for typed-columns
+    expansion without breaking source-level code (Capa
+    consumers already parse `JArr<JStr>` rows).
+
 - [x] **"Fully functional Wasm" slice 10 - Component Model
   parity harness + `Fs.allows` / `Env.allows` WIT-mismatch
   fix** (closed 2026-05-29). Two deliverables:

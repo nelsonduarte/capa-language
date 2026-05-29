@@ -136,6 +136,22 @@ _WIT_SIGNATURES: dict[tuple[str, str], str] = {
     # ``$str_contains`` check.
     ("Net", "restrict_to"): "restrict-to: func(host: string)",
 
+    # Db: SQLite-backed key-value + tabular store (slice 11,
+    # 2026-05). ``exec`` runs DDL / DML and returns
+    # ``result<_, io-error>`` (same shape as Fs.write); ``query``
+    # runs a SELECT and returns the rows as a JSON-encoded
+    # ``[[col1, col2, ...], ...]`` string with the same
+    # ``result<string, io-error>`` shape as Fs.read. Both methods
+    # take the sqlite file path as the first arg + the SQL as
+    # the second, mirroring Net.post's two-string layout. The
+    # host opens a fresh ``sqlite3.connect`` per call; the cap is
+    # stateless from the program's POV. Attenuation
+    # (``Db.restrict_to(prefix)``) is path-prefix matched
+    # identically to Fs.
+    ("Db", "exec"):        "exec: func(path: string, sql: string) -> result<_, io-error>",
+    ("Db", "query"):       "query: func(path: string, sql: string) -> result<string, io-error>",
+    ("Db", "restrict_to"): "restrict-to: func(prefix: string)",
+
     # ``parse_json`` / ``to_json`` used to live here as a synthetic
     # ``Json`` capability so the Wasm import machinery had something
     # to plumb. They now compile to plain ``call $__capa_parse_json``
@@ -151,7 +167,7 @@ _WIT_SIGNATURES: dict[tuple[str, str], str] = {
 # in ``_WIT_SIGNATURES`` raise ``UnsupportedCapability`` at WIT
 # generation time; the Wasm emitter mirrors this so the contract
 # stays in sync.
-_KNOWN_CAPABILITIES = {"Stdio", "Clock", "Env", "Fs", "Random", "Net"}
+_KNOWN_CAPABILITIES = {"Stdio", "Clock", "Env", "Fs", "Random", "Net", "Db"}
 
 
 # Per-interface type declarations injected before the method
@@ -177,6 +193,9 @@ _INTERFACE_TYPE_PRELUDE: dict[str, list[str]] = {
     # Net.get returns result<string, io-error>; same self-contained
     # rationale as Fs / Stdio.
     "Net": _IO_ERROR_RECORD,
+    # Db.exec / Db.query both reference io-error; same self-
+    # contained rationale.
+    "Db":  _IO_ERROR_RECORD,
 }
 
 
@@ -194,6 +213,9 @@ _METHODS_NEEDING_IO_ERROR: dict[str, frozenset[str]] = {
     # A program that only calls restrict_to (vanishingly rare; the
     # analyzer would flag the cap as unused) skips the prelude.
     "Net": frozenset({"get", "post"}),
+    # Db.exec / Db.query both return io-error-bearing results;
+    # restrict_to is the attenuator (no io-error).
+    "Db":  frozenset({"exec", "query"}),
 }
 
 
@@ -206,9 +228,9 @@ _METHODS_NEEDING_IO_ERROR: dict[str, frozenset[str]] = {
 # the core-wasm imports stay in lockstep.
 _GUEST_ONLY_METHODS: dict[str, frozenset[str]] = {
     "Random": frozenset({"with_seed", "int_range", "float_unit"}),
-    # Slice 1 (2026-05): ``Fs.allows`` / ``Env.allows`` are
-    # inlined at emit time (D4 inline-attenuation Option B). The
-    # Wasm emitter walks the attenuation chain and produces a
+    # Slice 1 (2026-05): ``Fs.allows`` / ``Env.allows`` / ``Db.allows``
+    # are inlined at emit time (D4 inline-attenuation Option B).
+    # The Wasm emitter walks the attenuation chain and produces a
     # static i32 Bool result without ever crossing the host
     # boundary; the WIT generator must therefore not produce a
     # signature for them either, or the Component Model wrap
@@ -219,6 +241,7 @@ _GUEST_ONLY_METHODS: dict[str, frozenset[str]] = {
     # (see _WIT_SIGNATURES).
     "Fs":  frozenset({"allows"}),
     "Env": frozenset({"allows"}),
+    "Db":  frozenset({"allows"}),
 }
 
 

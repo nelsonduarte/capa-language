@@ -368,6 +368,10 @@ class _DiscoveryMixin:
                         needs_starts_with = True
                     if cap == "Net" and instr.method in ("get", "post"):
                         needs_contains = True
+                    if cap == "Db" and instr.method in ("exec", "query"):
+                        # Db attenuation mirrors Fs: path-prefix
+                        # check via ``$str_starts_with``.
+                        needs_starts_with = True
                 if isinstance(instr, If):
                     visit(instr.then_body)
                     visit(instr.else_body)
@@ -586,13 +590,14 @@ class _DiscoveryMixin:
                     "restrict_to", "restrict_to_keys", "restrict_to_after",
                 ):
                     pass
-                elif (cap in ("Fs", "Env")
+                elif (cap in ("Fs", "Env", "Db")
                       and instr.method == "allows"):
-                    # Fs.allows / Env.allows lower to inline-attenuation
-                    # checks at emit time (D4 Option B): no host import,
-                    # no WIT signature needed. ``Clock.allows`` is the
-                    # exception (no string arg, needs the live wall
-                    # clock) and still uses the host bridge.
+                    # Fs.allows / Env.allows / Db.allows lower to
+                    # inline-attenuation checks at emit time (D4
+                    # Option B): no host import, no WIT signature
+                    # needed. ``Clock.allows`` is the exception
+                    # (no string arg, needs the live wall clock)
+                    # and still uses the host bridge.
                     pass
                 elif cap == "Random" and instr.method in (
                     "with_seed", "int_range", "float_unit",

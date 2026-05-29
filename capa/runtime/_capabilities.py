@@ -549,9 +549,111 @@ class Proc(_StubCapability):
         super().__init__("Proc")
 
 
-class Db(_StubCapability):
-    def __init__(self):
-        super().__init__("Db")
+class Db:
+    """Capability for SQLite database access, with first-class
+    attenuation that mirrors :class:`Fs`.
+
+    An instance carries either ``None`` (unrestricted authority,
+    the fresh capability supplied by ``main``) or a frozen set of
+    allowed file-path prefixes. ``restrict_to`` returns a new
+    ``Db`` whose authority is the *intersection* of the current
+    restrictions with the newly requested one: attenuation is
+    monotonic by construction (restrictions can only narrow, never
+    widen).
+
+    The actual storage is SQLite via Python's stdlib ``sqlite3``
+    module. Each call opens a fresh connection, executes, and
+    closes; the cap is stateless from the program's POV. Wasm
+    host mirror keeps the same shape (a per-call ``sqlite3.connect``
+    on the host side) so both backends agree on outcomes for the
+    same on-disk file.
+
+    Methods:
+    - ``restrict_to(path: String) -> Db``: attenuation
+    - ``allows(path: String) -> Bool``: query without IO
+    - ``exec(path: String, sql: String) -> Result<Unit, IoError>``:
+      run a single statement (DDL or DML). Multiple statements via
+      ``;`` are supported through ``executescript``.
+    - ``query(path: String, sql: String) -> Result<String, IoError>``:
+      run a SELECT and return the rows as a JSON-encoded
+      ``[[col1, col2, ...], ...]`` string. Every value is
+      stringified (caller parses + casts as needed). JSON is the
+      cheapest cross-backend wire shape; Capa's
+      ``parse_json`` makes consumption ergonomic.
+    """
+
+    __slots__ = ("_allowed",)
+
+    def __init__(self, _allowed=None):
+        self._allowed = _allowed
+
+    def restrict_to(self, path: str) -> "Db":
+        new = frozenset({path})
+        if self._allowed is not None:
+            new = new & self._allowed
+        return Db(_allowed=new)
+
+    def allows(self, path: str) -> bool:
+        if self._allowed is None:
+            return True
+        # Prefix match (mirrors Fs.allows): a restriction to
+        # "/var/data/" permits "/var/data/users.db" but denies
+        # "/etc/shadow".
+        return any(path.startswith(p) for p in self._allowed)
+
+    def _deny(self, path: str, op: str):
+        allowed_repr = (
+            sorted(self._allowed) if self._allowed is not None else "unrestricted"
+        )
+        return Err(IoError(
+            f"Db capability does not permit {op} on path {path!r}",
+            f"current restrictions: {allowed_repr}",
+        ))
+
+    def exec(self, path: str, sql: str):
+        import sqlite3
+        if not self.allows(path):
+            return self._deny(path, "exec")
+        try:
+            conn = sqlite3.connect(path)
+            try:
+                conn.executescript(sql)
+                conn.commit()
+                return Ok(None)
+            finally:
+                conn.close()
+        except (sqlite3.Error, OSError) as e:
+            return Err(IoError("SQLite exec failed", str(e)))
+
+    def query(self, path: str, sql: str):
+        import json
+        import sqlite3
+        if not self.allows(path):
+            return self._deny(path, "query")
+        try:
+            conn = sqlite3.connect(path)
+            try:
+                cur = conn.execute(sql)
+                rows = cur.fetchall()
+                # Every column value is stringified so the cross-
+                # backend wire format stays a single shape (JSON array
+                # of arrays of strings). NULL becomes the JSON string
+                # "null" so the consumer can disambiguate via a
+                # match on the exact bytes if needed; a richer
+                # encoding (typed JSON) is a v2 surface decision.
+                stringified = [
+                    [
+                        "null" if v is None else
+                        v if isinstance(v, str) else str(v)
+                        for v in row
+                    ]
+                    for row in rows
+                ]
+                return Ok(json.dumps(stringified))
+            finally:
+                conn.close()
+        except (sqlite3.Error, OSError, ValueError) as e:
+            return Err(IoError("SQLite query failed", str(e)))
 
 
 class Unsafe:

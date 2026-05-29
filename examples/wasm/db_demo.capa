@@ -1,0 +1,35 @@
+// Db v1: SQLite-backed capability with path-prefix attenuation
+// (mirrors Fs). ``exec`` runs DDL/DML; ``query`` returns a
+// JSON-encoded ``[[col1, col2, ...], ...]`` string.
+//
+// Parity strategy: use a deterministic ``/tmp/`` path (delete the
+// file first so the test starts clean). Both backends route
+// through Python's ``sqlite3`` module under the hood (Python
+// directly; Wasm via host bridge), so the on-disk bytes + query
+// results agree.
+
+fun main(stdio: Stdio, db: Db, fs: Fs)
+    let path = "/tmp/capa_db_demo.db"
+
+    // Start clean so repeated runs produce identical output.
+    match fs.write(path, "")
+        Ok(_) -> stdio.println("reset")
+        Err(_) -> stdio.eprintln("BUG: could not reset fixture")
+
+    match db.exec(path, "CREATE TABLE IF NOT EXISTS users (name TEXT, age INTEGER)")
+        Ok(_) -> stdio.println("created")
+        Err(_) -> stdio.eprintln("BUG: create failed")
+
+    match db.exec(path, "INSERT INTO users VALUES ('alice', 30); INSERT INTO users VALUES ('bob', 25)")
+        Ok(_) -> stdio.println("inserted")
+        Err(_) -> stdio.eprintln("BUG: insert failed")
+
+    match db.query(path, "SELECT name, age FROM users ORDER BY name")
+        Ok(rows) -> stdio.println("rows: ${rows}")
+        Err(_) -> stdio.eprintln("BUG: query failed")
+
+    // Attenuation: a Db scoped to /etc/ rejects the /tmp/ path.
+    let scoped = db.restrict_to("/etc/")
+    match scoped.query(path, "SELECT 1")
+        Ok(_) -> stdio.eprintln("BUG: denied query returned Ok")
+        Err(_) -> stdio.println("scoped: denied")
