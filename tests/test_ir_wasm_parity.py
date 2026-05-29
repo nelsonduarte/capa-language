@@ -139,6 +139,13 @@ _PARITY_PROGRAMS: list[str] = [
     # indices whose low 32 bits wrapped in-bounds silently
     # returned xs[0] instead of trapping.
     "audit_float_and_index.capa",
+    # Slice 17 (2026-05-29): String.length + String.substring on
+    # the Wasm backend switched from byte-indexed to code-point-
+    # indexed to match the Python runtime. Pre-fix Wasm
+    # ``"abcé".length()`` returned 5 (byte count) while Python
+    # returned 4 (code-point count); substring returned partial
+    # UTF-8 mid-codepoint on Wasm.
+    "string_unicode.capa",
 ]
 
 # Programs deliberately excluded from parity and why; documented
@@ -605,6 +612,14 @@ class TestPythonWasmParity(unittest.TestCase):
         # argument"; now both backends emit the same yes/no per
         # cap-mediated query for a runtime String arg.
         self._assert_parity("allows_dynamic.capa")
+
+    def test_string_unicode(self):
+        # Slice 17 (2026-05-29): String.length and substring now
+        # use code-point indices on Wasm, matching Python. Covers
+        # 2/3/4-byte code points + every substring boundary. Pre-
+        # fix this program would have diverged on every length
+        # call and every substring on a non-ASCII range.
+        self._assert_parity("string_unicode.capa")
 
     def test_audit_float_and_index(self):
         # Slice 16 (2026-05-29): pins three audit-fix surfaces.

@@ -948,6 +948,53 @@ Listed so the design space is explicit.
 
 ### Wasm-specific gaps that are not P0
 
+- [x] **"Fully functional Wasm" slice 17 - String.length +
+  String.substring switched to code-point semantics on Wasm**
+  (closed 2026-05-29). A third audit pass (this one on the
+  Python runtime — `_safety.py` + older capability code)
+  surfaced one **P0 silent-divergence bug** that the parity
+  test suite had been masking because every parity program
+  uses ASCII strings: Wasm's `String.length` returned the byte
+  count, Python's returned the code-point count; same for
+  `String.substring` indices (bytes vs code points). The two
+  backends produced different output on any non-ASCII input
+  but the parity tests never exercised one. A Capa program
+  computing `"abcé".substring(0, 4)` returned `"abcé"` on
+  Python and the broken UTF-8 `"abc\xC3"` on Wasm.
+  - **Fix**: two new WAT runtime helpers in `_runtime.py`:
+    - `$str_codepoint_count(p, l) -> i32` walks the byte
+      slice counting non-continuation bytes.
+    - `$str_cp_to_byte_offset(p, l, cp_idx) -> i32` returns
+      the byte offset of the cp_idx-th code-point boundary
+      (or `l` if past the end).
+  - `_emit_string_length` calls `$str_codepoint_count`;
+    `_emit_string_substring` translates both indices to byte
+    offsets via `$str_cp_to_byte_offset` before the
+    `memory.copy`. Bounds check now compares against the
+    code-point count (not the byte length).
+  - Discovery walker gains `_uses_string_codepoint_index`
+    (recurses into `MakeLambda.body` and match-arm
+    `guard_setup` so a closure-body or match-guard call to
+    `.length()` still flips the gate). New `$_str_cp_count`
+    scratch local declared with the other String scratch
+    locals.
+  - **Other audit findings deferred** (lower severity or
+    documented intentional): `_capa_shl` overflow-trap policy
+    difference with Wasm (P1, intentional fail-loud);
+    `int_range(low > high)` Wasm-side handling (P1, separate
+    Wasm-side fix); empty-frozenset fail-open in
+    `Fs/Db/Proc.allows` (P2, only reachable via direct
+    construction); `Clock._not_before = NaN` poisoning (P2,
+    fail-closed so safe); `to_json` on NaN/Inf raises
+    ValueError (P2, standard JSON doesn't support either);
+    `Some.map` vs `and_then` semantic (?, intentional per
+    Rust convention).
+  - New parity program `string_unicode.capa` covers
+    2/3/4-byte code points and every substring boundary;
+    would silently diverge on the pre-fix Wasm backend.
+    Suite 2045 -> 2046 / 5 skipped / 0 fail.
+    `capa_governance_pack` still matches Python byte-for-byte.
+
 - [x] **"Fully functional Wasm" slice 16 - older-Wasm-code audit
   pass (3 real bugs fixed)** (closed 2026-05-29). A second
   audit (slice 10 covered slices 4-11; this one covered

@@ -123,7 +123,13 @@ class _StringEmissionMixin:
         # copies live in scratch locals so we can read multiple
         # times without re-evaluating the receiver.
         if method == "length":
-            self._push_string_len_only(recv)
+            # Slice 17 (2026-05-29): code-point count, not byte
+            # count. Matches Python ``len(s)``. Pre-fix Wasm
+            # returned the byte length which diverged silently on
+            # any non-ASCII string (no parity test exercised
+            # multi-byte strings).
+            self._push_string_value_as_ptr_len(recv)
+            self._write("call $str_codepoint_count")
             self._write("i64.extend_i32_s")
             if dst is not None:
                 self._write(f"local.set ${dst}")
@@ -345,43 +351,58 @@ class _StringEmissionMixin:
     def _emit_string_substring(
         self, recv: Value, start: Value, end: Value, dst: Optional[str],
     ) -> None:
-        """``recv.substring(start, end)``: bounds-check the range,
-        allocate ``end-start`` bytes, memory.copy from
-        ``recv.ptr + start``, leave the result in dst's (ptr, len)
-        locals.
+        """``recv.substring(start, end)``: ``start`` and ``end`` are
+        CODE-POINT indices (slice 17, 2026-05-29). Translate each
+        to a byte offset via ``$str_cp_to_byte_offset``, bounds-
+        check, allocate the resulting byte range, memory.copy from
+        ``recv.ptr + byte_start``, leave the result in dst's
+        (ptr, len) locals.
 
-        Bounds check (audit fix C1): trap if ``start > end`` or
-        ``end > recv.len``. Both compares are unsigned so a
-        negative IR-level ``start`` or ``end`` (an i64 the IR
-        narrows to i32 via ``i32.wrap_i64``, which sign-extends to
-        a huge u32) also trips the guard. Capa is non-negative-
-        bounds-only on both backends; the Python helper
-        ``_capa_substring`` in ``capa.runtime._safety`` raises
-        ``ValueError`` on the same inputs. Python's native
-        ``s[start:end]`` clamps silently; we refuse so a parser
-        downstream can't be fed a quietly-shortened token."""
+        Pre-slice-17 the indices were byte offsets, which diverged
+        silently from Python's ``_capa_substring`` (Python indexes
+        by code points). A program calling ``"abcé".substring(0,
+        4)`` would return the full ``"abcé"`` on Python and the
+        broken UTF-8 ``"abc\\xC3"`` on Wasm. Now both backends
+        return ``"abcé"``.
+
+        Bounds check (audit fix C1, retained): trap if
+        ``start > end`` or ``end > recv.codepoint_count``. The
+        helper clamps cp_idx >= count to byte len, but ``end >
+        count`` would silently truncate; we keep the explicit
+        trap so a parser downstream can't be fed a quietly-
+        shortened token. Negative indices wrap to a huge u32 and
+        also trip the guard via the unsigned compare. The
+        Python helper ``_capa_substring`` in
+        ``capa.runtime._safety`` raises ``ValueError`` on the
+        same inputs."""
         if dst is None:
             return
         # Save receiver ptr + len.
         self._push_string_value_as_ptr_len(recv)
         self._write("local.set $_str_a_len")
         self._write("local.set $_str_a_ptr")
-        # Save start and end as i32 (the IR pushes Int as i64;
-        # narrow with i32.wrap_i64).
+        # Save start and end as i32 code-point indices.
         self._push_value(start)
         self._write("i32.wrap_i64")
         self._write("local.set $_str_start")
         self._push_value(end)
         self._write("i32.wrap_i64")
         self._write("local.set $_str_end")
-        # Bounds check: trap on start > end OR end > recv.len.
-        # Unsigned compares also catch negative inputs (a negative
-        # i64 wrapped to i32 is a huge u32 that exceeds recv.len).
+        # Bounds check on code-point indices: trap on start > end
+        # OR end > codepoint_count. Compute the count once and
+        # stash; the helper is also called for each cp -> byte
+        # translation below, but we read the count to validate the
+        # range first. (Two extra walks; cheaper than re-walking
+        # in a non-validated translation.)
+        self._write("local.get $_str_a_ptr")
+        self._write("local.get $_str_a_len")
+        self._write("call $str_codepoint_count")
+        self._write("local.set $_str_cp_count")
         self._write("local.get $_str_start")
         self._write("local.get $_str_end")
         self._write("i32.gt_u")
         self._write("local.get $_str_end")
-        self._write("local.get $_str_a_len")
+        self._write("local.get $_str_cp_count")
         self._write("i32.gt_u")
         self._write("i32.or")
         self._write("if")
@@ -389,17 +410,32 @@ class _StringEmissionMixin:
         self._write("unreachable")
         self._indent -= 1
         self._write("end")
-        # new_len = end - start
-        self._write("local.get $_str_end")
+        # Translate start / end from cp indices to byte offsets.
+        # ``$str_cp_to_byte_offset(p, l, cp_idx)`` returns the byte
+        # offset of the cp_idx-th code-point boundary (or ``l`` if
+        # cp_idx is at the end). Stash in $_str_b_ptr / $_str_b_len
+        # (re-use of the second-needle scratch as transient).
+        self._write("local.get $_str_a_ptr")
+        self._write("local.get $_str_a_len")
         self._write("local.get $_str_start")
+        self._write("call $str_cp_to_byte_offset")
+        self._write("local.set $_str_b_ptr")
+        self._write("local.get $_str_a_ptr")
+        self._write("local.get $_str_a_len")
+        self._write("local.get $_str_end")
+        self._write("call $str_cp_to_byte_offset")
+        self._write("local.set $_str_b_len")
+        # new_len = byte_end - byte_start
+        self._write("local.get $_str_b_len")
+        self._write("local.get $_str_b_ptr")
         self._write("i32.sub")
         self._write("local.tee $_str_new_len")
         # alloc(new_len)
         self._write("call $alloc")
         self._write("local.tee $_str_new_ptr")
-        # memory.copy(dst=new_ptr, src=recv.ptr + start, n=new_len)
+        # memory.copy(dst=new_ptr, src=recv.ptr + byte_start, n=new_len)
         self._write("local.get $_str_a_ptr")
-        self._write("local.get $_str_start")
+        self._write("local.get $_str_b_ptr")
         self._write("i32.add")
         self._write("local.get $_str_new_len")
         self._write("memory.copy")

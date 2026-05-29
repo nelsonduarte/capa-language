@@ -257,6 +257,61 @@ class _DiscoveryMixin:
                 return True
         return False
 
+    def _uses_string_codepoint_index(self, module: Module) -> bool:
+        """True when any function in the module calls a String
+        method whose Wasm emission now goes through the
+        codepoint-counting / cp-to-byte-offset helpers. Slice 17
+        (2026-05-29) switched ``length`` and ``substring`` from
+        byte-indexing to code-point-indexing to match the Python
+        runtime; the inline emit calls ``$str_codepoint_count`` /
+        ``$str_cp_to_byte_offset``, which must therefore be
+        present in the module when these methods appear.
+
+        Recurses into ``MakeLambda.body`` so a closure-body call
+        like ``names.filter(fun (n) -> Bool => n.length() > 3)``
+        also triggers the gate (lambda-lift happens after
+        discovery; the body is in the MakeLambda Instr at this
+        point)."""
+        def visit(instrs: list[Instr]) -> bool:
+            for instr in instrs:
+                if isinstance(instr, MethodCall):
+                    recv_ty = instr.receiver.ty or ""
+                    if recv_ty == "String" and instr.method in (
+                        "length", "substring",
+                    ):
+                        return True
+                if isinstance(instr, If):
+                    if visit(instr.then_body) or visit(instr.else_body):
+                        return True
+                if isinstance(instr, While):
+                    if visit(instr.cond_setup) or visit(instr.body):
+                        return True
+                if isinstance(instr, For):
+                    if visit(instr.body):
+                        return True
+                if isinstance(instr, Match):
+                    for arm in instr.arms:
+                        # Match arm guards lower to a prelude of
+                        # ANF instructions + a Value; a guard like
+                        # ``x if x.length() > 0`` puts the
+                        # ``length()`` call in the guard prelude.
+                        if visit(getattr(arm, "guard_setup", []) or []):
+                            return True
+                        if visit(arm.body):
+                            return True
+                if isinstance(instr, MakeLambda):
+                    if visit(instr.body):
+                        return True
+            return False
+        for fn in module.functions:
+            if visit(fn.body):
+                return True
+        for impl in module.impls:
+            for m in impl.methods:
+                if visit(m.body):
+                    return True
+        return False
+
     def _uses_random(self, module: Module) -> bool:
         """True if the module needs the SplitMix64 helpers + the
         ``$rand_state`` global. Triggered by either a ``Random()``

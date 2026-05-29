@@ -850,6 +850,10 @@ class _LocalsCollectionMixin:
                 "_str_i", "_str_start", "_str_end",
                 "_str_new_ptr", "_str_new_len",
                 "_str_byte", "_str_count",
+                # Slice 17 (2026-05-29): String.substring stashes
+                # the code-point count once for the bounds check
+                # so we don't walk the string a third time.
+                "_str_cp_count",
             ):
                 out.setdefault(name, "i32")
         if has_list_string:

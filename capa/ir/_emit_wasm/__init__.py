@@ -505,6 +505,14 @@ class WasmEmitter(
                 # Proc.exec attenuations require. Emitted only when
                 # the discovery walker flips on the gate.
                 self._emit_proc_allows_function()
+            if self._uses_string_codepoint_index(module):
+                # Slice 17 (2026-05-29): String.length and
+                # String.substring switched from byte-indexing to
+                # code-point-indexing to match Python. The two
+                # helpers walk the UTF-8 byte stream skipping
+                # continuation bytes.
+                self._emit_str_codepoint_count_function()
+                self._emit_str_cp_to_byte_offset_function()
             if self._uses_format_str(module):
                 self._emit_itoa_function()
                 if self._uses_float_format(module):

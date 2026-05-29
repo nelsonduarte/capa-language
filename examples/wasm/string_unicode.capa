@@ -1,0 +1,42 @@
+// Slice 17 (2026-05-29): String.length and String.substring on
+// non-ASCII strings.
+//
+// Pre-fix the Wasm backend was byte-indexed for both methods
+// while Python was code-point-indexed. ``"abcé".length()`` was
+// 4 (Python) vs 5 (Wasm); ``"abcé".substring(0, 4)`` was
+// ``"abcé"`` (Python) vs ``"abc\xC3"`` (Wasm, broken UTF-8 mid-
+// code-point). Both backends now agree on Python's
+// code-point-indexed semantics. Other methods (char_at,
+// index_of, contains, starts_with, ends_with, split, replace)
+// already agreed.
+//
+// Coverage: 2-byte (é), 3-byte (€), 4-byte (🦊) code points;
+// mixed strings; substring at every boundary.
+
+fun show(stdio: Stdio, label: String, n: Int)
+    stdio.println("${label}: ${n}")
+
+fun show_s(stdio: Stdio, label: String, s: String)
+    stdio.println("${label}: [${s}]")
+
+fun main(stdio: Stdio)
+    // Length: code-point count, not byte count.
+    show(stdio, "ascii len", "abcd".length())
+    show(stdio, "latin len", "abcé".length())
+    show(stdio, "euro len", "ab€".length())
+    show(stdio, "emoji len", "ab🦊".length())
+
+    // Mixed string: 1 + 2 + 3 + 4 = 10 bytes, 4 code points.
+    let mix = "a" + "é" + "€" + "🦊"
+    show(stdio, "mix len", mix.length())
+
+    // Substring by code-point index. Pre-fix Wasm would have
+    // returned partial UTF-8 mid-codepoint; Python returned a
+    // valid string.
+    show_s(stdio, "mix sub 0..1", mix.substring(0, 1))
+    show_s(stdio, "mix sub 1..2", mix.substring(1, 2))
+    show_s(stdio, "mix sub 2..3", mix.substring(2, 3))
+    show_s(stdio, "mix sub 3..4", mix.substring(3, 4))
+    show_s(stdio, "mix sub 0..4", mix.substring(0, 4))
+    show_s(stdio, "mix sub 0..0", mix.substring(0, 0))
+    show_s(stdio, "mix sub 2..4", mix.substring(2, 4))

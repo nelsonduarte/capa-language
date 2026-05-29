@@ -1130,3 +1130,194 @@ class _RuntimeHelpersMixin:
         self._write("local.get $new_ptr")
         self._indent -= 1
         self._write(")")
+
+    def _emit_str_codepoint_count_function(self) -> None:
+        """``$str_codepoint_count(p: i32, l: i32) -> i32`` — return
+        the number of Unicode code points in the UTF-8 byte slice
+        ``[p, p+l)``. Counts bytes whose high bits are NOT
+        ``10xxxxxx`` (continuation bytes). Audit fix 2026-05-29
+        (post-slice-16): Wasm's ``String.length`` was returning
+        the byte count; Python's was returning the code-point
+        count. Both backends now agree on code-point semantics."""
+        self._write(
+            "(func $str_codepoint_count (param $p i32) (param $l i32) "
+            "(result i32)"
+        )
+        self._indent += 1
+        self._write("(local $i i32)")
+        self._write("(local $count i32)")
+        self._write("(local $b i32)")
+        self._write("i32.const 0")
+        self._write("local.set $i")
+        self._write("i32.const 0")
+        self._write("local.set $count")
+        self._write("block $cp_exit")
+        self._indent += 1
+        self._write("loop $cp_loop")
+        self._indent += 1
+        # if i >= l: exit
+        self._write("local.get $i")
+        self._write("local.get $l")
+        self._write("i32.ge_s")
+        self._write(f"br_if $cp_exit")
+        # b = byte at p+i
+        self._write("local.get $p")
+        self._write("local.get $i")
+        self._write("i32.add")
+        self._write("i32.load8_u")
+        self._write("local.set $b")
+        # if (b & 0xC0) != 0x80: count++ (i.e. not a continuation
+        # byte: ASCII 0xxxxxxx or 11xxxxxx leading bytes both count)
+        self._write("local.get $b")
+        self._write("i32.const 192")
+        self._write("i32.and")
+        self._write("i32.const 128")
+        self._write("i32.ne")
+        self._write("if")
+        self._indent += 1
+        self._write("local.get $count")
+        self._write("i32.const 1")
+        self._write("i32.add")
+        self._write("local.set $count")
+        self._indent -= 1
+        self._write("end")
+        # i++
+        self._write("local.get $i")
+        self._write("i32.const 1")
+        self._write("i32.add")
+        self._write("local.set $i")
+        self._write(f"br $cp_loop")
+        self._indent -= 1
+        self._write("end")
+        self._indent -= 1
+        self._write("end")
+        self._write("local.get $count")
+        self._indent -= 1
+        self._write(")")
+
+    def _emit_str_cp_to_byte_offset_function(self) -> None:
+        """``$str_cp_to_byte_offset(p: i32, l: i32, cp_idx: i32)
+        -> i32`` — return the byte offset of the ``cp_idx``-th
+        code-point boundary in the UTF-8 byte slice ``[p, p+l)``.
+        Returns ``l`` if ``cp_idx`` is at or past the end (so the
+        caller doesn't need a separate length check; clamps to
+        the end naturally).
+
+        Walks the bytes counting code-point starts (bytes NOT in
+        ``10xxxxxx``); on the ``cp_idx``-th start it returns the
+        current byte offset. If ``cp_idx == 0`` returns 0 (the
+        start of the slice is always a code-point boundary by
+        definition for valid UTF-8). Audit fix 2026-05-29
+        (post-slice-16): Wasm's ``String.substring`` was indexing
+        bytes; Python's was indexing code points."""
+        self._write(
+            "(func $str_cp_to_byte_offset (param $p i32) "
+            "(param $l i32) (param $cp_idx i32) (result i32)"
+        )
+        self._indent += 1
+        self._write("(local $i i32)")
+        self._write("(local $count i32)")
+        self._write("(local $b i32)")
+        # Fast path: cp_idx == 0 returns 0.
+        self._write("local.get $cp_idx")
+        self._write("i32.eqz")
+        self._write("if")
+        self._indent += 1
+        self._write("i32.const 0")
+        self._write("return")
+        self._indent -= 1
+        self._write("end")
+        self._write("i32.const 0")
+        self._write("local.set $i")
+        self._write("i32.const 0")
+        self._write("local.set $count")
+        self._write("block $b2o_exit")
+        self._indent += 1
+        self._write("loop $b2o_loop")
+        self._indent += 1
+        # if i >= l: exit (return l as fallback below)
+        self._write("local.get $i")
+        self._write("local.get $l")
+        self._write("i32.ge_s")
+        self._write(f"br_if $b2o_exit")
+        # b = byte at p+i
+        self._write("local.get $p")
+        self._write("local.get $i")
+        self._write("i32.add")
+        self._write("i32.load8_u")
+        self._write("local.set $b")
+        # if (b & 0xC0) != 0x80: count++; if count == cp_idx,
+        # return i.
+        self._write("local.get $b")
+        self._write("i32.const 192")
+        self._write("i32.and")
+        self._write("i32.const 128")
+        self._write("i32.ne")
+        self._write("if")
+        self._indent += 1
+        self._write("local.get $count")
+        self._write("i32.const 1")
+        self._write("i32.add")
+        self._write("local.tee $count")
+        self._write("local.get $cp_idx")
+        self._write("i32.eq")
+        self._write("if")
+        self._indent += 1
+        # We just stepped onto the cp_idx-th code-point boundary
+        # AFTER the byte at position i was its leading byte. The
+        # boundary is at i+1's leading byte; walk i forward until
+        # we hit either l or the next non-continuation. Easier:
+        # return i+1 (since we just passed a leading byte, the
+        # next byte is the start of the next code point... unless
+        # this codepoint has continuation bytes). Walk past any
+        # continuation bytes starting at i+1.
+        self._write("local.get $i")
+        self._write("i32.const 1")
+        self._write("i32.add")
+        self._write("local.set $i")
+        self._write("block $skip_exit")
+        self._indent += 1
+        self._write("loop $skip_loop")
+        self._indent += 1
+        self._write("local.get $i")
+        self._write("local.get $l")
+        self._write("i32.ge_s")
+        self._write(f"br_if $skip_exit")
+        self._write("local.get $p")
+        self._write("local.get $i")
+        self._write("i32.add")
+        self._write("i32.load8_u")
+        self._write("i32.const 192")
+        self._write("i32.and")
+        self._write("i32.const 128")
+        self._write("i32.ne")
+        self._write(f"br_if $skip_exit")
+        self._write("local.get $i")
+        self._write("i32.const 1")
+        self._write("i32.add")
+        self._write("local.set $i")
+        self._write(f"br $skip_loop")
+        self._indent -= 1
+        self._write("end")
+        self._indent -= 1
+        self._write("end")
+        self._write("local.get $i")
+        self._write("return")
+        self._indent -= 1
+        self._write("end")
+        self._indent -= 1
+        self._write("end")
+        # i++
+        self._write("local.get $i")
+        self._write("i32.const 1")
+        self._write("i32.add")
+        self._write("local.set $i")
+        self._write(f"br $b2o_loop")
+        self._indent -= 1
+        self._write("end")
+        self._indent -= 1
+        self._write("end")
+        # Fell out: cp_idx past the end. Return l.
+        self._write("local.get $l")
+        self._indent -= 1
+        self._write(")")
