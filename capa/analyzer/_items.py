@@ -26,6 +26,7 @@ from __future__ import annotations
 
 from .. import capa_ast as A
 from ..typesys import (
+    CAPABILITY_NAMES,
     Ty, TyFun, TyName, TyUnit, TyUnknown, TyVar,
     compatible, contains_capability, ty_str,
 )
@@ -237,6 +238,30 @@ class _ItemsMixin:
         # they share the ``trait_methods`` / ``trait_method_sigs``
         # shape on the Symbol.
         if impl.trait_name is not None:
+            # Audit slice 21 P2 follow-up (2026-05-29): built-in
+            # capabilities (Stdio, Fs, Net, ...) are part of the
+            # host trust boundary - their inhabitants are the
+            # values the host hands the program at startup, not
+            # arbitrary user structs. Letting a user write
+            # ``impl Stdio for FakeStdio`` lets a non-host value
+            # inhabit a host cap type and pollutes the
+            # "Stdio is whatever the host hands you" invariant
+            # that the discipline relies on for soundness.
+            # Method dispatch routes through the user impl so
+            # no real I/O happens at runtime, but the model
+            # opens the door to future soundness regressions
+            # (e.g. when downstream tooling assumes a value of
+            # cap type Stdio is host-granted).
+            if impl.trait_name in CAPABILITY_NAMES:
+                self._err(
+                    f"cannot impl built-in capability "
+                    f"{impl.trait_name!r}: built-in caps are "
+                    f"host-granted and cannot be inhabited by "
+                    f"user types. Wrap the cap in a user-defined "
+                    f"capability instead.",
+                    impl.pos,
+                )
+                return
             trait = self.global_scope.lookup(impl.trait_name)
             if trait is None or trait.kind not in (
                 SymbolKind.TRAIT, SymbolKind.CAPABILITY,

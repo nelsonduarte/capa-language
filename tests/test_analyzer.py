@@ -672,6 +672,28 @@ class TestImpl(unittest.TestCase):
         )
         self.assertTrue(r.ok, r.errors)
 
+    def test_impl_builtin_capability_rejected(self):
+        # Audit slice 21 P2 (2026-05-29): built-in capabilities
+        # are host-granted; user code must not be able to
+        # inhabit them with arbitrary structs. Otherwise a
+        # ``FakeStdio`` could appear in a Stdio-typed parameter
+        # and downstream tooling that assumes values of cap
+        # type Stdio are host-granted would be wrong.
+        for cap in ("Stdio", "Fs", "Net", "Env", "Clock", "Random", "Unsafe"):
+            msgs = errors_of(
+                f"type Fake {{ junk: Int }}\n"
+                f"impl {cap} for Fake\n"
+                f"    fun ping(self)\n"
+                f"        return ()\n"
+            )
+            self.assertTrue(
+                any(
+                    f"cannot impl built-in capability '{cap}'" in m
+                    for m in msgs
+                ),
+                f"expected rejection for impl {cap}; got: {msgs}",
+            )
+
 
 # =============================================================
 # Capability discipline

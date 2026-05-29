@@ -998,11 +998,13 @@ Listed so the design space is explicit.
   zero-impl-no-extras correctness, and the impl-method
   `self`-carries-wrapped-caps case.
 
-  **Audit P2 still deferred** (not in scope here):
-  `impl <BuiltinCap> for <UserStruct>` (e.g.
-  `impl Stdio for FakeStdio`) accepted by the analyzer.
-  Reject at `capa/analyzer/_items.py:_check_impl` when
-  `item.trait_name in CAPABILITY_NAMES`.
+  **Audit P2 closed** (slice 22, 2026-05-29). Analyzer
+  now rejects `impl <BuiltinCap> for <UserStruct>` at
+  `capa/analyzer/_items.py:_check_impl` with an
+  actionable diagnostic pointing the user at the user-
+  cap-wrapping pattern. Regression test
+  `TestImpl::test_impl_builtin_capability_rejected`
+  covers every built-in cap.
 
   **Audit CLEAN areas** (skip on future passes):
   consuming-cap match/loop merge logic, tuple/struct
