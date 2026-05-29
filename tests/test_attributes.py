@@ -364,6 +364,59 @@ class TestIneligibilityProofs(unittest.TestCase):
         # anything about a function with the escape hatch).
         self.assertEqual(excl, [])
 
+    def test_fun_param_voids_the_proof(self):
+        # Audit slice 18 (2026-05-29): closures launder captured
+        # capabilities. ``fun b(f: Fun() -> Unit) { f() }`` exercises
+        # whatever cap the caller put into the lambda, but the type
+        # system doesn't track captures inside Fun(...). Pre-fix the
+        # manifest claimed ``b`` provably-excluded every cap;
+        # running ``fun a(stdio: Stdio) { let l = fun () =>
+        # stdio.println("x"); b(l) }`` exercised Stdio through ``b``
+        # despite the manifest. The fix: any Fun(...) in the
+        # signature voids the proof, same as Unsafe does.
+        excl = self._excl(
+            "fun b(f: Fun() -> Unit)\n"
+            "    f()\n",
+            fn_name="b",
+        )
+        self.assertEqual(excl, [])
+
+    def test_fun_return_voids_the_proof(self):
+        # Same rule for Fun returns: a caller of ``maker`` gets
+        # a closure that might carry any cap, so ``maker`` itself
+        # can't claim provable exclusion.
+        excl = self._excl(
+            "fun maker(stdio: Stdio) -> Fun() -> Unit\n"
+            "    return fun () -> Unit => stdio.println(\"hi\")\n",
+            fn_name="maker",
+        )
+        self.assertEqual(excl, [])
+
+    def test_nested_fun_voids_the_proof(self):
+        # Fun inside a generic / collection still triggers the
+        # downgrade (a List<Fun(...)> param could carry any cap
+        # through any element).
+        excl = self._excl(
+            "fun many(fs: List<Fun() -> Unit>)\n"
+            "    for f in fs\n"
+            "        f()\n",
+            fn_name="many",
+        )
+        self.assertEqual(excl, [])
+
+    def test_no_fun_in_sig_still_proves(self):
+        # Sanity: the downgrade ONLY fires when Fun appears in
+        # the signature. A plain function with no Fun param /
+        # return keeps its full exclusion claim.
+        excl = self._excl(
+            "fun pure_int(n: Int) -> Int\n"
+            "    return n + 1\n",
+            fn_name="pure_int",
+        )
+        self.assertIn("Stdio", excl)
+        self.assertIn("Fs", excl)
+        self.assertIn("Net", excl)
+
     def test_user_defined_cap_in_universe(self):
         excl = self._excl(
             "capability SendEmail\n"

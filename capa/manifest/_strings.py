@@ -151,3 +151,32 @@ def _root_type_name(t: Optional[A.TypeExpr]) -> Optional[str]:
     if isinstance(t, A.TypeName):
         return t.name
     return None
+
+
+def _contains_fun_type(t: Optional[A.TypeExpr]) -> bool:
+    """True if ``t`` is, or transitively contains, a ``FunType``.
+
+    Used by the manifest builder to detect functions whose
+    signature lets a caller pass in (or get back) a closure
+    value. Capa's type system does not track captured
+    capabilities inside ``Fun(...)``: a closure ``fun () ->
+    Unit => stdio.println("x")`` has the same type as a closure
+    that captures no caps at all. So any function that takes /
+    returns / nests a ``Fun(...)`` value cannot honestly claim
+    to **provably exclude** any capability — the lambda could
+    carry any cap the caller has in scope. Audit slice 18
+    (2026-05-29): a function declared as
+    ``fun b(f: Fun() -> Unit) { f() }`` exercises whatever cap
+    the caller put into the closure; pre-fix the manifest
+    claimed b provably-excluded every cap, which is unsound.
+    """
+    if t is None:
+        return False
+    if isinstance(t, A.FunType):
+        return True
+    if isinstance(t, A.TypeName):
+        return any(_contains_fun_type(a) for a in (t.args or ()))
+    if isinstance(t, A.TupleType):
+        return any(_contains_fun_type(e) for e in t.elements)
+    # UnitType, primitives: no Fun inside.
+    return False

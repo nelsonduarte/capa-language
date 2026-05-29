@@ -948,6 +948,71 @@ Listed so the design space is explicit.
 
 ### Wasm-specific gaps that are not P0
 
+- [x] **"Fully functional Wasm" slice 18 - manifest soundness
+  fix (closure-laundering of capabilities)** (closed
+  2026-05-29). A fourth audit (this one on the analyzer /
+  manifest builder) surfaced one **P0 manifest-unsoundness
+  bug** that directly contradicts Capa's headline regulatory
+  claim.
+  - **The bug.** Capa's pitch to auditors: "the manifest's
+    `provably_excluded_capabilities` is a hard claim — this
+    function CANNOT exercise the listed caps, by construction
+    of the analyzer's discipline". A program with shape:
+    ```
+    fun b(f: Fun() -> Unit) { f() }
+    fun a(stdio: Stdio) {
+        let leak = fun () -> Unit => stdio.println("LEAKED")
+        b(leak)
+    }
+    ```
+    type-checks, runs, and prints "LEAKED". Pre-fix the
+    manifest claimed `b` provably-excluded every cap including
+    Stdio — but Stdio IS exercised through `b`. The type
+    system does not track captured caps inside `Fun(...)` (a
+    lambda + a plain function both have the same type), so
+    the analyzer can't tell which caps a closure value
+    carries; any function accepting / returning a `Fun(...)`
+    could be invoked with a closure carrying any cap the
+    caller has in scope.
+  - **The fix.** New `_contains_fun_type(t)` helper in
+    `capa/manifest/_strings.py` walks a `TypeExpr` recursively
+    (through `TypeName` generics + `TupleType` + `FunType`
+    itself) to detect embedded `Fun(...)`. The manifest
+    builder downgrades `provably_excluded_capabilities` to
+    `[]` whenever the function's signature (any parameter
+    type OR return type, transitively) contains a `Fun(...)`.
+    Same machinery `Unsafe` already used — both are "we can't
+    honor the claim, so don't make it" cases.
+  - **Audit triage (3 P0 claimed; only #1 confirmed real).**
+    - **P0 #1 (closure laundering)**: confirmed, fixed this
+      slice.
+    - **P0 #2 (var of cap reassigned)**: NOT exploitable.
+      Verified — `var alias: Stdio = stdio` is rejected at
+      the `var` binding step ("capability cannot appear in
+      a 'var' binding"); the factory path is also blocked
+      ("capability cannot be constructed at a call site" +
+      "capability cannot appear in return type"). The
+      language-level guards block the path before the
+      alias-reassignment code is reached.
+    - **P0 #3 (struct cap-field smuggle via impl method)**:
+      NOT exploitable. Verified — `let m = SmtpMailer { net:
+      net }` is rejected ("capability 'SmtpMailer' cannot
+      appear in a 'let' binding"). Without the let-binding
+      there's no way to obtain a cap-bearing struct value
+      to invoke `.send()` on (return is also blocked).
+  - **Audit P1 / P2 deferred**: no transitive call-graph
+    cap-flow check (P0 #1 above closes the most acute case);
+    attenuation chain not tracked by analyzer (documented
+    out-of-scope; runtime enforces); cap-field of cap-bearing
+    struct can carry unrelated cap fields (would need
+    analyzer rule); pattern-arm duplicate detection skips
+    variants-with-payloads (no security impact).
+  - 4 new regression tests in `TestIneligibilityProofs`:
+    `test_fun_param_voids_proof`, `test_fun_return_voids_proof`,
+    `test_nested_fun_voids_proof`, `test_no_fun_in_sig_still_proves`.
+    Suite 2046 -> 2050 / 5 skipped / 0 fail.
+    `capa_governance_pack` still works end-to-end on `--wasm`.
+
 - [x] **"Fully functional Wasm" slice 17 - String.length +
   String.substring switched to code-point semantics on Wasm**
   (closed 2026-05-29). A third audit pass (this one on the

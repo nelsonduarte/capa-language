@@ -20,7 +20,7 @@ from ..typesys import CAPABILITY_NAMES
 
 from ._calls import _collect_calls
 from ._flow import _build_attenuation_map
-from ._strings import _root_type_name, _ty_text
+from ._strings import _contains_fun_type, _root_type_name, _ty_text
 
 
 SCHEMA_VERSION = 1
@@ -181,11 +181,30 @@ def _fun_record(
     # ``declared_caps`` an upper bound on what the function can
     # exercise (any cap a callee touches must be in scope here to
     # be passed; impl-method ``self`` is included via
-    # ``implicit_cap`` above). The proof breaks if ``Unsafe`` is
-    # in scope (the escape hatch can side-step the discipline),
-    # so we report an empty list in that case rather than an
-    # over-claim.
-    if has_unsafe:
+    # ``implicit_cap`` above).
+    #
+    # The proof breaks in two cases, both of which downgrade the
+    # claim to an empty list rather than over-claim:
+    #
+    # 1. ``Unsafe`` is in scope -- the escape hatch can side-step
+    #    the discipline.
+    # 2. The function's signature contains a ``Fun(...)`` type
+    #    (in a parameter, return type, or nested generic). Audit
+    #    slice 18 (2026-05-29): a function like
+    #    ``fun b(f: Fun() -> Unit) { f() }`` exercises whatever
+    #    cap the caller captured into the closure, but the type
+    #    system does not track captures inside ``Fun(...)``.
+    #    Pre-fix the manifest claimed ``b`` provably-excluded
+    #    every cap; running ``a(stdio) { let l = fun () =>
+    #    stdio.println("x"); b(l) }`` then exercised Stdio through
+    #    ``b`` despite ``b``'s manifest. The fix preserves the
+    #    intent of ``provably_excluded`` (downstream SBOM /
+    #    regulatory tooling consumes it as a hard claim) by
+    #    refusing to make the claim when it can't be honored.
+    has_fun_in_sig = any(
+        _contains_fun_type(p.type_expr) for p in fn.params if p.type_expr
+    ) or _contains_fun_type(fn.return_type)
+    if has_unsafe or has_fun_in_sig:
         provably_excluded_caps: list[str] = []
     else:
         declared_set = set(declared_caps)
