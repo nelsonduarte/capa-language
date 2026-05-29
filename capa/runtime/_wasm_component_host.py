@@ -300,9 +300,12 @@ class WasmComponentHost:
         import sqlite3
         db_ifc = root.add_instance("capa:host/db")
 
+        from ._capabilities import _install_sqlite_authorizer
+
         def db_exec(_store, path: str, sql: str):
             try:
                 conn = sqlite3.connect(path)
+                _install_sqlite_authorizer(conn)
                 try:
                     conn.executescript(sql)
                     conn.commit()
@@ -317,6 +320,7 @@ class WasmComponentHost:
         def db_query(_store, path: str, sql: str):
             try:
                 conn = sqlite3.connect(path)
+                _install_sqlite_authorizer(conn)
                 try:
                     cur = conn.execute(sql)
                     rows = cur.fetchall()

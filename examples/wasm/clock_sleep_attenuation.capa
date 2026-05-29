@@ -1,0 +1,32 @@
+// Slice 13 (2026-05-29): Clock.sleep with restrict_to_after.
+// Pre-fix the Wasm backend ignored the cap's deadline entirely
+// (Python silent no-op vs Wasm always-sleeps). The inline check
+// now mirrors Python: ``if (clock.now_secs() >= deadline) sleep
+// (secs) else no-op``.
+//
+// Parity strategy: pick a deadline far in the future
+// (year-3000-ish) so the deny branch always fires on both
+// backends. Sleep a known-positive duration that we'd notice if
+// it actually ran (1 second). With the gate in place the program
+// returns immediately on both backends; without it the Wasm side
+// would block for 1 second + still match the print output (both
+// would say "done").
+//
+// We can't directly observe "did not sleep" from inside the
+// program (sleep returns Unit), so the parity is "both backends
+// print the same line with no observable timing divergence" --
+// good enough for the harness.
+
+fun main(stdio: Stdio, clock: Clock)
+    // Deadline far in the future: 33000000000.0 secs ~ year 3015.
+    let future_only = clock.restrict_to_after(33000000000.0)
+    stdio.println("calling sleep on a denied clock")
+    future_only.sleep(1.0)
+    stdio.println("done (sleep was a silent no-op)")
+
+    // Past-deadline clock: gate passes; we still pass a 0.0 sleep
+    // so the test runs fast even when the host honours the call.
+    let past = clock.restrict_to_after(0.0)
+    stdio.println("calling sleep on an allowed clock")
+    past.sleep(0.0)
+    stdio.println("done (sleep ran)")

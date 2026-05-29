@@ -549,6 +549,38 @@ class Proc(_StubCapability):
         super().__init__("Proc")
 
 
+# SQLite authorizer action codes (stable across SQLite versions;
+# documented at https://www.sqlite.org/c3ref/c_alter_table.html).
+# Spelled out here rather than imported from ``sqlite3`` because
+# Python's stdlib doesn't expose the action-code constants as
+# named attributes; both Db (Python runtime) and the Wasm host
+# bridges use the same numbers.
+_SQLITE_ATTACH = 24
+_SQLITE_DETACH = 25
+_SQLITE_OK = 0
+_SQLITE_DENY = 1
+
+
+def _install_sqlite_authorizer(conn) -> None:
+    """Lock down ``conn`` so ATTACH / DETACH return ``not
+    authorized`` at SQLite's parser level. Mitigates the
+    documented Db.exec ATTACH-bypass: a Db cap scoped to ``/tmp/``
+    could otherwise run ``ATTACH DATABASE '/etc/secret.db' AS
+    evil`` to open a second file outside the cap's prefix.
+
+    Both Python ``Db.exec``/``Db.query`` and the Wasm host
+    bridges call this on every fresh connection so the path
+    attenuation is the only cap-mediated path to a SQLite file.
+    Everything else (CREATE / SELECT / INSERT / UPDATE / DELETE /
+    DROP / transactions) stays allowed.
+    """
+    def auth(action, _arg1, _arg2, _dbname, _source):
+        if action in (_SQLITE_ATTACH, _SQLITE_DETACH):
+            return _SQLITE_DENY
+        return _SQLITE_OK
+    conn.set_authorizer(auth)
+
+
 class Db:
     """Capability for SQLite database access, with first-class
     attenuation that mirrors :class:`Fs`.
@@ -581,22 +613,18 @@ class Db:
       cheapest cross-backend wire shape; Capa's
       ``parse_json`` makes consumption ergonomic.
 
-    Known v1 limitation (audit 2026-05-29): the SQL string is
-    passed verbatim to ``sqlite3.executescript`` / ``execute``,
-    so a malicious or compromised Capa program holding a Db cap
-    scoped to ``/tmp/`` could use ``ATTACH DATABASE
-    '/etc/secret.db' AS evil; SELECT * FROM evil.x`` to bypass
-    the path prefix restriction. Capa's threat model treats the
-    *program* as trusted code; the cap's purpose is to constrain
-    *which file* the program touches when the program itself is
-    well-intentioned. For hardened sandbox-the-guest scenarios,
-    v2 should either:
-    - reject SQL containing ``ATTACH`` / ``DETACH`` at the
-      runtime, or
-    - call ``connection.setlimit(SQLITE_LIMIT_ATTACHED, 0)``
-      (Python 3.11+; not portable to 3.10), or
-    - expose a parameterized-only API surface that rejects
-      multi-statement strings entirely.
+    Path-attenuation hardening (audit 2026-05-29, slice 13):
+    ``ATTACH DATABASE '/etc/secret.db' AS evil; SELECT * FROM
+    evil.x`` would bypass the path prefix attenuation by opening
+    a second connection from inside SQL. Both backends now
+    install a ``set_authorizer`` callback on every connection
+    that denies ``SQLITE_ATTACH`` and ``SQLITE_DETACH``; the
+    statement fails with ``OperationalError: not authorized``
+    which becomes ``Err(IoError("SQLite ... failed", "not
+    authorized"))`` on both sides. Other operations
+    (CREATE / SELECT / INSERT / UPDATE / DELETE / DROP /
+    transactions) remain allowed; the authorizer is narrowly
+    scoped to the two bypass-shaped opcodes.
     """
 
     __slots__ = ("_allowed",)
@@ -643,6 +671,7 @@ class Db:
             return self._deny(path, "exec")
         try:
             conn = sqlite3.connect(path)
+            _install_sqlite_authorizer(conn)
             try:
                 conn.executescript(sql)
                 conn.commit()
@@ -659,6 +688,7 @@ class Db:
             return self._deny(path, "query")
         try:
             conn = sqlite3.connect(path)
+            _install_sqlite_authorizer(conn)
             try:
                 cur = conn.execute(sql)
                 rows = cur.fetchall()

@@ -624,6 +624,16 @@ class _DiscoveryMixin:
                             f"capa.ir._emit_wasm together"
                         )
                     self._used_caps.add(key)
+                    # Slice 13 (2026-05-29): Clock.sleep with a
+                    # restrict_to_after chain emits an inline
+                    # ``$Clock_now_secs >= deadline`` gate before
+                    # the host sleep call. Register ``now_secs``
+                    # as a used cap so its host import is
+                    # emitted even when the program never calls
+                    # it directly.
+                    if (cap == "Clock" and instr.method == "sleep"
+                            and instr.attenuations):
+                        self._used_caps.add(("Clock", "now_secs"))
             # ``Random()`` constructor: source uses it as a Call
             # (``let r = Random()``). It carries no runtime value at
             # the Wasm level but still pulls the SplitMix64 helpers

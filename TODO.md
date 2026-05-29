@@ -948,6 +948,51 @@ Listed so the design space is explicit.
 
 ### Wasm-specific gaps that are not P0
 
+- [x] **"Fully functional Wasm" slice 13 - close the two
+  audit-deferred findings (Clock.sleep + Db.ATTACH)** (closed
+  2026-05-29). Slice 12 fixed two capability escapes but
+  deferred two more findings; this slice closes both.
+  - **Clock.sleep gate on Wasm.** Python silently no-ops
+    `clock.sleep()` when the cap's `restrict_to_after(deadline)`
+    deadline hasn't passed; Wasm pre-fix ran the host call
+    regardless. Fix: `(Clock, sleep)` added to
+    `_ATTENUATION_PRIVILEGED_OPS`;
+    `_emit_clock_with_attenuation_check` extended to emit an
+    inline `if (clock.now_secs() >= deadline) call
+    $Clock_sleep` guard. Multiple chained `restrict_to_after`
+    calls combine via `max(thresholds)` (matches Python). The
+    `secs` arg is stashed in a new `$_clock_sleep_secs` f64
+    scratch local so the if-arm doesn't re-evaluate it. The
+    implicit `Clock.now_secs` host call is registered in both
+    the Wasm discovery and the WIT
+    `collect_used_capabilities` so the Component Model wrap
+    doesn't fail at link time with "import interface is
+    missing function now-secs".
+  - **Db.ATTACH/DETACH block on both backends.** A Capa
+    program holding a Db cap scoped to `/tmp/` could
+    previously run `ATTACH DATABASE '/etc/secret.db' AS evil`
+    to open a connection to a file outside the cap's prefix.
+    Fix: every `sqlite3.connect` call (Python runtime + Wasm
+    core host + CM host) now installs an authorizer via
+    `conn.set_authorizer(...)` that returns `SQLITE_DENY` for
+    `SQLITE_ATTACH` (24) and `SQLITE_DETACH` (25). Every
+    other action stays allowed. Shared via a new module-
+    level `_install_sqlite_authorizer(conn)` helper so the
+    three call sites cannot drift. The `set_authorizer` API
+    is available in Python 3.4+, so this is portable to the
+    project's 3.10+ minimum (the earlier `setlimit` option
+    needed 3.11).
+  - **WIT collector fix surfaced by the Clock.sleep work**:
+    `collect_used_capabilities` did not filter `restrict_to*`
+    methods, so a program using `clock.restrict_to_after(...)`
+    failed component generation with "capability method
+    Clock.'restrict_to_after' has no WIT signature". The
+    Wasm-side discovery already filtered them; mirrored
+    that here.
+  - Two new parity programs (`clock_sleep_attenuation.capa`,
+    `db_attach_blocked.capa`) under both core + CM parity
+    harnesses. Suite 2036 -> 2040 / 5 skipped / 0 fail.
+
 - [x] **"Fully functional Wasm" slice 12 - audit-pass security
   hardening (capability escapes on Wasm)** (closed
   2026-05-29). Audit of slices 4-11 surfaced **two real

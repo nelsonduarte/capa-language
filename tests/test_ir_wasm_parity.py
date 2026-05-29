@@ -114,6 +114,12 @@ _PARITY_PROGRAMS: list[str] = [
     # on the Wasm backend, and that the path-prefix check admitted
     # ``/tmproot`` lookalikes when restricted to ``/tmp``.
     "fs_attenuation_audit.capa",
+    # Slice 13 (2026-05-29): close the two audit findings deferred
+    # from slice 12 - Clock.sleep on a restrict_to_after(future)
+    # cap silently no-ops on both backends now; Db.exec blocks
+    # ATTACH/DETACH at the SQLite parser level on both backends.
+    "clock_sleep_attenuation.capa",
+    "db_attach_blocked.capa",
 ]
 
 # Programs deliberately excluded from parity and why; documented
@@ -546,6 +552,33 @@ class TestPythonWasmParity(unittest.TestCase):
         # would fail on the pre-fix Wasm backend.
         self._assert_parity("fs_attenuation_audit.capa")
 
+    def test_clock_sleep_attenuation(self):
+        # Slice 13 (2026-05-29): Clock.sleep on a
+        # ``restrict_to_after(future)`` cap silently no-ops on
+        # both backends now. Pre-fix Python skipped the sleep
+        # but Wasm ran the host call; the inline ``if
+        # (clock.now_secs() >= deadline) sleep(secs)`` gate
+        # mirrors Python.
+        self._assert_parity("clock_sleep_attenuation.capa")
+
+    def test_db_attach_blocked(self):
+        # Slice 13 (2026-05-29): both backends install a
+        # ``set_authorizer`` on every sqlite connection that
+        # denies ATTACH / DETACH at the SQLite parser level.
+        # Closes the documented Db.exec ATTACH-bypass without
+        # needing Python 3.11+ ``setlimit`` (the authorizer API
+        # is portable to Python 3.10).
+        import os
+        path = "/tmp/capa_db_attach.db"
+        for _ in range(2):  # paranoia: ensure full reset
+            if os.path.exists(path):
+                os.unlink(path)
+        try:
+            self._assert_parity("db_attach_blocked.capa")
+        finally:
+            if os.path.exists(path):
+                os.unlink(path)
+
     def test_inventory_matches_examples_dir(self):
         # Soundness check: every .capa under examples/wasm/ is
         # either in the parity list or in the documented-excluded
@@ -585,6 +618,12 @@ _CM_HOST_BRIDGE_SUBSET: list[str] = [
     "net_restrict.capa",   # attenuation-deny short-circuit
     "allows_inline.capa",  # Fs.allows / Env.allows / Clock.allows inline
     "db_demo.capa",        # Db.exec / Db.query two-string-arg + attenuation
+    # Slice 13 audit-fix surface under CM. The Clock.sleep gate
+    # threads through the inline ``clock.now_secs()`` host call,
+    # so it exercises CM canonical-ABI lift for f64 returns; the
+    # ATTACH block runs through the standard Db host bridge.
+    "clock_sleep_attenuation.capa",
+    "db_attach_blocked.capa",
 ]
 
 
@@ -654,6 +693,29 @@ class TestPythonWasmComponentParity(unittest.TestCase):
             os.unlink(path)
         try:
             self._assert_cm_parity("db_demo.capa")
+        finally:
+            if os.path.exists(path):
+                os.unlink(path)
+
+    def test_clock_sleep_attenuation_under_cm(self):
+        # Slice 13 audit-fix surface under CM. The Clock.sleep
+        # gate calls ``clock.now_secs()`` inline; if the WIT
+        # generator hadn't been taught to advertise ``now_secs``
+        # when ``sleep`` carries attenuations, the component
+        # wrap would fail at link time with "import interface
+        # is missing function now-secs".
+        self._assert_cm_parity("clock_sleep_attenuation.capa")
+
+    def test_db_attach_blocked_under_cm(self):
+        # Slice 13 audit-fix surface under CM. Confirms the
+        # sqlite3 authorizer is installed on the CM host
+        # bridge's connections too.
+        import os
+        path = "/tmp/capa_db_attach.db"
+        if os.path.exists(path):
+            os.unlink(path)
+        try:
+            self._assert_cm_parity("db_attach_blocked.capa")
         finally:
             if os.path.exists(path):
                 os.unlink(path)

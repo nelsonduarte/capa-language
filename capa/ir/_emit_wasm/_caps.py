@@ -67,6 +67,13 @@ _ATTENUATION_PRIVILEGED_OPS: frozenset[tuple[str, str]] = frozenset({
     ("Env", "get"),
     ("Clock", "now_secs"),
     ("Clock", "now_monotonic"),
+    # Audit 2026-05-29 (slice 13): Clock.sleep is the gated op in
+    # the Python runtime (silent no-op when restrict_to_after's
+    # deadline hasn't passed). Pre-fix the Wasm backend ignored
+    # the attenuation entirely; the inline check now compares
+    # ``clock.now_secs()`` against the literal threshold at
+    # emit time and skips the host call when denied.
+    ("Clock", "sleep"),
     ("Db", "exec"),
     ("Db", "query"),
 })
@@ -1005,41 +1012,94 @@ class _CapDispatchMixin:
         self, instr: MethodCall, cap: str, method: str,
         attenuations: list,
     ) -> None:
-        """Clock.now_secs / Clock.now_monotonic with
-        ``restrict_to_after(t)``. The Python runtime treats the
-        ``now_*`` family as pure queries (anyone with a wall clock
-        can read it), so no check fires there. The Wasm backend
-        preserves that semantic: emit the host call as normal but
-        leave a CAPA-RUNTIME-LIMITATION comment so the analyzer
-        contract stays visible.
+        """``Clock.now_secs`` / ``Clock.now_monotonic`` / ``Clock.sleep``
+        with a ``restrict_to_after(t)`` chain. The Python runtime
+        treats the ``now_*`` family as pure queries (anyone with a
+        wall clock can read it), so no check fires there. The
+        Wasm backend preserves that semantic for ``now_*``: emit
+        the host call as normal but leave a CAPA-RUNTIME-LIMITATION
+        comment so the analyzer contract stays visible.
 
-        Clock.sleep on a denied clock is the gated op in the
-        Python runtime; it has no Wasm WIT signature yet, so this
-        branch is documentation-only until Clock.sleep lands."""
-        # Fall through to the standard path; emit a comment marker
-        # for grep / audit visibility.
-        self._write(
-            ";; CAPA-RUNTIME-LIMITATION: Clock.restrict_to_after "
-            "is a static-discipline attenuator; now_* are pure "
-            "queries, no Wasm-side check fires."
-        )
-        for arg in instr.args:
-            if arg.kind == "lit_str":
-                offset, length = self._intern_string(arg.literal)
-                self._write(f"i32.const {offset}")
-                self._write(f"i32.const {length}")
-            elif arg.kind == "local" and self._is_string_local(arg.name):
-                self._write(f"local.get ${arg.name}_ptr")
-                self._write(f"local.get ${arg.name}_len")
-            elif arg.kind == "param" and self._param_is_string(arg.name):
-                self._write(f"local.get ${arg.name}_ptr")
-                self._write(f"local.get ${arg.name}_len")
-            else:
+        ``Clock.sleep`` IS gated in the Python runtime: on a denied
+        clock (max of the restrict_to_after deadlines is still in
+        the future) the call becomes a silent no-op (matches the
+        fail-closed information-hiding pattern of ``Fs.exists`` /
+        ``Env.get``). The Wasm side mirrors this with an inline
+        ``clock.now_secs() >= threshold`` check around the host
+        ``$Clock_sleep`` call; if the check fails we drop the
+        ``secs`` arg and skip the call. The check uses
+        ``clock.now_secs()`` as the time source rather than
+        ``clock.now_monotonic()`` because ``restrict_to_after``'s
+        threshold is a wall-clock value (Capa source-level
+        ``time.time()`` semantics), matching the Python runtime
+        exactly.
+
+        Multiple restrict_to_after thresholds combine via
+        ``max``: a chain
+        ``c.restrict_to_after(10.0).restrict_to_after(20.0)``
+        carries the later deadline, so the inline check compares
+        ``now_secs()`` against the max of every literal threshold
+        in the chain.
+        """
+        if method != "sleep":
+            # now_secs / now_monotonic: pure query, no check.
+            self._write(
+                ";; CAPA-RUNTIME-LIMITATION: Clock.restrict_to_after "
+                "is a static-discipline attenuator; now_* are pure "
+                "queries, no Wasm-side check fires."
+            )
+            for arg in instr.args:
                 self._push_value(arg)
-        self._write(f"call ${cap}_{method}")
-        _params, result_ty = self._cap_method_wasm_sig(cap, method)
-        if result_ty and instr.dst is not None:
-            self._write(f"local.set ${instr.dst}")
+            self._write(f"call ${cap}_{method}")
+            _params, result_ty = self._cap_method_wasm_sig(cap, method)
+            if result_ty and instr.dst is not None:
+                self._write(f"local.set ${instr.dst}")
+            return
+
+        # Clock.sleep with restrict_to_after(threshold). Compute
+        # max(threshold) across the attenuation chain at emit time
+        # and emit the inline ``if (now_secs() >= threshold) sleep
+        # (secs)`` guard.
+        thresholds: list[float] = []
+        for att in attenuations:
+            if att.get("method") != "restrict_to_after":
+                raise WasmEmissionError(
+                    f"unsupported Clock attenuation: "
+                    f"{att.get('method')!r}"
+                )
+            args = att.get("args", [])
+            if not args:
+                raise WasmEmissionError(
+                    "Clock.restrict_to_after attenuation with no arg"
+                )
+            try:
+                thresholds.append(float(args[0]))
+            except (TypeError, ValueError) as e:
+                raise WasmEmissionError(
+                    f"Clock.restrict_to_after on Wasm requires a "
+                    f"literal Float threshold; got {args[0]!r}"
+                ) from e
+        deadline = max(thresholds)
+        # Stash the secs arg so we don't re-evaluate inside the if.
+        # secs is f64; reuse the closure-result scratch slot which
+        # is already declared by the locals walker whenever any
+        # Float-returning method appears (Clock.now_secs counts).
+        # If neither now_secs nor the HOF path declared it, the
+        # locals walker's has_clock_sleep_gate flag adds it; see
+        # _locals.py.
+        if instr.args:
+            self._push_value(instr.args[0])
+            self._write("local.set $_clock_sleep_secs")
+        # call $Clock_now_secs -> f64; push deadline -> f64; ge?
+        self._write("call $Clock_now_secs")
+        self._write(f"f64.const {deadline!r}")
+        self._write("f64.ge")
+        self._write("if")
+        self._indent += 1
+        self._write("local.get $_clock_sleep_secs")
+        self._write("call $Clock_sleep")
+        self._indent -= 1
+        self._write("end")
 
     def _emit_cap_indirect_materialise(self, ret_kind: str, dst) -> None:
         """Materialise a Capa-side value from the flat fields the

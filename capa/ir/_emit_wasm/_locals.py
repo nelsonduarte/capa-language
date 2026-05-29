@@ -110,6 +110,12 @@ class _LocalsCollectionMixin:
         has_attenuation_check = False
         has_attenuation_env_check = False
         has_atten_fs_write_check = False
+        # Clock.sleep with restrict_to_after wraps the host call
+        # in an inline ``$Clock_now_secs >= deadline`` check
+        # (slice 13, 2026-05-29). The ``secs`` arg is stashed in
+        # ``$_clock_sleep_secs`` (f64) so the if-arm doesn't
+        # re-evaluate it.
+        has_clock_sleep_gate = False
         # Audit fix C1: List indexing emits an inline ``i32.ge_u``
         # bounds-check trap; the wrapped-i32 idx is stashed in
         # ``$_bounds_idx`` so the check and the subsequent address
@@ -144,7 +150,7 @@ class _LocalsCollectionMixin:
             nonlocal cur_for_depth, max_for_depth
             nonlocal has_indirect_cap_call
             nonlocal has_attenuation_check, has_attenuation_env_check
-            nonlocal has_atten_fs_write_check
+            nonlocal has_atten_fs_write_check, has_clock_sleep_gate
             nonlocal has_list_index_bounds
             nonlocal has_map_pointer_key
             for instr in instrs:
@@ -396,6 +402,15 @@ class _LocalsCollectionMixin:
                         if (cap == "Fs"
                                 and m in ("exists", "is_dir")):
                             has_attenuation_check = True
+                        if cap == "Clock" and m == "sleep":
+                            # Clock.sleep with restrict_to_after
+                            # wraps the host call in an inline
+                            # ``$Clock_now_secs >= deadline``
+                            # check (slice 13, 2026-05-29). The
+                            # ``secs`` arg is stashed in
+                            # ``$_clock_sleep_secs`` so the
+                            # if-arm doesn't re-evaluate it.
+                            has_clock_sleep_gate = True
                         if (cap == "Fs" and m in ("read", "write", "mkdir", "list_dir")) \
                                 or (cap == "Net" and m in ("get", "post")) \
                                 or (cap == "Env" and m == "get") \
@@ -824,6 +839,11 @@ class _LocalsCollectionMixin:
                 out["_atten_content_len"] = "i32"
             if has_attenuation_env_check:
                 out["_atten_match"] = "i32"
+        if has_clock_sleep_gate:
+            # Clock.sleep gate stashes the f64 secs arg here so
+            # the inline ``if (now_secs() >= deadline)`` branch
+            # doesn't need to re-evaluate the IR Value.
+            out["_clock_sleep_secs"] = "f64"
         if has_list_index_bounds:
             # Audit fix C1: ``$_bounds_idx`` holds the wrapped-i32
             # index for the inline bounds check in ``_emit_index``.

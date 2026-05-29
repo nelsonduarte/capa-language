@@ -1,0 +1,46 @@
+// Slice 13 (2026-05-29): the Db cap's path attenuation can be
+// bypassed via SQL ``ATTACH DATABASE 'other.db' AS evil; SELECT
+// * FROM evil.x`` without the SQLite authorizer the runtime now
+// installs. Both backends (Python directly; Wasm via host
+// bridge) deny ATTACH/DETACH at the SQLite parser level; the
+// statement returns Err with "not authorized" as the cause.
+//
+// Hermetic: a fresh /tmp/ sqlite file is created, then a
+// well-formed ATTACH-bearing exec is attempted, then a
+// well-formed normal query confirms the connection still works
+// (the authorizer is narrowly scoped to ATTACH/DETACH; other ops
+// stay allowed).
+
+fun main(stdio: Stdio, db: Db, fs: Fs)
+    let path = "/tmp/capa_db_attach.db"
+
+    // Reset (truncate any leftover) so back-to-back runs see the
+    // same starting state.
+    match fs.write(path, "")
+        Ok(_) -> stdio.println("reset")
+        Err(_) -> stdio.eprintln("BUG: reset failed")
+
+    match db.exec(path, "CREATE TABLE IF NOT EXISTS log (msg TEXT)")
+        Ok(_) -> stdio.println("created")
+        Err(_) -> stdio.eprintln("BUG: create failed")
+
+    // ATTACH inside a script: must be denied at the SQLite
+    // parser level on both backends.
+    match db.exec(path, "ATTACH DATABASE '/tmp/capa_evil.db' AS evil")
+        Ok(_) -> stdio.eprintln("BUG: ATTACH succeeded")
+        Err(_) -> stdio.println("ATTACH denied")
+
+    // DETACH also denied (the authorizer covers both).
+    match db.exec(path, "DETACH DATABASE evil")
+        Ok(_) -> stdio.eprintln("BUG: DETACH succeeded")
+        Err(_) -> stdio.println("DETACH denied")
+
+    // Sanity: a normal INSERT + SELECT still works (the
+    // authorizer is narrow).
+    match db.exec(path, "INSERT INTO log VALUES ('hello')")
+        Ok(_) -> stdio.println("inserted")
+        Err(_) -> stdio.eprintln("BUG: insert blocked")
+
+    match db.query(path, "SELECT msg FROM log")
+        Ok(rows) -> stdio.println("rows: ${rows}")
+        Err(_) -> stdio.eprintln("BUG: query blocked")

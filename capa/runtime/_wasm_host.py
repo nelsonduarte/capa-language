@@ -1084,7 +1084,9 @@ class WasmHost:
                 )
                 return
             try:
+                from ._capabilities import _install_sqlite_authorizer
                 conn = sqlite3.connect(path)
+                _install_sqlite_authorizer(conn)
                 try:
                     conn.executescript(sql)
                     conn.commit()
@@ -1114,7 +1116,9 @@ class WasmHost:
                 )
                 return
             try:
+                from ._capabilities import _install_sqlite_authorizer
                 conn = sqlite3.connect(path)
+                _install_sqlite_authorizer(conn)
                 try:
                     cur = conn.execute(sql)
                     rows = cur.fetchall()

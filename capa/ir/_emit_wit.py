@@ -287,7 +287,35 @@ def collect_used_capabilities(module: Module) -> dict[str, set[str]]:
                     if rty in BUILTIN_CAPS:
                         cap = rty
                 if cap is not None:
+                    # ``restrict_to`` / ``restrict_to_keys`` /
+                    # ``restrict_to_after`` are pure attenuators
+                    # tracked in the analyzer + the Wasm emit's
+                    # attenuation chain. They never become host
+                    # calls, so they must not appear in the WIT
+                    # interface (which would force the host to
+                    # provide a matching no-op stub it never
+                    # calls). The core-wasm discovery pass
+                    # already filters them; this mirrors that rule
+                    # so WIT and core imports stay in lockstep.
+                    if instr.method in (
+                        "restrict_to",
+                        "restrict_to_keys",
+                        "restrict_to_after",
+                    ):
+                        continue
                     out.setdefault(cap, set()).add(instr.method)
+                    # Slice 13 (2026-05-29): Clock.sleep with a
+                    # restrict_to_after chain compiles to an
+                    # inline ``$Clock_now_secs >= deadline`` gate
+                    # around the host sleep. The core-wasm
+                    # discovery agrees with this rule; WIT must
+                    # advertise ``now-secs`` too or the component
+                    # link fails on "import interface is missing
+                    # function now-secs".
+                    if (cap == "Clock"
+                            and instr.method == "sleep"
+                            and getattr(instr, "attenuations", None)):
+                        out.setdefault(cap, set()).add("now_secs")
             # Recurse into nested instruction lists so we don't miss
             # method calls inside if/while/for/match arm bodies.
             if isinstance(instr, If):
