@@ -919,11 +919,21 @@ class _CapDispatchMixin:
         check the privileged op (Fs.read / Env.get) already uses
         via ``_emit_indirect_with_attenuation_check``.
 
-        The argument must be a literal string at the Wasm level
-        (same constraint as the rest of the inline attenuation
-        machinery). A non-literal argument cannot be checked
-        statically and raises ``WasmEmissionError`` directing the
-        user to either pass a literal or compile to Python.
+        Two argument shapes (slice 14, 2026-05-29):
+        - **Literal-string argument**: the answer is fully known at
+          emit time. Collapse to a single ``i32.const 0/1`` push;
+          zero runtime cost.
+        - **Dynamic argument (local / param / computed)**: emit a
+          runtime check that mirrors the privileged-op path's
+          ``_emit_path_prefix_check`` / key-AND machinery, bound
+          to dst as i32.
+
+        Pre-slice-14 the dynamic case raised
+        ``WasmEmissionError`` -- programs that passed a non-literal
+        path to ``fs.allows(...)`` compiled on Python but crashed
+        compile on Wasm. Lifting this restriction removes the
+        last cross-backend portability gap from the audit P2
+        backlog.
         """
         attenuations = getattr(instr, "attenuations", None) or []
         # No-arg form would be a bug; both Fs and Env.allows take
@@ -935,22 +945,11 @@ class _CapDispatchMixin:
                 f"{len(instr.args)} -- analyzer should have rejected"
             )
         arg = instr.args[0]
-        # Resolve the literal-string form. Locals and params come
-        # through with ``arg.kind in {"local", "param"}``; these
-        # cannot be checked at emit time because the attenuation
-        # chain (also literal) is matched byte-by-byte against the
-        # runtime string the local holds. A future slice can lift
-        # this restriction by emitting the same inline check the
-        # privileged-op path uses; for now we reject loudly.
         if arg.kind != "lit_str":
-            raise WasmEmissionError(
-                f"{cap}.allows on Wasm requires a literal string "
-                f"argument; got a dynamic value. For dynamic paths "
-                f"use the privileged op directly (e.g. ``fs.read(p)`` "
-                f"and pattern-match on the ``Err`` arm), or compile "
-                f"to the Python backend where the runtime carries "
-                f"the attenuation set."
-            )
+            # Dynamic-arg path: emit a runtime check. No
+            # attenuations -> always true.
+            self._emit_atten_allows_runtime(instr, cap, arg, attenuations)
+            return
         literal: str = arg.literal
         # Compute the static answer. No attenuations -> always true
         # (mirrors ``self._allowed_prefixes is None`` /
@@ -1005,6 +1004,52 @@ class _CapDispatchMixin:
                     result = False
                     break
         self._write(f"i32.const {1 if result else 0}")
+        if instr.dst is not None:
+            self._write(f"local.set ${instr.dst}")
+
+    def _emit_atten_allows_runtime(
+        self, instr, cap: str, arg, attenuations: list,
+    ) -> None:
+        """Runtime version of ``_emit_atten_allows`` for the
+        dynamic-argument case. Stashes the path / name in the
+        same ``$_atten_path_*`` scratch the privileged-op
+        attenuation check uses, walks the attenuation chain
+        emitting per-attenuation checks (AND-combined), then
+        binds the i32 accumulator to dst.
+
+        - ``cap in {Fs, Db}``: path-prefix check via
+          ``_emit_path_prefix_check`` (the same boundary-aware
+          ``eq OR starts-with-slash`` shape the privileged path
+          uses).
+        - ``cap == Env``: per-attenuation OR-chain of name-equality
+          against the keys in that restrict_to_keys list, AND-
+          combined across the chain. Empty key list -> ok=0.
+        - No attenuations: push 1 (unrestricted, matches
+          ``self._allowed_prefixes is None`` /
+          ``self._allowed_keys is None``).
+        """
+        if not attenuations:
+            self._write("i32.const 1")
+            if instr.dst is not None:
+                self._write(f"local.set ${instr.dst}")
+            return
+        # Stash the arg in the same scratch locals the privileged-
+        # op path uses (declared by the locals walker whenever any
+        # attenuation check is present in the function -- which is
+        # always true here because we have attenuations).
+        self._push_string_arg(arg)
+        self._write("local.set $_atten_path_len")
+        self._write("local.set $_atten_path_ptr")
+        # ok = 1; AND each per-attenuation check into it. Same
+        # accumulator shape as the privileged-op
+        # _emit_indirect_with_attenuation_check.
+        self._write("i32.const 1")
+        self._write("local.set $_atten_ok")
+        # Method-name parameter for _emit_one_attenuation is just
+        # used in error messages; pass through the source method.
+        for att in attenuations:
+            self._emit_one_attenuation(cap, instr.method, att)
+        self._write("local.get $_atten_ok")
         if instr.dst is not None:
             self._write(f"local.set ${instr.dst}")
 

@@ -1938,9 +1938,15 @@ class TestWasmAllowsInlineEmit(unittest.TestCase):
         wat = emit_wat(ir_mod)
         self.assertNotIn("\"capa:host/env\" \"allows\"", wat)
 
-    def test_fs_allows_dynamic_arg_rejected(self):
-        # Per D4: non-literal arg on Wasm raises WasmEmissionError
-        # with an actionable diagnostic.
+    def test_fs_allows_dynamic_arg_unrestricted_collapses_to_const(self):
+        # Slice 14 (2026-05-29): the literal-only restriction is
+        # lifted. For the unrestricted-cap case (no attenuations)
+        # the answer is always true so the runtime check collapses
+        # to ``i32.const 1`` and ``$_atten_path_*`` locals aren't
+        # needed. The ``fs.allows`` call is still inlined (no host
+        # import). Pre-slice this raised ``WasmEmissionError``;
+        # the canary test for that rejection is now a positive
+        # assertion that the WAT compiles cleanly.
         src = (
             "fun main(stdio: Stdio, fs: Fs)\n"
             "    let p = \"/x\"\n"
@@ -1950,11 +1956,31 @@ class TestWasmAllowsInlineEmit(unittest.TestCase):
             "        stdio.println(\"n\")\n"
         )
         ir_mod, _, _ = _parse_lower(src)
-        with self.assertRaises(WasmEmissionError) as cm:
-            emit_wat(ir_mod)
-        self.assertIn("literal string", str(cm.exception))
+        wat = emit_wat(ir_mod)
+        self.assertNotIn("\"capa:host/fs\" \"allows\"", wat)
 
-    def test_env_allows_dynamic_arg_rejected(self):
+    def test_fs_allows_dynamic_arg_attenuated_emits_runtime_check(self):
+        # The dynamic-arg + attenuated case is where the slice 14
+        # work actually lands: the path is stashed into
+        # ``$_atten_path_*`` and a boundary-aware prefix check is
+        # AND-combined into ``$_atten_ok`` over the chain.
+        src = (
+            "fun main(stdio: Stdio, fs: Fs)\n"
+            "    let scoped = fs.restrict_to(\"/tmp/\")\n"
+            "    let p = \"/tmp/work\"\n"
+            "    if scoped.allows(p)\n"
+            "        stdio.println(\"y\")\n"
+            "    else\n"
+            "        stdio.println(\"n\")\n"
+        )
+        ir_mod, _, _ = _parse_lower(src)
+        wat = emit_wat(ir_mod)
+        self.assertIn("$_atten_path_ptr", wat)
+        self.assertIn("$_atten_ok", wat)
+        self.assertNotIn("\"capa:host/fs\" \"allows\"", wat)
+
+    def test_env_allows_dynamic_arg_now_supported(self):
+        # Same slice 14 lift for Env.allows.
         src = (
             "fun main(stdio: Stdio, env: Env)\n"
             "    let n = \"HOME\"\n"
@@ -1964,8 +1990,8 @@ class TestWasmAllowsInlineEmit(unittest.TestCase):
             "        stdio.println(\"n\")\n"
         )
         ir_mod, _, _ = _parse_lower(src)
-        with self.assertRaises(WasmEmissionError):
-            emit_wat(ir_mod)
+        wat = emit_wat(ir_mod)
+        self.assertNotIn("\"capa:host/env\" \"allows\"", wat)
 
     def test_clock_allows_stays_on_host_bridge(self):
         # Clock.allows depends on the live wall clock; per D4 we

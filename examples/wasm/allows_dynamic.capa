@@ -1,0 +1,46 @@
+// Slice 14 (2026-05-29): the literal-only restriction on
+// ``Fs.allows`` / ``Env.allows`` / ``Db.allows`` is lifted.
+// Programs that pass a runtime String (let-binding, param,
+// computed expression) can now compile on Wasm too; pre-slice
+// they crashed emit with "requires a literal string argument".
+//
+// Parity strategy: the answer depends only on the cap's
+// attenuation chain + the runtime string. Both backends apply
+// the same boundary-aware path-prefix rule (eq OR prefix +
+// '/'), so the per-call yes/no decisions are byte-identical.
+
+fun show(stdio: Stdio, label: String, flag: Bool)
+    if flag
+        stdio.println("${label}: yes")
+    else
+        stdio.println("${label}: no")
+
+fun main(stdio: Stdio, fs: Fs, env: Env, db: Db)
+    let scoped_fs = fs.restrict_to("/tmp/")
+    let scoped_env = env.restrict_to_keys(["CAPA_HOME", "CAPA_PATH"])
+    let scoped_db = db.restrict_to("/var/data/")
+
+    // Fs.allows with let-bound paths.
+    let good_path = "/tmp/work/output.log"
+    let bad_path = "/etc/passwd"
+    show(stdio, "fs.allows(/tmp/work/...)", scoped_fs.allows(good_path))
+    show(stdio, "fs.allows(/etc/passwd)", scoped_fs.allows(bad_path))
+
+    // Boundary check on a dynamic path.
+    let boundary_path = "/tmproot/x"
+    show(stdio, "fs.allows(/tmproot/x)", scoped_fs.allows(boundary_path))
+
+    // Env.allows with let-bound names.
+    let hot = "CAPA_HOME"
+    let cold = "DEFINITELY_NOT_SET"
+    show(stdio, "env.allows(CAPA_HOME)", scoped_env.allows(hot))
+    show(stdio, "env.allows(DEFINITELY_NOT_SET)", scoped_env.allows(cold))
+
+    // Db.allows with let-bound paths.
+    let db_good = "/var/data/users.db"
+    let db_bad = "/etc/secret.db"
+    show(stdio, "db.allows(/var/data/users.db)", scoped_db.allows(db_good))
+    show(stdio, "db.allows(/etc/secret.db)", scoped_db.allows(db_bad))
+
+    // Unrestricted: dynamic-arg + no attenuations -> always yes.
+    show(stdio, "unrestricted fs.allows(/etc)", fs.allows(bad_path))

@@ -402,6 +402,18 @@ class _LocalsCollectionMixin:
                         if (cap == "Fs"
                                 and m in ("exists", "is_dir")):
                             has_attenuation_check = True
+                        # Slice 14 (2026-05-29): the dynamic-arg
+                        # path of ``Fs.allows`` / ``Env.allows`` /
+                        # ``Db.allows`` emits a runtime check that
+                        # stashes the path / name in ``$_atten_path_*``
+                        # and accumulates into ``$_atten_ok``. The
+                        # literal-arg fast-path doesn't need them.
+                        if (cap in ("Fs", "Env", "Db") and m == "allows"
+                                and instr.args
+                                and instr.args[0].kind != "lit_str"):
+                            has_attenuation_check = True
+                            if cap == "Env":
+                                has_attenuation_env_check = True
                         if cap == "Clock" and m == "sleep":
                             # Clock.sleep with restrict_to_after
                             # wraps the host call in an inline

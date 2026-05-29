@@ -120,6 +120,10 @@ _PARITY_PROGRAMS: list[str] = [
     # ATTACH/DETACH at the SQLite parser level on both backends.
     "clock_sleep_attenuation.capa",
     "db_attach_blocked.capa",
+    # Slice 14 (2026-05-29): lift the literal-only restriction on
+    # Fs/Env/Db.allows so programs can pass a runtime String
+    # argument and get the cap-mediated answer on both backends.
+    "allows_dynamic.capa",
 ]
 
 # Programs deliberately excluded from parity and why; documented
@@ -578,6 +582,14 @@ class TestPythonWasmParity(unittest.TestCase):
         finally:
             if os.path.exists(path):
                 os.unlink(path)
+
+    def test_allows_dynamic(self):
+        # Slice 14 (2026-05-29): the literal-only restriction on
+        # Fs/Env/Db.allows is lifted. Pre-slice the program below
+        # crashed compile on Wasm with "requires a literal string
+        # argument"; now both backends emit the same yes/no per
+        # cap-mediated query for a runtime String arg.
+        self._assert_parity("allows_dynamic.capa")
 
     def test_inventory_matches_examples_dir(self):
         # Soundness check: every .capa under examples/wasm/ is

@@ -948,6 +948,45 @@ Listed so the design space is explicit.
 
 ### Wasm-specific gaps that are not P0
 
+- [x] **"Fully functional Wasm" slice 14 - lift the last
+  audit-P2 restriction (dynamic-arg `allows`)** (closed
+  2026-05-29). Pre-slice the Wasm emitter rejected
+  `if fs.allows(some_runtime_path)` with "requires a literal
+  string argument" while Python accepted it; this last-remaining
+  audit-P2 portability gap is now closed.
+  - **Behavior**: literal-arg fast-path keeps the static collapse
+    at emit time (push `i32.const 0/1`, zero runtime cost). The
+    dynamic-arg path now emits a runtime check that mirrors the
+    privileged-op machinery: stash the path / name in
+    `$_atten_path_*`, AND-chain per-attenuation predicates into
+    `$_atten_ok`, push the accumulator as the i32 result. Three
+    capability paths covered:
+    - `Fs.allows` / `Db.allows`: per-attenuation
+      `_emit_path_prefix_check` (the boundary-aware
+      `eq OR starts-with-slash` shape from slice 12)
+    - `Env.allows`: per-attenuation OR-chain of `str_eq` against
+      the keys in that `restrict_to_keys` list, AND-combined
+      across the chain
+    - Unrestricted cap (no attenuations) collapses to
+      `i32.const 1` regardless of the arg shape
+  - **Discovery + locals**: the locals walker flags
+    `$_atten_path_*` / `$_atten_ok` when `Fs.allows` /
+    `Env.allows` / `Db.allows` appears with a non-literal arg;
+    the discovery walker registers `needs_starts_with` so the
+    `$str_starts_with` (+ transitively `$str_eq`) helpers are
+    emitted whenever any `Fs/Db.allows` source-level call
+    exists (over-emits the helper once if the call turns out
+    to be literal-only; <100 WAT bytes either way).
+  - **Tests**: the two pre-slice canary tests
+    (`test_fs_allows_dynamic_arg_rejected`,
+    `test_env_allows_dynamic_arg_rejected`) flipped to positive
+    assertions; added
+    `test_fs_allows_dynamic_arg_attenuated_emits_runtime_check`
+    to pin the runtime-check shape. New parity program
+    `allows_dynamic.capa` covers Fs/Env/Db with let-bound
+    args + the boundary case + the unrestricted shortcut.
+    Suite 2040 -> 2042 / 5 skipped / 0 fail.
+
 - [x] **"Fully functional Wasm" slice 13 - close the two
   audit-deferred findings (Clock.sleep + Db.ATTACH)** (closed
   2026-05-29). Slice 12 fixed two capability escapes but

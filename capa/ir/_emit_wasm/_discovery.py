@@ -378,6 +378,21 @@ class _DiscoveryMixin:
                         # Db attenuation mirrors Fs: path-prefix
                         # check via ``$str_starts_with``.
                         needs_starts_with = True
+                    # Slice 14 (2026-05-29): dynamic-arg
+                    # ``Fs.allows`` / ``Db.allows`` lowers to the
+                    # same path-prefix runtime check the
+                    # privileged ops use. Literal-arg fast-path
+                    # collapses to a const at emit time so it
+                    # needs no helper, but the dynamic-arg path
+                    # does. The literal vs dynamic decision lives
+                    # at emit time; here we conservatively flag
+                    # ``allows`` so the helper is available
+                    # whenever the source-level call exists --
+                    # over-emitting one helper for one no-op
+                    # function adds <100 bytes to the WAT.
+                    if (cap in ("Fs", "Db")
+                            and instr.method == "allows"):
+                        needs_starts_with = True
                 if isinstance(instr, If):
                     visit(instr.then_body)
                     visit(instr.else_body)
