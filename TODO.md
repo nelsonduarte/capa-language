@@ -948,6 +948,97 @@ Listed so the design space is explicit.
 
 ### Wasm-specific gaps that are not P0
 
+- [~] **"Fully functional Wasm" slice 21 - analyzer audit
+  (user-cap impl reachability for manifest exclusion)**
+  (audit-only, no code change, 2026-05-29). A seventh audit
+  pass (this one on `capa/analyzer/`) found one **P0
+  manifest-soundness gap** plus one P2; the P0 fix collided
+  with the LLM-demo regulatory pitch and needs a per-impl
+  reachability design before it can be made safely. Slice
+  closes audit-only; design follow-up tracked below.
+  - **The finding.** A function whose signature includes a
+    cap-bearing struct or a user-defined capability claims
+    in its `provably_excluded_capabilities` that built-in
+    caps not in its signature cannot be reached - but the
+    user-cap's impl methods can call into any built-in cap
+    the impl's struct holds. Audit reproducer
+    `repro9b_factory_launder.capa`:
+    ```capa
+    type FileLogger { out: Stdio }
+    impl Logger for FileLogger
+        fun log(self, msg)
+            self.out.println(msg)
+    fun use_logger(lg: FileLogger)
+        lg.log("through logger")  // exercises Stdio
+    ```
+    Manifest of `use_logger`: declared `[]`, excluded
+    `[..., Stdio, ...]`. Runtime: prints "through logger"
+    via real Stdio. The claim is false. Same shape with
+    `lg: Logger` (the user-cap trait param) instead of the
+    struct.
+  - **Why no code change in this slice.** The conservative
+    fix (downgrade `provably_excluded` to empty whenever
+    any param/return touches a user-cap or cap-bearing
+    struct) breaks 4 existing tests
+    (`test_llm_agent_runner_manifest_agent_loop_excludes_net`
+    and friends) because the LLM-agent demo's headline
+    regulatory pitch is *exactly* this shape:
+    `agent_loop(stdio: Stdio, llm: LlmClient,
+    search: SearchWeb, mail: SendEmail)` claims to exclude
+    Net/Fs/Env/Unsafe. Under the conservative rule, that
+    claim is voided. The demo's claim is structurally
+    identical to the audit reproducer - both rely on the
+    same kind of reasoning that the audit shows is unsound
+    under the current implementation.
+  - **The honest fix** is per-impl reachability under
+    closed-world reasoning: for each user-cap `T`,
+    `reachable(T) = ∪ (caps directly used by impl's
+    method bodies + caps held by the impl's struct fields
+    + reachable of any user-cap referenced)` over all
+    impls of `T` in the program. Then a function param
+    `lg: T` implicitly declares `reachable(T)` as an upper
+    bound on what the function can exercise; the
+    exclusion list is sound if and only if it omits every
+    cap in that union. This is **the** semantic that makes
+    both the audit reproducer and the LLM demo sound: the
+    LLM demo's impls (Mock + Anthropic) carry only Unsafe
+    (via `AnthropicLlmClient.u`), and the demo would have
+    to either drop the Unsafe-in-Anthropic field or accept
+    that Unsafe is in reach (the test would update to
+    assert Unsafe NOT in excluded, not Net). FileLogger
+    holds Stdio, so `use_logger` would correctly drop
+    Stdio from its exclusion list.
+  - **Implementation scope** (estimated ~half-session):
+    new `capa/manifest/_reachability.py` doing fixpoint
+    over (impl-block, struct-field) graph. `_fun_record`
+    expands each param's user-cap/cap-bearing-struct ref
+    to its reachable set, unions into the declared-set
+    used for the exclusion subtraction. Existing LLM demo
+    tests update: `test_llm_agent_runner_manifest_agent_loop_excludes_net`
+    drops Unsafe from the excluded assertion (Unsafe IS
+    reachable via Anthropic impl); other 3 tests similarly
+    adjust to the honest claim. New regression test from
+    the audit reproducer.
+  - **Audit P2 deferred** (not directly exploitable):
+    `impl <BuiltinCap> for <UserStruct>` (e.g.
+    `impl Stdio for FakeStdio`) is accepted by the
+    analyzer. Method dispatch routes through the user
+    impl so no actual built-in I/O happens, but it
+    pollutes the trust model (Stdio should be a host-
+    granted singleton, not user-inhabitable). Reject at
+    `capa/analyzer/_items.py:_check_impl` when
+    `item.trait_name in CAPABILITY_NAMES`.
+  - **Audit CLEAN areas** (skip on future passes):
+    consuming-cap match/loop merge logic, tuple/struct
+    field laundering when struct does NOT impl a user-
+    cap, generic instantiation cap-leakage (caught by
+    `_reject_cap_leak_via_substitution`), aliasing within
+    a call, `Option<Stdio>` construction
+    (`_check_no_capability` on variant payloads), let-
+    binding a cap from a bare Ident (vs MethodCall), free
+    function declaring `-> BuiltinCap` (caught by
+    `_check_no_builtin_capability` on return types).
+
 - [x] **"Fully functional Wasm" slice 20 - loader audit
   (mangled cap names leaking into manifest)** (closed
   2026-05-29). A sixth audit pass (this one on
