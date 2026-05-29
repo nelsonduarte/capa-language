@@ -549,8 +549,14 @@ class _LocalsCollectionMixin:
                             and recv_ty.startswith("List")):
                         # List.get builds an Option<T> result and
                         # reuses _m_scrut / _m_tag / _alloc_tmp_result.
+                        # Post-slice-15 (2026-05-29): the bounds
+                        # check is at i64 width, so the same
+                        # ``$_bounds_idx_i64`` scratch the trap-
+                        # style Index path uses also gets declared
+                        # here.
                         has_optres_method = True
                         has_list = True
+                        has_list_index_bounds = True
                 if isinstance(instr, Call):
                     if instr.callee_name == "parse_json":
                         # parse_json / to_json land as Capa-source
@@ -663,9 +669,14 @@ class _LocalsCollectionMixin:
             # data array via $_alloc_tmp (new data ptr) and
             # $_alloc_tmp_newcap (new capacity); remove's tail-shift
             # uses the same address-math scratch. Pointer-shape /
-            # scalar needles also stash in $_alloc_tmp.
+            # scalar needles also stash in $_alloc_tmp. Set<Float>
+            # additionally stashes the f64 needle in
+            # $_alloc_tmp_f64 (audit fix 2026-05-29 post-slice-15;
+            # pre-fix the f64 needle was set into the i64 slot
+            # which crashed the wasm verifier on the first use).
             out["_alloc_tmp"] = "i32"
             out.setdefault("_alloc_tmp_newcap", "i32")
+            out.setdefault("_alloc_tmp_f64", "f64")
         if has_set_string:
             # Set<String> compares via $str_eq, stashing the needle
             # pair in $_str_b_* and the scanned element in $_str_a_*.
@@ -873,7 +884,15 @@ class _LocalsCollectionMixin:
             # the address compute (``data_ptr + idx * elem_size``)
             # both consume the same wrapped value without
             # re-evaluating the IR ``Value`` for the index.
+            #
+            # Post-slice-15 (2026-05-29): the bounds check now
+            # validates the i64 idx against ``0 <= i < len``
+            # BEFORE wrapping, so negative i64s whose low 32 bits
+            # land in-bounds (e.g. ``-2**32``) trap instead of
+            # silently returning ``xs[0]``. ``$_bounds_idx_i64``
+            # is the i64 scratch the check reads.
             out["_bounds_idx"] = "i32"
+            out["_bounds_idx_i64"] = "i64"
         if has_optres_method:
             # Option/Result method dispatch stashes the receiver
             # pointer in $_m_scrut so the tag check + payload load

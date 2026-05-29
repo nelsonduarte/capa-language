@@ -172,9 +172,28 @@ class _SetEmissionMixin:
             self._write("local.get $_alloc_tmp")
             self._write(f"call $eq_{_eq_key(elem_ty)}")
             return
-        # Scalar element (Int 8-byte i64, Bool 4-byte i32). Load the
-        # element with the size-dispatched op and compare against the
-        # stashed needle with the matching width's eq.
+        # Scalar element (Int 8-byte i64, Bool 4-byte i32, Float
+        # 8-byte f64). Load with the size-dispatched op and compare
+        # against the stashed needle with the matching width's eq.
+        # Audit 2026-05-29 (post-slice-15): Float was being loaded
+        # as i64 and compared via i64.eq on the bit pattern, which
+        # both (a) crashed the wasm verifier on the stash side
+        # (``local.set $_alloc_tmp_i64`` of an f64 push) and (b)
+        # gave wrong NaN semantics (Python: ``float('nan') !=
+        # float('nan')``; bit-eq would have said equal). The
+        # dedicated Float branch loads f64 + compares with
+        # ``f64.eq`` so both backends agree on the NaN case too.
+        if elem_ty == "Float":
+            self._write(f"local.get ${set_local}")
+            self._write(f"i32.load offset={_SET_DATA_OFFSET}")
+            self._write(f"local.get ${idx_local}")
+            self._write(f"i32.const {elem_size}")
+            self._write("i32.mul")
+            self._write("i32.add")
+            self._write("f64.load")
+            self._write("local.get $_alloc_tmp_f64")
+            self._write("f64.eq")
+            return
         eq_op = "i64.eq" if elem_size == 8 else "i32.eq"
         load_op = _load_op_for_size(elem_size)
         self._write(f"local.get ${set_local}")
@@ -203,6 +222,13 @@ class _SetEmissionMixin:
             self._push_value(needle)
             self._write("local.set $_alloc_tmp")
             return None
+        # Float gets its own f64 scratch (``$_alloc_tmp_f64``,
+        # declared on demand). ``_emit_set_compare_at``'s Float
+        # branch reads from there with ``f64.eq``.
+        if elem_ty == "Float":
+            self._push_value(needle)
+            self._write("local.set $_alloc_tmp_f64")
+            return "_alloc_tmp_f64"
         # Scalar: 8-byte Int -> i64 scratch, 4-byte Bool -> i32.
         if elem_size == 8:
             self._push_value(needle)

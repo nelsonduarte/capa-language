@@ -125,8 +125,17 @@ class _ValueEmissionMixin:
             offset, capa_ty = self._current_captures[v.name]
             if capa_ty != "String":
                 self._write("local.get $env")
-                size = self._size_of(capa_ty)
-                self._write(f"{_load_op_for_size(size)} offset={offset}")
+                # Float captures round-trip as f64 (the closure-pack
+                # site uses ``f64.store`` for Float since
+                # ``i64.store`` would type-mismatch the f64 operand).
+                # Load must match. ``_load_op_for_size(8)`` returns
+                # ``i64.load`` which would mismatch the consumer's
+                # f64 local.
+                if capa_ty == "Float":
+                    self._write(f"f64.load offset={offset}")
+                else:
+                    size = self._size_of(capa_ty)
+                    self._write(f"{_load_op_for_size(size)} offset={offset}")
                 return
         if v.kind == "global" and v.name in self._const_values:
             # Module-level constant: inline the RHS literal at the

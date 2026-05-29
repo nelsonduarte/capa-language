@@ -948,6 +948,66 @@ Listed so the design space is explicit.
 
 ### Wasm-specific gaps that are not P0
 
+- [x] **"Fully functional Wasm" slice 16 - older-Wasm-code audit
+  pass (3 real bugs fixed)** (closed 2026-05-29). A second
+  audit (slice 10 covered slices 4-11; this one covered
+  Phase 6A-6E) surfaced three bugs in code that had been
+  stable for months because no test exercised the exact
+  shape. Two would have crashed the wasm verifier on first
+  real use; the third was a security-shaped bounds-check
+  bypass that Python's runtime caught but Wasm's did not.
+  - **P1: Float captures in lifted lambdas crashed the wasm
+    verifier.** `_emit_make_lambda` wrote Float env entries
+    with `i64.store` (from `_store_op_for_size(8)`), the
+    matching capture load in `_push_value` used `i64.load` —
+    both type-mismatch the f64 operand. A program like
+    `let factor = 1.5; let scale = fun (x: Float) -> Float
+    => x * factor; scale(2.0)` failed compile on Wasm. Fix:
+    Float-specific branches in both halves use `f64.store` /
+    `f64.load`. Existing closure tests never captured a
+    Float, which is how the bug survived.
+  - **P1: `Set<Float>` crashed the wasm verifier.** The
+    scalar-needle stash in `_emit_set_stash_needle` set the
+    f64 push into the i64 scratch (`local.set
+    $_alloc_tmp_i64`); the compare in `_emit_set_compare_at`
+    used `i64.eq` on the bit pattern (which would have also
+    given NaN-equal-to-NaN, opposite of Python). Fix: new
+    `$_alloc_tmp_f64` scratch declared on `has_set_method`,
+    Float-specific branch in both halves uses `f64.eq`. The
+    NaN fix is a bonus: both backends now agree on
+    `float('nan') != float('nan')`.
+  - **P1 security: negative-i64 list indices whose low 32
+    bits wrapped in-bounds silently returned `xs[0]`.** The
+    bounds check in `_emit_index` / `_emit_list_get` wrapped
+    the i64 to i32 before checking, so `-2**32 =
+    0xFFFFFFFF_00000000` wrapped to 0, passed the unsigned
+    compare, and returned the first element. Python's
+    `_capa_list_get` raises `IndexError`. Fix: validate
+    `0 <= idx < len` at i64 width BEFORE wrapping; only
+    wrap once we know the value fits. New `$_bounds_idx_i64`
+    scratch. The pre-fix comment ("the unsigned compare
+    catches negative indices") was right for most negatives
+    but missed the cases whose low 32 bits land in `[0,
+    len)`. A real attacker-controlled index computation
+    could trigger this; the trap-style `xs[i]` path now
+    traps and the `List.get(i)` path returns `None` on the
+    full range of negative i64s.
+  - **Findings deferred** (lower severity, marked ? by the
+    auditor): nested-tuple emit fallthrough (P2; no demo
+    nests tuples this way), `String.replace` count*delta
+    overflow (P2; needs attacker-controlled massive input),
+    `String.split` empty-separator garbage read (P2; pre-
+    existing low-value), `JsonValue.as_int` trap on large
+    floats (P2; edge case), `for i in 0..=i64::MAX`
+    infinite loop (P2; edge case), trait method stack leak
+    on dst=None+non-Unit (P2; not reachable in current
+    surface).
+  - New parity program `audit_float_and_index.capa`
+    exercises all three fixes; would crash compile or
+    silently diverge on the pre-fix backend. Suite 2044 ->
+    2045 / 5 skipped / 0 fail. `capa_governance_pack` on
+    pure `--wasm` still matches Python byte-for-byte.
+
 - [x] **"Fully functional Wasm" slice 15 - `Proc` capability v1
   (sandboxed subprocess, basename-prefix attenuation)** (closed
   2026-05-29). `Proc` moves from documented-stub

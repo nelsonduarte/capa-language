@@ -473,25 +473,31 @@ class _ListEmissionMixin:
         list_local = "_m_scrut"
         idx_local = "_m_tag"
         result_local = "_alloc_tmp_result"
-        # Stash list pointer and index (the IR's i64 index narrowed
-        # to i32 for address arithmetic).
+        # Stash list pointer + the i64 index (we check bounds at
+        # i64 width before wrapping; see the same audit-hardening
+        # in _emit_index for the trap-style xs[i] path). Wrapping
+        # a negative i64 like ``-2**32 = 0xFFFFFFFF_00000000`` to
+        # i32 gives 0, which would pass an i32-width bounds check
+        # and silently return Some(xs[0]) -- Python's
+        # List.get returns None on i < 0. The i64-width check
+        # makes both backends agree.
         self._push_value(recv)
         self._write(f"local.set ${list_local}")
         self._push_value(idx)
-        self._write("i32.wrap_i64")
-        self._write(f"local.set ${idx_local}")
+        self._write("local.set $_bounds_idx_i64")
         # Alloc Option<T> result up front; tag filled by branch.
         self._write(f"i32.const {_OPTION_LAYOUT['size']}")
         self._write("call $alloc")
         self._write(f"local.set ${result_local}")
-        # Bounds check: idx < 0 OR idx >= len -> None.
-        self._write(f"local.get ${idx_local}")
-        self._write("i32.const 0")
-        self._write("i32.lt_s")
-        self._write(f"local.get ${idx_local}")
+        # Bounds check at i64 width: idx < 0 OR idx >= len -> None.
+        self._write("local.get $_bounds_idx_i64")
+        self._write("i64.const 0")
+        self._write("i64.lt_s")
+        self._write("local.get $_bounds_idx_i64")
         self._write(f"local.get ${list_local}")
         self._write(f"i32.load offset={_LIST_LEN_OFFSET}")
-        self._write("i32.ge_s")
+        self._write("i64.extend_i32_u")
+        self._write("i64.ge_s")
         self._write("i32.or")
         self._write("if")
         self._indent += 1
@@ -502,7 +508,12 @@ class _ListEmissionMixin:
         self._indent -= 1
         self._write("else")
         self._indent += 1
-        # In bounds: Some(xs[i]). Tag = 0.
+        # In bounds: Some(xs[i]). Tag = 0. Wrap the i64 idx once
+        # into ``${idx_local}`` for the address compute below; we
+        # know it's in [0, len) so the wrap is lossless.
+        self._write("local.get $_bounds_idx_i64")
+        self._write("i32.wrap_i64")
+        self._write(f"local.set ${idx_local}")
         self._write(f"local.get ${result_local}")
         self._write("i32.const 0")
         self._write("i32.store")
@@ -662,20 +673,39 @@ class _ListEmissionMixin:
             load_op = "f64.load"
         else:
             load_op = _load_op_for_size(elem_size)
-        # Bounds check (audit fix C1): trap if idx >= len (unsigned
-        # compare also catches negative IR indices). Stash the
-        # wrapped idx so the address compute below can reuse it.
+        # Bounds check (audit fix C1, hardened 2026-05-29
+        # post-slice-15): trap if idx < 0 or idx >= len. The
+        # original "unsigned compare on the wrapped i32 also
+        # catches negative" reasoning had a hole: an i64 like
+        # ``-2**32 = 0xFFFFFFFF_00000000`` wraps to i32 0, which
+        # passes ``0 < len`` and silently returns ``xs[0]`` --
+        # Python raises IndexError on the same input. Check the
+        # original i64 against ``0 <= i < len`` BEFORE wrapping
+        # so no negative index can slip through.
         self._push_value(instr.index)
-        self._write("i32.wrap_i64")
-        self._write("local.tee $_bounds_idx")
-        self._push_value(instr.receiver)
-        self._write(f"i32.load offset={_LIST_LEN_OFFSET}")
-        self._write("i32.ge_u")
+        self._write("local.tee $_bounds_idx_i64")
+        self._write("i64.const 0")
+        self._write("i64.lt_s")
         self._write("if")
         self._indent += 1
         self._write("unreachable")
         self._indent -= 1
         self._write("end")
+        self._write("local.get $_bounds_idx_i64")
+        self._push_value(instr.receiver)
+        self._write(f"i32.load offset={_LIST_LEN_OFFSET}")
+        self._write("i64.extend_i32_u")
+        self._write("i64.ge_s")
+        self._write("if")
+        self._indent += 1
+        self._write("unreachable")
+        self._indent -= 1
+        self._write("end")
+        # Now the i64 idx is known in [0, len), so wrapping to i32
+        # is lossless. Stash so the address compute below can reuse.
+        self._write("local.get $_bounds_idx_i64")
+        self._write("i32.wrap_i64")
+        self._write("local.set $_bounds_idx")
         # Compute address: data_ptr + index * elem_size.
         self._push_value(instr.receiver)
         self._write(f"i32.load offset={_LIST_DATA_OFFSET}")

@@ -778,6 +778,19 @@ class _ClosureEmissionMixin:
                     self._write("local.get $_lam_env_tmp")
                     self._write("local.get $_str_a_len")
                     self._write(f"i32.store offset={offset + 4}")
+                elif capa_ty == "Float":
+                    # Float captures must round-trip through the
+                    # env record as f64 (not i64). Pre-audit-2 the
+                    # write used ``_store_op_for_size(8)`` =
+                    # ``i64.store`` which the wasm verifier rejects
+                    # for an f64 operand. The symmetric load in
+                    # ``_push_value``'s capture path is f64.load,
+                    # so writing as f64 keeps the round-trip
+                    # consistent.
+                    self._write("local.get $_lam_env_tmp")
+                    cap_val = Value(kind="local", name=name, ty=capa_ty)
+                    self._push_value(cap_val)
+                    self._write(f"f64.store offset={offset}")
                 else:
                     size = self._size_of(capa_ty)
                     self._write("local.get $_lam_env_tmp")

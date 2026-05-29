@@ -132,6 +132,13 @@ _PARITY_PROGRAMS: list[str] = [
     # timeout=30, shell=False) and decode UTF-8 with
     # errors='replace'.
     "proc_demo.capa",
+    # Slice 16 (2026-05-29): regression net for three older-code
+    # audit findings - Float captures in lifted lambdas crashed
+    # the wasm verifier, Set<Float> needle stash + NaN equality
+    # was bit-eq (NaN compared equal), and negative-i64 list
+    # indices whose low 32 bits wrapped in-bounds silently
+    # returned xs[0] instead of trapping.
+    "audit_float_and_index.capa",
 ]
 
 # Programs deliberately excluded from parity and why; documented
@@ -598,6 +605,15 @@ class TestPythonWasmParity(unittest.TestCase):
         # argument"; now both backends emit the same yes/no per
         # cap-mediated query for a runtime String arg.
         self._assert_parity("allows_dynamic.capa")
+
+    def test_audit_float_and_index(self):
+        # Slice 16 (2026-05-29): pins three audit-fix surfaces.
+        # Pre-fix the Float-capture program crashed the wasm
+        # verifier; the Set<Float> program also crashed; the
+        # negative-index path silently returned xs[0] instead of
+        # returning None / trapping. All three now produce
+        # byte-identical output on both backends.
+        self._assert_parity("audit_float_and_index.capa")
 
     def test_proc_demo(self):
         # Slice 15 (2026-05): Proc v1 sandboxed subprocess

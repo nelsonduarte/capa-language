@@ -1,0 +1,67 @@
+// Slice 16 (2026-05-29): regression net for three audit bugs in
+// the older Wasm backend.
+//
+// 1. Float captures in lifted lambdas crashed the wasm verifier
+//    pre-fix (env-record write was ``i64.store`` of an f64
+//    operand). The matching load path is now f64.load.
+// 2. ``Set<Float>`` similarly stashed the f64 needle into the
+//    i64 scratch and compared via ``i64.eq`` on the bit pattern;
+//    fix uses a dedicated ``$_alloc_tmp_f64`` and ``f64.eq``
+//    (which also gives Python-matching NaN semantics: NaN != NaN).
+// 3. Negative-i64 list indices whose low 32 bits land in-bounds
+//    silently returned ``xs[0]`` instead of trapping (Python:
+//    IndexError). The bounds check now validates against the
+//    i64 idx at full width before wrapping.
+
+fun show(stdio: Stdio, label: String, n: Int)
+    stdio.println("${label}: ${n}")
+
+fun show_f(stdio: Stdio, label: String, f: Float)
+    stdio.println("${label}: ${f}")
+
+fun main(stdio: Stdio)
+    // Fix 1: Float capture in a lifted lambda.
+    let factor = 1.5
+    let scale = fun (x: Float) -> Float => x * factor
+    show_f(stdio, "scale(2.0)", scale(2.0))
+    show_f(stdio, "scale(4.0)", scale(4.0))
+
+    // Fix 2: Set<Float> + NaN semantics. Both backends use
+    // ``f64.eq`` for the membership check, so NaN != NaN (the
+    // standard floating-point behaviour Python also follows).
+    var fs: Set<Float> = new_set()
+    fs.add(1.5)
+    fs.add(2.5)
+    fs.add(3.5)
+    show(stdio, "fs.length", fs.length())
+    if fs.contains(1.5)
+        stdio.println("contains 1.5: yes")
+    else
+        stdio.println("contains 1.5: no")
+    if fs.contains(99.0)
+        stdio.println("contains 99.0: yes")
+    else
+        stdio.println("contains 99.0: no")
+
+    // Fix 3 happy path: positive in-bounds indices still work.
+    let xs = [10, 20, 30]
+    show(stdio, "xs[0]", xs[0])
+    show(stdio, "xs[2]", xs[2])
+
+    // Fix 3 happy path via List.get: positive in-bounds returns
+    // Some; out-of-bounds returns None. (The trap-style xs[i]
+    // path is exercised by safety_traps.capa; we don't repeat
+    // it here because parity programs can't observe traps.)
+    match xs.get(1)
+        Some(v) -> show(stdio, "xs.get(1)", v)
+        None -> stdio.println("xs.get(1): none")
+    match xs.get(99)
+        Some(_) -> stdio.println("BUG: xs.get(99) returned Some")
+        None -> stdio.println("xs.get(99): none")
+    // Critical: large negative index whose low 32 bits wrap
+    // back into ``[0, len)``. Pre-fix this silently returned
+    // Some(xs[0]); post-fix it returns None on both backends.
+    let big_neg = 0 - 4294967296
+    match xs.get(big_neg)
+        Some(_) -> stdio.println("BUG: get(-2^32) leaked Some")
+        None -> stdio.println("get(-2^32): none")
