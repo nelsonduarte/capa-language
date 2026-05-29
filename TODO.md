@@ -948,6 +948,41 @@ Listed so the design space is explicit.
 
 ### Wasm-specific gaps that are not P0
 
+- [x] **"Fully functional Wasm" slice 9 - parity-list cleanup +
+  Component Model `option<T>` discriminant bug-fix** (closed
+  2026-05-29). Three deliverables in one slice:
+  - `examples/wasm/fs_demo.capa` and
+    `examples/wasm/env_demo.capa` promoted to the parity list.
+    Both were excluded as "needs a fixture" but were actually
+    parity-clean: fs_demo uses a single constant `/tmp/` path
+    and prints only that path + the bridge's response, both
+    backends routing through Python's `open(...)`; env_demo
+    queries the same `os.environ` from within one Python
+    process across two back-to-back runs. Suite gained 2
+    parity tests.
+  - **Component-host test coverage expanded**: `Net.post` happy-
+    path against an in-process loopback `http.server`, full Fs
+    round-trip (write + read + exists), and Env.get hit / miss
+    with a known-value fixture. Caught the discriminant bug
+    below; before this expansion the CM `option<T>` path had
+    no in-tree coverage.
+  - **Latent CM `option<T>` discriminant bug fixed**: the
+    Component Model canonical ABI for `option<T>` puts `none`
+    first (discriminant 0) and `some(T)` second (1). Capa's
+    internal Option layout uses the inverse (`Some`=0,
+    `None`=1). Pre-fix the core host happened to write Capa-
+    convention tags directly into the ret_area which fake-
+    matched the materialiser's naive byte-copy; the bug
+    surfaced only under `--component --run` where the CM
+    adapter writes WIT-convention bytes. Fix: core host now
+    writes WIT-convention (none=0, some=1) and the materialiser
+    XOR-flips the discriminant to Capa convention before
+    storing in the Option record. The attenuation-deny Err
+    writer was updated to match. Result<T, E> needs no change
+    (Ok=0/Err=1 matches both conventions).
+  Suite 2017 -> 2022 / 5 skipped / 0 fail. `capa_governance_pack`
+  on pure `--wasm` still matches Python byte-for-byte.
+
 - [x] **"Fully functional Wasm" slice 8 - `Net.post` end-to-end
   on Wasm** (closed 2026-05-29). Closes the deferred slice 3
   follow-up (D2 was deliberate to ship `Net.get` parity first).

@@ -343,11 +343,20 @@ class WasmHost:
                 value = None
             else:
                 value = os.environ.get(name)
+            # Tag convention: write the WIT-canonical discriminant
+            # (none=0, some=1). The materialiser XOR-flips to Capa's
+            # internal Option layout (Some=0, None=1) on read, so
+            # the core-host path and the Component Model path
+            # produce identical Capa records. Pre-fix the core host
+            # wrote Capa-convention tags here which happened to fake-
+            # match the materialiser's then-naive copy; the bug
+            # surfaced only on the component-wrapped path because
+            # the CM adapter writes WIT-convention.
             if value is None:
-                # tag = 1 (None); ptr/len fields undefined per WIT,
-                # write zeros so memory stays deterministic.
+                # tag = 0 (WIT none); ptr/len fields undefined per
+                # WIT, write zeros so memory stays deterministic.
                 self._memory.write(
-                    caller, (1).to_bytes(4, "little"), ret_area,
+                    caller, (0).to_bytes(4, "little"), ret_area,
                 )
                 self._memory.write(
                     caller, (0).to_bytes(4, "little"), ret_area + 4,
@@ -362,7 +371,8 @@ class WasmHost:
                 self._memory.write(caller, encoded, s_ptr)
             else:
                 s_ptr = 0
-            self._memory.write(caller, (0).to_bytes(4, "little"), ret_area)
+            # tag = 1 (WIT some)
+            self._memory.write(caller, (1).to_bytes(4, "little"), ret_area)
             self._memory.write(
                 caller, s_ptr.to_bytes(4, "little"), ret_area + 4,
             )

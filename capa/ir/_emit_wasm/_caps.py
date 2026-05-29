@@ -686,9 +686,13 @@ class _CapDispatchMixin:
             self._write("i32.store offset=16")
             return
         if ret_kind == "option_string":
-            # tag = 1 (None); ptr / len at 4 / 8 zero (unused).
+            # WIT-convention discriminant for ``none`` is 0 (see
+            # the long comment in ``option_string`` materialisation
+            # below). The materialiser XOR-flips on read, so writing
+            # 0 here makes Env.get's attenuation-deny path produce
+            # a Capa None record. Ptr / len at 4 / 8 stay zero.
             self._write("local.get $_ret_area")
-            self._write("i32.const 1")
+            self._write("i32.const 0")
             self._write("i32.store offset=0")
             self._write("local.get $_ret_area")
             self._write("i32.const 0")
@@ -873,14 +877,34 @@ class _CapDispatchMixin:
             # ret_area layout: tag i32 @ 0, ptr i32 @ 4, len i32 @ 8.
             # Capa Option<String> layout: tag@0, packed i64 (ptr |
             # len<<32) @ 8. Total record size 16 bytes.
+            #
+            # Tag convention bridge (2026-05): the canonical ABI for
+            # ``option<T>`` puts ``none`` first (discriminant 0) and
+            # ``some(T)`` second (discriminant 1). Capa's internal
+            # Option layout is the inverse (``Some``=0, ``None``=1).
+            # When the ret_area was written by the Component Model
+            # adapter (a wasm-tools component-wrapped run), the byte
+            # follows the WIT convention; when it was written by the
+            # core host or by the inline attenuation-deny path, it
+            # also follows the WIT convention (changed in this same
+            # slice for consistency). Either way: read the WIT
+            # discriminant out of the ret_area and XOR-flip to the
+            # Capa internal one before storing in the Option record.
+            # Without this flip, a component-wrapped Env.get of a
+            # set env var returned None and a missing env var
+            # returned Some(garbage); the bug was latent because no
+            # in-tree test exercised the component path for an
+            # ``option<T>`` return.
             dst_local = dst if dst is not None else "_alloc_tmp"
             self._write("i32.const 16")
             self._write("call $alloc")
             self._write(f"local.set ${dst_local}")
-            # tag
+            # tag: WIT discriminant ^ 1 = Capa tag
             self._write(f"local.get ${dst_local}")
             self._write("local.get $_ret_area")
             self._write("i32.load offset=0")
+            self._write("i32.const 1")
+            self._write("i32.xor")
             self._write("i32.store offset=0")
             # packed (ptr|len<<32). Build the i64 in pieces, store.
             self._write(f"local.get ${dst_local}")

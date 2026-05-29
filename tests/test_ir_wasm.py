@@ -3934,6 +3934,114 @@ class TestWasmComponentHost(unittest.TestCase):
         finally:
             os.unlink(fixture)
 
+    def test_net_post_under_component_host(self):
+        # Slice 8 (2026-05): ``Net.post`` parallels ``Net.get`` on
+        # the Component Model side. Same hermetic loopback fixture
+        # as the core-host happy-path test in TestWasmNetExecutes;
+        # the component host's ``post`` callback lifts
+        # ``Result<String, IoError>`` via the same Python type
+        # dispatch (``str`` -> Ok, ``IoErrorRecord`` -> Err).
+        import http.server
+        import threading
+        body_text = "post-body-cm"
+
+        class EchoHandler(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                length = int(self.headers.get("Content-Length", "0"))
+                payload = self.rfile.read(length)
+                self.send_response(200)
+                self.send_header(
+                    "Content-Type", "application/octet-stream",
+                )
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+            def log_message(self, *args, **kwargs):
+                pass
+
+        server = http.server.HTTPServer(("127.0.0.1", 0), EchoHandler)
+        port = server.server_address[1]
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            url = f"http://127.0.0.1:{port}/echo"
+            src = (
+                "fun main(stdio: Stdio, net: Net)\n"
+                f"    match net.post(\"{url}\", \"{body_text}\")\n"
+                "        Ok(text) -> stdio.println(\"echo: ${text}\")\n"
+                "        Err(_) -> stdio.eprintln(\"BUG: post failed\")\n"
+            )
+            self.assertEqual(
+                self._run_capturing_stdout(src),
+                f"echo: {body_text}\n",
+            )
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
+    def test_fs_round_trip_under_component_host(self):
+        # Slice 1 (2026-05): ``Fs.read`` / ``Fs.write`` /
+        # ``Fs.exists`` through the Component Model bridge. Writes
+        # a fixture, reads it back, then asks ``exists`` to confirm.
+        # The two result<...> arms exercise both Ok and Err code
+        # paths on a single program.
+        import os
+        import tempfile
+        fd, path = tempfile.mkstemp(suffix=".txt")
+        os.close(fd)
+        os.unlink(path)
+        # Escape backslashes in the path for the source-level
+        # double-quoted string literal (Windows tempdir).
+        escaped = path.replace("\\", "\\\\")
+        try:
+            src = (
+                "fun main(stdio: Stdio, fs: Fs)\n"
+                f"    match fs.write(\"{escaped}\", \"hello-cm\")\n"
+                "        Ok(_) -> stdio.println(\"wrote\")\n"
+                "        Err(_) -> stdio.eprintln(\"BUG: write failed\")\n"
+                f"    match fs.read(\"{escaped}\")\n"
+                "        Ok(text) -> stdio.println(\"read: ${text}\")\n"
+                "        Err(_) -> stdio.eprintln(\"BUG: read failed\")\n"
+                f"    if fs.exists(\"{escaped}\")\n"
+                "        stdio.println(\"exists: yes\")\n"
+                "    else\n"
+                "        stdio.println(\"exists: no\")\n"
+            )
+            self.assertEqual(
+                self._run_capturing_stdout(src),
+                "wrote\nread: hello-cm\nexists: yes\n",
+            )
+        finally:
+            if os.path.exists(path):
+                os.unlink(path)
+
+    def test_env_get_under_component_host(self):
+        # Slice 1 surface continued: ``Env.get`` returns
+        # ``Option<String>``. The component host lifts the Python
+        # ``str | None`` directly to ``Some(...)`` / ``None``. We
+        # set an env var explicitly so the value is deterministic
+        # across CI runs.
+        import os
+        os.environ["CAPA_CM_FIXTURE"] = "hello"
+        try:
+            src = (
+                "fun main(stdio: Stdio, env: Env)\n"
+                "    match env.get(\"CAPA_CM_FIXTURE\")\n"
+                "        Some(v) -> stdio.println(\"got: ${v}\")\n"
+                "        None -> stdio.println(\"missing\")\n"
+                "    match env.get(\"CAPA_CM_DEFINITELY_UNSET_XYZ\")\n"
+                "        Some(_) -> stdio.eprintln(\"BUG: leaked\")\n"
+                "        None -> stdio.println(\"missing: ok\")\n"
+            )
+            self.assertEqual(
+                self._run_capturing_stdout(src),
+                "got: hello\nmissing: ok\n",
+            )
+        finally:
+            os.environ.pop("CAPA_CM_FIXTURE", None)
+
 
 @unittest.skipUnless(
     _has_wasm_tools() and _has_wasmtime_py(),

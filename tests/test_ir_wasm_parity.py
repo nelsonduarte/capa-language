@@ -94,6 +94,16 @@ _PARITY_PROGRAMS: list[str] = [
     "option_result_hofs.capa",
     "fn_ref_as_closure.capa",
     "net_post.capa",
+    # ``fs_demo`` and ``env_demo`` were both flagged as deferred
+    # ("needs a fixture") in earlier slices, but inspection shows
+    # they are parity-clean by construction: ``fs_demo`` writes to
+    # / reads from a single constant ``/tmp/`` path and prints only
+    # the constant strings around it; ``env_demo`` queries the
+    # *same* ``os.environ`` from both backends within one Python
+    # process, so back-to-back runs see identical values. Promoted
+    # to the parity list 2026-05-29.
+    "fs_demo.capa",
+    "env_demo.capa",
 ]
 
 # Programs deliberately excluded from parity and why; documented
@@ -103,14 +113,6 @@ _EXCLUDED: dict[str, str] = {
     "clock_demo.capa": (
         "Clock.now_secs / now_monotonic are time-dependent; their "
         "values differ between back-to-back runs even on one backend."
-    ),
-    "env_demo.capa": (
-        "Env.get / Env.args depend on the host process state; equal "
-        "output requires a captured fixture both sides agree on."
-    ),
-    "fs_demo.capa": (
-        "Fs.read / Fs.write touch the real filesystem; parity needs a "
-        "deterministic temp-dir fixture wired into both backends."
     ),
 }
 
@@ -443,6 +445,27 @@ class TestPythonWasmParity(unittest.TestCase):
         # http.server fixture and lives in
         # ``test_net_post_round_trip_against_loopback``.
         self._assert_parity("net_post.capa")
+
+    def test_fs_demo(self):
+        # Slice 9 (2026-05): ``fs_demo`` exercises Fs.read /
+        # Fs.write end-to-end on both backends. Parity-clean by
+        # construction: the program writes to a single constant
+        # ``/tmp/`` path and prints only that path + the response
+        # of the host bridge. Both backends route through Python's
+        # ``open(...)`` under the hood (Python directly; Wasm via
+        # the host bridge), so back-to-back runs see identical
+        # bytes on disk. Previously gated as needing a fixture;
+        # inspection shows none was actually required.
+        self._assert_parity("fs_demo.capa")
+
+    def test_env_demo(self):
+        # Slice 9 (2026-05): ``env_demo`` queries Env.get for
+        # several keys. Parity-clean because both backends consult
+        # the same ``os.environ`` from within one Python process,
+        # and ``os.environ`` doesn't change between two back-to-
+        # back calls. Previously gated as needing a fixture;
+        # inspection shows none was actually required.
+        self._assert_parity("env_demo.capa")
 
     def test_inventory_matches_examples_dir(self):
         # Soundness check: every .capa under examples/wasm/ is
