@@ -81,10 +81,8 @@ class _MapEmissionMixin:
         - contains_key(k): linear scan -> Bool
         - get(k): linear scan -> Option<V>
         - pairs(): allocate List<(K, V)> in insertion order
-
-        Other methods (keys, values) wait until List<T> can hold
-        structured element types for non-String K (the existing
-        path packs key+value into a 16-byte tuple)."""
+        - keys(): allocate List<K> in insertion order (slice 5)
+        - values(): allocate List<V> in insertion order (slice 5)"""
         recv = instr.receiver
         method = instr.method
         recv_ty = recv.ty

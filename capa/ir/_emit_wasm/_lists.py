@@ -34,9 +34,10 @@ class _ListEmissionMixin:
         """Dispatch a method on a List receiver. Methods that read
         the header (length, is_empty) emit a single i32.load + a
         compare/store. ``push`` does grow-if-needed + store + len
-        increment. ``contains`` walks the array linearly. Methods
-        that need closures (map / filter / fold / find) raise; they
-        land in Phase 6E."""
+        increment. ``contains`` walks the array linearly. HOFs
+        (``map`` / ``filter`` / ``fold``) route through the closures
+        mixin, which lifts each lambda to a top-level Wasm function
+        and dispatches the body via ``call_indirect``."""
         recv = instr.receiver
         method = instr.method
         recv_ty = recv.ty
@@ -89,8 +90,7 @@ class _ListEmissionMixin:
                 self._write(f"local.set ${instr.dst}")
             return
         raise WasmEmissionError(
-            f"Phase 6D-2: List method {method!r} not supported "
-            f"(map / filter / fold need closures, see 6E)"
+            f"List method {method!r} is not implemented on the Wasm backend"
         )
 
     def _emit_list_push(

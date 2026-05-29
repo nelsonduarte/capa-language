@@ -91,6 +91,7 @@ _PARITY_PROGRAMS: list[str] = [
     "tuple_arity_n.capa",
     "map_keys_values.capa",
     "range_iter.capa",
+    "option_result_hofs.capa",
 ]
 
 # Programs deliberately excluded from parity and why; documented
@@ -404,6 +405,19 @@ class TestPythonWasmParity(unittest.TestCase):
         # locals so an inner loop's end-compare doesn't clobber the
         # outer's.
         self._assert_parity("range_iter.capa")
+
+    def test_option_result_hofs(self):
+        # Slice 6 (2026-05): every Option<T> / Result<T, E> HOF
+        # (``map``, ``and_then``, ``or_else``, ``filter``,
+        # ``ok_or``, ``map_err``, ``ok``, ``err``) lands on the
+        # Wasm backend. Exercises Int / String payloads,
+        # payload-type-changing maps, all Result projection
+        # directions, and pointer-pass-through on the fallback
+        # arm of map / and_then. Closure ABI matches List.map's
+        # call_indirect shape; the scratch locals reuse the
+        # existing has_list_hof declarations via the locals-
+        # collection extension shipped in the same slice.
+        self._assert_parity("option_result_hofs.capa")
 
     def test_inventory_matches_examples_dir(self):
         # Soundness check: every .capa under examples/wasm/ is

@@ -1,0 +1,109 @@
+// Slice 6 (2026-05): Option<T> + Result<T, E> HOFs on Wasm.
+// Pre-slice-6 the Wasm emitter only handled is_some / is_none /
+// is_ok / is_err / unwrap_or. Exercises every newly-supported
+// method across Int / String payloads to catch any per-shape
+// encoding divergence.
+//
+// All closures are inline lambdas (the Wasm emitter does not yet
+// support passing free top-level functions as Fun values; that
+// gap is orthogonal to slice 6 and the Python backend has the
+// same surface).
+
+fun show(stdio: Stdio, label: String, n: Int)
+    stdio.println("${label}: ${n}")
+
+fun show_opt_int(stdio: Stdio, label: String, o: Option<Int>)
+    stdio.println("${label}: ${o.unwrap_or(-1)}")
+
+fun show_opt_str(stdio: Stdio, label: String, o: Option<String>)
+    let fallback = "<none>"
+    let value = o.unwrap_or(fallback)
+    stdio.println("${label}: ${value}")
+
+fun show_res_int(stdio: Stdio, label: String, r: Result<Int, String>)
+    if r.is_ok()
+        stdio.println("${label}: ok=${r.unwrap_or(-1)}")
+    else
+        stdio.println("${label}: err")
+
+fun main(stdio: Stdio)
+    let some_i: Option<Int> = Some(5)
+    let none_i: Option<Int> = None
+    let some_neg: Option<Int> = Some(-3)
+    let none_for_str: Option<Int> = None
+
+    // ---- Option.map ----
+    show_opt_int(stdio, "Some(5).map(*2)",
+                 some_i.map(fun (x: Int) -> Int => x * 2))
+    show_opt_int(stdio, "None.map(*2)",
+                 none_i.map(fun (x: Int) -> Int => x * 2))
+
+    // Option.map with payload-type change (Int -> String).
+    show_opt_str(stdio, "Some(7).map(str)",
+                 Some(7).map(fun (n: Int) -> String => "v=${n}"))
+    show_opt_str(stdio, "None.map(str)",
+                 none_for_str.map(fun (n: Int) -> String => "v=${n}"))
+
+    // ---- Option.and_then ----
+    show_opt_int(stdio, "Some(5).and_then(>0)",
+                 some_i.and_then(fun (n: Int) -> Option<Int> =>
+                     if n > 0 then Some(n * 10) else None))
+    show_opt_int(stdio, "Some(-3).and_then(>0)",
+                 some_neg.and_then(fun (n: Int) -> Option<Int> =>
+                     if n > 0 then Some(n * 10) else None))
+    show_opt_int(stdio, "None.and_then(>0)",
+                 none_i.and_then(fun (n: Int) -> Option<Int> =>
+                     if n > 0 then Some(n * 10) else None))
+
+    // ---- Option.filter ----
+    show_opt_int(stdio, "Some(5).filter(>0)",
+                 some_i.filter(fun (x: Int) -> Bool => x > 0))
+    show_opt_int(stdio, "Some(-3).filter(>0)",
+                 some_neg.filter(fun (x: Int) -> Bool => x > 0))
+    show_opt_int(stdio, "None.filter(>0)",
+                 none_i.filter(fun (x: Int) -> Bool => x > 0))
+
+    // ---- Option.ok_or ----
+    show_res_int(stdio, "Some(5).ok_or(missing)", some_i.ok_or("missing"))
+    show_res_int(stdio, "None.ok_or(missing)", none_i.ok_or("missing"))
+
+    // ---- Result.map ----
+    let ok_i: Result<Int, String> = Ok(11)
+    let err_s: Result<Int, String> = Err("boom")
+    show_res_int(stdio, "Ok(11).map(*2)",
+                 ok_i.map(fun (x: Int) -> Int => x * 2))
+    show_res_int(stdio, "Err.map(*2)",
+                 err_s.map(fun (x: Int) -> Int => x * 2))
+
+    // ---- Result.map_err ----
+    show_res_int(stdio, "Ok.map_err",
+                 ok_i.map_err(fun (e: String) -> String => "ERR(${e})"))
+    show_res_int(stdio, "Err.map_err",
+                 err_s.map_err(fun (e: String) -> String => "ERR(${e})"))
+
+    // ---- Result.and_then ----
+    show_res_int(stdio, "Ok.and_then(99)",
+                 ok_i.and_then(fun (_n: Int) -> Result<Int, String> =>
+                     Ok(99)))
+    show_res_int(stdio, "Err.and_then(99)",
+                 err_s.and_then(fun (_n: Int) -> Result<Int, String> =>
+                     Ok(99)))
+
+    // ---- Result.or_else ----
+    show_res_int(stdio, "Ok.or_else",
+                 ok_i.or_else(fun (e: String) -> Result<Int, String> =>
+                     if e == "retry" then Ok(99) else Err("perm:${e}")))
+    let retry_r: Result<Int, String> = Err("retry")
+    show_res_int(stdio, "Err(retry).or_else",
+                 retry_r.or_else(fun (e: String) -> Result<Int, String> =>
+                     if e == "retry" then Ok(99) else Err("perm:${e}")))
+    let other_r: Result<Int, String> = Err("other")
+    show_res_int(stdio, "Err(other).or_else",
+                 other_r.or_else(fun (e: String) -> Result<Int, String> =>
+                     if e == "retry" then Ok(99) else Err("perm:${e}")))
+
+    // ---- Result.ok / Result.err ----
+    show_opt_int(stdio, "Ok(11).ok()", ok_i.ok())
+    show_opt_int(stdio, "Err.ok()", err_s.ok())
+    show_opt_str(stdio, "Ok(11).err()", ok_i.err())
+    show_opt_str(stdio, "Err(boom).err()", err_s.err())

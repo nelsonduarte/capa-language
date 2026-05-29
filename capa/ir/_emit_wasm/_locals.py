@@ -446,6 +446,22 @@ class _LocalsCollectionMixin:
                     if (recv_ty.startswith("Option")
                             or recv_ty.startswith("Result")):
                         has_optres_method = True
+                        # Slice 6 (2026-05): map / and_then / filter /
+                        # or_else / map_err invoke a closure. The
+                        # emitter stashes the closure value in
+                        # $_lam_fn_tmp and the per-T payload in the
+                        # _str_a_* / _alloc_tmp_i64 / _alloc_tmp_f64
+                        # scratch locals (same wire shape as
+                        # List.map). Re-uses the has_list_hof
+                        # declarations rather than carving a parallel
+                        # set; the scratch lives in stack scope
+                        # anyway so two HOFs in one function don't
+                        # collide.
+                        if instr.method in (
+                            "map", "and_then", "filter",
+                            "or_else", "map_err",
+                        ):
+                            has_list_hof = True
                     if instr.method == "split" and recv_ty == "String":
                         # split returns List<String>; uses _alloc_tmp_i64
                         # for the per-chunk packing dance.

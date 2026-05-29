@@ -29,7 +29,7 @@ from __future__ import annotations
 
 from .._nodes import (
     Module, Instr, Value, Function,
-    Call, MethodCall, For, FormatStr, If, While, Match,
+    BinOp, Call, MethodCall, For, FormatStr, If, While, Match,
     MakeList, MakeMap, MakeSet, MakeLambda,
     PatIdent, PatLiteral, PatTuple, PatVariant,
 )
@@ -428,6 +428,30 @@ class _DiscoveryMixin:
                             and instr.method in ("add", "contains", "remove")
                             and _element_type_of_set(recv_ty) == "String"):
                         return True
+                if isinstance(instr, BinOp) and instr.op in ("==", "!="):
+                    # BinOp ``==`` / ``!=`` on String operands lowers
+                    # to a ``call $str_eq`` (see __init__.py's
+                    # ``_emit_binop`` String branch). Without this
+                    # check a function whose only String comparison
+                    # lives in a lifted lambda (e.g. an Option.map
+                    # closure body doing ``s == "retry"``) would
+                    # emit a $str_eq call into a module that never
+                    # registered the helper.
+                    if (instr.left.ty == "String"
+                            or instr.right.ty == "String"):
+                        return True
+                if isinstance(instr, MakeLambda):
+                    # Lambdas are lifted into top-level Wasm
+                    # functions before emission, but the lift
+                    # happens AFTER discovery; at this point the
+                    # lambda body still lives inside ``MakeLambda``.
+                    # Recursing into it catches String comparisons
+                    # (BinOp ``==``) and similar str_eq-needing
+                    # patterns that only appear in closure bodies
+                    # (e.g. ``some.map(fun (e: String) -> Bool =>
+                    # e == "retry")``).
+                    if visit(instr.body):
+                        return True
                 if isinstance(instr, If):
                     if visit(instr.then_body) or visit(instr.else_body):
                         return True
@@ -476,12 +500,62 @@ class _DiscoveryMixin:
         Also walks every impl method body so the cap calls inside
         impl methods (e.g. ``self.stdio.println(...)`` in
         ``impl Logger for StdioLogger``) contribute their imports
-        to the module just like top-level function bodies."""
+        to the module just like top-level function bodies.
+
+        Slice 7 (D5, 2026-05): scans every function signature for
+        an ``Unsafe`` capability parameter and rejects with an
+        actionable diagnostic. Unsafe is intentionally Python-only
+        (it gives a program raw pointer / FFI / mmap-class
+        primitives that have no sandboxed Wasm equivalent). Pre-
+        slice-7 the rejection happened later, deep in cap-method
+        dispatch (``capability method Unsafe.alloc has no
+        WIT/Wasm encoding yet; widen the signature tables``)
+        which read as "this is a backlog item" rather than the
+        permanent stance it actually is. The single early raise
+        is more honest and points the user at the correct
+        workaround (Python backend or refactor the call site)."""
+        self._reject_unsafe_signatures(module)
         for fn in module.functions:
             self._discover_instrs(fn.body)
         for impl in module.impls:
             for method in impl.methods:
                 self._discover_instrs(method.body)
+
+    def _reject_unsafe_signatures(self, module: Module) -> None:
+        """Surface ``Unsafe``-typed parameters at discovery time
+        with a diagnostic that names the function, the parameter,
+        and the only two valid responses (run on the Python
+        backend, or remove the Unsafe argument). Scans both
+        top-level functions and impl methods."""
+        offenders: list[str] = []
+        for fn in module.functions:
+            for p in fn.params:
+                if p.ty == "Unsafe":
+                    offenders.append(f"{fn.name}({p.name}: Unsafe)")
+        for impl in module.impls:
+            impl_label = (
+                f"impl {impl.trait_name} for {impl.type_name}"
+                if impl.trait_name else f"impl {impl.type_name}"
+            )
+            for method in impl.methods:
+                for p in method.params:
+                    if p.ty == "Unsafe":
+                        offenders.append(
+                            f"{impl_label}::{method.name}"
+                            f"({p.name}: Unsafe)"
+                        )
+        if not offenders:
+            return
+        sites = "\n  - ".join(offenders)
+        raise WasmEmissionError(
+            "the Unsafe capability is intentionally not supported "
+            "on the Wasm backend (it grants raw pointer / FFI / "
+            "memory-map primitives that have no sandboxed Wasm "
+            "equivalent). Use the Python backend for these "
+            "functions, or refactor to remove the Unsafe "
+            "parameter.\n  - "
+            f"{sites}"
+        )
 
     def _discover_instrs(self, instrs: list[Instr]) -> None:
         for instr in instrs:

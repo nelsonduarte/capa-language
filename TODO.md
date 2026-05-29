@@ -948,6 +948,50 @@ Listed so the design space is explicit.
 
 ### Wasm-specific gaps that are not P0
 
+- [x] **"Fully functional Wasm" slices 6 + 7 - Option/Result HOFs
+  + Unsafe rejection + stale docstrings + two discovery-walker
+  bug-fixes** (closed 2026-05-29). Closes the master plan's
+  remaining slices and brings the Wasm backend to the
+  "fully functional" target.
+  - **Slice 6 Option HOFs**: `map`, `and_then`, `filter`,
+    `ok_or`, `or_else` lower to allocate-tag-and-payload + invoke
+    closure via the existing `call_indirect` ABI. Fallback arm of
+    `map` / `and_then` uses pointer pass-through (None record /
+    Err(e) encoding doesn't change across the output type),
+    avoiding a redundant 16-byte alloc per call.
+  - **Slice 6 Result HOFs**: `map`, `map_err`, `and_then`,
+    `or_else`, `ok`, `err`. `.ok()` and `.err()` are simple
+    projections (alloc Option + copy 8-byte payload + flip tag).
+    Closure-arity dispatch (Option.or_else takes a zero-arg
+    closure, Result.or_else takes the Err payload) uses a
+    dedicated `_emit_closure_call_no_payload` helper.
+  - **Slice 7 Unsafe rejection (D5)**: discovery walker scans
+    every function + impl method signature at emit-start and
+    raises a single actionable diagnostic naming each offending
+    site. Pre-slice-7 the rejection happened deep in cap-method
+    dispatch with a message that read as "this is a backlog
+    item"; now the user sees "Unsafe is intentionally not
+    supported on the Wasm backend ... use the Python backend
+    for these functions, or refactor".
+  - **Bonus discovery-walker fixes** (caught while verifying the
+    slice 6 parity program): BinOp `==` / `!=` on String
+    operands now triggers `$str_eq` emission (used to slip
+    through if the only String comparison was in a lifted
+    lambda); `MakeLambda.body` is now recursed into by the
+    `_uses_map_ops` walker so closure bodies contribute to the
+    helper-emission decisions just like the parent function does
+    (the lambda-lift happens AFTER discovery).
+  - **Docstring polish**: `_emit_list_method_call` no longer
+    references "Phase 6E" (HOFs landed); `_emit_map_method_call`
+    docstring lists `keys` / `values` instead of saying they're
+    deferred.
+  Plus one new parity program (`option_result_hofs.capa`,
+  ~25 assertions covering every method × {Int, String} payload).
+  `test_option_result_hofs` added to the parity harness.
+  Suite 2013 -> 2014 / 5 skipped / 0 fail. `capa_governance_pack`
+  on pure `--wasm` still matches the Python backend byte-for-byte
+  (no regression).
+
 - [x] **"Fully functional Wasm" slice 5 - tuple arity > 2,
   Map.keys / Map.values, range iteration, and four IR / emit
   bug-fixes surfaced by `capa_governance_pack` on pure `--wasm`**
