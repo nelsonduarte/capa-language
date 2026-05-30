@@ -26,6 +26,7 @@ claim.
 
 from __future__ import annotations
 
+import os
 import unittest
 
 try:
@@ -42,6 +43,18 @@ except ImportError:  # pragma: no cover - exercised only without the extra
 
 from capa import Lexer, LexerError, Parser, format_source, is_formatted
 from capa.parser import ParserError
+from capa.tokens import TokenKind
+
+# Layout tokens carry no source text of their own (INDENT / DEDENT
+# are zero-width markers, NEWLINE / EOF are synthesised), so the
+# slice-back invariant in the GAP D tests is asserted only over
+# non-layout tokens.
+_LAYOUT_KINDS = (
+    TokenKind.NEWLINE,
+    TokenKind.INDENT,
+    TokenKind.DEDENT,
+    TokenKind.EOF,
+)
 
 
 # A printable-only strategy that excludes control characters except
@@ -142,6 +155,63 @@ class TestLexerProperties(unittest.TestCase):
             Lexer(source).lex()
         except LexerError:
             return
+
+    # -------------------------------------------------------
+    # GAP D -- token position invariant (regression lock).
+    # -------------------------------------------------------
+    # For any source the lexer accepts, every non-layout token must
+    # slice back to its own text:
+    #
+    #     source[tok.start.offset : tok.end.offset] == tok.text
+    #
+    # This is NOT implied by the existing "lexer never raises"
+    # property nor by formatter round-tripping: a token could carry
+    # the right ``text`` while its ``Pos`` offsets drifted by one and
+    # nothing above would notice. It matters because the manifest's
+    # ``pos`` field -- which regulators read to locate a capability
+    # use in the source -- is built straight from token positions; a
+    # wrong ``Pos`` silently mis-attributes a capability to the wrong
+    # line/column. These tests lock the offsets against that drift.
+    # The invariant already holds (so these are expected to pass),
+    # including on the tricky tokens: strings with escapes,
+    # ${...} interpolation, raw strings, hex / char literals. The
+    # ``_program()`` flavour lives in ``TestPositionProperties`` at
+    # the end of the file (that strategy is defined further down).
+
+    def _assert_offsets_slice_to_text(self, source, tokens):
+        for tok in tokens:
+            if tok.kind in _LAYOUT_KINDS:
+                continue
+            self.assertEqual(
+                source[tok.start.offset:tok.end.offset],
+                tok.text,
+                msg=(
+                    f"token {tok.kind} text={tok.text!r} but "
+                    f"source[{tok.start.offset}:{tok.end.offset}]="
+                    f"{source[tok.start.offset:tok.end.offset]!r}"
+                ),
+            )
+
+    @given(_CAPA_ISH_TEXT)
+    @_PROFILE
+    def test_token_offsets_slice_to_text_fuzz(self, source):
+        # Raw capa-ish fuzz: catches drift on odd-but-lexable inputs.
+        try:
+            tokens = Lexer(source).lex()
+        except LexerError:
+            return
+        self._assert_offsets_slice_to_text(source, tokens)
+
+    @given(_SOURCE_TEXT)
+    @_PROFILE
+    def test_token_offsets_slice_to_text_source_text(self, source):
+        # Wider alphabet (Unicode letters / punctuation / symbols)
+        # so multibyte-character offsets are exercised too.
+        try:
+            tokens = Lexer(source).lex()
+        except LexerError:
+            return
+        self._assert_offsets_slice_to_text(source, tokens)
 
 
 # ===========================================================
@@ -706,7 +776,7 @@ class TestSyntaxAwarePipeline(unittest.TestCase):
 #     class missing from the manifest) would surface here.
 
 
-from capa.manifest import build_manifest
+from capa.manifest import build_cyclonedx, build_manifest, build_spdx
 from capa.runtime import _trace
 
 
@@ -1799,5 +1869,258 @@ class TestWasmAttenuationHonoured(unittest.TestCase):
         self._run_and_check(source)
 
 
+# ===========================================================
+# GAP D (cont.) -- token positions over generated programs
+# ===========================================================
+
+
+class TestPositionProperties(unittest.TestCase):
+    """The program-generator flavour of GAP D (the raw-text flavours
+    live in ``TestLexerProperties``). Well-formed programs exercise
+    realistic token sequences -- keywords, identifiers, string
+    literals with ${...} interpolation, operators -- in the order the
+    front end actually meets them, so this locks token positions
+    against drift on inputs that look like real Capa source.
+
+    Why it matters: the manifest ``pos`` field a regulator reads to
+    locate a capability use is derived straight from token offsets;
+    an off-by-one ``Pos`` would silently mis-attribute the use to the
+    wrong line/column while every existing front-end property still
+    passed."""
+
+    @given(_program())
+    @settings(
+        max_examples=50,
+        deadline=2000,
+        suppress_health_check=[HealthCheck.too_slow],
+    )
+    def test_token_offsets_slice_to_text_programs(self, source):
+        tokens = Lexer(source).lex()
+        for tok in tokens:
+            if tok.kind in _LAYOUT_KINDS:
+                continue
+            self.assertEqual(
+                source[tok.start.offset:tok.end.offset],
+                tok.text,
+                msg=(
+                    f"token {tok.kind} text={tok.text!r} but "
+                    f"source[{tok.start.offset}:{tok.end.offset}]="
+                    f"{source[tok.start.offset:tok.end.offset]!r}\n"
+                    f"in program:\n{textwrap.indent(source, '    ')}"
+                ),
+            )
+
+
+# ===========================================================
+# GAP C -- exporter conservation oracle
+# ===========================================================
+#
+# The manifest is the source of truth for capability claims; both
+# SBOM exporters (CycloneDX, SPDX) must faithfully surface those
+# claims. Slice 23 dropped the ``transitively_reachable_capability``
+# field from BOTH exporters and no test caught it, because every
+# exporter test asserted on hand-built fixtures rather than
+# cross-checking exporter output against the manifest built from the
+# SAME analysed module. This oracle closes that gap.
+#
+# Granularity: PER-FUNCTION (the stronger choice; feasible here).
+# CycloneDX function components are matched by reconstructing the
+# exact bom-ref ``capa:fn:<basename>:<qualname_ref>`` from each
+# manifest record's loader-time ``name`` / ``container`` (the bom-ref
+# uses the loader name, not ``source_name``). SPDX packages are
+# matched by their display name -- ``source_container::source_name``
+# or ``source_name`` -- which is exact (the SPDXID is run through a
+# lossy slug, so it is the wrong key to reconstruct from) and which
+# the generators keep unique per function.
+#
+# Note on the wraps-builtin shape: its only impl method is
+# ``Wrapper::probe`` (container="Wrapper"); the abstract capability
+# method is not a manifest function. That impl method and the
+# top-level functions (``make`` / ``run`` / ``main``) all have
+# distinct qualnames / display names, so per-function matching never
+# conflates two functions.
+
+
+class TestExporterConservation(unittest.TestCase):
+    """For every generated program, both SBOM exporters must surface
+    every capability claim the manifest makes:
+
+      (1) each ``transitively_reachable_capability`` of a function
+          appears as a CycloneDX property AND an SPDX annotation on
+          THAT function's component / package;
+      (2) each ``provably_excluded_capability`` likewise appears as
+          the corresponding negative property / annotation;
+      (3) every transitively-reachable BUILT-IN cap (one not naming a
+          user-defined cap) gets a synthesised ``capa:builtin:...``
+          CycloneDX component.
+
+    This would have caught slice 23 (exporters dropping the
+    transitive field): if either exporter stopped emitting
+    ``capa:transitively_reachable_capability``, assertion (1) fires on
+    the very first ``wraps_builtin`` example (every such program has a
+    function reaching ``Fs`` / ``Env``).
+
+    Scope note (honest): the ``wraps_builtin`` shape DOES carry
+    non-empty ``provably_excluded_capabilities`` per function, so
+    assertion (2) is exercised, not vacuous. Nothing is weakened:
+    every claim that exists in the manifest is checked at full
+    per-function strength against both exporters.
+    """
+
+    _FILENAME = "prop.capa"
+
+    @staticmethod
+    def _cdx_prop_values(component, prop_name):
+        return {
+            prop.get("value")
+            for prop in component.get("properties", [])
+            if prop.get("name") == prop_name
+        }
+
+    @staticmethod
+    def _spdx_comments(package):
+        return {a.get("comment") for a in package.get("annotations", [])}
+
+    def _run(self, source):
+        # The reuse generators emit source text; drive the front end
+        # explicitly (analyze() takes a parsed module, not a string).
+        module = Parser(Lexer(source).lex(), source=source).parse_module()
+        result = analyze(module, source=source)
+        self.assertTrue(
+            result.ok,
+            msg=(
+                "generator produced a program the analyser rejected:\n"
+                f"{textwrap.indent(source, '    ')}\n"
+                f"errors: {[e.format() for e in result.errors]}"
+            ),
+        )
+
+        fn_name = self._FILENAME
+        basename = os.path.basename(fn_name)
+        manifest = build_manifest(module, filename=fn_name)
+        cdx = build_cyclonedx(module, filename=fn_name)
+        spdx = build_spdx(module, filename=fn_name)
+
+        cdx_by_ref = {c.get("bom-ref"): c for c in cdx.get("components", [])}
+        spdx_by_name = {p.get("name"): p for p in spdx.get("packages", [])}
+        builtin_comp_caps = {
+            c.get("name")
+            for c in cdx.get("components", [])
+            if str(c.get("bom-ref", "")).startswith("capa:builtin:")
+        }
+        # A transitively-reachable cap that is NOT user-defined is a
+        # built-in, so it must get a synthesised component (assert 3).
+        user_cap_names = {
+            uc["name"] for uc in manifest.get("user_defined_capabilities", [])
+        }
+
+        all_transitive = set()
+
+        for fn in manifest["functions"]:
+            qualname_ref = (
+                f"{fn['container']}::{fn['name']}"
+                if fn.get("container")
+                else fn["name"]
+            )
+            display_name = (
+                f"{fn['source_container'] or fn['container']}"
+                f"::{fn['source_name']}"
+                if fn.get("container")
+                else fn["source_name"]
+            )
+            cdx_ref = f"capa:fn:{basename}:{qualname_ref}"
+
+            self.assertIn(
+                cdx_ref, cdx_by_ref,
+                msg=f"no CycloneDX component for {qualname_ref!r} ({cdx_ref})",
+            )
+            self.assertIn(
+                display_name, spdx_by_name,
+                msg=f"no SPDX package named {display_name!r}",
+            )
+
+            cdx_trans = self._cdx_prop_values(
+                cdx_by_ref[cdx_ref], "capa:transitively_reachable_capability",
+            )
+            cdx_excl = self._cdx_prop_values(
+                cdx_by_ref[cdx_ref], "capa:provably_excluded_capability",
+            )
+            spdx_comments = self._spdx_comments(spdx_by_name[display_name])
+
+            # (1) transitive caps surfaced in both dialects.
+            for cap in fn.get("transitively_reachable_capabilities", []):
+                all_transitive.add(cap)
+                self.assertIn(
+                    cap, cdx_trans,
+                    msg=(
+                        f"CycloneDX dropped transitive cap {cap!r} on "
+                        f"{qualname_ref!r}; surfaced={sorted(cdx_trans)}\n"
+                        f"{textwrap.indent(source, '    ')}"
+                    ),
+                )
+                self.assertIn(
+                    f"capa:transitively_reachable_capability={cap}",
+                    spdx_comments,
+                    msg=(
+                        f"SPDX dropped transitive cap {cap!r} on "
+                        f"{display_name!r}\n{textwrap.indent(source, '    ')}"
+                    ),
+                )
+
+            # (2) excluded caps surfaced in both dialects.
+            for cap in fn.get("provably_excluded_capabilities", []):
+                self.assertIn(
+                    cap, cdx_excl,
+                    msg=(
+                        f"CycloneDX dropped excluded cap {cap!r} on "
+                        f"{qualname_ref!r}\n{textwrap.indent(source, '    ')}"
+                    ),
+                )
+                self.assertIn(
+                    f"capa:provably_excluded_capability={cap}",
+                    spdx_comments,
+                    msg=(
+                        f"SPDX dropped excluded cap {cap!r} on "
+                        f"{display_name!r}\n{textwrap.indent(source, '    ')}"
+                    ),
+                )
+
+        # (3) every reachable built-in cap got a synthesised
+        # CycloneDX component.
+        for cap in all_transitive:
+            if cap not in user_cap_names:
+                self.assertIn(
+                    cap, builtin_comp_caps,
+                    msg=(
+                        f"CycloneDX did not synthesise a capa:builtin "
+                        f"component for reachable built-in cap {cap!r}; "
+                        f"builtin comps={sorted(builtin_comp_caps)}\n"
+                        f"{textwrap.indent(source, '    ')}"
+                    ),
+                )
+
+    @given(_program_user_cap_wraps_builtin())
+    @settings(
+        max_examples=50,
+        deadline=4000,
+        suppress_health_check=[HealthCheck.too_slow],
+    )
+    def test_exporters_conserve_caps_wraps_builtin(self, source):
+        # Primary strategy: the slice-21/23 shape, with non-trivial
+        # transitive reachability (a user cap wrapping a built-in).
+        self._run(source)
+
+    @given(_program_with_caps_advanced())
+    @settings(
+        max_examples=50,
+        deadline=4000,
+        suppress_health_check=[HealthCheck.too_slow],
+    )
+    def test_exporters_conserve_caps_advanced(self, source):
+        # Breadth strategy: varied cap declarations / call shapes.
+        self._run(source)
+
+
 if __name__ == "__main__":
     unittest.main()
+
