@@ -1,0 +1,30 @@
+// Slice 25.4 (2026-05-30): cross-function attenuation oracle for Proc.
+//
+// The Python backend has always treated Proc as a first-class value
+// whose restriction travels with the cap into every helper it is
+// passed to. The Wasm backend pre-slice-25.4 erased Proc values at
+// the IR level and inlined the basename + suffix-boundary check at
+// the literal call site, so the moment a restricted Proc crossed a
+// function boundary the receiving function saw an unrestricted cap
+// and the host bridge spawned the subprocess unconditionally (audit
+// slice 25 finding F1).
+//
+// This program reproduces the bug. ``main`` narrows the root Proc
+// to ``git`` and hands the narrowed cap to ``helper``; the helper
+// attempts to exec ``cmd`` (which is not on the allow-list).
+// Both backends must DENY the helper's exec - if Wasm prints the
+// "BUG" line, the cross-function attenuation regression has come
+// back.
+//
+// No fixture required: the deny check fires before subprocess.run,
+// so the program prints exactly one line regardless of whether the
+// system has ``cmd`` / ``git`` installed.
+
+fun helper(proc: Proc, stdio: Stdio)
+    match proc.exec("cmd", "[\"/c\", \"echo BUG\"]")
+        Ok(_) -> stdio.println("BUG: helper exec outside narrow")
+        Err(_) -> stdio.println("ok: helper proc.exec denied")
+
+fun main(stdio: Stdio, proc: Proc)
+    let narrow = proc.restrict_to("git")
+    helper(narrow, stdio)

@@ -649,19 +649,20 @@ class WasmEmitter(
         # to two i32s (ptr, len) named ``${p.name}_ptr`` /
         # ``${p.name}_len``.
         #
-        # Slice 25.2 / 25.3 (2026-05-30): ``Fs`` and ``Net`` are
-        # un-erased and lowered as i32 handles so a restricted cap
-        # carries its restriction across function boundaries (audit
-        # slice 25 F1: the previous erased-cap design relied on
-        # inline emit-time checks that dropped the restriction the
-        # moment the cap crossed a function boundary). Db / Proc /
-        # Env / Clock / Random / Unsafe / Stdio stay on the old
-        # erased path; one cap per rollout slice keeps each
-        # migration contained.
+        # Slices 25.2 - 25.6 (2026-05-30): Fs / Net / Db / Proc /
+        # Env / Clock are un-erased and lowered as i32 handles so a
+        # restricted cap carries its restriction across function
+        # boundaries (audit slice 25 F1: the previous erased-cap
+        # design relied on inline emit-time checks that dropped the
+        # restriction the moment the cap crossed a function
+        # boundary). Random / Unsafe / Stdio stay erased (no
+        # attenuation surface to wire).
         param_clauses = []
         for p in fn.params:
             if p.ty in BUILTIN_CAPS:
-                if p.ty in ("Fs", "Net"):
+                if p.ty in (
+                    "Fs", "Net", "Db", "Proc", "Env", "Clock",
+                ):
                     param_clauses.append(f"(param ${p.name} i32)")
                 continue
             if p.ty == "String":
@@ -1174,14 +1175,16 @@ class WasmEmitter(
             return
         for arg in instr.args:
             if arg.ty in BUILTIN_CAPS:
-                # Slice 25.2 / 25.3: Fs / Net are no longer erased -
-                # the cap value is an i32 handle the receiving
-                # function takes as the matching parameter. Push it
-                # so the call sees the receiver's restriction
-                # (cross-function attenuation soundness, audit
-                # slice 25 F1). Other built-in caps remain erased
-                # pending their own rollout slice.
-                if arg.ty in ("Fs", "Net"):
+                # Slices 25.2 - 25.6: Fs / Net / Db / Proc / Env /
+                # Clock are no longer erased - the cap value is an
+                # i32 handle the receiving function takes as the
+                # matching parameter. Push it so the call sees the
+                # receiver's restriction (cross-function attenuation
+                # soundness, audit slice 25 F1). Random / Stdio /
+                # Unsafe remain erased (no attenuation surface).
+                if arg.ty in (
+                    "Fs", "Net", "Db", "Proc", "Env", "Clock",
+                ):
                     self._push_value(arg)
                 continue
             if arg.ty == "String":
@@ -1204,9 +1207,11 @@ class WasmEmitter(
             if dst_ty == "String":
                 self._write(f"local.set ${instr.dst}_len")
                 self._write(f"local.set ${instr.dst}_ptr")
-            elif dst_ty in ("Fs", "Net"):
-                # Slice 25.2 / 25.3: Fs / Net return values carry
-                # the handle as i32.
+            elif dst_ty in (
+                "Fs", "Net", "Db", "Proc", "Env", "Clock",
+            ):
+                # Slices 25.2 - 25.6: Fs / Net / Db / Proc / Env /
+                # Clock return values carry the handle as i32.
                 self._write(f"local.set ${instr.dst}")
             elif dst_ty and dst_ty not in BUILTIN_CAPS and dst_ty != "Unit":
                 self._write(f"local.set ${instr.dst}")

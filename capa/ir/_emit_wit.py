@@ -58,31 +58,59 @@ _WIT_SIGNATURES: dict[tuple[str, str], str] = {
     # the rest of the toolchain (lowerer, host bridge) reads as
     # source-level names. The Wasm import emitter rewrites the
     # method-name component to kebab-case to match this WIT.
-    ("Clock", "now_secs"):      "now-secs: func() -> f64",
-    ("Clock", "now_monotonic"): "now-monotonic: func() -> f64",
-    # Clock.sleep: trivial f64 arg, no return. The Python runtime
+    #
+    # Slice 25.6 (2026-05-30): every Clock op takes ``handle: u32``
+    # as the FIRST param so the host can look up the receiver cap's
+    # ``restrict_to_after`` deadline in the per-instance handle table
+    # and enforce ``clock.allows()`` before the syscall. Closes the
+    # cross-function attenuation bug (audit slice 25 F1) for Clock:
+    # a Clock narrowed via ``restrict_to_after(t)`` passed across a
+    # function boundary now keeps its deadline. ``restrict-to-after``
+    # returns a fresh ``u32`` handle bound to the later of
+    # max(parent_threshold, new_threshold).
+    ("Clock", "now_secs"):      "now-secs: func(handle: u32) -> f64",
+    ("Clock", "now_monotonic"): "now-monotonic: func(handle: u32) -> f64",
+    # Clock.sleep: handle + f64 arg, no return. The Python runtime
     # treats a denied Clock (``restrict_to_after`` threshold in the
     # future) as a silent no-op; the host bridge mirrors that.
-    ("Clock", "sleep"):         "sleep: func(secs: f64)",
+    ("Clock", "sleep"):         "sleep: func(handle: u32, secs: f64)",
     # Clock.allows queries the cap's ``restrict_to_after`` deadline
-    # against the current host clock. Kept as a host bridge rather
-    # than an inline-attenuation check because the literal threshold
-    # is a Float, not a String, and the comparison needs the live
-    # ``time.time()`` reading anyway. Static (analyzer-known)
-    # attenuations cannot collapse this without a clock source.
-    ("Clock", "allows"):        "allows: func() -> bool",
+    # against the current host clock. The host looks up the cap via
+    # the handle and consults its real deadline (slice 25.6); the
+    # pre-slice host hard-coded ``return 1`` (unrestricted) regardless
+    # of attenuation, so a deny on a narrowed Clock crossing a
+    # function boundary was lost.
+    ("Clock", "allows"):        "allows: func(handle: u32) -> bool",
+    # Clock.restrict_to_after: returns a fresh handle bound to a
+    # later (max-merged) deadline. Mirrors fs.restrict-to / net.
+    # restrict-to; the guest threads the new handle as the receiver
+    # of subsequent Clock calls in this branch of the program.
+    ("Clock", "restrict_to_after"):
+        "restrict-to-after: func(handle: u32, t: f64) -> u32",
 
     # Env: process environment + argv. Phase 7B scope (Option<String>).
-    ("Env", "get"):  "get: func(name: string) -> option<string>",
+    #
+    # Slice 25.5 (2026-05-30): every Env op takes ``handle: u32`` as
+    # the FIRST param so the host looks up the receiver cap and
+    # enforces ``env.allows(name)`` before reading ``os.environ``.
+    # Closes the cross-function attenuation bug (audit slice 25 F1)
+    # for Env: a restrict_to_keys-narrowed Env passed across a
+    # function boundary now keeps its allow-list. The host bridge
+    # returns ``none`` for a denied key (same fail-closed convention
+    # the Python runtime uses).
+    ("Env", "get"):  "get: func(handle: u32, name: string) -> option<string>",
     # Env.args returns a list<string> of program arguments. The
-    # host constructs the list in linear memory via \$alloc.
-    ("Env", "args"): "args: func() -> list<string>",
-    # Env.restrict_to_keys is a no-op at the Wasm host level
-    # (mirrors Fs.restrict_to). The audit C2 inline attenuation
-    # check on Env.get is what enforces the discipline; this
-    # signature exists so the import resolves when Capa source
-    # uses ``env.restrict_to_keys(["..."])``.
-    ("Env", "restrict_to_keys"): "restrict-to-keys: func(keys: list<string>)",
+    # host constructs the list in linear memory via $alloc. The
+    # handle is taken for symmetry with the other Env ops; argv
+    # itself is not restriction-bearing (it reads ``sys.argv``).
+    ("Env", "args"): "args: func(handle: u32) -> list<string>",
+    # Env.restrict_to_keys: returns a fresh handle bound to an
+    # allow-list (intersected with the parent). The wire layout
+    # for ``list<string>`` is the same flat two-i32 (data_ptr, len)
+    # the args() return uses; the host reads N packed
+    # (str_ptr, str_len) i32 pairs out of the data buffer.
+    ("Env", "restrict_to_keys"):
+        "restrict-to-keys: func(handle: u32, keys: list<string>) -> u32",
 
     # Fs: filesystem reads + writes. Phase 7C scope (Result<T, IoError>).
     # IoError is a Capa-side record with two String fields (message,
@@ -167,9 +195,20 @@ _WIT_SIGNATURES: dict[tuple[str, str], str] = {
     # stateless from the program's POV. Attenuation
     # (``Db.restrict_to(prefix)``) is path-prefix matched
     # identically to Fs.
-    ("Db", "exec"):        "exec: func(path: string, sql: string) -> result<_, io-error>",
-    ("Db", "query"):       "query: func(path: string, sql: string) -> result<string, io-error>",
-    ("Db", "restrict_to"): "restrict-to: func(prefix: string)",
+    #
+    # Slice 25.4 (2026-05-30): every Db op takes ``handle: u32`` as
+    # the FIRST param so the host looks up the receiver cap and
+    # enforces ``db.allows(path)`` before opening the SQLite
+    # connection. Closes the cross-function attenuation bug (audit
+    # slice 25 F1) for Db. ``restrict-to`` returns a fresh ``u32``
+    # handle bound to a narrower prefix set (intersection with the
+    # parent).
+    ("Db", "exec"):
+        "exec: func(handle: u32, path: string, sql: string) -> result<_, io-error>",
+    ("Db", "query"):
+        "query: func(handle: u32, path: string, sql: string) -> result<string, io-error>",
+    ("Db", "restrict_to"):
+        "restrict-to: func(handle: u32, prefix: string) -> u32",
 
     # Proc: sandboxed subprocess execution (slice 15, 2026-05).
     # ``exec`` takes the command path + a JSON-encoded argv tail
@@ -179,11 +218,18 @@ _WIT_SIGNATURES: dict[tuple[str, str], str] = {
     # ABI shape needed. The host runs ``subprocess.run(argv,
     # capture_output=True, timeout=30, shell=False)``. Non-zero
     # exit, timeout, malformed argv JSON all surface as Err.
-    # ``restrict_to`` is a host no-op (the basename + suffix-
-    # boundary check is enforced inline at the guest via the
-    # ``$proc_allows`` runtime helper).
-    ("Proc", "exec"):        "exec: func(cmd: string, args-json: string) -> result<string, io-error>",
-    ("Proc", "restrict_to"): "restrict-to: func(prefix: string)",
+    #
+    # Slice 25.4 (2026-05-30): every Proc op takes ``handle: u32``
+    # as the FIRST param so the host looks up the receiver cap and
+    # enforces ``proc.allows(cmd)`` before spawning the subprocess.
+    # Closes the cross-function attenuation bug (audit slice 25 F1)
+    # for Proc. ``restrict-to`` returns a fresh ``u32`` handle bound
+    # to a narrower basename + suffix-boundary allow-list
+    # (intersection with the parent).
+    ("Proc", "exec"):
+        "exec: func(handle: u32, cmd: string, args-json: string) -> result<string, io-error>",
+    ("Proc", "restrict_to"):
+        "restrict-to: func(handle: u32, prefix: string) -> u32",
 
     # ``parse_json`` / ``to_json`` used to live here as a synthetic
     # ``Json`` capability so the Wasm import machinery had something
@@ -342,15 +388,27 @@ def collect_used_capabilities(module: Module) -> dict[str, set[str]]:
                     # already filters them; this mirrors that rule
                     # so WIT and core imports stay in lockstep.
                     #
-                    # Slice 25.2 / 25.3 exception (2026-05-30):
-                    # ``Fs.restrict_to`` / ``Net.restrict_to``
-                    # graduated to real host calls that take the
-                    # parent handle + the attenuation arg and
-                    # return a child handle, so they stay in the
-                    # WIT.
+                    # Slice 25.2 - 25.6 exception (2026-05-30):
+                    # ``Fs.restrict_to`` / ``Net.restrict_to`` /
+                    # ``Db.restrict_to`` / ``Proc.restrict_to`` /
+                    # ``Env.restrict_to_keys`` /
+                    # ``Clock.restrict_to_after`` graduated to real
+                    # host calls that take the parent handle + the
+                    # attenuation arg and return a child handle, so
+                    # they stay in the WIT.
                     if (
-                        cap in ("Fs", "Net")
+                        cap in ("Fs", "Net", "Db", "Proc")
                         and instr.method == "restrict_to"
+                    ):
+                        pass
+                    elif (
+                        cap == "Env"
+                        and instr.method == "restrict_to_keys"
+                    ):
+                        pass
+                    elif (
+                        cap == "Clock"
+                        and instr.method == "restrict_to_after"
                     ):
                         pass
                     elif instr.method in (

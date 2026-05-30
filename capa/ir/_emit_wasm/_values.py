@@ -234,14 +234,14 @@ class _ValueEmissionMixin:
         head = capa_ty.split("<", 1)[0]
         if head in _CAPA_TO_WASM:
             return _CAPA_TO_WASM[head]
-        # Slice 25.2 / 25.3 (2026-05-30): Fs and Net are un-erased
-        # as i32 handles into the host's per-instance cap table so
-        # a restricted cap survives crossing function boundaries
-        # (audit slice 25 F1; Net also closes F2 by routing through
-        # ``urlparse(url).hostname`` rather than ``$str_contains``).
-        # Db / Proc / Env / Clock / Random / Unsafe / Stdio stay
-        # erased pending their own rollout slice.
-        if head in ("Fs", "Net"):
+        # Slice 25.2 - 25.6 (2026-05-30): Fs, Net, Db, Proc, Env,
+        # Clock are un-erased as i32 handles into the host's per-
+        # instance cap table so a restricted cap survives crossing
+        # function boundaries (audit slice 25 F1; Net also closes F2
+        # by routing through ``urlparse(url).hostname`` rather than
+        # ``$str_contains``). Random / Unsafe / Stdio stay erased
+        # (no attenuation surface to wire).
+        if head in ("Fs", "Net", "Db", "Proc", "Env", "Clock"):
             return "i32"
         # ``()`` is Capa's empty-tuple / Unit alias from the type
         # printer; treat it the same as Unit (no Wasm result).

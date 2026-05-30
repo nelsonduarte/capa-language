@@ -1043,7 +1043,25 @@ Listed so the design space is explicit.
       single-cap programs that lack a name section fall back
       to Fs. 4 more Component Model tests parked behind the
       same slice-25.8 skip marker.
-    - 25.4 Db, 25.5 Proc, 25.6 Env, 25.7 Clock.
+    - **25.4-25.7 DONE** (Db, Proc, Env, Clock, batched
+      2026-05-30): four caps wired through the handle
+      table in one slice. Each follows the slice-25.2/25.3
+      template verbatim; scope held at ~600 LOC across
+      all four caps. Four new parity programs
+      (`db_/proc_/env_/clock_cross_function_attenuation.capa`),
+      one test method each, all deny on both backends.
+      `_wasm_host` bootstraps `_root_db` / `_root_proc` /
+      `_root_env` / `_root_clock` lazily; `run_main`'s
+      name-section routing dict extended to all six caps.
+      All inline-attenuation branches in
+      `_emit_one_attenuation` for the now-six-handled caps
+      sit dead-with-comment for slice-25.9 sweep. 6 more
+      Component Model tests parked behind the
+      `_SLICE_25_8_PENDING` marker. **F1 (slice-25 systemic
+      P0) is now closed on the core wasm backend for
+      every cap with attenuation surface; F2 closed by
+      side effect in 25.3.** Component Model is the last
+      gap; slice 25.8 unparks it.
     - 25.8 Component Model host parity (unparks the 7
       skipped tests + adds matching cross-function
       parity for every cap).

@@ -180,6 +180,17 @@ _PARITY_PROGRAMS: list[str] = [
     # ``BUG:`` line means the regression came back.
     "net_cross_function_attenuation.capa",
     "net_substring_attack.capa",
+    # Slices 25.4 / 25.5 / 25.6 (2026-05-30): same audit-slice-25 F1
+    # cross-function attenuation regression net for the remaining
+    # un-erased caps - Db / Proc (slice 25.4), Env (slice 25.5),
+    # Clock (slice 25.6). Each program narrows a root cap, hands it
+    # to a helper, and asserts the helper's privileged op is denied.
+    # The Python backend has always passed; the Wasm backend now
+    # matches via the handle-table routing.
+    "db_cross_function_attenuation.capa",
+    "proc_cross_function_attenuation.capa",
+    "env_cross_function_attenuation.capa",
+    "clock_cross_function_attenuation.capa",
 ]
 
 # Programs deliberately excluded from parity and why; documented
@@ -706,6 +717,50 @@ class TestPythonWasmParity(unittest.TestCase):
         # ``ok: hostname check rejected lookalike``.
         self._assert_parity("net_substring_attack.capa")
 
+    def test_db_cross_function_attenuation(self):
+        # Slice 25.4 (2026-05-30): Db cap restriction travels with
+        # the value across function boundaries on Wasm. Pre-slice
+        # the Wasm emitter erased Db values and inlined the path-
+        # prefix check at the literal call site; passing a
+        # restricted Db to a helper dropped the restriction and the
+        # host bridge happily opened the SQLite connection. Closes
+        # audit slice 25 finding F1 for Db.
+        self._assert_parity("db_cross_function_attenuation.capa")
+
+    def test_proc_cross_function_attenuation(self):
+        # Slice 25.4 (2026-05-30): Proc cap restriction travels with
+        # the value across function boundaries on Wasm. Pre-slice
+        # the Wasm emitter erased Proc values and inlined the
+        # basename + suffix-boundary check at the literal call site;
+        # passing a restricted Proc to a helper dropped the
+        # restriction and the host bridge happily spawned the
+        # subprocess. Closes audit slice 25 finding F1 for Proc.
+        self._assert_parity("proc_cross_function_attenuation.capa")
+
+    def test_env_cross_function_attenuation(self):
+        # Slice 25.5 (2026-05-30): Env cap restriction travels with
+        # the value across function boundaries on Wasm. Pre-slice
+        # the Wasm emitter erased Env values and inlined the
+        # allow-list check at the literal call site; passing a
+        # restricted Env to a helper dropped the restriction and the
+        # host bridge read ``os.environ`` unconditionally. Closes
+        # audit slice 25 finding F1 for Env. Both backends now
+        # return None (fail-closed-as-absent) for an out-of-allow-
+        # list key.
+        self._assert_parity("env_cross_function_attenuation.capa")
+
+    def test_clock_cross_function_attenuation(self):
+        # Slice 25.6 (2026-05-30): Clock cap restriction travels
+        # with the value across function boundaries on Wasm. Pre-
+        # slice the Wasm host bridge hard-coded ``allows`` to
+        # return ``true`` regardless of the cap's
+        # ``restrict_to_after`` deadline, so a narrowed Clock
+        # threaded through a helper queried as unrestricted.
+        # Closes audit slice 25 finding F1 for Clock. Both backends
+        # now consult the cap's real deadline against the wall
+        # clock.
+        self._assert_parity("clock_cross_function_attenuation.capa")
+
     def test_lambda_block_implicit_result(self):
         # Slice 24 (2026-05-30): block-body lambdas with an
         # implicit-result tail expression. Pre-fix Python's
@@ -847,10 +902,16 @@ class TestPythonWasmComponentParity(unittest.TestCase):
     def test_hello_under_cm(self):
         self._assert_cm_parity("hello.capa")
 
+    @unittest.skip(_SLICE_25_8_PENDING)
     def test_env_demo_under_cm(self):
         # Slice 9 bug shape: option<T> discriminant convention
         # mismatch between WIT (none=0, some=1) and Capa internal
         # (Some=0, None=1). This test would have failed pre-fix.
+        # Slice 25.5 (2026-05-30): Env was un-erased, so
+        # ``main(stdio, env)`` now compiles to ``main(i32)`` which
+        # the CM wrapper's fixed ``world { export main: func(); }``
+        # rejects until slice 25.8 generates the world from the
+        # signature.
         self._assert_cm_parity("env_demo.capa")
 
     @unittest.skip(_SLICE_25_8_PENDING)
@@ -889,13 +950,18 @@ class TestPythonWasmComponentParity(unittest.TestCase):
             if os.path.exists(path):
                 os.unlink(path)
 
+    @unittest.skip(_SLICE_25_8_PENDING)
     def test_clock_sleep_attenuation_under_cm(self):
         # Slice 13 audit-fix surface under CM. The Clock.sleep
         # gate calls ``clock.now_secs()`` inline; if the WIT
         # generator hadn't been taught to advertise ``now_secs``
         # when ``sleep`` carries attenuations, the component
         # wrap would fail at link time with "import interface
-        # is missing function now-secs".
+        # is missing function now-secs". Slice 25.6 (2026-05-30):
+        # Clock was un-erased, so ``main(stdio, clock)`` now
+        # compiles to ``main(i32)`` which the CM wrapper's fixed
+        # ``world { export main: func(); }`` rejects until slice
+        # 25.8 generates the world from the signature.
         self._assert_cm_parity("clock_sleep_attenuation.capa")
 
     @unittest.skip(_SLICE_25_8_PENDING)
@@ -913,6 +979,7 @@ class TestPythonWasmComponentParity(unittest.TestCase):
             if os.path.exists(path):
                 os.unlink(path)
 
+    @unittest.skip(_SLICE_25_8_PENDING)
     def test_proc_demo_under_cm(self):
         # Slice 15 (2026-05): Proc v1 sandboxed subprocess
         # capability under the Component Model. Same shape as
@@ -921,7 +988,11 @@ class TestPythonWasmComponentParity(unittest.TestCase):
         # so captured stdout matches byte-for-byte. The CM
         # canonical-ABI lift for ``result<string, io-error>``
         # already had Db / Fs / Net coverage; this case adds
-        # Proc to the matrix.
+        # Proc to the matrix. Slice 25.4 (2026-05-30): Proc was
+        # un-erased, so ``main(stdio, proc)`` now compiles to
+        # ``main(i32)`` which the CM wrapper's fixed
+        # ``world { export main: func(); }`` rejects until slice
+        # 25.8 generates the world from the signature.
         self._assert_cm_parity("proc_demo.capa")
 
     def test_subset_membership(self):

@@ -1,0 +1,27 @@
+// Slice 25.5 (2026-05-30): cross-function attenuation oracle for Env.
+//
+// The Python backend has always treated Env as a first-class value
+// whose restriction travels with the cap into every helper it is
+// passed to. The Wasm backend pre-slice-25.5 erased Env values at
+// the IR level and inlined the allow-list check at the literal
+// call site, so the moment a restricted Env crossed a function
+// boundary the receiving function saw an unrestricted cap and the
+// host bridge read ``os.environ`` unconditionally (audit slice 25
+// finding F1).
+//
+// This program reproduces the bug. ``main`` narrows the root Env
+// to ``NEVER_SET_KEY_12345`` (the only allowed key) and hands the
+// narrowed cap to ``helper``; the helper attempts to read ``PATH``,
+// which is not on the allow-list. Both backends must return ``None``
+// (Env's fail-closed-as-absent convention hides the existence of
+// out-of-allow-list keys) - if Wasm prints "BUG: helper read PATH"
+// the cross-function attenuation regression has come back.
+
+fun helper(env: Env, stdio: Stdio)
+    match env.get("PATH")
+        Some(_) -> stdio.println("BUG: helper read PATH")
+        None -> stdio.println("ok: helper env.get denied")
+
+fun main(stdio: Stdio, env: Env)
+    let narrow = env.restrict_to_keys(["NEVER_SET_KEY_12345"])
+    helper(narrow, stdio)

@@ -1,0 +1,31 @@
+// Slice 25.4 (2026-05-30): cross-function attenuation oracle for Db.
+//
+// The Python backend has always treated Db as a first-class value
+// whose restriction travels with the cap into every helper it is
+// passed to. The Wasm backend pre-slice-25.4 erased Db values at
+// the IR level and inlined ``restrict_to`` checks at the literal
+// call site, so the moment a restricted Db crossed a function
+// boundary the receiving function saw an unrestricted cap and the
+// host bridge executed the syscall unconditionally (audit slice 25
+// finding F1, same shape as the Fs / Net bugs fixed in slices
+// 25.2 / 25.3).
+//
+// This program reproduces the bug. ``main`` narrows the root Db to
+// ``/tmp/audit_narrow`` and hands the narrowed cap to ``helper``;
+// the helper attempts to exec against a different sqlite file
+// outside the narrow prefix. Both backends must DENY the helper's
+// exec - if Wasm prints the "BUG" line, the cross-function
+// attenuation regression has come back.
+//
+// No fixture required: the deny check fires before the SQLite
+// connection is opened, so the program prints exactly one line
+// regardless of on-disk state.
+
+fun helper(db: Db, stdio: Stdio)
+    match db.exec("/tmp/other_audit.sqlite", "CREATE TABLE x (a INT)")
+        Ok(_) -> stdio.println("BUG: helper exec outside narrow")
+        Err(_) -> stdio.println("ok: helper db.exec denied")
+
+fun main(stdio: Stdio, db: Db)
+    let narrow = db.restrict_to("/tmp/audit_narrow")
+    helper(narrow, stdio)

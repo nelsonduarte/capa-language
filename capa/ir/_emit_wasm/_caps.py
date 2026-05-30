@@ -265,6 +265,10 @@ class _CapDispatchMixin:
             # rebuilds a Capa Option<String> (16-byte record:
             # tag@0, packed (ptr|len<<32) i64 payload@8).
             return (["i32", "i32", "i32"], "")
+        if "func(handle: u32, name: string) -> option<string>" in wit:
+            # Slice 25.5 (2026-05-30): Env.get with handle. handle +
+            # (ptr, len) + ret_area = 4 i32s.
+            return (["i32", "i32", "i32", "i32"], "")
         if ("func(handle: u32, path: string) -> result<string, io-error>" in wit
                 or "func(handle: u32, url: string) -> result<string, io-error>" in wit):
             # Slice 25.2 (Fs.read) / 25.3 (Net.get): cap handle (i32)
@@ -291,32 +295,32 @@ class _CapDispatchMixin:
             # Fs.read's Err branch; Ok carries unit (no flat
             # fields).
             return (["i32", "i32", "i32", "i32", "i32"], "")
+        if ("func(handle: u32, path: string, sql: string) -> result<_, io-error>" in wit):
+            # Slice 25.4 (2026-05-30): Db.exec - handle + path + sql
+            # + ret_area = 6 i32s. Result<Unit, IoError> return.
+            return (["i32", "i32", "i32", "i32", "i32", "i32"], "")
+        if ("func(handle: u32, path: string, sql: string) -> result<string, io-error>" in wit):
+            # Slice 25.4 (2026-05-30): Db.query - handle + path + sql
+            # + ret_area = 6 i32s. Result<String, IoError> return.
+            return (["i32", "i32", "i32", "i32", "i32", "i32"], "")
+        if ("func(handle: u32, cmd: string, args-json: string) -> result<string, io-error>" in wit):
+            # Slice 25.4 (2026-05-30): Proc.exec - handle + cmd +
+            # args_json + ret_area = 6 i32s.
+            return (["i32", "i32", "i32", "i32", "i32", "i32"], "")
         if "func(path: string, sql: string) -> result<_, io-error>" in wit:
-            # Db.exec: same two-string-arg shape as Fs.write with a
-            # Result<Unit, IoError> return. Separate pattern entry
-            # because the WIT arg names are (path, sql) rather than
-            # (path, content); the wire signature is identical.
+            # Db.exec (pre-slice-25.4 erased shape, kept for
+            # backwards lookup tolerance): two-string-arg result-Unit.
             return (["i32", "i32", "i32", "i32", "i32"], "")
         if "func(url: string, body: string) -> result<string, io-error>" in wit:
-            # Net.post: url (ptr, len) + body (ptr, len) + 20-byte
-            # ret area for Result<String, IoError>. Same Ok arm
-            # shape as Net.get (ptr, len for the response body)
-            # plus the Err io-error 4-i32 fallback. The host's
-            # write into the ret area is independent of the body
-            # arg (which is read once and consumed by urlopen).
+            # Net.post (pre-slice-25.3 erased shape): two-string-arg
+            # result-String. Slice 25.3 promoted this to the handle-
+            # bearing pattern above.
             return (["i32", "i32", "i32", "i32", "i32"], "")
         if "func(path: string, sql: string) -> result<string, io-error>" in wit:
-            # Db.query: same shape as Net.post but the WIT arg
-            # names are (path, sql) so the pattern match needs
-            # its own entry. Returns the rows as a JSON-encoded
-            # string in the Ok arm.
+            # Db.query (pre-slice-25.4 erased shape).
             return (["i32", "i32", "i32", "i32", "i32"], "")
         if "func(cmd: string, args-json: string) -> result<string, io-error>" in wit:
-            # Proc.exec: same two-String-arg shape as Db.query /
-            # Net.post. The WIT arg names are (cmd, args-json)
-            # (kebab-case per WIT identifier rules) so the
-            # pattern match needs its own entry; the wire
-            # signature is identical.
+            # Proc.exec (pre-slice-25.4 erased shape).
             return (["i32", "i32", "i32", "i32", "i32"], "")
         if "func(handle: u32, path: string) -> result<_, io-error>" in wit:
             # Slice 25.2: Fs.mkdir - handle + (ptr, len) + ret_area.
@@ -348,53 +352,83 @@ class _CapDispatchMixin:
             # i32 on the Wasm side). Direct return, no canonical-
             # ABI indirect dance.
             return (["i32", "i32"], "i32")
+        if "func(handle: u32) -> f64" in wit:
+            # Slice 25.6 (2026-05-30): Clock.now_secs /
+            # Clock.now_monotonic - handle (i32) -> f64. The host
+            # looks up the receiver Clock to keep the wire shape
+            # uniform with the other privileged ops; the now_*
+            # family is itself a pure query, so the cap's
+            # restrict_to_after deadline doesn't gate them
+            # (matches the Python runtime).
+            return (["i32"], "f64")
+        if "func(handle: u32) -> bool" in wit:
+            # Slice 25.6 (2026-05-30): Clock.allows - handle (i32)
+            # -> i32 (Bool). The host looks up the receiver Clock
+            # and consults its ``allows()`` (which checks
+            # ``time.time() >= self._not_before``); pre-slice the
+            # host hard-coded ``return 1`` regardless of attenuation
+            # so a deny on a narrowed Clock crossing a function
+            # boundary was lost.
+            return (["i32"], "i32")
         if "func() -> bool" in wit:
-            # Clock.allows: no-arg query returning a bool. Wasm
-            # caps carry no runtime ``not_before`` state so the
-            # host always returns 1 (mirrors the unrestricted
-            # Python case); static attenuation discipline still
-            # applies at the analyzer level.
+            # Clock.allows (pre-slice-25.6 erased shape, kept for
+            # backwards lookup tolerance).
             return ([], "i32")
+        if "func(handle: u32, secs: f64)" in wit and "->" not in wit:
+            # Slice 25.6 (2026-05-30): Clock.sleep with handle +
+            # f64 arg, no return. Host looks up the cap and
+            # enforces ``clock.allows()`` before calling
+            # ``time.sleep``; on a denied cap the call is a silent
+            # no-op (matches Python).
+            return (["i32", "f64"], "")
         if "func(secs: f64)" in wit and "->" not in wit:
-            # Clock.sleep: one f64 arg, no return. Host calls
-            # ``time.sleep``; on a denied-by-source Clock the
-            # call is a silent no-op (matches Python).
+            # Clock.sleep (pre-slice-25.6 erased shape).
             return (["f64"], "")
+        if "func(handle: u32) -> list<string>" in wit:
+            # Slice 25.5 (2026-05-30): Env.args - handle (i32) +
+            # ret_area (i32). Canonical ABI: ``list<string>`` lowers
+            # to (data_ptr, len) which the host writes into the
+            # caller-allocated ret area.
+            return (["i32", "i32"], "")
         if "func() -> list<string>" in wit:
-            # Canonical ABI: ``list<string>`` lowers to two flat i32
-            # values (data_ptr, len). Two flats exceeds the default
-            # ``MAX_FLAT_RESULTS = 1``, so the lowering is indirect:
-            # the caller passes a return-area pointer; the callee
-            # writes (data_ptr, len) into it. The IR call-site
-            # materialises a Capa List<String> header (16 bytes)
-            # from the flat fields after the call.
+            # Env.args (pre-slice-25.5 erased shape, kept for
+            # backwards lookup tolerance).
             return (["i32"], "")
         if ("func(handle: u32, prefix: string) -> u32" in wit
                 or "func(handle: u32, host: string) -> u32" in wit):
-            # Slice 25.2 (Fs.restrict_to) / 25.3 (Net.restrict_to):
-            # takes the parent handle + the attenuation arg and
-            # returns a fresh child handle bound to a narrower
-            # restriction. The guest threads the new handle as the
-            # receiver of subsequent privileged calls in this branch
-            # of the program; passing the cap across a function
-            # boundary preserves the restriction (audit slice 25 F1).
+            # Slices 25.2 / 25.3 / 25.4:
+            # Fs.restrict_to / Net.restrict_to / Db.restrict_to /
+            # Proc.restrict_to all take the parent handle + the
+            # string attenuation arg and return a fresh child
+            # handle bound to a narrower restriction. The guest
+            # threads the new handle as the receiver of subsequent
+            # privileged calls in this branch of the program;
+            # passing the cap across a function boundary preserves
+            # the restriction (audit slice 25 F1).
+            return (["i32", "i32", "i32"], "i32")
+        if "func(handle: u32, t: f64) -> u32" in wit:
+            # Slice 25.6 (2026-05-30): Clock.restrict_to_after -
+            # parent handle (i32) + f64 deadline -> new handle
+            # (i32). The host max-merges the new threshold against
+            # the parent's deadline (intersection semantics, never
+            # widens).
+            return (["i32", "f64"], "i32")
+        if "func(handle: u32, keys: list<string>) -> u32" in wit:
+            # Slice 25.5 (2026-05-30): Env.restrict_to_keys -
+            # parent handle + list<string> header (data_ptr, len)
+            # -> new handle. The host reads the list out of linear
+            # memory, intersects with the parent's allow-list, and
+            # returns the child handle.
             return (["i32", "i32", "i32"], "i32")
         if (("func(prefix: string)" in wit
                 or "func(host: string)" in wit)
                 and "->" not in wit):
-            # Db.restrict_to / Proc.restrict_to: a string-arg,
-            # no-result no-op at the Wasm level. The capability
-            # discipline is enforced by the analyzer; at runtime
-            # the import is shared. Fs.restrict_to (slice 25.2)
-            # and Net.restrict_to (slice 25.3) graduated to the
-            # handle-returning shape above.
+            # Pre-slice-25.4 erased shapes for Db / Proc
+            # restrict_to; kept for backwards lookup tolerance.
             return (["i32", "i32"], "")
         if "func(keys: list<string>)" in wit and "->" not in wit:
-            # Env.restrict_to_keys: list<string> arg (ptr, len), no
-            # result. Mirrors Fs.restrict_to as a host-side no-op;
-            # the audit C2 inline check on Env.get is what enforces
-            # the discipline. Two i32s for the list header (data
-            # ptr, length).
+            # Pre-slice-25.5 erased shape for Env.restrict_to_keys;
+            # kept for backwards lookup tolerance.
             return (["i32", "i32"], "")
         if "func(s: string) -> result<u32, string>" in wit:
             # Json.parse, canonical ABI: string arg (ptr, len) +
@@ -416,37 +450,58 @@ class _CapDispatchMixin:
     def _emit_cap_method_call(self, instr: MethodCall) -> None:
         cap = instr.cap_used
         method = instr.method
-        # Slice 25.2 / 25.3 (2026-05-30): Fs.restrict_to /
-        # Net.restrict_to are no longer no-ops at the Wasm level.
-        # They cross the host bridge with the receiver's handle +
-        # the attenuation arg and return a fresh i32 handle bound to
-        # a narrower restriction. The dst local holds the new handle
-        # and is threaded as the receiver of downstream privileged
-        # calls (including across function boundaries - this is what
-        # closes audit slice 25 F1).
+        # Slices 25.2 - 25.6 (2026-05-30): the attenuator methods
+        # on Fs / Net / Db / Proc / Env / Clock are no longer no-ops
+        # at the Wasm level. They cross the host bridge with the
+        # receiver's handle + the attenuation arg(s) and return a
+        # fresh i32 handle bound to a narrower restriction. The dst
+        # local holds the new handle and is threaded as the receiver
+        # of downstream privileged calls (including across function
+        # boundaries - this is what closes audit slice 25 F1).
         if cap == "Fs" and method == "restrict_to":
             self._emit_fs_restrict_to(instr)
             return
         if cap == "Net" and method == "restrict_to":
             self._emit_net_restrict_to(instr)
             return
-        # Attenuator methods (``restrict_to`` / ``restrict_to_keys``
-        # / ``restrict_to_after``) are no-ops at the Wasm level for
-        # the remaining built-in caps: their values carry no runtime
-        # representation, so the inline emit-time check (audit C2)
-        # at the privileged op is what enforces discipline.
+        if cap == "Db" and method == "restrict_to":
+            self._emit_handle_restrict_to_string(instr, "Db")
+            return
+        if cap == "Proc" and method == "restrict_to":
+            self._emit_handle_restrict_to_string(instr, "Proc")
+            return
+        if cap == "Env" and method == "restrict_to_keys":
+            self._emit_env_restrict_to_keys(instr)
+            return
+        if cap == "Clock" and method == "restrict_to_after":
+            self._emit_clock_restrict_to_after(instr)
+            return
+        # Attenuator methods on Random / Stdio / Unsafe (the still-
+        # erased caps) are no-ops at the Wasm level: their values
+        # carry no runtime representation. Random has no
+        # restrict_to, but a safety net here keeps the dispatcher
+        # tolerant of analyzer additions.
         if method in ("restrict_to", "restrict_to_keys",
                       "restrict_to_after"):
             return
-        # ``allows`` on Fs / Env is inlined at emit time (D4 Option B).
-        # For a literal-string argument we collapse the attenuation
-        # chain to a static i32 result; for a non-literal argument
-        # we raise WasmEmissionError so the user moves to the
-        # Python backend or to a literal call. ``Clock.allows`` has
-        # no string arg and depends on the live wall clock, so it
-        # stays on the host bridge path.
+        # ``allows`` on Fs / Env / Db / Proc is inlined at emit time
+        # (D4 Option B). For a literal-string argument we collapse the
+        # attenuation chain to a static i32 result; for a non-literal
+        # argument we emit a runtime check that walks the attenuation
+        # chain. ``Clock.allows`` is special-cased (slice 25.6 routes
+        # it through a host call that consults the handle's
+        # ``not_before`` deadline against the live wall clock) - see
+        # the cap == "Clock" + method == "allows" branch below.
         if method == "allows" and cap in ("Fs", "Env", "Db", "Proc"):
             self._emit_atten_allows(instr, cap)
+            return
+        # Slice 25.6 (2026-05-30): Clock.allows now takes a handle
+        # the host looks up to consult the cap's real not-before
+        # deadline. Pre-slice the host hard-coded ``return 1``
+        # regardless of attenuation (the inline check fired only
+        # on the privileged ops, never on allows itself).
+        if cap == "Clock" and method == "allows":
+            self._emit_clock_allows_with_handle(instr)
             return
         # Random method calls route to the guest-side SplitMix64
         # helpers in ``_random.py``. The single host crossing
@@ -487,6 +542,28 @@ class _CapDispatchMixin:
             return
         if cap == "Net" and indirect is not None:
             self._emit_net_method_with_handle(instr, method, indirect)
+            return
+        # Slices 25.4 / 25.5 (2026-05-30): Db / Proc / Env
+        # indirect-return privileged ops go through the handle-
+        # passing helper. The host bridge looks up the receiver cap
+        # from the table and enforces ``cap.allows(arg)`` before
+        # the syscall, closing audit slice 25 F1 for these caps.
+        # The old inline attenuation-check machinery in
+        # ``_emit_one_attenuation`` is now dead code for these caps
+        # and is kept (commented) for the slice-25.9 cleanup.
+        if cap in ("Db", "Proc", "Env") and indirect is not None:
+            self._emit_indirect_with_cap_handle(instr, cap, method, indirect)
+            return
+        # Slice 25.6 (2026-05-30): Clock primitive-return ops
+        # (now_secs, now_monotonic, sleep) take ``handle`` as the
+        # first arg now too. ``allows`` is handled above. The
+        # inline ``Clock.sleep`` attenuation gate is now redundant
+        # (the host enforces via the handle's ``allows()``); kept
+        # commented for slice-25.9 cleanup.
+        if cap == "Clock" and method in (
+            "now_secs", "now_monotonic", "sleep",
+        ):
+            self._emit_clock_primitive_with_handle(instr, method)
             return
         # Capability attenuation enforcement (audit C2, 2026-05-25):
         # when the lowerer has tagged this MethodCall with an
@@ -699,6 +776,144 @@ class _CapDispatchMixin:
         self._write("local.tee $_ret_area")
         self._write(f"call $Net_{method}")
         self._emit_cap_indirect_materialise(ret_kind, instr.dst)
+
+    # ---- slices 25.4 / 25.5 / 25.6 Db / Proc / Env / Clock helpers ----
+
+    def _push_cap_handle(self, recv, cap: str) -> None:
+        """Push the receiver capability's i32 handle. Mirrors
+        ``_push_fs_handle`` / ``_push_net_handle``; receiver Value
+        must be a local or param of type ``cap`` (analyzer-enforced)
+        and may live in a captured environment when emitted inside
+        a lifted lambda body (``_push_value`` handles the env-aware
+        load path)."""
+        if recv.kind not in ("local", "param"):
+            raise WasmEmissionError(
+                f"{cap} method receiver must be a local or param "
+                f"(handle-passing), got {recv.kind!r}"
+            )
+        self._push_value(recv)
+
+    def _emit_handle_restrict_to_string(
+        self, instr: MethodCall, cap: str,
+    ) -> None:
+        """Emit ``new = cap.restrict_to(arg)`` for caps whose
+        attenuation arg is a single String (Db, Proc). Pushes
+        receiver handle + arg (ptr, len), calls the host import,
+        and binds the i32 result handle to ``instr.dst`` (declared
+        i32 by the locals walker now that the cap is un-erased)."""
+        if len(instr.args) != 1:
+            raise WasmEmissionError(
+                f"{cap}.restrict_to expected 1 arg, got "
+                f"{len(instr.args)}"
+            )
+        self._push_cap_handle(instr.receiver, cap)
+        self._push_string_arg(instr.args[0])
+        self._write(f"call ${cap}_restrict_to")
+        if instr.dst is not None:
+            self._write(f"local.set ${instr.dst}")
+
+    def _emit_env_restrict_to_keys(self, instr: MethodCall) -> None:
+        """Emit ``new = env.restrict_to_keys(keys)``. Pushes
+        receiver handle + the list<string> as (data_ptr, len),
+        calls the host import, and binds the i32 result handle.
+        The keys argument is a Capa List<String>; on the Wasm side
+        a List<String> is a 16-byte header (len@0, cap@4,
+        data_ptr@8, pad@12) with the data array storing 8-byte
+        packed (str_ptr, str_len) pairs - same layout the host
+        uses for ``env.args``'s output. We push the data_ptr and
+        len directly so the host can walk N=len items out of the
+        packed buffer."""
+        if len(instr.args) != 1:
+            raise WasmEmissionError(
+                f"Env.restrict_to_keys expected 1 list arg, got "
+                f"{len(instr.args)}"
+            )
+        # Receiver handle first.
+        self._push_cap_handle(instr.receiver, "Env")
+        # The list arg is an i32 pointer to the List<String> header;
+        # push (data_ptr, len) as the host expects.
+        arg = instr.args[0]
+        self._push_value(arg)
+        # Stash header pointer so we can load two fields.
+        self._write("local.tee $_alloc_tmp")
+        # data_ptr at offset 8
+        self._write("i32.load offset=8")
+        # Re-push header to load len.
+        self._write("local.get $_alloc_tmp")
+        # len at offset 0
+        self._write("i32.load offset=0")
+        self._write("call $Env_restrict_to_keys")
+        if instr.dst is not None:
+            self._write(f"local.set ${instr.dst}")
+
+    def _emit_clock_restrict_to_after(self, instr: MethodCall) -> None:
+        """Emit ``new = clock.restrict_to_after(t)``. Pushes
+        receiver handle (i32) + threshold (f64), calls the host
+        import, binds the i32 result handle. The host max-merges
+        the new threshold against the parent's deadline
+        (intersection semantics, never widens)."""
+        if len(instr.args) != 1:
+            raise WasmEmissionError(
+                f"Clock.restrict_to_after expected 1 arg, got "
+                f"{len(instr.args)}"
+            )
+        self._push_cap_handle(instr.receiver, "Clock")
+        self._push_value(instr.args[0])
+        self._write("call $Clock_restrict_to_after")
+        if instr.dst is not None:
+            self._write(f"local.set ${instr.dst}")
+
+    def _emit_indirect_with_cap_handle(
+        self, instr: MethodCall, cap: str, method: str,
+        indirect: tuple[int, str],
+    ) -> None:
+        """Emit a Db / Proc / Env privileged op (Db.exec /
+        Db.query / Proc.exec / Env.get / Env.args) with the
+        receiver handle as the FIRST host-call arg. The host
+        enforces ``cap.allows(...)`` via the table lookup before
+        the syscall, closing audit slice 25 F1 for these caps."""
+        ret_area_size, ret_kind = indirect
+        # Receiver handle first.
+        self._push_cap_handle(instr.receiver, cap)
+        # String args expanded the standard way; Env.args has no
+        # string args so the loop is a no-op for it.
+        for arg in instr.args:
+            self._push_string_arg(arg)
+        self._write(f"i32.const {ret_area_size}")
+        self._write("call $alloc")
+        self._write("local.tee $_ret_area")
+        self._write(f"call ${cap}_{method}")
+        self._emit_cap_indirect_materialise(ret_kind, instr.dst)
+
+    def _emit_clock_primitive_with_handle(
+        self, instr: MethodCall, method: str,
+    ) -> None:
+        """Emit a Clock primitive-return op (now_secs, now_monotonic,
+        sleep) with the receiver handle as the FIRST host-call arg.
+        Returns f64 for now_*; void for sleep."""
+        self._push_cap_handle(instr.receiver, "Clock")
+        for arg in instr.args:
+            self._push_value(arg)
+        self._write(f"call $Clock_{method}")
+        # now_secs / now_monotonic return f64 -> dst; sleep returns
+        # nothing.
+        if method in ("now_secs", "now_monotonic") and instr.dst is not None:
+            self._write(f"local.set ${instr.dst}")
+
+    def _emit_clock_allows_with_handle(self, instr: MethodCall) -> None:
+        """Emit ``clock.allows()`` with the receiver handle. The
+        host looks up the cap and consults its real not-before
+        deadline against the wall clock (slice 25.6); pre-slice
+        the host hard-coded ``return 1`` so a deny on a narrowed
+        Clock crossing a function boundary was lost."""
+        if instr.args:
+            raise WasmEmissionError(
+                f"Clock.allows takes no arg, got {len(instr.args)}"
+            )
+        self._push_cap_handle(instr.receiver, "Clock")
+        self._write("call $Clock_allows")
+        if instr.dst is not None:
+            self._write(f"local.set ${instr.dst}")
 
     def _push_string_arg(self, arg) -> None:
         """Push a string Value as (ptr, len). Replicates the inline
@@ -945,10 +1160,14 @@ class _CapDispatchMixin:
             self._write("local.set $_atten_ok")
             return
         if cap == "Db":
-            # Db attenuation mirrors Fs: ``restrict_to(prefix)``
-            # collapses to a path-prefix check on the path arg.
-            # Same machinery, same scratch locals
-            # (``$_atten_path_*``).
+            # Slice 25.4 (2026-05-30): obsolete after Db was routed
+            # through the host handle table. ``_emit_cap_method_call``
+            # now short-circuits Db.exec / Db.query to
+            # ``_emit_indirect_with_cap_handle`` before the
+            # attenuation-check path runs, so this branch is dead.
+            # Kept (rather than deleted) for the slice-25.9 cleanup
+            # that will sweep every cap's dead inline-attenuation
+            # branch together.
             if att_method != "restrict_to" or not args:
                 raise WasmEmissionError(
                     f"unsupported Db attenuation: {att_method!r} "
@@ -958,15 +1177,10 @@ class _CapDispatchMixin:
             self._emit_path_prefix_check(prefix)
             return
         if cap == "Proc":
-            # Proc attenuation is a basename + suffix-boundary
-            # check, not a path-prefix one. ``restrict_to("git")``
-            # admits ``git`` and ``git-lfs`` but rejects
-            # ``gitlab`` and ``/usr/bin/git`` is normalised to
-            # ``git`` before the compare. The ``$proc_allows``
-            # runtime helper does the walk at runtime so the
-            # check works for both literal and dynamic cmd args
-            # (it reads from ``$_atten_path_*`` like the other
-            # attenuation checks).
+            # Slice 25.4 (2026-05-30): obsolete after Proc was routed
+            # through the host handle table. Kept for slice-25.9
+            # cleanup. Original behaviour: basename + suffix-boundary
+            # check via the ``$proc_allows`` runtime helper.
             if att_method != "restrict_to" or not args:
                 raise WasmEmissionError(
                     f"unsupported Proc attenuation: {att_method!r} "
@@ -985,6 +1199,10 @@ class _CapDispatchMixin:
             self._write("local.set $_atten_ok")
             return
         if cap == "Env":
+            # Slice 25.5 (2026-05-30): obsolete after Env was routed
+            # through the host handle table. Kept for slice-25.9
+            # cleanup. Original behaviour: walk the literal key list
+            # and OR-equality the requested name against each key.
             if att_method != "restrict_to_keys":
                 raise WasmEmissionError(
                     f"unsupported Env attenuation: {att_method!r}"

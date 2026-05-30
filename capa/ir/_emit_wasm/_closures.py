@@ -119,12 +119,17 @@ class _ClosureEmissionMixin:
                 # an error -- this discovery pass only handles
                 # actual function references.
                 return
-            # Slice 25.2 / 25.3 (2026-05-30): Fs / Net are un-erased
-            # and count toward the closure signature; other caps
-            # stay erased.
+            # Slices 25.2 - 25.6 (2026-05-30): Fs / Net / Db / Proc
+            # / Env / Clock are un-erased and count toward the
+            # closure signature; other caps stay erased.
             arg_capa_tys = [
                 p.ty for p in target.params
-                if (p.ty not in BUILTIN_CAPS or p.ty in ("Fs", "Net"))
+                if (
+                    p.ty not in BUILTIN_CAPS
+                    or p.ty in (
+                        "Fs", "Net", "Db", "Proc", "Env", "Clock",
+                    )
+                )
             ]
             ret_capa_ty = target.return_type or "Unit"
             try:
@@ -239,10 +244,13 @@ class _ClosureEmissionMixin:
                 # check rejects it earlier), so this never fires
                 # in well-typed code. Keeps the loop simple.
                 #
-                # Slice 25.2 / 25.3: Fs / Net are un-erased - the
-                # closure ABI must thread their i32 handles the
-                # same way it threads any other scalar.
-                if p.ty in ("Fs", "Net"):
+                # Slices 25.2 - 25.6: Fs / Net / Db / Proc / Env /
+                # Clock are un-erased - the closure ABI must thread
+                # their i32 handles the same way it threads any
+                # other scalar.
+                if p.ty in (
+                    "Fs", "Net", "Db", "Proc", "Env", "Clock",
+                ):
                     param_clauses.append(f"(param ${p.name} i32)")
                 continue
             if p.ty == "String":
@@ -264,7 +272,9 @@ class _ClosureEmissionMixin:
         # is intentionally ignored: thunks have no captured state.
         for p in params:
             if p.ty in BUILTIN_CAPS:
-                if p.ty in ("Fs", "Net"):
+                if p.ty in (
+                    "Fs", "Net", "Db", "Proc", "Env", "Clock",
+                ):
                     self._write(f"local.get ${p.name}")
                 continue
             if p.ty == "String":
@@ -568,17 +578,22 @@ class _ClosureEmissionMixin:
             )
             if capa_ty in BUILTIN_CAPS:
                 # Capability captures are free at the Wasm level.
-                # Slice 25.2 / 25.3: except Fs / Net which are now
-                # i32 handles the lambda must close over so the
-                # restriction follows the cap into the closure body
-                # (otherwise the lambda would see whatever default
-                # the host bridge invented, defeating the cross-
-                # function soundness these slices deliver).
-                if capa_ty not in ("Fs", "Net"):
+                # Slices 25.2 - 25.6: except Fs / Net / Db / Proc /
+                # Env / Clock which are now i32 handles the lambda
+                # must close over so the restriction follows the cap
+                # into the closure body (otherwise the lambda would
+                # see whatever default the host bridge invented,
+                # defeating the cross-function soundness these
+                # slices deliver).
+                if capa_ty not in (
+                    "Fs", "Net", "Db", "Proc", "Env", "Clock",
+                ):
                     continue
             size = (
                 self._size_of(capa_ty)
-                if capa_ty not in ("Fs", "Net") else 4
+                if capa_ty not in (
+                    "Fs", "Net", "Db", "Proc", "Env", "Clock",
+                ) else 4
             )
             offset = _align_up(offset, size)
             env_layout[name] = (offset, capa_ty)
@@ -854,12 +869,14 @@ class _ClosureEmissionMixin:
         # Push env_ptr (first arg of the lifted lambda).
         self._push_value(Value(kind="local", name=instr.callee_name, ty=callee_ty))
         self._write("i32.wrap_i64")
-        # Push the user-level args. Slice 25.2 / 25.3: Fs / Net are
-        # un-erased and threaded as i32 handles; other built-in caps
-        # stay erased.
+        # Push the user-level args. Slices 25.2 - 25.6: Fs / Net /
+        # Db / Proc / Env / Clock are un-erased and threaded as i32
+        # handles; other built-in caps stay erased.
         for arg in instr.args:
             if arg.ty in BUILTIN_CAPS:
-                if arg.ty in ("Fs", "Net"):
+                if arg.ty in (
+                    "Fs", "Net", "Db", "Proc", "Env", "Clock",
+                ):
                     self._push_value(arg)
                 continue
             if arg.ty == "String":
@@ -876,7 +893,12 @@ class _ClosureEmissionMixin:
             dst_ty = self._dst_capa_ty(instr.dst)
             if (
                 dst_ty
-                and (dst_ty not in BUILTIN_CAPS or dst_ty in ("Fs", "Net"))
+                and (
+                    dst_ty not in BUILTIN_CAPS
+                    or dst_ty in (
+                        "Fs", "Net", "Db", "Proc", "Env", "Clock",
+                    )
+                )
                 and dst_ty not in ("Unit",)
             ):
                 if dst_ty == "String":

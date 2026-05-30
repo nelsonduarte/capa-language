@@ -33,10 +33,13 @@ class _InstrDispatchMixin:
             dst_ty = self._dst_capa_ty(instr.dst)
             if dst_ty in BUILTIN_CAPS:
                 # Capability locals are erased at the Wasm level,
-                # EXCEPT Fs (slice 25.2) / Net (slice 25.3) which
-                # carry i32 handles so a restricted cap survives
-                # crossing function boundaries.
-                if dst_ty in ("Fs", "Net"):
+                # EXCEPT Fs / Net / Db / Proc / Env / Clock
+                # (slices 25.2 - 25.6) which carry i32 handles so a
+                # restricted cap survives crossing function
+                # boundaries.
+                if dst_ty in (
+                    "Fs", "Net", "Db", "Proc", "Env", "Clock",
+                ):
                     self._push_value(instr.src)
                     self._write(f"local.set ${instr.dst}")
                 return
@@ -49,7 +52,9 @@ class _InstrDispatchMixin:
         if isinstance(instr, Reassign):
             dst_ty = self._dst_capa_ty(instr.dst)
             if dst_ty in BUILTIN_CAPS:
-                if dst_ty in ("Fs", "Net"):
+                if dst_ty in (
+                    "Fs", "Net", "Db", "Proc", "Env", "Clock",
+                ):
                     self._push_value(instr.src)
                     self._write(f"local.set ${instr.dst}")
                 return

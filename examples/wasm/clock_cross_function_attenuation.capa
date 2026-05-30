@@ -1,0 +1,30 @@
+// Slice 25.6 (2026-05-30): cross-function attenuation oracle for Clock.
+//
+// The Python backend has always treated Clock as a first-class
+// value whose ``restrict_to_after`` deadline travels with the cap
+// into every helper it is passed to. The Wasm backend pre-slice-
+// 25.6 erased Clock values at the IR level and hard-coded
+// ``allows`` to return ``true`` regardless of attenuation in the
+// host bridge, so the moment a restricted Clock crossed a function
+// boundary the receiving function saw an unrestricted cap (audit
+// slice 25 finding F1).
+//
+// This program reproduces the bug. ``main`` narrows the root Clock
+// to a deadline far in the future (year-3015) and hands the narrowed
+// cap to ``helper``; the helper queries ``allows()``. Both backends
+// must return ``false`` - if Wasm prints "BUG: allows returned true"
+// the cross-function attenuation regression has come back.
+//
+// Note: Clock's "main" privileged op is ``sleep`` (a silent no-op
+// on a denied cap), but ``allows`` is the surface that visibly
+// reveals the regression here without depending on timing.
+
+fun helper(clock: Clock, stdio: Stdio)
+    if clock.allows()
+        stdio.println("BUG: allows returned true")
+    else
+        stdio.println("ok: helper clock.allows denied")
+
+fun main(stdio: Stdio, clock: Clock)
+    let narrow = clock.restrict_to_after(33000000000.0)
+    helper(narrow, stdio)

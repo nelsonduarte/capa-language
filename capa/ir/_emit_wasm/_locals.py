@@ -595,11 +595,14 @@ class _LocalsCollectionMixin:
                     capa_ty = fn.locals.get(dst, "Int")
                     # Capability locals (``let other = stdio``)
                     # carry no Wasm value; skip declaration EXCEPT
-                    # for Fs (slice 25.2) / Net (slice 25.3) which
-                    # are i32 handles so a restricted cap survives
-                    # crossing function boundaries.
+                    # for Fs / Net / Db / Proc / Env / Clock
+                    # (slices 25.2 - 25.6) which are i32 handles
+                    # so a restricted cap survives crossing function
+                    # boundaries.
                     if capa_ty in BUILTIN_CAPS:
-                        if capa_ty in ("Fs", "Net"):
+                        if capa_ty in (
+                            "Fs", "Net", "Db", "Proc", "Env", "Clock",
+                        ):
                             out[dst] = "i32"
                         continue
                     # String locals expand to a (ptr, len) pair so
@@ -631,10 +634,12 @@ class _LocalsCollectionMixin:
             if name in param_names or name in out:
                 continue
             if capa_ty in BUILTIN_CAPS or capa_ty == "Unit":
-                # Slice 25.2 / 25.3 (2026-05-30): Fs / Net are
-                # un-erased; every other cap stays as a no-Wasm-
-                # value.
-                if capa_ty in ("Fs", "Net"):
+                # Slices 25.2 - 25.6 (2026-05-30): Fs / Net / Db /
+                # Proc / Env / Clock are un-erased; every other cap
+                # stays as a no-Wasm-value.
+                if capa_ty in (
+                    "Fs", "Net", "Db", "Proc", "Env", "Clock",
+                ):
                     out[name] = "i32"
                 continue
             if capa_ty == "String":

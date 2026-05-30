@@ -43,7 +43,7 @@ from typing import Optional
 
 import wasmtime
 
-from ._capabilities import Fs, Net, Stdio, _write_safe
+from ._capabilities import Clock, Db, Env, Fs, Net, Proc, Stdio, _write_safe
 from ._cap_handles import (
     CapHandleError,
     CapHandleTable,
@@ -71,26 +71,28 @@ class WasmHost:
         # Defaults to an empty list; callers (e.g. the CLI) pass the
         # real argv when they have it.
         self._args: list[str] = list(args) if args is not None else []
-        # Slice 25.2 / 25.3 (2026-05-30): per-instance capability
-        # handle table. Fs (slice 25.2) and Net (slice 25.3) have been
-        # migrated to handle-passing so a restricted cap crossing a
-        # function boundary keeps its restriction (the receiver's
-        # i32 handle is now part of the cap-method call signature,
-        # looked up by the host on every privileged op). The
-        # unrestricted root caps the host holds are allocated into
-        # this table by ``run_main`` once it has inspected ``main``'s
-        # signature; child handles come from
-        # ``capa:host/fs.restrict-to`` / ``capa:host/net.restrict-to``.
+        # Slices 25.2 - 25.6 (2026-05-30): per-instance capability
+        # handle table. Fs (25.2), Net (25.3), Db / Proc (25.4),
+        # Env (25.5), Clock (25.6) have been migrated to handle-
+        # passing so a restricted cap crossing a function boundary
+        # keeps its restriction (the receiver's i32 handle is now
+        # part of the cap-method call signature, looked up by the
+        # host on every privileged op). The unrestricted root caps
+        # the host holds are allocated into this table by ``run_main``
+        # once it has inspected ``main``'s signature; child handles
+        # come from ``capa:host/<cap>.restrict-{to|to-keys|to-after}``.
         self._cap_handles = CapHandleTable()
         # Root caps the host hands to programs that declare them on
         # main. Lazy-constructed in ``run_main`` so unit tests that
         # never invoke ``main`` don't get real cap instances
-        # attached. Db / Proc / Env / Clock / Random / Unsafe remain
-        # on the old erased path until their own rollout slices
-        # (25.4 - 25.7); Stdio stays erased indefinitely (no
-        # restriction state to thread).
+        # attached. Random / Unsafe stay erased indefinitely (no
+        # restriction state to thread); Stdio stays erased too.
         self._root_fs: Optional[Fs] = None
         self._root_net: Optional[Net] = None
+        self._root_db: Optional[Db] = None
+        self._root_proc: Optional[Proc] = None
+        self._root_env: Optional[Env] = None
+        self._root_clock: Optional[Clock] = None
         self._root_stdio: Optional[Stdio] = None
         self._register_stdio()
         self._register_clock()
@@ -253,38 +255,77 @@ class WasmHost:
 
     def _register_clock(self) -> None:
         """Register the ``capa:host/clock`` interface methods.
-        ``now_secs`` returns Unix epoch seconds as f64;
-        ``now_monotonic`` returns a monotonic time source's value
-        in seconds. Both signatures match the Capa runtime's
-        ``Clock`` class so the Wasm and Python paths produce
-        identical numbers."""
-        import time
-        ft_to_f64 = wasmtime.FuncType([], [wasmtime.ValType.f64()])
 
-        def now_secs():
+        Slice 25.6 (2026-05-30): every Clock op now takes ``handle:
+        u32`` as its first arg. The host looks up the receiver Clock
+        in ``self._cap_handles`` and consults its real
+        ``restrict_to_after`` deadline (``cap.allows()``) before any
+        action. Closes the cross-function attenuation bug (audit
+        slice 25 F1) for Clock: a Clock narrowed via
+        ``restrict_to_after(t)`` threaded through a helper function
+        on Wasm now keeps its deadline (pre-slice the host
+        hard-coded ``return 1`` for ``allows`` regardless of
+        attenuation, so a deny on a narrowed Clock crossing a
+        function boundary was lost).
+
+        ``now-secs(handle) -> f64`` / ``now-monotonic(handle) -> f64``:
+        the now_* family is a pure query in the Python runtime
+        (anyone with a wall clock can read it) so the host doesn't
+        gate them on ``allows()``; the handle threads for wire
+        uniformity. ``sleep(handle, secs)``: silent no-op on a
+        denied cap (matches Python). ``allows(handle) -> bool``:
+        queries the looked-up cap's ``allows()`` directly.
+        ``restrict-to-after(handle, t) -> u32``: returns a fresh
+        handle bound to the later of max(parent_threshold, t).
+        """
+        import time
+        ft_handle_to_f64 = wasmtime.FuncType(
+            [wasmtime.ValType.i32()], [wasmtime.ValType.f64()],
+        )
+
+        def _lookup_clock(handle):
+            """Resolve the receiver Clock cap; return None on a bad
+            handle (caller short-circuits to a sensible default
+            rather than crashing the host)."""
+            try:
+                return self._cap_handles.lookup(handle, Clock)
+            except CapHandleError:
+                return None
+
+        def now_secs(handle):
+            # The cap is looked up for wire uniformity (and so a
+            # bogus handle surfaces here rather than silently
+            # returning a real clock reading). The now_* ops are
+            # pure queries that ignore the cap's deadline.
+            _lookup_clock(handle)
             return time.time()
 
-        def now_monotonic():
+        def now_monotonic(handle):
+            _lookup_clock(handle)
             return time.monotonic()
 
         self.linker.define_func(
-            "capa:host/clock", "now-secs", ft_to_f64, now_secs,
+            "capa:host/clock", "now-secs", ft_handle_to_f64, now_secs,
         )
         self.linker.define_func(
-            "capa:host/clock", "now-monotonic", ft_to_f64, now_monotonic,
+            "capa:host/clock", "now-monotonic", ft_handle_to_f64,
+            now_monotonic,
         )
 
-        # Clock.sleep(secs: f64). The Python runtime treats a denied
-        # Clock as a silent no-op; this host bridge mirrors that by
-        # always calling ``time.sleep`` (the Wasm side carries no
-        # ``restrict_to_after`` state, just like Fs.restrict_to and
-        # Env.restrict_to_keys are no-ops at this layer). Static
-        # attenuation discipline still applies. Guard against
+        # Clock.sleep(handle, secs). Slice 25.6: the host enforces
+        # the receiver Clock's ``allows()`` before calling
+        # ``time.sleep``; on a denied cap the call is a silent
+        # no-op (matches the Python runtime). Guard against
         # negative durations (``time.sleep`` raises ValueError) so
         # the guest can't crash the host with a bad literal.
-        ft_sleep = wasmtime.FuncType([wasmtime.ValType.f64()], [])
+        ft_sleep = wasmtime.FuncType(
+            [wasmtime.ValType.i32(), wasmtime.ValType.f64()], [],
+        )
 
-        def clock_sleep(secs):
+        def clock_sleep(handle, secs):
+            clock = _lookup_clock(handle)
+            if clock is None or not clock.allows():
+                return
             if secs < 0:
                 return
             time.sleep(secs)
@@ -293,37 +334,71 @@ class WasmHost:
             "capa:host/clock", "sleep", ft_sleep, clock_sleep,
         )
 
-        # Clock.allows: queries the cap's ``restrict_to_after``
-        # threshold against the wall clock. Wasm caps carry no
-        # runtime state, so unrestricted is the only answer the
-        # host can give; mirrors the Python runtime's
-        # ``self._not_before is None or time.time() >= self._not_before``
-        # for the unrestricted case (returns true). Static
-        # attenuation chains that the analyzer can resolve are
-        # the responsibility of source-level discipline.
-        ft_allows = wasmtime.FuncType([], [wasmtime.ValType.i32()])
+        # Clock.allows(handle) -> bool. Slice 25.6: the host looks
+        # up the cap and consults its real not-before deadline
+        # against the wall clock. Pre-slice the host hard-coded
+        # ``return 1`` regardless of attenuation, so a deny on a
+        # narrowed Clock crossing a function boundary was lost
+        # (audit slice 25 F1 for Clock).
+        ft_allows = wasmtime.FuncType(
+            [wasmtime.ValType.i32()], [wasmtime.ValType.i32()],
+        )
 
-        def clock_allows():
-            return 1
+        def clock_allows(handle):
+            clock = _lookup_clock(handle)
+            if clock is None:
+                # Unknown handle: fail-closed (matches Fs / Net
+                # patterns where a bad handle never authorises a
+                # syscall).
+                return 0
+            return 1 if clock.allows() else 0
 
         self.linker.define_func(
             "capa:host/clock", "allows", ft_allows, clock_allows,
         )
 
+        # Clock.restrict_to_after(parent_handle, t) -> u32.
+        # Slice 25.6: looks up the parent handle, allocates a child
+        # Clock with the later (max-merged) deadline, returns the
+        # child's i32 handle.
+        ft_restrict_after = wasmtime.FuncType(
+            [wasmtime.ValType.i32(), wasmtime.ValType.f64()],
+            [wasmtime.ValType.i32()],
+        )
+
+        def clock_restrict_to_after(parent_handle, t):
+            try:
+                return self._cap_handles.restrict_clock_after(
+                    parent_handle, t,
+                )
+            except CapHandleError:
+                # Unknown parent handle = emitter bug; return 0
+                # (sentinel) so the next Clock op fails loudly.
+                return 0
+
+        self.linker.define_func(
+            "capa:host/clock", "restrict-to-after", ft_restrict_after,
+            clock_restrict_to_after,
+        )
+
     def _register_env(self) -> None:
         """Register the ``capa:host/env`` interface methods.
 
-        ``get(name: string) -> option<string>``: reads the named
-        env var from the host process. On miss, allocates an
-        Option with tag=None (1); on hit, allocates an Option
-        with tag=Some (0) and a packed (ptr, len) payload pointing
-        to a copy of the value's UTF-8 bytes in wasm memory.
+        Slice 25.5 (2026-05-30): every Env op now takes ``handle: u32``
+        as its first arg. The host looks up the receiver Env in
+        ``self._cap_handles`` and enforces ``env.allows(name)``
+        before reading ``os.environ``. Closes the cross-function
+        attenuation bug (audit slice 25 F1) for Env: a restricted
+        Env handed off to a helper function on Wasm previously lost
+        its allow-list because the emitter inlined the key check at
+        the literal call site only.
 
-        The host calls back into ``$alloc`` to materialise both
-        the Option container and the string buffer. That side-
-        channel keeps the WIT contract clean (``option<string>``)
-        and ties allocations to the module's bump heap so memory
-        stays linear and traceable.
+        ``get(handle, name) -> option<string>``: looks up the cap,
+        delegates to ``env.get(name)`` which already does
+        ``allows()`` + ``os.environ.get`` + ``Some/None_`` wrapping.
+        A denied key looks like an unset variable (returns None)
+        matching the Python runtime's fail-closed information-
+        hiding policy.
 
         **Trust boundary (audit M1, 2026-05).** This host bridge
         reads ``os.environ.get(name)`` without filtering: an
@@ -332,19 +407,22 @@ class WasmHost:
         ``AWS_*``, ``GITHUB_TOKEN``, ``PATH``). Capa's discipline is
         that the Env cap is itself the trust boundary; the
         attenuation system narrows it. Programs that statically call
-        ``env.restrict_to_keys([...])`` on a literal allow-list get
-        the restriction enforced inline by the emitter (audit C2);
-        unrestricted caps still see the full host environment. Hosts
-        wrapping a third-party ``.wasm`` blob should refuse to grant
-        an unrestricted Env cap unless they have audited the guest."""
+        ``env.restrict_to_keys([...])`` now have the restriction
+        enforced by the host (slice 25.5); unrestricted caps still
+        see the full host environment. Hosts wrapping a third-party
+        ``.wasm`` blob should refuse to grant an unrestricted Env
+        cap unless they have audited the guest."""
         import os
         # Canonical ABI lowering: ``option<string>`` returns through
         # a 12-byte caller-allocated area (tag i32 @ 0, ptr i32 @ 4,
         # len i32 @ 8). The host writes the flat fields; the IR
         # materialiser repackages them into a Capa Option<String>
         # heap record.
-        ft_string_to_unit_indirect = wasmtime.FuncType(
+        # Slice 25.5: handle + (name_ptr, name_len) + ret_area =
+        # 4 i32s.
+        ft_handle_string_indirect = wasmtime.FuncType(
             [
+                wasmtime.ValType.i32(),
                 wasmtime.ValType.i32(),
                 wasmtime.ValType.i32(),
                 wasmtime.ValType.i32(),
@@ -352,7 +430,16 @@ class WasmHost:
             [],
         )
 
-        def env_get(caller, name_ptr, name_len, ret_area):
+        def _lookup_env(handle):
+            """Resolve the receiver Env cap. Returns None on a bad
+            handle; callers short-circuit to a "no such key" None
+            value (matching the fail-closed convention)."""
+            try:
+                return self._cap_handles.lookup(handle, Env)
+            except CapHandleError:
+                return None
+
+        def env_get(caller, handle, name_ptr, name_len, ret_area):
             if self._memory is None or self._alloc_export is None:
                 raise RuntimeError(
                     "env.get called before instance memory + $alloc set"
@@ -370,7 +457,14 @@ class WasmHost:
             except UnicodeDecodeError:
                 value = None
             else:
-                value = os.environ.get(name)
+                # Slice 25.5: enforce via the looked-up Env cap.
+                # ``Env.get`` already does ``allows(name)`` +
+                # ``os.environ.get`` + ``Some/None_`` wrapping.
+                env = _lookup_env(handle)
+                if env is None or not env.allows(name):
+                    value = None
+                else:
+                    value = os.environ.get(name)
             # Tag convention: write the WIT-canonical discriminant
             # (none=0, some=1). The materialiser XOR-flips to Capa's
             # internal Option layout (Some=0, None=1) on read, so
@@ -411,29 +505,30 @@ class WasmHost:
             )
 
         self.linker.define_func(
-            "capa:host/env", "get", ft_string_to_unit_indirect,
+            "capa:host/env", "get", ft_handle_string_indirect,
             env_get, access_caller=True,
         )
 
-        # env.args() -> list<string>. Builds a List<String> in
+        # env.args(handle) -> list<string>. Slice 25.5: handle +
+        # ret_area (canonical-ABI indirect). Builds a List<String> in
         # linear memory: 16-byte header (len, cap, data_ptr, pad)
         # + N*8-byte data array of packed (ptr, len) i64s. The
-        # WasmHost stashes argv at construction time so the
-        # Canonical ABI: ``args`` returns ``list<string>`` indirectly
-        # via a caller-allocated return area. The host receives the
-        # return-area pointer as its single argument, writes
-        # ``(data_ptr, len)`` (two i32s) into the area, and returns
-        # nothing. The Capa-side caller then assembles the
-        # List<String> header (16 bytes) around the data buffer.
-        ft_indirect_to_unit = wasmtime.FuncType(
-            [wasmtime.ValType.i32()], [],
+        # WasmHost stashes argv at construction time. The handle
+        # is taken for wire uniformity; argv itself is not
+        # restriction-bearing (mirrors the Python ``Env.args``).
+        ft_handle_to_unit_indirect = wasmtime.FuncType(
+            [wasmtime.ValType.i32(), wasmtime.ValType.i32()], [],
         )
 
-        def env_args(caller, ret_area):
+        def env_args(caller, handle, ret_area):
             if self._memory is None or self._alloc_export is None:
                 raise RuntimeError(
                     "env.args called before memory + $alloc set"
                 )
+            # Look up the cap (for wire uniformity / loud failure on
+            # a bad handle); args themselves don't depend on the
+            # cap's allow-list.
+            _lookup_env(handle)
             n = len(self._args)
             # Allocate the data buffer (n * 8 bytes). Each slot
             # holds (str_ptr i32, str_len i32) which is the same
@@ -466,8 +561,56 @@ class WasmHost:
             )
 
         self.linker.define_func(
-            "capa:host/env", "args", ft_indirect_to_unit,
+            "capa:host/env", "args", ft_handle_to_unit_indirect,
             env_args, access_caller=True,
+        )
+
+        # env.restrict-to-keys(parent_handle, data_ptr, len) -> u32.
+        # Slice 25.5 (2026-05-30): walks the keys list out of linear
+        # memory and allocates a child Env with the narrowed allow-
+        # list (intersection with the parent). The data array
+        # stores N packed (str_ptr, str_len) i32 pairs - same
+        # layout the host produces for ``env.args``.
+        ft_restrict_keys = wasmtime.FuncType(
+            [
+                wasmtime.ValType.i32(),  # parent handle
+                wasmtime.ValType.i32(),  # data_ptr
+                wasmtime.ValType.i32(),  # len
+            ],
+            [wasmtime.ValType.i32()],
+        )
+
+        def env_restrict_to_keys(caller, parent_handle, data_ptr, n):
+            if self._memory is None:
+                raise RuntimeError(
+                    "env.restrict_to_keys called before memory was set"
+                )
+            keys: list[str] = []
+            for i in range(n):
+                slot = data_ptr + i * 8
+                k_ptr_b = bytes(self._memory.read(caller, slot, slot + 4))
+                k_len_b = bytes(self._memory.read(caller, slot + 4, slot + 8))
+                k_ptr = int.from_bytes(k_ptr_b, "little")
+                k_len = int.from_bytes(k_len_b, "little")
+                try:
+                    key = bytes(
+                        self._memory.read(caller, k_ptr, k_ptr + k_len)
+                    ).decode("utf-8")
+                except UnicodeDecodeError:
+                    # An invalid-UTF-8 key cannot match any real env
+                    # var; skip it rather than crashing the host.
+                    continue
+                keys.append(key)
+            try:
+                return self._cap_handles.restrict_env(parent_handle, keys)
+            except CapHandleError:
+                # Unknown parent handle = emitter bug; return 0 so
+                # the next Env op fails loudly.
+                return 0
+
+        self.linker.define_func(
+            "capa:host/env", "restrict-to-keys", ft_restrict_keys,
+            env_restrict_to_keys, access_caller=True,
         )
 
     def _register_fs(self) -> None:
@@ -1178,31 +1321,36 @@ class WasmHost:
     def _register_db(self) -> None:
         """Register the ``capa:host/db`` interface methods.
 
-        Slice 11 (2026-05): Db is a SQLite-backed capability. Both
-        ``exec`` and ``query`` take ``(path: string, sql: string)``
-        and return canonical-ABI ``result<...>`` shapes via a
-        20-byte caller-allocated return area:
+        Slice 11 (2026-05): Db is a SQLite-backed capability.
 
-        - ``exec`` returns ``result<_, io-error>`` (same Err arm
-          shape as Fs.write; Ok arm carries unit).
-        - ``query`` returns ``result<string, io-error>`` (same
-          Ok/Err arm shapes as Fs.read; the Ok string is a
-          JSON-encoded ``[[col1, col2, ...], ...]`` array of
-          arrays of stringified cell values).
+        Slice 25.4 (2026-05-30): every Db op now takes ``handle: u32``
+        as its first arg. The host looks up the receiver Db in
+        ``self._cap_handles`` and enforces ``db.allows(path)``
+        before opening the SQLite connection. Closes the cross-
+        function attenuation bug (audit slice 25 F1) for Db: a
+        restricted Db handed off to a helper function on Wasm
+        previously lost its prefix set because the emitter inlined
+        the path check at the literal call site only.
+
+        - ``exec(handle, path, sql)`` returns ``result<_, io-error>``
+          (same Err arm shape as Fs.write; Ok arm carries unit).
+        - ``query(handle, path, sql)`` returns
+          ``result<string, io-error>`` (same Ok/Err arm shapes as
+          Fs.read; the Ok string is a JSON-encoded
+          ``[[col1, col2, ...], ...]`` array of arrays of
+          stringified cell values).
+        - ``restrict-to(handle, prefix)`` returns a fresh ``u32``
+          handle bound to a narrower prefix set.
 
         The host opens a fresh ``sqlite3.connect`` per call; the
-        cap is stateless from the program's POV. Attenuation
-        (``Db.restrict_to(prefix)``) is inlined at the guest
-        side by the audit C2 ``$str_contains`` check around the
-        privileged op, so a denied path never reaches this
-        bridge. ``db.restrict-to`` is a host no-op like
-        ``fs.restrict-to``.
+        cap is stateless from the program's POV.
         """
         import json
         import sqlite3
 
-        ft_two_string_indirect = wasmtime.FuncType(
+        ft_handle_two_string_indirect = wasmtime.FuncType(
             [
+                wasmtime.ValType.i32(),  # handle (slice 25.4)
                 wasmtime.ValType.i32(),  # path_ptr
                 wasmtime.ValType.i32(),  # path_len
                 wasmtime.ValType.i32(),  # sql_ptr
@@ -1257,7 +1405,22 @@ class WasmHost:
                 caller, c_len.to_bytes(4, "little"), ret_area + 16,
             )
 
-        def db_exec(caller, path_ptr, path_len, sql_ptr, sql_len, ret_area):
+        def _lookup_db_or_err(caller, handle, ret_area):
+            """Resolve the receiver Db cap. On failure write an
+            Err(IoError) into ``ret_area`` and return None;
+            callers short-circuit and skip the syscall."""
+            try:
+                return self._cap_handles.lookup(handle, Db)
+            except CapHandleError as e:
+                _write_result_err_ioerror(
+                    caller, ret_area,
+                    "invalid Db capability handle", str(e),
+                )
+                return None
+
+        def db_exec(
+            caller, handle, path_ptr, path_len, sql_ptr, sql_len, ret_area,
+        ):
             if self._memory is None or self._alloc_export is None:
                 raise RuntimeError(
                     "db.exec called before memory + $alloc set"
@@ -1272,6 +1435,19 @@ class WasmHost:
             except UnicodeDecodeError as e:
                 _write_result_err_ioerror(
                     caller, ret_area, "invalid UTF-8", str(e),
+                )
+                return
+            # Slice 25.4: enforce the receiver cap's restriction via
+            # the looked-up Db's ``allows(path)``. Pre-slice the
+            # host trusted the emitter's inline check; cross-function
+            # attenuation broke as a result (audit slice 25 F1).
+            db = _lookup_db_or_err(caller, handle, ret_area)
+            if db is None:
+                return
+            if not db.allows(path):
+                _write_result_err_ioerror(
+                    caller, ret_area,
+                    f"Db capability does not permit exec: {path}",
                 )
                 return
             try:
@@ -1289,7 +1465,9 @@ class WasmHost:
                     caller, ret_area, "SQLite exec failed", str(e),
                 )
 
-        def db_query(caller, path_ptr, path_len, sql_ptr, sql_len, ret_area):
+        def db_query(
+            caller, handle, path_ptr, path_len, sql_ptr, sql_len, ret_area,
+        ):
             if self._memory is None or self._alloc_export is None:
                 raise RuntimeError(
                     "db.query called before memory + $alloc set"
@@ -1304,6 +1482,15 @@ class WasmHost:
             except UnicodeDecodeError as e:
                 _write_result_err_ioerror(
                     caller, ret_area, "invalid UTF-8", str(e),
+                )
+                return
+            db = _lookup_db_or_err(caller, handle, ret_area)
+            if db is None:
+                return
+            if not db.allows(path):
+                _write_result_err_ioerror(
+                    caller, ret_area,
+                    f"Db capability does not permit query: {path}",
                 )
                 return
             try:
@@ -1335,24 +1522,47 @@ class WasmHost:
                 )
 
         self.linker.define_func(
-            "capa:host/db", "exec", ft_two_string_indirect,
+            "capa:host/db", "exec", ft_handle_two_string_indirect,
             db_exec, access_caller=True,
         )
         self.linker.define_func(
-            "capa:host/db", "query", ft_two_string_indirect,
+            "capa:host/db", "query", ft_handle_two_string_indirect,
             db_query, access_caller=True,
         )
 
-        # db.restrict-to: host no-op like fs.restrict-to.
-        ft_string_to_unit = wasmtime.FuncType(
-            [wasmtime.ValType.i32(), wasmtime.ValType.i32()], [],
+        # db.restrict-to: slice 25.4 (2026-05-30). Looks up the parent
+        # handle, allocates a child Db with the narrowed prefix, and
+        # returns the child's i32 handle. Mirrors fs.restrict-to /
+        # net.restrict-to.
+        ft_restrict_to = wasmtime.FuncType(
+            [
+                wasmtime.ValType.i32(),  # parent handle
+                wasmtime.ValType.i32(),  # prefix_ptr
+                wasmtime.ValType.i32(),  # prefix_len
+            ],
+            [wasmtime.ValType.i32()],
         )
 
-        def db_restrict_to(caller, prefix_ptr, prefix_len):
-            return None
+        def db_restrict_to(caller, parent_handle, prefix_ptr, prefix_len):
+            if self._memory is None:
+                raise RuntimeError(
+                    "db.restrict_to called before memory was set"
+                )
+            try:
+                prefix = bytes(
+                    self._memory.read(
+                        caller, prefix_ptr, prefix_ptr + prefix_len,
+                    )
+                ).decode("utf-8")
+            except UnicodeDecodeError:
+                return 0
+            try:
+                return self._cap_handles.restrict_db(parent_handle, prefix)
+            except CapHandleError:
+                return 0
 
         self.linker.define_func(
-            "capa:host/db", "restrict-to", ft_string_to_unit,
+            "capa:host/db", "restrict-to", ft_restrict_to,
             db_restrict_to, access_caller=True,
         )
 
@@ -1374,17 +1584,23 @@ class WasmHost:
         UTF-8 with ``errors='replace'`` to match the rest of
         the host-bridge convention.
 
-        Attenuation (``Proc.restrict_to(prefix)``) is enforced
-        inline at the guest by the ``$proc_allows`` runtime
-        helper (basename + suffix-boundary check), so a denied
-        cmd never reaches this bridge. ``proc.restrict-to`` is
-        a host no-op like ``fs.restrict-to``.
+        Slice 25.4 (2026-05-30): every Proc op now takes ``handle:
+        u32`` as its first arg. The host looks up the receiver Proc
+        in ``self._cap_handles`` and enforces ``proc.allows(cmd)``
+        before spawning the subprocess. Closes the cross-function
+        attenuation bug (audit slice 25 F1) for Proc: a restricted
+        Proc handed off to a helper function on Wasm previously
+        lost its allow-list because the emitter inlined the
+        basename check at the literal call site only.
+        ``proc.restrict-to(handle, prefix)`` returns a fresh u32
+        handle bound to a narrower allow-list.
         """
         import json
         import subprocess
 
-        ft_two_string_indirect = wasmtime.FuncType(
+        ft_handle_two_string_indirect = wasmtime.FuncType(
             [
+                wasmtime.ValType.i32(),  # handle (slice 25.4)
                 wasmtime.ValType.i32(),  # cmd_ptr
                 wasmtime.ValType.i32(),  # cmd_len
                 wasmtime.ValType.i32(),  # args_ptr
@@ -1431,7 +1647,21 @@ class WasmHost:
                 caller, c_len.to_bytes(4, "little"), ret_area + 16,
             )
 
-        def proc_exec(caller, cmd_ptr, cmd_len, args_ptr, args_len, ret_area):
+        def _lookup_proc_or_err(caller, handle, ret_area):
+            """Resolve the receiver Proc cap. On failure write an
+            Err(IoError) into ``ret_area`` and return None."""
+            try:
+                return self._cap_handles.lookup(handle, Proc)
+            except CapHandleError as e:
+                _write_result_err_ioerror(
+                    caller, ret_area,
+                    "invalid Proc capability handle", str(e),
+                )
+                return None
+
+        def proc_exec(
+            caller, handle, cmd_ptr, cmd_len, args_ptr, args_len, ret_area,
+        ):
             if self._memory is None or self._alloc_export is None:
                 raise RuntimeError(
                     "proc.exec called before memory + $alloc set"
@@ -1446,6 +1676,17 @@ class WasmHost:
             except UnicodeDecodeError as e:
                 _write_result_err_ioerror(
                     caller, ret_area, "invalid UTF-8", str(e),
+                )
+                return
+            # Slice 25.4: enforce the receiver cap's restriction via
+            # ``Proc.allows(cmd)`` (basename + suffix-boundary).
+            proc = _lookup_proc_or_err(caller, handle, ret_area)
+            if proc is None:
+                return
+            if not proc.allows(cmd):
+                _write_result_err_ioerror(
+                    caller, ret_area,
+                    f"Proc capability does not permit exec: {cmd}",
                 )
                 return
             try:
@@ -1494,20 +1735,42 @@ class WasmHost:
             _write_result_ok_string(caller, ret_area, s_ptr, s_len)
 
         self.linker.define_func(
-            "capa:host/proc", "exec", ft_two_string_indirect,
+            "capa:host/proc", "exec", ft_handle_two_string_indirect,
             proc_exec, access_caller=True,
         )
 
-        # proc.restrict-to: host no-op like fs.restrict-to.
-        ft_string_to_unit = wasmtime.FuncType(
-            [wasmtime.ValType.i32(), wasmtime.ValType.i32()], [],
+        # proc.restrict-to: slice 25.4 (2026-05-30). Looks up the
+        # parent handle, allocates a child Proc with the narrower
+        # allow-list, returns the child's i32 handle.
+        ft_restrict_to = wasmtime.FuncType(
+            [
+                wasmtime.ValType.i32(),  # parent handle
+                wasmtime.ValType.i32(),  # prefix_ptr
+                wasmtime.ValType.i32(),  # prefix_len
+            ],
+            [wasmtime.ValType.i32()],
         )
 
-        def proc_restrict_to(caller, prefix_ptr, prefix_len):
-            return None
+        def proc_restrict_to(caller, parent_handle, prefix_ptr, prefix_len):
+            if self._memory is None:
+                raise RuntimeError(
+                    "proc.restrict_to called before memory was set"
+                )
+            try:
+                prefix = bytes(
+                    self._memory.read(
+                        caller, prefix_ptr, prefix_ptr + prefix_len,
+                    )
+                ).decode("utf-8")
+            except UnicodeDecodeError:
+                return 0
+            try:
+                return self._cap_handles.restrict_proc(parent_handle, prefix)
+            except CapHandleError:
+                return 0
 
         self.linker.define_func(
-            "capa:host/proc", "restrict-to", ft_string_to_unit,
+            "capa:host/proc", "restrict-to", ft_restrict_to,
             proc_restrict_to, access_caller=True,
         )
 
@@ -1785,22 +2048,24 @@ class WasmHost:
     def run_main(self, wasm_blob: bytes) -> None:
         """Instantiate and call the module's ``main`` export.
 
-        Pre-slice-25.2: ``fun main(stdio: Stdio)`` lowered to ``main()``
-        on Wasm (every cap param was erased). Slice 25.2 un-erased
-        ``Fs``; slice 25.3 un-erased ``Net``. Both lower to i32
-        handles the guest threads through every privileged op so a
-        restricted cap survives crossing function boundaries (audit
-        slice 25 F1). Db / Proc / Env / Clock / Random / Unsafe /
-        Stdio stay erased until their own rollout slices.
+        Pre-slice-25.2: ``fun main(stdio: Stdio)`` lowered to
+        ``main()`` on Wasm (every cap param was erased). Slices
+        25.2 - 25.6 un-erased Fs / Net / Db / Proc / Env / Clock;
+        all six lower to i32 handles the guest threads through
+        every privileged op so a restricted cap survives crossing
+        function boundaries (audit slice 25 F1). Random / Unsafe /
+        Stdio stay erased indefinitely (no attenuation surface to
+        thread).
 
-        ``main`` now takes one i32 arg per Fs / Net cap declared in
-        its source signature (in declaration order). To dispatch the
-        right root handle to each slot we recover main's parameter
-        names from the wasm ``name`` custom section the WAT compiler
-        preserves (params are declared as ``(param $fs i32)`` /
-        ``(param $net i32)`` so the name maps directly to the
-        cap-kind). Programs whose main takes no cap params (every
-        i32-free signature) follow the legacy no-handle path."""
+        ``main`` now takes one i32 arg per un-erased cap declared
+        in its source signature (in declaration order). To dispatch
+        the right root handle to each slot we recover main's
+        parameter names from the wasm ``name`` custom section the
+        WAT compiler preserves (params are declared as
+        ``(param $fs i32)`` / ``(param $net i32)`` / ... so the
+        name maps directly to the cap-kind). Programs whose main
+        takes no cap params (every i32-free signature) follow the
+        legacy no-handle path."""
         instance = self.instantiate(wasm_blob)
         main = instance.exports(self.store)["main"]
         # Discover how many i32 args main takes.
@@ -1817,24 +2082,41 @@ class WasmHost:
             self._root_fs = Fs()
         if self._root_net is None:
             self._root_net = Net()
+        if self._root_db is None:
+            self._root_db = Db()
+        if self._root_proc is None:
+            self._root_proc = Proc()
+        if self._root_env is None:
+            self._root_env = Env()
+        if self._root_clock is None:
+            self._root_clock = Clock()
         if self._root_stdio is None:
             self._root_stdio = Stdio()
         roots = bootstrap_root_handles(
             self._cap_handles,
             fs=self._root_fs,
             net=self._root_net,
+            db=self._root_db,
+            proc=self._root_proc,
+            env=self._root_env,
+            clock=self._root_clock,
             stdio=self._root_stdio,
         )
         # Walk main's parameter names so we can hand the right root
         # handle to each i32 slot. The name section preserves the
-        # source-level param identifiers (``$fs`` / ``$net``); we
-        # map by name to the matching root handle. Unknown names
-        # fall back to Fs (the legacy slice-25.2 behaviour) so an
-        # older blob without a name section still runs.
+        # source-level param identifiers (``$fs`` / ``$net`` / ``$db``
+        # / ``$proc`` / ``$env`` / ``$clock``); we map by name to the
+        # matching root handle. Unknown names fall back to Fs (the
+        # legacy slice-25.2 behaviour) so an older blob without a
+        # name section still runs.
         param_names = _read_main_param_names(wasm_blob, n_params)
         name_to_root: dict[str, int] = {
             "fs": roots.get("fs", 0),
             "net": roots.get("net", 0),
+            "db": roots.get("db", 0),
+            "proc": roots.get("proc", 0),
+            "env": roots.get("env", 0),
+            "clock": roots.get("clock", 0),
         }
         handle_args: list[int] = []
         for i in range(n_params):
