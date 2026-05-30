@@ -1,141 +1,145 @@
 # Camada de testes property-based / fuzz — âmbito
 
-> Estado: proposta de âmbito (2026-05-30, revista). Motivada pela
-> campanha de auditoria slices 16-26.
+> Estado: proposta de âmbito (2026-05-30, 3ª revisão após inspeção do
+> que já existe). Motivada pela campanha de auditoria slices 16-26.
 
-## Ponto de partida: o que JÁ existe
+## Realidade: a infraestrutura NÃO está em branco
 
-Correção a uma suposição inicial errada — a infraestrutura não está
-em branco. Já existem, com `hypothesis 6.152.7` (dependência presente):
+Duas revisões deste doc partiram de suposições erradas. A verdade,
+confirmada por inspeção do código:
 
-- **`tests/test_properties.py`** — `TestLexerProperties`,
-  `TestParserProperties`, `TestFormatterProperties`,
-  `TestAnalyzerProperties`, `TestRoundTripProperties`,
-  `TestPipelineProperties`.
-- **`tests/test_evaluation_fuzz.py`** — `TestProgramGenerator`,
-  `TestDifferentialFuzz`, `TestParserFuzz`, `TestManifestFuzz`,
-  `TestAttenuationFuzz`, `TestEndToEndFuzz`.
+**`tests/test_properties.py` (1126 linhas)** já contém:
+- Fuzz robustez front-end: `TestLexerProperties`, `TestParserProperties`,
+  `TestFormatterProperties`, `TestFormatterFixpoint` (idempotência +
+  convergência num passo).
+- Pipeline sintaxe-ciente: `TestSyntaxAwarePipeline` com gerador
+  `_program()` que emite programas plausíveis e afirma
+  lex+parse+analyze+transpile+`ast.parse` ponta-a-ponta.
+- **A invariante de soundness, nos dois backends**:
+  `TestRuntimeSubsetOfManifest` (Python) e
+  `TestWasmRuntimeSubsetOfManifest` (Wasm, via `_TracingWasmHost` que
+  regista cada operação de capability executada). Geradores
+  `_program_with_caps`, `_program_with_caps_advanced`,
+  `_program_with_caps_wasm`, `_program_with_caps_wasm_advanced`.
 
-Ou seja: já existe um gerador de programas, fuzz diferencial entre
-backends, fuzz do manifesto, e fuzz de atenuação — exatamente as
-*categorias* que deveriam ter apanhado os slices 18/21/23/25.
+**`evaluation/fuzz/`** — painel de ataques separado, 9 categorias
+(`cat_fs_traversal`, `cat_env_leak`, `cat_net_punch`,
+`cat_capability_aliasing`, `cat_capability_in_data`,
+`cat_llm_dispatch_escape`, etc.), cada uma gera ataques que
+`capa --check` deve rejeitar.
 
-## A pergunta certa
+`hypothesis 6.152.7` é dependência declarada (`pyproject.toml [test]`).
 
-**Se esta infraestrutura existe, porque é que a campanha encontrou ~21
-bugs — quatro deles a contradizer a afirmação principal?**
+## A pergunta afiada
 
-A resposta não é "falta a categoria de teste". É **profundidade**: o
-gerador existente não produz as *formas de programa* que dispararam os
-bugs. Os bugs da campanha viviam em formas específicas que o gerador
-provavelmente não emite:
+**Se a invariante de soundness já é testada nos dois backends com runtime
+instrumentado, porque é que o slice 25 (atenuação entre funções)
+escapou?**
 
-- **slice 21** (reachability por-impl): precisa de `impl UserCap for
-  Struct` onde o struct embrulha uma built-in cap, *passada* a uma
-  função que declara só a user-cap. Gerador de termos simples não
-  inventa esta cadeia.
-- **slice 25** (atenuação entre funções): precisa de `let n =
-  cap.restrict_to(x); helper(n)` — a atenuação e a operação privilegiada
-  em *funções diferentes*. Fuzz de atenuação intra-função não toca nisto.
-- **slice 24** (lambda block-body): precisa de uma lambda com corpo em
-  bloco terminando em expressão implícita, com tipo de retorno não-Unit.
-- **slice 23** (sub-divulgação no exportador): o oráculo tem de ser o
-  *CycloneDX/SPDX*, não a paridade entre backends.
+Porque a invariante testada é a errada para essa classe de bug.
 
-Portanto o âmbito não é "construir do zero" — é **aprofundar o gerador e
-adicionar os oráculos em falta**.
+`TestRuntimeSubsetOfManifest` afirma:
 
-## Trabalho, por lacuna concreta (ordenado por ROI)
+> usado(f) ⊆ declarado(f)   — "o manifesto é um limite superior honesto"
 
-### Lacuna 1 — Gerador: formas inter-função e cap-embrulhada
-**A de maior valor. ~1-2 slices.**
+O slice 25 **não** violava isto. Um programa que faz
+`let n = fs.restrict_to("/tmp"); helper(n)` e depois lê
+`/etc/passwd` dentro de `helper` continua a usar apenas a capability
+`Fs` que `helper` declara — passa a invariante de subset perfeitamente.
+O que é violado é uma invariante diferente, que **não existe** no suite:
 
-Estender `TestProgramGenerator` para emitir:
-- programas multi-função onde caps/valores atravessam fronteiras de
-  função (passar cap a helper, devolver de factory);
-- `impl UserCap for Struct` com a struct a embrulhar uma built-in cap;
-- cadeias `restrict_to(...)` separadas por chamadas de função;
-- lambdas com corpo em bloco (expressão tail implícita vs `return`).
+> Para cada cap atenuada c com restrição R, toda operação privilegiada
+> sobre c em runtime satisfaz R   — "a atenuação é honrada"
 
-Cada uma corresponde diretamente a um bug que escapou. Se o gerador as
-tivesse emitido, o fuzz diferencial + de atenuação já existente
-tê-las-ia apanhado.
+E, na sua forma de manifesto:
 
-### Lacuna 2 — Oráculo de soundness: runtime instrumentado
-**O núcleo regulatório. ~1-2 slices.**
+> usado(f) ∩ provably_excluded(f) = ∅   — "a exclusão é honrada"
 
-`TestAttenuationFuzz` / `TestManifestFuzz` precisam do oráculo certo:
-instrumentar `capa/runtime/_capabilities.py` para registar cada
-operação privilegiada realmente executada, atribuída à função
-chamadora. Depois a propriedade:
+Esta é a invariante que torna `provably_excluded_capabilities` um facto
+em vez de uma esperança. É a peça que falta.
 
-> Para qualquer programa gerado P e função f: se o manifesto de f diz
-> `C ∈ provably_excluded_capabilities`, executar P nunca exerce `C`
-> dentro de f (nem transitivamente via impls de user-cap alcançadas).
+Segundo motivo, complementar: mesmo que a invariante existisse, os
+geradores `_program_with_caps*` provavelmente não emitem a *forma* que
+dispara o bug — `restrict_to` numa função, operação privilegiada noutra.
+Um gerador que só atenua e usa na mesma função nunca exercita o caminho
+inter-função.
 
-Sem esta instrumentação, o fuzz de atenuação só consegue verificar
-"deny vs allow" em casos que o gerador conhece — não a invariante
-universal. Combinada com a Lacuna 1, esta teria apanhado o slice 25
-automaticamente.
+## Trabalho real: duas lacunas cirúrgicas
 
-### Lacuna 3 — Oráculo de exportador
-**~0.5 slice.**
+Não é uma camada nova. São duas adições contra infraestrutura existente.
 
-Propriedade independente de backend: todo
-`transitively_reachable_capability` no manifesto aparece como aresta
-**e** propriedade no CycloneDX **e** no SPDX; todo
-`provably_excluded_capability` aparece como a anotação negativa
-correspondente. (Apanharia o slice 23.) Verificável sobre o corpus
-existente + programas gerados, sem novo oráculo de runtime.
+### Lacuna A — Invariante de atenuação/exclusão (~1 slice)
+Ao lado de `TestRuntimeSubsetOfManifest` / `TestWasmRuntimeSubsetOfManifest`,
+adicionar `TestAttenuationHonoured` (Python) e o gémeo Wasm. Reutiliza o
+`_TracingWasmHost` e o `_trace` que já existem; estende o traço para
+registar **o argumento** de cada operação privilegiada (o caminho lido,
+o host contactado, a chave de env), não só a classe da cap.
 
-### Lacuna 4 — Oráculos metamórficos (independentes de backend)
-**~1 slice. Apanha "ambos os backends errados".**
+Duas afirmações por programa gerado:
+1. Toda operação registada sobre uma cap atenuada satisfaz a restrição
+   acumulada dessa cap (prefixo/host/chave/deadline).
+2. Para cada função f, `usado(f) ∩ manifest.provably_excluded(f) = ∅`.
 
-Sobre o corpus + variantes geradas:
-- idempotência do formatter: `fmt(fmt(x)) == fmt(x)` (pode já estar em
-  `TestFormatterProperties` — verificar antes de duplicar);
-- invariante de posições: `source[tok.start:tok.end] == tok.text` para
-  cada token (protege o campo `pos` do manifesto que os reguladores
-  leem);
-- mutações que preservam semântica: `x + 0 ≡ x`, renomear local não
-  muda output — oráculo sem precisar de comparar backends.
+Isto teria apanhado os slices 18, 21 e 25 automaticamente.
 
-### Lacuna 5 — Robustez do gerador nível-tipo
-**O peão pesado; várias semanas. Incremental.**
+### Lacuna B — Aprofundar os geradores (~1 slice)
+Estender `_program_with_caps_advanced` e `_program_with_caps_wasm_advanced`
+para emitir as formas que escaparam, cada uma ligada a um bug real:
+- atenuar numa função, usar a cap atenuada noutra (slice 25);
+- `impl UserCap for Struct` onde a struct embrulha uma built-in cap,
+  passada a uma função que declara só a user-cap (slice 21);
+- lambda com corpo em bloco terminando em expressão, retorno não-Unit
+  (slice 24);
+- cap guardada em campo de struct / capturada em closure e usada
+  depois.
 
-O gerador atual emite *algum* subconjunto bem-tipado. Alargá-lo tipo a
-tipo (genéricos, sum types com payloads mistos, closures que capturam
-caps, structs aninhadas) aumenta a fração do espaço de programas
-coberto. Não bloquear as Lacunas 1-4 nisto.
+A Lacuna B sozinha torna os fuzzers *existentes* capazes de reencontrar
+21/24; combinada com a Lacuna A, fecha também 25.
 
-## Onde encaixa
+## Lacunas menores (ROI mais baixo, opcionais)
 
-- `hypothesis` já é dependência (`pyproject.toml [test]`).
-- Reutilizar helpers de `tests/test_ir_wasm_parity.py` (`_run_python`,
-  `_run_wasm`, `_run_wasm_component`, `_capture_stdout`).
-- Reutilizar API pública: `Lexer`, `Parser`, `analyze`, `transpile`,
-  `format_source`, `is_formatted`, e `capa.ir.lower` / `compile_wasm`.
-- Estender os ficheiros existentes, não criar paralelos.
+### Lacuna C — Oráculo de exportador (~0.5 slice)
+Propriedade independente de backend sobre o corpus + programas gerados:
+todo `transitively_reachable_capability` no manifesto aparece como
+aresta **e** propriedade no CycloneDX **e** no SPDX; todo
+`provably_excluded` aparece como a anotação negativa correspondente.
+(Apanharia o slice 23.) Não precisa de runtime — compara manifesto vs.
+exportadores.
+
+### Lacuna D — Invariante de posições (~0.5 slice)
+`source[tok.start:tok.end] == tok.text` para cada token, sobre texto
+gerado. Protege o campo `pos` do manifesto que os reguladores leem.
+Pode encaixar em `TestLexerProperties`.
 
 ## Não-objetivos
 
-- Não substitui o corpus de paridade escrito à mão nem a auditoria
-  humana de *desenho* — apanha regressões de *implementação* da classe
-  que a campanha encontrou repetidamente.
-- Lacuna 5 (gerador nível-tipo completo) é multi-semana; as Lacunas
-  1-4 (~4 slices) fecham o ponto cego que a campanha expôs.
+- Não construir do zero — estender `test_properties.py` e
+  `test_evaluation_fuzz.py`.
+- Não duplicar a invariante de subset, que já existe e funciona.
+- Não substitui a auditoria humana de *desenho* — apanha regressões de
+  *implementação* da classe que a campanha encontrou repetidamente.
+- O gerador nível-tipo completo (genéricos, sum types com payloads,
+  closures cap-capturantes) é alargamento contínuo, não um pré-requisito.
 
 ## Ordem recomendada
 
-1. **Lacuna 1** (gerador: formas inter-função + cap-embrulhada) —
-   maior alavancagem; sozinha torna os fuzzers existentes capazes de
-   reencontrar slices 21/24/25.
-2. **Lacuna 2** (oráculo de runtime instrumentado) — fecha a invariante
-   de soundness universal.
-3. **Lacuna 3** (oráculo de exportador) — barato, fecha slice 23.
-4. **Lacuna 4** (metamórficos) — fecha "ambos errados".
-5. **Lacuna 5** (gerador nível-tipo) — incremental, contínuo.
+1. **Lacuna B** (aprofundar geradores) — desbloqueia tudo o resto;
+   sozinha reativa os fuzzers existentes para 21/24.
+2. **Lacuna A** (invariante de atenuação/exclusão) — fecha o núcleo
+   regulatório; com B, apanha 25.
+3. **Lacuna C** (exportador) — barata, fecha 23.
+4. **Lacuna D** (posições) — barata.
 
-Antes de cada lacuna: **ler a classe existente correspondente** e
-estendê-la, em vez de assumir que está vazia (lição desta própria
-revisão de âmbito).
+Total ~3 slices para fechar o ponto cego que a campanha expôs. Antes de
+cada lacuna: **ler a classe/gerador existente e estendê-lo** — lição
+das duas revisões erradas deste próprio doc.
+
+## Nota de honestidade para a NLnet
+
+A frase defensável após este trabalho: "a invariante
+`usado ⊆ declarado` é verificada por property-testing em ambos os
+backends desde [data]; a invariante `usado ∩ provably_excluded = ∅`
+(atenuação honrada) é adicionada na Lacuna A". Antes da Lacuna A,
+**não** afirmar que a exclusão é property-tested — só a auditoria
+manual (slice 25) a verificou até agora, num conjunto fixo de
+reprodutores.
