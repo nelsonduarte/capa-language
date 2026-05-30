@@ -270,18 +270,34 @@ class Env:
 
     __slots__ = ("_allowed_keys",)
 
+    # Windows env-var names are case-insensitive (``os.environ.get("path")``
+    # returns the same value as ``os.environ.get("PATH")``). Audit slice 25 F4
+    # (2026-05-30): a Capa program that calls
+    # ``env.restrict_to_keys(["path"])`` was getting a different surface from
+    # the same call on Linux (where ``path`` and ``PATH`` are distinct).
+    # Canonicalise the allow-list and the lookup key consistently so the
+    # restriction means the same thing on both platforms.
+    _CASE_INSENSITIVE = sys.platform == "win32"
+
+    @classmethod
+    def _canon_key(cls, name):
+        return name.upper() if cls._CASE_INSENSITIVE else name
+
     def __init__(self, _allowed_keys=None):
         self._allowed_keys = _allowed_keys
 
     def restrict_to_keys(self, keys) -> "Env":
         # Accept any iterable (CapaList, list, set, frozenset).
-        new = frozenset(keys)
+        new = frozenset(self._canon_key(k) for k in keys)
         if self._allowed_keys is not None:
             new = new & self._allowed_keys
         return Env(_allowed_keys=new)
 
     def allows(self, name: str) -> bool:
-        return self._allowed_keys is None or name in self._allowed_keys
+        return (
+            self._allowed_keys is None
+            or self._canon_key(name) in self._allowed_keys
+        )
 
     def get(self, name: str) -> "Option[str]":
         if not self.allows(name):

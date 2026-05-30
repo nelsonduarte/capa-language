@@ -948,6 +948,95 @@ Listed so the design space is explicit.
 
 ### Wasm-specific gaps that are not P0
 
+- [~] **"Fully functional Wasm" slice 25 - runtime cap-bridge
+  audit + handle-table architecture** (foundation closed
+  2026-05-30; rollout slices 25.2 - 25.8 pending). Tenth
+  audit pass; found a **systemic P0** plus several lower-
+  severity findings.
+  - **The systemic P0 (F1).** The Wasm backend's attenuation
+    enforcement is **intra-function only**. The emitter
+    inlines `restrict_to(...)` checks (`$str_contains`,
+    path-prefix WAT) at the literal call site in the same
+    function. The moment a restricted cap crosses any `fun`
+    boundary, the receiving function sees a plain cap, no
+    enforcement code is emitted, and the host bridge runs
+    the syscall unconditionally. Verified across **5 caps**
+    with cross-function reproducers (Fs, Db, Proc, Env,
+    Clock); Net exploitable in principle. Component Model
+    bridge has the identical bug. Python backend is sound.
+    Downstream demos exposed: `audit-trail-reporter`,
+    `policy-eval`, `sbom-watch` all do
+    `let read_fs = fs.restrict_to("data/"); run(log, read_fs, ...)`.
+    Reach: every regulator-facing `provably_excluded_capabilities`
+    claim is **honest at the manifest layer but unsound on
+    the Wasm runtime** for any program with cross-function
+    attenuation.
+  - **The architecture.** Capability values on Wasm become
+    i32 handles into a host-side table. Every privileged
+    host import takes the handle, looks up the
+    Python-side `CapRestriction` object, enforces it, then
+    performs the syscall. `main`'s cap params are root
+    handles allocated by the host at instance init.
+    Restriction-imports (e.g. `capa:host/fs.restrict-to`)
+    take a handle, allocate a fresh restricted handle via
+    the existing `Fs.restrict_to` etc., return the new
+    i32. Full design in `docs/design/wasm-cap-handles.md`.
+    Side benefit: closes **F2** (Wasm Net inline check
+    uses `$str_contains(url, host)` substring match
+    instead of parsed hostname) for free, since enforcement
+    now goes through `Net.allows` which uses urlparse.
+  - **What this slice (25.1) ships.**
+    - `capa/runtime/_cap_handles.py` (NEW): `CapHandleTable`
+      class, per-cap allocation helpers
+      (`restrict_fs`/`restrict_net`/`restrict_db`/`restrict_proc`/`restrict_env`/`restrict_clock_after`),
+      `bootstrap_root_handles` for the host-side root-
+      handle setup, type-checked `lookup`. The table
+      reuses the existing Python-side cap classes verbatim;
+      restriction monotonicity + intersection semantics
+      are inherited.
+    - `tests/test_cap_handles.py` (NEW, 10 cases): handle
+      allocation monotonicity, zero-sentinel rejection,
+      type-mismatch rejection, intersection chains for Fs
+      and Net, Env case-insensitive canonicalisation
+      surviving the round trip, bootstrap_root_handles
+      shape.
+    - `docs/design/wasm-cap-handles.md` (NEW): full
+      architecture + rollout plan + lifecycle.
+  - **What slices 25.2 - 25.8 will ship** (each is one
+    cap end-to-end against the foundation):
+    - 25.2 Fs: cross-function reproducer becomes a parity
+      test that DENIES on both backends.
+    - 25.3 Net: closes F1 + F2 together.
+    - 25.4 Db, 25.5 Proc, 25.6 Env, 25.7 Clock.
+    - 25.8 Component Model host parity.
+    - 25.9 Remove the inline-attenuation emitter
+      machinery; update positioning docs to reflect Wasm
+      now matches Python on cap-discipline soundness; add
+      `tests/test_cap_handles_cross_function.py` exercising
+      every cap × every cross-function pattern.
+  - **F4 closed in this slice.** `Env.restrict_to_keys`
+    now case-folds keys on Windows
+    (`capa/runtime/_capabilities.py:_canon_key`) so a
+    restriction `["NEVER_SET"]` actually denies a lookup
+    `env.get("PATH")` — pre-fix the platform's case-
+    insensitive `os.environ` was bypassing a
+    case-sensitive Python-side allow-list.
+  - **F3 (Random reseeding), F5 (Fs lexical vs realpath
+    portability), F6 (TOCTOU)** stay as documented
+    residuals; F3 is by design (`Random.with_seed`
+    docstring acknowledges it), F5 is Wasm being
+    stricter than Python (sound, just less portable), F6
+    is in the documented threat model.
+  - **CLEAN areas verified by the audit**: Fs intersection
+    semantics, Net Python intersection, SQLite ATTACH
+    blocked via `set_authorizer`, Proc basename+suffix
+    check, Fs realpath canonicalisation, stdio
+    replacement-char decoding, file-handle lifetimes
+    (every Python + Wasm path uses `with open(...)`), db
+    connection close, Unsafe trust boundary, wasmtime
+    memory-read bounds check.
+  - Suite 2061 -> 2071 / 5 skipped / 0 fail.
+
 - [x] **"Fully functional Wasm" slice 24 - CIR lowerer
   audit (block-body lambda implicit-result tail)**
   (closed 2026-05-30). A ninth audit pass on
