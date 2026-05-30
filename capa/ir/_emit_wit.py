@@ -87,28 +87,38 @@ _WIT_SIGNATURES: dict[tuple[str, str], str] = {
     # Fs: filesystem reads + writes. Phase 7C scope (Result<T, IoError>).
     # IoError is a Capa-side record with two String fields (message,
     # cause). The host constructs it via $alloc on error.
-    ("Fs", "read"):        "read: func(path: string) -> result<string, io-error>",
-    ("Fs", "write"):       "write: func(path: string, content: string) -> result<_, io-error>",
+    #
+    # Slice 25.2 (2026-05-30): every Fs op takes ``handle: u32`` as
+    # the FIRST param so the host can look up the receiver cap's
+    # restriction in the per-instance handle table and enforce it
+    # before the syscall. Closes the cross-function attenuation bug
+    # (audit slice 25 F1): a restricted Fs handed off to another
+    # function on Wasm previously lost its restriction because the
+    # emitter inlined the prefix check at the literal call site.
+    # ``restrict-to`` now returns a fresh ``u32`` handle bound to a
+    # narrower restriction (intersection with the parent).
+    ("Fs", "read"):        "read: func(handle: u32, path: string) -> result<string, io-error>",
+    ("Fs", "write"):       "write: func(handle: u32, path: string, content: string) -> result<_, io-error>",
     # Fs.exists / Fs.is_dir: queries returning bool. Mirror Python's
     # fail-closed-as-absent convention: a denied path reports false
     # so the cap doesn't leak existence outside its allowed
-    # prefixes (the host bridge cannot enforce the cap's prefix
-    # set; static attenuation discipline still applies).
-    ("Fs", "exists"):      "exists: func(path: string) -> bool",
-    ("Fs", "is_dir"):      "is-dir: func(path: string) -> bool",
+    # prefixes (now enforced by the host handle-table lookup).
+    ("Fs", "exists"):      "exists: func(handle: u32, path: string) -> bool",
+    ("Fs", "is_dir"):      "is-dir: func(handle: u32, path: string) -> bool",
     # Fs.mkdir: same canonical-ABI shape as Fs.write Ok-Unit
     # branch. Host uses ``os.makedirs(path, exist_ok=True)`` to
     # match the Python runtime's idempotent behaviour.
-    ("Fs", "mkdir"):       "mkdir: func(path: string) -> result<_, io-error>",
+    ("Fs", "mkdir"):       "mkdir: func(handle: u32, path: string) -> result<_, io-error>",
     # Fs.list_dir: new canonical-ABI shape with a
     # ``list<string>`` Ok arm. Host returns sorted entry basenames
     # to match the Python runtime's deterministic ordering.
-    ("Fs", "list_dir"):    "list-dir: func(path: string) -> result<list<string>, io-error>",
-    # restrict_to is a no-op at the Wasm level: capabilities carry
-    # no runtime value (their methods are imports by name), so an
-    # attenuation that returns another Fs has nothing to thread.
-    # The analyzer's static check is what enforces the discipline.
-    ("Fs", "restrict_to"): "restrict-to: func(prefix: string)",
+    ("Fs", "list_dir"):    "list-dir: func(handle: u32, path: string) -> result<list<string>, io-error>",
+    # ``restrict-to`` returns a fresh handle (slice 25.2). The
+    # host walks the parent restriction + the prefix to allocate
+    # a new entry in its handle table; the guest threads the new
+    # handle as the receiver of every subsequent Fs call from this
+    # branch of the program.
+    ("Fs", "restrict_to"): "restrict-to: func(handle: u32, prefix: string) -> u32",
 
     # Random: entropy source only. The actual SplitMix64 PRNG runs
     # guest-side (see ``capa.ir._emit_wasm._random``); the only thing
@@ -322,7 +332,15 @@ def collect_used_capabilities(module: Module) -> dict[str, set[str]]:
                     # calls). The core-wasm discovery pass
                     # already filters them; this mirrors that rule
                     # so WIT and core imports stay in lockstep.
-                    if instr.method in (
+                    #
+                    # Slice 25.2 exception (2026-05-30):
+                    # ``Fs.restrict_to`` graduated to a real host
+                    # call that takes the parent handle + prefix
+                    # and returns a child handle, so it stays in
+                    # the WIT.
+                    if cap == "Fs" and instr.method == "restrict_to":
+                        pass
+                    elif instr.method in (
                         "restrict_to",
                         "restrict_to_keys",
                         "restrict_to_after",

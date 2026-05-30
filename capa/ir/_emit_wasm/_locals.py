@@ -594,8 +594,13 @@ class _LocalsCollectionMixin:
                     # subset).
                     capa_ty = fn.locals.get(dst, "Int")
                     # Capability locals (``let other = stdio``)
-                    # carry no Wasm value; skip declaration.
+                    # carry no Wasm value; skip declaration EXCEPT
+                    # for Fs (slice 25.2, 2026-05-30) which is now
+                    # represented as an i32 handle so a restricted
+                    # cap survives crossing function boundaries.
                     if capa_ty in BUILTIN_CAPS:
+                        if capa_ty == "Fs":
+                            out[dst] = "i32"
                         continue
                     # String locals expand to a (ptr, len) pair so
                     # the function can carry the value forward. The
@@ -626,6 +631,10 @@ class _LocalsCollectionMixin:
             if name in param_names or name in out:
                 continue
             if capa_ty in BUILTIN_CAPS or capa_ty == "Unit":
+                # Slice 25.2 (2026-05-30): Fs is un-erased; every
+                # other cap stays as a no-Wasm-value.
+                if capa_ty == "Fs":
+                    out[name] = "i32"
                 continue
             if capa_ty == "String":
                 ptr_name = f"{name}_ptr"

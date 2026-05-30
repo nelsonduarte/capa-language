@@ -265,21 +265,28 @@ class _CapDispatchMixin:
             # rebuilds a Capa Option<String> (16-byte record:
             # tag@0, packed (ptr|len<<32) i64 payload@8).
             return (["i32", "i32", "i32"], "")
-        if ("func(path: string) -> result<string, io-error>" in wit
-                or "func(url: string) -> result<string, io-error>" in wit):
+        if ("func(handle: u32, path: string) -> result<string, io-error>" in wit):
+            # Slice 25.2 (2026-05-30): Fs.read now takes the cap
+            # handle (i32) as the FIRST arg so the host can look
+            # up the receiver's restriction in its handle table
+            # and enforce it before the syscall. handle + (ptr,
+            # len) + ret_area = 4 i32s.
+            return (["i32", "i32", "i32", "i32"], "")
+        if ("func(url: string) -> result<string, io-error>" in wit):
             # Canonical ABI indirect return: single-string arg
             # (ptr, len) + a caller-allocated 20-byte return area
             # for tag + Ok string (ptr, len) or Err io-error
             # (m_ptr, m_len, c_ptr, c_len). Materialiser rebuilds
-            # a Capa Result<String, IoError>. ``url:`` is the
-            # Net.get arg-name; ``path:`` is Fs.read's. The Wasm
-            # core signature is identical for both (the WIT arg
-            # name is documentation-only at this layer).
+            # a Capa Result<String, IoError>. Net.get path.
             return (["i32", "i32", "i32"], "")
         if "func() -> result<string, io-error>" in wit:
             # Stdio.read_line: no string arg, just the ret area.
             # Same 20-byte indirect-return shape as Fs.read.
             return (["i32"], "")
+        if "func(handle: u32, path: string, content: string) -> result<_, io-error>" in wit:
+            # Slice 25.2: Fs.write - handle + path + content +
+            # ret_area = 6 i32s.
+            return (["i32", "i32", "i32", "i32", "i32", "i32"], "")
         if "func(path: string, content: string) -> result<_, io-error>" in wit:
             # Canonical ABI indirect return: path + content +
             # 20-byte ret area for the result. Same layout as
@@ -313,6 +320,19 @@ class _CapDispatchMixin:
             # pattern match needs its own entry; the wire
             # signature is identical.
             return (["i32", "i32", "i32", "i32", "i32"], "")
+        if "func(handle: u32, path: string) -> result<_, io-error>" in wit:
+            # Slice 25.2: Fs.mkdir - handle + (ptr, len) + ret_area.
+            return (["i32", "i32", "i32", "i32"], "")
+        if "func(handle: u32, path: string) -> result<list<string>, io-error>" in wit:
+            # Slice 25.2: Fs.list_dir - same call shape as Fs.read
+            # but the Ok arm carries a list<string> instead of a
+            # string. handle + (ptr, len) + ret_area.
+            return (["i32", "i32", "i32", "i32"], "")
+        if "func(handle: u32, path: string) -> bool" in wit:
+            # Slice 25.2: Fs.exists / Fs.is_dir - handle + (ptr, len)
+            # -> i32 (Bool is i32 on the Wasm side). Direct return,
+            # no canonical-ABI indirect dance.
+            return (["i32", "i32", "i32"], "i32")
         if "func(path: string) -> result<_, io-error>" in wit:
             # Fs.mkdir: single-string arg version of Fs.write's
             # result<_, io-error> shape. Path (ptr, len) + 20-byte
@@ -351,14 +371,25 @@ class _CapDispatchMixin:
             # materialises a Capa List<String> header (16 bytes)
             # from the flat fields after the call.
             return (["i32"], "")
+        if "func(handle: u32, prefix: string) -> u32" in wit:
+            # Slice 25.2 (2026-05-30): Fs.restrict_to takes the
+            # parent handle + the prefix and returns a fresh
+            # child handle bound to a narrower restriction. The
+            # guest threads the new handle as the receiver of
+            # subsequent Fs calls in this branch of the program;
+            # passing the cap across a function boundary preserves
+            # the restriction (the bug fixed by this slice).
+            return (["i32", "i32", "i32"], "i32")
         if (("func(prefix: string)" in wit
                 or "func(host: string)" in wit)
                 and "->" not in wit):
-            # Fs.restrict_to / Net.restrict_to: a string-arg,
-            # no-result no-op at the Wasm level. The capability
-            # discipline is enforced by the analyzer; at runtime
-            # the import is shared. ``prefix:`` is the Fs arg
-            # name; ``host:`` is Net's. Both lower identically.
+            # Net.restrict_to / Db.restrict_to / Proc.restrict_to: a
+            # string-arg, no-result no-op at the Wasm level. The
+            # capability discipline is enforced by the analyzer; at
+            # runtime the import is shared. ``prefix:`` is the Db /
+            # Proc arg name; ``host:`` is Net's. All lower
+            # identically. Fs.restrict_to graduated to the handle-
+            # returning shape above in slice 25.2.
             return (["i32", "i32"], "")
         if "func(keys: list<string>)" in wit and "->" not in wit:
             # Env.restrict_to_keys: list<string> arg (ptr, len), no
@@ -387,15 +418,21 @@ class _CapDispatchMixin:
     def _emit_cap_method_call(self, instr: MethodCall) -> None:
         cap = instr.cap_used
         method = instr.method
+        # Slice 25.2 (2026-05-30): Fs.restrict_to is no longer a no-op
+        # at the Wasm level. It crosses the host bridge with the
+        # receiver's handle + the prefix string and returns a fresh
+        # i32 handle bound to a narrower restriction. The dst local
+        # holds the new handle and is threaded as the receiver of
+        # downstream Fs calls (including across function boundaries -
+        # this is what closes audit slice 25 F1).
+        if cap == "Fs" and method == "restrict_to":
+            self._emit_fs_restrict_to(instr)
+            return
         # Attenuator methods (``restrict_to`` / ``restrict_to_keys``
-        # / ``restrict_to_after``) are no-ops at the Wasm level:
-        # capabilities carry no runtime value at this layer (their
-        # methods are imports by name). The audit C2 inline check
-        # fires on the *privileged* op (Fs.read, Net.get, Env.get)
-        # whose receiver was bound via these attenuators; the
-        # attenuator call itself does nothing. Elide the call to
-        # avoid having to push arbitrary-typed args (e.g. the
-        # List<String> arg of Env.restrict_to_keys).
+        # / ``restrict_to_after``) are no-ops at the Wasm level for
+        # the remaining built-in caps: their values carry no runtime
+        # representation, so the inline emit-time check (audit C2)
+        # at the privileged op is what enforces discipline.
         if method in ("restrict_to", "restrict_to_keys",
                       "restrict_to_after"):
             return
@@ -428,6 +465,20 @@ class _CapDispatchMixin:
         # so primitive-return methods (Stdio, Clock) follow the
         # historical multi-value direct-return shape.
         indirect = _CANONICAL_INDIRECT_RETURN.get((cap, method))
+        # Slice 25.2 (2026-05-30): Fs no longer needs the inline
+        # emit-time attenuation check. The host bridge now enforces
+        # the receiver cap's restriction via the handle table, which
+        # is sound across function boundaries (the bug audit slice 25
+        # F1 documented). The handle is pushed as the FIRST arg by
+        # ``_emit_fs_method_with_handle`` below. The inline machinery
+        # stays intact for Net / Db / Proc / Env / Clock (they remain
+        # on the old erased-cap path until their own rollout slices).
+        if cap == "Fs" and indirect is not None:
+            self._emit_fs_method_with_handle(instr, method, indirect)
+            return
+        if cap == "Fs" and method in ("exists", "is_dir"):
+            self._emit_fs_bool_query_with_handle(instr, method)
+            return
         # Capability attenuation enforcement (audit C2, 2026-05-25):
         # when the lowerer has tagged this MethodCall with an
         # ``attenuations`` list, the receiver was bound via a
@@ -506,6 +557,87 @@ class _CapDispatchMixin:
         # WIT signature to know whether to expect a result.
         _params, result_ty = self._cap_method_wasm_sig(cap, method)
         if result_ty and instr.dst is not None:
+            self._write(f"local.set ${instr.dst}")
+
+    # ---- slice 25.2 Fs handle-passing helpers ------------------
+
+    def _push_fs_handle(self, recv) -> None:
+        """Push the receiver Fs cap's i32 handle. The receiver Value
+        is always a local or param of type Fs (the analyzer enforces
+        this); we emit a ``local.get`` against the matching slot.
+
+        Slice 25.2 (2026-05-30): Fs values became i32 handles into
+        the host's per-instance cap table so a restricted cap
+        survives crossing function boundaries (audit slice 25 F1).
+        """
+        if recv.kind not in ("local", "param"):
+            raise WasmEmissionError(
+                f"Fs method receiver must be a local or param "
+                f"(slice 25.2 handle-passing), got {recv.kind!r}"
+            )
+        # The Fs slot is captured by a lambda the same way other
+        # i32 captures are - delegate to ``_push_value`` so the
+        # env-aware load path fires when we're inside a lifted
+        # lambda body.
+        self._push_value(recv)
+
+    def _emit_fs_restrict_to(self, instr: MethodCall) -> None:
+        """Emit ``new_fs = fs.restrict_to(prefix)``. Pushes the
+        receiver handle + the prefix (ptr, len), calls the host
+        import, and binds the i32 result handle to ``instr.dst``.
+        The dst's Fs local was declared i32 by the locals walker
+        (slice 25.2 un-erased Fs)."""
+        if len(instr.args) != 1:
+            raise WasmEmissionError(
+                f"Fs.restrict_to expected 1 arg, got {len(instr.args)}"
+            )
+        self._push_fs_handle(instr.receiver)
+        self._push_string_arg(instr.args[0])
+        self._write("call $Fs_restrict_to")
+        if instr.dst is not None:
+            self._write(f"local.set ${instr.dst}")
+
+    def _emit_fs_method_with_handle(
+        self, instr: MethodCall, method: str,
+        indirect: tuple[int, str],
+    ) -> None:
+        """Emit a Fs privileged op (read / write / mkdir / list_dir)
+        with the receiver handle as the FIRST host-call arg. The
+        host enforces ``fs.allows(path)`` via the table lookup, so
+        no inline emit-time check is needed (the bug fixed by
+        slice 25.2). Push order matches the WIT signature: handle,
+        then each String arg expanded to (ptr, len), then ret_area.
+        """
+        ret_area_size, ret_kind = indirect
+        # Receiver handle first.
+        self._push_fs_handle(instr.receiver)
+        # String args expanded the standard way.
+        for arg in instr.args:
+            self._push_string_arg(arg)
+        # Allocate the ret area, stash in $_ret_area, push as the
+        # trailing arg, call (void).
+        self._write(f"i32.const {ret_area_size}")
+        self._write("call $alloc")
+        self._write("local.tee $_ret_area")
+        self._write(f"call $Fs_{method}")
+        self._emit_cap_indirect_materialise(ret_kind, instr.dst)
+
+    def _emit_fs_bool_query_with_handle(
+        self, instr: MethodCall, method: str,
+    ) -> None:
+        """Emit ``fs.exists(path)`` / ``fs.is_dir(path)``. Pushes
+        the receiver handle + the path (ptr, len), calls the host
+        import, binds the i32 (Bool) result. Host enforces the
+        restriction via handle lookup and returns 0 on a denied
+        path (fail-closed-as-absent; matches the Python runtime)."""
+        if len(instr.args) != 1:
+            raise WasmEmissionError(
+                f"Fs.{method} expected 1 arg, got {len(instr.args)}"
+            )
+        self._push_fs_handle(instr.receiver)
+        self._push_string_arg(instr.args[0])
+        self._write(f"call $Fs_{method}")
+        if instr.dst is not None:
             self._write(f"local.set ${instr.dst}")
 
     def _push_string_arg(self, arg) -> None:

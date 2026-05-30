@@ -1004,11 +1004,30 @@ Listed so the design space is explicit.
       architecture + rollout plan + lifecycle.
   - **What slices 25.2 - 25.8 will ship** (each is one
     cap end-to-end against the foundation):
-    - 25.2 Fs: cross-function reproducer becomes a parity
-      test that DENIES on both backends.
+    - **25.2 Fs DONE** (2026-05-30): cross-function
+      reproducer denies on both backends.
+      `WasmHost` holds a `CapHandleTable`; Fs ops take
+      `handle: u32` first param, host enforces
+      `fs.allows(path)` before the syscall; new
+      `fs.restrict_to(handle, prefix) -> u32` import
+      allocates a child handle. Fs is no longer erased
+      in CIR -> Wasm (un-erased in `_locals.py`,
+      `_closures.py`, `_traits.py`, `_dispatch.py`,
+      `_structs.py`, `_values.py`, `_emit_wasm/__init__.py`,
+      `_discovery.py`, `_emit_wit.py`); cap-method
+      lowering in `_caps.py` short-circuits ahead of
+      the old inline-attenuation machinery. New parity
+      program `examples/wasm/fs_cross_function_attenuation.capa`
+      + `test_fs_cross_function_attenuation`. 7 Component
+      Model tests parked with explicit slice-25.8 skip
+      markers (CM wrapper still emits fixed
+      `world { export main: func(); }` so wasm-tools
+      rejects the new main signature).
     - 25.3 Net: closes F1 + F2 together.
     - 25.4 Db, 25.5 Proc, 25.6 Env, 25.7 Clock.
-    - 25.8 Component Model host parity.
+    - 25.8 Component Model host parity (unparks the 7
+      skipped tests + adds matching cross-function
+      parity for every cap).
     - 25.9 Remove the inline-attenuation emitter
       machinery; update positioning docs to reflect Wasm
       now matches Python on cap-discipline soundness; add

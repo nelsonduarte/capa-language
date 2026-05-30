@@ -145,6 +145,14 @@ class _StructEmissionMixin:
                 # not to read from a capability-typed field. We
                 # could omit the slot entirely, but keeping it
                 # makes layouts uniform with the analyzer's view.
+                #
+                # Slice 25.2 (2026-05-30): Fs becomes an i32 handle
+                # the struct must carry so a restricted cap stashed
+                # in a record survives across function boundaries.
+                if field_ty == "Fs":
+                    self._write(f"local.get ${instr.dst}")
+                    self._push_value(fval)
+                    self._write(f"i32.store offset={offset}")
                 continue
             if field_ty == "String":
                 # Two i32 stores: ptr at offset, len at offset+4.
@@ -207,6 +215,15 @@ class _StructEmissionMixin:
             # that need to invoke a method on the capability route
             # to the imported function by name without reading the
             # receiver value.
+            #
+            # Slice 25.2 (2026-05-30): Fs becomes an i32 handle
+            # the consumer threads as the receiver of subsequent
+            # Fs calls (closing audit slice 25 F1 for Fs values
+            # stashed in records).
+            if field_ty == "Fs":
+                self._push_value(instr.receiver)
+                self._write(f"i32.load offset={offset}")
+                self._write(f"local.set ${instr.dst}")
             return
         if field_ty == "String":
             # Two i32 loads: ptr@offset, len@offset+4 -> dst's pair.

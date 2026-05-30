@@ -43,7 +43,12 @@ from typing import Optional
 
 import wasmtime
 
-from ._capabilities import _write_safe
+from ._capabilities import Fs, Stdio, _write_safe
+from ._cap_handles import (
+    CapHandleError,
+    CapHandleTable,
+    bootstrap_root_handles,
+)
 
 
 class WasmHost:
@@ -66,6 +71,24 @@ class WasmHost:
         # Defaults to an empty list; callers (e.g. the CLI) pass the
         # real argv when they have it.
         self._args: list[str] = list(args) if args is not None else []
+        # Slice 25.2 (2026-05-30): per-instance capability handle
+        # table. Fs has been migrated to handle-passing so a
+        # restricted ``Fs`` value crossing a function boundary keeps
+        # its restriction (the receiver's i32 handle is now part of
+        # the cap-method call signature, looked up by the host on
+        # every privileged op). The unrestricted root Fs the host
+        # holds is allocated into this table by ``run_main`` once
+        # it has inspected ``main``'s signature; child handles come
+        # from ``capa:host/fs.restrict-to``.
+        self._cap_handles = CapHandleTable()
+        # Root Fs the host hands to programs that declare ``fs:
+        # Fs`` on main. Lazy-constructed in ``run_main`` so unit
+        # tests that never invoke ``main`` don't get a real Fs
+        # instance attached. Net / Db / Proc / Env / Clock /
+        # Stdio remain on the old erased path until their own
+        # rollout slices (25.3 - 25.7).
+        self._root_fs: Optional[Fs] = None
+        self._root_stdio: Optional[Stdio] = None
         self._register_stdio()
         self._register_clock()
         self._register_env()
@@ -447,20 +470,28 @@ class WasmHost:
     def _register_fs(self) -> None:
         """Register ``capa:host/fs`` interface methods.
 
-        ``read(path: string) -> result<string, io-error>``: reads
-        the file at ``path``. On success, builds Ok(String). On
-        any OSError, builds Err(IoError) with ``message = exception
-        str``; the IoError record is two adjacent (ptr, len) pairs
-        for ``message`` and ``cause``.
+        Slice 25.2 (2026-05-30): every Fs op now takes ``handle: u32``
+        as its first arg. The host looks up the receiver Fs in
+        ``self._cap_handles`` and enforces the restriction
+        (``fs.allows(path)``) before the syscall. This closes the
+        cross-function attenuation bug (audit slice 25 F1): a
+        restricted Fs threaded through a helper function on Wasm
+        previously lost its restriction because the emitter inlined
+        the prefix check at the literal call site only. Now the
+        receiver carries an i32 handle through the Wasm value flow
+        and the host enforces on every call.
 
-        ``write(path, content) -> result<_, io-error>``: writes
-        ``content`` to ``path``. On success, builds Ok(Unit) with
-        a placeholder payload. On error, builds Err(IoError)
-        identically to read.
-
-        Phase 7C scope: no ``Fs.restrict_to`` capability attenuation
-        (the wasm-side cap is unrestricted; in production we would
-        track the same prefix set as ``capa.runtime.Fs``)."""
+        ``read(handle: u32, path: string) -> result<string, io-error>``:
+        looks up the cap from the handle table, calls
+        ``fs.allows(path)``; on deny, writes
+        ``Err(IoError(\"permission denied: ...\"))`` to the ret area
+        and skips the syscall. On allow, reads the file. ``write`` /
+        ``mkdir`` / ``list_dir`` follow the same pattern.
+        ``exists`` / ``is_dir`` fail-closed-as-absent on a denied
+        path (returns false rather than leaking out-of-prefix
+        existence; matches the Python runtime's behaviour).
+        ``restrict-to`` returns a fresh handle bound to a child
+        restriction (intersection with the parent)."""
         # Canonical ABI: result<T, io-error> returns indirectly via
         # a 20-byte caller area. Layout:
         #   tag i32  @ 0
@@ -469,6 +500,7 @@ class WasmHost:
         #                       c_len @ 16
         ft_fs_read_indirect = wasmtime.FuncType(
             [
+                wasmtime.ValType.i32(),  # handle (slice 25.2)
                 wasmtime.ValType.i32(),  # path_ptr
                 wasmtime.ValType.i32(),  # path_len
                 wasmtime.ValType.i32(),  # ret_area
@@ -477,6 +509,7 @@ class WasmHost:
         )
         ft_fs_write_indirect = wasmtime.FuncType(
             [
+                wasmtime.ValType.i32(),  # handle (slice 25.2)
                 wasmtime.ValType.i32(),  # path_ptr
                 wasmtime.ValType.i32(),  # path_len
                 wasmtime.ValType.i32(),  # content_ptr
@@ -531,7 +564,21 @@ class WasmHost:
                 caller, c_len.to_bytes(4, "little"), ret_area + 16,
             )
 
-        def fs_read(caller, path_ptr, path_len, ret_area):
+        def _lookup_fs_or_err(caller, handle, ret_area):
+            """Resolve the receiver Fs cap from the handle table.
+            On failure (unknown handle / wrong type / zero sentinel)
+            write an Err(IoError) into ``ret_area`` and return
+            None; callers short-circuit and skip the syscall."""
+            try:
+                return self._cap_handles.lookup(handle, Fs)
+            except CapHandleError as e:
+                _write_result_err_ioerror(
+                    caller, ret_area,
+                    "invalid Fs capability handle", str(e),
+                )
+                return None
+
+        def fs_read(caller, handle, path_ptr, path_len, ret_area):
             if self._memory is None or self._alloc_export is None:
                 raise RuntimeError(
                     "fs.read called before memory + $alloc set"
@@ -550,6 +597,21 @@ class WasmHost:
                     caller, ret_area, f"invalid utf-8 in path: {e}",
                 )
                 return
+            # Slice 25.2: enforce the receiver cap's restriction here
+            # rather than trusting an emitter-inlined prefix check. The
+            # cross-function attenuation bug (audit slice 25 F1) fell
+            # out of the inline approach losing the restriction at any
+            # function boundary; routing through ``self.allows(path)``
+            # is the single soundness chokepoint.
+            fs = _lookup_fs_or_err(caller, handle, ret_area)
+            if fs is None:
+                return
+            if not fs.allows(path):
+                _write_result_err_ioerror(
+                    caller, ret_area,
+                    f"Fs capability does not permit read: {path}",
+                )
+                return
             try:
                 content = open(path, encoding="utf-8").read()
                 s_ptr, s_len = _alloc_utf8(caller, content)
@@ -557,7 +619,7 @@ class WasmHost:
             except OSError as e:
                 _write_result_err_ioerror(caller, ret_area, str(e))
 
-        def fs_write(caller, p_ptr, p_len, c_ptr, c_len, ret_area):
+        def fs_write(caller, handle, p_ptr, p_len, c_ptr, c_len, ret_area):
             if self._memory is None or self._alloc_export is None:
                 raise RuntimeError(
                     "fs.write called before memory + $alloc set"
@@ -583,6 +645,15 @@ class WasmHost:
                     caller, ret_area, f"invalid utf-8 in content: {e}",
                 )
                 return
+            fs = _lookup_fs_or_err(caller, handle, ret_area)
+            if fs is None:
+                return
+            if not fs.allows(path):
+                _write_result_err_ioerror(
+                    caller, ret_area,
+                    f"Fs capability does not permit write: {path}",
+                )
+                return
             try:
                 with open(path, "w", encoding="utf-8") as f:
                     f.write(content)
@@ -599,37 +670,81 @@ class WasmHost:
             fs_write, access_caller=True,
         )
 
-        # fs.restrict_to is a no-op at the Wasm level. Static
-        # capability discipline is enforced by the analyzer; this
-        # callback only exists so the import resolves. A future
-        # phase that threads handles through the Fs interface
-        # would replace it with real prefix tracking.
-        ft_string_to_unit = wasmtime.FuncType(
-            [wasmtime.ValType.i32(), wasmtime.ValType.i32()], [],
+        # fs.restrict_to: slice 25.2 (2026-05-30). Looks up the parent
+        # handle, allocates a child Fs with the narrowed prefix, and
+        # returns the child's i32 handle. The Capa-side ``restrict_to``
+        # expression now produces a non-erased i32 value the guest
+        # threads as the receiver of subsequent Fs calls; passing it
+        # across a function boundary preserves the restriction (the
+        # bug fixed by this slice).
+        ft_restrict_to = wasmtime.FuncType(
+            [
+                wasmtime.ValType.i32(),  # parent handle
+                wasmtime.ValType.i32(),  # prefix_ptr
+                wasmtime.ValType.i32(),  # prefix_len
+            ],
+            [wasmtime.ValType.i32()],
         )
 
-        def fs_restrict_to(caller, prefix_ptr, prefix_len):
-            return None
+        def fs_restrict_to(caller, parent_handle, prefix_ptr, prefix_len):
+            if self._memory is None:
+                raise RuntimeError(
+                    "fs.restrict_to called before memory was set"
+                )
+            # Invalid UTF-8 in the prefix: surface as zero handle
+            # (the lookup-zero-sentinel raise on next use is the
+            # closest analogue to the Python runtime's failure mode
+            # without breaking the WIT signature). Vanishingly rare
+            # in practice (prefix is normally a literal interned at
+            # emit time).
+            try:
+                prefix = bytes(
+                    self._memory.read(
+                        caller, prefix_ptr, prefix_ptr + prefix_len,
+                    )
+                ).decode("utf-8")
+            except UnicodeDecodeError:
+                return 0
+            try:
+                return self._cap_handles.restrict_fs(parent_handle, prefix)
+            except CapHandleError:
+                # Unknown parent handle = emitter bug; the guest
+                # would crash on the next Fs op anyway. Return 0
+                # (sentinel) so the failure is loud rather than
+                # silently aliasing a real cap.
+                return 0
 
         self.linker.define_func(
-            "capa:host/fs", "restrict-to", ft_string_to_unit,
+            "capa:host/fs", "restrict-to", ft_restrict_to,
             fs_restrict_to, access_caller=True,
         )
 
-        # Fs.exists / Fs.is_dir: (path_ptr, path_len) -> i32 (bool).
+        # Fs.exists / Fs.is_dir: (handle, path_ptr, path_len) -> i32 (bool).
         # Mirror the Python runtime's fail-closed-as-absent
-        # convention: invalid UTF-8 in the path returns false (the
-        # host can't even attempt the syscall), matching what the
-        # Python side would do for a path that genuinely does not
-        # exist.
+        # convention: invalid UTF-8 in the path OR a denied path
+        # returns 0 (the host can't even attempt the syscall /
+        # the cap doesn't permit it). Routes through the handle
+        # table so cross-function restrictions hold (slice 25.2).
         ft_path_to_bool = wasmtime.FuncType(
-            [wasmtime.ValType.i32(), wasmtime.ValType.i32()],
+            [
+                wasmtime.ValType.i32(),  # handle (slice 25.2)
+                wasmtime.ValType.i32(),
+                wasmtime.ValType.i32(),
+            ],
             [wasmtime.ValType.i32()],
         )
 
         import os as _os_mod
 
-        def fs_exists(caller, path_ptr, path_len):
+        def _lookup_fs_bool(caller, handle):
+            """Bool-returning variant of the lookup helper. Returns
+            None when the handle is invalid; callers report 0."""
+            try:
+                return self._cap_handles.lookup(handle, Fs)
+            except CapHandleError:
+                return None
+
+        def fs_exists(caller, handle, path_ptr, path_len):
             if self._memory is None:
                 raise RuntimeError(
                     "fs.exists called before memory was set"
@@ -640,9 +755,12 @@ class WasmHost:
                 ).decode("utf-8")
             except UnicodeDecodeError:
                 return 0
+            fs = _lookup_fs_bool(caller, handle)
+            if fs is None or not fs.allows(path):
+                return 0
             return 1 if _os_mod.path.exists(path) else 0
 
-        def fs_is_dir(caller, path_ptr, path_len):
+        def fs_is_dir(caller, handle, path_ptr, path_len):
             if self._memory is None:
                 raise RuntimeError(
                     "fs.is_dir called before memory was set"
@@ -652,6 +770,9 @@ class WasmHost:
                     self._memory.read(caller, path_ptr, path_ptr + path_len)
                 ).decode("utf-8")
             except UnicodeDecodeError:
+                return 0
+            fs = _lookup_fs_bool(caller, handle)
+            if fs is None or not fs.allows(path):
                 return 0
             return 1 if _os_mod.path.isdir(path) else 0
 
@@ -664,13 +785,14 @@ class WasmHost:
             fs_is_dir, access_caller=True,
         )
 
-        # Fs.mkdir: (path_ptr, path_len, ret_area) -> ()
+        # Fs.mkdir: (handle, path_ptr, path_len, ret_area) -> ()
         # Same canonical-ABI shape as Fs.write Ok-Unit branch (20-byte
         # area). Idempotent via ``exist_ok=True`` to match the Python
         # runtime's contract; failures (e.g. EACCES, ENOTDIR on a
         # path component) become Err(IoError).
         ft_mkdir = wasmtime.FuncType(
             [
+                wasmtime.ValType.i32(),  # handle (slice 25.2)
                 wasmtime.ValType.i32(),
                 wasmtime.ValType.i32(),
                 wasmtime.ValType.i32(),
@@ -678,7 +800,7 @@ class WasmHost:
             [],
         )
 
-        def fs_mkdir(caller, path_ptr, path_len, ret_area):
+        def fs_mkdir(caller, handle, path_ptr, path_len, ret_area):
             if self._memory is None or self._alloc_export is None:
                 raise RuntimeError(
                     "fs.mkdir called before memory + $alloc set"
@@ -692,6 +814,15 @@ class WasmHost:
                     caller, ret_area, f"invalid utf-8 in path: {e}",
                 )
                 return
+            fs = _lookup_fs_or_err(caller, handle, ret_area)
+            if fs is None:
+                return
+            if not fs.allows(path):
+                _write_result_err_ioerror(
+                    caller, ret_area,
+                    f"Fs capability does not permit mkdir: {path}",
+                )
+                return
             try:
                 _os_mod.makedirs(path, exist_ok=True)
                 _write_result_ok_unit(caller, ret_area)
@@ -703,7 +834,7 @@ class WasmHost:
             fs_mkdir, access_caller=True,
         )
 
-        # Fs.list_dir: (path_ptr, path_len, ret_area) -> ()
+        # Fs.list_dir: (handle, path_ptr, path_len, ret_area) -> ()
         # Canonical-ABI result<list<string>, io-error>. ret_area is
         # 20 bytes: tag i32 @ 0; Ok arm (data_ptr i32 @ 4, len i32 @ 8);
         # Err arm (m_ptr @ 4, m_len @ 8, c_ptr @ 12, c_len @ 16).
@@ -712,7 +843,7 @@ class WasmHost:
         # materialiser wraps it in a List<String> header. Entries are
         # sorted to match the Python runtime's
         # ``sorted(os.listdir(path))``.
-        def fs_list_dir(caller, path_ptr, path_len, ret_area):
+        def fs_list_dir(caller, handle, path_ptr, path_len, ret_area):
             if self._memory is None or self._alloc_export is None:
                 raise RuntimeError(
                     "fs.list_dir called before memory + $alloc set"
@@ -724,6 +855,15 @@ class WasmHost:
             except UnicodeDecodeError as e:
                 _write_result_err_ioerror(
                     caller, ret_area, f"invalid utf-8 in path: {e}",
+                )
+                return
+            fs = _lookup_fs_or_err(caller, handle, ret_area)
+            if fs is None:
+                return
+            if not fs.allows(path):
+                _write_result_err_ioerror(
+                    caller, ret_area,
+                    f"Fs capability does not permit list_dir: {path}",
                 )
                 return
             try:
@@ -1593,10 +1733,58 @@ class WasmHost:
         return instance
 
     def run_main(self, wasm_blob: bytes) -> None:
-        """Instantiate and call the module's ``main`` export. The
-        Capa source's ``fun main(stdio: Stdio)`` lowers to a Wasm
-        export named ``main`` with no parameters (capability params
-        are dropped); calling it kicks off the program."""
+        """Instantiate and call the module's ``main`` export.
+
+        Pre-slice-25.2: ``fun main(stdio: Stdio)`` lowered to ``main()``
+        on Wasm (every cap param was erased). Slice 25.2 keeps Stdio /
+        Net / Db / Proc / Env / Clock / Random / Unsafe on the erased
+        path but routes ``Fs`` through a per-instance handle table; the
+        receiver is now an i32 the guest threads through every Fs call.
+        ``main`` therefore takes one i32 arg per Fs param in its
+        declared signature (and only Fs - other caps are still erased
+        until their own rollout slices).
+
+        We inspect the export's signature at call time: every i32
+        param the export declares corresponds to a Fs handle the
+        host must allocate. Allocating in declaration order is
+        sufficient because the IR's main-param walk goes left to
+        right and slice 25.2 only un-erases Fs (so no ordering
+        ambiguity arises from other caps becoming i32). The Fs root
+        handle is allocated unrestricted; programs that need a
+        narrower root should set CAPA_FS_ROOT or similar (deferred
+        to a future host-config slice)."""
         instance = self.instantiate(wasm_blob)
         main = instance.exports(self.store)["main"]
-        main(self.store)
+        # Discover how many i32 args main takes. ``wasmtime.Func`` in
+        # Python doesn't expose a stable typed signature pre-call, so
+        # we inspect via the module's type ascription on the func ref.
+        # Fall back to a try-catch on the call: pass N handles where
+        # N = number of params reported by ``main.type(store).params``.
+        try:
+            ftype = main.type(self.store)
+            n_params = len(list(ftype.params))
+        except Exception:
+            n_params = 0
+        # Allocate root Fs the host hands the guest. Stdio is still
+        # erased so we don't allocate a handle for it; same for the
+        # other built-in caps in this slice (their rollout is 25.3+).
+        # Net / Db / Proc / Env / Clock that would have been root
+        # handles stay implicit-by-import.
+        if self._root_fs is None:
+            self._root_fs = Fs()
+        if self._root_stdio is None:
+            self._root_stdio = Stdio()
+        roots = bootstrap_root_handles(
+            self._cap_handles,
+            fs=self._root_fs,
+            stdio=self._root_stdio,
+        )
+        # Slice 25.2 scope: only Fs is un-erased in the main signature
+        # (every other cap is still skipped by the Wasm emitter). The
+        # IR's main-param walk emits one i32 per Fs param in source
+        # order, so we hand exactly that many Fs handles. Programs
+        # declaring multiple Fs args (rare, but legal) get the same
+        # root cap aliased to each - the source-level analyzer
+        # already enforces capability uniqueness rules.
+        handle_args = [roots["fs"]] * n_params
+        main(self.store, *handle_args)

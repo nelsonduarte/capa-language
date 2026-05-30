@@ -1,0 +1,34 @@
+// Slice 25.2 (2026-05-30): cross-function attenuation oracle.
+//
+// The Python backend has always treated Fs as a first-class value
+// whose restriction travels with the cap into every helper it is
+// passed to. The Wasm backend pre-slice-25 erased Fs values at
+// the IR level and inlined ``restrict_to`` checks at the literal
+// call site, so the moment a restricted Fs crossed a function
+// boundary the receiving function saw an unrestricted cap and the
+// host bridge executed the syscall unconditionally (audit slice 25
+// finding F1).
+//
+// This program reproduces the bug. ``main`` narrows the root Fs to
+// ``C:/tmp/audit_narrow`` and hands the narrowed cap to ``helper``;
+// the helper attempts to read a file outside the narrow prefix.
+// Both backends must DENY the helper's read - if Wasm prints the
+// "BUG" line, the cross-function attenuation regression has come
+// back.
+//
+// Fixture: ``mkdir -p /tmp/audit_narrow`` +
+// ``echo outside > /tmp/other_file_outside_narrow.txt`` (the
+// parity test sets these up programmatically; the path is
+// portable across Linux + Git Bash on Windows where ``/tmp``
+// aliases ``C:\msys64\tmp`` or similar). The program prints
+// exactly one line regardless of fixture state because the cap
+// denial happens before the syscall.
+
+fun helper(fs: Fs, stdio: Stdio)
+    match fs.read("/tmp/other_file_outside_narrow.txt")
+        Ok(_) -> stdio.println("BUG: helper read outside narrow")
+        Err(_) -> stdio.println("ok: helper read denied")
+
+fun main(stdio: Stdio, fs: Fs)
+    let narrow = fs.restrict_to("/tmp/audit_narrow")
+    helper(narrow, stdio)

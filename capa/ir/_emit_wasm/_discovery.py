@@ -685,7 +685,16 @@ class _DiscoveryMixin:
                 # the privileged op is what enforces the discipline).
                 # Skip importing them so the host doesn't need to
                 # define a matching no-op stub.
-                if instr.method in (
+                #
+                # Slice 25.2 exception (2026-05-30): ``Fs.restrict_to``
+                # is no longer a no-op - it crosses the host bridge
+                # with the parent handle and returns a fresh i32
+                # handle bound to a narrower restriction. Register
+                # the import so the linker resolves the host
+                # callback.
+                if cap == "Fs" and instr.method == "restrict_to":
+                    self._used_caps.add(("Fs", "restrict_to"))
+                elif instr.method in (
                     "restrict_to", "restrict_to_keys", "restrict_to_after",
                 ):
                     pass

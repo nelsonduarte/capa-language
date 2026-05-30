@@ -361,7 +361,13 @@ class _EqualityMixin:
         for _fname, (offset, size, fty) in layout["fields"].items():
             if fty in BUILTIN_CAPS:
                 # Capability fields are erased at the Wasm level and
-                # carry no value to compare.
+                # carry no value to compare. Fs is un-erased as of
+                # slice 25.2 but two handles compare by identity
+                # rather than by restriction equivalence (matching
+                # the Python runtime, which compares Fs objects by
+                # ``is`` not by .allowed_prefixes set). Equality on
+                # Fs-holding structs is vanishingly rare; deferred
+                # to a future slice if it surfaces.
                 continue
             self._emit_struct_field_eq(offset, size, fty)
             # Stack now holds the field's i32 0/1 result.
