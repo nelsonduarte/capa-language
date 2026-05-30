@@ -40,6 +40,7 @@ from typing import Any, Optional
 
 from .. import capa_ast as A
 
+from ..typesys import CAPABILITY_NAMES as _BUILTIN_CAPABILITY_NAMES
 from ._funrec import build_manifest
 
 
@@ -157,6 +158,38 @@ def build_spdx(
         },
     ]
 
+    # ----- One package per transitively-reached built-in cap -----
+    # Slice 23 (2026-05-29): synthesise a package for each built-
+    # in cap any function in the program transitively reaches, so
+    # ``DEPENDS_ON`` edges built below can resolve to a real
+    # SPDXID. Mirrors the CycloneDX builtin-cap synthesis. Without
+    # this the dep graph carries the slice-21 transitive claim as
+    # an annotation but not as a walkable edge.
+    reached_builtins: set[str] = set()
+    for fn in inner["functions"]:
+        for cap in fn.get("transitively_reachable_capabilities", []):
+            if cap in _BUILTIN_CAPABILITY_NAMES:
+                reached_builtins.add(cap)
+    builtin_cap_ids: dict[str, str] = {}
+    for cap_name in sorted(reached_builtins):
+        cap_id = _spdx_id("Builtin", bom_basename, cap_name)
+        builtin_cap_ids[cap_name] = cap_id
+        packages.append({
+            "SPDXID": cap_id,
+            "name": cap_name,
+            "downloadLocation": "NOASSERTION",
+            "filesAnalyzed": False,
+            **_SPDX_NOASSERT_LICENSE_FIELDS,
+            "annotations": [
+                _annot(timestamp, "kind", "builtin-capability"),
+            ],
+        })
+        relationships.append({
+            "spdxElementId": program_id,
+            "relationshipType": "DEPENDS_ON",
+            "relatedSpdxElement": cap_id,
+        })
+
     # ----- One package per user-defined capability -----
     user_cap_ids: dict[str, str] = {}
     for uc in inner["user_defined_capabilities"]:
@@ -230,6 +263,14 @@ def build_spdx(
             ))
         for cap_type in fn["declared_capabilities"]:
             annots.append(_annot(timestamp, "declared_capability", cap_type))
+        # Slice 23 (2026-05-29): surface the transitively-
+        # reachable set so SPDX consumers see the honest
+        # authority chain in addition to the signature-only
+        # ``declared_capability`` view.
+        for cap_type in fn.get("transitively_reachable_capabilities", []):
+            annots.append(_annot(
+                timestamp, "transitively_reachable_capability", cap_type,
+            ))
         for cap_type in fn.get("provably_excluded_capabilities", []):
             annots.append(_annot(
                 timestamp, "provably_excluded_capability", cap_type,
@@ -260,10 +301,14 @@ def build_spdx(
             "relatedSpdxElement": fn_id,
         })
 
-        # Function -> user-defined capabilities it declares.
+        # Function -> every capability (user-defined OR built-in)
+        # it transitively reaches. Slice 23 (2026-05-29) widened
+        # this from the signature-only ``declared_capabilities``
+        # to the honest reachable set, matching the CycloneDX
+        # side and the per-function exclusion claim.
         seen_targets: set[str] = set()
-        for cap_type in fn["declared_capabilities"]:
-            cap_id = user_cap_ids.get(cap_type)
+        for cap_type in fn.get("transitively_reachable_capabilities", []):
+            cap_id = user_cap_ids.get(cap_type) or builtin_cap_ids.get(cap_type)
             if cap_id and cap_id not in seen_targets:
                 relationships.append({
                     "spdxElementId": fn_id,

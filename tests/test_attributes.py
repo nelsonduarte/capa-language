@@ -581,20 +581,25 @@ class TestCycloneDX(unittest.TestCase):
             '    return net.allows("api.example.com")\n',
             filename="api.capa",
         )
-        # 1 function component, 0 user caps
-        components = sbom["components"]
-        self.assertEqual(len(components), 1)
-        fn = components[0]
+        # Slice 23 (2026-05-29): the components list now includes
+        # a synthesised ``capa:builtin:<file>:Net`` component
+        # alongside the function (so dep edges from the fn can
+        # resolve to it). Look up the function by bom-ref.
+        fn = next(
+            c for c in sbom["components"]
+            if c["bom-ref"] == "capa:fn:api.capa:fetch_user"
+        )
         self.assertEqual(fn["name"], "fetch_user")
         self.assertEqual(fn["type"], "library")
-        self.assertEqual(fn["bom-ref"], "capa:fn:api.capa:fetch_user")
 
     def test_function_properties_include_capabilities(self):
         sbom = cyclonedx_of(
             'fun fetch_user(net: Net) -> Bool\n'
             '    return net.allows("api.example.com")\n',
         )
-        fn = sbom["components"][0]
+        fn = next(
+            c for c in sbom["components"] if c["name"] == "fetch_user"
+        )
         props = props_dict(fn["properties"])
         self.assertEqual(props["capa:kind"], ["function"])
         self.assertEqual(props["capa:has_unsafe"], ["false"])
@@ -649,11 +654,54 @@ class TestCycloneDX(unittest.TestCase):
         cap_ref = "capa:cap:email.capa:SendEmail"
         self.assertIn(cap_ref, deps[0]["dependsOn"])
 
+    def test_transitively_reachable_cap_surfaces_in_cyclonedx(self):
+        # Slice 23 (2026-05-29): the audit's per-impl reachability
+        # reproducer. A function whose signature touches a cap-
+        # bearing struct must surface the wrapped built-in cap
+        # as both a property and a dep edge — without these the
+        # CycloneDX consumer can't see the authority chain that
+        # slice 21 made sound at the manifest layer.
+        sbom = cyclonedx_of(
+            'capability Logger\n'
+            '    fun log(self, msg: String)\n'
+            'type FileLogger { out: Stdio }\n'
+            'impl Logger for FileLogger\n'
+            '    fun log(self, msg: String)\n'
+            '        self.out.println(msg)\n'
+            'fun use_logger(lg: FileLogger)\n'
+            '    lg.log("x")\n',
+            filename="log.capa",
+        )
+        # The built-in cap Stdio gets a synthesised component.
+        stdio_ref = "capa:builtin:log.capa:Stdio"
+        stdio = next(
+            (c for c in sbom["components"]
+             if c["bom-ref"] == stdio_ref),
+            None,
+        )
+        self.assertIsNotNone(stdio, "missing builtin Stdio component")
+        self.assertEqual(
+            props_dict(stdio["properties"])["capa:kind"],
+            ["builtin-capability"],
+        )
+        # use_logger surfaces Stdio in transitively_reachable.
+        use_ref = "capa:fn:log.capa:use_logger"
+        use = next(c for c in sbom["components"] if c["bom-ref"] == use_ref)
+        self.assertIn(
+            "Stdio",
+            props_dict(use["properties"])["capa:transitively_reachable_capability"],
+        )
+        # And the dep edge resolves to the synthesised Stdio ref.
+        deps = next(d for d in sbom["dependencies"] if d["ref"] == use_ref)
+        self.assertIn(stdio_ref, deps["dependsOn"])
+
     def test_unsafe_boundary_property(self):
         sbom = cyclonedx_of(
             'fun crosses(_u: Unsafe)\n    return\n',
         )
-        fn = sbom["components"][0]
+        fn = next(
+            c for c in sbom["components"] if c["name"] == "crosses"
+        )
         props = props_dict(fn["properties"])
         self.assertEqual(props["capa:has_unsafe"], ["true"])
 
@@ -964,6 +1012,46 @@ class TestSPDX(unittest.TestCase):
             None,
         )
         self.assertIsNotNone(edge, "expected CONTAINS edge from program to helper")
+
+    def test_transitively_reachable_cap_surfaces_in_spdx(self):
+        # Slice 23 (2026-05-29): SPDX mirror of the CycloneDX
+        # regression test — the audit's per-impl reachability
+        # reproducer must surface the wrapped Stdio as both an
+        # annotation and a DEPENDS_ON edge.
+        spdx = spdx_of(
+            'capability Logger\n'
+            '    fun log(self, msg: String)\n'
+            'type FileLogger { out: Stdio }\n'
+            'impl Logger for FileLogger\n'
+            '    fun log(self, msg: String)\n'
+            '        self.out.println(msg)\n'
+            'fun use_logger(lg: FileLogger)\n'
+            '    lg.log("x")\n',
+            filename="log.capa",
+        )
+        # Built-in Stdio gets a synthesised package.
+        stdio_pkg = _pkg_by_name(spdx, "Stdio")
+        self.assertIsNotNone(stdio_pkg)
+        kinds = [
+            a["comment"] for a in stdio_pkg["annotations"]
+            if a["comment"].startswith("capa:kind=")
+        ]
+        self.assertEqual(kinds, ["capa:kind=builtin-capability"])
+        # use_logger surfaces Stdio in transitively_reachable.
+        use_pkg = _pkg_by_name(spdx, "use_logger")
+        self.assertIn(
+            "capa:transitively_reachable_capability=Stdio",
+            [a["comment"] for a in use_pkg["annotations"]],
+        )
+        # DEPENDS_ON edge resolves to the synthesised Stdio package.
+        edge = next(
+            (r for r in spdx["relationships"]
+             if r["spdxElementId"] == use_pkg["SPDXID"]
+             and r["relationshipType"] == "DEPENDS_ON"
+             and r["relatedSpdxElement"] == stdio_pkg["SPDXID"]),
+            None,
+        )
+        self.assertIsNotNone(edge, "expected DEPENDS_ON from use_logger to Stdio")
 
     def test_function_to_function_call_becomes_depends_on(self):
         spdx = spdx_of(

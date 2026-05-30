@@ -55,6 +55,11 @@ _CDX_COMPONENT_COMPLIANCE_FIELDS: dict[str, Any] = {
     "licenses": [],
 }
 
+# Built-in capability names live in one place upstream; importing
+# the set here keeps the synthesised builtin-cap components and
+# the dep-edge resolver in lockstep with the analyzer.
+from ..typesys import CAPABILITY_NAMES as _BUILTIN_CAPABILITY_NAMES
+
 
 def build_cyclonedx(
     module: A.Module,
@@ -136,6 +141,35 @@ def build_cyclonedx(
                 f"capa:fn:{bom_basename}:{fn['name']}"
             )
 
+    # Audit slice 23 (2026-05-29): synthesise a component for
+    # every built-in capability that any function in the program
+    # transitively reaches, so the dep-edges built below can
+    # resolve those reach claims to a real bom-ref. Without this
+    # the CycloneDX graph would carry the (now sound) per-impl
+    # reachability claim only as a flat property and not as a
+    # walkable dependency edge — graph-tooling consumers would
+    # miss the authority chain that slice 21 made visible at the
+    # manifest layer.
+    reached_builtins: set[str] = set()
+    for fn in inner["functions"]:
+        for cap in fn.get("transitively_reachable_capabilities", []):
+            if cap in _BUILTIN_CAPABILITY_NAMES:
+                reached_builtins.add(cap)
+    builtin_cap_refs: dict[str, str] = {}
+    for cap_name in sorted(reached_builtins):
+        ref = f"capa:builtin:{bom_basename}:{cap_name}"
+        builtin_cap_refs[cap_name] = ref
+        components.append({
+            "bom-ref": ref,
+            "type": "library",
+            "name": cap_name,
+            "scope": "required",
+            **_CDX_COMPONENT_COMPLIANCE_FIELDS,
+            "properties": [
+                {"name": "capa:kind", "value": "builtin-capability"},
+            ],
+        })
+
     # bom-refs of user-defined caps, keyed by cap name
     user_cap_refs: dict[str, str] = {}
     for uc in inner["user_defined_capabilities"]:
@@ -166,7 +200,9 @@ def build_cyclonedx(
         })
 
     # Functions
-    program_depends_on: list[str] = list(user_cap_refs.values())
+    program_depends_on: list[str] = (
+        list(user_cap_refs.values()) + list(builtin_cap_refs.values())
+    )
     for fn in inner["functions"]:
         # bom-ref keyed on the loader-time name to keep
         # collision-resolution stable (two same-source-named helpers
@@ -213,6 +249,18 @@ def build_cyclonedx(
                 "name": "capa:declared_capability",
                 "value": cap_type,
             })
+        # Slice 23 (2026-05-29): surface the transitively-
+        # reachable set so consumers can read either the
+        # signature-only view (``capa:declared_capability``)
+        # or the honest authority chain (this one). The two
+        # sets overlap by construction (declared ⊆ reachable);
+        # emitting both lets a consumer pick the view that
+        # matches their compliance question.
+        for cap_type in fn.get("transitively_reachable_capabilities", []):
+            props.append({
+                "name": "capa:transitively_reachable_capability",
+                "value": cap_type,
+            })
         for cap_type in fn.get("provably_excluded_capabilities", []):
             props.append({
                 "name": "capa:provably_excluded_capability",
@@ -248,16 +296,23 @@ def build_cyclonedx(
             "properties": props,
         })
 
-        # Dependency edges: function -> capability components it
-        # declares, AND function -> functions it actually calls in
-        # the same module. Method-call edges (kind="method") are
-        # skipped in v1 because resolving the receiver to a specific
-        # impl requires type-tracking we do not yet have.
-        deps_for_this_fn: list[str] = [
-            user_cap_refs[c] for c in fn["declared_capabilities"]
-            if c in user_cap_refs
-        ]
-        seen_call_refs: set[str] = set(deps_for_this_fn)
+        # Dependency edges: function -> every capability (user-
+        # defined OR built-in) it transitively reaches, AND
+        # function -> functions it actually calls in the same
+        # module. Slice 23 (2026-05-29) widened this from
+        # ``declared_capabilities`` to ``transitively_reachable_capabilities``
+        # so the dep-graph reflects the same honest reachability
+        # the per-function exclusion claim now relies on.
+        # Method-call edges (kind="method") are still skipped in
+        # v1 because resolving the receiver to a specific impl
+        # requires type-tracking we do not yet have.
+        deps_for_this_fn: list[str] = []
+        seen_call_refs: set[str] = set()
+        for cap_type in fn.get("transitively_reachable_capabilities", []):
+            cap_ref = user_cap_refs.get(cap_type) or builtin_cap_refs.get(cap_type)
+            if cap_ref and cap_ref not in seen_call_refs:
+                deps_for_this_fn.append(cap_ref)
+                seen_call_refs.add(cap_ref)
         for call in fn["calls"]:
             if call["kind"] != "fn":
                 continue

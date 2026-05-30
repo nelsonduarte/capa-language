@@ -948,6 +948,80 @@ Listed so the design space is explicit.
 
 ### Wasm-specific gaps that are not P0
 
+- [x] **"Fully functional Wasm" slice 23 - SBOM exporter
+  audit (transitive cap reach for CycloneDX + SPDX)**
+  (closed 2026-05-29). An eighth audit pass on the
+  `capa/manifest/_cyclonedx.py` + `_spdx.py` exporters
+  found two **P0 regulator-facing under-disclosure bugs**
+  plus several P2/P3s deferred.
+  - **The finding.** Slice 21 added the
+    `transitively_reachable_capabilities` field to every
+    function record; the CycloneDX and SPDX exporters
+    were never updated to consume it. The per-function
+    `provably_excluded_capabilities` claim was sound at
+    the manifest layer but the SBOM dependency graphs
+    still showed only the signature-only
+    `declared_capabilities` view. A regulator walking
+    the dep graph from `main` to discover Stdio reach
+    saw nothing for `use_logger(lg: FileLogger)` (the
+    audit's slice-21 reproducer); the cap was reachable
+    via the impl chain but the graph carried zero edges
+    for it.
+  - **The fix.** Both exporters now:
+    1. synthesise a component/package per built-in cap
+       any function in the program transitively reaches
+       (`capa:builtin:<file>:Stdio` etc.) so dep edges
+       can resolve;
+    2. emit a `capa:transitively_reachable_capability`
+       property/annotation per function alongside the
+       unchanged `capa:declared_capability` (consumers
+       can read either view);
+    3. widen the per-function dep edges to walk the full
+       transitive set, resolving to user-cap refs OR the
+       new built-in-cap refs;
+    4. extend program-level `dependsOn` to include the
+       built-in cap refs.
+  - **Regression tests** (`TestCycloneDX::test_transitively_reachable_cap_surfaces_in_cyclonedx`
+    + `TestSPDX::test_transitively_reachable_cap_surfaces_in_spdx`)
+    lock the FileLogger reproducer end-to-end. Three
+    pre-existing tests updated to look up the function
+    component by bom-ref/name rather than `components[0]`
+    (built-in caps now share the components list).
+  - **Audit findings deferred:**
+    - **P2 / F4**: provenance attestation (`_provenance.py`)
+      doesn't bind the manifest hash to the source hash,
+      so a verifier with only the attestation can't tie
+      capability claims back to the build. Add a
+      `byproducts` entry with `name=capability-manifest`,
+      `digest.sha256` of canonical manifest JSON. Future
+      slice.
+    - **P2 / F6**: schema version doc says "refuse
+      unknown" but slice 21+23 added fields without
+      bumping. Either bump to 2 or relax the doc to
+      "additive fields ignored". Doc/policy call.
+    - **P3 / F5**: UUIDv5 derived from basename only;
+      two `main.capa` from different projects collide.
+      Touch on a project-id story.
+    - **P3 / F7**: VEX `@vex(...)` text not cross-checked
+      against the post-slice-21 exclusion list — stale
+      VEX statements survive into the SBOM. Add a
+      cross-check.
+    - **P3 / F8**: VEX `bom-ref` keyed on loader-mangled
+      name for cross-module non-pub items in standalone
+      `--vex` output. Mirror the CycloneDX
+      `qualname_display` demangle.
+  - **CLEAN areas verified:** `has_unsafe` aggregation
+    under transitive Unsafe reach (slice 21 propagates
+    correctly through both exporters), per-function
+    `provably_excluded_capabilities` value-sequence,
+    demangle through to exporters, CycloneDX
+    `vulnerabilities[]` shape, SPDXID sanitisation,
+    determinism (UUIDv5), strict-mode compliance fields.
+  - Suite 2058 -> 2060 / 5 skipped / 0 fail; gov pack
+    end-to-end on `--wasm` still works and its CycloneDX
+    correctly synthesises the 5 built-in caps it
+    reaches (Clock, Env, Fs, Net, Stdio).
+
 - [x] **"Fully functional Wasm" slice 21 - analyzer audit
   + per-impl reachability closure** (audit opened audit-
   only, closed via the per-impl reachability machinery
