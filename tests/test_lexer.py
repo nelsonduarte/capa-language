@@ -81,6 +81,39 @@ class TestIntegerLiterals(unittest.TestCase):
         with self.assertRaises(LexerError):
             lex("0x")
 
+    def test_int_at_i64_max_ok(self):
+        # 2**63 - 1 is i64::MAX; must lex cleanly.
+        toks = lex("9223372036854775807")
+        self.assertEqual(toks[0].value, 9223372036854775807)
+
+    def test_int_magnitude_2pow63_ok(self):
+        # 2**63 is the magnitude of i64::MIN; the unary minus is a
+        # separate token, so the lexer must let this magnitude
+        # through (``-9223372036854775808`` is a legal Int).
+        toks = lex("9223372036854775808")
+        self.assertEqual(toks[0].value, 9223372036854775808)
+
+    def test_int_over_i64_rejected(self):
+        # Audit slice 26 (2026-05-30): a magnitude strictly greater
+        # than 2**63 can't denote an Int under any sign. Pre-fix the
+        # lexer used unbounded int() and let these reach the
+        # backends, where Python printed them verbatim as bignums
+        # (violating the signed-64-bit Int type) and Wasm wrapped or
+        # failed to assemble. Now a clean compile-time error.
+        with self.assertRaises(LexerError):
+            lex("9223372036854775809")
+        with self.assertRaises(LexerError):
+            lex("99999999999999999999999999")
+
+    def test_int_over_i64_rejected_other_bases(self):
+        # Same bound applies to hex / octal / binary literals.
+        with self.assertRaises(LexerError):
+            lex("0x1_0000_0000_0000_0001")  # 2**64 + 1
+        with self.assertRaises(LexerError):
+            lex("0o2000000000000000000001")
+        with self.assertRaises(LexerError):
+            lex("0b1" + "0" * 64)  # 2**64
+
 
 # =============================================================
 # Float literals
