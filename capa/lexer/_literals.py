@@ -28,6 +28,22 @@ _HEX_DIGITS = "0123456789abcdefABCDEF"
 _OCT_DIGITS = "01234567"
 _BIN_DIGITS = "01"
 
+# Capa's ``Int`` is signed 64-bit. The lexer scans the magnitude of
+# an integer literal (the optional leading ``-`` is a separate unary
+# operator token), so the largest magnitude any well-formed literal
+# can carry is 2**63 -- which is only legal as the operand of unary
+# minus, yielding i64::MIN (-9223372036854775808). A magnitude
+# strictly greater than 2**63 can never denote an i64 value under any
+# sign, so the lexer rejects it here. Audit slice 26 (2026-05-30):
+# pre-fix the lexer used Python's unbounded ``int()`` and never
+# range-checked, so a literal like ``9223372036854775808`` slipped
+# through to the backends -- Python printed it verbatim as an
+# unbounded bignum (silently violating the i64 ``Int`` type) while
+# the Wasm backend either wrapped it or failed ``wasm-tools parse``
+# with "constant out of range". Neither matched the source-level
+# intent; both are now a clean compile-time error.
+_INT_MAGNITUDE_MAX = 1 << 63  # 2**63 == abs(i64::MIN)
+
 
 class _LiteralsMixin:
     def _lex_number(self, start: Pos) -> None:
@@ -46,6 +62,7 @@ class _LiteralsMixin:
                 base = 2
             text = self._slice_from(start)
             value = int(text[2:].replace("_", ""), base)
+            self._check_int_magnitude(value, text, start)
             self._emit(TokenKind.INT_LIT, text, start, value=value)
             return
 
@@ -76,7 +93,20 @@ class _LiteralsMixin:
             self._emit(TokenKind.FLOAT_LIT, text, start, value=value)
         else:
             value = int(text.replace("_", ""))
+            self._check_int_magnitude(value, text, start)
             self._emit(TokenKind.INT_LIT, text, start, value=value)
+
+    def _check_int_magnitude(self, value: int, text: str, start: Pos) -> None:
+        """Reject an integer literal whose magnitude can't denote a
+        signed 64-bit ``Int`` under any sign. See ``_INT_MAGNITUDE_MAX``
+        for why the bound is 2**63 inclusive (the unary-minus operand
+        path needs i64::MIN). Audit slice 26 (2026-05-30)."""
+        if value > _INT_MAGNITUDE_MAX:
+            raise self._error(
+                f"integer literal {text!r} is out of range for Int "
+                f"(signed 64-bit; max magnitude {_INT_MAGNITUDE_MAX})",
+                start,
+            )
 
     def _consume_digits(self, valid: str, what: str, start: Pos) -> None:
         """Consumes a sequence of digits in the given base, with

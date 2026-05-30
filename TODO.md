@@ -948,6 +948,64 @@ Listed so the design space is explicit.
 
 ### Wasm-specific gaps that are not P0
 
+- [x] **Slice 26 - lexer/parser audit (integer literal
+  overflow)** (closed 2026-05-30). An eleventh audit pass
+  (lexer + parser) found one **P1 silent value corruption**
+  plus two P3s, and positively verified a large CLEAN set
+  (full precedence ladder, literal forms, indentation,
+  comments, type grammar).
+  - **The bug.** `capa/lexer/_literals.py:_lex_number` used
+    Python's unbounded `int()` with no signed-64-bit range
+    check. A literal like `9223372036854775808` (2**63) or
+    `99999999999999999999999999` flowed untouched through
+    the lexer, parser, and analyzer. The Python backend then
+    printed it verbatim as an unbounded bignum (silently
+    violating the i64 `Int` type) while the Wasm backend
+    either wrapped it or failed `wasm-tools parse` with
+    "constant out of range". The source said one number; the
+    program produced another (or didn't compile on one
+    backend only).
+  - **The fix.** New `_check_int_magnitude` rejects any
+    integer literal whose magnitude exceeds 2**63. The bound
+    is 2**63 *inclusive* because the unary minus is a
+    separate token, so `-9223372036854775808` (i64::MIN)
+    must be reachable as `-(2**63)`. i64::MAX
+    (`9223372036854775807`) and i64::MIN via negation both
+    still lex cleanly; anything strictly past 2**63 is now a
+    clean compile-time error on all four bases (dec/hex/oct/
+    bin). Regression tests in `tests/test_lexer.py`.
+  - **Residual.** The single value `9223372036854775808`
+    used *positively* (not negated) is still accepted at lex
+    time (the lexer can't see whether a unary minus
+    follows). Narrow edge; a future analyzer-level
+    constant-fold pass could catch the non-negated 2**63.
+    Noted, not blocking.
+  - **Audit P3s deferred.** (1) `_parse_range` docstring
+    claims `a..b..c` is a syntax error; it actually parses
+    `(a..b)` and leaves `..c` for a generic "expected
+    newline" error - caught, but the docstring is
+    inaccurate. (2) `_close_type_args` mutates the shared
+    `>>` token in place when splitting nested generics
+    (`List<List<Int>>`); harmless in the single-pass compile
+    path but a latent footgun for any tool that re-parses a
+    cached token stream (LSP/formatter/fuzzer).
+  - **Test-hygiene note** (out of scope): `tests/test_lexer.py`
+    has duplicate `test_int_literal_value` method names;
+    Python keeps only the last, so some assertions silently
+    never run. Cleanup for a future slice.
+  - **CLEAN verified** (next audit can skip): full operator
+    precedence + associativity ladder (arith/bit/shift/
+    logical/unary/range/postfix-`?`), comparison
+    non-associativity enforced, all literal forms
+    (int/float/hex/oct/bin/underscore/exponent), string +
+    char escapes incl `\u{...}`, interpolation boundary
+    cases, indentation (tabs rejected, dedent-mismatch
+    rejected, blank/comment lines, paren continuation, EOF
+    in block), comments (nested block, EOF, in-string),
+    type grammar (`>>` split, Fun types, tuple vs grouping,
+    `Foo<>` rejected), assignment-target validation, token
+    positions.
+
 - [~] **"Fully functional Wasm" slice 25 - runtime cap-bridge
   audit + handle-table architecture** (foundation closed
   2026-05-30; rollout slices 25.2 - 25.8 pending). Tenth
