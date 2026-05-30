@@ -1,0 +1,47 @@
+// Slice 24 (2026-05-30): block-body lambda with implicit-
+// result tail. Pre-fix the CIR lowerer's _lower_lambda Block
+// branch fell through with no Return, so a non-Unit lambda
+// like ``fun (x) -> Int => { let y = x*2; y + 1 }`` returned
+// None on Python (silent wrong answer) and trapped on Wasm
+// ('unreachable' executed). The implicit-result-tail rule
+// already worked for ``match`` arms and expression-body
+// lambdas; this brings block-body lambdas in line.
+//
+// Both the CIR lowerer (Wasm path) and the legacy transpiler
+// (Python --run path) needed the fix; neither one was caught
+// by parity tests because every existing block-body lambda
+// in examples/wasm/ used either expression bodies after `=>`
+// or explicit ``return`` inside the block.
+
+fun main(stdio: Stdio)
+    // Simple case: let-then-tail.
+    let plus_one_doubled = fun (x: Int) -> Int =>
+        let y = x * 2
+        y + 1
+    stdio.println("plus_one_doubled(3)=${plus_one_doubled(3)}")
+    stdio.println("plus_one_doubled(10)=${plus_one_doubled(10)}")
+
+    // Tail expression after multiple lets.
+    let combine = fun (a: Int, b: Int) -> Int =>
+        let s = a + b
+        let p = a * b
+        s + p
+    stdio.println("combine(3,4)=${combine(3, 4)}")
+
+    // Explicit ``return`` inside a block still works (we
+    // didn't break the existing path).
+    let explicit = fun (x: Int) -> Int =>
+        let y = x * x
+        return y + 1
+    stdio.println("explicit(5)=${explicit(5)}")
+
+    // String return type with tail-expression body.
+    let greet = fun (who: String) -> String =>
+        let prefix = "hello, "
+        prefix + who
+    stdio.println("${greet(\"world\")}")
+
+    // Note: Unit-returning block-body lambdas (no `-> Ret`)
+    // hit a separate Wasm-emit-side bug (lambda body leaves
+    // a value on the WAT stack); tracked as a follow-up
+    // outside slice 24's scope. They work on Python today.

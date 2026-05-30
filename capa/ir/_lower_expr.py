@@ -229,13 +229,34 @@ class _LowerExprMixin:
             if is_cap:
                 self._cap_params[p.name] = ty_name
         # Body: an expression body produces a value the lambda must
-        # ``return``; a block body lowers as a sequence of statements
-        # with explicit ``return`` (the analyzer guarantees a Unit
-        # return for fall-off cases, which our emitter matches via the
-        # natural fall-through).
+        # ``return``. A block body that ends in an ExprStmt uses
+        # Capa's implicit-result-block semantics — the tail
+        # expression is the lambda's return value (matches
+        # ``_lower_match_expr``'s arm-body handling at
+        # _lower_expr.py:174-185). Otherwise the block lowers
+        # as plain statements with the analyzer-enforced
+        # explicit ``return``, or fall-through for Unit lambdas.
+        # Audit slice 24 (2026-05-30): pre-fix the Block branch
+        # always fell through, so a non-Unit lambda like
+        # ``fun (x) -> Int => { let y = x*2; y + 1 }`` returned
+        # None on Python and trapped on Wasm — silent divergence
+        # that no parity test exercised because every existing
+        # block-body lambda used explicit ``return``.
         self._enter_scope()
         if isinstance(e.body, A_local.Block):
-            self._lower_block(e.body)
+            ret_ty_name = _type_name(e.return_type) if e.return_type else "Unit"
+            stmts = e.body.stmts
+            if (
+                ret_ty_name != "Unit"
+                and stmts
+                and isinstance(stmts[-1], A_local.ExprStmt)
+            ):
+                for s in stmts[:-1]:
+                    self._lower_stmt(s)
+                v = self._lower_expr(stmts[-1].expr)
+                self._instrs.append(Return(value=v))
+            else:
+                self._lower_block(e.body)
         else:
             v = self._lower_expr(e.body)
             self._instrs.append(Return(value=v))

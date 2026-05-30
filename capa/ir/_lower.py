@@ -197,12 +197,20 @@ class Lowerer(
         outer_params = self._params
         outer_caps = self._cap_params
         outer_alias = self._alias_stack
+        # Audit slice 24 P2 (2026-05-30): also reset the per-
+        # function attenuation map so a stale entry from the
+        # previously-lowered function can't be consulted while
+        # lowering a const RHS. Latent today (consts can't carry
+        # caps) but the rest of the save/restore block already
+        # honors the "per-item state isolation" invariant.
+        outer_atten = self._attenuation_map
         self._counter = {"n": 0}
         self._instrs = []
         self._locals = {}
         self._params = {}
         self._cap_params = {}
         self._alias_stack = [{}]
+        self._attenuation_map = {}
         value = self._lower_expr(c.value)
         # Final binding: ``name = value``. Reuse AssignConst so the
         # emitter can render it without a special case.
@@ -217,6 +225,7 @@ class Lowerer(
         self._params = outer_params
         self._cap_params = outer_caps
         self._alias_stack = outer_alias
+        self._attenuation_map = outer_atten
         return ConstDecl(name=c.name, ty=ty, body=body)
 
     def _lower_trait_decl(self, t: A.TraitDecl) -> TraitDecl:

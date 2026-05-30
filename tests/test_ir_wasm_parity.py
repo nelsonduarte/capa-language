@@ -153,6 +153,16 @@ _PARITY_PROGRAMS: list[str] = [
     # shape. Now Python emits ``lambda i=i: ...`` to bind by
     # value, matching Wasm.
     "closure_loop_capture.capa",
+    # Slice 24 (2026-05-30): block-body lambda implicit-result
+    # tail parity. Pre-fix the CIR lowerer's Block branch fell
+    # through with no Return, so a non-Unit lambda like
+    # ``fun (x) -> Int => { let y = x*2; y + 1 }`` returned
+    # None on Python (silent wrong answer) and trapped on Wasm
+    # ('unreachable' executed). Both fixed: CIR side mirrors
+    # the implicit-result rule already used by ``_lower_match_expr``;
+    # transpiler side wraps the tail in ``return`` for the
+    # legacy Python path.
+    "lambda_block_implicit_result.capa",
 ]
 
 # Programs deliberately excluded from parity and why; documented
@@ -629,6 +639,16 @@ class TestPythonWasmParity(unittest.TestCase):
         # iteration. Real divergence undetected by every prior
         # parity test (none exercised a captured loop var).
         self._assert_parity("closure_loop_capture.capa")
+
+    def test_lambda_block_implicit_result(self):
+        # Slice 24 (2026-05-30): block-body lambdas with an
+        # implicit-result tail expression. Pre-fix Python's
+        # transpiler emitted the tail as a discarded statement
+        # (returning None) and the CIR lowerer for Wasm fell
+        # through with no Return (trap). Both fixed: transpiler
+        # wraps the tail in ``return``; lowerer mirrors the
+        # implicit-result rule from ``_lower_match_expr``.
+        self._assert_parity("lambda_block_implicit_result.capa")
 
     def test_string_unicode(self):
         # Slice 17 (2026-05-29): String.length and substring now

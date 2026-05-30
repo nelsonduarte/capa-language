@@ -204,7 +204,31 @@ class _ExpressionsMixin:
                 self.em.write("@_capa_wrap")
             self.em.write(f"def {name}({full_params}):")
             self.em.indent()
-            self._emit_block_body(e.body)
+            # Audit slice 24 (2026-05-30): a block-body lambda with
+            # a non-Unit return type uses Capa's implicit-result-
+            # block semantics — the trailing ExprStmt is the
+            # lambda's return value. Without this, Python emits the
+            # expression as a discarded statement and the lambda
+            # returns None, while the CIR-side fix wraps the tail
+            # in ``Return(...)`` and Wasm returns the correct value.
+            # Mirror the implicit-result rule at the transpiler
+            # layer so the legacy oracle backend matches Wasm.
+            returns_unit = (
+                e.return_type is None
+                or isinstance(e.return_type, A.UnitType)
+            )
+            stmts = e.body.stmts
+            if (
+                not returns_unit
+                and stmts
+                and isinstance(stmts[-1], A.ExprStmt)
+            ):
+                for s in stmts[:-1]:
+                    self._emit_stmt(s)
+                tail_value = self._emit_expr(stmts[-1].expr)
+                self.em.write(f"return {tail_value}")
+            else:
+                self._emit_block_body(e.body)
             self.em.dedent()
             return name
         body = self._emit_expr(e.body)

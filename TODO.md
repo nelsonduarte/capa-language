@@ -948,6 +948,48 @@ Listed so the design space is explicit.
 
 ### Wasm-specific gaps that are not P0
 
+- [x] **"Fully functional Wasm" slice 24 - CIR lowerer
+  audit (block-body lambda implicit-result tail)**
+  (closed 2026-05-30). A ninth audit pass on
+  `capa/ir/_lower_*` found one **P0 silent Python/Wasm
+  divergence** plus several lower-severity findings.
+  - **The bug.** A non-Unit lambda with a block body
+    ending in an implicit-result expression returned
+    `None` on Python and trapped on Wasm:
+    ```capa
+    let f = fun (x: Int) -> Int =>
+        let y = x * 2
+        y + 1
+    stdio.println("f(3)=${f(3)}")
+    ```
+    Python: `f(3)=None`. Wasm: `unreachable` instruction
+    executed. Two parallel bugs, no parity test caught
+    them (both backends honored their respective IRs).
+  - **The fix.** Mirror the `match`-arm implicit-result
+    rule in both `capa/ir/_lower_expr.py:_lower_lambda`
+    (Wasm path) and `capa/transpiler/_expressions.py:_emit_lambda`
+    (Python path). New parity program
+    `examples/wasm/lambda_block_implicit_result.capa`.
+  - **Bonus fix.** `_lower_const_decl` was not resetting
+    `self._attenuation_map` across function/const
+    boundaries — latent today (consts can't carry caps)
+    but broke the per-item state-isolation invariant.
+  - **Findings deferred** (separate slices): Unit-
+    returning block-body lambda trips Wasm emit "values
+    remaining on stack" (pre-existing); tuple-destructure
+    `for`-pattern + or-patterns + field-target assignment
+    raise `UnsupportedInIR` on Wasm; `_monomorphise`
+    Call-instance mutate-share footgun; analyzer
+    `unify` infinite recursion when pushing typed-T
+    into `var out: List<T>`.
+  - **CLEAN verified**: short-circuit ops with side
+    effects, `?` operator on Option/Result, interpolation
+    eval order, tuple/list literal eval order,
+    arithmetic/comparison, sum-match with mixed payload
+    arities, alpha-renamed shadowing, lambda value-capture
+    parity, monomorphisation, forward refs, map iteration.
+  - Suite 2060 -> 2061 / 5 skipped / 0 fail.
+
 - [x] **"Fully functional Wasm" slice 23 - SBOM exporter
   audit (transitive cap reach for CycloneDX + SPDX)**
   (closed 2026-05-29). An eighth audit pass on the
