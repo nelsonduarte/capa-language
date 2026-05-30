@@ -3903,14 +3903,6 @@ class TestWasmComponentHost(unittest.TestCase):
             self._run_capturing_stdout(src), "hi capa\n",
         )
 
-    @unittest.skip(
-        "Slice 25.5 (2026-05-30): Env handle threading changed "
-        "main's wasm signature to take an i32 per cap param; the "
-        "Component Model wrapper still emits a fixed "
-        "``world { export main: func(); }`` so ``wasm-tools "
-        "component new`` rejects programs whose main takes Env. "
-        "Slice 25.8 will unpark this alongside the Fs / Net CM tests."
-    )
     def test_env_args_round_trip(self):
         # Component-host argv lifting: Env.args() should return
         # the list passed at construction time, length-and-order
@@ -3924,14 +3916,6 @@ class TestWasmComponentHost(unittest.TestCase):
         out = self._run_capturing_stdout(src, args=["alpha", "beta", "gamma"])
         self.assertEqual(out, "alpha\nbeta\ngamma\n")
 
-    @unittest.skip(
-        "Slice 25.6 (2026-05-30): Clock handle threading changed "
-        "main's wasm signature to take an i32 per cap param; the "
-        "Component Model wrapper still emits a fixed "
-        "``world { export main: func(); }`` so ``wasm-tools "
-        "component new`` rejects programs whose main takes Clock. "
-        "Slice 25.8 will unpark this alongside the Fs / Net CM tests."
-    )
     def test_clock_now_secs_returns_positive_float(self):
         # Component-host Clock bridge. Exact value depends on
         # wall-clock so we only assert shape + sign.
@@ -3947,14 +3931,6 @@ class TestWasmComponentHost(unittest.TestCase):
             self._run_capturing_stdout(src), "positive\n",
         )
 
-    @unittest.skip(
-        "Slice 25.3 (2026-05-30): Net handle threading changed "
-        "main's wasm signature to take an i32 per cap param; the "
-        "Component Model wrapper still emits a fixed "
-        "``world { export main: func(); }`` so ``wasm-tools "
-        "component new`` rejects programs whose main takes Net. "
-        "Slice 25.8 will unpark this alongside the Fs CM tests."
-    )
     def test_net_get_file_url_under_component_host(self):
         # Slice 3: ``Net.get`` through the Component Model bridge.
         # Same hermetic ``file://`` round-trip as the core-host
@@ -3984,11 +3960,6 @@ class TestWasmComponentHost(unittest.TestCase):
         finally:
             os.unlink(fixture)
 
-    @unittest.skip(
-        "Slice 25.3 (2026-05-30): see "
-        "test_net_get_file_url_under_component_host above. Slice "
-        "25.8 will unpark both."
-    )
     def test_net_post_under_component_host(self):
         # Slice 8 (2026-05): ``Net.post`` parallels ``Net.get`` on
         # the Component Model side. Same hermetic loopback fixture
@@ -4036,15 +4007,6 @@ class TestWasmComponentHost(unittest.TestCase):
             server.server_close()
             thread.join(timeout=2)
 
-    @unittest.skip(
-        "Slice 25.2 (2026-05-30): Fs handle threading changed "
-        "main's wasm signature to take an i32 per cap param; the "
-        "Component Model wrapper still emits a fixed "
-        "``world { export main: func(); }`` so ``wasm-tools "
-        "component new`` rejects programs whose main takes Fs. "
-        "Slice 25.8 updates the CM wrapper to honor the new "
-        "signature; until then this test is parked."
-    )
     def test_fs_round_trip_under_component_host(self):
         # Slice 1 (2026-05): ``Fs.read`` / ``Fs.write`` /
         # ``Fs.exists`` through the Component Model bridge. Writes
@@ -4081,10 +4043,6 @@ class TestWasmComponentHost(unittest.TestCase):
             if os.path.exists(path):
                 os.unlink(path)
 
-    @unittest.skip(
-        "Slice 25.5 (2026-05-30): see test_env_args_round_trip "
-        "above. Slice 25.8 will unpark."
-    )
     def test_env_get_under_component_host(self):
         # Slice 1 surface continued: ``Env.get`` returns
         # ``Option<String>``. The component host lifts the Python
@@ -4110,10 +4068,6 @@ class TestWasmComponentHost(unittest.TestCase):
         finally:
             os.environ.pop("CAPA_CM_FIXTURE", None)
 
-    @unittest.skip(
-        "Slice 25.2 (2026-05-30): see test_fs_round_trip_under_"
-        "component_host above. Slice 25.8 will unpark both."
-    )
     def test_fs_mkdir_and_list_dir_under_component_host(self):
         # Slice 1 host bridges: ``Fs.mkdir`` returns
         # ``Result<Unit, IoError>`` (a result with an empty Ok

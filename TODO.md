@@ -1062,9 +1062,27 @@ Listed so the design space is explicit.
       every cap with attenuation surface; F2 closed by
       side effect in 25.3.** Component Model is the last
       gap; slice 25.8 unparks it.
-    - 25.8 Component Model host parity (unparks the 7
-      skipped tests + adds matching cross-function
-      parity for every cap).
+    - **25.8 DONE** (2026-05-30): Component Model host
+      reaches full parity with the core wasm host on
+      cap-handle threading. `capa/ir/_emit_wit.py` now
+      walks `main`'s cap-typed params and renders them
+      as `export main: func(fs: u32, net: u32, ...)`
+      (pure `fun main()` and Stdio-only programs keep
+      the trivial `func()` shape). `capa/runtime/_wasm_component_host.py`
+      grew its own `CapHandleTable` + lazy `_root_*` +
+      handler rewrites: every Fs/Net/Db/Proc/Env/Clock
+      handler takes `handle: u32` first, enforces
+      `allows()` via the looked-up cap, and the missing
+      `restrict-*` handlers were added (previously
+      stubbed as no-ops). `run_main` inspects
+      `main.type(store).params` from the WIT directly
+      (no `name`-section parse needed on CM — the WIT is
+      the source of truth). 17 previously-parked CM
+      tests now pass; 7 new `_under_cm` parity tests
+      cover the cross-function attenuation oracles on
+      the Component Model path. Gov pack runs end-to-end
+      on `capa --wasm --component --run`. F1/F2 are now
+      closed on **both** wasm execution paths.
     - 25.9 Remove the inline-attenuation emitter
       machinery; update positioning docs to reflect Wasm
       now matches Python on cap-discipline soundness; add

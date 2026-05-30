@@ -528,11 +528,65 @@ def emit_wit(module: Module, world_name: str = "program") -> str:
     # Export the Capa program's entry point so external Component
     # Model runtimes can call it. ``main`` matches the Capa
     # source-level convention and the core wasm's existing
-    # ``(export "main")`` clause; capability parameters are erased
-    # at the Wasm level (they become imports), so the export's
-    # canonical-ABI signature is the trivial ``() -> ()`` shape.
-    lines.append("  export main: func();")
+    # ``(export "main")`` clause.
+    #
+    # Slice 25.8 (2026-05-30): Fs / Net / Db / Proc / Env / Clock are
+    # un-erased on the core wasm path (slices 25.2 - 25.6) and lower
+    # to ``i32`` handle params on ``main``'s wasm signature so the
+    # host can route the right root cap to each slot. The Component
+    # Model world must therefore advertise the same param shape, or
+    # ``wasm-tools component new`` rejects the artifact with a
+    # core-vs-component signature mismatch. Stdio / Random / Unsafe
+    # have no attenuation surface to thread; they stay erased (no
+    # i32 param). Pure ``fun main()`` programs keep the trivial
+    # ``func()`` shape.
+    main_cap_params = _main_handle_param_names(module)
+    if main_cap_params:
+        sig = ", ".join(f"{name}: u32" for name in main_cap_params)
+        lines.append(f"  export main: func({sig});")
+    else:
+        lines.append("  export main: func();")
     lines.append("}")
     lines.append("")
 
     return "\n".join(lines)
+
+
+# Caps that lower to a real i32 handle on ``main``'s wasm signature
+# (slices 25.2 - 25.6). Mirrors ``_emit_wasm.__init__._emit_function``
+# and ``_wasm_host.WasmHost.run_main``: Fs / Net / Db / Proc / Env /
+# Clock thread through the host handle table; everything else
+# (Stdio / Random / Unsafe) stays erased on the wasm side and so on
+# the WIT side too.
+_HANDLE_BEARING_CAPS: frozenset[str] = frozenset({
+    "Fs", "Net", "Db", "Proc", "Env", "Clock",
+})
+
+
+def _main_handle_param_names(module: Module) -> list[str]:
+    """Return the lowercase cap-param names of ``main`` for the WIT
+    world export, in declaration order, filtered to caps that lower
+    to a real i32 handle (the wasm side erases the rest).
+
+    Returns ``[]`` if ``main`` is absent or has no handle-bearing
+    cap params; the caller then emits the trivial ``func()`` shape
+    so plain ``fun main()`` programs and Stdio-only programs are
+    unchanged."""
+    for fn in module.functions:
+        if fn.name != "main":
+            continue
+        out: list[str] = []
+        for p in fn.params:
+            if p.ty in _HANDLE_BEARING_CAPS:
+                # WIT identifiers are strict kebab-case (lowercase
+                # ASCII letters / digits / dashes). Capa source-
+                # level param names are typically already conformant
+                # (``fs`` / ``net`` / ``db`` / ``proc`` / ``env`` /
+                # ``clock``); rewrite any underscores to dashes for
+                # robustness against a project that named its cap
+                # ``my_fs``. The wasm-side param identifier is
+                # untouched (Wasm allows ``$my_fs``); only the WIT
+                # spelling is sanitised.
+                out.append(p.name.lower().replace("_", "-"))
+        return out
+    return []

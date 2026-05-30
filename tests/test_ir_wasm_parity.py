@@ -847,6 +847,26 @@ _CM_HOST_BRIDGE_SUBSET: list[str] = [
     # helper exercised by both Proc.exec's attenuation check and
     # Proc.allows on a scoped cap.
     "proc_demo.capa",
+    # Slice 25.8 (2026-05-30): cross-function attenuation parity on
+    # the Component Model path. The core wasm host gained handle-
+    # threading in slices 25.2 - 25.6; this slice catches the CM
+    # host up. Each of these programs narrows a root cap, hands the
+    # narrowed handle to a helper across a function boundary, and
+    # asserts the helper's privileged op is denied. Pre-slice-25.8
+    # the CM wrapper could not even ingest a program whose ``main``
+    # took a handle-bearing cap (hard ``wasm-tools component new``
+    # failure on the world-vs-core signature mismatch); now the CM
+    # host enforces the same restriction as the Python and core-
+    # wasm backends. ``net_substring_attack.capa`` is the F2
+    # companion (the inline ``$str_contains`` URL check used to
+    # admit lookalike URLs).
+    "fs_cross_function_attenuation.capa",
+    "net_cross_function_attenuation.capa",
+    "net_substring_attack.capa",
+    "db_cross_function_attenuation.capa",
+    "proc_cross_function_attenuation.capa",
+    "env_cross_function_attenuation.capa",
+    "clock_cross_function_attenuation.capa",
 ]
 
 
@@ -866,23 +886,16 @@ class TestPythonWasmComponentParity(unittest.TestCase):
     class is the regression net for the next such canonical-ABI
     mismatch."""
 
-    # Slice 25.2 (2026-05-30): wiring Fs through the host handle
-    # table changed ``main``'s wasm signature from ``func()`` to
-    # ``func(i32, ...)`` (one handle per cap param). The Component
-    # Model wrapper still emits a fixed
-    # ``world { export main: func(); }`` so ``wasm-tools component
-    # new`` rejects every program whose ``main`` takes a cap arg.
-    # Skip those tests with this marker until slice 25.8 updates
-    # the Component Model wrapper to honor the new signature; the
-    # core wasm parity (the regulator-relevant path) is unaffected
-    # and stays green throughout. Tests that don't take a cap on
-    # ``main`` keep running unchanged.
-    _SLICE_25_8_PENDING = (
-        "Component Model main-signature update pending slice 25.8 "
-        "(Fs handle threading through ``main``'s cap params landed "
-        "in slice 25.2 for the core wasm host; the Component Model "
-        "wrapper's WIT world is still fixed at ``main: func()``)."
-    )
+    # Slice 25.8 (2026-05-30): the Component Model host now mirrors
+    # the core host's cap-handle threading. The WIT generator emits
+    # ``export main: func(<cap>: u32, ...)`` for each handle-bearing
+    # cap on ``main``'s signature, ``WasmComponentHost`` parses the
+    # exported func's WIT param list and dispatches the right root
+    # handle into each slot, and every cap host bridge takes a
+    # ``handle: u32`` first arg + looks the receiver up in the
+    # per-instance handle table before performing the syscall. The
+    # tests that were parked here while the CM wrapper still hard-
+    # coded ``main: func();`` are now live.
 
     def _assert_cm_parity(self, filename: str) -> None:
         path = _EXAMPLES / filename
@@ -902,39 +915,29 @@ class TestPythonWasmComponentParity(unittest.TestCase):
     def test_hello_under_cm(self):
         self._assert_cm_parity("hello.capa")
 
-    @unittest.skip(_SLICE_25_8_PENDING)
     def test_env_demo_under_cm(self):
         # Slice 9 bug shape: option<T> discriminant convention
         # mismatch between WIT (none=0, some=1) and Capa internal
         # (Some=0, None=1). This test would have failed pre-fix.
-        # Slice 25.5 (2026-05-30): Env was un-erased, so
-        # ``main(stdio, env)`` now compiles to ``main(i32)`` which
-        # the CM wrapper's fixed ``world { export main: func(); }``
-        # rejects until slice 25.8 generates the world from the
-        # signature.
+        # Slice 25.8 (2026-05-30): unparked once the CM host's
+        # cap-handle threading caught up with the core host's.
         self._assert_cm_parity("env_demo.capa")
 
-    @unittest.skip(_SLICE_25_8_PENDING)
     def test_fs_demo_under_cm(self):
         self._assert_cm_parity("fs_demo.capa")
 
-    @unittest.skip(_SLICE_25_8_PENDING)
     def test_net_get_under_cm(self):
         self._assert_cm_parity("net_get.capa")
 
-    @unittest.skip(_SLICE_25_8_PENDING)
     def test_net_post_under_cm(self):
         self._assert_cm_parity("net_post.capa")
 
-    @unittest.skip(_SLICE_25_8_PENDING)
     def test_net_restrict_under_cm(self):
         self._assert_cm_parity("net_restrict.capa")
 
-    @unittest.skip(_SLICE_25_8_PENDING)
     def test_allows_inline_under_cm(self):
         self._assert_cm_parity("allows_inline.capa")
 
-    @unittest.skip(_SLICE_25_8_PENDING)
     def test_db_demo_under_cm(self):
         # Slice 11 (2026-05): Db v1 SQLite-backed capability under
         # the Component Model. Same reset-fixture dance as the
@@ -950,21 +953,17 @@ class TestPythonWasmComponentParity(unittest.TestCase):
             if os.path.exists(path):
                 os.unlink(path)
 
-    @unittest.skip(_SLICE_25_8_PENDING)
     def test_clock_sleep_attenuation_under_cm(self):
         # Slice 13 audit-fix surface under CM. The Clock.sleep
         # gate calls ``clock.now_secs()`` inline; if the WIT
         # generator hadn't been taught to advertise ``now_secs``
         # when ``sleep`` carries attenuations, the component
         # wrap would fail at link time with "import interface
-        # is missing function now-secs". Slice 25.6 (2026-05-30):
-        # Clock was un-erased, so ``main(stdio, clock)`` now
-        # compiles to ``main(i32)`` which the CM wrapper's fixed
-        # ``world { export main: func(); }`` rejects until slice
-        # 25.8 generates the world from the signature.
+        # is missing function now-secs". Slice 25.8 (2026-05-30):
+        # unparked alongside the rest of the cap-on-main CM tests
+        # once the CM host learned to thread handles through main.
         self._assert_cm_parity("clock_sleep_attenuation.capa")
 
-    @unittest.skip(_SLICE_25_8_PENDING)
     def test_db_attach_blocked_under_cm(self):
         # Slice 13 audit-fix surface under CM. Confirms the
         # sqlite3 authorizer is installed on the CM host
@@ -979,7 +978,6 @@ class TestPythonWasmComponentParity(unittest.TestCase):
             if os.path.exists(path):
                 os.unlink(path)
 
-    @unittest.skip(_SLICE_25_8_PENDING)
     def test_proc_demo_under_cm(self):
         # Slice 15 (2026-05): Proc v1 sandboxed subprocess
         # capability under the Component Model. Same shape as
@@ -988,12 +986,51 @@ class TestPythonWasmComponentParity(unittest.TestCase):
         # so captured stdout matches byte-for-byte. The CM
         # canonical-ABI lift for ``result<string, io-error>``
         # already had Db / Fs / Net coverage; this case adds
-        # Proc to the matrix. Slice 25.4 (2026-05-30): Proc was
-        # un-erased, so ``main(stdio, proc)`` now compiles to
-        # ``main(i32)`` which the CM wrapper's fixed
-        # ``world { export main: func(); }`` rejects until slice
-        # 25.8 generates the world from the signature.
+        # Proc to the matrix. Slice 25.8 (2026-05-30): unparked
+        # once the CM host's cap-handle threading reached parity
+        # with the core host.
         self._assert_cm_parity("proc_demo.capa")
+
+    # Slice 25.8 (2026-05-30): cross-function attenuation oracles
+    # under the Component Model. The core wasm path gained these
+    # in slices 25.2 - 25.6; this slice catches the CM path up.
+    # Each program narrows a root cap, hands the narrowed handle
+    # to a helper across a function boundary, and asserts the
+    # helper's privileged op is denied. A regression here means
+    # the CM host bridge stopped enforcing attenuation through
+    # the handle table on at least one cap.
+
+    def test_fs_cross_function_attenuation_under_cm(self):
+        self._assert_cm_parity("fs_cross_function_attenuation.capa")
+
+    def test_net_cross_function_attenuation_under_cm(self):
+        self._assert_cm_parity("net_cross_function_attenuation.capa")
+
+    def test_net_substring_attack_under_cm(self):
+        # Audit slice 25 F2 under CM: the substring-match URL bug
+        # admitted a URL whose hostname was ``attacker.invalid``
+        # but whose path contained ``api.example.com``. The
+        # handle-routed bridge defers to ``Net.get(url)`` which
+        # does the proper ``urlparse(url).hostname`` + ``allows()``
+        # check, so the lookalike is denied on both backends.
+        self._assert_cm_parity("net_substring_attack.capa")
+
+    def test_db_cross_function_attenuation_under_cm(self):
+        # The deny check fires before the SQLite connection is
+        # opened (the path-prefix check rejects the helper's call
+        # via the host handle table), so no on-disk fixture is
+        # required - both backends print exactly the one ``ok:``
+        # line regardless of /tmp state.
+        self._assert_cm_parity("db_cross_function_attenuation.capa")
+
+    def test_proc_cross_function_attenuation_under_cm(self):
+        self._assert_cm_parity("proc_cross_function_attenuation.capa")
+
+    def test_env_cross_function_attenuation_under_cm(self):
+        self._assert_cm_parity("env_cross_function_attenuation.capa")
+
+    def test_clock_cross_function_attenuation_under_cm(self):
+        self._assert_cm_parity("clock_cross_function_attenuation.capa")
 
     def test_subset_membership(self):
         # Soundness check: every entry in _CM_HOST_BRIDGE_SUBSET
