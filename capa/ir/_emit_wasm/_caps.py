@@ -42,48 +42,23 @@ from ._layout import WasmEmissionError
 # The materialiser kind selects the post-call code in
 # ``_emit_cap_indirect_materialise``; kept off the hot path so
 # each return shape can evolve independently.
-# Capability privileged ops that get an inline attenuation check
-# at the Wasm emission level when the receiver carries a tracked
-# restrict_to* chain. ``restrict_to`` itself is intentionally
-# absent: it is the attenuator, not the privileged op.
-# Audit C2 (2026-05-25): Python's Fs.allows / Net.allows / Env.allows
-# already gate these in the Python runtime; the Wasm side now
-# matches.
-_ATTENUATION_PRIVILEGED_OPS: frozenset[tuple[str, str]] = frozenset({
-    ("Fs", "read"),
-    ("Fs", "write"),
-    # Audit 2026-05-29 (slice 12): Fs.exists / Fs.is_dir / Fs.mkdir
-    # / Fs.list_dir all observe or mutate the filesystem and so
-    # must respect the cap's prefix attenuation just like read /
-    # write. Pre-fix a Db cap scoped to "/tmp/" could
-    # ``fs.mkdir("/etc/foo")`` on Wasm; the Python runtime
-    # already gated all four through ``self.allows(path)``.
-    ("Fs", "exists"),
-    ("Fs", "is_dir"),
-    ("Fs", "mkdir"),
-    ("Fs", "list_dir"),
-    ("Net", "get"),
-    ("Net", "post"),
-    ("Env", "get"),
-    ("Clock", "now_secs"),
-    ("Clock", "now_monotonic"),
-    # Audit 2026-05-29 (slice 13): Clock.sleep is the gated op in
-    # the Python runtime (silent no-op when restrict_to_after's
-    # deadline hasn't passed). Pre-fix the Wasm backend ignored
-    # the attenuation entirely; the inline check now compares
-    # ``clock.now_secs()`` against the literal threshold at
-    # emit time and skips the host call when denied.
-    ("Clock", "sleep"),
-    ("Db", "exec"),
-    ("Db", "query"),
-    # Slice 15 (2026-05): Proc.exec is the privileged op that
-    # crosses the trust boundary. ``restrict_to`` is the
-    # attenuator; ``allows`` is inlined (D4 Option B). Same
-    # two-String-arg shape as Db.exec / Net.post but the
-    # attenuation predicate is basename + suffix-boundary
-    # (``$proc_allows``) rather than path-prefix.
-    ("Proc", "exec"),
-})
+# Slice 25 (2026-05-30) note: the privileged-op inline-attenuation
+# check used to live here, keyed by the ``_ATTENUATION_PRIVILEGED_OPS``
+# set. Slices 25.2-25.8 moved every privileged op (Fs / Net / Db /
+# Proc / Env / Clock) to the host handle table, which enforces
+# ``cap.allows(arg)`` from the receiver's recorded restriction
+# before the syscall. The emit-time inline check is no longer
+# reachable for any privileged op; slice 25.9 deleted the dead
+# machinery (``_emit_indirect_with_attenuation_check``,
+# ``_emit_bool_query_with_attenuation_check``,
+# ``_emit_clock_with_attenuation_check``,
+# ``_emit_attenuation_err_into_ret_area``,
+# ``_ATTENUATION_PRIVILEGED_OPS``). The ``.allows(arg)`` query
+# methods still inline (``_emit_atten_allows`` collapses the
+# literal-arg case to a const at emit time;
+# ``_emit_atten_allows_runtime`` handles the dynamic-arg case via
+# ``_emit_path_prefix_check`` / ``$proc_allows``), because those
+# are guest-side queries with no host syscall to short-circuit.
 
 
 def _unquote_attenuation_arg(s: str) -> str:
@@ -156,28 +131,6 @@ def _parse_attenuation_key_list(args: list) -> list[str]:
     return out
 
 
-def _atten_err_message(cap: str, method: str) -> str:
-    """Diagnostic string shown when an attenuation check denies a
-    Wasm-side privileged call. Mirrors the shape of the Python
-    runtime's ``Fs._deny`` / ``Net.get`` / ``Env.get`` denial
-    messages so a `match ... { Err(io) -> println(io.message) }`
-    arm reads a useful sentence either way. The verbose
-    cause-list path is not threaded through (cause is left empty
-    in the ret area).
-    """
-    if cap == "Fs":
-        return f"Fs capability does not permit {method}"
-    if cap == "Net":
-        return f"Net capability does not permit {method}"
-    if cap == "Env":
-        return f"Env capability does not permit access to this name"
-    if cap == "Db":
-        return f"Db capability does not permit {method}"
-    if cap == "Proc":
-        return f"Proc capability does not permit {method}"
-    return f"capability does not permit {cap}.{method}"
-
-
 _CANONICAL_INDIRECT_RETURN: dict[tuple[str, str], tuple[int, str]] = {
     # list<string>: (data_ptr i32, len i32) = 8 bytes flat.
     ("Env", "args"): (8, "list_string"),
@@ -202,11 +155,10 @@ _CANONICAL_INDIRECT_RETURN: dict[tuple[str, str], tuple[int, str]] = {
     # and materialiser as Fs.read.
     ("Stdio", "read_line"): (20, "result_string_io_error"),
     # Net.get / Net.post: same canonical-ABI shape as Fs.read /
-    # Fs.write respectively. The attenuation branch in
-    # ``_emit_indirect_with_attenuation_check`` already handles
-    # both via the receiver-host check; Net.post adds a second
-    # String arg (the body) and uses the same 20-byte result
-    # area as Net.get.
+    # Fs.write respectively. The host enforces the receiver Net
+    # cap's restriction via the handle table (slice 25.3); Net.post
+    # adds a second String arg (the body) and uses the same 20-byte
+    # result area as Net.get.
     ("Net", "get"): (20, "result_string_io_error"),
     ("Net", "post"): (20, "result_string_io_error"),
     # Db.exec / Db.query: same canonical-ABI shapes as Fs.write /
@@ -556,57 +508,13 @@ class _CapDispatchMixin:
             return
         # Slice 25.6 (2026-05-30): Clock primitive-return ops
         # (now_secs, now_monotonic, sleep) take ``handle`` as the
-        # first arg now too. ``allows`` is handled above. The
-        # inline ``Clock.sleep`` attenuation gate is now redundant
-        # (the host enforces via the handle's ``allows()``); kept
-        # commented for slice-25.9 cleanup.
+        # first arg now too. ``allows`` is handled above. The host
+        # enforces attenuation via the handle's ``allows()``, so
+        # no inline emit-time check is needed.
         if cap == "Clock" and method in (
             "now_secs", "now_monotonic", "sleep",
         ):
             self._emit_clock_primitive_with_handle(instr, method)
-            return
-        # Capability attenuation enforcement (audit C2, 2026-05-25):
-        # when the lowerer has tagged this MethodCall with an
-        # ``attenuations`` list, the receiver was bound via a
-        # ``restrict_to`` / ``restrict_to_keys`` / ``restrict_to_after``
-        # chain that the Python runtime would honour by failing the
-        # operation. The Wasm host bridges historically trusted the
-        # guest for attenuation; we now emit an inline runtime check
-        # before the host call so the two backends agree.
-        # Scope: intra-function only (matches ``_flow._build_atten``
-        # which is documented intra-function). Cross-function caps
-        # rely on the analyzer's static discipline check.
-        attenuations = getattr(instr, "attenuations", None) or []
-        # Only privileged ops carry an enforceable check. ``restrict_*``
-        # methods themselves are attenuators, not privileged ops;
-        # they intentionally pass through unchanged.
-        priv_op = (cap, method) in _ATTENUATION_PRIVILEGED_OPS
-        if attenuations and priv_op and indirect is not None:
-            self._emit_indirect_with_attenuation_check(
-                instr, cap, method, indirect, attenuations,
-            )
-            return
-        if attenuations and priv_op and cap == "Clock":
-            self._emit_clock_with_attenuation_check(
-                instr, cap, method, attenuations,
-            )
-            return
-        if (attenuations and priv_op
-                and cap == "Fs" and method in ("exists", "is_dir")):
-            # Bool-returning queries. The Python runtime fails-
-            # closed-as-absent: a denied path reports False so the
-            # cap doesn't leak the existence of paths outside its
-            # allowed prefixes. Mirror that on Wasm by wrapping
-            # the host call with an inline allows check; on deny
-            # we push 0 (Bool false) without ever touching the
-            # host. Pre-fix the host bridge was called
-            # unconditionally; a Fs cap scoped to "/tmp/" could
-            # ``fs.exists("/etc/shadow")`` on Wasm and the host
-            # answered honestly, leaking out-of-prefix existence
-            # information.
-            self._emit_bool_query_with_attenuation_check(
-                instr, cap, method, attenuations,
-            )
             return
         # Push each argument. String args (literals or locals)
         # expand to (ptr, len) i32 pairs; scalar args use the
@@ -932,193 +840,22 @@ class _CapDispatchMixin:
         else:
             self._push_value(arg)
 
-    def _emit_indirect_with_attenuation_check(
-        self, instr: MethodCall, cap: str, method: str,
-        indirect: tuple[int, str], attenuations: list,
-    ) -> None:
-        """Emit a Fs / Net / Env privileged op with an inline
-        attenuation check. The check fires before the host import;
-        on failure we materialise an Err result into the ret area
-        and skip the host call. On pass we run the host call as
-        normal. Either way ``_emit_cap_indirect_materialise``
-        rebuilds the Capa-side value from ``$_ret_area``.
-
-        Layout: alloc ret_area first (so the failure path has a
-        valid slot to write into), then evaluate the predicate.
-        Each attenuation is enforced individually; the
-        intersection (AND) semantics match the Python runtime's
-        ``frozenset(... | {prefix})`` shape.
-
-        v1 limitation: only literal-string attenuation arguments are
-        enforced at the Wasm level. A ``restrict_to(some_var)`` call
-        where ``some_var`` is itself a runtime value triggers
-        ``WasmEmissionError`` from this helper -- the analyzer's
-        static check still applies, but the runtime check cannot
-        prove the prefix matches without crossing the trust
-        boundary. The Python runtime handles the dynamic-string
-        case via the same ``Fs.allows`` path; the Wasm side
-        deliberately refuses rather than fall-through-permit."""
-        ret_area_size, ret_kind = indirect
-
-        # Stash all args into scratch locals so we can re-push them
-        # for the host call AND read them for the check.
-        if cap == "Fs" and method == "read":
-            self._push_string_arg(instr.args[0])
-            self._write("local.set $_atten_path_len")
-            self._write("local.set $_atten_path_ptr")
-        elif cap == "Fs" and method == "write":
-            self._push_string_arg(instr.args[0])
-            self._write("local.set $_atten_path_len")
-            self._write("local.set $_atten_path_ptr")
-            self._push_string_arg(instr.args[1])
-            self._write("local.set $_atten_content_len")
-            self._write("local.set $_atten_content_ptr")
-        elif cap == "Net" and method == "get":
-            self._push_string_arg(instr.args[0])
-            self._write("local.set $_atten_path_len")
-            self._write("local.set $_atten_path_ptr")
-        elif cap == "Net" and method == "post":
-            # Net.post(url, body): two String args. Stash both
-            # before the predicate check so the host-call branch
-            # can re-push them without re-evaluating either IR
-            # Value (which would matter if the body is a function
-            # call with side effects).
-            self._push_string_arg(instr.args[0])
-            self._write("local.set $_atten_path_len")
-            self._write("local.set $_atten_path_ptr")
-            self._push_string_arg(instr.args[1])
-            self._write("local.set $_atten_content_len")
-            self._write("local.set $_atten_content_ptr")
-        elif cap == "Db" and method in ("exec", "query"):
-            # Db.exec(path, sql) / Db.query(path, sql): same
-            # two-String-arg shape as Net.post + Fs.write. The
-            # attenuation check fires on the path arg (prefix
-            # match); sql is opaque to the cap and is passed
-            # through to the host bridge as-is.
-            self._push_string_arg(instr.args[0])
-            self._write("local.set $_atten_path_len")
-            self._write("local.set $_atten_path_ptr")
-            self._push_string_arg(instr.args[1])
-            self._write("local.set $_atten_content_len")
-            self._write("local.set $_atten_content_ptr")
-        elif cap == "Proc" and method == "exec":
-            # Proc.exec(cmd, args_json): same two-String-arg
-            # shape as Db.exec. The attenuation check fires on
-            # the cmd arg (basename + suffix-boundary match via
-            # ``$proc_allows``); args_json is opaque to the cap
-            # and is passed through to the host bridge as-is.
-            # Stash-local names stay ``_atten_path_*`` /
-            # ``_atten_content_*`` (the locals walker declares
-            # them once when any two-String-arg attenuated op is
-            # present in the function).
-            self._push_string_arg(instr.args[0])
-            self._write("local.set $_atten_path_len")
-            self._write("local.set $_atten_path_ptr")
-            self._push_string_arg(instr.args[1])
-            self._write("local.set $_atten_content_len")
-            self._write("local.set $_atten_content_ptr")
-        elif cap == "Env" and method == "get":
-            self._push_string_arg(instr.args[0])
-            self._write("local.set $_atten_path_len")
-            self._write("local.set $_atten_path_ptr")
-        elif cap == "Fs" and method in ("mkdir", "list_dir"):
-            # Single-string-arg Fs ops that mutate (mkdir) or
-            # observe (list_dir). Same path-prefix attenuation as
-            # Fs.read / write; the inline check fires on the
-            # path arg.
-            self._push_string_arg(instr.args[0])
-            self._write("local.set $_atten_path_len")
-            self._write("local.set $_atten_path_ptr")
-        else:
-            raise WasmEmissionError(
-                f"attenuation check for {cap}.{method} not "
-                f"implemented at the Wasm level"
-            )
-
-        # Allocate ret area; stash pointer in $_ret_area for both
-        # branches.
-        self._write(f"i32.const {ret_area_size}")
-        self._write("call $alloc")
-        self._write("local.set $_ret_area")
-
-        # Build the predicate: 1 = all attenuations passed, 0 = at
-        # least one failed. Stash in $_atten_ok.
-        self._write("i32.const 1")
-        self._write("local.set $_atten_ok")
-        for att in attenuations:
-            self._emit_one_attenuation(cap, method, att)
-
-        # Branch on the predicate.
-        self._write("local.get $_atten_ok")
-        self._write("if")
-        self._indent += 1
-        # Pass: re-push args, push ret_area, call host.
-        if cap == "Fs" and method == "read":
-            self._write("local.get $_atten_path_ptr")
-            self._write("local.get $_atten_path_len")
-        elif cap == "Fs" and method == "write":
-            self._write("local.get $_atten_path_ptr")
-            self._write("local.get $_atten_path_len")
-            self._write("local.get $_atten_content_ptr")
-            self._write("local.get $_atten_content_len")
-        elif cap == "Net" and method == "get":
-            self._write("local.get $_atten_path_ptr")
-            self._write("local.get $_atten_path_len")
-        elif cap == "Net" and method == "post":
-            # Push url + body in the order the host's
-            # ``net.post(url_ptr, url_len, body_ptr, body_len,
-            # ret_area)`` signature expects.
-            self._write("local.get $_atten_path_ptr")
-            self._write("local.get $_atten_path_len")
-            self._write("local.get $_atten_content_ptr")
-            self._write("local.get $_atten_content_len")
-        elif cap == "Db" and method in ("exec", "query"):
-            # Push path + sql in the order the host's
-            # ``db.{exec,query}(path_ptr, path_len, sql_ptr,
-            # sql_len, ret_area)`` signature expects.
-            self._write("local.get $_atten_path_ptr")
-            self._write("local.get $_atten_path_len")
-            self._write("local.get $_atten_content_ptr")
-            self._write("local.get $_atten_content_len")
-        elif cap == "Proc" and method == "exec":
-            # Push cmd + args_json in the order the host's
-            # ``proc.exec(cmd_ptr, cmd_len, args_ptr, args_len,
-            # ret_area)`` signature expects.
-            self._write("local.get $_atten_path_ptr")
-            self._write("local.get $_atten_path_len")
-            self._write("local.get $_atten_content_ptr")
-            self._write("local.get $_atten_content_len")
-        elif cap == "Env" and method == "get":
-            self._write("local.get $_atten_path_ptr")
-            self._write("local.get $_atten_path_len")
-        elif cap == "Fs" and method in ("mkdir", "list_dir"):
-            # Single-string-arg push, parallel to Fs.read.
-            self._write("local.get $_atten_path_ptr")
-            self._write("local.get $_atten_path_len")
-        self._write("local.get $_ret_area")
-        self._write(f"call ${cap}_{method}")
-        self._indent -= 1
-        self._write("else")
-        self._indent += 1
-        # Fail-closed: write the canonical Err into $_ret_area.
-        self._emit_attenuation_err_into_ret_area(cap, method, ret_kind)
-        self._indent -= 1
-        self._write("end")
-
-        # Bind $_ret_area into local-slot expected by the
-        # materialiser (it reads via local.get $_ret_area).
-        self._emit_cap_indirect_materialise(ret_kind, instr.dst)
-
     def _emit_one_attenuation(
         self, cap: str, method: str, att: dict,
     ) -> None:
         """AND one attenuation into ``$_atten_ok``. Each attenuation
         is a record ``{"method": str, "args": [str_form, ...]}`` as
-        produced by ``_flatten_restrict_chain``. The arg strings
-        come from ``_stringify_expr`` on the AST and are quoted for
-        literal forms (``"/tmp/"``) or rendered bare for non-literal
-        forms; only the literal form is enforced at the Wasm level.
-        """
+        produced by ``_flatten_restrict_chain``.
+
+        Slice 25.9 (2026-05-30): only invoked from the
+        ``_emit_atten_allows_runtime`` dynamic-arg path on caps
+        Fs / Env / Db / Proc (the literal-arg path collapses to a
+        const at emit time without this helper). Net never reaches
+        here (``net.allows(...)`` is rejected by the WIT table at
+        discovery time) and the privileged-op paths moved to the
+        host handle table in slices 25.2-25.8, so the original
+        per-cap branch set is reduced to the four caps that still
+        host a guest-side ``.allows()`` query."""
         att_method = att.get("method")
         args = att.get("args", [])
         if cap == "Fs":
@@ -1130,44 +867,7 @@ class _CapDispatchMixin:
             prefix = _unquote_attenuation_arg(args[0])
             self._emit_path_prefix_check(prefix)
             return
-        if cap == "Net":
-            # Slice 25.3 (2026-05-30): obsolete after Net was
-            # routed through the host handle table. ``_emit_cap_method_call``
-            # now short-circuits Net.get / Net.post to
-            # ``_emit_net_method_with_handle`` before the
-            # attenuation-check path runs, so this branch is dead.
-            # Kept (rather than deleted) so the predicate-emit
-            # dispatch stays exhaustive across all caps; targeted
-            # for cleanup in slice 25.9 alongside Db / Proc / Env
-            # once they migrate too. The inline
-            # ``$str_contains(url, host)`` here was the audit slice 25
-            # F2 hazard (admitted lookalike URLs); the post-25.3 path
-            # delegates to Python ``Net.get`` which uses
-            # ``urlparse(url).hostname``.
-            if att_method != "restrict_to" or not args:
-                raise WasmEmissionError(
-                    f"unsupported Net attenuation: {att_method!r}"
-                )
-            host = _unquote_attenuation_arg(args[0])
-            offset, length = self._intern_string(host)
-            self._write("local.get $_atten_path_ptr")
-            self._write("local.get $_atten_path_len")
-            self._write(f"i32.const {offset}")
-            self._write(f"i32.const {length}")
-            self._write("call $str_contains")
-            self._write("local.get $_atten_ok")
-            self._write("i32.and")
-            self._write("local.set $_atten_ok")
-            return
         if cap == "Db":
-            # Slice 25.4 (2026-05-30): obsolete after Db was routed
-            # through the host handle table. ``_emit_cap_method_call``
-            # now short-circuits Db.exec / Db.query to
-            # ``_emit_indirect_with_cap_handle`` before the
-            # attenuation-check path runs, so this branch is dead.
-            # Kept (rather than deleted) for the slice-25.9 cleanup
-            # that will sweep every cap's dead inline-attenuation
-            # branch together.
             if att_method != "restrict_to" or not args:
                 raise WasmEmissionError(
                     f"unsupported Db attenuation: {att_method!r} "
@@ -1177,10 +877,9 @@ class _CapDispatchMixin:
             self._emit_path_prefix_check(prefix)
             return
         if cap == "Proc":
-            # Slice 25.4 (2026-05-30): obsolete after Proc was routed
-            # through the host handle table. Kept for slice-25.9
-            # cleanup. Original behaviour: basename + suffix-boundary
-            # check via the ``$proc_allows`` runtime helper.
+            # Basename + suffix-boundary check via the
+            # ``$proc_allows`` runtime helper (matches Python's
+            # ``Proc.allows`` semantics).
             if att_method != "restrict_to" or not args:
                 raise WasmEmissionError(
                     f"unsupported Proc attenuation: {att_method!r} "
@@ -1199,10 +898,9 @@ class _CapDispatchMixin:
             self._write("local.set $_atten_ok")
             return
         if cap == "Env":
-            # Slice 25.5 (2026-05-30): obsolete after Env was routed
-            # through the host handle table. Kept for slice-25.9
-            # cleanup. Original behaviour: walk the literal key list
-            # and OR-equality the requested name against each key.
+            # Walk the literal key list and OR-equality the
+            # requested name against each key, AND-combine into
+            # the running predicate.
             if att_method != "restrict_to_keys":
                 raise WasmEmissionError(
                     f"unsupported Env attenuation: {att_method!r}"
@@ -1286,122 +984,6 @@ class _CapDispatchMixin:
         self._write("i32.and")
         self._write("local.set $_atten_ok")
 
-    def _emit_bool_query_with_attenuation_check(
-        self, instr, cap: str, method: str, attenuations: list,
-    ) -> None:
-        """Wrap a Bool-returning Fs query (``exists`` / ``is_dir``)
-        in an inline attenuation check. On pass we call the host
-        and bind its i32 result to ``instr.dst``; on deny we push
-        0 (Bool false) directly, never touching the host. This
-        mirrors the Python runtime's fail-closed-as-absent rule
-        (``Fs.allows()`` returns False, ``Fs.exists()`` returns
-        False without leaking the existence of out-of-prefix
-        paths).
-
-        Uses the same ``$_atten_path_*`` + ``$_atten_ok`` scratch
-        as the indirect-return path; the locals collector already
-        declares them when any attenuated op is present."""
-        # Stash the path arg.
-        self._push_string_arg(instr.args[0])
-        self._write("local.set $_atten_path_len")
-        self._write("local.set $_atten_path_ptr")
-        # Build the predicate: 1 = all attenuations passed, 0 = at
-        # least one failed. Stash in $_atten_ok.
-        self._write("i32.const 1")
-        self._write("local.set $_atten_ok")
-        for att in attenuations:
-            self._emit_one_attenuation(cap, method, att)
-        # if (ok) call host(path) else push 0 -> bind to dst.
-        self._write("local.get $_atten_ok")
-        self._write("if (result i32)")
-        self._indent += 1
-        self._write("local.get $_atten_path_ptr")
-        self._write("local.get $_atten_path_len")
-        self._write(f"call ${cap}_{method}")
-        self._indent -= 1
-        self._write("else")
-        self._indent += 1
-        self._write("i32.const 0")
-        self._indent -= 1
-        self._write("end")
-        if instr.dst is not None:
-            self._write(f"local.set ${instr.dst}")
-
-    def _emit_attenuation_err_into_ret_area(
-        self, cap: str, method: str, ret_kind: str,
-    ) -> None:
-        """Populate ``$_ret_area`` with the canonical Err shape for
-        the given ret_kind. Mirrors the runtime ``_deny`` message the
-        Python ``Fs._deny`` / ``Net.get`` / ``Env.get`` paths
-        produce, so a downstream pattern match on ``Err(io)`` reads
-        a sensible diagnostic via ``${io.message}``."""
-        message = _atten_err_message(cap, method)
-        m_offset, m_length = self._intern_string(message)
-        if ret_kind in ("result_string_io_error", "result_unit_io_error"):
-            # tag = 1 (Err)
-            self._write("local.get $_ret_area")
-            self._write("i32.const 1")
-            self._write("i32.store offset=0")
-            # message ptr / len at offsets 4 / 8.
-            self._write("local.get $_ret_area")
-            self._write(f"i32.const {m_offset}")
-            self._write("i32.store offset=4")
-            self._write("local.get $_ret_area")
-            self._write(f"i32.const {m_length}")
-            self._write("i32.store offset=8")
-            # cause ptr / len at offsets 12 / 16: empty.
-            self._write("local.get $_ret_area")
-            self._write("i32.const 0")
-            self._write("i32.store offset=12")
-            self._write("local.get $_ret_area")
-            self._write("i32.const 0")
-            self._write("i32.store offset=16")
-            return
-        if ret_kind == "option_string":
-            # WIT-convention discriminant for ``none`` is 0 (see
-            # the long comment in ``option_string`` materialisation
-            # below). The materialiser XOR-flips on read, so writing
-            # 0 here makes Env.get's attenuation-deny path produce
-            # a Capa None record. Ptr / len at 4 / 8 stay zero.
-            self._write("local.get $_ret_area")
-            self._write("i32.const 0")
-            self._write("i32.store offset=0")
-            self._write("local.get $_ret_area")
-            self._write("i32.const 0")
-            self._write("i32.store offset=4")
-            self._write("local.get $_ret_area")
-            self._write("i32.const 0")
-            self._write("i32.store offset=8")
-            return
-        if ret_kind == "result_list_string_io_error":
-            # 20-byte ret area: tag i32 @ 0, then either the Ok
-            # arm's flat (data_ptr, len) at @4 / @8 or the Err
-            # arm's (m_ptr, m_len, c_ptr, c_len) at @4 / @8 / @12
-            # / @16. The Err arm has the same shape as
-            # ``result_string_io_error`` (4 i32s for io-error);
-            # the only difference is what the Ok arm carries, and
-            # we're writing an Err, so the layout matches.
-            self._write("local.get $_ret_area")
-            self._write("i32.const 1")
-            self._write("i32.store offset=0")
-            self._write("local.get $_ret_area")
-            self._write(f"i32.const {m_offset}")
-            self._write("i32.store offset=4")
-            self._write("local.get $_ret_area")
-            self._write(f"i32.const {m_length}")
-            self._write("i32.store offset=8")
-            self._write("local.get $_ret_area")
-            self._write("i32.const 0")
-            self._write("i32.store offset=12")
-            self._write("local.get $_ret_area")
-            self._write("i32.const 0")
-            self._write("i32.store offset=16")
-            return
-        raise WasmEmissionError(
-            f"attenuation Err materialisation for {ret_kind!r} "
-            f"not implemented"
-        )
-
     def _emit_atten_allows(
         self, instr: MethodCall, cap: str,
     ) -> None:
@@ -1409,9 +991,11 @@ class _CapDispatchMixin:
         inline (D4 Option B). With no attenuations the call is
         trivially true (matches the Python ``self._allowed is None``
         branch); otherwise we walk the chain at emit time and AND
-        each predicate into the result, mirroring the runtime
-        check the privileged op (Fs.read / Env.get) already uses
-        via ``_emit_indirect_with_attenuation_check``.
+        each predicate into the result. Privileged ops (Fs.read /
+        Env.get / ...) enforce the same restriction via the host
+        handle table since slice 25 (2026-05-30); this query path
+        stays inline because it has no host syscall to short-
+        circuit.
 
         Two argument shapes (slice 14, 2026-05-29):
         - **Literal-string argument**: the answer is fully known at
@@ -1559,16 +1143,13 @@ class _CapDispatchMixin:
             if instr.dst is not None:
                 self._write(f"local.set ${instr.dst}")
             return
-        # Stash the arg in the same scratch locals the privileged-
-        # op path uses (declared by the locals walker whenever any
-        # attenuation check is present in the function -- which is
-        # always true here because we have attenuations).
+        # Stash the arg in scratch locals (declared by the locals
+        # walker on demand whenever a dynamic-arg ``.allows()``
+        # call appears in the function).
         self._push_string_arg(arg)
         self._write("local.set $_atten_path_len")
         self._write("local.set $_atten_path_ptr")
-        # ok = 1; AND each per-attenuation check into it. Same
-        # accumulator shape as the privileged-op
-        # _emit_indirect_with_attenuation_check.
+        # ok = 1; AND each per-attenuation check into it.
         self._write("i32.const 1")
         self._write("local.set $_atten_ok")
         # Method-name parameter for _emit_one_attenuation is just
@@ -1578,99 +1159,6 @@ class _CapDispatchMixin:
         self._write("local.get $_atten_ok")
         if instr.dst is not None:
             self._write(f"local.set ${instr.dst}")
-
-    def _emit_clock_with_attenuation_check(
-        self, instr: MethodCall, cap: str, method: str,
-        attenuations: list,
-    ) -> None:
-        """``Clock.now_secs`` / ``Clock.now_monotonic`` / ``Clock.sleep``
-        with a ``restrict_to_after(t)`` chain. The Python runtime
-        treats the ``now_*`` family as pure queries (anyone with a
-        wall clock can read it), so no check fires there. The
-        Wasm backend preserves that semantic for ``now_*``: emit
-        the host call as normal but leave a CAPA-RUNTIME-LIMITATION
-        comment so the analyzer contract stays visible.
-
-        ``Clock.sleep`` IS gated in the Python runtime: on a denied
-        clock (max of the restrict_to_after deadlines is still in
-        the future) the call becomes a silent no-op (matches the
-        fail-closed information-hiding pattern of ``Fs.exists`` /
-        ``Env.get``). The Wasm side mirrors this with an inline
-        ``clock.now_secs() >= threshold`` check around the host
-        ``$Clock_sleep`` call; if the check fails we drop the
-        ``secs`` arg and skip the call. The check uses
-        ``clock.now_secs()`` as the time source rather than
-        ``clock.now_monotonic()`` because ``restrict_to_after``'s
-        threshold is a wall-clock value (Capa source-level
-        ``time.time()`` semantics), matching the Python runtime
-        exactly.
-
-        Multiple restrict_to_after thresholds combine via
-        ``max``: a chain
-        ``c.restrict_to_after(10.0).restrict_to_after(20.0)``
-        carries the later deadline, so the inline check compares
-        ``now_secs()`` against the max of every literal threshold
-        in the chain.
-        """
-        if method != "sleep":
-            # now_secs / now_monotonic: pure query, no check.
-            self._write(
-                ";; CAPA-RUNTIME-LIMITATION: Clock.restrict_to_after "
-                "is a static-discipline attenuator; now_* are pure "
-                "queries, no Wasm-side check fires."
-            )
-            for arg in instr.args:
-                self._push_value(arg)
-            self._write(f"call ${cap}_{method}")
-            _params, result_ty = self._cap_method_wasm_sig(cap, method)
-            if result_ty and instr.dst is not None:
-                self._write(f"local.set ${instr.dst}")
-            return
-
-        # Clock.sleep with restrict_to_after(threshold). Compute
-        # max(threshold) across the attenuation chain at emit time
-        # and emit the inline ``if (now_secs() >= threshold) sleep
-        # (secs)`` guard.
-        thresholds: list[float] = []
-        for att in attenuations:
-            if att.get("method") != "restrict_to_after":
-                raise WasmEmissionError(
-                    f"unsupported Clock attenuation: "
-                    f"{att.get('method')!r}"
-                )
-            args = att.get("args", [])
-            if not args:
-                raise WasmEmissionError(
-                    "Clock.restrict_to_after attenuation with no arg"
-                )
-            try:
-                thresholds.append(float(args[0]))
-            except (TypeError, ValueError) as e:
-                raise WasmEmissionError(
-                    f"Clock.restrict_to_after on Wasm requires a "
-                    f"literal Float threshold; got {args[0]!r}"
-                ) from e
-        deadline = max(thresholds)
-        # Stash the secs arg so we don't re-evaluate inside the if.
-        # secs is f64; reuse the closure-result scratch slot which
-        # is already declared by the locals walker whenever any
-        # Float-returning method appears (Clock.now_secs counts).
-        # If neither now_secs nor the HOF path declared it, the
-        # locals walker's has_clock_sleep_gate flag adds it; see
-        # _locals.py.
-        if instr.args:
-            self._push_value(instr.args[0])
-            self._write("local.set $_clock_sleep_secs")
-        # call $Clock_now_secs -> f64; push deadline -> f64; ge?
-        self._write("call $Clock_now_secs")
-        self._write(f"f64.const {deadline!r}")
-        self._write("f64.ge")
-        self._write("if")
-        self._indent += 1
-        self._write("local.get $_clock_sleep_secs")
-        self._write("call $Clock_sleep")
-        self._indent -= 1
-        self._write("end")
 
     def _emit_cap_indirect_materialise(self, ret_kind: str, dst) -> None:
         """Materialise a Capa-side value from the flat fields the

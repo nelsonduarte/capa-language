@@ -100,22 +100,21 @@ class _LocalsCollectionMixin:
         # canonical-ABI indirect return; drives the ``$_ret_area``
         # scratch local declaration.
         has_indirect_cap_call = False
-        # Set when any MethodCall carries a non-empty ``attenuations``
-        # list (audit C2). Drives declaration of the
-        # ``$_atten_*`` scratch locals the inline check needs.
-        # Tracked separately from ``has_indirect_cap_call`` because
-        # the Env attenuation check fires on Env.get whose ret_area
-        # is option_string (12 bytes), not the 20-byte
-        # result_string_io_error layout.
+        # Set when any MethodCall is a ``.allows(dynamic_arg)`` on
+        # Fs / Env / Db / Proc with a non-empty ``attenuations``
+        # list. Drives declaration of the ``$_atten_path_*`` and
+        # ``$_atten_ok`` scratch locals the dynamic-arg runtime
+        # check needs (literal-arg ``.allows()`` collapses to a
+        # const at emit time and needs no locals). Privileged ops
+        # moved to the host handle table in slice 25; their
+        # emit-time inline check is gone, so the ``$_atten_*``
+        # locals are only declared on demand for the still-inline
+        # ``.allows()`` dynamic-arg path.
         has_attenuation_check = False
+        # ``$_atten_match`` is the per-Env-restrict_to_keys
+        # OR-chain scratch; declared only when an Env attenuation
+        # surface is present.
         has_attenuation_env_check = False
-        has_atten_fs_write_check = False
-        # Clock.sleep with restrict_to_after wraps the host call
-        # in an inline ``$Clock_now_secs >= deadline`` check
-        # (slice 13, 2026-05-29). The ``secs`` arg is stashed in
-        # ``$_clock_sleep_secs`` (f64) so the if-arm doesn't
-        # re-evaluate it.
-        has_clock_sleep_gate = False
         # Audit fix C1: List indexing emits an inline ``i32.ge_u``
         # bounds-check trap; the wrapped-i32 idx is stashed in
         # ``$_bounds_idx`` so the check and the subsequent address
@@ -150,7 +149,6 @@ class _LocalsCollectionMixin:
             nonlocal cur_for_depth, max_for_depth
             nonlocal has_indirect_cap_call
             nonlocal has_attenuation_check, has_attenuation_env_check
-            nonlocal has_atten_fs_write_check, has_clock_sleep_gate
             nonlocal has_list_index_bounds
             nonlocal has_map_pointer_key
             for instr in instrs:
@@ -383,32 +381,22 @@ class _LocalsCollectionMixin:
                         in _CANONICAL_INDIRECT_RETURN
                     ):
                         has_indirect_cap_call = True
-                    # Capability attenuation check (audit C2):
-                    # MethodCall with non-empty ``attenuations`` and
-                    # a privileged op on Fs / Net / Env triggers
-                    # ``_atten_*`` scratch local declarations.
+                    # Capability attenuation check: the privileged
+                    # ops (Fs.read / Net.get / ...) moved to the
+                    # host handle table in slice 25 and no longer
+                    # need any emit-time inline check or scratch
+                    # locals. Only the dynamic-arg path of
+                    # ``cap.allows(path)`` on Fs / Env / Db / Proc
+                    # still emits an inline runtime check (the
+                    # literal-arg path collapses to a const), so
+                    # the ``$_atten_path_*`` / ``$_atten_ok``
+                    # scratch is declared only when that pattern
+                    # appears. Env attenuations additionally use
+                    # ``$_atten_match`` for the per-restrict_to_keys
+                    # OR-chain.
                     if getattr(instr, "attenuations", None):
                         cap = instr.cap_used or ""
                         m = instr.method
-                        # Bool-returning Fs queries (exists / is_dir)
-                        # also gate through an inline attenuation
-                        # check (audit 2026-05-29) but use the
-                        # direct-return path, not the indirect ret-
-                        # area dance. They still need the
-                        # ``$_atten_path_*`` + ``$_atten_ok`` scratch
-                        # locals declared, so flag
-                        # ``has_attenuation_check`` without setting
-                        # ``has_indirect_cap_call``.
-                        if (cap == "Fs"
-                                and m in ("exists", "is_dir")):
-                            has_attenuation_check = True
-                        # Slice 14 (2026-05-29): the dynamic-arg
-                        # path of ``Fs.allows`` / ``Env.allows`` /
-                        # ``Db.allows`` / ``Proc.allows`` (slice 15)
-                        # emits a runtime check that stashes the
-                        # path / name in ``$_atten_path_*`` and
-                        # accumulates into ``$_atten_ok``. The
-                        # literal-arg fast-path doesn't need them.
                         if (cap in ("Fs", "Env", "Db", "Proc")
                                 and m == "allows"
                                 and instr.args
@@ -416,45 +404,6 @@ class _LocalsCollectionMixin:
                             has_attenuation_check = True
                             if cap == "Env":
                                 has_attenuation_env_check = True
-                        if cap == "Clock" and m == "sleep":
-                            # Clock.sleep with restrict_to_after
-                            # wraps the host call in an inline
-                            # ``$Clock_now_secs >= deadline``
-                            # check (slice 13, 2026-05-29). The
-                            # ``secs`` arg is stashed in
-                            # ``$_clock_sleep_secs`` so the
-                            # if-arm doesn't re-evaluate it.
-                            has_clock_sleep_gate = True
-                        if (cap == "Fs" and m in ("read", "write", "mkdir", "list_dir")) \
-                                or (cap == "Net" and m in ("get", "post")) \
-                                or (cap == "Env" and m == "get") \
-                                or (cap == "Db" and m in ("exec", "query")) \
-                                or (cap == "Proc" and m == "exec"):
-                            has_attenuation_check = True
-                            has_indirect_cap_call = True
-                            if cap == "Env":
-                                has_attenuation_env_check = True
-                            if cap == "Fs" and m == "write":
-                                has_atten_fs_write_check = True
-                            if cap == "Net" and m == "post":
-                                # Net.post threads a second String
-                                # (the body) into the host call;
-                                # the attenuation-stash dance reuses
-                                # the same _atten_content_* locals
-                                # Fs.write uses.
-                                has_atten_fs_write_check = True
-                            if cap == "Db" and m in ("exec", "query"):
-                                # Same two-String-arg shape; reuse
-                                # the Fs.write attenuation-stash
-                                # locals.
-                                has_atten_fs_write_check = True
-                            if cap == "Proc" and m == "exec":
-                                # Slice 15 (2026-05): Proc.exec
-                                # threads cmd + args_json; reuse
-                                # the same ``_atten_content_*``
-                                # locals as the other two-String
-                                # ops.
-                                has_atten_fs_write_check = True
                     if recv_ty.startswith("List"):
                         # List method calls (push / contains / get
                         # / length / is_empty / ...) reuse $_m_scrut
@@ -879,23 +828,15 @@ class _LocalsCollectionMixin:
             out.setdefault("_m_tag", "i32")
             out.setdefault("_alloc_tmp", "i32")
         if has_attenuation_check:
-            # Capability attenuation check (audit C2). Three i32
-            # pairs: path/url/name (always), content (Fs.write only).
-            # ``_atten_ok`` is the predicate accumulator; ``_atten_match``
-            # is the per-Env-restrict_to_keys OR-chain scratch.
+            # Dynamic-arg ``.allows()`` check stashes the path/
+            # name in ``$_atten_path_*`` and accumulates the
+            # predicate into ``$_atten_ok``. Env-specific OR-chain
+            # against the key list uses ``$_atten_match``.
             out["_atten_path_ptr"] = "i32"
             out["_atten_path_len"] = "i32"
             out["_atten_ok"] = "i32"
-            if has_atten_fs_write_check:
-                out["_atten_content_ptr"] = "i32"
-                out["_atten_content_len"] = "i32"
             if has_attenuation_env_check:
                 out["_atten_match"] = "i32"
-        if has_clock_sleep_gate:
-            # Clock.sleep gate stashes the f64 secs arg here so
-            # the inline ``if (now_secs() >= deadline)`` branch
-            # doesn't need to re-evaluate the IR Value.
-            out["_clock_sleep_secs"] = "f64"
         if has_list_index_bounds:
             # Audit fix C1: ``$_bounds_idx`` holds the wrapped-i32
             # index for the inline bounds check in ``_emit_index``.

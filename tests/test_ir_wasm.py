@@ -2009,28 +2009,31 @@ class TestWasmAllowsInlineEmit(unittest.TestCase):
 
 
 class TestWasmAttenuationEnforcement(unittest.TestCase):
-    """Audit C2 (2026-05-25): the Wasm backend now emits inline
-    runtime checks for capability methods whose receiver was bound
-    via a ``restrict_to`` / ``restrict_to_keys`` chain. Before this
-    work, ``Fs.restrict_to`` was a host-side no-op and the Wasm
-    backend trusted the guest -- a malicious program could declare
-    ``fs.restrict_to("data/")`` then call ``fs.read("/etc/passwd")``
-    and the runtime would obey the second call.
+    """Audit C2 + slice 25 (2026-05-30): privileged capability ops
+    (Fs.read / Net.get / Db.exec / ...) on a receiver bound via a
+    ``restrict_to`` / ``restrict_to_keys`` chain are enforced by
+    the host handle table -- the receiver is an i32 handle the
+    host looks up to consult the recorded restriction before each
+    syscall. Pre-slice-25 the Wasm backend emitted an inline
+    check before the host import; slice 25.9 removed that dead
+    machinery once every cap had been routed through the handle
+    table.
 
-    These tests cover three layers:
-    - WAT shape: the inline check appears (or is absent for
-      unrestricted Fs) in the emitted text.
-    - Runtime execution: the Wasm host returns Err for denied
-      paths, Ok for allowed paths -- matching the Python runtime
-      byte-for-byte.
-    - Cross-method: Net / Env enforcement paths use the same
-      pattern; we pin WAT shape for the cases that don't have a
-      Wasm runtime bridge yet (Net)."""
+    These tests cover two layers:
+    - WAT shape: the emit-time inline check is no longer present
+      for privileged ops; the receiver handle flows as the first
+      arg of the host import instead.
+    - Runtime execution: the host returns Err for denied paths,
+      Ok for allowed paths -- matching the Python runtime byte-
+      for-byte. Cross-function attenuation (the previous gap that
+      the inline check could not catch) is now sound on both
+      backends.
+    """
 
-    def test_no_restrict_no_check(self):
-        # Unrestricted ``fs.read`` produces no $str_starts_with call
-        # in the emitted WAT. Pin via grep so a regression that
-        # over-fires the check is caught.
+    def test_no_restrict_no_inline_check(self):
+        # Unrestricted ``fs.read`` produces no inline-check
+        # machinery. Pin via grep so a regression that re-
+        # introduces an emit-time check is caught.
         src = (
             "fun main(stdio: Stdio, fs: Fs)\n"
             "    match fs.read(\"/etc/passwd\")\n"
@@ -2042,7 +2045,12 @@ class TestWasmAttenuationEnforcement(unittest.TestCase):
         self.assertNotIn("$str_starts_with", wat)
         self.assertNotIn("$_atten_ok", wat)
 
-    def test_fs_read_emits_inline_check_when_restricted(self):
+    def test_fs_read_restricted_uses_handle_not_inline_check(self):
+        # After slice 25.2, Fs.read carries the receiver handle as
+        # its first arg and the host enforces the restriction via
+        # the handle table. No inline ``$str_starts_with`` /
+        # ``$_atten_*`` machinery is emitted for the privileged
+        # op; the WAT just passes the handle and calls $Fs_read.
         src = (
             "fun main(stdio: Stdio, fs: Fs)\n"
             "    let tmp = fs.restrict_to(\"/tmp/\")\n"
@@ -2052,11 +2060,11 @@ class TestWasmAttenuationEnforcement(unittest.TestCase):
         )
         ir_mod, _, _ = _parse_lower(src)
         wat = emit_wat(ir_mod)
-        # The helper function is emitted, the check is wired into
-        # main, and the attenuation locals are declared.
-        self.assertIn("$str_starts_with", wat)
-        self.assertIn("$_atten_ok", wat)
-        self.assertIn("$_atten_path_ptr", wat)
+        self.assertNotIn("$str_starts_with", wat)
+        self.assertNotIn("$_atten_ok", wat)
+        self.assertNotIn("$_atten_path_ptr", wat)
+        self.assertIn("call $Fs_read", wat)
+        self.assertIn("call $Fs_restrict_to", wat)
 
     @unittest.skipUnless(
         _has_wasm_tools() and _has_wasmtime_py(),
@@ -2199,49 +2207,27 @@ class TestWasmAttenuationEnforcement(unittest.TestCase):
             sys.stdout = saved
         self.assertEqual(out.getvalue(), "denied\n")
 
-    def test_net_restrict_to_emits_contains_check(self):
-        # Net has no Wasm host bridge yet; pin the WAT shape so the
-        # check is in place ahead of the host work landing.
-        # We only verify the lower / emit pipeline produces a
-        # $str_contains call gated on the URL argument.
-        from capa.ir import lower as ir_lower
-        # Hand-roll an IR Module with a Net.get + attenuation so
-        # the emitter is exercised without needing the analyzer to
-        # accept a Net cap on main (Net isn't wired through the
-        # analyzer's main signature yet).
-        from capa.ir._nodes import (
-            Module, Function, Param, MethodCall, Value, AssignConst,
+    def test_net_get_restricted_uses_handle_not_inline_check(self):
+        # Slice 25.3 (2026-05-30): Net.get carries the receiver
+        # handle as its first arg and the host enforces the
+        # restriction via the handle table (using
+        # ``urlparse(url).hostname`` rather than a substring
+        # check, which closes the audit slice 25 F2 lookalike-URL
+        # hazard). Verify no inline ``$str_contains`` machinery
+        # is emitted.
+        src = (
+            "fun main(stdio: Stdio, net: Net)\n"
+            "    let api = net.restrict_to(\"api.example.com\")\n"
+            "    match api.get(\"https://api.example.com/health\")\n"
+            "        Ok(_) -> stdio.println(\"ok\")\n"
+            "        Err(_) -> stdio.println(\"err\")\n"
         )
-        net_method = MethodCall(
-            dst="_t0",
-            receiver=Value(kind="param", name="net", ty="Net"),
-            method="get",
-            args=[Value(kind="lit_str", literal="https://api.example.com/")],
-            cap_used="Net",
-            attenuations=[{
-                "method": "restrict_to",
-                "args": ['"api.example.com"'],
-            }],
-        )
-        fn = Function(
-            name="probe",
-            params=[Param(name="net", ty="Net", is_capability=True)],
-            return_type="Unit",
-            declared_caps=["Net"],
-            body=[net_method],
-            locals={"_t0": "Result<String, IoError>"},
-        )
-        mod = Module(functions=[fn])
-        # The emitter needs a WIT signature; Net entries aren't in
-        # the table today, so this raises -- we capture and report
-        # that the gating is consistent. The check helper still
-        # gets emitted into a probe-shaped module via the discovery
-        # pass; rather than fight the emitter, verify the discovery
-        # gate fires.
-        from capa.ir._emit_wasm import WasmEmitter
-        emitter = WasmEmitter()
-        s, c, _p = emitter._uses_attenuation_check(mod)
-        self.assertTrue(c)
+        ir_mod, _, _ = _parse_lower(src)
+        wat = emit_wat(ir_mod)
+        self.assertNotIn("$str_contains", wat)
+        self.assertNotIn("$_atten_ok", wat)
+        self.assertIn("call $Net_get", wat)
+        self.assertIn("call $Net_restrict_to", wat)
 
     @unittest.skipUnless(
         _has_wasm_tools() and _has_wasmtime_py(),

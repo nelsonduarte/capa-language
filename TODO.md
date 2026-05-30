@@ -1083,11 +1083,45 @@ Listed so the design space is explicit.
       the Component Model path. Gov pack runs end-to-end
       on `capa --wasm --component --run`. F1/F2 are now
       closed on **both** wasm execution paths.
-    - 25.9 Remove the inline-attenuation emitter
-      machinery; update positioning docs to reflect Wasm
-      now matches Python on cap-discipline soundness; add
-      `tests/test_cap_handles_cross_function.py` exercising
-      every cap × every cross-function pattern.
+    - **25.9 DONE** (2026-05-30): swept the dead inline-
+      attenuation emitter machinery. Net **-785 LOC**
+      removed (~620 in `_caps.py`, ~125 in `_runtime.py`,
+      ~90 in `_discovery.py`, ~80 in `_locals.py`). Fully
+      gone: `_emit_indirect_with_attenuation_check`,
+      `_emit_bool_query_with_attenuation_check`,
+      `_emit_clock_with_attenuation_check`,
+      `_emit_attenuation_err_into_ret_area`,
+      `_ATTENUATION_PRIVILEGED_OPS`, runtime helper
+      `$str_contains`, scratch locals
+      `$_atten_content_*`/`$_clock_sleep_secs`, the dead
+      `attenuations and priv_op` dispatch branches in
+      `_emit_cap_method_call`. Stale "inline-check WAT
+      present" test inverted to "handle path active, no
+      inline check". Kept-because-still-live:
+      `MethodCall.attenuations` (consumed by
+      `_emit_atten_allows` for the Fs/Env/Db/Proc
+      literal-arg `.allows(x)` fast path AND by the
+      manifest's `args_flow` field via
+      `_build_attenuation_map`); future slice could move
+      `.allows()` to the host via per-handle imports,
+      not blocking F1/F2.
+
+- **Slice 25 CLOSED** (2026-05-30). Audit slice 25 found
+  F1 (systemic cross-function attenuation bypass on
+  wasm, all six attenuation-bearing caps) and F2 (Net
+  inline check used substring match instead of parsed
+  hostname). Both closed across slices 25.1-25.9:
+  handle-table foundation + Env case-fix (25.1),
+  Fs (25.2), Net (25.3, closes F2 by side effect),
+  Db/Proc/Env/Clock batched (25.4-7), Component Model
+  parity (25.8), cleanup (25.9). Suite 2061 (slice-25
+  audit start) -> 2085 / 5 skipped / 0 fail. F4 (Env
+  case-sensitivity) closed in 25.1. F3 / F5 / F6
+  documented residuals. The wasm backends (core +
+  Component Model) now match the Python backend on
+  cap-discipline soundness; the regulator-facing
+  ``provably_excluded_capabilities`` claim is honored
+  at runtime on **both** wasm execution paths.
   - **F4 closed in this slice.** `Env.restrict_to_keys`
     now case-folds keys on Windows
     (`capa/runtime/_capabilities.py:_canon_key`) so a

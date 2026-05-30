@@ -103,11 +103,14 @@ class _RuntimeHelpersMixin:
     def _emit_str_starts_with_function(self) -> None:
         """Helper: ``$str_starts_with(hp, hl, np, nl) -> i32`` returns
         1 if the haystack ``hp[..hl]`` begins with the needle
-        ``np[..nl]``, 0 otherwise. Used by the Wasm-side attenuation
-        check for ``Fs.read`` / ``Fs.write`` after ``Fs.restrict_to``:
-        the runtime check fires before the host import and must
-        return Err on prefix miss without ever crossing the trust
-        boundary.
+        ``np[..nl]``, 0 otherwise. Used by the dynamic-arg
+        ``Fs.allows(path)`` / ``Db.allows(path)`` queries: the
+        runtime check answers the question without crossing the
+        host bridge. The privileged ops (Fs.read / Db.exec / ...)
+        moved to the host handle table in slice 25 (2026-05-30);
+        the host enforces ``cap.allows(arg)`` from the receiver's
+        recorded restriction before each syscall, so no inline
+        emit-time check fires for them.
 
         Empty needle (``nl == 0``) returns 1, mirroring the Python
         ``str.startswith`` semantic. A needle longer than the
@@ -175,120 +178,6 @@ class _RuntimeHelpersMixin:
         self._indent -= 1
         self._write(")")
 
-    def _emit_str_contains_function(self) -> None:
-        """Helper: ``$str_contains(hp, hl, np, nl) -> i32`` returns 1
-        if the haystack contains the needle anywhere, 0 otherwise.
-        Used by the Wasm-side attenuation check for ``Net.get`` /
-        ``Net.post`` after ``Net.restrict_to(host)``: matches if the
-        request URL contains the allow-listed host substring.
-
-        Linear scan: for each ``i`` in ``[0, hl - nl]``, walk ``nl``
-        bytes and return 1 on the first equal slice. Empty needle
-        returns 1; a needle longer than the haystack returns 0
-        (fast path)."""
-        self._write(
-            "(func $str_contains (param $hp i32) (param $hl i32) "
-            "(param $np i32) (param $nl i32) (result i32)"
-        )
-        self._indent += 1
-        self._write("(local $i i32)")
-        self._write("(local $j i32)")
-        self._write("(local $max i32)")
-        # Empty needle -> always 1.
-        self._write("local.get $nl")
-        self._write("i32.eqz")
-        self._write("if")
-        self._indent += 1
-        self._write("i32.const 1")
-        self._write("return")
-        self._indent -= 1
-        self._write("end")
-        # Needle longer than haystack -> 0.
-        self._write("local.get $nl")
-        self._write("local.get $hl")
-        self._write("i32.gt_s")
-        self._write("if")
-        self._indent += 1
-        self._write("i32.const 0")
-        self._write("return")
-        self._indent -= 1
-        self._write("end")
-        # max = hl - nl
-        self._write("local.get $hl")
-        self._write("local.get $nl")
-        self._write("i32.sub")
-        self._write("local.set $max")
-        # i = 0
-        self._write("i32.const 0")
-        self._write("local.set $i")
-        self._write("block $sc_exit (result i32)")
-        self._indent += 1
-        self._write("loop $sc_loop")
-        self._indent += 1
-        # if i > max: exit with 0.
-        self._write("local.get $i")
-        self._write("local.get $max")
-        self._write("i32.gt_s")
-        self._write("if")
-        self._indent += 1
-        self._write("i32.const 0")
-        self._write("br $sc_exit")
-        self._indent -= 1
-        self._write("end")
-        # Compare hp[i..i+nl] vs np[0..nl] via inner loop.
-        self._write("i32.const 0")
-        self._write("local.set $j")
-        self._write("block $sc_inner_exit")
-        self._indent += 1
-        self._write("loop $sc_inner_loop")
-        self._indent += 1
-        # if j >= nl: matched -> exit outer with 1.
-        self._write("local.get $j")
-        self._write("local.get $nl")
-        self._write("i32.ge_s")
-        self._write("if")
-        self._indent += 1
-        self._write("i32.const 1")
-        self._write("br $sc_exit")
-        self._indent -= 1
-        self._write("end")
-        # if hp[i + j] != np[j]: break inner.
-        self._write("local.get $hp")
-        self._write("local.get $i")
-        self._write("i32.add")
-        self._write("local.get $j")
-        self._write("i32.add")
-        self._write("i32.load8_u")
-        self._write("local.get $np")
-        self._write("local.get $j")
-        self._write("i32.add")
-        self._write("i32.load8_u")
-        self._write("i32.ne")
-        self._write("br_if $sc_inner_exit")
-        # j += 1.
-        self._write("local.get $j")
-        self._write("i32.const 1")
-        self._write("i32.add")
-        self._write("local.set $j")
-        self._write("br $sc_inner_loop")
-        self._indent -= 1
-        self._write("end")
-        self._indent -= 1
-        self._write("end")
-        # i += 1.
-        self._write("local.get $i")
-        self._write("i32.const 1")
-        self._write("i32.add")
-        self._write("local.set $i")
-        self._write("br $sc_loop")
-        self._indent -= 1
-        self._write("end")
-        self._write("unreachable")
-        self._indent -= 1
-        self._write("end")
-        self._indent -= 1
-        self._write(")")
-
     def _emit_proc_allows_function(self) -> None:
         """Helper: ``$proc_allows(cp, cl, pp, pl) -> i32`` returns
         1 if the command at ``cp[..cl]`` is admitted by the prefix
@@ -308,11 +197,13 @@ class _RuntimeHelpersMixin:
           single ``-`` boundary byte test (rejecting ``gitlab``).
 
         Used by:
-        - ``Proc.exec`` attenuation enforcement (literal or
-          dynamic cmd args via the ``_emit_indirect_with_
-          attenuation_check`` path),
-        - ``Proc.allows`` dynamic-arg path (slice 14-style
-          runtime check)."""
+        - ``Proc.allows`` dynamic-arg path. The privileged op
+          (``Proc.exec``) moved to the host handle table in
+          slice 25.4 (2026-05-30); the host enforces
+          ``proc.allows(cmd)`` from the receiver's recorded
+          restriction, so no inline emit-time check fires for
+          the syscall. Only the guest-side ``.allows(cmd)``
+          query still calls this helper."""
         self._write(
             "(func $proc_allows (param $cp i32) (param $cl i32) "
             "(param $pp i32) (param $pl i32) (result i32)"

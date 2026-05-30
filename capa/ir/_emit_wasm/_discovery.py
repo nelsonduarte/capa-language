@@ -360,115 +360,43 @@ class _DiscoveryMixin:
                     return True
         return False
 
-    def _uses_env_atten_check(self, module: Module) -> bool:
-        """True if any ``Env.get`` MethodCall in the module carries a
-        non-empty ``attenuations`` list. ``Env.restrict_to_keys``
-        is enforced by a chain of ``$str_eq`` calls (OR'd together)
-        emitted in ``_emit_cap_method_call``; we lift the discovery
-        out so the helper can be unconditionally available at emit
-        site without having to round-trip the module again."""
-        def visit(instrs: list[Instr]) -> bool:
-            for instr in instrs:
-                if (isinstance(instr, MethodCall)
-                        and instr.attenuations
-                        and (instr.cap_used or "") == "Env"):
-                    return True
-                if isinstance(instr, If):
-                    if visit(instr.then_body) or visit(instr.else_body):
-                        return True
-                if isinstance(instr, While):
-                    if visit(instr.cond_setup) or visit(instr.body):
-                        return True
-                if isinstance(instr, For):
-                    if visit(instr.body):
-                        return True
-                if isinstance(instr, Match):
-                    for arm in instr.arms:
-                        if visit(arm.body):
-                            return True
-            return False
-        for fn in module.functions:
-            if visit(fn.body):
-                return True
-        for impl in module.impls:
-            for m in impl.methods:
-                if visit(m.body):
-                    return True
-        return False
-
     def _uses_attenuation_check(
         self, module: Module,
-    ) -> tuple[bool, bool, bool]:
-        """Walk the module for ``MethodCall`` instructions whose
-        ``attenuations`` field is non-empty: those are the Fs / Net /
-        Env / Clock / Db / Proc privileged ops that the Wasm backend
-        must guard with an inline runtime check (audit C2, 2026-05-25).
+    ) -> tuple[bool, bool]:
+        """Walk the module for ``cap.allows(arg)`` MethodCalls on
+        Fs / Env / Db / Proc with a tracked attenuation chain.
+        Only ``.allows()`` queries still emit an inline runtime
+        check; the privileged ops (Fs.read / Net.get / ...) moved
+        to the host handle table in slice 25 (2026-05-30), so this
+        helper no longer needs to scan them.
 
-        Returns ``(needs_starts_with, needs_contains, needs_proc_allows)``:
-        - ``needs_starts_with``: Fs.read / Fs.write after restrict_to
-          require a prefix check via ``$str_starts_with``.
-        - ``needs_contains``: Net.get / Net.post after restrict_to(host)
-          require an in-string host check via ``$str_contains``.
-        - ``needs_proc_allows``: Proc.exec after restrict_to(prefix)
-          (or any Proc.allows source-level call) requires a basename
-          + suffix-boundary check via ``$proc_allows`` (slice 15).
+        Returns ``(needs_starts_with, needs_proc_allows)``:
+        - ``needs_starts_with``: Fs.allows / Db.allows requires
+          the prefix-component check via ``$str_starts_with``.
+        - ``needs_proc_allows``: Proc.allows requires the basename
+          + suffix-boundary check via ``$proc_allows``.
 
-        Env.restrict_to_keys reuses ``$str_eq`` (already emitted via
-        the Map / String-method discovery branches; we don't add a
-        separate flag for it here)."""
+        Env.allows uses ``$str_eq`` (already emitted via the
+        Map / String-method discovery branches; no separate flag
+        is needed)."""
         needs_starts_with = False
-        needs_contains = False
         needs_proc_allows = False
 
         def visit(instrs: list[Instr]) -> None:
-            nonlocal needs_starts_with, needs_contains
-            nonlocal needs_proc_allows
+            nonlocal needs_starts_with, needs_proc_allows
             for instr in instrs:
                 if isinstance(instr, MethodCall) and instr.attenuations:
                     cap = instr.cap_used or ""
-                    if cap == "Fs" and instr.method in (
-                        # Audit 2026-05-29 (slice 12): every Fs op
-                        # that crosses the trust boundary gates
-                        # through the prefix check now.
-                        "read", "write", "exists", "is_dir",
-                        "mkdir", "list_dir",
-                    ):
-                        needs_starts_with = True
-                    if cap == "Net" and instr.method in ("get", "post"):
-                        needs_contains = True
-                    if cap == "Db" and instr.method in ("exec", "query"):
-                        # Db attenuation mirrors Fs: path-prefix
-                        # check via ``$str_starts_with``.
-                        needs_starts_with = True
-                    if cap == "Proc" and instr.method == "exec":
-                        # Slice 15 (2026-05): Proc.exec attenuation
-                        # uses ``$proc_allows`` (basename +
-                        # suffix-boundary check at runtime). The
-                        # helper itself uses ``$str_eq``; the
-                        # ``needs_starts_with`` flag is left alone
-                        # since Proc doesn't reuse the prefix
-                        # check.
-                        needs_proc_allows = True
-                    # Slice 14 (2026-05-29): dynamic-arg
-                    # ``Fs.allows`` / ``Db.allows`` lowers to the
-                    # same path-prefix runtime check the
-                    # privileged ops use. Literal-arg fast-path
-                    # collapses to a const at emit time so it
-                    # needs no helper, but the dynamic-arg path
-                    # does. The literal vs dynamic decision lives
-                    # at emit time; here we conservatively flag
-                    # ``allows`` so the helper is available
-                    # whenever the source-level call exists --
-                    # over-emitting one helper for one no-op
-                    # function adds <100 bytes to the WAT.
+                    # Conservatively flag the helper whenever
+                    # ``.allows()`` exists with a tracked
+                    # attenuation chain: the literal-arg fast-path
+                    # collapses to a const without the helper, the
+                    # dynamic-arg path needs it. Deciding which is
+                    # which lives at emit time; over-emitting one
+                    # unused helper adds <100 bytes to the WAT.
                     if (cap in ("Fs", "Db")
                             and instr.method == "allows"):
                         needs_starts_with = True
-                    # Slice 15 (2026-05): ``Proc.allows`` (literal
-                    # or dynamic arg) lowers to ``$proc_allows``
-                    # at runtime when the receiver carries any
-                    # attenuation. Same conservative flagging as
-                    # Fs.allows / Db.allows.
                     if cap == "Proc" and instr.method == "allows":
                         needs_proc_allows = True
                 if isinstance(instr, If):
@@ -487,7 +415,7 @@ class _DiscoveryMixin:
         for impl in module.impls:
             for m in impl.methods:
                 visit(m.body)
-        return needs_starts_with, needs_contains, needs_proc_allows
+        return needs_starts_with, needs_proc_allows
 
     def _uses_map_ops(self, module: Module) -> bool:
         """True if the module needs the ``$str_eq`` helper. After
@@ -736,16 +664,6 @@ class _DiscoveryMixin:
                             f"capa.ir._emit_wasm together"
                         )
                     self._used_caps.add(key)
-                    # Slice 13 (2026-05-29): Clock.sleep with a
-                    # restrict_to_after chain emits an inline
-                    # ``$Clock_now_secs >= deadline`` gate before
-                    # the host sleep call. Register ``now_secs``
-                    # as a used cap so its host import is
-                    # emitted even when the program never calls
-                    # it directly.
-                    if (cap == "Clock" and instr.method == "sleep"
-                            and instr.attenuations):
-                        self._used_caps.add(("Clock", "now_secs"))
             # ``Random()`` constructor: source uses it as a Call
             # (``let r = Random()``). It carries no runtime value at
             # the Wasm level but still pulls the SplitMix64 helpers
