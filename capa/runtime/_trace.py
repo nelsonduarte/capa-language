@@ -3,27 +3,41 @@ suite to assert soundness at runtime.
 
 The instrumentation wraps the public methods of each built-in
 capability class so every method call appends a record
-``(class_name, method_name)`` to a module-level list. Tests
-read the list and compare it against the manifest the analyser
-emits for the same program, asserting that the runtime
-capability surface is a subset of the statically-declared one.
+``(class_name, method_name, first_arg)`` to a module-level list.
+Tests read the list and compare it against the manifest the
+analyser emits for the same program, asserting that the runtime
+capability surface is a subset of the statically-declared one,
+and (since the attenuation/exclusion slice) that every privileged
+operation honoured the restriction in force on its capability.
+
+``first_arg`` is the first positional argument of the call when
+it is a string (the path read, the host contacted, the env key,
+the prefix restricted to, ...) and ``None`` otherwise. It is the
+single datum the "attenuation honoured" invariant needs: the
+class+method alone cannot tell a read of ``/tmp/x`` from a read
+of ``/etc/passwd``.
 
 The instrumentation is **opt-in**: it is dormant unless a test
 calls :func:`enable`. Production runs and the existing
-end-to-end tests are unaffected. This matters because patching
-the runtime classes has a measurable cost in tight loops, and
-nobody outside the property suite cares about the trace.
+end-to-end tests are unaffected -- nothing outside the property
+suite ever calls :func:`enable`, so the wrapper (and the cost of
+recording the argument) never runs in production. This matters
+because patching the runtime classes has a measurable cost in
+tight loops, and nobody outside the property suite cares about
+the trace.
 """
 
 from __future__ import annotations
 
 from functools import wraps
-from typing import Any
+from typing import Any, Optional
 
 
 # Module-level accumulator. Tests should always call :func:`clear`
-# at the top of each test to avoid bleed-over between cases.
-_records: list[tuple[str, str]] = []
+# at the top of each test to avoid bleed-over between cases. Each
+# record is ``(class_name, method_name, first_arg)`` where
+# ``first_arg`` is the first positional string argument or None.
+_records: list[tuple[str, str, Optional[str]]] = []
 _enabled = False
 
 
@@ -33,14 +47,26 @@ def clear() -> None:
 
 
 def get() -> list[tuple[str, str]]:
-    """Return a copy of the current trace, oldest first."""
+    """Return a copy of the trace as ``(class, method)`` pairs,
+    oldest first. Kept argument-free for backward compatibility
+    with the subset-invariant tests; callers that need the
+    operation argument use :func:`records`."""
+    return [(cls, op) for cls, op, _arg in _records]
+
+
+def records() -> list[tuple[str, str, Optional[str]]]:
+    """Return a copy of the full trace as
+    ``(class, method, first_arg)`` triples, oldest first.
+    ``first_arg`` is the first positional argument of the call
+    when it is a string and ``None`` otherwise. This is the form
+    the attenuation-honoured invariant consumes."""
     return list(_records)
 
 
 def classes_used() -> set[str]:
     """Return the set of capability class names that appear in the
     trace. This is the runtime side of the soundness comparison."""
-    return {cls for cls, _ in _records}
+    return {cls for cls, _op, _arg in _records}
 
 
 def enable() -> None:
@@ -60,6 +86,7 @@ def enable() -> None:
 
     for cls in (
         caps.Stdio, caps.Fs, caps.Env, caps.Clock, caps.Random, caps.Net,
+        caps.Db, caps.Proc,
     ):
         _wrap_class(cls)
 
@@ -83,6 +110,13 @@ def _wrap_class(cls: type) -> None:
 def _wrap_method(cls_name: str, op_name: str, method) -> Any:
     @wraps(method)
     def wrapper(self, *args, **kwargs):
-        _records.append((cls_name, op_name))
+        # Record the first positional argument when it is a string:
+        # for the privileged operations that is the path / host /
+        # key / prefix the call acted on, which is exactly what the
+        # attenuation-honoured invariant checks. Non-string first
+        # args (e.g. Clock.sleep's float, Random.with_seed's int)
+        # record None -- those caps have no path-shaped restriction.
+        first_arg = args[0] if args and isinstance(args[0], str) else None
+        _records.append((cls_name, op_name, first_arg))
         return method(self, *args, **kwargs)
     return wrapper
