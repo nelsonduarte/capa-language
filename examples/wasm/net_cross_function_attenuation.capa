@@ -1,0 +1,32 @@
+// Slice 25.3 (2026-05-30): cross-function attenuation oracle for Net.
+//
+// The Python backend has always treated Net as a first-class value
+// whose restriction travels with the cap into every helper it is
+// passed to. The Wasm backend pre-slice-25.3 erased Net values at
+// the IR level and inlined ``restrict_to`` checks at the literal
+// call site, so the moment a restricted Net crossed a function
+// boundary the receiving function saw an unrestricted cap and the
+// host bridge executed the syscall unconditionally (audit slice 25
+// finding F1, same shape as the Fs bug fixed in slice 25.2).
+//
+// This program reproduces the bug. ``main`` narrows the root Net to
+// ``api.example.com`` and hands the narrowed cap to ``helper``;
+// the helper attempts to fetch a URL whose host is
+// ``attacker.invalid``. Both backends must DENY the helper's fetch
+// - if Wasm prints the "BUG" line, the cross-function attenuation
+// regression has come back.
+//
+// No fixture / network call required: ``attacker.invalid`` is in
+// the IANA reserved test TLD ``.invalid`` so even if the deny check
+// were bypassed, the URL would never resolve. The deny path here
+// asserts the cap-mediated short-circuit, which is what audit slice
+// 25 F1 is about.
+
+fun helper(net: Net, stdio: Stdio)
+    match net.get("https://attacker.invalid/x")
+        Ok(_) -> stdio.println("BUG: helper reached attacker.invalid")
+        Err(_) -> stdio.println("ok: helper net.get denied")
+
+fun main(stdio: Stdio, net: Net)
+    let narrow = net.restrict_to("api.example.com")
+    helper(narrow, stdio)

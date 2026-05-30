@@ -154,13 +154,13 @@ class _TraitEmissionMixin:
         # Push receiver (self) -- always an i32 pointer.
         self._push_value(instr.receiver)
         # Push remaining args; capability args are erased (other
-        # than Fs, slice 25.2 - it now carries an i32 handle so a
-        # restricted cap survives crossing function boundaries),
-        # String args expand to (ptr, len), other args go through
-        # the regular push path.
+        # than Fs / Net, slices 25.2 / 25.3 - they now carry i32
+        # handles so a restricted cap survives crossing function
+        # boundaries), String args expand to (ptr, len), other args
+        # go through the regular push path.
         for arg in instr.args:
             if arg.ty in BUILTIN_CAPS:
-                if arg.ty == "Fs":
+                if arg.ty in ("Fs", "Net"):
                     self._push_value(arg)
                 continue
             if arg.ty == "String":
@@ -174,8 +174,9 @@ class _TraitEmissionMixin:
                 # Multi-value (i32 i32) return -> dst pair.
                 self._write(f"local.set ${instr.dst}_len")
                 self._write(f"local.set ${instr.dst}_ptr")
-            elif dst_ty == "Fs":
-                # Slice 25.2: Fs returns the handle as i32.
+            elif dst_ty in ("Fs", "Net"):
+                # Slice 25.2 / 25.3: Fs / Net return the handle as
+                # i32.
                 self._write(f"local.set ${instr.dst}")
             elif dst_ty and dst_ty not in BUILTIN_CAPS and dst_ty != "Unit":
                 self._write(f"local.set ${instr.dst}")

@@ -43,7 +43,7 @@ from typing import Optional
 
 import wasmtime
 
-from ._capabilities import Fs, Stdio, _write_safe
+from ._capabilities import Fs, Net, Stdio, _write_safe
 from ._cap_handles import (
     CapHandleError,
     CapHandleTable,
@@ -71,23 +71,26 @@ class WasmHost:
         # Defaults to an empty list; callers (e.g. the CLI) pass the
         # real argv when they have it.
         self._args: list[str] = list(args) if args is not None else []
-        # Slice 25.2 (2026-05-30): per-instance capability handle
-        # table. Fs has been migrated to handle-passing so a
-        # restricted ``Fs`` value crossing a function boundary keeps
-        # its restriction (the receiver's i32 handle is now part of
-        # the cap-method call signature, looked up by the host on
-        # every privileged op). The unrestricted root Fs the host
-        # holds is allocated into this table by ``run_main`` once
-        # it has inspected ``main``'s signature; child handles come
-        # from ``capa:host/fs.restrict-to``.
+        # Slice 25.2 / 25.3 (2026-05-30): per-instance capability
+        # handle table. Fs (slice 25.2) and Net (slice 25.3) have been
+        # migrated to handle-passing so a restricted cap crossing a
+        # function boundary keeps its restriction (the receiver's
+        # i32 handle is now part of the cap-method call signature,
+        # looked up by the host on every privileged op). The
+        # unrestricted root caps the host holds are allocated into
+        # this table by ``run_main`` once it has inspected ``main``'s
+        # signature; child handles come from
+        # ``capa:host/fs.restrict-to`` / ``capa:host/net.restrict-to``.
         self._cap_handles = CapHandleTable()
-        # Root Fs the host hands to programs that declare ``fs:
-        # Fs`` on main. Lazy-constructed in ``run_main`` so unit
-        # tests that never invoke ``main`` don't get a real Fs
-        # instance attached. Net / Db / Proc / Env / Clock /
-        # Stdio remain on the old erased path until their own
-        # rollout slices (25.3 - 25.7).
+        # Root caps the host hands to programs that declare them on
+        # main. Lazy-constructed in ``run_main`` so unit tests that
+        # never invoke ``main`` don't get real cap instances
+        # attached. Db / Proc / Env / Clock / Random / Unsafe remain
+        # on the old erased path until their own rollout slices
+        # (25.4 - 25.7); Stdio stays erased indefinitely (no
+        # restriction state to thread).
         self._root_fs: Optional[Fs] = None
+        self._root_net: Optional[Net] = None
         self._root_stdio: Optional[Stdio] = None
         self._register_stdio()
         self._register_clock()
@@ -936,31 +939,27 @@ class WasmHost:
     def _register_net(self) -> None:
         """Register the ``capa:host/net`` interface methods.
 
-        Methods: ``get(url) -> Result<String, IoError>`` and
-        ``post(url, body) -> Result<String, IoError>``. Both host
-        callbacks mirror ``capa.runtime._capabilities.Net.{get,post}``
-        exactly so a ``file://`` URL (get) or a same-process loopback
-        (post) produces byte-identical output on both backends:
-        ``urllib.request.urlopen(Request(url[, data=body]))`` with a
-        10-second timeout, body bytes decoded UTF-8 with
-        ``errors="replace"`` so non-UTF-8 responses produce a
-        deterministic ``U+FFFD``-substituted string rather than a
-        host-side trap.
+        Slice 25.3 (2026-05-30): every Net op now takes ``handle: u32``
+        as its first arg. The host looks up the receiver Net cap in
+        ``self._cap_handles`` and enforces the restriction by calling
+        the looked-up ``Net.get(url)`` / ``Net.post(url, body)``
+        directly (the existing Python ``Net.get`` / ``Net.post``
+        already do ``urlparse(url).hostname`` + ``allows()``, which
+        also fixes audit slice 25 F2 - the inline
+        ``$str_contains(url, host)`` accepted lookalikes like
+        ``https://attacker.invalid/?redir=api.example.com``).
 
-        Attenuation enforcement (``net.restrict_to(host)``) is
-        inlined at emit time via ``$str_contains(url, host)`` in
-        the Wasm backend (audit C2); a denied URL never reaches
-        this host bridge. The Python ``Net.{get,post}`` does the
-        same check against the parsed ``urlparse(url).hostname``.
-        Both backends therefore agree on which URLs make it to the
-        network layer, and these methods only handle the
-        unrestricted / already-allowed path.
+        Methods:
+        - ``get(handle, url) -> Result<String, IoError>``
+        - ``post(handle, url, body) -> Result<String, IoError>``
+        - ``restrict-to(handle, host) -> u32``
 
-        ``net.restrict-to`` is a host no-op like ``fs.restrict-to``
-        since capabilities carry no runtime value at the Wasm
-        level."""
-        from urllib.request import Request, urlopen
-        from urllib.error import URLError
+        Cross-function attenuation soundness (audit slice 25 F1):
+        a restricted Net cap threaded through a helper function on
+        Wasm now keeps its restriction because the receiver carries
+        its i32 handle through every call; the host enforces on
+        every privileged op rather than at the literal call site
+        only."""
         # Canonical ABI: result<string, io-error> returns indirectly
         # via a 20-byte caller area. Same shape as Fs.read. Layout:
         #   tag i32  @ 0
@@ -969,6 +968,7 @@ class WasmHost:
         #                       c_len @ 16
         ft_net_get_indirect = wasmtime.FuncType(
             [
+                wasmtime.ValType.i32(),  # handle (slice 25.3)
                 wasmtime.ValType.i32(),  # url_ptr
                 wasmtime.ValType.i32(),  # url_len
                 wasmtime.ValType.i32(),  # ret_area
@@ -1013,7 +1013,21 @@ class WasmHost:
                 caller, c_len.to_bytes(4, "little"), ret_area + 16,
             )
 
-        def net_get(caller, url_ptr, url_len, ret_area):
+        def _lookup_net_or_err(caller, handle, ret_area):
+            """Resolve the receiver Net cap from the handle table.
+            On failure (unknown handle / wrong type / zero sentinel)
+            write an Err(IoError) into ``ret_area`` and return
+            None; callers short-circuit and skip the syscall."""
+            try:
+                return self._cap_handles.lookup(handle, Net)
+            except CapHandleError as e:
+                _write_result_err_ioerror(
+                    caller, ret_area,
+                    "invalid Net capability handle", str(e),
+                )
+                return None
+
+        def net_get(caller, handle, url_ptr, url_len, ret_area):
             if self._memory is None or self._alloc_export is None:
                 raise RuntimeError(
                     "net.get called before memory + $alloc set"
@@ -1032,20 +1046,30 @@ class WasmHost:
                     caller, ret_area, "invalid URL", str(e),
                 )
                 return
-            # Mirror ``capa.runtime._capabilities.Net.get`` exactly:
-            # any URLError / OSError / ValueError from urlopen lowers
-            # to the same Err shape the Python runtime produces, so
-            # the two backends' failure messages stay aligned. The
-            # body decode uses ``errors="replace"`` so non-UTF-8
-            # responses do not surface a UnicodeDecodeError.
-            try:
-                with urlopen(Request(url), timeout=10) as resp:
-                    data = resp.read().decode("utf-8", errors="replace")
-                s_ptr, s_len = _alloc_utf8(caller, data)
+            # Slice 25.3: enforce via the looked-up Net cap directly.
+            # ``Net.get`` already does ``urlparse(url).hostname`` +
+            # ``allows()`` + the urlopen call + the same OSError /
+            # URLError fall-through to a Capa-side IoError. Routing
+            # through it gives us the F2 substring-attack fix for
+            # free (the host bridge previously trusted the emitter's
+            # inline ``$str_contains`` check, which admitted
+            # lookalike URLs).
+            net = _lookup_net_or_err(caller, handle, ret_area)
+            if net is None:
+                return
+            from ._result import Ok
+            result = net.get(url)
+            if isinstance(result, Ok):
+                s_ptr, s_len = _alloc_utf8(caller, result.value)
                 _write_result_ok_string(caller, ret_area, s_ptr, s_len)
-            except (URLError, OSError, ValueError) as e:
+            else:
+                # Err: payload is an IoError instance with
+                # .message / .cause String fields.
+                err = result.error
                 _write_result_err_ioerror(
-                    caller, ret_area, "HTTP GET failed", str(e),
+                    caller, ret_area,
+                    getattr(err, "message", str(err)),
+                    getattr(err, "cause", ""),
                 )
 
         self.linker.define_func(
@@ -1057,6 +1081,7 @@ class WasmHost:
         # second String arg (the request body).
         ft_net_post_indirect = wasmtime.FuncType(
             [
+                wasmtime.ValType.i32(),  # handle (slice 25.3)
                 wasmtime.ValType.i32(),  # url_ptr
                 wasmtime.ValType.i32(),  # url_len
                 wasmtime.ValType.i32(),  # body_ptr
@@ -1066,17 +1091,18 @@ class WasmHost:
             [],
         )
 
-        def net_post(caller, url_ptr, url_len, body_ptr, body_len, ret_area):
+        def net_post(
+            caller, handle, url_ptr, url_len, body_ptr, body_len, ret_area,
+        ):
             if self._memory is None or self._alloc_export is None:
                 raise RuntimeError(
                     "net.post called before memory + $alloc set"
                 )
             # Same UTF-8 decode policy as net.get for the URL; the
-            # body is treated as opaque bytes (we don't decode +
-            # re-encode it to preserve byte-for-byte semantics with
-            # the Python runtime, which calls body.encode("utf-8")
-            # on a Capa String -- always valid UTF-8 at the source
-            # level since Capa Strings are unicode-safe).
+            # body is decoded as UTF-8 too because the Python-side
+            # ``Net.post(url, body)`` takes a Capa String (always
+            # valid UTF-8). errors="replace" defends against a
+            # malformed-byte fuzz from the guest.
             try:
                 url = bytes(
                     self._memory.read(caller, url_ptr, url_ptr + url_len)
@@ -1086,21 +1112,23 @@ class WasmHost:
                     caller, ret_area, "invalid URL", str(e),
                 )
                 return
-            body_bytes = bytes(
+            body = bytes(
                 self._memory.read(caller, body_ptr, body_ptr + body_len)
-            )
-            try:
-                req = Request(
-                    url, data=body_bytes,
-                    headers={"Content-Type": "application/octet-stream"},
-                )
-                with urlopen(req, timeout=10) as resp:
-                    data = resp.read().decode("utf-8", errors="replace")
-                s_ptr, s_len = _alloc_utf8(caller, data)
+            ).decode("utf-8", errors="replace")
+            net = _lookup_net_or_err(caller, handle, ret_area)
+            if net is None:
+                return
+            from ._result import Ok
+            result = net.post(url, body)
+            if isinstance(result, Ok):
+                s_ptr, s_len = _alloc_utf8(caller, result.value)
                 _write_result_ok_string(caller, ret_area, s_ptr, s_len)
-            except (URLError, OSError, ValueError) as e:
+            else:
+                err = result.error
                 _write_result_err_ioerror(
-                    caller, ret_area, "HTTP POST failed", str(e),
+                    caller, ret_area,
+                    getattr(err, "message", str(err)),
+                    getattr(err, "cause", ""),
                 )
 
         self.linker.define_func(
@@ -1108,20 +1136,42 @@ class WasmHost:
             net_post, access_caller=True,
         )
 
-        # net.restrict_to is a no-op at the Wasm level (mirrors
-        # fs.restrict_to). Static capability discipline is enforced
-        # by the analyzer + the audit C2 inline ``$str_contains``
-        # check the Wasm emitter wraps around ``Net.get``; this
-        # callback only exists so the import resolves.
-        ft_string_to_unit = wasmtime.FuncType(
-            [wasmtime.ValType.i32(), wasmtime.ValType.i32()], [],
+        # net.restrict_to: slice 25.3 (2026-05-30). Looks up the parent
+        # handle, allocates a child Net with the narrowed host set,
+        # and returns the child's i32 handle. Mirrors fs.restrict-to;
+        # the new handle threads as the receiver of subsequent Net
+        # calls in this branch of the program, so a cap restricted
+        # to one host and passed across a function boundary keeps
+        # its restriction (closes audit slice 25 F1 for Net).
+        ft_restrict_to = wasmtime.FuncType(
+            [
+                wasmtime.ValType.i32(),  # parent handle
+                wasmtime.ValType.i32(),  # host_ptr
+                wasmtime.ValType.i32(),  # host_len
+            ],
+            [wasmtime.ValType.i32()],
         )
 
-        def net_restrict_to(caller, host_ptr, host_len):
-            return None
+        def net_restrict_to(caller, parent_handle, host_ptr, host_len):
+            if self._memory is None:
+                raise RuntimeError(
+                    "net.restrict_to called before memory was set"
+                )
+            try:
+                host = bytes(
+                    self._memory.read(
+                        caller, host_ptr, host_ptr + host_len,
+                    )
+                ).decode("utf-8")
+            except UnicodeDecodeError:
+                return 0
+            try:
+                return self._cap_handles.restrict_net(parent_handle, host)
+            except CapHandleError:
+                return 0
 
         self.linker.define_func(
-            "capa:host/net", "restrict-to", ft_string_to_unit,
+            "capa:host/net", "restrict-to", ft_restrict_to,
             net_restrict_to, access_caller=True,
         )
 
@@ -1736,55 +1786,182 @@ class WasmHost:
         """Instantiate and call the module's ``main`` export.
 
         Pre-slice-25.2: ``fun main(stdio: Stdio)`` lowered to ``main()``
-        on Wasm (every cap param was erased). Slice 25.2 keeps Stdio /
-        Net / Db / Proc / Env / Clock / Random / Unsafe on the erased
-        path but routes ``Fs`` through a per-instance handle table; the
-        receiver is now an i32 the guest threads through every Fs call.
-        ``main`` therefore takes one i32 arg per Fs param in its
-        declared signature (and only Fs - other caps are still erased
-        until their own rollout slices).
+        on Wasm (every cap param was erased). Slice 25.2 un-erased
+        ``Fs``; slice 25.3 un-erased ``Net``. Both lower to i32
+        handles the guest threads through every privileged op so a
+        restricted cap survives crossing function boundaries (audit
+        slice 25 F1). Db / Proc / Env / Clock / Random / Unsafe /
+        Stdio stay erased until their own rollout slices.
 
-        We inspect the export's signature at call time: every i32
-        param the export declares corresponds to a Fs handle the
-        host must allocate. Allocating in declaration order is
-        sufficient because the IR's main-param walk goes left to
-        right and slice 25.2 only un-erases Fs (so no ordering
-        ambiguity arises from other caps becoming i32). The Fs root
-        handle is allocated unrestricted; programs that need a
-        narrower root should set CAPA_FS_ROOT or similar (deferred
-        to a future host-config slice)."""
+        ``main`` now takes one i32 arg per Fs / Net cap declared in
+        its source signature (in declaration order). To dispatch the
+        right root handle to each slot we recover main's parameter
+        names from the wasm ``name`` custom section the WAT compiler
+        preserves (params are declared as ``(param $fs i32)`` /
+        ``(param $net i32)`` so the name maps directly to the
+        cap-kind). Programs whose main takes no cap params (every
+        i32-free signature) follow the legacy no-handle path."""
         instance = self.instantiate(wasm_blob)
         main = instance.exports(self.store)["main"]
-        # Discover how many i32 args main takes. ``wasmtime.Func`` in
-        # Python doesn't expose a stable typed signature pre-call, so
-        # we inspect via the module's type ascription on the func ref.
-        # Fall back to a try-catch on the call: pass N handles where
-        # N = number of params reported by ``main.type(store).params``.
+        # Discover how many i32 args main takes.
         try:
             ftype = main.type(self.store)
             n_params = len(list(ftype.params))
         except Exception:
             n_params = 0
-        # Allocate root Fs the host hands the guest. Stdio is still
-        # erased so we don't allocate a handle for it; same for the
-        # other built-in caps in this slice (their rollout is 25.3+).
-        # Net / Db / Proc / Env / Clock that would have been root
-        # handles stay implicit-by-import.
+        # Allocate root caps the host hands the guest. Lazy-construct
+        # the roots once per host instance so a test that re-runs
+        # ``main`` reuses the same handle table entries (handle
+        # identity stays stable across invocations).
         if self._root_fs is None:
             self._root_fs = Fs()
+        if self._root_net is None:
+            self._root_net = Net()
         if self._root_stdio is None:
             self._root_stdio = Stdio()
         roots = bootstrap_root_handles(
             self._cap_handles,
             fs=self._root_fs,
+            net=self._root_net,
             stdio=self._root_stdio,
         )
-        # Slice 25.2 scope: only Fs is un-erased in the main signature
-        # (every other cap is still skipped by the Wasm emitter). The
-        # IR's main-param walk emits one i32 per Fs param in source
-        # order, so we hand exactly that many Fs handles. Programs
-        # declaring multiple Fs args (rare, but legal) get the same
-        # root cap aliased to each - the source-level analyzer
-        # already enforces capability uniqueness rules.
-        handle_args = [roots["fs"]] * n_params
+        # Walk main's parameter names so we can hand the right root
+        # handle to each i32 slot. The name section preserves the
+        # source-level param identifiers (``$fs`` / ``$net``); we
+        # map by name to the matching root handle. Unknown names
+        # fall back to Fs (the legacy slice-25.2 behaviour) so an
+        # older blob without a name section still runs.
+        param_names = _read_main_param_names(wasm_blob, n_params)
+        name_to_root: dict[str, int] = {
+            "fs": roots.get("fs", 0),
+            "net": roots.get("net", 0),
+        }
+        handle_args: list[int] = []
+        for i in range(n_params):
+            name = param_names[i] if i < len(param_names) else ""
+            handle_args.append(name_to_root.get(name, roots.get("fs", 0)))
         main(self.store, *handle_args)
+
+
+# ---- helpers ----------------------------------------------------
+
+
+def _read_uleb128(buf: bytes, off: int) -> tuple[int, int]:
+    """Decode an unsigned LEB128 from ``buf`` at ``off``; returns
+    ``(value, next_offset)``. Used by the wasm name-section parser."""
+    val = 0
+    shift = 0
+    while True:
+        b = buf[off]
+        off += 1
+        val |= (b & 0x7F) << shift
+        if (b & 0x80) == 0:
+            return val, off
+        shift += 7
+
+
+def _read_main_param_names(wasm_blob: bytes, n_params: int) -> list[str]:
+    """Recover ``main``'s parameter names from the wasm ``name``
+    custom section. Returns a list of length ``n_params`` (or empty
+    on any parse failure / absent section).
+
+    Slice 25.3 (2026-05-30): used by ``WasmHost.run_main`` to map
+    each i32 param of the ``main`` export to the matching root
+    capability handle. The WAT compiler preserves the source-level
+    param identifiers (``(param $fs i32) (param $net i32)``) into
+    the name section's ``local`` subsection (id 2), keyed by the
+    function index of ``main``. We:
+
+    1. Walk the top-level section list looking for the ``name``
+       custom section (custom section, id 0, payload starts with
+       the section name as a length-prefixed string).
+    2. Inside the name section, scan subsection id 1 (function
+       names) to find the function index whose name is ``main``.
+    3. Scan subsection id 2 (local names) for that function's
+       entry, extract the first ``n_params`` local names (in
+       wasm-locals these come first, before any non-param local).
+
+    Returns ``[]`` if the section is absent, the lookup fails, or
+    the layout doesn't match. Callers must tolerate the empty case
+    (falling back to a sensible default per index)."""
+    try:
+        # Header: magic (4) + version (4) = 8 bytes.
+        if len(wasm_blob) < 8 or wasm_blob[:4] != b"\x00asm":
+            return []
+        off = 8
+        name_payload: bytes | None = None
+        while off < len(wasm_blob):
+            section_id = wasm_blob[off]
+            off += 1
+            size, off = _read_uleb128(wasm_blob, off)
+            payload_start = off
+            off += size
+            if section_id != 0:
+                continue
+            # Custom section: payload starts with name as LEB-len-
+            # prefixed UTF-8 string.
+            j = payload_start
+            nlen, j = _read_uleb128(wasm_blob, j)
+            name = wasm_blob[j:j + nlen].decode("utf-8", errors="replace")
+            j += nlen
+            if name == "name":
+                name_payload = wasm_blob[j:payload_start + size]
+                break
+        if name_payload is None:
+            return []
+
+        # Walk subsections; cache function-name -> idx, then look
+        # up main's local names.
+        fn_idx_for_main: int | None = None
+        local_names_by_fn: dict[int, list[str]] = {}
+        p = 0
+        while p < len(name_payload):
+            sub_id = name_payload[p]
+            p += 1
+            sub_size, p = _read_uleb128(name_payload, p)
+            sub_payload = name_payload[p:p + sub_size]
+            p += sub_size
+            if sub_id == 1:
+                # function names: namemap (vec of {idx, name}).
+                q = 0
+                count, q = _read_uleb128(sub_payload, q)
+                for _ in range(count):
+                    idx, q = _read_uleb128(sub_payload, q)
+                    nlen, q = _read_uleb128(sub_payload, q)
+                    name = sub_payload[q:q + nlen].decode(
+                        "utf-8", errors="replace",
+                    )
+                    q += nlen
+                    if name == "main":
+                        fn_idx_for_main = idx
+            elif sub_id == 2:
+                # local names: indirectnamemap = vec of {fn_idx,
+                # namemap}.
+                q = 0
+                fn_count, q = _read_uleb128(sub_payload, q)
+                for _ in range(fn_count):
+                    fn_idx, q = _read_uleb128(sub_payload, q)
+                    local_count, q = _read_uleb128(sub_payload, q)
+                    locals_here: list[tuple[int, str]] = []
+                    for _ in range(local_count):
+                        local_idx, q = _read_uleb128(sub_payload, q)
+                        nlen, q = _read_uleb128(sub_payload, q)
+                        name = sub_payload[q:q + nlen].decode(
+                            "utf-8", errors="replace",
+                        )
+                        q += nlen
+                        locals_here.append((local_idx, name))
+                    # Keep first ``n_params`` local names in
+                    # local-index order; those correspond to the
+                    # function's parameters (wasm convention:
+                    # params come first in the local index space).
+                    locals_here.sort(key=lambda t: t[0])
+                    local_names_by_fn[fn_idx] = [
+                        n for _, n in locals_here
+                    ]
+        if fn_idx_for_main is None:
+            return []
+        names = local_names_by_fn.get(fn_idx_for_main, [])
+        return names[:n_params]
+    except (IndexError, UnicodeDecodeError, ValueError):
+        return []

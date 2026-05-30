@@ -1,0 +1,35 @@
+// Slice 25.3 (2026-05-30): substring-vs-parsed-hostname oracle for Net.
+//
+// Pre-slice-25.3 the Wasm emitter's inline ``Net.restrict_to`` check
+// was ``$str_contains(url, host)``: a literal substring match that
+// admitted URLs whose hostname is attacker-controlled but whose
+// path / query component contained the allowed host as a substring.
+// The Python ``Net.get`` uses ``urlparse(url).hostname`` and so
+// rejects the same URL correctly (audit slice 25 finding F2).
+//
+// Concretely, ``https://attacker.invalid/?redir=api.example.com``
+// has hostname ``attacker.invalid`` (which is NOT in the allow-set
+// ``{"api.example.com"}``); a sound check denies it. The pre-fix
+// Wasm path ran ``$str_contains(<url>, "api.example.com")`` which
+// returned 1 because the literal appears in the query string, and
+// the host bridge then attempted to fetch the attacker URL.
+//
+// Post-slice-25.3 the host bridge looks up the Net cap from the
+// handle table and calls ``Net.get`` (Python) directly; the
+// urlparse + allows() check rejects in one place. Both backends
+// now print ``ok: hostname check rejected lookalike``. The bug is
+// back if Wasm prints ``BUG: substring-match bypass``.
+//
+// No fixture / network call required: ``attacker.invalid`` is in
+// the IANA reserved test TLD ``.invalid``.
+
+fun main(stdio: Stdio, net: Net)
+    let scoped = net.restrict_to("api.example.com")
+    // URL whose substring contains the allowed host in the
+    // path / query component but whose hostname is
+    // attacker.invalid. The pre-fix Wasm inline check did
+    // str_contains(url, host) and accepted; Python uses
+    // urlparse(url).hostname and rejects.
+    match scoped.get("https://attacker.invalid/?redir=api.example.com")
+        Ok(_) -> stdio.println("BUG: substring-match bypass")
+        Err(_) -> stdio.println("ok: hostname check rejected lookalike")

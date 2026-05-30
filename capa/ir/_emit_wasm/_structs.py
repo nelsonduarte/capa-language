@@ -146,10 +146,11 @@ class _StructEmissionMixin:
                 # could omit the slot entirely, but keeping it
                 # makes layouts uniform with the analyzer's view.
                 #
-                # Slice 25.2 (2026-05-30): Fs becomes an i32 handle
-                # the struct must carry so a restricted cap stashed
-                # in a record survives across function boundaries.
-                if field_ty == "Fs":
+                # Slice 25.2 / 25.3 (2026-05-30): Fs / Net become
+                # i32 handles the struct must carry so a restricted
+                # cap stashed in a record survives across function
+                # boundaries.
+                if field_ty in ("Fs", "Net"):
                     self._write(f"local.get ${instr.dst}")
                     self._push_value(fval)
                     self._write(f"i32.store offset={offset}")
@@ -216,11 +217,11 @@ class _StructEmissionMixin:
             # to the imported function by name without reading the
             # receiver value.
             #
-            # Slice 25.2 (2026-05-30): Fs becomes an i32 handle
-            # the consumer threads as the receiver of subsequent
-            # Fs calls (closing audit slice 25 F1 for Fs values
-            # stashed in records).
-            if field_ty == "Fs":
+            # Slice 25.2 / 25.3 (2026-05-30): Fs / Net become i32
+            # handles the consumer threads as the receiver of
+            # subsequent privileged calls (closing audit slice 25
+            # F1 for cap values stashed in records).
+            if field_ty in ("Fs", "Net"):
                 self._push_value(instr.receiver)
                 self._write(f"i32.load offset={offset}")
                 self._write(f"local.set ${instr.dst}")

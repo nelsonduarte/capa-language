@@ -1023,7 +1023,26 @@ Listed so the design space is explicit.
       markers (CM wrapper still emits fixed
       `world { export main: func(); }` so wasm-tools
       rejects the new main signature).
-    - 25.3 Net: closes F1 + F2 together.
+    - **25.3 Net DONE** (2026-05-30): closes F1 + F2 together.
+      Net is no longer erased in CIR -> Wasm (mirrors slice
+      25.2 across `_locals.py`, `_closures.py`, `_traits.py`,
+      `_dispatch.py`, `_structs.py`, `_values.py`,
+      `_emit_wasm/__init__.py`, `_discovery.py`, `_emit_wit.py`);
+      Net cap-method lowering in `_caps.py` short-circuits
+      ahead of the now-dead inline `$str_contains` machinery
+      (kept commented for slice-25.9 cleanup). Host bridge
+      delegates to the Python `Net.get` / `Net.post` which
+      use `urlparse(url).hostname` + `allows()` — closes F2
+      by side effect. New `capa:host/net.restrict-to(handle,
+      host) -> u32` import. Two new parity programs:
+      `net_cross_function_attenuation.capa` (F1) and
+      `net_substring_attack.capa` (F2). Notable: `run_main`
+      now parses the wasm `name` custom section to recover
+      source-level cap param identifiers (`$fs`, `$net`) so
+      the right root handle is routed to each i32 slot;
+      single-cap programs that lack a name section fall back
+      to Fs. 4 more Component Model tests parked behind the
+      same slice-25.8 skip marker.
     - 25.4 Db, 25.5 Proc, 25.6 Env, 25.7 Clock.
     - 25.8 Component Model host parity (unparks the 7
       skipped tests + adds matching cross-function

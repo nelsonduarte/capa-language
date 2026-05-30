@@ -265,27 +265,25 @@ class _CapDispatchMixin:
             # rebuilds a Capa Option<String> (16-byte record:
             # tag@0, packed (ptr|len<<32) i64 payload@8).
             return (["i32", "i32", "i32"], "")
-        if ("func(handle: u32, path: string) -> result<string, io-error>" in wit):
-            # Slice 25.2 (2026-05-30): Fs.read now takes the cap
-            # handle (i32) as the FIRST arg so the host can look
-            # up the receiver's restriction in its handle table
-            # and enforce it before the syscall. handle + (ptr,
-            # len) + ret_area = 4 i32s.
+        if ("func(handle: u32, path: string) -> result<string, io-error>" in wit
+                or "func(handle: u32, url: string) -> result<string, io-error>" in wit):
+            # Slice 25.2 (Fs.read) / 25.3 (Net.get): cap handle (i32)
+            # as the FIRST arg so the host can look up the receiver's
+            # restriction in its handle table and enforce it before
+            # the syscall. handle + (ptr, len) + ret_area = 4 i32s.
             return (["i32", "i32", "i32", "i32"], "")
-        if ("func(url: string) -> result<string, io-error>" in wit):
-            # Canonical ABI indirect return: single-string arg
-            # (ptr, len) + a caller-allocated 20-byte return area
-            # for tag + Ok string (ptr, len) or Err io-error
-            # (m_ptr, m_len, c_ptr, c_len). Materialiser rebuilds
-            # a Capa Result<String, IoError>. Net.get path.
-            return (["i32", "i32", "i32"], "")
         if "func() -> result<string, io-error>" in wit:
             # Stdio.read_line: no string arg, just the ret area.
             # Same 20-byte indirect-return shape as Fs.read.
             return (["i32"], "")
-        if "func(handle: u32, path: string, content: string) -> result<_, io-error>" in wit:
-            # Slice 25.2: Fs.write - handle + path + content +
-            # ret_area = 6 i32s.
+        if ("func(handle: u32, path: string, content: string) -> result<_, io-error>" in wit
+                or "func(handle: u32, url: string, body: string) -> result<string, io-error>" in wit):
+            # Slice 25.2 (Fs.write) / 25.3 (Net.post): handle +
+            # two String args + ret_area = 6 i32s. Fs.write returns
+            # result<_, io-error> (Ok-Unit) and Net.post returns
+            # result<string, io-error>; both lower to a 20-byte
+            # caller-allocated ret area so the wire shape is
+            # identical at this layer.
             return (["i32", "i32", "i32", "i32", "i32", "i32"], "")
         if "func(path: string, content: string) -> result<_, io-error>" in wit:
             # Canonical ABI indirect return: path + content +
@@ -371,25 +369,25 @@ class _CapDispatchMixin:
             # materialises a Capa List<String> header (16 bytes)
             # from the flat fields after the call.
             return (["i32"], "")
-        if "func(handle: u32, prefix: string) -> u32" in wit:
-            # Slice 25.2 (2026-05-30): Fs.restrict_to takes the
-            # parent handle + the prefix and returns a fresh
-            # child handle bound to a narrower restriction. The
-            # guest threads the new handle as the receiver of
-            # subsequent Fs calls in this branch of the program;
-            # passing the cap across a function boundary preserves
-            # the restriction (the bug fixed by this slice).
+        if ("func(handle: u32, prefix: string) -> u32" in wit
+                or "func(handle: u32, host: string) -> u32" in wit):
+            # Slice 25.2 (Fs.restrict_to) / 25.3 (Net.restrict_to):
+            # takes the parent handle + the attenuation arg and
+            # returns a fresh child handle bound to a narrower
+            # restriction. The guest threads the new handle as the
+            # receiver of subsequent privileged calls in this branch
+            # of the program; passing the cap across a function
+            # boundary preserves the restriction (audit slice 25 F1).
             return (["i32", "i32", "i32"], "i32")
         if (("func(prefix: string)" in wit
                 or "func(host: string)" in wit)
                 and "->" not in wit):
-            # Net.restrict_to / Db.restrict_to / Proc.restrict_to: a
-            # string-arg, no-result no-op at the Wasm level. The
-            # capability discipline is enforced by the analyzer; at
-            # runtime the import is shared. ``prefix:`` is the Db /
-            # Proc arg name; ``host:`` is Net's. All lower
-            # identically. Fs.restrict_to graduated to the handle-
-            # returning shape above in slice 25.2.
+            # Db.restrict_to / Proc.restrict_to: a string-arg,
+            # no-result no-op at the Wasm level. The capability
+            # discipline is enforced by the analyzer; at runtime
+            # the import is shared. Fs.restrict_to (slice 25.2)
+            # and Net.restrict_to (slice 25.3) graduated to the
+            # handle-returning shape above.
             return (["i32", "i32"], "")
         if "func(keys: list<string>)" in wit and "->" not in wit:
             # Env.restrict_to_keys: list<string> arg (ptr, len), no
@@ -418,15 +416,19 @@ class _CapDispatchMixin:
     def _emit_cap_method_call(self, instr: MethodCall) -> None:
         cap = instr.cap_used
         method = instr.method
-        # Slice 25.2 (2026-05-30): Fs.restrict_to is no longer a no-op
-        # at the Wasm level. It crosses the host bridge with the
-        # receiver's handle + the prefix string and returns a fresh
-        # i32 handle bound to a narrower restriction. The dst local
-        # holds the new handle and is threaded as the receiver of
-        # downstream Fs calls (including across function boundaries -
-        # this is what closes audit slice 25 F1).
+        # Slice 25.2 / 25.3 (2026-05-30): Fs.restrict_to /
+        # Net.restrict_to are no longer no-ops at the Wasm level.
+        # They cross the host bridge with the receiver's handle +
+        # the attenuation arg and return a fresh i32 handle bound to
+        # a narrower restriction. The dst local holds the new handle
+        # and is threaded as the receiver of downstream privileged
+        # calls (including across function boundaries - this is what
+        # closes audit slice 25 F1).
         if cap == "Fs" and method == "restrict_to":
             self._emit_fs_restrict_to(instr)
+            return
+        if cap == "Net" and method == "restrict_to":
+            self._emit_net_restrict_to(instr)
             return
         # Attenuator methods (``restrict_to`` / ``restrict_to_keys``
         # / ``restrict_to_after``) are no-ops at the Wasm level for
@@ -465,19 +467,26 @@ class _CapDispatchMixin:
         # so primitive-return methods (Stdio, Clock) follow the
         # historical multi-value direct-return shape.
         indirect = _CANONICAL_INDIRECT_RETURN.get((cap, method))
-        # Slice 25.2 (2026-05-30): Fs no longer needs the inline
-        # emit-time attenuation check. The host bridge now enforces
-        # the receiver cap's restriction via the handle table, which
-        # is sound across function boundaries (the bug audit slice 25
-        # F1 documented). The handle is pushed as the FIRST arg by
-        # ``_emit_fs_method_with_handle`` below. The inline machinery
-        # stays intact for Net / Db / Proc / Env / Clock (they remain
-        # on the old erased-cap path until their own rollout slices).
+        # Slice 25.2 / 25.3 (2026-05-30): Fs / Net no longer need the
+        # inline emit-time attenuation check. The host bridge now
+        # enforces the receiver cap's restriction via the handle
+        # table, which is sound across function boundaries (the bug
+        # audit slice 25 F1 documented) AND uses
+        # ``urlparse(url).hostname`` for Net (which the inline
+        # ``$str_contains`` check failed to do - audit slice 25 F2,
+        # substring-attack lookalike URLs were admitted). The handle
+        # is pushed as the FIRST arg by the helpers below. The
+        # inline machinery stays intact for Db / Proc / Env / Clock
+        # (they remain on the old erased-cap path until their own
+        # rollout slices).
         if cap == "Fs" and indirect is not None:
             self._emit_fs_method_with_handle(instr, method, indirect)
             return
         if cap == "Fs" and method in ("exists", "is_dir"):
             self._emit_fs_bool_query_with_handle(instr, method)
+            return
+        if cap == "Net" and indirect is not None:
+            self._emit_net_method_with_handle(instr, method, indirect)
             return
         # Capability attenuation enforcement (audit C2, 2026-05-25):
         # when the lowerer has tagged this MethodCall with an
@@ -639,6 +648,57 @@ class _CapDispatchMixin:
         self._write(f"call $Fs_{method}")
         if instr.dst is not None:
             self._write(f"local.set ${instr.dst}")
+
+    # ---- slice 25.3 Net handle-passing helpers -----------------
+
+    def _push_net_handle(self, recv) -> None:
+        """Push the receiver Net cap's i32 handle. Mirrors
+        ``_push_fs_handle``; the receiver Value is always a local
+        or param of type Net (analyzer-enforced) and may live in a
+        captured environment when we're inside a lifted lambda
+        body (``_push_value`` handles the env-aware load path)."""
+        if recv.kind not in ("local", "param"):
+            raise WasmEmissionError(
+                f"Net method receiver must be a local or param "
+                f"(slice 25.3 handle-passing), got {recv.kind!r}"
+            )
+        self._push_value(recv)
+
+    def _emit_net_restrict_to(self, instr: MethodCall) -> None:
+        """Emit ``new_net = net.restrict_to(host)``. Pushes the
+        receiver handle + the host (ptr, len), calls the host
+        import, binds the i32 result handle to ``instr.dst``. The
+        dst's Net local was declared i32 by the locals walker
+        (slice 25.3 un-erased Net)."""
+        if len(instr.args) != 1:
+            raise WasmEmissionError(
+                f"Net.restrict_to expected 1 arg, got {len(instr.args)}"
+            )
+        self._push_net_handle(instr.receiver)
+        self._push_string_arg(instr.args[0])
+        self._write("call $Net_restrict_to")
+        if instr.dst is not None:
+            self._write(f"local.set ${instr.dst}")
+
+    def _emit_net_method_with_handle(
+        self, instr: MethodCall, method: str,
+        indirect: tuple[int, str],
+    ) -> None:
+        """Emit a Net privileged op (get / post) with the receiver
+        handle as the FIRST host-call arg. The host looks up the
+        cap and delegates to the Python ``Net.{get,post}`` which
+        does ``urlparse(url).hostname`` + ``allows()`` (which is
+        what closes audit slice 25 F2; the prior inline
+        ``$str_contains(url, host)`` admitted lookalike URLs)."""
+        ret_area_size, ret_kind = indirect
+        self._push_net_handle(instr.receiver)
+        for arg in instr.args:
+            self._push_string_arg(arg)
+        self._write(f"i32.const {ret_area_size}")
+        self._write("call $alloc")
+        self._write("local.tee $_ret_area")
+        self._write(f"call $Net_{method}")
+        self._emit_cap_indirect_materialise(ret_kind, instr.dst)
 
     def _push_string_arg(self, arg) -> None:
         """Push a string Value as (ptr, len). Replicates the inline
@@ -856,13 +916,25 @@ class _CapDispatchMixin:
             self._emit_path_prefix_check(prefix)
             return
         if cap == "Net":
+            # Slice 25.3 (2026-05-30): obsolete after Net was
+            # routed through the host handle table. ``_emit_cap_method_call``
+            # now short-circuits Net.get / Net.post to
+            # ``_emit_net_method_with_handle`` before the
+            # attenuation-check path runs, so this branch is dead.
+            # Kept (rather than deleted) so the predicate-emit
+            # dispatch stays exhaustive across all caps; targeted
+            # for cleanup in slice 25.9 alongside Db / Proc / Env
+            # once they migrate too. The inline
+            # ``$str_contains(url, host)`` here was the audit slice 25
+            # F2 hazard (admitted lookalike URLs); the post-25.3 path
+            # delegates to Python ``Net.get`` which uses
+            # ``urlparse(url).hostname``.
             if att_method != "restrict_to" or not args:
                 raise WasmEmissionError(
                     f"unsupported Net attenuation: {att_method!r}"
                 )
             host = _unquote_attenuation_arg(args[0])
             offset, length = self._intern_string(host)
-            # str_contains(url_ptr, url_len, host_ptr, host_len)
             self._write("local.get $_atten_path_ptr")
             self._write("local.get $_atten_path_len")
             self._write(f"i32.const {offset}")

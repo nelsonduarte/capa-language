@@ -131,20 +131,29 @@ _WIT_SIGNATURES: dict[tuple[str, str], str] = {
     # Net: HTTP GET / POST against a URL. Same canonical-ABI shape
     # as Fs.read (result<string, io-error>): a 20-byte caller-
     # allocated return area for tag + Ok string (ptr, len) or Err
-    # io-error (m_ptr, m_len, c_ptr, c_len). The host mirrors the
-    # Python runtime's ``urllib.request.urlopen`` + ``decode("utf-8",
-    # errors="replace")`` exactly so a ``file://`` URL produces
-    # byte-identical output on both backends. ``post`` adds a second
-    # string argument (the body) and sets Content-Type
-    # ``application/octet-stream`` on both backends.
-    ("Net", "get"): "get: func(url: string) -> result<string, io-error>",
-    ("Net", "post"): "post: func(url: string, body: string) -> result<string, io-error>",
-    # restrict_to is a no-op at the Wasm level: capabilities carry
-    # no runtime value (their methods are imports by name). The
-    # attenuation discipline is enforced inline at the privileged
-    # op (``Net.get`` / ``Net.post``) via the audit C2
-    # ``$str_contains`` check.
-    ("Net", "restrict_to"): "restrict-to: func(host: string)",
+    # io-error (m_ptr, m_len, c_ptr, c_len). The host enforces the
+    # receiver cap's restriction via the per-instance handle table
+    # then delegates to ``capa.runtime.Net.{get,post}`` so the
+    # ``urlparse(url).hostname`` + ``allows(host)`` check runs in
+    # one place.
+    #
+    # Slice 25.3 (2026-05-30): every Net op takes ``handle: u32`` as
+    # the FIRST param so the host looks up the receiver cap in the
+    # handle table. Closes the cross-function attenuation bug (audit
+    # slice 25 F1) AND the URL substring-match bug (audit slice 25
+    # F2): the pre-fix inline check was ``$str_contains(url, host)``,
+    # which accepted a URL whose hostname is ``attacker.invalid`` but
+    # whose path contains ``api.example.com``. ``restrict-to`` now
+    # returns a fresh ``u32`` handle bound to a narrower host set
+    # (intersection with the parent).
+    ("Net", "get"): "get: func(handle: u32, url: string) -> result<string, io-error>",
+    ("Net", "post"): "post: func(handle: u32, url: string, body: string) -> result<string, io-error>",
+    # ``restrict-to`` returns a fresh handle (slice 25.3). The host
+    # walks the parent restriction + the host and allocates a new
+    # entry in its handle table; the guest threads the new handle
+    # as the receiver of every subsequent Net call in this branch
+    # of the program.
+    ("Net", "restrict_to"): "restrict-to: func(handle: u32, host: string) -> u32",
 
     # Db: SQLite-backed key-value + tabular store (slice 11,
     # 2026-05). ``exec`` runs DDL / DML and returns
@@ -333,12 +342,16 @@ def collect_used_capabilities(module: Module) -> dict[str, set[str]]:
                     # already filters them; this mirrors that rule
                     # so WIT and core imports stay in lockstep.
                     #
-                    # Slice 25.2 exception (2026-05-30):
-                    # ``Fs.restrict_to`` graduated to a real host
-                    # call that takes the parent handle + prefix
-                    # and returns a child handle, so it stays in
-                    # the WIT.
-                    if cap == "Fs" and instr.method == "restrict_to":
+                    # Slice 25.2 / 25.3 exception (2026-05-30):
+                    # ``Fs.restrict_to`` / ``Net.restrict_to``
+                    # graduated to real host calls that take the
+                    # parent handle + the attenuation arg and
+                    # return a child handle, so they stay in the
+                    # WIT.
+                    if (
+                        cap in ("Fs", "Net")
+                        and instr.method == "restrict_to"
+                    ):
                         pass
                     elif instr.method in (
                         "restrict_to",
