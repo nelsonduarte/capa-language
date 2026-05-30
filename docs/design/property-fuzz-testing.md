@@ -96,20 +96,43 @@ para emitir as formas que escaparam, cada uma ligada a um bug real:
 A Lacuna B sozinha torna os fuzzers *existentes* capazes de reencontrar
 21/24; combinada com a Lacuna A, fecha também 25.
 
-## Lacunas menores (ROI mais baixo, opcionais)
+## Lacunas menores — AMBAS FEITAS (2026-05-31)
 
-### Lacuna C — Oráculo de exportador (~0.5 slice)
-Propriedade independente de backend sobre o corpus + programas gerados:
-todo `transitively_reachable_capability` no manifesto aparece como
-aresta **e** propriedade no CycloneDX **e** no SPDX; todo
-`provably_excluded` aparece como a anotação negativa correspondente.
-(Apanharia o slice 23.) Não precisa de runtime — compara manifesto vs.
-exportadores.
+### Lacuna C — Oráculo de exportador — FEITA
+Propriedade independente de backend: todo
+`transitively_reachable_capability` no manifesto aparece como
+propriedade no CycloneDX **e** anotação no SPDX; todo
+`provably_excluded` aparece como a entrada negativa correspondente;
+todo built-in transitivamente alcançado tem um componente sintetizado
+`capa:builtin:...` no CycloneDX. (Apanharia o slice 23.) Não precisa de
+runtime — compara manifesto vs. exportadores.
 
-### Lacuna D — Invariante de posições (~0.5 slice)
-`source[tok.start:tok.end] == tok.text` para cada token, sobre texto
-gerado. Protege o campo `pos` do manifesto que os reguladores leem.
-Pode encaixar em `TestLexerProperties`.
+Implementada em `TestExporterConservation` a granularidade **por-função**
+(a forma forte): cada função do manifesto é casada com o seu componente
+CycloneDX (por bom-ref reconstruído) e o seu pacote SPDX (por nome de
+exibição). Geradores: `_program_user_cap_wraps_builtin` (forma slice-21,
+reachability transitiva não-trivial) + `_program_with_caps_advanced`.
+Verificado por mutação: ao remover a propriedade transitiva do
+CycloneDX, dispara `AssertionError`.
+
+### Lacuna D — Invariante de posições — FEITA
+`source[tok.start.offset:tok.end.offset] == tok.text` para cada token
+não-layout, sobre texto bruto (`_CAPA_ISH_TEXT` / `_SOURCE_TEXT`) e
+sobre programas gerados (`_program()`). Protege o campo `pos` do
+manifesto que os reguladores leem. Implementada em
+`TestLexerProperties` (dois métodos raw-text) + `TestPositionProperties`
+(programas). Verificada por mutação: um off-by-one no offset start ou
+end dispara; a baseline não.
+
+## Estado final do âmbito
+
+Todas as quatro lacunas (A, B, C, D) estão fechadas. `test_properties.py`
+cresceu de 11 para 21 métodos. A frase defensável para a NLnet é agora:
+**`usado ∩ provably_excluded = ∅` (atenuação honrada) é property-tested
+em ambos os backends, e a conservação manifesto→SBOM é property-tested
+por-função** — não só por auditoria manual. A Lacuna 5 (gerador
+nível-tipo completo: genéricos, sum types com payloads, closures
+cap-capturantes) fica como alargamento contínuo, não pré-requisito.
 
 ## Não-objetivos
 
