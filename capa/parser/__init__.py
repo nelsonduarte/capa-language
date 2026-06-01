@@ -68,7 +68,15 @@ class Parser(
         source: str = "",
         filename: str = "<input>",
     ):
-        self.tokens = tokens
+        # Shallow-copy the token list so the parser owns its own
+        # stream: ``_close_type_args`` rewrites the ``>>`` slot when
+        # splitting nested generics, and that write must not reach a
+        # caller that shares this list (an LSP caching tokens, the
+        # comment sidecar, a re-parse of the same stream). Audit
+        # slice 26 P3-2 (2026-06-01). The Token objects themselves
+        # are never mutated in place (see ``_close_type_args``); the
+        # split produces a fresh Token via ``dataclasses.replace``.
+        self.tokens = list(tokens)
         self.idx = 0
         self.source = source
         self.filename = filename

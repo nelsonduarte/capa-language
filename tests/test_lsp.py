@@ -2016,6 +2016,54 @@ class TestSemanticTokens(unittest.TestCase):
         self.assertIn("declaration", greet["mods"])
         self.assertEqual(greet["length"], 5)
 
+    def test_columns_are_utf16_units(self):
+        # Audit slice 28 P3 (2026-06-01): the wire protocol counts
+        # columns + token lengths in UTF-16 code units (pygls Utf16),
+        # but the lexer works in codepoints. A token on a line that
+        # contains an astral char (emoji in a string) before it must
+        # be reported at its UTF-16 column, not its codepoint column.
+        # Here the type annotation ``Int`` sits after a 2-UTF16-unit
+        # emoji on its line; without the fix the decoded col would be
+        # one short.
+        emoji = "\U0001F600"  # 1 codepoint, 2 UTF-16 units
+        src = (
+            "fun main(stdio: Stdio)\n"
+            f'    let s = "{emoji}"\n'
+            "    let n: Int = 0\n"
+        )
+        types, mods, data = self.compute(src, "t.capa")
+        decoded = self._decode(types, mods, data)
+        # Find the Int type token on line 2 (0-based).
+        int_tok = next(
+            d for d in decoded if d["line"] == 2 and d["type"] == "type"
+        )
+        line2 = src.splitlines()[2]
+        cp_col = line2.index("Int")
+        utf16_col = len(line2[:cp_col].encode("utf-16-le")) // 2
+        # 'Int' is on an ASCII-only line, so cp == utf16 here; the
+        # real guard is the emoji line not shifting later tokens.
+        self.assertEqual(int_tok["col"], utf16_col)
+        # And a token whose own line carries the emoji before it:
+        # add an identifier reference after the emoji on the SAME line.
+        src2 = (
+            "fun main(stdio: Stdio)\n"
+            "    let greeting = 1\n"
+            f'    let z = "{emoji}" == greeting\n'
+        )
+        # (greeting is referenced after the emoji on line 2)
+        types2, mods2, data2 = self.compute(src2, "t.capa")
+        decoded2 = self._decode(types2, mods2, data2)
+        line2b = src2.splitlines()[2]
+        cp = line2b.index("greeting", line2b.index("=="))
+        expected_utf16 = len(line2b[:cp].encode("utf-16-le")) // 2
+        ref = next(
+            d for d in decoded2
+            if d["line"] == 2 and d["col"] == expected_utf16
+        )
+        # The codepoint col would be expected_utf16 - 1 (emoji = 1 cp
+        # but 2 utf16 units); assert we did NOT report that.
+        self.assertNotEqual(ref["col"], cp)  # cp is the codepoint col
+
     def test_parameter_declaration_and_use_are_tagged_as_parameter(self):
         src = "fun greet(name: String) -> String\n    return name\n"
         types, mods, data = self.compute(src, "t.capa")

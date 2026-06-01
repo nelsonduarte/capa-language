@@ -948,6 +948,38 @@ Listed so the design space is explicit.
 
 ### Wasm-specific gaps that are not P0
 
+- [x] **Slice 29 - documented-residual cleanup** (closed
+  2026-06-01). Closed the three P3s left open by earlier
+  slices, each verified before + after.
+  - **Slice 26 P3-2** - `parser/_types.py:_close_type_args`
+    mutated the shared `Token` object in place when
+    splitting a `>>` in nested generics (`List<List<Int>>`),
+    so re-parsing the same token stream a second time saw a
+    single `>` and failed (latent footgun for an LSP token
+    cache / comment sidecar / re-parse). Fix: `Parser`
+    shallow-copies its token list (`__init__`), and the
+    split writes a FRESH token via `dataclasses.replace`
+    instead of mutating. Verified: re-parse of the same
+    stream now succeeds and the original stream's RSHIFT
+    tokens are untouched.
+  - **Slice 26 P3-1** - `parser/_expressions.py:_parse_range`
+    docstring claimed `a..b..c` was a dedicated syntax
+    error; it actually parses `(a..b)` and leaves `..c` for
+    the generic "expected newline" rejection. Docstring
+    corrected to match (the behaviour is sound; only the
+    claim was wrong).
+  - **Slice 28 P3** - `lsp/semantic_tokens.py` emitted
+    `deltaStart` / `length` in codepoint units while the
+    LSP wire protocol counts UTF-16. Cosmetic (coloring
+    offset after an astral char in a string on the same
+    line, never corruption), but cleaned up: `_encode` now
+    converts column + length to UTF-16 units via a
+    dependency-free `_utf16_len` helper. ASCII is the
+    identity, so existing output is unchanged.
+  - Regression tests added (parser re-parse + chained-range;
+    semantic-tokens UTF-16 columns). Suite 2113 -> 2116
+    passed / 8 skipped, 0 regressions.
+
 - [x] **Slice 28 - LSP robustness audit (UTF-16/codepoint
   positions + RecursionError)** (closed 2026-06-01). A
   thirteenth audit pass, on `capa/lsp/` (the editor surface,

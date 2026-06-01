@@ -102,18 +102,26 @@ class _TypesMixin:
             self._advance()
             return
         if tok.kind == T.RSHIFT:
-            # Rewrite the RSHIFT slot to a single ``>`` token starting
-            # at the second character so the outer closer sees the
-            # right position. The ``end`` shrinks by one too.
+            # Split the ``>>`` into a single ``>`` so the outer closer
+            # sees one ``>`` at the right position. Audit slice 26
+            # P3-2 (2026-06-01): write a FRESH Token into the stream
+            # slot via ``dataclasses.replace`` rather than mutating
+            # the shared Token object in place -- the original token
+            # may be referenced by a caller (LSP token cache, comment
+            # sidecar) that must not observe the rewrite. The parser
+            # owns its own list copy (see ``Parser.__init__``), so
+            # overwriting the slot is local; only the in-place object
+            # mutation was the leak.
+            import dataclasses
             new_start = Pos(
                 line=tok.start.line,
                 col=tok.start.col + 1,
                 offset=tok.start.offset + 1,
                 filename=tok.start.filename,
             )
-            tok.kind = T.GT
-            tok.text = ">"
-            tok.start = new_start
+            self.tokens[self.idx] = dataclasses.replace(
+                tok, kind=T.GT, text=">", start=new_start,
+            )
             return
         # Reuse the standard "expected" diagnostic for anything else.
         self._expect(T.GT, "expected '>' to close type argument list")

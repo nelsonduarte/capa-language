@@ -141,8 +141,18 @@ class _ExpressionsMixin:
 
     def _parse_range(self) -> A.Expr:
         """Range expression: ``start..end`` (exclusive) or
-        ``start..=end`` (inclusive). Non-associative, chained ranges
-        like ``a..b..c`` are not allowed and would be a syntax error.
+        ``start..=end`` (inclusive). Non-associative: this method
+        consumes at most ONE range operator, so a chained
+        ``a..b..c`` parses as ``(a..b)`` and leaves ``..c`` in the
+        token stream. The trailing ``..c`` is then rejected by
+        whatever statement context expected the expression to end
+        (e.g. ``expected newline after let binding``) -- a chained
+        range never produces a valid parse, but the diagnostic is the
+        generic "unexpected trailing tokens" one rather than a
+        range-specific message. Audit slice 26 P3-1 (2026-06-01):
+        docstring corrected to match the actual behaviour (it
+        previously claimed a dedicated syntax error).
+
         Sits between comparison and the bitwise/arithmetic band in the
         precedence ladder, so ``1+2..5+3`` parses as ``(1+2)..(5+3)``
         and ``a | b .. c`` as ``(a | b) .. c``.

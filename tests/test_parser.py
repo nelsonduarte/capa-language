@@ -431,6 +431,29 @@ class TestExpressions(unittest.TestCase):
         self.assertEqual(inner.name, "List")
         self.assertEqual(inner.args[0].name, "Int")
 
+    def test_nested_generic_reparse_does_not_mutate_shared_stream(self):
+        # Audit slice 26 P3-2 (2026-06-01): the ``>>`` split in
+        # _close_type_args used to mutate the shared Token object in
+        # place, so re-parsing the SAME token list a second time saw
+        # a single ``>`` where ``>>`` had been and failed. The parser
+        # now copies its stream and splits via dataclasses.replace.
+        src = "fun f(xs: List<List<Int>>)\n    return\n"
+        toks = Lexer(src).lex()
+        m1 = Parser(toks, source=src).parse_module()
+        m2 = Parser(toks, source=src).parse_module()  # must not raise
+        self.assertEqual(len(m1.items), len(m2.items))
+        # The original stream still has its two RSHIFT tokens intact;
+        # the split happened on each parser's private copy.
+        rshift = [t for t in toks if t.kind.name == "RSHIFT"]
+        self.assertEqual(len(rshift), 1)
+
+    def test_chained_range_rejected(self):
+        # Audit slice 26 P3-1 (2026-06-01): a..b..c is non-associative;
+        # _parse_range consumes one range, leaving ..c to be rejected
+        # by the statement context. It never produces a valid parse.
+        with self.assertRaises(ParserError):
+            parse("fun f()\n    let x = 1..2..3\n")
+
     def test_function_call(self):
         e = parse_expr("f(1, 2, 3)")
         self.assertIsInstance(e, A.Call)

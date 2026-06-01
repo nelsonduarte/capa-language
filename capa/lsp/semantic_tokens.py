@@ -132,11 +132,31 @@ def compute_semantic_tokens(
                 modifiers_mask=_mods_mask({"declaration"}),
             ))
 
-    return TOKEN_TYPES, TOKEN_MODIFIERS, _encode(sem_tokens)
+    return TOKEN_TYPES, TOKEN_MODIFIERS, _encode(sem_tokens, source)
 
 
-def _encode(sem_tokens: list[_SemToken]) -> list[int]:
-    """Sort, deduplicate, and relative-encode the tokens."""
+def _utf16_len(s: str) -> int:
+    """Number of UTF-16 code units in ``s``. A BMP char is 1 unit; a
+    supplementary-plane char (emoji, ...) is a surrogate pair = 2.
+    Audit slice 28 P3 (2026-06-01): the LSP wire protocol counts
+    columns + token lengths in UTF-16 units (pygls advertises Utf16),
+    but the lexer's columns and ``len(name)`` are codepoints. They
+    agree for ASCII; they diverge once an astral char sits earlier on
+    the line. Kept dependency-free (no pygls import) to match the
+    rest of this module; the byte count over utf-16-le / 2 is the
+    code-unit count."""
+    return len(s.encode("utf-16-le")) // 2
+
+
+def _encode(sem_tokens: list[_SemToken], source: str) -> list[int]:
+    """Sort, deduplicate, and relative-encode the tokens.
+
+    Columns and lengths are converted from the lexer's codepoint
+    coordinates to the UTF-16 code units the LSP wire protocol uses
+    (slice 28 P3). For an all-ASCII document this is the identity, so
+    existing behaviour is unchanged; it only shifts when an astral
+    char precedes a token on the same line.
+    """
     sem_tokens.sort(key=lambda t: (t.line, t.col))
     seen: set[tuple[int, int]] = set()
     deduped: list[_SemToken] = []
@@ -147,12 +167,31 @@ def _encode(sem_tokens: list[_SemToken]) -> list[int]:
         seen.add(key)
         deduped.append(t)
 
+    # Index source lines so we can convert a codepoint column to its
+    # UTF-16 column (count UTF-16 units in the line prefix before the
+    # token) and the token's codepoint length to its UTF-16 length.
+    lines = source.splitlines()
+
+    def _utf16_col0(line_1: int, col_1: int) -> int:
+        idx = line_1 - 1
+        if 0 <= idx < len(lines):
+            return _utf16_len(lines[idx][: col_1 - 1])
+        return col_1 - 1  # out of range: fall back to codepoint col
+
+    def _utf16_tok_len(line_1: int, col_1: int, cp_len: int) -> int:
+        idx = line_1 - 1
+        if 0 <= idx < len(lines):
+            cp0 = col_1 - 1
+            return _utf16_len(lines[idx][cp0: cp0 + cp_len])
+        return cp_len
+
     data: list[int] = []
     prev_line_0 = 0
     prev_col_0 = 0
     for t in deduped:
         line_0 = t.line - 1
-        col_0 = t.col - 1
+        col_0 = _utf16_col0(t.line, t.col)
+        length = _utf16_tok_len(t.line, t.col, t.length)
         if line_0 == prev_line_0:
             delta_line = 0
             delta_start = col_0 - prev_col_0
@@ -160,7 +199,7 @@ def _encode(sem_tokens: list[_SemToken]) -> list[int]:
             delta_line = line_0 - prev_line_0
             delta_start = col_0
         data.extend([
-            delta_line, delta_start, t.length,
+            delta_line, delta_start, length,
             t.type_index, t.modifiers_mask,
         ])
         prev_line_0 = line_0
