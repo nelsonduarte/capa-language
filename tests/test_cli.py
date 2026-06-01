@@ -884,5 +884,69 @@ class TestCliInProcess(unittest.TestCase):
                 self.assertIn("--wasm", err)
 
 
+class TestCliRobustness(unittest.TestCase):
+    """Audit slice 30: malformed-input and bad-flag-combo robustness.
+    Each was a verified crash / wrong-exit / corrupted-output before
+    the fix."""
+
+    def test_non_utf8_file_clean_error(self):
+        # P1-b: a binary / non-UTF-8 file is a user error (exit 2 +
+        # clean message), not a UnicodeDecodeError traceback.
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "bin.capa"
+            p.write_bytes(b"\xff\xfe\x00bad")
+            rc, _out, err = _run_main([str(p)])
+            self.assertEqual(rc, 2, err)
+            self.assertIn("not valid UTF-8", err)
+            self.assertNotIn("Traceback", err)
+
+    def test_non_utf8_file_clean_error_migrate(self):
+        # P1-b: same guard on the migrate dispatcher's read_text.
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "bin.capa"
+            p.write_bytes(b"\xff\xfe\x00bad")
+            rc, _out, err = _run_main(["migrate", str(p)])
+            self.assertEqual(rc, 2, err)
+            self.assertIn("not valid UTF-8", err)
+            self.assertNotIn("Traceback", err)
+
+    def test_wasm_memory_cap_over_range_rejected(self):
+        # P2-b: a cap above the wasm32 page limit used to write an
+        # invalid module with exit 0; now it's rejected up front and
+        # no artifact is written.
+        with tempfile.TemporaryDirectory() as td:
+            src = _write_capa(
+                Path(td), "m.capa",
+                'fun main(stdio: Stdio)\n    stdio.println("hi")\n',
+            )
+            out_wasm = Path(td) / "out.wasm"
+            rc, _out, err = _run_main([
+                str(src), "--wasm", "--output", str(out_wasm),
+                "--wasm-memory-cap", "999999999999",
+            ])
+            self.assertEqual(rc, 2, err)
+            self.assertIn("--wasm-memory-cap", err)
+            self.assertFalse(
+                out_wasm.exists(),
+                "invalid .wasm must not be written when the cap is "
+                "rejected",
+            )
+
+    def test_token_dump_no_crash_on_literal(self):
+        # P1-a: the dump's arrow glyph crashed on a cp1252 redirect.
+        # In-process stdout is a StringIO (unicode), so this checks
+        # the dump path runs cleanly and includes the literal value;
+        # the reconfigure guard handles the real-stream case.
+        with tempfile.TemporaryDirectory() as td:
+            src = _write_capa(
+                Path(td), "lit.capa",
+                'fun main(stdio: Stdio)\n    let x = 42\n'
+                '    stdio.println("hi")\n',
+            )
+            rc, out, err = _run_main([str(src)])
+            self.assertEqual(rc, 0, err)
+            self.assertIn("INT_LIT", out)
+
+
 if __name__ == "__main__":
     unittest.main()

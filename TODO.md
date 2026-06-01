@@ -948,6 +948,53 @@ Listed so the design space is explicit.
 
 ### Wasm-specific gaps that are not P0
 
+- [x] **Slice 30 - CLI driver robustness audit** (closed
+  2026-06-01). A fourteenth audit pass, on `capa/cli.py`
+  (1328 LOC, the entry point). No P0 (the CLI doesn't gate
+  the capability/regulatory claims); fixed two P1 crashes
+  + one P2 corrupted-output, each verified before + after.
+  - **P1-a - token dump crashed on redirect.** The default
+    token dump uses a `->` arrow glyph (U+2192); on a
+    cp1252 Windows console redirected to a file, printing
+    any literal token (`let x = 42`) raised
+    `UnicodeEncodeError` + traceback, exit 1 -- on the most
+    basic `capa file.capa > out` invocation. Fix:
+    `main()` reconfigures stdout/stderr to UTF-8 with
+    `errors="replace"` at startup (guarded so the StringIO
+    test harness, which has no `.reconfigure`, is
+    unaffected). Closes the whole class (also unicode file
+    names in error messages), not just the arrow.
+  - **P1-b - non-UTF-8 file -> raw traceback.** Both
+    `read_text(encoding="utf-8")` sites (main + migrate)
+    caught only `OSError`; a binary file raises
+    `UnicodeDecodeError` (a `ValueError`), so it escaped as
+    a traceback, exit 1. Fix: catch `UnicodeDecodeError` at
+    both sites, clean `not valid UTF-8` message, exit 2.
+  - **P2-b - invalid .wasm written as success.**
+    `--wasm-memory-cap` only guarded `<= 0`; a value above
+    the wasm32 limit (65536 pages) was emitted verbatim,
+    producing a module `wasm-tools validate` rejects, yet
+    written to disk with a success message + exit 0. Fix:
+    validate `1 <= cap <= 65536` (new `_WASM32_MAX_PAGES`);
+    out-of-range -> clean error, exit 2, no artifact
+    written.
+  - **Deferred (documented, not fixed - UX-nicety, zero
+    corruption risk):** conflicting output-format flags
+    (`--manifest --cyclonedx`) silently pick the first;
+    `--stdin` + positional file silently ignores the file;
+    `--output` / `--component` / `--wasm-memory-cap` are
+    silent no-ops with a non-matching action. All P2/P3,
+    none crash or corrupt.
+  - **CLEAN verified:** no ANSI color leak into redirected
+    output; missing file / directory -> exit 2; empty stdin
+    -> exit 0; `--run` runtime error -> clean rewritten
+    traceback exit 1; subcommand argparse (missing arg /
+    unknown flag / `--help`) consistent exit 2/0;
+    non-integer `--wasm-memory-cap` rejected by argparse
+    exit 2.
+  - Regression tests in `TestCliRobustness` (4). Suite
+    2116 -> 2120 passed / 8 skipped, 0 regressions.
+
 - [x] **Slice 29 - documented-residual cleanup** (closed
   2026-06-01). Closed the three P3s left open by earlier
   slices, each verified before + after.

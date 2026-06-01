@@ -32,6 +32,13 @@ from capa.init_project import init_project
 from capa._debug import _rewrite_traceback
 
 
+# wasm32 caps linear memory at 65536 pages of 64 KiB = 4 GiB. A
+# ``--wasm-memory-cap`` above this produces a module that wasm-tools
+# rejects, so the CLI refuses it rather than writing an invalid
+# artifact (audit slice 30 P2-b).
+_WASM32_MAX_PAGES = 65536
+
+
 # ANSI colors for terminal highlighting
 class C:
     RESET = "\033[0m"
@@ -422,6 +429,14 @@ def _dispatch_migrate(argv: list[str]) -> int:
     except OSError as e:
         print(f"capa migrate: cannot read {path}: {e}", file=sys.stderr)
         return 2
+    except UnicodeDecodeError:
+        # Non-UTF-8 file: clean error, not a traceback (audit slice
+        # 30 P1-b). ``UnicodeDecodeError`` is a ``ValueError``.
+        print(
+            f"capa migrate: {path}: not valid UTF-8",
+            file=sys.stderr,
+        )
+        return 2
     filename = str(path)
 
     # Lex + link (multi-file aware) + analyse, mirroring the --manifest
@@ -466,6 +481,21 @@ def _dispatch_migrate(argv: list[str]) -> int:
 
 
 def main() -> int:
+    # Make stdout/stderr UTF-8 with replacement so CLI output never
+    # crashes the process on a non-ASCII byte. The token dump uses a
+    # ``->`` arrow glyph, error messages can carry unicode file names,
+    # and the default Windows console codec is cp1252 -- printing
+    # either to a redirected file raised UnicodeEncodeError +
+    # traceback (audit slice 30 P1-a). ``reconfigure`` exists on the
+    # real text streams (3.7+); under the test harness stdout is an
+    # ``io.StringIO`` without it (and StringIO is already unicode, so
+    # it needs no reconfigure). Guarded so neither case fails.
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
+
     # Subcommand dispatch happens before argparse so the rest of
     # the CLI can stay flag-based without complicating help output.
     if len(sys.argv) >= 2 and sys.argv[1] == "init":
@@ -742,6 +772,17 @@ def main() -> int:
         except OSError as e:
             print(f"error opening {path}: {e}", file=sys.stderr)
             return 2
+        except UnicodeDecodeError:
+            # A binary / non-UTF-8 file is a user error, not a crash.
+            # ``UnicodeDecodeError`` is a ``ValueError``, so the
+            # ``OSError`` clause above does not catch it (audit slice
+            # 30 P1-b).
+            print(
+                f"error: {path}: not valid UTF-8 (Capa source must be "
+                f"UTF-8 encoded)",
+                file=sys.stderr,
+            )
+            return 2
         filename = str(path)
     else:
         parser.print_usage(sys.stderr)
@@ -935,6 +976,18 @@ def main() -> int:
         wasm_memory_cap: int | None = ...  # type: ignore[assignment]
     elif args.wasm_memory_cap <= 0:
         wasm_memory_cap = None
+    elif args.wasm_memory_cap > _WASM32_MAX_PAGES:
+        # wasm32 caps linear memory at 65536 64KiB pages (4 GiB). A
+        # larger value produces a module wasm-tools rejects, which we
+        # used to write to disk with a success message + exit 0 (audit
+        # slice 30 P2-b). Reject it up front.
+        print(
+            f"capa: --wasm-memory-cap must be between 1 and "
+            f"{_WASM32_MAX_PAGES} pages (wasm32 caps linear memory at "
+            f"4 GiB); got {args.wasm_memory_cap}",
+            file=sys.stderr,
+        )
+        return 2
     else:
         wasm_memory_cap = args.wasm_memory_cap
 
