@@ -1583,5 +1583,289 @@ class TestCapaAddRegistry(_TempDirMixin, unittest.TestCase):
         self.assertEqual(dep.verify_key, key)
 
 
+class TestRegistryIndexSignature(_TempDirMixin, unittest.TestCase):
+    """Detached-signature verification of the registry index, with the
+    warn-then-enforce phasing (docs/design/signed-registry-index.md).
+
+    The fail-open paths (unconfigured root key, absent signature) need
+    no gpg and always run. The fail-closed paths split:
+
+      * "signature present but gpg says invalid / wrong key" needs a
+        real gpg + an ephemeral keyring to produce a genuine VALIDSIG
+        whose fingerprint mismatches the pinned root -> skipUnless.
+      * the cache-poisoning re-verification reuses the same machinery.
+
+    Each test patches ``_REGISTRY_ROOT_KEY`` and the warn-once guards in
+    ``capa.pkg._registry`` directly, then drives ``resolve_name`` through
+    a ``file://`` index so the real fetch + cache + verify path runs.
+    """
+
+    _KEY = "6C1D222D491FB88031E041A536CFB426101AA24B"
+
+    def _good_index(self) -> str:
+        return textwrap.dedent(f'''\
+            {{
+              "registry_version": 1,
+              "updated": "2026-05-27",
+              "packages": {{
+                "capa_http": {{
+                  "git": "https://github.com/nelsonduarte/capa_http",
+                  "verify_key": "{self._KEY}",
+                  "latest": "v0.1.3",
+                  "description": "HTTP client"
+                }}
+              }}
+            }}
+        ''')
+
+    def _index_url(self, body: str) -> str:
+        p = self._tmp / "index.json"
+        p.write_text(body, encoding="utf-8")
+        return p.as_uri()
+
+    def _cache_dir(self) -> Path:
+        d = self._tmp / "cache"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    def setUp(self) -> None:
+        super().setUp()
+        # Reset the once-per-process warn guards so each test observes a
+        # fresh warning (the module remembers across tests otherwise).
+        import capa.pkg._registry as reg
+        reg._warned_unconfigured = False
+        reg._warned_reasons.clear()
+
+    # --- fail-open paths (no gpg required) -------------------------------
+
+    def test_unconfigured_root_key_fails_open_with_warning(self):
+        # Default production state: _REGISTRY_ROOT_KEY == "". An index
+        # with no .asc must resolve AND warn (fail-open).
+        import io
+        import contextlib
+        url = self._index_url(self._good_index())
+        buf = io.StringIO()
+        with contextlib.redirect_stderr(buf):
+            entry = resolve_name(
+                "capa_http", registry_url=url, cache_dir=self._cache_dir(),
+            )
+        self.assertEqual(entry.name, "capa_http")
+        self.assertIn("not configured", buf.getvalue().lower())
+
+    def test_unsigned_index_with_root_configured_warns_and_resolves(self):
+        # Root key configured but the index has no sibling .asc -> the
+        # "unsigned" fail-open branch warns once and resolves.
+        import io
+        import contextlib
+        from unittest.mock import patch
+        url = self._index_url(self._good_index())
+        buf = io.StringIO()
+        with patch("capa.pkg._registry._REGISTRY_ROOT_KEY", self._KEY), \
+                contextlib.redirect_stderr(buf):
+            entry = resolve_name(
+                "capa_http", registry_url=url, cache_dir=self._cache_dir(),
+            )
+        self.assertEqual(entry.name, "capa_http")
+        self.assertIn("unsigned", buf.getvalue().lower())
+
+    def test_present_but_garbage_signature_fails_closed(self):
+        # A .asc that is NOT a valid GPG signature: gpg --verify returns
+        # non-zero, so this is fail-closed regardless of whether the
+        # signature could ever match (no keyring needed; gpg rejects
+        # malformed armour outright). Skips only if gpg is absent.
+        from unittest.mock import patch
+        body = self._good_index()
+        idx = self._tmp / "index.json"
+        idx.write_text(body, encoding="utf-8")
+        (self._tmp / "index.json.asc").write_text(
+            "-----BEGIN PGP SIGNATURE-----\nnot a real signature\n"
+            "-----END PGP SIGNATURE-----\n",
+            encoding="utf-8",
+        )
+        url = idx.as_uri()
+        with patch("capa.pkg._registry._REGISTRY_ROOT_KEY", self._KEY):
+            with self.assertRaises(RegistryError) as ctx:
+                resolve_name(
+                    "capa_http", registry_url=url,
+                    cache_dir=self._cache_dir(),
+                )
+        msg = str(ctx.exception).lower()
+        self.assertIn("signature verification failed", msg)
+
+    # --- fail-closed positive/negative with a real ephemeral key --------
+
+    def _make_gpg_home(self) -> tuple[Path, str, dict]:
+        """Ephemeral GNUPGHOME + passphrase-less Ed25519 key; returns
+        (gnupg_home, fingerprint, env). Mirrors TestInstallVerifyKey."""
+        gnupg_home = self._tmp / "gnupg"
+        gnupg_home.mkdir(parents=True, exist_ok=True)
+        try:
+            os.chmod(gnupg_home, 0o700)
+        except OSError:
+            pass
+        env = {**os.environ, "GNUPGHOME": str(gnupg_home)}
+        batch = (
+            "%no-protection\n"
+            "Key-Type: EDDSA\n"
+            "Key-Curve: ed25519\n"
+            "Name-Real: Capa Registry Test\n"
+            "Name-Email: capa-registry-test@example.invalid\n"
+            "Expire-Date: 0\n"
+            "%commit\n"
+        )
+        r = subprocess.run(
+            ["gpg", "--batch", "--generate-key"],
+            input=batch, capture_output=True, text=True, env=env,
+        )
+        if r.returncode != 0:
+            self.skipTest(
+                f"gpg --generate-key failed: {r.stderr.strip()}"
+            )
+        r = subprocess.run(
+            ["gpg", "--list-keys", "--with-colons",
+             "capa-registry-test@example.invalid"],
+            capture_output=True, text=True, env=env,
+        )
+        fingerprint = None
+        for line in r.stdout.splitlines():
+            if line.startswith("fpr:"):
+                fingerprint = line.split(":")[9]
+                break
+        if fingerprint is None:
+            self.skipTest("could not read the ephemeral key's fingerprint")
+        return gnupg_home, fingerprint, env
+
+    def _sign(self, index_path: Path, env: dict, fpr: str) -> str:
+        """Detach-sign ``index_path`` with the ephemeral key, write the
+        sibling .asc, and return its armoured text."""
+        r = subprocess.run(
+            ["gpg", "--batch", "--yes", "--armor", "--detach-sign",
+             "--local-user", fpr, "--output", "-", str(index_path)],
+            capture_output=True, text=True, env=env,
+        )
+        if r.returncode != 0:
+            self.skipTest(f"gpg detach-sign failed: {r.stderr.strip()}")
+        sig = r.stdout
+        index_path.with_name(index_path.name + ".asc").write_text(
+            sig, encoding="utf-8",
+        )
+        return sig
+
+    @unittest.skipUnless(
+        _gpg_available(), "gpg binary not on PATH",
+    )
+    @unittest.skipIf(
+        sys.platform == "win32",
+        "ephemeral GNUPGHOME path mangling under MSYS git/gpg; the "
+        "production verify path runs fine, only the test scaffold is "
+        "platform-fragile (same as TestInstallVerifyKey).",
+    )
+    def test_valid_signature_resolves(self):
+        from unittest.mock import patch
+        _, fpr, env = self._make_gpg_home()
+        idx = self._tmp / "index.json"
+        idx.write_text(self._good_index(), encoding="utf-8")
+        self._sign(idx, env, fpr)
+        url = idx.as_uri()
+        with patch.dict(os.environ, env, clear=False), \
+                patch("capa.pkg._registry._REGISTRY_ROOT_KEY", fpr):
+            entry = resolve_name(
+                "capa_http", registry_url=url, cache_dir=self._cache_dir(),
+            )
+        self.assertEqual(entry.name, "capa_http")
+
+    @unittest.skipUnless(
+        _gpg_available(), "gpg binary not on PATH",
+    )
+    @unittest.skipIf(
+        sys.platform == "win32",
+        "ephemeral GNUPGHOME path mangling under MSYS; see "
+        "test_valid_signature_resolves.",
+    )
+    def test_valid_signature_wrong_root_key_fails_closed(self):
+        # A genuine VALIDSIG, but the pinned root key is a different
+        # fingerprint -> mismatch -> fail-closed.
+        from unittest.mock import patch
+        _, fpr, env = self._make_gpg_home()
+        idx = self._tmp / "index.json"
+        idx.write_text(self._good_index(), encoding="utf-8")
+        self._sign(idx, env, fpr)
+        url = idx.as_uri()
+        wrong = "DEAD" * 10
+        with patch.dict(os.environ, env, clear=False), \
+                patch("capa.pkg._registry._REGISTRY_ROOT_KEY", wrong):
+            with self.assertRaises(RegistryError) as ctx:
+                resolve_name(
+                    "capa_http", registry_url=url,
+                    cache_dir=self._cache_dir(),
+                )
+        self.assertIn(fpr.upper(), str(ctx.exception))
+
+    @unittest.skipUnless(
+        _gpg_available(), "gpg binary not on PATH",
+    )
+    @unittest.skipIf(
+        sys.platform == "win32",
+        "ephemeral GNUPGHOME path mangling under MSYS; see "
+        "test_valid_signature_resolves.",
+    )
+    def test_tampered_index_bytes_fail_closed(self):
+        # Sign the good index, then tamper the bytes the signature was
+        # made over -> gpg --verify returns non-zero -> fail-closed.
+        from unittest.mock import patch
+        _, fpr, env = self._make_gpg_home()
+        idx = self._tmp / "index.json"
+        idx.write_text(self._good_index(), encoding="utf-8")
+        self._sign(idx, env, fpr)
+        # Tamper AFTER signing: swap the git URL to an attacker's repo.
+        tampered = self._good_index().replace(
+            "nelsonduarte/capa_http", "attacker/evil"
+        )
+        idx.write_text(tampered, encoding="utf-8")
+        url = idx.as_uri()
+        with patch.dict(os.environ, env, clear=False), \
+                patch("capa.pkg._registry._REGISTRY_ROOT_KEY", fpr):
+            with self.assertRaises(RegistryError):
+                resolve_name(
+                    "capa_http", registry_url=url,
+                    cache_dir=self._cache_dir(),
+                )
+
+    @unittest.skipUnless(
+        _gpg_available(), "gpg binary not on PATH",
+    )
+    def test_poisoned_cache_without_matching_sig_fails_closed(self):
+        # Cache-poisoning vector: a fresh, well-formed cache entry with a
+        # swapped git+verify_key but NO valid matching .asc, root key
+        # configured -> the cache read must re-verify and reject it.
+        # Needs only gpg (not an ephemeral keyring): a garbage .asc makes
+        # gpg --verify return non-zero, so this runs live on every box
+        # that has gpg, Windows included.
+        from unittest.mock import patch
+        cache_dir = self._cache_dir()
+        # Write a poisoned cache directly (simulating another process).
+        poisoned = self._good_index().replace(
+            "nelsonduarte/capa_http", "attacker/evil"
+        ).replace(self._KEY, "AB" * 20)
+        (cache_dir / "registry-index.json").write_text(
+            poisoned, encoding="utf-8",
+        )
+        # An absent .asc with root configured would hit the "unsigned"
+        # fail-open branch (no rejection). To exercise fail-CLOSED on the
+        # cache, plant a garbage .asc so gpg --verify returns non-zero.
+        (cache_dir / "registry-index.json.asc").write_text(
+            "-----BEGIN PGP SIGNATURE-----\nbogus\n"
+            "-----END PGP SIGNATURE-----\n",
+            encoding="utf-8",
+        )
+        # Cache is fresh, so it is read without a network round-trip.
+        url = "https://example.invalid/index.json"
+        with patch("capa.pkg._registry._REGISTRY_ROOT_KEY", self._KEY):
+            with self.assertRaises(RegistryError):
+                resolve_name(
+                    "capa_http", registry_url=url, cache_dir=cache_dir,
+                )
+
+
 if __name__ == "__main__":
     unittest.main()

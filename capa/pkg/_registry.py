@@ -36,6 +36,9 @@ fallback when the fetch fails (stale-but-available beats hard-fail).
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
+import tempfile
 import time
 import urllib.request
 from dataclasses import dataclass
@@ -59,11 +62,64 @@ SUPPORTED_REGISTRY_VERSION = 1
 # Network timeout for the index fetch, in seconds.
 _FETCH_TIMEOUT = 10
 
+# Transports the registry-index URL may use. The index is the trust
+# root for the whole add flow: it supplies both the git URL AND the
+# ``verify_key`` GPG fingerprint that anchors every downstream
+# signature check. A cleartext fetch lets a network attacker swap
+# both in one coherent entry, so the GPG layer then "passes" against
+# the attacker's own key. We therefore require an authenticated
+# transport for the index even though git deps themselves may use
+# ``http://`` (a moved git dep is still caught by the lockfile SHA;
+# a swapped index is not caught by anything below it). ``file://`` is
+# allowed so the test suite (and air-gapped / self-hosted mirrors)
+# can point at a local index. Audit slice 27 (2026-05-31).
+_ALLOWED_INDEX_SCHEMES = ("https://", "file://")
+
 # How long a cached index stays fresh, in seconds. Within this window
 # the cache is read directly; past it the network is consulted.
 _CACHE_TTL = 3600
 
 _CACHE_FILENAME = "registry-index.json"
+
+# Detached-signature filename, alongside the index (network) and the
+# cache. ASCII-armoured GPG detached signature of the exact index bytes.
+_SIG_SUFFIX = ".asc"
+_CACHE_SIG_FILENAME = _CACHE_FILENAME + _SIG_SUFFIX
+
+# Root-key fingerprint that anchors trust in the registry index itself.
+# Out-of-band: it ships with the toolchain binary, NOT with the index,
+# so a MITM / cache-poisoning attacker cannot substitute it. When the
+# index carries a detached ``index.json.asc`` that GPG validates against
+# this exact 40-hex (uppercase) fingerprint, the index is accepted.
+#
+# Phasing (warn-then-enforce): the live registry is NOT signed yet and
+# no root key is published, so this is the empty "not configured"
+# sentinel. While empty, a missing / unconfigured signature fails OPEN
+# with a one-time stderr warning so ``capa add`` / ``capa search`` keep
+# working. A present-but-invalid signature still fails CLOSED.
+#
+# TODO(slice 27): once capa-registry ships index.json.asc, fill this
+# with the real root-key fingerprint. That flips the missing-signature
+# path from warn-then-continue to fail-closed. See
+# docs/design/signed-registry-index.md ("Faseamento: warn-then-enforce").
+_REGISTRY_ROOT_KEY = ""
+
+# Once-per-process warning guards (fail-open paths warn once, not per
+# call, so a search loop does not spam stderr).
+_warned_unconfigured = False
+_warned_reasons: set[str] = set()
+
+
+def _warn(message: str) -> None:
+    print(f"capa: warning: {message}", file=sys.stderr)
+
+
+def _warn_once(reason: str, message: str) -> None:
+    """Emit ``message`` to stderr at most once per process for ``reason``."""
+    if reason in _warned_reasons:
+        return
+    _warned_reasons.add(reason)
+    _warn(message)
 
 
 class RegistryError(Exception):
@@ -86,36 +142,189 @@ class RegistryEntry:
     description: Optional[str] = None
 
 
-def _fetch_index(url: str) -> dict:
-    """GET the registry index and parse it as JSON.
+def _verify_index_signature(
+    index_bytes: bytes, sig_text: Optional[str]
+) -> None:
+    """Verify a detached GPG signature over the raw index bytes.
 
-    Factored out so tests can monkeypatch the network round-trip
-    without a live server. Raises any ``urllib`` / ``OSError`` /
-    JSON error to the caller, which decides whether to fall back to a
+    Phased "warn-then-enforce" trust gate (see
+    docs/design/signed-registry-index.md). Decision table:
+
+      * root key not configured (``_REGISTRY_ROOT_KEY`` empty)
+            -> warn once, return (FAIL-OPEN).
+      * signature absent (``sig_text is None``)
+            -> warn once, return (FAIL-OPEN, "unsigned").
+      * signature present, gpg binary missing (FileNotFoundError)
+            -> warn once, return (FAIL-OPEN, cannot verify).
+      * signature present, gpg non-zero / no VALIDSIG / fingerprint
+        mismatch
+            -> raise RegistryError (FAIL-CLOSED; an attack signal).
+      * signature present, VALIDSIG fingerprint == root key
+            -> return (accepted).
+
+    The verification runs over the EXACT bytes ``index_bytes`` (not a
+    re-serialised dict): GPG signs bytes. Uses the caller's default
+    GNUPGHOME, since the published root key would live in the user's
+    keyring; no isolated keyring is invented for production verification.
+    """
+    global _warned_unconfigured
+
+    if not _REGISTRY_ROOT_KEY:
+        if not _warned_unconfigured:
+            _warned_unconfigured = True
+            _warn(
+                "registry index signing is not configured in this "
+                "toolchain (no root key); the index is being trusted "
+                "without signature verification. See "
+                "docs/design/signed-registry-index.md."
+            )
+        return
+
+    if sig_text is None:
+        _warn_once(
+            "unsigned",
+            "registry index is unsigned (no detached signature alongside "
+            "it); trusting it without verification. A future toolchain "
+            "release will refuse an unsigned index.",
+        )
+        return
+
+    expected = _REGISTRY_ROOT_KEY.upper().replace(" ", "")
+
+    with tempfile.TemporaryDirectory(prefix="capa_idxsig_") as td:
+        tmp = Path(td)
+        index_file = tmp / "index.json"
+        sig_file = tmp / "index.json.asc"
+        index_file.write_bytes(index_bytes)
+        sig_file.write_text(sig_text, encoding="utf-8")
+        try:
+            r = subprocess.run(
+                [
+                    "gpg", "--status-fd", "1", "--verify",
+                    str(sig_file), str(index_file),
+                ],
+                capture_output=True, text=True, encoding="utf-8",
+            )
+        except FileNotFoundError:
+            _warn_once(
+                "nogpg",
+                "registry index carries a signature but 'gpg' is not on "
+                "PATH, so it cannot be verified; trusting it unverified.",
+            )
+            return
+
+    if r.returncode != 0:
+        raise RegistryError(
+            "registry index signature verification FAILED: ``gpg "
+            "--verify`` returned non-zero. The detached signature does "
+            "not validate. Either the index/signature was tampered with "
+            "in transit or in the cache, or the signing key is not in "
+            "your GPG keyring.\n\n"
+            f"gpg output:\n{(r.stdout + r.stderr).strip()}\n\n"
+            f"The expected root key is {expected}; import it out of band:\n"
+            f"  gpg --recv-keys {expected}"
+        )
+
+    # ``--status-fd 1`` routes the machine-readable status lines to
+    # stdout; look for ``[GNUPG:] VALIDSIG <fingerprint>``.
+    fingerprint = None
+    for line in r.stdout.splitlines():
+        if line.startswith("[GNUPG:] VALIDSIG "):
+            parts = line.split()
+            if len(parts) >= 3:
+                fingerprint = parts[2].upper()
+                break
+    if fingerprint is None:
+        raise RegistryError(
+            "registry index signature verification FAILED: ``gpg "
+            "--verify`` succeeded but emitted no VALIDSIG line, so the "
+            "signing fingerprint cannot be confirmed. Refusing the "
+            "index.\n\n"
+            f"gpg output:\n{(r.stdout + r.stderr).strip()}"
+        )
+    if fingerprint != expected:
+        raise RegistryError(
+            f"registry index is signed by {fingerprint}, but this "
+            f"toolchain pins the registry root key to {expected}. A "
+            f"mismatched signature is an attack signal (swapped index / "
+            f"poisoned cache / mirror compromise). Refusing the index."
+        )
+
+
+def _fetch_index(url: str) -> tuple[bytes, Optional[str]]:
+    """GET the registry index and its detached signature.
+
+    Returns ``(raw_index_bytes, sig_text_or_none)``. The raw bytes are
+    returned (not a parsed dict) because the signature verifier needs
+    the exact bytes GPG signed; JSON parsing happens in the caller after
+    verification. The ``.asc`` is best-effort: a 404 / fetch error on it
+    is treated as "no signature" (``None``), which the verifier handles
+    per the warn-then-enforce phasing.
+
+    Factored out so tests can monkeypatch the network round-trip without
+    a live server. Raises any ``urllib`` / ``OSError`` error on the
+    INDEX fetch to the caller, which decides whether to fall back to a
     cached copy.
     """
     with urllib.request.urlopen(url, timeout=_FETCH_TIMEOUT) as resp:
         raw = resp.read()
-    return json.loads(raw.decode("utf-8"))
+    sig_text: Optional[str] = None
+    try:
+        with urllib.request.urlopen(
+            url + _SIG_SUFFIX, timeout=_FETCH_TIMEOUT
+        ) as sresp:
+            sig_text = sresp.read().decode("utf-8")
+    except Exception:  # noqa: BLE001 - any sig fetch failure => unsigned
+        sig_text = None
+    return raw, sig_text
 
 
 def _default_cache_dir() -> Path:
     return Path.home() / ".capa"
 
 
-def _read_cache(cache_path: Path) -> Optional[dict]:
+def _read_cache(cache_path: Path) -> Optional[tuple[bytes, Optional[str]]]:
+    """Read the cached index bytes and its cached detached signature.
+
+    Returns ``(raw_index_bytes, sig_text_or_none)`` or ``None`` when no
+    cached index exists. The signature is read from the sibling
+    ``registry-index.json.asc`` so the cache read re-verifies against the
+    same bytes that were verified on write (cache-poisoning defence).
+    """
     try:
-        return json.loads(cache_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        raw = cache_path.read_bytes()
+    except OSError:
         return None
+    sig_path = cache_path.with_name(_CACHE_SIG_FILENAME)
+    try:
+        sig_text: Optional[str] = sig_path.read_text(encoding="utf-8")
+    except OSError:
+        sig_text = None
+    return raw, sig_text
 
 
-def _write_cache(cache_path: Path, index: dict) -> None:
+def _write_cache(
+    cache_path: Path, index_bytes: bytes, sig_text: Optional[str]
+) -> None:
+    """Persist the raw index bytes and its detached signature.
+
+    Writes the EXACT fetched bytes (not a re-serialised dict) so the
+    cached ``.asc`` keeps verifying against them. The sibling signature
+    is written when present and removed when absent, so a later
+    unsigned refresh cannot leave a stale ``.asc`` behind that would
+    falsely fail verification.
+    """
     try:
         cache_path.parent.mkdir(parents=True, exist_ok=True)
-        cache_path.write_text(
-            json.dumps(index, indent=2), encoding="utf-8"
-        )
+        cache_path.write_bytes(index_bytes)
+        sig_path = cache_path.with_name(_CACHE_SIG_FILENAME)
+        if sig_text is not None:
+            sig_path.write_text(sig_text, encoding="utf-8")
+        else:
+            try:
+                sig_path.unlink()
+            except OSError:
+                pass
     except OSError:
         # A cache that cannot be written is not fatal; the resolve
         # already succeeded against the freshly fetched index.
@@ -123,12 +332,17 @@ def _write_cache(cache_path: Path, index: dict) -> None:
 
 
 def _load_index(url: str, cache_path: Path) -> dict:
-    """Return the index dict, honouring the cache TTL.
+    """Return the index dict, honouring the cache TTL and verifying the
+    detached signature over the raw bytes (network OR cache) before any
+    JSON parse.
 
-    Fresh cache (within TTL): used without a network round-trip.
-    Stale or missing cache: fetch from the network, refresh the cache
-    on success, fall back to a stale cache on failure. Only when the
-    network fails and no cache exists is a fetch failure fatal.
+    Fresh cache (within TTL): used without a network round-trip, but
+    still signature-verified (a poisoned cache must not slip through).
+    Stale or missing cache: fetch from the network, verify, refresh the
+    cache on success, fall back to a (verified) stale cache on failure.
+    Only when the network fails and no cache exists is a fetch failure
+    fatal. A present-but-invalid signature (cache or network) is
+    fail-closed and is never swallowed by the stale-fallback path.
     """
     cached = _read_cache(cache_path)
     if cached is not None:
@@ -137,20 +351,43 @@ def _load_index(url: str, cache_path: Path) -> dict:
         except OSError:
             age = _CACHE_TTL + 1
         if age < _CACHE_TTL:
-            return cached
+            raw, sig = cached
+            _verify_index_signature(raw, sig)
+            return _parse_index_bytes(raw, url)
 
     try:
-        index = _fetch_index(url)
+        raw, sig = _fetch_index(url)
     except Exception as e:  # noqa: BLE001 - network/parse errors vary
         if cached is not None:
-            return cached
+            raw, sig = cached
+            _verify_index_signature(raw, sig)
+            return _parse_index_bytes(raw, url)
         raise RegistryError(
             f"could not fetch the registry index from {url} and no "
             f"cached copy is available: {e}"
         ) from None
 
-    _write_cache(cache_path, index)
+    # Verify BEFORE parsing/caching: GPG signs the exact bytes, and a
+    # bad signature must fail closed rather than be persisted.
+    _verify_index_signature(raw, sig)
+    index = _parse_index_bytes(raw, url)
+    _write_cache(cache_path, raw, sig)
     return index
+
+
+def _parse_index_bytes(raw: bytes, url: str) -> dict:
+    """Decode + JSON-parse verified index bytes into a dict.
+
+    Kept separate from verification so the verify-then-parse order is
+    explicit at the call sites. A decode/JSON error is surfaced the same
+    way the rest of ``_load_packages`` reports a malformed index.
+    """
+    try:
+        return json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError) as e:
+        raise RegistryError(
+            f"registry index at {url} is malformed: {e}"
+        ) from None
 
 
 def _load_packages(
@@ -177,6 +414,19 @@ def _load_packages(
         or os.environ.get("CAPA_REGISTRY_URL")
         or DEFAULT_REGISTRY_URL
     )
+    # The index is the trust root (it carries the verify_key that
+    # anchors every GPG check below it), so it must arrive over an
+    # authenticated transport. Reject a cleartext or otherwise
+    # unexpected scheme regardless of whether it came from the
+    # argument, the CAPA_REGISTRY_URL env var, or the default.
+    if not url.startswith(_ALLOWED_INDEX_SCHEMES):
+        raise RegistryError(
+            f"registry index URL must use an authenticated transport "
+            f"({' or '.join(s.rstrip(':/') for s in _ALLOWED_INDEX_SCHEMES)}); "
+            f"got {url!r}. A cleartext index can be swapped in transit, "
+            f"and the index supplies the GPG verify_key that anchors "
+            f"package signature verification."
+        )
     base = cache_dir if cache_dir is not None else _default_cache_dir()
     cache_path = base / _CACHE_FILENAME
 

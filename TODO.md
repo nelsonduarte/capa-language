@@ -948,6 +948,76 @@ Listed so the design space is explicit.
 
 ### Wasm-specific gaps that are not P0
 
+- [~] **Slice 27 - package-manager supply-chain audit
+  (registry trust root)** (https + index-signing landed
+  2026-05-31; enforcement phase pending registry-side
+  signing). A twelfth audit pass, this one on the REAL
+  package manager `capa/pkg/` (two prior audit briefs
+  hallucinated nonexistent module paths `capa/package/`
+  and stub `_signing.py` etc. - the real PM is a
+  git-vendoring resolver: clone + commit-SHA + optional
+  GPG tag verify + optional SLSA, NO artifact digest).
+  - **No P0 found.** The GPG core (`_verify_signed_pin`)
+    is sound (rejects non-zero, requires VALIDSIG,
+    compares full 40-hex fingerprint); the lockfile
+    defends moved tags (pre-clone ls-remote check);
+    path-traversal / `ext::` / pin-injection are closed
+    and tested. Verified by independent code-read + run.
+  - **The genuine finding (P1).** The registry index is
+    the trust root for the whole `capa add` flow: it
+    supplies both the git URL AND the `verify_key` GPG
+    fingerprint that anchors every downstream signature
+    check. Pre-fix the index was fetched with `http://`
+    permitted, `CAPA_REGISTRY_URL` env-overridable, and
+    its on-disk cache trusted by mtime with no integrity
+    check. A MITM (or cache writer, or env var) swaps URL
+    + verify_key in one coherent entry; the GPG layer
+    then "passes" against the attacker's own key.
+  - **Fixes shipped this slice:**
+    1. **https enforced for the index URL**
+       (`_ALLOWED_INDEX_SCHEMES = (https, file)`, checked
+       in `_load_packages` so it covers arg / env / default).
+       `http://` for the index now rejected; git deps may
+       still use http (a moved git dep is caught by the
+       lock SHA, a swapped index is not caught below it).
+       `file://` kept for tests + air-gapped mirrors.
+    2. **Detached-GPG index signature verification**
+       (`_verify_index_signature`), warn-then-enforce:
+       root key unconfigured / signature absent / gpg
+       missing -> warn once + continue (FAIL-OPEN);
+       signature present but gpg-invalid / no-VALIDSIG /
+       wrong-fingerprint -> RegistryError (FAIL-CLOSED).
+       Verifies the RAW index bytes before JSON parse, on
+       BOTH the network and cache paths, so the
+       cache-poisoning vector is closed (a well-formed
+       poisoned cache without a valid matching `.asc` is
+       rejected - verified independently). Design in
+       `docs/design/signed-registry-index.md`.
+  - **Enforcement transition (pending, not this slice):**
+    `_REGISTRY_ROOT_KEY = ""` (the unconfigured sentinel)
+    keeps the live UNSIGNED index working today (fail-open
+    + one warning). When the separate `capa-registry` repo
+    ships `index.json.asc` and the real root fingerprint
+    is baked into `_REGISTRY_ROOT_KEY`, the missing-
+    signature path flips from warn to fail-closed. Tracked
+    by the TODO(slice 27) marker in `_registry.py`.
+  - **Audit residuals deferred** (lower severity, in the
+    sub-agent report): SLSA verifies a release tarball it
+    then discards (not tied to the installed checkout) +
+    `--owner`-only scoping; rev-pin lock entries are
+    audit-only (silently healed, not enforced) since the
+    rev IS the SHA; removing `verify_key` from capa.toml
+    silently downgrades a previously-signed dep. All P2 /
+    manifest-edit gaps, none remote-escalation.
+  - **CLEAN verified**: GPG verify logic, moved-tag lock
+    refusal + vendor-not-clobbered, git URL allow-list,
+    pin/name option-injection guards, registry version
+    gating, no tarball-extract / zip-slip surface (deps
+    are git clones).
+  - Suite 2098 -> 2102 passed / 8 skipped (3 new skips =
+    ephemeral-gpg-keypair on Windows/MSYS, same fragility
+    as the 2 pre-existing). `tests/test_pkg.py` 80 -> 84.
+
 - [x] **Slice 26 - lexer/parser audit (integer literal
   overflow)** (closed 2026-05-30). An eleventh audit pass
   (lexer + parser) found one **P1 silent value corruption**
