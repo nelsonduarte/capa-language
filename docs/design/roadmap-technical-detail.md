@@ -7,7 +7,18 @@
 
 ---
 
-## P1 — Wasm AOT (`capa build --release`)
+## P1 — Wasm AOT (`capa build --release`) — FEITO (2026-06-01)
+
+**Estado:** implementado. `capa build --release` + `capa run-aot`,
+container `capa/runtime/_aot.py`, `WasmHost.run_main_aot`, 12 testes
+em `tests/test_aot.py`. Notas de implementação face ao desenho abaixo:
+(1) os param-names do main TÊM de ser capturados no header do
+container — o `.cwasm` serializado perde a name section (confirmado:
+`'net'` não aparece nos bytes serializados); (2) `load_aot` recebe o
+engine do host porque o wasmtime recusa cross-Engine instantiation;
+(3) ganho de module-load ~1.3x num módulo trivial (escala com o
+tamanho), wall-clock dominado pelo arranque do Python — a P1.2(b)
+launcher Rust removeria esse piso, deferida.
 
 **Objetivo:** binário standalone de performance near-native, sem
 escrever backend novo. Reaproveita 100% do pipeline Wasm auditado.

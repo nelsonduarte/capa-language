@@ -948,6 +948,50 @@ Listed so the design space is explicit.
 
 ### Wasm-specific gaps that are not P0
 
+- [x] **Roadmap P1 - Wasm AOT (`capa build --release` +
+  `capa run-aot`)** (landed 2026-06-01). First phase of the
+  post-1.0 security+performance roadmap
+  (docs/design/roadmap-technical-detail.md). Compile-once /
+  run-many: serialise the wasmtime/Cranelift module instead
+  of JIT-compiling the .wasm on every `--run`. Reuses the
+  whole audited Wasm pipeline; no new backend.
+  - **New `capa/runtime/_aot.py`**: a portable AOT container
+    (`CPAO` magic + JSON header + serialized cwasm). The
+    header carries (a) `main`'s param names -- the serialized
+    cwasm drops the name section, so without this the host
+    couldn't map cap slots to root handles; captured from the
+    .wasm at build time instead -- and (b) the wasmtime
+    version, so a cwasm from a mismatched wasmtime is refused
+    (deserializing a mismatched blob is unsafe) rather than
+    crashing.
+  - **`WasmHost.run_main_aot`**: deserialize path, sharing a
+    new `_invoke_main` helper with the JIT `run_main` (root-
+    handle bootstrap + name->slot mapping extracted so both
+    paths use one implementation). load_aot takes the host's
+    engine (wasmtime refuses cross-Engine instantiation).
+  - **CLI**: `capa build --release <file> [-o out.cwasm]`
+    (multi-file aware via the loader; same memory-cap bounds
+    as --wasm) and `capa run-aot <file.cwasm> [-- args]`.
+  - **Verified**: build->run-aot output is byte-identical to
+    `--run --wasm` on a plain program AND on one with
+    attenuated Fs+Net params in (net, fs) order (proves the
+    param-name->handle mapping survives serialization, the
+    one thing that could silently break). Version-mismatch
+    fails closed; bad-magic gives a clean error not a
+    traceback; an analysis error refuses the build with no
+    artifact written.
+  - **Honest perf note**: module-load (the part AOT
+    optimizes) is ~1.3x faster on a trivial module; the gain
+    scales with module size (Cranelift compile cost grows,
+    deserialize stays ~flat) and with run count. Wall-clock
+    of a one-shot CLI run is dominated by Python interpreter
+    startup (~150ms both paths), so the headline win is
+    architectural (a distributable compile-once artifact),
+    not a big one-shot speedup. A Rust launcher (roadmap
+    P1.2b) would remove the Python startup floor; deferred.
+  - 12 tests in `tests/test_aot.py` (container format unit +
+    build/load + CLI e2e parity). Suite 2121 -> 2133.
+
 - [x] **Slice 30 - CLI driver robustness audit** (closed
   2026-06-01). A fourteenth audit pass, on `capa/cli.py`
   (1328 LOC, the entry point). No P0 (the CLI doesn't gate

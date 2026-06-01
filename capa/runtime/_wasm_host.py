@@ -2068,16 +2068,54 @@ class WasmHost:
         legacy no-handle path."""
         instance = self.instantiate(wasm_blob)
         main = instance.exports(self.store)["main"]
-        # Discover how many i32 args main takes.
+        n_params = self._main_param_count(main)
+        # The .wasm carries a name section, so recover param names from
+        # the blob itself.
+        param_names = _read_main_param_names(wasm_blob, n_params)
+        self._invoke_main(main, n_params, param_names)
+
+    def run_main_aot(self, module, header: dict) -> None:
+        """Instantiate and run a deserialized AOT ``module`` (from
+        ``capa.runtime._aot.load_aot``) against the registered host
+        imports.
+
+        The serialized ``.cwasm`` has no readable name section, so the
+        ``main`` parameter names cannot be recovered from it; they were
+        captured at build time and travel in the AOT container header
+        (roadmap P1). We take them from ``header`` instead of parsing
+        the blob, then share the same root-handle mapping + invocation
+        path as ``run_main``."""
+        from ._aot import aot_main_param_names
+        instance = self.linker.instantiate(self.store, module)
+        exports = instance.exports(self.store)
+        if "memory" in exports:
+            self._memory = exports["memory"]
+        if "alloc" in exports:
+            self._alloc_export = exports["alloc"]
+        main = exports["main"]
+        n_params = self._main_param_count(main)
+        param_names = aot_main_param_names(header)
+        self._invoke_main(main, n_params, param_names)
+
+    def _main_param_count(self, main) -> int:
+        """Number of i32 args the ``main`` export takes (0 on any
+        introspection failure / a no-cap signature)."""
         try:
-            ftype = main.type(self.store)
-            n_params = len(list(ftype.params))
+            return len(list(main.type(self.store).params))
         except Exception:
-            n_params = 0
-        # Allocate root caps the host hands the guest. Lazy-construct
-        # the roots once per host instance so a test that re-runs
-        # ``main`` reuses the same handle table entries (handle
-        # identity stays stable across invocations).
+            return 0
+
+    def _invoke_main(self, main, n_params: int, param_names: list) -> None:
+        """Shared root-handle bootstrap + dispatch for both the JIT
+        (``run_main``) and AOT (``run_main_aot``) paths. Allocates the
+        root capabilities, maps each of ``main``'s i32 slots to the
+        right root handle by parameter name, and calls ``main``.
+
+        Lazy-constructs the roots once per host instance so a re-run
+        reuses the same handle-table entries (handle identity stays
+        stable across invocations). Unknown / missing param names fall
+        back to Fs (the legacy slice-25.2 behaviour) so a blob without
+        usable names still runs."""
         if self._root_fs is None:
             self._root_fs = Fs()
         if self._root_net is None:
@@ -2102,14 +2140,6 @@ class WasmHost:
             clock=self._root_clock,
             stdio=self._root_stdio,
         )
-        # Walk main's parameter names so we can hand the right root
-        # handle to each i32 slot. The name section preserves the
-        # source-level param identifiers (``$fs`` / ``$net`` / ``$db``
-        # / ``$proc`` / ``$env`` / ``$clock``); we map by name to the
-        # matching root handle. Unknown names fall back to Fs (the
-        # legacy slice-25.2 behaviour) so an older blob without a
-        # name section still runs.
-        param_names = _read_main_param_names(wasm_blob, n_params)
         name_to_root: dict[str, int] = {
             "fs": roots.get("fs", 0),
             "net": roots.get("net", 0),

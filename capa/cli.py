@@ -480,6 +480,179 @@ def _dispatch_migrate(argv: list[str]) -> int:
     return 0
 
 
+def _dispatch_build(argv: list[str]) -> int:
+    """Handle ``python -m capa build --release <file> -o <out>``.
+
+    Compiles a Capa program ahead of time: AST -> CIR -> WAT -> binary
+    Wasm -> wasmtime/Cranelift serialized module, wrapped in a portable
+    AOT container (capa.runtime._aot). The resulting ``.cwasm`` loads +
+    runs with no recompile (roadmap P1). Run it with ``capa run-aot``.
+
+    Multi-file aware via the loader, mirroring ``--wasm`` / ``migrate``.
+    """
+    sub = argparse.ArgumentParser(
+        prog="capa build",
+        description=(
+            "Ahead-of-time compile a Capa program to a portable AOT "
+            "artifact (Cranelift-compiled, no recompile on run)."
+        ),
+    )
+    sub.add_argument("file", help=".capa file to build")
+    sub.add_argument(
+        "--release",
+        action="store_true",
+        help=(
+            "build the AOT artifact (currently the only build mode; "
+            "accepted for forward compatibility and cargo-like ergonomics)"
+        ),
+    )
+    sub.add_argument(
+        "-o", "--output",
+        help="output path for the .cwasm artifact (default: <file>.cwasm)",
+    )
+    sub.add_argument(
+        "--wasm-memory-cap", type=int, default=None, metavar="<pages>",
+        help="cap linear memory to N 64KiB pages (1..65536)",
+    )
+    args = sub.parse_args(argv)
+
+    if not _wasm_tooling_available():
+        print(
+            "capa build: the Wasm toolchain is required (wasm-tools on "
+            "PATH + the 'wasmtime' Python package). Install both and "
+            "retry.",
+            file=sys.stderr,
+        )
+        return 2
+
+    path = Path(args.file)
+    try:
+        source = path.read_text(encoding="utf-8")
+    except OSError as e:
+        print(f"capa build: cannot read {path}: {e}", file=sys.stderr)
+        return 2
+    except UnicodeDecodeError:
+        print(f"capa build: {path}: not valid UTF-8", file=sys.stderr)
+        return 2
+    filename = str(path)
+
+    # Validate the memory cap with the same bounds as the --wasm path
+    # (slice 30 P2-b): 0 / negative opts out; > wasm32 max is refused.
+    if args.wasm_memory_cap is None:
+        memory_cap: int | None = ...  # type: ignore[assignment]
+    elif args.wasm_memory_cap <= 0:
+        memory_cap = None
+    elif args.wasm_memory_cap > _WASM32_MAX_PAGES:
+        print(
+            f"capa build: --wasm-memory-cap must be between 1 and "
+            f"{_WASM32_MAX_PAGES} pages; got {args.wasm_memory_cap}",
+            file=sys.stderr,
+        )
+        return 2
+    else:
+        memory_cap = args.wasm_memory_cap
+
+    from capa.loader import ModuleLoader, LoaderError
+    try:
+        loader = ModuleLoader(search_paths=_capa_search_paths())
+        linked = loader.load_root(source, filename)
+    except LexerError as e:
+        print(e.format(), file=sys.stderr)
+        return 1
+    except LoaderError as le:
+        print(le.format(), file=sys.stderr)
+        return 1
+
+    result = analyze(
+        linked.module, source=source, filename=filename,
+        sources=linked.sources,
+        module_privates=linked.module_privates,
+    )
+    if not result.ok:
+        for err in result.errors:
+            print(err.format(), file=sys.stderr)
+        n = len(result.errors)
+        print(
+            f"capa build: {filename}: {n} error{'s' if n != 1 else ''}; "
+            "fix them before building.",
+            file=sys.stderr,
+        )
+        return 1
+
+    from capa.ir import compile_wasm
+    from capa.runtime._aot import build_aot
+    try:
+        blob = compile_wasm(
+            linked.module, types=result.types,
+            memory_cap_pages=memory_cap,
+            filename=filename,
+        )
+        artifact = build_aot(blob, capa_version=_CAPA_VERSION)
+    except Exception as e:
+        print(f"capa build: {e}", file=sys.stderr)
+        return 1
+
+    out = args.output or (str(path.with_suffix("")) + ".cwasm")
+    try:
+        Path(out).write_bytes(artifact)
+    except OSError as e:
+        print(f"capa build: cannot write {out}: {e}", file=sys.stderr)
+        return 2
+    print(
+        f"capa build: wrote AOT artifact ({len(artifact)} bytes) to {out}",
+        file=sys.stderr,
+    )
+    return 0
+
+
+def _dispatch_run_aot(argv: list[str]) -> int:
+    """Handle ``python -m capa run-aot <file.cwasm> [-- args...]``.
+
+    Loads a portable AOT artifact built by ``capa build --release`` and
+    runs its ``main`` against the real capability host. The artifact's
+    serialized module is deserialized (no recompile) and the recorded
+    main-param names map each cap slot to its root handle.
+    """
+    # Split argv on ``--`` so program args after it are forwarded to the
+    # Capa program (env.args), mirroring the --run path.
+    program_args: list[str] = []
+    if "--" in argv:
+        sep = argv.index("--")
+        program_args = argv[sep + 1:]
+        argv = argv[:sep]
+
+    sub = argparse.ArgumentParser(
+        prog="capa run-aot",
+        description="Run an AOT artifact built by `capa build --release`.",
+    )
+    sub.add_argument("file", help=".cwasm artifact to run")
+    args = sub.parse_args(argv)
+
+    try:
+        artifact = Path(args.file).read_bytes()
+    except OSError as e:
+        print(f"capa run-aot: cannot read {args.file}: {e}", file=sys.stderr)
+        return 2
+
+    from capa.runtime._aot import load_aot, AotError
+    from capa.runtime._wasm_host import WasmHost
+    host = WasmHost(args=program_args)
+    try:
+        # Deserialize against the HOST's engine: wasmtime refuses
+        # cross-Engine instantiation, so the module must share the
+        # engine the linker/store belong to.
+        module, header = load_aot(artifact, engine=host.engine)
+    except AotError as e:
+        print(f"capa run-aot: {e}", file=sys.stderr)
+        return 2
+    try:
+        host.run_main_aot(module, header)
+    except Exception as e:
+        print(f"capa run-aot: {e}", file=sys.stderr)
+        return 1
+    return 0
+
+
 def main() -> int:
     # Make stdout/stderr UTF-8 with replacement so CLI output never
     # crashes the process on a non-ASCII byte. The token dump uses a
@@ -508,6 +681,10 @@ def main() -> int:
         return _dispatch_search(sys.argv[2:])
     if len(sys.argv) >= 2 and sys.argv[1] == "migrate":
         return _dispatch_migrate(sys.argv[2:])
+    if len(sys.argv) >= 2 and sys.argv[1] == "build":
+        return _dispatch_build(sys.argv[2:])
+    if len(sys.argv) >= 2 and sys.argv[1] == "run-aot":
+        return _dispatch_run_aot(sys.argv[2:])
     if len(sys.argv) >= 2 and sys.argv[1] == "lsp":
         from capa.lsp_server import serve
         return serve()
