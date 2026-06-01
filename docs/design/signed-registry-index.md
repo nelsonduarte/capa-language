@@ -37,26 +37,37 @@ verificar contra a chave-raiz embutida no toolchain.
   igual a `_REGISTRY_ROOT_KEY`. Mesma lógica de comparação de
   fingerprint completa (40 hex maiúsculas) de `_verify_signed_pin`.
 
-## Faseamento: warn-then-enforce
+## Estado: ENFORCED (2026-06-01)
 
-O índice live atual NÃO está assinado. Verificação obrigatória imediata
-partiria `capa add`/`capa search` para todos. Logo:
+A transição completou-se. O `capa-registry` shippa `index.json.asc`
+(assinado pela chave-raiz `6C1D222D491FB88031E041A536CFB426101AA24B`),
+live em `raw.githubusercontent.com/.../index.json.asc`, e
+`_REGISTRY_ROOT_KEY` está preenchida com essa fingerprint. A tabela de
+decisão final:
 
 - **Assinatura presente + verifica contra a raiz** → aceitar.
 - **Assinatura presente + inválida / chave errada / corrompida** →
-  **fail-closed** (`RegistryError`). Uma assinatura má é um sinal de
-  ataque, nunca aceitável.
-- **Assinatura ausente** OU **chave-raiz não configurada** (placeholder)
-  → **fail-open com aviso** a stderr. Permite o índice atual
-  não-assinado funcionar enquanto o registry não shippa a assinatura.
-- **Transição para obrigatório**: quando `capa-registry` shippar
-  `index.json.asc` e `_REGISTRY_ROOT_KEY` estiver preenchida com a
-  fingerprint real, um release futuro vira o caminho "ausente" de
-  fail-open-com-aviso para fail-closed. Marcado no código com um
-  TODO ligado a esta decisão.
+  **fail-closed** (`RegistryError`). Uma assinatura má é sinal de
+  ataque, nunca aceitável. O opt-out NÃO se aplica aqui.
+- **Assinatura ausente**:
+  - sem opt-out → **fail-closed** (`RegistryError`). Fecha o
+    *downgrade attack*: um atacante que troca o índice também consegue
+    remover o `.asc`, logo a ausência é recusada quando o toolchain
+    conhece a chave.
+  - com `CAPA_REGISTRY_ALLOW_UNSIGNED=1` → **fail-open com aviso**.
+    Escape hatch explícito para mirrors air-gapped / self-hosted que
+    legitimamente servem um índice não-assinado. Cobre apenas
+    assinatura ausente, nunca inválida.
+- **gpg ausente do PATH** → **fail-open com aviso**. Limitação de
+  ambiente do utilizador, não um vetor controlável pelo atacante de
+  rede; degrada em vez de bloquear.
+- **chave-raiz vazia** (`_REGISTRY_ROOT_KEY == ""`, só builds pre-1.0)
+  → fail-open com aviso.
 
-`file://` (testes, mirrors air-gapped) segue as mesmas regras: se houver
-`index.json.asc` ao lado, verifica; senão, aviso + continua.
+`file://` segue as mesmas regras. Verificado end-to-end: fetch real do
+índice live + assinatura verifica contra a chave-raiz; índice
+adulterado / não-assinado / mal-assinado recusado; opt-out resgata só
+ausência, nunca assinatura inválida.
 
 ## Pontos de aplicação
 

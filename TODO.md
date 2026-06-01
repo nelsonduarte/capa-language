@@ -1090,10 +1090,10 @@ Listed so the design space is explicit.
   - `tests/test_lsp.py` 174 -> 185; full suite 2102 -> 2113
     passed / 8 skipped, 0 regressions.
 
-- [~] **Slice 27 - package-manager supply-chain audit
+- [x] **Slice 27 - package-manager supply-chain audit
   (registry trust root)** (https + index-signing landed
-  2026-05-31; enforcement phase pending registry-side
-  signing). A twelfth audit pass, this one on the REAL
+  2026-05-31; ENFORCEMENT completed 2026-06-01). A twelfth
+  audit pass, this one on the REAL
   package manager `capa/pkg/` (two prior audit briefs
   hallucinated nonexistent module paths `capa/package/`
   and stub `_signing.py` etc. - the real PM is a
@@ -1135,14 +1135,29 @@ Listed so the design space is explicit.
        poisoned cache without a valid matching `.asc` is
        rejected - verified independently). Design in
        `docs/design/signed-registry-index.md`.
-  - **Enforcement transition (pending, not this slice):**
-    `_REGISTRY_ROOT_KEY = ""` (the unconfigured sentinel)
-    keeps the live UNSIGNED index working today (fail-open
-    + one warning). When the separate `capa-registry` repo
-    ships `index.json.asc` and the real root fingerprint
-    is baked into `_REGISTRY_ROOT_KEY`, the missing-
-    signature path flips from warn to fail-closed. Tracked
-    by the TODO(slice 27) marker in `_registry.py`.
+  - **Enforcement COMPLETED (2026-06-01).** The
+    `capa-registry` repo now ships `index.json.asc` (signed
+    with the root key `6C1D...A24B`, live on
+    raw.githubusercontent.com), `_REGISTRY_ROOT_KEY` is
+    baked with that fingerprint, and the missing-signature
+    path is fail-closed. Final decision table: valid sig ->
+    accept; invalid/mismatched sig -> fail-closed (opt-out
+    never applies); missing sig -> fail-closed UNLESS
+    `CAPA_REGISTRY_ALLOW_UNSIGNED=1` (explicit escape hatch
+    for air-gapped / self-hosted mirrors, covers absence
+    only); gpg-not-on-PATH -> warn (environment limit, not
+    an attacker vector). Closes the downgrade attack
+    (strip-the-.asc). Verified end-to-end against the LIVE
+    signed index (real network fetch + signature verify),
+    and independently that the opt-out never rescues an
+    invalid signature. Registry-side commit:
+    `capa-registry@761a58a` (sign index + document trust
+    model). Tests updated: name-resolution / search tests
+    opt out (they exercise resolution, not signing);
+    `TestRegistryIndexSignature` rewritten for the enforced
+    semantics (unsigned-with-root now fail-closed; new
+    opt-out-resolves + opt-out-does-not-rescue-bad-sig
+    cases). Suite 2120 -> 2121.
   - **Audit residuals deferred** (lower severity, in the
     sub-agent report): SLSA verifies a release tarball it
     then discards (not tied to the installed checkout) +

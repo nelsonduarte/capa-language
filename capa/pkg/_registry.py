@@ -88,21 +88,29 @@ _CACHE_SIG_FILENAME = _CACHE_FILENAME + _SIG_SUFFIX
 
 # Root-key fingerprint that anchors trust in the registry index itself.
 # Out-of-band: it ships with the toolchain binary, NOT with the index,
-# so a MITM / cache-poisoning attacker cannot substitute it. When the
-# index carries a detached ``index.json.asc`` that GPG validates against
-# this exact 40-hex (uppercase) fingerprint, the index is accepted.
+# so a MITM / cache-poisoning attacker cannot substitute it. The index
+# carries a detached ``index.json.asc`` (signed with this key); the
+# toolchain verifies the exact index bytes against this fingerprint
+# before trusting any entry.
 #
-# Phasing (warn-then-enforce): the live registry is NOT signed yet and
-# no root key is published, so this is the empty "not configured"
-# sentinel. While empty, a missing / unconfigured signature fails OPEN
-# with a one-time stderr warning so ``capa add`` / ``capa search`` keep
-# working. A present-but-invalid signature still fails CLOSED.
-#
-# TODO(slice 27): once capa-registry ships index.json.asc, fill this
-# with the real root-key fingerprint. That flips the missing-signature
-# path from warn-then-continue to fail-closed. See
-# docs/design/signed-registry-index.md ("Faseamento: warn-then-enforce").
-_REGISTRY_ROOT_KEY = ""
+# Slice 27 enforcement (2026-06-01): capa-registry now ships
+# index.json.asc signed by this key, so it is baked in and the index
+# is ENFORCED. A signed-and-valid index is accepted; a missing,
+# invalid, mismatched, or unverifiable-because-tampered signature is
+# refused (fail-closed). The only fail-open paths left are (a) gpg not
+# on PATH -- an environment limitation, not an attacker-controllable
+# vector, so it warns rather than blocks; and (b) the explicit
+# ``CAPA_REGISTRY_ALLOW_UNSIGNED=1`` escape hatch for air-gapped /
+# self-hosted mirrors that legitimately serve an unsigned index. See
+# docs/design/signed-registry-index.md.
+_REGISTRY_ROOT_KEY = "6C1D222D491FB88031E041A536CFB426101AA24B"
+
+# Explicit opt-out for an unsigned index (air-gapped / self-hosted
+# mirror). When set to "1", a MISSING signature warns instead of
+# failing closed. A PRESENT-but-invalid signature still fails closed
+# regardless -- the escape hatch is for "no signature at all", never
+# for "a signature that does not validate".
+_ALLOW_UNSIGNED_ENV = "CAPA_REGISTRY_ALLOW_UNSIGNED"
 
 # Once-per-process warning guards (fail-open paths warn once, not per
 # call, so a search loop does not spam stderr).
@@ -147,26 +155,39 @@ def _verify_index_signature(
 ) -> None:
     """Verify a detached GPG signature over the raw index bytes.
 
-    Phased "warn-then-enforce" trust gate (see
+    Enforced trust gate (slice 27 enforcement, see
     docs/design/signed-registry-index.md). Decision table:
 
       * root key not configured (``_REGISTRY_ROOT_KEY`` empty)
-            -> warn once, return (FAIL-OPEN).
-      * signature absent (``sig_text is None``)
-            -> warn once, return (FAIL-OPEN, "unsigned").
+            -> warn once, return (FAIL-OPEN). Pre-1.0 builds only;
+               the shipped toolchain bakes the key.
+      * signature absent (``sig_text is None``):
+            - with ``CAPA_REGISTRY_ALLOW_UNSIGNED=1`` set
+                  -> warn once, return (explicit opt-out for
+                     air-gapped / self-hosted unsigned mirrors).
+            - otherwise
+                  -> raise RegistryError (FAIL-CLOSED). A missing
+                     signature is a downgrade-attack vector when the
+                     toolchain knows the key, so absence is refused.
       * signature present, gpg binary missing (FileNotFoundError)
-            -> warn once, return (FAIL-OPEN, cannot verify).
+            -> warn once, return. gpg-not-on-PATH is an environment
+               limitation, not an attacker-controllable vector, so it
+               degrades rather than blocks.
       * signature present, gpg non-zero / no VALIDSIG / fingerprint
         mismatch
             -> raise RegistryError (FAIL-CLOSED; an attack signal).
+               The opt-out does NOT apply: a present-but-invalid
+               signature is always refused.
       * signature present, VALIDSIG fingerprint == root key
             -> return (accepted).
 
     The verification runs over the EXACT bytes ``index_bytes`` (not a
     re-serialised dict): GPG signs bytes. Uses the caller's default
-    GNUPGHOME, since the published root key would live in the user's
+    GNUPGHOME, since the published root key lives in the user's
     keyring; no isolated keyring is invented for production verification.
     """
+    import os
+
     global _warned_unconfigured
 
     if not _REGISTRY_ROOT_KEY:
@@ -181,13 +202,27 @@ def _verify_index_signature(
         return
 
     if sig_text is None:
-        _warn_once(
-            "unsigned",
-            "registry index is unsigned (no detached signature alongside "
-            "it); trusting it without verification. A future toolchain "
-            "release will refuse an unsigned index.",
+        if os.environ.get(_ALLOW_UNSIGNED_ENV) == "1":
+            _warn_once(
+                "unsigned",
+                "registry index is unsigned and "
+                f"{_ALLOW_UNSIGNED_ENV}=1 is set; trusting it without "
+                "verification (air-gapped / self-hosted mirror "
+                "opt-out).",
+            )
+            return
+        raise RegistryError(
+            "registry index is unsigned: no detached signature "
+            "(index.json.asc) was found alongside it, but this "
+            "toolchain enforces index signing. A missing signature is "
+            "refused because an attacker who can swap the index can "
+            "also strip its signature.\n\n"
+            "If you are pointing at an air-gapped or self-hosted "
+            f"mirror that legitimately serves an unsigned index, set "
+            f"{_ALLOW_UNSIGNED_ENV}=1 to opt out. The official "
+            "registry is signed; an unsigned official index is a "
+            "tampering signal."
         )
-        return
 
     expected = _REGISTRY_ROOT_KEY.upper().replace(" ", "")
 

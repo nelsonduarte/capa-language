@@ -1339,6 +1339,21 @@ class TestRegistryResolve(_TempDirMixin, unittest.TestCase):
 
     _KEY = "6C1D222D491FB88031E041A536CFB426101AA24B"
 
+    def setUp(self) -> None:
+        super().setUp()
+        # These tests exercise NAME RESOLUTION, not signature verification;
+        # their unsigned file:// indexes are incidental. Opt out of the
+        # enforced signing gate so the resolution assertions run as before.
+        from unittest.mock import patch
+        self._env_patch = patch.dict(
+            os.environ, {"CAPA_REGISTRY_ALLOW_UNSIGNED": "1"}
+        )
+        self._env_patch.start()
+
+    def tearDown(self) -> None:
+        self._env_patch.stop()
+        super().tearDown()
+
     def _index_url(self, body: str) -> str:
         p = self._tmp / "index.json"
         p.write_text(textwrap.dedent(body), encoding="utf-8")
@@ -1459,6 +1474,21 @@ class TestRegistrySearch(_TempDirMixin, unittest.TestCase):
     a per-test ``cache_dir`` isolated from ``~/.capa``. A synthetic
     multi-package index keeps the assertions deterministic.
     """
+
+    def setUp(self) -> None:
+        super().setUp()
+        # These tests exercise SEARCH, not signature verification; their
+        # unsigned file:// indexes are incidental. Opt out of the enforced
+        # signing gate so the search assertions run as before.
+        from unittest.mock import patch
+        self._env_patch = patch.dict(
+            os.environ, {"CAPA_REGISTRY_ALLOW_UNSIGNED": "1"}
+        )
+        self._env_patch.start()
+
+    def tearDown(self) -> None:
+        self._env_patch.stop()
+        super().tearDown()
 
     def _index_url(self, body: str) -> str:
         p = self._tmp / "index.json"
@@ -1639,28 +1669,50 @@ class TestRegistryIndexSignature(_TempDirMixin, unittest.TestCase):
     # --- fail-open paths (no gpg required) -------------------------------
 
     def test_unconfigured_root_key_fails_open_with_warning(self):
-        # Default production state: _REGISTRY_ROOT_KEY == "". An index
-        # with no .asc must resolve AND warn (fail-open).
+        # Pre-1.0 build state: _REGISTRY_ROOT_KEY == "". The shipped
+        # toolchain now bakes the real key, so patch it back to "" to
+        # simulate the unconfigured build. An index with no .asc must
+        # resolve AND warn (fail-open).
         import io
         import contextlib
+        from unittest.mock import patch
         url = self._index_url(self._good_index())
         buf = io.StringIO()
-        with contextlib.redirect_stderr(buf):
+        with patch("capa.pkg._registry._REGISTRY_ROOT_KEY", ""), \
+                contextlib.redirect_stderr(buf):
             entry = resolve_name(
                 "capa_http", registry_url=url, cache_dir=self._cache_dir(),
             )
         self.assertEqual(entry.name, "capa_http")
         self.assertIn("not configured", buf.getvalue().lower())
 
-    def test_unsigned_index_with_root_configured_warns_and_resolves(self):
-        # Root key configured but the index has no sibling .asc -> the
-        # "unsigned" fail-open branch warns once and resolves.
+    def test_unsigned_index_with_root_configured_fails_closed(self):
+        # Root key configured (the enforced default) but the index has no
+        # sibling .asc and no opt-out env -> fail-closed. A missing
+        # signature is a downgrade-attack vector once the key is known.
+        from unittest.mock import patch
+        url = self._index_url(self._good_index())
+        with patch("capa.pkg._registry._REGISTRY_ROOT_KEY", self._KEY):
+            with self.assertRaises(RegistryError) as ctx:
+                resolve_name(
+                    "capa_http", registry_url=url,
+                    cache_dir=self._cache_dir(),
+                )
+        self.assertIn("unsigned", str(ctx.exception).lower())
+
+    def test_unsigned_index_with_opt_out_env_resolves(self):
+        # Same as above but with CAPA_REGISTRY_ALLOW_UNSIGNED=1: the
+        # explicit air-gapped / self-hosted-mirror opt-out warns once and
+        # resolves instead of failing closed.
         import io
         import contextlib
         from unittest.mock import patch
         url = self._index_url(self._good_index())
         buf = io.StringIO()
         with patch("capa.pkg._registry._REGISTRY_ROOT_KEY", self._KEY), \
+                patch.dict(
+                    os.environ, {"CAPA_REGISTRY_ALLOW_UNSIGNED": "1"}
+                ), \
                 contextlib.redirect_stderr(buf):
             entry = resolve_name(
                 "capa_http", registry_url=url, cache_dir=self._cache_dir(),
@@ -1668,11 +1720,17 @@ class TestRegistryIndexSignature(_TempDirMixin, unittest.TestCase):
         self.assertEqual(entry.name, "capa_http")
         self.assertIn("unsigned", buf.getvalue().lower())
 
+    @unittest.skipUnless(
+        _gpg_available(), "gpg binary not on PATH",
+    )
     def test_present_but_garbage_signature_fails_closed(self):
         # A .asc that is NOT a valid GPG signature: gpg --verify returns
         # non-zero, so this is fail-closed regardless of whether the
         # signature could ever match (no keyring needed; gpg rejects
-        # malformed armour outright). Skips only if gpg is absent.
+        # malformed armour outright). Skips only if gpg is absent: without
+        # gpg the production path warns-and-trusts (gpg-not-on-PATH is an
+        # environment limitation, not an attack vector), so fail-closed
+        # cannot be asserted.
         from unittest.mock import patch
         body = self._good_index()
         idx = self._tmp / "index.json"
@@ -1691,6 +1749,19 @@ class TestRegistryIndexSignature(_TempDirMixin, unittest.TestCase):
                 )
         msg = str(ctx.exception).lower()
         self.assertIn("signature verification failed", msg)
+
+        # Security property: the opt-out env is for "no signature at all",
+        # NEVER for "a signature that does not validate". A present-but-bad
+        # signature must STILL fail closed even with the escape hatch set.
+        with patch("capa.pkg._registry._REGISTRY_ROOT_KEY", self._KEY), \
+                patch.dict(
+                    os.environ, {"CAPA_REGISTRY_ALLOW_UNSIGNED": "1"}
+                ):
+            with self.assertRaises(RegistryError):
+                resolve_name(
+                    "capa_http", registry_url=url,
+                    cache_dir=self._cache_dir(),
+                )
 
     # --- fail-closed positive/negative with a real ephemeral key --------
 
