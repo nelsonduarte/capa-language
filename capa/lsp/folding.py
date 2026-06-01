@@ -77,7 +77,10 @@ def compute_folding_ranges(source: str) -> list[FoldingRange]:
         module = Parser(
             tokens, source=source, filename="<lsp>",
         ).parse_module()
-    except (LexerError, ParserError):
+    except (LexerError, ParserError, RecursionError):
+        # RecursionError is a robustness guard: a deeply nested
+        # expression overflows the recursive-descent parser. Show no
+        # folds rather than crashing the foldingRange request.
         return []
     ranges: list[FoldingRange] = []
     _collect(module, ranges)

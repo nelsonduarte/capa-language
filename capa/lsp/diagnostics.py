@@ -45,14 +45,27 @@ def compute_diagnostics(source: str, filename: str) -> list[Diagnostic]:
     except LexerError as e:
         out.append(Diagnostic(pos=e.pos or fallback_pos, message=e.message))
         return out
+    except RecursionError:
+        # Robustness guard: deeply nested input can overflow the lexer.
+        # Degrade to no diagnostics rather than crashing the request.
+        return out
 
     try:
         module = Parser(tokens, source=source, filename=filename).parse_module()
     except ParserError as e:
         out.append(Diagnostic(pos=e.pos or fallback_pos, message=e.message))
         return out
+    except RecursionError:
+        # Robustness guard: a deeply nested expression overflows the
+        # recursive-descent parser. Degrade to no diagnostics.
+        return out
 
-    result = analyze(module, source=source, filename=filename)
+    try:
+        result = analyze(module, source=source, filename=filename)
+    except RecursionError:
+        # Robustness guard: a deeply nested AST can overflow the
+        # analyzer's recursive walk. Degrade to no diagnostics.
+        return out
     for err in result.errors:
         out.append(Diagnostic(pos=err.pos, message=err.message))
     return out

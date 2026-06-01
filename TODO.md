@@ -948,6 +948,69 @@ Listed so the design space is explicit.
 
 ### Wasm-specific gaps that are not P0
 
+- [x] **Slice 28 - LSP robustness audit (UTF-16/codepoint
+  positions + RecursionError)** (closed 2026-06-01). A
+  thirteenth audit pass, on `capa/lsp/` (the editor surface,
+  not the regulatory claim). Found one **P0 buffer-corrupting
+  bug** + one **P1 crash-on-malformed-input**, both fixed.
+  - **P0 - UTF-16 vs codepoint column mismatch.** The LSP
+    server converted positions as raw codepoints
+    (`col = character + 1` inbound, `character = col - 1`
+    outbound) while pygls advertises UTF-16 position
+    encoding, and `capa/lsp/` negotiated none. On any line
+    with a supplementary-plane char (e.g. an emoji in a
+    string) before an identifier, every returned range was
+    off by the count of astral chars - and on **rename** the
+    client overwrote the wrong columns, silently corrupting
+    the user's buffer (the worst LSP outcome). Verified
+    independently: `greeting` after an emoji resolved to
+    codepoint col 18 but UTF-16 col 19; the server emitted
+    18.
+  - **The fix.** Route every inbound `params.position` and
+    every outbound `Position`/`Range`/`TextEdit` through
+    pygls's `PositionCodec` (default Utf16) at the
+    `server.py` boundary, reusing the document's own
+    `.position_codec`. The per-handler `compute_*` functions
+    stay in codepoint space (consistent with the lexer's
+    codepoint offsets); only the wire boundary converts. 11
+    outbound sites converted (diagnostics, hover, definition,
+    references, highlight, formatting, range-formatting,
+    document-symbols, code-action, prepare-rename, rename);
+    line-only ranges (folding) are encoding-safe and left.
+    Verified ASCII is a no-op in both directions (the
+    regression guard - all pre-existing tests pass with
+    identical ranges).
+  - **P1 - RecursionError escaped the parse guards.** The
+    narrow `except (LexerError, ParserError)` in
+    `context.py` / `folding.py` / `diagnostics.py` let a
+    deeply-nested-expression `RecursionError` propagate
+    (uncaught, though pygls contained it to a degraded
+    feature + error toast); `analyze()` was also called
+    outside the guard. Broadened the guards to catch
+    `RecursionError` and wrapped the `analyze()` calls.
+    Reproducer (`'('*600 ... ')'*600`) now degrades to
+    empty diagnostics / folding / floor-completion instead
+    of raising.
+  - **Residual (P3, documented):** `semantic_tokens` emits
+    delta-encoded `[deltaLine, deltaStart, length, ...]`
+    integers in codepoint units, not `Range` objects, so it
+    wasn't covered by the boundary fix. Impact is cosmetic
+    only - token `length` is correct (Capa identifiers are
+    ASCII), and `delta_start` shifts only when an astral char
+    sits in a string before a token on the same line, giving
+    slightly-offset coloring, never buffer corruption. Needs
+    a different (delta-aware) conversion; deferred.
+  - **CLEAN verified by the audit:** no single bad request
+    kills the session (pygls 2.1.1 contains every handler
+    exception); completion/hover/definition/references/
+    highlight/folding/semantic-tokens all degrade gracefully
+    on empty / unterminated-string / bad-char / missing-brace
+    / undefined-name / type-error documents (11 handlers x 9
+    malformed docs, none raised); `did_change` reads the
+    already-patched document (no stale-read).
+  - `tests/test_lsp.py` 174 -> 185; full suite 2102 -> 2113
+    passed / 8 skipped, 0 regressions.
+
 - [~] **Slice 27 - package-manager supply-chain audit
   (registry trust root)** (https + index-signing landed
   2026-05-31; enforcement phase pending registry-side

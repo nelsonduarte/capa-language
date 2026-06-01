@@ -56,6 +56,71 @@ def _uri_to_filename(uri: str) -> str:
     return filename
 
 
+# ---------------------------------------------------------------
+# Position-encoding boundary.
+#
+# Internally every compute_* helper works in *codepoint* columns
+# (matching the lexer's offsets). The LSP wire protocol, however,
+# uses UTF-16 code units for ``character`` columns (pygls defaults
+# to the ``Utf16`` PositionCodec). For ASCII these coincide, but a
+# line containing an astral (supplementary-plane) char shifts every
+# subsequent column. So we convert at the server boundary only:
+#
+# * INBOUND  (client -> server): ``_inbound_line_col`` turns a
+#   client ``lsp.Position`` into 1-based codepoint (line, col).
+# * OUTBOUND (server -> client): build the ``lsp.Range`` /
+#   ``lsp.Position`` in codepoint space first, then run it through
+#   ``_to_client_range`` / ``_to_client_position`` before emitting.
+#
+# The document carries its own ``position_codec``; we reuse it when
+# reachable and fall back to a module-level codec otherwise (e.g. a
+# mocked doc in tests).
+# ---------------------------------------------------------------
+
+
+def _codec(doc=None):
+    """Return the PositionCodec to use. Prefer the document's own
+    codec (constructed with the negotiated encoding); fall back to a
+    fresh default ``Utf16`` codec when none is reachable."""
+    from pygls.workspace import PositionCodec
+    if doc is not None:
+        cand = getattr(doc, "position_codec", None)
+        if isinstance(cand, PositionCodec):
+            return cand
+    return PositionCodec()
+
+
+def _doc_lines(doc) -> "list[str]":
+    """Document text split for the codec (keepends so column maths
+    stay per-line). Tolerates a mocked ``.source``."""
+    source = getattr(doc, "source", "") or ""
+    if not isinstance(source, str):
+        source = ""
+    return source.splitlines(keepends=True)
+
+
+def _inbound_line_col(doc, position) -> "tuple[int, int]":
+    """Convert a client ``lsp.Position`` (0-based, UTF-16 column)
+    into the 1-based codepoint (line, col) the compute_* helpers
+    expect."""
+    server_pos = _codec(doc).position_from_client_units(
+        _doc_lines(doc), position,
+    )
+    return server_pos.line + 1, server_pos.character + 1
+
+
+def _to_client_position(doc, position):
+    """Convert a codepoint-space ``lsp.Position`` to client UTF-16
+    units."""
+    return _codec(doc).position_to_client_units(_doc_lines(doc), position)
+
+
+def _to_client_range(doc, rng):
+    """Convert a codepoint-space ``lsp.Range`` to client UTF-16
+    units."""
+    return _codec(doc).range_to_client_units(_doc_lines(doc), rng)
+
+
 def _to_lsp_position(pos: Pos):
     from lsprotocol import types as lsp
     return lsp.Position(
@@ -67,7 +132,10 @@ def _to_lsp_position(pos: Pos):
 def _to_lsp_range(pos: Pos, end_pos: "Pos | None" = None):
     """One-character range when only ``pos`` is available;
     precise start-to-end when both. The one-character form is
-    enough for editors to underline the starting token."""
+    enough for editors to underline the starting token.
+
+    Returns a range in *codepoint* space; callers convert to client
+    UTF-16 units at the emit boundary."""
     from lsprotocol import types as lsp
     start = _to_lsp_position(pos)
     if end_pos is None:
@@ -95,11 +163,19 @@ def _build_server():
 
     def _refresh(ls, uri: str, source: str) -> None:
         filename = _uri_to_filename(uri)
+        # Convert outbound ranges against the *analysed* source (the
+        # arg), which on did_open precedes the workspace doc being
+        # populated. Reuse the doc's codec when reachable.
+        doc = ls.workspace.get_text_document(uri)
+        codec = _codec(doc)
+        lines = source.splitlines(keepends=True)
         diagnostics = []
         for d in compute_diagnostics(source, filename):
             diagnostics.append(
                 lsp.Diagnostic(
-                    range=_to_lsp_range(d.pos),
+                    range=codec.range_to_client_units(
+                        lines, _to_lsp_range(d.pos),
+                    ),
                     severity=lsp.DiagnosticSeverity.Error,
                     source=d.source,
                     message=d.message,
@@ -138,8 +214,7 @@ def _build_server():
     @server.feature(lsp.TEXT_DOCUMENT_HOVER)
     def hover(ls, params: "lsp.HoverParams"):
         doc = ls.workspace.get_text_document(params.text_document.uri)
-        line = params.position.line + 1
-        col = params.position.character + 1
+        line, col = _inbound_line_col(doc, params.position)
         result = compute_hover(doc.source, params.text_document.uri, line, col)
         if result is None:
             return None
@@ -155,7 +230,7 @@ def _build_server():
             contents=lsp.MarkupContent(
                 kind=lsp.MarkupKind.Markdown, value=markdown,
             ),
-            range=lsp.Range(start=start, end=end),
+            range=_to_client_range(doc, lsp.Range(start=start, end=end)),
         )
 
     # -----------------------------------------------------------
@@ -165,8 +240,7 @@ def _build_server():
     @server.feature(lsp.TEXT_DOCUMENT_DEFINITION)
     def definition(ls, params: "lsp.DefinitionParams"):
         doc = ls.workspace.get_text_document(params.text_document.uri)
-        line = params.position.line + 1
-        col = params.position.character + 1
+        line, col = _inbound_line_col(doc, params.position)
         target = compute_definition(
             doc.source, params.text_document.uri, line, col,
         )
@@ -177,7 +251,7 @@ def _build_server():
         )
         return lsp.Location(
             uri=params.text_document.uri,
-            range=lsp.Range(start=start, end=start),
+            range=_to_client_range(doc, lsp.Range(start=start, end=start)),
         )
 
     # -----------------------------------------------------------
@@ -187,8 +261,7 @@ def _build_server():
     @server.feature(lsp.TEXT_DOCUMENT_REFERENCES)
     def references(ls, params: "lsp.ReferenceParams"):
         doc = ls.workspace.get_text_document(params.text_document.uri)
-        line = params.position.line + 1
-        col = params.position.character + 1
+        line, col = _inbound_line_col(doc, params.position)
         include_decl = (
             params.context.include_declaration
             if params.context is not None else True
@@ -202,7 +275,7 @@ def _build_server():
         return [
             lsp.Location(
                 uri=params.text_document.uri,
-                range=lsp.Range(
+                range=_to_client_range(doc, lsp.Range(
                     start=lsp.Position(
                         line=i.pos.line - 1, character=i.pos.col - 1,
                     ),
@@ -210,7 +283,7 @@ def _build_server():
                         line=i.pos.line - 1,
                         character=i.pos.col - 1 + len(i.name),
                     ),
-                ),
+                )),
             )
             for i in idents
         ]
@@ -231,8 +304,7 @@ def _build_server():
     @server.feature(lsp.TEXT_DOCUMENT_DOCUMENT_HIGHLIGHT)
     def document_highlight(ls, params: "lsp.DocumentHighlightParams"):
         doc = ls.workspace.get_text_document(params.text_document.uri)
-        line = params.position.line + 1
-        col = params.position.character + 1
+        line, col = _inbound_line_col(doc, params.position)
         hits = compute_document_highlights(
             doc.source, params.text_document.uri, line, col,
         )
@@ -240,13 +312,13 @@ def _build_server():
             return None
         return [
             lsp.DocumentHighlight(
-                range=lsp.Range(
+                range=_to_client_range(doc, lsp.Range(
                     start=lsp.Position(line=h.line - 1, character=h.col - 1),
                     end=lsp.Position(
                         line=h.line - 1,
                         character=h.col - 1 + len(h.name),
                     ),
-                ),
+                )),
                 kind=_highlight_kind.get(h.kind, lsp.DocumentHighlightKind.Text),
             )
             for h in hits
@@ -290,7 +362,7 @@ def _build_server():
         edits = compute_formatting(doc.source)
         return [
             lsp.TextEdit(
-                range=lsp.Range(
+                range=_to_client_range(doc, lsp.Range(
                     start=lsp.Position(
                         line=e.start_line - 1,
                         character=e.start_col - 1,
@@ -299,7 +371,7 @@ def _build_server():
                         line=e.end_line - 1,
                         character=e.end_col - 1,
                     ),
-                ),
+                )),
                 new_text=e.new_text,
             )
             for e in edits
@@ -308,15 +380,16 @@ def _build_server():
     @server.feature(lsp.TEXT_DOCUMENT_RANGE_FORMATTING)
     def range_formatting(ls, params: "lsp.DocumentRangeFormattingParams"):
         doc = ls.workspace.get_text_document(params.text_document.uri)
-        rng = params.range
+        start_line, start_col = _inbound_line_col(doc, params.range.start)
+        end_line, end_col = _inbound_line_col(doc, params.range.end)
         edits = compute_range_formatting(
             doc.source,
-            rng.start.line + 1, rng.start.character + 1,
-            rng.end.line + 1, rng.end.character + 1,
+            start_line, start_col,
+            end_line, end_col,
         )
         return [
             lsp.TextEdit(
-                range=lsp.Range(
+                range=_to_client_range(doc, lsp.Range(
                     start=lsp.Position(
                         line=e.start_line - 1,
                         character=e.start_col - 1,
@@ -325,7 +398,7 @@ def _build_server():
                         line=e.end_line - 1,
                         character=e.end_col - 1,
                     ),
-                ),
+                )),
                 new_text=e.new_text,
             )
             for e in edits
@@ -348,18 +421,18 @@ def _build_server():
         "impl":       lsp.SymbolKind.Class,
     }
 
-    def _docsym_to_lsp(sym):
+    def _docsym_to_lsp(doc, sym):
         pos = lsp.Position(
             line=sym.pos.line - 1, character=sym.pos.col - 1,
         )
-        rng = lsp.Range(start=pos, end=pos)
+        rng = _to_client_range(doc, lsp.Range(start=pos, end=pos))
         return lsp.DocumentSymbol(
             name=sym.name,
             detail=sym.detail or None,
             kind=_docsym_kind.get(sym.kind, lsp.SymbolKind.Variable),
             range=rng,
             selection_range=rng,
-            children=[_docsym_to_lsp(c) for c in sym.children] or None,
+            children=[_docsym_to_lsp(doc, c) for c in sym.children] or None,
         )
 
     @server.feature(lsp.TEXT_DOCUMENT_DOCUMENT_SYMBOL)
@@ -368,7 +441,7 @@ def _build_server():
         syms = compute_document_symbols(doc.source, params.text_document.uri)
         if syms is None:
             return None
-        return [_docsym_to_lsp(s) for s in syms]
+        return [_docsym_to_lsp(doc, s) for s in syms]
 
     # -----------------------------------------------------------
     # Code actions.
@@ -385,7 +458,7 @@ def _build_server():
             for ca in compute_code_actions(doc.source, diag.message, diag_line_1):
                 edit = ca.edit
                 text_edit = lsp.TextEdit(
-                    range=lsp.Range(
+                    range=_to_client_range(doc, lsp.Range(
                         start=lsp.Position(
                             line=edit.line - 1,
                             character=edit.col_start - 1,
@@ -394,7 +467,7 @@ def _build_server():
                             line=edit.line - 1,
                             character=edit.col_end - 1,
                         ),
-                    ),
+                    )),
                     new_text=edit.new_text,
                 )
                 actions.append(
@@ -449,8 +522,7 @@ def _build_server():
     @server.feature(lsp.TEXT_DOCUMENT_COMPLETION)
     def completion(ls, params: "lsp.CompletionParams"):
         doc = ls.workspace.get_text_document(params.text_document.uri)
-        line = params.position.line + 1
-        col = params.position.character + 1
+        line, col = _inbound_line_col(doc, params.position)
         items = compute_completions(
             doc.source, params.text_document.uri, line, col,
         )
@@ -473,8 +545,7 @@ def _build_server():
     @server.feature(lsp.TEXT_DOCUMENT_PREPARE_RENAME)
     def prepare_rename(ls, params: "lsp.PrepareRenameParams"):
         doc = ls.workspace.get_text_document(params.text_document.uri)
-        line = params.position.line + 1
-        col = params.position.character + 1
+        line, col = _inbound_line_col(doc, params.position)
         pre = compute_prepare_rename(
             doc.source, params.text_document.uri, line, col,
         )
@@ -485,13 +556,12 @@ def _build_server():
         end = lsp.Position(
             line=pos.line - 1, character=pos.col - 1 + len(name),
         )
-        return lsp.Range(start=start, end=end)
+        return _to_client_range(doc, lsp.Range(start=start, end=end))
 
     @server.feature(lsp.TEXT_DOCUMENT_RENAME)
     def rename(ls, params: "lsp.RenameParams"):
         doc = ls.workspace.get_text_document(params.text_document.uri)
-        line = params.position.line + 1
-        col = params.position.character + 1
+        line, col = _inbound_line_col(doc, params.position)
         result = compute_rename(
             doc.source, params.text_document.uri, line, col,
             params.new_name,
@@ -501,14 +571,14 @@ def _build_server():
             return None
         text_edits = [
             lsp.TextEdit(
-                range=lsp.Range(
+                range=_to_client_range(doc, lsp.Range(
                     start=lsp.Position(
                         line=e.line - 1, character=e.col_start - 1,
                     ),
                     end=lsp.Position(
                         line=e.line - 1, character=e.col_end - 1,
                     ),
-                ),
+                )),
                 new_text=params.new_name,
             )
             for e in result.edits

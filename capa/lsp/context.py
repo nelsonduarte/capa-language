@@ -78,7 +78,10 @@ class LspContext:
             module = Parser(
                 tokens, source=source, filename=filename,
             ).parse_module()
-        except (LexerError, ParserError):
+        except (LexerError, ParserError, RecursionError):
+            # RecursionError is a robustness guard: a deeply nested
+            # expression overflows the recursive-descent parser. Degrade
+            # to "no context" rather than letting it crash the handler.
             return None
 
         # If the buffer imports anything *and* it points at a real
@@ -103,12 +106,18 @@ class LspContext:
             except (LexerError, ParserError, LoaderError, OSError):
                 linked = None
 
-        result = analyze(
-            module_for_analysis,
-            source=source, filename=filename,
-            sources=sources_map,
-            module_privates=privates_map,
-        )
+        try:
+            result = analyze(
+                module_for_analysis,
+                source=source, filename=filename,
+                sources=sources_map,
+                module_privates=privates_map,
+            )
+        except RecursionError:
+            # Robustness guard: a deeply nested AST can overflow the
+            # analyzer's recursive walk. Degrade to "no context" so the
+            # editor feature falls back gracefully instead of crashing.
+            return None
         return cls(
             source=source, filename=filename,
             module=module_for_analysis,

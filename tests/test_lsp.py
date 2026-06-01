@@ -403,6 +403,103 @@ class TestLspServerHandlersInProcess(unittest.TestCase):
         msg, kind = self.messages[0]
         self.assertIn("123_not_an_ident", msg)
 
+    # ---- P0: UTF-16 vs codepoint column at the wire boundary ----
+    #
+    # When a line contains an astral (supplementary-plane) char
+    # before an identifier, the LSP wire ``character`` column is in
+    # UTF-16 code units (pygls' Utf16 codec) while the compute_*
+    # helpers work in codepoints. The server boundary must convert
+    # both ways or rename silently corrupts the buffer.
+
+    _ASTRAL_SRC = (
+        "fun f(greeting: String) -> String\n"
+        "    let z = \"\U0001F600\" + greeting\n"
+    )
+    # On line 2 (0-based 1): the emoji is one codepoint but two
+    # UTF-16 units, so ``greeting`` sits at codepoint col 18 (0-based)
+    # / UTF-16 col 19 (0-based). Verified via PositionCodec.
+    _GREETING_CP_0BASED = 18
+    _GREETING_UTF16_0BASED = 19
+
+    def _greeting_client_col(self):
+        from pygls.workspace import PositionCodec
+        from lsprotocol import types as lsp
+        lines = self._ASTRAL_SRC.splitlines(keepends=True)
+        out = PositionCodec().position_to_client_units(
+            lines, lsp.Position(line=1, character=self._GREETING_CP_0BASED),
+        )
+        return out.character
+
+    def test_astral_client_col_matches_verified_value(self):
+        # Guards the hard-coded expectation against codec drift.
+        self.assertEqual(
+            self._greeting_client_col(), self._GREETING_UTF16_0BASED,
+        )
+
+    def test_rename_on_astral_line_emits_utf16_columns(self):
+        # P0 rename: the edit on the astral line must land on the
+        # correct UTF-16 columns, not the (shifted) codepoint ones.
+        from lsprotocol import types as lsp
+        self._set_source(self._ASTRAL_SRC)
+        client_col = self._greeting_client_col()
+        params = lsp.RenameParams(
+            text_document=self._text_doc_id(),
+            position=self._params_position(1, client_col),
+            new_name="hi",
+        )
+        result = self._handler(lsp.TEXT_DOCUMENT_RENAME)(params)
+        self.assertIsNotNone(result)
+        edits = result.changes["file:///t.capa"]
+        use_edits = [e for e in edits if e.range.start.line == 1]
+        self.assertEqual(len(use_edits), 1)
+        rng = use_edits[0].range
+        # UTF-16 start 19, end 19 + len("greeting") == 27.
+        self.assertEqual(rng.start.character, self._GREETING_UTF16_0BASED)
+        self.assertEqual(rng.end.character, self._GREETING_UTF16_0BASED + 8)
+        # The declaration edit on the ASCII line is unshifted.
+        decl_edits = [e for e in edits if e.range.start.line == 0]
+        self.assertEqual(decl_edits[0].range.start.character, 6)
+
+    def test_hover_on_astral_line_resolves_inbound_position(self):
+        # P0 round-trip: a client UTF-16 position on the astral line
+        # must resolve to the right codepoint col so hover/definition
+        # find the identifier.
+        from lsprotocol import types as lsp
+        self._set_source(self._ASTRAL_SRC)
+        client_col = self._greeting_client_col()
+        params = lsp.HoverParams(
+            text_document=self._text_doc_id(),
+            position=self._params_position(1, client_col),
+        )
+        result = self._handler(lsp.TEXT_DOCUMENT_HOVER)(params)
+        self.assertIsNotNone(result)
+        # And the returned range comes back in UTF-16 client units.
+        self.assertEqual(
+            result.range.start.character, self._GREETING_UTF16_0BASED,
+        )
+
+    def test_ascii_rename_columns_unchanged_by_codec(self):
+        # Regression guard: for ASCII, codepoint == UTF-16, so the
+        # conversion must be a no-op.
+        from lsprotocol import types as lsp
+        self._set_source(
+            "fun greet(name: String) -> String\n"
+            "    return name\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(greet(\"x\"))\n"
+        )
+        params = lsp.RenameParams(
+            text_document=self._text_doc_id(),
+            position=self._params_position(3, 18),
+            new_name="hello",
+        )
+        result = self._handler(lsp.TEXT_DOCUMENT_RENAME)(params)
+        edits = result.changes["file:///t.capa"]
+        # greet decl on line 0 starts at column 4.
+        decl = [e for e in edits if e.range.start.line == 0][0]
+        self.assertEqual(decl.range.start.character, 4)
+        self.assertEqual(decl.range.end.character, 4 + 5)
+
 
 @unittest.skipUnless(
     _HAVE_LSP,
@@ -2355,6 +2452,43 @@ class TestLspFoldingHandler(TestLspServerHandlersInProcess):
         params = lsp.FoldingRangeParams(text_document=self._text_doc_id())
         result = self._handler(method)(params)
         self.assertIsNone(result)
+
+
+class TestLspDeepNestingRobustness(unittest.TestCase):
+    """P1: a deeply nested expression overflows Python's recursion
+    limit inside the lexer / parser / analyzer. The LSP compute
+    helpers must degrade (empty / floor result) rather than letting
+    a ``RecursionError`` escape and crash the editor request.
+
+    These hit the pure compute_* helpers, so they run without
+    pygls / lsprotocol installed.
+    """
+
+    # 600 nested parens reliably overflows the recursive-descent
+    # parser at the default recursion limit.
+    DEEP_SRC = (
+        "fun f(stdio: Stdio)\n"
+        "    let x = " + ("(" * 600) + "1" + (")" * 600) + "\n"
+    )
+
+    def test_compute_diagnostics_degrades(self):
+        from capa.lsp.diagnostics import compute_diagnostics
+        # Must not raise; a degraded (possibly empty) list is fine.
+        result = compute_diagnostics(self.DEEP_SRC, "t.capa")
+        self.assertIsInstance(result, list)
+
+    def test_compute_folding_ranges_degrades(self):
+        from capa.lsp.folding import compute_folding_ranges
+        result = compute_folding_ranges(self.DEEP_SRC)
+        self.assertEqual(result, [])
+
+    def test_compute_completions_degrades(self):
+        from capa.lsp.completion import compute_completions
+        # Cursor on the let line; should fall back to the floor list
+        # (keywords + built-ins) instead of raising.
+        result = compute_completions(self.DEEP_SRC, "t.capa", 2, 13)
+        self.assertIsInstance(result, list)
+        self.assertGreater(len(result), 0)
 
 
 if __name__ == "__main__":
