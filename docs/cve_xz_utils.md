@@ -184,7 +184,7 @@ The narrow source-level case where Capa contributes:
 Honestly, the bulk of what xz did:
 
 - **Build-script execution at packaging time.** `dpkg`, `rpm`,
-  `make`, `autoconf` — none of these are Capa. A malicious
+  `make`, `autoconf`: none of these are Capa. A malicious
   contributor who lands logic in those scripts has unlimited
   authority before any Capa code runs.
 

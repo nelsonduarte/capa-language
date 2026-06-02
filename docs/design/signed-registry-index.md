@@ -1,4 +1,4 @@
-# Índice de registry assinado — design (slice 27, 2026-05-31)
+# Índice de registry assinado, design (slice 27, 2026-05-31)
 
 ## Problema
 
@@ -6,7 +6,7 @@ O índice de registry (`capa/pkg/_registry.py`) é a **raiz de confiança**
 de todo o fluxo `capa add <name>`: fornece a URL git **e** a `verify_key`
 (fingerprint GPG) que ancora toda a verificação de assinatura a jusante
 (`_verify_signed_pin` em `_install.py`). Auditoria slice 27: o índice em
-si não estava assinado nem protegido — fetchado com `http://` permitido,
+si não estava assinado nem protegido, fetchado com `http://` permitido,
 `CAPA_REGISTRY_URL` env-overridável, e cache em disco confiado por mtime
 sem verificação de integridade. Um atacante que faça MITM do índice (ou
 escreva o cache, ou ponha a env var) troca URL git + verify_key numa
@@ -21,7 +21,7 @@ verificar contra a chave-raiz embutida no toolchain.
 ## Modelo de confiança
 
 - **Chave-raiz**: uma fingerprint GPG embutida no código do toolchain
-  (`_REGISTRY_ROOT_KEY`). É a única âncora que o atacante não controla —
+  (`_REGISTRY_ROOT_KEY`). É a única âncora que o atacante não controla,
   vem com o binário do compilador, não com o índice. Rotação =
   release do toolchain (mesma cadência que qualquer constante de
   segurança embutida).
@@ -97,7 +97,7 @@ ausência, nunca assinatura inválida.
 
 Nenhuma nova. Reutiliza `gpg` no PATH (já requerido por
 `_verify_signed_pin`). `cryptography` está disponível mas não é
-necessária — manter consistência com a abordagem shell-out-to-gpg do
+necessária, manter consistência com a abordagem shell-out-to-gpg do
 resto do package manager, e o princípio "core compiler dependency-free".
 
 ## Testabilidade
@@ -111,7 +111,7 @@ testes desta feature:
   só verifica que um índice sem `.asc` produz aviso + sucesso.
 - O caminho fail-closed (assinatura presente mas inválida) com uma `.asc`
   lixo é testável sem gpg real se a verificação distinguir "gpg disse
-  inválido" de "gpg indisponível" — mas a comparação de fingerprint
+  inválido" de "gpg indisponível", mas a comparação de fingerprint
   precisa de gpg, então marca-se skipUnless para o caminho positivo.
 
 ## Não-objetivos

@@ -7,17 +7,17 @@
 
 ---
 
-## P1 — Wasm AOT (`capa build --release`) — FEITO (2026-06-01)
+## P1: Wasm AOT (`capa build --release`), FEITO (2026-06-01)
 
 **Estado:** implementado. `capa build --release` + `capa run-aot`,
 container `capa/runtime/_aot.py`, `WasmHost.run_main_aot`, 12 testes
 em `tests/test_aot.py`. Notas de implementação face ao desenho abaixo:
 (1) os param-names do main TÊM de ser capturados no header do
-container — o `.cwasm` serializado perde a name section (confirmado:
+container, o `.cwasm` serializado perde a name section (confirmado:
 `'net'` não aparece nos bytes serializados); (2) `load_aot` recebe o
 engine do host porque o wasmtime recusa cross-Engine instantiation;
 (3) ganho de module-load ~1.3x num módulo trivial (escala com o
-tamanho), wall-clock dominado pelo arranque do Python — a P1.2(b)
+tamanho), wall-clock dominado pelo arranque do Python, a P1.2(b)
 launcher Rust removeria esse piso, deferida.
 
 **Objetivo:** binário standalone de performance near-native, sem
@@ -43,7 +43,7 @@ muitas, a velocidade Cranelift".
 
 ### Desenho
 
-**P1.1 — `capa build --release <file> -o <out>` (novo dispatcher).**
+**P1.1: `capa build --release <file> -o <out>` (novo dispatcher).**
 Novo `_dispatch_build` em `capa/cli.py`, ao lado de `_dispatch_init`
 etc. (o padrão de dispatch já existe em `main()`,
 `capa/cli.py:468+`). Passos:
@@ -54,7 +54,7 @@ etc. (o padrão de dispatch já existe em `main()`,
    wasmtime sem precisar do CLI `wasmtime` separado.
 3. Escrever o `.cwasm` + um pequeno *launcher* (ver P1.2).
 
-**P1.2 — Launcher / runtime embarcado.** O `.cwasm` precisa do
+**P1.2: Launcher / runtime embarcado.** O `.cwasm` precisa do
 `WasmHost` (as host bridges das capabilities) para correr. Duas
 opções, por ordem de esforço:
 - **(a) Launcher Python fino** (~1 slice): um script/entry-point que
@@ -78,7 +78,7 @@ CLIs curtos, P1.2(b).
   idêntico ao `--run` (reusar o harness de paridade
   `tests/test_ir_wasm_parity.py`).
 - Benchmark: medir `--run` (JIT) vs `.cwasm` (AOT) em 3 programas
-  (CPU-bound, alloc-heavy, IO-heavy). Documentar os números — a tese
+  (CPU-bound, alloc-heavy, IO-heavy). Documentar os números, a tese
   precisa de um número real, não "near-native" hand-wave.
 
 ### Riscos
@@ -86,12 +86,12 @@ CLIs curtos, P1.2(b).
   não é portável entre versões. Documentar + versionar o header.
 - As host bridges não mudam, mas o launcher tem de as registar na
   mesma ordem (a slice 25.8 mostrou como `_TracingWasmHost` ficou
-  stale ao copiar parcialmente o `__init__` — o launcher deve chamar
+  stale ao copiar parcialmente o `__init__`: o launcher deve chamar
   o setup real, não re-implementá-lo).
 
 ---
 
-## S1 — Linear handles / must-call types — FEITO (2026-06-01)
+## S1: Linear handles / must-call types, FEITO (2026-06-01)
 
 **Estado:** implementado. `linear type Foo { ... }` + `consume self`,
 mixin `capa/analyzer/_linear.py` (`_live_linear` dual do `_consumed`,
@@ -113,7 +113,7 @@ A maquinaria de linearidade JÁ existe, mas só para capabilities:
   (`capa/analyzer/_expressions.py:456-461`).
 - O `self._consumed: set[str]` é reset por-função
   (`capa/analyzer/__init__.py:297`), com fork/merge em branches
-  (snapshot antes, união conservadora depois) — exatamente a
+  (snapshot antes, união conservadora depois), exatamente a
   semântica que linear handles precisam.
 - `Symbol.consuming_params: list[bool]`
   (`capa/analyzer/_declarations.py:227`) propaga para call sites.
@@ -128,7 +128,7 @@ consumido antes de a função retornar). Falta:
 
 ### Desenho
 
-**S1.1 — Sintaxe + AST.** Um qualificador `linear` num `type`:
+**S1.1: Sintaxe + AST.** Um qualificador `linear` num `type`:
 ```
 linear type FileHandle { fd: Int }
 ```
@@ -136,18 +136,18 @@ Adicionar `is_linear: bool` ao `TypeStruct` AST
 (`capa/capa_ast/_items.py`, ao lado de `is_pub`). O parser de items
 (`capa/parser/_items.py`) reconhece o keyword antes de `type`.
 
-**S1.2 — Modelo de analyzer.** Marcar o `Symbol` do tipo com
+**S1.2: Modelo de analyzer.** Marcar o `Symbol` do tipo com
 `is_linear`. Quando um valor de tipo linear é criado (struct literal,
 ou retorno de uma função que produz um), entra num conjunto novo
 `self._live_linear: dict[name, Pos]` (paralelo ao `self._consumed`,
-mesma mecânica de fork/merge em branches —
+mesma mecânica de fork/merge em branches,
 `capa/analyzer/__init__.py:297` mostra o padrão).
 
-**S1.3 — Enforcement (a inovação face ao consume existente).** O
+**S1.3: Enforcement (a inovação face ao consume existente).** O
 consume existente erra em *use após consumir*. Linear handles erram
 em *não-consumir antes de sair de scope*:
 - No fim de cada função / bloco, `self._live_linear` tem de estar
-  vazio (todo o valor linear foi consumido — passado a um
+  vazio (todo o valor linear foi consumido, passado a um
   `consume`-param, ou explicitamente libertado via um método marcado
   `consumes self`).
 - Erro novo via `self._err(...)`
@@ -159,9 +159,9 @@ em *não-consumir antes de sair de scope*:
   não no outro é um erro (a união conservadora já existe para o
   caso simétrico).
 
-**S1.4 — Surface no SBOM.** Novo campo no function record
+**S1.4: Surface no SBOM.** Novo campo no function record
 (`capa/manifest/_funrec.py:333-348`, onde estão as 12 chaves):
-`"linear_obligations": [...]` — "esta função recebe/produz handles
+`"linear_obligations": [...]`: "esta função recebe/produz handles
 lineares que tem de libertar; estes são". Param-level: adicionar
 `"is_linear"` ao param record (`_funrec.py:212-217`, ao lado de
 `is_capability`).
@@ -178,14 +178,14 @@ lineares que tem de libertar; estes são". Param-level: adicionar
 - Interação com closures: um valor linear capturado numa closure que
   pode ser chamada N vezes não pode ser consumido lá (o
   `_discipline.py:65-71` já tem o erro análogo para caps consumidas
-  em closures — reaproveitar o raciocínio).
+  em closures, reaproveitar o raciocínio).
 - Retorno de valores lineares: uma função pode *devolver* um handle
   linear (transferindo a obrigação ao chamador). O `_live_linear` tem
   de tratar `return x` como "consome x" (transfere, não dropa).
 
 ---
 
-## S2 — Information Flow Control (a aposta de unicidade)
+## S2: Information Flow Control (a aposta de unicidade)
 
 **Objetivo:** provar para onde os dados podem fluir, não só que efeitos
 uma função exerce. `usado ∩ provably_excluded = ∅` é sobre autoridade;
@@ -205,13 +205,13 @@ IFC é sobre `secret nunca alcança sink public sem declassify`.
 
 ### Desenho (explicit IFC, lattice pequena, declassify auditável)
 
-**S2.1 — Lattice mínima.** Dois níveis para v1: `@public` (default,
+**S2.1: Lattice mínima.** Dois níveis para v1: `@public` (default,
 implícito) e `@secret`. Ordem: `public ⊑ secret` (secret é mais
 restrito). NÃO labels de princípios arbitrárias (lição da Pony:
 poder a mais mata ergonomia). v2 pode acrescentar níveis
 intermédios.
 
-**S2.2 — Sintaxe + AST.** Label num tipo ou param:
+**S2.2: Sintaxe + AST.** Label num tipo ou param:
 ```
 fun handler(token: @secret String, net: Net) -> Result<Unit, IoError>
 ```
@@ -219,7 +219,7 @@ Adicionar `label: Optional[SecurityLabel]` ao `TypeExpr`/`Param`
 (`capa/capa_ast/_types.py`, `_items.py`). Parser de tipos
 (`capa/parser/_types.py`) reconhece `@secret`/`@public` antes do tipo.
 
-**S2.3 — Propagação de labels (o núcleo).** Estender o walk de
+**S2.3: Propagação de labels (o núcleo).** Estender o walk de
 expressões (`capa/analyzer/_expressions.py`) para computar o label de
 cada expressão:
 - Literal → `public`.
@@ -231,8 +231,8 @@ cada expressão:
 - Manter um `self._expr_label: dict[id(expr), Label]` paralelo aos
   `bindings` existentes.
 
-**S2.4 — Sinks e enforcement.** Definir os *sinks public*: parâmetros
-de métodos de capability que saem do programa —
+**S2.4: Sinks e enforcement.** Definir os *sinks public*: parâmetros
+de métodos de capability que saem do programa,
 `stdio.println(x)`, `net.post(url, body)`, `net.get(url)`,
 `fs.write(path, content)`. Quando um argumento `@secret` chega a um
 sink que exige `@public`:
@@ -245,20 +245,20 @@ self._err(
 )
 ```
 A lista de sinks vive ao lado de `CAPABILITY_NAMES` / da definição de
-métodos de cap (já há um sítio canónico — o builtins/typesys).
+métodos de cap (já há um sítio canónico, o builtins/typesys).
 
-**S2.5 — Declassify (a inovação regulatória).** Um builtin
-`declassify(value: @secret T, reason: String) -> @public T` — o ÚNICO
+**S2.5: Declassify (a inovação regulatória).** Um builtin
+`declassify(value: @secret T, reason: String) -> @public T`: o ÚNICO
 ponto onde secret→public é permitido. Cada chamada:
 - É verificada (tem de ter um `reason` literal não-vazio).
 - Aparece no SBOM: novo campo no function record
   (`capa/manifest/_funrec.py:333`):
   `"declassification_sites": [{"pos": ..., "reason": ...}]`. Isto é o
-  diferenciador — o SBOM passa a dizer "esta função desclassifica
+  diferenciador, o SBOM passa a dizer "esta função desclassifica
   dados secretos nestes N pontos, por estas razões", algo que
   NENHUMA ferramenta mainstream produz.
 
-**S2.6 — Roll-out warn-then-enforce** (lição da slice 27): primeiro o
+**S2.6: Roll-out warn-then-enforce** (lição da slice 27): primeiro o
 analyzer *avisa* sobre fluxos secret→sink não-declassificados (não
 quebra programas existentes, que não têm labels); quando o ecossistema
 adotar labels, fail-closed. Um flag/atributo opt-in
@@ -280,20 +280,20 @@ adotar labels, fail-closed. Um flag/atributo opt-in
 - **Implicit flows**: `if secret > 0 { public_log("hit") }` vaza um
   bit via control flow. v1 pode cobrir só *explicit flows* (dados que
   fluem por atribuição/chamada) e documentar honestamente que
-  implicit flows não são cobertos — é a fronteira clássica IFC, e
+  implicit flows não são cobertos, é a fronteira clássica IFC, e
   over-claiming aqui seria o tipo de bug que a campanha de auditoria
   encontrou. Honestidade: o SBOM diz "explicit-flow IFC", não "IFC".
 - **Interação com capabilities**: um valor `@secret` passado a uma
-  capability já declarada — os dois sistemas são ortogonais (um sobre
+  capability já declarada, os dois sistemas são ortogonais (um sobre
   autoridade, outro sobre fluxo) mas o SBOM tem de os apresentar
   coerentemente.
-- **Containers**: `List<@secret String>` — o label propaga pelo
+- **Containers**: `List<@secret String>`: o label propaga pelo
   container. v1 pode exigir o label no elemento e propagar
   conservadoramente (todo o container vira secret se um elemento for).
 
 ---
 
-## P2 — GC real via Wasm GC proposal
+## P2: GC real via Wasm GC proposal
 
 **Objetivo:** substituir o bump allocator que vaza em processos de
 longa duração.
@@ -317,7 +317,7 @@ para servidores.
 
 ### Desenho
 
-**P2.1 — Avaliar o Wasm GC proposal.** O wasmtime já suporta o GC
+**P2.1: Avaliar o Wasm GC proposal.** O wasmtime já suporta o GC
 proposal (structs/arrays geridos pelo runtime, `ref`/`struct.new`/
 `array.new`). Reaproveita a estratégia "dobrar no Wasm" do P1.
 Trade-off: o modelo de memória muda de "tudo i32 em linear memory"
@@ -325,17 +325,17 @@ para "valores geridos são `ref`". Isto é uma reescrita do layout
 (`capa/ir/_emit_wasm/_layout.py`, `_structs.py`, `_lists.py`), não
 incremental.
 
-**P2.2 — Faseamento.** Demasiado grande para uma slice. Sequência:
+**P2.2: Faseamento.** Demasiado grande para uma slice. Sequência:
 1. Manter o bump allocator como default; adicionar um modo GC opt-in
    (`capa build --gc`) que emite o GC proposal para os tipos heap.
 2. Migrar tipo a tipo (structs primeiro, depois listas, depois
-   strings/closures) — cada um com o harness de paridade a confirmar
+   strings/closures), cada um com o harness de paridade a confirmar
    output idêntico. Mesma disciplina das slices 25.2-25.7 (uma cap de
    cada vez).
 3. Quando estável e medido, virar default.
 
 **Alternativa mais barata (se o GC proposal provar difícil):**
-reference counting no runtime emitido — um refcount i32 no header de
+reference counting no runtime emitido, um refcount i32 no header de
 cada objeto, `$retain`/`$release` emitidos nos pontos de
 cópia/drop (o `_live_linear` de S1 dá os pontos de drop de borla).
 Não apanha ciclos, mas a maioria do código Capa não os cria (sem
@@ -344,13 +344,13 @@ S1 fá-lo quase de graça para os tipos lineares.
 
 **Recomendação:** medir primeiro (P1 dá o harness de benchmark). Se o
 working-set típico cabe no cap de 16 MiB para os casos de uso reais,
-P2 pode esperar. Não fazer GC por purismo — fazer quando um caso de
+P2 pode esperar. Não fazer GC por purismo, fazer quando um caso de
 uso de longa duração o exigir.
 
 ### Riscos
 - O GC proposal muda o ABI do heap; toca em todos os ficheiros de
   `_emit_wasm/` que assumem ponteiros i32. É o maior risco de
-  regressão de todo o plano — daí o faseamento opt-in.
+  regressão de todo o plano, daí o faseamento opt-in.
 - A Component Model (slice 25.8) interage com GC; verificar paridade
   nos dois hosts.
 
@@ -358,14 +358,14 @@ uso de longa duração o exigir.
 
 ## Fases menores (resumo técnico)
 
-- **P3 (otimizações lowerer) — PARCIAL (2026-06-02):** o resíduo do
+- **P3 (otimizações lowerer): PARCIAL (2026-06-02):** o resíduo do
   slice 26 (literal 2^63 não-negado) foi fechado, mas no ANALYZER, não
   como constant-fold do lowerer: um `IntLit == 2^63` só é legal como
   operando imediato de unary-minus (i64::MIN); qualquer uso positivo é
   rejeitado, fechando a divergência Python (bignum) vs Wasm (wrap).
   O **constant-fold foi deliberadamente NÃO feito**: medido num
   programa fabricado com 100 ops de constantes, o compile inteiro é
-  ~2ms e o Cranelift já dobra as constantes a jusante — sem ganho
+  ~2ms e o Cranelift já dobra as constantes a jusante, sem ganho
   mensurável. Além disso o fold teria de preservar o trap-on-overflow
   do i64 (só dobrar quando o resultado cabe em i64), código subtil com
   risco de regressão de semântica e zero retorno. Decisão de
@@ -395,5 +395,5 @@ P2 (GC) ─────── beneficia de P1 (benchmark) + S1 (drop points)
 Cada fase deixa a suite verde + **ou** uma alegação SBOM nova **ou**
 um número de performance medido. Warn-then-enforce em tudo o que muda
 semântica de programas existentes (S1, S2). Property-test + mutation-
-check em tudo o que é alegação de segurança (S1, S2, S4) — a campanha
+check em tudo o que é alegação de segurança (S1, S2, S4), a campanha
 de auditoria provou que paridade entre backends não chega.

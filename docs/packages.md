@@ -7,7 +7,7 @@ a `capa.lock` so the resolution is reproducible.
 
 When a `capa.toml` file is present in the working directory, the
 Capa loader picks up `./vendor/` and the parent of every `path =`
-dep automatically — no `CAPA_PATH` environment variable needed.
+dep automatically, no `CAPA_PATH` environment variable needed.
 
 ## Quick start
 
@@ -170,7 +170,7 @@ Useful when:
 - Vendoring by hand into `./libraries/` is preferred over
   fetching at install time.
 
-Path deps do not appear in `capa.lock` — they are by definition
+Path deps do not appear in `capa.lock`: they are by definition
 not reproducible across machines.
 
 ## Lockfile
@@ -217,10 +217,10 @@ project, it walks the following search paths, in order:
    imports work without configuration).
 2. Every directory listed in the `CAPA_PATH` environment
    variable.
-3. `./vendor/` — when `capa.toml` declares at least one git
+3. `./vendor/`: when `capa.toml` declares at least one git
    dependency.
 4. The parent of every `path = "..."` dependency.
-5. `./libraries/` — conventional fallback for hand-vendored
+5. `./libraries/`: conventional fallback for hand-vendored
    projects.
 6. The directory of the root file (so a submodule can import a
    sibling of the file the user passed to `capa --run`).

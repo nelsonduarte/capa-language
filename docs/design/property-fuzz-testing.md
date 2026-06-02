@@ -1,4 +1,4 @@
-# Camada de testes property-based / fuzz — âmbito
+# Camada de testes property-based / fuzz, âmbito
 
 > Estado: proposta de âmbito (2026-05-30, 3ª revisão após inspeção do
 > que já existe). Motivada pela campanha de auditoria slices 16-26.
@@ -22,7 +22,7 @@ confirmada por inspeção do código:
   `_program_with_caps`, `_program_with_caps_advanced`,
   `_program_with_caps_wasm`, `_program_with_caps_wasm_advanced`.
 
-**`evaluation/fuzz/`** — painel de ataques separado, 9 categorias
+**`evaluation/fuzz/`**, painel de ataques separado, 9 categorias
 (`cat_fs_traversal`, `cat_env_leak`, `cat_net_punch`,
 `cat_capability_aliasing`, `cat_capability_in_data`,
 `cat_llm_dispatch_escape`, etc.), cada uma gera ataques que
@@ -40,27 +40,27 @@ Porque a invariante testada é a errada para essa classe de bug.
 
 `TestRuntimeSubsetOfManifest` afirma:
 
-> usado(f) ⊆ declarado(f)   — "o manifesto é um limite superior honesto"
+> usado(f) ⊆ declarado(f), "o manifesto é um limite superior honesto"
 
 O slice 25 **não** violava isto. Um programa que faz
 `let n = fs.restrict_to("/tmp"); helper(n)` e depois lê
 `/etc/passwd` dentro de `helper` continua a usar apenas a capability
-`Fs` que `helper` declara — passa a invariante de subset perfeitamente.
+`Fs` que `helper` declara, passa a invariante de subset perfeitamente.
 O que é violado é uma invariante diferente, que **não existe** no suite:
 
 > Para cada cap atenuada c com restrição R, toda operação privilegiada
-> sobre c em runtime satisfaz R   — "a atenuação é honrada"
+> sobre c em runtime satisfaz R, "a atenuação é honrada"
 
 E, na sua forma de manifesto:
 
-> usado(f) ∩ provably_excluded(f) = ∅   — "a exclusão é honrada"
+> usado(f) ∩ provably_excluded(f) = ∅, "a exclusão é honrada"
 
 Esta é a invariante que torna `provably_excluded_capabilities` um facto
 em vez de uma esperança. É a peça que falta.
 
 Segundo motivo, complementar: mesmo que a invariante existisse, os
 geradores `_program_with_caps*` provavelmente não emitem a *forma* que
-dispara o bug — `restrict_to` numa função, operação privilegiada noutra.
+dispara o bug, `restrict_to` numa função, operação privilegiada noutra.
 Um gerador que só atenua e usa na mesma função nunca exercita o caminho
 inter-função.
 
@@ -68,7 +68,7 @@ inter-função.
 
 Não é uma camada nova. São duas adições contra infraestrutura existente.
 
-### Lacuna A — Invariante de atenuação/exclusão (~1 slice)
+### Lacuna A, Invariante de atenuação/exclusão (~1 slice)
 Ao lado de `TestRuntimeSubsetOfManifest` / `TestWasmRuntimeSubsetOfManifest`,
 adicionar `TestAttenuationHonoured` (Python) e o gémeo Wasm. Reutiliza o
 `_TracingWasmHost` e o `_trace` que já existem; estende o traço para
@@ -82,7 +82,7 @@ Duas afirmações por programa gerado:
 
 Isto teria apanhado os slices 18, 21 e 25 automaticamente.
 
-### Lacuna B — Aprofundar os geradores (~1 slice)
+### Lacuna B, Aprofundar os geradores (~1 slice)
 Estender `_program_with_caps_advanced` e `_program_with_caps_wasm_advanced`
 para emitir as formas que escaparam, cada uma ligada a um bug real:
 - atenuar numa função, usar a cap atenuada noutra (slice 25);
@@ -96,16 +96,16 @@ para emitir as formas que escaparam, cada uma ligada a um bug real:
 A Lacuna B sozinha torna os fuzzers *existentes* capazes de reencontrar
 21/24; combinada com a Lacuna A, fecha também 25.
 
-## Lacunas menores — AMBAS FEITAS (2026-05-31)
+## Lacunas menores, AMBAS FEITAS (2026-05-31)
 
-### Lacuna C — Oráculo de exportador — FEITA
+### Lacuna C, Oráculo de exportador, FEITA
 Propriedade independente de backend: todo
 `transitively_reachable_capability` no manifesto aparece como
 propriedade no CycloneDX **e** anotação no SPDX; todo
 `provably_excluded` aparece como a entrada negativa correspondente;
 todo built-in transitivamente alcançado tem um componente sintetizado
 `capa:builtin:...` no CycloneDX. (Apanharia o slice 23.) Não precisa de
-runtime — compara manifesto vs. exportadores.
+runtime, compara manifesto vs. exportadores.
 
 Implementada em `TestExporterConservation` a granularidade **por-função**
 (a forma forte): cada função do manifesto é casada com o seu componente
@@ -115,7 +115,7 @@ reachability transitiva não-trivial) + `_program_with_caps_advanced`.
 Verificado por mutação: ao remover a propriedade transitiva do
 CycloneDX, dispara `AssertionError`.
 
-### Lacuna D — Invariante de posições — FEITA
+### Lacuna D, Invariante de posições, FEITA
 `source[tok.start.offset:tok.end.offset] == tok.text` para cada token
 não-layout, sobre texto bruto (`_CAPA_ISH_TEXT` / `_SOURCE_TEXT`) e
 sobre programas gerados (`_program()`). Protege o campo `pos` do
@@ -130,31 +130,31 @@ Todas as quatro lacunas (A, B, C, D) estão fechadas. `test_properties.py`
 cresceu de 11 para 21 métodos. A frase defensável para a NLnet é agora:
 **`usado ∩ provably_excluded = ∅` (atenuação honrada) é property-tested
 em ambos os backends, e a conservação manifesto→SBOM é property-tested
-por-função** — não só por auditoria manual. A Lacuna 5 (gerador
+por-função**, não só por auditoria manual. A Lacuna 5 (gerador
 nível-tipo completo: genéricos, sum types com payloads, closures
 cap-capturantes) fica como alargamento contínuo, não pré-requisito.
 
 ## Não-objetivos
 
-- Não construir do zero — estender `test_properties.py` e
+- Não construir do zero, estender `test_properties.py` e
   `test_evaluation_fuzz.py`.
 - Não duplicar a invariante de subset, que já existe e funciona.
-- Não substitui a auditoria humana de *desenho* — apanha regressões de
+- Não substitui a auditoria humana de *desenho*, apanha regressões de
   *implementação* da classe que a campanha encontrou repetidamente.
 - O gerador nível-tipo completo (genéricos, sum types com payloads,
   closures cap-capturantes) é alargamento contínuo, não um pré-requisito.
 
 ## Ordem recomendada
 
-1. **Lacuna B** (aprofundar geradores) — desbloqueia tudo o resto;
+1. **Lacuna B** (aprofundar geradores): desbloqueia tudo o resto;
    sozinha reativa os fuzzers existentes para 21/24.
-2. **Lacuna A** (invariante de atenuação/exclusão) — fecha o núcleo
+2. **Lacuna A** (invariante de atenuação/exclusão): fecha o núcleo
    regulatório; com B, apanha 25.
-3. **Lacuna C** (exportador) — barata, fecha 23.
-4. **Lacuna D** (posições) — barata.
+3. **Lacuna C** (exportador): barata, fecha 23.
+4. **Lacuna D** (posições): barata.
 
 Total ~3 slices para fechar o ponto cego que a campanha expôs. Antes de
-cada lacuna: **ler a classe/gerador existente e estendê-lo** — lição
+cada lacuna: **ler a classe/gerador existente e estendê-lo**, lição
 das duas revisões erradas deste próprio doc.
 
 ## Nota de honestidade para a NLnet
@@ -163,6 +163,6 @@ A frase defensável após este trabalho: "a invariante
 `usado ⊆ declarado` é verificada por property-testing em ambos os
 backends desde [data]; a invariante `usado ∩ provably_excluded = ∅`
 (atenuação honrada) é adicionada na Lacuna A". Antes da Lacuna A,
-**não** afirmar que a exclusão é property-tested — só a auditoria
+**não** afirmar que a exclusão é property-tested: só a auditoria
 manual (slice 25) a verificou até agora, num conjunto fixo de
 reprodutores.
