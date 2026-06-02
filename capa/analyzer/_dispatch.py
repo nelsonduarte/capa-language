@@ -343,6 +343,11 @@ class _DispatchMixin:
         # for the args.
         self._check_ifc_sink(e, recv_ty)
 
+        # Roadmap S2: a secret pushed / added / set into a mutable
+        # container taints the container binding, so a later read does
+        # not launder it back to public.
+        self._check_ifc_container_mutation(e, recv_ty)
+
         from . import SymbolKind
 
         # Capabilities: consult registered methods. Covers both

@@ -99,8 +99,15 @@ cada site registado no SBOM (`declassifications` por função +
 branches `if`/`match` com condição secret) entregue como check
 **strict-only**: o tier default fica focado nos fluxos de dados
 explícitos (alto valor, baixo ruído), e `@strict_ifc` liga
-noninterference completa (explícito + implícito como erros). Pendente:
-inferência de fluxo (v2) e fluxo implícito em loops (`while`/`for`).
+noninterference completa (explícito + implícito como erros).
+Anti-laundering: literais de agregado (struct/lista/tuplo) carregam o
+join dos labels dos elementos, a variável de for-loop herda o label do
+iterável, e contentores mutáveis (`new_map`/`new_set`/`[]` + `set`/`add`/
+`push`) ficam contaminados quando recebem um valor secret. Pendente:
+inferência de fluxo (v2), fluxo implícito em loops (`while`/`for`),
+precisão por-campo (hoje a granularidade é o agregado inteiro), e fluxo
+secret através de fronteiras de função sem anotação `@secret` no
+parâmetro (por design, mantém-se explícito).
 
 ### S3 — Typestate / session types
 **ROI: médio-alto. Esforço: ~5-6 slices. Dependências: S1 (linearidade).**

@@ -77,6 +77,20 @@ _SECRET_SOURCES: frozenset = frozenset({
     ("Env", "get"),
 })
 
+# Mutating methods that can inject tainted data INTO a mutable
+# container. When called with a @secret argument in one of the listed
+# positions, the receiver container becomes @secret: a later read
+# (``get`` / ``contains`` / ``keys`` / iteration) would otherwise
+# launder the secret back to public. Keyed ``(TypeName, method)`` ->
+# the 0-based argument positions that carry data into the container.
+# This is the mutable-container analogue of the aggregate-literal
+# rule; together they stop a secret from being hidden in a collection.
+_CONTAINER_MUTATORS: dict[tuple[str, str], set[int]] = {
+    ("List", "push"): {0},
+    ("Set",  "add"):  {0},
+    ("Map",  "set"):  {0, 1},
+}
+
 
 class _IfcMixin:
     def _label_expr(self, e: A.Expr) -> str:
@@ -205,9 +219,11 @@ class _IfcMixin:
         if isinstance(e, (A.ListLit, A.TupleLit)):
             return L.join_all(self._label_of(el) for el in e.elements)
 
-        # Anything else (lambda, match expr, mutable map/set built via
-        # new_map()/new_set() + set(), ...) is public by default in this
-        # slice; richer propagation through those forms is a follow-up.
+        # Anything else (lambda, match expr, ...) is public by default
+        # in this slice. Mutable containers are handled separately: a
+        # secret put into one via push / add / set taints the receiver
+        # binding (see ``_check_ifc_container_mutation``), so the read
+        # rules above inherit the now-secret receiver label.
         return L.PUBLIC
 
     # ---- implicit flow / pc-label (roadmap S2.implicit) ----------
@@ -292,6 +308,39 @@ class _IfcMixin:
                 e.pos,
             )
         return value_ty
+
+    # ---- mutable-container taint (roadmap S2) --------------------
+
+    def _check_ifc_container_mutation(self, e: A.MethodCall, recv_ty) -> None:
+        """When a mutating method (``List.push`` / ``Set.add`` /
+        ``Map.set``) is called with a @secret argument, raise the label
+        of the receiver binding so the container is @secret from here
+        on. Without this, ``let m = new_map(); m.set(k, secret); m.get(k)``
+        would launder the secret back to public on the read.
+
+        Only a plain identifier receiver is handled (the common case);
+        a mutation through a more complex receiver expression is not
+        tracked in this slice. The raise is monotonic (join), so it is
+        sound under conditional / looping mutation: once tainted, the
+        binding stays tainted."""
+        cap_name = getattr(recv_ty, "name", None)
+        if cap_name is None:
+            return
+        taint_args = _CONTAINER_MUTATORS.get((cap_name, e.method))
+        if not taint_args:
+            return
+        if not isinstance(e.receiver, A.Ident):
+            return
+        incoming = L.join_all(
+            self._label_of(e.args[idx])
+            for idx in taint_args
+            if idx < len(e.args)
+        )
+        if L.normalize(incoming) != L.SECRET:
+            return
+        sym = self.bindings.get(id(e.receiver))
+        if sym is not None:
+            sym.label = L.join(sym.label, L.SECRET)
 
     # ---- sink enforcement (roadmap S2.4) -------------------------
 

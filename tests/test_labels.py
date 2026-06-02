@@ -390,6 +390,63 @@ class TestAggregateLabels(unittest.TestCase):
         self.assertEqual(len(r.warnings), 1)
 
 
+class TestMutableContainerTaint(unittest.TestCase):
+    """Roadmap S2: a @secret pushed / added / set into a mutable
+    container (built via new_map() / new_set() / []) taints the
+    container binding, so a later read does not launder it to public."""
+
+    def _analyze(self, src: str):
+        from capa import analyze
+        m = _parse(src)
+        return analyze(m, source=src)
+
+    def test_map_set_then_get(self):
+        r = self._analyze(
+            "fun f(stdio: Stdio, token: @secret String)\n"
+            "    let m = new_map()\n"
+            "    m.set(\"k\", token)\n"
+            "    stdio.println(m.get(\"k\").unwrap_or(\"\"))\n"
+        )
+        self.assertEqual(len(r.warnings), 1)
+
+    def test_secret_key_also_taints_map(self):
+        r = self._analyze(
+            "fun f(stdio: Stdio, token: @secret String)\n"
+            "    let m = new_map()\n"
+            "    m.set(token, \"v\")\n"
+            "    stdio.println(m.get(\"x\").unwrap_or(\"\"))\n"
+        )
+        self.assertEqual(len(r.warnings), 1)
+
+    def test_list_push_then_get(self):
+        r = self._analyze(
+            "fun f(stdio: Stdio, token: @secret String)\n"
+            "    let xs = []\n"
+            "    xs.push(token)\n"
+            "    stdio.println(xs.get(0).unwrap_or(\"\"))\n"
+        )
+        self.assertEqual(len(r.warnings), 1)
+
+    def test_set_add_then_iterate(self):
+        r = self._analyze(
+            "fun f(stdio: Stdio, token: @secret String)\n"
+            "    let s = new_set()\n"
+            "    s.add(token)\n"
+            "    for x in s.to_list()\n"
+            "        stdio.println(x)\n"
+        )
+        self.assertEqual(len(r.warnings), 1)
+
+    def test_public_container_stays_clean(self):
+        r = self._analyze(
+            "fun f(stdio: Stdio)\n"
+            "    let m = new_map()\n"
+            "    m.set(\"k\", \"v\")\n"
+            "    stdio.println(m.get(\"k\").unwrap_or(\"\"))\n"
+        )
+        self.assertEqual(len(r.warnings), 0)
+
+
 class TestImplicitFlow(unittest.TestCase):
     """Roadmap S2.implicit: a sink that fires inside a branch guarded by
     a @secret condition leaks whether the branch was taken (the pc-label
