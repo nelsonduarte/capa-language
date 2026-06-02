@@ -59,13 +59,13 @@ and P2 (LLM tool-use demo).
 
 ---
 
-## P0 — done for this milestone
+## P0: done for this milestone
 
 No remaining work in this priority.
 
 ---
 
-## P1 — High-impact within positioning
+## P1: High-impact within positioning
 
 Strengthens the capability + supply-chain claim, but isn't on
 the current Wasm critical path.
@@ -713,7 +713,7 @@ the current Wasm critical path.
 
 ---
 
-## P2 — Adoption-moving, not core
+## P2: Adoption-moving, not core
 
 The single highest-leverage move per the strategy section is
 **LLM tool-use sandboxing**: capability discipline is
@@ -905,7 +905,7 @@ right primitives. Listed at the top of this section accordingly.
 
 ---
 
-## P3 — Research-grade, parked
+## P3: Research-grade, parked
 
 None on the current plan. Each is a multi-month arc of its own.
 Listed so the design space is explicit.
@@ -1436,7 +1436,7 @@ Listed so the design space is explicit.
       ahead of the now-dead inline `$str_contains` machinery
       (kept commented for slice-25.9 cleanup). Host bridge
       delegates to the Python `Net.get` / `Net.post` which
-      use `urlparse(url).hostname` + `allows()` — closes F2
+      use `urlparse(url).hostname` + `allows()`: closes F2
       by side effect. New `capa:host/net.restrict-to(handle,
       host) -> u32` import. Two new parity programs:
       `net_cross_function_attenuation.capa` (F1) and
@@ -1480,7 +1480,7 @@ Listed so the design space is explicit.
       `restrict-*` handlers were added (previously
       stubbed as no-ops). `run_main` inspects
       `main.type(store).params` from the WIT directly
-      (no `name`-section parse needed on CM — the WIT is
+      (no `name`-section parse needed on CM, the WIT is
       the source of truth). 17 previously-parked CM
       tests now pass; 7 new `_under_cm` parity tests
       cover the cross-function attenuation oracles on
@@ -1530,7 +1530,7 @@ Listed so the design space is explicit.
     now case-folds keys on Windows
     (`capa/runtime/_capabilities.py:_canon_key`) so a
     restriction `["NEVER_SET"]` actually denies a lookup
-    `env.get("PATH")` — pre-fix the platform's case-
+    `env.get("PATH")`: pre-fix the platform's case-
     insensitive `os.environ` was bypassing a
     case-sensitive Python-side allow-list.
   - **F3 (Random reseeding), F5 (Fs lexical vs realpath
@@ -1573,7 +1573,7 @@ Listed so the design space is explicit.
     `examples/wasm/lambda_block_implicit_result.capa`.
   - **Bonus fix.** `_lower_const_decl` was not resetting
     `self._attenuation_map` across function/const
-    boundaries — latent today (consts can't carry caps)
+    boundaries, latent today (consts can't carry caps)
     but broke the per-item state-isolation invariant.
   - **Findings deferred** (separate slices): Unit-
     returning block-body lambda trips Wasm emit "values
@@ -1646,7 +1646,7 @@ Listed so the design space is explicit.
       two `main.capa` from different projects collide.
       Touch on a project-id story.
     - **P3 / F7**: VEX `@vex(...)` text not cross-checked
-      against the post-slice-21 exclusion list — stale
+      against the post-slice-21 exclusion list, stale
       VEX statements survive into the SBOM. Add a
       cross-check.
     - **P3 / F8**: VEX `bom-ref` keyed on loader-mangled
@@ -1882,7 +1882,7 @@ Listed so the design space is explicit.
   - **The bug.** `for i in 0..N { handlers.push(fun () => i) }`
     on the Python backend produced lambdas that all returned
     the loop's final value (Python late-binding closure
-    semantics — `lambda: i` looks up `i` at call time, after
+    semantics, `lambda: i` looks up `i` at call time, after
     the loop has finished). The Wasm backend captured each
     iteration's `i` at `MakeLambda` time (the env record is
     allocated fresh per closure construction), so its
@@ -1898,7 +1898,7 @@ Listed so the design space is explicit.
     `lambda i=i: i`. Default args bind values at lambda-
     creation time, matching Wasm's MakeLambda-time snapshot.
     Reference-typed captures (lists, strings) still share
-    the same object — default args bind references, not deep
+    the same object, default args bind references, not deep
     copies, same as Wasm capturing the i32 heap pointer.
   - **Audit P2s deferred** (lower severity, all confirmed
     not exploitable from realistic source): `${...}`
@@ -1930,7 +1930,7 @@ Listed so the design space is explicit.
   bug** that directly contradicts Capa's headline regulatory
   claim.
   - **The bug.** Capa's pitch to auditors: "the manifest's
-    `provably_excluded_capabilities` is a hard claim — this
+    `provably_excluded_capabilities` is a hard claim, this
     function CANNOT exercise the listed caps, by construction
     of the analyzer's discipline". A program with shape:
     ```
@@ -1942,7 +1942,7 @@ Listed so the design space is explicit.
     ```
     type-checks, runs, and prints "LEAKED". Pre-fix the
     manifest claimed `b` provably-excluded every cap including
-    Stdio — but Stdio IS exercised through `b`. The type
+    Stdio, but Stdio IS exercised through `b`. The type
     system does not track captured caps inside `Fun(...)` (a
     lambda + a plain function both have the same type), so
     the analyzer can't tell which caps a closure value
@@ -1956,13 +1956,13 @@ Listed so the design space is explicit.
     builder downgrades `provably_excluded_capabilities` to
     `[]` whenever the function's signature (any parameter
     type OR return type, transitively) contains a `Fun(...)`.
-    Same machinery `Unsafe` already used — both are "we can't
+    Same machinery `Unsafe` already used, both are "we can't
     honor the claim, so don't make it" cases.
   - **Audit triage (3 P0 claimed; only #1 confirmed real).**
     - **P0 #1 (closure laundering)**: confirmed, fixed this
       slice.
     - **P0 #2 (var of cap reassigned)**: NOT exploitable.
-      Verified — `var alias: Stdio = stdio` is rejected at
+      Verified: `var alias: Stdio = stdio` is rejected at
       the `var` binding step ("capability cannot appear in
       a 'var' binding"); the factory path is also blocked
       ("capability cannot be constructed at a call site" +
@@ -1970,7 +1970,7 @@ Listed so the design space is explicit.
       language-level guards block the path before the
       alias-reassignment code is reached.
     - **P0 #3 (struct cap-field smuggle via impl method)**:
-      NOT exploitable. Verified — `let m = SmtpMailer { net:
+      NOT exploitable. Verified: `let m = SmtpMailer { net:
       net }` is rejected ("capability 'SmtpMailer' cannot
       appear in a 'let' binding"). Without the let-binding
       there's no way to obtain a cap-bearing struct value
@@ -1991,7 +1991,7 @@ Listed so the design space is explicit.
 - [x] **"Fully functional Wasm" slice 17 - String.length +
   String.substring switched to code-point semantics on Wasm**
   (closed 2026-05-29). A third audit pass (this one on the
-  Python runtime — `_safety.py` + older capability code)
+  Python runtime, `_safety.py` + older capability code)
   surfaced one **P0 silent-divergence bug** that the parity
   test suite had been masking because every parity program
   uses ASCII strings: Wasm's `String.length` returned the byte
@@ -2046,7 +2046,7 @@ Listed so the design space is explicit.
   - **P1: Float captures in lifted lambdas crashed the wasm
     verifier.** `_emit_make_lambda` wrote Float env entries
     with `i64.store` (from `_store_op_for_size(8)`), the
-    matching capture load in `_push_value` used `i64.load` —
+    matching capture load in `_push_value` used `i64.load`,
     both type-mismatch the f64 operand. A program like
     `let factor = 1.5; let scale = fun (x: Float) -> Float
     => x * factor; scale(2.0)` failed compile on Wasm. Fix:
@@ -3239,11 +3239,11 @@ the full reasoning.
 - 2026-05-15: Stdlib paths via `CAPA_PATH`.
 
 ### Supply-chain artefacts
-- 2026-05-15: **Tier 1 complete** — SBOM diff tool, SPDX 2.3
+- 2026-05-15: **Tier 1 complete**: SBOM diff tool, SPDX 2.3
   emission, VEX integration, SLSA Build L1 provenance.
-- 2026-05-15: **Tier 2 complete** — `docs/regulatory.md`
+- 2026-05-15: **Tier 2 complete**: `docs/regulatory.md`
   covering CRA + NIS2 + DORA + NIST SSDF + OWASP SCVS.
-- 2026-05-15: Tier 3 — provenance signing workflow.
+- 2026-05-15: Tier 3, provenance signing workflow.
 - 2026-05-15: Ineligibility proofs as SBOM enrichment
   (`provably_excluded_capabilities` in CycloneDX + SPDX).
 - 2026-05-23: **Package-manager supply-chain hardening, three
@@ -3426,7 +3426,7 @@ the full reasoning.
   Lambda-param case left as latent (the bound names are
   collected, no test added since LambdaExpr parsing has its
   own quirks worth a separate scope).
-- 2026-05-25: **`capa_http` v0.1.3** — vendor-aware sys.path
+- 2026-05-25: **`capa_http` v0.1.3**: vendor-aware sys.path
   in `make_urllib_client`. Probes both `./vendor/capa_http/`
   (package manager) and `./libraries/capa_http/` (legacy
   hand-vendoring), with vendor taking priority. Closes the

@@ -1056,11 +1056,11 @@ tests on `tests/test_loader.py`:
   - `TestQualifiedCallShadowing` extended with five cases
     covering the AST-binder shapes the earlier round's tests
     did not exercise:
-    * `test_tuple_pattern_shadow_in_let` — `let (mylib, _n) = pair`
-    * `test_struct_pattern_shorthand_shadow_in_let` — `let Foo { x } = obj`
-    * `test_for_pattern_tuple_shadow` — destructuring in for-loop
-    * `test_lambda_param_shadow` — `fun (mylib) => mylib.method(x)`
-    * `test_if_elif_else_shadow` — shadow introduced inside a
+    * `test_tuple_pattern_shadow_in_let`: `let (mylib, _n) = pair`
+    * `test_struct_pattern_shorthand_shadow_in_let`: `let Foo { x } = obj`
+    * `test_for_pattern_tuple_shadow`: destructuring in for-loop
+    * `test_lambda_param_shadow`: `fun (mylib) => mylib.method(x)`
+    * `test_if_elif_else_shadow`: shadow introduced inside a
       nested else branch
   - New `TestLoaderErrorFormat` class with two cases for the
     `LoaderError.format` rendering (with positional anchor and
@@ -1081,10 +1081,10 @@ path under `unittest`. Lifting that to 74% with four
 end-to-end smoke tests (`TestWasmComponentHost` in
 `tests/test_ir_wasm.py`):
 
-  - `test_hello_under_component_host` — Stdio.println basic path
-  - `test_stdio_with_string_interpolation` — string interp lift
-  - `test_env_args_round_trip` — Env.args() argv lifting (3 args)
-  - `test_clock_now_secs_returns_positive_float` — Clock bridge
+  - `test_hello_under_component_host`: Stdio.println basic path
+  - `test_stdio_with_string_interpolation`: string interp lift
+  - `test_env_args_round_trip`: Env.args() argv lifting (3 args)
+  - `test_clock_now_secs_returns_positive_float`: Clock bridge
 
 Each compiles a small Capa source to a core wasm, wraps it as
 a Component Model component via `wasm-tools component embed/new`
@@ -1128,7 +1128,7 @@ binding (parameters, `let` / `var` / `for` patterns, match
 arm pattern binders, `LambdaExpr` parameters) into a
 function-level shadow set. The `MethodCall(Ident(name), ...)`
 rewrite skips when `name` is in that set. Scoping is
-function-level rather than block-level — slightly
+function-level rather than block-level, slightly
 over-conservative (a `let http = ...` on line 10 shadows the
 alias for the whole function, including line 5) but SOUND:
 the loader never silently drops a method receiver in favour
@@ -2537,7 +2537,7 @@ completeness.
 
   Mechanism: the REPL appends the expression as a bare
   expression statement (not a `let` binding, so capability
-  references like `stdio` still type-check — Capa's discipline
+  references like `stdio` still type-check, Capa's discipline
   forbids binding caps to a `let`), runs the analyzer, and
   reads back the type of the last main-body statement from
   `result.types` keyed by node id. The transpiler / runtime are
@@ -3830,10 +3830,10 @@ suites.
   compiler's own `--cyclonedx` output emit) and builds typed
   Capa structs: `CdxDocument`, `CdxComponent`, `CdxHash`,
   `CdxLicense`, `CdxDependency`, `CdxMetadata`. Handles both
-  CycloneDX license shapes — `{license: {id|name}}` (a single
+  CycloneDX license shapes, `{license: {id|name}}` (a single
   SPDX identifier or a human-readable name) and `{expression:
   ...}` (a full SPDX-license-expression like `MIT OR
-  Apache-2.0`) — plus the dual `metadata.tools` representation
+  Apache-2.0`), plus the dual `metadata.tools` representation
   (modern `tools.components[]` and the legacy flat
   `tools[]` array). Regression test in
   `tests/test_transpiler.py::test_cyclonedx_parser`.
