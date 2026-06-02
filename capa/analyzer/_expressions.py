@@ -181,10 +181,16 @@ class _ExpressionsMixin:
         before = set(self._consumed)
         branch_results: list[set[str]] = []
 
+        # Roadmap S2: the scrutinee's IFC label flows to every name a
+        # pattern binds. ``match env.get(...) { Some(key) -> ... }``
+        # makes ``key`` secret, so the headline read-secret-then-leak
+        # case is caught after the match destructure.
+        scrutinee_label = self._label_of(s.scrutinee)
         for arm in s.arms:
             self._consumed = set(before)
             self._push_scope()
             self._bind_pattern(arm.pattern, scrutinee_ty, mutable=False)
+            self._label_pattern_binds(arm.pattern, scrutinee_label)
             if arm.guard is not None:
                 gty = self._check_expr(arm.guard)
                 if not compatible(TyBool, gty):

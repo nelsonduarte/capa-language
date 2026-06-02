@@ -52,6 +52,24 @@ _PUBLIC_SINKS: dict[tuple[str, str], set[int]] = {
     ("Db", "query"):       {0, 1},
 }
 
+# Built-in capability methods that PRODUCE secret data -- the sources.
+# Their result is labelled ``@secret`` regardless of argument labels,
+# so a program that reads a secret and routes it to a public sink is
+# caught without the programmer annotating anything. Roadmap S2
+# (source caps). Keyed ``(CapName, method)``.
+#
+# Conservative on purpose -- only ``Env.get`` for now. Environment
+# variables are where API keys / tokens / credentials live (the
+# headline prompt-injection-exfiltration case), so treating them as
+# secret-by-default is the safe and accurate call. ``Fs.read`` is
+# deliberately NOT a source: a config / data file is usually public,
+# and over-labelling it would warn on every legitimate file echo. A
+# program that does hold a secret in a file can annotate the binding
+# ``@secret`` explicitly. Future levels could make this configurable.
+_SECRET_SOURCES: frozenset = frozenset({
+    ("Env", "get"),
+})
+
 
 class _IfcMixin:
     def _label_expr(self, e: A.Expr) -> str:
@@ -83,6 +101,26 @@ class _IfcMixin:
         sym = self.scope.lookup_local(name)
         if sym is not None:
             sym.label = self._join_decl_and_value_label(decl_label, value)
+
+    def _label_pattern_binds(self, pat: A.Pattern, scrutinee_label: str) -> None:
+        """Propagate a scrutinee's IFC label to every name a pattern
+        destructure binds (roadmap S2 source flow). When the matched
+        value is ``secret`` -- e.g. the Option from ``env.get(...)`` --
+        each name pulled out of it (``Some(key)`` -> ``key``) becomes
+        ``secret`` too, so leaking the payload to a public sink is
+        caught. Conservative: a sub-payload inherits the whole
+        scrutinee's label (no per-field refinement in this slice).
+
+        A ``public`` scrutinee leaves the binds untouched, so an
+        explicit ``@secret`` annotation on the bound name (rare in a
+        pattern, but possible via the surrounding ``let`` type) is not
+        clobbered."""
+        if L.normalize(scrutinee_label) != L.SECRET:
+            return
+        for name in _pattern_bound_names(pat):
+            sym = self.scope.lookup_local(name)
+            if sym is not None:
+                sym.label = L.join(sym.label, L.SECRET)
 
     def _compute_label(self, e: A.Expr) -> str:
         # Literals are public.
@@ -122,15 +160,21 @@ class _IfcMixin:
             # (Per-field labels are a v2 refinement.)
             return self._label_of(e.receiver)
 
-        # Calls / method-calls get their label from the callee's
-        # declared return label + the join of argument labels, handled
-        # where the call is type-checked (so the source-cap labelling
-        # and declassify can hook in). Until those slices land, a call
-        # result is the join of its argument labels (a pure function of
-        # tainted inputs is tainted) -- a safe default.
+        # Calls / method-calls. A method call on a built-in source
+        # cap (``env.get(...)``) yields secret data regardless of its
+        # arguments -- this is how secrets enter the program without
+        # any annotation (roadmap S2 source caps). Otherwise a call
+        # result is the join of its argument (and receiver) labels: a
+        # pure function of tainted inputs is tainted -- the safe
+        # default. (``declassify`` overrides this at its own call
+        # site in a later slice.)
         if isinstance(e, A.Call):
             return L.join_all(self._label_of(a) for a in e.args)
         if isinstance(e, A.MethodCall):
+            recv_ty = self.types.get(id(e.receiver))
+            cap_name = getattr(recv_ty, "name", None)
+            if cap_name is not None and (cap_name, e.method) in _SECRET_SOURCES:
+                return L.SECRET
             return L.join(
                 self._label_of(e.receiver),
                 L.join_all(self._label_of(a) for a in e.args),
@@ -197,3 +241,24 @@ def _is_ty_name(ty) -> bool:
     the receiver type is the resolved TyName or anything carrying a
     ``.name``."""
     return type(ty).__name__ == "TyName"
+
+
+def _pattern_bound_names(pat: A.Pattern):
+    """Yield every name a pattern binds, walking nested payloads,
+    tuple elements, and struct fields. Wildcard / literal patterns
+    bind nothing; or-patterns bind nothing in v0 (the parser forbids
+    bindings inside alternatives)."""
+    if isinstance(pat, A.IdentPat):
+        yield pat.name
+    elif isinstance(pat, A.VariantPat):
+        for sub in pat.payloads:
+            yield from _pattern_bound_names(sub)
+    elif isinstance(pat, A.TuplePat):
+        for sub in pat.elements:
+            yield from _pattern_bound_names(sub)
+    elif isinstance(pat, A.StructPat):
+        for _field, sub in pat.fields:
+            if sub is not None:
+                yield from _pattern_bound_names(sub)
+            else:
+                yield _field

@@ -256,5 +256,76 @@ class TestSinkEnforcement(unittest.TestCase):
         self.assertIn("Net.post", r.warnings[0].message)
 
 
+class TestSecretSources(unittest.TestCase):
+    """Roadmap S2 source caps: a read from a built-in secret source
+    (``env.get``) yields ``@secret`` data with no annotation, and that
+    label flows through a ``match``/``let`` destructure to the bound
+    names -- so the read-secret-then-leak headline case is caught."""
+
+    def _analyze(self, src: str):
+        from capa import analyze
+        m = _parse(src)
+        return analyze(m, source=src)
+
+    def test_env_get_result_is_secret(self):
+        # The Option<String> from env.get is labelled secret directly.
+        from capa.analyzer import Analyzer
+        src = (
+            "fun f(env: Env, _s: Stdio)\n"
+            "    let opt = env.get(\"API_KEY\")\n"
+            "    _s.println(\"x\")\n"
+        )
+        m = _parse(src)
+        az = Analyzer(source=src)
+        az.analyze(m)
+        let_stmt = m.items[0].body.stmts[0]
+        self.assertEqual(az._expr_labels.get(id(let_stmt.value)), "secret")
+
+    def test_match_payload_inherits_secret(self):
+        # The headline case: env.get -> match Some(key) -> sink(key).
+        r = self._analyze(
+            "fun leak(env: Env, stdio: Stdio)\n"
+            "    match env.get(\"API_KEY\")\n"
+            "        Some(key) -> stdio.println(key)\n"
+            "        None -> stdio.println(\"no key\")\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(len(r.warnings), 1)
+        self.assertIn("Stdio.println", r.warnings[0].message)
+
+    def test_match_payload_not_leaked_is_clean(self):
+        # Reading the secret and matching on it without routing the
+        # payload to a sink is fine.
+        r = self._analyze(
+            "fun safe(env: Env, stdio: Stdio)\n"
+            "    match env.get(\"API_KEY\")\n"
+            "        Some(_key) -> stdio.println(\"got one\")\n"
+            "        None -> stdio.println(\"none\")\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(len(r.warnings), 0)
+
+    def test_public_match_payload_stays_public(self):
+        # A match on a public scrutinee does not taint its binds.
+        r = self._analyze(
+            "fun f(stdio: Stdio)\n"
+            "    match (1, 2)\n"
+            "        (a, _b) -> stdio.println(\"x\")\n"
+        )
+        self.assertEqual(len(r.warnings), 0)
+
+    def test_strict_ifc_makes_source_leak_an_error(self):
+        r = self._analyze(
+            "@strict_ifc()\n"
+            "fun leak(env: Env, stdio: Stdio)\n"
+            "    match env.get(\"API_KEY\")\n"
+            "        Some(key) -> stdio.println(key)\n"
+            "        None -> stdio.println(\"no key\")\n"
+        )
+        self.assertFalse(r.ok)
+        self.assertEqual(len(r.errors), 1)
+        self.assertIn("information-flow", r.errors[0].message)
+
+
 if __name__ == "__main__":
     unittest.main()
