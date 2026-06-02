@@ -65,7 +65,7 @@ both.
 | **Annex I Part I (2)(b)** | "be made available on the market with a secure-by-default configuration" | Direct: Capa programs cannot exercise authority they did not declare. The default for any function is *zero capabilities*; widening is explicit. Secure-by-default is the only configuration available. |
 | **Annex I Part I (2)(c)** | "ensure that vulnerabilities can be addressed through security updates" | Indirect: the CycloneDX SBOM includes versions and a stable component identity scheme (`pkg:` PURLs), so update tracking ties back to the same identity used at audit time. |
 | **Annex I Part I (2)(d)** | "ensure protection from unauthorised access ... appropriate authentication, identity management or access management systems" | Direct, at the source level: capabilities are unforgeable handles; access management is the type system. Cross-process authentication is below Capa's layer. |
-| **Annex I Part I (2)(e)** | "protect the confidentiality of stored, transmitted or otherwise processed data ... encrypting relevant data at rest or in transit" | Out of scope for the language layer. Capa does not provide crypto primitives; it provides capability discipline over whatever crypto the user calls. |
+| **Annex I Part I (2)(e)** | "protect the confidentiality of stored, transmitted or otherwise processed data ... encrypting relevant data at rest or in transit" | Partial, at the data-flow level: Capa does not provide crypto primitives (the *encryption* half stays the user's), but information-flow control directly governs *where* confidential data may go. Mark data `@secret` and the compiler proves it cannot reach a public sink (a log, a network call, a file write) without passing through an audited `declassify`, and records every such disclosure in the SBOM as `declassification_sites`. The confidentiality boundary is machine-checked at compile time, and the disclosures are enumerated for the auditor. See the IFC subsection below. |
 | **Annex I Part I (2)(f)** | "protect the integrity of stored, transmitted or otherwise processed data ... programs, configuration against any manipulation" | Direct: every function's declared capabilities are derivable from its signature alone (Manifest Completeness Theorem, see [`docs/semantics.md`](semantics.md)). Manipulation of a dependency that adds `Fs`/`Net`/`Env` access is statically visible in the SBOM diff. |
 | **Annex I Part I (2)(g)** | "process only data ... that are necessary ... ('minimisation of data')" | Direct: the principle of least authority is built into the language. A function gets exactly the capabilities it declares; nothing more is reachable. |
 | **Annex I Part I (2)(h)** | "protect the availability of essential and basic functions ... including the resilience against and mitigation of denial-of-service attacks" | Out of scope. Capa does not address DoS. |
@@ -135,6 +135,47 @@ including the SBOM diff, is in
 [`docs/empirical_micro.md`](empirical_micro.md). That is the
 smallest demonstration of the *information-gain* claim made
 in this section.
+
+---
+
+## The second contribution: machine-checked data-flow confidentiality
+
+The capability layer answers "what can this component *do*?". The
+information-flow layer answers a question the SBOM has never carried:
+"where can this component's *secret data* go?". Capabilities bound
+the effects; information-flow control bounds the disclosures.
+
+A value typed `@secret` (an API key, a card number, a credential)
+carries a security label the compiler propagates through every
+derived value. A `@secret` value that reaches a public sink
+(`Stdio.println`, `Net.post`, `Fs.write`, `Db.exec`, ...) is a
+compile-time information-flow violation. The single sanctioned way
+across is `declassify(value, reason: "...")`, and every use is
+recorded in the manifest:
+
+```
+"declassifications": [
+  { "reason": "PCI DSS 3.4: display only the last four PAN digits",
+    "value": "mask_pan(pan)", "pos": "13:17" }
+],
+```
+
+with a program-wide `declassification_sites` count in the summary.
+For Annex I Part I (2)(e) (confidentiality of processed data) and
+(2)(g) (data minimisation), this turns an organisational assertion
+("we are careful with cardholder data") into a machine-checkable one:
+the compiler refuses to build a program that leaks a secret to a sink,
+and the conformity pack enumerates every deliberate disclosure with
+its stated justification. An auditor does not have to trust a
+data-handling policy document; they read the disclosure list the
+compiler generated, by construction.
+
+The worked example is
+[`capa_paymentguard`](https://github.com/nelsonduarte/capa_paymentguard),
+a payment-security core (PCI DSS / PSD2) that ships a complete CRA
+conformity pack: the compiler proves a card number cannot reach a log
+line or a network call unless masked, and the pack lists the four
+disclosure points with their reasons.
 
 ---
 
