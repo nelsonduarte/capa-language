@@ -49,5 +49,12 @@ class Pattern(Node):
 
 @dataclass(kw_only=True)
 class TypeExpr(Node):
-    """Type expression (annotations, returns, generic parameters)."""
-    pass
+    """Type expression (annotations, returns, generic parameters).
+
+    ``label`` carries an optional information-flow security label
+    written before the type (``@secret String``, ``@public Int``) --
+    roadmap S2. ``None`` means unlabelled, which the analyzer treats
+    as ``@public`` (the lattice bottom). The label lives on the base
+    so every type form (named, function, tuple, unit) can be
+    labelled uniformly."""
+    label: "str | None" = None

@@ -21,6 +21,29 @@ from ..tokens import Pos, TokenKind as T
 
 class _TypesMixin:
     def _parse_type(self) -> A.TypeExpr:
+        # Optional security label before the type (roadmap S2):
+        # ``@secret String`` / ``@public Int``. Distinct from a
+        # function attribute ``@name(...)`` -- a label is ``@`` + a
+        # bare ``secret``/``public`` identifier NOT followed by ``(``.
+        # The label attaches to whatever TypeExpr follows.
+        label: "str | None" = None
+        if self._check(T.AT):
+            nxt = self._peek(1)
+            after = self._peek(2)
+            from .._labels import VALID_LABELS
+            if (
+                nxt.kind == T.IDENT
+                and nxt.text in VALID_LABELS
+                and after.kind != T.LPAREN
+            ):
+                self._advance()  # '@'
+                label = self._advance().text  # 'secret' / 'public'
+        ty = self._parse_type_unlabelled()
+        if label is not None:
+            ty.label = label
+        return ty
+
+    def _parse_type_unlabelled(self) -> A.TypeExpr:
         # Special case: () = UnitType
         if self._check(T.LPAREN):
             start = self._peek().start
