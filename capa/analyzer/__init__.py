@@ -155,6 +155,11 @@ class Symbol:
     # check that consumes it gates first on `pos != BUILTIN_POS`,
     # so the default does not cause false positives for built-ins.
     has_self: bool = False
+    # For methods: True when the receiver is declared ``consume self``
+    # (roadmap S1). A call to such a method discharges the linear
+    # obligation on the receiver -- e.g. ``h.close()`` where
+    # ``close(consume self)`` releases a ``linear type`` handle.
+    consumes_self: bool = False
 
 
 @dataclass
@@ -235,6 +240,7 @@ from ._dispatch import _DispatchMixin
 from ._expressions import _ExpressionsMixin
 from ._frozen import _FrozenTypesMixin
 from ._items import _ItemsMixin
+from ._linear import _LinearMixin
 from ._patterns import _PatternsMixin
 from ._statements import _StatementsMixin
 from ._typing import _TypingMixin
@@ -243,7 +249,7 @@ from ._typing import _TypingMixin
 class Analyzer(
     _TypingMixin, _DisciplineMixin, _DispatchMixin,
     _PatternsMixin, _DeclarationsMixin, _FrozenTypesMixin,
-    _StatementsMixin, _ExpressionsMixin, _ItemsMixin,
+    _LinearMixin, _StatementsMixin, _ExpressionsMixin, _ItemsMixin,
 ):
     """Performs the semantic analysis of a Module.
 
@@ -300,6 +306,22 @@ class Analyzer(
         # snapshot before each branch, conservative union after (any branch
         # possibly consuming -> considered consumed).
         self._consumed: set[str] = set()
+        # Roadmap S1 -- linear (must-consume) types. Names of structs
+        # declared ``linear type``; populated once per ``analyze`` from
+        # the module items. A value of a linear type must be consumed
+        # (passed to a ``consume`` param / ``consume self`` method)
+        # before it leaves scope, or the analyzer errors.
+        self._linear_types: set[str] = set()
+        # Live linear values in the current function: local name -> Pos
+        # (the bind site, for the error message). Reset per function. A
+        # name enters when a linear value is bound (``let h = open()``)
+        # and leaves when consumed. At end of scope / function the set
+        # must be empty -- the DUAL of ``_consumed`` (that one errors on
+        # use-after-consume; this errors on never-consumed). Branch
+        # merge is an INTERSECTION of survivors over non-diverging arms
+        # (a value still-live on every path stays live; one consumed on
+        # some-but-not-all paths is an error, surfaced at merge).
+        self._live_linear: dict[str, "Pos"] = {}
         # Stack of "names local to the lambda" for flow analysis in
         # closures. When inside a lambda, consuming a name that is NOT
         # in this stack means we are consuming a cap captured from the
@@ -344,6 +366,13 @@ class Analyzer(
         # can walk them, and before statement checking so
         # ``_check_assign`` sees a fully populated set.
         self._frozen_types = self._compute_frozen_types(module)
+        # Phase 1c: collect the names of ``linear type`` structs
+        # (roadmap S1). Used by statement/expression checking to track
+        # must-consume values.
+        self._linear_types = {
+            it.name for it in module.items
+            if isinstance(it, A.TypeStruct) and it.is_linear
+        }
         # Phase 2: visit bodies of functions, impls, etc.
         for item in module.items:
             self._check_item(item)

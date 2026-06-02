@@ -323,6 +323,9 @@ class _DeclarationsMixin:
                 ],
                 has_self=bool(method.params)
                     and method.params[0].name == "self",
+                consumes_self=bool(method.params)
+                    and method.params[0].name == "self"
+                    and method.params[0].consuming,
             )
             target.methods[method.name] = m_sym
 

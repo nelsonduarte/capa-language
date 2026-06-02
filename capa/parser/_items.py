@@ -80,6 +80,19 @@ class _ItemsMixin:
                     "(v1 supports them on 'fun' only)"
                 )
             return self._parse_type_decl(is_pub, doc=doc)
+        if self._check(T.KW_LINEAR):
+            # ``linear type Name { ... }`` -- a must-consume struct
+            # (roadmap S1). The qualifier sits before ``type`` (after
+            # ``pub`` if present), mirroring ``pub``.
+            if attributes:
+                raise self._error(
+                    "attributes are not valid on 'linear type' "
+                    "(v1 supports them on 'fun' only)"
+                )
+            self._advance()  # consume 'linear'
+            if not self._check(T.KW_TYPE):
+                raise self._error("expected 'type' after 'linear'")
+            return self._parse_type_decl(is_pub, doc=doc, is_linear=True)
         if self._check(T.KW_TRAIT):
             if attributes:
                 raise self._error(
@@ -266,6 +279,7 @@ class _ItemsMixin:
         is_pub: bool,
         *,
         doc: Optional[str] = None,
+        is_linear: bool = False,
     ) -> A.Item:
         start = self._peek().start
         self._expect(T.KW_TYPE, "expected 'type'")
@@ -285,9 +299,18 @@ class _ItemsMixin:
                 type_params=type_params,
                 fields=fields,
                 is_pub=is_pub,
+                is_linear=is_linear,
                 doc=doc,
             )
         if self._match(T.EQ):
+            # Sum type: ``linear`` is not (yet) meaningful on a sum
+            # type -- the must-consume obligation is defined for
+            # structs in S1. Reject rather than silently ignore.
+            if is_linear:
+                raise self._error(
+                    "'linear' is only valid on a struct type "
+                    "(`linear type Name { ... }`), not a sum type"
+                )
             # Sum type: type Name = INDENT variants DEDENT
             self._expect(T.NEWLINE, "expected newline after '=' in sum type")
             self._expect(T.INDENT, "expected indented variants for sum type")
@@ -539,12 +562,18 @@ class _ItemsMixin:
 
     def _parse_param(self) -> A.Param:
         ppos = self._peek().start
+        # Optional `consume`: marks the parameter as consuming
+        # (transfers ownership). Parsed before the ``self`` special
+        # case so ``consume self`` works -- a method that consumes its
+        # receiver, the way a linear type's ``close(consume self)``
+        # releases the handle (roadmap S1).
+        consuming = bool(self._match(T.KW_CONSUME))
         # `self` is a special case: no type.
         if self._match(T.KW_SELF):
-            return A.Param(pos=ppos, name="self", name_pos=ppos, type_expr=None)
-        # Optional `consume`: marks the parameter as consuming (transfers
-        # ownership of the passed capability).
-        consuming = bool(self._match(T.KW_CONSUME))
+            return A.Param(
+                pos=ppos, name="self", name_pos=ppos, type_expr=None,
+                consuming=consuming,
+            )
         name_tok = self._expect(T.IDENT, "expected parameter name")
         name = name_tok.text
         self._expect(T.COLON, f"expected ':' after parameter name {name!r}")

@@ -160,6 +160,17 @@ class _ItemsMixin:
         # Fresh ``_consumed`` set for the function body.
         prev_consumed = self._consumed
         self._consumed = set()
+        # Fresh ``_live_linear`` map for the function body (roadmap
+        # S1), saved/restored so a nested function's obligations do
+        # not bleed into the enclosing one. Function parameters do NOT
+        # seed the live set: a ``consume`` linear param is the
+        # terminal owner (the value legitimately ends its life here,
+        # e.g. ``close(consume h)`` destroys the handle), and a
+        # non-consuming linear param is borrowed (the caller keeps the
+        # obligation). Obligations arise only from values *produced*
+        # inside the body (``let h = open()``).
+        prev_live_linear = self._live_linear
+        self._live_linear = {}
         # Fresh TyVar substitution universe for the function.
         prev_subs = self._ty_subs
         self._ty_subs = {}
@@ -191,6 +202,12 @@ class _ItemsMixin:
                 f"fall through and return None at runtime",
                 err_pos,
             )
+
+        # Roadmap S1: any linear obligation still live at function
+        # exit was never consumed -- a leak. Report each, then
+        # restore the enclosing function's live set.
+        self._linear_check_dropped(set(self._live_linear))
+        self._live_linear = prev_live_linear
 
         self._consumed = prev_consumed
         self._ty_subs = prev_subs

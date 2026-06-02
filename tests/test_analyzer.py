@@ -5410,5 +5410,124 @@ class TestMapKeyTypeRestrictions(unittest.TestCase):
         self.assertTrue(r.ok, r.errors)
 
 
+class TestLinearTypes(unittest.TestCase):
+    """Roadmap S1: ``linear type`` must-consume discipline. A linear
+    value must be consumed (passed to a ``consume`` param / ``consume
+    self`` method, or returned) before it leaves scope."""
+
+    _BASE = (
+        "linear type Handle { id: Int }\n"
+        "fun open() -> Handle\n"
+        "    return Handle { id: 1 }\n"
+        "fun close(consume h: Handle) -> Unit\n"
+        "    return ()\n"
+    )
+
+    def _errs(self, body: str) -> list[str]:
+        # Drop the unused-cap-param noise so tests assert on the
+        # linear messages only.
+        return [
+            e for e in errors_of(self._BASE + body)
+            if "never used" not in e
+        ]
+
+    def test_consumed_ok(self):
+        self.assertEqual(
+            self._errs(
+                "fun main(_s: Stdio)\n"
+                "    let h = open()\n"
+                "    close(h)\n"
+            ),
+            [],
+        )
+
+    def test_dropped_errors(self):
+        errs = self._errs(
+            "fun main(_s: Stdio)\n"
+            "    let h = open()\n"
+            "    _s.println(\"leak\")\n"
+        )
+        self.assertTrue(
+            any("dropped without being consumed" in e for e in errs),
+            errs,
+        )
+
+    def test_returned_transfers_obligation(self):
+        self.assertEqual(
+            self._errs(
+                "fun make() -> Handle\n"
+                "    let h = open()\n"
+                "    return h\n"
+                "fun main(_s: Stdio)\n"
+                "    close(make())\n"
+            ),
+            [],
+        )
+
+    def test_consume_self_method_discharges(self):
+        errs = [
+            e for e in errors_of(
+                "linear type Handle { id: Int }\n"
+                "impl Handle\n"
+                "    fun shut(consume self) -> Unit\n"
+                "        return ()\n"
+                "fun open() -> Handle\n"
+                "    return Handle { id: 1 }\n"
+                "fun main(_s: Stdio)\n"
+                "    let h = open()\n"
+                "    h.shut()\n"
+            )
+            if "never used" not in e
+        ]
+        self.assertEqual(errs, [])
+
+    def test_both_branches_consume_ok(self):
+        self.assertEqual(
+            self._errs(
+                "fun main(c: Bool)\n"
+                "    let h = open()\n"
+                "    if c\n"
+                "        close(h)\n"
+                "    else\n"
+                "        close(h)\n"
+            ),
+            [],
+        )
+
+    def test_consume_one_branch_only_errors(self):
+        errs = self._errs(
+            "fun main(c: Bool, _s: Stdio)\n"
+            "    let h = open()\n"
+            "    if c\n"
+            "        close(h)\n"
+            "    _s.println(\"x\")\n"
+        )
+        self.assertTrue(
+            any("dropped without being consumed" in e for e in errs),
+            errs,
+        )
+
+    def test_consume_param_terminal_not_re_obligated(self):
+        # ``close(consume h)`` is the terminal owner; its own body
+        # need not re-consume h. (Regression: an early version seeded
+        # consume-params into the live set and flagged close itself.)
+        self.assertEqual(self._errs(""), [])
+
+    def test_non_linear_struct_unaffected(self):
+        self.assertEqual(
+            [
+                e for e in errors_of(
+                    "type Plain { x: Int }\n"
+                    "fun mk() -> Plain\n"
+                    "    return Plain { x: 1 }\n"
+                    "fun main(_s: Stdio)\n"
+                    "    let p = mk()\n"
+                )
+                if "never used" not in e
+            ],
+            [],
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

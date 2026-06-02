@@ -148,6 +148,7 @@ class TestTopLevelShape(unittest.TestCase):
             "declared_capabilities",
             "transitively_reachable_capabilities",
             "provably_excluded_capabilities",
+            "linear_obligations",
             "has_unsafe", "attributes", "calls",
             # Source-level identifiers + import-module disclosure for
             # SBOM emission. ``name`` and ``container`` stay as the
@@ -158,6 +159,50 @@ class TestTopLevelShape(unittest.TestCase):
             "source_name", "source_container", "source_module_index",
         }
         self.assertEqual(set(fn.keys()), required)
+
+
+class TestLinearObligations(unittest.TestCase):
+    """Roadmap S1: the manifest surfaces must-consume (linear-type)
+    obligations -- ``consumes`` lists linear params the function takes
+    ownership of, ``produces_linear`` flags a function that hands a
+    linear value back to its caller. Per-param ``is_linear`` marks the
+    slot."""
+
+    _SRC = (
+        "linear type Handle { id: Int }\n"
+        "fun open() -> Handle\n"
+        "    return Handle { id: 1 }\n"
+        "fun close(consume h: Handle) -> Unit\n"
+        "    return ()\n"
+        "fun main(_s: Stdio)\n"
+        "    let h = open()\n"
+        "    close(h)\n"
+    )
+
+    def _fn(self, name: str):
+        m = build_manifest(_analysed(self._SRC))
+        return next(f for f in m["functions"] if f["source_name"] == name)
+
+    def test_producer_flags_produces_linear(self):
+        op = self._fn("open")
+        self.assertTrue(op["linear_obligations"]["produces_linear"])
+        self.assertEqual(op["linear_obligations"]["consumes"], [])
+
+    def test_consumer_lists_consumed_param(self):
+        cl = self._fn("close")
+        self.assertEqual(cl["linear_obligations"]["consumes"], ["h"])
+        self.assertFalse(cl["linear_obligations"]["produces_linear"])
+
+    def test_consumed_param_is_flagged_linear(self):
+        cl = self._fn("close")
+        hp = next(p for p in cl["params"] if p["name"] == "h")
+        self.assertTrue(hp["is_linear"])
+        self.assertTrue(hp["consuming"])
+
+    def test_plain_function_has_empty_obligations(self):
+        mn = self._fn("main")
+        self.assertEqual(mn["linear_obligations"]["consumes"], [])
+        self.assertFalse(mn["linear_obligations"]["produces_linear"])
 
 
 class TestSourceNameDemangle(unittest.TestCase):

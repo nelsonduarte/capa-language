@@ -91,7 +91,14 @@ CLIs curtos, P1.2(b).
 
 ---
 
-## S1 — Linear handles / must-call types
+## S1 — Linear handles / must-call types — FEITO (2026-06-01)
+
+**Estado:** implementado. `linear type Foo { ... }` + `consume self`,
+mixin `capa/analyzer/_linear.py` (`_live_linear` dual do `_consumed`,
+fork/merge por união de sobreviventes), SBOM `linear_obligations` +
+`is_linear`, 12 testes. Limites de MVP deferidos: drop em ramo
+divergente, aliasing via `let g = h`, destructure de valor linear.
+Corre nos dois backends (linearidade é compile-time).
 
 **Objetivo:** tipos de utilizador que TÊM de ser consumidos (ficheiro
 fechado, transação resolvida). Fecha resource leaks; fundação para S3.

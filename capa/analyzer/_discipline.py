@@ -52,6 +52,14 @@ class _DisciplineMixin:
         for arg, consuming in zip(args, consuming_flags):
             if not consuming:
                 continue
+            # Roadmap S1: a ``consume`` param also discharges a linear
+            # obligation when the arg is a bare identifier holding a
+            # live linear value. (Linear values are user structs, not
+            # capabilities, so they don't match ``_is_capability_ident``
+            # below; handle them first and continue.)
+            if isinstance(arg, A.Ident) and arg.name in self._live_linear:
+                self._linear_discharge(arg.name)
+                continue
             path = self._is_capability_ident(arg)
             if path is None:
                 continue

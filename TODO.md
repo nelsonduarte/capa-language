@@ -948,6 +948,56 @@ Listed so the design space is explicit.
 
 ### Wasm-specific gaps that are not P0
 
+- [x] **Roadmap S1 - linear (must-consume) types** (landed
+  2026-06-01). Second roadmap phase
+  (docs/design/roadmap-technical-detail.md). A
+  ``linear type Foo { ... }`` value must be consumed before
+  it leaves scope -- passed to a ``consume`` param /
+  ``consume self`` method, or returned (transfers the
+  obligation to the caller). Closes the resource-leak bug
+  class (file never closed, transaction never resolved) at
+  compile time. The dual of the existing capability
+  ``consume`` discipline (that errors on use-after-consume;
+  this errors on never-consumed).
+  - **Syntax/AST (S1.1)**: new ``KW_LINEAR`` token;
+    ``linear type Name { ... }`` (struct only -- ``linear``
+    on a sum type is rejected); ``TypeStruct.is_linear``.
+    ``consume self`` now parses (``consume`` accepted before
+    the ``self`` special-case) so a method can release its
+    receiver.
+  - **Analyzer (S1.2/S1.3)**: new ``capa/analyzer/_linear.py``
+    mixin. ``_linear_types`` collected per-analyze;
+    ``_live_linear`` (name -> bind Pos) tracks outstanding
+    obligations per function, save/restored like
+    ``_consumed``. A ``let h = open()`` of a linear value
+    opens an obligation; a ``consume`` arg / ``consume self``
+    call / ``return h`` discharges it; anything still live at
+    function exit is a leak error. Branch fork/merge mirrors
+    the ``_consumed`` machinery but merges by UNION of
+    surviving obligations (a value must be consumed on every
+    path, so consume-on-some-branches-only is caught).
+    Function ``consume`` params are the terminal owner and do
+    NOT re-obligate the body.
+  - **SBOM (S1.4)**: per-param ``is_linear``; per-function
+    ``linear_obligations: {consumes: [...], produces_linear:
+    bool}`` -- "this function takes ownership of handle X and
+    must release it" / "produces a handle the caller must
+    release". The regulator-facing must-consume surface.
+  - **Known MVP limits (deferred, documented)**: a linear
+    value dropped on a *diverging* branch (e.g. consumed in
+    ``then``, ``return`` in ``else`` without consuming) is
+    not caught -- diverging branches are excluded from the
+    merge and there's no per-``return`` drop check yet;
+    aliasing a linear value via ``let g = h`` is treated as
+    the obligation staying on the original name (no
+    move-tracking through plain idents); destructuring a
+    linear value isn't tracked. None are soundness holes in
+    the common path; all are extensions for a follow-up.
+  - Runs end-to-end on both backends (linearity is
+    compile-time only; the lowerer treats a linear struct as
+    a plain struct). 12 new tests (analyzer + manifest).
+    Suite 2133 -> 2145.
+
 - [x] **Roadmap P1 - Wasm AOT (`capa build --release` +
   `capa run-aot`)** (landed 2026-06-01). First phase of the
   post-1.0 security+performance roadmap

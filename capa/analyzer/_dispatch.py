@@ -489,4 +489,11 @@ class _DispatchMixin:
         if method_sym.consuming_params:
             self._mark_consumed_args(reordered_args, method_sym.consuming_params)
 
+        # Roadmap S1: a ``consume self`` method discharges the linear
+        # obligation on its receiver (``h.close()`` releases ``h``).
+        if getattr(method_sym, "consumes_self", False) and isinstance(
+            e.receiver, A.Ident
+        ):
+            self._linear_discharge(e.receiver.name)
+
         return ret_ty

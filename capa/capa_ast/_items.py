@@ -76,11 +76,19 @@ class Field(Node):
 
 @dataclass(kw_only=True)
 class TypeStruct(Item):
-    """type Name { field: T, ... }"""
+    """type Name { field: T, ... }
+
+    ``is_linear`` marks a must-consume type (roadmap S1): a value of a
+    linear struct must be consumed -- passed to a ``consume`` parameter
+    or a ``consume self`` method -- before it goes out of scope. The
+    analyzer refuses to let a linear value be silently dropped, closing
+    the resource-leak bug class (an open file never closed, a
+    transaction never committed/aborted)."""
     name: str
     type_params: list[str] = field(default_factory=list)
     fields: list[Field]
     is_pub: bool = False
+    is_linear: bool = False
     doc: Optional[str] = None
     name_pos: Optional[Pos] = None
 

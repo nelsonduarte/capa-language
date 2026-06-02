@@ -130,6 +130,13 @@ def build_manifest(
         module, user_cap_names=user_cap_names_mangled,
     )
 
+    # Roadmap S1: names of ``linear type`` structs, so per-function
+    # records can flag must-consume params + obligations.
+    linear_types: set[str] = {
+        item.name for item in module.items
+        if isinstance(item, A.TypeStruct) and getattr(item, "is_linear", False)
+    }
+
     # Build per-function records. Walks both top-level funs and
     # methods inside impl blocks (which are nested FunDecl nodes).
     # For impl methods, when the impl is *of* a capability trait
@@ -146,6 +153,7 @@ def build_manifest(
                 item, cap_names, filename,
                 container=None, implicit_cap=None,
                 reachable=reachable, unprovable=unprovable,
+                linear_types=linear_types,
             ))
         elif isinstance(item, A.ImplBlock):
             implicit = (
@@ -159,6 +167,7 @@ def build_manifest(
                     container=item.type_name,
                     implicit_cap=implicit,
                     reachable=reachable, unprovable=unprovable,
+                    linear_types=linear_types,
                 ))
 
     summary = {
@@ -193,11 +202,14 @@ def _fun_record(
     implicit_cap: Optional[str] = None,
     reachable: Optional[dict[str, set[str]]] = None,
     unprovable: Optional[set[str]] = None,
+    linear_types: Optional[set[str]] = None,
 ) -> dict[str, Any]:
     if reachable is None:
         reachable = {}
     if unprovable is None:
         unprovable = set()
+    if linear_types is None:
+        linear_types = set()
     param_records: list[dict[str, Any]] = []
     for p in fn.params:
         if p.name == "self":
@@ -209,11 +221,16 @@ def _fun_record(
             # non-pub imported types (audit slice 20, 2026-05-29).
             ty_text = _demangle_type_text(_ty_text(p.type_expr)) if p.type_expr else "?"
         is_cap = _root_type_name(p.type_expr) in cap_names if p.type_expr else False
+        # Roadmap S1: flag a must-consume (linear-typed) parameter so
+        # the SBOM surfaces the obligation the caller transfers in.
+        root_ty = _root_type_name(p.type_expr) if p.type_expr else None
+        is_linear = root_ty in linear_types if root_ty else False
         param_records.append({
             "name": p.name,
             "type": ty_text,
             "consuming": p.consuming,
             "is_capability": is_cap,
+            "is_linear": is_linear,
         })
 
     declared_caps = [
@@ -329,6 +346,22 @@ def _fun_record(
     source_name, module_index = _demangle(fn.name)
     source_container, _ = _demangle(container) if container is not None else (None, None)
 
+    # Roadmap S1: the must-consume surface. ``linear_obligations``
+    # lists the linear-typed parameters this function takes by
+    # ``consume`` (it receives ownership and must consume/return them)
+    # and whether the return type is itself linear (the function hands
+    # an obligation back to its caller). Regulator-facing: "this
+    # function takes ownership of resource handle X and must release
+    # it" / "this function produces a handle the caller must release".
+    linear_param_obligations = [
+        p["name"] for p in param_records
+        if p.get("is_linear") and p["consuming"]
+    ]
+    return_is_linear = (
+        _root_type_name(fn.return_type) in linear_types
+        if fn.return_type else False
+    )
+
     return {
         "name": fn.name,
         "source_name": source_name,
@@ -343,6 +376,10 @@ def _fun_record(
         "declared_capabilities": declared_caps,
         "transitively_reachable_capabilities": transitively_reachable,
         "provably_excluded_capabilities": provably_excluded_caps,
+        "linear_obligations": {
+            "consumes": linear_param_obligations,
+            "produces_linear": return_is_linear,
+        },
         "has_unsafe": has_unsafe,
         "attributes": attrs,
         "calls": calls,

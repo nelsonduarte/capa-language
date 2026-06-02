@@ -87,6 +87,15 @@ class _StatementsMixin:
         if not isinstance(s.value, (A.MethodCall, A.Call)):
             self._check_no_capability(actual, s.pos, "a 'let' binding")
         self._bind_pattern(s.pattern, actual, mutable=False)
+        # Roadmap S1: a ``let h = open()`` of a linear-typed value
+        # opens a must-consume obligation under the bound name. Only
+        # a simple identifier pattern carries it (a destructure of a
+        # linear value is not in S1's scope). If the RHS is itself a
+        # bare identifier we treated as a move below in
+        # ``_check_ident``; here the common ``let h = <call>`` case is
+        # the obligation source.
+        if isinstance(s.pattern, A.IdentPat):
+            self._linear_bind(s.pattern.name, actual, s.pos)
 
     def _check_var(self, s: A.VarStmt) -> None:
         from . import Symbol, SymbolKind
@@ -216,14 +225,30 @@ class _StatementsMixin:
         # uses (see _check_match_expr).
         before = set(self._consumed)
         branch_results: list[set[str]] = []
+        # Roadmap S1: track each non-diverging branch's surviving
+        # linear obligations too. A value must be consumed on EVERY
+        # path, so the post-if live set is the UNION of survivors --
+        # a value still live after any reachable branch is still an
+        # outstanding obligation (and one consumed on some-but-not-all
+        # paths therefore surfaces here, since it survives on the
+        # paths that didn't consume it). Diverging branches (return /
+        # break / continue) are excluded: that path doesn't reach the
+        # merge, and the consume obligation it carried is its own
+        # (a diverging branch that drops a linear value is caught by
+        # the function/loop exit checks on that path, not here).
+        before_live = dict(self._live_linear)
+        branch_live: list[dict] = []
 
         self._consumed = set(before)
+        self._live_linear = dict(before_live)
         self._check_block(s.then_block)
         if not _block_diverges(s.then_block):
             branch_results.append(self._consumed)
+            branch_live.append(dict(self._live_linear))
 
         for cond, blk in s.elif_arms:
             self._consumed = set(before)
+            self._live_linear = dict(before_live)
             cty = self._check_expr(cond)
             if not compatible(TyBool, cty):
                 self._err(
@@ -233,28 +258,37 @@ class _StatementsMixin:
             self._check_block(blk)
             if not _block_diverges(blk):
                 branch_results.append(self._consumed)
+                branch_live.append(dict(self._live_linear))
 
         if s.else_block is not None:
             self._consumed = set(before)
+            self._live_linear = dict(before_live)
             self._check_block(s.else_block)
             if not _block_diverges(s.else_block):
                 branch_results.append(self._consumed)
+                branch_live.append(dict(self._live_linear))
         else:
             # No else: the all-conditions-false path falls
             # through and consumes nothing additional.
             branch_results.append(before)
+            branch_live.append(dict(before_live))
 
         if branch_results:
             merged: set[str] = set()
             for s_set in branch_results:
                 merged |= s_set
             self._consumed = merged
+            # Union of surviving obligations across reachable branches.
+            merged_live: dict = {}
+            for live in branch_live:
+                merged_live.update(live)
+            self._live_linear = merged_live
         else:
             # Every branch diverges; the code after this if is
-            # unreachable. Keep ``_consumed`` at the pre-if state
-            # so any further analysis (which will not actually
-            # execute) does not see spurious consumption.
+            # unreachable. Keep state at the pre-if snapshot so any
+            # further (unreachable) analysis sees no spurious change.
             self._consumed = before
+            self._live_linear = before_live
 
     def _check_while(self, s: A.WhileStmt) -> None:
         cty = self._check_expr(s.cond)
@@ -337,3 +371,8 @@ class _StatementsMixin:
                 f"return: expected {ty_str(expected)}, got {ty_str(actual)}",
                 s.pos,
             )
+        # Roadmap S1: ``return h`` transfers the linear obligation to
+        # the caller -- discharge it here so it isn't reported as a
+        # leak at function exit.
+        if isinstance(s.value, A.Ident) and s.value.name in self._live_linear:
+            self._linear_discharge(s.value.name)
