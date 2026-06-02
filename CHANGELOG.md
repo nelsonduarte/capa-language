@@ -9,6 +9,8 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+## [1.0.0-rc.6], 2026-06-02
+
 ### Information-flow control: @secret / @public labels + declassify
 
 Capabilities control which effects a function may exercise; this

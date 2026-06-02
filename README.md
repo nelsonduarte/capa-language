@@ -254,7 +254,7 @@ LICENSE  STABILITY.md  CONTRIBUTING.md  SECURITY.md  README.md
 
 ## Status
 
-Capa currently ships as **`1.0.0-rc.5`**, with information-flow
+Capa currently ships as **`1.0.0-rc.6`**, with information-flow
 control and the now fully functional Wasm backend on the `main`
 branch ahead of the next release tag (see
 [`CHANGELOG.md`](CHANGELOG.md) Unreleased section). The stability

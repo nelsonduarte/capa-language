@@ -1352,11 +1352,15 @@ Listed so the design space is explicit.
     `Foo<>` rejected), assignment-target validation, token
     positions.
 
-- [~] **"Fully functional Wasm" slice 25 - runtime cap-bridge
+- [x] **"Fully functional Wasm" slice 25 - runtime cap-bridge
   audit + handle-table architecture** (foundation closed
-  2026-05-30; rollout slices 25.2 - 25.8 pending). Tenth
-  audit pass; found a **systemic P0** plus several lower-
-  severity findings.
+  2026-05-30; rollout slices 25.1 - 25.9 all closed by
+  2026-05-30). Tenth audit pass; found a **systemic P0** plus
+  several lower-severity findings, all since fixed. The
+  "fully functional Wasm" arc is complete: every capability,
+  the full language surface, and sound cross-function
+  attenuation run on both Wasm hosts with output byte-identical
+  to Python (verified 2026-06-02).
   - **The systemic P0 (F1).** The Wasm backend's attenuation
     enforcement is **intra-function only**. The emitter
     inlines `restrict_to(...)` checks (`$str_contains`,
