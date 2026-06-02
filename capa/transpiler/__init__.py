@@ -81,6 +81,7 @@ from capa.runtime import (
     CapaList, CapaRange, CapaSet, _NoneType,
     parse_int, parse_float,
     to_float, to_int,
+    declassify,
     py_import, py_invoke,
     JNull, JBool, JNum, JStr, JArr, JObj, JsonValue,
     parse_json, to_json,

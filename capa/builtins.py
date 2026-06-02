@@ -268,6 +268,12 @@ FREE_FUNCTIONS: dict[str, tuple[TyFun, list[str]]] = {
     "py_invoke":   (fun(TyName("Unsafe"), TyUnknown, lst(TyUnknown), TyUnknown),   []),
     "parse_json":  (fun(TyString, res(_json_ty, TyString)),                        []),
     "to_json":     (fun(_json_ty, TyString),                                       []),
+    # Roadmap S2.5: the single auditable @secret -> @public bridge.
+    # ``declassify(value, reason: "...")`` returns ``value`` with a
+    # @public label. The analyzer special-cases its call shape (the
+    # ``reason`` must be a named string literal) and the SBOM records
+    # every call site; see ``_IfcMixin._check_declassify``.
+    "declassify":  (fun(T, TyString, T),                                           ["T"]),
 }
 
 

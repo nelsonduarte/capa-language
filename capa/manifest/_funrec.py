@@ -18,7 +18,7 @@ from typing import Any, Optional
 from .. import capa_ast as A
 from ..typesys import CAPABILITY_NAMES
 
-from ._calls import _collect_calls
+from ._calls import _collect_calls, _collect_declassifications
 from ._flow import _build_attenuation_map
 from ._reachability import caps_reachable_via_sig, compute_reachability
 from ._strings import _contains_fun_type, _root_type_name, _ty_text
@@ -181,6 +181,11 @@ def build_manifest(
         "functions_crossing_unsafe": sum(
             1 for f in functions if f["has_unsafe"]
         ),
+        # Roadmap S2.5: program-wide count of auditable secret->public
+        # declassification sites.
+        "declassification_sites": sum(
+            len(f["declassifications"]) for f in functions
+        ),
     }
 
     return {
@@ -334,6 +339,13 @@ def _fun_record(
     calls: list[dict[str, Any]] = []
     _collect_calls(fn.body, calls, attenuation_map=attenuation_map)
 
+    # Roadmap S2.5: the auditable @secret -> @public bridges in this
+    # function. Each entry is a deliberate disclosure with a stated
+    # reason -- the regulator-facing record of where the program lets
+    # secret data cross to a public sink.
+    declassifications: list[dict[str, Any]] = []
+    _collect_declassifications(fn.body, declassifications)
+
     # Surface the source-level identifier (the loader's
     # ``_capa_m{N}__<source>`` mangle is for collision-avoidance
     # at analysis / transpile time, not for regulator-facing
@@ -383,4 +395,5 @@ def _fun_record(
         "has_unsafe": has_unsafe,
         "attributes": attrs,
         "calls": calls,
+        "declassifications": declassifications,
     }

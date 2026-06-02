@@ -64,6 +64,7 @@ class TestEmptyModule(unittest.TestCase):
             "functions_with_capabilities": 0,
             "functions_with_attributes": 0,
             "functions_crossing_unsafe": 0,
+            "declassification_sites": 0,
         })
 
     def test_empty_module_still_carries_schema_version(self):
@@ -127,6 +128,7 @@ class TestTopLevelShape(unittest.TestCase):
         "functions_with_capabilities",
         "functions_with_attributes",
         "functions_crossing_unsafe",
+        "declassification_sites",
     }
 
     def test_required_top_level_keys_present(self):
@@ -150,6 +152,8 @@ class TestTopLevelShape(unittest.TestCase):
             "provably_excluded_capabilities",
             "linear_obligations",
             "has_unsafe", "attributes", "calls",
+            # Roadmap S2.5: the auditable @secret -> @public bridges.
+            "declassifications",
             # Source-level identifiers + import-module disclosure for
             # SBOM emission. ``name`` and ``container`` stay as the
             # loader-time (possibly mangled) identifiers so internal

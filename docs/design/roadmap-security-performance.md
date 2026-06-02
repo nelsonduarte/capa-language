@@ -88,6 +88,16 @@ de fluxo. Inferência é v2.
 Faseamento de roll-out (lição da slice 27): warn-then-enforce. Primeiro
 o analyzer *avisa* sobre fluxos não-declassificados; depois fail-closed.
 
+**Estado de implementação (2026-06):** entregue a fundação explícita —
+lattice de dois pontos (`@secret`/`@public`), propagação por join,
+enforcement secret→sink (`Stdio.println`, `Net.post`, `Fs.write`, ...)
+em warn-then-enforce (`@strict_ifc` torna erro), source caps
+secret-by-default (`env.get`) com fluxo do label por pattern-destructure,
+e `declassify(value, reason: "...")` como a única ponte auditável, com
+cada site registado no SBOM (`declassifications` por função +
+`declassification_sites` no sumário). Pendente: fluxo implícito
+(pc-label em branches com condição secret) e inferência (v2).
+
 ### S3 — Typestate / session types
 **ROI: médio-alto. Esforço: ~5-6 slices. Dependências: S1 (linearidade).**
 

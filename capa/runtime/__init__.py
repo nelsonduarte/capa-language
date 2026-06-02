@@ -56,6 +56,7 @@ from ._convert import (
     to_float,
     to_int,
 )
+from ._ifc import declassify
 from ._json import (
     JArr,
     JBool,
@@ -114,6 +115,7 @@ __all__ = [
     "py_invoke",
     "to_float",
     "to_int",
+    "declassify",
     "_propagate_err",
     "_capa_iadd",
     "_capa_isub",

@@ -327,5 +327,98 @@ class TestSecretSources(unittest.TestCase):
         self.assertIn("information-flow", r.errors[0].message)
 
 
+class TestDeclassify(unittest.TestCase):
+    """Roadmap S2.5: ``declassify(value, reason: "...")`` is the single
+    auditable @secret -> @public bridge. It clears the sink warning,
+    requires a named string-literal reason, warns on a no-op, and is
+    recorded in the SBOM."""
+
+    def _analyze(self, src: str):
+        from capa import analyze
+        m = _parse(src)
+        return analyze(m, source=src)
+
+    def test_declassify_clears_the_leak(self):
+        r = self._analyze(
+            "fun f(env: Env, stdio: Stdio)\n"
+            "    match env.get(\"K\")\n"
+            "        Some(key) -> "
+            "stdio.println(declassify(key, reason: \"audit ok\"))\n"
+            "        None -> stdio.println(\"none\")\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(len(r.warnings), 0)
+
+    def test_reason_must_be_named(self):
+        r = self._analyze(
+            "fun f(token: @secret String, stdio: Stdio)\n"
+            "    stdio.println(declassify(token, \"oops\"))\n"
+        )
+        self.assertFalse(r.ok)
+        self.assertTrue(
+            any("named" in e.message for e in r.errors),
+            [e.message for e in r.errors],
+        )
+
+    def test_reason_must_be_a_literal(self):
+        r = self._analyze(
+            "fun f(token: @secret String, stdio: Stdio, why: String)\n"
+            "    stdio.println(declassify(token, reason: why))\n"
+        )
+        self.assertFalse(r.ok)
+        self.assertTrue(
+            any("literal" in e.message for e in r.errors),
+            [e.message for e in r.errors],
+        )
+
+    def test_declassify_of_public_warns(self):
+        r = self._analyze(
+            "fun f(stdio: Stdio)\n"
+            "    stdio.println(declassify(\"plain\", reason: \"x\"))\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(len(r.warnings), 1)
+        self.assertIn("no-op", r.warnings[0].message)
+
+    def test_declassified_value_keeps_its_type(self):
+        # declassify is identity on the value: an Int stays an Int, so
+        # a downstream Int use type-checks.
+        r = self._analyze(
+            "fun f(token: @secret Int) -> Int\n"
+            "    let n = declassify(token, reason: \"ok\")\n"
+            "    return n + 1\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+
+    def test_user_function_named_declassify_is_not_special(self):
+        # A user-defined declassify is an ordinary function: the IFC
+        # special-case is guarded by the built-in binding position, so
+        # this must not fire the bespoke shape errors.
+        r = self._analyze(
+            "fun declassify(x: Int) -> Int\n"
+            "    return x\n"
+            "fun f() -> Int\n"
+            "    return declassify(5)\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+
+    def test_sbom_records_declassification_site(self):
+        from capa.manifest import build_manifest
+        src = (
+            "fun f(env: Env, stdio: Stdio)\n"
+            "    match env.get(\"K\")\n"
+            "        Some(key) -> "
+            "stdio.println(declassify(key, reason: \"only last 4\"))\n"
+            "        None -> stdio.println(\"none\")\n"
+        )
+        m = _parse(src)
+        manifest = build_manifest(m, filename="<test>")
+        self.assertEqual(manifest["summary"]["declassification_sites"], 1)
+        sites = manifest["functions"][0]["declassifications"]
+        self.assertEqual(len(sites), 1)
+        self.assertEqual(sites[0]["reason"], "only last 4")
+        self.assertEqual(sites[0]["value"], "key")
+
+
 if __name__ == "__main__":
     unittest.main()

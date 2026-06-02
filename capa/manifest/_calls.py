@@ -111,3 +111,53 @@ def _collect_calls(
                                     it, calls,
                                     attenuation_map=attenuation_map,
                                 )
+
+
+def _collect_declassifications(node, sites: list[dict[str, Any]]) -> None:
+    """Recursively collect ``declassify(value, reason: "...")`` call
+    sites from a function body (roadmap S2.5).
+
+    Each site records the ``reason`` string verbatim, the source-like
+    stringification of the declassified value, and the position. This
+    is the regulatory centerpiece of the IFC work: an SBOM consumer
+    reads off every point where the program deliberately lets a
+    ``@secret`` value cross to ``@public``, and the stated reason.
+
+    The analyzer has already enforced the call shape (a required
+    ``reason:`` string literal), so this walker trusts it; a
+    defensively malformed node is skipped rather than recorded."""
+    if node is None:
+        return
+
+    if (
+        isinstance(node, A.Call)
+        and isinstance(node.callee, A.Ident)
+        and node.callee.name == "declassify"
+        and len(node.args) == 2
+        and len(node.arg_names) == 2
+        and node.arg_names[1] == "reason"
+        and isinstance(node.args[1], A.StringLit)
+    ):
+        sites.append({
+            "reason": node.args[1].value,
+            "value": _stringify_expr(node.args[0]),
+            "pos": f"{node.pos.line}:{node.pos.col}",
+        })
+
+    # Always keep walking: a declassify can be nested anywhere, and a
+    # declassified value may itself contain a nested declassify.
+    if isinstance(node, A.Node):
+        for f in node.__dataclass_fields__.values():
+            if f.name == "pos":
+                continue
+            v = getattr(node, f.name)
+            if isinstance(v, A.Node):
+                _collect_declassifications(v, sites)
+            elif isinstance(v, list):
+                for item in v:
+                    if isinstance(item, A.Node):
+                        _collect_declassifications(item, sites)
+                    elif isinstance(item, tuple):
+                        for it in item:
+                            if isinstance(it, A.Node):
+                                _collect_declassifications(it, sites)

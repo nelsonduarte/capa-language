@@ -457,6 +457,16 @@ class _LowerExprMixin:
             else:
                 self._instrs.append(MakeSet(dst=dst))
             return Value(kind="local", name=dst, ty=result_ty)
+        # declassify(value, reason) is identity (roadmap S2.5): lower
+        # just the value and return it directly, so the result flows
+        # through in whatever representation the lowerer gave the value
+        # (String ptr+len, i64, struct handle, ...) with no Call
+        # instruction emitted. The @secret -> @public relabel and the
+        # SBOM audit record are compile-time only; the reason literal
+        # is dropped from the IR. (The Python backend keeps a real
+        # runtime ``declassify`` identity call via the transpiler.)
+        if callee_name == "declassify" and len(e.args) == 2:
+            return self._lower_expr(e.args[0])
         args = [self._lower_expr(arg) for arg in e.args]
         result_ty = "Unknown"
         if self.types:

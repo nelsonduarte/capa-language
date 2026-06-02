@@ -151,6 +151,14 @@ class _DispatchMixin:
                     )
                     return TyName(sym.name)
                 if sym.kind == SymbolKind.FUNCTION:
+                    # Roadmap S2.5: declassify has a bespoke call shape
+                    # (a required ``reason:`` string literal) that the
+                    # generic named-arg path cannot express, so it is
+                    # checked directly. The binding is recorded above,
+                    # so ``_is_declassify_call`` recognises it here and
+                    # in the label pass.
+                    if self._is_declassify_call(e):
+                        return self._check_declassify(e, arg_tys)
                     if isinstance(sym.ty, TyFun):
                         perm = self._resolve_named_args(
                             e, sym.param_names, repr(sym.name),

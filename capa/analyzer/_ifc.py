@@ -169,6 +169,11 @@ class _IfcMixin:
         # default. (``declassify`` overrides this at its own call
         # site in a later slice.)
         if isinstance(e, A.Call):
+            # declassify is the auditable secret->public bridge: its
+            # result is PUBLIC by construction, regardless of the
+            # value's label (roadmap S2.5).
+            if self._is_declassify_call(e):
+                return L.PUBLIC
             return L.join_all(self._label_of(a) for a in e.args)
         if isinstance(e, A.MethodCall):
             recv_ty = self.types.get(id(e.receiver))
@@ -184,6 +189,74 @@ class _IfcMixin:
         # expr, ...) is public by default in this slice; richer
         # propagation through those forms is a follow-up.
         return L.PUBLIC
+
+    # ---- declassify (roadmap S2.5) -------------------------------
+
+    def _is_declassify_call(self, e: A.Expr) -> bool:
+        """True if ``e`` is a call to the built-in ``declassify``.
+        Guarded by the binding's built-in position so a user function
+        that happens to be named ``declassify`` is not special-cased."""
+        from ..builtins import BUILTIN_POS
+        if not isinstance(e, A.Call):
+            return False
+        if not isinstance(e.callee, A.Ident) or e.callee.name != "declassify":
+            return False
+        sym = self.bindings.get(id(e.callee))
+        return sym is not None and sym.pos == BUILTIN_POS
+
+    def _check_declassify(self, e: A.Call, arg_tys: list):
+        """Validate a ``declassify(value, reason: "...")`` call and
+        return the value's type (declassify is identity on the value;
+        only its security label changes -- to PUBLIC, set in
+        ``_compute_label``).
+
+        The shape is deliberately rigid so the SBOM can record a
+        meaningful audit trail: exactly two arguments, the first the
+        value (positional), the second a ``reason:`` named argument
+        that must be a plain string literal. A no-op declassify (the
+        value is not @secret) is flagged as a warning -- a dead
+        security annotation is dangerous noise in a regulated SBOM.
+
+        Args were already type-checked by ``_check_call`` (so their
+        labels are in ``self._expr_labels``)."""
+        value_ty = arg_tys[0] if arg_tys else None
+        names = e.arg_names
+        if len(e.args) != 2:
+            self._err(
+                "declassify takes exactly two arguments: the value and "
+                "reason: \"...\" (a string literal recorded in the SBOM)",
+                e.pos,
+            )
+            return value_ty
+        if names[0] is not None:
+            self._err(
+                "declassify: the value is the first (positional) argument",
+                e.args[0].pos,
+            )
+        if names[1] != "reason":
+            self._err(
+                "declassify: the second argument must be named "
+                "reason: \"...\" so the SBOM can record why the "
+                "disclosure is intended",
+                e.args[1].pos,
+            )
+        elif not isinstance(e.args[1], A.StringLit):
+            self._err(
+                "declassify: reason must be a plain string literal (not "
+                "an interpolation or a computed value) so it can be "
+                "recorded verbatim in the SBOM",
+                e.args[1].pos,
+            )
+        # A declassify of a value that is not secret is a no-op: the
+        # annotation claims a disclosure that the data flow does not
+        # actually contain. Warn so it does not mislead an auditor.
+        if L.normalize(self._label_of(e.args[0])) != L.SECRET:
+            self._warn_ifc(
+                "declassify of a @public value is a no-op (the value is "
+                "not @secret); remove it or re-check the data flow",
+                e.pos,
+            )
+        return value_ty
 
     # ---- sink enforcement (roadmap S2.4) -------------------------
 
