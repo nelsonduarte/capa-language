@@ -145,6 +145,7 @@ class _ItemsMixin:
                 )
                 psym = Symbol(
                     name=p.name, kind=SymbolKind.PARAM, pos=p.pos, ty=pty,
+                    label=p.type_expr.label if p.type_expr else None,
                 )
                 if contains_capability(pty) is not None:
                     cap_param_syms.append(psym)

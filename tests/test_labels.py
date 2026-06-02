@@ -91,5 +91,84 @@ class TestLabelParsing(unittest.TestCase):
         self.assertEqual(m.items[0].attributes[0].name, "security")
 
 
+class TestLabelPropagation(unittest.TestCase):
+    """Roadmap S2.3: a value's security label is the join of the
+    labels that flow into it. Propagation only -- no flow is rejected
+    in this slice (enforcement is S2.4)."""
+
+    def _let_labels(self, src: str) -> dict:
+        # Drive the analyzer directly to read the per-expression
+        # label map it builds (_expr_labels), keyed by RHS id.
+        from capa.analyzer import Analyzer
+        m = _parse(src)
+        az = Analyzer(source=src)
+        az.analyze(m)
+        out = {}
+        for fn in m.items:
+            if not isinstance(fn, A.FunDecl):
+                continue
+            for st in fn.body.stmts:
+                if isinstance(st, A.LetStmt) and isinstance(st.pattern, A.IdentPat):
+                    out[st.pattern.name] = az._expr_labels.get(id(st.value))
+        return out
+
+    def test_ident_inherits_binding_label(self):
+        labels = self._let_labels(
+            "fun h(token: @secret String, _s: Stdio) -> Unit\n"
+            "    let echoed = token\n"
+            "    _s.println(\"x\")\n"
+        )
+        self.assertEqual(labels["echoed"], "secret")
+
+    def test_binop_joins_operand_labels(self):
+        labels = self._let_labels(
+            "fun h(token: @secret Int, _s: Stdio) -> Unit\n"
+            "    let combined = token + 1\n"
+            "    let plain = 1 + 2\n"
+            "    _s.println(\"x\")\n"
+        )
+        self.assertEqual(labels["combined"], "secret")
+        self.assertEqual(labels["plain"], "public")
+
+    def test_interpolation_is_a_flow(self):
+        # "${secret}" is secret -- the classic logging-leak shape.
+        labels = self._let_labels(
+            "fun h(token: @secret String, _s: Stdio) -> Unit\n"
+            "    let msg = \"value=${token}\"\n"
+            "    _s.println(\"x\")\n"
+        )
+        self.assertEqual(labels["msg"], "secret")
+
+    def test_taint_is_transitive(self):
+        labels = self._let_labels(
+            "fun h(token: @secret Int, _s: Stdio) -> Unit\n"
+            "    let a = token\n"
+            "    let b = a + 1\n"
+            "    _s.println(\"x\")\n"
+        )
+        self.assertEqual(labels["a"], "secret")
+        self.assertEqual(labels["b"], "secret")
+
+    def test_explicit_annotation_on_let(self):
+        labels = self._let_labels(
+            "fun h(_s: Stdio) -> Unit\n"
+            "    let x: @secret Int = 1\n"
+            "    let y = x\n"
+            "    _s.println(\"z\")\n"
+        )
+        self.assertEqual(labels["y"], "secret")
+
+    def test_propagation_does_not_reject_yet(self):
+        # S2.3 only observes -- a secret-to-sink flow still analyses
+        # cleanly (enforcement is the next slice).
+        from capa import analyze
+        m = _parse(
+            "fun h(token: @secret String, stdio: Stdio) -> Unit\n"
+            "    stdio.println(token)\n"
+        )
+        r = analyze(m, source="x")
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -160,6 +160,11 @@ class Symbol:
     # obligation on the receiver -- e.g. ``h.close()`` where
     # ``close(consume self)`` releases a ``linear type`` handle.
     consumes_self: bool = False
+    # Information-flow security label (roadmap S2). For a PARAM /
+    # LOCAL[_VAR] / CONSTANT whose declared type carried a ``@secret``
+    # / ``@public`` annotation; ``None`` means unlabelled (= public).
+    # Read when an Ident referencing this symbol is given its label.
+    label: Optional[str] = None
 
 
 @dataclass
@@ -239,6 +244,7 @@ from ._discipline import _DisciplineMixin
 from ._dispatch import _DispatchMixin
 from ._expressions import _ExpressionsMixin
 from ._frozen import _FrozenTypesMixin
+from ._ifc import _IfcMixin
 from ._items import _ItemsMixin
 from ._linear import _LinearMixin
 from ._patterns import _PatternsMixin
@@ -249,7 +255,8 @@ from ._typing import _TypingMixin
 class Analyzer(
     _TypingMixin, _DisciplineMixin, _DispatchMixin,
     _PatternsMixin, _DeclarationsMixin, _FrozenTypesMixin,
-    _LinearMixin, _StatementsMixin, _ExpressionsMixin, _ItemsMixin,
+    _IfcMixin, _LinearMixin, _StatementsMixin, _ExpressionsMixin,
+    _ItemsMixin,
 ):
     """Performs the semantic analysis of a Module.
 
@@ -311,6 +318,12 @@ class Analyzer(
         # (i64::MIN). Populated by ``_check_unary`` just before it
         # descends into the operand (slice 26 residual / P3).
         self._neg_int_operand_ids: set[int] = set()
+        # Roadmap S2 -- information-flow labels. Parallel to
+        # ``self.types`` (keyed by id(expr)): each visited expression's
+        # security label, computed by ``_label_expr`` in ``_check_expr``
+        # from its children's labels. Read by sink-enforcement /
+        # SBOM-emission in later S2 slices.
+        self._expr_labels: dict[int, str] = {}
         # Roadmap S1 -- linear (must-consume) types. Names of structs
         # declared ``linear type``; populated once per ``analyze`` from
         # the module items. A value of a linear type must be consumed

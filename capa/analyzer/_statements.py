@@ -87,6 +87,16 @@ class _StatementsMixin:
         if not isinstance(s.value, (A.MethodCall, A.Call)):
             self._check_no_capability(actual, s.pos, "a 'let' binding")
         self._bind_pattern(s.pattern, actual, mutable=False)
+        # Roadmap S2.3: the binding's label is the join of any declared
+        # ``@secret``/``@public`` annotation and the label of the RHS
+        # value -- so ``let x = secret_value`` makes x secret even
+        # without an annotation, the core taint-propagation rule.
+        if isinstance(s.pattern, A.IdentPat):
+            self._label_binding(
+                s.pattern.name,
+                s.type_expr.label if s.type_expr is not None else None,
+                s.value,
+            )
         # Roadmap S1: a ``let h = open()`` of a linear-typed value
         # opens a must-consume obligation under the bound name. Only
         # a simple identifier pattern carries it (a destructure of a
@@ -114,10 +124,14 @@ class _StatementsMixin:
             self._check_no_capability(actual, s.pos, "a 'var' binding")
         if self.scope.lookup_local(s.name) is not None:
             self._err(f"duplicate declaration of {s.name!r}", s.pos)
+        _var_label = self._join_decl_and_value_label(
+            s.type_expr.label if s.type_expr is not None else None,
+            s.value,
+        )
         self.scope.define(
             Symbol(
                 name=s.name, kind=SymbolKind.LOCAL_VAR,
-                pos=s.pos, ty=actual,
+                pos=s.pos, ty=actual, label=_var_label,
             )
         )
 

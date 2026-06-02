@@ -261,6 +261,11 @@ class _ExpressionsMixin:
     def _check_expr(self, e: A.Expr) -> Ty:
         ty = self._check_expr_inner(e)
         self.types[id(e)] = ty
+        # Roadmap S2.3: record the IFC label of this expression now
+        # that its children (visited during _check_expr_inner) are
+        # already labelled. Propagation only -- no flow is rejected
+        # in this slice.
+        self._label_expr(e)
         return ty
 
     def _check_expr_inner(self, e: A.Expr) -> Ty:
