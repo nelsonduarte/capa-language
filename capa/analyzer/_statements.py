@@ -27,6 +27,7 @@ pulls helpers from the other mixins (``_check_expr``,
 from __future__ import annotations
 
 from .. import capa_ast as A
+from .. import _labels as L
 from ..typesys import (
     Ty, TyBool, TyName, TyUnit, TyUnknown,
     compatible, ty_str,
@@ -253,8 +254,20 @@ class _StatementsMixin:
         before_live = dict(self._live_linear)
         branch_live: list[dict] = []
 
+        # Roadmap S2.implicit: each branch body is guarded by all the
+        # conditions evaluated to reach it, so the pc-label rises by the
+        # join of those condition labels. ``acc_pc`` accumulates them:
+        # the then-block sees ``cond``; each elif sees ``cond`` plus the
+        # earlier elif conditions; the else sees all of them. A sink
+        # under a secret pc is an implicit-flow leak (checked in
+        # ``_check_ifc_sink``). Conditions themselves are evaluated
+        # under the outer pc; only the bodies are raised.
+        saved_pc = self._pc_label
+        acc_pc = L.join(saved_pc, self._label_of(s.cond))
+
         self._consumed = set(before)
         self._live_linear = dict(before_live)
+        self._pc_label = acc_pc
         self._check_block(s.then_block)
         if not _block_diverges(s.then_block):
             branch_results.append(self._consumed)
@@ -263,12 +276,15 @@ class _StatementsMixin:
         for cond, blk in s.elif_arms:
             self._consumed = set(before)
             self._live_linear = dict(before_live)
+            self._pc_label = saved_pc
             cty = self._check_expr(cond)
             if not compatible(TyBool, cty):
                 self._err(
                     f"elif condition must be Bool, got {ty_str(cty)}",
                     cond.pos,
                 )
+            acc_pc = L.join(acc_pc, self._label_of(cond))
+            self._pc_label = acc_pc
             self._check_block(blk)
             if not _block_diverges(blk):
                 branch_results.append(self._consumed)
@@ -277,6 +293,7 @@ class _StatementsMixin:
         if s.else_block is not None:
             self._consumed = set(before)
             self._live_linear = dict(before_live)
+            self._pc_label = acc_pc
             self._check_block(s.else_block)
             if not _block_diverges(s.else_block):
                 branch_results.append(self._consumed)
@@ -303,6 +320,10 @@ class _StatementsMixin:
             # further (unreachable) analysis sees no spurious change.
             self._consumed = before
             self._live_linear = before_live
+
+        # Restore the pc-label: the implicit-flow raise scoped only to
+        # the branch bodies (roadmap S2.implicit).
+        self._pc_label = saved_pc
 
     def _check_while(self, s: A.WhileStmt) -> None:
         cty = self._check_expr(s.cond)

@@ -190,6 +190,21 @@ class _IfcMixin:
         # propagation through those forms is a follow-up.
         return L.PUBLIC
 
+    # ---- implicit flow / pc-label (roadmap S2.implicit) ----------
+
+    def _pc_raise(self, *cond_exprs) -> str:
+        """Raise (and return the previous) pc-label by joining in the
+        labels of the given condition expressions. The caller stores
+        the return value and restores ``self._pc_label`` to it once the
+        guarded body is checked. A secret condition makes the pc SECRET
+        for the body, so a public sink inside leaks the one bit of
+        whether the branch was taken (roadmap S2.implicit)."""
+        prev = self._pc_label
+        self._pc_label = L.join_all(
+            [prev] + [self._label_of(c) for c in cond_exprs]
+        )
+        return prev
+
     # ---- declassify (roadmap S2.5) -------------------------------
 
     def _is_declassify_call(self, e: A.Expr) -> bool:
@@ -295,6 +310,35 @@ class _IfcMixin:
                 self._err(msg, arg.pos)
             else:
                 self._warn_ifc(msg, arg.pos)
+
+        # Implicit control flow (roadmap S2.implicit): the sink fires
+        # under a secret pc -- it is inside a branch whose condition is
+        # @secret -- so the mere fact that it ran leaks whether that
+        # branch was taken, independent of the argument labels.
+        #
+        # This is checked ONLY under ``@strict_ifc``. Implicit flows are
+        # subtle and pervasive (any sink in a branch that matches on a
+        # secret source trips one), and flagging them in the default
+        # warn tier would be noisy and would undercut declassify: the
+        # canonical ``match env.get(...) { Some(k) -> println(
+        # declassify(k, ...)) }`` fix still leaks the one existence bit
+        # via control flow, which is real but rarely what the user
+        # cares about. So the default tier stays focused on the
+        # high-value explicit DATA leaks; opting into ``@strict_ifc``
+        # turns on full noninterference (explicit + implicit, as hard
+        # errors) for code that needs the stronger guarantee.
+        if (
+            getattr(self, "_strict_ifc", False)
+            and L.normalize(getattr(self, "_pc_label", L.PUBLIC)) == L.SECRET
+        ):
+            self._err(
+                f"information-flow (strict): {cap_name}.{e.method} runs "
+                f"under secret control flow (inside a branch whose "
+                f"condition is @secret), which leaks whether that branch "
+                f"was taken. Move the sink outside the secret-conditioned "
+                f"branch so its execution does not depend on the secret.",
+                e.pos,
+            )
 
     def _warn_ifc(self, message: str, pos) -> None:
         """Record a non-fatal IFC warning (does not affect ``ok``).

@@ -323,8 +323,89 @@ class TestSecretSources(unittest.TestCase):
             "        None -> stdio.println(\"no key\")\n"
         )
         self.assertFalse(r.ok)
-        self.assertEqual(len(r.errors), 1)
-        self.assertIn("information-flow", r.errors[0].message)
+        # Under strict, the explicit data leak is an error; the implicit
+        # control-flow leaks (S2.implicit) are also errors here.
+        self.assertTrue(
+            any("information-flow" in e.message for e in r.errors),
+            [e.message for e in r.errors],
+        )
+
+
+class TestImplicitFlow(unittest.TestCase):
+    """Roadmap S2.implicit: a sink that fires inside a branch guarded by
+    a @secret condition leaks whether the branch was taken (the pc-label
+    rises to SECRET in the branch body). Gated to @strict_ifc only: the
+    default warn tier stays focused on explicit DATA leaks, while strict
+    turns on full noninterference (implicit leaks become errors)."""
+
+    def _analyze(self, src: str):
+        from capa import analyze
+        m = _parse(src)
+        return analyze(m, source=src)
+
+    def test_implicit_not_flagged_in_default_tier(self):
+        # Printing a constant inside a secret-conditioned match arm is
+        # an implicit leak, but the default (non-strict) tier ignores
+        # it -- no explicit data flow, so no warning.
+        r = self._analyze(
+            "fun f(env: Env, stdio: Stdio)\n"
+            "    match env.get(\"K\")\n"
+            "        Some(_k) -> stdio.println(\"present\")\n"
+            "        None -> stdio.println(\"absent\")\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(len(r.warnings), 0)
+
+    def test_implicit_match_leak_errors_under_strict(self):
+        r = self._analyze(
+            "@strict_ifc()\n"
+            "fun f(env: Env, stdio: Stdio)\n"
+            "    match env.get(\"K\")\n"
+            "        Some(_k) -> stdio.println(\"present\")\n"
+            "        None -> stdio.println(\"absent\")\n"
+        )
+        self.assertFalse(r.ok)
+        self.assertTrue(
+            all("information-flow (strict)" in e.message for e in r.errors),
+            [e.message for e in r.errors],
+        )
+        # One implicit leak per arm.
+        self.assertEqual(len(r.errors), 2)
+
+    def test_implicit_if_leak_errors_under_strict(self):
+        r = self._analyze(
+            "@strict_ifc()\n"
+            "fun f(token: @secret Bool, stdio: Stdio)\n"
+            "    if token\n"
+            "        stdio.println(\"yes\")\n"
+            "    else\n"
+            "        stdio.println(\"no\")\n"
+        )
+        self.assertFalse(r.ok)
+        self.assertEqual(len(r.errors), 2)
+
+    def test_sink_outside_secret_branch_is_clean_under_strict(self):
+        # The pc-label is restored after the branch, so a sink after the
+        # if does not run under secret control flow.
+        r = self._analyze(
+            "@strict_ifc()\n"
+            "fun f(token: @secret Bool, stdio: Stdio)\n"
+            "    if token\n"
+            "        let _x = 1\n"
+            "    stdio.println(\"always\")\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+
+    def test_public_condition_does_not_raise_pc(self):
+        r = self._analyze(
+            "@strict_ifc()\n"
+            "fun f(flag: Bool, stdio: Stdio)\n"
+            "    if flag\n"
+            "        stdio.println(\"yes\")\n"
+            "    else\n"
+            "        stdio.println(\"no\")\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
 
 
 class TestDeclassify(unittest.TestCase):

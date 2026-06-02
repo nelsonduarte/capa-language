@@ -95,8 +95,12 @@ em warn-then-enforce (`@strict_ifc` torna erro), source caps
 secret-by-default (`env.get`) com fluxo do label por pattern-destructure,
 e `declassify(value, reason: "...")` como a única ponte auditável, com
 cada site registado no SBOM (`declassifications` por função +
-`declassification_sites` no sumário). Pendente: fluxo implícito
-(pc-label em branches com condição secret) e inferência (v2).
+`declassification_sites` no sumário). Fluxo implícito (pc-label em
+branches `if`/`match` com condição secret) entregue como check
+**strict-only**: o tier default fica focado nos fluxos de dados
+explícitos (alto valor, baixo ruído), e `@strict_ifc` liga
+noninterference completa (explícito + implícito como erros). Pendente:
+inferência de fluxo (v2) e fluxo implícito em loops (`while`/`for`).
 
 ### S3 — Typestate / session types
 **ROI: médio-alto. Esforço: ~5-6 slices. Dependências: S1 (linearidade).**

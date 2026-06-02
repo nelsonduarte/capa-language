@@ -20,6 +20,7 @@ from __future__ import annotations
 from typing import Optional
 
 from .. import capa_ast as A
+from .. import _labels as L
 from ..builtins import BUILTIN_POS as _BUILTIN_POS
 from ..typesys import (
     Ty, TyBool, TyChar, TyFloat, TyFun, TyInt, TyName, TyString,
@@ -149,8 +150,13 @@ class _ExpressionsMixin:
                 f"if-expression: condition must be Bool, got {ty_str(cond_ty)}",
                 e.cond.pos,
             )
+        # Roadmap S2.implicit: both arms are guarded by ``cond``, so the
+        # pc-label rises by its label while checking them.
+        saved_pc = self._pc_label
+        self._pc_label = L.join(saved_pc, self._label_of(e.cond))
         then_ty = self._check_expr(e.then_expr)
         else_ty = self._check_expr(e.else_expr)
+        self._pc_label = saved_pc
         if not compatible(then_ty, else_ty):
             self._err(
                 f"if-expression: branches have incompatible types: "
@@ -186,11 +192,17 @@ class _ExpressionsMixin:
         # makes ``key`` secret, so the headline read-secret-then-leak
         # case is caught after the match destructure.
         scrutinee_label = self._label_of(s.scrutinee)
+        # Roadmap S2.implicit: every arm is selected by the scrutinee's
+        # value, so a secret scrutinee raises the pc-label inside the
+        # arm bodies (and guards) -- a sink there leaks which arm ran.
+        saved_pc = self._pc_label
+        arm_pc = L.join(saved_pc, scrutinee_label)
         for arm in s.arms:
             self._consumed = set(before)
             self._push_scope()
             self._bind_pattern(arm.pattern, scrutinee_ty, mutable=False)
             self._label_pattern_binds(arm.pattern, scrutinee_label)
+            self._pc_label = arm_pc
             if arm.guard is not None:
                 gty = self._check_expr(arm.guard)
                 if not compatible(TyBool, gty):
@@ -229,6 +241,9 @@ class _ExpressionsMixin:
             # simply does not contribute to ``branch_results``.
             if not arm_diverges:
                 branch_results.append(self._consumed)
+
+        # Restore the pc-label raised for the arm bodies (S2.implicit).
+        self._pc_label = saved_pc
 
         if branch_results:
             merged: set[str] = set()

@@ -338,6 +338,12 @@ class Analyzer(
         # hard errors instead of warnings. Set per-function in
         # ``_check_fun``, restored on exit.
         self._strict_ifc: bool = False
+        # Roadmap S2.implicit -- the program-counter (pc) label. SECRET
+        # while checking the body of an ``if`` / ``match`` whose
+        # condition (or scrutinee) is @secret: a public sink that fires
+        # under secret control flow leaks one bit (whether the branch
+        # was taken). Joined and restored around each branch body.
+        self._pc_label: str = "public"
         # Roadmap S1 -- linear (must-consume) types. Names of structs
         # declared ``linear type``; populated once per ``analyze`` from
         # the module items. A value of a linear type must be consumed
