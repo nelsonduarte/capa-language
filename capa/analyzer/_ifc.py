@@ -20,6 +20,13 @@ later S2 slices.
 Children are always visited before their parent (``_check_expr``
 recurses into operands first), so when ``_label_of_expr`` runs for a
 parent the children's labels are already in ``self._expr_labels``.
+
+Aggregate literals (struct / list / tuple) carry the join of their
+element labels, so a secret stashed in one and read back is not
+laundered to public; the read rules above already inherit the
+receiver's label. The granularity is whole-aggregate (per-field
+precision is a follow-up) and the flow is intra-procedural (crossing a
+function boundary still relies on an explicit ``@secret`` parameter).
 """
 
 from __future__ import annotations
@@ -185,9 +192,22 @@ class _IfcMixin:
                 L.join_all(self._label_of(a) for a in e.args),
             )
 
-        # Anything else (lambda, struct lit, list/map/set lit, match
-        # expr, ...) is public by default in this slice; richer
-        # propagation through those forms is a follow-up.
+        # Aggregate literals carry the join of the labels of the values
+        # they hold, so a secret placed in a struct field / list / tuple
+        # element makes the whole aggregate secret. Combined with the
+        # field-read / index rules above (a read inherits the receiver's
+        # label), this closes the laundering hole where stashing a
+        # @secret in an aggregate and reading it back would otherwise
+        # come out @public. Conservative (whole-aggregate, not
+        # per-field); per-field precision is a later refinement.
+        if isinstance(e, A.StructLit):
+            return L.join_all(self._label_of(v) for _name, v in e.fields)
+        if isinstance(e, (A.ListLit, A.TupleLit)):
+            return L.join_all(self._label_of(el) for el in e.elements)
+
+        # Anything else (lambda, match expr, mutable map/set built via
+        # new_map()/new_set() + set(), ...) is public by default in this
+        # slice; richer propagation through those forms is a follow-up.
         return L.PUBLIC
 
     # ---- implicit flow / pc-label (roadmap S2.implicit) ----------

@@ -331,6 +331,65 @@ class TestSecretSources(unittest.TestCase):
         )
 
 
+class TestAggregateLabels(unittest.TestCase):
+    """Roadmap S2 (laundering fix): an aggregate literal carries the
+    join of the labels of the values it holds, so stashing a @secret in
+    a struct field / list / tuple and reading it back no longer launders
+    it to @public. A for-loop variable inherits the iterable's label."""
+
+    def _analyze(self, src: str):
+        from capa import analyze
+        m = _parse(src)
+        return analyze(m, source=src)
+
+    def test_struct_field_does_not_launder(self):
+        r = self._analyze(
+            "type Box { field: String, tag: String }\n"
+            "fun f(stdio: Stdio, token: @secret String)\n"
+            "    let b = Box { field: token, tag: \"t\" }\n"
+            "    stdio.println(b.field)\n"
+        )
+        self.assertEqual(len(r.warnings), 1)
+        self.assertIn("information-flow", r.warnings[0].message)
+
+    def test_list_element_does_not_launder(self):
+        r = self._analyze(
+            "fun f(stdio: Stdio, token: @secret String)\n"
+            "    let xs = [token, \"other\"]\n"
+            "    stdio.println(xs.get(0).unwrap_or(\"\"))\n"
+        )
+        self.assertEqual(len(r.warnings), 1)
+
+    def test_tuple_element_does_not_launder(self):
+        r = self._analyze(
+            "fun f(stdio: Stdio, token: @secret String)\n"
+            "    let pair = (token, 1)\n"
+            "    stdio.println(\"${pair}\")\n"
+        )
+        self.assertEqual(len(r.warnings), 1)
+
+    def test_public_aggregate_stays_clean(self):
+        r = self._analyze(
+            "type Box { a: String }\n"
+            "fun f(stdio: Stdio)\n"
+            "    let b = Box { a: \"hi\" }\n"
+            "    stdio.println(b.a)\n"
+        )
+        self.assertEqual(len(r.warnings), 0)
+
+    def test_for_loop_var_inherits_iterable_label(self):
+        # Iterating a tainted list taints the loop variable, and the
+        # sink in the body warns exactly once (not twice from the
+        # two-pass loop analysis).
+        r = self._analyze(
+            "fun f(stdio: Stdio, token: @secret String)\n"
+            "    let xs = [token]\n"
+            "    for x in xs\n"
+            "        stdio.println(x)\n"
+        )
+        self.assertEqual(len(r.warnings), 1)
+
+
 class TestImplicitFlow(unittest.TestCase):
     """Roadmap S2.implicit: a sink that fires inside a branch guarded by
     a @secret condition leaks whether the branch was taken (the pc-label

@@ -205,6 +205,7 @@ class _StatementsMixin:
         return {
             "consumed": self._consumed.copy(),
             "errors_len": len(self.errors),
+            "warnings_len": len(self.warnings),
             "bindings_keys": set(self.bindings.keys()),
             "types_keys": set(self.types.keys()),
         }
@@ -215,6 +216,10 @@ class _StatementsMixin:
         ``_consumed`` reverts."""
         self._consumed = snap["consumed"]
         self.errors = self.errors[: snap["errors_len"]]
+        # Drop any IFC warnings emitted during the speculative pass so
+        # the real pass below is the single source of each diagnostic
+        # (otherwise a sink in a loop body warns twice).
+        self.warnings = self.warnings[: snap["warnings_len"]]
         for k in list(self.bindings.keys()):
             if k not in snap["bindings_keys"]:
                 del self.bindings[k]
@@ -347,6 +352,10 @@ class _StatementsMixin:
 
     def _check_for(self, s: A.ForStmt) -> None:
         iter_ty = self._check_expr(s.iter)
+        # Roadmap S2: an element drawn from a tainted iterable is
+        # tainted, so the loop variable inherits the iterable's label
+        # (mirrors the element-of-tainted-container rule for indexing).
+        iter_label = self._label_of(s.iter)
         elem_ty: Ty = TyUnknown
         # ``List<T>`` and ``Range<T>`` are the two built-in
         # iterables today; both expose their element type as the
@@ -382,6 +391,7 @@ class _StatementsMixin:
         snap = self._snapshot_for_dry_run()
         self._push_scope()
         self._bind_pattern(s.pattern, elem_ty, mutable=False)
+        self._label_pattern_binds(s.pattern, iter_label)
         for stmt in s.body.stmts:
             self._check_stmt(stmt)
         self._pop_scope()
@@ -391,6 +401,7 @@ class _StatementsMixin:
         self._consumed |= consumed_in_body
         self._push_scope()
         self._bind_pattern(s.pattern, elem_ty, mutable=False)
+        self._label_pattern_binds(s.pattern, iter_label)
         for stmt in s.body.stmts:
             self._check_stmt(stmt)
         self._pop_scope()
