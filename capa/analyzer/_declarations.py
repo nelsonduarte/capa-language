@@ -96,6 +96,14 @@ class _DeclarationsMixin:
                     pos=item.pos, type_params=list(item.type_params),
                 )
                 self._declare_global(sym)
+            elif isinstance(item, A.TypestateDecl):
+                # Roadmap S3: register the typestate as a type name so
+                # ``Name[State]`` resolves. Modelled as a struct-kind
+                # symbol (it is a nominal, linear, state-indexed type).
+                self._declare_global(Symbol(
+                    name=item.name, kind=SymbolKind.TYPE_STRUCT,
+                    pos=item.pos,
+                ))
             elif isinstance(item, A.TypeSum):
                 sym = Symbol(
                     name=item.name, kind=SymbolKind.TYPE_SUM,
@@ -447,7 +455,32 @@ class _DeclarationsMixin:
             # hashable keys, but parity is the source of truth.
             if name == "Map" and te.args:
                 self._reject_unsupported_map_key(te.args[0])
-            return TyName(name, args)
+            # Roadmap S3: a ``Name[State]`` index. The bracket form is
+            # only valid on a typestate, and the state must be one it
+            # declares.
+            state = getattr(te, "state", None)
+            if state is not None:
+                states = self._typestates.get(name)
+                if states is None:
+                    self._err(
+                        f"type {name!r} is not a typestate, so it cannot "
+                        f"carry a state index [{state}]",
+                        te.pos,
+                    )
+                elif state not in states:
+                    avail = ", ".join(states)
+                    self._err(
+                        f"typestate {name!r} has no state {state!r} "
+                        f"(states: {avail})",
+                        te.pos,
+                    )
+            elif name in self._typestates:
+                self._err(
+                    f"typestate {name!r} must be written with a state "
+                    f"index, e.g. {name}[{self._typestates[name][0]}]",
+                    te.pos,
+                )
+            return TyName(name, args, state=state)
         return TyUnknown
 
     def _reject_unsupported_map_key(self, key_te: A.TypeExpr) -> None:

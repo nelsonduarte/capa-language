@@ -40,6 +40,12 @@ class _ItemsMixin:
             self._emit_impl(item)
         elif isinstance(item, A.FunDecl):
             self._emit_fun(item)
+        elif isinstance(item, A.TypestateDecl):
+            # Roadmap S3: a typestate is a compile-time-only protocol
+            # marker (its state lives in the type, enforced by the
+            # analyzer). It has no runtime representation in v1, so it
+            # emits nothing.
+            pass
         else:
             raise TranspilerError(f"unsupported top-level item: {type(item).__name__}")
 

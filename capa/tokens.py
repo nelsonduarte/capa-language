@@ -45,6 +45,7 @@ class TokenKind(Enum):
     KW_CONST = auto()
     KW_PUB = auto()
     KW_LINEAR = auto()
+    KW_TYPESTATE = auto()
     KW_IMPORT = auto()
     KW_AS = auto()
 
@@ -154,6 +155,7 @@ KEYWORDS: dict[str, TokenKind] = {
     "const":      TokenKind.KW_CONST,
     "pub":        TokenKind.KW_PUB,
     "linear":     TokenKind.KW_LINEAR,
+    "typestate":  TokenKind.KW_TYPESTATE,
     "import":     TokenKind.KW_IMPORT,
     "as":         TokenKind.KW_AS,
     "let":        TokenKind.KW_LET,

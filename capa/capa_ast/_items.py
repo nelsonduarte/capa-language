@@ -123,6 +123,29 @@ class TypeSum(Item):
 
 
 @dataclass(kw_only=True)
+class TypestateDecl(Item):
+    """typestate Name
+        State1
+        State2
+        State3
+
+    A typestate declares a finite set of named states for a protocol
+    (roadmap S3). A value of the type carries its current state in the
+    type itself (``Name[State1]``), and is *linear* (must be consumed /
+    transitioned before it goes out of scope, like a ``linear type``).
+    Operations are ordinary functions that take a value in a specific
+    state; a transition consumes a value in one state and returns it in
+    another, so the type checker plus the linearity discipline enforce
+    the protocol. ``states`` is the ordered list of state names; the
+    first is the conventional initial state."""
+    name: str
+    states: list[str]
+    is_pub: bool = False
+    doc: Optional[str] = None
+    name_pos: Optional[Pos] = None
+
+
+@dataclass(kw_only=True)
 class Param(Node):
     """Function or method parameter.
 

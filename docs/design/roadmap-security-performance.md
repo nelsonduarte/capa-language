@@ -118,6 +118,17 @@ Real para código de protocolo/rede; ponto de dor mesmo na Rust. Liga
 ao SBOM: `protocol_states` por handle. Constrói sobre os linear
 handles de S1.
 
+**Estado de implementação (2026-06):** fundação (S3.1) entregue. O
+desenho escolhido leva o estado para o TIPO: `typestate Name` declara
+os estados, um valor escreve-se `Name[State]` e é linear (S1). O
+type-checker faz cumprir o protocolo de graça (`Socket[Created]` !=
+`Socket[Connected]`); uma transição e so uma funcao que consome um
+estado e devolve outro. Entregue: a declaracao, a sintaxe `Name[State]`,
+compatibilidade estado-exata (compatible/unify/ty_str), registo como
+linear, e validacao dos nomes de estado. Pendente: construcao in-body +
+forma ergonomica de transicao (S3.2), metodos com receiver por estado,
+e o surface `protocol_states` no SBOM.
+
 ### S4: Constant-time markers para crypto
 **ROI: nicho mas mecanicamente verificável. Esforço: ~3 slices. Dependências: nenhuma.**
 

@@ -541,6 +541,40 @@ The guarantee is surfaced in the manifest as a per-function
 `constant_time` boolean. Variable-time arithmetic (e.g. division by a
 secret) is not yet modelled.
 
+### 6.6. Typestate (protocols)
+
+A `typestate` declares the named states of a protocol:
+
+```capa
+typestate Socket
+    Created
+    Connected
+    Closed
+```
+
+A value of a typestate carries its current state in the type, written
+`Name[State]`, and is linear (it must be consumed or transitioned
+before it leaves scope, like a `linear type`). Because the state is
+part of the type, `Socket[Created]` and `Socket[Connected]` are
+distinct types and the ordinary type checker enforces the protocol. A
+transition is a function that consumes a value in one state and returns
+it in another; an operation only valid in a given state takes that
+state:
+
+```capa
+fun connect(consume s: Socket[Created]) -> Socket[Connected]
+fun send(s: Socket[Connected], data: String)
+fun close(consume s: Socket[Connected])
+
+// send(s, "hi") on a Socket[Created] is a compile-time type error;
+// using s after connect(s) is a linearity error (it was consumed).
+```
+
+A `[State]` index is only valid on a typestate, and the state must be
+one the typestate declares. This is the foundation slice (S3.1): the
+in-body transition form and the SBOM `protocol_states` surface are
+follow-ups.
+
 ---
 
 ## 7. Imports

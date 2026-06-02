@@ -9,6 +9,26 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+### Typestate foundation: typestate declarations + state-indexed types (roadmap S3.1)
+
+The first slice of typestate / session types. A `typestate Name`
+declaration lists the named states of a protocol; a value carries its
+current state in the type, written `Name[State]`, and is linear (it
+must be consumed or transitioned, reusing the S1 must-consume
+discipline). Because the state lives in the type, the ordinary type
+checker enforces the protocol: `Socket[Created]` and
+`Socket[Connected]` are distinct types, so passing one where the other
+is expected is a compile-time error. A transition is then just a
+function that consumes a value in one state and returns it in another.
+
+This slice ships the type-level foundation: the `typestate`
+declaration, the `Name[State]` type syntax, state-exact type
+compatibility (in `compatible` / `unify` / `ty_str`), registration of
+typestate types as linear, and validation that every `[State]` names a
+declared state. In-body construction and the ergonomic transition form
+land in the next slice (S3.2), as does the SBOM `protocol_states`
+surface.
+
 ### Constant-time markers: @constant_time (roadmap S4)
 
 A function annotated `@constant_time()` must not let a `@secret` value

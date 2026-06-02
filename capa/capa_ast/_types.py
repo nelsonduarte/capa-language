@@ -18,9 +18,14 @@ from ._base import TypeExpr
 
 @dataclass(kw_only=True)
 class TypeName(TypeExpr):
-    """Type name, possibly with generic arguments."""
+    """Type name, possibly with generic arguments.
+
+    ``state`` carries the typestate index written ``Name[State]``
+    (roadmap S3); ``None`` for an ordinary type. It is distinct from
+    ``args`` (the ``<T>`` generic arguments)."""
     name: str
     args: list[TypeExpr] = field(default_factory=list)
+    state: "str | None" = None
 
 
 @dataclass(kw_only=True)

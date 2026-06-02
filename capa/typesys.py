@@ -44,9 +44,15 @@ class Ty:
 
 @dataclass(frozen=True)
 class TyName(Ty):
-    """Named type: ``Int``, ``List<T>``, ``Task``, ``Result<T, E>``..."""
+    """Named type: ``Int``, ``List<T>``, ``Task``, ``Result<T, E>``...
+
+    ``state`` is the typestate index written ``Name[State]`` (roadmap
+    S3); ``None`` for an ordinary type. It participates in equality and
+    hashing, so ``Socket[Created]`` and ``Socket[Connected]`` are
+    distinct types, which is what enforces the protocol."""
     name: str
     args: tuple[Ty, ...] = ()
+    state: "str | None" = None
 
 
 @dataclass(frozen=True)
@@ -126,10 +132,11 @@ def ty_str(t: Ty) -> str:
     if isinstance(t, _TyUnknownSingleton):
         return "?"
     if isinstance(t, TyName):
+        suffix = f"[{t.state}]" if t.state is not None else ""
         if not t.args:
-            return t.name
+            return f"{t.name}{suffix}"
         args = ", ".join(ty_str(a) for a in t.args)
-        return f"{t.name}<{args}>"
+        return f"{t.name}<{args}>{suffix}"
     if isinstance(t, TyVar):
         return t.name
     if isinstance(t, TyFun):
@@ -158,7 +165,11 @@ def substitute(t: Ty, mapping: dict[str, Ty]) -> Ty:
     if isinstance(t, TyName):
         if not t.args:
             return t
-        return TyName(t.name, tuple(substitute(a, mapping) for a in t.args))
+        return TyName(
+            t.name,
+            tuple(substitute(a, mapping) for a in t.args),
+            state=t.state,
+        )
     if isinstance(t, TyFun):
         return TyFun(
             tuple(substitute(p, mapping) for p in t.params),
@@ -193,6 +204,11 @@ def compatible(expected: Ty, actual: Ty) -> bool:
         return True
     if isinstance(expected, TyName) and isinstance(actual, TyName):
         if expected.name != actual.name:
+            return False
+        # Typestate index (roadmap S3): a value in one state is not
+        # compatible with a parameter expecting another state, which is
+        # what enforces the protocol at the type level.
+        if expected.state != actual.state:
             return False
         if len(expected.args) != len(actual.args):
             return False
@@ -290,6 +306,8 @@ def unify(expected: Ty, actual: Ty, mapping: dict[str, Ty]) -> bool:
 
     if isinstance(expected, TyName) and isinstance(actual, TyName):
         if expected.name != actual.name:
+            return False
+        if expected.state != actual.state:  # roadmap S3: state-exact
             return False
         if len(expected.args) != len(actual.args):
             return False

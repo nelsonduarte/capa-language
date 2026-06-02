@@ -70,6 +70,7 @@ from ._items import (
     Module,
     Param,
     TraitDecl,
+    TypestateDecl,
     TypeStruct,
     TypeSum,
     Variant,

@@ -356,6 +356,9 @@ class Analyzer(
         # (passed to a ``consume`` param / ``consume self`` method)
         # before it leaves scope, or the analyzer errors.
         self._linear_types: set[str] = set()
+        # Roadmap S3: typestate name -> ordered list of state names.
+        # Populated in ``analyze``; used to validate ``Name[State]``.
+        self._typestates: dict[str, list[str]] = {}
         # Live linear values in the current function: local name -> Pos
         # (the bind site, for the error message). Reset per function. A
         # name enters when a linear value is bound (``let h = open()``)
@@ -401,6 +404,13 @@ class Analyzer(
     def analyze(self, module: A.Module) -> AnalysisResult:
         # Pre-populate global scope with primitives and capabilities.
         self._install_builtins()
+        # Roadmap S3: record typestate declarations (name -> ordered
+        # states) BEFORE signature resolution, since ``_resolve_type``
+        # consults them to validate every ``Name[State]`` it meets.
+        self._typestates = {
+            it.name: list(it.states) for it in module.items
+            if isinstance(it, A.TypestateDecl)
+        }
         # Phase 1: register all top-level declarations (forward refs).
         self._collect_globals(module)
         # Phase 1b: compute the set of frozen struct types
@@ -417,6 +427,11 @@ class Analyzer(
             it.name for it in module.items
             if isinstance(it, A.TypeStruct) and it.is_linear
         }
+        # Roadmap S3: a typestate value is also linear (must be consumed
+        # / transitioned). ``_typestates`` itself is populated before
+        # ``_collect_globals`` (signature resolution needs it); here we
+        # just fold the names into the linear set.
+        self._linear_types |= set(self._typestates)
         # Phase 2: visit bodies of functions, impls, etc.
         for item in module.items:
             self._check_item(item)

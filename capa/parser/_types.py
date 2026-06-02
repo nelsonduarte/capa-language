@@ -80,7 +80,17 @@ class _TypesMixin:
         args: list[A.TypeExpr] = []
         if self._check(T.LT):
             args = self._parse_type_args()
-        return A.TypeName(pos=start, name=name, args=args)
+        # Typestate index (roadmap S3): ``Name[State]``. A single bare
+        # state identifier in brackets after the type name. Distinct
+        # from the ``<T>`` generic-argument list above.
+        state: "str | None" = None
+        if self._check(T.LBRACKET):
+            self._advance()
+            state = self._expect(
+                T.IDENT, "expected a state name inside '[...]'",
+            ).text
+            self._expect(T.RBRACKET, "expected ']' after state name")
+        return A.TypeName(pos=start, name=name, args=args, state=state)
 
     def _parse_tuple_or_paren_type(self) -> A.TypeExpr:
         start = self._peek().start

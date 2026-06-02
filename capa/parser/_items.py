@@ -93,6 +93,14 @@ class _ItemsMixin:
             if not self._check(T.KW_TYPE):
                 raise self._error("expected 'type' after 'linear'")
             return self._parse_type_decl(is_pub, doc=doc, is_linear=True)
+        if self._check(T.KW_TYPESTATE):
+            # ``typestate Name`` + indented state names (roadmap S3).
+            if attributes:
+                raise self._error(
+                    "attributes are not valid on 'typestate' "
+                    "(v1 supports them on 'fun' only)"
+                )
+            return self._parse_typestate_decl(is_pub, doc=doc)
         if self._check(T.KW_TRAIT):
             if attributes:
                 raise self._error(
@@ -331,6 +339,49 @@ class _ItemsMixin:
                 doc=doc,
             )
         raise self._error("expected '{' (struct) or '=' (sum) in type declaration")
+
+    def _parse_typestate_decl(
+        self, is_pub: bool, *, doc: Optional[str] = None,
+    ) -> A.Item:
+        """``typestate Name`` followed by an indented list of bare
+        state names, one per line (roadmap S3)::
+
+            typestate Socket
+                Created
+                Connected
+                Closed
+        """
+        start = self._peek().start
+        self._expect(T.KW_TYPESTATE, "expected 'typestate'")
+        name_tok = self._expect(T.IDENT, "expected typestate name")
+        self._expect(
+            T.NEWLINE, "expected newline after typestate name",
+        )
+        self._expect(T.INDENT, "expected indented states for typestate")
+        states: list[str] = []
+        seen: set[str] = set()
+        while not self._check(T.DEDENT) and not self._at_end():
+            state_tok = self._expect(T.IDENT, "expected state name")
+            if state_tok.text in seen:
+                raise self._error(
+                    f"duplicate state {state_tok.text!r} in typestate "
+                    f"{name_tok.text!r}"
+                )
+            seen.add(state_tok.text)
+            states.append(state_tok.text)
+            self._expect_eos("after state name")
+            self._skip_newlines()
+        self._expect(T.DEDENT, "expected dedent at end of typestate")
+        if not states:
+            raise self._error("typestate must declare at least one state")
+        return A.TypestateDecl(
+            pos=start,
+            name=name_tok.text,
+            name_pos=name_tok.start,
+            states=states,
+            is_pub=is_pub,
+            doc=doc,
+        )
 
     def _parse_struct_fields(self) -> list[A.Field]:
         """Inside { ... }, separated by commas, with optional newlines."""

@@ -925,8 +925,11 @@ Listed so the design space is explicit.
   (intra-procedural, whole-aggregate granularity). Remaining (v2):
   cross-function inference without explicit `@secret` params,
   per-field precision, a mechanised noninterference proof.
-- **Typestate / session types**. Real for network / protocol
-  code; concrete pain point even in Rust.
+- **Typestate / session types**. Foundation SHIPPED (S3.1): the
+  state lives in the type (`typestate Name` + `Name[State]`), a value
+  is linear, and the type checker enforces the protocol via state-exact
+  compatibility. Remaining: in-body construction + ergonomic transition
+  form (S3.2), state-specific receiver methods, SBOM `protocol_states`.
 - **Constant-time markers for crypto**. SHIPPED (S4, analyzer):
   `@constant_time()` rejects secret-dependent control flow (if /
   elif / while / if-expr / match) and secret-indexed memory access
