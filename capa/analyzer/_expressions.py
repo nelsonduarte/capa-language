@@ -28,6 +28,17 @@ from ..typesys import (
 )
 
 
+# 2**63: the magnitude of i64::MIN. The lexer admits a literal up to
+# this value (a bare ``9223372036854775808``) because it cannot see
+# whether a unary minus precedes it -- ``-9223372036854775808`` is the
+# only legal use, denoting i64::MIN. Used POSITIVELY the same literal
+# is out of i64 range, and the two backends disagree (Python prints
+# the bignum, Wasm wraps to i64::MIN) -- a silent divergence. The
+# analyzer closes it: an ``IntLit`` of exactly 2**63 is only allowed
+# as the immediate operand of unary ``-`` (slice 26 residual / P3).
+_I64_MIN_MAGNITUDE = 1 << 63
+
+
 class _ExpressionsMixin:
     def _check_lambda(self, e: A.LambdaExpr) -> Ty:
         """Type a lambda expression. The body is checked in a
@@ -254,6 +265,20 @@ class _ExpressionsMixin:
 
     def _check_expr_inner(self, e: A.Expr) -> Ty:
         if isinstance(e, A.IntLit):
+            # Slice 26 residual / P3: a bare 2**63 is out of i64 range
+            # (only ``-2**63`` = i64::MIN is legal). Allowed solely as
+            # the immediate operand of unary ``-`` (which marks its
+            # operand id in ``_neg_int_operand_ids`` before descending).
+            if (
+                e.value == _I64_MIN_MAGNITUDE
+                and id(e) not in self._neg_int_operand_ids
+            ):
+                self._err(
+                    f"integer literal {e.value} is out of range for Int "
+                    f"(signed 64-bit; max is {_I64_MIN_MAGNITUDE - 1}). "
+                    f"Only -{e.value} (i64::MIN) is representable.",
+                    e.pos,
+                )
             return TyInt
         if isinstance(e, A.FloatLit):
             return TyFloat
@@ -554,6 +579,10 @@ class _ExpressionsMixin:
         return TyUnknown
 
     def _check_unary(self, e: A.UnaryOp) -> Ty:
+        # Mark a directly-negated integer literal so the IntLit check
+        # permits 2**63 (i64::MIN's magnitude) here and nowhere else.
+        if e.op == "-" and isinstance(e.operand, A.IntLit):
+            self._neg_int_operand_ids.add(id(e.operand))
         ot = self._check_expr(e.operand)
         if e.op == "-":
             if compatible(TyInt, ot):

@@ -5529,5 +5529,33 @@ class TestLinearTypes(unittest.TestCase):
         )
 
 
+class TestIntLiteralRange(unittest.TestCase):
+    """Slice 26 residual / P3: a bare 2**63 is out of i64 range; only
+    ``-2**63`` (i64::MIN) is representable. The lexer admits the
+    magnitude (it can't see a preceding unary minus); the analyzer
+    rejects a positive use to close the Python/Wasm divergence
+    (Python printed the bignum, Wasm wrapped)."""
+
+    def _errs(self, body: str) -> list[str]:
+        return errors_of(f"fun f()\n    {body}\n")
+
+    def test_positive_2pow63_rejected(self):
+        errs = self._errs("let x = 9223372036854775808")
+        self.assertTrue(
+            any("out of range" in e for e in errs), errs,
+        )
+
+    def test_negated_2pow63_is_i64_min_ok(self):
+        self.assertEqual(self._errs("let x = -9223372036854775808"), [])
+
+    def test_i64_max_ok(self):
+        self.assertEqual(self._errs("let x = 9223372036854775807"), [])
+
+    def test_positive_2pow63_in_expression_rejected(self):
+        # Not just in a let -- any positive use is out of range.
+        errs = self._errs("let x = 9223372036854775808 + 1")
+        self.assertTrue(any("out of range" in e for e in errs), errs)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -948,6 +948,25 @@ Listed so the design space is explicit.
 
 ### Wasm-specific gaps that are not P0
 
+- [x] **Roadmap P3 (partial) - 2^63 residual closed; constant-fold
+  deliberately skipped** (2026-06-02). The slice-26 residual (a bare
+  ``9223372036854775808`` = 2**63 used positively) was a real silent
+  divergence: Python printed the bignum, Wasm wrapped to i64::MIN. The
+  lexer admits the magnitude (it can't see a preceding unary minus, and
+  ``-9223372036854775808`` = i64::MIN must work), so the ANALYZER now
+  rejects an ``IntLit == 2**63`` unless it's the immediate operand of
+  unary ``-`` (``_check_unary`` marks the operand id; the ``IntLit``
+  check consults it). Clean error, both backends. 4 new tests in
+  ``TestIntLiteralRange``.
+  - **Constant-fold NOT implemented (measured decision).** Benchmarked
+    a fabricated program with 100 constant ops: full compile ~2ms,
+    Cranelift already folds constants downstream -- no measurable gain.
+    The fold would also have to preserve i64 trap-on-overflow (only
+    fold when the result fits), subtle code with regression risk and no
+    payoff. Skipped per the no-over-engineering principle; closure-dedup
+    / DCE likewise parked until a benchmark shows the overhead matters.
+  - Suite 2145 -> 2149.
+
 - [x] **Roadmap S1 - linear (must-consume) types** (landed
   2026-06-01). Second roadmap phase
   (docs/design/roadmap-technical-detail.md). A

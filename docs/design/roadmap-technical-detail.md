@@ -358,9 +358,20 @@ uso de longa duração o exigir.
 
 ## Fases menores (resumo técnico)
 
-- **P3 (otimizações lowerer):** dedup de closures lifted, constant-fold
-  IR (fecha o resíduo slice 26: literal 2^63 não-negado), DCE. Cada
-  passe contra o harness de paridade. Baixo risco, contínuo.
+- **P3 (otimizações lowerer) — PARCIAL (2026-06-02):** o resíduo do
+  slice 26 (literal 2^63 não-negado) foi fechado, mas no ANALYZER, não
+  como constant-fold do lowerer: um `IntLit == 2^63` só é legal como
+  operando imediato de unary-minus (i64::MIN); qualquer uso positivo é
+  rejeitado, fechando a divergência Python (bignum) vs Wasm (wrap).
+  O **constant-fold foi deliberadamente NÃO feito**: medido num
+  programa fabricado com 100 ops de constantes, o compile inteiro é
+  ~2ms e o Cranelift já dobra as constantes a jusante — sem ganho
+  mensurável. Além disso o fold teria de preservar o trap-on-overflow
+  do i64 (só dobrar quando o resultado cabe em i64), código subtil com
+  risco de regressão de semântica e zero retorno. Decisão de
+  engenharia: não implementar uma otimização sem ganho demonstrável.
+  Dedup de closures / DCE ficam igualmente parked até haver um
+  benchmark que prove que o overhead importa.
 - **P4 (TCO):** lowrar chamadas em posição de cauda para `return_call`
   (Wasm tail-call proposal, estável). Detetar tail position no lowerer
   (`capa/ir/_lower_*`), emitir `return_call` em vez de `call`+`return`.

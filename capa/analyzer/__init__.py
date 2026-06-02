@@ -306,6 +306,11 @@ class Analyzer(
         # snapshot before each branch, conservative union after (any branch
         # possibly consuming -> considered consumed).
         self._consumed: set[str] = set()
+        # ids of IntLit nodes that are the immediate operand of a unary
+        # ``-`` -- the only context where a 2**63 literal is legal
+        # (i64::MIN). Populated by ``_check_unary`` just before it
+        # descends into the operand (slice 26 residual / P3).
+        self._neg_int_operand_ids: set[int] = set()
         # Roadmap S1 -- linear (must-consume) types. Names of structs
         # declared ``linear type``; populated once per ``analyze`` from
         # the module items. A value of a linear type must be consumed
