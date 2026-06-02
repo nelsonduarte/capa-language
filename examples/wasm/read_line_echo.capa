@@ -1,0 +1,12 @@
+// Stdio.read_line parity example (Slice 1 host-bridge pile).
+//
+// Reads two lines from stdin and echoes them transformed. Both
+// backends read sys.stdin.readline() and strip the trailing newline,
+// so the output is byte-identical for the same stdin fixture.
+fun main(stdio: Stdio)
+    match stdio.read_line()
+        Ok(name) -> stdio.println("hello, ${name}")
+        Err(_) -> stdio.println("no name")
+    match stdio.read_line()
+        Ok(answer) -> stdio.println("you said: ${answer}")
+        Err(_) -> stdio.println("no answer")

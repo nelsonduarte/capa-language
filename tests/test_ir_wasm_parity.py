@@ -201,6 +201,12 @@ _EXCLUDED: dict[str, str] = {
         "Clock.now_secs / now_monotonic are time-dependent; their "
         "values differ between back-to-back runs even on one backend."
     ),
+    "read_line_echo.capa": (
+        "Stdio.read_line consumes stdin; covered by the dedicated "
+        "test_stdio_read_line / test_stdio_read_line_under_cm methods "
+        "which install a stdin fixture per backend run (the auto-list "
+        "harness does not feed stdin)."
+    ),
 }
 
 
@@ -632,6 +638,34 @@ class TestPythonWasmParity(unittest.TestCase):
         # mirrors Python.
         self._assert_parity("clock_sleep_attenuation.capa")
 
+    def test_stdio_read_line(self):
+        # Slice 1 host-bridge pile: Stdio.read_line parity. Both
+        # backends read sys.stdin.readline() and strip the trailing
+        # newline; a fresh stdin buffer is installed per backend run
+        # because each consumes it.
+        stdin_text = "Alice\n42\n"
+
+        def _run_with_stdin(thunk):
+            saved = sys.stdin
+            sys.stdin = io.StringIO(stdin_text)
+            try:
+                return _capture_stdout(thunk)
+            finally:
+                sys.stdin = saved
+
+        src = (_EXAMPLES / "read_line_echo.capa").read_text(encoding="utf-8")
+        py_out = _run_with_stdin(lambda: _run_python(src))
+        wasm_out = _run_with_stdin(lambda: _run_wasm(src))
+        self.assertEqual(
+            py_out, wasm_out,
+            msg=(
+                f"Python/Wasm read_line divergence.\n"
+                f"--- python ---\n{py_out}\n--- wasm ---\n{wasm_out}"
+            ),
+        )
+        self.assertIn("hello, Alice", py_out)
+        self.assertIn("you said: 42", py_out)
+
     def test_db_attach_blocked(self):
         # Slice 13 (2026-05-29): both backends install a
         # ``set_authorizer`` on every sqlite connection that
@@ -963,6 +997,31 @@ class TestPythonWasmComponentParity(unittest.TestCase):
         # unparked alongside the rest of the cap-on-main CM tests
         # once the CM host learned to thread handles through main.
         self._assert_cm_parity("clock_sleep_attenuation.capa")
+
+    def test_stdio_read_line_under_cm(self):
+        # Slice 1 host-bridge pile under the Component Model: the CM
+        # host's read-line bridge reads sys.stdin and returns the
+        # canonical-ABI result<string, io-error>, matching Python.
+        stdin_text = "Alice\n42\n"
+
+        def _run_with_stdin(thunk):
+            saved = sys.stdin
+            sys.stdin = io.StringIO(stdin_text)
+            try:
+                return _capture_stdout(thunk)
+            finally:
+                sys.stdin = saved
+
+        src = (_EXAMPLES / "read_line_echo.capa").read_text(encoding="utf-8")
+        py_out = _run_with_stdin(lambda: _run_python(src))
+        cm_out = _run_with_stdin(lambda: _run_wasm_component(src))
+        self.assertEqual(
+            py_out, cm_out,
+            msg=(
+                f"Python/CM read_line divergence.\n"
+                f"--- python ---\n{py_out}\n--- cm ---\n{cm_out}"
+            ),
+        )
 
     def test_db_attach_blocked_under_cm(self):
         # Slice 13 audit-fix surface under CM. Confirms the
