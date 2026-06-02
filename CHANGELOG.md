@@ -9,6 +9,22 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+### Constant-time markers: @constant_time (roadmap S4)
+
+A function annotated `@constant_time()` must not let a `@secret` value
+drive its execution time, the CWE-208 side channel. Building directly
+on the S2 information-flow labels, the analyzer rejects, inside such a
+function: a control-flow decision on a secret (`if` / `elif` / `while`
+/ `match` / `if`-expression condition), and a memory access indexed by
+a secret (`xs[secret]`, `list.get(secret)`, `map.get(secret)`,
+`map.contains_key(secret)`, `set.contains(secret)`,
+`str.char_at(secret)`). Arithmetic and branches on public data stay
+legal, so a branchless constant-time formulation type-checks. The
+guarantee is surfaced in the manifest as a per-function `constant_time`
+boolean, so the SBOM records which functions carry it (relevant to the
+crypto subset of a CRA conformity pack). Variable-time arithmetic
+(e.g. division by a secret) is not yet modelled.
+
 ## [1.0.0-rc.6], 2026-06-02
 
 ### Information-flow control: @secret / @public labels + declassify

@@ -154,6 +154,10 @@ class _ExpressionsMixin:
         # pc-label rises by its label while checking them.
         saved_pc = self._pc_label
         self._pc_label = L.join(saved_pc, self._label_of(e.cond))
+        # Roadmap S4: a @constant_time function cannot branch on a secret.
+        self._ct_reject(
+            self._label_of(e.cond), e.cond.pos, "an if-expression condition"
+        )
         then_ty = self._check_expr(e.then_expr)
         else_ty = self._check_expr(e.else_expr)
         self._pc_label = saved_pc
@@ -192,6 +196,8 @@ class _ExpressionsMixin:
         # makes ``key`` secret, so the headline read-secret-then-leak
         # case is caught after the match destructure.
         scrutinee_label = self._label_of(s.scrutinee)
+        # Roadmap S4: a @constant_time function cannot match on a secret.
+        self._ct_reject(scrutinee_label, s.scrutinee.pos, "a match scrutinee")
         # Roadmap S2.implicit: every arm is selected by the scrutinee's
         # value, so a secret scrutinee raises the pc-label inside the
         # arm bodies (and guards) -- a sink there leaks which arm ran.
@@ -339,6 +345,8 @@ class _ExpressionsMixin:
         if isinstance(e, A.Index):
             recv_ty = self._check_expr(e.receiver)
             self._check_expr(e.index)
+            # Roadmap S4: indexing with a secret leaks it via cache timing.
+            self._check_ct_index(e)
             if (
                 isinstance(recv_ty, TyName)
                 and recv_ty.name == "List" and recv_ty.args

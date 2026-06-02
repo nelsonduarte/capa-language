@@ -503,6 +503,44 @@ function boundary needs an explicit `@secret` parameter, the
 explicit-flow model) and whole-aggregate in granularity (per-field
 precision is future work).
 
+### 6.5. Constant-time functions
+
+The `@constant_time()` function attribute requires that no `@secret`
+value influences the function's execution time (the CWE-208 side
+channel). Built on the same security labels, the analyzer rejects two
+things inside a constant-time function:
+
+- **Control flow on a secret**: an `if` / `elif` / `while` /
+  `if`-expression condition or a `match` scrutinee whose label is
+  `@secret`. The branch taken (and so the time spent) would reveal the
+  secret.
+- **Memory access indexed by a secret**: `xs[secret]`,
+  `list.get(secret)`, `map.get(secret)`, `map.contains_key(secret)`,
+  `set.contains(secret)`, and `str.char_at(secret)`. A data-dependent
+  access leaks the secret through cache timing (the classic
+  table-lookup attack).
+
+Arithmetic on secrets and branches on public data remain legal, so a
+branchless constant-time implementation type-checks:
+
+```capa
+@constant_time()
+fun ct_select(flag: Bool, a: @secret Int, b: @secret Int) -> Int
+    if flag                 // ok: flag is public
+        return a
+    return b
+
+@constant_time()
+fun leaky(a: @secret Int, b: @secret Int) -> Bool
+    if a == b               // error: branch on a secret
+        return true
+    return false
+```
+
+The guarantee is surfaced in the manifest as a per-function
+`constant_time` boolean. Variable-time arithmetic (e.g. division by a
+secret) is not yet modelled.
+
 ---
 
 ## 7. Imports

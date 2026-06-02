@@ -152,6 +152,8 @@ class TestTopLevelShape(unittest.TestCase):
             "provably_excluded_capabilities",
             "linear_obligations",
             "has_unsafe", "attributes", "calls",
+            # Roadmap S4: constant-time guarantee flag.
+            "constant_time",
             # Roadmap S2.5: the auditable @secret -> @public bridges.
             "declassifications",
             # Source-level identifiers + import-module disclosure for

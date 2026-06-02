@@ -524,6 +524,129 @@ class TestImplicitFlow(unittest.TestCase):
         self.assertTrue(r.ok, [e.message for e in r.errors])
 
 
+class TestConstantTime(unittest.TestCase):
+    """Roadmap S4: a @constant_time function must not let a @secret
+    value drive control flow (timing) or memory access (cache timing),
+    the CWE-208 side channels."""
+
+    def _analyze(self, src: str):
+        from capa import analyze
+        m = _parse(src)
+        return analyze(m, source=src)
+
+    def _ct_errors(self, r):
+        return [e for e in r.errors if "constant-time" in e.message]
+
+    def test_if_on_secret_rejected(self):
+        r = self._analyze(
+            "@constant_time()\n"
+            "fun cmp(a: @secret Int, b: @secret Int) -> Bool\n"
+            "    if a == b\n"
+            "        return true\n"
+            "    return false\n"
+        )
+        self.assertFalse(r.ok)
+        self.assertEqual(len(self._ct_errors(r)), 1)
+
+    def test_match_on_secret_rejected(self):
+        r = self._analyze(
+            "@constant_time()\n"
+            "fun f(x: @secret Int) -> Int\n"
+            "    return match x\n"
+            "        0 -> 1\n"
+            "        _ -> 2\n"
+        )
+        self.assertTrue(self._ct_errors(r))
+
+    def test_while_on_secret_rejected(self):
+        r = self._analyze(
+            "@constant_time()\n"
+            "fun f(n: @secret Int) -> Int\n"
+            "    var i = 0\n"
+            "    while i < n\n"
+            "        i = i + 1\n"
+            "    return i\n"
+        )
+        self.assertTrue(self._ct_errors(r))
+
+    def test_index_with_secret_rejected(self):
+        r = self._analyze(
+            "@constant_time()\n"
+            "fun pick(table: List<Int>, idx: @secret Int) -> Int\n"
+            "    return table[idx]\n"
+        )
+        self.assertTrue(self._ct_errors(r))
+
+    def test_list_get_with_secret_rejected(self):
+        r = self._analyze(
+            "@constant_time()\n"
+            "fun pick(table: List<Int>, idx: @secret Int) -> Int\n"
+            "    return table.get(idx).unwrap_or(0)\n"
+        )
+        self.assertTrue(self._ct_errors(r))
+
+    def test_map_get_with_secret_key_rejected(self):
+        r = self._analyze(
+            "@constant_time()\n"
+            "fun look(m: Map<Int, Int>, k: @secret Int) -> Int\n"
+            "    return m.get(k).unwrap_or(0)\n"
+        )
+        self.assertTrue(self._ct_errors(r))
+
+    def test_arithmetic_on_secret_is_fine(self):
+        # Arithmetic does not branch or index, so it is constant-time.
+        r = self._analyze(
+            "@constant_time()\n"
+            "fun add(a: @secret Int, b: @secret Int) -> Int\n"
+            "    return a + b\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+
+    def test_branch_on_public_is_fine(self):
+        r = self._analyze(
+            "@constant_time()\n"
+            "fun pick(flag: Bool, a: @secret Int, b: @secret Int) -> Int\n"
+            "    if flag\n"
+            "        return a\n"
+            "    return b\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+
+    def test_public_index_is_fine(self):
+        r = self._analyze(
+            "@constant_time()\n"
+            "fun pick(table: List<Int>, idx: Int) -> Int\n"
+            "    return table.get(idx).unwrap_or(0)\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+
+    def test_no_attribute_means_no_ct_rule(self):
+        # Without @constant_time, a secret branch is allowed (the IFC
+        # data-flow rules still apply, but timing is not checked).
+        r = self._analyze(
+            "fun cmp(a: @secret Int, b: @secret Int) -> Bool\n"
+            "    if a == b\n"
+            "        return true\n"
+            "    return false\n"
+        )
+        self.assertEqual(self._ct_errors(r), [])
+
+    def test_sbom_records_constant_time(self):
+        from capa.manifest import build_manifest
+        src = (
+            "@constant_time()\n"
+            "fun add(a: @secret Int, b: @secret Int) -> Int\n"
+            "    return a + b\n"
+            "fun plain(x: Int) -> Int\n"
+            "    return x\n"
+        )
+        m = _parse(src)
+        manifest = build_manifest(m, filename="<test>")
+        by_name = {f["source_name"]: f for f in manifest["functions"]}
+        self.assertTrue(by_name["add"]["constant_time"])
+        self.assertFalse(by_name["plain"]["constant_time"])
+
+
 class TestDeclassify(unittest.TestCase):
     """Roadmap S2.5: ``declassify(value, reason: "...")`` is the single
     auditable @secret -> @public bridge. It clears the sink warning,

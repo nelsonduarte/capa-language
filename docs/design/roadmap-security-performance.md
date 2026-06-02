@@ -127,6 +127,15 @@ dela. Os CVE studies do repo já incluem CWE-208 (timing); isto
 preveni-lo-ia mecanicamente. Liga a S2 (os dados secret são os mesmos
 labels). Surface no SBOM: `constant_time_guarantees`.
 
+**Estado de implementação (2026-06):** entregue no analyzer. O atributo
+`@constant_time()` rejeita controlo de fluxo sobre secret (if / elif /
+while / if-expr / match) e acesso indexado por secret (`xs[secret]`,
+`list.get` / `map.get` / `map.contains_key` / `set.contains` /
+`str.char_at` com argumento secret), reaproveitando os labels do S2.
+Surface no SBOM como um booleano `constant_time` por função. Pendente:
+enforcement defense-in-depth no emitter Wasm, e operações de tempo
+variável (ex. divisão por secret), ainda não modeladas.
+
 ### S5: Quantitative / budgeted capabilities (DEFER)
 O TODO marca ROI marginal. Manter parked, a maioria do rate-limiting
 resolve-se ao nível da aplicação. Só implementar se um caso concreto

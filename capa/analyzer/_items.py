@@ -47,6 +47,10 @@ class _ItemsMixin:
         # for this function. Without it, a secret-reaches-public-sink
         # flow is a warning (warn-then-enforce); with it, a hard error.
         "strict_ifc": set(),
+        # Roadmap S4: require this function to be constant-time. The
+        # analyzer rejects any control-flow decision or index that
+        # depends on a @secret value (CWE-208 timing leaks).
+        "constant_time": set(),
     }
 
     def _check_item(self, item: A.Item) -> None:
@@ -132,6 +136,13 @@ class _ItemsMixin:
         prev_strict_ifc = getattr(self, "_strict_ifc", False)
         self._strict_ifc = any(
             a.name == "strict_ifc" for a in fn.attributes
+        )
+
+        # Roadmap S4: ``@constant_time`` rejects secret-dependent
+        # control flow / indexing in this function's body.
+        prev_constant_time = getattr(self, "_constant_time", False)
+        self._constant_time = any(
+            a.name == "constant_time" for a in fn.attributes
         )
 
         # Capability parameters: collected so the analyzer can
@@ -248,6 +259,7 @@ class _ItemsMixin:
             )
 
         self._strict_ifc = prev_strict_ifc
+        self._constant_time = prev_constant_time
         self._pop_scope()
         self._pop_type_params()
 

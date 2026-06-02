@@ -91,6 +91,20 @@ _CONTAINER_MUTATORS: dict[tuple[str, str], set[int]] = {
     ("Map",  "set"):  {0, 1},
 }
 
+# Lookup methods whose index / key argument selects which memory is
+# touched. In a ``@constant_time`` function (roadmap S4) a @secret in
+# one of these positions is a data-dependent access (the cache-timing
+# side channel behind table lookups, e.g. an AES S-box). Keyed
+# ``(TypeName, method)`` -> the 0-based argument positions that act as
+# the index / key. This is the method-call analogue of ``xs[secret]``.
+_CT_INDEX_METHODS: dict[tuple[str, str], set[int]] = {
+    ("List",   "get"):          {0},
+    ("Map",    "get"):          {0},
+    ("Map",    "contains_key"): {0},
+    ("Set",    "contains"):     {0},
+    ("String", "char_at"):      {0},
+}
+
 
 class _IfcMixin:
     def _label_expr(self, e: A.Expr) -> str:
@@ -240,6 +254,65 @@ class _IfcMixin:
             [prev] + [self._label_of(c) for c in cond_exprs]
         )
         return prev
+
+    # ---- constant-time enforcement (roadmap S4) ------------------
+
+    def _ct_reject(self, label: str, pos, what: str) -> None:
+        """In a ``@constant_time`` function, a control-flow decision on
+        a @secret value leaks the secret through timing (CWE-208).
+        Reject it. No-op outside a constant-time function or for a
+        public condition."""
+        if (
+            getattr(self, "_constant_time", False)
+            and L.normalize(label) == L.SECRET
+        ):
+            self._err(
+                f"constant-time violation: {what} depends on a @secret "
+                f"value, which leaks it through timing. A @constant_time "
+                f"function must not branch on secret data; rewrite it "
+                f"branchless (e.g. a constant-time select / compare).",
+                pos,
+            )
+
+    def _check_ct_index(self, e: A.Index) -> None:
+        """In a ``@constant_time`` function, indexing with a @secret
+        value leaks it through data-dependent memory access (cache
+        timing). Reject it."""
+        if (
+            getattr(self, "_constant_time", False)
+            and L.normalize(self._label_of(e.index)) == L.SECRET
+        ):
+            self._err(
+                "constant-time violation: indexing with a @secret value "
+                "leaks it through data-dependent memory access. A "
+                "@constant_time function must not use a secret as an index.",
+                e.pos,
+            )
+
+    def _check_ct_method_index(self, e: A.MethodCall, recv_ty) -> None:
+        """Method-call form of the index check: ``list.get(secret)`` /
+        ``map.get(secret)`` / ``set.contains(secret)`` /
+        ``str.char_at(secret)`` in a ``@constant_time`` function is a
+        data-dependent lookup (the table-lookup timing side channel)."""
+        if not getattr(self, "_constant_time", False):
+            return
+        cap_name = getattr(recv_ty, "name", None)
+        if cap_name is None:
+            return
+        idx_args = _CT_INDEX_METHODS.get((cap_name, e.method))
+        if not idx_args:
+            return
+        for idx in idx_args:
+            if idx < len(e.args) and \
+                    L.normalize(self._label_of(e.args[idx])) == L.SECRET:
+                self._err(
+                    f"constant-time violation: {cap_name}.{e.method} with a "
+                    f"@secret index / key leaks it through data-dependent "
+                    f"memory access (the table-lookup timing side channel). "
+                    f"A @constant_time function must not look up by a secret.",
+                    e.pos,
+                )
+                return
 
     # ---- declassify (roadmap S2.5) -------------------------------
 

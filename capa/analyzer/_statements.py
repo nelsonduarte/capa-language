@@ -235,6 +235,8 @@ class _StatementsMixin:
                 f"if condition must be Bool, got {ty_str(cond_ty)}",
                 s.cond.pos,
             )
+        # Roadmap S4: a @constant_time function cannot branch on a secret.
+        self._ct_reject(self._label_of(s.cond), s.cond.pos, "an if-condition")
         # Flow analysis: snapshot ``_consumed`` before each branch
         # and take the conservative union after. Branches whose
         # body diverges (ends in ``return`` / ``break`` /
@@ -288,6 +290,7 @@ class _StatementsMixin:
                     f"elif condition must be Bool, got {ty_str(cty)}",
                     cond.pos,
                 )
+            self._ct_reject(self._label_of(cond), cond.pos, "an elif-condition")
             acc_pc = L.join(acc_pc, self._label_of(cond))
             self._pc_label = acc_pc
             self._check_block(blk)
@@ -337,6 +340,9 @@ class _StatementsMixin:
                 f"while condition must be Bool, got {ty_str(cty)}",
                 s.cond.pos,
             )
+        # Roadmap S4: a @constant_time function cannot loop on a secret
+        # (the iteration count would leak it).
+        self._ct_reject(self._label_of(s.cond), s.cond.pos, "a while-condition")
         # Two-pass fixed-point flow analysis. Pass 1 (dry-run):
         # visit the body silently to discover which caps will be
         # consumed. Pass 2 (real): pre-mark those caps and run

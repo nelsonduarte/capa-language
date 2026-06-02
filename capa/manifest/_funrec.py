@@ -393,6 +393,7 @@ def _fun_record(
             "produces_linear": return_is_linear,
         },
         "has_unsafe": has_unsafe,
+        "constant_time": any(a.name == "constant_time" for a in fn.attributes),
         "attributes": attrs,
         "calls": calls,
         "declassifications": declassifications,

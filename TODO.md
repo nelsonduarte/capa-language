@@ -927,10 +927,14 @@ Listed so the design space is explicit.
   per-field precision, a mechanised noninterference proof.
 - **Typestate / session types**. Real for network / protocol
   code; concrete pain point even in Rust.
-- **Constant-time markers for crypto**. Niche but high-value
-  for the crypto subset. The CVE case studies already include
-  CWE-208 (timing attack) examples that this would mechanically
-  prevent.
+- **Constant-time markers for crypto**. SHIPPED (S4, analyzer):
+  `@constant_time()` rejects secret-dependent control flow (if /
+  elif / while / if-expr / match) and secret-indexed memory access
+  (`xs[secret]`, list/map/set lookups, `str.char_at`), reusing the S2
+  labels; surfaced in the SBOM as a per-function `constant_time` flag.
+  Mechanically prevents the CWE-208 examples in the CVE case studies.
+  Remaining: defense-in-depth enforcement in the Wasm emitter, and
+  variable-time arithmetic (e.g. division by a secret).
 - **Quantitative capabilities** (budgeted authority). ROI:
   marginal; most rate-limiting use cases are solved at the
   application level.

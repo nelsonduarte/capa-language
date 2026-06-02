@@ -348,6 +348,11 @@ class _DispatchMixin:
         # not launder it back to public.
         self._check_ifc_container_mutation(e, recv_ty)
 
+        # Roadmap S4: in a @constant_time function, a lookup keyed by a
+        # secret (list.get / map.get / set.contains / str.char_at) is a
+        # data-dependent memory access.
+        self._check_ct_method_index(e, recv_ty)
+
         from . import SymbolKind
 
         # Capabilities: consult registered methods. Covers both

@@ -338,6 +338,12 @@ class Analyzer(
         # hard errors instead of warnings. Set per-function in
         # ``_check_fun``, restored on exit.
         self._strict_ifc: bool = False
+        # Roadmap S4 -- True inside a function annotated ``@constant_time``:
+        # a control-flow decision (if / match / while) or an index on a
+        # @secret value is rejected, because it leaks the secret through
+        # timing / data-dependent memory access (CWE-208). Set
+        # per-function in ``_check_fun``, restored on exit.
+        self._constant_time: bool = False
         # Roadmap S2.implicit -- the program-counter (pc) label. SECRET
         # while checking the body of an ``if`` / ``match`` whose
         # condition (or scrutinee) is @secret: a public sink that fires
