@@ -912,13 +912,19 @@ Listed so the design space is explicit.
 
 ### Type-system extensions
 
-- **Linear handles for resources** (must-call types). Smallest
-  of the four extensions, most defensible value-add. ROI: high
-  — closes a concrete bug class (resource leaks).
-- **Information Flow Control (IFC)**. Cost: large; the type
-  system needs a label algebra + noninterference proof. ROI:
-  highest — addresses privacy leakage and prompt-injection
-  attacks where capability discipline alone is not enough.
+- **Linear handles for resources** (must-call types). SHIPPED
+  (S1): `linear type` + `consume self`, `_live_linear` tracking,
+  `linear_obligations` in the SBOM. Closes a concrete bug class
+  (resource leaks).
+- **Information Flow Control (IFC)**. SHIPPED (S2): two-point
+  `@public`/`@secret` lattice, join propagation, secret-by-default
+  `env.get`, secret-to-sink enforcement (warn-then-enforce,
+  `@strict_ifc`), `declassify(value, reason)` recorded in the SBOM as
+  `declassification_sites`, implicit-flow under strict, and
+  anti-laundering through aggregates + mutable containers
+  (intra-procedural, whole-aggregate granularity). Remaining (v2):
+  cross-function inference without explicit `@secret` params,
+  per-field precision, a mechanised noninterference proof.
 - **Typestate / session types**. Real for network / protocol
   code; concrete pain point even in Rust.
 - **Constant-time markers for crypto**. Niche but high-value

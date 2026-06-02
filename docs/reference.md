@@ -446,6 +446,63 @@ fun pure(x: Int) -> Int                   // no capabilities (pure)
 fun with_consume(consume cap: MyCap)      // ownership transfer
 ```
 
+### 6.4. Information-flow control
+
+Capabilities control *which* effects a function may exercise;
+information-flow control constrains *where* data may flow. A
+two-point security lattice (`@public`, the default, below `@secret`)
+attaches to type expressions on parameters, bindings, return types,
+and struct fields:
+
+```capa
+fun handle(token: @secret String, _net: Net) -> Int
+    return 0
+```
+
+**Propagation**. A value's label is the join of the labels that flow
+into it: binary and unary operators, string interpolation
+(`"${secret}"` is secret), field reads (inherit the receiver's
+label), indexing, the `?` operator, and function results (a call with
+a secret argument returns secret). A `match` / `let` destructure of a
+secret scrutinee taints the bound names; aggregate literals (struct /
+list / tuple) carry the join of their element labels; a for-loop
+variable inherits the iterable's label; and a secret pushed / added /
+set into a mutable `List` / `Set` / `Map` taints the container.
+
+**Sources and sinks**. `env.get(...)` is secret-by-default (its
+result is `@secret` with no annotation). The public sinks are
+`Stdio.print` / `println` / `eprintln`, `Net.get` / `post`,
+`Fs.write`, and `Db.exec` / `query`. A `@secret` value reaching a
+sink-position argument is an information-flow violation: a warning by
+default, a hard error inside a function annotated `@strict_ifc()`
+(which also turns on implicit-flow checking, where a sink inside a
+branch guarded by a secret condition is reported).
+
+**Declassification**. `declassify(value, reason: "...")` is the
+single auditable secret-to-public bridge. It is identity at runtime
+and relabels its result `@public`; the `reason` must be a named
+string literal so the manifest can record it. Declassifying a value
+that is not `@secret` is reported as a no-op warning. Every call site
+is recorded in the SBOM as `declassifications` per function and
+`declassification_sites` in the summary.
+
+```capa
+fun leak(env: Env, stdio: Stdio)
+    match env.get("API_KEY")
+        Some(key) -> stdio.println(key)        // violation: secret to a public sink
+        None -> stdio.println("no key")
+
+fun ok(env: Env, stdio: Stdio)
+    match env.get("API_KEY")
+        Some(key) -> stdio.println(declassify(mask(key), reason: "logged masked"))
+        None -> stdio.println("no key")
+```
+
+The analysis is intra-procedural by design (a secret crossing a
+function boundary needs an explicit `@secret` parameter, the
+explicit-flow model) and whole-aggregate in granularity (per-field
+precision is future work).
+
 ---
 
 ## 7. Imports

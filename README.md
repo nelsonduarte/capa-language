@@ -78,7 +78,25 @@ not take `stdio: Stdio`.
 
 Capabilities can also be **attenuated**: `fs.restrict_to("data/")`
 returns a fresh `Fs` whose authority is narrowed to that prefix,
-and the narrowing is monotonic by construction. The
+and the narrowing is monotonic by construction.
+
+Capabilities control *which* effects a function may exercise;
+**information-flow control** constrains *where* data may flow. Mark
+data `@secret` and the compiler proves it cannot reach a public sink
+(a log line, a network call, a file write) unless you route it
+through an audited `declassify`:
+
+```capa
+fun leak(env: Env, stdio: Stdio)
+    match env.get("API_KEY")              // env.get is @secret by default
+        Some(key) -> stdio.println(key)   // information-flow violation: secret to a public sink
+        None -> stdio.println("no key")
+```
+
+`declassify(value, reason: "...")` is the single auditable
+secret-to-public bridge, and every use is recorded in the SBOM as
+`declassification_sites`, so the manifest says exactly where, and why,
+a program discloses sensitive data. The
 [tour](https://capa-language.com/tour.html) walks through the
 rest of the feature set.
 
@@ -236,20 +254,26 @@ LICENSE  STABILITY.md  CONTRIBUTING.md  SECURITY.md  README.md
 
 ## Status
 
-Capa currently ships as **`1.0.0-rc.3`**, with the Wasm
-Component Model backend on the `main` branch ahead of the next
-release tag (see [`CHANGELOG.md`](CHANGELOG.md) Unreleased
-section). The stability commitment that starts with `1.0.0` is
-documented in [`STABILITY.md`](STABILITY.md); the short version
-is "post-1.0, breaking changes require a major bump, deprecations
-get one minor release of warning first".
+Capa currently ships as **`1.0.0-rc.5`**, with information-flow
+control and the now fully functional Wasm backend on the `main`
+branch ahead of the next release tag (see
+[`CHANGELOG.md`](CHANGELOG.md) Unreleased section). The stability
+commitment that starts with `1.0.0` is documented in
+[`STABILITY.md`](STABILITY.md); the short version is "post-1.0,
+breaking changes require a major bump, deprecations get one minor
+release of warning first".
 
-**1214 tests** spanning the lexer, parser, analyzer, transpiler,
-LSP, formatter, attribute-schema validation, package manager,
-the Wasm backend, and Hypothesis-based property tests. The
-transpiler suite actually executes the generated Python and
-checks stdout; the property suite fuzzes the full pipeline with
-arbitrary text and syntax-aware Capa programs.
+**2203 tests** spanning the lexer, parser, analyzer, transpiler,
+LSP, formatter, attribute-schema validation, package manager, the
+information-flow checker, the Wasm backend (with a Python/Wasm output
+parity harness), and Hypothesis-based property tests. The transpiler
+suite actually executes the generated Python and checks stdout; the
+property suite fuzzes the full pipeline with arbitrary text and
+syntax-aware Capa programs. The Wasm backend runs every capability
+(Fs, Env, Clock, Stdio, Net, Random, Db, Proc) and the full language
+surface with output byte-identical to the Python reference, and
+cross-function capability attenuation is enforced soundly at the Wasm
+runtime via host-side handle tables.
 
 Run them:
 

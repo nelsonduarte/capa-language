@@ -9,6 +9,61 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+### Information-flow control: @secret / @public labels + declassify
+
+Capabilities control which effects a function may exercise; this
+release adds information-flow control, which constrains where data
+may flow. A two-point security lattice (`@public` below `@secret`)
+attaches to type expressions, parameters, and struct fields
+(`token: @secret String`). Labels propagate automatically by join
+through every derived value: arithmetic, string interpolation
+(`"${secret}"` is secret), field reads, indexing, the `?` operator,
+and function results (a call with a secret argument returns secret).
+
+`env.get(...)` is a secret-by-default source: its result is `@secret`
+with no annotation, so the read-a-key-then-exfiltrate case is caught
+without the programmer labelling anything. A `@secret` value that
+reaches a public sink (`Stdio.print/println/eprintln`, `Net.get/post`,
+`Fs.write`, `Db.exec/query`) is an information-flow violation. The
+rollout is warn-then-enforce: a compile-time warning by default, a
+hard error inside a function annotated `@strict_ifc()`.
+
+`declassify(value, reason: "...")` is the single auditable
+secret-to-public bridge. It is identity at runtime and relabels the
+result `@public`; the `reason` must be a named string literal.
+Declassifying a non-secret value is reported as a no-op warning. Every
+call site is recorded in the manifest as `declassifications` per
+function (`reason`, `value`, `pos`) and counted as
+`declassification_sites` in the summary, so the SBOM carries a
+machine-checkable record of exactly where, and why, a program
+discloses sensitive data.
+
+Implicit flow (a sink inside a branch guarded by a `@secret`
+condition) is enforced under `@strict_ifc` only, so the default tier
+stays focused on the high-value explicit data leaks. Laundering is
+closed intra-procedurally: aggregate literals (struct / list / tuple)
+carry the join of their element labels, a for-loop variable inherits
+the iterable's label, and a secret pushed / added / set into a mutable
+`List` / `Set` / `Map` taints the container. The analysis is
+intra-procedural by design (a secret crossing a function boundary
+needs an explicit `@secret` parameter) and whole-aggregate in
+granularity (per-field precision is future work). New flagship example
+`capa_paymentguard` exercises the whole story on a PCI DSS / PSD2
+payment-security core.
+
+### Wasm: Stdio.read_line parity coverage
+
+`Stdio.read_line` worked end-to-end on the core and Component Model
+Wasm hosts but had no parity test, the last method of the
+host-bridge pile left uncovered. Added a stdin-fixtured parity test
+(core + Component Model) and the `read_line_echo.capa` example. With
+this, every host-bridged capability method (`read_line`, `Clock.sleep`,
+`Fs.exists/is_dir/mkdir/list_dir`, `Env/Fs/Clock.allows`) has Wasm
+parity coverage, and the "fully functional Wasm" arc (all capabilities,
+Random, Net, String methods, Map.keys/values, tuple arities, range
+iteration, Option/Result higher-order methods) is verified against the
+Python reference.
+
 ## [1.0.0-rc.5], 2026-05-27
 
 ### Manifest: source-level names in SBOM emission
