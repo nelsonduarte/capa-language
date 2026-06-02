@@ -410,7 +410,11 @@ class _ExpressionsMixin:
                     e.pos,
                 )
             return unwrap_ty
+        if isinstance(e, A.Become):
+            return self._check_become(e)
         if isinstance(e, A.StructLit):
+            if e.state is not None:
+                return self._check_typestate_new(e)
             return self._check_struct_lit(e)
         if isinstance(e, A.ListLit):
             return self._check_list_lit(e)
@@ -672,6 +676,66 @@ class _ExpressionsMixin:
                     return substitute(fty, mapping)
                 return fty
         return TyUnknown
+
+    def _check_typestate_new(self, e: A.StructLit) -> Ty:
+        """Roadmap S3.2: ``Name[State] {}`` constructs a fresh typestate
+        value in ``State``. The value is linear (the constructing
+        ``let`` registers the must-consume obligation). v1 typestates
+        carry no fields, so the braces must be empty."""
+        name = e.type_name
+        states = self._typestates.get(name)
+        if states is None:
+            self._err(
+                f"{name!r} is not a typestate; only a typestate can be "
+                f"constructed with a state index ``{name}[State] {{}}``",
+                e.pos,
+            )
+            for _, v in e.fields:
+                self._check_expr(v)
+            return TyUnknown
+        if e.state not in states:
+            self._err(
+                f"typestate {name!r} has no state {e.state!r} "
+                f"(states: {', '.join(states)})",
+                e.pos,
+            )
+        if e.fields:
+            self._err(
+                f"typestate {name!r} carries no fields in this version; "
+                f"write ``{name}[{e.state}] {{}}``",
+                e.pos,
+            )
+            for _, v in e.fields:
+                self._check_expr(v)
+        return TyName(name, state=e.state)
+
+    def _check_become(self, e: A.Become) -> Ty:
+        """Roadmap S3.2: ``become(value, State)`` transitions a
+        typestate value. It consumes ``value`` in its current state
+        (the must-consume obligation moves to the result) and yields the
+        same value re-typed to ``State``, so the protocol advances
+        without dropping or duplicating the value."""
+        val_ty = self._check_expr(e.value)
+        if not (isinstance(val_ty, TyName) and val_ty.name in self._typestates):
+            self._err(
+                f"become expects a typestate value, got {ty_str(val_ty)}",
+                e.value.pos,
+            )
+            return TyUnknown
+        states = self._typestates[val_ty.name]
+        if e.state not in states:
+            self._err(
+                f"typestate {val_ty.name!r} has no state {e.state!r} "
+                f"(states: {', '.join(states)})",
+                e.pos,
+            )
+            return TyName(val_ty.name, state=val_ty.state)
+        # The old-state value is consumed: its linear obligation moves
+        # to the freshly-typed result (which the surrounding binding
+        # re-registers as live).
+        if isinstance(e.value, A.Ident):
+            self._linear_discharge(e.value.name)
+        return TyName(val_ty.name, state=e.state)
 
     def _check_struct_lit(self, e: A.StructLit) -> Ty:
         from . import SymbolKind

@@ -65,6 +65,7 @@ class TestEmptyModule(unittest.TestCase):
             "functions_with_attributes": 0,
             "functions_crossing_unsafe": 0,
             "declassification_sites": 0,
+            "protocol_states": 0,
         })
 
     def test_empty_module_still_carries_schema_version(self):
@@ -119,6 +120,7 @@ class TestTopLevelShape(unittest.TestCase):
         "schema_version",
         "filename",
         "user_defined_capabilities",
+        "typestates",
         "functions",
         "summary",
     }
@@ -129,6 +131,7 @@ class TestTopLevelShape(unittest.TestCase):
         "functions_with_attributes",
         "functions_crossing_unsafe",
         "declassification_sites",
+        "protocol_states",
     }
 
     def test_required_top_level_keys_present(self):

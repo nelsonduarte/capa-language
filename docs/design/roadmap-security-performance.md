@@ -125,9 +125,12 @@ type-checker faz cumprir o protocolo de graça (`Socket[Created]` !=
 `Socket[Connected]`); uma transição e so uma funcao que consome um
 estado e devolve outro. Entregue: a declaracao, a sintaxe `Name[State]`,
 compatibilidade estado-exata (compatible/unify/ty_str), registo como
-linear, e validacao dos nomes de estado. Pendente: construcao in-body +
-forma ergonomica de transicao (S3.2), metodos com receiver por estado,
-e o surface `protocol_states` no SBOM.
+linear, e validacao dos nomes de estado. S3.2 tornou-o utilizavel:
+construcao `Name[State] {}` + transicao `become(value, State)` (consome
+o valor antigo, a obrigacao linear move-se para o resultado); um
+protocolo completo verifica e corre no backend Python, e o SBOM ganhou
+`typestates` (cada protocolo + estados) e `protocol_states` no sumario.
+Pendente: lowering para Wasm e metodos com receiver por estado (S3.3).
 
 ### S4: Constant-time markers para crypto
 **ROI: nicho mas mecanicamente verificável. Esforço: ~3 slices. Dependências: nenhuma.**

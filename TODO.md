@@ -925,11 +925,14 @@ Listed so the design space is explicit.
   (intra-procedural, whole-aggregate granularity). Remaining (v2):
   cross-function inference without explicit `@secret` params,
   per-field precision, a mechanised noninterference proof.
-- **Typestate / session types**. Foundation SHIPPED (S3.1): the
-  state lives in the type (`typestate Name` + `Name[State]`), a value
-  is linear, and the type checker enforces the protocol via state-exact
-  compatibility. Remaining: in-body construction + ergonomic transition
-  form (S3.2), state-specific receiver methods, SBOM `protocol_states`.
+- **Typestate / session types**. SHIPPED (S3.1 + S3.2, Python
+  backend): the state lives in the type (`typestate Name` +
+  `Name[State]`), a value is linear, and the type checker enforces the
+  protocol via state-exact compatibility. Construction `Name[State] {}`
+  + transition `become(value, State)` make a full protocol type-check
+  and run; the SBOM carries `typestates` + a `protocol_states` count.
+  Remaining (S3.3): Wasm lowering (opaque-token ABI), state-specific
+  receiver methods, and typestate fields/payloads (v1 is fieldless).
 - **Constant-time markers for crypto**. SHIPPED (S4, analyzer):
   `@constant_time()` rejects secret-dependent control flow (if /
   elif / while / if-expr / match) and secret-indexed memory access

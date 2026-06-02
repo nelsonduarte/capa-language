@@ -172,6 +172,16 @@ class Lowerer(
                 imports.append(
                     ImportDecl(path=list(item.path), alias=item.alias)
                 )
+            elif isinstance(item, A.TypestateDecl):
+                # Roadmap S3: typestate is Python-backend-only in v1. The
+                # Wasm lowering (opaque-token ABI + the construction /
+                # become forms) is a focused S3.3 task; reject the whole
+                # module cleanly here so ``--wasm`` fails early with a
+                # clear message (``--prefer-wasm`` falls back to Python).
+                raise UnsupportedInIR(
+                    "typestate types are not yet supported on the Wasm "
+                    "backend (Python backend only in this version)"
+                )
             else:
                 raise UnsupportedInIR(
                     f"top-level item {type(item).__name__}"

@@ -188,11 +188,25 @@ def build_manifest(
         ),
     }
 
+    # Roadmap S3: the protocols (typestates) the module declares, with
+    # their ordered states. A regulator-facing record of the state
+    # machines the program enforces by construction.
+    protocol_states = [
+        {
+            "name": _demangle(item.name)[0],
+            "states": list(item.states),
+        }
+        for item in module.items
+        if isinstance(item, A.TypestateDecl)
+    ]
+    summary["protocol_states"] = len(protocol_states)
+
     return {
         "capa_version": capa_version,
         "schema_version": SCHEMA_VERSION,
         "filename": filename,
         "user_defined_capabilities": user_caps,
+        "typestates": protocol_states,
         "functions": functions,
         "summary": summary,
     }

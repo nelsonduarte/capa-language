@@ -35,6 +35,7 @@ from __future__ import annotations
 
 from ._base import Expr, Item, Node, Pattern, Stmt, TypeExpr
 from ._exprs import (
+    Become,
     BinOp,
     BoolLit,
     Call,

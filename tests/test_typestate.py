@@ -122,5 +122,112 @@ class TestTypestateAnalyzer(unittest.TestCase):
                          ["Created", "Connected", "Closed"])
 
 
+_DOOR = (
+    "typestate Door\n"
+    "    Open\n"
+    "    Closed\n"
+    "fun open_door(consume d: Door[Closed]) -> Door[Open]\n"
+    "    return become(d, Open)\n"
+    "fun walk_through(d: Door[Open])\n"
+    "    return\n"
+    "fun discard(consume d: Door[Open])\n"
+    "    return\n"
+)
+
+
+class TestTypestateConstructionAndTransition(unittest.TestCase):
+    """Roadmap S3.2: ``Name[State] {}`` constructs and ``become(v,
+    State)`` transitions; a full protocol type-checks and runs."""
+
+    def test_full_protocol_checks(self):
+        errs = _errors(
+            _DOOR
+            + "fun main(_s: Stdio)\n"
+            + "    let d = Door[Closed] {}\n"
+            + "    let d2 = open_door(d)\n"
+            + "    walk_through(d2)\n"
+            + "    discard(d2)\n"
+        )
+        self.assertEqual(errs, [])
+
+    def test_wrong_state_operation_rejected(self):
+        errs = _errors(
+            _DOOR
+            + "fun main(_s: Stdio)\n"
+            + "    let d = Door[Closed] {}\n"
+            + "    walk_through(d)\n"
+            + "    discard(d)\n"
+        )
+        self.assertTrue(
+            any("Door[Open]" in e and "Door[Closed]" in e for e in errs),
+            errs,
+        )
+
+    def test_constructed_value_must_be_consumed(self):
+        errs = _errors(
+            _DOOR
+            + "fun main(_s: Stdio)\n"
+            + "    let d = Door[Closed] {}\n"
+            + "    return\n"
+        )
+        self.assertTrue(any("dropped without being consumed" in e
+                            for e in errs), errs)
+
+    def test_become_to_unknown_state_rejected(self):
+        errs = _errors(
+            _DOOR
+            + "fun main(_s: Stdio)\n"
+            + "    let d = Door[Closed] {}\n"
+            + "    let d2 = become(d, Ajar)\n"
+            + "    discard(d2)\n"
+        )
+        self.assertTrue(any("no state 'Ajar'" in e for e in errs), errs)
+
+    def test_become_on_non_typestate_rejected(self):
+        errs = _errors("fun f(x: Int) -> Int\n    return become(x, Open)\n")
+        self.assertTrue(any("become expects a typestate" in e
+                            for e in errs), errs)
+
+    def test_construct_non_typestate_rejected(self):
+        errs = _errors("fun f()\n    let x = Int[Open] {}\n    return\n")
+        self.assertTrue(any("is not a typestate" in e for e in errs), errs)
+
+    def test_protocol_runs_on_python_backend(self):
+        from capa import transpile
+        src = (
+            _DOOR
+            + "fun main(stdio: Stdio)\n"
+            + "    let d = Door[Closed] {}\n"
+            + "    let d2 = open_door(d)\n"
+            + "    walk_through(d2)\n"
+            + "    discard(d2)\n"
+            + "    stdio.println(\"done\")\n"
+        )
+        m = _parse(src)
+        result = analyze(m, source=src)
+        self.assertTrue(result.ok, [e.message for e in result.errors])
+        code = transpile(m, types=result.types, bindings=result.bindings)
+        import io
+        from contextlib import redirect_stdout
+        ns = {"__name__": "__main__"}
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            exec(compile(code, "<ts>", "exec"), ns)
+        self.assertIn("done", buf.getvalue())
+
+
+class TestTypestateManifest(unittest.TestCase):
+    def test_protocol_states_in_manifest(self):
+        from capa.manifest import build_manifest
+        m = _parse(_BASE)
+        manifest = build_manifest(m, filename="<test>")
+        self.assertEqual(manifest["summary"]["protocol_states"], 1)
+        self.assertEqual(
+            manifest["typestates"],
+            [{"name": "Socket",
+              "states": ["Created", "Connected", "Closed"]}],
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

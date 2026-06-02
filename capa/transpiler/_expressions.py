@@ -109,7 +109,17 @@ class _ExpressionsMixin:
             return f"{recv}[{idx}]"
         if isinstance(e, A.Try):
             return self._emit_try(e)
+        if isinstance(e, A.Become):
+            # Roadmap S3.2: a transition is identity at runtime; only the
+            # state-type changes (a compile-time property). The value
+            # flows through unchanged.
+            return self._emit_expr(e.value)
         if isinstance(e, A.StructLit):
+            if e.state is not None:
+                # Roadmap S3.2: a v1 typestate carries no data, so its
+                # runtime value is an opaque token (None, like unit). The
+                # protocol is enforced entirely at compile time.
+                return "None"
             parts = []
             for fname, fexpr in e.fields:
                 parts.append(f"{_safe_ident(fname)}={self._emit_expr(fexpr)}")

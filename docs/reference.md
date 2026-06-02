@@ -571,9 +571,30 @@ fun close(consume s: Socket[Connected])
 ```
 
 A `[State]` index is only valid on a typestate, and the state must be
-one the typestate declares. This is the foundation slice (S3.1): the
-in-body transition form and the SBOM `protocol_states` surface are
-follow-ups.
+one the typestate declares.
+
+A value is constructed with `Name[State] {}` (v1 typestates carry no
+fields, so the braces are empty) and transitioned with `become(value,
+State)`, which consumes the value in its current state and yields it
+re-typed to the new one:
+
+```capa
+fun open_door(consume d: Door[Closed]) -> Door[Open]
+    return become(d, Open)
+
+fun main(_s: Stdio)
+    let d = Door[Closed] {}
+    let d = open_door(d)        // d is now Door[Open]
+    walk_through(d)             // requires Door[Open]
+```
+
+Because the value is linear, a constructed typestate that is never
+consumed (transitioned to a terminal operation or passed to a `consume`
+parameter) is a compile-time error, so a protocol cannot be silently
+abandoned mid-way. The manifest records each declared protocol and its
+states under `typestates` (and a `protocol_states` count in the
+summary). Typestate is Python-backend only in this version; Wasm
+support and state-specific receiver methods are follow-ups.
 
 ---
 

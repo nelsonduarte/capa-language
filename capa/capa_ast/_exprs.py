@@ -153,10 +153,24 @@ class Try(Expr):
 
 @dataclass(kw_only=True)
 class StructLit(Expr):
-    """Type { field: value, ... }"""
+    """Type { field: value, ... }
+
+    ``state`` is set for a typestate construction ``Type[State] { }``
+    (roadmap S3.2); ``None`` for an ordinary struct literal."""
     type_name: str
     type_args: list[TypeExpr] = field(default_factory=list)
     fields: list[tuple[str, Expr]]
+    state: "str | None" = None
+
+
+@dataclass(kw_only=True)
+class Become(Expr):
+    """``become(value, State)`` -- a typestate transition (roadmap
+    S3.2). Consumes the typestate ``value`` and yields it re-typed to
+    ``state``, preserving identity so the linearity obligation moves to
+    the new-state value rather than being dropped."""
+    value: Expr
+    state: str
 
 
 @dataclass(kw_only=True)

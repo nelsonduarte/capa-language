@@ -21,13 +21,22 @@ checker enforces the protocol: `Socket[Created]` and
 is expected is a compile-time error. A transition is then just a
 function that consumes a value in one state and returns it in another.
 
-This slice ships the type-level foundation: the `typestate`
+The foundation (S3.1) ships the type-level machinery: the `typestate`
 declaration, the `Name[State]` type syntax, state-exact type
 compatibility (in `compatible` / `unify` / `ty_str`), registration of
 typestate types as linear, and validation that every `[State]` names a
-declared state. In-body construction and the ergonomic transition form
-land in the next slice (S3.2), as does the SBOM `protocol_states`
-surface.
+declared state.
+
+S3.2 makes it usable: `Name[State] {}` constructs a value in a state,
+and `become(value, State)` transitions it (consuming the old-state
+value so its must-consume obligation moves to the result rather than
+being dropped or duplicated). A full protocol now type-checks and runs
+on the Python backend: a wrong-state operation, a dropped value, or a
+bad transition target are all compile-time errors. The manifest gains
+a top-level `typestates` list (each protocol with its ordered states)
+and a `protocol_states` summary count. Typestate is Python-backend
+only in this version; Wasm lowering and state-specific receiver methods
+are follow-ups (S3.3).
 
 ### Constant-time markers: @constant_time (roadmap S4)
 

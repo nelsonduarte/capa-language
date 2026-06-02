@@ -358,6 +358,9 @@ class _ExpressionsMixin:
             self._advance()
             return A.Ident(pos=tok.start, name="self")
 
+        if tok.kind == T.KW_BECOME:
+            return self._parse_become_expr()
+
         if tok.kind == T.KW_MATCH:
             return self._parse_match_expr()
 
@@ -418,6 +421,27 @@ class _ExpressionsMixin:
         is the inline-arm form, not a struct literal as the scrutinee.
         """
         tok = self._advance()
+        # Typestate construction: Type[State] { } (roadmap S3.2). An
+        # uppercase name, then ``[State]``, then ``{`` -- the braces
+        # disambiguate from indexing (``Type[i]`` with no brace stays a
+        # plain index expression). Only consume the bracket form when it
+        # is actually followed by ``{``.
+        state: "str | None" = None
+        if (
+            tok.text and tok.text[0].isupper()
+            and self._check(T.LBRACKET)
+            and not self._no_struct_lit
+        ):
+            save = self.idx
+            self._advance()  # [
+            if self._check(T.IDENT):
+                st = self._advance().text
+                if self._match(T.RBRACKET) and self._check(T.LBRACE):
+                    state = st
+                else:
+                    self.idx = save
+            else:
+                self.idx = save
         # Struct literal: Type { field: value, ... }
         # Convention: name starts with an uppercase letter.
         if (
@@ -431,8 +455,27 @@ class _ExpressionsMixin:
                 pos=tok.start,
                 type_name=tok.text,
                 fields=fields,
+                state=state,
             )
         return A.Ident(pos=tok.start, name=tok.text)
+
+    def _parse_become_expr(self) -> A.Expr:
+        """``become(value, State)`` -- a typestate transition (roadmap
+        S3.2). The second argument is a bare state name, not an
+        expression, so it is parsed as an identifier."""
+        start = self._advance().start  # 'become'
+        self._expect(T.LPAREN, "expected '(' after 'become'")
+        value = self._parse_expr()
+        self._expect(
+            T.COMMA,
+            "expected ',' between the value and the target state in "
+            "become(value, State)",
+        )
+        state = self._expect(
+            T.IDENT, "expected a target state name in become(value, State)",
+        ).text
+        self._expect(T.RPAREN, "expected ')' to close become(...)")
+        return A.Become(pos=start, value=value, state=state)
 
     def _parse_struct_lit_fields(self) -> list[tuple[str, A.Expr]]:
         fields: list[tuple[str, A.Expr]] = []
