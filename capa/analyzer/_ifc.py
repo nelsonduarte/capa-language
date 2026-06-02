@@ -9,11 +9,13 @@ references take their label from the binding's ``Symbol.label`` (set
 from a ``@secret`` / ``@public`` annotation when the binding was
 declared).
 
-This slice only PROPAGATES labels. Enforcement (a ``secret`` value
-reaching a ``public`` sink) and the source-cap labelling
-(``env.get`` -> secret) land in later S2 slices; until then the
-labels are computed but no flow is rejected, so behaviour is
-unchanged.
+Label propagation (S2.3) computes the labels; sink enforcement
+(S2.4, ``_check_ifc_sink``) reports when a ``secret`` value reaches a
+public-exfiltration sink (Stdio.println, Net.post, Fs.write, ...).
+Warn-then-enforce: a non-fatal warning by default, a hard error under
+``@strict_ifc``. The source-cap labelling (``env.get`` -> secret),
+``declassify`` + SBOM, and implicit (control-flow) leaks land in
+later S2 slices.
 
 Children are always visited before their parent (``_check_expr``
 recurses into operands first), so when ``_label_of_expr`` runs for a
@@ -24,6 +26,31 @@ from __future__ import annotations
 
 from .. import capa_ast as A
 from .. import _labels as L
+
+
+# Built-in capability methods that exfiltrate data out of the program
+# -- the public sinks. A ``@secret`` value reaching any of these
+# argument positions is an information-flow violation unless it was
+# declassified. Keyed by ``(CapName, method)`` -> the set of 0-based
+# argument indices that are sinks. Roadmap S2.4.
+#
+# Receiver-only / pure-query methods (allows, exists, read, get from
+# Env, now_secs, ...) are NOT sinks: they bring data IN or inspect,
+# they don't send it out. ``restrict_to*`` take a config string, not
+# user data. The path argument of fs.write is included (a secret
+# written to an attacker-chosen path is still disclosure), as is the
+# URL of net.get/post (a secret in a URL leaks via the request line /
+# server logs).
+_PUBLIC_SINKS: dict[tuple[str, str], set[int]] = {
+    ("Stdio", "print"):    {0},
+    ("Stdio", "println"):  {0},
+    ("Stdio", "eprintln"): {0},
+    ("Net", "get"):        {0},
+    ("Net", "post"):       {0, 1},
+    ("Fs", "write"):       {0, 1},
+    ("Db", "exec"):        {0, 1},
+    ("Db", "query"):       {0, 1},
+}
 
 
 class _IfcMixin:
@@ -113,3 +140,60 @@ class _IfcMixin:
         # expr, ...) is public by default in this slice; richer
         # propagation through those forms is a follow-up.
         return L.PUBLIC
+
+    # ---- sink enforcement (roadmap S2.4) -------------------------
+
+    def _check_ifc_sink(self, e: A.MethodCall, recv_ty) -> None:
+        """If ``e`` calls a public-sink capability method with a
+        ``@secret`` argument in a sink position, report a flow
+        violation. Warn-then-enforce: a warning by default (so
+        existing unlabelled code is unaffected and labelled code
+        surfaces the disclosure), a hard error when the enclosing
+        function opted into ``@strict_ifc``.
+
+        The arguments were just typed by ``_check_method_call``, so
+        their labels are already in ``self._expr_labels``."""
+        if not isinstance(recv_ty, A.TypeName) and not _is_ty_name(recv_ty):
+            return
+        cap_name = getattr(recv_ty, "name", None)
+        if cap_name is None:
+            return
+        sink_args = _PUBLIC_SINKS.get((cap_name, e.method))
+        if not sink_args:
+            return
+        for idx in sorted(sink_args):
+            if idx >= len(e.args):
+                continue
+            arg = e.args[idx]
+            if L.normalize(self._label_of(arg)) != L.SECRET:
+                continue
+            msg = (
+                f"information-flow: a @secret value reaches "
+                f"{cap_name}.{e.method} (argument {idx + 1}), a public "
+                f"sink that sends data out of the program. Route it "
+                f"through declassify(value, reason: \"...\") if this "
+                f"disclosure is intended."
+            )
+            if getattr(self, "_strict_ifc", False):
+                self._err(msg, arg.pos)
+            else:
+                self._warn_ifc(msg, arg.pos)
+
+    def _warn_ifc(self, message: str, pos) -> None:
+        """Record a non-fatal IFC warning (does not affect ``ok``).
+        Mirrors ``_err`` but routes to ``self.warnings``."""
+        from . import AnalysisError
+        src = self.source
+        fname = self.filename
+        if pos.filename and pos.filename in self.sources:
+            src = self.sources[pos.filename]
+            fname = pos.filename
+        self.warnings.append(AnalysisError(message, pos, src, fname))
+
+
+def _is_ty_name(ty) -> bool:
+    """True if ``ty`` is a TyName (the analyzer's resolved type), not
+    the AST TypeName. Kept tolerant so the sink check works whether
+    the receiver type is the resolved TyName or anything carrying a
+    ``.name``."""
+    return type(ty).__name__ == "TyName"

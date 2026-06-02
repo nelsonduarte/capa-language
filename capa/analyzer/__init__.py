@@ -228,6 +228,13 @@ class AnalysisResult:
     # site to its Symbol even when the declaration has no
     # references elsewhere in the file.
     global_symbols: dict[str, Symbol] = field(default_factory=dict)
+    # Non-fatal diagnostics (roadmap S2.4): information-flow warnings
+    # under the warn-then-enforce roll-out. These do NOT affect
+    # ``ok`` -- a program with an unlabelled-era secret->sink flow
+    # still compiles, but the warning surfaces the disclosure. They
+    # become hard errors when the function opts into ``@strict_ifc``
+    # (those go in ``errors``, not here).
+    warnings: list[AnalysisError] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
@@ -298,6 +305,8 @@ class Analyzer(
         self.global_scope = Scope()
         self.scope = self.global_scope
         self.errors: list[AnalysisError] = []
+        # Non-fatal IFC warnings (roadmap S2.4, warn-then-enforce).
+        self.warnings: list[AnalysisError] = []
         self.types: dict[int, Ty] = {}
         self.bindings: dict[int, Symbol] = {}
         # Return type of the function currently being analyzed,
@@ -324,6 +333,11 @@ class Analyzer(
         # from its children's labels. Read by sink-enforcement /
         # SBOM-emission in later S2 slices.
         self._expr_labels: dict[int, str] = {}
+        # Roadmap S2.4 -- True inside a function annotated
+        # ``@strict_ifc``: information-flow sink violations become
+        # hard errors instead of warnings. Set per-function in
+        # ``_check_fun``, restored on exit.
+        self._strict_ifc: bool = False
         # Roadmap S1 -- linear (must-consume) types. Names of structs
         # declared ``linear type``; populated once per ``analyze`` from
         # the module items. A value of a linear type must be consumed
@@ -396,6 +410,7 @@ class Analyzer(
             self._check_item(item)
         return AnalysisResult(
             errors=self.errors,
+            warnings=self.warnings,
             types=self.types,
             bindings=self.bindings,
             global_symbols=dict(self.global_scope.symbols),

@@ -170,5 +170,91 @@ class TestLabelPropagation(unittest.TestCase):
         self.assertTrue(r.ok, [e.message for e in r.errors])
 
 
+class TestSinkEnforcement(unittest.TestCase):
+    """Roadmap S2.4: a @secret value reaching a public sink
+    (Stdio.println, Net.post, Fs.write, ...) is a flow violation --
+    a warning by default (warn-then-enforce), a hard error under
+    @strict_ifc."""
+
+    def _analyze(self, src: str):
+        from capa import analyze
+        m = _parse(src)
+        return analyze(m, source=src)
+
+    def test_secret_to_println_warns_not_errors(self):
+        r = self._analyze(
+            "fun h(token: @secret String, stdio: Stdio)\n"
+            "    stdio.println(token)\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(len(r.warnings), 1)
+        self.assertIn("information-flow", r.warnings[0].message)
+        self.assertIn("Stdio.println", r.warnings[0].message)
+
+    def test_secret_via_interpolation_warns(self):
+        r = self._analyze(
+            "fun h(token: @secret String, stdio: Stdio)\n"
+            "    stdio.println(\"value=${token}\")\n"
+        )
+        self.assertEqual(len(r.warnings), 1)
+
+    def test_public_to_sink_is_clean(self):
+        r = self._analyze(
+            "fun h(stdio: Stdio)\n"
+            "    stdio.println(\"plain\")\n"
+        )
+        self.assertEqual(len(r.warnings), 0)
+        self.assertEqual(len(r.errors), 0)
+
+    def test_secret_not_reaching_sink_is_clean(self):
+        r = self._analyze(
+            "fun h(token: @secret String, _s: Stdio)\n"
+            "    let x = token\n"
+            "    _s.println(\"unrelated\")\n"
+        )
+        self.assertEqual(len(r.warnings), 0)
+
+    def test_strict_ifc_turns_warning_into_error(self):
+        r = self._analyze(
+            "@strict_ifc()\n"
+            "fun h(token: @secret String, stdio: Stdio)\n"
+            "    stdio.println(token)\n"
+        )
+        self.assertFalse(r.ok)
+        self.assertEqual(len(r.errors), 1)
+        self.assertIn("information-flow", r.errors[0].message)
+
+    def test_strict_ifc_clean_flow_compiles(self):
+        r = self._analyze(
+            "@strict_ifc()\n"
+            "fun h(stdio: Stdio)\n"
+            "    stdio.println(\"ok\")\n"
+        )
+        self.assertTrue(r.ok)
+
+    def test_strict_ifc_does_not_leak_to_sibling_function(self):
+        # The strict flag is per-function: a non-strict function
+        # after a strict one still only warns.
+        r = self._analyze(
+            "@strict_ifc()\n"
+            "fun strict_one(token: @secret String, stdio: Stdio)\n"
+            "    let x = token\n"
+            "    stdio.println(\"clean\")\n"
+            "fun loose(token: @secret String, stdio: Stdio)\n"
+            "    stdio.println(token)\n"
+        )
+        # loose's flow is a warning, not an error -> still ok.
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(len(r.warnings), 1)
+
+    def test_net_post_body_is_a_sink(self):
+        r = self._analyze(
+            "fun h(token: @secret String, net: Net)\n"
+            "    let _ = net.post(\"http://x/y\", token)\n"
+        )
+        self.assertEqual(len(r.warnings), 1)
+        self.assertIn("Net.post", r.warnings[0].message)
+
+
 if __name__ == "__main__":
     unittest.main()

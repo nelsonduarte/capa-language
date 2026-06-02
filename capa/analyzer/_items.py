@@ -43,6 +43,10 @@ class _ItemsMixin:
         "deprecated": {"reason", "since", "use", "removed_in"},
         "audited":    {"date", "by", "scope", "notes"},
         "vex":        {"cve", "status", "justification", "detail"},
+        # Roadmap S2.4: opt into fail-closed information-flow checking
+        # for this function. Without it, a secret-reaches-public-sink
+        # flow is a warning (warn-then-enforce); with it, a hard error.
+        "strict_ifc": set(),
     }
 
     def _check_item(self, item: A.Item) -> None:
@@ -121,6 +125,14 @@ class _ItemsMixin:
 
         self._push_type_params(fn.type_params)
         self._push_scope(is_function_root=True)
+
+        # Roadmap S2.4: a function opting into ``@strict_ifc`` turns
+        # information-flow sink warnings into hard errors for its body.
+        # Saved/restored so nested functions don't inherit it.
+        prev_strict_ifc = getattr(self, "_strict_ifc", False)
+        self._strict_ifc = any(
+            a.name == "strict_ifc" for a in fn.attributes
+        )
 
         # Capability parameters: collected so the analyzer can
         # warn at the end of the body if any are declared but
@@ -235,6 +247,7 @@ class _ItemsMixin:
                 psym.pos,
             )
 
+        self._strict_ifc = prev_strict_ifc
         self._pop_scope()
         self._pop_type_params()
 

@@ -1069,6 +1069,16 @@ def main() -> int:
             sources=sources_map,
             module_privates=privates_map,
         )
+        # Non-fatal warnings (e.g. information-flow secret->sink under
+        # the warn-then-enforce roll-out, roadmap S2.4) print
+        # regardless of whether the program compiles.
+        for warn in getattr(result, "warnings", []):
+            text = warn.format(severity="warning")
+            if use_color:
+                print(f"{C.YELLOW}{text}{C.RESET}", file=sys.stderr)
+            else:
+                print(text, file=sys.stderr)
+            print(file=sys.stderr)
         if not result.ok:
             for err in result.errors:
                 if use_color:

@@ -327,6 +327,14 @@ class _DispatchMixin:
         slots.extend((a, f"argument {i + 1}") for i, a in enumerate(e.args))
         self._check_no_aliasing(slots)
 
+        # Roadmap S2.4: information-flow sink check. When the receiver
+        # is a built-in capability whose method exfiltrates data
+        # (Stdio.println, Net.post, Fs.write, ...), a ``@secret``
+        # argument reaching it is a flow violation unless it was
+        # declassified. Runs on the labels _check_expr just recorded
+        # for the args.
+        self._check_ifc_sink(e, recv_ty)
+
         from . import SymbolKind
 
         # Capabilities: consult registered methods. Covers both

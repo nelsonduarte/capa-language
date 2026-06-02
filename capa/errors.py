@@ -30,8 +30,11 @@ class LexerError(Exception):
         self.filename = filename
         super().__init__(self.format())
 
-    def format(self) -> str:
-        header = f"{self.filename}:{self.pos.line}:{self.pos.col}: error: {self.message}"
+    def format(self, severity: str = "error") -> str:
+        header = (
+            f"{self.filename}:{self.pos.line}:{self.pos.col}: "
+            f"{severity}: {self.message}"
+        )
         if not self.source:
             return header
         lines = self.source.split("\n")
