@@ -598,9 +598,23 @@ abandoned mid-way. The manifest records each declared protocol and its
 states under `typestates` (and a `protocol_states` count in the
 summary). Typestate runs on both the Python and Wasm backends with
 identical behaviour (a typestate lowers as a state-indexed struct).
-State-specific receiver methods (`value.op()` dispatched on state) are
-a follow-up; today operations are free functions that take the value
-in a specific state.
+
+Operations can be free functions that take the value in a specific
+state, or methods declared in an `impl Type[State]` block (callable
+only when the receiver is in that state). A transition method consumes
+`self` and returns the new state:
+
+```capa
+impl Door[Closed]
+    fun open_it(consume self) -> Door[Open]
+        return become(self, Open)
+
+impl Door[Open]
+    fun walk(self) -> Int       // only callable on a Door[Open]
+        return self.id
+
+// d.walk() on a Door[Closed] is a compile-time error.
+```
 
 ---
 

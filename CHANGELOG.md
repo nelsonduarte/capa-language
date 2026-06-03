@@ -9,6 +9,22 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+### Typestate state-specific methods (roadmap S3.5)
+
+Operations on a typestate can now be methods, written in an `impl
+Type[State]` block, callable only when the receiver is in that state:
+`door.label()` type-checks on a `Door[Open]` but is rejected on a
+`Door[Closed]`. A transition can be a method too: `fun open_it(consume
+self) -> Door[Open]` consumes the value and returns it in the new
+state, so `door.open_it()` reads as a natural protocol step. Inside an
+`impl Type[State]`, `self` carries that state. An `impl Type[State]` on
+a non-typestate, or on a state the typestate does not declare, is
+rejected. State is compile-time-only, so the methods are ordinary
+struct methods at runtime; `examples/wasm/typestate_methods.capa` runs
+byte-identically on both backends. With this, the typestate feature
+(S3) is complete: declarations, state-indexed types, construction,
+`become` transitions, fields, and state-specific methods.
+
 ### Typestate fields / payload (roadmap S3.4)
 
 A typestate can now carry data, not just a state: `typestate Socket

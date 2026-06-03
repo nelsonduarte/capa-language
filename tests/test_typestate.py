@@ -302,6 +302,96 @@ class TestTypestateFields(unittest.TestCase):
         self.assertIn("fd=7", buf.getvalue())
 
 
+_DOOR_METHODS = (
+    "typestate Door { id: Int }\n"
+    "    Open\n"
+    "    Closed\n"
+    "impl Door[Closed]\n"
+    "    fun open_it(consume self) -> Door[Open]\n"
+    "        return become(self, Open)\n"
+    "impl Door[Open]\n"
+    "    fun label(self) -> Int\n"
+    "        return self.id\n"
+    "fun discard(consume d: Door[Open])\n"
+    "    return\n"
+)
+
+
+class TestTypestateStateMethods(unittest.TestCase):
+    """Roadmap S3.5: ``impl Type[State]`` methods are only callable when
+    the typestate receiver is in that state; a transition method may
+    ``consume self`` and return the value in a new state."""
+
+    def _errors(self, src: str):
+        m = _parse(src)
+        return [e.message for e in analyze(m, source=src).errors]
+
+    def test_state_method_protocol_checks(self):
+        errs = self._errors(
+            _DOOR_METHODS
+            + "fun main(_s: Stdio)\n"
+            + "    let d = Door[Closed] { id: 1 }\n"
+            + "    let o = d.open_it()\n"
+            + "    let n = o.label()\n"
+            + "    discard(o)\n"
+        )
+        self.assertEqual(errs, [])
+
+    def test_wrong_state_method_rejected(self):
+        errs = self._errors(
+            _DOOR_METHODS
+            + "fun main(_s: Stdio)\n"
+            + "    let d = Door[Closed] { id: 1 }\n"
+            + "    let n = d.label()\n"
+            + "    discard(d.open_it())\n"
+        )
+        self.assertTrue(
+            any("requires Door[Open]" in e and "Door[Closed]" in e
+                for e in errs),
+            errs,
+        )
+
+    def test_impl_state_on_non_typestate_rejected(self):
+        errs = self._errors(
+            "type Point { x: Int }\n"
+            "impl Point[Foo]\n"
+            "    fun f(self) -> Int\n"
+            "        return self.x\n"
+        )
+        self.assertTrue(any("is not a typestate" in e for e in errs), errs)
+
+    def test_impl_unknown_state_rejected(self):
+        errs = self._errors(
+            "typestate D { id: Int }\n    Open\n"
+            "impl D[Bogus]\n"
+            "    fun f(self) -> Int\n"
+            "        return self.id\n"
+        )
+        self.assertTrue(any("no state 'Bogus'" in e for e in errs), errs)
+
+    def test_state_methods_run_on_python(self):
+        from capa import transpile
+        src = (
+            _DOOR_METHODS
+            + "fun main(stdio: Stdio)\n"
+            + "    let d = Door[Closed] { id: 42 }\n"
+            + "    let o = d.open_it()\n"
+            + "    stdio.println(\"label=${o.label()}\")\n"
+            + "    discard(o)\n"
+        )
+        m = _parse(src)
+        result = analyze(m, source=src)
+        self.assertTrue(result.ok, [e.message for e in result.errors])
+        code = transpile(m, types=result.types, bindings=result.bindings)
+        import io
+        from contextlib import redirect_stdout
+        ns = {"__name__": "__main__"}
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            exec(compile(code, "<ts>", "exec"), ns)
+        self.assertIn("label=42", buf.getvalue())
+
+
 class TestTypestateManifest(unittest.TestCase):
     def test_protocol_states_in_manifest(self):
         from capa.manifest import build_manifest

@@ -106,7 +106,10 @@ class _InstrDispatchMixin:
             if recv_ty.startswith("Option") or recv_ty.startswith("Result"):
                 self._emit_option_method_call(instr)
                 return
-            recv_head = recv_ty.split("<", 1)[0]
+            # Strip generic args (``<...>``) and a typestate state index
+            # (``[State]``, roadmap S3.5) to get the bare type name the
+            # method table is keyed by.
+            recv_head = recv_ty.split("<", 1)[0].split("[", 1)[0]
             if (recv_head, instr.method) in self._method_table:
                 self._emit_trait_method_call(instr)
                 return

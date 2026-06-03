@@ -44,6 +44,7 @@ _PARITY_PROGRAMS: list[str] = [
     "hello.capa",
     "typestate_door.capa",
     "typestate_socket.capa",
+    "typestate_methods.capa",
     "fizzbuzz.capa",
     "shape_area.capa",
     "strings.capa",
@@ -652,6 +653,12 @@ class TestPythonWasmParity(unittest.TestCase):
         # struct; construction + field reads + become run identically on
         # both backends.
         self._assert_parity("typestate_socket.capa")
+
+    def test_typestate_methods(self):
+        # Roadmap S3.5: state-specific receiver methods (impl Type[State])
+        # and transition methods (consume self) run identically on both
+        # backends; the state is compile-time-only.
+        self._assert_parity("typestate_methods.capa")
 
     def test_stdio_read_line(self):
         # Slice 1 host-bridge pile: Stdio.read_line parity. Both

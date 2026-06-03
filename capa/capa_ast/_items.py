@@ -217,8 +217,11 @@ class FunDecl(Item):
 
 @dataclass(kw_only=True)
 class ImplBlock(Item):
-    """impl Trait for Type<...>   or   impl Type<...>"""
+    """impl Trait for Type<...>   or   impl Type<...>   or
+    impl Type[State] (roadmap S3.5: methods valid only when the
+    typestate receiver is in ``state``)."""
     trait_name: Optional[str]   # None = inherent impl
     type_name: str
     type_args: list[TypeExpr] = field(default_factory=list)
+    state: Optional[str] = None   # typestate state these methods require
     methods: list[FunDecl]

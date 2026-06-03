@@ -406,6 +406,18 @@ class _DispatchMixin:
                         e.pos,
                     )
                     return TyUnknown
+                # Roadmap S3.5: a method from ``impl Type[State]`` is
+                # only callable when the typestate receiver is in that
+                # state. The receiver's current state is on its TyName.
+                req = getattr(method_sym, "required_state", None)
+                if req is not None and getattr(recv_ty, "state", None) != req:
+                    got = recv_ty.state or "no state"
+                    self._err(
+                        f"method {e.method!r} requires "
+                        f"{recv_ty.name}[{req}], but the receiver is "
+                        f"{recv_ty.name}[{got}]",
+                        e.pos,
+                    )
                 return self._check_method_dispatch(
                     e, type_sym, method_sym, recv_ty, arg_tys,
                 )

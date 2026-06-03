@@ -165,6 +165,10 @@ class Symbol:
     # / ``@public`` annotation; ``None`` means unlabelled (= public).
     # Read when an Ident referencing this symbol is given its label.
     label: Optional[str] = None
+    # Roadmap S3.5: for a method registered from ``impl Type[State]``,
+    # the typestate state the receiver must be in for the call to be
+    # legal. ``None`` for an ordinary (state-agnostic) method.
+    required_state: Optional[str] = None
 
 
 @dataclass

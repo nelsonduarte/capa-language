@@ -524,6 +524,7 @@ class _ItemsMixin:
         first_args: list[A.TypeExpr] = []
         if self._check(T.LT):
             first_args = self._parse_type_args()
+        first_state = self._parse_state_index_opt()
         if self._match(T.KW_FOR):
             trait_name: Optional[str] = first_name
             if first_args:
@@ -531,14 +532,21 @@ class _ItemsMixin:
                 raise self._error(
                     "generic trait references in impl are not yet supported"
                 )
+            if first_state is not None:
+                raise self._error(
+                    "a state index belongs on the target type, not the "
+                    "trait (write `impl Trait for Type[State]`)"
+                )
             type_name = self._expect(T.IDENT, "expected target type name").text
             type_args: list[A.TypeExpr] = []
             if self._check(T.LT):
                 type_args = self._parse_type_args()
+            type_state = self._parse_state_index_opt()
         else:
             trait_name = None
             type_name = first_name
             type_args = first_args
+            type_state = first_state
         self._expect(T.NEWLINE, "expected newline after impl header")
         self._expect(T.INDENT, "expected indented method definitions")
         methods: list[A.FunDecl] = []
@@ -557,8 +565,22 @@ class _ItemsMixin:
             trait_name=trait_name,
             type_name=type_name,
             type_args=type_args,
+            state=type_state,
             methods=methods,
         )
+
+    def _parse_state_index_opt(self) -> Optional[str]:
+        """Parse an optional ``[State]`` typestate index after a type
+        name in an ``impl`` header (roadmap S3.5). Returns the state
+        name or ``None``."""
+        if not self._check(T.LBRACKET):
+            return None
+        self._advance()
+        state = self._expect(
+            T.IDENT, "expected a state name inside '[...]'",
+        ).text
+        self._expect(T.RBRACKET, "expected ']' after state name")
+        return state
 
     # -------- fun --------
 

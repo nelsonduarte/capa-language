@@ -140,7 +140,7 @@ class _TraitEmissionMixin:
         when v.ty is Unknown) so impl-method ``self.method()``
         calls resolve to the right concrete-type entry in the
         method table."""
-        recv_ty = self._effective_value_ty(instr.receiver).split("<", 1)[0]
+        recv_ty = self._effective_value_ty(instr.receiver).split("<", 1)[0].split("[", 1)[0]
         target = self._method_table.get((recv_ty, instr.method))
         if target is None:
             # Trait with multiple impls (or no impl at all): the

@@ -136,8 +136,11 @@ become = identidade), e um protocolo corre byte-identico em Python e
 Wasm. S3.4 adicionou campos/payload: `typestate Socket { fd: Int }`,
 construcao `Socket[Created] { fd: 7 }`, acesso `s.fd`, `become`
 preserva os campos (typestate = struct indexado por estado, com
-paridade Wasm). Pendente: metodos com receiver por estado
-(`value.op()` despachado pelo estado).
+paridade Wasm). S3.5 adicionou metodos com receiver por estado:
+`impl Type[State]` com metodos so chamaveis nesse estado, e metodos de
+transicao (`consume self` -> novo estado); `self` carrega o estado do
+impl. **S3 completo** (declaracao, tipos indexados, construcao,
+`become`, campos, metodos por estado), com paridade Python/Wasm.
 
 ### S4: Constant-time markers para crypto
 **ROI: nicho mas mecanicamente verificável. Esforço: ~3 slices. Dependências: nenhuma.**

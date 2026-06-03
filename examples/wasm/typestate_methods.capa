@@ -1,0 +1,30 @@
+// State-specific method parity example (roadmap S3.5). Methods live in
+// `impl Type[State]` blocks and are only callable when the receiver is
+// in that state; a transition method consumes self and returns the
+// value re-typed. The state is compile-time-only, so the methods are
+// ordinary struct methods at runtime and behave identically on both
+// backends.
+typestate Door { id: Int }
+    Open
+    Closed
+
+impl Door[Closed]
+    fun open_it(consume self) -> Door[Open]
+        return become(self, Open)
+
+impl Door[Open]
+    fun label(self) -> Int
+        return self.id
+    fun close_it(consume self) -> Door[Closed]
+        return become(self, Closed)
+
+fun discard(consume d: Door[Closed])
+    return
+
+fun main(stdio: Stdio)
+    let d = Door[Closed] { id: 7 }
+    let o = d.open_it()
+    stdio.println("opened, label=${o.label()}")
+    let c = o.close_it()
+    stdio.println("closed again")
+    discard(c)

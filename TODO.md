@@ -937,8 +937,10 @@ Listed so the design space is explicit.
   `examples/wasm/typestate_door.capa`). S3.4 added fields/payload
   (`typestate Socket { fd: Int }`, construction `Socket[Created] { fd: 7 }`,
   field access, become preserves them; `typestate_socket.capa` parity).
-  Remaining: state-specific receiver methods (`value.op()` dispatched on
-  state).
+  S3.5 added state-specific methods (`impl Type[State]`, callable only
+  in that state; transition methods `consume self`;
+  `typestate_methods.capa` parity). **S3 COMPLETE** across both
+  backends.
 - **Constant-time markers for crypto**. SHIPPED (S4, analyzer):
   `@constant_time()` rejects secret-dependent control flow (if /
   elif / while / if-expr / match) and secret-indexed memory access
@@ -3217,15 +3219,13 @@ What an adopter should know is not yet there. Surfaced in
 - **No async / await**. Keywords are reserved; no
   implementation. Capability-aware async is a research
   question. (P3)
-- **Typestate is fieldless + Python-method dispatch is positional**.
-  A typestate value carries no payload yet (wrap data alongside it),
-  and operations are free functions `op(value)` rather than
-  state-specific receiver methods `value.op()`. (S3.4)
 
-  Resolved since this list was first written: the **package manager +
-  registry** ship (`capa.toml` + `capa install` + `capa.lock` + the
-  `capa-registry` index), and the **REPL** is v2 (incremental state +
-  readline / history).
+Resolved since this list was first written: **typestate** is now full
+(S3.1-S3.5: state-indexed types, `become`, fields/payload, and
+state-specific `impl Type[State]` methods, Python + Wasm parity); the
+**package manager + registry** ship (`capa.toml` + `capa install` +
+`capa.lock` + the `capa-registry` index), and the **REPL** is v2
+(incremental state + readline / history).
 
 ---
 

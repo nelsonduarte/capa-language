@@ -317,6 +317,22 @@ class _DeclarationsMixin:
             SymbolKind.TYPE_STRUCT, SymbolKind.TYPE_SUM,
         ):
             return
+        # Roadmap S3.5: a state index on the impl header is only valid
+        # when the target is a typestate that declares that state.
+        if impl.state is not None:
+            states = self._typestates.get(impl.type_name)
+            if states is None:
+                self._err(
+                    f"type {impl.type_name!r} is not a typestate, so an "
+                    f"impl cannot carry a state index [{impl.state}]",
+                    impl.pos,
+                )
+            elif impl.state not in states:
+                self._err(
+                    f"typestate {impl.type_name!r} has no state "
+                    f"{impl.state!r} (states: {', '.join(states)})",
+                    impl.pos,
+                )
         if impl.trait_name is not None:
             target.implements.add(impl.trait_name)
         self_args = tuple(TyVar(p) for p in target.type_params)
@@ -348,6 +364,9 @@ class _DeclarationsMixin:
                 consumes_self=bool(method.params)
                     and method.params[0].name == "self"
                     and method.params[0].consuming,
+                # Roadmap S3.5: ``impl Type[State]`` methods require the
+                # receiver to be in ``State`` at the call site.
+                required_state=impl.state,
             )
             target.methods[method.name] = m_sym
 

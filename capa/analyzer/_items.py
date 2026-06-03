@@ -353,7 +353,12 @@ class _ItemsMixin:
 
         self_args = tuple(TyVar(p) for p in target.type_params)
         prev_self = self.self_type
-        self.self_type = TyName(impl.type_name, self_args)
+        # Roadmap S3.5: inside an ``impl Type[State]`` the receiver is
+        # in that state, so ``self`` carries it (a transition or a
+        # state-method call on ``self`` then type-checks coherently).
+        self.self_type = TyName(
+            impl.type_name, self_args, state=impl.state,
+        )
         self._push_type_params(target.type_params)
 
         for method in impl.methods:
