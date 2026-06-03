@@ -93,6 +93,13 @@ class _ExpressionsMixin:
         # consumption checks know which names are local.
         self._lambda_local_names_stack.append(param_names)
 
+        # A ``break`` / ``continue`` in the lambda body cannot cross the
+        # lambda's function boundary, so the enclosing loop context is
+        # NOT visible inside the body: reset the loop depth to 0 (a jump
+        # there reports "break outside of a loop"), restore on exit.
+        prev_loop_depth = self._loop_depth
+        self._loop_depth = 0
+
         # Body: single expression (its type is the return type)
         # or an indented block (return statements are checked
         # against ``current_return_type``; without a return,
@@ -135,6 +142,7 @@ class _ExpressionsMixin:
                 ret_ty = body_ty
 
         self._lambda_local_names_stack.pop()
+        self._loop_depth = prev_loop_depth
         self._consumed = prev_consumed
         self._pop_scope()
 

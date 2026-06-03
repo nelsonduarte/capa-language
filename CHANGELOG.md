@@ -9,6 +9,43 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+### Bug-hunt fixes: cross-backend parity, soundness, and Wasm patterns
+
+A deep bug hunt across both backends fixed a batch of correctness gaps.
+Behaviour-changing items are noted; all are covered by new tests.
+
+- **Integer division `/` now floors on both backends.** The Wasm
+  backend emitted truncating `i64.div_s` while the Python backend
+  floored, so `-7 / 2` was `-3` on Wasm vs `-4` on Python. Wasm now
+  applies the floor correction (matching the already-floored `%`), and
+  both backends trap on `MIN / -1` (a new `_capa_idiv` helper guards the
+  Python side). Integer `/` and `%` are now floor + trap on both.
+- **Unary integer negation traps on `i64::MIN`** on both backends
+  (was: Python produced the out-of-range bignum `2**63`, Wasm wrapped).
+- **Float division by zero traps on the Wasm backend**, matching
+  Python's `ZeroDivisionError` and the existing float-`%` trap.
+- **A match used for its value must be exhaustive.** A non-exhaustive
+  match expression was accepted, then crashed the Python backend and
+  returned an empty value on Wasm; the analyzer now rejects it.
+- **`break` / `continue` inside a lambda are rejected** by the analyzer
+  (they cannot cross the lambda's function boundary).
+- **`String.index_of` returns a code-point offset on Wasm** (was a byte
+  offset), matching Python and the code-point contract of `length` /
+  `substring` / `char_at`.
+- **`Set<Float>` equality no longer crashes the Wasm backend** (an
+  undeclared `$_alloc_tmp_f64` local in the set-equality helper).
+- **A user function named `parse_int` / `parse_float` no longer collides
+  with the builtin helper on Wasm**; the user definition shadows the
+  builtin on both backends.
+- **A `Bool` reached through a tuple index interpolates as `true` /
+  `false`** (was Python-style `True` / `False`).
+- **Wasm match patterns**: identifier-binding catch-alls in sum matches,
+  float-literal patterns, binding-free or-patterns (`A | B`), and struct
+  patterns (`P { x: 0, y }`) now lower and run on the Wasm backend with
+  Python parity. Still loudly unsupported on Wasm (compile-time error,
+  never a silent miscompile): char-scrutinee match (`Char` has no Wasm
+  value encoding yet) and or-patterns that bind.
+
 ### Tail-call optimisation on the Wasm backend (roadmap P4)
 
 A call whose result is immediately returned (`return f(x)`) now lowers

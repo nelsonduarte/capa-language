@@ -54,6 +54,25 @@ fun main(stdio: Stdio)
     s3.add("gamma")
     show(stdio, "s1 == s3 string diff", s1 == s3)
 
+    // Set<Float>: order-independent equality. The $eq_Set_Float
+    // helper stashes the f64 needle in $_alloc_tmp_f64 and compares
+    // with f64.eq; pre-fix that local was undeclared (and never
+    // written) so the generated WAT failed to parse (bug #5).
+    let f1: Set<Float> = new_set()
+    f1.add(1.5)
+    f1.add(2.5)
+    let f2: Set<Float> = new_set()
+    f2.add(2.5)
+    f2.add(1.5)
+    show(stdio, "f1 == f2 float reversed", f1 == f2)
+    let f3: Set<Float> = new_set()
+    f3.add(1.5)
+    f3.add(9.9)
+    show(stdio, "f1 == f3 float diff", f1 == f3)
+    show(stdio, "f1 != f3 float diff", f1 != f3)
+    show(stdio, "f1 contains 2.5", f1.contains(2.5))
+    show(stdio, "f1 contains 7.0", f1.contains(7.0))
+
     // Set<Point>: structural element compare. H2 freezes Point
     // because of the Set<Point> declaration.
     let p1 = Point { x: 1, y: 2 }

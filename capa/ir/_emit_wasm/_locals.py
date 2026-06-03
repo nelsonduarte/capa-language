@@ -27,6 +27,7 @@ from .._nodes import (
     MakeLambda, MakeList, MakeMap, MakeRange, MakeSet, MakeTuple,
     PatIdent, PatVariant,
 )
+from .._lower_pattern import PatStruct
 from .._capa_types import BUILTIN_CAPS
 from ._layout import (
     _element_type_of_list, _element_type_of_set, _map_key_type,
@@ -86,6 +87,11 @@ class _LocalsCollectionMixin:
         # them; the Int match path stashes the scrutinee in a
         # dedicated i64 local instead.
         has_int_match = False
+        # Set when any Match in this function has a Float scrutinee.
+        # Float values are f64, so neither the i32 ``$_m_scrut`` nor
+        # the i64 ``$_m_scrut_i64`` can hold them; the Float match
+        # path stashes the scrutinee in a dedicated f64 local.
+        has_float_match = False
         # Set when any Int ``a % b`` BinOp appears. The Wasm emitter
         # corrects ``i64.rem_s`` to Python's floored modulo via a
         # scratch ``$_alloc_tmp_i64`` slot; declare it on demand.
@@ -144,7 +150,7 @@ class _LocalsCollectionMixin:
             nonlocal has_list_string, has_optres_method
             nonlocal has_list_method, has_set_method
             nonlocal has_set_string, has_set_pointer
-            nonlocal has_tuple, has_int_match, has_int_modulo
+            nonlocal has_tuple, has_int_match, has_float_match, has_int_modulo
             nonlocal has_int_overflow_check
             nonlocal cur_for_depth, max_for_depth
             nonlocal has_indirect_cap_call
@@ -163,6 +169,10 @@ class _LocalsCollectionMixin:
                     # hold an i64).
                     if (instr.scrutinee.ty or "") == "Int":
                         has_int_match = True
+                    # Float-scrutinee match stashes the f64 scrutinee
+                    # in ``$_m_scrut_f64``.
+                    if (instr.scrutinee.ty or "") == "Float":
+                        has_float_match = True
                     # Refine binder types from the variant's payload
                     # layout. The analyzer's pattern-side type
                     # inference is incomplete for builtin sum types
@@ -234,6 +244,21 @@ class _LocalsCollectionMixin:
                         # is declared even if the function has no
                         # other String-producing instruction.
                         has_tuple = True
+                    # Struct-scrutinee match: a PatStruct arm binds
+                    # named fields; refine fn.locals with each field's
+                    # declared type (from the struct layout) so the
+                    # local-decl sweep allocates the right Wasm shape
+                    # (i64 for Int, f64 for Float, i32 for Bool /
+                    # pointer-shape, String _ptr/_len pair). Recurses
+                    # into nested struct fields.
+                    struct_head = (instr.scrutinee.ty or "").split("<", 1)[0]
+                    struct_head = struct_head.split("[", 1)[0]
+                    struct_layout = self._struct_layouts.get(struct_head)
+                    if struct_layout is not None:
+                        for arm in instr.arms:
+                            self._refine_struct_pat_binds(
+                                arm.pattern, struct_layout, fn,
+                            )
                     for arm in instr.arms:
                         # Guard preludes can introduce BinOps too
                         # (audit fix C2 lowers Int +/-/* through the
@@ -333,12 +358,16 @@ class _LocalsCollectionMixin:
                     # for String payload unpacking. Both locals are
                     # declared via has_match + the i64-scratch group.
                     has_match = True
-                if isinstance(instr, BinOp) and instr.op == "%":
+                if isinstance(instr, BinOp) and instr.op in ("%", "/"):
                     # Int ``%`` lowers to a floored-modulo correction
                     # (``i64.rem_s`` then sign-adjust against the
-                    # divisor) that needs ``$_alloc_tmp_i64`` as scratch.
-                    # Skip when either operand is Float (that path emits
-                    # the f64.floor formula without the i64 stash).
+                    # divisor), and Int ``/`` lowers to a floored-
+                    # division correction (``i64.div_s`` then subtract 1
+                    # against the divisor); both need ``$_alloc_tmp_i64``
+                    # as scratch. Skip when either operand is Float (the
+                    # Float ``/`` path emits a bare ``f64.div`` and the
+                    # Float ``%`` path uses the f64.floor formula, neither
+                    # of which touches the i64 stash).
                     lt = (instr.left.ty or "")
                     rt = (instr.right.ty or "")
                     if lt != "Float" and rt != "Float":
@@ -690,6 +719,11 @@ class _LocalsCollectionMixin:
             # live in the i32 ``$_m_scrut``, so it gets a dedicated
             # i64 stash local.
             out["_m_scrut_i64"] = "i64"
+        if has_float_match:
+            # Float-scrutinee match: the scrutinee is an f64 and
+            # cannot live in either the i32 ``$_m_scrut`` or the i64
+            # ``$_m_scrut_i64``; it gets a dedicated f64 stash local.
+            out["_m_scrut_f64"] = "f64"
         if has_variant_ctor or has_list or has_map or has_indirect_cap_call:
             out["_alloc_tmp"] = "i32"
         if has_indirect_cap_call:
@@ -862,3 +896,32 @@ class _LocalsCollectionMixin:
             out.setdefault("_m_tag", "i32")
             out.setdefault("_alloc_tmp_result", "i32")
         return out
+
+    def _refine_struct_pat_binds(
+        self, pattern, struct_layout: dict, fn: Function,
+    ) -> None:
+        """Thread a struct pattern's field types into ``fn.locals`` so
+        the local-decl sweep allocates the right Wasm shape for each
+        bound field. Shorthand ``{ y }`` and explicit ``{ y: y }``
+        both arrive as a PatIdent sub-pattern named after the binder;
+        nested ``{ at: Point { x } }`` recurses with the nested
+        struct's layout. Literal / wildcard fields bind nothing."""
+        if not isinstance(pattern, PatStruct):
+            return
+        for fname, sub in pattern.fields:
+            f_info = struct_layout["fields"].get(fname)
+            if f_info is None:
+                continue
+            _off, _sz, field_ty = f_info
+            if isinstance(sub, PatIdent):
+                cur = fn.locals.get(sub.name, "")
+                if (cur in ("", "Unknown", "?", "Any")
+                        or cur.startswith("?")):
+                    if field_ty and field_ty not in ("Unknown", "Any"):
+                        fn.locals[sub.name] = field_ty
+            elif isinstance(sub, PatStruct):
+                nested = self._struct_layouts.get(
+                    field_ty.split("<", 1)[0].split("[", 1)[0],
+                )
+                if nested is not None:
+                    self._refine_struct_pat_binds(sub, nested, fn)

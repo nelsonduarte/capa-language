@@ -57,9 +57,15 @@ class _ExpressionsMixin:
             rt = self.types.get(id(e.right))
             lt_is_int = isinstance(lt, TyName) and lt.name == "Int"
             rt_is_int = isinstance(rt, TyName) and rt.name == "Int"
-            if e.op == "/":
-                if lt_is_int and rt_is_int:
-                    op = "//"
+            # Safety (Bug #1): Int ``/`` is floor division (Python
+            # ``//``), but plain ``//`` neither traps on ``MIN / -1``
+            # (Python yields the bignum ``2**63``, escaping i64) nor on
+            # division by zero in a way that matches the Wasm trap.
+            # Route through ``_capa_idiv``, which floors AND traps on
+            # ``b == 0`` (ZeroDivisionError) and ``MIN / -1``
+            # (OverflowError), mirroring the Wasm backend.
+            if e.op == "/" and lt_is_int and rt_is_int:
+                return f"_capa_idiv({l}, {r})"
             # Safety: route Int +/-/* and <</>> through the
             # overflow-checking runtime helpers so the Python backend
             # raises ``OverflowError`` at the same input the Wasm
@@ -82,6 +88,17 @@ class _ExpressionsMixin:
             if op is None:
                 raise TranspilerError(f"unsupported unary: {e.op}")
             inner = self._emit_expr(e.operand)
+            # Safety (Bug #6): negating ``i64::MIN`` overflows i64
+            # (``-(MIN) == 2**63``). Plain Python ``-x`` yields the
+            # bignum ``2**63`` (escaping i64) while the Wasm ``0 - x``
+            # wraps back to MIN; both are wrong. Route Int negation
+            # through the checked subtract (``0 - x``) so the Python
+            # backend raises ``OverflowError`` at the same input the
+            # Wasm backend now traps on. Normal negation is unaffected.
+            from ..typesys import TyName
+            ot = self.types.get(id(e.operand))
+            if e.op == "-" and isinstance(ot, TyName) and ot.name == "Int":
+                return f"_capa_isub(0, {inner})"
             return f"({op}{inner})"
         if isinstance(e, A.Call):
             return self._emit_call(e)
@@ -653,6 +670,34 @@ class _ExpressionsMixin:
         inner = self._emit_expr(e.expr)
         return f"_capa_try({inner})"
 
+    def _interp_type(self, expr: A.Expr):
+        """Resolves the static type of an interpolated sub-expression.
+
+        Returns the analyzer-recorded type from ``self.types`` when one
+        is present and concrete. The analyzer records ``TyUnknown`` for a
+        tuple index (it only resolves the element type for ``List``
+        receivers), so for an ``A.Index`` over a tuple with a constant
+        integer index we derive the element type from the receiver's
+        ``TyTuple``. This keeps display decisions (e.g. lowering a Bool to
+        ``true`` / ``false`` in ``${...}``) keyed off the real element
+        type regardless of the node shape, matching the Wasm backend.
+        """
+        from ..typesys import TyName, TyTuple, TyUnknown
+        ty = self.types.get(id(expr))
+        if isinstance(ty, TyName) or (
+            ty is not None and ty is not TyUnknown
+        ):
+            return ty
+        # Fall back: derive a tuple-index element type the analyzer left
+        # as TyUnknown. Only constant int indices are statically known.
+        if isinstance(expr, A.Index) and isinstance(expr.index, A.IntLit):
+            recv_ty = self.types.get(id(expr.receiver))
+            if isinstance(recv_ty, TyTuple):
+                i = expr.index.value
+                if 0 <= i < len(recv_ty.elements):
+                    return recv_ty.elements[i]
+        return ty
+
     def _emit_interpolated_string(self, e: A.InterpolatedString) -> str:
         """Emits a string with interpolations as a Python f-string.
 
@@ -688,7 +733,7 @@ class _ExpressionsMixin:
                 parts.append(escaped)
             else:
                 expr_code = self._emit_expr(part)
-                ty = self.types.get(id(part))
+                ty = self._interp_type(part)
                 if isinstance(ty, TyName) and ty.name == "Bool":
                     # Python's f-string formats a bool as ``True`` /
                     # ``False`` (capitalised); the Wasm backend uses

@@ -18,6 +18,17 @@ fun main(stdio: Stdio)
     stdio.println("${7 % (-3)}")
     stdio.println("${0 % 3}")
 
+    // Int division: floored on both backends (Python ``//`` vs the
+    // floor-corrected ``i64.div_s`` on Wasm). i64.div_s alone
+    // truncates toward zero, so the mixed-sign cases would diverge
+    // (``-7 / 2`` was wasm -3 / py -4) without the correction.
+    stdio.println("${(-7) / 2}")
+    stdio.println("${7 / (-2)}")
+    stdio.println("${(-1) / 2}")
+    stdio.println("${7 / 2}")
+    stdio.println("${(-8) / (-2)}")
+    stdio.println("${0 / 5}")
+
     // Float modulo, sign coverage.
     stdio.println("${(-7.5) % 3.0}")
     stdio.println("${7.5 % 3.0}")

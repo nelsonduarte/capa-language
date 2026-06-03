@@ -1,0 +1,29 @@
+// Sum-type match with a bare-identifier catch-all arm that binds
+// the scrutinee (``other -> ...``). Pre-fix the Wasm sum-match path
+// rejected PatIdent with "Phase 6C: match arm pattern PatIdent not
+// supported"; the Python backend has always handled it. Stdio +
+// String only so the two backends produce byte-identical output.
+
+type Signal =
+    Go(Int)
+    Stop
+    Wait(Int)
+
+// The catch-all ``other`` binds the whole Signal value; the arm
+// re-matches it (via a second function) to prove the binding really
+// carries the scrutinee, not a stale value.
+fun classify(s: Signal) -> String
+    return match s
+        Go(n) -> "go ${n}"
+        other -> describe_rest(other)
+
+fun describe_rest(s: Signal) -> String
+    return match s
+        Stop -> "stop"
+        Wait(n) -> "wait ${n}"
+        x -> "unknown"
+
+fun main(stdio: Stdio)
+    stdio.println(classify(Go(3)))
+    stdio.println(classify(Stop))
+    stdio.println(classify(Wait(7)))

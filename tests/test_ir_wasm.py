@@ -1557,27 +1557,35 @@ class TestWasmFtoaParity(unittest.TestCase):
         )
         self.assertEqual(self._run_capturing_stdout(src), "-0.0\n")
 
-    def test_infinity_via_division(self):
-        # Capa has no literal +/-inf or nan; compute via division.
+    def test_infinity_via_division_now_traps(self):
+        # Bug #4: float division by zero used to yield IEEE-754 inf on
+        # the Wasm backend while the Python backend raised
+        # ZeroDivisionError - a divergence. Both backends now agree by
+        # trapping on a zero divisor, so ``one / zero`` can no longer
+        # be used to synthesise inf (Capa has no inf/nan literals).
+        import wasmtime
         src = (
             "fun main(stdio: Stdio)\n"
             "    let zero: Float = 0.0\n"
             "    let one: Float = 1.0\n"
             "    let inf_val: Float = one / zero\n"
-            "    let neg_inf: Float = -one / zero\n"
             "    stdio.println(\"${inf_val}\")\n"
-            "    stdio.println(\"${neg_inf}\")\n"
         )
-        self.assertEqual(self._run_capturing_stdout(src), "inf\n-inf\n")
+        with self.assertRaises(wasmtime.Trap):
+            self._run_capturing_stdout(src)
 
-    def test_nan_via_division(self):
+    def test_nan_via_division_now_traps(self):
+        # Bug #4 (cont.): ``zero / zero`` (which produced nan) now
+        # traps on the Wasm backend too, matching Python.
+        import wasmtime
         src = (
             "fun main(stdio: Stdio)\n"
             "    let zero: Float = 0.0\n"
             "    let nan_val: Float = zero / zero\n"
             "    stdio.println(\"${nan_val}\")\n"
         )
-        self.assertEqual(self._run_capturing_stdout(src), "nan\n")
+        with self.assertRaises(wasmtime.Trap):
+            self._run_capturing_stdout(src)
 
 
 @unittest.skipUnless(
@@ -5120,6 +5128,81 @@ class TestWasmSafetyTraps(unittest.TestCase):
         with self.assertRaises(wasmtime.Trap):
             self._exec(src, "sub", -(1 << 63), 1)
 
+    # ---- Bug #1: Int ``/`` is floored AND traps on /0 and MIN/-1 ---
+
+    def test_int_div_is_floored(self):
+        # ``i64.div_s`` truncates toward zero (``-7 / 2 == -3``), but
+        # Capa Int division floors (``-7 / 2 == -4``), matching the
+        # Python backend's ``//``. The Wasm floor correction must agree.
+        src = (
+            "fun div(a: Int, b: Int) -> Int\n"
+            "    return a / b\n"
+        )
+        self.assertEqual(self._exec(src, "div", -7, 2), -4)
+        self.assertEqual(self._exec(src, "div", 7, -2), -4)
+        self.assertEqual(self._exec(src, "div", -1, 2), -1)
+        self.assertEqual(self._exec(src, "div", 7, 2), 3)
+        self.assertEqual(self._exec(src, "div", -8, -2), 4)
+        self.assertEqual(self._exec(src, "div", 0, 5), 0)
+
+    def test_int_div_by_zero_traps(self):
+        import wasmtime
+        src = (
+            "fun div(a: Int, b: Int) -> Int\n"
+            "    return a / b\n"
+        )
+        with self.assertRaises(wasmtime.Trap):
+            self._exec(src, "div", 7, 0)
+
+    def test_int_div_min_by_neg_one_traps(self):
+        # ``i64::MIN / -1`` = ``2**63`` overflows the signed window;
+        # the native div_s trap (preserved by computing the quotient
+        # first) must fire, matching ``_capa_idiv``'s OverflowError.
+        import wasmtime
+        src = (
+            "fun div(a: Int, b: Int) -> Int\n"
+            "    return a / b\n"
+        )
+        with self.assertRaises(wasmtime.Trap):
+            self._exec(src, "div", -(1 << 63), -1)
+
+    # ---- Bug #6: unary negation of i64::MIN traps -----------------
+
+    def test_int_negate_works(self):
+        src = (
+            "fun neg(a: Int) -> Int\n"
+            "    return -a\n"
+        )
+        self.assertEqual(self._exec(src, "neg", 5), -5)
+        self.assertEqual(self._exec(src, "neg", -5), 5)
+        self.assertEqual(self._exec(src, "neg", 0), 0)
+
+    def test_int_negate_min_traps(self):
+        # ``-(i64::MIN)`` = ``2**63`` overflows i64. The naive ``0 - x``
+        # wraps back to MIN; the guard traps instead, matching the
+        # Python backend's ``_capa_isub(0, x)`` OverflowError.
+        import wasmtime
+        src = (
+            "fun neg(a: Int) -> Int\n"
+            "    return -a\n"
+        )
+        with self.assertRaises(wasmtime.Trap):
+            self._exec(src, "neg", -(1 << 63))
+
+    # ---- Bug #4: Float ``/`` by zero traps ------------------------
+
+    def test_float_div_zero_traps(self):
+        # ``f64.div`` yields inf on a zero divisor, but Python raises
+        # ZeroDivisionError. The Wasm guard now traps to match.
+        import wasmtime
+        src = (
+            "fun fdiv(a: Float, b: Float) -> Float\n"
+            "    return a / b\n"
+        )
+        self.assertAlmostEqual(self._exec(src, "fdiv", 7.5, 3.0), 2.5)
+        with self.assertRaises(wasmtime.Trap):
+            self._exec(src, "fdiv", 1.5, 0.0)
+
     # ---- Fix C4: to_int out-of-range traps ------------------------
 
     def test_to_int_in_range_works(self):
@@ -5192,6 +5275,68 @@ class TestWasmSafetyTraps(unittest.TestCase):
         finally:
             sys.stdout = saved
         self.assertEqual(buf.getvalue(), "None\n")
+
+    # ---- Bug #7: user-defined parse_int / parse_float shadow the
+    # builtin (no "duplicate func identifier" parse error) ----------
+
+    def _run_main_stdout(self, src: str) -> str:
+        import io
+        import sys
+        from capa.runtime._wasm_host import WasmHost
+        _, types, ast_mod = _parse_lower(src)
+        blob = compile_wasm(ast_mod, types=types)
+        host = WasmHost()
+        buf = io.StringIO()
+        saved = sys.stdout
+        sys.stdout = buf
+        try:
+            host.run_main(blob)
+        finally:
+            sys.stdout = saved
+        return buf.getvalue()
+
+    def test_user_parse_int_shadows_builtin(self):
+        # A user-defined ``parse_int`` must win over the builtin
+        # (matching the Python backend) instead of colliding with the
+        # ``$parse_int`` runtime helper at WAT-parse time.
+        src = (
+            'fun parse_int(s: String) -> Int\n'
+            '    return 99\n'
+            'fun main(stdio: Stdio)\n'
+            '    let v = parse_int("x")\n'
+            '    stdio.println("${v}")\n'
+        )
+        self.assertEqual(self._run_main_stdout(src), "99\n")
+
+    def test_user_parse_float_shadows_builtin(self):
+        src = (
+            'fun parse_float(s: String) -> Float\n'
+            '    return 1.5\n'
+            'fun main(stdio: Stdio)\n'
+            '    let v = parse_float("x")\n'
+            '    stdio.println("${v}")\n'
+        )
+        self.assertEqual(self._run_main_stdout(src), "1.5\n")
+
+    def test_builtin_parse_int_still_works_when_not_shadowed(self):
+        # Control: with no user definition the builtin helper must
+        # still parse the string and return Some.
+        src = (
+            'fun main(stdio: Stdio)\n'
+            '    match parse_int("42")\n'
+            '        Some(n) -> stdio.println("Some(${n})")\n'
+            '        None -> stdio.println("None")\n'
+        )
+        self.assertEqual(self._run_main_stdout(src), "Some(42)\n")
+
+    def test_builtin_parse_float_still_works_when_not_shadowed(self):
+        src = (
+            'fun main(stdio: Stdio)\n'
+            '    match parse_float("3.5")\n'
+            '        Some(n) -> stdio.println("Some(${n})")\n'
+            '        None -> stdio.println("None")\n'
+        )
+        self.assertEqual(self._run_main_stdout(src), "Some(3.5)\n")
 
 
 @unittest.skipUnless(

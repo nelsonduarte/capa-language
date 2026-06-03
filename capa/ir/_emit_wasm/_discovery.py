@@ -187,9 +187,16 @@ class _DiscoveryMixin:
         return False
 
     def _uses_parse_int(self, module: Module) -> bool:
+        # A user-defined ``parse_int`` shadows the builtin: emit the
+        # user function instead of the runtime helper (matches the
+        # Python backend, where the user's function wins).
+        if any(fn.name == "parse_int" for fn in module.functions):
+            return False
         return self._uses_builtin_free_fn(module, "parse_int")
 
     def _uses_parse_float(self, module: Module) -> bool:
+        if any(fn.name == "parse_float" for fn in module.functions):
+            return False
         return self._uses_builtin_free_fn(module, "parse_float")
 
     def _uses_builtin_free_fn(self, module: Module, name: str) -> bool:

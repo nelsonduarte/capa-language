@@ -1209,13 +1209,29 @@ class _StringEmissionMixin:
         self, recv: Value, needle: Value, dst,
     ) -> None:
         """``recv.index_of(needle) -> Option<Int>``. Naive
-        substring scan; on first match writes ``Some(byte_offset)``
+        substring scan; on first match writes ``Some(cp_offset)``
         and exits, otherwise the loop exhausts to the fall-through
         and writes ``None``. D3 slice 4 (2026-05) changed the
         contract from the legacy ``-1`` sentinel to ``Option<Int>``;
         the Python emitter in ``capa/ir/_emit_python.py`` and the
         legacy transpiler both produce the same shape so the
         backends stay in lockstep.
+
+        The returned index is a CODE-POINT offset, not a byte
+        offset (slice 17, 2026-05-29). The scan still works
+        bytewise, but on a match the matched byte offset is
+        translated to a code-point offset by counting the UTF-8
+        code points (bytes whose top two bits are not ``10``)
+        strictly before the match. This mirrors the inline UTF-8
+        walk in ``_emit_string_char_at``; it is inlined rather than
+        calling ``$str_codepoint_count`` because the runtime helper
+        is only emitted when discovery sees ``length`` / ``substring``
+        in the module, which would not fire for an index_of-only
+        program. Pre-fix the Wasm backend returned the raw byte
+        offset, diverging from Python's ``str.find`` (which is
+        code-point indexed) on any non-ASCII prefix:
+        ``"a\\u{1F600}b".index_of("b")`` gave 5 on Wasm but 2 on
+        Python. Now both return 2.
 
         Empty-needle behaviour matches Python's ``str.find("")``:
         the empty needle is found at offset 0 for any receiver
@@ -1234,9 +1250,10 @@ class _StringEmissionMixin:
         self._write("call $alloc")
         self._write("local.set $_alloc_tmp_result")
         # Scan: i in [0, recv.len - needle.len]. On match write
-        # Some(i) into the Option record and ``br`` past the
-        # None-write tail. On loop exhaustion fall through to the
-        # tail which writes None.
+        # Some(cp_offset) into the Option record and ``br`` past the
+        # None-write tail, where cp_offset is the code-point count of
+        # the receiver bytes strictly before the matched byte offset.
+        # On loop exhaustion fall through to the tail which writes None.
         self._write("i32.const 0")
         self._write("local.set $_str_i")
         self._block_counter += 1
@@ -1268,12 +1285,62 @@ class _StringEmissionMixin:
         self._write("call $str_eq")
         self._write("if")
         self._indent += 1
-        # Match: write Some(i) and bail past the None-write tail.
+        # Match: write Some(cp_offset) and bail past the None-write
+        # tail. The scan index $_str_i is a byte offset; translate it
+        # to a code-point offset by counting the receiver bytes in
+        # [0, i) that are NOT UTF-8 continuation bytes (i.e. whose
+        # top two bits are not ``10``). $_str_count = running cp
+        # count, $_str_end = byte cursor, $_str_byte = current byte.
+        # None case is unaffected.
         self._write("local.get $_alloc_tmp_result")
         self._write("i32.const 0")
         self._write("i32.store")
-        self._write("local.get $_alloc_tmp_result")
+        self._write("i32.const 0")
+        self._write("local.set $_str_count")
+        self._write("i32.const 0")
+        self._write("local.set $_str_end")
+        self._block_counter += 1
+        cp_loop = f"$Sio{self._block_counter}_cploop"
+        cp_exit = f"$Sio{self._block_counter}_cpexit"
+        self._write(f"block {cp_exit}")
+        self._indent += 1
+        self._write(f"loop {cp_loop}")
+        self._indent += 1
+        # if cursor >= match byte offset: done counting.
+        self._write("local.get $_str_end")
         self._write("local.get $_str_i")
+        self._write("i32.ge_s")
+        self._write(f"br_if {cp_exit}")
+        # if (byte & 0xC0) != 0x80: count++ (non-continuation byte).
+        self._write("local.get $_str_a_ptr")
+        self._write("local.get $_str_end")
+        self._write("i32.add")
+        self._write("i32.load8_u")
+        self._write("i32.const 192")
+        self._write("i32.and")
+        self._write("i32.const 128")
+        self._write("i32.ne")
+        self._write("if")
+        self._indent += 1
+        self._write("local.get $_str_count")
+        self._write("i32.const 1")
+        self._write("i32.add")
+        self._write("local.set $_str_count")
+        self._indent -= 1
+        self._write("end")
+        # cursor++
+        self._write("local.get $_str_end")
+        self._write("i32.const 1")
+        self._write("i32.add")
+        self._write("local.set $_str_end")
+        self._write(f"br {cp_loop}")
+        self._indent -= 1
+        self._write("end")
+        self._indent -= 1
+        self._write("end")
+        # Store Some(cp_count).
+        self._write("local.get $_alloc_tmp_result")
+        self._write("local.get $_str_count")
         self._write("i64.extend_i32_s")
         self._write("i64.store offset=8")
         self._write(f"br {outer}")

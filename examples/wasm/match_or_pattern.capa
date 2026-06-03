@@ -1,0 +1,38 @@
+// Or-patterns (``A | B -> body``): the arm fires if ANY alternative
+// matches; the body runs once. Covers the binding-free cases the
+// Wasm backend now supports - payload-less sum variants and Int /
+// Float literals. Pre-fix the Wasm match path raised
+// "match pattern OrPat" at CIR-lowering time. Stdio + String only.
+
+type Direction =
+    North
+    South
+    East
+    West
+
+fun axis(d: Direction) -> String
+    return match d
+        North | South -> "vertical"
+        East | West -> "horizontal"
+
+fun size(n: Int) -> String
+    return match n
+        0 | 1 | 2 -> "small"
+        3 | 4 -> "medium"
+        other -> "large"
+
+fun bucket(x: Float) -> String
+    return match x
+        0.0 | 1.0 -> "edge"
+        _ -> "middle"
+
+fun main(stdio: Stdio)
+    stdio.println(axis(North))
+    stdio.println(axis(South))
+    stdio.println(axis(East))
+    stdio.println(axis(West))
+    stdio.println(size(1))
+    stdio.println(size(4))
+    stdio.println(size(99))
+    stdio.println(bucket(1.0))
+    stdio.println(bucket(0.5))

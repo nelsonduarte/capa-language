@@ -191,6 +191,57 @@ class TestTranspileBasic(unittest.TestCase):
         self.assertEqual(out, "Olá, Capa!\n")
 
 
+class TestBoolInterpolationLowercase(unittest.TestCase):
+    """Capa renders a Bool as ``true`` / ``false`` (lowercase) inside a
+    ``${...}`` interpolation, matching JSON and the Wasm backend, never
+    Python's capitalised ``True`` / ``False``.
+
+    The transpiler keys this lowering off the analyzer-recorded type of
+    the interpolated sub-expression. BUG #9: a Bool reached via a tuple
+    index (``t[0]``) was rendered as ``True`` because the analyzer records
+    ``TyUnknown`` for a tuple index (it only resolves element types for
+    ``List`` receivers), so the lowering never fired. The transpiler now
+    derives the tuple element type from the receiver's ``TyTuple`` for a
+    constant index. See ``_interp_type`` in
+    capa/transpiler/_expressions.py.
+    """
+
+    def test_bool_tuple_index_renders_lowercase(self):
+        rc, out, _ = run_capa(
+            'fun main(s: Stdio)\n'
+            '    let t = (true, false)\n'
+            '    s.println("${t[0]}")\n'
+            '    s.println("${t[1]}")\n'
+        )
+        self.assertEqual(rc, 0)
+        self.assertEqual(out, "true\nfalse\n")
+
+    def test_int_tuple_index_unaffected(self):
+        rc, out, _ = run_capa(
+            'fun main(s: Stdio)\n'
+            '    let t = (1, 2)\n'
+            '    s.println("${t[0]}")\n'
+        )
+        self.assertEqual(rc, 0)
+        self.assertEqual(out, "1\n")
+
+    def test_other_bool_shapes_still_lowercase(self):
+        rc, out, _ = run_capa(
+            'fun ret_bool() -> Bool\n'
+            '    return true\n'
+            '\n'
+            'fun main(s: Stdio)\n'
+            '    let b = true\n'
+            '    let xs = [true, false]\n'
+            '    s.println("${b}")\n'
+            '    s.println("${xs[0]}")\n'
+            '    s.println("${ret_bool()}")\n'
+            '    s.println("${1 == 2}")\n'
+        )
+        self.assertEqual(rc, 0)
+        self.assertEqual(out, "true\ntrue\ntrue\nfalse\n")
+
+
 class TestIntegerDivision(unittest.TestCase):
     """Regression tests for the Int/Int `/` lowering.
 
@@ -215,12 +266,17 @@ class TestIntegerDivision(unittest.TestCase):
         self.assertEqual(out, "3\n5\n3\n")
 
     def test_int_div_int_emits_floor_division(self):
+        # Bug #1: Int ``/`` routes through the ``_capa_idiv`` runtime
+        # helper, which floors (like ``//``) AND traps on ``b == 0``
+        # and ``i64::MIN / -1`` (plain ``//`` does neither in a way
+        # that matches the Wasm trap). Must not be true division.
         code = transpile_only(
             'fun main(stdio: Stdio)\n'
             '    stdio.println("${10 / 3}")\n'
         )
-        self.assertIn("10 // 3", code)
+        self.assertIn("_capa_idiv(10, 3)", code)
         self.assertNotIn("(10 / 3)", code)
+        self.assertNotIn("10 // 3", code)
 
     def test_int_div_int_via_let_bindings(self):
         # Ensure the type-lookup also works when the operands are

@@ -200,6 +200,18 @@ _PARITY_PROGRAMS: list[str] = [
     # the constant-stack property at large depth is a separate Wasm-only
     # test (the Python reference would hit its recursion limit).
     "tail_recursion.capa",
+    # Match-pattern parity slice (2026-06-03): patterns that already
+    # worked on the Python backend but the Wasm CIR path rejected at
+    # compile time. ``match_ident_sum`` is a bare-identifier catch-all
+    # in a sum match; ``match_float_lit`` is Float-literal arms
+    # (f64.eq); ``match_or_pattern`` is binding-free or-patterns
+    # (variant + Int/Float literal alternatives); ``match_struct_pattern``
+    # destructures struct scrutinees (literal / wildcard fields,
+    # shorthand binds, nested struct sub-patterns).
+    "match_ident_sum.capa",
+    "match_float_lit.capa",
+    "match_or_pattern.capa",
+    "match_struct_pattern.capa",
 ]
 
 # Programs deliberately excluded from parity and why; documented
@@ -521,10 +533,14 @@ class TestPythonWasmParity(unittest.TestCase):
 
     def test_string_index_of(self):
         # Slice 4 (2026-05): ``String.index_of`` returns
-        # ``Option<Int>`` (byte offset). D3 retired the legacy -1
-        # sentinel; the Python emitter wraps ``.find()`` in a
-        # ``Some/None_`` lambda, the Wasm emitter writes the
-        # Option record directly.
+        # ``Option<Int>``. D3 retired the legacy -1 sentinel; the
+        # Python emitter wraps ``.find()`` in a ``Some/None_``
+        # lambda, the Wasm emitter writes the Option record directly.
+        # Slice 17 (2026-05-29): the index is a CODE-POINT offset,
+        # not a byte offset. The example now includes multibyte
+        # prefixes (emoji / accented / CJK) where the Wasm backend
+        # previously returned the byte offset and diverged from
+        # Python's code-point-indexed ``str.find``.
         self._assert_parity("string_index_of.capa")
 
     def test_tuple_arity_n(self):
@@ -863,6 +879,36 @@ class TestPythonWasmParity(unittest.TestCase):
         # Roadmap P4: tail calls lower to ``return_call``. Moderate
         # depth so the Python reference path agrees byte-for-byte.
         self._assert_parity("tail_recursion.capa")
+
+    def test_match_ident_sum(self):
+        # Match-pattern slice (2026-06-03): a bare-identifier catch-all
+        # arm in a sum-type match binds the scrutinee. Pre-fix the Wasm
+        # sum-match path raised "Phase 6C: match arm pattern PatIdent
+        # not supported"; the binding now mirrors the Int / Bool /
+        # String / tuple paths.
+        self._assert_parity("match_ident_sum.capa")
+
+    def test_match_float_lit(self):
+        # Match-pattern slice (2026-06-03): Float-literal arms compare
+        # the f64 scrutinee via ``f64.eq`` (Python ``==`` semantics).
+        # Pre-fix a Float scrutinee was rejected outright.
+        self._assert_parity("match_float_lit.capa")
+
+    def test_match_or_pattern(self):
+        # Match-pattern slice (2026-06-03): binding-free or-patterns
+        # (``A | B -> body``) over payload-less sum variants and
+        # Int / Float literals. Each alternative's predicate is ORed;
+        # the body runs once. Pre-fix the CIR lowerer raised
+        # "match pattern OrPat".
+        self._assert_parity("match_or_pattern.capa")
+
+    def test_match_struct_pattern(self):
+        # Match-pattern slice (2026-06-03): struct-destructuring
+        # patterns test literal / wildcard fields and bind shorthand
+        # fields, recursing into nested struct sub-patterns via the
+        # struct layout offsets. Pre-fix the CIR lowerer raised
+        # "match pattern StructPat".
+        self._assert_parity("match_struct_pattern.capa")
 
     def test_tail_call_emits_return_call(self):
         # White-box: confirm the peephole actually fires (a green

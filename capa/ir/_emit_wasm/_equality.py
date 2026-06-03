@@ -1077,6 +1077,11 @@ class _EqualityMixin:
         self._write("(local $_eq_set_i_b i32)")
         self._write("(local $_alloc_tmp i32)")
         self._write("(local $_alloc_tmp_i64 i64)")
+        # Float elements stash the needle in $_alloc_tmp_f64 and
+        # compare with f64.eq (see _emit_set_stash_element_at /
+        # _emit_set_compare_at). Declare it so $eq_Set_Float is
+        # self-contained (bug #5).
+        self._write("(local $_alloc_tmp_f64 f64)")
         self._write("(local $_str_a_ptr i32)")
         self._write("(local $_str_a_len i32)")
         self._write("(local $_str_b_ptr i32)")
@@ -1221,6 +1226,23 @@ class _EqualityMixin:
             self._write("i32.load")
             self._write("local.set $_alloc_tmp")
             return None
+        # Float: load the f64 element and stash in $_alloc_tmp_f64 so
+        # _emit_set_compare_at's Float branch (which reads from there
+        # and compares with f64.eq) finds the needle. Without this the
+        # scalar fallback below would i64.load the bit pattern into
+        # $_alloc_tmp_i64, which the Float compare never reads -> wrong
+        # result, and the helper never declares $_alloc_tmp_f64 -> the
+        # generated WAT references an undeclared local (bug #5).
+        if elem_ty == "Float":
+            self._write(f"local.get {set_local}")
+            self._write(f"i32.load offset={_SET_DATA_OFFSET}")
+            self._write(f"local.get ${idx_local}")
+            self._write(f"i32.const {elem_size}")
+            self._write("i32.mul")
+            self._write("i32.add")
+            self._write("f64.load")
+            self._write("local.set $_alloc_tmp_f64")
+            return "_alloc_tmp_f64"
         # Scalar (Int 8-byte, Bool 4-byte). Load the element and
         # stash in the size-appropriate scratch.
         from ._layout import _load_op_for_size

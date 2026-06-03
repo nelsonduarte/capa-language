@@ -85,6 +85,7 @@ from ._result import (
 )
 from ._safety import (
     _capa_iadd,
+    _capa_idiv,
     _capa_imul,
     _capa_isub,
     _capa_list_get,
@@ -120,6 +121,7 @@ __all__ = [
     "_capa_iadd",
     "_capa_isub",
     "_capa_imul",
+    "_capa_idiv",
     "_capa_shl",
     "_capa_shr",
     "_capa_list_get",

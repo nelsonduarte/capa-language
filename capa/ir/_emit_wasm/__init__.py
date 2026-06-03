@@ -290,6 +290,11 @@ class WasmEmitter(
         # with computed bodies raise at the use site so a future
         # Wasm-global-with-start-fn pass can take over cleanly.
         self._const_values: dict[str, Value] = {}
+        # Names of user-defined free functions. Consulted when a
+        # builtin free function (e.g. parse_int / parse_float) could
+        # be shadowed by a user definition of the same name: the user
+        # function wins, matching the Python backend.
+        self._user_fn_names = {fn.name for fn in module.functions}
         for c in module.consts:
             if len(c.body) == 1 and isinstance(c.body[0], AssignConst):
                 src = c.body[0].src
@@ -946,6 +951,20 @@ class WasmEmitter(
                 self._write("f64.sub")
                 self._write(f"local.set ${instr.dst}")
                 return
+            if op == "/":
+                # Safety (Bug #4): ``f64.div`` yields ``inf`` on a zero
+                # divisor, but the Python backend raises
+                # ``ZeroDivisionError`` on ``1.5 / 0.0``. Mirror the
+                # float-``%`` zero guard above: trap when the divisor is
+                # zero. Non-zero division is left to IEEE-754.
+                self._push_value(instr.right)
+                self._write("f64.const 0")
+                self._write("f64.eq")
+                self._write("if")
+                self._indent += 1
+                self._write("unreachable")
+                self._indent -= 1
+                self._write("end")
             self._push_value(instr.left)
             self._push_value(instr.right)
             self._write(_FLOAT_BINOP[op])
@@ -980,6 +999,46 @@ class WasmEmitter(
             self._write("local.get $_alloc_tmp_i64")
             self._push_value(instr.right)
             self._write("i64.add")
+            self._indent -= 1
+            self._write("else")
+            self._indent += 1
+            self._write("local.get $_alloc_tmp_i64")
+            self._indent -= 1
+            self._write("end")
+            self._write(f"local.set ${instr.dst}")
+            return
+        if op == "/" and op in _INT_BINOP and not is_float:
+            # Safety + parity (Bug #1): ``i64.div_s`` truncates toward
+            # zero (``-7 / 2 == -3``), but Capa Int division is floored
+            # (``-7 / 2 == -4``), matching the Python backend's ``//``.
+            # Compute ``q = a div_s b`` first - this preserves
+            # wasmtime's native traps on ``b == 0`` and ``MIN / -1`` -
+            # then apply the same floor correction the ``%`` path above
+            # uses: subtract 1 from ``q`` iff ``(a rem_s b) != 0 and
+            # (a XOR b) < 0`` (a non-zero remainder with operands of
+            # differing sign). Mirrors ``_capa_idiv`` on the Python
+            # side; both backends trap on ``/0`` and ``MIN / -1``.
+            self._push_value(instr.left)
+            self._push_value(instr.right)
+            self._write("i64.div_s")
+            self._write("local.set $_alloc_tmp_i64")
+            # Predicate: (a rem_s b) != 0 AND (a XOR b) < 0.
+            self._push_value(instr.left)
+            self._push_value(instr.right)
+            self._write("i64.rem_s")
+            self._write("i64.const 0")
+            self._write("i64.ne")
+            self._push_value(instr.left)
+            self._push_value(instr.right)
+            self._write("i64.xor")
+            self._write("i64.const 0")
+            self._write("i64.lt_s")
+            self._write("i32.and")
+            self._write("if (result i64)")
+            self._indent += 1
+            self._write("local.get $_alloc_tmp_i64")
+            self._write("i64.const 1")
+            self._write("i64.sub")
             self._indent -= 1
             self._write("else")
             self._indent += 1
@@ -1175,6 +1234,20 @@ class WasmEmitter(
                 self._write("f64.neg")
                 self._write(f"local.set ${instr.dst}")
                 return
+            # Safety (Bug #6): Wasm has no ``i64.neg``; synthesise as
+            # ``0 - x``. But ``0 - i64::MIN`` wraps back to MIN (the
+            # only i64 value whose negation overflows), so guard it:
+            # trap when ``x == i64::MIN`` to match the Python backend's
+            # ``_capa_isub(0, x)`` ``OverflowError``. All other values
+            # negate normally (``-5 -> -5``, ``-(-5) -> 5``).
+            self._push_value(instr.operand)
+            self._write("i64.const -9223372036854775808")  # i64::MIN
+            self._write("i64.eq")
+            self._write("if")
+            self._indent += 1
+            self._write("unreachable")
+            self._indent -= 1
+            self._write("end")
             self._write("i64.const 0")
             self._push_value(instr.operand)
             self._write("i64.sub")
@@ -1234,7 +1307,8 @@ class WasmEmitter(
         # as (ptr, len); the return is an Option<Int> / Option<Float>
         # pointer.
         if instr.callee_name in ("parse_int", "parse_float") \
-                and len(instr.args) == 1:
+                and len(instr.args) == 1 \
+                and instr.callee_name not in self._user_fn_names:
             arg = instr.args[0]
             if arg.kind == "lit_str":
                 offset, length = self._intern_string(arg.literal)

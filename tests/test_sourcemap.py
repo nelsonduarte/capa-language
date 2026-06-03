@@ -72,8 +72,11 @@ class LineMapTests(unittest.TestCase):
         py_for_3 = [k for k, v in line_map.items() if v.line == 3]
         self.assertTrue(py_for_3)
         # The mapped python line (1-based) should contain the division.
+        # Int ``/`` now lowers to the ``_capa_idiv`` helper (Bug #1),
+        # which traps on the zero divisor rather than emitting a bare
+        # ``/``; the statement still concerns the division.
         target = lines[py_for_3[0] - 1]
-        self.assertIn("/", target)
+        self.assertIn("_capa_idiv", target)
 
 
 def _make_tb(filename: str, lineno: int):

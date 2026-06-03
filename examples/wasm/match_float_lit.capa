@@ -1,0 +1,30 @@
+// Float-literal match patterns on the Wasm backend. A ``1.5 -> ...``
+// arm compares the scrutinee with ``f64.eq``, matching Python's
+// ``==`` semantics exactly (including NaN never comparing equal).
+// Pre-fix the Wasm match emitter rejected a Float scrutinee with
+// "only sum types, Bool, String, and tuples are supported". The
+// scrutinee is Float but every result is a String, so no Float
+// interpolation crosses the backends (which would diverge on
+// formatting); output stays byte-identical.
+
+fun grade(score: Float) -> String
+    return match score
+        1.0 -> "perfect"
+        0.5 -> "half"
+        0.0 -> "zero"
+        other -> "partial"
+
+// Expression-position Float match bound to a let.
+fun tag(x: Float) -> String
+    let t = match x
+        3.14 -> "pi-ish"
+        _ -> "other"
+    return t
+
+fun main(stdio: Stdio)
+    stdio.println(grade(1.0))
+    stdio.println(grade(0.5))
+    stdio.println(grade(0.0))
+    stdio.println(grade(0.25))
+    stdio.println(tag(3.14))
+    stdio.println(tag(2.71))

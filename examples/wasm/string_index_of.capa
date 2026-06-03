@@ -24,3 +24,20 @@ fun main(stdio: Stdio)
     match s.index_of("hello")
         Some(i) -> stdio.println("prefix at ${i}")
         None    -> stdio.println("prefix miss")
+    // Multibyte: index_of returns a code-point offset, not a byte
+    // offset (slice 17). The emoji is one code point but four UTF-8
+    // bytes, so the byte offset of "b" is 5 while the code-point
+    // offset is 2. Both backends must agree on 2.
+    let m = "a\u{1F600}b"
+    match m.index_of("b")
+        Some(i) -> stdio.println("mb b at ${i}")
+        None    -> stdio.println("mb b miss")
+    // Two-byte (e) and three-byte (CJK) code points before the hit.
+    let m2 = "café\u{4E2D}x"
+    match m2.index_of("x")
+        Some(i) -> stdio.println("mb x at ${i}")
+        None    -> stdio.println("mb x miss")
+    // Needle that itself is multibyte, with a multibyte prefix.
+    match m2.index_of("\u{4E2D}")
+        Some(i) -> stdio.println("mb needle at ${i}")
+        None    -> stdio.println("mb needle miss")

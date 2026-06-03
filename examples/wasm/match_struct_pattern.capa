@@ -1,0 +1,45 @@
+// Struct-destructuring match patterns (``P { x: 0, y } -> body``):
+// test the literal / wildcard fields and bind the shorthand fields.
+// Pre-fix the Wasm match path raised "match pattern StructPat" at
+// CIR-lowering time; the Python backend has always handled it.
+// Exercises: a literal Int field, a literal Bool field, shorthand
+// binds, an explicit wildcard field, a bound String field, and a
+// nested struct sub-pattern. Stdio + Int / String only (no Float
+// interpolation), so output is byte-identical across backends.
+
+type Inner {
+    a: Int,
+    b: Int
+}
+
+type Outer {
+    name: String,
+    flag: Bool,
+    inner: Inner
+}
+
+type Point {
+    x: Int,
+    y: Int,
+    z: Int
+}
+
+// Literal field + shorthand bind; explicit wildcard field; nested
+// struct sub-pattern with its own literal + bind.
+fun describe(o: Outer) -> String
+    return match o
+        Outer { name, flag: true, inner: Inner { a: 0, b } } -> "first name=${name} b=${b}"
+        Outer { name, flag: _, inner: Inner { a, b } } -> "rest name=${name} a=${a} b=${b}"
+
+// Literal Int field gates the first arm; wildcard field ignores z.
+fun place(p: Point) -> String
+    return match p
+        Point { x: 0, y, z: _ } -> "origin-x y=${y}"
+        Point { x, y, z } -> "x=${x} y=${y} z=${z}"
+
+fun main(stdio: Stdio)
+    stdio.println(describe(Outer { name: "alpha", flag: true, inner: Inner { a: 0, b: 9 } }))
+    stdio.println(describe(Outer { name: "beta", flag: false, inner: Inner { a: 5, b: 6 } }))
+    stdio.println(describe(Outer { name: "gamma", flag: true, inner: Inner { a: 1, b: 2 } }))
+    stdio.println(place(Point { x: 0, y: 4, z: 100 }))
+    stdio.println(place(Point { x: 7, y: 8, z: 9 }))

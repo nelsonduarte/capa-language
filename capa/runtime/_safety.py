@@ -22,6 +22,10 @@ Helpers exported:
 - ``_capa_iadd(a, b)`` / ``_capa_isub(a, b)`` / ``_capa_imul(a, b)``:
   signed 64-bit add / sub / mul. Raise ``OverflowError`` when the
   result is outside ``[-(2**63), 2**63)``.
+- ``_capa_idiv(a, b)``: signed 64-bit floor division (Python ``//``).
+  Raises ``ZeroDivisionError`` on ``b == 0`` and ``OverflowError`` on
+  ``_I64_MIN / -1`` (whose quotient ``2**63`` overflows i64). The Wasm
+  backend traps on the same two inputs.
 - ``_capa_shl(a, b)`` / ``_capa_shr(a, b)``: i64 left / arithmetic-
   right shift. Raise ``OverflowError`` when ``b`` is outside
   ``[0, 64)``. ``_capa_shl`` additionally traps when the shifted
@@ -78,6 +82,25 @@ def _capa_imul(a: int, b: int) -> int:
             f"Int multiplication overflows signed 64-bit: {a} * {b} = {r}"
         )
     return r
+
+
+def _capa_idiv(a: int, b: int) -> int:
+    """Signed 64-bit floor division (Python ``//`` semantics).
+
+    Raises ``ZeroDivisionError`` when ``b == 0`` and ``OverflowError``
+    when ``a == _I64_MIN and b == -1`` (the quotient ``2**63`` leaves
+    the signed 64-bit window). The Wasm backend traps on the same two
+    inputs (wasmtime's native ``i64.div_s`` traps on ``/0`` and
+    ``MIN / -1``), and applies the same floor correction so both
+    backends round toward negative infinity (``-7 / 2 == -4``).
+    """
+    if b == 0:
+        raise ZeroDivisionError("Int division by zero")
+    if a == _I64_MIN and b == -1:
+        raise OverflowError(
+            f"Int division overflows signed 64-bit: {a} / {b} = {-a}"
+        )
+    return a // b
 
 
 def _capa_shl(a: int, b: int) -> int:

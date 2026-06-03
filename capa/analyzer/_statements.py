@@ -57,15 +57,36 @@ class _StatementsMixin:
         elif isinstance(stmt, A.ReturnStmt):
             self._check_return(stmt)
         elif isinstance(stmt, A.BreakStmt):
-            pass  # only allow inside loops? leave for v1.1
+            self._check_loop_jump(stmt, "break")
         elif isinstance(stmt, A.ContinueStmt):
-            pass
+            self._check_loop_jump(stmt, "continue")
         elif isinstance(stmt, A.ExprStmt):
+            # A bare ``match`` statement discards its value, so an
+            # open-domain scrutinee (Int / String / Float / Char) does
+            # not need a catch-all: a miss is a legal no-op. Mark the
+            # node as statement-position so the exhaustiveness check
+            # stays lenient there, while a value-producing match still
+            # requires full coverage. (Still routed through
+            # ``_check_expr`` so the type / IFC-label registration the
+            # IR and transpiler rely on happens as usual.)
+            if isinstance(stmt.expr, A.MatchExpr):
+                self._stmt_position_matches.add(id(stmt.expr))
             self._check_expr(stmt.expr)
         else:
             self._err(
                 f"unknown statement type {type(stmt).__name__}", stmt.pos,
             )
+
+    def _check_loop_jump(self, stmt: A.Stmt, kw: str) -> None:
+        """Validate a ``break`` / ``continue``. A jump is legal only
+        when it is lexically inside a loop body of the SAME function:
+        ``_loop_depth`` is bumped around ``while`` / ``for`` bodies and
+        reset to 0 when entering a lambda body, so a jump inside a
+        lambda (which cannot cross the lambda's function boundary)
+        reports an error here rather than producing code that both
+        backends reject at codegen."""
+        if self._loop_depth <= 0:
+            self._err(f"{kw} outside of a loop", stmt.pos)
 
     def _check_let(self, s: A.LetStmt) -> None:
         actual = self._check_expr(s.value)
@@ -348,13 +369,17 @@ class _StatementsMixin:
         # consumed. Pass 2 (real): pre-mark those caps and run
         # the body for real, so use-after-consume across loop
         # iterations is caught in a single static analysis.
-        snap = self._snapshot_for_dry_run()
-        self._check_block(s.body)
-        consumed_in_body = self._consumed - snap["consumed"]
-        self._restore_after_dry_run(snap)
+        self._loop_depth += 1
+        try:
+            snap = self._snapshot_for_dry_run()
+            self._check_block(s.body)
+            consumed_in_body = self._consumed - snap["consumed"]
+            self._restore_after_dry_run(snap)
 
-        self._consumed |= consumed_in_body
-        self._check_block(s.body)
+            self._consumed |= consumed_in_body
+            self._check_block(s.body)
+        finally:
+            self._loop_depth -= 1
 
     def _check_for(self, s: A.ForStmt) -> None:
         iter_ty = self._check_expr(s.iter)
@@ -394,23 +419,27 @@ class _StatementsMixin:
             )
 
         # Same two-pass dry-run / real-run dance as ``_check_while``.
-        snap = self._snapshot_for_dry_run()
-        self._push_scope()
-        self._bind_pattern(s.pattern, elem_ty, mutable=False)
-        self._label_pattern_binds(s.pattern, iter_label)
-        for stmt in s.body.stmts:
-            self._check_stmt(stmt)
-        self._pop_scope()
-        consumed_in_body = self._consumed - snap["consumed"]
-        self._restore_after_dry_run(snap)
+        self._loop_depth += 1
+        try:
+            snap = self._snapshot_for_dry_run()
+            self._push_scope()
+            self._bind_pattern(s.pattern, elem_ty, mutable=False)
+            self._label_pattern_binds(s.pattern, iter_label)
+            for stmt in s.body.stmts:
+                self._check_stmt(stmt)
+            self._pop_scope()
+            consumed_in_body = self._consumed - snap["consumed"]
+            self._restore_after_dry_run(snap)
 
-        self._consumed |= consumed_in_body
-        self._push_scope()
-        self._bind_pattern(s.pattern, elem_ty, mutable=False)
-        self._label_pattern_binds(s.pattern, iter_label)
-        for stmt in s.body.stmts:
-            self._check_stmt(stmt)
-        self._pop_scope()
+            self._consumed |= consumed_in_body
+            self._push_scope()
+            self._bind_pattern(s.pattern, elem_ty, mutable=False)
+            self._label_pattern_binds(s.pattern, iter_label)
+            for stmt in s.body.stmts:
+                self._check_stmt(stmt)
+            self._pop_scope()
+        finally:
+            self._loop_depth -= 1
 
     def _check_return(self, s: A.ReturnStmt) -> None:
         if s.value is None:

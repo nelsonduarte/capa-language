@@ -163,11 +163,67 @@ class _PatternsMixin:
                 )
             return
 
-        if not isinstance(scrutinee_ty, TyName):
-            return
         from . import SymbolKind
-        type_sym = self.global_scope.lookup(scrutinee_ty.name)
-        if type_sym is None or type_sym.kind != SymbolKind.TYPE_SUM:
+        type_sym = (
+            self.global_scope.lookup(scrutinee_ty.name)
+            if isinstance(scrutinee_ty, TyName) else None
+        )
+        # A type is a sum (for exhaustiveness) when it carries variants.
+        # User ``type ... = A | B`` is registered as ``TYPE_SUM``; the
+        # built-in ``Option`` / ``Result`` are registered as
+        # ``TYPE_STRUCT`` for historical reasons but still carry their
+        # variants in ``sum_variants``, so key off that dict rather than
+        # the symbol kind alone.
+        is_sum = type_sym is not None and (
+            type_sym.kind == SymbolKind.TYPE_SUM
+            or bool(type_sym.sum_variants)
+        )
+        if not is_sum:
+            # Bool, sum types, and a single irrefutable catch-all arm
+            # are already handled above. What remains here is a value
+            # match whose scrutinee is an open scalar domain (Int /
+            # String / Float / Char) with no catch-all: it cannot be
+            # exhausted by enumerating arms, so a miss has no defined
+            # result (the Python backend crashes with UnboundLocalError,
+            # the Wasm backend returns a zero value). Reject it in VALUE
+            # position; in statement position the value is discarded and
+            # a miss is a legal no-op, so stay lenient.
+            #
+            # Product / aggregate scrutinees (tuples, structs) and
+            # unresolved types are intentionally left lenient: proving
+            # exhaustiveness over the cross-product of their components
+            # (e.g. ``(true, x) | (false, x)`` covering ``(Bool, Int)``)
+            # is out of scope here, and the single-irrefutable-arm case
+            # is already covered by the catch-all short-circuit above.
+            OPEN_SCALARS = {"Int", "String", "Float", "Char"}
+            scalar = (
+                isinstance(scrutinee_ty, TyName)
+                and scrutinee_ty.name in OPEN_SCALARS
+            )
+            if not scalar:
+                return
+            if id(s) in self._stmt_position_matches:
+                return
+            self._err(
+                f"non-exhaustive match expression on "
+                f"{ty_str(scrutinee_ty)}: a match used for its value "
+                f"must cover every case; add '_ -> ...' (or a bare "
+                f"binding) to handle the remaining cases",
+                s.pos,
+            )
+            return
+
+        # Statement-position coverage is enforced for true ``TYPE_SUM``
+        # types (the historical behaviour) but NOT for the built-in
+        # variant-carrying ``TYPE_STRUCT`` types (Option / Result): a
+        # bare ``match opt`` whose value is discarded was always allowed
+        # to omit a variant, and tightening that here would be an
+        # unrelated regression. Value-position matches always require
+        # full variant coverage.
+        if (
+            id(s) in self._stmt_position_matches
+            and type_sym.kind != SymbolKind.TYPE_SUM
+        ):
             return
 
         covered: set[str] = set()
@@ -189,13 +245,31 @@ class _PatternsMixin:
             )
 
     def _pattern_is_catchall(self, p: A.Pattern) -> bool:
-        """A pattern captures all values when it is a wildcard,
-        a binding ident, or an or-pattern whose alternatives
-        include at least one catch-all."""
+        """``True`` iff the pattern is irrefutable: it matches every
+        value of its type and so makes the match exhaustive.
+
+        - A wildcard ``_`` or a bare ident binder matches anything.
+        - An or-pattern is irrefutable when any alternative is.
+        - A tuple pattern is irrefutable when every element pattern is
+          (a product type is covered once each field is covered): so
+          ``(x, y)`` or ``(g, _)`` catches all tuples, while ``(1, y)``
+          does not (the first slot is a refutable literal).
+        - A struct pattern is irrefutable when every field sub-pattern
+          is (shorthand ``{field}`` binds, so it is irrefutable too).
+          Structs are single-variant, so an all-irrefutable field
+          destructure covers every value of the struct type.
+        """
         if isinstance(p, (A.WildcardPat, A.IdentPat)):
             return True
         if isinstance(p, A.OrPat):
             return any(self._pattern_is_catchall(a) for a in p.alternatives)
+        if isinstance(p, A.TuplePat):
+            return all(self._pattern_is_catchall(e) for e in p.elements)
+        if isinstance(p, A.StructPat):
+            return all(
+                fp is None or self._pattern_is_catchall(fp)
+                for _, fp in p.fields
+            )
         return False
 
     def _flatten_or_pat(self, p: A.Pattern) -> list[A.Pattern]:

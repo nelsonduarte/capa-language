@@ -1409,6 +1409,94 @@ class TestMatchExhaustiveness(unittest.TestCase):
             any("missing true, false" in m for m in msgs)
         )
 
+    # ------- Value-position open-domain exhaustiveness (BUG #2) -------
+    #
+    # A ``match`` used for its value (``return match ...``,
+    # ``let x = match ...``) over an open scalar domain (Int / String /
+    # Float / Char) must have a catch-all: a miss has no defined result
+    # (Python backend raises UnboundLocalError, Wasm returns a zero
+    # value). A bare statement-position ``match`` discards its value, so
+    # a miss is a legal no-op and stays lenient.
+
+    def test_value_match_on_int_without_catchall_rejected(self):
+        msgs = errors_of(
+            "fun t(i: Int) -> String\n"
+            "    return match i\n"
+            '        1 -> "one"\n'
+            '        2 -> "two"\n'
+        )
+        self.assertTrue(
+            any(
+                "non-exhaustive match expression on Int" in m
+                for m in msgs
+            ),
+            f"got: {msgs}",
+        )
+
+    def test_value_match_on_string_without_catchall_rejected(self):
+        msgs = errors_of(
+            "fun t(s: String) -> Int\n"
+            "    return match s\n"
+            '        "a" -> 1\n'
+            '        "b" -> 2\n'
+        )
+        self.assertTrue(
+            any(
+                "non-exhaustive match expression on String" in m
+                for m in msgs
+            ),
+            f"got: {msgs}",
+        )
+
+    def test_value_match_in_let_without_catchall_rejected(self):
+        msgs = errors_of(
+            "fun t(i: Int) -> Int\n"
+            "    let r = match i\n"
+            "        1 -> 10\n"
+            "        2 -> 20\n"
+            "    return r\n"
+        )
+        self.assertTrue(
+            any(
+                "non-exhaustive match expression on Int" in m
+                for m in msgs
+            ),
+            f"got: {msgs}",
+        )
+
+    def test_value_match_on_int_with_wildcard_ok(self):
+        # Control: a wildcard catch-all keeps the value match valid.
+        r = check(
+            "fun t(i: Int) -> String\n"
+            "    return match i\n"
+            '        1 -> "one"\n'
+            '        2 -> "two"\n'
+            '        _ -> "other"\n'
+        )
+        self.assertTrue(r.ok, r.errors)
+
+    def test_value_match_on_int_with_ident_catchall_ok(self):
+        # Control: a bare ident binder is also a catch-all.
+        r = check(
+            "fun t(i: Int) -> Int\n"
+            "    return match i\n"
+            "        1 -> 10\n"
+            "        other -> other\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+    def test_statement_match_on_int_without_catchall_ok(self):
+        # Control: a bare statement-position match discards its value,
+        # so an open-domain scrutinee needs no catch-all.
+        r = check(
+            "fun main(stdio: Stdio)\n"
+            "    let i = 3\n"
+            "    match i\n"
+            '        1 -> stdio.println("one")\n'
+            '        2 -> stdio.println("two")\n'
+        )
+        self.assertTrue(r.ok, r.errors)
+
 
 # =============================================================
 # Closures (lambdas)
@@ -1575,6 +1663,68 @@ class TestLambdas(unittest.TestCase):
                 "cannot consume capability 'stdio' captured" in m
                 for m in msgs
             )
+        )
+
+    # ------- break / continue cannot cross a lambda (BUG #8) -------
+    #
+    # A ``break`` / ``continue`` inside a lambda body cannot cross the
+    # lambda's function boundary: the enclosing loop is not visible, so
+    # both backends fail at codegen (Python SyntaxError, Wasm "break
+    # outside of a loop"). The analyzer must reject it; a break /
+    # continue directly inside a real loop must still be accepted.
+
+    def test_break_in_lambda_inside_loop_rejected(self):
+        msgs = errors_of(
+            "fun main(stdio: Stdio)\n"
+            "    for i in 0..3\n"
+            "        let f = fun () -> Unit =>\n"
+            "            if i == 1\n"
+            "                break\n"
+            "        f()\n"
+        )
+        self.assertTrue(
+            any("break outside of a loop" in m for m in msgs),
+            f"got: {msgs}",
+        )
+
+    def test_continue_in_lambda_inside_loop_rejected(self):
+        msgs = errors_of(
+            "fun main(stdio: Stdio)\n"
+            "    for i in 0..3\n"
+            "        let f = fun () -> Unit =>\n"
+            "            if i == 1\n"
+            "                continue\n"
+            "        f()\n"
+        )
+        self.assertTrue(
+            any("continue outside of a loop" in m for m in msgs),
+            f"got: {msgs}",
+        )
+
+    def test_break_directly_in_loop_ok(self):
+        # Control: break / continue directly inside a real loop body
+        # (no lambda in between) must still be accepted.
+        r = check(
+            "fun main(stdio: Stdio)\n"
+            "    for i in 0..3\n"
+            "        if i == 1\n"
+            "            break\n"
+            "        if i == 2\n"
+            "            continue\n"
+            '        stdio.println("${i}")\n'
+        )
+        self.assertTrue(r.ok, r.errors)
+
+    def test_break_outside_loop_rejected(self):
+        # A break at function top level (no enclosing loop) is also an
+        # error -- the loop-depth tracking covers this case too.
+        msgs = errors_of(
+            "fun main(stdio: Stdio)\n"
+            "    break\n"
+        )
+        self.assertTrue(
+            any("break outside of a loop" in m for m in msgs),
+            f"got: {msgs}",
         )
 
 

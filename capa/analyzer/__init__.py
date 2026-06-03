@@ -379,6 +379,21 @@ class Analyzer(
         # outside, that is an error because the lambda may be called
         # multiple times.
         self._lambda_local_names_stack: list[set[str]] = []
+        # Loop nesting depth in the current control-flow region. Bumped
+        # while checking a ``while`` / ``for`` body and consulted by the
+        # ``break`` / ``continue`` checkers: depth 0 means "not inside a
+        # loop", so a jump there is an error. Saved and reset to 0 when
+        # entering a lambda body, because ``break`` / ``continue`` cannot
+        # cross the lambda's function boundary (both backends fail at
+        # codegen otherwise).
+        self._loop_depth: int = 0
+        # ids of ``MatchExpr`` nodes that appear in statement position
+        # (a bare ``match`` whose value is discarded). Populated by
+        # ``_check_stmt`` before it descends, consulted by the
+        # exhaustiveness check: a statement match over an open domain
+        # (Int / String / Float / Char) may omit a catch-all (a miss is
+        # a no-op), but a value-producing match may not.
+        self._stmt_position_matches: set[int] = set()
         # Substitutions of fresh TyVars (introduced by expressions
         # like ``[]`` whose element is unknown). Per-function state;
         # reset in ``_check_fun``. When a call binds a fresh TyVar,

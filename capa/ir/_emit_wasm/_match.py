@@ -25,6 +25,7 @@ from __future__ import annotations
 from .._nodes import (
     Match, MatchArm, PatVariant, PatIdent, PatLiteral, PatWildcard, PatTuple,
 )
+from .._lower_pattern import PatOr, PatStruct
 from ._layout import (
     WasmEmissionError,
     _OPTION_LAYOUT, _RESULT_LAYOUT,
@@ -66,6 +67,9 @@ class _MatchEmissionMixin:
         if scrut_ty == "Int":
             self._emit_int_match(instr)
             return
+        if scrut_ty == "Float":
+            self._emit_float_match(instr)
+            return
         # Tuple scrutinee: ``match pair; (a, b) -> ...``. The
         # scrutinee is an i32 pointer to a tuple heap record (16
         # bytes for arity 2); each arm's pattern is either a
@@ -74,6 +78,14 @@ class _MatchEmissionMixin:
         if (scrut_ty.startswith("(") and scrut_ty.endswith(")")
                 and scrut_ty != "()"):
             self._emit_tuple_match(instr, scrut_ty)
+            return
+        # Struct scrutinee: ``match p; P { x: 0, y } -> ...``. The
+        # scrutinee is an i32 pointer to a struct heap record; each
+        # arm destructures named fields via the struct layout offsets.
+        from ._layout import _strip_type_qualifiers
+        struct_head = _strip_type_qualifiers(scrut_ty)
+        if struct_head in self._struct_layouts:
+            self._emit_struct_match(instr, struct_head)
             return
         # Sum-layout lookups strip generic args: ``Option<Int>`` ->
         # ``Option``. The built-in Option / Result and user-defined
@@ -190,12 +202,28 @@ class _MatchEmissionMixin:
         opened = 0
         for arm in instr.arms:
             pat = arm.pattern
-            if isinstance(pat, PatLiteral) and pat.kind == "int":
+            if isinstance(pat, PatOr):
+                # ``1 | 2 -> body``: fire when the scrutinee equals
+                # any alternative. Predicate ORs the per-literal
+                # i64.eq checks; binding-free by construction.
+                self._emit_scalar_or_predicate(pat, scrut_local, "i64")
+                self._write("if")
+                self._indent += 1
+                self._emit_body(arm.body)
+                self._indent -= 1
+                self._write("else")
+                self._indent += 1
+                opened += 1
+                continue
+            if isinstance(pat, PatLiteral) and pat.kind in ("int", "char"):
                 # Compare scrutinee against the literal. ``int()`` is
                 # defensive: lowering stores the literal as a Python
                 # int already, but a stray str would otherwise emit a
                 # malformed ``i64.const``. Negative literals are
-                # valid (``i64.const -1``).
+                # valid (``i64.const -1``). A Char literal lowers to
+                # ``kind="char"`` carrying its Unicode code point, so
+                # the same i64.eq scalar comparison applies (a Char is
+                # an integer code point at runtime).
                 self._write(f"local.get ${scrut_local}")
                 self._write(f"i64.const {int(pat.value)}")
                 self._write("i64.eq")
@@ -226,6 +254,113 @@ class _MatchEmissionMixin:
         for _ in range(opened):
             self._indent -= 1
             self._write("end")
+
+    def _emit_float_match(self, instr: Match) -> None:
+        """Lower a Float-scrutinee match. The scrutinee is an f64;
+        each arm pattern is ``PatLiteral(kind="float")`` (compare the
+        scrutinee against the literal via ``f64.eq``, matching
+        Python's ``==`` semantics exactly, including NaN never
+        comparing equal), ``PatIdent`` (catch-all that binds the
+        scrutinee to a name), or ``PatWildcard`` (catch-all that
+        ignores the value). Structurally identical to the Int path
+        but over f64; the scrutinee lives in the dedicated
+        ``$_m_scrut_f64`` local (the i32 / i64 scratch cannot hold an
+        f64). The analyzer guarantees a default arm so the cascade
+        always terminates."""
+        scrut_local = "_m_scrut_f64"
+        self._push_value(instr.scrutinee)
+        self._write(f"local.set ${scrut_local}")
+        if _match_has_guards(instr):
+            self._emit_float_match_with_guards(instr, scrut_local)
+            return
+        opened = 0
+        for arm in instr.arms:
+            pat = arm.pattern
+            if isinstance(pat, PatOr):
+                self._emit_scalar_or_predicate(pat, scrut_local, "f64")
+                self._write("if")
+                self._indent += 1
+                self._emit_body(arm.body)
+                self._indent -= 1
+                self._write("else")
+                self._indent += 1
+                opened += 1
+                continue
+            if isinstance(pat, PatLiteral) and pat.kind == "float":
+                self._write(f"local.get ${scrut_local}")
+                self._write(f"f64.const {float(pat.value)}")
+                self._write("f64.eq")
+                self._write("if")
+                self._indent += 1
+                self._emit_body(arm.body)
+                self._indent -= 1
+                self._write("else")
+                self._indent += 1
+                opened += 1
+                continue
+            if isinstance(pat, PatIdent):
+                self._write(f"local.get ${scrut_local}")
+                self._write(f"local.set ${pat.name}")
+                self._emit_body(arm.body)
+                break
+            if isinstance(pat, PatWildcard):
+                self._emit_body(arm.body)
+                break
+            raise WasmEmissionError(
+                f"Float match: pattern {type(pat).__name__} not "
+                f"supported; literal / identifier / wildcard only"
+            )
+        for _ in range(opened):
+            self._indent -= 1
+            self._write("end")
+
+    def _emit_float_match_with_guards(
+        self, instr: Match, scrut_local: str,
+    ) -> None:
+        """Flat-block emission for a Float match where at least one
+        arm carries a guard. Mirrors ``_emit_int_match_with_guards``
+        but compares via ``f64.eq``; the scrutinee (f64) lives in
+        ``$_m_scrut_f64``."""
+        done_label = self._open_match_done_block()
+        for arm in instr.arms:
+            pat = arm.pattern
+            if isinstance(pat, PatOr):
+                def push_predicate(p=pat):
+                    self._emit_scalar_or_predicate(p, scrut_local, "f64")
+
+                def bind_payloads():
+                    return
+            elif isinstance(pat, PatLiteral) and pat.kind == "float":
+                def push_predicate(p=pat):
+                    self._write(f"local.get ${scrut_local}")
+                    self._write(f"f64.const {float(p.value)}")
+                    self._write("f64.eq")
+
+                def bind_payloads():
+                    return
+            elif isinstance(pat, PatIdent):
+                def push_predicate():
+                    self._write("i32.const 1")
+
+                def bind_payloads(p=pat):
+                    self._write(f"local.get ${scrut_local}")
+                    self._write(f"local.set ${p.name}")
+            elif isinstance(pat, PatWildcard):
+                def push_predicate():
+                    self._write("i32.const 1")
+
+                def bind_payloads():
+                    return
+            else:
+                raise WasmEmissionError(
+                    f"Float match (guarded): pattern "
+                    f"{type(pat).__name__} not supported; "
+                    f"literal / identifier / wildcard only"
+                )
+            self._emit_guarded_arm(
+                arm, push_predicate, bind_payloads, done_label,
+            )
+        self._close_match_done_block()
 
     def _emit_nested_variant_arm(
         self, arm: MatchArm, scrut_local: str, tag_local: str,
@@ -638,6 +773,264 @@ class _MatchEmissionMixin:
             self._write(f"i64.load offset={offset}")
             self._write(f"local.set ${sub.name}")
 
+    def _emit_struct_match(self, instr: Match, struct_name: str) -> None:
+        """Lower a struct-scrutinee match. The scrutinee is an i32
+        pointer to a struct heap record; each arm is a ``PatStruct``
+        that destructures named fields. Field encoding follows the
+        struct layout (NON-uniform: Int = i64, Float = f64, Bool =
+        i64-narrowed, String = two adjacent i32s ptr@off/len@off+4,
+        pointer-shape = i32), not the uniform 8-byte tuple slot
+        stride. A literal sub-pattern contributes to the arm's
+        predicate; a PatIdent binds the field; PatWildcard skips; a
+        nested PatStruct recurses (one level is exercised by the
+        oracle, deeper nesting works by the same recursion).
+
+        Arms cascade through if/else like the tuple path: an arm with
+        literal field checks opens an ``if`` whose ``else`` carries
+        the next arm; a fully-irrefutable arm (only binds / wildcards)
+        binds, runs the body, and stops the cascade. The analyzer
+        guarantees the arm set is exhaustive."""
+        layout = self._struct_layouts[struct_name]
+        scrut_local = "_m_scrut"
+        self._push_value(instr.scrutinee)
+        self._write(f"local.set ${scrut_local}")
+        opened = 0
+        for arm in instr.arms:
+            pat = arm.pattern
+            if isinstance(pat, PatStruct):
+                checks = self._struct_pattern_checks(pat, layout, scrut_local)
+                if checks:
+                    # Refutable arm: AND the field predicates.
+                    for n, emit_check in enumerate(checks):
+                        emit_check()
+                        if n > 0:
+                            self._write("i32.and")
+                    self._write("if")
+                    self._indent += 1
+                    self._emit_struct_pattern_binds(pat, layout, scrut_local)
+                    self._emit_body(arm.body)
+                    self._indent -= 1
+                    self._write("else")
+                    self._indent += 1
+                    opened += 1
+                    continue
+                # Irrefutable struct arm: bind + run, cascade stops.
+                self._emit_struct_pattern_binds(pat, layout, scrut_local)
+                self._emit_body(arm.body)
+                break
+            if isinstance(pat, PatIdent):
+                self._write(f"local.get ${scrut_local}")
+                self._write(f"local.set ${pat.name}")
+                self._emit_body(arm.body)
+                break
+            if isinstance(pat, PatWildcard):
+                self._emit_body(arm.body)
+                break
+            raise WasmEmissionError(
+                f"Struct match: pattern {type(pat).__name__} not "
+                f"supported (PatStruct / PatIdent / PatWildcard only)"
+            )
+        for _ in range(opened):
+            self._indent -= 1
+            self._write("end")
+
+    def _struct_pattern_checks(
+        self, pat: PatStruct, layout: dict, scrut_local: str,
+    ) -> list:
+        """Return a list of 0-arg callables, each of which pushes an
+        i32 0/1 predicate for one literal (or nested-refutable) field
+        of the struct pattern. An empty list means the pattern is
+        irrefutable (only binds / wildcards). PatIdent / PatWildcard
+        sub-patterns contribute no check. A nested PatStruct field
+        contributes its own (recursively gathered) field checks,
+        loading the nested struct pointer first."""
+        checks: list = []
+        for fname, sub in pat.fields:
+            f_info = layout["fields"].get(fname)
+            if f_info is None:
+                raise WasmEmissionError(
+                    f"struct {pat.type_name}: field {fname!r} not "
+                    f"found in layout"
+                )
+            offset, size, field_ty = f_info
+            if isinstance(sub, (PatIdent, PatWildcard)):
+                continue
+            if isinstance(sub, PatLiteral):
+                checks.append(self._struct_field_eq_thunk(
+                    scrut_local, offset, size, field_ty, sub,
+                ))
+                continue
+            if isinstance(sub, PatStruct):
+                # Nested struct field: load its i32 pointer into the
+                # shared inner scratch, then gather the nested
+                # pattern's own field checks against that pointer.
+                nested_layout = self._struct_layouts.get(
+                    sub.type_name,
+                )
+                if nested_layout is None:
+                    raise WasmEmissionError(
+                        f"struct match: nested struct type "
+                        f"{sub.type_name!r} has no known layout"
+                    )
+
+                def emit_nested(
+                    off=offset, sp=sub, nl=nested_layout,
+                ):
+                    self._write(f"local.get ${scrut_local}")
+                    self._write(f"i32.load offset={off}")
+                    self._write("local.set $_m_scrut_inner")
+                    inner = self._struct_pattern_checks(
+                        sp, nl, "_m_scrut_inner",
+                    )
+                    if not inner:
+                        self._write("i32.const 1")
+                        return
+                    for n, emit_check in enumerate(inner):
+                        emit_check()
+                        if n > 0:
+                            self._write("i32.and")
+
+                checks.append(emit_nested)
+                continue
+            raise WasmEmissionError(
+                f"struct match: field {fname!r} sub-pattern "
+                f"{type(sub).__name__} not supported (literal / "
+                f"identifier / wildcard / nested struct only)"
+            )
+        return checks
+
+    def _struct_field_eq_thunk(
+        self, scrut_local: str, offset: int, size: int, field_ty: str,
+        lit_pat: PatLiteral,
+    ):
+        """Return a 0-arg callable that pushes an i32 0/1: 1 iff the
+        struct field at ``offset`` (with declared type ``field_ty``,
+        ``size`` bytes) equals the literal in ``lit_pat``. Field
+        encoding follows the struct layout: Int = i64, Float = f64,
+        Bool = i32 (4-byte slot), String = two i32s (ptr@offset,
+        len@offset+4)."""
+        kind = lit_pat.kind
+
+        def thunk():
+            if kind in ("int", "char"):
+                self._write(f"local.get ${scrut_local}")
+                self._write(f"i64.load offset={offset}")
+                self._write(f"i64.const {int(lit_pat.value)}")
+                self._write("i64.eq")
+                return
+            if kind == "float":
+                self._write(f"local.get ${scrut_local}")
+                self._write(f"f64.load offset={offset}")
+                self._write(f"f64.const {float(lit_pat.value)}")
+                self._write("f64.eq")
+                return
+            if kind == "bool":
+                # Bool fields occupy a 4-byte i32 slot in struct
+                # layout (see _layout._STRUCT_FIELD_SIZES); load via
+                # the size-appropriate op rather than assuming i64.
+                self._write(f"local.get ${scrut_local}")
+                self._write(f"{_load_op_for_size(size)} offset={offset}")
+                if size == 8:
+                    self._write("i32.wrap_i64")
+                self._write(f"i32.const {1 if lit_pat.value else 0}")
+                self._write("i32.eq")
+                return
+            if kind == "str":
+                # String field: ptr@offset, len@offset+4 (two i32s).
+                lit_off, length = self._intern_string(lit_pat.value)
+                self._write(f"i32.const {lit_off}")
+                self._write(f"i32.const {length}")
+                self._write(f"local.get ${scrut_local}")
+                self._write(f"i32.load offset={offset}")
+                self._write(f"local.get ${scrut_local}")
+                self._write(f"i32.load offset={offset + 4}")
+                self._write("call $str_eq")
+                return
+            raise WasmEmissionError(
+                f"struct match: literal kind {kind!r} not supported "
+                f"for field equality"
+            )
+
+        return thunk
+
+    def _emit_struct_pattern_binds(
+        self, pat: PatStruct, layout: dict, scrut_local: str,
+    ) -> None:
+        """Bind the PatIdent fields of a struct pattern into their
+        locals, loading each from the struct record by layout offset.
+        Field encoding follows the struct layout (see
+        ``_emit_field_access``): String = two i32 loads into the
+        bind's (ptr, len) pair, Float = f64, Bool = i64-narrowed,
+        pointer-shape = i32 (loaded directly, NOT i64-wrapped, because
+        struct slots store pointer fields as a bare i32 at their
+        offset), Int / scalar = sized load. Nested PatStruct fields
+        recurse against the loaded inner pointer."""
+        for fname, sub in pat.fields:
+            offset, size, field_ty = layout["fields"][fname]
+            if isinstance(sub, PatWildcard):
+                continue
+            if isinstance(sub, PatLiteral):
+                continue
+            if isinstance(sub, PatStruct):
+                self._write(f"local.get ${scrut_local}")
+                self._write(f"i32.load offset={offset}")
+                self._write("local.set $_m_scrut_inner")
+                nested_layout = self._struct_layouts[sub.type_name]
+                self._emit_struct_pattern_binds(
+                    sub, nested_layout, "_m_scrut_inner",
+                )
+                continue
+            if isinstance(sub, PatIdent):
+                self._bind_struct_field(sub.name, offset, size, field_ty,
+                                        scrut_local)
+                continue
+            raise WasmEmissionError(
+                f"struct match: field {fname!r} bind sub-pattern "
+                f"{type(sub).__name__} not supported"
+            )
+
+    def _bind_struct_field(
+        self, name: str, offset: int, size: int, field_ty: str,
+        scrut_local: str,
+    ) -> None:
+        """Load a single struct field into the bind local(s). Mirrors
+        ``_emit_field_access``'s per-type load rules so a bound field
+        carries the same Wasm shape downstream code expects."""
+        head = field_ty.split("<", 1)[0]
+        if field_ty == "String":
+            self._write(f"local.get ${scrut_local}")
+            self._write(f"i32.load offset={offset}")
+            self._write(f"local.set ${name}_ptr")
+            self._write(f"local.get ${scrut_local}")
+            self._write(f"i32.load offset={offset + 4}")
+            self._write(f"local.set ${name}_len")
+            return
+        if field_ty == "Float":
+            self._write(f"local.get ${scrut_local}")
+            self._write(f"f64.load offset={offset}")
+            self._write(f"local.set ${name}")
+            return
+        if field_ty == "Bool":
+            self._write(f"local.get ${scrut_local}")
+            self._write(f"{_load_op_for_size(size)} offset={offset}")
+            self._write(f"local.set ${name}")
+            return
+        if (head in self._struct_layouts
+                or head in self._sum_layouts
+                or field_ty.startswith(("List", "Map", "Set"))
+                or (field_ty.startswith("(") and field_ty.endswith(")")
+                    and field_ty != "()")):
+            # Pointer-shape field: struct slots store the i32 pointer
+            # directly (see _emit_make_struct), so load it as i32.
+            self._write(f"local.get ${scrut_local}")
+            self._write(f"i32.load offset={offset}")
+            self._write(f"local.set ${name}")
+            return
+        # Default Int / scalar: sized load.
+        self._write(f"local.get ${scrut_local}")
+        self._write(f"{_load_op_for_size(size)} offset={offset}")
+        self._write(f"local.set ${name}")
+
     def _emit_match_arm(
         self, arm: MatchArm, scrut_local: str, tag_local: str,
         sum_layout: dict,
@@ -647,6 +1040,20 @@ class _MatchEmissionMixin:
         emits matching ``end`` instructions after all arms are
         processed."""
         pat = arm.pattern
+        # Or-pattern arm (``A | B -> body``) against a sum scrutinee:
+        # the body fires when the discriminant matches ANY of the
+        # alternatives' tags. Alternatives are binding-free by
+        # construction (the lowerer rejects payload binders), so we
+        # OR the per-alternative tag comparisons and open a single if.
+        if isinstance(pat, PatOr):
+            self._emit_sum_or_predicate(pat, tag_local, sum_layout)
+            self._write("if")
+            self._indent += 1
+            self._emit_body(arm.body)
+            self._indent -= 1
+            self._write("else")
+            self._indent += 1
+            return 1
         # If any payload sub-pattern is itself a PatVariant, the
         # arm needs a combined two-level tag check; delegate.
         if isinstance(pat, PatVariant) and any(
@@ -739,6 +1146,16 @@ class _MatchEmissionMixin:
             self._write("else")
             self._indent += 1
             return 1
+        if isinstance(pat, PatIdent):
+            # Bare-identifier catch-all that binds the whole scrutinee
+            # pointer to a name (mirrors the Int / Bool / String /
+            # tuple paths). The analyzer guarantees this is the last
+            # arm, so we run the body inline without opening an if and
+            # stop the cascade.
+            self._write(f"local.get ${scrut_local}")
+            self._write(f"local.set ${pat.name}")
+            self._emit_body(arm.body)
+            return 0
         if isinstance(pat, PatWildcard):
             # Catch-all: body emits inside the current cascade
             # (which is the open ``else`` of the previous arm).
@@ -748,6 +1165,64 @@ class _MatchEmissionMixin:
             f"Phase 6C: match arm pattern {type(pat).__name__} not "
             f"supported (PatVariant + PatWildcard are the current set)"
         )
+
+    def _emit_sum_or_predicate(
+        self, pat: PatOr, tag_local: str, sum_layout: dict,
+    ) -> None:
+        """Push an i32 0/1 predicate: 1 iff the discriminant in
+        ``$tag_local`` equals ANY of the or-pattern's alternative
+        variant tags. A ``PatWildcard`` alternative degenerates to a
+        constant-true predicate. Alternatives are binding-free by
+        construction (the lowerer rejects payload binders), so no
+        binding happens here."""
+        emitted = 0
+        for alt in pat.alternatives:
+            if isinstance(alt, PatWildcard):
+                self._write("i32.const 1")
+            elif isinstance(alt, PatVariant):
+                tag, _payloads = sum_layout["variants"][alt.name]
+                self._write(f"local.get ${tag_local}")
+                self._write(f"i32.const {tag}")
+                self._write("i32.eq")
+            else:
+                raise WasmEmissionError(
+                    f"or-pattern alternative {type(alt).__name__} not "
+                    f"supported against a sum scrutinee (variant / "
+                    f"wildcard only)"
+                )
+            if emitted > 0:
+                self._write("i32.or")
+            emitted += 1
+
+    def _emit_scalar_or_predicate(
+        self, pat: PatOr, scrut_local: str, scalar: str,
+    ) -> None:
+        """Push an i32 0/1 predicate: 1 iff the scalar scrutinee in
+        ``$scrut_local`` equals ANY of the or-pattern's literal
+        alternatives. ``scalar`` selects the comparison opcode:
+        ``"i64"`` (Int / Char code point) or ``"f64"`` (Float). A
+        ``PatWildcard`` alternative degenerates to constant-true."""
+        emitted = 0
+        for alt in pat.alternatives:
+            if isinstance(alt, PatWildcard):
+                self._write("i32.const 1")
+            elif isinstance(alt, PatLiteral):
+                self._write(f"local.get ${scrut_local}")
+                if scalar == "f64":
+                    self._write(f"f64.const {float(alt.value)}")
+                    self._write("f64.eq")
+                else:
+                    self._write(f"i64.const {int(alt.value)}")
+                    self._write("i64.eq")
+            else:
+                raise WasmEmissionError(
+                    f"or-pattern alternative {type(alt).__name__} not "
+                    f"supported against a scalar scrutinee (literal / "
+                    f"wildcard only)"
+                )
+            if emitted > 0:
+                self._write("i32.or")
+            emitted += 1
 
     # ----------------------------------------------------------------
     # Guarded match emission (flat block + br on success).
@@ -901,7 +1376,13 @@ class _MatchEmissionMixin:
         done_label = self._open_match_done_block()
         for arm in instr.arms:
             pat = arm.pattern
-            if isinstance(pat, PatLiteral) and pat.kind == "int":
+            if isinstance(pat, PatOr):
+                def push_predicate(p=pat):
+                    self._emit_scalar_or_predicate(p, scrut_local, "i64")
+
+                def bind_payloads():
+                    return  # or-pattern alternatives are binding-free
+            elif isinstance(pat, PatLiteral) and pat.kind in ("int", "char"):
                 def push_predicate(p=pat):
                     self._write(f"local.get ${scrut_local}")
                     self._write(f"i64.const {int(p.value)}")
@@ -1094,7 +1575,13 @@ class _MatchEmissionMixin:
                     done_label,
                 )
                 continue
-            if isinstance(pat, PatVariant):
+            if isinstance(pat, PatOr):
+                def push_predicate(p=pat):
+                    self._emit_sum_or_predicate(p, tag_local, sum_layout)
+
+                def bind_payloads():
+                    return  # or-pattern alternatives are binding-free
+            elif isinstance(pat, PatVariant):
                 tag, payload_layouts = sum_layout["variants"][pat.name]
 
                 def push_predicate(t=tag):

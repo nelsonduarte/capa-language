@@ -15,6 +15,9 @@ Audit P1 refactor: split per AST family.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from typing import Optional
+
 from .. import capa_ast as A
 from ._lower_helpers import (
     _split_tuple_elem_types, _split_top_level_comma, UnsupportedInIR,
@@ -22,6 +25,34 @@ from ._lower_helpers import (
 from ._nodes import (
     PatIdent, PatLiteral, PatTuple, PatVariant, PatWildcard, Pattern, Value,
 )
+
+
+# Two CIR pattern shapes that the core ``_nodes`` set does not carry
+# yet (the Python IR emitter only understands the original five). They
+# live here rather than in ``_nodes`` because only the Wasm match
+# emitter consumes them; the Wasm emitter imports them from this module
+# (no import cycle: lowering never imports the emitter). If a later
+# phase teaches the Python IR emitter about them they should graduate
+# into ``_nodes``.
+@dataclass
+class PatOr(Pattern):
+    """``A | B | ... -> body``. Matches if ANY alternative matches;
+    the body runs once. Only the binding-free case is lowered (the
+    lowerer rejects alternatives that bind names); the emitter ORs
+    the per-alternative predicates together."""
+    alternatives: list
+
+
+@dataclass
+class PatStruct(Pattern):
+    """``Type { field: subpat, field2, ... } -> body``. Matches a
+    struct scrutinee by destructuring fields. ``fields`` is an
+    ordered list of ``(field_name, sub_pattern)`` pairs; shorthand
+    ``{ x }`` lowers to ``("x", PatIdent("x"))``. The emitter loads
+    each field from the struct's heap record (via the struct layout
+    offsets) and recursively matches the sub-pattern."""
+    type_name: str
+    fields: list  # list[tuple[str, Pattern]]
 
 
 class _LowerPatternMixin:
@@ -113,7 +144,52 @@ class _LowerPatternMixin:
         if isinstance(p, A.TuplePat):
             elements = [self._lower_pattern(sub) for sub in p.elements]
             return PatTuple(elements=elements)
+        if isinstance(p, A.OrPat):
+            return self._lower_or_pattern(p)
+        if isinstance(p, A.StructPat):
+            return self._lower_struct_pattern(p)
         raise UnsupportedInIR(f"match pattern {type(p).__name__}")
+
+    def _lower_or_pattern(self, p: A.OrPat) -> Pattern:
+        """Lower an or-pattern. Each alternative is lowered
+        independently; the emitter ORs their predicates and runs the
+        shared body once. We accept only binding-free alternatives
+        (variant-without-payload, literal, wildcard) -- supporting
+        bindings would require every alternative to bind the same
+        names with the same types (Rust's rule), which the Wasm
+        emitter does not implement. A binding-bearing alternative
+        raises so a program never silently miscompiles."""
+        alts: list[Pattern] = []
+        for sub in p.alternatives:
+            if isinstance(sub, A.IdentPat):
+                raise UnsupportedInIR(
+                    "or-pattern with bindings not supported on the "
+                    "Wasm backend yet (alternatives must be "
+                    "binding-free: literal / wildcard / "
+                    "payload-less variant)"
+                )
+            if isinstance(sub, A.VariantPat) and sub.payloads:
+                raise UnsupportedInIR(
+                    "or-pattern with bindings not supported on the "
+                    "Wasm backend yet (a variant alternative may not "
+                    "carry payload binders)"
+                )
+            lowered = self._lower_pattern(sub)
+            alts.append(lowered)
+        return PatOr(alternatives=alts)
+
+    def _lower_struct_pattern(self, p: A.StructPat) -> Pattern:
+        """Lower a struct-destructuring pattern. Shorthand fields
+        (``{ x }``) carry a ``None`` sub-pattern in the AST, which we
+        expand to ``IdentPat(x)`` (bind the field to a local named
+        after it). Each sub-pattern is lowered recursively and its
+        binders are tracked as arm-scope locals."""
+        fields: list = []
+        for fname, sub in p.fields:
+            if sub is None:
+                sub = A.IdentPat(pos=p.pos, name=fname)
+            fields.append((fname, self._lower_pattern(sub)))
+        return PatStruct(type_name=p.type_name, fields=fields)
 
     def _lower_literal_pattern(self, p: A.LiteralPat) -> Pattern:
         v = p.value
@@ -125,6 +201,13 @@ class _LowerPatternMixin:
             return PatLiteral(kind="bool", value=v.value)
         if isinstance(v, A.UnitLit):
             return PatLiteral(kind="unit", value=None)
+        if isinstance(v, A.CharLit):
+            # A Char is a Unicode code point: an integer at runtime.
+            # Lower to the same shape as an Int literal carrying the
+            # code point so the scalar i64.eq path compares it.
+            return PatLiteral(kind="char", value=ord(v.value))
+        if isinstance(v, A.FloatLit):
+            return PatLiteral(kind="float", value=v.value)
         raise UnsupportedInIR(
             f"literal pattern of kind {type(v).__name__}"
         )
