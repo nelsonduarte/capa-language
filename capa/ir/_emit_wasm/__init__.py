@@ -693,8 +693,7 @@ class WasmEmitter(
             self._write(f"(local ${name} {ty})")
 
         # Emit body instructions.
-        for instr in fn.body:
-            self._emit_instr(instr)
+        self._emit_body(fn.body)
 
         # Wasm's verifier wants a value on the stack at function
         # exit when the result type is non-empty. Capa's source
@@ -708,6 +707,87 @@ class WasmEmitter(
 
         self._indent -= 1
         self._write(")")
+
+    # ----- tail-call optimisation (roadmap P4) ------------------
+
+    # Free-function names that ``_emit_user_call`` routes to a
+    # non-``call $name`` path (intrinsics / host bridges / source-level
+    # constructors). A tail call must reuse the *ordinary* user-call
+    # shape, so these are excluded from the peephole and fall back to
+    # the normal call + return.
+    _TAIL_CALL_INTRINSICS = frozenset({
+        "Random", "parse_json", "to_json",
+        "parse_int", "parse_float", "to_float", "to_int",
+    })
+
+    def _emit_body(self, instrs: list) -> None:
+        """Emit a straight-line instruction sequence, applying the
+        tail-call peephole (roadmap P4): a ``Call`` whose result is
+        immediately returned (``return f(x)``) becomes a Wasm
+        ``return_call``, so accumulator-style recursion runs in
+        constant stack space instead of overflowing.
+
+        The pair ``Call(dst=t)`` then ``Return(value=t)`` is the canonical
+        CIR shape the lowerer produces for ``return f(...)``. ``return_call``
+        is type-valid here for free: the returned value *is* the call's
+        result, so the callee's result type equals the enclosing
+        function's, which is exactly what the proposal requires.
+
+        Used for every block body (function top level, ``if`` / ``else``
+        arms, ``while`` body, ``match`` arms) so a tail call in any
+        position is optimised."""
+        n = len(instrs)
+        i = 0
+        while i < n:
+            instr = instrs[i]
+            nxt = instrs[i + 1] if i + 1 < n else None
+            if (
+                isinstance(instr, Call)
+                and instr.dst is not None
+                and isinstance(nxt, Return)
+                and nxt.value is not None
+                and nxt.value.kind in ("local", "param")
+                and nxt.value.name == instr.dst
+                and self._is_tail_callable(instr)
+            ):
+                self._emit_tail_call(instr)
+                i += 2
+                continue
+            self._emit_instr(instr)
+            i += 1
+
+    def _is_tail_callable(self, instr: Call) -> bool:
+        """True if ``instr`` is an ordinary user-function call (the only
+        flavour the tail-call peephole handles). Variant constructors,
+        intrinsics / host bridges, and closure calls keep their normal
+        call + return lowering."""
+        name = instr.callee_name
+        if name in self._variant_to_sum:
+            return False
+        if name in self._TAIL_CALL_INTRINSICS:
+            return False
+        callee_ty = self._lookup_local_or_param_ty(name)
+        if callee_ty and callee_ty.startswith("Fun"):
+            return False
+        return True
+
+    def _emit_tail_call(self, instr: Call) -> None:
+        """Emit ``return_call $name`` for a call in tail position. The
+        argument-pushing mirrors the ordinary path in
+        ``_emit_user_call`` (capabilities erased except the
+        handle-carrying ones; String expands to ptr/len); the result is
+        not bound and no separate ``return`` follows, because
+        ``return_call`` transfers control to the callee directly."""
+        for arg in instr.args:
+            if arg.ty in BUILTIN_CAPS:
+                if arg.ty in ("Fs", "Net", "Db", "Proc", "Env", "Clock"):
+                    self._push_value(arg)
+                continue
+            if arg.ty == "String":
+                self._push_string_value_as_ptr_len(arg)
+                continue
+            self._push_value(arg)
+        self._write(f"return_call ${instr.callee_name}")
 
     # _collect_locals lives in _locals.py as
     # _LocalsCollectionMixin (mixed into this class above).

@@ -171,14 +171,12 @@ class _InstrDispatchMixin:
             self._push_value(instr.cond)
             self._write("if")
             self._indent += 1
-            for sub in instr.then_body:
-                self._emit_instr(sub)
+            self._emit_body(instr.then_body)
             self._indent -= 1
             if instr.else_body:
                 self._write("else")
                 self._indent += 1
-                for sub in instr.else_body:
-                    self._emit_instr(sub)
+                self._emit_body(instr.else_body)
                 self._indent -= 1
             self._write("end")
             return
@@ -204,8 +202,7 @@ class _InstrDispatchMixin:
             self._push_value(instr.cond)
             self._write("i32.eqz")
             self._write(f"br_if {exit_label}")
-            for sub in instr.body:
-                self._emit_instr(sub)
+            self._emit_body(instr.body)
             self._write(f"br {loop_label}")
             self._indent -= 1
             self._write("end")

@@ -1,0 +1,38 @@
+// Tail-call optimisation (roadmap P4): a call whose result is
+// immediately returned lowers to Wasm ``return_call``, so these
+// accumulator-style recursions run in constant stack space on the
+// Wasm backend. This program keeps the depth moderate (300) so the
+// Python reference path (ordinary recursion) agrees byte-for-byte;
+// the constant-stack property at large depth is covered by the
+// dedicated Wasm-only test. Int + Stdio only, so the two backends
+// produce identical output.
+
+// Tail call in an if/else-return position.
+fun sum_to(n: Int, acc: Int) -> Int
+    if n == 0
+        return acc
+    return sum_to(n - 1, acc + n)
+
+// Tail call in a match-arm position: each arm returns directly, so the
+// recursive arm is a tail call.
+fun count_down(n: Int, acc: Int) -> Int
+    match n
+        0 -> return acc
+        _ -> return count_down(n - 1, acc + 1)
+
+// Mutual tail recursion: each calls the other in tail position.
+fun is_even(n: Int) -> Int
+    if n == 0
+        return 1
+    return is_odd(n - 1)
+
+fun is_odd(n: Int) -> Int
+    if n == 0
+        return 0
+    return is_even(n - 1)
+
+fun main(stdio: Stdio)
+    stdio.println("sum_to(300)=${sum_to(300, 0)}")
+    stdio.println("count_down(300)=${count_down(300, 0)}")
+    stdio.println("is_even(300)=${is_even(300)}")
+    stdio.println("is_odd(300)=${is_odd(300)}")

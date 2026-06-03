@@ -344,8 +344,7 @@ class _ClosureEmissionMixin:
         local_decls = self._collect_locals(synth_fn, param_names)
         for name, ty in local_decls.items():
             self._write(f"(local ${name} {ty})")
-        for instr in lifted["body"]:
-            self._emit_instr(instr)
+        self._emit_body(lifted["body"])
         if lifted["result_wasm_ty"]:
             self._write("unreachable")
         self._indent -= 1

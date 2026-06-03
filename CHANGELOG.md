@@ -9,6 +9,24 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+### Tail-call optimisation on the Wasm backend (roadmap P4)
+
+A call whose result is immediately returned (`return f(x)`) now lowers
+to a Wasm `return_call`, so accumulator-style and mutually recursive
+functions run in constant stack space instead of overflowing. The
+peephole fires for tail calls in `if` / `else` branches, in
+statement-`match` arms (`_ -> return f(...)`), and in straight-line
+bodies; it covers ordinary user functions (variant constructors,
+intrinsics, and closure calls keep their normal lowering). A
+1,000,000-deep tail recursion that would blow an ordinary call stack
+now returns cleanly (`examples/wasm/tail_recursion.capa` is the parity
+example; a dedicated Wasm-only test exercises the deep case). The
+expression form `return match n { ... }` is not yet optimised (the
+match result is bound to a temporary before the return, so the tail
+call is not adjacent to it); use the statement-`match` form for a tail
+call. No wasmtime configuration change is needed: the tail-call
+proposal is enabled by default in the engine we ship against.
+
 ### Constant-time: reject variable-time arithmetic (roadmap S4)
 
 A `@constant_time` function now rejects `/` and `%` when either operand

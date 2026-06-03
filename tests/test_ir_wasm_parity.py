@@ -194,6 +194,12 @@ _PARITY_PROGRAMS: list[str] = [
     "proc_cross_function_attenuation.capa",
     "env_cross_function_attenuation.capa",
     "clock_cross_function_attenuation.capa",
+    # Roadmap P4 (tail-call optimisation): tail calls in if/else,
+    # statement-match arms, and mutual recursion lower to Wasm
+    # ``return_call``. At this moderate depth (300) both backends agree;
+    # the constant-stack property at large depth is a separate Wasm-only
+    # test (the Python reference would hit its recursion limit).
+    "tail_recursion.capa",
 ]
 
 # Programs deliberately excluded from parity and why; documented
@@ -852,6 +858,38 @@ class TestPythonWasmParity(unittest.TestCase):
         # the same ``python -c "..."`` invocation, so captured
         # stdout + attenuation-deny diagnostics match exactly.
         self._assert_parity("proc_demo.capa")
+
+    def test_tail_recursion(self):
+        # Roadmap P4: tail calls lower to ``return_call``. Moderate
+        # depth so the Python reference path agrees byte-for-byte.
+        self._assert_parity("tail_recursion.capa")
+
+    def test_tail_call_emits_return_call(self):
+        # White-box: confirm the peephole actually fires (a green
+        # parity run alone would also pass with a plain ``call``).
+        src = (_EXAMPLES / "tail_recursion.capa").read_text(encoding="utf-8")
+        module, result = _parse_and_analyze(src)
+        from capa.ir import compile_wat
+        wat = compile_wat(module, types=result.types)
+        # sum_to (if/else), count_down (match arm), is_even, is_odd.
+        self.assertEqual(wat.count("return_call"), 4, wat)
+
+    def test_tail_call_runs_in_constant_stack_wasm_only(self):
+        # The robustness payoff: a depth that overflows an ordinary
+        # call stack returns cleanly under TCO. Wasm-only -- the Python
+        # reference would raise RecursionError well before this depth,
+        # so it is deliberately not a parity program.
+        src = (
+            "fun sum_to(n: Int, acc: Int) -> Int\n"
+            "    if n == 0\n"
+            "        return acc\n"
+            "    return sum_to(n - 1, acc + n)\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"${sum_to(1000000, 0)}\")\n"
+        )
+        out = _capture_stdout(lambda: _run_wasm(src))
+        # 1_000_000 * 1_000_001 / 2
+        self.assertEqual(out, "500000500000\n")
 
     def test_inventory_matches_examples_dir(self):
         # Soundness check: every .capa under examples/wasm/ is

@@ -132,8 +132,7 @@ class _MatchEmissionMixin:
                     self._write("i32.eqz")
                 self._write("if")
                 self._indent += 1
-                for sub in arm.body:
-                    self._emit_instr(sub)
+                self._emit_body(arm.body)
                 self._indent -= 1
                 self._write("else")
                 self._indent += 1
@@ -146,12 +145,10 @@ class _MatchEmissionMixin:
                 # in practice.
                 self._write(f"local.get ${scrut_local}")
                 self._write(f"local.set ${pat.name}")
-                for sub in arm.body:
-                    self._emit_instr(sub)
+                self._emit_body(arm.body)
                 break
             if isinstance(pat, PatWildcard):
-                for sub in arm.body:
-                    self._emit_instr(sub)
+                self._emit_body(arm.body)
                 break
             raise WasmEmissionError(
                 f"Bool match: pattern {type(pat).__name__} not "
@@ -204,8 +201,7 @@ class _MatchEmissionMixin:
                 self._write("i64.eq")
                 self._write("if")
                 self._indent += 1
-                for sub in arm.body:
-                    self._emit_instr(sub)
+                self._emit_body(arm.body)
                 self._indent -= 1
                 self._write("else")
                 self._indent += 1
@@ -218,12 +214,10 @@ class _MatchEmissionMixin:
                 # in practice.
                 self._write(f"local.get ${scrut_local}")
                 self._write(f"local.set ${pat.name}")
-                for sub in arm.body:
-                    self._emit_instr(sub)
+                self._emit_body(arm.body)
                 break
             if isinstance(pat, PatWildcard):
-                for sub in arm.body:
-                    self._emit_instr(sub)
+                self._emit_body(arm.body)
                 break
             raise WasmEmissionError(
                 f"Int match: pattern {type(pat).__name__} not "
@@ -329,8 +323,7 @@ class _MatchEmissionMixin:
                 )
 
         # 5. Run the arm body.
-        for sub in arm.body:
-            self._emit_instr(sub)
+        self._emit_body(arm.body)
 
         # 6. Open the else cascade for the next arm.
         self._indent -= 1
@@ -426,8 +419,7 @@ class _MatchEmissionMixin:
                 self._write("call $str_eq")
                 self._write("if")
                 self._indent += 1
-                for sub in arm.body:
-                    self._emit_instr(sub)
+                self._emit_body(arm.body)
                 self._indent -= 1
                 self._write("else")
                 self._indent += 1
@@ -441,12 +433,10 @@ class _MatchEmissionMixin:
                 self._write(f"local.set ${pat.name}_ptr")
                 self._write("local.get $_str_a_len")
                 self._write(f"local.set ${pat.name}_len")
-                for sub in arm.body:
-                    self._emit_instr(sub)
+                self._emit_body(arm.body)
                 break
             if isinstance(pat, PatWildcard):
-                for sub in arm.body:
-                    self._emit_instr(sub)
+                self._emit_body(arm.body)
                 break
             raise WasmEmissionError(
                 f"String match: pattern {type(pat).__name__} not "
@@ -525,8 +515,7 @@ class _MatchEmissionMixin:
                     self._emit_tuple_arm_binds(
                         scrut_local, elem_tys, pat.elements,
                     )
-                    for sub in arm.body:
-                        self._emit_instr(sub)
+                    self._emit_body(arm.body)
                     self._indent -= 1
                     self._write("else")
                     self._indent += 1
@@ -538,18 +527,15 @@ class _MatchEmissionMixin:
                 self._emit_tuple_arm_binds(
                     scrut_local, elem_tys, pat.elements,
                 )
-                for sub in arm.body:
-                    self._emit_instr(sub)
+                self._emit_body(arm.body)
                 break
             if isinstance(pat, PatIdent):
                 self._write(f"local.get ${scrut_local}")
                 self._write(f"local.set ${pat.name}")
-                for sub in arm.body:
-                    self._emit_instr(sub)
+                self._emit_body(arm.body)
                 break
             if isinstance(pat, PatWildcard):
-                for sub in arm.body:
-                    self._emit_instr(sub)
+                self._emit_body(arm.body)
                 break
             raise WasmEmissionError(
                 f"Tuple match: pattern {type(pat).__name__} not "
@@ -747,8 +733,7 @@ class _MatchEmissionMixin:
                         f"{type(sub_pat).__name__} inside variant "
                         f"payload not yet supported"
                     )
-            for sub in arm.body:
-                self._emit_instr(sub)
+            self._emit_body(arm.body)
             # Cascade into the else block where the next arm lives.
             self._indent -= 1
             self._write("else")
@@ -757,8 +742,7 @@ class _MatchEmissionMixin:
         if isinstance(pat, PatWildcard):
             # Catch-all: body emits inside the current cascade
             # (which is the open ``else`` of the previous arm).
-            for sub in arm.body:
-                self._emit_instr(sub)
+            self._emit_body(arm.body)
             return 0
         raise WasmEmissionError(
             f"Phase 6C: match arm pattern {type(pat).__name__} not "
@@ -834,14 +818,12 @@ class _MatchEmissionMixin:
             self._push_value(arm.guard)
             self._write("if")
             self._indent += 1
-            for sub in arm.body:
-                self._emit_instr(sub)
+            self._emit_body(arm.body)
             self._write(f"br {done_label}")
             self._indent -= 1
             self._write("end")
         else:
-            for sub in arm.body:
-                self._emit_instr(sub)
+            self._emit_body(arm.body)
             self._write(f"br {done_label}")
         self._indent -= 1
         self._write("end")

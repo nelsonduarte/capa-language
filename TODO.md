@@ -948,8 +948,11 @@ Listed so the design space is explicit.
   variable-time arithmetic (`/` and `%` on a secret operand, the
   variable-latency divider), reusing the S2 labels; surfaced in the
   SBOM as a per-function `constant_time` flag. Mechanically prevents
-  the CWE-208 examples in the CVE case studies. Remaining:
-  defense-in-depth enforcement in the Wasm emitter.
+  the CWE-208 examples in the CVE case studies. COMPLETE: a Wasm-emitter
+  defense-in-depth check was considered and dropped (the CIR is
+  label-free and emission is gated on a clean analysis, so the analyzer
+  is the single, inescapable enforcement point; a redundant emitter
+  check would mean threading labels through the whole IR for no gain).
 - **Quantitative capabilities** (budgeted authority). ROI:
   marginal; most rate-limiting use cases are solved at the
   application level.
@@ -967,7 +970,13 @@ Listed so the design space is explicit.
   is the semantics: capabilities cannot leak across `await`
   boundaries; cancellation must not strand resources
   (intersects with linear handles).
-- **Tail-call optimisation**.
+- **Tail-call optimisation**. SHIPPED (roadmap P4, Wasm backend):
+  `return f(x)` lowers to `return_call` via an emitter peephole, so
+  accumulator-style + mutually recursive functions run in constant
+  stack (1M-deep recursion verified). Fires in if/else, statement-match
+  arms, and straight-line bodies. Not yet optimised: the expression
+  form `return match n { ... }` (result bound to a temp before the
+  return, so the tail call is not adjacent).
 - **Garbage collection beyond CPython's**.
 - **Custom syntax extensions / macros**.
 

@@ -159,8 +159,14 @@ while / if-expr / match) e acesso indexado por secret (`xs[secret]`,
 Surface no SBOM como um booleano `constant_time` por função. As
 operações de tempo variável já são modeladas: `/` e `%` sobre um
 operando secret (o divisor de latência variável, tanto inteiro `idiv`
-como float `divsd`) são rejeitadas. Pendente: enforcement
-defense-in-depth no emitter Wasm (hoje a garantia vive no analyzer).
+como float `divsd`) são rejeitadas. **S4 dado por completo.** O
+enforcement defense-in-depth no emitter Wasm foi deliberadamente
+abandonado: o CIR é label-free por design, e a emissão Wasm só é
+alcançada depois de uma análise limpa (`capa build` recusa emitir se
+`analyze()` falhar), por isso o analyzer é o ponto de enforcement único
+e inescapável. Reproduzir a verificação no emitter exigiria re-plumbing
+dos labels `@secret` por todo o IR para valor marginal nulo, uma
+abstração morta.
 
 ### S5: Quantitative / budgeted capabilities (DEFER)
 O TODO marca ROI marginal. Manter parked, a maioria do rate-limiting
@@ -212,10 +218,16 @@ eliminação de instruções mortas. Cada um é pequeno e mensurável contra
 o harness de paridade.
 
 ### P4: Tail-call optimisation
-**ROI: médio. Esforço: ~2 slices. Dependências: nenhuma.**
-O TODO já o lista. O Wasm tem tail-calls nativos (proposal estável);
-lowrar chamadas em posição de cauda para `return_call` dá recursão
-sem stack-overflow. Barato dado o backend Wasm.
+**ROI: médio. Esforço: ~2 slices. Dependências: nenhuma. ENTREGUE.**
+O Wasm tem tail-calls nativos (proposal estável, ligado por omissão na
+engine que usamos). Uma chamada cujo resultado é imediatamente
+retornado (`return f(x)`) é lowrada para `return_call` via um peephole
+no emitter: dispara em `if`/`else`, em arms de statement-`match`
+(`_ -> return f(...)`), e em corpos straight-line, para funções de
+utilizador ordinárias. Recursão de 1.000.000 de profundidade corre em
+stack constante. Pendente (menor): a forma de expressão `return match`
+ainda não é otimizada (o resultado do match é ligado a um temporário
+antes do return, por isso o tail-call não fica adjacente).
 
 ---
 
