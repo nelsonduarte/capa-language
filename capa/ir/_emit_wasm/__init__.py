@@ -735,7 +735,19 @@ class WasmEmitter(
 
         Used for every block body (function top level, ``if`` / ``else``
         arms, ``while`` body, ``match`` arms) so a tail call in any
-        position is optimised."""
+        position is optimised.
+
+        Known limitation (documented in CHANGELOG / docs/reference.md): a
+        call in *expression*-position ``match`` / ``if`` (``return match
+        n { ... }``) is NOT optimised, because the lowerer binds the
+        match result to a temporary and the ``Return`` reads that
+        temporary *after* the ``Match`` instruction, so the
+        ``Call`` / ``Return`` pair is not adjacent here. The
+        statement-form (``_ -> return f(...)``) is optimised. Lifting
+        this needs a CIR-level tail-position marker set by the lowerer
+        (so both backends share it), which is a separate change; the
+        fallback for the unoptimised case is an ordinary call + return,
+        which is correct, just not constant-stack."""
         n = len(instrs)
         i = 0
         while i < n:
@@ -771,14 +783,17 @@ class WasmEmitter(
             return False
         return True
 
-    def _emit_tail_call(self, instr: Call) -> None:
-        """Emit ``return_call $name`` for a call in tail position. The
-        argument-pushing mirrors the ordinary path in
-        ``_emit_user_call`` (capabilities erased except the
-        handle-carrying ones; String expands to ptr/len); the result is
-        not bound and no separate ``return`` follows, because
-        ``return_call`` transfers control to the callee directly."""
-        for arg in instr.args:
+    def _push_call_args(self, args: list) -> None:
+        """Push a call's arguments in the shared call ABI: capability
+        args are erased except the handle-carrying ones (Fs / Net / Db /
+        Proc / Env / Clock, slices 25.2-25.6, which cross function
+        boundaries as i32 handles so a restricted cap keeps its
+        restriction); String args expand to (ptr, len); everything else
+        goes through the regular push path. Single source of truth for
+        the ordinary call (``_emit_user_call``), the tail call
+        (``_emit_tail_call``), and the trait/impl-method call
+        (``_emit_trait_method_call``) so the three never drift."""
+        for arg in args:
             if arg.ty in BUILTIN_CAPS:
                 if arg.ty in ("Fs", "Net", "Db", "Proc", "Env", "Clock"):
                     self._push_value(arg)
@@ -787,6 +802,12 @@ class WasmEmitter(
                 self._push_string_value_as_ptr_len(arg)
                 continue
             self._push_value(arg)
+
+    def _emit_tail_call(self, instr: Call) -> None:
+        """Emit ``return_call $name`` for a call in tail position. The
+        result is not bound and no separate ``return`` follows, because
+        ``return_call`` transfers control to the callee directly."""
+        self._push_call_args(instr.args)
         self._write(f"return_call ${instr.callee_name}")
 
     # _collect_locals lives in _locals.py as
@@ -1244,29 +1265,7 @@ class WasmEmitter(
         if callee_ty and callee_ty.startswith("Fun"):
             self._emit_closure_call(instr, callee_ty)
             return
-        for arg in instr.args:
-            if arg.ty in BUILTIN_CAPS:
-                # Slices 25.2 - 25.6: Fs / Net / Db / Proc / Env /
-                # Clock are no longer erased - the cap value is an
-                # i32 handle the receiving function takes as the
-                # matching parameter. Push it so the call sees the
-                # receiver's restriction (cross-function attenuation
-                # soundness, audit slice 25 F1). Random / Stdio /
-                # Unsafe remain erased (no attenuation surface).
-                if arg.ty in (
-                    "Fs", "Net", "Db", "Proc", "Env", "Clock",
-                ):
-                    self._push_value(arg)
-                continue
-            if arg.ty == "String":
-                # Defer to the shared helper, which now handles
-                # ``lit_str`` / ``local`` / ``param`` / ``global``
-                # uniformly (the previous hand-inlined branch
-                # missed ``global`` for top-level
-                # ``pub const X: String`` constants).
-                self._push_string_value_as_ptr_len(arg)
-                continue
-            self._push_value(arg)
+        self._push_call_args(instr.args)
         self._write(f"call ${instr.callee_name}")
         if instr.dst is not None:
             dst_ty = self._dst_capa_ty(instr.dst)

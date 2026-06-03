@@ -29,6 +29,7 @@ from .._nodes import (
 from .._capa_types import BUILTIN_CAPS
 from ._layout import (
     WasmEmissionError, _store_op_for_size, _load_op_for_size,
+    _strip_type_qualifiers,
 )
 
 
@@ -187,8 +188,8 @@ class _StructEmissionMixin:
         locals carry their (ptr, len) pair through the emitter."""
         # Roadmap S3.4: a typestate receiver carries a state index in
         # its type string (``Socket[Connected]``); the struct layout is
-        # keyed by the bare name, so strip the index before lookup.
-        recv_ty = instr.receiver.ty.split("[", 1)[0]
+        # keyed by the bare name, so strip qualifiers before lookup.
+        recv_ty = _strip_type_qualifiers(instr.receiver.ty)
         layout = self._struct_layouts.get(recv_ty)
         if layout is None:
             # Analyzer-side type-propagation gap: the FieldAccess's
@@ -199,7 +200,7 @@ class _StructEmissionMixin:
             if (instr.receiver.kind in ("local", "param")
                     and self._current_fn is not None
                     and instr.receiver.name in self._current_fn.locals):
-                fallback = self._current_fn.locals[instr.receiver.name].split("[", 1)[0]
+                fallback = _strip_type_qualifiers(self._current_fn.locals[instr.receiver.name])
                 layout = self._struct_layouts.get(fallback)
                 if layout is not None:
                     recv_ty = fallback

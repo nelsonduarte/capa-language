@@ -337,6 +337,25 @@ class TestTypestateStateMethods(unittest.TestCase):
         )
         self.assertEqual(errs, [])
 
+    def test_same_name_method_across_states_rejected(self):
+        # A method name must be unique across all states (Capa dispatches
+        # by name on the bare type); the diagnostic must explain the
+        # state constraint rather than report a bare "duplicate".
+        errs = self._errors(
+            "typestate Door { id: Int }\n"
+            "    Open\n"
+            "    Closed\n"
+            "impl Door[Closed]\n"
+            "    fun peek(self) -> Int\n"
+            "        return self.id\n"
+            "impl Door[Open]\n"
+            "    fun peek(self) -> Int\n"
+            "        return self.id\n"
+        )
+        self.assertTrue(
+            any("unique across all states" in e for e in errs), errs
+        )
+
     def test_wrong_state_method_rejected(self):
         errs = self._errors(
             _DOOR_METHODS

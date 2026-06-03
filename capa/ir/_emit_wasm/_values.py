@@ -31,6 +31,7 @@ from .._nodes import Value
 from ._layout import (
     WasmEmissionError, _TYPE_SIZE,
     _size_of, _store_op_for_size, _load_op_for_size,
+    _strip_type_qualifiers,
 )
 
 
@@ -231,11 +232,10 @@ class _ValueEmissionMixin:
     # ----- helpers ----------------------------------------------
 
     def _wasm_type(self, capa_ty: str) -> str:
-        head = capa_ty.split("<", 1)[0]
-        # Roadmap S3.3: strip a typestate state index (``Door[Closed]``
-        # -> ``Door``) so the type resolves to its zero-field-struct
-        # layout (an i32 pointer). ``[`` appears in no other type form.
-        head = head.split("[", 1)[0]
+        # Reduce to the bare type name (drops generic args and a
+        # typestate state index, e.g. ``Door[Closed]`` -> ``Door``, so
+        # a state-indexed type resolves to its zero-field-struct layout).
+        head = _strip_type_qualifiers(capa_ty)
         if head in _CAPA_TO_WASM:
             return _CAPA_TO_WASM[head]
         # Slice 25.2 - 25.6 (2026-05-30): Fs, Net, Db, Proc, Env,

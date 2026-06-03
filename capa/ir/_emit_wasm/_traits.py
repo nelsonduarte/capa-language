@@ -34,7 +34,7 @@ from __future__ import annotations
 
 from .._nodes import Function, MethodCall
 from .._capa_types import BUILTIN_CAPS
-from ._layout import WasmEmissionError
+from ._layout import WasmEmissionError, _strip_type_qualifiers
 
 
 def _impl_method_name(type_name: str, method_name: str) -> str:
@@ -140,7 +140,7 @@ class _TraitEmissionMixin:
         when v.ty is Unknown) so impl-method ``self.method()``
         calls resolve to the right concrete-type entry in the
         method table."""
-        recv_ty = self._effective_value_ty(instr.receiver).split("<", 1)[0].split("[", 1)[0]
+        recv_ty = _strip_type_qualifiers(self._effective_value_ty(instr.receiver))
         target = self._method_table.get((recv_ty, instr.method))
         if target is None:
             # Trait with multiple impls (or no impl at all): the
@@ -151,25 +151,10 @@ class _TraitEmissionMixin:
                 f"module. If {recv_ty} is a trait with multiple "
                 f"impls, vtable dispatch is not yet supported."
             )
-        # Push receiver (self) -- always an i32 pointer.
+        # Push receiver (self) -- always an i32 pointer -- then the
+        # remaining args via the shared call ABI helper.
         self._push_value(instr.receiver)
-        # Push remaining args; capability args are erased (other
-        # than Fs / Net / Db / Proc / Env / Clock, slices 25.2 -
-        # 25.6 - they now carry i32 handles so a restricted cap
-        # survives crossing function boundaries), String args expand
-        # to (ptr, len), other args go through the regular push
-        # path.
-        for arg in instr.args:
-            if arg.ty in BUILTIN_CAPS:
-                if arg.ty in (
-                    "Fs", "Net", "Db", "Proc", "Env", "Clock",
-                ):
-                    self._push_value(arg)
-                continue
-            if arg.ty == "String":
-                self._push_string_value_as_ptr_len(arg)
-            else:
-                self._push_value(arg)
+        self._push_call_args(instr.args)
         self._write(f"call ${target}")
         if instr.dst is not None:
             dst_ty = self._dst_capa_ty(instr.dst)

@@ -342,11 +342,32 @@ class _DeclarationsMixin:
 
         for method in impl.methods:
             if method.name in target.methods:
-                self._err(
-                    f"duplicate method {method.name!r} in impl of "
-                    f"{impl.type_name!r}",
-                    method.pos,
-                )
+                existing = target.methods[method.name]
+                existing_state = getattr(existing, "required_state", None)
+                if impl.state is not None or existing_state is not None:
+                    # Roadmap S3.5: methods are dispatched by name on the
+                    # bare type, so a name must be unique across *all*
+                    # states of a typestate. Spell that out rather than
+                    # reporting a bare "duplicate" the user cannot explain
+                    # when the two definitions sit in different
+                    # ``impl Type[State]`` blocks.
+                    prior = (f"for state {existing_state!r}"
+                             if existing_state is not None
+                             else "with no state")
+                    self._err(
+                        f"method {method.name!r} is already defined on "
+                        f"{impl.type_name!r} ({prior}); a typestate method "
+                        f"name must be unique across all states, because "
+                        f"Capa dispatches methods by name. Rename one of "
+                        f"them, or give them distinct per-state names.",
+                        method.pos,
+                    )
+                else:
+                    self._err(
+                        f"duplicate method {method.name!r} in impl of "
+                        f"{impl.type_name!r}",
+                        method.pos,
+                    )
                 continue
             fty = self._method_type_from_decl(method)
             m_sym = Symbol(

@@ -183,7 +183,6 @@ def _cmp_rows(study: str, base: dict, cur: dict) -> list[dict]:
     """Produce one comparison row per leaf metric. Counts are compared
     exactly; *_tolerance / tolerance keys drive timing comparisons."""
     rows: list[dict] = []
-    exact = base.get("exact", True)
 
     def add(metric, b, c, tol=None):
         if b is None or c is None:

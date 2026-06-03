@@ -24,7 +24,7 @@ from .._nodes import (
     FieldAccess, Index, For,
     FormatStr, MakeLambda, Match,
 )
-from ._layout import WasmEmissionError
+from ._layout import WasmEmissionError, _strip_type_qualifiers
 
 
 class _InstrDispatchMixin:
@@ -106,10 +106,9 @@ class _InstrDispatchMixin:
             if recv_ty.startswith("Option") or recv_ty.startswith("Result"):
                 self._emit_option_method_call(instr)
                 return
-            # Strip generic args (``<...>``) and a typestate state index
-            # (``[State]``, roadmap S3.5) to get the bare type name the
-            # method table is keyed by.
-            recv_head = recv_ty.split("<", 1)[0].split("[", 1)[0]
+            # Reduce to the bare type name the method table is keyed by
+            # (drops generic args and a typestate state index).
+            recv_head = _strip_type_qualifiers(recv_ty)
             if (recv_head, instr.method) in self._method_table:
                 self._emit_trait_method_call(instr)
                 return

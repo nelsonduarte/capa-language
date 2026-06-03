@@ -105,6 +105,12 @@ _CT_INDEX_METHODS: dict[tuple[str, str], set[int]] = {
     ("String", "char_at"):      {0},
 }
 
+# Operators whose latency depends on operand values on the targets we
+# emit (the variable-latency divider, CWE-208). A @secret operand of any
+# of these leaks through timing. Add the next variable-time operator
+# here, and ``_check_ct_arith`` picks it up with no further change.
+_VARIABLE_TIME_OPS: frozenset[str] = frozenset({"/", "%"})
+
 
 class _IfcMixin:
     def _label_expr(self, e: A.Expr) -> str:
@@ -324,7 +330,7 @@ class _IfcMixin:
         targets we emit, so they stay allowed.)"""
         if not getattr(self, "_constant_time", False):
             return
-        if e.op not in ("/", "%"):
+        if e.op not in _VARIABLE_TIME_OPS:
             return
         if (
             L.normalize(self._label_of(e.left)) == L.SECRET

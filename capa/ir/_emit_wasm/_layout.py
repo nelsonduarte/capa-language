@@ -299,6 +299,17 @@ def _align_up(offset: int, alignment: int) -> int:
     return (offset + alignment - 1) & ~(alignment - 1)
 
 
+def _strip_type_qualifiers(ty: str) -> str:
+    """Reduce a Capa type string to the bare type name the layout and
+    method tables are keyed by: drop generic arguments (``<...>``) and a
+    typestate state index (``[State]``). ``Door[Open]`` -> ``Door``,
+    ``List<Int>`` -> ``List``, ``Box<Int>[Sealed]`` -> ``Box``. Stripping
+    a marker that is absent is a no-op, so it is safe on any type string.
+    Centralises the state-strip that roadmap S3.3-S3.5 added at several
+    emitter sites."""
+    return ty.split("<", 1)[0].split("[", 1)[0]
+
+
 def compute_struct_layout(
     decl: StructDecl,
     sum_layouts: dict,
