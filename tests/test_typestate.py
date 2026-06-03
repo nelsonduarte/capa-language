@@ -216,6 +216,92 @@ class TestTypestateConstructionAndTransition(unittest.TestCase):
         self.assertIn("done", buf.getvalue())
 
 
+_SOCK = (
+    "typestate Socket { fd: Int }\n"
+    "    Created\n"
+    "    Connected\n"
+    "fun connect(consume s: Socket[Created]) -> Socket[Connected]\n"
+    "    return become(s, Connected)\n"
+    "fun fd_of(s: Socket[Connected]) -> Int\n"
+    "    return s.fd\n"
+    "fun close(consume s: Socket[Connected])\n"
+    "    return\n"
+)
+
+
+class TestTypestateFields(unittest.TestCase):
+    """Roadmap S3.4: a typestate carries declared fields (a
+    state-indexed struct). Construction validates them, field access
+    reads them, and `become` preserves them across the transition."""
+
+    def _analyze(self, src: str):
+        from capa import analyze
+        m = _parse(src)
+        return analyze(m, source=src)
+
+    def test_parse_fields(self):
+        m = _parse(_SOCK)
+        ts = m.items[0]
+        self.assertEqual([f.name for f in ts.fields], ["fd"])
+
+    def test_full_fielded_protocol_checks(self):
+        errs = [e.message for e in self._analyze(
+            _SOCK
+            + "fun main(_s: Stdio)\n"
+            + "    let s = Socket[Created] { fd: 7 }\n"
+            + "    let c = connect(s)\n"
+            + "    close(c)\n"
+        ).errors]
+        self.assertEqual(errs, [])
+
+    def test_missing_field_rejected(self):
+        errs = [e.message for e in self._analyze(
+            _SOCK + "fun f()\n    close(Socket[Created] {})\n"
+        ).errors]
+        self.assertTrue(any("missing fields fd" in e for e in errs), errs)
+
+    def test_wrong_field_type_rejected(self):
+        errs = [e.message for e in self._analyze(
+            _SOCK + "fun f()\n    close(Socket[Created] { fd: \"x\" })\n"
+        ).errors]
+        self.assertTrue(any("field 'fd' expects Int" in e for e in errs), errs)
+
+    def test_unknown_field_rejected(self):
+        errs = [e.message for e in self._analyze(
+            _SOCK + "fun f()\n    close(Socket[Created] { port: 80 })\n"
+        ).errors]
+        self.assertTrue(any("has no field 'port'" in e for e in errs), errs)
+
+    def test_capability_field_rejected(self):
+        errs = [e.message for e in self._analyze(
+            "typestate Bad { n: Net }\n    S\nfun f()\n    return\n"
+        ).errors]
+        self.assertTrue(any("cannot appear in typestate field" in e
+                            for e in errs), errs)
+
+    def test_fielded_protocol_runs_on_python(self):
+        from capa import transpile
+        src = (
+            _SOCK
+            + "fun main(stdio: Stdio)\n"
+            + "    let s = Socket[Created] { fd: 7 }\n"
+            + "    let c = connect(s)\n"
+            + "    stdio.println(\"fd=${fd_of(c)}\")\n"
+            + "    close(c)\n"
+        )
+        m = _parse(src)
+        result = analyze(m, source=src)
+        self.assertTrue(result.ok, [e.message for e in result.errors])
+        code = transpile(m, types=result.types, bindings=result.bindings)
+        import io
+        from contextlib import redirect_stdout
+        ns = {"__name__": "__main__"}
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            exec(compile(code, "<ts>", "exec"), ns)
+        self.assertIn("fd=7", buf.getvalue())
+
+
 class TestTypestateManifest(unittest.TestCase):
     def test_protocol_states_in_manifest(self):
         from capa.manifest import build_manifest

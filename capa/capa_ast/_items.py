@@ -137,9 +137,12 @@ class TypestateDecl(Item):
     state; a transition consumes a value in one state and returns it in
     another, so the type checker plus the linearity discipline enforce
     the protocol. ``states`` is the ordered list of state names; the
-    first is the conventional initial state."""
+    first is the conventional initial state. ``fields`` (roadmap S3.4)
+    is the data a value carries across all states (empty for a bare
+    protocol token)."""
     name: str
     states: list[str]
+    fields: list[Field] = field(default_factory=list)
     is_pub: bool = False
     doc: Optional[str] = None
     name_pos: Optional[Pos] = None

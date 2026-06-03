@@ -933,11 +933,12 @@ Listed so the design space is explicit.
   protocol via state-exact compatibility. Construction `Name[State] {}`
   + transition `become(value, State)` make a full protocol type-check
   and run; the SBOM carries `typestates` + a `protocol_states` count.
-  S3.3 added Wasm parity (a v1 typestate lowers as a zero-field struct /
-  i32 token, construction is a fieldless MakeStruct, become is identity;
-  `examples/wasm/typestate_door.capa` runs byte-identically on both
-  backends). Remaining: state-specific receiver methods and typestate
-  fields/payloads (v1 is fieldless).
+  S3.3 added Wasm parity (a typestate lowers as a state-indexed struct;
+  `examples/wasm/typestate_door.capa`). S3.4 added fields/payload
+  (`typestate Socket { fd: Int }`, construction `Socket[Created] { fd: 7 }`,
+  field access, become preserves them; `typestate_socket.capa` parity).
+  Remaining: state-specific receiver methods (`value.op()` dispatched on
+  state).
 - **Constant-time markers for crypto**. SHIPPED (S4, analyzer):
   `@constant_time()` rejects secret-dependent control flow (if /
   elif / while / if-expr / match) and secret-indexed memory access

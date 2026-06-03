@@ -202,6 +202,20 @@ class _DeclarationsMixin:
                         )
                     sym.struct_fields[fld.name] = fty
                 self._pop_type_params()
+            elif isinstance(item, A.TypestateDecl):
+                # Roadmap S3.4: a typestate is a state-indexed struct;
+                # resolve its shared fields into the same ``struct_fields``
+                # map so field access and construction reuse the struct
+                # machinery. Like a struct, fields cannot hold a cap.
+                sym = self.global_scope.lookup(item.name)
+                if sym is None:
+                    continue
+                for fld in item.fields:
+                    fty = self._resolve_type(fld.type_expr)
+                    self._check_no_capability(
+                        fty, fld.pos, f"typestate field {fld.name!r}",
+                    )
+                    sym.struct_fields[fld.name] = fty
             elif isinstance(item, A.TypeSum):
                 sym = self.global_scope.lookup(item.name)
                 if sym is None:

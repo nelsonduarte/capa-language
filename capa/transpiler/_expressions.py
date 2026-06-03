@@ -115,11 +115,9 @@ class _ExpressionsMixin:
             # flows through unchanged.
             return self._emit_expr(e.value)
         if isinstance(e, A.StructLit):
-            if e.state is not None:
-                # Roadmap S3.2: a v1 typestate carries no data, so its
-                # runtime value is an opaque token (None, like unit). The
-                # protocol is enforced entirely at compile time.
-                return "None"
+            # Roadmap S3.4: a typestate construction ``Name[State] {...}``
+            # builds the same struct class as an ordinary literal (the
+            # state is compile-time-only); a fieldless one is ``Name()``.
             parts = []
             for fname, fexpr in e.fields:
                 parts.append(f"{_safe_ident(fname)}={self._emit_expr(fexpr)}")

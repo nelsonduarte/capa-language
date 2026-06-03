@@ -41,11 +41,13 @@ class _ItemsMixin:
         elif isinstance(item, A.FunDecl):
             self._emit_fun(item)
         elif isinstance(item, A.TypestateDecl):
-            # Roadmap S3: a typestate is a compile-time-only protocol
-            # marker (its state lives in the type, enforced by the
-            # analyzer). It has no runtime representation in v1, so it
-            # emits nothing.
-            pass
+            # Roadmap S3.4: a typestate is a state-indexed struct (the
+            # state is compile-time-only). Emit a struct class carrying
+            # its shared fields so constructions / field reads work; a
+            # fieldless typestate becomes an empty class.
+            self._emit_struct(A.TypeStruct(
+                pos=item.pos, name=item.name, fields=list(item.fields),
+            ))
         else:
             raise TranspilerError(f"unsupported top-level item: {type(item).__name__}")
 

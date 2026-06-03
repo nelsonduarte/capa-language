@@ -173,14 +173,20 @@ class Lowerer(
                     ImportDecl(path=list(item.path), alias=item.alias)
                 )
             elif isinstance(item, A.TypestateDecl):
-                # Roadmap S3.3: a v1 typestate carries no data, so it
-                # lowers as a zero-field struct. That reuses the whole
+                # Roadmap S3.3/S3.4: a typestate lowers as a struct
+                # carrying its shared fields. That reuses the whole
                 # struct machinery: the value is an i32 heap pointer,
-                # construction is a fieldless MakeStruct, and ``become``
-                # is identity (see ``_lower_expr``). The state index is a
-                # compile-time-only property already enforced by the
-                # analyzer, so it does not appear in the CIR.
-                types.append(StructDecl(name=item.name, fields=[]))
+                # construction is a MakeStruct, field reads are normal,
+                # and ``become`` is identity (see ``_lower_expr``). The
+                # state index is compile-time-only and does not appear
+                # in the CIR.
+                types.append(StructDecl(
+                    name=item.name,
+                    fields=[
+                        StructField(name=f.name, ty=_type_name(f.type_expr))
+                        for f in item.fields
+                    ],
+                ))
             else:
                 raise UnsupportedInIR(
                     f"top-level item {type(item).__name__}"

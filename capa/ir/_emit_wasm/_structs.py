@@ -185,7 +185,10 @@ class _StructEmissionMixin:
         into the destination String's ``${dst}_ptr`` and
         ``${dst}_len`` locals -- mirroring how String params and
         locals carry their (ptr, len) pair through the emitter."""
-        recv_ty = instr.receiver.ty
+        # Roadmap S3.4: a typestate receiver carries a state index in
+        # its type string (``Socket[Connected]``); the struct layout is
+        # keyed by the bare name, so strip the index before lookup.
+        recv_ty = instr.receiver.ty.split("[", 1)[0]
         layout = self._struct_layouts.get(recv_ty)
         if layout is None:
             # Analyzer-side type-propagation gap: the FieldAccess's
@@ -196,7 +199,7 @@ class _StructEmissionMixin:
             if (instr.receiver.kind in ("local", "param")
                     and self._current_fn is not None
                     and instr.receiver.name in self._current_fn.locals):
-                fallback = self._current_fn.locals[instr.receiver.name]
+                fallback = self._current_fn.locals[instr.receiver.name].split("[", 1)[0]
                 layout = self._struct_layouts.get(fallback)
                 if layout is not None:
                     recv_ty = fallback

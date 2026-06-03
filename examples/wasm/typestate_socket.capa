@@ -1,0 +1,27 @@
+// Typestate-with-fields parity example (roadmap S3.4): a Socket
+// protocol that carries an fd across its states. The typestate lowers
+// to a struct (the fd is a real field, an i32 slot on Wasm);
+// construction is a MakeStruct, the field read is a normal load, and
+// `become` is identity, so it runs the same way under Python and Wasm.
+typestate Socket { fd: Int }
+    Created
+    Connected
+    Closed
+
+fun connect(consume s: Socket[Created]) -> Socket[Connected]
+    return become(s, Connected)
+
+fun close(consume s: Socket[Connected]) -> Socket[Closed]
+    return become(s, Closed)
+
+fun discard(consume s: Socket[Closed])
+    return
+
+fun main(stdio: Stdio)
+    let s0 = Socket[Created] { fd: 7 }
+    stdio.println("created fd=${s0.fd}")
+    let s1 = connect(s0)
+    stdio.println("connected fd=${s1.fd}")
+    let s2 = close(s1)
+    stdio.println("closed fd=${s2.fd}")
+    discard(s2)

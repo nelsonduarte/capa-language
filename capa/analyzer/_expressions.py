@@ -678,16 +678,17 @@ class _ExpressionsMixin:
         return TyUnknown
 
     def _check_typestate_new(self, e: A.StructLit) -> Ty:
-        """Roadmap S3.2: ``Name[State] {}`` constructs a fresh typestate
-        value in ``State``. The value is linear (the constructing
-        ``let`` registers the must-consume obligation). v1 typestates
-        carry no fields, so the braces must be empty."""
+        """Roadmap S3.2/S3.4: ``Name[State] { fields }`` constructs a
+        fresh typestate value in ``State`` carrying its declared fields.
+        The value is linear (the constructing ``let`` registers the
+        must-consume obligation). Fields are validated against the
+        typestate's declaration exactly like a struct literal."""
         name = e.type_name
         states = self._typestates.get(name)
         if states is None:
             self._err(
                 f"{name!r} is not a typestate; only a typestate can be "
-                f"constructed with a state index ``{name}[State] {{}}``",
+                f"constructed with a state index ``{name}[State] {{ ... }}``",
                 e.pos,
             )
             for _, v in e.fields:
@@ -699,14 +700,37 @@ class _ExpressionsMixin:
                 f"(states: {', '.join(states)})",
                 e.pos,
             )
-        if e.fields:
+        # Validate the fields against the typestate's declaration
+        # (registered in ``struct_fields``), mirroring struct-literal
+        # checking. Typestates take no generic parameters in v1.
+        sym = self.global_scope.lookup(name)
+        fields = sym.struct_fields if sym is not None else {}
+        seen: set[str] = set()
+        for fname, fexpr in e.fields:
+            if fname in seen:
+                self._err(f"duplicate field {fname!r} in {name!r}", e.pos)
+            seen.add(fname)
+            actual = self._check_expr(fexpr)
+            if fname not in fields:
+                hint = self._hint_did_you_mean(fname, list(fields.keys()))
+                self._err(
+                    f"typestate {name!r} has no field {fname!r}{hint}",
+                    fexpr.pos,
+                )
+                continue
+            if not compatible(fields[fname], actual):
+                self._err(
+                    f"typestate {name!r}: field {fname!r} expects "
+                    f"{ty_str(fields[fname])}, got {ty_str(actual)}",
+                    fexpr.pos,
+                )
+        missing = set(fields.keys()) - seen
+        if missing:
             self._err(
-                f"typestate {name!r} carries no fields in this version; "
-                f"write ``{name}[{e.state}] {{}}``",
+                f"typestate {name!r}: missing fields "
+                f"{', '.join(sorted(missing))}",
                 e.pos,
             )
-            for _, v in e.fields:
-                self._check_expr(v)
         return TyName(name, state=e.state)
 
     def _check_become(self, e: A.Become) -> Ty:

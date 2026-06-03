@@ -343,10 +343,11 @@ class _ItemsMixin:
     def _parse_typestate_decl(
         self, is_pub: bool, *, doc: Optional[str] = None,
     ) -> A.Item:
-        """``typestate Name`` followed by an indented list of bare
-        state names, one per line (roadmap S3)::
+        """``typestate Name`` with an optional field block, followed by
+        an indented list of bare state names, one per line (roadmap S3;
+        fields are S3.4)::
 
-            typestate Socket
+            typestate Socket { fd: Int }
                 Created
                 Connected
                 Closed
@@ -354,8 +355,14 @@ class _ItemsMixin:
         start = self._peek().start
         self._expect(T.KW_TYPESTATE, "expected 'typestate'")
         name_tok = self._expect(T.IDENT, "expected typestate name")
+        # Optional shared field block (S3.4): the data a value of this
+        # typestate carries across all states. ``_parse_struct_fields``
+        # consumes through the closing ``}``.
+        fields: list[A.Field] = []
+        if self._match(T.LBRACE):
+            fields = self._parse_struct_fields()
         self._expect(
-            T.NEWLINE, "expected newline after typestate name",
+            T.NEWLINE, "expected newline after typestate header",
         )
         self._expect(T.INDENT, "expected indented states for typestate")
         states: list[str] = []
@@ -379,6 +386,7 @@ class _ItemsMixin:
             name=name_tok.text,
             name_pos=name_tok.start,
             states=states,
+            fields=fields,
             is_pub=is_pub,
             doc=doc,
         )

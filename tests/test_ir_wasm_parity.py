@@ -43,6 +43,7 @@ _EXAMPLES = Path(__file__).resolve().parent.parent / "examples" / "wasm"
 _PARITY_PROGRAMS: list[str] = [
     "hello.capa",
     "typestate_door.capa",
+    "typestate_socket.capa",
     "fizzbuzz.capa",
     "shape_area.capa",
     "strings.capa",
@@ -645,6 +646,12 @@ class TestPythonWasmParity(unittest.TestCase):
         # (an i32 token on Wasm); construction is a fieldless MakeStruct
         # and become is identity.
         self._assert_parity("typestate_door.capa")
+
+    def test_typestate_socket(self):
+        # Roadmap S3.4: a typestate carrying a field (fd) lowers as a
+        # struct; construction + field reads + become run identically on
+        # both backends.
+        self._assert_parity("typestate_socket.capa")
 
     def test_stdio_read_line(self):
         # Slice 1 host-bridge pile: Stdio.read_line parity. Both

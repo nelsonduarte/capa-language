@@ -9,6 +9,20 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+### Typestate fields / payload (roadmap S3.4)
+
+A typestate can now carry data, not just a state: `typestate Socket
+{ fd: Int }` declares shared fields, constructed with `Socket[Created]
+{ fd: 7 }` and read with `s.fd`. A transition (`become`) preserves the
+fields. This makes typestate usable for real protocol handles (wrap an
+fd / connection) rather than being a bare protocol token. Under the
+hood a typestate is a state-indexed struct, so it reuses the struct
+machinery end to end: field validation at construction (missing /
+unknown / wrong-type / capability-typed fields are rejected), field
+access, the Python class, and the Wasm struct lowering (the field is a
+real slot; `examples/wasm/typestate_socket.capa` runs byte-identically
+on both backends). State-specific receiver methods remain a follow-up.
+
 ## [1.0.0], 2026-06-03
 
 First stable release. No feature changes from `1.0.0-rc.7`; this

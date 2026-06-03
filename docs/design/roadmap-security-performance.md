@@ -133,8 +133,11 @@ protocolo completo verifica e corre no backend Python, e o SBOM ganhou
 S3.3 trouxe paridade Wasm: um typestate v1 (sem dados) faz lowering como
 struct sem campos (valor = ponteiro i32, construcao = MakeStruct vazio,
 become = identidade), e um protocolo corre byte-identico em Python e
-Wasm. Pendente: metodos com receiver por estado e campos/payload no
-typestate.
+Wasm. S3.4 adicionou campos/payload: `typestate Socket { fd: Int }`,
+construcao `Socket[Created] { fd: 7 }`, acesso `s.fd`, `become`
+preserva os campos (typestate = struct indexado por estado, com
+paridade Wasm). Pendente: metodos com receiver por estado
+(`value.op()` despachado pelo estado).
 
 ### S4: Constant-time markers para crypto
 **ROI: nicho mas mecanicamente verificável. Esforço: ~3 slices. Dependências: nenhuma.**

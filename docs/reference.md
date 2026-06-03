@@ -552,9 +552,12 @@ typestate Socket
     Closed
 ```
 
-A value of a typestate carries its current state in the type, written
-`Name[State]`, and is linear (it must be consumed or transitioned
-before it leaves scope, like a `linear type`). Because the state is
+A typestate may declare shared fields in a brace block (`typestate
+Socket { fd: Int }`), the data a value carries across all its states
+(like a struct; capability-typed fields are rejected). A value of a
+typestate carries its current state in the type, written `Name[State]`,
+and is linear (it must be consumed or transitioned before it leaves
+scope, like a `linear type`). Because the state is
 part of the type, `Socket[Created]` and `Socket[Connected]` are
 distinct types and the ordinary type checker enforces the protocol. A
 transition is a function that consumes a value in one state and returns
@@ -573,10 +576,10 @@ fun close(consume s: Socket[Connected])
 A `[State]` index is only valid on a typestate, and the state must be
 one the typestate declares.
 
-A value is constructed with `Name[State] {}` (v1 typestates carry no
-fields, so the braces are empty) and transitioned with `become(value,
+A value is constructed with `Name[State] { fields }` (the braces are
+empty for a fieldless typestate) and transitioned with `become(value,
 State)`, which consumes the value in its current state and yields it
-re-typed to the new one:
+re-typed to the new one (preserving its fields):
 
 ```capa
 fun open_door(consume d: Door[Closed]) -> Door[Open]
@@ -594,9 +597,10 @@ parameter) is a compile-time error, so a protocol cannot be silently
 abandoned mid-way. The manifest records each declared protocol and its
 states under `typestates` (and a `protocol_states` count in the
 summary). Typestate runs on both the Python and Wasm backends with
-identical behaviour (a v1 typestate carries no data, so it lowers as a
-zero-field struct / i32 token). State-specific receiver methods and
-typestate fields are follow-ups.
+identical behaviour (a typestate lowers as a state-indexed struct).
+State-specific receiver methods (`value.op()` dispatched on state) are
+a follow-up; today operations are free functions that take the value
+in a specific state.
 
 ---
 
