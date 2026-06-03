@@ -90,8 +90,9 @@ capa --run my_first.capa
 For a progressive 10-chapter introduction to the language, open
 `docs/tutorial.md`.
 
-> An interactive REPL is planned for a future version. For now,
-> `.capa` files are the only execution mode.
+> Prefer an interactive session? `capa repl` starts a REPL with
+> incremental state and readline history; `.capa` files remain the
+> primary execution mode.
 
 ## 4. CLI
 

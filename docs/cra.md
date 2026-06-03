@@ -215,6 +215,15 @@ The static check happens at build time; the audit happens at
 release time; the trail lives in the SBOM the regulation
 already requires.
 
+To start from a working skeleton rather than wiring this up by
+hand, the [`capa_cra_template`](https://github.com/nelsonduarte/capa_cra_template)
+repository is a CRA-ready starter project: a capability-bounded
+program plus CI/release workflows that emit the SBOM, VEX, and
+SLSA L2 provenance on every build. To turn those artefacts into a
+regulator-readable Markdown audit pack plus a JSON attestation,
+[`capa_governance_pack`](https://github.com/nelsonduarte/capa_governance_pack)
+consumes the SBOM + policy + VEX and produces both.
+
 ---
 
 ## What Capa does *not* solve under CRA
