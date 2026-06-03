@@ -93,7 +93,7 @@
                 {
                     "comment": "Block-opening declarations",
                     "name": "keyword.declaration.capa",
-                    "match": "\\b(fun|type|trait|impl|capability|const|import|as)\\b"
+                    "match": "\\b(fun|type|typestate|linear|trait|impl|capability|const|import|as)\\b"
                 },
                 {
                     "comment": "Visibility / binding storage modifiers",
@@ -103,7 +103,7 @@
                 {
                     "comment": "Control-flow keywords",
                     "name": "keyword.control.capa",
-                    "match": "\\b(if|then|elif|else|match|while|for|in|break|continue|return)\\b"
+                    "match": "\\b(if|then|elif|else|match|while|for|in|break|continue|return|become)\\b"
                 },
                 {
                     "comment": "Logical operators (words)",
@@ -248,7 +248,7 @@
                 {
                     "comment": "Built-in conversion and stdlib functions",
                     "name": "support.function.builtin.capa",
-                    "match": "\\b(parse_int|parse_float|to_int|to_float|new_map|new_set|parse_json|to_json|py_import|py_invoke)\\b"
+                    "match": "\\b(parse_int|parse_float|to_int|to_float|new_map|new_set|parse_json|to_json|py_import|py_invoke|declassify)\\b"
                 }
             ]
         },

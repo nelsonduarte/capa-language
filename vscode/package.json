@@ -2,7 +2,7 @@
     "name": "capa-language",
     "displayName": "Capa Language",
     "description": "Syntax highlighting for the Capa programming language",
-    "version": "0.7.0",
+    "version": "0.8.0",
     "publisher": "nelsonduarte",
     "engines": {
         "vscode": "^1.80.0"
@@ -14,12 +14,19 @@
         "capa",
         "capability",
         "supply chain",
-        "security"
+        "security",
+        "information-flow",
+        "sbom"
     ],
     "license": "MIT",
+    "homepage": "https://capa-language.com",
+    "bugs": {
+        "url": "https://github.com/nelsonduarte/capa-language/issues"
+    },
     "repository": {
         "type": "git",
-        "url": "https://github.com/nelsonduarte/capa-language.git"
+        "url": "https://github.com/nelsonduarte/capa-language.git",
+        "directory": "vscode"
     },
     "contributes": {
         "languages": [

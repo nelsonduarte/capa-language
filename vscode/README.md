@@ -6,19 +6,25 @@ This extension provides TextMate-based highlighting. A capability-aware language
 
 ## What it highlights
 
-- Keywords by category: declarations (`fun`, `type`, `trait`, `impl`, `capability`, ...), control flow (`if`, `then`, `elif`, `else`, `match`, `while`, `for`, ...), storage modifiers (`let`, `var`, `pub`, `consume`), logical operators (`and`, `or`, `not`).
+- Keywords by category: declarations (`fun`, `type`, `typestate`, `linear`, `trait`, `impl`, `capability`, ...), control flow (`if`, `then`, `elif`, `else`, `match`, `while`, `for`, `become`, ...), storage modifiers (`let`, `var`, `pub`, `consume`), logical operators (`and`, `or`, `not`).
+- Attributes and security labels (`@security(...)`, `@strict_ifc`, `@constant_time`, and the information-flow labels `@secret` / `@public`), highlighted as attributes.
 - Built-in primitive types (`Int`, `Float`, `String`, `Bool`, `Char`, `Unit`).
 - Built-in capabilities (`Stdio`, `Fs`, `Net`, `Env`, `Clock`, `Random`, `Proc`, `Db`, `Unsafe`), highlighted distinctly from regular user types.
 - Built-in generic types (`List`, `Option`, `Result`, `Map`, `Set`, `Fun`, `JsonValue`, `IoError`).
 - Built-in variant constructors (`Some`, `None`, `Ok`, `Err`, and the `JsonValue` variants).
-- Built-in functions (`parse_int`, `parse_float`, `to_int`, `to_float`, `new_map`, `new_set`, `parse_json`, `to_json`, `py_import`, `py_invoke`).
+- Built-in functions (`parse_int`, `parse_float`, `to_int`, `to_float`, `new_map`, `new_set`, `parse_json`, `to_json`, `py_import`, `py_invoke`, `declassify`).
 - Integer (decimal, hex, octal, binary), float, and string literals, with proper handling of `${...}` interpolation (the interpolated expression is highlighted recursively).
 - Range operators `..` and `..=`, the lambda body separator `=>`, the result-propagation operator `?`, and the or-pattern separator `|`.
 - Reserved-for-future-use keywords (`async`, `await`, `yield`, `defer`, `where`, `mut`) are flagged with the `invalid.deprecated.reserved` scope so themes can render them as a warning.
 
-## Install (manual, alpha)
+## Install
 
-The extension is not on the VSCode Marketplace yet. To install it for local use:
+From the VSCode Marketplace: search for "Capa Language" in the
+Extensions view, or run `code --install-extension nelsonduarte.capa-language`.
+
+### From source (development)
+
+To work on the extension itself, install it locally:
 
 ### Option A, symlink (preferred during development)
 
@@ -43,7 +49,7 @@ Or package as a `.vsix`:
 ```bash
 npm install -g @vscode/vsce
 cd vscode && vsce package
-code --install-extension capa-language-0.7.0.vsix
+code --install-extension capa-language-0.8.0.vsix
 ```
 
 ## What's not in this extension yet
