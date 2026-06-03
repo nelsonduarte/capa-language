@@ -1,9 +1,10 @@
-// Pure-compute benchmark: naive recursive Fibonacci. Measures
-// function-call overhead, which is where Capa's _capa_wrap
-// decorator (used for any function that touches `?`) would
-// dominate. `fib` itself does not use `?`, so the decorator is
-// not applied: this measures the raw transpiled function-call
-// path against hand Python.
+// Pure-arithmetic benchmark: naive recursive Fibonacci. This is
+// the worst case for the Python backend's overhead, because `fib`
+// is almost entirely Int add/subtract and every Int op routes
+// through an overflow-checked helper (`_capa_iadd` / `_capa_isub`)
+// that traps at the same input the Wasm backend traps on. The
+// resulting ratio (~3.5x vs hand Python) is the cost of the
+// loud-overflow security guarantee, not of the call path itself.
 
 fun fib(n: Int) -> Int
     if n < 2

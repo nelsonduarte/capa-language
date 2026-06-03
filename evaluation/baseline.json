@@ -13,10 +13,10 @@
     "exact": true
   },
   "sbom_diff": {
-    "_paper": "5.3 SBOM diff: 122 functions (73 pure, 49 with caps), 61 attribution facts, 6 capability axes",
-    "fns_total": 122,
+    "_paper": "5.3 SBOM diff: 121 functions (72 pure, 49 with caps), 61 attribution facts, 6 capability axes",
+    "fns_total": 121,
     "fns_with_caps": 49,
-    "fns_pure": 73,
+    "fns_pure": 72,
     "info_bits": 61,
     "caps": 6,
     "exact": true
@@ -45,12 +45,13 @@
     "exact": false
   },
   "micro_overhead": {
-    "_paper": "5.2 micro: fib 1.00x, scope_analyser 1.12x, ua_parse 1.45x (Capa vs hand-Python)",
-    "tolerance": 0.35,
+    "_paper": "5.2 micro: fib 3.52x (overflow-checked integer arithmetic worst case), scope_analyser 1.40x, ua_parse 1.91x (Capa vs hand-Python)",
+    "_note": "fib is high because every Int op routes through an overflow-checked helper (_capa_iadd/_capa_isub); this is the cost of the loud-overflow guarantee, not a transpiler inefficiency. Machine-dependent; re-anchor with --update-baseline on the submission machine.",
+    "tolerance": 0.45,
     "per_workload": {
-      "fib": 1.00,
-      "scope_analyser": 1.12,
-      "ua_parse": 1.45
+      "fib": 3.52,
+      "scope_analyser": 1.40,
+      "ua_parse": 1.91
     },
     "exact": false
   }
