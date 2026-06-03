@@ -1,0 +1,17 @@
+// Char-literal match patterns on the Wasm backend. After the Wasm
+// path normalizes the scrutinee type ``Char`` -> ``String``, a
+// ``match c { 'a' -> ... }`` routes to the existing String-scrutinee
+// match path and the char-literal patterns lower as one-char string
+// literal patterns (compared via ``$str_eq``). Output must be byte-
+// identical to the Python reference path.
+
+fun classify(c: Char) -> String
+    return match c
+        'a' -> "ay"
+        'b' -> "bee"
+        _ -> "other"
+
+fun main(stdio: Stdio)
+    stdio.println(classify('a'))
+    stdio.println(classify('b'))
+    stdio.println(classify('z'))

@@ -219,6 +219,16 @@ _PARITY_PROGRAMS: list[str] = [
     "match_float_lit.capa",
     "match_or_pattern.capa",
     "match_struct_pattern.capa",
+    # Char slice (2026-06-03): a Capa ``Char`` is a single-codepoint
+    # String; the Wasm path normalizes the type token ``Char`` ->
+    # ``String`` before emit so the existing String machinery carries
+    # it. ``char_basics`` covers value / param / return / equality /
+    # tuple / list / struct-field / multibyte; ``match_char_lit``
+    # covers char-literal match patterns (one-char string compare via
+    # ``$str_eq``). Pre-fix both errored with "Capa type 'Char' has
+    # no Wasm encoding yet".
+    "char_basics.capa",
+    "match_char_lit.capa",
 ]
 
 # Programs deliberately excluded from parity and why; documented
@@ -924,6 +934,26 @@ class TestPythonWasmParity(unittest.TestCase):
         # struct layout offsets. Pre-fix the CIR lowerer raised
         # "match pattern StructPat".
         self._assert_parity("match_struct_pattern.capa")
+
+    def test_char_basics(self):
+        # Char slice (2026-06-03): a Capa ``Char`` is a single-
+        # codepoint String and is laid out exactly like a String at
+        # the Wasm level. The Wasm path normalizes the type token
+        # ``Char`` -> ``String`` across every type-string-bearing
+        # field before emit, so the String machinery (params, returns,
+        # locals, interpolation, equality, tuple / list / struct
+        # slots) carries it. Covers a multibyte codepoint too. Pre-fix
+        # this errored with "Capa type 'Char' has no Wasm encoding
+        # yet".
+        self._assert_parity("char_basics.capa")
+
+    def test_match_char_lit(self):
+        # Char slice (2026-06-03): char-literal match patterns. After
+        # the scrutinee type is normalized ``Char`` -> ``String``, a
+        # ``match c { 'a' -> ... }`` routes to the String-scrutinee
+        # match path; the char-literal patterns lower as one-char
+        # ``PatLiteral(kind="str")`` compared via ``$str_eq``.
+        self._assert_parity("match_char_lit.capa")
 
     def test_tail_call_emits_return_call(self):
         # White-box: confirm the peephole actually fires (a green

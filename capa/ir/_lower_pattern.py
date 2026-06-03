@@ -202,10 +202,17 @@ class _LowerPatternMixin:
         if isinstance(v, A.UnitLit):
             return PatLiteral(kind="unit", value=None)
         if isinstance(v, A.CharLit):
-            # A Char is a Unicode code point: an integer at runtime.
-            # Lower to the same shape as an Int literal carrying the
-            # code point so the scalar i64.eq path compares it.
-            return PatLiteral(kind="char", value=ord(v.value))
+            # A Char is a single-codepoint String at the value level
+            # (see ``_lower_expr.py``'s CharLit -> ``lit_str`` rule).
+            # Lower the pattern as a one-char String literal so the
+            # existing String-scrutinee match path compares it via
+            # ``$str_eq`` (kind="str"); on the Wasm path the scrutinee
+            # type is normalized ``Char`` -> ``String`` before emit, so
+            # ``match c { 'a' -> ... }`` routes to ``_emit_string_match``
+            # and ``PatLiteral.kind == "str"`` is what that path reads.
+            # The Python emitter also renders a "str"-kind PatLiteral
+            # as the one-char string literal, matching the value rule.
+            return PatLiteral(kind="str", value=v.value)
         if isinstance(v, A.FloatLit):
             return PatLiteral(kind="float", value=v.value)
         raise UnsupportedInIR(

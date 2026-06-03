@@ -184,6 +184,7 @@ def compile_wat(
     extra section would noisily change byte-level snapshots."""
     from ._builtin_json import inject_into
     from ._monomorphise import monomorphise
+    from ._normalize_char import normalize_char_to_string
     from ._emit_wasm import MEMORY_CAP_DEFAULT_PAGES
     if memory_cap_pages is ...:
         memory_cap_pages = MEMORY_CAP_DEFAULT_PAGES
@@ -196,6 +197,16 @@ def compile_wat(
     # ``type_params`` left to confuse it. Pass is a no-op on
     # programs without generics.
     monomorphise(ir_mod)
+    # Normalize the Capa type token ``Char`` -> ``String`` across
+    # every type-string-bearing field of the module. A Char is a
+    # single-codepoint String and is laid out exactly like a String
+    # at the Wasm level; this pass lets the emitter's String
+    # machinery carry it without a dedicated Char encoding. Wasm path
+    # only -- the Python transpiler and the AST-derived manifest are
+    # untouched. No-op on programs without any Char. Runs after
+    # monomorphise so specialised clones (e.g. ``first<Char>``) are
+    # normalized too.
+    normalize_char_to_string(ir_mod)
     manifest_json: str | None = None
     if embed_manifest:
         manifest_json = _build_wasm_capa_manifest_json(

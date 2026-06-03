@@ -1,0 +1,56 @@
+// Char support on the Wasm backend. A Capa ``Char`` is a single-
+// codepoint String at the value level; the CIR lowerer represents a
+// char literal as a string-shaped value. The Wasm path normalizes the
+// type token ``Char`` -> ``String`` before emission so the existing
+// String machinery (params, returns, locals, interpolation, equality,
+// tuple / list / struct slots) carries it. Output must be byte-
+// identical to the Python reference path.
+//
+// Bool results from == are branched into "yes" / "no" strings rather
+// than interpolated directly, because bare Bool interpolation (True vs
+// true) diverges between backends independently of Char; this keeps
+// the program parity-clean while still exercising char equality.
+
+type Tagged {
+    c: Char,
+    label: String
+}
+
+// param + return, both Char.
+fun idc(c: Char) -> Char
+    return c
+
+fun show(stdio: Stdio, tag: String, flag: Bool)
+    if flag
+        stdio.println("${tag}: yes")
+    else
+        stdio.println("${tag}: no")
+
+fun main(stdio: Stdio)
+    // value + interpolation.
+    let c = 'a'
+    stdio.println("${c}")
+
+    // param + return + interpolation.
+    stdio.println("${idc('x')}")
+
+    // equality (one-char Strings compared via str_eq).
+    show(stdio, "'a' == 'a'", 'a' == 'a')
+    show(stdio, "'a' == 'b'", 'a' == 'b')
+
+    // Char in a tuple, read back and printed.
+    let pair: (Char, Int) = ('q', 7)
+    let pc = pair[0]
+    stdio.println("${pc}")
+
+    // Char in a list, read back and printed.
+    let chars = ['x', 'y', 'z']
+    stdio.println("${chars[1]}")
+
+    // Char in a struct field, read back and printed.
+    let t = Tagged { c: 'k', label: "kilo" }
+    stdio.println("${t.c}-${t.label}")
+
+    // Multibyte: a single non-ASCII codepoint, value + interpolation.
+    let euro = 'é'
+    stdio.println("${euro}")
