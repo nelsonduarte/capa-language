@@ -804,10 +804,13 @@ right primitives. Listed at the top of this section accordingly.
   gain, so it stays out of scope. 6 new incremental tests;
   full suite 1827 / 5 skipped / 0 fail.
 
-- [ ] **VSCode marketplace publication**. Grammar lives in
-  `vscode/`; install today is manual symlink/junction. Publish
-  to Marketplace for one-click install. ⏱ 1-2h once the
-  Marketplace account + publisher are set up.
+- [~] **VSCode marketplace publication**. Extension prepared
+  (2026-06-02): grammar updated to the full current surface
+  (typestate / IFC / linear / constant-time), package.json at 0.8.0
+  with homepage / bugs / keywords, README + CHANGELOG + LICENSE +
+  .vscodeignore added; `vsce package` runs warning-free. Remaining:
+  the owner runs `vsce publish` with their Marketplace PAT (publisher
+  `nelsonduarte` is set up).
 
 - [~] **Migration path from Python** (slice 1 closed 2026-05-27).
   Interop is one-way via `Unsafe`; the gradual-hardening *pattern*
