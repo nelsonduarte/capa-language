@@ -1,0 +1,57 @@
+{
+  "_meta": {
+    "description": "Published empirical numbers from section 5 of docs/paper-draft.md. `reproduce.py` re-runs each study and reports the delta against these. Count metrics are exact-reproducible (any delta is a real regression); timing ratios vary by machine and are checked within a tolerance band.",
+    "paper_section": "5",
+    "measured_tag": "pre-1.0 working draft",
+    "note": "Run `python -m evaluation.reproduce --update-baseline` at a fresh release tag to re-anchor these to the version you submit against."
+  },
+  "fuzz": {
+    "_paper": "5.5 soundness panel: 138/138 rejected across 9 categories",
+    "attempts": 138,
+    "rejected": 138,
+    "categories": 9,
+    "exact": true
+  },
+  "sbom_diff": {
+    "_paper": "5.3 SBOM diff: 122 functions (73 pure, 49 with caps), 61 attribution facts, 6 capability axes",
+    "fns_total": 122,
+    "fns_with_caps": 49,
+    "fns_pure": 73,
+    "info_bits": 61,
+    "caps": 6,
+    "exact": true
+  },
+  "cve": {
+    "_paper": "5.1 quantitative: N=150, 74.0% structural reject, 23.3% attenuation, 97.3% Capa-relevant",
+    "n": 150,
+    "structural_reject": 111,
+    "attenuation_mitigated": 35,
+    "out_of_scope": 4,
+    "pct_structural": 74.0,
+    "pct_attenuation": 23.3,
+    "pct_capa_relevant": 97.3,
+    "exact": true,
+    "pct_tolerance": 0.1
+  },
+  "runtime_macro": {
+    "_paper": "5.2 macro: ~1.52x cold-start wall-clock (--wasm vs --python)",
+    "tolerance": 0.35,
+    "mean_ratio": 1.52,
+    "per_workload": {
+      "policy_eval": 1.55,
+      "sbom_watch": 1.49,
+      "audit_trail": 1.52
+    },
+    "exact": false
+  },
+  "micro_overhead": {
+    "_paper": "5.2 micro: fib 1.00x, scope_analyser 1.12x, ua_parse 1.45x (Capa vs hand-Python)",
+    "tolerance": 0.35,
+    "per_workload": {
+      "fib": 1.00,
+      "scope_analyser": 1.12,
+      "ua_parse": 1.45
+    },
+    "exact": false
+  }
+}

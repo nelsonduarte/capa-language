@@ -23,7 +23,34 @@ The harness uses a shared helper module
 [`shared/runner_utils.py`](shared/runner_utils.py) (subprocess +
 timing + CSV emit).
 
-## Reproducing
+## One-command reproduction (paper §5 deltas)
+
+To re-run every §5 study at once and diff the result against the
+numbers published in `docs/paper-draft.md`, use the orchestrator:
+
+```
+python -m evaluation.reproduce                  # fast studies: fuzz, sbom_diff, cve
+python -m evaluation.reproduce --with-runtime   # + macro Python/Wasm timing
+python -m evaluation.reproduce --with-micro     # + micro overhead vs hand-Python
+python -m evaluation.reproduce --all            # everything
+python -m evaluation.reproduce --all --json report.json
+python -m evaluation.reproduce --update-baseline   # re-anchor baseline.json to now
+```
+
+It prints a `baseline | current | delta | status` table. The published
+numbers live in [`baseline.json`](baseline.json). **Count** metrics
+(fuzz rejections, SBOM-diff attribution facts, CVE buckets) are
+exact-reproducible: any delta is a real change and the tool exits
+non-zero. **Timing** ratios (runtime macro, micro overhead) vary by
+machine and are checked within a tolerance band; they only warn unless
+`--strict` is given. The fast studies need no network (the CVE headline
+is recomputed from the committed `cve/decisions.csv`).
+
+On the day you submit, run this at the release tag: re-anchor the
+baseline with `--update-baseline`, or fix whatever drifted, so the
+paper never cites a number an old run produced.
+
+## Reproducing (individual studies)
 
 From the repo root, with the venv active:
 
