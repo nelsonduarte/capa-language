@@ -804,15 +804,12 @@ right primitives. Listed at the top of this section accordingly.
   gain, so it stays out of scope. 6 new incremental tests;
   full suite 1827 / 5 skipped / 0 fail.
 
-- [~] **VSCode marketplace publication** (uploaded 2026-06-03, in
-  verification). Submitted as `nelsonduarte.capa-language` v0.8.0;
-  Microsoft's automatic verification (malware scan + new-publisher
-  checks) is in progress and clears on its own (minutes to ~a day for
-  a new publisher), after which `code --install-extension
-  nelsonduarte.capa-language` works. Grammar covers the full current
-  surface (typestate / IFC / linear / constant-time); README +
-  CHANGELOG + LICENSE + .vscodeignore shipped. A first-party bundled
-  LSP client remains a follow-up.
+- [x] **VSCode marketplace publication** (published + live
+  2026-06-03). `nelsonduarte.capa-language` v0.8.0 is live on the VS
+  Code Marketplace (`code --install-extension nelsonduarte.capa-language`).
+  Grammar covers the full current surface (typestate / IFC / linear /
+  constant-time); README + CHANGELOG + LICENSE + .vscodeignore shipped.
+  A first-party bundled LSP client remains a follow-up.
 
 - [~] **Migration path from Python** (slice 1 closed 2026-05-27).
   Interop is one-way via `Unsafe`; the gradual-hardening *pattern*

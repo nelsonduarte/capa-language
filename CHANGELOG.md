@@ -9,6 +9,8 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+## [1.0.0-rc.7], 2026-06-03
+
 ### Typestate foundation: typestate declarations + state-indexed types (roadmap S3.1)
 
 The first slice of typestate / session types. A `typestate Name`

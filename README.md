@@ -254,19 +254,20 @@ LICENSE  STABILITY.md  CONTRIBUTING.md  SECURITY.md  README.md
 
 ## Status
 
-Capa currently ships as **`1.0.0-rc.6`**, with information-flow
-control and the now fully functional Wasm backend on the `main`
-branch ahead of the next release tag (see
-[`CHANGELOG.md`](CHANGELOG.md) Unreleased section). The stability
+Capa currently ships as **`1.0.0-rc.7`**, with the full security
+axis (information-flow control, constant-time markers, and typestate
+protocols) and the fully functional Wasm backend on the `main` branch
+(see [`CHANGELOG.md`](CHANGELOG.md)). The stability
 commitment that starts with `1.0.0` is documented in
 [`STABILITY.md`](STABILITY.md); the short version is "post-1.0,
 breaking changes require a major bump, deprecations get one minor
 release of warning first".
 
-**2203 tests** spanning the lexer, parser, analyzer, transpiler,
+**2234 tests** spanning the lexer, parser, analyzer, transpiler,
 LSP, formatter, attribute-schema validation, package manager, the
-information-flow checker, the Wasm backend (with a Python/Wasm output
-parity harness), and Hypothesis-based property tests. The transpiler
+information-flow / constant-time / typestate checkers, the Wasm
+backend (with a Python/Wasm output parity harness), and
+Hypothesis-based property tests. The transpiler
 suite actually executes the generated Python and checks stdout; the
 property suite fuzzes the full pipeline with arbitrary text and
 syntax-aware Capa programs. The Wasm backend runs every capability
