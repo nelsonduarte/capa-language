@@ -156,9 +156,11 @@ labels). Surface no SBOM: `constant_time_guarantees`.
 while / if-expr / match) e acesso indexado por secret (`xs[secret]`,
 `list.get` / `map.get` / `map.contains_key` / `set.contains` /
 `str.char_at` com argumento secret), reaproveitando os labels do S2.
-Surface no SBOM como um booleano `constant_time` por função. Pendente:
-enforcement defense-in-depth no emitter Wasm, e operações de tempo
-variável (ex. divisão por secret), ainda não modeladas.
+Surface no SBOM como um booleano `constant_time` por função. As
+operações de tempo variável já são modeladas: `/` e `%` sobre um
+operando secret (o divisor de latência variável, tanto inteiro `idiv`
+como float `divsd`) são rejeitadas. Pendente: enforcement
+defense-in-depth no emitter Wasm (hoje a garantia vive no analyzer).
 
 ### S5: Quantitative / budgeted capabilities (DEFER)
 O TODO marca ROI marginal. Manter parked, a maioria do rate-limiting

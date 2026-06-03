@@ -548,6 +548,7 @@ class _ExpressionsMixin:
         lt = self._check_expr(e.left)
         rt = self._check_expr(e.right)
         op = e.op
+        self._check_ct_arith(e)
         if op in ("+", "-", "*", "/", "%"):
             if compatible(TyInt, lt) and compatible(TyInt, rt):
                 return TyInt

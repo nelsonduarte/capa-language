@@ -507,7 +507,7 @@ precision is future work).
 
 The `@constant_time()` function attribute requires that no `@secret`
 value influences the function's execution time (the CWE-208 side
-channel). Built on the same security labels, the analyzer rejects two
+channel). Built on the same security labels, the analyzer rejects three
 things inside a constant-time function:
 
 - **Control flow on a secret**: an `if` / `elif` / `while` /
@@ -519,9 +519,14 @@ things inside a constant-time function:
   `set.contains(secret)`, and `str.char_at(secret)`. A data-dependent
   access leaks the secret through cache timing (the classic
   table-lookup attack).
+- **Variable-time arithmetic on a secret**: `/` and `%` when either
+  operand is `@secret`. Division and modulo run on the CPU's
+  variable-latency divider (integer `idiv`, float `divsd`), so their
+  timing depends on the operand values.
 
-Arithmetic on secrets and branches on public data remain legal, so a
-branchless constant-time implementation type-checks:
+Add / subtract / multiply on secrets (fixed-latency) and branches on
+public data remain legal, so a branchless constant-time implementation
+type-checks:
 
 ```capa
 @constant_time()
@@ -538,8 +543,7 @@ fun leaky(a: @secret Int, b: @secret Int) -> Bool
 ```
 
 The guarantee is surfaced in the manifest as a per-function
-`constant_time` boolean. Variable-time arithmetic (e.g. division by a
-secret) is not yet modelled.
+`constant_time` boolean.
 
 ### 6.6. Typestate (protocols)
 

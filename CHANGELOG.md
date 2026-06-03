@@ -9,6 +9,16 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+### Constant-time: reject variable-time arithmetic (roadmap S4)
+
+A `@constant_time` function now rejects `/` and `%` when either operand
+is `@secret`. Division and modulo run on the CPU's variable-latency
+divider (integer `idiv`, float `divsd`), so their timing depends on the
+operand values, the CWE-208 side channel. This closes the documented S4
+gap; add / subtract / multiply stay legal (fixed-latency). The only
+remaining S4 follow-up is defense-in-depth enforcement in the Wasm
+emitter (the guarantee lives in the analyzer today).
+
 ### Typestate state-specific methods (roadmap S3.5)
 
 Operations on a typestate can now be methods, written in an `impl

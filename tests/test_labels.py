@@ -593,12 +593,58 @@ class TestConstantTime(unittest.TestCase):
         )
         self.assertTrue(self._ct_errors(r))
 
+    def test_div_by_secret_rejected(self):
+        # Division runs on the variable-latency divider: a secret
+        # divisor leaks through timing (CWE-208).
+        r = self._analyze(
+            "@constant_time()\n"
+            "fun f(a: Int, b: @secret Int) -> Int\n"
+            "    return a / b\n"
+        )
+        self.assertTrue(self._ct_errors(r))
+
+    def test_mod_by_secret_rejected(self):
+        r = self._analyze(
+            "@constant_time()\n"
+            "fun f(a: Int, b: @secret Int) -> Int\n"
+            "    return a % b\n"
+        )
+        self.assertTrue(self._ct_errors(r))
+
+    def test_div_with_secret_dividend_rejected(self):
+        # A secret dividend is just as unsafe: the join of the operand
+        # labels is secret, so the variable-latency divide leaks it.
+        r = self._analyze(
+            "@constant_time()\n"
+            "fun f(a: @secret Int, b: Int) -> Int\n"
+            "    return a / b\n"
+        )
+        self.assertTrue(self._ct_errors(r))
+
+    def test_float_div_by_secret_rejected(self):
+        r = self._analyze(
+            "@constant_time()\n"
+            "fun f(a: Float, b: @secret Float) -> Float\n"
+            "    return a / b\n"
+        )
+        self.assertTrue(self._ct_errors(r))
+
     def test_arithmetic_on_secret_is_fine(self):
-        # Arithmetic does not branch or index, so it is constant-time.
+        # Add / subtract / multiply are fixed-latency, so they do not
+        # leak a secret through timing.
         r = self._analyze(
             "@constant_time()\n"
             "fun add(a: @secret Int, b: @secret Int) -> Int\n"
-            "    return a + b\n"
+            "    return (a + b) * (a - b)\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+
+    def test_div_by_public_is_fine(self):
+        # Division is allowed when no operand is secret.
+        r = self._analyze(
+            "@constant_time()\n"
+            "fun f(a: Int, b: Int) -> Int\n"
+            "    return a / b\n"
         )
         self.assertTrue(r.ok, [e.message for e in r.errors])
 

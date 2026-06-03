@@ -314,6 +314,30 @@ class _IfcMixin:
                 )
                 return
 
+    def _check_ct_arith(self, e: A.BinOp) -> None:
+        """In a ``@constant_time`` function, division and modulo run on
+        the CPU's variable-latency divider: their timing depends on the
+        operand values (CWE-208), so a @secret operand leaks through
+        timing. This holds for both integer (``idiv``) and floating
+        (``divsd``) division. Reject ``/`` and ``%`` when either operand
+        is secret. (Add / subtract / multiply are fixed-latency on the
+        targets we emit, so they stay allowed.)"""
+        if not getattr(self, "_constant_time", False):
+            return
+        if e.op not in ("/", "%"):
+            return
+        if (
+            L.normalize(self._label_of(e.left)) == L.SECRET
+            or L.normalize(self._label_of(e.right)) == L.SECRET
+        ):
+            self._err(
+                f"constant-time violation: {e.op!r} on a @secret operand "
+                f"leaks it through timing (division and modulo run on the "
+                f"variable-latency divider). A @constant_time function "
+                f"must avoid variable-time arithmetic on secret data.",
+                e.pos,
+            )
+
     # ---- declassify (roadmap S2.5) -------------------------------
 
     def _is_declassify_call(self, e: A.Expr) -> bool:

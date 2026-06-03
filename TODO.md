@@ -943,12 +943,13 @@ Listed so the design space is explicit.
   backends.
 - **Constant-time markers for crypto**. SHIPPED (S4, analyzer):
   `@constant_time()` rejects secret-dependent control flow (if /
-  elif / while / if-expr / match) and secret-indexed memory access
-  (`xs[secret]`, list/map/set lookups, `str.char_at`), reusing the S2
-  labels; surfaced in the SBOM as a per-function `constant_time` flag.
-  Mechanically prevents the CWE-208 examples in the CVE case studies.
-  Remaining: defense-in-depth enforcement in the Wasm emitter, and
-  variable-time arithmetic (e.g. division by a secret).
+  elif / while / if-expr / match), secret-indexed memory access
+  (`xs[secret]`, list/map/set lookups, `str.char_at`), and
+  variable-time arithmetic (`/` and `%` on a secret operand, the
+  variable-latency divider), reusing the S2 labels; surfaced in the
+  SBOM as a per-function `constant_time` flag. Mechanically prevents
+  the CWE-208 examples in the CVE case studies. Remaining:
+  defense-in-depth enforcement in the Wasm emitter.
 - **Quantitative capabilities** (budgeted authority). ROI:
   marginal; most rate-limiting use cases are solved at the
   application level.
