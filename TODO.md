@@ -3211,18 +3211,23 @@ Listed so the design space is explicit.
 What an adopter should know is not yet there. Surfaced in
 `docs/roadmap.html`.
 
-- **No package manager or registry**. No way to share or
-  reuse Capa libraries beyond copying source. Waits on the
-  module system. (P2)
-- **No native backend**. Capa transpiles to Python; runtime
-  is CPython. Benchmarks measure 1.00x to 1.45x overhead vs
-  hand-Python. The Wasm CM backend (in active development)
-  changes this but isn't 1.0-ready yet. (P3 long-term)
+- **No native backend**. Capa transpiles to Python (CPython
+  runtime; 1.00x to 1.45x overhead vs hand-Python) or lowers to
+  a Wasm Component Model artifact (now fully functional, with
+  output byte-identical to Python). A native LLVM backend is the
+  long-term performance play. (P3 long-term)
 - **No async / await**. Keywords are reserved; no
   implementation. Capability-aware async is a research
   question. (P3)
-- **REPL: MVP only**. Re-runs the assembled program on each
-  input; no incremental state or readline. (P2)
+- **Typestate is fieldless + Python-method dispatch is positional**.
+  A typestate value carries no payload yet (wrap data alongside it),
+  and operations are free functions `op(value)` rather than
+  state-specific receiver methods `value.op()`. (S3.4)
+
+  Resolved since this list was first written: the **package manager +
+  registry** ship (`capa.toml` + `capa install` + `capa.lock` + the
+  `capa-registry` index), and the **REPL** is v2 (incremental state +
+  readline / history).
 
 ---
 
