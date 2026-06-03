@@ -92,6 +92,13 @@ _PARITY_PROGRAMS: list[str] = [
     "string_char_at.capa",
     "string_index_of.capa",
     "tuple_arity_n.capa",
+    # Slice (2026-06-03): nested tuple indexing. Pre-fix the Wasm
+    # emitter stored a raw i64 into the i32 tuple local for a
+    # nested-tuple element (a dst type like (Int, Int) matched no
+    # pointer-shaped branch), producing invalid Wasm. A nested
+    # tuple element is an i32 pointer in the slot, so it now decodes
+    # like a struct / list element.
+    "tuple_nested_index.capa",
     "map_keys_values.capa",
     "range_iter.capa",
     "option_result_hofs.capa",
@@ -550,6 +557,14 @@ class TestPythonWasmParity(unittest.TestCase):
         # parses elem types out of the receiver's tuple shape when
         # the analyzer didn't carry a precise type for the slot.
         self._assert_parity("tuple_arity_n.capa")
+
+    def test_tuple_nested_index(self):
+        # Slice (2026-06-03): nested tuple indexing. A nested-tuple
+        # element is an i32 pointer in the slot; pre-fix the Wasm
+        # emitter fell through to a raw i64.load and stored an i64
+        # into the i32 tuple local, producing invalid Wasm. Now the
+        # pointer-shaped decode branch also covers tuple-typed dsts.
+        self._assert_parity("tuple_nested_index.capa")
 
     def test_map_keys_values(self):
         # Slice 5 (2026-05): ``Map.keys()`` / ``Map.values()`` walk

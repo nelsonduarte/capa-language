@@ -360,6 +360,23 @@ class _ExpressionsMixin:
                 and recv_ty.name == "List" and recv_ty.args
             ):
                 return recv_ty.args[0]
+            if isinstance(recv_ty, TyTuple) and isinstance(e.index, A.IntLit):
+                # A constant tuple index has a statically-known element
+                # type; surface it so downstream consumers get the right
+                # type and so out-of-range / mismatch errors are caught.
+                # Without this it diverged: Python raised IndexError at
+                # runtime while the Wasm backend silently returned 0. The
+                # arity and index are both statically known here, so an
+                # out-of-range constant index is a compile-time error.
+                idx = e.index.value
+                if 0 <= idx < len(recv_ty.elements):
+                    return recv_ty.elements[idx]
+                self._err(
+                    f"tuple index {idx} is out of range for a "
+                    f"{len(recv_ty.elements)}-element tuple",
+                    e.pos,
+                )
+                return TyUnknown
             return TyUnknown
         if isinstance(e, A.Try):
             inner = self._check_expr(e.expr)

@@ -1,0 +1,27 @@
+// Nested tuple indexing. Pre-fix the Wasm emitter stored a raw
+// i64 into the i32 tuple local for a nested-tuple element (its
+// dst type, e.g. (Int, Int), matched no pointer-shaped branch),
+// producing invalid Wasm. A nested tuple element is an i32
+// pointer in the slot, so it must decode like a struct / list
+// element. This program reads nested tuples plus Int and Bool
+// elements so every decode path is exercised on both backends.
+
+fun main(stdio: Stdio)
+    let t = ((1, 2), (3, 4))
+    let a = t[0]
+    let b = t[1]
+    stdio.println("${a[0]} ${a[1]} ${b[0]} ${b[1]}")
+    stdio.println("${t[0][1]} ${t[1][0]}")
+
+    let mixed: (Int, (Int, Bool), Bool) = (9, (8, true), false)
+    let inner = mixed[1]
+    stdio.println("first: ${mixed[0]}")
+    stdio.println("inner int: ${inner[0]}")
+    if inner[1]
+        stdio.println("inner bool: true")
+    else
+        stdio.println("inner bool: false")
+    if mixed[2]
+        stdio.println("last bool: true")
+    else
+        stdio.println("last bool: false")

@@ -5739,5 +5739,46 @@ class TestIntLiteralRange(unittest.TestCase):
         self.assertTrue(any("out of range" in e for e in errs), errs)
 
 
+class TestTupleConstIndexType(unittest.TestCase):
+    """A constant tuple index has a statically-known element type.
+    The analyzer surfaces it so downstream consumers get the right
+    type, an out-of-range constant index is a compile error, and a
+    type mismatch on a tuple element is caught. Without this it
+    diverged: Python raised IndexError at runtime while the Wasm
+    backend silently returned 0."""
+
+    def _errs(self, body: str) -> list[str]:
+        return errors_of(f"fun f()\n    {body}\n")
+
+    def test_in_bounds_index_types_correctly(self):
+        # Control: an in-bounds index recovers the element type, so
+        # binding it to a matching annotation is accepted.
+        self.assertEqual(
+            self._errs("let t = (1, 2)\n    let x: Int = t[0]"), [],
+        )
+
+    def test_in_bounds_index_string_element(self):
+        # Control: heterogeneous tuple, element 1 is String.
+        self.assertEqual(
+            self._errs('let t = (1, "hi")\n    let s: String = t[1]'),
+            [],
+        )
+
+    def test_const_out_of_range_rejected(self):
+        errs = self._errs("let t = (1, 2)\n    let x = t[5]")
+        self.assertTrue(
+            any("out of range" in e for e in errs), errs,
+        )
+
+    def test_type_mismatch_caught(self):
+        # t[0] is Int; binding it to String must error now that the
+        # element type is recovered (was permissive TyUnknown before).
+        errs = self._errs("let t = (1, 2)\n    let x: String = t[0]")
+        self.assertTrue(
+            any("expected String" in e and "got Int" in e for e in errs),
+            errs,
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

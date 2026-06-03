@@ -39,6 +39,11 @@ Behaviour-changing items are noted; all are covered by new tests.
   builtin on both backends.
 - **A `Bool` reached through a tuple index interpolates as `true` /
   `false`** (was Python-style `True` / `False`).
+- **Tuple indexing is now typed at the root.** A constant tuple index
+  `t[k]` resolves to the k-th element type (was `Unknown`, which masked
+  type errors), a constant out-of-range index is a compile-time error
+  (was: Python `IndexError` at runtime vs Wasm silently returning 0),
+  and a nested tuple index `t[0][1]` no longer emits invalid Wasm.
 - **Wasm match patterns**: identifier-binding catch-alls in sum matches,
   float-literal patterns, binding-free or-patterns (`A | B`), and struct
   patterns (`P { x: 0, y }`) now lower and run on the Wasm backend with
