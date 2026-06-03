@@ -1,10 +1,10 @@
 # Stability policy
 
-Capa currently ships as `1.0.0-rc.3`. This file describes the
-**stability commitment that will start with `1.0.0`** and the
-process for getting there. The commitment is the only thing
-that changes at 1.0; the language itself does not jump
-features when the version flips.
+Capa ships as `1.0.0` (released 2026-06-03). The
+**stability commitment described below is now in effect**: the
+surfaces listed are covered by SemVer from this release on. The
+commitment is the only thing that changed at 1.0; the language
+itself did not jump features when the version flipped.
 
 ## Stable surfaces (after 1.0)
 

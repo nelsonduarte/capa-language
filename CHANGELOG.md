@@ -9,6 +9,40 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+## [1.0.0], 2026-06-03
+
+First stable release. No feature changes from `1.0.0-rc.7`; this
+release flips the version and brings the [`STABILITY.md`](STABILITY.md)
+commitment into effect (the listed surfaces now follow SemVer:
+breaking changes require a major bump, deprecations get one minor
+release of warning first).
+
+The 1.0 surface, in one place:
+
+- **Capability discipline**: the authority a function holds is in its
+  signature; the default is zero capabilities, widening is explicit,
+  and attenuation (`restrict_to`) is monotonic. Enforced on the Python
+  backend and soundly across function boundaries on the Wasm backend.
+- **Information-flow control (S2)**: `@secret` / `@public` labels,
+  secret-to-sink enforcement (warn-then-enforce, `@strict_ifc`),
+  `declassify(value, reason)` as the single auditable bridge, recorded
+  in the SBOM as `declassification_sites`.
+- **Constant-time markers (S4)**: `@constant_time()` rejects
+  secret-dependent control flow and memory access (CWE-208).
+- **Typestate / session types (S3)**: `typestate` + `Name[State]` +
+  `become`, with the protocol enforced by the type checker plus
+  linearity; recorded in the SBOM as `typestates` / `protocol_states`.
+- **Linear handles (S1)**: must-consume types, surfaced as
+  `linear_obligations`.
+- **Two backends with parity**: a Python transpiler and a fully
+  functional Wasm Component Model backend, output byte-identical
+  across a parity harness.
+- **Supply-chain artifacts by construction**: capability manifest,
+  CycloneDX + SPDX SBOMs, VEX, SLSA provenance, all emitted by the
+  compiler.
+- **Tooling**: package manager + signed registry, REPL, LSP server,
+  formatter, and a VSCode Marketplace extension.
+
 ## [1.0.0-rc.7], 2026-06-03
 
 ### Typestate foundation: typestate declarations + state-indexed types (roadmap S3.1)

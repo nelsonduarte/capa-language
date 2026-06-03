@@ -254,14 +254,13 @@ LICENSE  STABILITY.md  CONTRIBUTING.md  SECURITY.md  README.md
 
 ## Status
 
-Capa currently ships as **`1.0.0-rc.7`**, with the full security
-axis (information-flow control, constant-time markers, and typestate
-protocols) and the fully functional Wasm backend on the `main` branch
-(see [`CHANGELOG.md`](CHANGELOG.md)). The stability
-commitment that starts with `1.0.0` is documented in
-[`STABILITY.md`](STABILITY.md); the short version is "post-1.0,
-breaking changes require a major bump, deprecations get one minor
-release of warning first".
+Capa ships as **`1.0.0`** (released 2026-06-03), with the full
+security axis (information-flow control, constant-time markers, and
+typestate protocols) and the fully functional Wasm backend (see
+[`CHANGELOG.md`](CHANGELOG.md)). The stability commitment in
+[`STABILITY.md`](STABILITY.md) is now **in effect**: post-1.0,
+breaking changes to the covered surfaces require a major bump, and
+deprecations get one minor release of warning first.
 
 **2234 tests** spanning the lexer, parser, analyzer, transpiler,
 LSP, formatter, attribute-schema validation, package manager, the
