@@ -813,6 +813,16 @@ class _ExpressionsMixin:
                     f"{ty_str(substituted)}, got {ty_str(actual_ty)}",
                     fexpr.pos,
                 )
+            # Audit hole D (2026-06): the function-call path rejects a
+            # capability substituted into a generic type parameter
+            # (``_reject_cap_leak_via_substitution``); the same must hold
+            # for a struct literal, else ``Box { value: stdio }`` smuggles
+            # a cap behind a ``T`` so a function taking ``Box<Stdio>``
+            # exercises Stdio while its manifest reports no capability.
+            self._reject_cap_leak_via_substitution(
+                expected, substituted, e.type_name, fexpr.pos,
+                slot=f"field {fname!r}",
+            )
         missing = set(sym.struct_fields.keys()) - seen
         if missing:
             self._err(

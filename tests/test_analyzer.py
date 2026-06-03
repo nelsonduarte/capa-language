@@ -4936,6 +4936,38 @@ class TestCapLeakViaGenericInstantiation(unittest.TestCase):
             msgs,
         )
 
+    def test_struct_literal_with_builtin_cap_rejected(self):
+        # Hole D (2026-06): a struct LITERAL that puts a cap into a
+        # generic field smuggles it behind T, so a function taking
+        # ``Box<Stdio>`` exercises Stdio with an empty manifest. The
+        # struct-construction path must reject it like the call path.
+        msgs = errors_of(
+            "type Box<T> { value: T }\n"
+            "fun exercise(b: Box<Stdio>)\n"
+            "    b.value.println(\"x\")\n"
+            "fun main(stdio: Stdio)\n"
+            "    exercise(Box { value: stdio })\n"
+        )
+        self.assertTrue(
+            any("capability 'Stdio'" in m and "generic" in m for m in msgs),
+            msgs,
+        )
+
+    def test_variant_constructor_with_builtin_cap_rejected(self):
+        # Hole D (2026-06): the same smuggle through a generic variant
+        # payload (``Wrap(stdio)``) must be rejected too.
+        msgs = errors_of(
+            "type H<T> =\n"
+            "    Wrap(T)\n"
+            "    Empty\n"
+            "fun main(stdio: Stdio)\n"
+            "    let _h = Wrap(stdio)\n"
+        )
+        self.assertTrue(
+            any("capability 'Stdio'" in m and "generic" in m for m in msgs),
+            msgs,
+        )
+
     def test_generic_with_user_capability_rejected(self):
         # The leak shape generalises: a user-defined capability
         # (``Mailer`` here) smuggled through a TyVar is the same

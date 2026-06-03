@@ -208,6 +208,15 @@ class _DispatchMixin:
                                 f"got {ty_str(arg_tys[i])}",
                                 e.args[i].pos,
                             )
+                        # Audit hole D (2026-06): reject a capability
+                        # smuggled into a generic variant payload, mirroring
+                        # the function-call and struct-literal checks, so a
+                        # value carried in ``Wrap(stdio)`` cannot be exercised
+                        # behind a ``T`` without appearing in the manifest.
+                        self._reject_cap_leak_via_substitution(
+                            exp_ty, substituted_payload, sym.name,
+                            e.args[i].pos, slot=f"argument {i + 1}",
+                        )
                     if sym.variant_owner is not None:
                         owner = sym.variant_owner
                         args = tuple(
