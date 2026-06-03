@@ -58,6 +58,11 @@ class _LowerExprMixin:
             return self._lower_field_access(e)
         if isinstance(e, A.Index):
             return self._lower_index(e)
+        if isinstance(e, A.Become):
+            # Roadmap S3.3: a typestate transition is identity at
+            # runtime; only the state-type changes (a compile-time
+            # property). Lower to the value operand directly.
+            return self._lower_expr(e.value)
         if isinstance(e, A.StructLit):
             return self._lower_struct_lit(e)
         if isinstance(e, A.ListLit):

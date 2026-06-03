@@ -593,8 +593,10 @@ consumed (transitioned to a terminal operation or passed to a `consume`
 parameter) is a compile-time error, so a protocol cannot be silently
 abandoned mid-way. The manifest records each declared protocol and its
 states under `typestates` (and a `protocol_states` count in the
-summary). Typestate is Python-backend only in this version; Wasm
-support and state-specific receiver methods are follow-ups.
+summary). Typestate runs on both the Python and Wasm backends with
+identical behaviour (a v1 typestate carries no data, so it lowers as a
+zero-field struct / i32 token). State-specific receiver methods and
+typestate fields are follow-ups.
 
 ---
 

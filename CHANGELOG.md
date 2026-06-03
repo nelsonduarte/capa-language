@@ -34,9 +34,15 @@ being dropped or duplicated). A full protocol now type-checks and runs
 on the Python backend: a wrong-state operation, a dropped value, or a
 bad transition target are all compile-time errors. The manifest gains
 a top-level `typestates` list (each protocol with its ordered states)
-and a `protocol_states` summary count. Typestate is Python-backend
-only in this version; Wasm lowering and state-specific receiver methods
-are follow-ups (S3.3).
+and a `protocol_states` summary count.
+
+S3.3 brings typestate to the Wasm backend with parity: a v1 typestate
+(which carries no data) lowers as a zero-field struct, so its value is
+an i32 heap pointer, construction is a fieldless `MakeStruct`, and
+`become` is identity. A door-protocol example runs byte-identically
+under Python and Wasm (`examples/wasm/typestate_door.capa`, in the
+parity suite). State-specific receiver methods and typestate fields /
+payloads remain follow-ups.
 
 ### Constant-time markers: @constant_time (roadmap S4)
 

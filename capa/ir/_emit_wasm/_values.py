@@ -232,6 +232,10 @@ class _ValueEmissionMixin:
 
     def _wasm_type(self, capa_ty: str) -> str:
         head = capa_ty.split("<", 1)[0]
+        # Roadmap S3.3: strip a typestate state index (``Door[Closed]``
+        # -> ``Door``) so the type resolves to its zero-field-struct
+        # layout (an i32 pointer). ``[`` appears in no other type form.
+        head = head.split("[", 1)[0]
         if head in _CAPA_TO_WASM:
             return _CAPA_TO_WASM[head]
         # Slice 25.2 - 25.6 (2026-05-30): Fs, Net, Db, Proc, Env,

@@ -42,6 +42,7 @@ _EXAMPLES = Path(__file__).resolve().parent.parent / "examples" / "wasm"
 # clean too.
 _PARITY_PROGRAMS: list[str] = [
     "hello.capa",
+    "typestate_door.capa",
     "fizzbuzz.capa",
     "shape_area.capa",
     "strings.capa",
@@ -637,6 +638,13 @@ class TestPythonWasmParity(unittest.TestCase):
         # (clock.now_secs() >= deadline) sleep(secs)`` gate
         # mirrors Python.
         self._assert_parity("clock_sleep_attenuation.capa")
+
+    def test_typestate_door(self):
+        # Roadmap S3.3: a typestate protocol runs identically on both
+        # backends. The typestate value lowers to a zero-field struct
+        # (an i32 token on Wasm); construction is a fieldless MakeStruct
+        # and become is identity.
+        self._assert_parity("typestate_door.capa")
 
     def test_stdio_read_line(self):
         # Slice 1 host-bridge pile: Stdio.read_line parity. Both

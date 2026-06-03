@@ -130,7 +130,11 @@ construcao `Name[State] {}` + transicao `become(value, State)` (consome
 o valor antigo, a obrigacao linear move-se para o resultado); um
 protocolo completo verifica e corre no backend Python, e o SBOM ganhou
 `typestates` (cada protocolo + estados) e `protocol_states` no sumario.
-Pendente: lowering para Wasm e metodos com receiver por estado (S3.3).
+S3.3 trouxe paridade Wasm: um typestate v1 (sem dados) faz lowering como
+struct sem campos (valor = ponteiro i32, construcao = MakeStruct vazio,
+become = identidade), e um protocolo corre byte-identico em Python e
+Wasm. Pendente: metodos com receiver por estado e campos/payload no
+typestate.
 
 ### S4: Constant-time markers para crypto
 **ROI: nicho mas mecanicamente verificável. Esforço: ~3 slices. Dependências: nenhuma.**

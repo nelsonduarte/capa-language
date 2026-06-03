@@ -173,15 +173,14 @@ class Lowerer(
                     ImportDecl(path=list(item.path), alias=item.alias)
                 )
             elif isinstance(item, A.TypestateDecl):
-                # Roadmap S3: typestate is Python-backend-only in v1. The
-                # Wasm lowering (opaque-token ABI + the construction /
-                # become forms) is a focused S3.3 task; reject the whole
-                # module cleanly here so ``--wasm`` fails early with a
-                # clear message (``--prefer-wasm`` falls back to Python).
-                raise UnsupportedInIR(
-                    "typestate types are not yet supported on the Wasm "
-                    "backend (Python backend only in this version)"
-                )
+                # Roadmap S3.3: a v1 typestate carries no data, so it
+                # lowers as a zero-field struct. That reuses the whole
+                # struct machinery: the value is an i32 heap pointer,
+                # construction is a fieldless MakeStruct, and ``become``
+                # is identity (see ``_lower_expr``). The state index is a
+                # compile-time-only property already enforced by the
+                # analyzer, so it does not appear in the CIR.
+                types.append(StructDecl(name=item.name, fields=[]))
             else:
                 raise UnsupportedInIR(
                     f"top-level item {type(item).__name__}"

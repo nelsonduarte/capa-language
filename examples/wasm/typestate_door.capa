@@ -1,0 +1,27 @@
+// Typestate parity example (roadmap S3.3): a Door protocol driven
+// through its states on both backends. The typestate value lowers to a
+// zero-field struct (an i32 token on Wasm); construction is a fieldless
+// MakeStruct and `become` is identity, so the protocol runs the same
+// way under Python and Wasm.
+typestate Door
+    Open
+    Closed
+
+fun open_door(consume d: Door[Closed]) -> Door[Open]
+    return become(d, Open)
+
+fun close_door(consume d: Door[Open]) -> Door[Closed]
+    return become(d, Closed)
+
+fun discard(consume d: Door[Closed])
+    return
+
+fun main(stdio: Stdio)
+    let d0 = Door[Closed] {}
+    stdio.println("start: closed")
+    let d1 = open_door(d0)
+    stdio.println("opened")
+    let d2 = close_door(d1)
+    stdio.println("closed again")
+    discard(d2)
+    stdio.println("done")
