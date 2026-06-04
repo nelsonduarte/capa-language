@@ -37,9 +37,11 @@ from ._nodes import (
 @dataclass
 class PatOr(Pattern):
     """``A | B | ... -> body``. Matches if ANY alternative matches;
-    the body runs once. Only the binding-free case is lowered (the
-    lowerer rejects alternatives that bind names); the emitter ORs
-    the per-alternative predicates together."""
+    the body runs once. Binding alternatives are supported against a
+    sum scrutinee (every alternative binds the same names, enforced by
+    the analyzer); the emitter ORs the per-alternative tag predicates
+    and selects the matching alternative's payload at runtime to
+    populate the shared binders."""
     alternatives: list
 
 
@@ -81,6 +83,16 @@ class _LowerPatternMixin:
                     self._bind_local(sub.name, ety)
                 else:
                     self._refine_pattern_binds(sub, ety)
+            return
+        if isinstance(p, A.OrPat):
+            # Or-pattern: refine each alternative's binders against the
+            # same scrutinee type. The analyzer has already proven all
+            # alternatives bind the same names with compatible types,
+            # so refining every alternative writes the same (name ->
+            # type) facts; the shared binders end up with the variant
+            # payload type from whichever alternative carries it.
+            for alt in p.alternatives:
+                self._refine_pattern_binds(alt, scrut_ty)
             return
         if not isinstance(p, A.VariantPat) or not p.payloads:
             return
@@ -153,27 +165,29 @@ class _LowerPatternMixin:
     def _lower_or_pattern(self, p: A.OrPat) -> Pattern:
         """Lower an or-pattern. Each alternative is lowered
         independently; the emitter ORs their predicates and runs the
-        shared body once. We accept only binding-free alternatives
-        (variant-without-payload, literal, wildcard) -- supporting
-        bindings would require every alternative to bind the same
-        names with the same types (Rust's rule), which the Wasm
-        emitter does not implement. A binding-bearing alternative
-        raises so a program never silently miscompiles."""
+        shared body once. Binding alternatives (variant payload
+        binders) are supported against a sum scrutinee: the analyzer
+        has already proven every alternative binds the same names with
+        compatible types (Rust's rule), and the Wasm emitter selects
+        the matching alternative's payload at runtime to populate the
+        shared binders. Alternatives that themselves carry a NESTED
+        binding pattern inside a payload (e.g. ``Wrap(Some(x))``) are
+        not yet handled and raise so a program never silently
+        miscompiles."""
         alts: list[Pattern] = []
         for sub in p.alternatives:
-            if isinstance(sub, A.IdentPat):
-                raise UnsupportedInIR(
-                    "or-pattern with bindings not supported on the "
-                    "Wasm backend yet (alternatives must be "
-                    "binding-free: literal / wildcard / "
-                    "payload-less variant)"
-                )
-            if isinstance(sub, A.VariantPat) and sub.payloads:
-                raise UnsupportedInIR(
-                    "or-pattern with bindings not supported on the "
-                    "Wasm backend yet (a variant alternative may not "
-                    "carry payload binders)"
-                )
+            if isinstance(sub, A.VariantPat):
+                for payload in sub.payloads:
+                    if not isinstance(
+                        payload, (A.IdentPat, A.WildcardPat),
+                    ):
+                        raise UnsupportedInIR(
+                            "or-pattern alternative with a nested "
+                            "(non-identifier) payload pattern is not "
+                            "supported on the Wasm backend yet; a "
+                            "variant alternative's payload must be a "
+                            "plain binder or wildcard"
+                        )
             lowered = self._lower_pattern(sub)
             alts.append(lowered)
         return PatOr(alternatives=alts)

@@ -219,6 +219,20 @@ _PARITY_PROGRAMS: list[str] = [
     "match_float_lit.capa",
     "match_or_pattern.capa",
     "match_struct_pattern.capa",
+    # Bound or-pattern slice (2026-06-04): or-patterns whose
+    # alternatives are different variants each binding the SAME name(s)
+    # (e.g. ``Pos(n) | Neg(n) -> n``). Pre-fix the Wasm CIR lowerer
+    # rejected any binding alternative ("or-pattern with bindings not
+    # supported on the Wasm backend yet"); the Python backend already
+    # handled them via native ``a | b`` match. The Wasm emitter now ORs
+    # the alternative tag predicates and, after the predicate gates
+    # entry, re-checks each variant alternative's tag to load the
+    # matched alternative's payload into the shared binder. Covers a
+    # single shared bind, two shared binds, a bound or-pattern under a
+    # guard, statement- and expression-position match, payload types
+    # Int / String / Char / Bool / Float / struct / list, and a
+    # binding-free or-pattern regression.
+    "match_or_bind.capa",
     # Char slice (2026-06-03): a Capa ``Char`` is a single-codepoint
     # String; the Wasm path normalizes the type token ``Char`` ->
     # ``String`` before emit so the existing String machinery carries

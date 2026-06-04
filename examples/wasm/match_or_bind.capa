@@ -1,0 +1,131 @@
+// Bound or-patterns (``A(x) | B(x) -> body``): alternatives that are
+// different variants each carrying a payload bound to the SAME name.
+// When any alternative matches, its payload populates the shared
+// binder and the single body runs once. Covers (1) one shared bind
+// over a sum, (2) two shared binds, (3) a bound or-pattern with a
+// guard, (4) statement- and expression-position match, (5) payload
+// types Int / String / Char / Bool / Float / compound (struct + list),
+// and (6) binding-free or-patterns still working. Stdio + String only.
+//
+// Bool payloads are branched into "yes" / "no" strings rather than
+// interpolated directly, because bare Bool interpolation (True vs
+// true) diverges between backends; that divergence is unrelated to
+// or-patterns, so the program keeps it out of the comparison.
+
+type IntBox =
+    Pos(Int)
+    Neg(Int)
+    Zero
+
+type Tagged =
+    Left(Int, String)
+    Right(Int, String)
+
+type Word =
+    Greeting(String)
+    Farewell(String)
+
+type Letter =
+    Vowel(Char)
+    Consonant(Char)
+
+type Flagged =
+    On(Bool)
+    Off(Bool)
+
+type Measured =
+    Lo(Float)
+    Hi(Float)
+
+type Point {
+    x: Int,
+    y: Int
+}
+
+type Boxed =
+    First(Point)
+    Second(Point)
+
+type Listed =
+    Front(List<Int>)
+    Back(List<Int>)
+
+// (1) one shared bound name over a sum, body uses it (expr-position)
+fun magnitude(b: IntBox) -> Int
+    return match b
+        Pos(n) | Neg(n) -> n
+        Zero -> 0
+
+// (2) two shared bound names
+fun describe(t: Tagged) -> String
+    return match t
+        Left(n, s) | Right(n, s) -> "${s}=${n}"
+
+// (3) bound or-pattern combined with a guard
+fun classify(b: IntBox) -> String
+    return match b
+        Pos(n) | Neg(n) if n > 10 -> "big"
+        Pos(n) | Neg(n) -> "small:${n}"
+        Zero -> "zero"
+
+// (4) statement-position match with a bound or-pattern
+fun shout(w: Word, stdio: Stdio)
+    match w
+        Greeting(s) | Farewell(s) -> stdio.println("${s}!")
+
+// (5) Char payload
+fun letter_of(l: Letter) -> Char
+    return match l
+        Vowel(c) | Consonant(c) -> c
+
+// (5) Bool payload (branched to avoid bare-Bool interpolation divergence)
+fun state_of(f: Flagged) -> String
+    return match f
+        On(b) | Off(b) -> if b then "yes" else "no"
+
+// (5) Float payload
+fun reading(m: Measured) -> Float
+    return match m
+        Lo(x) | Hi(x) -> x
+
+// (5) compound payload: struct
+fun point_x(b: Boxed) -> Int
+    return match b
+        First(p) | Second(p) -> p.x
+
+// (5) compound payload: list
+fun first_elem(l: Listed) -> Int
+    return match l
+        Front(xs) | Back(xs) -> xs[0]
+
+// (6) binding-free or-pattern still works (wildcard payloads bind
+// nothing; the body shares no binders)
+fun is_extreme(b: IntBox) -> String
+    return match b
+        Pos(_) | Neg(_) -> "extreme"
+        Zero -> "calm"
+
+fun main(stdio: Stdio)
+    stdio.println("${magnitude(Pos(7))}")
+    stdio.println("${magnitude(Neg(7))}")
+    stdio.println("${magnitude(Zero)}")
+    stdio.println(describe(Left(3, "L")))
+    stdio.println(describe(Right(9, "R")))
+    stdio.println(classify(Pos(20)))
+    stdio.println(classify(Neg(20)))
+    stdio.println(classify(Pos(4)))
+    stdio.println(classify(Neg(4)))
+    stdio.println(classify(Zero))
+    shout(Greeting("hello"), stdio)
+    shout(Farewell("bye"), stdio)
+    stdio.println("${letter_of(Vowel('a'))}")
+    stdio.println("${letter_of(Consonant('z'))}")
+    stdio.println(state_of(On(true)))
+    stdio.println(state_of(Off(false)))
+    stdio.println("${reading(Lo(1.5))}")
+    stdio.println("${reading(Hi(2.5))}")
+    stdio.println("${point_x(First(Point { x: 11, y: 22 }))}")
+    stdio.println("${point_x(Second(Point { x: 33, y: 44 }))}")
+    stdio.println("${first_elem(Front([100, 200]))}")
+    stdio.println("${first_elem(Back([300, 400]))}")
+    stdio.println(is_extreme(Pos(1)))

@@ -1049,6 +1049,10 @@ class _MatchEmissionMixin:
             self._emit_sum_or_predicate(pat, tag_local, sum_layout)
             self._write("if")
             self._indent += 1
+            if self._or_pattern_binds(pat):
+                self._emit_sum_or_pattern_binds(
+                    pat, tag_local, scrut_local, sum_layout,
+                )
             self._emit_body(arm.body)
             self._indent -= 1
             self._write("else")
@@ -1172,9 +1176,11 @@ class _MatchEmissionMixin:
         """Push an i32 0/1 predicate: 1 iff the discriminant in
         ``$tag_local`` equals ANY of the or-pattern's alternative
         variant tags. A ``PatWildcard`` alternative degenerates to a
-        constant-true predicate. Alternatives are binding-free by
-        construction (the lowerer rejects payload binders), so no
-        binding happens here."""
+        constant-true predicate. This emits only the predicate; any
+        payload binding for binding alternatives is handled separately
+        by ``_emit_sum_or_pattern_binds`` after the predicate gates
+        entry (a variant alternative's payload binder is ignored
+        here)."""
         emitted = 0
         for alt in pat.alternatives:
             if isinstance(alt, PatWildcard):
@@ -1193,6 +1199,49 @@ class _MatchEmissionMixin:
             if emitted > 0:
                 self._write("i32.or")
             emitted += 1
+
+    def _or_pattern_binds(self, pat: PatOr) -> bool:
+        """True iff any alternative of ``pat`` carries a payload binder
+        (a variant alternative with a ``PatIdent`` payload). A
+        binding-free or-pattern (payload-less variants, wildcards) ORs
+        its predicates and runs the body with nothing to bind; a
+        binding or-pattern needs the runtime alternative-dispatch that
+        ``_emit_sum_or_pattern_binds`` performs."""
+        for alt in pat.alternatives:
+            if isinstance(alt, PatVariant) and any(
+                isinstance(p, PatIdent) for p in alt.payloads
+            ):
+                return True
+        return False
+
+    def _emit_sum_or_pattern_binds(
+        self, pat: PatOr, tag_local: str, scrut_local: str,
+        sum_layout: dict,
+    ) -> None:
+        """Populate the shared binders of a binding or-pattern. The
+        OR predicate has already gated entry (one alternative's tag
+        matched the scrutinee); here we discover WHICH alternative
+        matched by re-checking each variant alternative's tag and,
+        on the match, load its payload(s) into the shared bind
+        local(s). Because the analyzer proved every alternative binds
+        the same names, each branch writes the same locals; only one
+        branch runs (the tags are distinct), so the binders end up
+        holding the matched variant's payload. Wildcard / payload-less
+        alternatives contribute no binds."""
+        for alt in pat.alternatives:
+            if not isinstance(alt, PatVariant):
+                continue
+            if not any(isinstance(p, PatIdent) for p in alt.payloads):
+                continue
+            tag, payload_layouts = sum_layout["variants"][alt.name]
+            self._write(f"local.get ${tag_local}")
+            self._write(f"i32.const {tag}")
+            self._write("i32.eq")
+            self._write("if")
+            self._indent += 1
+            self._emit_variant_payload_binds(alt, tuple(payload_layouts), scrut_local)
+            self._indent -= 1
+            self._write("end")
 
     def _emit_scalar_or_predicate(
         self, pat: PatOr, scrut_local: str, scalar: str,
@@ -1579,8 +1628,14 @@ class _MatchEmissionMixin:
                 def push_predicate(p=pat):
                     self._emit_sum_or_predicate(p, tag_local, sum_layout)
 
-                def bind_payloads():
-                    return  # or-pattern alternatives are binding-free
+                if self._or_pattern_binds(pat):
+                    def bind_payloads(p=pat):
+                        self._emit_sum_or_pattern_binds(
+                            p, tag_local, scrut_local, sum_layout,
+                        )
+                else:
+                    def bind_payloads():
+                        return  # binding-free alternatives
             elif isinstance(pat, PatVariant):
                 tag, payload_layouts = sum_layout["variants"][pat.name]
 
