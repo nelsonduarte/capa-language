@@ -724,7 +724,18 @@ class _LocalsCollectionMixin:
             # cannot live in either the i32 ``$_m_scrut`` or the i64
             # ``$_m_scrut_i64``; it gets a dedicated f64 stash local.
             out["_m_scrut_f64"] = "f64"
-        if has_variant_ctor or has_list or has_map or has_indirect_cap_call:
+        if (has_variant_ctor or has_list or has_map or has_indirect_cap_call
+                or has_list_method):
+            # ``has_list_method`` (any List method call: push / contains /
+            # get / ...) is gated here too because the push grow path and
+            # the contains scan stash the new-data / needle pointer in
+            # ``$_alloc_tmp``. Previously this only fired via ``has_list``
+            # (a ``MakeList`` in the body), so a function that received a
+            # ``List`` as a parameter and merely pushed to it never got
+            # ``$_alloc_tmp`` declared and the WAT referenced an unknown
+            # local. The String / i64 element variants pull in the i64
+            # scratch via ``has_list_string`` / ``has_list_contains_i64``,
+            # which are element-type driven and fire for parameters too.
             out["_alloc_tmp"] = "i32"
         if has_indirect_cap_call:
             # The canonical-ABI lowering for capability calls with

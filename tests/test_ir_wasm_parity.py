@@ -258,6 +258,21 @@ _PARITY_PROGRAMS: list[str] = [
     # / Bool / Float, a compound generic field (List / nested struct),
     # the same-function read, and the non-generic regression case.
     "generic_struct_field.capa",
+    # List-parameter mutation slice (2026-06-04): pushing to a List
+    # received as a function PARAMETER (no local list built in the body)
+    # crashed the Wasm backend at assembly time with "unknown local
+    # $_alloc_tmp". The push grow path and the contains scan stash a
+    # scratch pointer in $_alloc_tmp, but _collect_locals only declared
+    # that local when the body itself built a list (MakeList / has_list).
+    # A list arriving purely as a parameter never tripped that gate, so
+    # the emitted WAT referenced an undeclared local. Fix: the
+    # $_alloc_tmp declaration gate now also fires on has_list_method (any
+    # List method call). Covers push on a parameter for Int / String /
+    # Char / Bool / Float / struct / nested-list elements, contains on a
+    # parameter, and the by-reference caller-visibility semantics
+    # (a push through a parameter is visible to the caller on both
+    # backends, including across the grow path).
+    "list_param_push.capa",
 ]
 
 # Programs deliberately excluded from parity and why; documented
@@ -1003,6 +1018,19 @@ class TestPythonWasmParity(unittest.TestCase):
         # struct), the same-function read, and the non-generic
         # regression case.
         self._assert_parity("generic_struct_field.capa")
+
+    def test_list_param_push(self):
+        # List-parameter mutation slice (2026-06-04): pushing to a List
+        # received as a function PARAMETER (no local list built in the
+        # body) crashed the Wasm backend at assembly time with "unknown
+        # local $_alloc_tmp" - the push grow path / contains scan stash a
+        # scratch pointer there, but the locals pass only declared it when
+        # the body itself built a list (MakeList). Covers push on a
+        # parameter for Int / String / Char / Bool / Float / struct /
+        # nested-list elements, contains on a parameter, and by-reference
+        # caller-visibility (a push through a parameter is visible to the
+        # caller on both backends, including across the grow path).
+        self._assert_parity("list_param_push.capa")
 
     def test_tail_call_emits_return_call(self):
         # White-box: confirm the peephole actually fires (a green

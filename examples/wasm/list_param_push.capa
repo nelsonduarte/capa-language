@@ -1,0 +1,123 @@
+// List-parameter mutation slice (2026-06-04): pushing to a List that
+// the function received as a PARAMETER (so the body declares no local
+// list of its own via `var` / `let [...]`) crashed the Wasm backend at
+// assembly time: "wasm-tools parse failed: unknown local $_alloc_tmp".
+//
+// Root cause: the list `push` grow path (and the `contains` scan) stash
+// a scratch pointer in `$_alloc_tmp`, but `_collect_locals` only declared
+// that local when the body itself built a list (`MakeList`, gated by
+// `has_list`). A list arriving purely as a parameter never tripped that
+// gate, so the emitted WAT referenced an undeclared local. The fix adds
+// the `has_list_method` flag (set by any List method call) to the
+// `$_alloc_tmp` declaration gate.
+//
+// This program exercises push on a list parameter across every element
+// type the layout machinery treats differently (Int, String, Char, Bool,
+// Float, a struct pointer, a nested list), plus `contains` on a parameter
+// (same `$_alloc_tmp` scratch), and asserts mutation through a parameter
+// is visible to the caller (Capa lists are by-reference; the Python
+// backend shows the pushed element in the caller's list, so the Wasm
+// backend must too). Bool results are branched into yes/no strings
+// because bare Bool interpolation diverges from Python
+// independently of this fix.
+
+type Point {
+    x: Int,
+    y: Int
+}
+
+// Each helper takes a List<T> PARAMETER and pushes to it. No local list
+// is declared in any of these bodies, so pre-fix every one emitted an
+// undeclared $_alloc_tmp.
+fun push_int(xs: List<Int>, v: Int)
+    xs.push(v)
+
+fun push_string(xs: List<String>, v: String)
+    xs.push(v)
+
+fun push_char(xs: List<Char>, v: Char)
+    xs.push(v)
+
+fun push_bool(xs: List<Bool>, v: Bool)
+    xs.push(v)
+
+fun push_float(xs: List<Float>, v: Float)
+    xs.push(v)
+
+fun push_point(xs: List<Point>, p: Point)
+    xs.push(p)
+
+fun push_nested(xs: List<List<Int>>, inner: List<Int>)
+    xs.push(inner)
+
+// contains on a parameter list also stashes the needle in $_alloc_tmp.
+fun has(xs: List<Int>, needle: Int) -> Bool
+    return xs.contains(needle)
+
+fun yesno(stdio: Stdio, tag: String, flag: Bool)
+    if flag
+        stdio.println("${tag}: yes")
+    else
+        stdio.println("${tag}: no")
+
+fun main(stdio: Stdio)
+    // --- Int ---
+    let ints: List<Int> = [1, 2, 3]
+    push_int(ints, 4)
+    push_int(ints, 5)
+    stdio.println("ints.length = ${ints.length()}")
+    stdio.println("ints[3] = ${ints[3]}")
+    stdio.println("ints[4] = ${ints[4]}")
+
+    // --- String ---
+    let strs: List<String> = ["a", "b"]
+    push_string(strs, "c")
+    stdio.println("strs.length = ${strs.length()}")
+    stdio.println("strs[2] = ${strs[2]}")
+
+    // --- Char ---
+    let chars: List<Char> = ['x', 'y']
+    push_char(chars, 'z')
+    stdio.println("chars.length = ${chars.length()}")
+    stdio.println("chars[2] = ${chars[2]}")
+
+    // --- Bool ---
+    let bools: List<Bool> = [true]
+    push_bool(bools, false)
+    push_bool(bools, true)
+    stdio.println("bools.length = ${bools.length()}")
+    yesno(stdio, "bools[1]", bools[1])
+    yesno(stdio, "bools[2]", bools[2])
+
+    // --- Float ---
+    let floats: List<Float> = [1.5]
+    push_float(floats, 2.25)
+    stdio.println("floats.length = ${floats.length()}")
+    stdio.println("floats[1] = ${floats[1]}")
+
+    // --- struct ---
+    let pts: List<Point> = [Point { x: 1, y: 2 }]
+    push_point(pts, Point { x: 3, y: 4 })
+    stdio.println("pts.length = ${pts.length()}")
+    stdio.println("pts[1].x = ${pts[1].x}, pts[1].y = ${pts[1].y}")
+
+    // --- nested list ---
+    let grid: List<List<Int>> = [[1, 2]]
+    push_nested(grid, [3, 4, 5])
+    stdio.println("grid.length = ${grid.length()}")
+    stdio.println("grid[1].length = ${grid[1].length()}")
+    stdio.println("grid[1][2] = ${grid[1][2]}")
+
+    // --- contains on a parameter ---
+    yesno(stdio, "ints has 5", has(ints, 5))
+    yesno(stdio, "ints has 99", has(ints, 99))
+
+    // --- caller-visibility: push past initial capacity (forces the
+    // grow path through $_alloc_tmp) and confirm the caller sees it ---
+    let vis: List<Int> = [0]
+    var i = 1
+    while i < 12
+        push_int(vis, i)
+        i += 1
+    stdio.println("vis.length = ${vis.length()}")
+    stdio.println("vis[11] = ${vis[11]}")
