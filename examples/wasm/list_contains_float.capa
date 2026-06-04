@@ -1,0 +1,55 @@
+// List<Float>.contains(needle) parity. Pre-fix the Wasm backend
+// stashed the f64 needle in the i64 scratch and compared with
+// i64.eq + i64.load, which crashed the verifier ("expected i64,
+// found f64") and would have bit-compared NaN. The fix mirrors the
+// Set<Float> membership path: a dedicated f64 scratch, f64.load on
+// each element, and f64.eq for the compare.
+//
+// Covered cases:
+//   - present / absent on a locally-built list
+//   - present / absent on a list arriving as a PARAMETER
+//   - real comparison values (2.5 present, 2.6 absent; negatives)
+//   - 0.0 vs -0.0 (f64.eq treats them equal; Python agrees)
+//   - a distinct-object NaN needle (Python: NaN != NaN, so "no";
+//     f64.eq agrees). We deliberately compute the needle separately
+//     from the stored value so Python's identity short-circuit in
+//     ``x in xs`` does not fire -- that keeps both backends in sync.
+
+fun show(stdio: Stdio, tag: String, flag: Bool)
+    if flag
+        stdio.println("${tag}: yes")
+    else
+        stdio.println("${tag}: no")
+
+// List<Float> received purely as a parameter (no MakeList in the
+// body) to exercise the parameter shape, not just locally-built.
+fun probe(stdio: Stdio, xs: List<Float>, needle: Float, tag: String)
+    show(stdio, tag, xs.contains(needle))
+
+fun main(stdio: Stdio)
+    let xs: List<Float> = [1.0, 2.5, 3.0]
+
+    // Locally-built list: present and absent.
+    show(stdio, "local present 2.5", xs.contains(2.5))
+    show(stdio, "local absent 2.6", xs.contains(2.6))
+
+    // Negative floats.
+    let ns: List<Float> = [-1.5, -2.5, 4.0]
+    show(stdio, "neg present -2.5", ns.contains(-2.5))
+    show(stdio, "neg absent -3.5", ns.contains(-3.5))
+
+    // 0.0 vs -0.0: f64.eq treats them equal, and so does Python.
+    let zs: List<Float> = [0.0, 9.0]
+    show(stdio, "zero contains -0.0", zs.contains(-0.0))
+
+    // List as a parameter: present and absent.
+    probe(stdio, xs, 1.0, "param present 1.0")
+    probe(stdio, xs, 7.0, "param absent 7.0")
+
+    // NaN: needle computed as a DISTINCT object (inf - inf) from the
+    // stored element. Python returns "no" (NaN != NaN); f64.eq too.
+    let big = 1.0e308
+    let stored_nan = (big * 10.0) - (big * 100.0)
+    let fresh_nan = (big * 10.0) - (big * 100.0)
+    let ws: List<Float> = [1.0, stored_nan, 3.0]
+    show(stdio, "nan needle absent", ws.contains(fresh_nan))

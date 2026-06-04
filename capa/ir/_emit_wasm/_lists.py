@@ -219,16 +219,32 @@ class _ListEmissionMixin:
             return
         list_local = "_m_scrut"
         idx_local = "_m_tag"
-        # Compare op depends on element width.
-        eq_op = "i64.eq" if elem_size == 8 else "i32.eq"
-        load_op = _load_op_for_size(elem_size)
-        # Push needle once into a fresh local; reusing $_alloc_tmp.
-        # Needle is a scalar (Int or Bool) so it fits in i64 / i32.
-        if elem_size == 8:
+        # Compare op + needle width depend on the element type.
+        # Float must use a dedicated f64 scratch + ``f64.eq`` + an
+        # f64 element load: a Float needle pushes f64 onto the stack,
+        # so stashing it into the i64 scratch (``local.set
+        # $_alloc_tmp_i64``) type-mismatches the wasm verifier, and
+        # an ``i64.eq`` bit-compare would give wrong NaN semantics
+        # (Python: ``float('nan') != float('nan')``; bit-eq says
+        # equal). This mirrors the Set<Float> membership fix in
+        # ``_sets.py`` (``$_alloc_tmp_f64`` + ``f64.eq``).
+        if elem_ty == "Float":
+            eq_op = "f64.eq"
+            load_op = "f64.load"
+            self._push_value(needle)
+            self._write("local.set $_alloc_tmp_f64")
+            needle_local = "_alloc_tmp_f64"
+        elif elem_size == 8:
+            # Int (or other 8-byte scalar): i64 scratch + i64.eq.
+            eq_op = "i64.eq"
+            load_op = _load_op_for_size(elem_size)
             self._push_value(needle)
             self._write(f"local.set $_alloc_tmp_i64")
             needle_local = "_alloc_tmp_i64"
         else:
+            # Bool / Char: 4-byte i32 scratch + i32.eq.
+            eq_op = "i32.eq"
+            load_op = _load_op_for_size(elem_size)
             self._push_value(needle)
             self._write(f"local.set $_alloc_tmp")
             needle_local = "_alloc_tmp"

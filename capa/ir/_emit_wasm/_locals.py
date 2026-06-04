@@ -57,6 +57,11 @@ class _LocalsCollectionMixin:
         has_for = False
         has_range = False
         has_list_contains_i64 = False
+        # List<Float>.contains stashes the f64 needle in
+        # ``$_alloc_tmp_f64`` and compares with ``f64.eq`` (mirrors
+        # the Set<Float> membership path); the i64 scratch would
+        # type-mismatch the f64 needle and bit-eq the wrong NaN.
+        has_list_contains_f64 = False
         has_map = False
         # Map with a pointer-shape key (struct / sum / tuple) needs
         # the dedicated $_alloc_tmp_key_ptr scratch so the linear
@@ -144,7 +149,8 @@ class _LocalsCollectionMixin:
 
         def visit(instrs: list[Instr]) -> None:
             nonlocal has_match, has_variant_ctor, has_list, has_for, has_range
-            nonlocal has_list_contains_i64, has_map, has_string_method
+            nonlocal has_list_contains_i64, has_list_contains_f64
+            nonlocal has_map, has_string_method
             nonlocal has_format_str, has_make_lambda, has_list_hof
             nonlocal has_json_method, has_json_parse
             nonlocal has_list_string, has_optres_method
@@ -468,7 +474,10 @@ class _LocalsCollectionMixin:
                             has_list_method = True
                     if instr.method == "contains" and recv_ty.startswith("List"):
                         elem_ty = _element_type_of_list(recv_ty)
-                        if self._size_of(elem_ty) == 8:
+                        if elem_ty == "Float":
+                            # f64 needle scratch + f64.eq path.
+                            has_list_contains_f64 = True
+                        elif self._size_of(elem_ty) == 8:
                             has_list_contains_i64 = True
                         if elem_ty == "String":
                             # List<String>.contains needs the
@@ -762,6 +771,11 @@ class _LocalsCollectionMixin:
             # JsonValue as_X projection, and List<String>
             # construction / indexing / split (per-element packing).
             out["_alloc_tmp_i64"] = "i64"
+        if has_list_contains_f64:
+            # List<Float>.contains stashes the f64 needle here and
+            # compares each f64-loaded element with ``f64.eq``
+            # (Python-matching NaN semantics: NaN != NaN).
+            out.setdefault("_alloc_tmp_f64", "f64")
         if has_map:
             # Match/For scratch locals double as Map scan helpers
             # (map_local, idx_local). Plus map-specific scratch.

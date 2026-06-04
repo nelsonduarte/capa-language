@@ -76,6 +76,7 @@ _PARITY_PROGRAMS: list[str] = [
     "sum_eq.capa",
     "list_eq.capa",
     "list_contains_struct.capa",
+    "list_contains_float.capa",
     "nested_eq.capa",
     "set_basics.capa",
     "set_string.capa",
@@ -511,6 +512,9 @@ class TestPythonWasmParity(unittest.TestCase):
 
     def test_list_contains_struct(self):
         self._assert_parity("list_contains_struct.capa")
+
+    def test_list_contains_float(self):
+        self._assert_parity("list_contains_float.capa")
 
     def test_nested_eq(self):
         self._assert_parity("nested_eq.capa")
