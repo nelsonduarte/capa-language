@@ -982,6 +982,100 @@ Listed so the design space is explicit.
 
 ### Wasm-specific gaps that are not P0
 
+- [x] **Bug-hunt batch: cross-backend parity, soundness, Wasm
+  patterns** (2026-06-03). A deep bug hunt across both backends
+  closed a batch of correctness gaps, all behaviour-changing items
+  noted and all covered by new tests. Integer `/` now floors on
+  both backends (Wasm had truncated, so `-7 / 2` was `-3` vs
+  Python's `-4`) and both backends trap on `MIN / -1`; unary
+  integer negation traps on `i64::MIN`; float division by zero
+  traps on Wasm (matching Python's `ZeroDivisionError`); a match
+  used for its value must be exhaustive (was accepted, then crashed
+  Python / returned empty on Wasm); `break` / `continue` inside a
+  lambda are rejected by the analyzer; `String.index_of` returns a
+  code-point offset on Wasm (was a byte offset); `Set<Float>`
+  equality no longer crashes Wasm (an undeclared local in the
+  set-equality helper); a user function named `parse_int` /
+  `parse_float` now shadows the builtin on both backends instead of
+  colliding on Wasm; and a `Bool` reached through a tuple index
+  interpolates as `true` / `false` (was Python-style `True` /
+  `False`). Wasm match patterns gained identifier-binding catch-alls
+  in sum matches, float-literal patterns, binding-free or-patterns
+  (`A | B`), and struct patterns (`P { x: 0, y }`), all with Python
+  parity.
+
+- [x] **Tuple indexing typed at the root** (2026-06-03). A constant
+  tuple index `t[k]` now resolves to the k-th element type in the
+  analyzer (was `Unknown`, which lost the element type for consumers
+  like interpolation and masked downstream type errors); a constant
+  out-of-range index is now a compile-time error (had diverged:
+  Python `IndexError` at runtime vs Wasm silently returning 0); and
+  a nested tuple index `t[0][1]` no longer emits invalid Wasm (the
+  decode now uses the pointer-shaped path for the inner i32 pointer).
+  Parity program `examples/wasm/tuple_nested_index.capa`.
+
+- [x] **Char type on the Wasm backend** (2026-06-03). Char had no
+  Wasm encoding and errored at emit time while it worked on Python.
+  A Capa Char is a single-codepoint String, so the Wasm path
+  normalises the Char type token to String in the lowered CIR before
+  emission, reusing all existing String machinery (values, params,
+  returns, locals, interpolation, equality, container slots, match);
+  char-literal patterns lower as one-char string-literal patterns.
+  Wasm-only: the manifest still reports Char, the analyzer keeps
+  Char and String distinct, and a user type whose name merely
+  contains "Char" is unaffected (whole-word normalisation). This
+  also unblocked the char-literal / char-scrutinee match patterns
+  left loudly unsupported in the earlier match-pattern work. Parity
+  examples `char_basics.capa`, `match_char_lit.capa`.
+
+- [x] **Generic struct/sum monomorphisation on the Wasm backend**
+  (2026-06-03). A generic struct/sum field whose type is the type
+  parameter mis-decoded on Wasm when the instance crossed a function
+  boundary (`unknown local $_ir_t0` for String-shaped fields,
+  `type mismatch i32 vs i64` for Int), while Python worked. The
+  Wasm path now specialises each generic struct/sum per concrete
+  instantiation (e.g. `Pair<Char>` -> a `Pair__Char` clone with
+  field `a: Char`) before emission: the pass collects
+  instantiations, clones with the type variables substituted,
+  mangles a stable per-instantiation name, rewrites references, and
+  refines sum-pattern payloads. The Python backend and the manifest
+  are unaffected (the manifest still reports the original generic
+  type names). Parity program
+  `examples/wasm/generic_struct_field.capa`.
+
+- [x] **Or-patterns that BIND on the Wasm backend** (2026-06-03).
+  An or-pattern whose alternatives bind a payload
+  (`Pos(n) | Neg(n) -> n`) was loudly rejected on the Wasm path
+  even though Python supported it; this implements them with Python
+  parity. The emitter gates the arm on the OR-of-tags predicate,
+  then does a per-alternative tag dispatch to load the matched
+  variant's payload into the shared bind local(s) (every branch
+  writes the same locals, exactly one runs); works in statement-
+  and expression-position matches and with guards that reference the
+  bound names. Still loudly unsupported on Wasm (compile-time error,
+  never a miscompile): an alternative whose payload is a nested
+  non-identifier pattern (e.g. `Wrap(A(x)) | Hold(A(x))`). Parity
+  program `examples/wasm/match_or_bind.capa`.
+
+- [x] **Security: capability-leak hole D closed** (2026-06-03). The
+  cap-leak guard added for hole C (reject a capability substituted
+  into a generic type parameter at a call site) was not applied to
+  the struct-literal path (`Box { value: stdio }`) or the variant-
+  constructor path (`Wrap(stdio)`). Both passed `capa --check`, and
+  a function taking `Box<Stdio>` / `H<Stdio>` could then call
+  `.println(...)` on the unwrapped value while its manifest reported
+  no capabilities - a soundness hole in the central SBOM claim. The
+  analyzer now runs the same substitution check after struct-literal
+  and variant-constructor substitution; legitimate generic code is
+  unaffected (the helper only fires when a capability appears
+  post-substitution but not pre).
+
+- [x] **One-command reproduction harness for the paper's §5
+  numbers** (2026-06-03). New `evaluation/reproduce.py` regenerates
+  the section-5 measurements in a single command, and the §5
+  baselines were re-anchored to current measurements after the fib
+  diagnosis.
+
 - [x] **Roadmap P3 (partial) - 2^63 residual closed; constant-fold
   deliberately skipped** (2026-06-02). The slice-26 residual (a bare
   ``9223372036854775808`` = 2**63 used positively) was a real silent
@@ -1609,12 +1703,17 @@ Listed so the design space is explicit.
     but broke the per-item state-isolation invariant.
   - **Findings deferred** (separate slices): Unit-
     returning block-body lambda trips Wasm emit "values
-    remaining on stack" (pre-existing); tuple-destructure
-    `for`-pattern + or-patterns + field-target assignment
-    raise `UnsupportedInIR` on Wasm; `_monomorphise`
-    Call-instance mutate-share footgun; analyzer
-    `unify` infinite recursion when pushing typed-T
-    into `var out: List<T>`.
+    remaining on stack" (pre-existing). Or-patterns -
+    including binding or-patterns - now WORK on Wasm (landed
+    2026-06-03); what remains `UnsupportedInIR` / loudly
+    rejected is the tuple-destructure `for`-pattern, the
+    field-target assignment case, and or-pattern alternatives
+    whose payload is a nested non-identifier pattern (e.g.
+    `Wrap(A(x)) | Hold(A(x))`). Still open / not yet
+    verified: the `_monomorphise` Call-instance mutate-share
+    footgun; the analyzer `unify` infinite-recursion case
+    when pushing a typed `T` into `var out: List<T>`; and the
+    string-based `_monomorphise._parse_ty` unifier limitation.
   - **CLEAN verified**: short-circuit ops with side
     effects, `?` operator on Option/Result, interpolation
     eval order, tuple/list literal eval order,
@@ -3221,10 +3320,13 @@ Listed so the design space is explicit.
 What an adopter should know is not yet there. Surfaced in
 `docs/roadmap.html`.
 
-- **No native backend**. Capa transpiles to Python (CPython
-  runtime; 1.00x to 1.45x overhead vs hand-Python) or lowers to
-  a Wasm Component Model artifact (now fully functional, with
-  output byte-identical to Python). A native LLVM backend is the
+- **No native (LLVM) backend**. Capa transpiles to Python
+  (CPython runtime; 1.00x to 1.45x overhead vs hand-Python) or
+  lowers to a Wasm Component Model artifact (now fully functional,
+  with output byte-identical to Python). Ahead-of-time Wasm
+  compilation already exists via `capa build --release` (roadmap
+  P1: serialise the wasmtime/Cranelift module so it is compiled
+  once and run many times). A native LLVM backend remains the
   long-term performance play. (P3 long-term)
 - **No async / await**. Keywords are reserved; no
   implementation. Capability-aware async is a research
