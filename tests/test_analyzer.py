@@ -1160,6 +1160,77 @@ class TestGenericsInference(unittest.TestCase):
             f"got: {msgs}",
         )
 
+    def test_generic_list_accumulator_of_type_var(self):
+        # Regression: pushing a value typed as the bare type variable ``T``
+        # into a ``List<T>`` inside a generic function used to crash the
+        # unifier with infinite recursion (missing occurs-check / reflexive
+        # guard). It must now check cleanly.
+        r = check(
+            "fun wrap<T>(x: T) -> List<T>\n"
+            "    var out: List<T> = []\n"
+            "    out.push(x)\n"
+            "    return out\n"
+            "fun main(stdio: Stdio)\n"
+            "    let xs = wrap(42)\n"
+            "    stdio.println(\"x\")\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+    def test_generic_list_accumulator_multiple_pushes(self):
+        r = check(
+            "fun wrap3<T>(a: T, b: T, c: T) -> List<T>\n"
+            "    var out: List<T> = []\n"
+            "    out.push(a)\n"
+            "    out.push(b)\n"
+            "    out.push(c)\n"
+            "    return out\n"
+            "fun main(stdio: Stdio)\n"
+            "    let xs = wrap3(1, 2, 3)\n"
+            "    stdio.println(\"x\")\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+    def test_generic_map_accumulator_of_type_var(self):
+        r = check(
+            "fun mwrap<K, T>(k: K, v: T) -> Map<K, T>\n"
+            "    var out: Map<K, T> = new_map()\n"
+            "    out.set(k, v)\n"
+            "    return out\n"
+            "fun main(stdio: Stdio)\n"
+            "    let m = mwrap(\"k\", 99)\n"
+            "    stdio.println(\"x\")\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+    def test_generic_set_accumulator_of_type_var(self):
+        r = check(
+            "fun swrap<T>(x: T) -> Set<T>\n"
+            "    var out: Set<T> = new_set()\n"
+            "    out.add(x)\n"
+            "    return out\n"
+            "fun main(stdio: Stdio)\n"
+            "    let s = swrap(7)\n"
+            "    stdio.println(\"x\")\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+    def test_generic_hof_accumulator_of_inferred_var(self):
+        # The higher-order variant builds ``List<B>`` from ``f(x)`` where ``B``
+        # is concrete after inference. This already worked; guard against
+        # regressions from the occurs-check fix.
+        r = check(
+            "fun mapper<A, B>(x: A, f: Fun(A) -> B) -> List<B>\n"
+            "    var out: List<B> = []\n"
+            "    out.push(f(x))\n"
+            "    return out\n"
+            "fun dbl(n: Int) -> Int\n"
+            "    return n * 2\n"
+            "fun main(stdio: Stdio)\n"
+            "    let xs = mapper(21, dbl)\n"
+            "    stdio.println(\"x\")\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
 
 # =============================================================
 # Method dispatch

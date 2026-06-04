@@ -1,0 +1,71 @@
+// Generic accumulators that build a mutable container of the bare type
+// variable and push/insert a value typed as that same variable. This pattern
+// (``var out: List<T> = []; out.push(x)`` where ``x: T``) once crashed the
+// analyzer's unifier with infinite recursion (missing occurs-check / reflexive
+// guard). It must type-check and produce identical output on both backends.
+
+fun wrap<T>(x: T) -> List<T>
+    var out: List<T> = []
+    out.push(x)
+    return out
+
+fun wrap3<T>(a: T, b: T, c: T) -> List<T>
+    var out: List<T> = []
+    out.push(a)
+    out.push(b)
+    out.push(c)
+    return out
+
+fun mwrap<K, T>(k: K, v: T) -> Map<K, T>
+    var out: Map<K, T> = new_map()
+    out.set(k, v)
+    return out
+
+fun swrap<T>(x: T) -> Set<T>
+    var out: Set<T> = new_set()
+    out.add(x)
+    return out
+
+fun mapper<A, B>(x: A, f: Fun(A) -> B) -> List<B>
+    var out: List<B> = []
+    out.push(f(x))
+    return out
+
+fun dbl(n: Int) -> Int
+    return n * 2
+
+fun main(stdio: Stdio)
+    let ints = wrap(42)
+    match ints.get(0)
+        Some(v) -> stdio.println("${v}")
+        None -> stdio.println("none")
+
+    let strs = wrap("hello")
+    match strs.get(0)
+        Some(v) -> stdio.println(v)
+        None -> stdio.println("none")
+
+    let chars = wrap('Z')
+    match chars.get(0)
+        Some(v) -> stdio.println("${v}")
+        None -> stdio.println("none")
+
+    let many = wrap3(1, 2, 3)
+    match many.get(2)
+        Some(v) -> stdio.println("${v}")
+        None -> stdio.println("none")
+    stdio.println("${many.length()}")
+
+    let m = mwrap("k", 99)
+    match m.get("k")
+        Some(v) -> stdio.println("${v}")
+        None -> stdio.println("none")
+
+    let s = swrap(7)
+    stdio.println("${s.contains(7)}")
+    stdio.println("${s.length()}")
+
+    let mapped = mapper(21, dbl)
+    match mapped.get(0)
+        Some(v) -> stdio.println("${v}")
+        None -> stdio.println("none")

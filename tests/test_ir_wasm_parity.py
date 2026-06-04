@@ -51,6 +51,7 @@ _PARITY_PROGRAMS: list[str] = [
     "word_count.capa",
     "closures.capa",
     "json_demo.capa",
+    "generic_accumulator.capa",
     "list_struct_basics.capa",
     "list_struct_map_identity.capa",
     "list_struct_map.capa",
@@ -420,6 +421,9 @@ class TestPythonWasmParity(unittest.TestCase):
 
     def test_json_demo(self):
         self._assert_parity("json_demo.capa")
+
+    def test_generic_accumulator(self):
+        self._assert_parity("generic_accumulator.capa")
 
     def test_list_struct_basics(self):
         self._assert_parity("list_struct_basics.capa")

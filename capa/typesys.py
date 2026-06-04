@@ -264,6 +264,25 @@ def contains_capability(t: Ty) -> Ty | None:
     return None
 
 
+def occurs_in(name: str, t: Ty) -> bool:
+    """Occurs-check: returns True if the type variable ``name`` appears
+    anywhere inside ``t``. Used by :func:`unify` to refuse bindings that
+    would build an infinite (non-finite) type, and to detect the reflexive
+    ``X = X`` case so unification terminates.
+    """
+    if isinstance(t, TyVar):
+        return t.name == name
+    if isinstance(t, TyName):
+        return any(occurs_in(name, a) for a in t.args)
+    if isinstance(t, TyTuple):
+        return any(occurs_in(name, e) for e in t.elements)
+    if isinstance(t, TyFun):
+        return any(occurs_in(name, p) for p in t.params) or occurs_in(
+            name, t.ret
+        )
+    return False
+
+
 def unify(expected: Ty, actual: Ty, mapping: dict[str, Ty]) -> bool:
     """Local inference: discovers TyVar→Ty substitutions that make
     ``expected`` compatible with ``actual``, accumulating them in ``mapping``.
@@ -290,8 +309,28 @@ def unify(expected: Ty, actual: Ty, mapping: dict[str, Ty]) -> bool:
 
     # TyVar on the expected side: bind (or verify consistency if already bound).
     if isinstance(expected, TyVar):
+        # Reflexive case (``X`` against ``X``): trivially consistent. This must
+        # be handled before any binding/recursion, otherwise binding ``X`` to
+        # ``X`` and then re-unifying that binding loops forever. It arises in
+        # the common generic-accumulator pattern, e.g. ``out.push(x)`` on a
+        # ``List<T>`` whose element variable shares a name with ``x``'s ``T``.
+        if isinstance(actual, TyVar) and actual.name == expected.name:
+            return True
         bound = mapping.get(expected.name)
+        # A pre-existing self-referential binding (``X = X``, which callers may
+        # seed when the owner's type parameter shares a name with the
+        # argument's variable) carries no information. Treat it as unbound so we
+        # can either accept a concrete refinement or stay reflexive, instead of
+        # recursing on it forever.
+        if isinstance(bound, TyVar) and bound.name == expected.name:
+            bound = None
         if bound is None:
+            # Occurs-check: refuse to build an infinite type (binding ``X`` to a
+            # term that itself mentions ``X``). A bare reflexive binding is
+            # already handled above; anything else that contains ``X`` has no
+            # finite solution.
+            if occurs_in(expected.name, actual):
+                return False
             mapping[expected.name] = actual
             return True
         return unify(bound, actual, mapping)
