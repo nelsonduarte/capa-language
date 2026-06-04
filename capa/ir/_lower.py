@@ -281,7 +281,11 @@ class Lowerer(
             StructField(name=f.name, ty=_type_name(f.type_expr))
             for f in t.fields
         ]
-        return StructDecl(name=t.name, fields=fields)
+        return StructDecl(
+            name=t.name,
+            fields=fields,
+            type_params=list(getattr(t, "type_params", []) or []),
+        )
 
     def _lower_sum_decl(self, t: A.TypeSum) -> SumDecl:
         variants = [
@@ -291,7 +295,11 @@ class Lowerer(
             )
             for v in t.variants
         ]
-        return SumDecl(name=t.name, variants=variants)
+        return SumDecl(
+            name=t.name,
+            variants=variants,
+            type_params=list(getattr(t, "type_params", []) or []),
+        )
 
     # ------------------------------------------------------------
     # Lexical scope + alpha-renaming helpers.

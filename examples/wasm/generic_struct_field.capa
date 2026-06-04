@@ -1,0 +1,133 @@
+// generic_struct_field.capa: a generic struct's field, read across a
+// function boundary, must decode identically on the Python and Wasm
+// backends for any concrete type parameter T.
+//
+// Pre-fix the Wasm backend left a generic struct decl ``Pair<T>``
+// un-monomorphised: the field ``a: T`` was sized / decoded as the
+// bare type variable ``T`` (no Wasm encoding), so a ``Pair<Char>``
+// returned from one function and read in another mis-decoded (or hit
+// "unknown local" / "type mismatch"). The monomorphisation pass now
+// specialises a generic type per concrete instantiation
+// (``Pair<Char>`` -> ``Pair__Char`` with ``a: Char``), so the layout
+// machinery sizes every field from its real type.
+
+type Pair<T> {
+    a: T,
+    b: Int
+}
+
+type Box<T> {
+    value: T
+}
+
+// Two type parameters in one struct, plus a generic struct nested
+// inside another generic struct (criterion 5).
+type Two<A, B> {
+    first: A,
+    second: B
+}
+
+type Plain {
+    x: Int,
+    y: String
+}
+
+// --- cross-boundary readers, one per concrete T --------------------
+
+fun make_int() -> Pair<Int>
+    return Pair { a: 42, b: 1 }
+
+fun read_int(p: Pair<Int>) -> Int
+    return p.a
+
+fun make_str() -> Pair<String>
+    return Pair { a: "hello", b: 2 }
+
+fun read_str(p: Pair<String>) -> String
+    return p.a
+
+fun make_char() -> Pair<Char>
+    return Pair { a: 'z', b: 3 }
+
+fun read_char(p: Pair<Char>) -> Char
+    return p.a
+
+fun make_bool() -> Pair<Bool>
+    return Pair { a: true, b: 4 }
+
+fun read_bool(p: Pair<Bool>) -> Bool
+    return p.a
+
+fun make_float() -> Pair<Float>
+    return Pair { a: 2.5, b: 5 }
+
+fun read_float(p: Pair<Float>) -> Float
+    return p.a
+
+// --- generic field that is itself a compound type ------------------
+
+fun make_list_box() -> Box<List<Int>>
+    return Box { value: [10, 20, 30] }
+
+fun read_list_box(b: Box<List<Int>>) -> Int
+    return b.value[1]
+
+fun make_struct_box() -> Box<Plain>
+    return Box { value: Plain { x: 7, y: "inner" } }
+
+fun read_struct_box(b: Box<Plain>) -> String
+    return b.value.y
+
+// --- multiple generic fields + generic nested in generic -----------
+
+fun make_two() -> Two<String, Int>
+    return Two { first: "k", second: 8 }
+
+fun read_two(t: Two<String, Int>) -> String
+    return t.first
+
+fun make_box_two() -> Box<Two<Bool, Int>>
+    return Box { value: Two { first: true, second: 6 } }
+
+fun read_box_two(b: Box<Two<Bool, Int>>) -> Int
+    return b.value.second
+
+// --- same-function read (no boundary crossing) ---------------------
+
+fun same_function() -> Int
+    let p = Pair { a: 100, b: 200 }
+    return p.a + p.b
+
+fun main(s: Stdio)
+    // Cross-boundary, per concrete T.
+    let pi = make_int()
+    s.println("int: ${read_int(pi)} ${pi.b}")
+    let ps = make_str()
+    s.println("str: ${read_str(ps)} ${ps.b}")
+    let pc = make_char()
+    s.println("char: ${read_char(pc)} ${pc.b}")
+    let pb = make_bool()
+    s.println("bool: ${read_bool(pb)} ${pb.b}")
+    let pf = make_float()
+    s.println("float: ${read_float(pf)} ${pf.b}")
+
+    // Compound generic field, cross-boundary.
+    let lb = make_list_box()
+    s.println("list-box: ${read_list_box(lb)}")
+    let sb = make_struct_box()
+    s.println("struct-box: ${read_struct_box(sb)}")
+
+    // Multiple generic fields, and a generic struct nested in another.
+    let tw = make_two()
+    s.println("two: ${read_two(tw)} ${tw.second}")
+    let bt = make_box_two()
+    s.println("box-two: ${read_box_two(bt)} ${bt.value.first}")
+
+    // Same-function read of a generic field.
+    let local = Pair { a: 'q', b: 9 }
+    s.println("same-fn char: ${local.a} ${local.b}")
+    s.println("same-fn int: ${same_function()}")
+
+    // Non-generic struct must still work (no regression).
+    let plain = Plain { x: 1, y: "ok" }
+    s.println("plain: ${plain.x} ${plain.y}")

@@ -229,6 +229,20 @@ _PARITY_PROGRAMS: list[str] = [
     # no Wasm encoding yet".
     "char_basics.capa",
     "match_char_lit.capa",
+    # Generic-struct slice (2026-06-03): a generic struct's field,
+    # read across a function boundary, must decode identically on
+    # both backends for any concrete T. Pre-fix the Wasm path left
+    # ``Pair<T>`` un-monomorphised, so the field ``a: T`` was sized /
+    # decoded as the bare type variable (no Wasm encoding) and a
+    # ``Pair<Char>`` returned from one function and read in another
+    # mis-decoded ("unknown local $_ir_t0" / "type mismatch i32 vs
+    # i64"). The monomorphiser now specialises generic struct / sum
+    # types per concrete instantiation (``Pair<Char>`` ->
+    # ``Pair__Char`` with ``a: Char``) so the layout machinery sizes
+    # every field from its real type. Covers T = Int / String / Char
+    # / Bool / Float, a compound generic field (List / nested struct),
+    # the same-function read, and the non-generic regression case.
+    "generic_struct_field.capa",
 ]
 
 # Programs deliberately excluded from parity and why; documented
@@ -954,6 +968,23 @@ class TestPythonWasmParity(unittest.TestCase):
         # match path; the char-literal patterns lower as one-char
         # ``PatLiteral(kind="str")`` compared via ``$str_eq``.
         self._assert_parity("match_char_lit.capa")
+
+    def test_generic_struct_field(self):
+        # Generic-struct slice (2026-06-03): a generic struct's field,
+        # read across a function boundary, must decode identically on
+        # both backends for any concrete type parameter T. Pre-fix the
+        # Wasm path left ``Pair<T>`` un-monomorphised, so the field
+        # ``a: T`` was sized / decoded as the bare type variable and a
+        # ``Pair<Char>`` returned from one function and read in another
+        # mis-decoded ("unknown local $_ir_t0" / "type mismatch i32 vs
+        # i64"). The monomorphiser now specialises generic struct / sum
+        # types per concrete instantiation (``Pair<Char>`` ->
+        # ``Pair__Char`` with ``a: Char``) so the layout machinery
+        # sizes every field from its real type. Covers T = Int / String
+        # / Char / Bool / Float, a compound generic field (List / nested
+        # struct), the same-function read, and the non-generic
+        # regression case.
+        self._assert_parity("generic_struct_field.capa")
 
     def test_tail_call_emits_return_call(self):
         # White-box: confirm the peephole actually fires (a green

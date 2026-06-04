@@ -472,9 +472,18 @@ class StructField:
 @dataclass
 class StructDecl:
     """A top-level ``type Name { field: T, ... }`` declaration. The
-    Python emitter renders this as ``@dataclass class Name``."""
+    Python emitter renders this as ``@dataclass class Name``.
+
+    ``type_params`` carries the source's ``type Pair<T> { ... }``
+    type-parameter names. The Python backend ignores them (duck
+    typing); the Wasm backend's monomorphisation pass uses them to
+    specialise a generic struct per concrete instantiation
+    (``Pair<Char>`` -> a ``Pair__Char`` clone whose field ``a`` has
+    the concrete type) so the layout machinery sizes / decodes each
+    field correctly. Empty for non-generic structs."""
     name: str
     fields: list[StructField]
+    type_params: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -492,9 +501,15 @@ class SumVariant:
 class SumDecl:
     """A top-level ``type Name = V1 | V2(T) | ...`` declaration.
     Lowered to a sequence of dataclasses (one per variant) plus a
-    union-type alias the analyzer's type-checker uses."""
+    union-type alias the analyzer's type-checker uses.
+
+    ``type_params`` mirrors :class:`StructDecl.type_params`: the
+    source's ``type Either<L, R> = ...`` type-parameter names, used
+    by the Wasm monomorphisation pass to specialise a generic sum
+    per concrete instantiation. Empty for non-generic sums."""
     name: str
     variants: list[SumVariant]
+    type_params: list[str] = field(default_factory=list)
 
 
 @dataclass
