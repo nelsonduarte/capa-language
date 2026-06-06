@@ -96,7 +96,7 @@ class _ClosureEmissionMixin:
         from .._nodes import (
             Call, MethodCall, For, If, While, Match, MakeLambda,
             AssignConst, Reassign, BinOp, UnaryOp, Index, FieldAccess,
-            Return, TryUnwrap, FormatStr, Value as IrValue,
+            FieldStore, Return, TryUnwrap, FormatStr, Value as IrValue,
         )
 
         # Map global-fun callee names to their Function for sig
@@ -185,6 +185,9 @@ class _ClosureEmissionMixin:
                     visit_value(instr.index)
                 elif isinstance(instr, FieldAccess):
                     visit_value(instr.receiver)
+                elif isinstance(instr, FieldStore):
+                    visit_value(instr.receiver)
+                    visit_value(instr.src)
                 elif isinstance(instr, Return):
                     visit_value(instr.value)
                 elif isinstance(instr, TryUnwrap):

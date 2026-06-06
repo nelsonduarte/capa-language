@@ -1,0 +1,100 @@
+// Struct field-target assignment on the Wasm backend: ``obj.field =
+// value`` mutates the field slot of the struct's heap record in place,
+// mirroring the Python backend's in-place mutation. Exercises every
+// field type (Int, String, Char, Bool, Float, nested struct, list),
+// the read-modify-write form (``c.value = c.value + 1`` and the
+// compound ``+=`` shorthand), caller-visibility through a function
+// boundary, and a nested receiver (a field of ``outer.inner``).
+//
+// Output must be byte-identical to the Python reference path. Bool is
+// branched into yes / no strings rather than interpolated, because
+// bare Bool interpolation (True vs true) diverges between backends
+// independently of this feature (see char_basics.capa).
+
+type Inner {
+    n: Int
+}
+
+type Bag {
+    i: Int,
+    s: String,
+    c: Char,
+    b: Bool,
+    f: Float,
+    inner: Inner,
+    xs: List<Int>
+}
+
+type Outer {
+    inner: Inner
+}
+
+fun show_bool(stdio: Stdio, label: String, flag: Bool)
+    if flag
+        stdio.println("${label}: yes")
+    else
+        stdio.println("${label}: no")
+
+// Caller-visibility: mutate a field of the caller's struct inside a
+// callee. On the Python backend the struct is a reference, so the
+// caller sees the change; the Wasm backend passes the i32 record
+// pointer, so the write through that pointer is visible too.
+fun bump(b: Bag)
+    b.i = 99
+
+fun main(stdio: Stdio)
+    var bag = Bag {
+        i: 0,
+        s: "init",
+        c: 'a',
+        b: false,
+        f: 1.0,
+        inner: Inner { n: 10 },
+        xs: [1, 2, 3]
+    }
+
+    // Int field: plain assign, then read-modify-write two ways.
+    bag.i = 5
+    stdio.println("i = ${bag.i}")
+    bag.i = bag.i + 1
+    stdio.println("i = ${bag.i}")
+    bag.i += 4
+    stdio.println("i = ${bag.i}")
+
+    // String field.
+    bag.s = "changed"
+    stdio.println("s = ${bag.s}")
+
+    // Char field.
+    bag.c = 'z'
+    stdio.println("c = ${bag.c}")
+
+    // Bool field.
+    bag.b = true
+    show_bool(stdio, "b", bag.b)
+
+    // Float field, plain + read-modify-write.
+    bag.f = 2.5
+    stdio.println("f = ${bag.f}")
+    bag.f = bag.f + 0.5
+    stdio.println("f = ${bag.f}")
+
+    // Nested-struct field (assign a whole struct value).
+    bag.inner = Inner { n: 42 }
+    stdio.println("inner.n = ${bag.inner.n}")
+
+    // List field (assign a whole list value).
+    bag.xs = [7, 8, 9, 10]
+    stdio.println("xs.length = ${bag.xs.length()}")
+    stdio.println("xs[3] = ${bag.xs[3]}")
+
+    // Nested receiver: a field of a struct that lives inside another
+    // struct (``outer.inner.n``).
+    var outer = Outer { inner: Inner { n: 1 } }
+    outer.inner.n = 77
+    stdio.println("outer.inner.n = ${outer.inner.n}")
+
+    // Caller-visibility through a function boundary.
+    bag.i = 1
+    bump(bag)
+    stdio.println("after bump, i = ${bag.i}")

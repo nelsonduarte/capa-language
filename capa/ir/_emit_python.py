@@ -26,7 +26,7 @@ from ._nodes import (
     AssignConst, Reassign, BinOp, UnaryOp, Call, MethodCall,
     If, While, Break, Continue, Return,
     MakeStruct, MakeList, MakeTuple, MakeMap, MakeRange, MakeSet,
-    FieldAccess, Index, FormatStr, For,
+    FieldAccess, FieldStore, Index, FormatStr, For,
     TryUnwrap, MakeLambda,
     Pattern, PatWildcard, PatIdent, PatLiteral, PatVariant, PatTuple, Match,
     StructDecl, SumDecl, ImplBlock, TraitDecl, ConstDecl, ImportDecl,
@@ -443,6 +443,11 @@ class PythonEmitter:
         if isinstance(instr, FieldAccess):
             recv = self._format_value(instr.receiver)
             self._write(f"{instr.dst} = {recv}.{instr.field}")
+            return
+        if isinstance(instr, FieldStore):
+            recv = self._format_value(instr.receiver)
+            val = self._format_value(instr.src)
+            self._write(f"{recv}.{instr.field} = {val}")
             return
         if isinstance(instr, Index):
             recv = self._format_value(instr.receiver)

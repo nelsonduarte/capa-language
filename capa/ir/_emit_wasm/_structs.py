@@ -24,7 +24,7 @@ duplicate inline checks at every call site.
 from __future__ import annotations
 
 from .._nodes import (
-    Call, FieldAccess, MakeStruct, Value,
+    Call, FieldAccess, FieldStore, MakeStruct, Value,
 )
 from .._capa_types import BUILTIN_CAPS
 from ._layout import (
@@ -251,4 +251,70 @@ class _StructEmissionMixin:
         else:
             self._write(f"{_load_op_for_size(size)} offset={offset}")
         self._write(f"local.set ${instr.dst}")
+
+    def _emit_field_store(self, instr: FieldStore) -> None:
+        """Write a value into a struct field slot in place. The
+        receiver is an i32 pointer to the heap record; we resolve the
+        field's layout offset and emit the store opcode that mirrors
+        the per-field-type encoding ``_emit_make_struct`` and
+        ``_emit_field_access`` use. This is the symmetric WRITE to a
+        field READ; reusing the same layout machinery guarantees the
+        read-back recovers exactly what was stored.
+
+        Wasm store ordering: push the field address (receiver pointer),
+        then the value, then the store opcode (the offset rides on the
+        opcode)."""
+        recv_ty = _strip_type_qualifiers(instr.receiver.ty)
+        layout = self._struct_layouts.get(recv_ty)
+        if layout is None:
+            # Same Unknown-receiver fallback as _emit_field_access:
+            # the receiver Value may carry ty="Unknown" while the
+            # local's declared type names a concrete struct.
+            if (instr.receiver.kind in ("local", "param")
+                    and self._current_fn is not None
+                    and instr.receiver.name in self._current_fn.locals):
+                fallback = _strip_type_qualifiers(
+                    self._current_fn.locals[instr.receiver.name]
+                )
+                layout = self._struct_layouts.get(fallback)
+                if layout is not None:
+                    recv_ty = fallback
+        if layout is None:
+            raise WasmEmissionError(
+                f"FieldStore on receiver of type {recv_ty!r}: no "
+                f"struct layout known. The IR's type inference must "
+                f"have produced an unexpected receiver type."
+            )
+        f_info = layout["fields"].get(instr.field)
+        if f_info is None:
+            raise WasmEmissionError(
+                f"struct {recv_ty}: field {instr.field!r} not found"
+            )
+        offset, size, field_ty = f_info
+        if field_ty in BUILTIN_CAPS:
+            # Capability field. Fs / Net / Db / Proc / Env / Clock
+            # carry i32 handles (slices 25.2 - 25.6); store the
+            # handle. Every other cap is erased and has no Wasm value,
+            # so the store is a no-op (matching _emit_make_struct).
+            if field_ty in ("Fs", "Net", "Db", "Proc", "Env", "Clock"):
+                self._push_value(instr.receiver)
+                self._push_value(instr.src)
+                self._write(f"i32.store offset={offset}")
+            return
+        if field_ty == "String":
+            # Two i32 stores: ptr@offset, len@offset+4.
+            self._push_value(instr.receiver)
+            self._push_string_field_ptr_only(instr.src)
+            self._write(f"i32.store offset={offset}")
+            self._push_value(instr.receiver)
+            self._push_string_field_len_only(instr.src)
+            self._write(f"i32.store offset={offset + 4}")
+            return
+        self._push_value(instr.receiver)
+        self._push_value(instr.src)
+        if field_ty == "Float":
+            # f64 slot stays native f64; matches _emit_make_struct.
+            self._write(f"f64.store offset={offset}")
+        else:
+            self._write(f"{_store_op_for_size(size)} offset={offset}")
 

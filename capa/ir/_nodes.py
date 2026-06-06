@@ -250,6 +250,20 @@ class FieldAccess(Instr):
 
 
 @dataclass
+class FieldStore(Instr):
+    """``receiver.field = src``. In-place mutation of a struct field
+    slot. The receiver is the same heap-record value a ``FieldAccess``
+    reads from; this writes ``src`` into that field's slot using the
+    field's per-type encoding (the symmetric operation to a read).
+    No ``dst``: the instruction is a pure side effect. The analyzer
+    (capa/analyzer/_frozen.py) has already vetted that ``field`` is
+    permitted to be mutated."""
+    receiver: Value
+    field: str
+    src: Value
+
+
+@dataclass
 class Index(Instr):
     """``dst = receiver[index]``. List indexing only for Phase 2;
     Map / Set indexing routes through dedicated method calls

@@ -21,7 +21,7 @@ from .._nodes import (
     AssignConst, Reassign, BinOp, UnaryOp, Call, MethodCall,
     If, While, Break, Continue, Return, TryUnwrap,
     MakeStruct, MakeList, MakeMap, MakeRange, MakeSet, MakeTuple,
-    FieldAccess, Index, For,
+    FieldAccess, FieldStore, Index, For,
     FormatStr, MakeLambda, Match,
 )
 from ._layout import WasmEmissionError, _strip_type_qualifiers
@@ -140,6 +140,9 @@ class _InstrDispatchMixin:
             return
         if isinstance(instr, FieldAccess):
             self._emit_field_access(instr)
+            return
+        if isinstance(instr, FieldStore):
+            self._emit_field_store(instr)
             return
         if isinstance(instr, Index):
             # Tuple receivers go through the type-aware tuple

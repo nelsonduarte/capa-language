@@ -151,6 +151,9 @@ def _normalize_instr(instr) -> None:
         instr.end = _normalize_value(instr.end)
     elif isinstance(instr, N.FieldAccess):
         instr.receiver = _normalize_value(instr.receiver)
+    elif isinstance(instr, N.FieldStore):
+        instr.receiver = _normalize_value(instr.receiver)
+        instr.src = _normalize_value(instr.src)
     elif isinstance(instr, N.Index):
         instr.receiver = _normalize_value(instr.receiver)
         instr.index = _normalize_value(instr.index)

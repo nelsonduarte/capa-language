@@ -288,6 +288,16 @@ _PARITY_PROGRAMS: list[str] = [
     # for-loops (a tuple-destructure loop inside a plain one and inside
     # another tuple-destructure loop).
     "for_tuple_destructure.capa",
+    # Slice (2026-06-06): struct field-target assignment on the Wasm
+    # backend. ``obj.field = value`` lowers to a FieldStore that writes
+    # the field slot of the heap record in place (the symmetric write to
+    # a field read), mirroring the Python backend's in-place mutation.
+    # Covers every field type (Int / String / Char / Bool / Float /
+    # nested struct / list), the read-modify-write form (``x = x + 1``
+    # and ``+=``), a nested receiver (``outer.inner.n``), and caller-
+    # visibility through a function boundary (a callee mutating the
+    # caller's struct).
+    "struct_field_assign.capa",
 ]
 
 # Programs deliberately excluded from parity and why; documented
@@ -1049,6 +1059,18 @@ class TestPythonWasmParity(unittest.TestCase):
         # caller-visibility (a push through a parameter is visible to the
         # caller on both backends, including across the grow path).
         self._assert_parity("list_param_push.capa")
+
+    def test_struct_field_assign(self):
+        # Field-target assignment slice (2026-06-06): ``obj.field =
+        # value`` lowers to a FieldStore that writes the field slot of
+        # the heap record in place (the symmetric write to a field
+        # read). Covers every field type (Int / String / Char / Bool /
+        # Float / nested struct / list), the read-modify-write form
+        # (``x = x + 1`` and ``+=``), a nested receiver
+        # (``outer.inner.n``), and caller-visibility through a function
+        # boundary (a callee mutating the caller's struct must be
+        # observed identically on both backends).
+        self._assert_parity("struct_field_assign.capa")
 
     def test_tail_call_emits_return_call(self):
         # White-box: confirm the peephole actually fires (a green

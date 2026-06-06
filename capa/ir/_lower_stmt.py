@@ -21,7 +21,7 @@ from ._lower_helpers import (
 from ._nodes import (
     AssignConst, Reassign, BinOp, Call, MethodCall,
     Break, Continue, For, If, Match, MatchArm, Return, TryUnwrap,
-    FieldAccess, Index, Instr, Value, While, fresh_local,
+    FieldAccess, FieldStore, Index, Instr, Value, While, fresh_local,
 )
 
 
@@ -156,8 +156,12 @@ class _LowerStmtMixin:
     def _lower_assign(self, s: A.AssignStmt) -> None:
         # Plain ``x = expr`` lowers directly; compound assignments
         # (``+=``, ``-=``, ``*=``, ``/=``, ``%=``) rewrite to
-        # ``x = x <op> expr`` at the IR level. LHS-as-FieldAccess /
-        # Index targets are still deferred.
+        # ``x = x <op> expr`` at the IR level. A FieldAccess target
+        # (``obj.field = expr``) lowers to a FieldStore; the analyzer
+        # has already vetted that the field may be mutated. Index
+        # targets are still deferred.
+        if isinstance(s.target, A.FieldAccess):
+            return self._lower_field_assign(s)
         if not isinstance(s.target, A.Ident):
             raise UnsupportedInIR(
                 f"assignment target {type(s.target).__name__}"
@@ -188,6 +192,55 @@ class _LowerStmtMixin:
             Reassign(
                 dst=target,
                 src=Value(kind="local", name=dst, ty=cur_ty),
+            )
+        )
+
+    def _lower_field_assign(self, s: A.AssignStmt) -> None:
+        # ``recv.field = expr`` (and compound forms). The receiver is
+        # lowered to a struct-pointer Value; the RHS lands in a
+        # FieldStore that writes the field slot in place. For compound
+        # ops, read the current field value first, combine, then store.
+        from ._lower_helpers import _ty_to_str
+        target = s.target
+        recv = self._lower_expr(target.receiver)
+        # Field type from the analyzer (keyed by the FieldAccess node
+        # id), so the read-modify-write intermediate and the store
+        # carry a concrete type.
+        field_ty = "Unknown"
+        if self.types:
+            t = self.types.get(id(target))
+            if t is not None:
+                field_ty = _ty_to_str(t)
+        if s.op == "=":
+            value = self._lower_expr(s.value)
+            self._instrs.append(
+                FieldStore(receiver=recv, field=target.field_name, src=value)
+            )
+            return
+        compound_ops = {"+=": "+", "-=": "-", "*=": "*", "/=": "/", "%=": "%"}
+        if s.op not in compound_ops:
+            raise UnsupportedInIR(
+                f"compound assignment operator {s.op!r}"
+            )
+        op = compound_ops[s.op]
+        # Read the current field value into a fresh local.
+        cur = fresh_local(self._counter)
+        self._locals[cur] = field_ty
+        self._instrs.append(
+            FieldAccess(dst=cur, receiver=recv, field=target.field_name)
+        )
+        left = Value(kind="local", name=cur, ty=field_ty)
+        right = self._lower_expr(s.value)
+        combined = fresh_local(self._counter)
+        self._locals[combined] = field_ty
+        self._instrs.append(
+            BinOp(dst=combined, op=op, left=left, right=right)
+        )
+        self._instrs.append(
+            FieldStore(
+                receiver=recv,
+                field=target.field_name,
+                src=Value(kind="local", name=combined, ty=field_ty),
             )
         )
 
