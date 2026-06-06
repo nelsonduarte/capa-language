@@ -354,6 +354,24 @@ class _LowerStmtMixin:
             bind_ty = iter_value.ty[5:-1]
         elif iter_value.ty.startswith("Range"):
             bind_ty = "Int"
+        elif iter_value.ty == "String":
+            # Iterating a String yields each Unicode code point bound
+            # as a one-codepoint String per iteration (Capa models a
+            # Char as a one-codepoint String). The element is a String
+            # so the body can use String methods / interpolation on it,
+            # matching the Python backend which yields one-character
+            # strings.
+            bind_ty = "String"
+        # A tuple-destructuring for-pattern over a String has no tuple
+        # element to destructure (each element is a one-codepoint
+        # String, not a tuple). Reject it loudly here rather than let
+        # the destructure path Index into a String receiver and emit a
+        # silent miscompile.
+        if isinstance(s.pattern, A.TuplePat) and bind_ty == "String":
+            raise UnsupportedInIR(
+                "tuple-destructuring for-pattern over a String "
+                "(a String element is a one-codepoint String, not a tuple)"
+            )
         self._enter_scope()
         if isinstance(s.pattern, A.IdentPat):
             bound = self._bind_local(s.pattern.name, bind_ty)

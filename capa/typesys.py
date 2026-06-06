@@ -204,6 +204,30 @@ def compatible(expected: Ty, actual: Ty) -> bool:
         return True
     if isinstance(expected, TyName) and isinstance(actual, TyName):
         if expected.name != actual.name:
+            # A Capa ``Char`` is, by definition, exactly one code
+            # point, so it is ALWAYS a valid ``String`` (a char literal
+            # lowers to a one-character string, the runtime represents
+            # both as Python ``str``, and the Wasm backend normalizes
+            # the ``Char`` type token to ``String`` before emission).
+            # The relationship is ASYMMETRIC: where a ``String`` is
+            # expected a ``Char`` is accepted, but where a ``Char`` is
+            # expected a general ``String`` is NOT -- an arbitrary or
+            # multi-codepoint string cannot be stored in a Char slot.
+            # This keeps ``let s: String = 'z'``, passing a char
+            # literal where a String is wanted, and the
+            # String-iteration element used as a String all working
+            # (the loop variable is typed ``String`` and ``c == 'a'``
+            # checks compatibility in both directions). The one safe
+            # ``String``-into-``Char`` case -- a provably
+            # one-code-point string *literal* -- needs the expression
+            # to inspect, so it lives in the analyzer's assignment /
+            # argument checker, not here. Both must be unparameterised
+            # scalars.
+            if (
+                expected.name == "String" and actual.name == "Char"
+                and not expected.args and not actual.args
+            ):
+                return expected.state == actual.state
             return False
         # Typestate index (roadmap S3): a value in one state is not
         # compatible with a parameter expecting another state, which is

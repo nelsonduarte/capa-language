@@ -294,6 +294,15 @@ class _DiscoveryMixin:
                     if visit(instr.cond_setup) or visit(instr.body):
                         return True
                 if isinstance(instr, For):
+                    # ``for c in s`` walks the receiver's UTF-8 code
+                    # points; the for-string emit path itself does the
+                    # leading-byte classification inline, but a body
+                    # that calls length / substring still needs the
+                    # helpers, so recurse either way. The String-iter
+                    # walk does not call $str_codepoint_count /
+                    # $str_cp_to_byte_offset directly (it inlines the
+                    # classification), so no extra gate is required for
+                    # the loop itself.
                     if visit(instr.body):
                         return True
                 if isinstance(instr, Match):

@@ -770,6 +770,14 @@ class _ListEmissionMixin:
             # No data array, no materialised List<Int>.
             self._emit_for_range(instr)
             return
+        elif iter_ty == "String":
+            # ``for c in s``: iterate each Unicode code point of the
+            # UTF-8 byte slice, binding ``c`` as a one-codepoint
+            # String (ptr into the original buffer, len = the code
+            # point's byte length). Matches the Python backend, which
+            # yields one-character strings.
+            self._emit_for_string(instr)
+            return
         else:
             raise WasmEmissionError(
                 f"For-iter over type {iter_ty!r}: only List, Set, and "
@@ -979,6 +987,132 @@ class _ListEmissionMixin:
         self._write("i64.const 1")
         self._write("i64.add")
         self._write(f"local.set ${instr.name}")
+        self._write(f"br {loop_label}")
+        self._indent -= 1
+        self._write("end")
+        self._indent -= 1
+        self._write("end")
+        self._loop_labels.pop()
+
+    def _emit_for_string(self, instr: For) -> None:
+        """``for c in s`` over a String. Walks the receiver's UTF-8
+        byte slice one code point at a time, binding ``c`` as a
+        one-codepoint String per iteration: ``c_ptr`` points into
+        the original buffer at the code point's first byte and
+        ``c_len`` is the code point's byte length (1/2/3/4). Each
+        iteration advances the byte cursor by that byte length, so
+        the loop runs exactly once per code point and zero times for
+        an empty string -- parity with the Python backend, which
+        yields one-character strings.
+
+        Reuses the same UTF-8 leading-byte classification as
+        ``_emit_string_char_at`` / ``$str_cp_to_byte_offset``:
+        ``0xxxxxxx`` -> 1, ``110xxxxx`` -> 2, ``1110xxxx`` -> 3,
+        ``11110xxx`` -> 4. No allocation: the element is a (ptr, len)
+        view into the immutable receiver buffer, like ``trim`` /
+        ``substring`` views.
+
+        Scratch is depth-indexed (``_f_list_N`` / ``_f_idx_N`` /
+        ``_f_strlen_N`` / ``_f_byte_N`` / ``_f_cplen_N``) so a String
+        iteration nested inside (or containing) another for-loop
+        keeps its own cursor state; a match in the body can't clobber
+        it either (the match helper locals are distinct)."""
+        depth = self._for_depth
+        ptr_local = f"_f_list_{depth}"
+        idx_local = f"_f_idx_{depth}"
+        len_local = f"_f_strlen_{depth}"
+        byte_local = f"_f_byte_{depth}"
+        cplen_local = f"_f_cplen_{depth}"
+        # Stash receiver (ptr, len) into the depth-indexed scratch and
+        # start the byte cursor at 0.
+        self._push_string_value_as_ptr_len(instr.iter)
+        self._write(f"local.set ${len_local}")
+        self._write(f"local.set ${ptr_local}")
+        self._write("i32.const 0")
+        self._write(f"local.set ${idx_local}")
+        self._block_counter += 1
+        loop_label = f"$FS{self._block_counter}_loop"
+        exit_label = f"$FS{self._block_counter}_exit"
+        cont_label = f"$FS{self._block_counter}_cont"
+        self._loop_labels.append((cont_label, exit_label))
+        self._write(f"block {exit_label}")
+        self._indent += 1
+        self._write(f"loop {loop_label}")
+        self._indent += 1
+        # Loop guard: byte cursor >= receiver byte length -> exit.
+        self._write(f"local.get ${idx_local}")
+        self._write(f"local.get ${len_local}")
+        self._write("i32.ge_s")
+        self._write(f"br_if {exit_label}")
+        # Classify the leading byte at ptr+idx into a code-point byte
+        # length (1/2/3/4); stash in $cplen_local.
+        self._write(f"local.get ${ptr_local}")
+        self._write(f"local.get ${idx_local}")
+        self._write("i32.add")
+        self._write("i32.load8_u")
+        self._write(f"local.tee ${byte_local}")
+        self._write("i32.const 0x80")
+        self._write("i32.and")
+        self._write("i32.eqz")
+        self._write("if (result i32)")
+        self._indent += 1
+        self._write("i32.const 1")
+        self._indent -= 1
+        self._write("else")
+        self._indent += 1
+        self._write(f"local.get ${byte_local}")
+        self._write("i32.const 0xe0")
+        self._write("i32.and")
+        self._write("i32.const 0xc0")
+        self._write("i32.eq")
+        self._write("if (result i32)")
+        self._indent += 1
+        self._write("i32.const 2")
+        self._indent -= 1
+        self._write("else")
+        self._indent += 1
+        self._write(f"local.get ${byte_local}")
+        self._write("i32.const 0xf0")
+        self._write("i32.and")
+        self._write("i32.const 0xe0")
+        self._write("i32.eq")
+        self._write("if (result i32)")
+        self._indent += 1
+        self._write("i32.const 3")
+        self._indent -= 1
+        self._write("else")
+        self._indent += 1
+        self._write("i32.const 4")
+        self._indent -= 1
+        self._write("end")
+        self._indent -= 1
+        self._write("end")
+        self._indent -= 1
+        self._write("end")
+        self._write(f"local.set ${cplen_local}")
+        # Bind the element as a one-codepoint String view:
+        #   c_ptr = receiver.ptr + idx ; c_len = cp_len.
+        self._write(f"local.get ${ptr_local}")
+        self._write(f"local.get ${idx_local}")
+        self._write("i32.add")
+        self._write(f"local.set ${instr.name}_ptr")
+        self._write(f"local.get ${cplen_local}")
+        self._write(f"local.set ${instr.name}_len")
+        # Body wrapped in an inner block whose end is the ``continue``
+        # target, so a ``continue`` still runs the byte-cursor bump.
+        self._write(f"block {cont_label}")
+        self._indent += 1
+        self._for_depth += 1
+        for sub in instr.body:
+            self._emit_instr(sub)
+        self._for_depth -= 1
+        self._indent -= 1
+        self._write("end")
+        # Advance the byte cursor by the code point's byte length.
+        self._write(f"local.get ${idx_local}")
+        self._write(f"local.get ${cplen_local}")
+        self._write("i32.add")
+        self._write(f"local.set ${idx_local}")
         self._write(f"br {loop_label}")
         self._indent -= 1
         self._write("end")

@@ -56,6 +56,7 @@ class _LocalsCollectionMixin:
         has_list = False
         has_for = False
         has_range = False
+        has_string_iter = False
         has_list_contains_i64 = False
         # List<Float>.contains stashes the f64 needle in
         # ``$_alloc_tmp_f64`` and compares with ``f64.eq`` (mirrors
@@ -149,6 +150,7 @@ class _LocalsCollectionMixin:
 
         def visit(instrs: list[Instr]) -> None:
             nonlocal has_match, has_variant_ctor, has_list, has_for, has_range
+            nonlocal has_string_iter
             nonlocal has_list_contains_i64, has_list_contains_f64
             nonlocal has_map, has_string_method
             nonlocal has_format_str, has_make_lambda, has_list_hof
@@ -332,6 +334,15 @@ class _LocalsCollectionMixin:
                         # locals once via the has_range flag below.
                         iter_elem = "Int"
                         has_range = True
+                    elif iter_ty == "String":
+                        # ``for c in s``: each iteration binds a one-
+                        # codepoint String. The bind is a (ptr, len)
+                        # pair like any String element; the UTF-8 walk
+                        # needs depth-indexed cursor / length / leading-
+                        # byte / cp-length scratch declared via the
+                        # has_string_iter flag below.
+                        iter_elem = "String"
+                        has_string_iter = True
                     if iter_elem == "String":
                         has_list_string = True
                     # Refine the for-binder's type from the iter's
@@ -701,6 +712,17 @@ class _LocalsCollectionMixin:
             for d in range(max_for_depth):
                 out[f"_f_list_{d}"] = "i32"
                 out[f"_f_idx_{d}"] = "i32"
+        if has_string_iter:
+            # ``for c in s`` reuses the depth-indexed ptr/cursor pair
+            # ($_f_list_N as the receiver ptr, $_f_idx_N as the byte
+            # cursor) and adds three more per-depth i32 scratch locals:
+            # the receiver byte length, the current leading byte, and
+            # the current code point's byte length. Depth-indexed so a
+            # nested String iteration keeps its own UTF-8 cursor state.
+            for d in range(max_for_depth):
+                out[f"_f_strlen_{d}"] = "i32"
+                out[f"_f_byte_{d}"] = "i32"
+                out[f"_f_cplen_{d}"] = "i32"
         if has_range:
             # Range iter / MakeRange: scratch for the for-loop's
             # exit-compare (loaded once at loop top) and for the

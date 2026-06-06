@@ -28,7 +28,7 @@ from .. import capa_ast as A
 from ..typesys import (
     CAPABILITY_NAMES,
     Ty, TyFun, TyName, TyUnit, TyUnknown, TyVar,
-    compatible, contains_capability, ty_str,
+    contains_capability, ty_str,
 )
 
 
@@ -71,7 +71,7 @@ class _ItemsMixin:
         sym = self.global_scope.lookup(c.name)
         expected = sym.ty if sym is not None else TyUnknown
         actual = self._check_expr(c.value)
-        if not compatible(expected, actual):
+        if not self._assignable(expected, actual, c.value):
             self._err(
                 f"constant {c.name!r}: expected {ty_str(expected)}, "
                 f"got {ty_str(actual)}",

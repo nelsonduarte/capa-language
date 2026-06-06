@@ -358,3 +358,33 @@ class _DisciplineMixin:
             ):
                 return True
         return False
+
+    def _assignable(self, expected: Ty, actual: Ty, expr: A.Expr) -> bool:
+        """Assignment-direction compatibility for a value flowing into a
+        declared slot (a ``let``/``var``/assignment target, a struct or
+        typestate field, a function or method argument).
+
+        It is :meth:`_compatible_with_impls` plus the one narrow
+        ``String``-into-``Char`` relaxation that needs the expression to
+        be sound: a Capa ``Char`` is exactly one code point, so a general
+        ``String`` is rejected where a ``Char`` is expected, but a
+        provably one-code-point string *literal* (a ``StringLit`` of
+        length one) is accepted -- so ``let c: Char = "a"`` stays OK while
+        ``let c: Char = "abc"`` and ``let c: Char = someStringVar`` are
+        rejected. The other direction (a ``Char`` where a ``String`` is
+        expected) is handled unconditionally by ``compatible`` itself,
+        since a one-code-point ``Char`` is always a valid ``String``.
+        """
+        if self._compatible_with_impls(expected, actual):
+            return True
+        if (
+            isinstance(expected, TyName)
+            and expected.name == "Char" and not expected.args
+            and isinstance(actual, TyName)
+            and actual.name == "String" and not actual.args
+            and expected.state == actual.state
+            and isinstance(expr, A.StringLit)
+            and len(expr.value) == 1
+        ):
+            return True
+        return False

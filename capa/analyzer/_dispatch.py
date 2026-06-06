@@ -27,7 +27,7 @@ from typing import Optional
 from .. import capa_ast as A
 from ..typesys import (
     CAPABILITY_NAMES, Ty, TyFun, TyName, TyUnknown,
-    compatible, instantiate, substitute, ty_str, unify,
+    instantiate, substitute, ty_str, unify,
 )
 
 
@@ -201,7 +201,9 @@ class _DispatchMixin:
                             break
                         unify(exp_ty, arg_tys[i], mapping)
                         substituted_payload = substitute(exp_ty, mapping)
-                        if not compatible(substituted_payload, arg_tys[i]):
+                        if not self._assignable(
+                            substituted_payload, arg_tys[i], e.args[i]
+                        ):
                             self._err(
                                 f"variant {sym.name!r}: argument {i + 1} "
                                 f"expected {ty_str(substituted_payload)}, "
@@ -313,7 +315,7 @@ class _DispatchMixin:
 
         for i, (param_ty, arg_ty) in enumerate(zip(fun_ty.params, arg_tys)):
             substituted = substitute(param_ty, mapping)
-            if not self._compatible_with_impls(substituted, arg_ty):
+            if not self._assignable(substituted, arg_ty, args_in_order[i]):
                 self._err(
                     f"call to {name!r}: argument {i + 1} expects "
                     f"{ty_str(substituted)}, got {ty_str(arg_ty)}",
@@ -512,7 +514,7 @@ class _DispatchMixin:
             zip(method_fun_ty.params, reordered_tys)
         ):
             substituted = substitute(param_ty, mapping)
-            if not self._compatible_with_impls(substituted, arg_ty):
+            if not self._assignable(substituted, arg_ty, reordered_args[i]):
                 self._err(
                     f"call to {recv_ty.name}.{e.method!r}: argument "
                     f"{i + 1} expects {ty_str(substituted)}, got "

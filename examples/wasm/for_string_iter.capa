@@ -1,0 +1,108 @@
+// String iteration in a for-loop (2026-06-06). ``for c in s`` was
+// accepted by the analyzer and ran on the Python backend (yielding one
+// character per iteration) but the Wasm CIR emitter rejected it at
+// lowering time ("For-iter over type 'String': only List, Set, and
+// Range iteration are supported"). The Wasm backend now walks the
+// receiver's UTF-8 byte slice one Unicode code point at a time, binding
+// the loop variable as a one-codepoint String (a ptr/len view into the
+// original buffer) per iteration -- parity with Python, which yields
+// one-character strings.
+//
+// Iterating a String yields each CODE POINT in order; the loop variable
+// is typed String (a one-codepoint String, consistent with Capa
+// modelling a Char as a one-codepoint String). Each iteration advances
+// by one code point, not one byte, so a multibyte / astral character is
+// one iteration. An empty string yields zero iterations.
+//
+// Covers: ASCII; a mix of ASCII / accented / CJK / emoji (astral); the
+// empty string; the bound element used as a String (interpolated,
+// compared to a one-character string AND a char literal, concatenated,
+// collected into a List<String>, passed to a String-typed function);
+// break / continue / early return; iterating a String from a variable,
+// a function return, a struct field, and a literal; and nested loops
+// (String inside List, List inside String).
+
+fun shout(c: String) -> String
+    return c + "!"
+
+fun source() -> String
+    return "x\u{00e9}z"
+
+fun firstA(s: String) -> String
+    // Early return out of a String for-loop.
+    for c in s
+        if c == "A"
+            return "got-A"
+    return "no-A"
+
+type Holder {
+    s: String
+}
+
+fun main(stdio: Stdio)
+    // 1. ASCII: one code point per iteration.
+    for c in "abc"
+        stdio.println(c)
+
+    // 2. Multibyte: ASCII, accented (2-byte), CJK (3-byte), emoji
+    //    (4-byte / astral), ASCII. Exactly one iteration per code point.
+    let mixed = "a\u{00e9}\u{4e2d}\u{1f600}b"
+    var cps = 0
+    for c in mixed
+        stdio.println("cp=${c}")
+        cps += 1
+    stdio.println("codepoints=${cps}")
+
+    // 3. Empty string: zero iterations.
+    for c in ""
+        stdio.println("UNREACHABLE")
+    stdio.println("after empty")
+
+    // 4. Element used as a String: interpolate, compare to a one-char
+    //    string and to a char literal, concatenate, collect, pass to fn.
+    var collected: List<String> = []
+    for c in "abc"
+        if c == "b"
+            stdio.println("matched string b")
+        if c == 'a'
+            stdio.println("matched char a")
+        collected.push(c + c)
+        stdio.println(shout(c))
+    stdio.println("collected=${collected.length()}")
+
+    // 5. break / continue / early return.
+    for c in "12345"
+        if c == "2"
+            continue
+        if c == "4"
+            break
+        stdio.println("kept ${c}")
+    stdio.println(firstA("xAy"))
+    stdio.println(firstA("xyz"))
+
+    // 6. Iterate a String from a variable, a function return, a field,
+    //    and a literal.
+    let v = "hi"
+    for c in v
+        stdio.println("var ${c}")
+    for c in source()
+        stdio.println("ret ${c}")
+    let h = Holder { s: "ok" }
+    for c in h.s
+        stdio.println("field ${c}")
+    for c in "lit"
+        stdio.println("lit ${c}")
+
+    // 7. Nested loops. A String iteration inside a List iteration.
+    let words = ["ab", "cd"]
+    for w in words
+        for c in w
+            stdio.println("word ${c}")
+    // A List iteration inside a String iteration.
+    for c in "XY"
+        for n in [1, 2]
+            stdio.println("${c}${n}")
+    // A String iteration inside a String iteration.
+    for outer in "pq"
+        for inner in "12"
+            stdio.println("${outer}-${inner}")

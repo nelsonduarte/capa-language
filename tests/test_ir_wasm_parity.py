@@ -288,6 +288,23 @@ _PARITY_PROGRAMS: list[str] = [
     # for-loops (a tuple-destructure loop inside a plain one and inside
     # another tuple-destructure loop).
     "for_tuple_destructure.capa",
+    # String iteration slice (2026-06-06): ``for c in s`` walks the
+    # receiver's UTF-8 byte slice one Unicode code point at a time on
+    # the Wasm backend, binding the loop variable as a one-codepoint
+    # String (a ptr/len view into the original buffer) per iteration.
+    # Pre-fix the Wasm CIR emitter rejected it at lowering time ("For-
+    # iter over type 'String': only List, Set, and Range iteration are
+    # supported") while the Python backend already yielded one-character
+    # strings. The analyzer now types the loop variable String (was
+    # Unknown) and Char / String are interchangeable for == so a char-
+    # literal comparison still type-checks. Covers ASCII, a mix of
+    # ASCII / accented / CJK / emoji (astral), the empty string, the
+    # element used as a String (interpolate / compare to a one-char
+    # string and a char literal / concatenate / collect / pass to a
+    # String fn), break / continue / early return, iterating a String
+    # from a variable / function return / struct field / literal, and
+    # nested loops (String in List, List in String, String in String).
+    "for_string_iter.capa",
     # Slice (2026-06-06): struct field-target assignment on the Wasm
     # backend. ``obj.field = value`` lowers to a FieldStore that writes
     # the field slot of the heap record in place (the symmetric write to

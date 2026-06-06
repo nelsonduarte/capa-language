@@ -29,7 +29,7 @@ from __future__ import annotations
 from .. import capa_ast as A
 from .. import _labels as L
 from ..typesys import (
-    Ty, TyBool, TyName, TyUnit, TyUnknown,
+    Ty, TyBool, TyName, TyString, TyUnit, TyUnknown,
     compatible, ty_str,
 )
 
@@ -92,7 +92,7 @@ class _StatementsMixin:
         actual = self._check_expr(s.value)
         if s.type_expr is not None:
             declared = self._resolve_type(s.type_expr)
-            if not compatible(declared, actual):
+            if not self._assignable(declared, actual, s.value):
                 self._err(
                     f"let binding: expected {ty_str(declared)}, "
                     f"got {ty_str(actual)}",
@@ -135,7 +135,7 @@ class _StatementsMixin:
         actual = self._check_expr(s.value)
         if s.type_expr is not None:
             declared = self._resolve_type(s.type_expr)
-            if not compatible(declared, actual):
+            if not self._assignable(declared, actual, s.value):
                 self._err(
                     f"var declaration: expected {ty_str(declared)}, "
                     f"got {ty_str(actual)}",
@@ -229,7 +229,7 @@ class _StatementsMixin:
                     f"construction (or as a function parameter) and stay put",
                     s.pos,
                 )
-        if not compatible(target_ty, value_ty):
+        if not self._assignable(target_ty, value_ty, s.value):
             self._err(
                 f"assignment: cannot assign {ty_str(value_ty)} to "
                 f"{ty_str(target_ty)}",
@@ -407,30 +407,44 @@ class _StatementsMixin:
         iter_label = self._label_of(s.iter)
         elem_ty: Ty = TyUnknown
         # Capa's iterables are exactly ``List<T>``, ``Set<T>``,
-        # ``Range`` and ``String`` (character-by-character). Each
+        # ``Range`` and ``String`` (code-point-by-code-point). Each
         # collection exposes its element type as its single type
-        # argument; ``String`` iterates characters (the element
-        # type is left ``Unknown`` here, as it was historically,
-        # so the ``examples/io.capa`` count-lines pattern keeps
-        # working). A future ``Iterable`` trait would consolidate
-        # this dispatch, but the enumeration is sound until it
-        # lands. Anything else has no sound lowering on either
-        # backend, so reject it here rather than let the Python
-        # backend silently iterate a Map's keys or crash, while
-        # the Wasm backend emits a clean error.
+        # argument; ``String`` iterates Unicode code points, each
+        # bound as a one-codepoint ``String`` (Capa models a Char as
+        # a one-codepoint String, and the Python backend yields
+        # one-character strings). A future ``Iterable`` trait would
+        # consolidate this dispatch, but the enumeration is sound
+        # until it lands. Anything else has no sound lowering on
+        # either backend, so reject it here rather than let the
+        # Python backend silently iterate a Map's keys or crash,
+        # while the Wasm backend emits a clean error.
         if (
             isinstance(iter_ty, TyName)
             and iter_ty.name in ("List", "Set", "Range") and iter_ty.args
         ):
             elem_ty = iter_ty.args[0]
+        elif isinstance(iter_ty, TyName) and iter_ty.name == "String":
+            # Each iteration yields a one-codepoint String, so the
+            # loop variable is typed ``String``; the body can use it
+            # as a String (interpolate, compare, concatenate, pass to
+            # a String-typed parameter). A tuple-destructuring pattern
+            # has no tuple element to bind here, so reject it cleanly
+            # rather than bind its components to ``Unknown``.
+            elem_ty = TyString
+            if isinstance(s.pattern, A.TuplePat):
+                self._err(
+                    "cannot destructure a String element with a tuple "
+                    "pattern: each iteration yields a one-codepoint "
+                    "String, not a tuple",
+                    s.pattern.pos,
+                )
         elif isinstance(iter_ty, TyName) and iter_ty.name in (
-            "List", "Set", "Range", "String"
+            "List", "Set", "Range"
         ):
             # Iterable shapes whose element type we don't pin here
-            # (a bare ``Range`` without args, or ``String``). The
-            # loop variable stays ``Unknown``; this matches prior
-            # behaviour for ``String`` and downstream dispatch
-            # falls back to runtime typing.
+            # (a bare ``Range`` without args). The loop variable stays
+            # ``Unknown``; downstream dispatch falls back to runtime
+            # typing.
             elem_ty = TyUnknown
         elif iter_ty is TyUnknown:
             # Inference could not resolve the iterable's type (a
@@ -486,7 +500,12 @@ class _StatementsMixin:
         else:
             actual = self._check_expr(s.value)
         expected = self.current_return_type or TyUnit
-        if not compatible(expected, actual):
+        ret_ok = (
+            self._assignable(expected, actual, s.value)
+            if s.value is not None
+            else compatible(expected, actual)
+        )
+        if not ret_ok:
             self._err(
                 f"return: expected {ty_str(expected)}, got {ty_str(actual)}",
                 s.pos,

@@ -131,7 +131,7 @@ class _ExpressionsMixin:
             body_ty = self._check_expr(e.body)
             self.current_return_type = prev_ret
             if decl_ret_expr is not None:
-                if not compatible(decl_ret_expr, body_ty):
+                if not self._assignable(decl_ret_expr, body_ty, e.body):
                     self._err(
                         f"lambda body has type {ty_str(body_ty)}, but "
                         f"declared return type is {ty_str(decl_ret_expr)}",
@@ -744,7 +744,7 @@ class _ExpressionsMixin:
                     fexpr.pos,
                 )
                 continue
-            if not compatible(fields[fname], actual):
+            if not self._assignable(fields[fname], actual, fexpr):
                 self._err(
                     f"typestate {name!r}: field {fname!r} expects "
                     f"{ty_str(fields[fname])}, got {ty_str(actual)}",
@@ -832,7 +832,7 @@ class _ExpressionsMixin:
             expected = sym.struct_fields[fname]
             substituted = substitute(expected, mapping)
             actual_ty = self.types.get(id(fexpr), TyUnknown)
-            if not compatible(substituted, actual_ty):
+            if not self._assignable(substituted, actual_ty, fexpr):
                 self._err(
                     f"struct {e.type_name!r}: field {fname!r} expects "
                     f"{ty_str(substituted)}, got {ty_str(actual_ty)}",

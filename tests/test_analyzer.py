@@ -5938,6 +5938,120 @@ class TestForLoopIterable(unittest.TestCase):
 
 
 # =============================================================
+# Asymmetric Char / String compatibility.
+#
+# A Capa Char is, by definition, exactly one code point, so it is
+# ALWAYS a valid String (one direction). A general String is NOT a
+# Char: only a provably one-code-point string LITERAL is accepted
+# where a Char is expected. A multi-char literal or a non-literal
+# String value flowing into a Char slot is unsound and rejected.
+# =============================================================
+
+class TestCharStringCompat(unittest.TestCase):
+    def test_one_char_literal_into_char_ok(self):
+        r = check(
+            "fun main(stdio: Stdio)\n"
+            "    let c: Char = \"a\"\n"
+            "    stdio.print(\"${c}\")\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+    def test_multi_char_literal_into_char_rejected(self):
+        msgs = errors_of(
+            "fun main(stdio: Stdio)\n"
+            "    let c: Char = \"abc\"\n"
+        )
+        self.assertTrue(
+            any("expected Char" in m and "String" in m for m in msgs), msgs,
+        )
+
+    def test_string_value_into_char_rejected(self):
+        msgs = errors_of(
+            "fun main(stdio: Stdio)\n"
+            "    let s = \"abc\"\n"
+            "    let c: Char = s\n"
+        )
+        self.assertTrue(
+            any("expected Char" in m and "String" in m for m in msgs), msgs,
+        )
+
+    def test_char_literal_into_string_ok(self):
+        r = check(
+            "fun main(stdio: Stdio)\n"
+            "    let s: String = 'z'\n"
+            "    stdio.print(s)\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+    def test_char_compare_against_string_iter_element_ok(self):
+        # The String-iteration element is typed String; comparing it
+        # to a char literal stays valid via the Char-is-a-String
+        # direction, and using it as a String (interpolate, print,
+        # concat, .length()) stays valid too.
+        r = check(
+            "fun main(stdio: Stdio)\n"
+            "    let s = \"abc\"\n"
+            "    for c in s\n"
+            "        if c == 'a'\n"
+            "            stdio.print(c + \"!\")\n"
+            "        let n = c.length()\n"
+            "        stdio.print(\"${c}${n}\")\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+    def test_multi_char_literal_into_char_field_rejected(self):
+        msgs = errors_of(
+            "type Box { c: Char }\n"
+            "fun main(stdio: Stdio)\n"
+            "    let b = Box { c: \"ab\" }\n"
+        )
+        self.assertTrue(
+            any("expects Char" in m and "String" in m for m in msgs), msgs,
+        )
+
+    def test_one_char_literal_into_char_field_ok(self):
+        r = check(
+            "type Box { c: Char }\n"
+            "fun main(stdio: Stdio)\n"
+            "    let b = Box { c: \"a\" }\n"
+            "    stdio.print(\"${b.c}\")\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+    def test_string_value_into_char_param_rejected(self):
+        msgs = errors_of(
+            "fun take(c: Char) -> Char\n"
+            "    return c\n"
+            "fun main(stdio: Stdio)\n"
+            "    let s = \"ab\"\n"
+            "    let r = take(s)\n"
+        )
+        self.assertTrue(
+            any("expects Char" in m and "String" in m for m in msgs), msgs,
+        )
+
+    def test_char_literal_into_string_param_ok(self):
+        r = check(
+            "fun take(s: String) -> String\n"
+            "    return s\n"
+            "fun main(stdio: Stdio)\n"
+            "    let r = take('a')\n"
+            "    stdio.print(r)\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+    def test_one_char_literal_into_char_param_ok(self):
+        r = check(
+            "fun take(c: Char) -> Char\n"
+            "    return c\n"
+            "fun main(stdio: Stdio)\n"
+            "    let r = take(\"a\")\n"
+            "    stdio.print(\"${r}\")\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+
+# =============================================================
 # Index-element assignment rejection (GAP 2)
 #
 # ``xs[i] = v`` and the augmented ``xs[i] += 1`` have no sound
