@@ -34,12 +34,38 @@ from ._layout import (
 
 
 class _StructEmissionMixin:
+    def _resolve_construction_sum(self, instr: Call) -> str:
+        """Resolve the sum type a variant constructor builds.
+
+        The ``_variant_to_sum`` table is keyed by the bare variant
+        name, which collides once a generic sum is monomorphised into
+        several concrete clones that share a variant name (e.g.
+        ``Opt<T>`` -> ``Opt__Char`` and ``Opt__Point`` both declare a
+        ``Just`` variant). The table then maps ``Just`` to whichever
+        clone was declared last, so a ``Just('z')`` whose dst is typed
+        ``Opt__Char`` would be laid out with ``Opt__Point``'s payload
+        sizes -- a silent miscompile.
+
+        The monomorphiser pins the constructor call's dst local to the
+        concrete sum type, so prefer that: if the dst's declared type
+        names a sum layout that actually declares this variant, use it.
+        Fall back to the bare-name table for the non-generic case (and
+        for built-in Option / Result, whose dst type is the bare sum
+        name already)."""
+        if instr.dst is not None and self._current_fn is not None:
+            dst_ty = self._current_fn.locals.get(instr.dst, "")
+            head = _strip_type_qualifiers(dst_ty)
+            layout = self._sum_layouts.get(head)
+            if layout is not None and instr.callee_name in layout["variants"]:
+                return head
+        return self._variant_to_sum[instr.callee_name]
+
     def _emit_variant_construction(self, instr: Call) -> None:
         """Emit code that allocates a sum-type instance, writes the
         variant tag at offset 0, and stores each payload at its
         layout-determined offset. Leaves the i32 pointer in
         ``instr.dst``."""
-        sum_name = self._variant_to_sum[instr.callee_name]
+        sum_name = self._resolve_construction_sum(instr)
         sum_layout = self._sum_layouts[sum_name]
         tag, payload_layouts = sum_layout["variants"][instr.callee_name]
         total_size = sum_layout["size"]

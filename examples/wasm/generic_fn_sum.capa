@@ -1,0 +1,91 @@
+// generic_fn_sum.capa: a generic FUNCTION whose parameter / return
+// type is a user-defined SUM type parameterised by the function's type
+// variable must have its specialised instance emitted on the Wasm
+// backend and every call routed to it, with parity to Python.
+//
+// Pre-fix the monomorphiser already specialised the generic sum decl
+// (``Opt<T>`` -> ``Opt__Char`` / ``Opt__Point`` ...) and the generic
+// function (``unwrap<T>`` -> ``unwrap__Char`` / ``unwrap__Point``),
+// but the Wasm emitter resolved a variant constructor's sum via a
+// table keyed by the bare variant name (``_variant_to_sum["Just"]``).
+// Once two monomorphic clones of the same generic sum shared a variant
+// name, that table collapsed to whichever clone was declared last, so a
+// ``Just('z')`` whose dst is ``Opt__Char`` (String payload, 8-byte
+// slot) was laid out with ``Opt__Point``'s payload sizes (4-byte
+// pointer slot) -- a silent miscompile that surfaced as a Wasm
+// validation failure ("type mismatch: expected i32, found i64"). The
+// emitter now resolves a constructor's sum from the dst local's
+// concrete (monomorphised) type, so every clone gets its own layout.
+
+type Opt<T> =
+    Just(T)
+    Nothing
+
+type Point {
+    x: Int,
+    y: Int
+}
+
+// Criterion 1: generic fn over a user sum, matches it, returns the T
+// payload or a fallback. Instantiated at Int / String / Char below.
+fun unwrap<T>(o: Opt<T>, fallback: T) -> T
+    return match o
+        Just(x) -> x
+        Nothing -> fallback
+
+// Criterion 2: generic fn that RETURNS a user sum it constructs.
+fun wrap<T>(x: T) -> Opt<T>
+    return Just(x)
+
+// A second generic sum, exercised at several concrete types in the same
+// program. (Variant names are globally unique in Capa, so a distinct set
+// is required; the constructor-routing fix is proven by Opt's own
+// multi-instantiation above, where one variant name backs several
+// monomorphic clones with different payload layouts.)
+type Maybe<T> =
+    Present(T)
+    Absent
+
+fun unwrap_maybe<T>(m: Maybe<T>, fallback: T) -> T
+    return match m
+        Present(x) -> x
+        Absent -> fallback
+
+fun main(s: Stdio)
+    // Criterion 1 + 3: one generic fn, three concrete instances in one
+    // program (Int, String, Char), distinct specialised instances.
+    let a = unwrap(Just(42), 0)
+    s.println("int: ${a}")
+    let b = unwrap(Just("hi"), "none")
+    s.println("str: ${b}")
+    let c = unwrap(Just('z'), 'a')
+    s.println("char: ${c}")
+
+    // The Nothing arm, instantiated at Int and String.
+    let ni: Opt<Int> = Nothing
+    s.println("none-int: ${unwrap(ni, 99)}")
+    let ns: Opt<String> = Nothing
+    let ns_v = unwrap(ns, "fallback")
+    s.println("none-str: ${ns_v}")
+
+    // Criterion 2: generic fn returns a constructed sum, several types.
+    let wi = wrap(7)
+    s.println("wrap-int: ${unwrap(wi, 0)}")
+    let ws = wrap("wrapped")
+    let ws_v = unwrap(ws, "x")
+    s.println("wrap-str: ${ws_v}")
+
+    // Criterion 4: payload is itself a compound type (a struct, a list).
+    let p = Point { x: 1, y: 2 }
+    let q = Point { x: 9, y: 9 }
+    let r = unwrap(Just(p), q)
+    s.println("struct: ${r.x} ${r.y}")
+    let lst = unwrap(Just([10, 20, 30]), [0])
+    s.println("list: ${lst[1]}")
+
+    // A second generic sum reusing the same variant names: each must
+    // route to its own layout.
+    let m = unwrap_maybe(Present("via-maybe"), "no-maybe")
+    s.println("maybe: ${m}")
+    let mc = unwrap_maybe(Present('q'), 'a')
+    s.println("maybe-char: ${mc}")

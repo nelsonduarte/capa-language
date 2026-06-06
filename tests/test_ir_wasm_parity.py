@@ -259,6 +259,24 @@ _PARITY_PROGRAMS: list[str] = [
     # / Bool / Float, a compound generic field (List / nested struct),
     # the same-function read, and the non-generic regression case.
     "generic_struct_field.capa",
+    # Generic FUNCTION over a user SUM type slice (2026-06-06): a generic
+    # function whose parameter / return type is a user-defined sum
+    # parameterised by the function's type variable (``unwrap<T>(o:
+    # Opt<T>, fallback: T) -> T``) type-checked and ran on Python but
+    # miscompiled on Wasm once instantiated at more than one concrete
+    # type. The monomorphiser already specialised both the sum decl and
+    # the function, but the emitter routed a variant constructor to a sum
+    # via a table keyed by the bare variant name; two monomorphic clones
+    # sharing a variant name (``Opt__Char`` / ``Opt__Point`` both declare
+    # ``Just``) collapsed that table to the last-declared clone, so a
+    # ``Just('z')`` typed ``Opt__Char`` was laid out with the wrong
+    # clone's payload sizes ("type mismatch: expected i32, found i64" at
+    # Wasm validation). The emitter now resolves a constructor's sum from
+    # the dst local's concrete monomorphised type. Covers T = Int /
+    # String / Char, the fallback (Nothing) arm, a generic fn that
+    # returns a constructed sum, a compound payload (struct + list), the
+    # same generic fn at several concrete types, and a second generic sum.
+    "generic_fn_sum.capa",
     # List-parameter mutation slice (2026-06-04): pushing to a List
     # received as a function PARAMETER (no local list built in the body)
     # crashed the Wasm backend at assembly time with "unknown local
@@ -1075,6 +1093,27 @@ class TestPythonWasmParity(unittest.TestCase):
         # struct), the same-function read, and the non-generic
         # regression case.
         self._assert_parity("generic_struct_field.capa")
+
+    def test_generic_fn_sum(self):
+        # Generic-function-over-user-sum slice (2026-06-06): a generic
+        # function whose parameter / return type is a user-defined sum
+        # parameterised by the function's type variable (``unwrap<T>(o:
+        # Opt<T>, fallback: T) -> T``) ran on Python but miscompiled on
+        # Wasm once instantiated at more than one concrete type. The
+        # monomorphiser specialised the sum decl and the function, but
+        # the emitter routed variant construction via a table keyed by
+        # the bare variant name; two clones of one generic sum that share
+        # a variant name (``Opt__Char`` / ``Opt__Point`` both declare
+        # ``Just``) collapsed it to the last clone, so a ``Just('z')``
+        # typed ``Opt__Char`` (String, 8-byte slot) was laid out with the
+        # other clone's payload sizes ("type mismatch: expected i32,
+        # found i64"). The emitter now resolves a constructor's sum from
+        # the dst local's concrete monomorphised type. Covers T = Int /
+        # String / Char, the Nothing fallback arm, a generic fn that
+        # returns a constructed sum, a compound payload (struct + list),
+        # the same generic fn at several concrete types, and a second
+        # generic sum.
+        self._assert_parity("generic_fn_sum.capa")
 
     def test_list_param_push(self):
         # List-parameter mutation slice (2026-06-04): pushing to a List
