@@ -73,19 +73,39 @@ class _StatementsMixin:
             else:
                 target = self._emit_expr(s.target)
                 value = self._emit_expr(s.value)
-                # Safety: augmented assignment on an Int target (``+=``,
-                # ``-=``, ``*=``, ``<<=``, ``>>=``) routes through the
-                # overflow-checking runtime helpers so the Python backend
-                # raises ``OverflowError`` at the same input the Wasm
-                # backend traps on (audit fixes C2 and C3). Mirrors the
-                # plain-BinOp rewrite in ``_emit_expr``.
-                if s.op in ("+=", "-=", "*=", "<<=", ">>="):
+                # Safety: augmented assignment on an Int target routes
+                # through the same integer helpers the plain-BinOp path in
+                # ``_emit_expr`` uses, so both backends agree.
+                #   ``+= -= *= <<= >>=`` -> overflow-checking helpers, so
+                #     the Python backend raises ``OverflowError`` at the
+                #     same input the Wasm backend traps on (audit C2/C3).
+                #   ``/=`` -> ``_capa_idiv`` so Int division floors AND
+                #     traps on ``/0`` and ``MIN / -1`` like the Wasm
+                #     ``i64.div_s`` (plain ``/=`` is float true division
+                #     in Python and diverges from Wasm).
+                #   ``%=`` -> plain ``%`` (Python's floored modulo already
+                #     matches Wasm ``i64.rem_s`` and traps on ``/0``),
+                #     mirroring binary ``%``; rewritten here only so a
+                #     Float-vs-Int decision is explicit and Int ``%=`` is
+                #     never accidentally promoted.
+                # Float targets fall through to the raw Python operator, so
+                # Float ``/=`` stays true division and Float ``%=`` stays
+                # float modulo - unchanged on both backends.
+                if s.op in ("+=", "-=", "*=", "<<=", ">>=", "/=", "%="):
                     from ..typesys import TyName
                     tt = self.types.get(id(s.target))
                     vt = self.types.get(id(s.value))
                     tt_is_int = isinstance(tt, TyName) and tt.name == "Int"
                     vt_is_int = isinstance(vt, TyName) and vt.name == "Int"
                     if tt_is_int and vt_is_int:
+                        if s.op == "/=":
+                            self.em.write(
+                                f"{target} = _capa_idiv({target}, {value})"
+                            )
+                            return
+                        if s.op == "%=":
+                            self.em.write(f"{target} %= {value}")
+                            return
                         helper = {
                             "+=": "_capa_iadd",
                             "-=": "_capa_isub",

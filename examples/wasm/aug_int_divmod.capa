@@ -1,0 +1,94 @@
+// Augmented integer division / modulo parity (2026-06-06).
+//
+// ``x /= y`` and ``x %= y`` on an Int target must produce exactly the
+// same result as the explicit ``x = x / y`` / ``x = x % y`` form, which
+// the Wasm backend already gets right. The Python backend previously
+// routed Int ``+= -= *= <<= >>=`` through the floor / overflow helpers
+// but let ``/=`` and ``%=`` fall through to the raw Python operators,
+// so ``x /= y`` was true division (Float, wrong rounding) and diverged
+// from Wasm. This program pins both forms across positive, negative,
+// mixed-sign, and zero-result operands, as a plain local and as a
+// struct-field read-modify-write. Output must be byte-identical to the
+// Python reference path.
+
+type Acc {
+    x: Int
+}
+
+fun main(stdio: Stdio)
+    // ---- Int /= as a plain local ----
+
+    // Even positive: 24 / 4 = 6 (must NOT print 6.0).
+    var a = 24
+    a /= 4
+    stdio.println("a = ${a}")
+
+    // Floor vs truncation: -7 / 2 = -4 on both backends (-3.5 truncated
+    // toward zero would be -3; Python true division would print -3.5).
+    var b = -7
+    b /= 2
+    stdio.println("b = ${b}")
+
+    // Positive dividend, negative divisor: 7 / -2 = -4 (floored).
+    var c = 7
+    c /= -2
+    stdio.println("c = ${c}")
+
+    // Both negative: -8 / -2 = 4.
+    var d = -8
+    d /= -2
+    stdio.println("d = ${d}")
+
+    // Non-exact positive: 7 / 2 = 3.
+    var e = 7
+    e /= 2
+    stdio.println("e = ${e}")
+
+    // ---- Int %= as a plain local ----
+
+    // Positive: 17 % 5 = 2.
+    var f = 17
+    f %= 5
+    stdio.println("f = ${f}")
+
+    // Mixed sign (floored modulo, sign of divisor): -7 % 3 = 2.
+    var g = -7
+    g %= 3
+    stdio.println("g = ${g}")
+
+    // Mixed sign other way: 7 % -3 = -2.
+    var h = 7
+    h %= -3
+    stdio.println("h = ${h}")
+
+    // ---- Struct-field read-modify-write ----
+
+    var p = Acc { x: 24 }
+    p.x /= 4
+    stdio.println("p.x = ${p.x}")
+
+    var q = Acc { x: -7 }
+    q.x /= 2
+    stdio.println("q.x = ${q.x}")
+
+    var r = Acc { x: 17 }
+    r.x %= 5
+    stdio.println("r.x = ${r.x}")
+
+    var s = Acc { x: -7 }
+    s.x %= 3
+    stdio.println("s.x = ${s.x}")
+
+    // ---- Float /= must stay float division (unaffected) ----
+
+    var fa = 7.0
+    fa /= 2.0
+    stdio.println("fa = ${fa}")
+
+    // ---- Regression: other augmented ops on Int still correct ----
+
+    var ia = 10
+    ia += 5
+    ia -= 3
+    ia *= 2
+    stdio.println("ia = ${ia}")

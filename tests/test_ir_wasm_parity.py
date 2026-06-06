@@ -298,6 +298,18 @@ _PARITY_PROGRAMS: list[str] = [
     # visibility through a function boundary (a callee mutating the
     # caller's struct).
     "struct_field_assign.capa",
+    # Slice (2026-06-06): augmented integer division / modulo. ``x /=
+    # y`` and ``x %= y`` on an Int target must produce the same floored
+    # result as the explicit ``x = x / y`` / ``x = x % y`` form (which
+    # the Wasm backend already gets right). The Python backend routed
+    # Int ``+= -= *= <<= >>=`` through the floor / overflow helpers but
+    # let ``/=`` / ``%=`` fall through to raw Python operators, so ``x
+    # /= 4`` was true division (Float, wrong rounding) and ``-7 /= 2``
+    # printed ``-3.5`` instead of ``-4``. Covers positive / negative /
+    # mixed-sign / zero-result operands as a plain local and as a
+    # struct-field read-modify-write, plus the Float ``/=`` (unchanged,
+    # stays float division) and the ``+= -= *=`` regression.
+    "aug_int_divmod.capa",
 ]
 
 # Programs deliberately excluded from parity and why; documented
@@ -1059,6 +1071,18 @@ class TestPythonWasmParity(unittest.TestCase):
         # caller-visibility (a push through a parameter is visible to the
         # caller on both backends, including across the grow path).
         self._assert_parity("list_param_push.capa")
+
+    def test_aug_int_divmod(self):
+        # Augmented integer division / modulo slice (2026-06-06): ``x
+        # /= y`` and ``x %= y`` on an Int target lower to the same
+        # ``_capa_idiv`` / floored-``%`` path as the binary forms.
+        # Pre-fix the Python backend let Int ``/=`` fall through to raw
+        # Python true division (Float, wrong rounding), so ``24 /= 4``
+        # printed ``6.0`` and ``-7 /= 2`` printed ``-3.5`` where the
+        # Wasm backend printed ``6`` / ``-4``. Covers plain locals,
+        # struct-field RMW, the unaffected Float ``/=``, and the
+        # ``+= -= *=`` regression.
+        self._assert_parity("aug_int_divmod.capa")
 
     def test_struct_field_assign(self):
         # Field-target assignment slice (2026-06-06): ``obj.field =

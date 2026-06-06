@@ -5166,6 +5166,70 @@ class TestWasmSafetyTraps(unittest.TestCase):
         with self.assertRaises(wasmtime.Trap):
             self._exec(src, "div", -(1 << 63), -1)
 
+    # ---- Augmented Int /= and %= match the binary div / mod -------
+    #
+    # The augmented form (``x /= y`` / ``x %= y``) on an Int target
+    # must produce the same floored result AND trap on the same
+    # inputs as the binary ``/`` / ``%``. These mirror the binary
+    # trap tests above for the augmented-assignment path (which the
+    # Python backend used to route through raw float division).
+
+    def test_aug_int_div_is_floored(self):
+        src = (
+            "fun adiv(a: Int, b: Int) -> Int\n"
+            "    var x = a\n"
+            "    x /= b\n"
+            "    return x\n"
+        )
+        self.assertEqual(self._exec(src, "adiv", -7, 2), -4)
+        self.assertEqual(self._exec(src, "adiv", 7, -2), -4)
+        self.assertEqual(self._exec(src, "adiv", 24, 4), 6)
+        self.assertEqual(self._exec(src, "adiv", -8, -2), 4)
+
+    def test_aug_int_div_by_zero_traps(self):
+        import wasmtime
+        src = (
+            "fun adiv(a: Int, b: Int) -> Int\n"
+            "    var x = a\n"
+            "    x /= b\n"
+            "    return x\n"
+        )
+        with self.assertRaises(wasmtime.Trap):
+            self._exec(src, "adiv", 7, 0)
+
+    def test_aug_int_div_min_by_neg_one_traps(self):
+        import wasmtime
+        src = (
+            "fun adiv(a: Int, b: Int) -> Int\n"
+            "    var x = a\n"
+            "    x /= b\n"
+            "    return x\n"
+        )
+        with self.assertRaises(wasmtime.Trap):
+            self._exec(src, "adiv", -(1 << 63), -1)
+
+    def test_aug_int_mod_is_floored(self):
+        src = (
+            "fun amod(a: Int, b: Int) -> Int\n"
+            "    var x = a\n"
+            "    x %= b\n"
+            "    return x\n"
+        )
+        self.assertEqual(self._exec(src, "amod", -7, 3), 2)
+        self.assertEqual(self._exec(src, "amod", 7, -3), -2)
+        self.assertEqual(self._exec(src, "amod", 17, 5), 2)
+
+    def test_aug_int_mod_by_zero_traps(self):
+        import wasmtime
+        src = (
+            "fun amod(a: Int, b: Int) -> Int\n"
+            "    var x = a\n"
+            "    x %= b\n"
+            "    return x\n"
+        )
+        with self.assertRaises(wasmtime.Trap):
+            self._exec(src, "amod", 7, 0)
+
     # ---- Bug #6: unary negation of i64::MIN traps -----------------
 
     def test_int_negate_works(self):

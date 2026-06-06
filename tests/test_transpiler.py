@@ -330,6 +330,123 @@ class TestIntegerDivision(unittest.TestCase):
         self.assertIn("Int", joined)
         self.assertIn("Float", joined)
 
+    # ---- Augmented Int /= and %= mirror the binary forms ----------
+    #
+    # The Python backend routed Int ``+= -= *= <<= >>=`` through the
+    # floor / overflow helpers but let ``/=`` and ``%=`` fall through
+    # to the raw Python augmented operators. ``x /= 4`` is true
+    # division in Python (Float, wrong rounding), so it printed
+    # ``6.0`` where the explicit ``x = x / 4`` and the Wasm backend
+    # both yield ``6``. These pin the augmented forms to the same
+    # ``_capa_idiv`` / floored-``%`` lowering as the binary forms.
+
+    def test_aug_int_div_runtime_is_integer(self):
+        rc, out, err = run_capa(
+            'fun main(stdio: Stdio)\n'
+            '    var x = 24\n'
+            '    x /= 4\n'
+            '    stdio.println("${x}")\n'
+        )
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out, "6\n")
+
+    def test_aug_int_div_is_floored(self):
+        # ``-7 /= 2`` must floor to ``-4`` (Python true division would
+        # give ``-3.5``; truncation would give ``-3``).
+        rc, out, err = run_capa(
+            'fun main(stdio: Stdio)\n'
+            '    var x = -7\n'
+            '    x /= 2\n'
+            '    stdio.println("${x}")\n'
+        )
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out, "-4\n")
+
+    def test_aug_int_div_emits_idiv_helper(self):
+        code = transpile_only(
+            'fun main(stdio: Stdio)\n'
+            '    var x = 24\n'
+            '    x /= 4\n'
+        )
+        self.assertIn("_capa_idiv(x, 4)", code)
+        # Must NOT leave a raw float-division augmented operator.
+        self.assertNotIn("x /= 4", code)
+
+    def test_aug_int_mod_runtime_floored(self):
+        rc, out, err = run_capa(
+            'fun main(stdio: Stdio)\n'
+            '    var x = -7\n'
+            '    x %= 3\n'
+            '    stdio.println("${x}")\n'
+        )
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out, "2\n")
+
+    def test_aug_int_div_struct_field_rmw(self):
+        # The struct field read-modify-write form (``c.x /= 4``)
+        # surfaces the same lowering as the plain local.
+        rc, out, err = run_capa(
+            'type Acc {\n'
+            '    x: Int\n'
+            '}\n'
+            'fun main(stdio: Stdio)\n'
+            '    var c = Acc { x: -7 }\n'
+            '    c.x /= 2\n'
+            '    stdio.println("${c.x}")\n'
+        )
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out, "-4\n")
+
+    def test_aug_float_div_stays_true_division(self):
+        # Float ``/=`` must be UNAFFECTED: it stays true division and
+        # produces a Float result.
+        rc, out, err = run_capa(
+            'fun main(stdio: Stdio)\n'
+            '    var x = 7.0\n'
+            '    x /= 2.0\n'
+            '    stdio.println("${x}")\n'
+        )
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out, "3.5\n")
+
+    def test_aug_float_div_emits_true_division(self):
+        code = transpile_only(
+            'fun main(stdio: Stdio)\n'
+            '    var x = 7.0\n'
+            '    x /= 2.0\n'
+        )
+        # Float target keeps the raw Python augmented operator (the
+        # ``_capa_idiv`` symbol still appears in the import preamble,
+        # so check for the call form, not the bare name).
+        self.assertIn("x /= ", code)
+        self.assertNotIn("_capa_idiv(", code)
+
+    def test_aug_int_div_by_zero_raises(self):
+        # ``/=`` by zero on Int must trap, matching the binary form
+        # (``_capa_idiv`` raises ``ZeroDivisionError``).
+        rc, out, err = run_capa(
+            'fun main(stdio: Stdio)\n'
+            '    var x = 7\n'
+            '    let z = 0\n'
+            '    x /= z\n'
+            '    stdio.println("${x}")\n'
+        )
+        self.assertNotEqual(rc, 0)
+        self.assertIn("ZeroDivisionError", err)
+
+    def test_aug_int_mod_by_zero_raises(self):
+        # ``%=`` by zero on Int raises ``ZeroDivisionError`` (Python's
+        # native ``%`` 0), matching the binary ``%``.
+        rc, out, err = run_capa(
+            'fun main(stdio: Stdio)\n'
+            '    var x = 7\n'
+            '    let z = 0\n'
+            '    x %= z\n'
+            '    stdio.println("${x}")\n'
+        )
+        self.assertNotEqual(rc, 0)
+        self.assertIn("ZeroDivisionError", err)
+
 
 class TestTranspileTypes(unittest.TestCase):
     def test_struct_creation(self):
