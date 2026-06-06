@@ -179,6 +179,24 @@ class _StatementsMixin:
                     f"cannot assign to parameter {sym.name!r}", s.pos,
                 )
         elif isinstance(s.target, (A.FieldAccess, A.Index)):
+            # A bare index-element target (``xs[i] = v`` and the
+            # augmented ``xs[i] += 1``) has no sound lowering on
+            # either backend: the Python transpiler emits an
+            # assignment to a function call (``_capa_list_get(...) =
+            # v``), a runtime SyntaxError, and the Wasm backend
+            # raises a CIR-lowering error. Reject it at the target
+            # so both backends agree at compile time. Note that
+            # ``xs[i].field = v`` is a FieldAccess target (its
+            # receiver is the Index) and stays allowed: it lowers
+            # via a field store whose receiver is the index.
+            if isinstance(s.target, A.Index):
+                self._err(
+                    "assignment to a list element is not supported "
+                    "(no backend can lower 'xs[i] = v'); rebuild the "
+                    "list or assign through a struct field reached by "
+                    "the index instead",
+                    s.target.pos,
+                )
             # Frozen-struct check: writing to a field of a struct
             # that flows (directly or transitively) into a
             # ``Set<...>`` or ``Map<...K, V>`` key would break the
@@ -388,33 +406,54 @@ class _StatementsMixin:
         # (mirrors the element-of-tainted-container rule for indexing).
         iter_label = self._label_of(s.iter)
         elem_ty: Ty = TyUnknown
-        # ``List<T>`` and ``Range<T>`` are the two built-in
-        # iterables today; both expose their element type as the
-        # single type argument. A future ``Iterable`` trait would
-        # consolidate this dispatch, but the two-case enumeration
-        # is sound until the trait lands.
+        # Capa's iterables are exactly ``List<T>``, ``Set<T>``,
+        # ``Range`` and ``String`` (character-by-character). Each
+        # collection exposes its element type as its single type
+        # argument; ``String`` iterates characters (the element
+        # type is left ``Unknown`` here, as it was historically,
+        # so the ``examples/io.capa`` count-lines pattern keeps
+        # working). A future ``Iterable`` trait would consolidate
+        # this dispatch, but the enumeration is sound until it
+        # lands. Anything else has no sound lowering on either
+        # backend, so reject it here rather than let the Python
+        # backend silently iterate a Map's keys or crash, while
+        # the Wasm backend emits a clean error.
         if (
             isinstance(iter_ty, TyName)
-            and iter_ty.name in ("List", "Range") and iter_ty.args
+            and iter_ty.name in ("List", "Set", "Range") and iter_ty.args
         ):
             elem_ty = iter_ty.args[0]
-        elif (
-            isinstance(iter_ty, TyName)
-            and iter_ty.name in ("Int", "Float", "Bool")
+        elif isinstance(iter_ty, TyName) and iter_ty.name in (
+            "List", "Set", "Range", "String"
         ):
-            # Iterating a numeric or boolean scalar would raise
-            # ``TypeError: 'int' object is not iterable`` at
-            # runtime. ``String`` and ``Char`` are intentionally
-            # left out of this check: Python iterates them
-            # natively (character-by-character), and the
-            # ``examples/io.capa`` count-lines pattern relies on
-            # ``for c in some_string``. List<T> and Range<T> stay
-            # the documented shapes; this check just catches the
-            # clear-mistake primitives.
+            # Iterable shapes whose element type we don't pin here
+            # (a bare ``Range`` without args, or ``String``). The
+            # loop variable stays ``Unknown``; this matches prior
+            # behaviour for ``String`` and downstream dispatch
+            # falls back to runtime typing.
+            elem_ty = TyUnknown
+        elif iter_ty is TyUnknown:
+            # Inference could not resolve the iterable's type (a
+            # prior error, or an untyped expression). Don't pile a
+            # spurious not-iterable error on top.
+            elem_ty = TyUnknown
+        elif isinstance(iter_ty, TyName) and iter_ty.name == "Map":
+            # A Map is not iterable directly: the Python backend
+            # would silently iterate its keys (plain form) or crash
+            # on a leaked host ``ValueError`` (the ``for (k, v)``
+            # destructuring form), while the Wasm backend errors.
+            # Point the user at the keys()/values() views instead.
+            self._err(
+                f"cannot iterate a {ty_str(iter_ty)} directly; iterate "
+                f"its keys with '.keys()' or its values with '.values()'",
+                s.iter.pos,
+            )
+        else:
+            # Any other type (numeric / boolean scalar, struct,
+            # tuple, ...) is not iterable.
             self._err(
                 f"cannot iterate: {ty_str(iter_ty)} is not iterable "
-                f"(use List<T>, Range<T>, or String for character "
-                f"iteration)",
+                f"(Capa iterables are List, Set, Range, and String)",
                 s.iter.pos,
             )
 

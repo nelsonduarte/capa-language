@@ -5851,5 +5851,169 @@ class TestTupleConstIndexType(unittest.TestCase):
         )
 
 
+# =============================================================
+# For-loop iterable validation (GAP 1)
+#
+# Capa's iterables are exactly List, Set, Range, and String. A
+# Map (and any other non-iterable type) has no sound lowering on
+# either backend: the Python backend would silently iterate a
+# Map's keys or crash on the destructuring form, while the Wasm
+# backend errors. The analyzer rejects them so both backends
+# agree at compile time.
+# =============================================================
+
+class TestForLoopIterable(unittest.TestCase):
+    def test_for_over_map_rejected_with_keys_values_hint(self):
+        msgs = errors_of(
+            "fun main(stdio: Stdio)\n"
+            "    let m: Map<String, Int> = new_map()\n"
+            "    for k in m\n"
+            "        stdio.print(k)\n"
+        )
+        self.assertTrue(
+            any("cannot iterate a Map" in m for m in msgs), msgs,
+        )
+        self.assertTrue(
+            any(".keys()" in m and ".values()" in m for m in msgs), msgs,
+        )
+
+    def test_for_destructure_over_map_rejected(self):
+        # The ``for (k, v) in m`` shape is the one that crashes the
+        # Python backend at runtime today; it must be a clean
+        # compile error too.
+        msgs = errors_of(
+            "fun main(stdio: Stdio)\n"
+            "    let m: Map<String, Int> = new_map()\n"
+            "    for (k, v) in m\n"
+            "        stdio.print(k)\n"
+        )
+        self.assertTrue(
+            any("cannot iterate a Map" in m for m in msgs), msgs,
+        )
+
+    def test_for_over_int_scalar_rejected(self):
+        msgs = errors_of(
+            "fun main(stdio: Stdio)\n"
+            "    let n = 5\n"
+            "    for x in n\n"
+            "        stdio.print(\"${x}\")\n"
+        )
+        self.assertTrue(
+            any("is not iterable" in m for m in msgs), msgs,
+        )
+
+    def test_for_over_list_ok(self):
+        r = check(
+            "fun main(stdio: Stdio)\n"
+            "    for x in [1, 2, 3]\n"
+            "        stdio.print(\"${x}\")\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+    def test_for_over_range_ok(self):
+        r = check(
+            "fun main(stdio: Stdio)\n"
+            "    for i in 0..3\n"
+            "        stdio.print(\"${i}\")\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+    def test_for_over_set_ok(self):
+        r = check(
+            "fun main(stdio: Stdio)\n"
+            "    let s: Set<Int> = new_set()\n"
+            "    s.add(1)\n"
+            "    for x in s\n"
+            "        stdio.print(\"${x}\")\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+    def test_for_over_string_ok(self):
+        r = check(
+            "fun main(stdio: Stdio)\n"
+            "    for c in \"abc\"\n"
+            "        stdio.print(c)\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+
+# =============================================================
+# Index-element assignment rejection (GAP 2)
+#
+# ``xs[i] = v`` and the augmented ``xs[i] += 1`` have no sound
+# lowering on either backend (the Python backend emits an
+# assignment to a function call, a SyntaxError; the Wasm backend
+# raises a CIR-lowering error). The analyzer rejects a bare Index
+# assignment target. Assigning to a struct field reached THROUGH
+# an index (``xs[0].field = v``) keeps working: its target is a
+# FieldAccess whose receiver is the Index.
+# =============================================================
+
+class TestIndexAssignment(unittest.TestCase):
+    def test_index_assign_constant_index_rejected(self):
+        msgs = errors_of(
+            "fun main(stdio: Stdio)\n"
+            "    var xs: List<Int> = [1, 2, 3]\n"
+            "    xs[0] = 9\n"
+        )
+        self.assertTrue(
+            any("list element is not supported" in m for m in msgs), msgs,
+        )
+
+    def test_index_assign_variable_index_rejected(self):
+        msgs = errors_of(
+            "fun main(stdio: Stdio)\n"
+            "    var xs: List<Int> = [1, 2, 3]\n"
+            "    let i = 1\n"
+            "    xs[i] = 9\n"
+        )
+        self.assertTrue(
+            any("list element is not supported" in m for m in msgs), msgs,
+        )
+
+    def test_index_augmented_assign_rejected(self):
+        msgs = errors_of(
+            "fun main(stdio: Stdio)\n"
+            "    var xs: List<Int> = [1, 2, 3]\n"
+            "    xs[0] += 1\n"
+        )
+        self.assertTrue(
+            any("list element is not supported" in m for m in msgs), msgs,
+        )
+
+    def test_field_through_index_assign_ok(self):
+        # Control: the struct-field-through-index form lowers via a
+        # field store and must NOT be rejected.
+        r = check(
+            "type Cell { value: Int }\n"
+            "fun main(stdio: Stdio)\n"
+            "    var xs: List<Cell> = [Cell { value: 1 }]\n"
+            "    xs[0].value = 42\n"
+            "    stdio.println(\"${xs[0].value}\")\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+    def test_plain_reassignment_ok(self):
+        # Control: ordinary var reassignment stays allowed.
+        r = check(
+            "fun main(stdio: Stdio)\n"
+            "    var x = 1\n"
+            "    x = 2\n"
+            "    stdio.println(\"${x}\")\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+    def test_struct_field_assign_ok(self):
+        # Control: struct field-target assignment stays allowed.
+        r = check(
+            "type Counter { value: Int }\n"
+            "fun main(stdio: Stdio)\n"
+            "    var c = Counter { value: 1 }\n"
+            "    c.value = 2\n"
+            "    stdio.println(\"${c.value}\")\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+
 if __name__ == "__main__":
     unittest.main()
