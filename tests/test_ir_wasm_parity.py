@@ -274,6 +274,20 @@ _PARITY_PROGRAMS: list[str] = [
     # (a push through a parameter is visible to the caller on both
     # backends, including across the grow path).
     "list_param_push.capa",
+    # Tuple-destructuring for-pattern slice (2026-06-06): a for-loop
+    # whose loop pattern destructures a tuple (``for (a, b) in pairs``)
+    # already ran on the Python backend but the Wasm CIR lowerer
+    # rejected it ("for-pattern TuplePat"). The lowerer now binds each
+    # iteration's element to a fresh temporary carrying the tuple type
+    # and destructures it positionally through the same ``Index`` path
+    # that powers ``let (a, b) = t`` and ``t[i]``; both backends already
+    # emit ``For`` (single name) and tuple ``Index``, so no IR-node or
+    # emitter change was needed. Covers arity 2/3/4, component types
+    # Int / String / Char / Bool / struct / nested-tuple, a wildcard
+    # component, the plain single-identifier regression, and nested
+    # for-loops (a tuple-destructure loop inside a plain one and inside
+    # another tuple-destructure loop).
+    "for_tuple_destructure.capa",
 ]
 
 # Programs deliberately excluded from parity and why; documented

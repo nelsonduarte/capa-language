@@ -1,0 +1,80 @@
+// Tuple-destructuring for-loop patterns. Pre-slice (2026-06-06) the
+// Wasm CIR lowerer only handled a single-identifier loop binder and
+// rejected ``for (a, b) in pairs`` with "CIR lowering does not yet
+// support: for-pattern TuplePat". The Python backend already handled
+// it. The lowerer now binds each iteration's element to a fresh
+// temporary carrying the tuple type and destructures it positionally
+// via the same ``Index`` path that powers ``let (a, b) = t``, so both
+// backends agree. This program exercises:
+//   - a 2-tuple, both components used in the body
+//   - arity 3 and arity 4 for-patterns
+//   - component types Int, String, Char, Bool, a struct, nested tuple
+//   - a wildcard binding only some components
+//   - a plain single-identifier for-pattern (regression)
+//   - nested for-loops, including a tuple-destructure loop inside one
+
+type Point {
+    x: Int,
+    y: Int
+}
+
+fun main(stdio: Stdio)
+    // 1. 2-tuple, both components used.
+    let pairs: List<(Int, String)> = [(1, "one"), (2, "two"), (3, "three")]
+    for (n, name) in pairs
+        stdio.println("${n} = ${name}")
+
+    // 2. arity 3.
+    let triples: List<(Int, String, Bool)> = [(1, "a", true), (2, "b", false)]
+    for (i, s, flag) in triples
+        if flag
+            stdio.println("${i}:${s}:on")
+        else
+            stdio.println("${i}:${s}:off")
+
+    // arity 4.
+    let quads: List<(Int, Int, Int, Int)> = [(1, 2, 3, 4), (5, 6, 7, 8)]
+    for (a, b, c, d) in quads
+        stdio.println("sum = ${a + b + c + d}")
+
+    // 3a. Char component (Capa Char is a single-codepoint String).
+    let chars: List<(Char, Int)> = [('a', 1), ('b', 2), ('c', 3)]
+    for (ch, code) in chars
+        stdio.println("${ch} -> ${code}")
+
+    // 3b. Struct component.
+    let labelled: List<(String, Point)> = [
+        ("origin", Point { x: 0, y: 0 }),
+        ("unit", Point { x: 1, y: 1 })
+    ]
+    for (tag, p) in labelled
+        stdio.println("${tag}: (${p.x}, ${p.y})")
+
+    // 3c. Nested-tuple component: read the whole inner tuple, then index.
+    let nested: List<(Int, (Int, Int))> = [(1, (10, 20)), (2, (30, 40))]
+    for (head, inner) in nested
+        stdio.println("${head}: ${inner[0]} ${inner[1]}")
+
+    // 4. Wildcard: bind only the second component, ignore the first.
+    for (_, name) in pairs
+        stdio.println("name = ${name}")
+
+    // 6a. Plain single-identifier for-pattern (regression).
+    let nums = [10, 20, 30]
+    var total = 0
+    for x in nums
+        total += x
+    stdio.println("total = ${total}")
+
+    // 6b. Nested for-loops: a tuple-destructure loop inside a plain one.
+    let groups = [100, 200]
+    for base in groups
+        for (delta, label) in pairs
+            stdio.println("${label}: ${base + delta}")
+
+    // 6c. Nested for-loops: a tuple-destructure loop inside another.
+    let outer: List<(Int, String)> = [(1, "x"), (2, "y")]
+    let inner2: List<(Int, Int)> = [(10, 11), (20, 21)]
+    for (oi, os) in outer
+        for (ia, ib) in inner2
+            stdio.println("${os}${oi}: ${ia}+${ib}=${ia + ib}")

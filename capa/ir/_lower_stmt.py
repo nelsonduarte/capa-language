@@ -284,9 +284,11 @@ class _LowerStmtMixin:
         )
 
     def _lower_for(self, s: A.ForStmt) -> None:
-        # Phase 2 only supports Ident patterns. Tuple destructuring
-        # (``for (a, b) in pairs``) is deferred.
-        if not isinstance(s.pattern, A.IdentPat):
+        # Two for-pattern shapes are supported: a single ``IdentPat``
+        # (``for x in xs``) and a ``TuplePat`` (``for (a, b) in pairs``)
+        # that destructures each element positionally. Any other
+        # pattern shape is rejected loudly rather than miscompiled.
+        if not isinstance(s.pattern, (A.IdentPat, A.TuplePat)):
             raise UnsupportedInIR(
                 f"for-pattern {type(s.pattern).__name__}"
             )
@@ -300,9 +302,43 @@ class _LowerStmtMixin:
         elif iter_value.ty.startswith("Range"):
             bind_ty = "Int"
         self._enter_scope()
-        bound = self._bind_local(s.pattern.name, bind_ty)
+        if isinstance(s.pattern, A.IdentPat):
+            bound = self._bind_local(s.pattern.name, bind_ty)
+            destructure: list[Instr] = []
+        else:
+            # Tuple-destructuring for-pattern. Bind each iteration's
+            # element to a fresh temporary carrying the tuple type,
+            # then destructure that temporary into the named
+            # components positionally. This reuses the exact ``Index``
+            # path that powers ``let (a, b) = t`` and ``t[i]``: each
+            # backend already lowers ``Index`` on a tuple receiver, so
+            # no IR-node or emitter change is needed. The temporary is
+            # the ``For`` loop's single bind name; the destructure
+            # instructions are prepended to the loop body so they run
+            # once per iteration with the components in scope.
+            bound = fresh_local(self._counter, prefix="forelem")
+            self._locals[bound] = bind_ty
+            elem_types = _split_tuple_elem_types(bind_ty)
+            elem_v = Value(kind="local", name=bound, ty=bind_ty)
+            destructure = []
+            for idx, sub in enumerate(s.pattern.elements):
+                # ``for (a, _) in pairs``: skip the wildcard slot.
+                if isinstance(sub, A.WildcardPat):
+                    continue
+                if not isinstance(sub, A.IdentPat):
+                    raise UnsupportedInIR(
+                        f"nested for-pattern {type(sub).__name__}"
+                    )
+                idx_v = Value(kind="lit_int", literal=idx, ty="Int")
+                sub_ty = (
+                    elem_types[idx] if idx < len(elem_types) else "Unknown"
+                )
+                sub_bound = self._bind_local(sub.name, sub_ty)
+                destructure.append(
+                    Index(dst=sub_bound, receiver=elem_v, index=idx_v)
+                )
         outer = self._instrs
-        self._instrs = []
+        self._instrs = list(destructure)
         self._lower_block(s.body)
         body = self._instrs
         self._instrs = outer
