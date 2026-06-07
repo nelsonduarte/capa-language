@@ -140,10 +140,26 @@ class _ValueEmissionMixin:
                 return
         if v.kind == "global" and v.name in self._const_values:
             # Module-level constant: inline the RHS literal at the
-            # use site. Recurse into the literal Value via the same
-            # push path so the lit_int / lit_bool / lit_str / etc.
-            # cases below handle the actual emission.
-            self._push_value(self._const_values[v.name])
+            # use site in the SAME calling shape a local / param of
+            # that type would use. A String const must be pushed as
+            # two i32s (ptr, len) -- the standard String value shape
+            # every consumer (capability-method arg push, user-call
+            # arg push, concat, ==) expects. Recursing through the
+            # generic path here would land in the ``lit_str`` branch
+            # below, which emits a PACKED i64 (ptr | len<<32) meant
+            # only for uniform 8-byte slots (tuple / Map / variant
+            # payload); fed where (i32, i32) is expected it type-
+            # mismatches and crashes the module. Delegate String
+            # consts to the (ptr, len) helper (which has its own
+            # const branch) and keep the recursion for the scalar
+            # consts (Int -> i64, Bool -> i32, Float -> f64, Unit ->
+            # nothing), whose single-value shapes the lit_* branches
+            # already produce correctly.
+            const_v = self._const_values[v.name]
+            if const_v.kind == "lit_str":
+                self._push_string_value_as_ptr_len(v)
+                return
+            self._push_value(const_v)
             return
         if (v.kind == "global" and v.ty
                 and v.ty.startswith("Fun")):

@@ -366,6 +366,43 @@ _PARITY_PROGRAMS: list[str] = [
     # reads by index AND by iterating + matching, and the .push()
     # regression.
     "list_literal_sum_interleaved.capa",
+    # Slice (2026-06-07): top-level ``const`` of a non-i64-shaped type
+    # used at a value site. Pre-fix the global-const branch of
+    # ``_push_value`` recursed every const through the generic literal
+    # path, so a ``const S: String`` landed in the packed-i64
+    # ``lit_str`` branch (ptr | len<<32) - the encoding the uniform
+    # 8-byte slots (tuple / Map / variant payload) need, but the wrong
+    # shape for a String value fed where (ptr, len) two-i32s are
+    # expected (println, ``+``, ``==``, a String fn arg). Module
+    # validation crashed with "type mismatch: expected i32, found i64".
+    # Fix: the const branch now dispatches on the stored literal's
+    # shape, delegating a String const to ``_push_string_value_as_ptr_len``
+    # (two i32s) and keeping the recursion for the scalar consts (Int ->
+    # i64, Bool -> i32, Float -> f64). Covers a String const via bare
+    # println / interpolation / concat / == / String-fn arg, Int / Bool
+    # / Float consts used several ways, and consts read across more than
+    # one function.
+    "top_level_const.capa",
+    # Slice (2026-06-07): a top-level String ``const`` used at every
+    # non-i64-shaped value site the global-const fix's reviewer
+    # verified by hand. Pre-fix the sibling struct-field-store helpers
+    # ``_push_string_field_ptr_only`` / ``_push_string_field_len_only``
+    # handled lit_str / local / param but NOT the ``global`` const
+    # case, so a String const used as a struct-field initializer
+    # (``Box { label: S, n: 5 }``) errored loudly on the Wasm backend
+    # ("cannot push string ptr of Value kind 'global'") while Python
+    # accepted it - a loud divergence, not a miscompile, but still a
+    # case parity must cover. Fix: both helpers gained a global-const
+    # branch that resolves the const from ``_const_values`` and re-
+    # dispatches on the underlying lit_str literal, mirroring the
+    # const branch already present in ``_push_string_value_as_ptr_len``.
+    # Covers a String const as a struct field (read back via println +
+    # interpolation), a String const AND a String literal as fields in
+    # one struct, an empty-string const and a multi-byte-UTF-8 const as
+    # fields, and - to lock the whole matrix - a String const as a Map
+    # key, Map value, List element, tuple component, and match
+    # scrutinee.
+    "const_string_sites.capa",
 ]
 
 # Programs deliberately excluded from parity and why; documented
@@ -1181,6 +1218,36 @@ class TestPythonWasmParity(unittest.TestCase):
         # monomorphised generic sum, reads by index AND by iterating +
         # matching, and the .push() regression.
         self._assert_parity("list_literal_sum_interleaved.capa")
+
+    def test_top_level_const(self):
+        # Slice (2026-06-07): a top-level ``const`` of a non-i64-shaped
+        # type used at a value site. Pre-fix the global-const branch of
+        # ``_push_value`` recursed a String const into the packed-i64
+        # ``lit_str`` path and crashed Wasm module validation the moment
+        # the const reached a String sink (println / ``+`` / ``==`` / a
+        # String fn arg) with "type mismatch: expected i32, found i64".
+        # The fix dispatches the const branch on the stored literal's
+        # shape - String consts go through the (ptr, len) helper, scalar
+        # consts keep the recursion. Exercises String / Int / Bool /
+        # Float consts used several ways, including across functions.
+        self._assert_parity("top_level_const.capa")
+
+    def test_const_string_sites(self):
+        # Slice (2026-06-07): a top-level String ``const`` used at
+        # every non-i64-shaped value site. Pre-fix the struct-field-
+        # store helpers ``_push_string_field_ptr_only`` /
+        # ``_push_string_field_len_only`` lacked a ``global``-const
+        # branch, so a String const used as a struct-field initializer
+        # (``Box { label: S, n: 5 }``) errored loudly on Wasm ("cannot
+        # push string ptr of Value kind 'global'") while Python
+        # accepted it. Both helpers now resolve the const from
+        # ``_const_values`` and re-dispatch on the underlying lit_str
+        # literal, mirroring ``_push_string_value_as_ptr_len``. Covers
+        # struct field (println + interpolation read-back), a const +
+        # literal in one struct, an empty-string const and a multi-
+        # byte-UTF-8 const as fields, and a String const as a Map key,
+        # Map value, List element, tuple component, and match scrutinee.
+        self._assert_parity("const_string_sites.capa")
 
     def test_struct_field_assign(self):
         # Field-target assignment slice (2026-06-06): ``obj.field =

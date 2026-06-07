@@ -85,6 +85,13 @@ class _StringEmissionMixin:
         if v.kind in ("local", "param"):
             self._write(f"local.get ${v.name}_ptr")
             return
+        if v.kind == "global" and v.name in self._const_values:
+            # Top-level String ``const`` used as a struct-field
+            # initializer. Re-dispatch on the underlying lit_str
+            # literal, mirroring the const branch in
+            # ``_push_string_value_as_ptr_len``.
+            self._push_string_field_ptr_only(self._const_values[v.name])
+            return
         raise WasmEmissionError(
             f"cannot push string ptr of Value kind {v.kind!r}"
         )
@@ -96,6 +103,13 @@ class _StringEmissionMixin:
             return
         if v.kind in ("local", "param"):
             self._write(f"local.get ${v.name}_len")
+            return
+        if v.kind == "global" and v.name in self._const_values:
+            # Top-level String ``const`` used as a struct-field
+            # initializer. Re-dispatch on the underlying lit_str
+            # literal, mirroring the const branch in
+            # ``_push_string_value_as_ptr_len``.
+            self._push_string_field_len_only(self._const_values[v.name])
             return
         raise WasmEmissionError(
             f"cannot push string len of Value kind {v.kind!r}"

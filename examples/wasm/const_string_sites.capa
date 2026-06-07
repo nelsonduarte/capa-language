@@ -1,0 +1,68 @@
+// Top-level String ``const`` used at every non-i64-shaped value site
+// the reviewer verified by hand after the global-const fix. Pre-fix
+// the sibling struct-field-store helpers
+// ``_push_string_field_ptr_only`` / ``_push_string_field_len_only``
+// handled lit_str / local / param but NOT the ``global`` const case,
+// so a String const used as a struct-field initializer errored loudly
+// on Wasm with "cannot push string ptr of Value kind 'global'" while
+// Python accepted it. The Map / List / tuple / match-scrutinee sites
+// route through ``_push_string_value_as_ptr_len`` (which already had
+// the const branch) and are pinned here so the whole matrix stays
+// covered. Includes an empty-string const and a multi-byte-UTF-8
+// const.
+
+const STORED: String = "stored"
+const LABEL: String = "tag"
+const EMPTY: String = ""
+const ACCENT: String = "café"
+
+type Box {
+    label: String,
+    n: Int,
+}
+
+fun main(stdio: Stdio)
+    // 1. String const as a struct-field initializer; read back via
+    //    bare println and interpolation.
+    let b = Box { label: STORED, n: 5 }
+    stdio.println(b.label)
+    stdio.println("box: ${b.label} / ${b.n}")
+
+    // 2. String const AND a String literal as fields in one struct.
+    let b2 = Box { label: LABEL, n: 9 }
+    let b3 = Box { label: "literal", n: 9 }
+    stdio.println("${b2.label} vs ${b3.label}")
+
+    // 3. Empty-string const and a multi-byte-UTF-8 const as fields.
+    let be = Box { label: EMPTY, n: 0 }
+    let ba = Box { label: ACCENT, n: 1 }
+    stdio.println("empty=[${be.label}] accent=[${ba.label}]")
+
+    // String const as a Map key.
+    let mk: Map<String, Int> = new_map()
+    mk.set(STORED, 100)
+    match mk.get(STORED)
+        Some(v) -> stdio.println("map key STORED -> ${v}")
+        None -> stdio.println("map key STORED missing")
+
+    // String const as a Map value.
+    let mv: Map<Int, String> = new_map()
+    mv.set(1, STORED)
+    match mv.get(1)
+        Some(s) -> stdio.println("map value 1 -> ${s}")
+        None -> stdio.println("map value 1 missing")
+
+    // String const as a List element.
+    let xs: List<String> = [STORED, "other", ACCENT]
+    for x in xs
+        stdio.println("list elem: ${x}")
+
+    // String const as a tuple component.
+    let t = (STORED, 7)
+    let (tk, tn) = t
+    stdio.println("tuple: ${tk} / ${tn}")
+
+    // String const as a match scrutinee.
+    match STORED
+        "stored" -> stdio.println("scrutinee matched stored")
+        _ -> stdio.println("scrutinee fell through")

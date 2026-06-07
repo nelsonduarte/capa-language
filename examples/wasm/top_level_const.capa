@@ -1,0 +1,57 @@
+// Top-level constants of every scalar / String shape, used several
+// ways across more than one function. A String const must be pushed
+// at a use site in the SAME (ptr, len) calling shape a String local
+// or param uses; pre-fix the Wasm backend recursed a String const
+// into the packed-i64 ``lit_str`` branch (meant only for uniform
+// 8-byte slots) and crashed module validation with "type mismatch:
+// expected i32, found i64" the moment the const reached a
+// String-taking sink (println, concat, ==, a String fn arg). The
+// scalar consts (Int / Bool / Float) regress the recursion path that
+// already worked.
+
+const GREETING: String = "hello"
+const COUNT: Int = 7
+const ACTIVE: Bool = true
+const SCALE: Float = 1.5
+const BIAS: Float = 0.5
+
+fun shout(name: String) -> String
+    return GREETING + ", " + name + "!"
+
+fun bumped() -> Int
+    return COUNT + 1
+
+fun toggled() -> Bool
+    return ACTIVE
+
+fun main(stdio: Stdio)
+    // String const: bare println, interpolation, concat, ==, and as
+    // a String-taking function argument.
+    stdio.println(GREETING)
+    stdio.println("greeting is ${GREETING}")
+    let combined = GREETING + " world"
+    stdio.println(combined)
+    if GREETING == "hello"
+        stdio.println("greeting matches")
+    else
+        stdio.println("greeting differs")
+    stdio.println(shout(GREETING))
+
+    // Int const: interpolation, arithmetic, ==, cross-function use.
+    stdio.println("count is ${COUNT}")
+    let doubled = COUNT * 2
+    stdio.println("doubled is ${doubled}")
+    stdio.println("bumped is ${bumped()}")
+    if COUNT == 7
+        stdio.println("count matches")
+
+    // Bool const: branch, interpolation, cross-function use.
+    if ACTIVE
+        stdio.println("active branch")
+    stdio.println("active is ${ACTIVE}")
+    if toggled()
+        stdio.println("toggled branch")
+
+    // Float const: arithmetic + interpolation (Grisu2, parity-clean).
+    let blended = SCALE + BIAS
+    stdio.println("blended is ${blended}")
