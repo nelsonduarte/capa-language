@@ -1,0 +1,174 @@
+// multi_impl_sum_dispatch.capa: a trait with MULTIPLE *sum-type* impls,
+// used through a trait-typed value, dispatches dynamically to the right
+// concrete impl on the Wasm backend with byte-for-byte parity to the
+// Python reference.
+//
+// Pre-fix the Wasm backend raised a precise WasmEmissionError for any
+// sum-type impl target of a multi-impl trait, because the dispatcher read
+// the type-id at struct offset 0 - exactly where a sum stores its variant
+// tag. The fix moves the type-id to a UNIFORM offset 4 (free padding in
+// both struct and sum layouts) for every participating type. A sum keeps
+// its variant tag at offset 0 and payloads at offset 8 unchanged, so its
+// match / equality / payload extraction are unaffected; only its
+// constructor additionally writes the type-id at offset 4, and the
+// dispatcher reads the type-id from offset 4 for both struct and sum.
+//
+// Covers (sum-only): every result shape (String / Int / Bool / Float /
+// Unit) through a trait method; two distinct sum types each implementing
+// the trait, dispatched through one trait type; the trait value flowing
+// through a let / function param / function return / struct field / a
+// match arm binder - the method called after each hop, still dispatching
+// by dynamic type; a List of trait values with mixed sum concrete types
+// iterated with the method called per element; an impl method that does
+// `match self`; an impl method calling another method on self; and a
+// participating sum still working as a PLAIN sum (match, structural
+// equality equal + unequal) so the offset-4 type-id does not corrupt
+// those paths.
+
+trait Token
+    fun kind(self) -> String
+    fun weight(self) -> Int
+    fun loud(self) -> Bool
+    fun scale(self) -> Float
+    fun show(self, out: Stdio)
+    // method calling another method on self
+    fun label(self) -> String
+
+type Note =
+    Rest
+    Beat(Int)
+
+type Chord =
+    Empty
+    Triad(Int, String)
+
+impl Token for Note
+    fun kind(self) -> String
+        return "note"
+    fun weight(self) -> Int
+        // match self inside an impl method
+        match self
+            Rest -> return 0
+            Beat(n) -> return n
+    fun loud(self) -> Bool
+        match self
+            Rest -> return false
+            Beat(n) -> return n > 3
+    fun scale(self) -> Float
+        return 1.5
+    fun show(self, out: Stdio)
+        out.println("note w=${self.weight()}")
+    fun label(self) -> String
+        return "note:${self.kind()}"
+
+impl Token for Chord
+    fun kind(self) -> String
+        return "chord"
+    fun weight(self) -> Int
+        match self
+            Empty -> return 0
+            Triad(n, _) -> return n
+    fun loud(self) -> Bool
+        return true
+    fun scale(self) -> Float
+        return 3.25
+    fun show(self, out: Stdio)
+        out.println("chord w=${self.weight()}")
+    fun label(self) -> String
+        return "chord:${self.kind()}"
+
+// trait value as a struct field (the field hop).
+type Bar {
+    lead: Token,
+    index: Int
+}
+
+// trait value as a sum payload (the match hop).
+type Boxed =
+    Nothing
+    Held(Token)
+
+// param hop + every result shape exercised after dispatch.
+fun report(t: Token, out: Stdio)
+    out.println("kind=${t.kind()} weight=${t.weight()}")
+    if t.loud()
+        out.println("  loud")
+    else
+        out.println("  quiet")
+    let s = t.scale()
+    out.println("  scale=${s}")
+    t.show(out)
+    out.println("  label=${t.label()}")
+
+// return hop: returns a trait-typed value built from a concrete sum.
+fun pick(which: Int) -> Token
+    if which == 0
+        return Beat(5)
+    else
+        return Triad(9, "maj")
+
+fun main(out: Stdio)
+    // let hop, two sum types behind one trait type.
+    let a: Token = Beat(2)
+    let b: Token = Triad(4, "min")
+    report(a, out)
+    report(b, out)
+
+    // return hop.
+    let p0 = pick(0)
+    let p1 = pick(1)
+    out.println("picked: ${p0.kind()} ${p1.kind()}")
+
+    // struct-field hop: a trait value stored in a field, read, method called.
+    let bar = Bar { lead: Triad(6, "sus"), index: 1 }
+    out.println("bar lead=${bar.lead.kind()} weight=${bar.lead.weight()} index=${bar.index}")
+
+    // match-binder hop: a trait value carried by a sum variant, extracted
+    // via match, method called on the binder.
+    let boxed = Held(Beat(7))
+    match boxed
+        Nothing -> out.println("none")
+        Held(t) -> out.println("boxed kind=${t.kind()} weight=${t.weight()}")
+
+    // headline: a List of trait values with mixed sum concrete types,
+    // iterated, the method called on each element.
+    var toks: List<Token> = []
+    toks.push(Beat(1))
+    toks.push(Triad(2, "x"))
+    toks.push(Rest)
+    toks.push(Beat(8))
+    var total = 0
+    for tk in toks
+        total = total + tk.weight()
+    out.println("total weight=${total}")
+    for tk in toks
+        out.println("each: ${tk.kind()}")
+
+    // a participating sum is still a plain sum: match, structural
+    // equality (equal + unequal), and carried as an Option payload, all
+    // correct despite the offset-4 type-id header.
+    let plain = Beat(3)
+    match plain
+        Rest -> out.println("plain rest")
+        Beat(n) -> out.println("plain beat ${n}")
+    let plain2 = Beat(3)
+    if plain == plain2
+        out.println("beats equal")
+    else
+        out.println("BUG: equal beats differ")
+    let plain3 = Beat(4)
+    if plain == plain3
+        out.println("BUG: differing beats compared equal")
+    else
+        out.println("beats differ correctly")
+    let ch1 = Triad(1, "a")
+    let ch2 = Triad(1, "a")
+    let ch3 = Triad(1, "b")
+    if ch1 == ch2
+        out.println("chords equal")
+    else
+        out.println("BUG: equal chords differ")
+    if ch1 == ch3
+        out.println("BUG: differing chords compared equal")
+    else
+        out.println("chords differ correctly")

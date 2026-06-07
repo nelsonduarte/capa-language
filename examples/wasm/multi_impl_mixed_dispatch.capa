@@ -1,0 +1,185 @@
+// multi_impl_mixed_dispatch.capa: a SINGLE multi-impl trait with BOTH a
+// struct impl AND sum impls, dispatched dynamically through one trait
+// type on the Wasm backend with byte-for-byte parity to the Python
+// reference. This is the case the uniform offset-4 type-id exists FOR: a
+// struct participant carries fields at offset 8 with the type-id in its
+// reserved header at offset 4, and a sum participant carries its variant
+// tag at offset 0, payloads at offset 8, and the type-id at offset 4 -
+// so the one dispatcher reads the type-id from the same offset for both.
+//
+// Covers (mixed): one trait with a struct impl and two sum impls; the
+// trait value flowing through a let / param / return / struct field / a
+// match-arm binder, with the method called after each hop; a List of
+// trait values mixing the struct and both sum concrete types, iterated
+// with the method called per element; an impl method that does
+// `match self`; an impl method calling another method on self; and each
+// participating value still working as its plain concrete self (struct
+// field read + equality, sum match + equality) despite the offset-4
+// type-id header.
+
+trait Shape
+    fun area(self) -> Int
+    fun name(self) -> String
+    fun big(self) -> Bool
+    fun ratio(self) -> Float
+    // method calling another method on self
+    fun summary(self) -> String
+
+// struct participant
+type Rect {
+    w: Int,
+    h: Int
+}
+
+// sum participants (two distinct sum types)
+type Disc =
+    Point
+    Radius(Int)
+
+type Tri =
+    Flat
+    Sides(Int, Int)
+
+impl Shape for Rect
+    fun area(self) -> Int
+        return self.w * self.h
+    fun name(self) -> String
+        return "rect"
+    fun big(self) -> Bool
+        return self.area() > 50
+    fun ratio(self) -> Float
+        return 1.5
+    fun summary(self) -> String
+        return "${self.name()}:${self.area()}"
+
+impl Shape for Disc
+    fun area(self) -> Int
+        // match self inside an impl method
+        match self
+            Point -> return 0
+            Radius(r) -> return 3 * r * r
+    fun name(self) -> String
+        return "disc"
+    fun big(self) -> Bool
+        return self.area() > 50
+    fun ratio(self) -> Float
+        return 3.14
+    fun summary(self) -> String
+        return "${self.name()}:${self.area()}"
+
+impl Shape for Tri
+    fun area(self) -> Int
+        match self
+            Flat -> return 0
+            Sides(b, h) -> return b * h / 2
+    fun name(self) -> String
+        return "tri"
+    fun big(self) -> Bool
+        return self.area() > 50
+    fun ratio(self) -> Float
+        return 0.5
+    fun summary(self) -> String
+        return "${self.name()}:${self.area()}"
+
+// trait value as a struct field (the field hop).
+type Scene {
+    hero: Shape,
+    tag: Int
+}
+
+// trait value as a sum payload (the match hop).
+type Wrap =
+    Nope
+    Has(Shape)
+
+// param hop + every result shape exercised after dispatch.
+fun report(sh: Shape, out: Stdio)
+    out.println("name=${sh.name()} area=${sh.area()}")
+    if sh.big()
+        out.println("  big")
+    else
+        out.println("  small")
+    let r = sh.ratio()
+    out.println("  ratio=${r}")
+    out.println("  summary=${sh.summary()}")
+
+// return hop: returns a trait-typed value built from a concrete type.
+fun pick(which: Int) -> Shape
+    if which == 0
+        return Rect { w: 8, h: 9 }
+    else
+        if which == 1
+            return Radius(5)
+        else
+            return Sides(6, 4)
+
+fun main(out: Stdio)
+    // let hop: struct + both sum types behind one trait type.
+    let a: Shape = Rect { w: 3, h: 4 }
+    let b: Shape = Radius(2)
+    let c: Shape = Sides(10, 3)
+    report(a, out)
+    report(b, out)
+    report(c, out)
+
+    // return hop.
+    let p0 = pick(0)
+    let p1 = pick(1)
+    let p2 = pick(2)
+    out.println("picked: ${p0.name()} ${p1.name()} ${p2.name()}")
+
+    // struct-field hop: a trait value (a sum) stored in a struct field.
+    let scene = Scene { hero: Radius(4), tag: 9 }
+    out.println("scene hero=${scene.hero.name()} area=${scene.hero.area()} tag=${scene.tag}")
+
+    // match-binder hop: a trait value (a struct) carried by a sum
+    // variant, extracted via match, method called on the binder.
+    let wrapped = Has(Rect { w: 2, h: 2 })
+    match wrapped
+        Nope -> out.println("nope")
+        Has(sh) -> out.println("wrapped name=${sh.name()} area=${sh.area()}")
+
+    // headline: a List of trait values mixing struct AND sum concrete
+    // types, iterated, method called per element.
+    var shapes: List<Shape> = []
+    shapes.push(Rect { w: 5, h: 5 })
+    shapes.push(Radius(3))
+    shapes.push(Sides(8, 8))
+    shapes.push(Point)
+    shapes.push(Rect { w: 1, h: 1 })
+    var total = 0
+    for s in shapes
+        total = total + s.area()
+    out.println("total area=${total}")
+    for s in shapes
+        out.println("each: ${s.name()} = ${s.area()}")
+
+    // participating values still work as their plain concrete selves.
+    // struct: field read + structural equality.
+    let r1 = Rect { w: 2, h: 3 }
+    let r2 = Rect { w: 2, h: 3 }
+    let r3 = Rect { w: 2, h: 9 }
+    out.println("plain rect w=${r1.w} h=${r1.h}")
+    if r1 == r2
+        out.println("rects equal")
+    else
+        out.println("BUG: equal rects differ")
+    if r1 == r3
+        out.println("BUG: differing rects compared equal")
+    else
+        out.println("rects differ correctly")
+    // sum: match + structural equality.
+    let d1 = Radius(7)
+    let d2 = Radius(7)
+    let d3 = Radius(8)
+    match d1
+        Point -> out.println("plain point")
+        Radius(r) -> out.println("plain radius ${r}")
+    if d1 == d2
+        out.println("discs equal")
+    else
+        out.println("BUG: equal discs differ")
+    if d1 == d3
+        out.println("BUG: differing discs compared equal")
+    else
+        out.println("discs differ correctly")

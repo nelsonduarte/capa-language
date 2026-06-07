@@ -519,10 +519,21 @@ _PARITY_PROGRAMS: list[str] = [
     # with the method called per element (the headline), a self-method
     # call, and a participating struct used as a plain concrete value
     # (direct call / field read / structural equality) to prove the
-    # offset-0 header does not corrupt those paths. (A sum-type impl
-    # target in a multi-impl trait still raises a precise loud error -
-    # offset 0 is the sum's variant tag - so it is not a parity program.)
+    # header does not corrupt those paths.
     "multi_impl_dispatch.capa",
+    # Sum-type impl targets of a multi-impl trait (2026-06-07): the
+    # type-id moved to a UNIFORM offset 4 (free padding in both struct
+    # and sum layouts) so a single dispatcher routes both. A sum keeps
+    # its variant tag at offset 0 and payloads at offset 8 unchanged.
+    # ``multi_impl_sum_dispatch.capa`` covers two distinct sum impls of
+    # one trait (every result shape, let / param / return / field /
+    # match hops, a mixed-sum List<Trait>, match self, self-method call,
+    # plain-sum match + equality); ``multi_impl_mixed_dispatch.capa``
+    # covers ONE trait with BOTH a struct impl AND sum impls (the case
+    # the uniform offset exists for) through every hop and a List<Trait>
+    # mixing struct + sum concrete types.
+    "multi_impl_sum_dispatch.capa",
+    "multi_impl_mixed_dispatch.capa",
 ]
 
 # Programs deliberately excluded from parity and why; documented
@@ -1533,6 +1544,41 @@ class TestPythonWasmParity(unittest.TestCase):
         # call / field read / equality) so the header does not corrupt
         # those paths.
         self._assert_parity("multi_impl_dispatch.capa")
+
+    def test_multi_impl_sum_dispatch(self):
+        # Sum-type impl targets of a multi-impl trait (2026-06-07):
+        # pre-fix the Wasm backend raised a precise WasmEmissionError
+        # for any sum impl target because the dispatcher read the
+        # type-id at struct offset 0 - exactly where a sum stores its
+        # variant tag. The fix moves the type-id to a UNIFORM offset 4
+        # (free padding in both struct and sum layouts) for every
+        # participant: a sum keeps its variant tag at offset 0 and
+        # payloads at offset 8 unchanged, so its match / equality /
+        # payload extraction are unaffected, while its constructor also
+        # writes the type-id at offset 4. Covers two distinct sum impls
+        # of one trait, every result shape (String / Int / Bool / Float
+        # / Unit), the trait value through a let / param / return /
+        # struct field / match-binder hop, a List<Trait> mixing sum
+        # concrete types iterated per element, ``match self`` in an impl
+        # method, a self-method call, and a participating sum used as a
+        # plain sum (match + structural equality, equal and unequal) so
+        # the offset-4 type-id does not corrupt those paths.
+        self._assert_parity("multi_impl_sum_dispatch.capa")
+
+    def test_multi_impl_mixed_dispatch(self):
+        # Mixed struct + sum impls of ONE multi-impl trait (2026-06-07):
+        # the case the uniform offset-4 type-id exists for. A struct
+        # participant carries fields at offset 8 with the type-id in its
+        # reserved header at offset 4; a sum participant carries its
+        # variant tag at offset 0, payloads at offset 8, and the type-id
+        # at offset 4 - so the one dispatcher reads the type-id from the
+        # same offset regardless of the receiver's dynamic type. Covers
+        # one trait with a struct impl + two sum impls through every hop
+        # (let / param / return / struct field / match-binder) and a
+        # List<Trait> mixing struct and both sum concrete types iterated
+        # per element, plus each value used as its plain concrete self
+        # (struct field + equality, sum match + equality).
+        self._assert_parity("multi_impl_mixed_dispatch.capa")
 
     def test_struct_field_assign(self):
         # Field-target assignment slice (2026-06-06): ``obj.field =

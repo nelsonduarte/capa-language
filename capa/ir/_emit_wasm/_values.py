@@ -31,7 +31,7 @@ from .._nodes import Value
 from ._layout import (
     WasmEmissionError, _TYPE_SIZE,
     _size_of, _store_op_for_size, _load_op_for_size,
-    _strip_type_qualifiers,
+    _strip_type_qualifiers, _TYPE_ID_OFFSET,
 )
 
 
@@ -238,6 +238,23 @@ class _ValueEmissionMixin:
             self._write("local.tee $_alloc_tmp")
             self._write(f"i32.const {tag}")
             self._write("i32.store")
+            # Multi-impl-trait dispatch header for a SUM participant: a
+            # payloadless variant still needs its concrete sum's type-id
+            # at the uniform offset 4 so dynamic dispatch on a trait-
+            # typed receiver routes correctly. Without this a nullary
+            # variant (e.g. ``Rest``) would carry a zero type-id and the
+            # dispatch if-chain would fall through to ``unreachable``.
+            if sum_name in getattr(self, "_header_sum_types", ()):
+                type_id = self._type_ids.get(sum_name)
+                if type_id is None:
+                    raise WasmEmissionError(
+                        f"sum {sum_name!r} participates in multi-impl "
+                        f"dispatch but has no assigned type-id; the trait "
+                        f"dispatch setup is inconsistent."
+                    )
+                self._write("local.get $_alloc_tmp")
+                self._write(f"i32.const {type_id}")
+                self._write(f"i32.store offset={_TYPE_ID_OFFSET}")
             self._write("local.get $_alloc_tmp")
             return
         raise WasmEmissionError(

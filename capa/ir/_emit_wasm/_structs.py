@@ -29,7 +29,7 @@ from .._nodes import (
 from .._capa_types import BUILTIN_CAPS
 from ._layout import (
     WasmEmissionError, _store_op_for_size, _load_op_for_size,
-    _strip_type_qualifiers,
+    _strip_type_qualifiers, _TYPE_ID_OFFSET,
 )
 
 
@@ -86,6 +86,23 @@ class _StructEmissionMixin:
         self._write(f"local.get ${instr.dst}")
         self._write(f"i32.const {tag}")
         self._write("i32.store")
+        # Multi-impl-trait dispatch header for a SUM participant: write
+        # this concrete sum's type-id at the uniform offset 4 (free
+        # padding between the offset-0 tag and the offset-8 payloads).
+        # match / equality / TryUnwrap read only offset 0 and offset 8+,
+        # so this write is invisible to every other sum operation. Only
+        # sums that implement a multi-impl trait carry a type-id.
+        if sum_name in getattr(self, "_header_sum_types", ()):
+            type_id = self._type_ids.get(sum_name)
+            if type_id is None:
+                raise WasmEmissionError(
+                    f"sum {sum_name!r} participates in multi-impl "
+                    f"dispatch but has no assigned type-id; the trait "
+                    f"dispatch setup is inconsistent."
+                )
+            self._write(f"local.get ${instr.dst}")
+            self._write(f"i32.const {type_id}")
+            self._write(f"i32.store offset={_TYPE_ID_OFFSET}")
         # Store each payload at its offset. Phase 7B+ uses uniform
         # 8-byte payload slots for Option / Result. The arg's type
         # determines whether we store directly (Int -> i64) or
@@ -158,10 +175,13 @@ class _StructEmissionMixin:
         self._write("call $alloc")
         self._write(f"local.set ${instr.dst}")
         # Multi-impl-trait dispatch header: write this concrete type's
-        # type-id into the offset-0 word so a later method call through
-        # a trait-typed receiver can load the tag and dispatch to the
-        # right impl. The header is invisible to field iteration (it is
-        # not in layout["fields"]); only construction writes it.
+        # type-id into the offset-4 word (the uniform dispatch offset)
+        # so a later method call through a trait-typed receiver can load
+        # the tag and dispatch to the right impl. The header is invisible
+        # to field iteration (it is not in layout["fields"]); only
+        # construction writes it. Offset 4 (not 0) so a sum participant
+        # can carry its variant tag at offset 0 and the dispatcher reads
+        # the type-id from the same offset for both.
         if layout.get("has_header"):
             type_id = self._type_ids.get(instr.type_name)
             if type_id is None:
@@ -172,7 +192,7 @@ class _StructEmissionMixin:
                 )
             self._write(f"local.get ${instr.dst}")
             self._write(f"i32.const {type_id}")
-            self._write("i32.store")
+            self._write(f"i32.store offset={_TYPE_ID_OFFSET}")
         for fname, fval in instr.fields:
             f_info = layout["fields"].get(fname)
             if f_info is None:

@@ -34,7 +34,9 @@ from __future__ import annotations
 
 from .._nodes import Function, MethodCall
 from .._capa_types import BUILTIN_CAPS
-from ._layout import WasmEmissionError, _strip_type_qualifiers
+from ._layout import (
+    WasmEmissionError, _strip_type_qualifiers, _TYPE_ID_OFFSET,
+)
 
 
 def _impl_method_name(type_name: str, method_name: str) -> str:
@@ -68,26 +70,36 @@ class _TraitEmissionMixin:
         self._trait_to_impl: dict[str, object] = {}
         self._method_table: dict[tuple[str, str], str] = {}
         # Multi-impl traits are dispatched dynamically via a type-id
-        # tag stored at offset 0 of every participating struct (a small
-        # per-concrete-type integer). A method call on a multi-impl-
-        # trait-typed receiver loads that tag and dispatches to the
-        # matching concrete impl method through an if-chain. The three
-        # tables below carry the data that dispatch needs:
+        # tag stored at a UNIFORM offset (``_TYPE_ID_OFFSET`` = 4) of
+        # every participating value -- struct OR sum (a small per-
+        # concrete-type integer). A method call on a multi-impl-trait-
+        # typed receiver loads that tag and dispatches to the matching
+        # concrete impl method through an if-chain. Offset 4 is chosen
+        # so the same dispatcher works for both: a sum keeps its variant
+        # tag at offset 0 and payloads at offset 8, leaving offset 4
+        # free, and a participating struct reserves an 8-byte header
+        # whose offset-4 word is also free (fields stay at offset 8).
+        # The tables below carry the data that dispatch needs:
         #
         # - ``_multi_impl_traits``: the set of trait names with >1 impl.
         # - ``_type_ids[type_name]``: the stable integer tag written at
-        #   offset 0 of a participating struct, used to discriminate
-        #   the receiver's dynamic type at the call site.
+        #   offset 4 of a participating value, used to discriminate the
+        #   receiver's dynamic type at the call site.
         # - ``_header_struct_types``: concrete struct types that must
-        #   reserve offset 0 for a type-id (they implement at least one
-        #   multi-impl trait). ``compute_struct_layout`` reads this so
-        #   the struct's fields start after the header.
+        #   reserve an 8-byte header for the type-id (they implement at
+        #   least one multi-impl trait). ``compute_struct_layout`` reads
+        #   this so the struct's fields start after the header.
+        # - ``_header_sum_types``: concrete sum types whose constructor
+        #   must additionally write the type-id at offset 4. A sum needs
+        #   no layout change (offset 4 is free padding already), so this
+        #   only drives the construction emitter, not the layout pass.
         # - ``_multi_impl_candidates[(trait, method)]``: the ordered
         #   list of ``(type_id, mangled_method)`` candidates the
         #   if-chain compares the loaded tag against.
         self._multi_impl_traits: set[str] = set()
         self._type_ids: dict[str, int] = {}
         self._header_struct_types: set[str] = set()
+        self._header_sum_types: set[str] = set()
         self._multi_impl_candidates: dict[tuple[str, str], list] = {}
         by_trait: dict[str, list] = {}
         for impl in module.impls:
@@ -119,28 +131,25 @@ class _TraitEmissionMixin:
             method_names = [m.name for m in impls[0].methods]
             for method_name in method_names:
                 self._multi_impl_candidates[(trait_name, method_name)] = []
+            sum_names = self._sum_layout_names(module)
             for impl in impls:
                 target_head = _strip_type_qualifiers(impl.type_name)
-                # First cut: only struct impl targets. A sum type uses
-                # offset 0 for its variant tag, which would collide with
-                # a type-id header; supporting sum impl targets needs a
-                # non-colliding header slot, deferred. Raise a precise
-                # loud error rather than miscompiling.
-                if target_head in self._sum_layout_names(module):
-                    raise WasmEmissionError(
-                        f"trait {trait_name!r} has a sum-type impl target "
-                        f"{impl.type_name!r}: multi-impl (dynamic) dispatch "
-                        f"on the Wasm backend currently supports struct impl "
-                        f"targets only, because a sum type already uses "
-                        f"offset 0 for its variant tag and a dynamic-dispatch "
-                        f"type-id would collide there. Keep this trait single-"
-                        f"impl, or use struct impl targets, until a non-"
-                        f"colliding sum header lands."
-                    )
+                # Both struct AND sum impl targets are supported: the
+                # type-id lives at the uniform ``_TYPE_ID_OFFSET`` (4),
+                # which is free padding in either layout (a sum keeps
+                # offset 0 for its variant tag and offset 8 for
+                # payloads; a struct keeps offset 8 for fields). A sum
+                # participant needs no layout change, only a type-id
+                # write in its constructor, so it is recorded in the
+                # sum-header set rather than the struct-header set.
+                is_sum = target_head in sum_names
                 if impl.type_name not in self._type_ids:
                     self._type_ids[impl.type_name] = next_id
                     next_id += 1
-                self._header_struct_types.add(impl.type_name)
+                if is_sum:
+                    self._header_sum_types.add(impl.type_name)
+                else:
+                    self._header_struct_types.add(impl.type_name)
                 tid = self._type_ids[impl.type_name]
                 for method_name in method_names:
                     mangled = _impl_method_name(impl.type_name, method_name)
@@ -240,8 +249,10 @@ class _TraitEmissionMixin:
     def _emit_multi_impl_dispatch(self, instr: MethodCall, candidates: list) -> None:
         """Emit dynamic dispatch for a method call on a multi-impl-
         trait-typed receiver. The receiver is a single i32 pointer to a
-        participating struct whose offset-0 word holds the concrete
-        type-id. Load that tag once, then walk an if-chain comparing it
+        participating value (struct or sum) whose offset-4 word holds
+        the concrete type-id (the uniform ``_TYPE_ID_OFFSET``, free in
+        both layouts). Load that tag once, then walk an if-chain
+        comparing it
         against each candidate ``(type_id, mangled)``; the matching arm
         pushes the receiver + args and calls the concrete impl method,
         storing the result in the same calling shape the single-impl
@@ -259,9 +270,10 @@ class _TraitEmissionMixin:
         # and every arm's receiver push read the same value once.
         self._push_value(instr.receiver)
         self._write("local.set $_trait_recv")
-        # Load the type-id tag from offset 0 of the receiver record.
+        # Load the type-id tag from the uniform offset 4 of the receiver
+        # record (free in both struct and sum layouts).
         self._write("local.get $_trait_recv")
-        self._write("i32.load")
+        self._write(f"i32.load offset={_TYPE_ID_OFFSET}")
         self._write("local.set $_trait_tag")
         for tid, mangled in candidates:
             self._write("local.get $_trait_tag")

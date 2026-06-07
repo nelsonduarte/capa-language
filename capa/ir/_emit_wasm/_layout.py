@@ -310,11 +310,21 @@ def _strip_type_qualifiers(ty: str) -> str:
     return ty.split("<", 1)[0].split("[", 1)[0]
 
 
-# Byte size of the multi-impl-trait dispatch header (the type-id word
-# at offset 0 of a participating struct). 8 bytes keeps the first
+# Byte size of the multi-impl-trait dispatch header (the 8-byte word
+# at the front of a participating struct). 8 bytes keeps the first
 # field 8-byte aligned (so an Int / Float / pointer field needs no
 # extra padding), matching the sum-type tag-then-payload convention.
 _TYPE_ID_HEADER_SIZE = 8
+
+# Uniform byte offset of the multi-impl-trait dispatch type-id, used by
+# BOTH struct and sum participants so one dispatcher reads the type-id
+# from the same place regardless of the receiver's dynamic type. A sum
+# stores its variant tag at offset 0 and payloads at offset 8, leaving
+# offset 4..8 free; a participating struct reserves an 8-byte header
+# with fields starting at offset 8, so offset 4 inside that header is
+# also free. The dispatcher and both construction emitters agree on
+# this constant.
+_TYPE_ID_OFFSET = 4
 
 
 def compute_struct_layout(
@@ -331,14 +341,19 @@ def compute_struct_layout(
     alignment).
 
     When ``reserve_header`` is set the struct implements at least one
-    multi-impl trait and needs a type-id word at offset 0 for dynamic
-    dispatch. Fields then start after an 8-byte header
-    (``_TYPE_ID_HEADER_SIZE``) instead of at offset 0; the header is
-    NOT listed in ``fields`` so field-by-field iteration (equality,
+    multi-impl trait and needs a type-id word at ``_TYPE_ID_OFFSET``
+    (offset 4) for dynamic dispatch. Fields then start after an 8-byte
+    header (``_TYPE_ID_HEADER_SIZE``) instead of at offset 0; the header
+    is NOT listed in ``fields`` so field-by-field iteration (equality,
     field access, struct-literal construction) never sees it, but every
     field's offset already accounts for it. The layout also records
     ``has_header`` so the construction emitter knows to write the
-    type-id and the load/store sites stay header-agnostic."""
+    type-id and the load/store sites stay header-agnostic.
+
+    The type-id sits at offset 4 (not offset 0) so the dispatcher can
+    read it from the same uniform offset for both struct and sum
+    participants: a sum keeps its variant tag at offset 0, so a shared
+    dispatcher reads the type-id from offset 4 in either case."""
     fields: dict[str, tuple[int, int, str]] = {}
     offset = _TYPE_ID_HEADER_SIZE if reserve_header else 0
     for f in decl.fields:
