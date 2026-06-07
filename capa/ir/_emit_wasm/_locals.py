@@ -81,6 +81,11 @@ class _LocalsCollectionMixin:
         has_optres_method = False
         has_list_method = False
         has_set_method = False
+        # Set when any MethodCall has a multi-impl-trait-typed receiver
+        # (dynamic dispatch). The if-chain dispatcher stashes the
+        # receiver pointer in $_trait_recv and the loaded type-id tag
+        # in $_trait_tag.
+        has_multi_impl_dispatch = False
         # Set whose element type lowers to an i32 heap pointer
         # (struct / sum / tuple / nested collection): add / contains
         # / remove scan via the element's $eq_* helper, stashing the
@@ -165,6 +170,7 @@ class _LocalsCollectionMixin:
             nonlocal has_attenuation_check, has_attenuation_env_check
             nonlocal has_list_index_bounds
             nonlocal has_map_pointer_key
+            nonlocal has_multi_impl_dispatch
             for instr in instrs:
                 if isinstance(instr, Match):
                     has_match = True
@@ -410,6 +416,17 @@ class _LocalsCollectionMixin:
                         has_int_overflow_check = True
                 if isinstance(instr, MethodCall):
                     recv_ty = instr.receiver.ty or ""
+                    # Multi-impl trait receiver: the dynamic-dispatch
+                    # if-chain needs $_trait_recv / $_trait_tag scratch.
+                    # Resolve the effective receiver type so a binder
+                    # typed Unknown (then refined via fn.locals) still
+                    # trips the gate.
+                    eff_recv = self._effective_value_ty(instr.receiver)
+                    eff_recv_head = eff_recv.split("<", 1)[0].split("[", 1)[0]
+                    if eff_recv_head in getattr(
+                        self, "_multi_impl_traits", (),
+                    ):
+                        has_multi_impl_dispatch = True
                     if recv_ty.startswith("Map"):
                         has_map = True
                         # Pointer-shape key (struct / sum / tuple)
@@ -942,6 +959,13 @@ class _LocalsCollectionMixin:
             out.setdefault("_m_scrut", "i32")
             out.setdefault("_m_tag", "i32")
             out.setdefault("_alloc_tmp_result", "i32")
+        if has_multi_impl_dispatch:
+            # Multi-impl trait dynamic dispatch: the if-chain stashes
+            # the receiver pointer in $_trait_recv (re-pushed per arm)
+            # and the loaded type-id tag in $_trait_tag (compared
+            # against each candidate). Both i32.
+            out["_trait_recv"] = "i32"
+            out["_trait_tag"] = "i32"
         return out
 
     def _refine_struct_pat_binds(

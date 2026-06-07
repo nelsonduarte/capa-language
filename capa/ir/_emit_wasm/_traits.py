@@ -67,12 +67,28 @@ class _TraitEmissionMixin:
         unambiguously."""
         self._trait_to_impl: dict[str, object] = {}
         self._method_table: dict[tuple[str, str], str] = {}
-        # Traits that carry more than one impl. Their values would need
-        # a packed (struct_ptr, vtable) layout for dynamic dispatch,
-        # which this phase does not emit; recorded so ``_wasm_type``
-        # can reject a multi-impl trait-typed value with a precise
-        # error instead of the generic "no Wasm encoding" one.
+        # Multi-impl traits are dispatched dynamically via a type-id
+        # tag stored at offset 0 of every participating struct (a small
+        # per-concrete-type integer). A method call on a multi-impl-
+        # trait-typed receiver loads that tag and dispatches to the
+        # matching concrete impl method through an if-chain. The three
+        # tables below carry the data that dispatch needs:
+        #
+        # - ``_multi_impl_traits``: the set of trait names with >1 impl.
+        # - ``_type_ids[type_name]``: the stable integer tag written at
+        #   offset 0 of a participating struct, used to discriminate
+        #   the receiver's dynamic type at the call site.
+        # - ``_header_struct_types``: concrete struct types that must
+        #   reserve offset 0 for a type-id (they implement at least one
+        #   multi-impl trait). ``compute_struct_layout`` reads this so
+        #   the struct's fields start after the header.
+        # - ``_multi_impl_candidates[(trait, method)]``: the ordered
+        #   list of ``(type_id, mangled_method)`` candidates the
+        #   if-chain compares the loaded tag against.
         self._multi_impl_traits: set[str] = set()
+        self._type_ids: dict[str, int] = {}
+        self._header_struct_types: set[str] = set()
+        self._multi_impl_candidates: dict[tuple[str, str], list] = {}
         by_trait: dict[str, list] = {}
         for impl in module.impls:
             for method in impl.methods:
@@ -81,6 +97,12 @@ class _TraitEmissionMixin:
                 self._method_table[(impl.type_name, method.name)] = mangled
             if impl.trait_name:
                 by_trait.setdefault(impl.trait_name, []).append(impl)
+        # Assign stable per-concrete-type ids. A type that implements a
+        # multi-impl trait gets a small positive integer; the ordering
+        # is the impl-declaration order, which is deterministic for a
+        # given module so the tag a struct is built with always matches
+        # the tag the dispatcher compares against.
+        next_id = 1
         for trait_name, impls in by_trait.items():
             if len(impls) == 1:
                 self._trait_to_impl[trait_name] = impls[0]
@@ -88,8 +110,52 @@ class _TraitEmissionMixin:
                     mangled = _impl_method_name(impls[0].type_name, method.name)
                     # Trait entry: only when impl is unique.
                     self._method_table[(trait_name, method.name)] = mangled
-            else:
-                self._multi_impl_traits.add(trait_name)
+                continue
+            # Multi-impl trait: register dynamic-dispatch metadata.
+            self._multi_impl_traits.add(trait_name)
+            # Determine the methods this trait declares (every impl
+            # must supply all of them; use the first impl's method list
+            # as the canonical set).
+            method_names = [m.name for m in impls[0].methods]
+            for method_name in method_names:
+                self._multi_impl_candidates[(trait_name, method_name)] = []
+            for impl in impls:
+                target_head = _strip_type_qualifiers(impl.type_name)
+                # First cut: only struct impl targets. A sum type uses
+                # offset 0 for its variant tag, which would collide with
+                # a type-id header; supporting sum impl targets needs a
+                # non-colliding header slot, deferred. Raise a precise
+                # loud error rather than miscompiling.
+                if target_head in self._sum_layout_names(module):
+                    raise WasmEmissionError(
+                        f"trait {trait_name!r} has a sum-type impl target "
+                        f"{impl.type_name!r}: multi-impl (dynamic) dispatch "
+                        f"on the Wasm backend currently supports struct impl "
+                        f"targets only, because a sum type already uses "
+                        f"offset 0 for its variant tag and a dynamic-dispatch "
+                        f"type-id would collide there. Keep this trait single-"
+                        f"impl, or use struct impl targets, until a non-"
+                        f"colliding sum header lands."
+                    )
+                if impl.type_name not in self._type_ids:
+                    self._type_ids[impl.type_name] = next_id
+                    next_id += 1
+                self._header_struct_types.add(impl.type_name)
+                tid = self._type_ids[impl.type_name]
+                for method_name in method_names:
+                    mangled = _impl_method_name(impl.type_name, method_name)
+                    self._multi_impl_candidates[
+                        (trait_name, method_name)
+                    ].append((tid, mangled))
+
+    @staticmethod
+    def _sum_layout_names(module) -> set[str]:
+        """Names of sum types declared in ``module`` (used to detect a
+        sum impl target). Built-in sums (Option / Result / JsonValue)
+        are never user impl targets, so the module's own SumDecls are
+        the only ones that matter here."""
+        from .._nodes import SumDecl
+        return {t.name for t in module.types if isinstance(t, SumDecl)}
 
     def _emit_impl_methods(self, module) -> None:
         """Emit every impl block's methods as top-level Wasm
@@ -149,32 +215,92 @@ class _TraitEmissionMixin:
         calls resolve to the right concrete-type entry in the
         method table."""
         recv_ty = _strip_type_qualifiers(self._effective_value_ty(instr.receiver))
+        candidates = self._multi_impl_candidates.get((recv_ty, instr.method))
+        if candidates:
+            # Multi-impl trait receiver: dynamic dispatch by type-id.
+            self._emit_multi_impl_dispatch(instr, candidates)
+            return
         target = self._method_table.get((recv_ty, instr.method))
         if target is None:
-            # Trait with multiple impls (or no impl at all): the
-            # _method_table only carries unique-impl trait entries.
+            # Trait with no impl (or an unresolved receiver type): the
+            # _method_table only carries unique-impl trait entries and
+            # concrete-type entries.
             raise WasmEmissionError(
                 f"MethodCall on receiver type {recv_ty!r} method "
                 f"{instr.method!r}: no impl method found in this "
-                f"module. If {recv_ty} is a trait with multiple "
-                f"impls, vtable dispatch is not yet supported."
+                f"module."
             )
         # Push receiver (self) -- always an i32 pointer -- then the
         # remaining args via the shared call ABI helper.
         self._push_value(instr.receiver)
         self._push_call_args(instr.args)
         self._write(f"call ${target}")
-        if instr.dst is not None:
-            dst_ty = self._dst_capa_ty(instr.dst)
-            if dst_ty == "String":
-                # Multi-value (i32 i32) return -> dst pair.
-                self._write(f"local.set ${instr.dst}_len")
-                self._write(f"local.set ${instr.dst}_ptr")
-            elif dst_ty in (
-                "Fs", "Net", "Db", "Proc", "Env", "Clock",
-            ):
-                # Slices 25.2 - 25.6: Fs / Net / Db / Proc / Env /
-                # Clock return the handle as i32.
-                self._write(f"local.set ${instr.dst}")
-            elif dst_ty and dst_ty not in BUILTIN_CAPS and dst_ty != "Unit":
-                self._write(f"local.set ${instr.dst}")
+        self._store_trait_call_result(instr)
+
+    def _emit_multi_impl_dispatch(self, instr: MethodCall, candidates: list) -> None:
+        """Emit dynamic dispatch for a method call on a multi-impl-
+        trait-typed receiver. The receiver is a single i32 pointer to a
+        participating struct whose offset-0 word holds the concrete
+        type-id. Load that tag once, then walk an if-chain comparing it
+        against each candidate ``(type_id, mangled)``; the matching arm
+        pushes the receiver + args and calls the concrete impl method,
+        storing the result in the same calling shape the single-impl
+        path uses (String as (ptr, len), caps / scalars as one value).
+        A tag matching no candidate is unreachable for a well-typed
+        program; the trailing ``unreachable`` keeps the chain well-typed
+        and traps loudly if it is ever hit.
+
+        The args / receiver are re-pushed inside each arm rather than
+        once before the chain so the operand-stack shape stays a clean
+        per-call sequence (Wasm ``if`` blocks cannot leave the operand
+        stack in differing shapes across arms when they carry a result;
+        re-pushing per arm sidesteps that entirely)."""
+        # Stash the receiver pointer in a scratch local so the tag load
+        # and every arm's receiver push read the same value once.
+        self._push_value(instr.receiver)
+        self._write("local.set $_trait_recv")
+        # Load the type-id tag from offset 0 of the receiver record.
+        self._write("local.get $_trait_recv")
+        self._write("i32.load")
+        self._write("local.set $_trait_tag")
+        for tid, mangled in candidates:
+            self._write("local.get $_trait_tag")
+            self._write(f"i32.const {tid}")
+            self._write("i32.eq")
+            self._write("if")
+            self._indent += 1
+            self._write("local.get $_trait_recv")
+            self._push_call_args(instr.args)
+            self._write(f"call ${mangled}")
+            self._store_trait_call_result(instr)
+            self._indent -= 1
+            self._write("else")
+            self._indent += 1
+        # Innermost else: no candidate matched (unreachable for a well-
+        # typed program). Trap.
+        self._write("unreachable")
+        # Close every else arm opened above.
+        for _ in candidates:
+            self._indent -= 1
+            self._write("end")
+
+    def _store_trait_call_result(self, instr: MethodCall) -> None:
+        """Store a trait/impl method call's result in the dst's calling
+        shape. Shared by the single-impl and multi-impl dispatch paths
+        so the two never drift. The result (if any) is already on the
+        operand stack from the preceding ``call``."""
+        if instr.dst is None:
+            return
+        dst_ty = self._dst_capa_ty(instr.dst)
+        if dst_ty == "String":
+            # Multi-value (i32 i32) return -> dst pair.
+            self._write(f"local.set ${instr.dst}_len")
+            self._write(f"local.set ${instr.dst}_ptr")
+        elif dst_ty in (
+            "Fs", "Net", "Db", "Proc", "Env", "Clock",
+        ):
+            # Slices 25.2 - 25.6: Fs / Net / Db / Proc / Env /
+            # Clock return the handle as i32.
+            self._write(f"local.set ${instr.dst}")
+        elif dst_ty and dst_ty not in BUILTIN_CAPS and dst_ty != "Unit":
+            self._write(f"local.set ${instr.dst}")

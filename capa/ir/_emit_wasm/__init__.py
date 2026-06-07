@@ -315,8 +315,12 @@ class WasmEmitter(
         # inline small structs.
         for ty in module.types:
             if isinstance(ty, StructDecl):
+                # Structs implementing a multi-impl trait reserve a
+                # type-id header at offset 0 for dynamic dispatch
+                # (``_setup_trait_dispatch`` populated the set above).
                 self._struct_layouts[ty.name] = compute_struct_layout(
                     ty, self._sum_layouts, self._struct_layouts,
+                    reserve_header=ty.name in self._header_struct_types,
                 )
             elif isinstance(ty, SumDecl):
                 self._sum_layouts[ty.name] = compute_sum_layout(

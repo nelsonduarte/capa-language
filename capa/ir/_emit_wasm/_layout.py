@@ -310,24 +310,48 @@ def _strip_type_qualifiers(ty: str) -> str:
     return ty.split("<", 1)[0].split("[", 1)[0]
 
 
+# Byte size of the multi-impl-trait dispatch header (the type-id word
+# at offset 0 of a participating struct). 8 bytes keeps the first
+# field 8-byte aligned (so an Int / Float / pointer field needs no
+# extra padding), matching the sum-type tag-then-payload convention.
+_TYPE_ID_HEADER_SIZE = 8
+
+
 def compute_struct_layout(
     decl: StructDecl,
     sum_layouts: dict,
     struct_layouts: dict,
+    *,
+    reserve_header: bool = False,
 ) -> dict:
     """Compute per-field offsets and total size for a struct,
     laying fields out in declaration order with natural alignment.
     Returns a dict with ``fields`` (name -> (offset, size, capa_ty))
     and ``size`` (total bytes, rounded up to 8 for downstream
-    alignment)."""
+    alignment).
+
+    When ``reserve_header`` is set the struct implements at least one
+    multi-impl trait and needs a type-id word at offset 0 for dynamic
+    dispatch. Fields then start after an 8-byte header
+    (``_TYPE_ID_HEADER_SIZE``) instead of at offset 0; the header is
+    NOT listed in ``fields`` so field-by-field iteration (equality,
+    field access, struct-literal construction) never sees it, but every
+    field's offset already accounts for it. The layout also records
+    ``has_header`` so the construction emitter knows to write the
+    type-id and the load/store sites stay header-agnostic."""
     fields: dict[str, tuple[int, int, str]] = {}
-    offset = 0
+    offset = _TYPE_ID_HEADER_SIZE if reserve_header else 0
     for f in decl.fields:
         size = _size_of(f.ty, sum_layouts, struct_layouts)
         offset = _align_up(offset, size)
         fields[f.name] = (offset, size, f.ty)
         offset += size
-    return {"fields": fields, "size": _align_up(offset, 8)}
+    base = _TYPE_ID_HEADER_SIZE if reserve_header else 0
+    return {
+        "fields": fields,
+        "size": _align_up(max(offset, base), 8),
+        "has_header": reserve_header,
+    }
 
 
 def compute_sum_layout(

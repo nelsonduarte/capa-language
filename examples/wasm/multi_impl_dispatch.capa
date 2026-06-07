@@ -1,0 +1,171 @@
+// multi_impl_dispatch.capa: a trait with MULTIPLE impls, used through a
+// trait-typed value, dispatches dynamically to the right concrete impl on
+// the Wasm backend with byte-for-byte parity to the Python reference.
+//
+// Pre-fix the Wasm backend raised a precise WasmEmissionError ("multiple
+// impls ... vtable dispatch not yet supported") for any method call on a
+// multi-impl-trait-typed receiver: the front-end accepted the program and
+// it ran on Python, but Wasm had no dynamic-dispatch codegen. The fix
+// stores a small per-concrete-type type-id at offset 0 of every struct
+// that implements a multi-impl trait (its fields shift to start after the
+// 8-byte header, invisible to field-by-field iteration), keeps a trait
+// value as a single i32 struct pointer (no fat pointer, no packing at
+// boundaries), and at a method call on a trait-typed receiver loads the
+// type-id and dispatches through an if-chain to the matching mangled impl
+// method, reusing the existing arg-push + result-store ABI.
+//
+// Covers: every result shape (String / Int / Bool / Float) through a
+// trait method; three impls of one trait whose structs have DIFFERENT
+// field layouts (different sizes), so dispatch must find the right method
+// AND each impl reads its own fields; the trait value flowing through a
+// let, a function parameter, a function return, a struct field, and a sum
+// payload extracted by match - the method called after each hop, still
+// dispatching by dynamic type; a List of trait values with mixed concrete
+// types iterated with the method called on each element (the headline); a
+// trait method that calls another method on self; and a struct in the
+// participating set still working as a plain concrete value (direct method
+// call, field read, structural equality) so the offset-0 header does not
+// corrupt those paths.
+
+trait Animal
+    fun sound(self) -> String
+    fun legs(self) -> Int
+    fun heavy(self) -> Bool
+    fun mass(self) -> Float
+
+// Three impls with deliberately different field layouts / sizes.
+type Dog {
+    name: String
+}
+
+type Bird {
+    wingspan: Int,
+    feathered: Bool
+}
+
+type Snake {
+    length: Int,
+    venom: Float
+}
+
+impl Animal for Dog
+    fun sound(self) -> String
+        return "woof"
+    fun legs(self) -> Int
+        return 4
+    fun heavy(self) -> Bool
+        return true
+    fun mass(self) -> Float
+        return 20.5
+    // method calling another method on self (inherent, concrete-typed)
+    fun describe(self) -> String
+        return "${self.name} says ${self.sound()}"
+
+impl Animal for Bird
+    fun sound(self) -> String
+        return "tweet"
+    fun legs(self) -> Int
+        return 2
+    fun heavy(self) -> Bool
+        return false
+    fun mass(self) -> Float
+        return 0.3
+
+impl Animal for Snake
+    fun sound(self) -> String
+        return "hiss"
+    fun legs(self) -> Int
+        return 0
+    fun heavy(self) -> Bool
+        return false
+    fun mass(self) -> Float
+        return 1.2
+
+// trait value as a struct field (the field hop).
+type Zoo {
+    star: Animal,
+    count: Int
+}
+
+// trait value as a sum payload (the match hop).
+type Maybe =
+    Nothing
+    Just(Animal)
+
+// param hop + every result shape exercised after dispatch.
+fun report(a: Animal, out: Stdio)
+    out.println("sound=${a.sound()} legs=${a.legs()}")
+    if a.heavy()
+        out.println("  heavy")
+    else
+        out.println("  light")
+    let m = a.mass()
+    out.println("  mass=${m}")
+
+// return hop: returns a trait-typed value built from a concrete struct.
+fun pick(which: Int) -> Animal
+    if which == 0
+        return Dog { name: "Rex" }
+    else
+        if which == 1
+            return Bird { wingspan: 30, feathered: true }
+        else
+            return Snake { length: 100, venom: 0.9 }
+
+fun main(out: Stdio)
+    // let hop, three concrete types behind one trait type.
+    let d: Animal = Dog { name: "Spot" }
+    let b: Animal = Bird { wingspan: 25, feathered: true }
+    let s: Animal = Snake { length: 50, venom: 0.5 }
+    report(d, out)
+    report(b, out)
+    report(s, out)
+
+    // return hop.
+    let p0 = pick(0)
+    let p1 = pick(1)
+    let p2 = pick(2)
+    out.println("picked: ${p0.sound()} ${p1.sound()} ${p2.sound()}")
+
+    // struct-field hop: a trait value stored in a field, read, method called.
+    let z = Zoo { star: Bird { wingspan: 99, feathered: false }, count: 7 }
+    out.println("zoo star sound=${z.star.sound()} count=${z.count}")
+
+    // sum-payload hop: a trait value carried by a sum variant, extracted
+    // via match, method called on the binder.
+    let boxed = Just(Snake { length: 3, venom: 0.4 })
+    match boxed
+        Nothing -> out.println("nothing")
+        Just(a) -> out.println("boxed sound=${a.sound()} mass=${a.mass()}")
+
+    // headline: a List of trait values with mixed concrete types,
+    // iterated, the method called on each element.
+    var animals: List<Animal> = []
+    animals.push(Dog { name: "A" })
+    animals.push(Bird { wingspan: 1, feathered: true })
+    animals.push(Snake { length: 2, venom: 0.1 })
+    animals.push(Dog { name: "B" })
+    var total_legs = 0
+    for an in animals
+        total_legs = total_legs + an.legs()
+    out.println("total legs=${total_legs}")
+    for an in animals
+        out.println("each: ${an.sound()}")
+
+    // a struct in the participating set is still a plain concrete value:
+    // direct (non-trait) method call, field read, self-method call, and
+    // structural equality must all stay correct despite the offset-0
+    // type-id header.
+    let plain = Dog { name: "Plain" }
+    out.println("direct sound=${plain.sound()} name=${plain.name}")
+    out.println("self-method: ${plain.describe()}")
+    let plain2 = Dog { name: "Plain" }
+    if plain == plain2
+        out.println("dogs equal")
+    else
+        out.println("dogs differ")
+    let plain3 = Dog { name: "Other" }
+    if plain == plain3
+        out.println("BUG: differing dogs compared equal")
+    else
+        out.println("dogs differ correctly")

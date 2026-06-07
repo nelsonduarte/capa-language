@@ -157,6 +157,22 @@ class _StructEmissionMixin:
         self._write(f"i32.const {layout['size']}")
         self._write("call $alloc")
         self._write(f"local.set ${instr.dst}")
+        # Multi-impl-trait dispatch header: write this concrete type's
+        # type-id into the offset-0 word so a later method call through
+        # a trait-typed receiver can load the tag and dispatch to the
+        # right impl. The header is invisible to field iteration (it is
+        # not in layout["fields"]); only construction writes it.
+        if layout.get("has_header"):
+            type_id = self._type_ids.get(instr.type_name)
+            if type_id is None:
+                raise WasmEmissionError(
+                    f"struct {instr.type_name!r} reserves a dispatch "
+                    f"header but has no assigned type-id; the trait "
+                    f"dispatch setup is inconsistent."
+                )
+            self._write(f"local.get ${instr.dst}")
+            self._write(f"i32.const {type_id}")
+            self._write("i32.store")
         for fname, fval in instr.fields:
             f_info = layout["fields"].get(fname)
             if f_info is None:

@@ -501,6 +501,28 @@ _PARITY_PROGRAMS: list[str] = [
     "generic_fn_struct.capa",
     "generic_struct_construction.capa",
     "generic_sum_payload_binder.capa",
+    # Multi-impl trait dynamic dispatch slice (2026-06-07): a trait with
+    # MORE THAN ONE impl, called through a trait-typed value, dispatches
+    # to the right concrete impl on the Wasm backend. Pre-fix the front-
+    # end accepted such programs and they ran on Python, but the Wasm
+    # backend raised a precise WasmEmissionError (no vtable / dynamic-
+    # dispatch codegen). The fix stores a per-concrete-type type-id at
+    # offset 0 of every struct that implements a multi-impl trait (fields
+    # shift after an 8-byte header, invisible to field iteration), keeps a
+    # trait value as a single i32 struct pointer (no fat pointer, no
+    # boundary packing), and at a method call on a trait-typed receiver
+    # loads the type-id and dispatches via an if-chain to the matching
+    # mangled impl method. Covers every result shape (String / Int / Bool
+    # / Float), three impls with different field layouts, the trait value
+    # flowing through a let / param / return / struct field / sum-payload
+    # match, a List of trait values with mixed concrete types iterated
+    # with the method called per element (the headline), a self-method
+    # call, and a participating struct used as a plain concrete value
+    # (direct call / field read / structural equality) to prove the
+    # offset-0 header does not corrupt those paths. (A sum-type impl
+    # target in a multi-impl trait still raises a precise loud error -
+    # offset 0 is the sum's variant tag - so it is not a parity program.)
+    "multi_impl_dispatch.capa",
 ]
 
 # Programs deliberately excluded from parity and why; documented
@@ -1489,6 +1511,28 @@ class TestPythonWasmParity(unittest.TestCase):
         # ``Opt<Opt<Int>>``) to exercise sizing when the inner payload is
         # absent.
         self._assert_parity("generic_sum_payload_binder.capa")
+
+    def test_multi_impl_dispatch(self):
+        # Multi-impl trait dynamic dispatch slice (2026-06-07): a trait
+        # with MORE THAN ONE impl, called through a trait-typed value,
+        # dispatches to the right concrete impl on the Wasm backend.
+        # Pre-fix the front-end accepted such programs (they ran on
+        # Python) but the Wasm backend raised a precise
+        # WasmEmissionError - no dynamic-dispatch codegen. The fix
+        # stores a per-concrete-type type-id at offset 0 of every
+        # struct implementing a multi-impl trait (fields shift after an
+        # 8-byte header, invisible to field iteration), keeps a trait
+        # value as a single i32 struct pointer, and dispatches at the
+        # call site by loading the tag and walking an if-chain to the
+        # matching mangled impl method. Covers every result shape
+        # (String / Int / Bool / Float), three impls with different
+        # field layouts, the trait value through a let / param / return
+        # / struct field / sum-payload match, a List of mixed concrete
+        # types iterated per element, a self-method call, and a
+        # participating struct used as a plain concrete value (direct
+        # call / field read / equality) so the header does not corrupt
+        # those paths.
+        self._assert_parity("multi_impl_dispatch.capa")
 
     def test_struct_field_assign(self):
         # Field-target assignment slice (2026-06-06): ``obj.field =

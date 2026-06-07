@@ -112,6 +112,16 @@ class _InstrDispatchMixin:
             if (recv_head, instr.method) in self._method_table:
                 self._emit_trait_method_call(instr)
                 return
+            # Multi-impl trait receiver: not in _method_table (that
+            # only carries unique-impl + concrete entries) but in the
+            # dynamic-dispatch candidate table. Route to the trait
+            # call emitter, which loads the type-id tag and dispatches
+            # via an if-chain.
+            if (recv_head, instr.method) in getattr(
+                self, "_multi_impl_candidates", {},
+            ):
+                self._emit_trait_method_call(instr)
+                return
             raise WasmEmissionError(
                 f"MethodCall on receiver of type {recv_ty!r} "
                 f"(method {instr.method!r}) is not supported by the "
