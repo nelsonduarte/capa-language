@@ -1,0 +1,164 @@
+// list_literal_sum_interleaved.capa: a LIST LITERAL of a sum type
+// where a payloadless (tag-only) variant element appears before a
+// payload-carrying element must store every element at its correct
+// data-array slot on the Wasm backend, with parity to Python.
+//
+// Root cause (pre-fix): _emit_make_list cached the data-array base
+// pointer in $_alloc_tmp and re-used it for every element store. A
+// payloadless variant element (e.g. ``Nil`` / ``Off``) pushes via the
+// ``variant_ctor`` path in _push_value, which does ``call $alloc`` +
+// ``local.tee $_alloc_tmp`` and so overwrote that scratch with the
+// fresh variant pointer. Every element AFTER the first payloadless
+// variant then computed its store address from that variant pointer
+// instead of the data array, landing in the wrong heap region and
+// reading back as 0. ``[Nil, Has(3)]`` read element 1 as 0 on Wasm
+// (Python gave 3); ``[Has(5), Nil, Has(7)]`` read element 2 as 0.
+// The ``.push()``-built equivalent was always correct because push
+// re-reads data_ptr from the header each call. Fix: _emit_make_list
+// now re-reads data_ptr from the list header for each element store,
+// immune to any element push that clobbers a scratch local.
+
+// Non-generic sum with a payloadless variant and an Int payload.
+type Opt =
+    Has(Int)
+    Nil
+
+// Generic sum (monomorphised) with a payloadless variant.
+type Box<T> =
+    Full(T)
+    Empty
+
+type Pt {
+    x: Int,
+    y: Int
+}
+
+// Different payload types, each paired with a payloadless variant.
+type Tagged =
+    TInt(Int)
+    TStr(String)
+    TPt(Pt)
+    TList(List<Int>)
+    TPair((Int, Int))
+    TNone
+
+fun opt_val(o: Opt) -> Int
+    return match o
+        Has(n) -> n
+        Nil -> -1
+
+fun box_val(b: Box<Int>) -> Int
+    return match b
+        Full(n) -> n
+        Empty -> -1
+
+fun main(s: Stdio)
+    // Criterion 1: [Nil, Has(3)], read element 1's payload.
+    let a = [Nil, Has(3)]
+    s.println("c1: ${opt_val(a[1])}")
+
+    // Criterion 2: [Has(5), Nil, Has(7)], read elements 0 / 1 / 2.
+    let b = [Has(5), Nil, Has(7)]
+    s.println("c2: ${opt_val(b[0])} ${opt_val(b[1])} ${opt_val(b[2])}")
+
+    // Criterion 3: many interleavings, read every element by index.
+    // payloadless first
+    let p1 = [Nil, Has(1), Has(2)]
+    s.println("p1: ${opt_val(p1[0])} ${opt_val(p1[1])} ${opt_val(p1[2])}")
+    // payloadless last
+    let p2 = [Has(1), Has(2), Nil]
+    s.println("p2: ${opt_val(p2[0])} ${opt_val(p2[1])} ${opt_val(p2[2])}")
+    // payloadless middle
+    let p3 = [Has(1), Nil, Has(2)]
+    s.println("p3: ${opt_val(p3[0])} ${opt_val(p3[1])} ${opt_val(p3[2])}")
+    // multiple consecutive payloadless
+    let p4 = [Nil, Nil, Has(9)]
+    s.println("p4: ${opt_val(p4[0])} ${opt_val(p4[1])} ${opt_val(p4[2])}")
+    // all payloadless
+    let p5 = [Nil, Nil, Nil]
+    s.println("p5: ${opt_val(p5[0])} ${opt_val(p5[1])} ${opt_val(p5[2])}")
+    // all payload-carrying
+    let p6 = [Has(4), Has(5), Has(6)]
+    s.println("p6: ${opt_val(p6[0])} ${opt_val(p6[1])} ${opt_val(p6[2])}")
+
+    // Criterion 4: different payload types, each with an interleaved
+    // payloadless variant; read each element back.
+    // Int payload
+    let ti = [TNone, TInt(11), TNone, TInt(22)]
+    s.println("ti: ${tag_int(ti[1])} ${tag_int(ti[3])}")
+    // String payload
+    let ts = [TNone, TStr("alpha"), TStr("beta")]
+    s.println("ts: ${tag_str(ts[1])} ${tag_str(ts[2])}")
+    // struct payload
+    let tp = [TNone, TPt(Pt { x: 3, y: 4 }), TNone]
+    s.println("tp: ${tag_pt(tp[1])}")
+    // list payload
+    let tl = [TNone, TList([100, 200, 300])]
+    s.println("tl: ${tag_list(tl[1])}")
+    // tuple payload
+    let tt = [TNone, TPair((7, 8)), TNone]
+    s.println("tt: ${tag_pair(tt[1])}")
+
+    // Criterion 5: generic sum (monomorphised) list literal.
+    let g: List<Box<Int>> = [Empty, Full(42), Empty, Full(99)]
+    s.println("g: ${box_val(g[1])} ${box_val(g[3])}")
+
+    // Criterion 6: read elements back by ITERATING and matching each.
+    let it = [Has(10), Nil, Has(30), Nil, Has(50)]
+    var total = 0
+    for e in it
+        match e
+            Has(n) -> total = total + n
+            Nil -> total = total + 0
+    s.println("iter-sum: ${total}")
+
+    // Criterion 7 regression: the .push()-built equivalent stays correct.
+    var pushed: List<Opt> = []
+    pushed.push(Nil)
+    pushed.push(Has(3))
+    s.println("push: ${opt_val(pushed[1])}")
+
+fun tag_int(t: Tagged) -> Int
+    return match t
+        TInt(n) -> n
+        TStr(_) -> -1
+        TPt(_) -> -1
+        TList(_) -> -1
+        TPair(_) -> -1
+        TNone -> -1
+
+fun tag_str(t: Tagged) -> String
+    return match t
+        TStr(v) -> v
+        TInt(_) -> "?"
+        TPt(_) -> "?"
+        TList(_) -> "?"
+        TPair(_) -> "?"
+        TNone -> "?"
+
+fun tag_pt(t: Tagged) -> String
+    return match t
+        TPt(p) -> "${p.x},${p.y}"
+        TInt(_) -> "?"
+        TStr(_) -> "?"
+        TList(_) -> "?"
+        TPair(_) -> "?"
+        TNone -> "?"
+
+fun tag_list(t: Tagged) -> Int
+    return match t
+        TList(xs) -> xs[1]
+        TInt(_) -> -1
+        TStr(_) -> -1
+        TPt(_) -> -1
+        TPair(_) -> -1
+        TNone -> -1
+
+fun tag_pair(t: Tagged) -> Int
+    return match t
+        TPair(pr) -> pr[0] + pr[1]
+        TInt(_) -> -1
+        TStr(_) -> -1
+        TPt(_) -> -1
+        TList(_) -> -1
+        TNone -> -1

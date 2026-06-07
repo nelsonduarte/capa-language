@@ -609,14 +609,20 @@ class _ListEmissionMixin:
         self._write(f"local.get ${instr.dst}")
         self._write("local.get $_alloc_tmp")
         self._write(f"i32.store offset={_LIST_DATA_OFFSET}")
-        # Write each literal element. ``_alloc_tmp`` holds the base
-        # pointer of the data array. String elements pack (ptr, len)
-        # into the 8-byte slot as ``ptr | (len << 32)``; Float
-        # elements use ``f64.store`` so the slot bytes are the
-        # IEEE-754 bit pattern (a subsequent ``f64.load`` reads them
-        # back as an f64; an ``i64.load`` reads the same bits as i64
-        # for HOF emission's uniform i64 slot path). Other types use
-        # the size-dispatched store directly.
+        # Write each literal element. The base pointer of the data
+        # array is re-read from the list header (``instr.dst``'s
+        # data_ptr slot) for EACH element store rather than cached in
+        # ``$_alloc_tmp``: a payloadless sum element (e.g. ``Nil`` /
+        # ``Off``) pushes via the ``variant_ctor`` path in
+        # ``_push_value``, which does ``call $alloc`` + ``local.tee
+        # $_alloc_tmp`` and so overwrites that scratch with the fresh
+        # variant pointer. With a cached base, every element after the
+        # first payloadless variant would compute its store address
+        # from that variant pointer instead of the data array and the
+        # value would land in the wrong heap region (read back as 0).
+        # Re-reading data_ptr from the header each iteration mirrors
+        # how ``_emit_list_push`` addresses the slot and is immune to
+        # any element push that clobbers a scratch local.
         store_op = _store_op_for_size(elem_size)
         for i, elem in enumerate(instr.elements):
             if elem_ty == "String":
@@ -630,7 +636,8 @@ class _ListEmissionMixin:
                 #   [base, ptr_i64]
                 #   [base, ptr_i64, (len_i64<<32)]
                 #   [base, packed_i64]
-                self._write("local.get $_alloc_tmp")
+                self._write(f"local.get ${instr.dst}")
+                self._write(f"i32.load offset={_LIST_DATA_OFFSET}")
                 self._push_string_value_as_ptr_len(elem)
                 self._write("i64.extend_i32_u")
                 self._write("i64.const 32")
@@ -642,16 +649,13 @@ class _ListEmissionMixin:
                 self._write("i64.or")
                 self._write(f"i64.store offset={i * elem_size}")
                 continue
-            self._write("local.get $_alloc_tmp")
+            self._write(f"local.get ${instr.dst}")
+            self._write(f"i32.load offset={_LIST_DATA_OFFSET}")
             self._push_value(elem)
             if elem_ty == "Float":
                 self._write(f"f64.store offset={i * elem_size}")
             else:
                 self._write(f"{store_op} offset={i * elem_size}")
-        # Drop the leftover from local.tee (it lives in $_alloc_tmp
-        # but the stack value persisted). i32.store consumed the tag
-        # offset's stack value already in the data_ptr store above,
-        # so the stack is balanced at this point.
 
     def _emit_index(self, instr: Index) -> None:
         """Lower ``xs[i]`` for a List receiver. Bounds-check ``i``

@@ -345,6 +345,27 @@ _PARITY_PROGRAMS: list[str] = [
     # struct-field read-modify-write, plus the Float ``/=`` (unchanged,
     # stays float division) and the ``+= -= *=`` regression.
     "aug_int_divmod.capa",
+    # Slice (2026-06-07): list literal of a sum type with an interleaved
+    # payloadless (tag-only) variant element. Pre-fix _emit_make_list
+    # cached the data-array base pointer in $_alloc_tmp and reused it for
+    # every element store, but a payloadless variant element pushes via
+    # the variant_ctor path in _push_value, which does ``call $alloc`` +
+    # ``local.tee $_alloc_tmp`` and so overwrote that scratch with the
+    # fresh variant pointer. Every element AFTER the first payloadless
+    # variant then stored at variant_ptr + offset instead of the data
+    # array, reading back as 0 (silent wrong value): ``[Nil, Has(3)]``
+    # read element 1 as 0 on Wasm (Python gave 3); ``[Has(5), Nil,
+    # Has(7)]`` read element 2 as 0. The .push()-built equivalent was
+    # always correct (push re-reads data_ptr from the header each call).
+    # Fix: _emit_make_list re-reads data_ptr from the list header for
+    # each element store, immune to any element push that clobbers a
+    # scratch local. Covers payloadless first / last / middle / multiple
+    # consecutive / all-payloadless / all-payload orders, payload types
+    # Int / String / struct / list / tuple each with an interleaved
+    # payloadless variant, a non-generic AND a monomorphised generic sum,
+    # reads by index AND by iterating + matching, and the .push()
+    # regression.
+    "list_literal_sum_interleaved.capa",
 ]
 
 # Programs deliberately excluded from parity and why; documented
@@ -1139,6 +1160,27 @@ class TestPythonWasmParity(unittest.TestCase):
         # struct-field RMW, the unaffected Float ``/=``, and the
         # ``+= -= *=`` regression.
         self._assert_parity("aug_int_divmod.capa")
+
+    def test_list_literal_sum_interleaved(self):
+        # List-literal sum-element slice (2026-06-07): a list literal of
+        # a sum type with an interleaved payloadless (tag-only) variant
+        # element silently read back later payload-carrying elements as
+        # 0 on the Wasm backend. _emit_make_list cached the data-array
+        # base pointer in $_alloc_tmp, but a payloadless variant element
+        # pushes via the variant_ctor path in _push_value (``call $alloc``
+        # + ``local.tee $_alloc_tmp``), overwriting that scratch with the
+        # fresh variant pointer; every element after the first payloadless
+        # variant then stored at variant_ptr + offset instead of the data
+        # array. The .push()-built equivalent was always correct (push
+        # re-reads data_ptr from the header each call). Fix:
+        # _emit_make_list re-reads data_ptr from the list header for each
+        # element store. Covers payloadless first / last / middle /
+        # multiple-consecutive / all-payloadless / all-payload orders,
+        # payload types Int / String / struct / list / tuple each with an
+        # interleaved payloadless variant, a non-generic AND a
+        # monomorphised generic sum, reads by index AND by iterating +
+        # matching, and the .push() regression.
+        self._assert_parity("list_literal_sum_interleaved.capa")
 
     def test_struct_field_assign(self):
         # Field-target assignment slice (2026-06-06): ``obj.field =
