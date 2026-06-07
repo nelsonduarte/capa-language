@@ -379,12 +379,26 @@ class _DispatchMixin:
         # TyUnknown (which propagated as ``?`` through the
         # lowerer and broke the Wasm backend on any user-cap
         # method call result).
+        # ``capability X`` lands as SymbolKind.CAPABILITY and
+        # ``trait X`` as SymbolKind.TRAIT, but both populate the
+        # same ``sym.methods`` table (see ``_declarations.py``) and
+        # both can have a method called through a value typed as the
+        # trait/cap. Route both through the same dispatch path so a
+        # method called on a TRAIT-typed receiver gets its DECLARED
+        # return type. Without the TRAIT case here the call fell
+        # through to TyUnknown, which propagated as ``?`` through the
+        # lowerer and broke the Wasm backend (a String return read
+        # back as a single i64 instead of (ptr, len)).
         if isinstance(recv_ty, TyName):
             cap_sym = self.global_scope.lookup(recv_ty.name)
             if (
                 cap_sym is not None
-                and cap_sym.kind == SymbolKind.CAPABILITY
+                and cap_sym.kind in (SymbolKind.CAPABILITY, SymbolKind.TRAIT)
             ):
+                kind_word = (
+                    "capability" if cap_sym.kind == SymbolKind.CAPABILITY
+                    else "trait"
+                )
                 method_sym = cap_sym.methods.get(e.method)
                 if method_sym is not None and isinstance(method_sym.ty, TyFun):
                     return self._check_method_dispatch(
@@ -395,7 +409,7 @@ class _DispatchMixin:
                         e.method, list(cap_sym.methods.keys()),
                     )
                     self._err(
-                        f"capability {recv_ty.name!r} has no method "
+                        f"{kind_word} {recv_ty.name!r} has no method "
                         f"{e.method!r}{hint}",
                         e.pos,
                     )

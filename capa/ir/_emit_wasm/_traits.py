@@ -67,6 +67,12 @@ class _TraitEmissionMixin:
         unambiguously."""
         self._trait_to_impl: dict[str, object] = {}
         self._method_table: dict[tuple[str, str], str] = {}
+        # Traits that carry more than one impl. Their values would need
+        # a packed (struct_ptr, vtable) layout for dynamic dispatch,
+        # which this phase does not emit; recorded so ``_wasm_type``
+        # can reject a multi-impl trait-typed value with a precise
+        # error instead of the generic "no Wasm encoding" one.
+        self._multi_impl_traits: set[str] = set()
         by_trait: dict[str, list] = {}
         for impl in module.impls:
             for method in impl.methods:
@@ -82,6 +88,8 @@ class _TraitEmissionMixin:
                     mangled = _impl_method_name(impls[0].type_name, method.name)
                     # Trait entry: only when impl is unique.
                     self._method_table[(trait_name, method.name)] = mangled
+            else:
+                self._multi_impl_traits.add(trait_name)
 
     def _emit_impl_methods(self, module) -> None:
         """Emit every impl block's methods as top-level Wasm

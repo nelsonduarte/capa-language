@@ -1,0 +1,83 @@
+// Method calls through a trait-typed (user-capability) receiver
+// must give their result the trait method's DECLARED return type
+// so the Wasm backend stores/reads it in the correct calling
+// shape: String as (ptr, len), Bool as i32, Float as f64, Int as
+// i64. A single impl of the trait routes monomorphically; the
+// result still has to carry the right type or a String return
+// gets read back as a single i64.
+//
+// Exercises a String return used five ways (printed, interpolated,
+// concatenated, compared, passed onward to another String
+// consumer), Bool / Float / Int returns used in branch / arithmetic
+// / print, the ``return g.method()`` direct-return shape, and the
+// let-then-use shape.
+
+capability Greeter
+    fun greet(self) -> String
+    fun score(self) -> Int
+    fun ratio(self) -> Float
+    fun active(self) -> Bool
+
+type English {
+    name: String,
+    base: Int
+}
+
+impl Greeter for English
+    fun greet(self) -> String
+        return "Hello, ${self.name}"
+    fun score(self) -> Int
+        return self.base + 7
+    fun ratio(self) -> Float
+        return 1.5
+    fun active(self) -> Bool
+        return true
+
+fun make_english(n: String, base: Int) -> English
+    return English { name: n, base: base }
+
+// Direct-return shape: the trait method result is the function's
+// return value.
+fun run_greet(g: Greeter) -> String
+    return g.greet()
+
+// A second String consumer the result is passed onward to.
+fun shout(s: String, stdio: Stdio)
+    stdio.println("shout: ${s}")
+
+fun use_all(g: Greeter, stdio: Stdio)
+    // let-then-use, printed and interpolated.
+    let msg = g.greet()
+    stdio.println(msg)
+    stdio.println("interp: ${msg}")
+    // concatenated.
+    let banner = msg + "!"
+    stdio.println(banner)
+    // compared.
+    if msg == "Hello, Ada"
+        stdio.println("greeting matched")
+    else
+        stdio.println("greeting did not match")
+    // passed onward to another String consumer.
+    shout(g.greet(), stdio)
+    // Int return used in arithmetic + print.
+    let s = g.score()
+    stdio.println("score+1: ${s + 1}")
+    // Float return used in a branch.
+    let r = g.ratio()
+    if r > 1.0
+        stdio.println("ratio is high")
+    else
+        stdio.println("ratio is low")
+    // Bool return used in a branch.
+    let a = g.active()
+    if a
+        stdio.println("active")
+    else
+        stdio.println("inactive")
+
+fun main(stdio: Stdio)
+    let ada = make_english("Ada", 10)
+    // direct-return shape, result printed.
+    stdio.println(run_greet(ada))
+    use_all(ada, stdio)

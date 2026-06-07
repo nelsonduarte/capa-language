@@ -403,6 +403,34 @@ _PARITY_PROGRAMS: list[str] = [
     # key, Map value, List element, tuple component, and match
     # scrutinee.
     "const_string_sites.capa",
+    # Slice (2026-06-07): a method invoked through a trait-typed
+    # (user-capability) receiver must give its result the trait
+    # method's DECLARED return type, so the Wasm backend stores /
+    # reads it in the right calling shape - String as (ptr, len),
+    # Bool as i32, Float as f64, Int as i64. A String return read
+    # back as a single i64 would trip module validation or silently
+    # mis-decode. The single-impl trait routes monomorphically
+    # through the impl's mangled method; this program exercises a
+    # String return printed / interpolated / concatenated / compared
+    # / passed onward to another String consumer, Bool / Float / Int
+    # returns used in branch / arithmetic / print, the direct-return
+    # ``return g.greet()`` shape, and the let-then-use shape.
+    # (A trait with more than one impl needs dynamic dispatch over a
+    # packed struct_ptr+vtable layout the backend does not emit yet;
+    # that case raises a precise WasmEmissionError rather than
+    # miscompiling, so it is not a parity program.)
+    "trait_return_shapes.capa",
+    # Sibling of trait_return_shapes.capa using the ``trait`` keyword
+    # (SymbolKind.TRAIT) instead of ``capability``
+    # (SymbolKind.CAPABILITY). The capability flavour already resolved
+    # a method's declared return type at the call site; the trait
+    # flavour fell through to TyUnknown, which propagated as ``?`` and
+    # broke the Wasm backend's calling shape (String return decoded as
+    # a single i64). Covers String / Bool / Float / Int returns plus an
+    # aggregate (struct + List) return, a struct implementing TWO
+    # different single-impl traits, and a trait method returning another
+    # trait type.
+    "trait_keyword_return_shapes.capa",
 ]
 
 # Programs deliberately excluded from parity and why; documented
@@ -1248,6 +1276,38 @@ class TestPythonWasmParity(unittest.TestCase):
         # byte-UTF-8 const as fields, and a String const as a Map key,
         # Map value, List element, tuple component, and match scrutinee.
         self._assert_parity("const_string_sites.capa")
+
+    def test_trait_return_shapes(self):
+        # Slice (2026-06-07): a method called through a trait-typed
+        # (user-capability) receiver must give its result the trait
+        # method's DECLARED return type so the Wasm backend stores /
+        # reads it in the right calling shape - String as (ptr, len),
+        # Bool as i32, Float as f64, Int as i64. A String return
+        # decoded as a single i64 would trip module validation or
+        # silently mis-decode. The single-impl trait routes
+        # monomorphically through the impl's mangled method. Covers a
+        # String return printed / interpolated / concatenated /
+        # compared / passed onward to another String consumer, Bool /
+        # Float / Int returns used in branch / arithmetic / print, the
+        # direct-return ``return g.greet()`` shape, and let-then-use.
+        self._assert_parity("trait_return_shapes.capa")
+
+    def test_trait_keyword_return_shapes(self):
+        # Slice (2026-06-07): the ``trait`` keyword (SymbolKind.TRAIT)
+        # sibling of test_trait_return_shapes (which used the
+        # ``capability`` keyword, SymbolKind.CAPABILITY). A method
+        # called through a ``trait``-typed receiver must get its
+        # DECLARED return type so the Wasm backend stores / reads it in
+        # the right calling shape - String as (ptr, len), Bool as i32,
+        # Float as f64, Int as i64 (typed Int, not Unknown-aliased),
+        # struct / List as an i32 pointer. Before the fix the trait
+        # path fell through to TyUnknown and Wasm rejected the module
+        # ("type mismatch: expected i64, found i32"). Covers String /
+        # Bool / Float / Int returns used five / arithmetic / branch
+        # ways, an aggregate (struct field read, then List iteration)
+        # return, a struct implementing TWO different single-impl
+        # traits, and a trait method returning another trait type.
+        self._assert_parity("trait_keyword_return_shapes.capa")
 
     def test_struct_field_assign(self):
         # Field-target assignment slice (2026-06-06): ``obj.field =

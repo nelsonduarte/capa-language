@@ -291,6 +291,20 @@ class _ValueEmissionMixin:
         # values are i32 pointers to the impl's struct.
         if head in self._trait_to_impl:
             return "i32"
+        # User-defined trait / capability with more than one impl:
+        # a value of this type needs runtime dynamic dispatch over a
+        # packed (struct_ptr, vtable) layout, which this phase does
+        # not emit. Raise a precise error rather than the generic
+        # "no Wasm encoding" message so the limit is legible.
+        if head in getattr(self, "_multi_impl_traits", ()):
+            raise WasmEmissionError(
+                f"trait {head!r} has multiple impls; calling its "
+                f"methods through a {head}-typed value needs dynamic "
+                f"dispatch (a packed struct_ptr+vtable layout), which "
+                f"the Wasm backend does not emit yet. Use a "
+                f"concrete-typed receiver, or keep the trait single-"
+                f"impl, until vtable dispatch lands."
+            )
         # Tuples render as ``(T1, T2, ...)``. Stored on the heap
         # as 16-byte records (one uniform 8-byte slot per element
         # for up to 2 elements; arities other than 2 are deferred).

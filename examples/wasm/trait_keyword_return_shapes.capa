@@ -1,0 +1,127 @@
+// Sibling of trait_return_shapes.capa, but exercising the ``trait``
+// keyword (SymbolKind.TRAIT) instead of ``capability``
+// (SymbolKind.CAPABILITY). The two land as distinct symbol kinds; the
+// capability flavour already resolved a method's declared return type
+// at the call site, but a method called through a ``trait``-typed
+// receiver fell through to TyUnknown. That Unknown propagated as ``?``
+// through the lowerer and broke the Wasm backend at calling-shape time
+// (a String return read back as a single i64 instead of (ptr, len),
+// "type mismatch: expected i64, found i32").
+//
+// With the fix, a ``trait``-typed receiver method call carries its
+// real declared return type, so the result is stored / read in the
+// correct shape on both backends: String as (ptr, len), Bool as i32,
+// Float as f64, Int as i64, struct / List as an i32 pointer.
+//
+// Covers: a String return used five ways (printed, interpolated,
+// concatenated, compared, returned directly via ``return g.greet()``,
+// let-then-use, passed onward to another String consumer); Bool /
+// Float / Int returns in branch / arithmetic / print (Int typed Int,
+// not Unknown-aliased-to-i64); an aggregate return (struct field read,
+// then List iteration) through a trait receiver; a struct implementing
+// TWO different single-impl traits; and a trait method that returns
+// another trait type.
+
+trait Greeter
+    fun greet(self) -> String
+    fun score(self) -> Int
+    fun ratio(self) -> Float
+    fun active(self) -> Bool
+
+trait Builder
+    fun origin(self) -> Point
+    fun primes(self) -> List<Int>
+    fun delegate(self) -> Greeter
+
+type Point {
+    x: Int,
+    y: Int
+}
+
+// Robot implements TWO different single-impl traits (Greeter +
+// Builder).
+type Robot {
+    name: String,
+    base: Int
+}
+
+impl Greeter for Robot
+    fun greet(self) -> String
+        return "Hello, ${self.name}"
+    fun score(self) -> Int
+        return self.base + 7
+    fun ratio(self) -> Float
+        return 1.5
+    fun active(self) -> Bool
+        return true
+
+impl Builder for Robot
+    fun origin(self) -> Point
+        return Point { x: self.base, y: self.base + 1 }
+    fun primes(self) -> List<Int>
+        return [2, 3, 5, self.base]
+    // A trait method that returns another trait type.
+    fun delegate(self) -> Greeter
+        return Robot { name: self.name, base: self.base }
+
+fun make_robot(n: String, base: Int) -> Robot
+    return Robot { name: n, base: base }
+
+// Direct-return shape: the trait method result is the function's
+// return value.
+fun run_greet(g: Greeter) -> String
+    return g.greet()
+
+// A second String consumer the result is passed onward to.
+fun shout(s: String, stdio: Stdio)
+    stdio.println("shout: ${s}")
+
+fun use_greeter(g: Greeter, stdio: Stdio)
+    // let-then-use, printed and interpolated.
+    let msg = g.greet()
+    stdio.println(msg)
+    stdio.println("interp: ${msg}")
+    // concatenated.
+    let banner = msg + "!"
+    stdio.println(banner)
+    // compared.
+    if msg == "Hello, Ada"
+        stdio.println("greeting matched")
+    else
+        stdio.println("greeting did not match")
+    // passed onward to another String consumer.
+    shout(g.greet(), stdio)
+    // Int return used in arithmetic + print (typed Int, not Unknown).
+    let s = g.score()
+    stdio.println("score+1: ${s + 1}")
+    // Float return used in a branch.
+    let r = g.ratio()
+    if r > 1.0
+        stdio.println("ratio is high")
+    else
+        stdio.println("ratio is low")
+    // Bool return used in a branch.
+    let a = g.active()
+    if a
+        stdio.println("active")
+    else
+        stdio.println("inactive")
+
+fun use_builder(b: Builder, stdio: Stdio)
+    // Aggregate return: struct, field read afterwards.
+    let p = b.origin()
+    stdio.println("origin: ${p.x}, ${p.y}")
+    // Aggregate return: List, iterated afterwards.
+    let xs = b.primes()
+    for n in xs
+        stdio.println("prime: ${n}")
+    // Trait method returning another trait type, then used.
+    let g = b.delegate()
+    stdio.println("delegate: ${g.greet()}")
+
+fun main(stdio: Stdio)
+    let r = make_robot("Ada", 10)
+    // direct-return shape, result printed.
+    stdio.println(run_greet(r))
+    use_greeter(r, stdio)
+    use_builder(r, stdio)
