@@ -181,6 +181,26 @@ def substitute(t: Ty, mapping: dict[str, Ty]) -> Ty:
 
 
 # ===========================================================
+# Flexible vs rigid type variables
+# ===========================================================
+
+
+def is_flexible(t: Ty) -> bool:
+    """A *flexible* ``TyVar`` is an inference placeholder still to be
+    unified. The analyzer marks these by giving them a leading ``?`` in
+    their name (see ``_fresh_ty_var``); a declared generic type parameter
+    (``T``, ``K``, ...) is *rigid* and keeps its plain name.
+
+    The distinction matters for soundness: a flexible var is compatible
+    with anything (it will be resolved), but a rigid var standing for an
+    unknown-but-fixed type inside a generic body is only compatible with
+    itself, otherwise ``out.push("x")`` on a ``List<T>`` would type-check
+    and crash the host at runtime.
+    """
+    return isinstance(t, TyVar) and t.name.startswith("?")
+
+
+# ===========================================================
 # Type compatibility (structural equality with TyUnknown wildcard)
 # ===========================================================
 
@@ -192,14 +212,30 @@ def compatible(expected: Ty, actual: Ty) -> bool:
     - ``TyUnknown`` is compatible with any other type (on either
       side). This relaxation avoids cascading errors from a
       single non-typable expression.
-    - ``TyVar`` (not-instantiated) is compatible with any type, since
-      it represents an inference placeholder still to be resolved
-      (e.g., `[]` produces `List<TyVar>`).
+    - A *flexible* ``TyVar`` (an inference placeholder, name beginning
+      with ``?``) on either side is compatible with any type, since it
+      is still to be resolved (e.g., `[]` produces `List<?lst_0>`).
+    - A *rigid* ``TyVar`` (a declared generic type parameter such as
+      ``T``) is compatible ONLY with the same rigid variable (same
+      name) or with a flexible ``?`` variable that can absorb it. A
+      rigid variable versus a concrete type, or versus a *different*
+      rigid variable, is NOT compatible: inside ``fun build<T>`` the
+      element type of a ``List<T>`` is fixed-but-unknown, so pushing a
+      ``String`` (``compatible(T, String)``) must be rejected to keep
+      the program from reaching a host type error at runtime.
     """
     if isinstance(expected, _TyUnknownSingleton) or isinstance(actual, _TyUnknownSingleton):
         return True
-    if isinstance(expected, TyVar) or isinstance(actual, TyVar):
+    if is_flexible(expected) or is_flexible(actual):
         return True
+    if isinstance(expected, TyVar) or isinstance(actual, TyVar):
+        # At least one side is a rigid TyVar (flexible handled above).
+        # Compatible only when both are the same rigid variable.
+        return (
+            isinstance(expected, TyVar)
+            and isinstance(actual, TyVar)
+            and expected.name == actual.name
+        )
     if isinstance(expected, _TyUnitSingleton) and isinstance(actual, _TyUnitSingleton):
         return True
     if isinstance(expected, TyName) and isinstance(actual, TyName):
@@ -341,12 +377,22 @@ def unify(expected: Ty, actual: Ty, mapping: dict[str, Ty]) -> bool:
         if isinstance(actual, TyVar) and actual.name == expected.name:
             return True
         bound = mapping.get(expected.name)
-        # A pre-existing self-referential binding (``X = X``, which callers may
-        # seed when the owner's type parameter shares a name with the
-        # argument's variable) carries no information. Treat it as unbound so we
-        # can either accept a concrete refinement or stay reflexive, instead of
-        # recursing on it forever.
+        # A pre-existing self-referential binding (``X = X``) is seeded by the
+        # method dispatcher when an owner's type parameter is instantiated to a
+        # *rigid* generic variable of the same name (the receiver of a method
+        # call on ``List<T>`` inside ``fun build<T>`` carries element type
+        # ``T``). It means "this slot is fixed to the unknown-but-rigid ``T``",
+        # NOT "this slot is still free". Refining it to a concrete type would be
+        # unsound: ``out.push("x")`` would then type-check and crash the host.
+        # So a *rigid* self-referential binding only unifies with a flexible
+        # ``?`` placeholder (which can absorb it); against a concrete type or a
+        # different variable it fails cleanly. The reflexive ``T`` vs ``T`` case
+        # is already handled above. A *flexible* self-referential binding (a
+        # ``?`` inference placeholder) is, as before, treated as unbound so it
+        # can be refined to a concrete type.
         if isinstance(bound, TyVar) and bound.name == expected.name:
+            if not is_flexible(bound):
+                return is_flexible(actual)
             bound = None
         if bound is None:
             # Occurs-check: refuse to build an infinite type (binding ``X`` to a

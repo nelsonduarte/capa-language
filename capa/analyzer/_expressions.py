@@ -555,14 +555,22 @@ class _ExpressionsMixin:
             # Constructor without payload: the type is the
             # owning sum type. For generic types whose
             # parameters we cannot infer from context, use
-            # TyUnknown (built-ins) or TyVar (user types) so
-            # later unification can refine.
+            # TyUnknown (built-ins) or a FRESH flexible TyVar
+            # (user types) so later unification can refine. The
+            # var must be a fresh ``?`` placeholder, NOT the
+            # declared rigid parameter name: ``Nothing`` of
+            # ``Opt<T>`` has a still-unknown element type, so
+            # ``let ni: Opt<Int> = Nothing`` has to unify it to
+            # Int. A rigid ``T`` here would be incompatible with
+            # every concrete instantiation.
             if not sym.variant_payload_tys and sym.variant_owner is not None:
                 owner = sym.variant_owner
                 if owner.pos is _BUILTIN_POS:
                     args = tuple(TyUnknown for _ in owner.type_params)
                 else:
-                    args = tuple(TyVar(p) for p in owner.type_params)
+                    args = tuple(
+                        self._fresh_ty_var(p) for p in owner.type_params
+                    )
                 return TyName(owner.name, args)
             return TyUnknown
         if sym.ty is not None:

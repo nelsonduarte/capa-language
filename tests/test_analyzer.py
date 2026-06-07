@@ -1232,6 +1232,117 @@ class TestGenericsInference(unittest.TestCase):
         self.assertTrue(r.ok, r.errors)
 
 
+class TestRigidTypeVarSoundness(unittest.TestCase):
+    """A declared generic type parameter (``T``) is *rigid* inside the
+    function body: its concrete identity is fixed-but-unknown. Pushing a
+    concrete value into a ``List<T>`` / ``Map<K, T>`` / ``Set<T>`` slot,
+    or pushing the container into itself, used to type-check (because
+    ``compatible(T, anything)`` returned True) and then crash the Python
+    backend with a host ``TypeError`` -- a well-typed program reaching a
+    runtime type error, i.e. unsoundness. These must now be rejected
+    cleanly, while a value genuinely typed ``T`` still flows in."""
+
+    def test_concrete_string_into_list_of_t_rejected(self):
+        msgs = errors_of(
+            "fun build<T>(x: T) -> List<T>\n"
+            "    var out: List<T> = []\n"
+            "    out.push(\"a string literal\")\n"
+            "    return out\n"
+            "fun main(stdio: Stdio)\n"
+            "    let r = build(5)\n"
+            "    stdio.println(\"x\")\n"
+        )
+        self.assertTrue(
+            any("expects T" in m and "String" in m for m in msgs), msgs
+        )
+
+    def test_concrete_int_into_list_of_t_rejected(self):
+        msgs = errors_of(
+            "fun build<T>(x: T) -> List<T>\n"
+            "    var out: List<T> = []\n"
+            "    out.push(99)\n"
+            "    return out\n"
+            "fun main(stdio: Stdio)\n"
+            "    let r = build(\"s\")\n"
+            "    stdio.println(\"x\")\n"
+        )
+        self.assertTrue(
+            any("expects T" in m and "Int" in m for m in msgs), msgs
+        )
+
+    def test_self_push_rejected(self):
+        # out.push(out): pushing the List<T> into its own List<T> slot.
+        msgs = errors_of(
+            "fun build<T>(x: T) -> List<T>\n"
+            "    var out: List<T> = []\n"
+            "    out.push(out)\n"
+            "    return out\n"
+            "fun main(stdio: Stdio)\n"
+            "    let r = build(5)\n"
+            "    stdio.println(\"x\")\n"
+        )
+        self.assertTrue(
+            any("expects T" in m and "List<T>" in m for m in msgs), msgs
+        )
+
+    def test_concrete_value_into_map_of_t_rejected(self):
+        msgs = errors_of(
+            "fun mwrap<K, T>(k: K, v: T) -> Map<K, T>\n"
+            "    var out: Map<K, T> = new_map()\n"
+            "    out.set(k, \"wrong\")\n"
+            "    return out\n"
+            "fun main(stdio: Stdio)\n"
+            "    let m = mwrap(\"k\", 99)\n"
+            "    stdio.println(\"x\")\n"
+        )
+        self.assertTrue(
+            any("expects T" in m and "String" in m for m in msgs), msgs
+        )
+
+    def test_concrete_element_into_set_of_t_rejected(self):
+        msgs = errors_of(
+            "fun swrap<T>(x: T) -> Set<T>\n"
+            "    var out: Set<T> = new_set()\n"
+            "    out.add(\"wrong\")\n"
+            "    return out\n"
+            "fun main(stdio: Stdio)\n"
+            "    let s = swrap(7)\n"
+            "    stdio.println(\"x\")\n"
+        )
+        self.assertTrue(
+            any("expects T" in m and "String" in m for m in msgs), msgs
+        )
+
+    def test_value_of_t_into_list_of_t_still_accepted(self):
+        # Control: the legitimate accumulator pattern must keep working.
+        r = check(
+            "fun build<T>(x: T) -> List<T>\n"
+            "    var out: List<T> = []\n"
+            "    out.push(x)\n"
+            "    return out\n"
+            "fun main(stdio: Stdio)\n"
+            "    let r = build(5)\n"
+            "    stdio.println(\"x\")\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+    def test_nullary_variant_of_user_sum_still_assigns_concrete(self):
+        # Control: a payloadless variant of a user generic sum has a
+        # still-unknown element type, so binding it to a concrete
+        # instantiation must remain accepted (the type param here is a
+        # fresh flexible placeholder, not a rigid T).
+        r = check(
+            "type Opt<T> =\n"
+            "    Just(T)\n"
+            "    Nothing\n"
+            "fun main(stdio: Stdio)\n"
+            "    let ni: Opt<Int> = Nothing\n"
+            "    let ns: Opt<String> = Nothing\n"
+            "    stdio.println(\"x\")\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+
 # =============================================================
 # Method dispatch
 # =============================================================
