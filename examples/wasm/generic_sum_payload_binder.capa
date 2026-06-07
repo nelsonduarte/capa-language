@@ -1,0 +1,112 @@
+// generic_sum_payload_binder.capa: a generic sum's payload of type T,
+// matched with a binder, must decode the binder as the CONCRETE
+// instantiation rather than the bare type variable on the Wasm backend,
+// at T = Int / String / a struct payload, and through a NESTED generic
+// sum (a sum whose payload is itself another generic sum).
+//
+// Pre-fix two losses survived monomorphisation for a nested generic
+// sum (``Opt<Opt<Int>>``). (1) A monomorphic sum clone's
+// ``SumVariant.payload_tys`` is a ``list[str]``; the instantiation
+// rewrite treated each bare string as opaque, so the outer clone's
+// ``Just`` payload stayed the canonical ``Opt<Int>`` instead of the
+// mangled ``Opt__Int``. (2) The match-binder refinement read its
+// payload table from the pre-rewrite decls (stale ``Opt<Int>``) and
+// never propagated the concrete sum onto an inner match whose scrutinee
+// is an outer binder, nor onto the Value references to a refined binder
+// (an interpolated ``${k}`` kept ty ``T``). Each surfaced as
+// "Capa type 'Opt<Int>' / 'T' has no Wasm encoding yet". Fix: the
+// rewrite threads ``payload_tys``; the binder refinement reads the
+// rewritten decls, recovers an inner scrutinee's sum from its refined
+// local type, and syncs every refined binder's Value references to its
+// concrete type.
+
+type Opt<T> =
+    Just(T)
+    Nothing
+
+type Point {
+    x: Int,
+    y: Int
+}
+
+// Generic struct whose field is itself a generic sum (Box<Opt<T>>): the
+// sum-field's payload must size / decode by the struct's instantiation.
+type Box<T> {
+    value: T
+}
+
+fun main(s: Stdio)
+    // T = Int: binder in interpolation + arithmetic.
+    let oi = Just(42)
+    match oi
+        Just(n) -> s.println("int: ${n + 1}")
+        Nothing -> s.println("none")
+
+    // T = String: binder in interpolation + repeated use.
+    let os = Just("hi")
+    match os
+        Just(v) -> s.println("str: ${v} ${v}")
+        Nothing -> s.println("none")
+
+    // Binder used as a list index.
+    let lst = [10, 20, 30]
+    let idx = Just(2)
+    match idx
+        Just(i) -> s.println("idx: ${lst[i]}")
+        Nothing -> s.println("none")
+
+    // Struct payload, binder fields read.
+    let op = Just(Point { x: 7, y: 8 })
+    match op
+        Just(pt) -> s.println("struct: ${pt.x} ${pt.y}")
+        Nothing -> s.println("none")
+
+    // Nested generic sum: Opt<Opt<Int>>, binder is itself matched.
+    let on = Just(Just(5))
+    match on
+        Just(inner) ->
+            match inner
+                Just(k) -> s.println("nested: ${k}")
+                Nothing -> s.println("nested none")
+        Nothing -> s.println("outer none")
+
+    // Nested generic sum with a String leaf payload.
+    let ons = Just(Just("leaf"))
+    match ons
+        Just(inner) ->
+            match inner
+                Just(w) -> s.println("nested-str: ${w}")
+                Nothing -> s.println("nested-str none")
+        Nothing -> s.println("outer none")
+
+    // Inner-Nothing arm of a nested generic sum (Opt<Opt<Int>>): the
+    // outer Just carries an inner Nothing, so the absent-inner-payload arm
+    // is taken. Exercises sizing of the inner sum when its payload is
+    // absent (no Int slot to decode) - distinct from the present-payload
+    // path above.
+    let oinner_none: Opt<Opt<Int>> = Just(Nothing)
+    match oinner_none
+        Just(inner) ->
+            match inner
+                Just(k) -> s.println("inner present: ${k}")
+                Nothing -> s.println("inner none taken")
+        Nothing -> s.println("outer none")
+
+    // Generic STRUCT whose field is a generic SUM (Box<Opt<Int>>), matched
+    // on the field ``bo.value``; the inner payload is bound and used.
+    let bo: Box<Opt<Int>> = Box { value: Just(123) }
+    match bo.value
+        Just(n) -> s.println("box-field int: ${n + 1}")
+        Nothing -> s.println("box-field none")
+
+    // Same shape at a String leaf, to exercise the ptr/len payload slot.
+    let bos: Box<Opt<String>> = Box { value: Just("boxed") }
+    match bos.value
+        Just(v) -> s.println("box-field str: ${v}")
+        Nothing -> s.println("box-field none")
+
+    // Box<Opt<T>> with the field's Nothing arm taken.
+    let bon: Box<Opt<Int>> = Box { value: Nothing }
+    match bon.value
+        Just(n) -> s.println("box-field present: ${n}")
+        Nothing -> s.println("box-field none taken")

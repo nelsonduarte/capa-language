@@ -478,6 +478,29 @@ _PARITY_PROGRAMS: list[str] = [
     # different single-impl traits, and a trait method returning another
     # trait type.
     "trait_keyword_return_shapes.capa",
+    # Group A generics slice (2026-06-07): the three remaining
+    # Wasm-backend generics gaps. (A1) A generic FREE FUNCTION whose
+    # parameter / return type is itself a generic struct or sum, called
+    # at >=2 instantiations: a generic struct literal bound to a local
+    # carried only the bare generic head (``bi: Box`` not ``Box<Int>``),
+    # so call-site inference could not unify ``Box<T>`` against it and
+    # the call missed its clone ("unknown func $unwrap_box"); a pre-pass
+    # now annotates each such local with its canonical instantiation
+    # before inference. (A2) Generic struct construction / field access
+    # in nested / list / generic-field paths, value-checked. (A3) A
+    # generic sum's payload of type T matched with a binder, at T = Int /
+    # String / a struct payload and through a NESTED generic sum: a sum
+    # clone's ``payload_tys`` list escaped the instantiation rewrite
+    # (stayed ``Opt<Int>`` not ``Opt__Int``), and the match-binder
+    # refinement read stale pre-rewrite decls and never reached an inner
+    # match's scrutinee nor a refined binder's Value references ("no Wasm
+    # encoding for 'Opt<Int>' / 'T'"); the rewrite now threads
+    # ``payload_tys``, the refinement reads the rewritten decls, recovers
+    # an inner scrutinee's sum from its refined local, and syncs every
+    # refined binder's Value references.
+    "generic_fn_struct.capa",
+    "generic_struct_construction.capa",
+    "generic_sum_payload_binder.capa",
 ]
 
 # Programs deliberately excluded from parity and why; documented
@@ -1419,6 +1442,53 @@ class TestPythonWasmParity(unittest.TestCase):
         # return, a struct implementing TWO different single-impl
         # traits, and a trait method returning another trait type.
         self._assert_parity("trait_keyword_return_shapes.capa")
+
+    def test_generic_fn_struct(self):
+        # Group A1 (2026-06-07): a generic FREE FUNCTION whose
+        # parameter / return type is itself a generic struct or sum,
+        # called at two instantiations. Pre-fix a generic struct literal
+        # bound to a local carried only the bare generic head
+        # (``bi: Box`` not ``Box<Int>``), so the monomorphiser's
+        # call-site inference could not unify ``Box<T>`` against it and
+        # the call missed its emitted clone ("unknown func
+        # $unwrap_box"); a generic fn returning a generic struct was
+        # never specialised. A pre-pass now annotates each generic
+        # struct-literal local with its canonical instantiation before
+        # call inference. Covers a taker, a returner, and a generic fn
+        # over a generic SUM, each at Int (i64) and String (ptr/len),
+        # result used several ways. Also a nested-sibling pre-pass guard:
+        # an if/else building the SAME generic struct at Int (then, taken)
+        # vs String (else) - a stale-overwrite in the pre-pass would make
+        # the taken Int branch resolve to the String clone and mis-decode.
+        self._assert_parity("generic_fn_struct.capa")
+
+    def test_generic_struct_construction(self):
+        # Group A2 (2026-06-07): generic struct construction + field
+        # access in nested / list / generic-field paths, value-checked.
+        # A nested generic literal (``Box<Box<Int>>``), a generic struct
+        # built as a list element, and a two-type-param struct with a
+        # generic-struct field all flow the per-site make-struct
+        # inference at construction sites the earlier slices did not
+        # exercise.
+        self._assert_parity("generic_struct_construction.capa")
+
+    def test_generic_sum_payload_binder(self):
+        # Group A3 (2026-06-07): a generic sum's payload of type T,
+        # matched with a binder, decodes as the concrete instantiation
+        # at T = Int / String / a struct payload and through a NESTED
+        # generic sum (``Opt<Opt<Int>>``). Pre-fix a sum clone's
+        # ``payload_tys`` list escaped the instantiation rewrite (stayed
+        # ``Opt<Int>``), and the binder refinement read stale decls and
+        # never reached an inner match's scrutinee nor a refined binder's
+        # Value references (``${k}`` kept ty ``T``), surfacing as "no
+        # Wasm encoding for 'Opt<Int>' / 'T'". Also a generic STRUCT whose
+        # field is a generic SUM (``Box<Opt<Int>>`` / ``Box<Opt<String>>``)
+        # matched on the field ``bo.value`` with the inner payload bound +
+        # used (Int and String leaves, plus the field's Nothing arm), and
+        # the inner-Nothing arm of a nested sum (``Just(Nothing)`` of
+        # ``Opt<Opt<Int>>``) to exercise sizing when the inner payload is
+        # absent.
+        self._assert_parity("generic_sum_payload_binder.capa")
 
     def test_struct_field_assign(self):
         # Field-target assignment slice (2026-06-06): ``obj.field =

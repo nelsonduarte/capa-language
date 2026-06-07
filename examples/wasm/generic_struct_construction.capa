@@ -1,0 +1,45 @@
+// generic_struct_construction.capa: generic struct construction and
+// field access in the paths that historically reached the Wasm emitter
+// still bare / partial ("no Wasm encoding yet") -- a nested generic
+// struct, a generic struct stored in a List, and a generic struct with
+// a generic-struct field -- now value-check identically on both
+// backends. These build on the same per-site make-struct inference the
+// generic-struct-field slice added, exercised at construction sites the
+// earlier programs did not cover (literal-only locals, no function
+// boundary, nesting through a list element).
+
+type Box<T> {
+    value: T
+}
+
+type Pair<A, B> {
+    first: A,
+    second: B
+}
+
+fun main(s: Stdio)
+    // Generic struct built as a list element literal, no fn boundary.
+    let boxes = [Box { value: 1 }, Box { value: 2 }, Box { value: 3 }]
+    var total = 0
+    for b in boxes
+        total = total + b.value
+    s.println("total: ${total}")
+
+    // Nested generic struct (Box<Box<Int>>) built as a literal.
+    let nested = Box { value: Box { value: 99 } }
+    s.println("nested: ${nested.value.value}")
+
+    // Two-type-param generic struct with a generic-struct field.
+    let p = Pair { first: Box { value: 5 }, second: "tag" }
+    s.println("pair: ${p.first.value} ${p.second}")
+
+    // List of nested generic structs.
+    let nlist = [Box { value: Box { value: 10 } }, Box { value: Box { value: 20 } }]
+    var nt = 0
+    for n in nlist
+        nt = nt + n.value.value
+    s.println("nlist: ${nt}")
+
+    // String payload in a nested generic, to exercise the ptr/len slot.
+    let sbox = Box { value: Box { value: "deep" } }
+    s.println("sbox: ${sbox.value.value}")

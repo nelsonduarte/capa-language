@@ -103,6 +103,15 @@ def _rewrite_ty(ty_str: str, rewrites: dict[str, str]) -> str:
 # *type name* used as a constructor target rather than a value type.
 _TYPE_NAME_FIELDS = {"type_name"}
 
+# Dataclass field names that carry a *list* of Capa type strings (as
+# opposed to a list of identifiers / capability names). A monomorphic
+# sum clone's ``SumVariant.payload_tys`` carries the substituted-but-
+# still-canonical payload types (``Just(Opt<Int>)``); those must be
+# rewritten to their mangled clone names just like a scalar ``ty``
+# field. The generic recursion below treats a bare ``str`` as opaque,
+# so without this set a nested generic payload escapes the rewrite.
+_TYPE_STRING_LIST_FIELDS = {"payload_tys"}
+
 
 def _rewrite_node_types(node, rewrites: dict[str, str]):
     """Recursively rewrite every type-string field of a node so a
@@ -131,6 +140,14 @@ def _rewrite_node_types(node, rewrites: dict[str, str]):
             old = getattr(node, f.name)
             if isinstance(old, str) and f.name in _TYPE_STRING_FIELDS:
                 new = _rewrite_ty(old, rewrites)
+            elif (
+                isinstance(old, list)
+                and f.name in _TYPE_STRING_LIST_FIELDS
+            ):
+                new = [
+                    _rewrite_ty(x, rewrites) if isinstance(x, str) else x
+                    for x in old
+                ]
             elif isinstance(old, str) and f.name in _TYPE_NAME_FIELDS:
                 # Bare constructor targets (``MakeStruct.type_name``)
                 # carry no args, so a plain-string lookup resolves the
@@ -518,8 +535,14 @@ def monomorphise_generic_types(module: N.Module) -> N.Module:
     # (``n: L``). Refine each PatVariant binder's local type from the
     # concrete sum decl so the Wasm match-payload extractor decodes
     # it as its real type rather than choking on the type variable.
+    # Read from ``module.types`` (the rewritten clones), NOT from
+    # ``new_decls``: the latter holds the pre-rewrite decls whose
+    # payload types still carry the canonical nested instantiation
+    # (``Just(Opt<Int>)``) rather than its mangled clone name
+    # (``Just(Opt__Int)``). A binder typed from the stale payload would
+    # keep the un-encodable ``Opt<Int>`` and crash the emitter.
     concrete_sum_payloads: dict[str, dict[str, list[str]]] = {}
-    for decl in new_decls.values():
+    for decl in module.types:
         if isinstance(decl, N.SumDecl):
             concrete_sum_payloads[decl.name] = {
                 v.name: list(v.payload_tys) for v in decl.variants
@@ -528,6 +551,14 @@ def monomorphise_generic_types(module: N.Module) -> N.Module:
         for fn in module.functions:
             for instr in fn.body:
                 _refine_match_binders(fn, instr, concrete_sum_payloads)
+            # Refining a binder updates ``fn.locals`` but not the Value
+            # references to it in the arm body. A binder used in an
+            # interpolation / index / call still carries the stale bare
+            # type variable on its Value ``.ty`` (``${k}`` with ty
+            # ``T``). Sync every Value referencing a refined binder to
+            # its local's resolved type so the emitter sees the concrete
+            # shape.
+            _sync_value_tys_to_locals(fn, abstract_names)
 
     # 4. Specialise generic impl blocks per instantiation. The struct /
     #    sum decls are now monomorphic (``Box__Int``), but the impl that
@@ -731,6 +762,22 @@ def _refine_match_binders(fn, instr, concrete_sum_payloads: dict) -> None:
     if isinstance(instr, N.Match):
         scrut_head = _strip_head(instr.scrutinee.ty)
         payloads = concrete_sum_payloads.get(scrut_head)
+        if payloads is None:
+            # The scrutinee Value's ty can be a stale bare type variable
+            # (``inner: T``) left from the original generic decl when the
+            # scrutinee is itself a refined binder of an enclosing match.
+            # Recover the real monomorphic sum from the scrutinee local's
+            # (already-refined) type, and propagate it onto the Value so
+            # the emitter sizes the match on the concrete sum.
+            scrut = instr.scrutinee
+            if scrut.kind in ("local", "param"):
+                local_head = _strip_head(fn.locals.get(scrut.name, ""))
+                if local_head in concrete_sum_payloads:
+                    payloads = concrete_sum_payloads[local_head]
+                    instr.scrutinee = N.Value(
+                        kind=scrut.kind, name=scrut.name,
+                        literal=scrut.literal, ty=fn.locals[scrut.name],
+                    )
         if payloads is not None:
             for arm in instr.arms:
                 _refine_pattern_binders(arm.pattern, payloads, fn)
@@ -750,6 +797,49 @@ def _refine_match_binders(fn, instr, concrete_sum_payloads: dict) -> None:
     elif isinstance(instr, N.For):
         for sub in instr.body:
             _refine_match_binders(fn, sub, concrete_sum_payloads)
+
+
+def _sync_value_tys_to_locals(fn, abstract_names: set) -> None:
+    """Rewrite the ``ty`` of any Value that references a local whose
+    type was refined to a concrete shape but whose own annotation is
+    still the bare type-variable head. Conservative: only touches a
+    Value whose ``ty`` is one of the program's generic type-parameter
+    names (``T`` / ``A`` / ...), the exact stale-binder case left by
+    ``_refine_match_binders``; never a concrete type."""
+
+    def rewrite(node):
+        if node is None:
+            return node
+        if isinstance(node, N.Value):
+            if node.kind in ("local", "param") and node.name in fn.locals:
+                local_ty = fn.locals[node.name]
+                if (
+                    node.ty
+                    and node.ty != local_ty
+                    and node.ty in abstract_names
+                ):
+                    return N.Value(
+                        kind=node.kind, name=node.name,
+                        literal=node.literal, ty=local_ty,
+                    )
+            return node
+        if isinstance(node, list):
+            return [rewrite(x) for x in node]
+        if isinstance(node, tuple):
+            return tuple(rewrite(x) for x in node)
+        if is_dataclass(node):
+            changes = {}
+            for f in fields(node):
+                old = getattr(node, f.name)
+                new = rewrite(old)
+                if new is not old:
+                    changes[f.name] = new
+            if changes:
+                return replace(node, **changes)
+            return node
+        return node
+
+    fn.body = [rewrite(instr) for instr in fn.body]
 
 
 def _refine_pattern_binders(pattern, payloads: dict, fn) -> None:

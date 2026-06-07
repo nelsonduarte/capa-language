@@ -1,0 +1,89 @@
+// generic_fn_struct.capa: a generic FREE FUNCTION whose parameter
+// and/or return type is itself a generic struct (or generic sum),
+// instantiated at more than one concrete type, must resolve every call
+// to its monomorphic clone on the Wasm backend with parity to Python.
+//
+// Pre-fix a generic struct literal bound to a local left that local
+// typed with the BARE generic head (``let bi = Box { value: 42 }`` gave
+// ``bi: Box``, not ``Box<Int>`` -- the type argument is only implied by
+// the field value). The monomorphiser's call-site inference ran on that
+// bare type and could not unify ``Box<T>`` against ``Box`` (arity
+// mismatch), so a call ``unwrap_box(bi)`` was left targeting the bare
+// generic ``unwrap_box``; the clone ``unwrap_box__Int`` existed but no
+// call reached it ("unknown func: $unwrap_box" at Wasm validation), and
+// a generic fn returning a generic struct (``rebox``) was never
+// specialised at all. Fix: a pre-pass annotates every local bound to a
+// generic struct literal with its canonical instantiation type before
+// call inference runs, so the unifier resolves T from the struct's real
+// type arguments. Covers a generic fn taking a generic struct and one
+// returning a generic struct, each at T = Int and T = String (i64 vs
+// ptr/len), plus a generic fn over a generic SUM.
+
+type Box<T> {
+    value: T
+}
+
+type Opt<T> =
+    Just(T)
+    Nothing
+
+// Generic fn TAKING a generic struct, returning the payload T.
+fun unwrap_box<T>(b: Box<T>) -> T
+    return b.value
+
+// Generic fn RETURNING a generic struct it constructs.
+fun rebox<T>(b: Box<T>) -> Box<T>
+    return Box { value: b.value }
+
+// Generic fn over a generic SUM.
+fun first_or<T>(o: Opt<T>, fallback: T) -> T
+    return match o
+        Just(x) -> x
+        Nothing -> fallback
+
+fun main(s: Stdio)
+    // Generic struct as a function arg, at two instantiations.
+    let bi = Box { value: 42 }
+    let bs = Box { value: "hello" }
+    s.println("int: ${unwrap_box(bi)}")
+    s.println("str: ${unwrap_box(bs)}")
+
+    // Generic struct as a function return, fed back into the taker.
+    let ri = rebox(bi)
+    let rs = rebox(bs)
+    s.println("rebox int: ${unwrap_box(ri)}")
+    s.println("rebox str: ${unwrap_box(rs)}")
+
+    // Result used several ways: arithmetic, comparison, re-interpolation.
+    let v = unwrap_box(bi)
+    s.println("twice: ${v + v}")
+    if unwrap_box(bs) == "hello"
+        s.println("eq: yes")
+    else
+        s.println("eq: no")
+
+    // Generic fn over a generic SUM, at two instantiations.
+    let oi = first_or(Just(7), 0)
+    let none_str = "none"
+    let os = first_or(Just(none_str), "fallback")
+    s.println("opt int: ${oi}")
+    s.println("opt str: ${os}")
+    let ni: Opt<Int> = Nothing
+    s.println("opt none: ${first_or(ni, 99)}")
+
+    // Nested-sibling pre-pass guard: an if/else whose then-branch builds a
+    // generic struct at Int (the EARLIER-declared branch) and whose
+    // else-branch builds the same generic struct at String, run with the
+    // condition TRUE so the EARLIER (Int) branch is taken and fed through
+    // the generic taker. The new pre-pass annotates each branch's literal
+    // local with its own instantiation; if the second branch's annotation
+    // were allowed to overwrite the first's (a stale-overwrite regression),
+    // the taken Int branch would resolve to ``unwrap_box__String`` and
+    // mis-decode. Value-checked so any such cross-branch leak surfaces.
+    let take_int = true
+    if take_int
+        let sib = Box { value: 314 }
+        s.println("sibling int: ${unwrap_box(sib)}")
+    else
+        let sib = Box { value: "stringy" }
+        s.println("sibling str: ${unwrap_box(sib)}")

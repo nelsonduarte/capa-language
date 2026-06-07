@@ -5,12 +5,13 @@ free function, synthesise a mangled clone, and rewrite the call.
 
 from __future__ import annotations
 
+from dataclasses import fields, is_dataclass, replace
 from typing import Optional
 
 from .. import _nodes as N
 from ._functions import _specialise_function
-from ._typestr import _mangle, _unify_ty
-from ._types import monomorphise_generic_types
+from ._typestr import _mangle, _strip_head, _unify_ty
+from ._types import _infer_make_struct_subst, monomorphise_generic_types
 
 
 # ============================================================
@@ -68,6 +69,130 @@ def _walk_calls(instrs: list[N.Instr], visitor) -> None:
 
 
 # ============================================================
+# Generic-struct-literal local typing (pre-pass)
+# ============================================================
+#
+# A generic struct literal bound to a local (``let bi = Box { value:
+# 42 }``) leaves that local typed with the *bare* generic head
+# (``Box``) -- the lowerer carries no type argument because the
+# arguments are only implied by the field values. A subsequent call
+# whose generic parameter is that struct type (``unwrap_box(bi)`` with
+# ``b: Box<T>``) then cannot infer ``T``: unifying ``Box<T>`` against
+# the bare ``Box`` fails on arity. Sum constructors already carry the
+# full instantiation (``Just(7)`` -> ``Opt<Int>``), so only struct
+# literals need this.
+#
+# This pre-pass runs BEFORE call-site inference. It walks each
+# function in body order, infers each generic struct literal's
+# canonical instantiation (``Box<Int>``) from its field values via the
+# same ``_infer_make_struct_subst`` the type pass uses, threads the
+# result through aliases, and rewrites the bare head on the bound
+# local's type (in ``fn.locals`` and on every Value that references
+# it) to the canonical ``G<args>`` form. The later type pass then
+# mangles ``Box<Int>`` -> ``Box__Int`` uniformly with all other
+# concrete instantiations.
+
+
+def _annotate_generic_struct_literal_types(
+    module: N.Module,
+) -> None:
+    generic_structs: dict[str, N.StructDecl] = {
+        ty.name: ty
+        for ty in module.types
+        if isinstance(ty, N.StructDecl) and ty.type_params
+    }
+    if not generic_structs:
+        return
+    for fn in module.functions:
+        concrete: dict[str, str] = {}
+        _scan_literal_types(fn.body, generic_structs, fn, concrete)
+        if not concrete:
+            continue
+        for name, canonical in concrete.items():
+            if _strip_head(fn.locals.get(name, "")) == _strip_head(canonical):
+                fn.locals[name] = canonical
+        fn.body = [_retype_local_refs(instr, concrete) for instr in fn.body]
+
+
+def _scan_literal_types(
+    body: list[N.Instr], generic_structs: dict[str, N.StructDecl],
+    fn: N.Function, concrete: dict[str, str],
+) -> None:
+    """Walk one instruction list in body order, recording for each
+    generic struct literal the canonical instantiation it resolves to
+    and propagating it through alias assignments. Recurses into nested
+    control-flow bodies (the same scope; a literal in a branch still
+    types its bound local for later calls)."""
+    for instr in body:
+        if (
+            isinstance(instr, N.MakeStruct)
+            and instr.type_name in generic_structs
+        ):
+            decl = generic_structs[instr.type_name]
+            subst = _infer_make_struct_subst(instr, decl, concrete)
+            if subst is not None and all(tp in subst for tp in decl.type_params):
+                args = [subst[tp] for tp in decl.type_params]
+                concrete[instr.dst] = (
+                    f"{instr.type_name}<{', '.join(args)}>"
+                )
+        elif isinstance(instr, (N.AssignConst, N.Reassign)):
+            src = instr.src
+            if src.kind in ("local", "param") and src.name in concrete:
+                concrete[instr.dst] = concrete[src.name]
+        else:
+            for sub in _child_bodies(instr):
+                _scan_literal_types(sub, generic_structs, fn, concrete)
+
+
+def _child_bodies(instr):
+    if isinstance(instr, N.If):
+        yield instr.then_body
+        yield instr.else_body
+    elif isinstance(instr, N.While):
+        yield instr.cond_setup
+        yield instr.body
+    elif isinstance(instr, N.For):
+        yield instr.body
+    elif isinstance(instr, N.Match):
+        for arm in instr.arms:
+            yield arm.body
+
+
+def _retype_local_refs(node, concrete: dict[str, str]):
+    """Rewrite the ``ty`` of any Value referencing a local that a
+    generic struct literal resolved to a canonical instantiation, when
+    that Value still carries the bare generic head. Mirrors the
+    type-pass's ``_rewrite_bare_local_refs`` but rewrites to the
+    canonical (un-mangled) form."""
+    if node is None:
+        return node
+    if isinstance(node, N.Value):
+        if node.name in concrete:
+            canonical = concrete[node.name]
+            if node.ty == _strip_head(canonical) and node.ty != canonical:
+                return N.Value(
+                    kind=node.kind, name=node.name,
+                    literal=node.literal, ty=canonical,
+                )
+        return node
+    if isinstance(node, list):
+        return [_retype_local_refs(x, concrete) for x in node]
+    if isinstance(node, tuple):
+        return tuple(_retype_local_refs(x, concrete) for x in node)
+    if is_dataclass(node):
+        changes = {}
+        for f in fields(node):
+            old = getattr(node, f.name)
+            new = _retype_local_refs(old, concrete)
+            if new is not old:
+                changes[f.name] = new
+        if changes:
+            return replace(node, **changes)
+        return node
+    return node
+
+
+# ============================================================
 # Top-level pass
 # ============================================================
 
@@ -82,6 +207,12 @@ def monomorphise(module: N.Module) -> N.Module:
     are removed, specialised clones are appended, and every call
     to a generic function is rewritten to its mangled name. The
     same module reference is returned for convenience."""
+    # Pre-pass: give every local bound to a generic struct literal its
+    # canonical instantiation type (``Box`` -> ``Box<Int>``) so a call
+    # whose generic parameter is that struct type can infer the
+    # substitution. Must precede call-site inference below.
+    _annotate_generic_struct_literal_types(module)
+
     generics: dict[str, N.Function] = {
         fn.name: fn for fn in module.functions if fn.type_params
     }
