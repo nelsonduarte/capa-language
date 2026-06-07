@@ -1,0 +1,136 @@
+// generic_impl_methods_advanced.capa: regression net for three defects in
+// the generic-impl monomorphisation path, each a wrong-output or compile
+// crash on the Wasm backend that the Python reference handled correctly.
+//
+// FINDING 1 (silent method loss): a generic type with MORE THAN ONE
+// inherent ``impl`` block had every block after the first silently
+// dropped - the per-instantiation impl-emit dedup keyed on
+// ``(mangled_type, trait_name)``, so two ``impl Box<T>`` blocks both
+// keyed on ``(Box__Int, None)`` and collided. Methods from the second /
+// third block were discarded; if never called there was NO error at all
+// (silent). Now the dedup keys on the method name too, so every method
+// from every inherent block survives. Covered below by ``Cell<T>`` with
+// three inherent impl blocks (get / set+with / describe), plus a
+// never-called method in a later block (``unused``) that must not break
+// compilation.
+//
+// FINDING 2 (crash on a valid program): a SUM-variant construction inside
+// a generic impl method (``return Some_(x)``) left the dst local typed
+// ``Opt<?>`` - the type-parameter substitution concretised the variant
+// argument but the positional ``?`` survived, and the partial-type
+// resolution / sum-construction-site inference only ran over free
+// functions, never over specialised impl method bodies. The Wasm backend
+// crashed with "Capa type 'Opt<?>' has no Wasm encoding yet". The
+// identical ``return Some_(x)`` in a free function always worked. Now the
+// same resolution pass runs over specialised method bodies. Covered by
+// ``Opt<T>.wrap`` at T = Int, T = String, and a struct payload.
+//
+// FINDING 3 (crash on a valid program): a NESTED generic instantiation
+// used through a method (``Box<Box<Int>>`` with ``.get()``) produced a
+// clone named ``Box__Box`` whose method ``get`` returned the bare head
+// ``Box`` instead of ``Box__Int``, crashing with "Capa type 'Box' has no
+// Wasm encoding yet". The make-struct-site inference for the outer literal
+// pegged the type parameter to the bare head of the field value rather
+// than carrying the nested type argument at full depth. The same nested
+// type via plain field access (no method) worked. Now the inference
+// carries nested arguments at full depth (``T = Box<Int>`` ->
+// ``Box__Box__Int``). Covered by ``Box<Box<Int>>`` / ``Box<Box<String>>``
+// chained ``.get().get()``, and a generic struct whose field type is
+// another generic instantiation, method-accessed.
+
+// ---- Finding 1: multiple inherent impl blocks ----
+
+type Cell<T> {
+    value: T
+}
+
+impl Cell<T>
+    fun get(self) -> T
+        return self.value
+
+impl Cell<T>
+    // second inherent block: a T-arg method returning a fresh Cell<T>
+    fun with(self, v: T) -> Cell<T>
+        return Cell { value: v }
+    // a method returning a different concrete type
+    fun describe(self) -> String
+        return "cell"
+
+impl Cell<T>
+    // third inherent block, including a never-called method that must
+    // still compile (the silent-loss bug would have dropped this block
+    // entirely with no error).
+    fun get_twice_eq(self) -> Bool
+        return true
+    fun unused(self) -> T
+        return self.value
+
+// ---- Finding 2: sum-variant construction inside a generic method ----
+
+type Opt<T> =
+    None_
+    Some_(T)
+
+type Point {
+    x: Int,
+    y: Int
+}
+
+impl Opt<T>
+    // constructs a variant of its own generic sum
+    fun wrap(self, x: T) -> Opt<T>
+        return Some_(x)
+    // matches the variant it constructed
+    fun get_or(self, d: T) -> T
+        return match self
+            None_ -> d
+            Some_(v) -> v
+
+// ---- Finding 3: nested generic instantiation through a method ----
+
+type Wrapper<T> {
+    inner: T
+}
+
+impl Wrapper<T>
+    fun unwrap(self) -> T
+        return self.inner
+
+fun main(s: Stdio)
+    // Finding 1: three inherent impl blocks, every method callable.
+    let ci = Cell { value: 10 }
+    let cs = Cell { value: "hi" }
+    let ci2 = ci.with(20)
+    let cs2 = cs.with("yo")
+    s.println("cell int: ${ci.get()} ${ci2.get()} ${ci.describe()} ${ci.get_twice_eq()}")
+    s.println("cell str: ${cs.get()} ${cs2.get()}")
+
+    // Finding 2: variant construction inside a method, T = Int / String.
+    let oi: Opt<Int> = None_
+    let wi = oi.wrap(42)
+    let os: Opt<String> = None_
+    let ws = os.wrap("yes")
+    let ws_val = ws.get_or("no")
+    s.println("opt int: ${wi.get_or(0)} str: ${ws_val}")
+
+    // Finding 2: variant construction with a struct payload.
+    let op: Opt<Point> = None_
+    let wp = op.wrap(Point { x: 3, y: 4 })
+    let got = wp.get_or(Point { x: 0, y: 0 })
+    s.println("opt point: ${got.x} ${got.y}")
+
+    // Finding 3: nested generic Box<Box<Int>> chained .get().get().
+    let bi_inner = Cell { value: 99 }
+    let bi_outer = Cell { value: bi_inner }
+    s.println("nested int: ${bi_outer.get().get()}")
+
+    // Finding 3: nested Box<Box<String>>.
+    let bs_inner = Cell { value: "deep" }
+    let bs_outer = Cell { value: bs_inner }
+    s.println("nested str: ${bs_outer.get().get()}")
+
+    // Finding 3: a generic struct whose field type is another generic
+    // instantiation, method-accessed.
+    let w_inner = Cell { value: 7 }
+    let w = Wrapper { inner: w_inner }
+    s.println("wrapper: ${w.unwrap().get()}")

@@ -277,6 +277,36 @@ _PARITY_PROGRAMS: list[str] = [
     # returns a constructed sum, a compound payload (struct + list), the
     # same generic fn at several concrete types, and a second generic sum.
     "generic_fn_sum.capa",
+    # Generic-impl-method slice (2026-06-07): methods on a generic type's
+    # ``impl`` block must dispatch once the type is monomorphised. The
+    # monomorphiser specialised the generic struct / sum decls but left
+    # ``module.impls`` keyed on the bare generic head with type-variable
+    # bodies, so a method call on a monomorphised receiver (``Box__Int``)
+    # found no method-table entry on the Wasm backend. The pass now
+    # specialises each generic impl per instantiation and re-keys it on
+    # the mangled type name. Covers a T-getter, a T-arg method, a
+    # String-returning method, a self.method() call, three instantiations
+    # of one type, T-typed param / return shapes, a generic value in a
+    # list / across a function boundary, and a generic sum's match-self
+    # methods.
+    "generic_impl_methods.capa",
+    # Generic-impl-method defect slice (2026-06-07): three review-found
+    # defects in the generic-impl monomorphisation path, each correct on
+    # the Python reference but wrong / crashing on Wasm. (1) A generic
+    # type with more than one inherent ``impl`` block silently dropped
+    # every block after the first (the per-instantiation emit dedup keyed
+    # on ``(mangled_type, trait_name)`` collided all inherent blocks onto
+    # ``(Cell__Int, None)``); now keyed on the method name too so every
+    # method survives, including a never-called method in a later block.
+    # (2) A sum-variant construction inside a generic method
+    # (``return Some_(x)``) left the dst typed ``Opt<?>`` and crashed
+    # ("no Wasm encoding") because partial-type resolution never ran over
+    # specialised method bodies; now it does. (3) A nested generic
+    # instantiation through a method (``Cell<Cell<Int>>`` with
+    # ``.get().get()``) mangled to ``Cell__Cell`` (bare-headed method
+    # return) instead of ``Cell__Cell_Int``; the make-struct-site
+    # inference now carries nested type arguments at full depth.
+    "generic_impl_methods_advanced.capa",
     # List-parameter mutation slice (2026-06-04): pushing to a List
     # received as a function PARAMETER (no local list built in the body)
     # crashed the Wasm backend at assembly time with "unknown local
@@ -1200,6 +1230,51 @@ class TestPythonWasmParity(unittest.TestCase):
         # the same generic fn at several concrete types, and a second
         # generic sum.
         self._assert_parity("generic_fn_sum.capa")
+
+    def test_generic_impl_methods(self):
+        # Generic-impl-method slice (2026-06-07): a method declared in an
+        # ``impl`` block on a generic type must dispatch on the Wasm
+        # backend once the type is monomorphised. Pre-fix the
+        # monomorphiser specialised the generic struct / sum decls but
+        # never rewrote ``module.impls``: the impl stayed keyed on the
+        # bare head ``Box`` with bodies mentioning the type variable
+        # ``T``, while the Wasm method-dispatch table is keyed on the
+        # monomorphised receiver type, so ``bi.get()`` on a ``Box__Int``
+        # found no ``(Box__Int, get)`` entry ("MethodCall ... not
+        # supported"). The monomorphiser now specialises each generic
+        # impl per instantiation (substitute T, rewrite to the mangled
+        # clone, re-key the impl on the mangled type name). Covers a
+        # getter returning T, a method taking a T arg, a method returning
+        # a different concrete type (String), a self.method() call, the
+        # same generic type at three instantiations (Int / String /
+        # Bool), a method whose param / return type IS T (String ptr/len
+        # vs Int i64), a generic value in a list / passed to / returned
+        # from a function, and a generic SUM type with ``match self``
+        # methods at two instantiations.
+        self._assert_parity("generic_impl_methods.capa")
+
+    def test_generic_impl_methods_advanced(self):
+        # Generic-impl-method defect slice (2026-06-07): three review-
+        # found defects in the generic-impl monomorphisation path, each
+        # correct on Python but wrong / crashing on Wasm. (1) Multiple
+        # inherent ``impl`` blocks on one generic type: pre-fix the
+        # per-instantiation emit dedup keyed ``(mangled_type, trait_name)``
+        # collided every inherent block onto ``(Cell__Int, None)`` and
+        # silently dropped all but the first - a SILENT method loss (no
+        # error if the dropped method was never called). Now keyed on the
+        # method name too. (2) A sum-variant construction inside a generic
+        # method (``return Some_(x)``) left the dst typed ``Opt<?>`` and
+        # crashed with "no Wasm encoding"; partial-type resolution now runs
+        # over specialised method bodies. (3) A nested generic
+        # instantiation through a method (``Cell<Cell<Int>>`` /
+        # ``Cell<Cell<String>>`` with ``.get().get()``) mangled to a
+        # bare-headed ``Cell__Cell`` clone instead of ``Cell__Cell_Int``;
+        # make-struct-site inference now carries nested type arguments at
+        # full depth. Covers three inherent blocks with a never-called
+        # method, variant construction at T = Int / String / struct
+        # payload, nested generics two deep, and a generic struct whose
+        # field is another generic instantiation, method-accessed.
+        self._assert_parity("generic_impl_methods_advanced.capa")
 
     def test_list_param_push(self):
         # List-parameter mutation slice (2026-06-04): pushing to a List

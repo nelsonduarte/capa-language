@@ -57,7 +57,10 @@ class _MatchEmissionMixin:
         because each Match consumes the locals before recursing
         into arm bodies.
         """
-        scrut_ty = instr.scrutinee.ty
+        # Use the effective type so a ``match self`` inside an impl
+        # method resolves to the impl's owning (possibly monomorphised)
+        # type via fn.locals rather than the lowerer's ``Unknown``.
+        scrut_ty = self._effective_value_ty(instr.scrutinee) or instr.scrutinee.ty
         if scrut_ty == "Bool":
             self._emit_bool_match(instr)
             return

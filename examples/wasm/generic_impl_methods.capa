@@ -1,0 +1,101 @@
+// generic_impl_methods.capa: methods declared in an ``impl`` block on a
+// GENERIC type must dispatch correctly on the Wasm backend once the type
+// is monomorphised, with parity to the Python reference.
+//
+// Pre-fix the monomorphiser specialised the generic struct / sum DECLS
+// (``Box<Int>`` -> ``Box__Int``) but never rewrote ``module.impls``: the
+// impl block stayed keyed on the bare generic head ``Box`` with method
+// bodies still mentioning the type variable ``T``. The Wasm method-
+// dispatch table is keyed on the (monomorphised) receiver type, so a
+// ``bi.get()`` whose receiver is ``Box__Int`` found no ``(Box__Int, get)``
+// entry and raised "MethodCall ... not supported". The monomorphiser now
+// specialises each generic impl per instantiation: it substitutes the
+// type parameters through every method (params / return / locals / body),
+// rewrites the now-concrete generic types to their mangled clone names,
+// and re-keys the impl on the mangled type name so dispatch resolves.
+//
+// Covers: a getter returning T; a method taking a T argument; a method
+// returning a different concrete type (String); a method that calls
+// another method of the same struct (self.get()); the SAME generic type
+// at three instantiations (Int / String / Bool) with no cross-talk; a
+// method whose param / return type IS T (so String uses ptr/len and Int
+// uses i64); a generic value stored in a list / passed to a function /
+// returned from a function; and a generic SUM type with methods that
+// ``match self`` at two instantiations.
+
+type Box<T> {
+    value: T
+}
+
+impl Box<T>
+    // getter returning the type parameter T
+    fun get(self) -> T
+        return self.value
+    // method taking a T argument and returning a fresh Box<T>
+    fun set(self, v: T) -> Box<T>
+        return Box { value: v }
+    // method returning a DIFFERENT concrete type (String)
+    fun describe(self) -> String
+        return "box"
+    // method that calls another method of the same struct
+    fun get_via(self) -> T
+        return self.get()
+
+type Maybe<T> =
+    Nada
+    Got(T)
+
+impl Maybe<T>
+    // method whose return type IS T, matching self
+    fun or_default(self, d: T) -> T
+        return match self
+            Nada -> d
+            Got(x) -> x
+    fun is_present(self) -> Bool
+        return match self
+            Nada -> false
+            Got(_) -> true
+
+// generic struct passed to a function and returned from a function
+fun take_box(b: Box<Int>) -> Int
+    return b.get()
+
+fun make_box(v: Bool) -> Box<Bool>
+    return Box { value: v }
+
+fun main(s: Stdio)
+    // SAME generic type at three instantiations, no cross-talk.
+    let bi = Box { value: 7 }
+    let bs = Box { value: "hi" }
+    let bb = Box { value: true }
+    s.println("int: ${bi.get()} ${bi.describe()} ${bi.get_via()}")
+    s.println("str: ${bs.get()} ${bs.get_via()}")
+    s.println("bool: ${bb.get()}")
+
+    // method taking + returning T: Int (i64) vs String (ptr/len).
+    let bi2 = bi.set(50)
+    let bs2 = bs.set("yo")
+    s.println("set int: ${bi2.get()}")
+    s.println("set str: ${bs2.get()}")
+
+    // generic value passed to a function and returned from a function.
+    s.println("take: ${take_box(bi)}")
+    let mb = make_box(false)
+    s.println("made: ${mb.get()}")
+
+    // generic value stored in a list, method called on each element.
+    let boxes = [Box { value: 1 }, Box { value: 2 }, Box { value: 3 }]
+    var total = 0
+    for bx in boxes
+        total = total + bx.get()
+    s.println("list total: ${total}")
+
+    // generic SUM methods at two instantiations.
+    let oi = Got(99)
+    let on: Maybe<Int> = Nada
+    s.println("maybe int: ${oi.or_default(0)} ${on.or_default(-1)} ${oi.is_present()}")
+    let os = Got("present")
+    let osn: Maybe<String> = Nada
+    let osv = os.or_default("def")
+    let osnv = osn.or_default("fallback")
+    s.println("maybe str: ${osv} ${osnv} ${os.is_present()}")

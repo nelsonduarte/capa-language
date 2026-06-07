@@ -588,10 +588,20 @@ class ImplBlock:
     Capa traits to Python ABCs; the analyzer's static check is what
     makes the trait-impl relationship meaningful. The field is here
     because future backends (Wasm CM in particular) need to know
-    which capability/trait each method realises."""
+    which capability/trait each method realises.
+
+    ``type_params`` carries the source's ``impl Box<T> { ... }``
+    type-parameter names (the binders from the impl header's
+    ``type_args``). The Python backend ignores them (duck typing);
+    the Wasm monomorphisation pass uses them to specialise a generic
+    type's methods per concrete instantiation (``impl Box<T>`` ->
+    a ``Box__Int`` impl whose ``get`` returns ``Int``) so the
+    method-dispatch table is keyed on the mangled type name. Empty
+    for non-generic impls."""
     type_name: str
     trait_name: Optional[str]
     methods: list[Function]
+    type_params: list[str] = field(default_factory=list)
 
 
 @dataclass

@@ -523,12 +523,25 @@ def _rewrite_node_types(node, rewrites: dict[str, str]):
 
 def _infer_make_struct_subst(
     instr: N.MakeStruct, decl: N.StructDecl,
+    local_concrete: Optional[dict[str, str]] = None,
 ) -> Optional[dict[str, str]]:
     """Infer the type-parameter substitution for a generic struct
     literal from its field values' concrete types. ``Pair { a: 'x',
     b: 5 }`` against ``Pair<T> { a: T, b: Int }`` yields ``{T: Char}``.
     Returns None when any type parameter stays unresolved or a field
-    value's type is itself unresolved."""
+    value's type is itself unresolved.
+
+    ``local_concrete`` (optional) maps a local name to the full,
+    nested concrete type a prior generic-struct literal / alias
+    resolved it to (``inner -> "Box<Int>"``). A field value that
+    refers to such a local carries only the bare generic head in its
+    ``ty`` (the lowerer annotates ``Box``, not ``Box<Int>``), so the
+    naive inference would peg the type parameter to the bare head and
+    mangle a nested ``Box<Box<Int>>`` down to ``Box__Box`` (whose
+    field / method return type is the un-encodable bare ``Box``).
+    Consulting this map carries the nested argument at full depth so
+    the outer literal infers ``T = Box<Int>`` and mangles to
+    ``Box__Box__Int``."""
     type_param_set = set(decl.type_params)
     field_decl_ty = {f.name: f.ty for f in decl.fields}
     mapping: dict[str, str] = {}
@@ -536,6 +549,20 @@ def _infer_make_struct_subst(
         decl_ty = field_decl_ty.get(fname)
         if decl_ty is None:
             return None
+        # Carry a nested generic instantiation at full depth: if the
+        # field value is a local already resolved to a concrete nested
+        # type, unify against that rather than the bare head its ``ty``
+        # annotation carries.
+        if (
+            local_concrete is not None
+            and fval.kind in ("local", "param")
+            and fval.name in local_concrete
+        ):
+            if not _unify_ty(
+                decl_ty, local_concrete[fval.name], type_param_set, mapping,
+            ):
+                return None
+            continue
         if not fval.ty or fval.ty.startswith("?") or fval.ty in (
             "Unknown", "",
         ):
@@ -796,11 +823,24 @@ def monomorphise_generic_types(module: N.Module) -> N.Module:
         return _mangle_type(head, args)
 
     for fn in module.functions:
+        local_concrete: dict[str, str] = {}
         for instr in fn.body:
             _scan_make_struct_sites(
                 fn, instr, generic_structs,
                 register_instantiation, make_struct_sites,
+                local_concrete,
             )
+
+    # Generic impl blocks, grouped by the bare type name they extend.
+    # An impl whose ``type_params`` equal its owning generic decl's
+    # ``type_params`` is the generic impl (``impl Box<T>``) and applies
+    # to every instantiation; one whose binders differ (``impl
+    # Box<Int>``) is a concrete specialisation and applies only to the
+    # matching instantiation. Both are specialised below.
+    generic_impls: dict[str, list[N.ImplBlock]] = {}
+    for impl in module.impls:
+        if impl.type_name in generic_names and impl.type_params:
+            generic_impls.setdefault(impl.type_name, []).append(impl)
 
     if not instantiations:
         return module
@@ -871,7 +911,198 @@ def monomorphise_generic_types(module: N.Module) -> N.Module:
             for instr in fn.body:
                 _refine_match_binders(fn, instr, concrete_sum_payloads)
 
+    # 4. Specialise generic impl blocks per instantiation. The struct /
+    #    sum decls are now monomorphic (``Box__Int``), but the impl that
+    #    carries their methods still extends the bare generic ``Box``
+    #    with bodies mentioning the type variable ``T``. The Wasm
+    #    method-dispatch table is keyed on the mangled type name, so an
+    #    un-specialised impl leaves ``(Box__Int, get)`` unresolved.
+    if generic_impls:
+        new_impls: list = [
+            impl for impl in module.impls
+            if not (impl.type_name in generic_names and impl.type_params)
+        ]
+        # Dedup at METHOD granularity, not impl-block granularity. A
+        # generic type may carry more than one inherent ``impl`` block
+        # (``impl Box<T>`` twice), all with ``trait_name=None``; a
+        # per-block key keyed on ``(mangled, trait_name)`` would collide
+        # all inherent blocks onto ``(Box__Int, None)`` and silently
+        # drop every block after the first - a silent loss of methods.
+        # Keying on the method name as well keeps every method from
+        # every block while still not double-emitting the same method
+        # for one instantiation (which would produce a duplicate Wasm
+        # function name in the dispatch table).
+        emitted: set[tuple[str, str | None, str]] = set()
+        for canonical, (head, args) in instantiations.items():
+            impls = generic_impls.get(head)
+            if not impls:
+                continue
+            mangled = _mangle_type(head, args)
+            decl_params = (
+                generic_structs[head].type_params if head in generic_structs
+                else generic_sums[head].type_params
+            )
+            for impl in impls:
+                # Concrete-specialised impl (``impl Box<Int>``): its
+                # binders are concrete types, so it applies only to the
+                # exact matching instantiation. The generic impl
+                # (binders == decl type_params) applies to all.
+                is_generic_impl = impl.type_params == decl_params
+                subst = dict(zip(impl.type_params, args))
+                if not is_generic_impl and list(impl.type_params) != list(args):
+                    continue
+                methods = [
+                    m for m in impl.methods
+                    if (mangled, impl.trait_name, m.name) not in emitted
+                ]
+                if not methods:
+                    continue
+                for m in methods:
+                    emitted.add((mangled, impl.trait_name, m.name))
+                new_impls.append(
+                    _specialise_impl(
+                        impl, methods, subst, mangled, rewrites,
+                        generic_structs, generic_names, abstract_names,
+                    )
+                )
+        module.impls = new_impls
+
     return module
+
+
+def _specialise_impl(
+    impl, methods, subst: dict[str, str], mangled: str,
+    rewrites: dict[str, str], generic_structs: dict,
+    generic_names: set, abstract_names: set,
+):
+    """Clone the given ``methods`` of a generic impl block for one
+    concrete instantiation: substitute the type parameters through
+    every method, resolve any partial generic type the substitution
+    leaves behind, rewrite the now-concrete generic type strings to
+    their mangled clone names, and patch the bare-headed struct-literal
+    references each generic constructor leaves behind. The result
+    extends the mangled type (``Box__Int``) so the Wasm method-dispatch
+    table resolves ``(Box__Int, get)`` to the specialised body.
+
+    ``methods`` is the (possibly merged-across-blocks, de-duplicated)
+    subset of this block's methods to emit for this instantiation."""
+    new_methods = []
+    for method in methods:
+        # Reuse the function-clone machinery to substitute the type
+        # parameters (``T`` -> ``Int``) through params / return /
+        # locals / body; the method keeps its own name (the dispatch
+        # mangling is ``<type>_<method>``, handled by the emitter).
+        spec = _specialise_function(method, subst, method.name)
+        # A sum-variant construction inside the method (``return
+        # Some_(x)``) leaves the dst local typed ``Opt<?>``: the
+        # substitution concretises the variant argument (``T`` ->
+        # ``Int``) but the ``?`` is positional, not a type parameter,
+        # so it survives. Resolve it against the method's own concrete
+        # type strings (its substituted return type ``Opt<Int>``)
+        # exactly as free functions are resolved at step 0 - otherwise
+        # the un-erased ``Opt<?>`` reaches the emitter ("no Wasm
+        # encoding"). Runs BEFORE the mangling rewrite so the resolved
+        # ``Opt<Int>`` is then rewritten to ``Opt__Int`` below.
+        _resolve_partial_types(spec, generic_names, abstract_names)
+        # Patch bare generic-struct constructors inside the method body
+        # (``return Box { value: v }``): the literal's ``type_name`` and
+        # dst local carry the bare head, which neither the
+        # type-parameter substitution nor the instantiation-string
+        # rewrite reaches. Infer each site's instantiation from the
+        # constructor's now-concrete field-value types. This runs BEFORE
+        # the instantiation-string rewrite so the inferred type
+        # arguments are still in canonical form (``Cell<Int>``, not the
+        # already-mangled ``Cell__Int``); inferring from the mangled
+        # form would re-mangle a nested literal a second time
+        # (``Cell { value: <Cell__Int> }`` -> ``Cell__Cell__Int``
+        # instead of ``Cell__Cell_Int``) and seed a clone that does not
+        # exist.
+        sites: dict[tuple[str, str], tuple[str, str]] = {}
+        local_concrete: dict[str, str] = {}
+        for instr in spec.body:
+            _collect_method_make_struct_sites(
+                spec, instr, generic_structs, sites, local_concrete,
+            )
+        if sites:
+            _patch_bare_generic_struct_refs(spec, sites)
+        # The substitution leaves concrete generic instantiations
+        # (``Box<Int>``) that must point at their mangled clone.
+        spec.return_type = _rewrite_ty(spec.return_type, rewrites)
+        spec.params = [
+            N.Param(
+                name=p.name,
+                ty=_rewrite_ty(p.ty, rewrites),
+                is_capability=p.is_capability,
+            )
+            for p in spec.params
+        ]
+        spec.locals = {
+            name: _rewrite_ty(lty, rewrites)
+            for name, lty in spec.locals.items()
+        }
+        spec.body = [_rewrite_node_types(instr, rewrites) for instr in spec.body]
+        new_methods.append(spec)
+    return N.ImplBlock(
+        type_name=mangled,
+        trait_name=impl.trait_name,
+        methods=new_methods,
+        type_params=[],
+    )
+
+
+def _collect_method_make_struct_sites(
+    fn, instr, generic_structs, sites, local_concrete=None,
+) -> None:
+    """Record the (bare_head, mangled) instantiation for every generic
+    struct literal in a specialised impl method. The type-parameter
+    substitution has already concretised the field-value types, so the
+    instantiation is inferred from those exactly as
+    ``_scan_make_struct_sites`` does for top-level functions.
+
+    ``local_concrete`` threads a nested generic instantiation at full
+    depth across body order, identically to ``_scan_make_struct_sites``,
+    so a literal built inside a method whose field references an earlier
+    resolved local mangles to the correct nested clone name rather than
+    pegging the type parameter to a bare head."""
+    if local_concrete is None:
+        local_concrete = {}
+    if isinstance(instr, N.MakeStruct) and instr.type_name in generic_structs:
+        decl = generic_structs[instr.type_name]
+        sub = _infer_make_struct_subst(instr, decl, local_concrete)
+        if sub is not None:
+            args = [sub[tp] for tp in decl.type_params]
+            if not any(_is_abstract_ty(a, set(decl.type_params)) for a in args):
+                mangled = _mangle_type(instr.type_name, args)
+                sites[(fn.name, instr.dst)] = (instr.type_name, mangled)
+                local_concrete[instr.dst] = (
+                    f"{instr.type_name}<{', '.join(args)}>"
+                )
+        return
+    if isinstance(instr, (N.AssignConst, N.Reassign)):
+        src = instr.src
+        if (src.kind in ("local", "param")
+                and src.name in local_concrete):
+            local_concrete[instr.dst] = local_concrete[src.name]
+        return
+    for sub_list in _child_instr_lists(instr):
+        for s in sub_list:
+            _collect_method_make_struct_sites(
+                fn, s, generic_structs, sites, local_concrete)
+
+
+def _child_instr_lists(instr):
+    """Yield the nested instruction lists of a control-flow node."""
+    if isinstance(instr, N.If):
+        yield instr.then_body
+        yield instr.else_body
+    elif isinstance(instr, N.While):
+        yield instr.cond_setup
+        yield instr.body
+    elif isinstance(instr, N.For):
+        yield instr.body
+    elif isinstance(instr, N.Match):
+        for arm in instr.arms:
+            yield arm.body
 
 
 def _refine_match_binders(fn, instr, concrete_sum_payloads: dict) -> None:
@@ -1005,43 +1236,70 @@ def _rewrite_bare_local_refs(node, bare_local_types: dict):
 
 def _scan_make_struct_sites(
     fn, instr, generic_structs, register_instantiation, sites,
+    local_concrete=None,
 ) -> None:
     """Recurse through an instruction tree recording, for every
     generic struct literal, the mangled instantiation inferred from
     its field values. Registers the instantiation so a clone is built
-    even when no annotated type string elsewhere mentions it."""
+    even when no annotated type string elsewhere mentions it.
+
+    ``local_concrete`` (a per-function dict, created on the first
+    call) maps each local resolved to a concrete generic-struct
+    instantiation to its full nested canonical type (``inner ->
+    "Box<Int>"``). It is threaded through body order so a later
+    literal whose field references an earlier resolved local
+    (``Box { value: inner }``) infers the nested type argument at full
+    depth instead of pegging it to the bare head. Alias assignments
+    (``let outer = _ir_t1``) propagate the entry to the alias."""
+    if local_concrete is None:
+        local_concrete = {}
     if isinstance(instr, N.MakeStruct) and instr.type_name in generic_structs:
         decl = generic_structs[instr.type_name]
-        subst = _infer_make_struct_subst(instr, decl)
+        subst = _infer_make_struct_subst(instr, decl, local_concrete)
         if subst is not None:
             args = [subst[tp] for tp in decl.type_params]
             mangled = register_instantiation(instr.type_name, args)
             if mangled is not None:
                 sites[(fn.name, instr.dst)] = (instr.type_name, mangled)
+                local_concrete[instr.dst] = (
+                    f"{instr.type_name}<{', '.join(args)}>"
+                )
+        return
+    if isinstance(instr, (N.AssignConst, N.Reassign)):
+        src = instr.src
+        if (src.kind in ("local", "param")
+                and src.name in local_concrete):
+            local_concrete[instr.dst] = local_concrete[src.name]
         return
     if isinstance(instr, N.If):
         for sub in instr.then_body:
             _scan_make_struct_sites(
-                fn, sub, generic_structs, register_instantiation, sites)
+                fn, sub, generic_structs, register_instantiation, sites,
+                local_concrete)
         for sub in instr.else_body:
             _scan_make_struct_sites(
-                fn, sub, generic_structs, register_instantiation, sites)
+                fn, sub, generic_structs, register_instantiation, sites,
+                local_concrete)
     elif isinstance(instr, N.While):
         for sub in instr.cond_setup:
             _scan_make_struct_sites(
-                fn, sub, generic_structs, register_instantiation, sites)
+                fn, sub, generic_structs, register_instantiation, sites,
+                local_concrete)
         for sub in instr.body:
             _scan_make_struct_sites(
-                fn, sub, generic_structs, register_instantiation, sites)
+                fn, sub, generic_structs, register_instantiation, sites,
+                local_concrete)
     elif isinstance(instr, N.For):
         for sub in instr.body:
             _scan_make_struct_sites(
-                fn, sub, generic_structs, register_instantiation, sites)
+                fn, sub, generic_structs, register_instantiation, sites,
+                local_concrete)
     elif isinstance(instr, N.Match):
         for arm in instr.arms:
             for sub in arm.body:
                 _scan_make_struct_sites(
-                    fn, sub, generic_structs, register_instantiation, sites)
+                    fn, sub, generic_structs, register_instantiation, sites,
+                    local_concrete)
 
 
 # ============================================================

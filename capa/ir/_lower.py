@@ -270,10 +270,21 @@ class Lowerer(
         # FunDecl. ``self`` becomes a regular parameter (the analyzer
         # has already typed it as the impl's target type).
         methods = [self.lower_function(m) for m in impl.methods]
+        # An ``impl Box<T>`` header carries its type-parameter binders
+        # in ``type_args`` as bare ``TypeName`` nodes (``T``). Capture
+        # their names so the Wasm monomorphisation pass can specialise
+        # the methods per concrete instantiation. A concrete impl
+        # (``impl Box<Int>``) or a non-generic impl contributes none.
+        type_params = [
+            a.name
+            for a in (impl.type_args or [])
+            if getattr(a, "name", None) and not getattr(a, "args", None)
+        ]
         return ImplBlock(
             type_name=impl.type_name,
             trait_name=impl.trait_name,
             methods=methods,
+            type_params=type_params,
         )
 
     def _lower_struct_decl(self, t: A.TypeStruct) -> StructDecl:
