@@ -1163,9 +1163,22 @@ def _patch_bare_generic_struct_refs(fn, make_struct_sites: dict) -> None:
     type, and the emitter sizes / decodes it as a struct pointer
     rather than hitting the bare-name fallback."""
     # local name -> (bare_head, mangled) for locals that hold a
-    # concrete generic-struct instance.
+    # concrete generic-struct instance. Threaded through nested
+    # control-flow bodies in body order, exactly as
+    # ``_scan_make_struct_sites`` threads its ``local_concrete``: a
+    # branch inherits a copy of the enclosing scope's map so a literal
+    # built inside one branch cannot leak its entry into a sibling
+    # branch.
     concrete: dict[str, tuple[str, str]] = {}
-    for instr in fn.body:
+    _patch_body_scope(fn, fn.body, make_struct_sites, concrete)
+
+
+def _patch_body_scope(fn, body, make_struct_sites, concrete) -> None:
+    """Patch one instruction list in body order, then recurse into any
+    nested control-flow bodies with a forked copy of ``concrete`` so
+    sibling branches do not cross-contaminate."""
+    # 1. Patch MakeStruct sites and propagate aliases in body order.
+    for instr in body:
         if isinstance(instr, N.MakeStruct):
             site = make_struct_sites.get((fn.name, instr.dst))
             if site is not None:
@@ -1173,29 +1186,44 @@ def _patch_bare_generic_struct_refs(fn, make_struct_sites: dict) -> None:
                 instr.type_name = mangled
                 fn.locals[instr.dst] = mangled
                 concrete[instr.dst] = (bare_head, mangled)
-    if not concrete:
-        return
-    # Fixed-point alias propagation: an assignment whose src is a
-    # concrete local and whose dst is still typed with the same bare
-    # head inherits the concrete instantiation.
-    changed = True
-    while changed:
-        changed = False
-        for instr in fn.body:
-            if isinstance(instr, (N.AssignConst, N.Reassign)):
-                src = instr.src
-                if (src.kind in ("local", "param")
-                        and src.name in concrete
-                        and instr.dst not in concrete):
-                    bare_head, mangled = concrete[src.name]
-                    dst_ty = fn.locals.get(instr.dst, "")
-                    if dst_ty in (bare_head, mangled):
-                        concrete[instr.dst] = (bare_head, mangled)
-                        fn.locals[instr.dst] = mangled
-                        changed = True
-    fn.body = [
-        _rewrite_bare_local_refs(instr, concrete) for instr in fn.body
-    ]
+        elif isinstance(instr, (N.AssignConst, N.Reassign)):
+            src = instr.src
+            if (src.kind in ("local", "param")
+                    and src.name in concrete
+                    and instr.dst not in concrete):
+                bare_head, mangled = concrete[src.name]
+                dst_ty = fn.locals.get(instr.dst, "")
+                if dst_ty in (bare_head, mangled):
+                    concrete[instr.dst] = (bare_head, mangled)
+                    fn.locals[instr.dst] = mangled
+    # 2. Rewrite bare local refs at this level, and recurse into the
+    #    nested bodies of each control-flow node with a forked scope.
+    for idx, instr in enumerate(body):
+        if _child_instr_lists_present(instr):
+            _recurse_patch_children(fn, instr, make_struct_sites, concrete)
+        body[idx] = _rewrite_bare_local_refs_shallow(instr, concrete)
+
+
+def _child_instr_lists_present(instr) -> bool:
+    return isinstance(instr, (N.If, N.While, N.For, N.Match))
+
+
+def _recurse_patch_children(fn, instr, make_struct_sites, concrete) -> None:
+    """Descend into a control-flow node's nested bodies. Each distinct
+    branch gets its own forked copy of ``concrete`` so an instantiation
+    resolved in one branch is not visible to a sibling branch."""
+    if isinstance(instr, N.If):
+        _patch_body_scope(fn, instr.then_body, make_struct_sites, dict(concrete))
+        _patch_body_scope(fn, instr.else_body, make_struct_sites, dict(concrete))
+    elif isinstance(instr, N.While):
+        scope = dict(concrete)
+        _patch_body_scope(fn, instr.cond_setup, make_struct_sites, scope)
+        _patch_body_scope(fn, instr.body, make_struct_sites, scope)
+    elif isinstance(instr, N.For):
+        _patch_body_scope(fn, instr.body, make_struct_sites, dict(concrete))
+    elif isinstance(instr, N.Match):
+        for arm in instr.arms:
+            _patch_body_scope(fn, arm.body, make_struct_sites, dict(concrete))
 
 
 def _rewrite_bare_local_refs(node, bare_local_types: dict):
@@ -1231,6 +1259,38 @@ def _rewrite_bare_local_refs(node, bare_local_types: dict):
         if changes:
             return replace(node, **changes)
         return node
+    return node
+
+
+# Fields of control-flow nodes that hold nested instruction lists.
+# These are patched per-scope by ``_patch_body_scope`` recursion, so
+# the shallow rewriter must not descend into them (doing so would
+# re-apply the enclosing scope to a child, defeating per-branch
+# isolation).
+_BODY_FIELDS = frozenset(
+    {"then_body", "else_body", "cond_setup", "body", "arms"}
+)
+
+
+def _rewrite_bare_local_refs_shallow(node, bare_local_types: dict):
+    """Like :func:`_rewrite_bare_local_refs`, but for a control-flow
+    instruction it rewrites only the node's own value-bearing fields
+    (``cond``, ``scrutinee``, ``iter``, ...) and leaves nested
+    instruction bodies untouched, since those are rewritten separately
+    with their own per-branch scope. For a non-control-flow
+    instruction it behaves identically to the deep rewriter."""
+    if not _child_instr_lists_present(node):
+        return _rewrite_bare_local_refs(node, bare_local_types)
+    changes = {}
+    for f in fields(node):
+        if f.name in _BODY_FIELDS:
+            continue
+        old = getattr(node, f.name)
+        new = _rewrite_bare_local_refs(old, bare_local_types)
+        if new is not old:
+            changes[f.name] = new
+    if changes:
+        return replace(node, **changes)
     return node
 
 

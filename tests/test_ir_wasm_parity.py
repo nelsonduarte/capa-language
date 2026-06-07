@@ -307,6 +307,23 @@ _PARITY_PROGRAMS: list[str] = [
     # return) instead of ``Cell__Cell_Int``; the make-struct-site
     # inference now carries nested type arguments at full depth.
     "generic_impl_methods_advanced.capa",
+    # Generic-literal-in-control-flow slice (2026-06-07): a generic
+    # struct literal whose construction site is INSIDE a control-flow
+    # block (if then/else, for, while, match arm) crashed the Wasm
+    # backend with a bare-headed "Capa type 'Box' has no Wasm encoding
+    # yet". ``_patch_bare_generic_struct_refs`` walked only the flat
+    # top-level ``fn.body`` and never recursed into nested instruction
+    # bodies, so although the mangled clone was registered (the scan side
+    # recurses) the bare ``MakeStruct.type_name`` and dst-local typing
+    # inside the nested block were never patched. The patch pass now
+    # recurses into nested control-flow bodies with per-branch scoping.
+    # Covers a literal built in an if then-body, an if else-body, a for
+    # body, a while body, and a match arm; nested control flow (if inside
+    # for); two sibling branches building the SAME generic type at
+    # DIFFERENT instantiations (Box<Int> vs Box<String>, value-checked so
+    # a wrong cross-branch scope entry surfaces); and a method call on a
+    # literal built inside a branch.
+    "generic_literal_in_control_flow.capa",
     # List-parameter mutation slice (2026-06-04): pushing to a List
     # received as a function PARAMETER (no local list built in the body)
     # crashed the Wasm backend at assembly time with "unknown local
@@ -1275,6 +1292,25 @@ class TestPythonWasmParity(unittest.TestCase):
         # payload, nested generics two deep, and a generic struct whose
         # field is another generic instantiation, method-accessed.
         self._assert_parity("generic_impl_methods_advanced.capa")
+
+    def test_generic_literal_in_control_flow(self):
+        # Generic-literal-in-control-flow slice (2026-06-07): a generic
+        # struct literal whose construction site is INSIDE a control-flow
+        # block (if then/else, for, while, match arm) crashed the Wasm
+        # backend with a bare-headed "Capa type 'Box' has no Wasm
+        # encoding yet". ``_patch_bare_generic_struct_refs`` walked only
+        # the flat top-level ``fn.body`` and never recursed into nested
+        # instruction bodies, so the mangled clone was registered (the
+        # scan side recurses) but the bare ``MakeStruct.type_name`` and
+        # dst-local typing inside the nested block were left unpatched.
+        # The patch pass now recurses into nested control-flow bodies
+        # with the same per-branch scoping the scan side uses. Covers a
+        # literal built in an if then-body, an if else-body, a for body,
+        # a while body, a match arm; nested control flow (if inside for);
+        # two sibling branches building the same generic type at
+        # different instantiations (Box<Int> vs Box<String>); and a
+        # method call on a literal built inside a branch.
+        self._assert_parity("generic_literal_in_control_flow.capa")
 
     def test_list_param_push(self):
         # List-parameter mutation slice (2026-06-04): pushing to a List

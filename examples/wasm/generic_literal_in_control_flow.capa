@@ -1,0 +1,107 @@
+// generic_literal_in_control_flow.capa: a generic struct literal whose
+// CONSTRUCTION SITE is inside a control-flow block (if then/else, for,
+// while, match arm) must monomorphise correctly on the Wasm backend,
+// with parity to the Python reference.
+//
+// Pre-fix (2026-06-07) ``_patch_bare_generic_struct_refs`` walked only
+// the flat top-level ``fn.body`` and never recursed into nested
+// instruction bodies (If.then_body / If.else_body / For.body /
+// While.body / Match arm bodies). Its companion ``_scan_make_struct_sites``
+// DID recurse, so the mangled clone (``Box__Int``) was registered, but
+// the bare-headed ``MakeStruct.type_name`` and the dst-local typing
+// INSIDE the nested block were never patched. That left a bare ``Box``
+// the emitter could not size / encode, crashing with "Capa type 'Box'
+// has no Wasm encoding yet". The same literal at the top level worked.
+// The patch pass now recurses into nested control-flow bodies with the
+// same per-branch scoping the scan side uses.
+//
+// Covers a generic literal built inside: an if then-body, an if
+// else-body, a for body, a while body, a match arm; nested control flow
+// (an if inside a for); two sibling branches building the SAME generic
+// type at DIFFERENT instantiations (Box<Int> vs Box<String>) - a wrong
+// cross-branch scope entry would be a silent miscompile, so both shapes
+// are read back and value-checked; and a method called on a literal
+// built inside a branch (the impl-method path).
+
+type Box<T> {
+    value: T
+}
+
+impl Box<T>
+    fun get(self) -> T
+        return self.value
+    fun describe(self) -> String
+        return "boxed"
+
+fun main(s: Stdio)
+    // 1. literal inside an if THEN-body, field-read after.
+    let cond = true
+    if cond
+        let bt = Box { value: 11 }
+        s.println("then: ${bt.value}")
+    else
+        let bf = Box { value: 22 }
+        s.println("else-skip: ${bf.value}")
+
+    // 2. literal inside an if ELSE-body, method-call after.
+    if cond
+        s.println("then-skip")
+    else
+        let be = Box { value: 33 }
+        s.println("else: ${be.get()}")
+    // exercise the else branch too
+    let no = false
+    if no
+        let bx = Box { value: 100 }
+        s.println("never: ${bx.value}")
+    else
+        let by = Box { value: 44 }
+        s.println("else2: ${by.get()} ${by.describe()}")
+
+    // 3. literal inside a for body, used (field read + method) each iter.
+    var total = 0
+    for i in 0..3
+        let bi = Box { value: i }
+        total = total + bi.get()
+    s.println("for total: ${total}")
+
+    // 4. literal inside a while body.
+    var n = 0
+    var sum = 0
+    while n < 3
+        let bw = Box { value: n }
+        sum = sum + bw.value
+        n = n + 1
+    s.println("while sum: ${sum}")
+
+    // 5. literal inside a match arm.
+    let pick = 1
+    match pick
+        0 -> s.println("zero")
+        _ ->
+            let bm = Box { value: 77 }
+            s.println("match: ${bm.get()}")
+
+    // 6. nested control flow: literal inside an if inside a for.
+    var acc = 0
+    for j in 0..4
+        if j > 1
+            let bn = Box { value: j }
+            acc = acc + bn.value
+    s.println("nested acc: ${acc}")
+
+    // 7. two sibling branches building the SAME generic type at
+    //    DIFFERENT instantiations: Box<Int> vs Box<String>. A wrong
+    //    cross-branch scope entry would corrupt one of these shapes.
+    if cond
+        let bint = Box { value: 555 }
+        s.println("branch int: ${bint.get()}")
+    else
+        let bstr = Box { value: "wrong" }
+        s.println("branch str: ${bstr.get()}")
+    if no
+        let bint2 = Box { value: 999 }
+        s.println("branch int2: ${bint2.get()}")
+    else
+        let bstr2 = Box { value: "right" }
+        s.println("branch str2: ${bstr2.get()}")
