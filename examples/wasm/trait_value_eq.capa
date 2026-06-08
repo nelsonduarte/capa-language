@@ -1,0 +1,87 @@
+// trait_value_eq.capa: structural equality (== / !=) of trait-typed
+// values, dispatched at runtime on the dynamic type-id. The Python
+// backend gives deep by-value equality of the underlying concrete value
+// (Radius(5) == Radius(5) is true even through a Shape binding), and
+// returns false - never an error - for two different dynamic types
+// (including struct-vs-sum). The Wasm $eq_<Trait> dispatcher reproduces
+// exactly that: compare the two type-ids (different -> not equal), and
+// route a matching pair to the concrete type's $eq_<Concrete> helper.
+//
+// Covers: multi-impl trait (struct AND sum dynamic types, a sum with
+// payload-bearing AND payloadless variants), same type + equal fields
+// (true), same type + different fields (false), different dynamic types
+// incl struct-vs-sum (false), and != as the negation. A single-impl
+// trait (one concrete type, no type-id header) is exercised below too.
+
+trait Shape
+    fun area(self) -> Int
+
+type Rect {
+    w: Int,
+    h: Int
+}
+
+type Sq {
+    s: Int
+}
+
+type Disc =
+    Point
+    Radius(Int)
+
+impl Shape for Rect
+    fun area(self) -> Int
+        return self.w * self.h
+
+impl Shape for Sq
+    fun area(self) -> Int
+        return self.s * self.s
+
+impl Shape for Disc
+    fun area(self) -> Int
+        match self
+            Point -> return 0
+            Radius(r) -> return r * r
+
+// Single-impl trait: exactly one concrete type, no type-id header.
+trait Greeter
+    fun hi(self) -> String
+
+type Person {
+    age: Int
+}
+
+impl Greeter for Person
+    fun hi(self) -> String
+        return "hi"
+
+fun main(stdio: Stdio)
+    let a: Shape = Rect { w: 2, h: 3 }
+    let b: Shape = Rect { w: 2, h: 3 }
+    let c: Shape = Rect { w: 4, h: 5 }
+    let d: Shape = Sq { s: 6 }
+    let e: Shape = Radius(5)
+    let f: Shape = Radius(5)
+    let g: Shape = Radius(7)
+    let p: Shape = Point
+    let q: Shape = Point
+
+    stdio.println("same type same fields: ${a == b}")
+    stdio.println("same type diff fields: ${a == c}")
+    stdio.println("diff struct types: ${a == d}")
+    stdio.println("struct vs sum: ${a == e}")
+    stdio.println("sum same payload: ${e == f}")
+    stdio.println("sum diff payload: ${e == g}")
+    stdio.println("sum payloadless eq: ${p == q}")
+    stdio.println("sum payloadless vs payload: ${p == e}")
+    stdio.println("ne same fields: ${a != b}")
+    stdio.println("ne diff fields: ${a != c}")
+    stdio.println("ne diff types: ${a != d}")
+
+    // Single-impl trait equality.
+    let s1: Greeter = Person { age: 1 }
+    let s2: Greeter = Person { age: 1 }
+    let s3: Greeter = Person { age: 2 }
+    stdio.println("single eq: ${s1 == s2}")
+    stdio.println("single diff: ${s1 == s3}")
+    stdio.println("single ne: ${s1 != s3}")

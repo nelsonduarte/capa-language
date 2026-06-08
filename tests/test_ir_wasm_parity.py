@@ -553,6 +553,25 @@ _PARITY_PROGRAMS: list[str] = [
     "option_result_trait_payload.capa",
     "map_trait_value.capa",
     "container_trait_payload.capa",
+    # Trait-typed value structural equality (2026-06-08): == / != on a
+    # trait-typed value dispatches at runtime on the offset-4 type-id to
+    # the matching concrete type's $eq_<Concrete> helper via a $eq_<Trait>
+    # dispatcher. Two trait values are equal IFF same dynamic type AND
+    # structurally equal; different dynamic types (incl struct-vs-sum)
+    # compare not-equal (matching Python's False, never an error). Pre-fix
+    # the Wasm backend raised a precise WasmEmissionError for trait == / !=.
+    # ``trait_value_eq.capa`` covers direct == / != for single-impl AND
+    # multi-impl traits, struct AND sum dynamic types (sum with payload-
+    # bearing + payloadless variants), same-type-equal / same-type-different
+    # / different-type cases. ``trait_eq_in_containers.capa`` covers a trait
+    # leaf nested in List<Trait>, Option<Trait>, Result<Trait, Int>,
+    # Map<String, Trait>, Map<Int, Trait>, a (Trait, Int) tuple, a struct
+    # with a trait field, and List<Trait>.contains. (Trait as a Map key /
+    # Set element stays a precise loud error: a sum dynamic type is
+    # unhashable on the Python backend while a struct one is hashable, so
+    # the two backends cannot agree at compile time.)
+    "trait_value_eq.capa",
+    "trait_eq_in_containers.capa",
 ]
 
 # Programs deliberately excluded from parity and why; documented
@@ -1265,6 +1284,49 @@ class TestPythonWasmParity(unittest.TestCase):
         # "match pattern StructPat".
         self._assert_parity("match_struct_pattern.capa")
 
+    def test_match_or_bind(self):
+        # Bound or-pattern slice (2026-06-04): or-patterns whose
+        # alternatives are different variants each binding the SAME
+        # name(s) (e.g. ``Pos(n) | Neg(n) -> n``). Pre-fix the Wasm CIR
+        # lowerer rejected any binding alternative ("or-pattern with
+        # bindings not supported on the Wasm backend yet"); the Python
+        # backend already handled them via native ``a | b`` match. The
+        # Wasm emitter now ORs the alternative tag predicates and, after
+        # the predicate gates entry, re-checks each variant alternative's
+        # tag to load the matched alternative's payload into the shared
+        # binder. Covers a single shared bind, two shared binds, a bound
+        # or-pattern under a guard, statement- and expression-position
+        # match, payload types Int / String / Char / Bool / Float /
+        # struct / list, and a binding-free or-pattern regression.
+        self._assert_parity("match_or_bind.capa")
+
+    def test_for_tuple_destructure(self):
+        # Tuple-destructuring for-pattern slice (2026-06-06): a for-loop
+        # whose loop pattern destructures a tuple (``for (a, b) in
+        # pairs``) already ran on the Python backend but the Wasm CIR
+        # lowerer rejected it ("for-pattern TuplePat"). The lowerer now
+        # binds each iteration's element to a fresh temporary carrying
+        # the tuple type and destructures it positionally through the
+        # same ``Index`` path that powers ``let (a, b) = t`` and
+        # ``t[i]``. Covers arity 2/3/4, component types Int / String /
+        # Char / Bool / struct / nested-tuple, a wildcard component, the
+        # plain single-identifier regression, and nested for-loops.
+        self._assert_parity("for_tuple_destructure.capa")
+
+    def test_for_string_iter(self):
+        # String iteration slice (2026-06-06): ``for c in s`` walks the
+        # receiver's UTF-8 byte slice one Unicode code point at a time on
+        # the Wasm backend, binding the loop variable as a one-codepoint
+        # String per iteration. Pre-fix the Wasm CIR emitter rejected it
+        # at lowering time ("For-iter over type 'String': only List, Set,
+        # and Range iteration are supported") while the Python backend
+        # already yielded one-character strings. Covers ASCII, a mix of
+        # ASCII / accented / CJK / emoji (astral), the empty string, the
+        # element used as a String several ways, break / continue / early
+        # return, iterating a String from a variable / function return /
+        # struct field / literal, and nested loops.
+        self._assert_parity("for_string_iter.capa")
+
     def test_char_basics(self):
         # Char slice (2026-06-03): a Capa ``Char`` is a single-
         # codepoint String and is laid out exactly like a String at
@@ -1633,6 +1695,33 @@ class TestPythonWasmParity(unittest.TestCase):
         # mixing struct and sum dynamic types.
         self._assert_parity("container_trait_payload.capa")
 
+    def test_trait_value_eq(self):
+        # Trait-typed value structural equality (2026-06-08): == / != on
+        # a trait-typed value dispatches at runtime on the offset-4
+        # type-id to the matching concrete type's $eq_<Concrete> helper
+        # via a $eq_<Trait> dispatcher. Two trait values are equal IFF
+        # same dynamic type AND structurally equal; different dynamic
+        # types (incl struct-vs-sum) compare not-equal (matching Python's
+        # False, never an error). Pre-fix the Wasm backend raised a
+        # precise WasmEmissionError for trait == / !=. Covers direct == /
+        # != for single-impl AND multi-impl traits, struct AND sum
+        # dynamic types (sum with payload-bearing + payloadless
+        # variants), same-type-equal / same-type-different / different-
+        # type cases.
+        self._assert_parity("trait_value_eq.capa")
+
+    def test_trait_eq_in_containers(self):
+        # Trait-typed value equality inside containers (2026-06-08): a
+        # trait leaf nested in List<Trait>, Option<Trait>, Result<Trait,
+        # Int>, Map<String, Trait>, Map<Int, Trait>, a (Trait, Int)
+        # tuple, a struct with a trait field, and List<Trait>.contains,
+        # each compared with == / != and routed through the same offset-4
+        # type-id dispatch. (Trait as a Map key / Set element stays a
+        # precise loud error: a sum dynamic type is unhashable on the
+        # Python backend while a struct one is hashable, so the two
+        # backends cannot agree at compile time.)
+        self._assert_parity("trait_eq_in_containers.capa")
+
     def test_struct_field_assign(self):
         # Field-target assignment slice (2026-06-06): ``obj.field =
         # value`` lowers to a FieldStore that writes the field slot of
@@ -1689,6 +1778,35 @@ class TestPythonWasmParity(unittest.TestCase):
                 f"{sorted(unaccounted)}. Either add to _PARITY_PROGRAMS "
                 "(and a test_ method) or add to _EXCLUDED with a "
                 "one-line rationale."
+            ),
+        )
+
+    def test_every_parity_program_has_executing_test(self):
+        # Soundness check (2026-06-08): list membership in
+        # ``_PARITY_PROGRAMS`` alone does NOT make a program run --
+        # pytest only executes ``test_*`` methods. A program added to
+        # the list without a method that actually drives it (e.g. via
+        # ``self._assert_parity("foo.capa")``) silently ships
+        # un-exercised, and ``test_inventory_matches_examples_dir``
+        # passes on membership alone. This gate closes that gap: every
+        # parity program must be referenced by an ``_assert_parity``
+        # call inside some ``test_*`` method of this class, so a
+        # list-only registration can never silently ship again.
+        import inspect
+        import re
+
+        class_src = inspect.getsource(type(self))
+        referenced = set(
+            re.findall(r'_assert_parity\(\s*"([^"]+\.capa)"', class_src)
+        )
+        unwired = [p for p in _PARITY_PROGRAMS if p not in referenced]
+        self.assertFalse(
+            unwired,
+            (
+                "parity programs registered in _PARITY_PROGRAMS but not "
+                "driven by any test method (pytest will never run them): "
+                f"{sorted(unwired)}. Add a test_ method that calls "
+                "self._assert_parity(\"<name>.capa\") for each."
             ),
         )
 

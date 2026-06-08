@@ -95,6 +95,16 @@ class _EqualityMixin:
             or head in ("List", "Map", "Set")
         )
 
+    def _is_trait_eq_ty(self, ty: str) -> bool:
+        """True iff ``ty`` is a user-defined trait type that needs the
+        runtime-type-id-dispatched ``$eq_<Trait>`` helper. A trait-typed
+        value is a single i32 pointer to a concrete struct / sum whose
+        dynamic type is only known at runtime, so its ``==`` cannot use
+        a fixed concrete ``$eq_*`` helper; the dispatcher picks the
+        concrete helper by tag (multi-impl) or directly (single-impl)."""
+        head = ty.split("<", 1)[0]
+        return head in getattr(self, "_trait_eq_candidates", {})
+
     # ----- discovery -------------------------------------------------
 
     def _collect_eq_types(self, module) -> list[str]:
@@ -106,6 +116,20 @@ class _EqualityMixin:
         order: list[str] = []
 
         def add(ty: str) -> None:
+            head = ty.split("<", 1)[0]
+            if self._is_trait_eq_ty(head):
+                # A trait leaf needs its ``$eq_<Trait>`` dispatcher AND
+                # every concrete impl target's ``$eq_<Concrete>`` helper
+                # (the dispatcher calls them by tag). Record the trait so
+                # the dispatcher is emitted, then recurse into each
+                # concrete type so its structural helper is too.
+                if head in seen:
+                    return
+                seen.add(head)
+                order.append(head)
+                for _tid, concrete in self._trait_eq_candidates[head]:
+                    add(concrete)
+                return
             if not self._is_compound_eq_ty(ty) or ty in seen:
                 return
             seen.add(ty)
@@ -118,8 +142,12 @@ class _EqualityMixin:
                 if isinstance(instr, BinOp) and instr.op in ("==", "!="):
                     lt = self._normalize_eq_ty(instr.left.ty or "")
                     rt = self._normalize_eq_ty(instr.right.ty or "")
-                    cand = lt if self._is_compound_eq_ty(lt) else rt
-                    if self._is_compound_eq_ty(cand):
+                    # Pick whichever side names a helper-bearing type:
+                    # a compound (struct / sum / tuple / List / Map / Set)
+                    # or a trait (dispatched structurally by type-id).
+                    cand = lt if (self._is_compound_eq_ty(lt)
+                                  or self._is_trait_eq_ty(lt)) else rt
+                    if self._is_compound_eq_ty(cand) or self._is_trait_eq_ty(cand):
                         add(cand)
                 elif isinstance(instr, MethodCall) and instr.method == "contains":
                     elem = self._list_elem_ty(instr.receiver.ty or "")
@@ -203,7 +231,14 @@ class _EqualityMixin:
             # ``$eq_Set_*`` compares elements via the leaf compare,
             # which calls ``$eq_<elem>`` for pointer-shape elements.
             subs.append(self._set_elem_ty(ty))
-        return [s for s in subs if self._is_compound_eq_ty(s)]
+        # Keep compound subtypes (their own ``$eq_*`` helper) and trait
+        # subtypes (their ``$eq_<Trait>`` dispatcher): a List<Trait>, a
+        # Map<K, Trait>, a struct with a trait-typed field, or a tuple /
+        # sum payload of trait type all need the dispatcher reachable.
+        return [
+            s for s in subs
+            if self._is_compound_eq_ty(s) or self._is_trait_eq_ty(s)
+        ]
 
     def _list_elem_ty(self, ty: str) -> str:
         if ty.startswith("List<") and ty.endswith(">"):
@@ -329,6 +364,9 @@ class _EqualityMixin:
 
     def _emit_eq_helper(self, ty: str) -> None:
         head = ty.split("<", 1)[0]
+        if self._is_trait_eq_ty(head):
+            self._emit_trait_eq(head)
+            return
         if head in self._struct_layouts:
             self._emit_struct_eq(ty)
         elif head in self._sum_layouts:
@@ -345,6 +383,79 @@ class _EqualityMixin:
             raise WasmEmissionError(
                 f"structural equality for {ty!r} is not supported"
             )
+
+    def _emit_trait_eq(self, trait: str) -> None:
+        """``$eq_<Trait>(a, b) -> i32``: runtime-type-id-dispatched
+        structural equality of two trait-typed values (each a single
+        i32 pointer to a concrete struct / sum).
+
+        Semantics (matching the Python backend's ``==``): two trait
+        values are equal IFF they have the SAME dynamic type AND are
+        structurally equal; different dynamic types compare as not
+        equal (Python returns False, it never errors).
+
+        Single-impl trait: there is exactly one possible dynamic type
+        and the concrete value carries NO type-id header, so the helper
+        delegates straight to that concrete type's ``$eq_<Concrete>``
+        helper (both operands are guaranteed the same dynamic type).
+
+        Multi-impl trait: load a's type-id and b's type-id from the
+        uniform ``_TYPE_ID_OFFSET`` (4); a mismatch is an instant 0
+        (different dynamic type). When they agree, dispatch on the tag
+        via an if-chain over the trait's impl targets, returning
+        ``call $eq_<Concrete>(a, b)`` for the matching candidate. The
+        innermost else returns 0 defensively (a valid trait value
+        always matches a candidate)."""
+        from ._layout import _TYPE_ID_OFFSET
+        name = _eq_key(trait)
+        candidates = self._trait_eq_candidates[trait]
+        self._write(
+            f"(func $eq_{name} (param $a i32) (param $b i32) (result i32)"
+        )
+        self._indent += 1
+        # Single-impl: one concrete type, no type-id - delegate directly.
+        if len(candidates) == 1 and candidates[0][0] is None:
+            concrete = candidates[0][1]
+            self._write("local.get $a")
+            self._write("local.get $b")
+            self._write(f"call $eq_{_eq_key(concrete)}")
+            self._indent -= 1
+            self._write(")")
+            return
+        # Multi-impl: different dynamic types -> 0.
+        self._write("block $eq_done (result i32)")
+        self._indent += 1
+        self._write("local.get $a")
+        self._write(f"i32.load offset={_TYPE_ID_OFFSET}")
+        self._write("local.get $b")
+        self._write(f"i32.load offset={_TYPE_ID_OFFSET}")
+        self._write("i32.ne")
+        self._write("if")
+        self._indent += 1
+        self._write("i32.const 0")
+        self._write("br $eq_done")
+        self._indent -= 1
+        self._write("end")
+        # Same dynamic type: dispatch on a's tag to the concrete helper.
+        for tid, concrete in candidates:
+            self._write("local.get $a")
+            self._write(f"i32.load offset={_TYPE_ID_OFFSET}")
+            self._write(f"i32.const {tid}")
+            self._write("i32.eq")
+            self._write("if")
+            self._indent += 1
+            self._write("local.get $a")
+            self._write("local.get $b")
+            self._write(f"call $eq_{_eq_key(concrete)}")
+            self._write("br $eq_done")
+            self._indent -= 1
+            self._write("end")
+        # Defensive: a valid trait value always matches a candidate.
+        self._write("i32.const 0")
+        self._indent -= 1
+        self._write("end")
+        self._indent -= 1
+        self._write(")")
 
     def _emit_struct_eq(self, ty: str) -> None:
         """``$eq_<Struct>(a, b) -> i32``: AND of per-field compares,
@@ -433,6 +544,13 @@ class _EqualityMixin:
             return
         if ty == "String":
             self._write("call $str_eq")
+            return
+        if self._is_trait_eq_ty(ty):
+            # A trait leaf (nested in a List / Map value / tuple / sum
+            # payload / struct field / Option / Result payload) routes
+            # through its ``$eq_<Trait>`` runtime-type-id dispatcher,
+            # which itself calls the matching concrete ``$eq_*`` helper.
+            self._write(f"call $eq_{_eq_key(ty.split('<', 1)[0])}")
             return
         if self._is_compound_eq_ty(ty):
             # All compound leaves (struct / sum / tuple / List /

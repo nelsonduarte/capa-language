@@ -110,6 +110,20 @@ class _TraitEmissionMixin:
         self._header_struct_types: set[str] = set()
         self._header_sum_types: set[str] = set()
         self._multi_impl_candidates: dict[tuple[str, str], list] = {}
+        # Per-trait structural-equality dispatch table, consumed by the
+        # ``$eq_<Trait>`` helper in the equality mixin. Maps a trait name
+        # to an ordered list of ``(type_id, concrete_type)`` candidates:
+        #
+        # - Single-impl trait: one candidate with ``type_id`` = ``None``
+        #   (a single-impl concrete value carries NO type-id header, and
+        #   the only possible dynamic type is that one concrete type, so
+        #   the dispatcher calls its ``$eq_<Concrete>`` helper directly
+        #   without a tag check).
+        # - Multi-impl trait: one candidate per impl target, each with
+        #   the stable ``type_id`` written at ``_TYPE_ID_OFFSET`` of a
+        #   participating value, so the dispatcher can compare a's and
+        #   b's tags and route to the matching concrete helper.
+        self._trait_eq_candidates: dict[str, list] = {}
         by_trait: dict[str, list] = {}
         for impl in module.impls:
             for method in impl.methods:
@@ -133,6 +147,10 @@ class _TraitEmissionMixin:
                     mangled = _impl_method_name(impls[0].type_name, method.name)
                     # Trait entry: only when impl is unique.
                     self._method_table[(trait_name, method.name)] = mangled
+                # Single-impl eq dispatch: one concrete type, no type-id.
+                self._trait_eq_candidates[trait_name] = [
+                    (None, impls[0].type_name)
+                ]
                 continue
             # Multi-impl trait: register dynamic-dispatch metadata.
             self._multi_impl_traits.add(trait_name)
@@ -167,6 +185,11 @@ class _TraitEmissionMixin:
                     self._multi_impl_candidates[
                         (trait_name, method_name)
                     ].append((tid, mangled))
+                # Multi-impl eq dispatch: one (type_id, concrete) per
+                # impl target so ``$eq_<Trait>`` can tag-dispatch.
+                self._trait_eq_candidates.setdefault(trait_name, []).append(
+                    (tid, impl.type_name)
+                )
 
     @staticmethod
     def _sum_layout_names(module) -> set[str]:

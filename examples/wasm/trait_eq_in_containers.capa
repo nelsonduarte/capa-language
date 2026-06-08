@@ -1,0 +1,110 @@
+// trait_eq_in_containers.capa: structural equality of trait-typed values
+// nested inside the compound containers. A trait leaf routes through its
+// $eq_<Trait> type-id dispatcher wherever it appears - List element, Map
+// value, tuple component, sum payload (Option / Result), struct field -
+// so each container's element/field-wise equality matches the Python
+// backend byte-for-byte, with mixed concrete dynamic types throughout.
+//
+// Covers: List<Trait> == / != (mixed struct + sum elements, diff payload,
+// diff order), Option<Trait> ==, Result<Trait, Int> ==, Map<String, Trait>
+// and Map<Int, Trait> == (trait as VALUE), a (Trait, Int) tuple ==, a
+// struct with a trait-typed field ==, and List<Trait>.contains (a hit and
+// a miss, leaf-compare path).
+
+trait Shape
+    fun area(self) -> Int
+
+type Rect {
+    w: Int,
+    h: Int
+}
+
+type Disc =
+    Point
+    Radius(Int)
+
+impl Shape for Rect
+    fun area(self) -> Int
+        return self.w * self.h
+
+impl Shape for Disc
+    fun area(self) -> Int
+        match self
+            Point -> return 0
+            Radius(r) -> return r * r
+
+type Box {
+    item: Shape,
+    n: Int
+}
+
+fun rect(w: Int, h: Int) -> Shape
+    return Rect { w: w, h: h }
+
+fun disc(r: Int) -> Shape
+    return Radius(r)
+
+fun mklist(a: Shape, b: Shape) -> List<Shape>
+    var xs: List<Shape> = []
+    xs.push(a)
+    xs.push(b)
+    return xs
+
+fun main(stdio: Stdio)
+    let l1 = mklist(rect(1, 2), disc(3))
+    let l2 = mklist(rect(1, 2), disc(3))
+    let l3 = mklist(rect(1, 2), disc(4))
+    let l4 = mklist(disc(3), rect(1, 2))
+    stdio.println("list eq: ${l1 == l2}")
+    stdio.println("list diff payload: ${l1 == l3}")
+    stdio.println("list diff order: ${l1 == l4}")
+    stdio.println("list ne: ${l1 != l3}")
+
+    let o1: Option<Shape> = Some(rect(2, 2))
+    let o2: Option<Shape> = Some(rect(2, 2))
+    let o3: Option<Shape> = Some(disc(2))
+    let o4: Option<Shape> = None
+    stdio.println("opt eq: ${o1 == o2}")
+    stdio.println("opt diff type: ${o1 == o3}")
+    stdio.println("opt none: ${o1 == o4}")
+
+    let r1: Result<Shape, Int> = Ok(disc(5))
+    let r2: Result<Shape, Int> = Ok(disc(5))
+    let r3: Result<Shape, Int> = Ok(rect(5, 1))
+    stdio.println("result eq: ${r1 == r2}")
+    stdio.println("result diff: ${r1 == r3}")
+
+    var m1: Map<String, Shape> = new_map()
+    m1.set("a", rect(1, 1))
+    m1.set("b", disc(2))
+    var m2: Map<String, Shape> = new_map()
+    m2.set("a", rect(1, 1))
+    m2.set("b", disc(2))
+    var m3: Map<String, Shape> = new_map()
+    m3.set("a", rect(1, 1))
+    m3.set("b", disc(9))
+    stdio.println("map str eq: ${m1 == m2}")
+    stdio.println("map str diff: ${m1 == m3}")
+
+    var mi1: Map<Int, Shape> = new_map()
+    mi1.set(1, disc(7))
+    var mi2: Map<Int, Shape> = new_map()
+    mi2.set(1, disc(7))
+    stdio.println("map int eq: ${mi1 == mi2}")
+
+    let t1: (Shape, Int) = (rect(3, 3), 1)
+    let t2: (Shape, Int) = (rect(3, 3), 1)
+    let t3: (Shape, Int) = (disc(3), 1)
+    stdio.println("tuple eq: ${t1 == t2}")
+    stdio.println("tuple diff type: ${t1 == t3}")
+
+    let b1 = Box { item: rect(4, 4), n: 2 }
+    let b2 = Box { item: rect(4, 4), n: 2 }
+    let b3 = Box { item: disc(4), n: 2 }
+    stdio.println("struct field eq: ${b1 == b2}")
+    stdio.println("struct field diff: ${b1 == b3}")
+
+    let needle: Shape = disc(3)
+    stdio.println("contains hit: ${l1.contains(needle)}")
+    let miss: Shape = disc(99)
+    stdio.println("contains miss: ${l1.contains(miss)}")

@@ -49,16 +49,17 @@ class _MapEmissionMixin:
     def _reject_trait_map_key(self, key_ty: str) -> None:
         """Raise a precise loud error for a trait-typed Map key.
 
-        A trait value is a single i32 pointer whose dynamic type is
-        only known at runtime; a Map key needs structural equality
-        (and on the Python backend a sum-typed dynamic value is
-        additionally unhashable, so a sum-typed trait key fails there
-        too; a struct-typed one is hashable). The pointer-shape key branches below would emit a
-        ``call $eq_<TraitName>`` to a helper that is never generated
-        (a trait is not a structural-equality type), producing invalid
-        Wasm. Catch it here so a trait key is a clear compile-time
-        error rather than a missing-function link failure. This slice
-        covers trait values / payloads, not trait Map keys."""
+        Trait VALUE equality is supported (the ``$eq_<Trait>`` type-id
+        dispatcher), so the Wasm side could in principle compare two
+        trait keys structurally. The blocker is Python parity, not the
+        Wasm machinery: a struct dynamic type is hashable but a SUM
+        dynamic type raises ``unhashable type`` when used as a dict key
+        on the Python backend, so the two backends cannot agree on a
+        trait Map key uniformly at compile time (the compiler cannot
+        know the runtime dynamic type). Catch it here so a trait key is
+        a clear compile-time error rather than a Python/Wasm divergence.
+        Trait as a VALUE / element / field is supported; only trait as a
+        Map key (and Set element) stays rejected."""
         if key_ty.split("<", 1)[0] in getattr(
             self, "_trait_value_types", ()
         ):

@@ -162,15 +162,15 @@ class _SetEmissionMixin:
         if elem_ty.split("<", 1)[0] in getattr(
             self, "_trait_value_types", ()
         ):
-            # A trait element needs structural equality on its concrete
-            # dynamic type, which has no compile-time ``$eq_<Trait>``
-            # helper (a trait is not a structural-equality type), so the
-            # ``call $eq_<elem>`` below would link to a missing function.
-            # On the Python backend a sum-typed dynamic value is
-            # additionally unhashable (a struct-typed one is hashable),
-            # so a sum-typed trait Set element fails there too. Raise a
-            # precise loud error; this slice covers trait values /
-            # payloads, not trait Set elements.
+            # Trait VALUE equality is supported (the ``$eq_<Trait>``
+            # type-id dispatcher), but a Set element stays rejected on
+            # Python-parity grounds: a struct dynamic type is hashable
+            # while a SUM dynamic type raises ``unhashable type`` as a
+            # Set element on the Python backend, so the two backends
+            # cannot agree uniformly at compile time (the runtime dynamic
+            # type is unknown to the compiler). Raise a precise loud
+            # error; trait as a VALUE / element / field is supported,
+            # only trait as a Set element (and Map key) stays rejected.
             raise WasmEmissionError(
                 f"Set element type {elem_ty!r} (a trait) is not supported "
                 f"on the Wasm backend: a Set element needs structural "

@@ -1132,26 +1132,20 @@ class WasmEmitter(
             # type is only known at runtime (the offset-4 type-id). The
             # Python backend gives STRUCTURAL equality of the underlying
             # concrete value (``Beat(1) == Beat(1)`` is True even through
-            # a ``Token`` binding); reproducing that on Wasm needs a
-            # runtime dispatch on the type-id to the matching
-            # ``$eq_<ConcreteType>`` helper, which the value/payload slice
-            # does not yet implement. Falling through to the scalar
-            # ``i64.eq`` below would (a) trip the validator (two i32
-            # pointers, not i64) and (b) even if it didn't, compare
-            # pointer identity rather than value - a silent wrong answer.
-            # Raise a precise, loud error instead.
-            trait_types = getattr(self, "_trait_value_types", ())
-            if (_strip_type_qualifiers(left_ty) in trait_types
-                    or _strip_type_qualifiers(right_ty) in trait_types):
-                raise WasmEmissionError(
-                    f"{op!r} on a trait-typed value "
-                    f"({left_ty!r} {op} {right_ty!r}) is not yet supported "
-                    f"on the Wasm backend: structural equality through a "
-                    f"trait binding needs a runtime dispatch on the "
-                    f"dynamic type-id to the concrete type's equality "
-                    f"helper. Compare the concrete types directly, or "
-                    f"match on the value first."
-                )
+            # a ``Token`` binding), and returns False - not an error -
+            # for two different dynamic types. The ``$eq_<Trait>``
+            # dispatcher reproduces exactly that: it compares the two
+            # type-ids (different -> 0) and routes a matching pair to the
+            # concrete type's structural helper. Pick whichever side
+            # names a trait.
+            trait_ty = (
+                _strip_type_qualifiers(left_ty)
+                if self._is_trait_eq_ty(_strip_type_qualifiers(left_ty))
+                else _strip_type_qualifiers(right_ty)
+            )
+            if self._is_trait_eq_ty(trait_ty):
+                self._emit_compound_eq(instr, op, trait_ty)
+                return
         if op in _CMP_BINOP:
             self._push_value(instr.left)
             self._push_value(instr.right)
