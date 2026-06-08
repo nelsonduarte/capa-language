@@ -159,6 +159,26 @@ class _SetEmissionMixin:
             self._write("local.get $_str_b_len")
             self._write("call $str_eq")
             return
+        if elem_ty.split("<", 1)[0] in getattr(
+            self, "_trait_value_types", ()
+        ):
+            # A trait element needs structural equality on its concrete
+            # dynamic type, which has no compile-time ``$eq_<Trait>``
+            # helper (a trait is not a structural-equality type), so the
+            # ``call $eq_<elem>`` below would link to a missing function.
+            # On the Python backend a sum-typed dynamic value is
+            # additionally unhashable (a struct-typed one is hashable),
+            # so a sum-typed trait Set element fails there too. Raise a
+            # precise loud error; this slice covers trait values /
+            # payloads, not trait Set elements.
+            raise WasmEmissionError(
+                f"Set element type {elem_ty!r} (a trait) is not supported "
+                f"on the Wasm backend: a Set element needs structural "
+                f"equality on the concrete value, which a trait-typed "
+                f"element cannot resolve at compile time (and a sum-typed "
+                f"dynamic value is unhashable on the Python backend too). "
+                f"Use a concrete element type."
+            )
         if self._is_pointer_shape_ty(elem_ty):
             # Load the element's i32 pointer, compare structurally
             # against the stashed needle pointer.

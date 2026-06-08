@@ -183,13 +183,10 @@ class _TupleEmissionMixin:
             self._write("i32.wrap_i64")
             self._write(f"local.set ${instr.dst}")
             return
-        head = dst_ty.split("<", 1)[0]
-        if (head in self._struct_layouts
-                or head in self._sum_layouts
-                or dst_ty.startswith(("List", "Map", "Set"))
-                or self._is_tuple_ty(dst_ty)):
-            # A nested tuple element is an i32 pointer in the slot, just
-            # like a struct / list element, so decode it the same way.
+        if self._is_pointer_shape_ty(dst_ty):
+            # A nested tuple / struct / sum / collection / trait-value
+            # element is an i32 pointer in the slot, so decode it the
+            # same way (i64.extend on store, i32.wrap on read).
             self._write(f"i64.load offset={offset}")
             self._write("i32.wrap_i64")
             self._write(f"local.set ${instr.dst}")

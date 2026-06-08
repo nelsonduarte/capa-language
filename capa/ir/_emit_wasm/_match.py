@@ -737,7 +737,6 @@ class _MatchEmissionMixin:
                 continue
             offset = idx * 8
             ty = elem_tys[idx] if idx < len(elem_tys) else "Unknown"
-            head = ty.split("<", 1)[0]
             if ty == "String":
                 self._write(f"local.get ${scrut_local}")
                 self._write(f"i64.load offset={offset}")
@@ -761,11 +760,7 @@ class _MatchEmissionMixin:
                 self._write("i32.wrap_i64")
                 self._write(f"local.set ${sub.name}")
                 continue
-            if (head in self._struct_layouts
-                    or head in self._sum_layouts
-                    or ty.startswith(("List", "Map", "Set"))
-                    or (ty.startswith("(") and ty.endswith(")")
-                        and ty != "()")):
+            if self._is_pointer_shape_ty(ty):
                 self._write(f"local.get ${scrut_local}")
                 self._write(f"i64.load offset={offset}")
                 self._write("i32.wrap_i64")
@@ -999,7 +994,6 @@ class _MatchEmissionMixin:
         """Load a single struct field into the bind local(s). Mirrors
         ``_emit_field_access``'s per-type load rules so a bound field
         carries the same Wasm shape downstream code expects."""
-        head = field_ty.split("<", 1)[0]
         if field_ty == "String":
             self._write(f"local.get ${scrut_local}")
             self._write(f"i32.load offset={offset}")
@@ -1018,13 +1012,10 @@ class _MatchEmissionMixin:
             self._write(f"{_load_op_for_size(size)} offset={offset}")
             self._write(f"local.set ${name}")
             return
-        if (head in self._struct_layouts
-                or head in self._sum_layouts
-                or field_ty.startswith(("List", "Map", "Set"))
-                or (field_ty.startswith("(") and field_ty.endswith(")")
-                    and field_ty != "()")):
-            # Pointer-shape field: struct slots store the i32 pointer
-            # directly (see _emit_make_struct), so load it as i32.
+        if self._is_pointer_shape_ty(field_ty):
+            # Pointer-shape field (struct / sum / collection / tuple /
+            # trait value): struct slots store the i32 pointer directly
+            # (see _emit_make_struct), so load it as i32.
             self._write(f"local.get ${scrut_local}")
             self._write(f"i32.load offset={offset}")
             self._write(f"local.set ${name}")

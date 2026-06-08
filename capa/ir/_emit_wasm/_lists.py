@@ -544,7 +544,6 @@ class _ListEmissionMixin:
         self._write("i32.mul")
         self._write("i32.add")
         # Stack: [result_ptr, elem_addr]
-        head = elem_ty.split("<", 1)[0]
         if elem_ty == "Float":
             self._write("f64.load")
             self._write("f64.store offset=8")
@@ -555,9 +554,10 @@ class _ListEmissionMixin:
         elif elem_ty == "String":
             self._write("i64.load")
             self._write("i64.store offset=8")
-        elif (head in self._struct_layouts
-                or head in self._sum_layouts
-                or elem_ty.startswith(("List", "Map", "Set"))):
+        elif self._is_pointer_shape_ty(elem_ty):
+            # Pointer-shape element (struct / sum / collection / tuple /
+            # trait value): the list slot holds a 4-byte i32 pointer;
+            # i64-extend it into the Option's uniform 8-byte Some slot.
             self._write("i32.load")
             self._write("i64.extend_i32_u")
             self._write("i64.store offset=8")

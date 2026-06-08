@@ -46,6 +46,31 @@ from ._layout import (
 
 
 class _MapEmissionMixin:
+    def _reject_trait_map_key(self, key_ty: str) -> None:
+        """Raise a precise loud error for a trait-typed Map key.
+
+        A trait value is a single i32 pointer whose dynamic type is
+        only known at runtime; a Map key needs structural equality
+        (and on the Python backend a sum-typed dynamic value is
+        additionally unhashable, so a sum-typed trait key fails there
+        too; a struct-typed one is hashable). The pointer-shape key branches below would emit a
+        ``call $eq_<TraitName>`` to a helper that is never generated
+        (a trait is not a structural-equality type), producing invalid
+        Wasm. Catch it here so a trait key is a clear compile-time
+        error rather than a missing-function link failure. This slice
+        covers trait values / payloads, not trait Map keys."""
+        if key_ty.split("<", 1)[0] in getattr(
+            self, "_trait_value_types", ()
+        ):
+            raise WasmEmissionError(
+                f"Map key type {key_ty!r} (a trait) is not supported on "
+                f"the Wasm backend: a Map key needs structural equality "
+                f"on the concrete value, which a trait-typed key cannot "
+                f"resolve at compile time (and a sum-typed dynamic value "
+                f"is unhashable on the Python backend too). Use a "
+                f"concrete key type."
+            )
+
     def _emit_make_map(self, instr: MakeMap) -> None:
         """Allocate a Map<K, V> header (16 bytes) + an initial data
         array of 8 pair slots (8 * 16 = 128 bytes). The header
@@ -148,6 +173,7 @@ class _MapEmissionMixin:
         The compare helper reads the same scratch locals back, so
         the pair (canonical-push, pair-key-compare) is the only
         pair of calls a Map-method emitter needs to make."""
+        self._reject_trait_map_key(key_ty)
         if key_ty == "String":
             self._push_string_value_as_ptr_len(key_value)
             self._write("local.set $_alloc_tmp_key_len")
@@ -188,6 +214,7 @@ class _MapEmissionMixin:
           (the slice-3 structural-equality helper compares the two
           heap records by value).
         """
+        self._reject_trait_map_key(key_ty)
         if key_ty == "String":
             self._write(f"local.get ${pair_addr_local}")
             self._write(f"i32.load offset={_MAP_PAIR_KEY_PTR_OFFSET}")
@@ -234,6 +261,7 @@ class _MapEmissionMixin:
         - Pointer-shape: ``pair[0..4] = canonical_i32`` (the key
           slot holds the heap pointer; same 4-byte pad as Bool).
         """
+        self._reject_trait_map_key(key_ty)
         if key_ty == "String":
             self._write(f"local.get ${pair_addr_local}")
             self._write("local.get $_alloc_tmp")
@@ -279,6 +307,7 @@ class _MapEmissionMixin:
           pointer at ``pair[0]`` into ``tuple[0]``. Per slice 1,
           pointer-shape tuple elements occupy 4 bytes at offset 0.
         """
+        self._reject_trait_map_key(key_ty)
         if key_ty == "String":
             self._write(f"local.get ${tuple_addr_local}")
             self._write(f"local.get ${pair_addr_local}")
@@ -589,6 +618,7 @@ class _MapEmissionMixin:
         ``_emit_load_pair_key_for_tuple`` but writes into a List<K>
         slot (which is size-dispatched) rather than a tuple slot
         (uniform 8 bytes)."""
+        self._reject_trait_map_key(key_ty)
         if key_ty == "String":
             # Pack pair (ptr, len) into list's packed-i64 slot.
             self._write(f"local.get ${pair_addr_local}")
@@ -652,11 +682,10 @@ class _MapEmissionMixin:
             self._write("i32.wrap_i64")
             self._write("i32.store offset=0")
             return
-        # Pointer-shape values: pair has i32-extended-to-i64; list
-        # slot is 4 bytes, wrap back to i32.
-        if (value_ty.split("<", 1)[0] in self._struct_layouts
-                or value_ty.split("<", 1)[0] in self._sum_layouts
-                or value_ty.startswith(("List", "Map", "Set"))):
+        # Pointer-shape values (struct, sum, list, map, set, tuple,
+        # trait value): pair has i32-extended-to-i64; list slot is 4
+        # bytes, wrap back to i32.
+        if self._is_pointer_shape_ty(value_ty):
             self._write(f"local.get ${pair_addr_local}")
             self._write(f"i64.load offset={_MAP_PAIR_VALUE_OFFSET}")
             self._write("i32.wrap_i64")
@@ -705,11 +734,9 @@ class _MapEmissionMixin:
             self._write("local.get $_alloc_tmp_i64")
             self._write("i64.or")
             return
-        # Pointer-shaped types (struct, sum, list, map). Extend i32
-        # to i64 to fit the uniform value slot.
-        if value_ty.split("<", 1)[0] in self._struct_layouts \
-                or value_ty.split("<", 1)[0] in self._sum_layouts \
-                or value_ty.startswith(("List", "Map", "Set")):
+        # Pointer-shaped types (struct, sum, list, map, set, tuple,
+        # trait value). Extend i32 to i64 to fit the uniform value slot.
+        if self._is_pointer_shape_ty(value_ty):
             self._push_value(v)
             self._write("i64.extend_i32_u")
             return

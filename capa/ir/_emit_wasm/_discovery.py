@@ -231,13 +231,21 @@ class _DiscoveryMixin:
         return False
 
     def _uses_format_str(self, module: Module) -> bool:
-        """True if any function body contains a ``FormatStr``
-        instruction. Drives the emission of the ``$itoa`` helper
-        (and pre-interning of ``"true"`` / ``"false"`` for Bool
-        parts). Recurses into ``MakeLambda`` bodies so a format
-        string nested inside a lambda still triggers the helper
-        emission (otherwise the lifted lambda's body references
-        ``$itoa`` that the module never defined)."""
+        """True if any function OR impl-method body contains a
+        ``FormatStr`` instruction. Drives the emission of the
+        ``$itoa`` helper (and pre-interning of ``"true"`` /
+        ``"false"`` for Bool parts). Recurses into ``MakeLambda``
+        bodies so a format string nested inside a lambda still
+        triggers the helper emission (otherwise the lifted lambda's
+        body references ``$itoa`` that the module never defined).
+
+        Impl-method bodies are walked alongside top-level functions
+        (mirroring ``_uses_string_codepoint_index`` / the Random /
+        cap discovery walks): a format string that appears ONLY
+        inside an impl method - e.g. ``Beat(n) -> "beat ${n}"`` in
+        an ``impl Token for Note`` - must still emit ``$itoa``, or
+        the impl method's body references a helper the module never
+        defined."""
         def visit(instrs: list[Instr]) -> bool:
             for instr in instrs:
                 if isinstance(instr, FormatStr):
@@ -262,6 +270,10 @@ class _DiscoveryMixin:
         for fn in module.functions:
             if visit(fn.body):
                 return True
+        for impl in module.impls:
+            for method in impl.methods:
+                if visit(method.body):
+                    return True
         return False
 
     def _uses_string_codepoint_index(self, module: Module) -> bool:

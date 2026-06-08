@@ -534,6 +534,25 @@ _PARITY_PROGRAMS: list[str] = [
     # mixing struct + sum concrete types.
     "multi_impl_sum_dispatch.capa",
     "multi_impl_mixed_dispatch.capa",
+    # Trait-typed value as a container payload / value (2026-06-08): a
+    # trait value lowers to a single i32 heap pointer tagged with a
+    # dynamic type-id, but the Wasm pointer-shape predicate did not treat
+    # a trait head as pointer-shaped, so the uniform-8-byte slot encoders
+    # neither i64-extended on store nor i32-wrapped on read-back. The fix
+    # recognises trait heads centrally, repairing every container
+    # symmetrically. ``option_result_trait_payload.capa`` covers
+    # Option<Trait> (Some + None) and Result<Trait> (Ok + Err) over a
+    # single-impl trait and a multi-impl trait at struct AND sum dynamic
+    # types, dispatching after extraction; ``map_trait_value.capa`` covers
+    # Map<String, Trait> + Map<Int, Trait> with mixed dynamic types,
+    # Map.get -> Option<Trait> + dispatch, Map.values iteration, an
+    # overwrite and a miss; ``container_trait_payload.capa`` covers
+    # List<Trait> (iterate / .get(i) / index), a tuple with a trait
+    # component (let + match destructure), and a struct field of trait
+    # type.
+    "option_result_trait_payload.capa",
+    "map_trait_value.capa",
+    "container_trait_payload.capa",
 ]
 
 # Programs deliberately excluded from parity and why; documented
@@ -1579,6 +1598,40 @@ class TestPythonWasmParity(unittest.TestCase):
         # per element, plus each value used as its plain concrete self
         # (struct field + equality, sum match + equality).
         self._assert_parity("multi_impl_mixed_dispatch.capa")
+
+    def test_option_result_trait_payload(self):
+        # Trait value as an Option<Trait> / Result<Trait> payload
+        # (2026-06-08): pre-fix the Wasm backend rejected
+        # Some(traitval) / Ok(traitval) / Err(traitval) with "type
+        # mismatch: expected i64, found i32" because a trait head was
+        # not recognised as pointer-shaped, so the uniform-8-byte
+        # payload slot was neither i64-extended on store nor i32-wrapped
+        # on read-back. Covers Option<Trait> Some + None and
+        # Result<Trait> Ok + Err over a single-impl trait and a
+        # multi-impl trait at BOTH a struct and a sum dynamic type, with
+        # method dispatch on the extracted value (the type-id must
+        # survive the i64<->i32 slot round-trip).
+        self._assert_parity("option_result_trait_payload.capa")
+
+    def test_map_trait_value(self):
+        # Trait value as a Map<K, Trait> value (2026-06-08): pre-fix the
+        # Wasm backend raised "Map value type 'X' not supported" because
+        # the Map value encoder's inline pointer-shape test did not
+        # recognise a trait head. Covers K = String and K = Int, several
+        # entries with different concrete dynamic types (struct + two
+        # sum participants), Map.get returning Option<Trait> then a
+        # method call on the value, Map.values iteration with per-value
+        # dispatch, an overwrite, and a miss.
+        self._assert_parity("map_trait_value.capa")
+
+    def test_container_trait_payload(self):
+        # Trait value in the other containers the central pointer-shape
+        # predicate now enables (2026-06-08): List<Trait> (iterate /
+        # .get(i) -> Option<Trait> / index), a tuple with a trait
+        # component (let-destructure + match-destructure), and a struct
+        # field of trait type - each read / extracted then dispatched,
+        # mixing struct and sum dynamic types.
+        self._assert_parity("container_trait_payload.capa")
 
     def test_struct_field_assign(self):
         # Field-target assignment slice (2026-06-06): ``obj.field =

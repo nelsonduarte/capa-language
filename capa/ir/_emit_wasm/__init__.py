@@ -58,6 +58,7 @@ from ._layout import (
     _OPTION_LAYOUT, _RESULT_LAYOUT, _IOERROR_LAYOUT, _JSONVALUE_LAYOUT,
     _map_value_type, _element_type_of_list, _element_type_of_set,
     _size_of, _store_op_for_size, _load_op_for_size, _align_up,
+    _strip_type_qualifiers,
     compute_struct_layout, compute_sum_layout,
 )
 from ._runtime import _RuntimeHelpersMixin
@@ -1127,6 +1128,30 @@ class WasmEmitter(
             if self._is_compound_eq_ty(cmp_ty):
                 self._emit_compound_eq(instr, op, cmp_ty)
                 return
+            # A trait-typed operand is a single i32 pointer whose dynamic
+            # type is only known at runtime (the offset-4 type-id). The
+            # Python backend gives STRUCTURAL equality of the underlying
+            # concrete value (``Beat(1) == Beat(1)`` is True even through
+            # a ``Token`` binding); reproducing that on Wasm needs a
+            # runtime dispatch on the type-id to the matching
+            # ``$eq_<ConcreteType>`` helper, which the value/payload slice
+            # does not yet implement. Falling through to the scalar
+            # ``i64.eq`` below would (a) trip the validator (two i32
+            # pointers, not i64) and (b) even if it didn't, compare
+            # pointer identity rather than value - a silent wrong answer.
+            # Raise a precise, loud error instead.
+            trait_types = getattr(self, "_trait_value_types", ())
+            if (_strip_type_qualifiers(left_ty) in trait_types
+                    or _strip_type_qualifiers(right_ty) in trait_types):
+                raise WasmEmissionError(
+                    f"{op!r} on a trait-typed value "
+                    f"({left_ty!r} {op} {right_ty!r}) is not yet supported "
+                    f"on the Wasm backend: structural equality through a "
+                    f"trait binding needs a runtime dispatch on the "
+                    f"dynamic type-id to the concrete type's equality "
+                    f"helper. Compare the concrete types directly, or "
+                    f"match on the value first."
+                )
         if op in _CMP_BINOP:
             self._push_value(instr.left)
             self._push_value(instr.right)

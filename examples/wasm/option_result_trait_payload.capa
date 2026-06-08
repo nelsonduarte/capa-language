@@ -1,0 +1,113 @@
+// option_result_trait_payload.capa: a trait-typed value as the payload
+// of Option<Trait> / Result<Trait>, with method dispatch after the value
+// is pulled back out of the container, byte-for-byte identical on Python,
+// --wasm, and --component.
+//
+// Pre-fix the Wasm backend rejected Some(traitval) / Ok(traitval) /
+// Err(traitval) with "type mismatch: expected i64, found i32": a trait
+// value lowers to a single i32 heap pointer (a concrete struct or sum
+// tagged with a dynamic type-id), but the pointer-shape predicate did
+// not treat a trait head as pointer-shaped, so the uniform-8-byte payload
+// slot was neither i64-extended on store nor i32-wrapped on read-back.
+// The fix recognises a trait head centrally, repairing the store
+// (variant construction) and the read-back (match-arm binding) together.
+//
+// Covers: Option<Trait> Some + None; Result<Trait> Ok + Err; a SINGLE-
+// impl trait and a MULTI-impl trait; the multi-impl trait dispatched at
+// TWO dynamic types - a struct participant AND a sum participant - so the
+// type-id survives the i64<->i32 slot round-trip and dispatch still picks
+// the right concrete method after extraction.
+
+// single-impl trait
+trait Greeter
+    fun greet(self) -> String
+
+// multi-impl trait: struct participant (Rect) + sum participant (Disc)
+trait Shape
+    fun area(self) -> Int
+    fun name(self) -> String
+
+type Robot {
+    who: String
+}
+
+impl Greeter for Robot
+    fun greet(self) -> String
+        return "hi ${self.who}"
+
+type Rect {
+    w: Int,
+    h: Int
+}
+
+type Disc =
+    Point
+    Radius(Int)
+
+impl Shape for Rect
+    fun area(self) -> Int
+        return self.w * self.h
+    fun name(self) -> String
+        return "rect"
+
+impl Shape for Disc
+    fun area(self) -> Int
+        match self
+            Point -> return 0
+            Radius(r) -> return 3 * r * r
+    fun name(self) -> String
+        return "disc"
+
+fun some_shape(s: Shape) -> Option<Shape>
+    return Some(s)
+
+fun some_greeter(g: Greeter) -> Option<Greeter>
+    return Some(g)
+
+fun ok_shape(s: Shape) -> Result<Shape, String>
+    return Ok(s)
+
+fun err_shape(msg: String) -> Result<Shape, String>
+    return Err(msg)
+
+fun main(stdio: Stdio)
+    // Option<Trait> Some, multi-impl struct dynamic type.
+    let r1: Shape = Rect { w: 3, h: 4 }
+    match some_shape(r1)
+        Some(sh) -> stdio.println("opt struct: ${sh.name()} ${sh.area()}")
+        None -> stdio.println("none")
+
+    // Option<Trait> Some, multi-impl sum dynamic type.
+    let d1: Shape = Radius(5)
+    match some_shape(d1)
+        Some(sh) -> stdio.println("opt sum: ${sh.name()} ${sh.area()}")
+        None -> stdio.println("none")
+
+    // Option<Trait> None.
+    let empty: Option<Shape> = None
+    match empty
+        Some(sh) -> stdio.println("BUG: ${sh.name()}")
+        None -> stdio.println("opt none ok")
+
+    // Option<Trait> over a single-impl trait.
+    let g: Greeter = Robot { who: "Ada" }
+    match some_greeter(g)
+        Some(gg) -> stdio.println("opt single: ${gg.greet()}")
+        None -> stdio.println("none")
+
+    // Result<Trait> Ok, sum dynamic type.
+    let d2: Shape = Radius(2)
+    match ok_shape(d2)
+        Ok(sh) -> stdio.println("ok sum: ${sh.name()} ${sh.area()}")
+        Err(e) -> stdio.println("err: ${e}")
+
+    // Result<Trait> Ok, struct dynamic type.
+    let r2: Shape = Rect { w: 6, h: 7 }
+    match ok_shape(r2)
+        Ok(sh) -> stdio.println("ok struct: ${sh.name()} ${sh.area()}")
+        Err(e) -> stdio.println("err: ${e}")
+
+    // Result<Trait> Err.
+    match err_shape("boom")
+        Ok(sh) -> stdio.println("BUG ok: ${sh.name()}")
+        Err(e) -> stdio.println("err: ${e}")

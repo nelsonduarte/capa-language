@@ -1,0 +1,95 @@
+// container_trait_payload.capa: trait-typed values as elements /
+// components / fields of the OTHER containers the central pointer-shape
+// predicate now enables - List<Trait>, a tuple with a trait component,
+// and a struct field of trait type - each iterated / destructured /
+// read and then dispatched, byte-for-byte identical on Python, --wasm,
+// and --component.
+//
+// These ride the same fix as Option<Trait> / Map<K, Trait>: a trait head
+// is now pointer-shaped, so a trait value crossing a uniform-8-byte slot
+// (List element, tuple slot, sum payload) is i64-extended on store and
+// i32-wrapped on read-back, while a struct field (a bare i32 slot) stores
+// and loads the pointer directly. The type-id survives every round-trip,
+// so dispatch after extraction still resolves to the right concrete impl.
+//
+// Covers: List<Trait> push / iterate / .get(i) -> Option<Trait> / index
+// via destructuring; a (Shape, Int) tuple via let-destructure AND match;
+// a struct field of trait type read then dispatched; mixed struct + sum
+// dynamic types throughout.
+
+trait Shape
+    fun area(self) -> Int
+    fun name(self) -> String
+
+type Rect {
+    w: Int,
+    h: Int
+}
+
+type Disc =
+    Point
+    Radius(Int)
+
+impl Shape for Rect
+    fun area(self) -> Int
+        return self.w * self.h
+    fun name(self) -> String
+        return "rect"
+
+impl Shape for Disc
+    fun area(self) -> Int
+        match self
+            Point -> return 0
+            Radius(r) -> return r * r
+    fun name(self) -> String
+        return "disc"
+
+// trait value as a struct field.
+type Holder {
+    item: Shape,
+    tag: Int
+}
+
+fun fill() -> List<Shape>
+    var xs: List<Shape> = []
+    xs.push(Rect { w: 2, h: 3 })
+    xs.push(Radius(5))
+    xs.push(Point)
+    return xs
+
+fun pair_up(s: Shape, n: Int) -> (Shape, Int)
+    return (s, n)
+
+fun main(stdio: Stdio)
+    // List<Trait>: iterate + dispatch per element (mixed struct + sum).
+    let xs = fill()
+    for s in xs
+        stdio.println("each: ${s.name()} = ${s.area()}")
+
+    // List<Trait>: .get(i) -> Option<Trait> then dispatch; a hit + miss.
+    match xs.get(1)
+        Some(s) -> stdio.println("get1: ${s.name()} ${s.area()}")
+        None -> stdio.println("get1 none")
+    match xs.get(9)
+        Some(s) -> stdio.println("BUG ${s.area()}")
+        None -> stdio.println("get9 none ok")
+
+    // tuple with a trait component: let-destructure.
+    let r: Shape = Rect { w: 3, h: 3 }
+    let t = pair_up(r, 7)
+    let (sh, n) = t
+    stdio.println("tuple let: ${sh.name()} ${sh.area()} ${n}")
+
+    // tuple with a trait component: match-destructure, sum dynamic type.
+    let d: Shape = Radius(4)
+    let t2 = pair_up(d, 1)
+    match t2
+        (sh2, m) -> stdio.println("tuple match: ${sh2.name()} ${sh2.area()} ${m}")
+
+    // struct field of trait type: read then dispatch.
+    let r2: Shape = Rect { w: 5, h: 5 }
+    let h = Holder { item: r2, tag: 9 }
+    stdio.println("field: ${h.item.name()} ${h.item.area()} tag=${h.tag}")
+    let d3: Shape = Radius(6)
+    let h2 = Holder { item: d3, tag: 2 }
+    stdio.println("field2: ${h2.item.name()} ${h2.item.area()} tag=${h2.tag}")

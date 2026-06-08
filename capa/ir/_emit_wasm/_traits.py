@@ -97,6 +97,15 @@ class _TraitEmissionMixin:
         #   list of ``(type_id, mangled_method)`` candidates the
         #   if-chain compares the loaded tag against.
         self._multi_impl_traits: set[str] = set()
+        # Union of every trait name that can hold a value (single-impl
+        # AND multi-impl). A trait-typed value lowers to a single i32
+        # heap pointer (a concrete struct or sum), so the pointer-shape
+        # predicate must treat a trait head as pointer-shaped; without
+        # it the uniform-8-byte slot encoders (Option/Result payload,
+        # Map value, List element, tuple component, struct field) skip
+        # the i32<->i64 extend/wrap and the slot read-back type-mismatches.
+        # Populated below as the single- and multi-impl tables are built.
+        self._trait_value_types: set[str] = set()
         self._type_ids: dict[str, int] = {}
         self._header_struct_types: set[str] = set()
         self._header_sum_types: set[str] = set()
@@ -116,6 +125,8 @@ class _TraitEmissionMixin:
         # the tag the dispatcher compares against.
         next_id = 1
         for trait_name, impls in by_trait.items():
+            # Every trait with at least one impl can hold a value.
+            self._trait_value_types.add(trait_name)
             if len(impls) == 1:
                 self._trait_to_impl[trait_name] = impls[0]
                 for method in impls[0].methods:

@@ -67,9 +67,18 @@ class _EncodingMixin:
     def _is_pointer_shape_ty(self, ty: str) -> bool:
         """True iff ``ty`` lowers to an i32 heap pointer in the
         Wasm backend's value representation. Struct, sum, list /
-        map / set, and non-unit tuple types all hand their data
-        round through a heap record; their pointer needs i32 -> i64
-        extension when stored in a uniform i64 payload slot.
+        map / set, non-unit tuple, and user-defined TRAIT types all
+        hand their data round through a heap record; their pointer
+        needs i32 -> i64 extension when stored in a uniform i64
+        payload slot.
+
+        A trait-typed value lowers to a single i32 pointer (a
+        concrete struct or sum) tagged with a dynamic type-id, so
+        it is pointer-shaped exactly like the concrete types it
+        stands in for. Recognising it here repairs the store side
+        (Option/Result payload, Map value, List element, tuple
+        component, struct field) and the read-back side (match-arm
+        payload unwrap) symmetrically through this one predicate.
 
         Variant-construction call sites OR in their own checks on
         top of this predicate (``arg.kind == "variant_ctor"`` and
@@ -81,6 +90,7 @@ class _EncodingMixin:
         return (
             head in self._struct_layouts
             or head in self._sum_layouts
+            or head in getattr(self, "_trait_value_types", ())
             or ty.startswith(("List", "Map", "Set"))
             or (ty.startswith("(") and ty.endswith(")") and ty != "()")
         )

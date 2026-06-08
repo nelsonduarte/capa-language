@@ -1,0 +1,116 @@
+// map_trait_value.capa: a trait-typed value as the VALUE of a
+// Map<K, Trait>, with method dispatch after the value is pulled back out,
+// byte-for-byte identical on Python, --wasm, and --component.
+//
+// Pre-fix the Wasm backend rejected a trait map value with "Map value
+// type 'X' not supported on the Wasm backend": the Map value encoder's
+// inline pointer-shape test did not recognise a trait head, so the value
+// was never i64-extended into the uniform 8-byte value slot. The fix
+// routes the Map value store / Map.values read-back through the central
+// pointer-shape predicate, which now recognises trait heads; Map.get
+// copies the raw value slot into the Option<Trait> Some slot unchanged
+// (both are uniform 8-byte slots) and the match-arm read-back wraps it
+// back to i32.
+//
+// Covers: K = String AND K = Int; several entries with DIFFERENT concrete
+// dynamic types (a struct participant and two sum participants of one
+// multi-impl trait, plus a single-impl trait); Map.get returning
+// Option<Trait> then a method called on the retrieved value; iterating
+// Map.values calling the method per value; an overwrite (set on an
+// existing key) and a miss (get on an absent key).
+
+// multi-impl trait: struct participant (Rect) + sum participants
+// (Disc, Tri).
+trait Shape
+    fun area(self) -> Int
+    fun name(self) -> String
+
+type Rect {
+    w: Int,
+    h: Int
+}
+
+type Disc =
+    Point
+    Radius(Int)
+
+type Tri =
+    Flat
+    Sides(Int, Int)
+
+impl Shape for Rect
+    fun area(self) -> Int
+        return self.w * self.h
+    fun name(self) -> String
+        return "rect"
+
+impl Shape for Disc
+    fun area(self) -> Int
+        match self
+            Point -> return 0
+            Radius(r) -> return 3 * r * r
+    fun name(self) -> String
+        return "disc"
+
+impl Shape for Tri
+    fun area(self) -> Int
+        match self
+            Flat -> return 0
+            Sides(b, h) -> return b * h / 2
+    fun name(self) -> String
+        return "tri"
+
+// Build a Map<String, Shape> with mixed concrete dynamic types; the
+// trait values cross the value slot, are retrieved, and dispatch.
+fun build_named(a: Shape, b: Shape, c: Shape) -> Map<String, Shape>
+    var m: Map<String, Shape> = new_map()
+    m.set("first", a)
+    m.set("second", b)
+    m.set("third", c)
+    return m
+
+// Build a Map<Int, Shape> exercising the Int-key path.
+fun build_indexed(a: Shape, b: Shape) -> Map<Int, Shape>
+    var m: Map<Int, Shape> = new_map()
+    m.set(1, a)
+    m.set(2, b)
+    // overwrite an existing key with a different concrete dynamic type.
+    m.set(1, b)
+    return m
+
+fun main(stdio: Stdio)
+    let r: Shape = Rect { w: 3, h: 4 }
+    let d: Shape = Radius(5)
+    let t: Shape = Sides(8, 3)
+
+    // Map<String, Shape>: get then dispatch on the retrieved value.
+    let named = build_named(r, d, t)
+    match named.get("first")
+        Some(sh) -> stdio.println("first: ${sh.name()} ${sh.area()}")
+        None -> stdio.println("first missing")
+    match named.get("second")
+        Some(sh) -> stdio.println("second: ${sh.name()} ${sh.area()}")
+        None -> stdio.println("second missing")
+    match named.get("third")
+        Some(sh) -> stdio.println("third: ${sh.name()} ${sh.area()}")
+        None -> stdio.println("third missing")
+    // a miss.
+    match named.get("absent")
+        Some(sh) -> stdio.println("BUG: ${sh.name()}")
+        None -> stdio.println("absent missing ok")
+
+    // iterate Map.values calling the method per value.
+    var total = 0
+    for v in named.values()
+        total = total + v.area()
+    stdio.println("named total area = ${total}")
+
+    // Map<Int, Shape> including an overwrite.
+    let indexed = build_indexed(r, d)
+    match indexed.get(1)
+        Some(sh) -> stdio.println("idx1: ${sh.name()} ${sh.area()}")
+        None -> stdio.println("idx1 missing")
+    match indexed.get(2)
+        Some(sh) -> stdio.println("idx2: ${sh.name()} ${sh.area()}")
+        None -> stdio.println("idx2 missing")
+    stdio.println("indexed length = ${indexed.length()}")
