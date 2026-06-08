@@ -989,9 +989,14 @@ Listed so the design space is explicit.
   `@strict_ifc`), `declassify(value, reason)` recorded in the SBOM as
   `declassification_sites`, implicit-flow under strict, and
   anti-laundering through aggregates + mutable containers
-  (intra-procedural, whole-aggregate granularity). Remaining (v2):
-  cross-function inference without explicit `@secret` params,
-  per-field precision, a mechanised noninterference proof.
+  (intra-procedural, whole-aggregate granularity). Cross-function
+  inference SHIPPED this session: modular sink-reaching-parameter
+  inference computed to a fixpoint over the call graph, reported at the
+  call site (warn by default, hard error under `@strict_ifc`), covering
+  free functions, concrete methods, and trait/capability dynamic
+  dispatch (by-name over-approximation); `declassify` breaks the chain.
+  Remaining (v2): per-field precision and a mechanised noninterference
+  proof.
 - **Typestate / session types**. SHIPPED (S3.1 + S3.2, Python
   backend): the state lives in the type (`typestate Name` +
   `Name[State]`), a value is linear, and the type checker enforces the

@@ -512,6 +512,138 @@ class _IfcMixin:
                 e.pos,
             )
 
+    # ---- cross-function sink-parameter flow (roadmap S2.6) -------
+
+    def _check_ifc_call_summary(
+        self, e: A.Call, sym, perm: list[int],
+    ) -> None:
+        """At a user free-function call, flag any @secret argument
+        bound to a parameter that reaches a public sink inside the
+        callee (its sink-reaching parameter set, computed to a
+        fixpoint in ``_ifc_summary``). Warn-then-enforce, mirroring
+        the intra-procedural sink check.
+
+        ``perm`` is the named-argument permutation: ``e.args[perm[i]]``
+        is the argument bound to the callee's i-th explicit parameter
+        (the same order ``sym.param_names`` uses, ``self``-stripped for
+        free functions). The summary's parameter indices are over the
+        full parameter list, which for a free function equals the
+        explicit list, so no shift is needed here."""
+        key = ("fun", sym.name)
+        sink_params = self._ifc_summaries.get(key)
+        if not sink_params:
+            return
+        for param_idx, arg_idx in enumerate(perm):
+            if param_idx not in sink_params:
+                continue
+            if arg_idx >= len(e.args):
+                continue
+            arg = e.args[arg_idx]
+            if L.normalize(self._label_of(arg)) != L.SECRET:
+                continue
+            pname = (
+                sym.param_names[param_idx]
+                if param_idx < len(sym.param_names)
+                else f"argument {arg_idx + 1}"
+            )
+            self._emit_ifc_call_leak(repr(sym.name), pname, arg.pos)
+
+    def _check_ifc_method_call_summary(
+        self, e: A.MethodCall, type_sym, method_sym,
+        recv_ty, perm: list[int],
+    ) -> None:
+        """At a user method call, flag a @secret receiver or argument
+        bound to a sink-reaching parameter of the callee.
+
+        Parameter index 0 in the summary is ``self`` (the receiver);
+        the explicit parameters follow. ``perm`` maps the i-th
+        explicit parameter to ``e.args[perm[i]]`` (``self``-stripped,
+        as ``method_sym.param_names`` is).
+
+        Two receiver shapes:
+
+        * A statically-known CONCRETE receiver type whose exact
+          ``("method", T, method)`` summary key is present: use that
+          one summary (precise, no over-approximation).
+
+        * A TRAIT- / capability-typed receiver (the call dispatches
+          DYNAMICALLY, so the concrete impl is not known statically),
+          or a concrete receiver whose exact key is absent: fall back
+          to the UNION over every concrete impl type that defines a
+          method of this name. A parameter index counts as
+          sink-reaching if it is sink-reaching in ANY candidate impl.
+          This mirrors the by-name over-approximation the summary
+          BUILDER uses for a not-statically-known receiver, so the
+          call site never under-reports a leak (sound over-approx)."""
+        callee_name = f"{recv_ty.name}.{e.method}"
+        exact_key = ("method", recv_ty.name, e.method)
+
+        # A trait/capability-typed receiver dispatches dynamically: the
+        # concrete impl is not known statically, so the precise exact
+        # key (which is keyed by the IMPL type) does not apply -- it is
+        # the TRAIT name. Over-approximate across every impl method of
+        # this name. Also fall back when the exact key is simply absent.
+        from . import SymbolKind
+        recv_is_dynamic = type_sym is not None and getattr(
+            type_sym, "kind", None,
+        ) in (SymbolKind.TRAIT, SymbolKind.CAPABILITY)
+
+        # Precise path: a statically-known CONCRETE receiver whose exact
+        # summary KEY is present. Use that one summary verbatim -- even
+        # when it is empty (the method does not sink the param), which
+        # is the precision case: another unrelated type's same-named
+        # method sinking must NOT taint this concrete call.
+        if not recv_is_dynamic and exact_key in self._ifc_summaries:
+            sink_params = self._ifc_summaries[exact_key]
+        else:
+            from ._ifc_summary import methods_by_name
+            grouping = methods_by_name(self._ifc_summaries)
+            sink_params = set()
+            for key in grouping.get(e.method, ()):
+                sink_params |= self._ifc_summaries.get(key, frozenset())
+        if not sink_params:
+            return
+
+        has_self = getattr(method_sym, "has_self", False)
+        # Receiver = parameter index 0 when the method takes ``self``.
+        if has_self and 0 in sink_params:
+            if L.normalize(self._label_of(e.receiver)) == L.SECRET:
+                self._emit_ifc_call_leak(
+                    repr(callee_name), "self (the receiver)", e.receiver.pos,
+                )
+        for local_idx, arg_idx in enumerate(perm):
+            full_idx = local_idx + 1 if has_self else local_idx
+            if full_idx not in sink_params:
+                continue
+            if arg_idx >= len(e.args):
+                continue
+            arg = e.args[arg_idx]
+            if L.normalize(self._label_of(arg)) != L.SECRET:
+                continue
+            pname = (
+                method_sym.param_names[local_idx]
+                if local_idx < len(method_sym.param_names)
+                else f"argument {arg_idx + 1}"
+            )
+            self._emit_ifc_call_leak(repr(callee_name), pname, arg.pos)
+
+    def _emit_ifc_call_leak(self, callee: str, param: str, pos) -> None:
+        """Emit the cross-function sink-parameter diagnostic: a @secret
+        value passed to a parameter that reaches a public sink inside
+        the callee. Warn by default, hard error under ``@strict_ifc``,
+        matching the intra-procedural tier."""
+        msg = (
+            f"information-flow: a @secret value is passed to {callee} as "
+            f"{param}, which reaches a public sink inside {callee} (it "
+            f"sends data out of the program). Route it through "
+            f"declassify(value, reason: \"...\") if this disclosure is "
+            f"intended."
+        )
+        if getattr(self, "_strict_ifc", False):
+            self._err(msg, pos)
+        else:
+            self._warn_ifc(msg, pos)
+
     def _warn_ifc(self, message: str, pos) -> None:
         """Record a non-fatal IFC warning (does not affect ``ok``).
         Mirrors ``_err`` but routes to ``self.warnings``."""

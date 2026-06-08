@@ -168,6 +168,13 @@ class _DispatchMixin:
                             return instantiate(
                                 sym.ty.ret, sym.type_params, {},
                             )
+                        # Roadmap S2.6: cross-function sink-parameter
+                        # flow -- a @secret argument bound to a callee
+                        # parameter that reaches a public sink inside
+                        # the callee is a boundary leak. ``perm`` is in
+                        # parameter order, so it doubles as the
+                        # param-index -> arg-index map.
+                        self._check_ifc_call_summary(e, sym, perm)
                         reordered_args = [e.args[j] for j in perm]
                         reordered_tys = [arg_tys[j] for j in perm]
                         ret_ty = self._check_call_with_inference(
@@ -508,6 +515,12 @@ class _DispatchMixin:
         if perm is None:
             all_type_params = type_sym.type_params + method_sym.type_params
             return instantiate(method_fun_ty.ret, all_type_params, mapping)
+        # Roadmap S2.6: cross-function sink-parameter flow at a method
+        # call. ``perm`` maps each explicit parameter to its argument;
+        # the receiver binds to ``self`` (summary param index 0).
+        self._check_ifc_method_call_summary(
+            e, type_sym, method_sym, recv_ty, perm,
+        )
         reordered_args = [e.args[j] for j in perm]
         reordered_tys = [arg_tys[j] for j in perm]
 
