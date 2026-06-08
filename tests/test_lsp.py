@@ -29,23 +29,19 @@ except ImportError:
     _HAVE_PYGLS = False
 
 
-@unittest.skipUnless(
-    _HAVE_LSP and _HAVE_PYGLS,
-    "requires pygls + lsprotocol (pip install '.[lsp]')",
-)
-class TestLspServerHandlersInProcess(unittest.TestCase):
-    """In-process coverage for the handlers built inside
-    ``capa.lsp.server._build_server()``. The earlier suites
-    (``TestHover``, ``TestGoToDefinition``, ...) hit the
-    ``compute_*`` helpers directly through the back-compat shim;
-    that misses the server itself, which translates between
-    pygls' LSP types and the compute helpers' Capa-native types.
+class _LspHandlerHarness:
+    """Shared fixtures for in-process handler tests.
 
-    The harness builds the real LanguageServer, then stubs the
-    workspace + publish_diagnostics + show_message so each
-    feature handler can be invoked with mock LSP params without
-    a JSON-RPC round-trip. Handlers are retrieved from
-    ``server.protocol.fm.features`` (pygls 2.x's feature map).
+    Builds the real LanguageServer, then stubs the workspace +
+    publish_diagnostics + show_message so each feature handler can
+    be invoked with mock LSP params without a JSON-RPC round-trip.
+    Handlers are retrieved from ``server.protocol.fm.features``
+    (pygls 2.x's feature map).
+
+    This is a mixin (no ``test_*`` methods of its own) so that
+    every handler-test class gets the harness exactly once without
+    re-running another class's feature tests via inheritance. Mix
+    it in alongside ``unittest.TestCase``.
     """
 
     def setUp(self):
@@ -88,6 +84,23 @@ class TestLspServerHandlersInProcess(unittest.TestCase):
     def _text_doc_id(self):
         from lsprotocol import types as lsp
         return lsp.TextDocumentIdentifier(uri="file:///t.capa")
+
+
+@unittest.skipUnless(
+    _HAVE_LSP and _HAVE_PYGLS,
+    "requires pygls + lsprotocol (pip install '.[lsp]')",
+)
+class TestLspServerHandlersInProcess(_LspHandlerHarness, unittest.TestCase):
+    """In-process coverage for the handlers built inside
+    ``capa.lsp.server._build_server()``. The earlier suites
+    (``TestHover``, ``TestGoToDefinition``, ...) hit the
+    ``compute_*`` helpers directly through the back-compat shim;
+    that misses the server itself, which translates between
+    pygls' LSP types and the compute helpers' Capa-native types.
+
+    Fixtures live in ``_LspHandlerHarness``; this class adds the
+    feature-by-feature handler tests.
+    """
 
     # ---- did_open / did_change / did_save / did_close --------
 
@@ -2537,6 +2550,407 @@ class TestLspDeepNestingRobustness(unittest.TestCase):
         result = compute_completions(self.DEEP_SRC, "t.capa", 2, 13)
         self.assertIsInstance(result, list)
         self.assertGreater(len(result), 0)
+
+
+class TestSignatureHelp(unittest.TestCase):
+    """``textDocument/signatureHelp`` surfaces the callee's
+    signature and tracks the active parameter as the cursor
+    advances past top-level commas. Hits the compute helper
+    directly (runs without pygls)."""
+
+    def setUp(self):
+        from capa.lsp.signature_help import compute_signature_help
+        self.sig = compute_signature_help
+
+    _ADD = (
+        "fun add(a: Int, b: Int) -> Int\n"
+        "    return a + b\n"
+        "\n"
+        "fun main(stdio: Stdio)\n"
+        "    let z = add(1, 2)\n"
+    )
+
+    def test_first_parameter_active(self):
+        # Cursor on the ``1`` (col 17): first argument.
+        info = self.sig(self._ADD, "t.capa", 5, 17)
+        self.assertIsNotNone(info)
+        self.assertEqual(info.label, "fun add(a: Int, b: Int) -> Int")
+        self.assertEqual(info.parameters, ["a: Int", "b: Int"])
+        self.assertEqual(info.active_parameter, 0)
+
+    def test_active_parameter_advances_past_comma(self):
+        # Cursor after the comma (col 19): second argument.
+        info = self.sig(self._ADD, "t.capa", 5, 19)
+        self.assertIsNotNone(info)
+        self.assertEqual(info.active_parameter, 1)
+
+    def test_nested_call_comma_not_miscounted(self):
+        src = (
+            "fun add(a: Int, b: Int) -> Int\n"
+            "    return a + b\n"
+            "\n"
+            "fun main(stdio: Stdio)\n"
+            "    let z = add(add(1, 2), 3)\n"
+        )
+        # Inner comma at col 22 must not advance the outer call.
+        # Cursor on the outer ``3`` (col 28): outer second arg.
+        info = self.sig(src, "t.capa", 5, 28)
+        self.assertIsNotNone(info)
+        self.assertEqual(info.active_parameter, 1)
+        # Cursor inside the inner call after its comma (col 24):
+        # the inner call's second parameter.
+        inner = self.sig(src, "t.capa", 5, 24)
+        self.assertIsNotNone(inner)
+        self.assertEqual(inner.active_parameter, 1)
+
+    def test_method_call_resolves(self):
+        src = (
+            "type Counter {\n"
+            "    n: Int\n"
+            "}\n"
+            "\n"
+            "impl Counter\n"
+            "    fun bump(self, by: Int) -> Int\n"
+            "        return self.n + by\n"
+            "\n"
+            "fun main(stdio: Stdio)\n"
+            "    let c = Counter { n: 0 }\n"
+            "    let r = c.bump(5)\n"
+        )
+        # Cursor inside ``c.bump(5)`` argument list (col 20).
+        info = self.sig(src, "t.capa", 11, 20)
+        self.assertIsNotNone(info)
+        self.assertEqual(info.label, "fun bump(by: Int) -> Int")
+        self.assertEqual(info.parameters, ["by: Int"])
+        self.assertEqual(info.active_parameter, 0)
+
+    def test_unresolved_callee_no_signature(self):
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    let z = mystery(1, 2)\n"
+        )
+        self.assertIsNone(self.sig(src, "t.capa", 2, 21))
+
+    def test_outside_any_call_returns_none(self):
+        self.assertIsNone(self.sig(self._ADD, "t.capa", 5, 9))
+
+    def test_broken_file_no_crash(self):
+        # Trailing open paren: the buffer does not parse cleanly.
+        src = "fun main(stdio: Stdio)\n    let z = add(\n"
+        result = self.sig(src, "t.capa", 2, 16)
+        # Either None (callee unresolvable in a broken buffer) or a
+        # well-formed SignatureInfo; never an exception.
+        self.assertTrue(result is None or hasattr(result, "label"))
+
+
+class TestInlayHints(unittest.TestCase):
+    """``textDocument/inlayHint`` emits ``: T`` hints for
+    un-annotated let / var bindings, using the analyzer's inferred
+    type. Hits the compute helper directly."""
+
+    def setUp(self):
+        from capa.lsp.inlay_hint import compute_inlay_hints
+        self.hints = compute_inlay_hints
+
+    _SRC = (
+        "fun main(stdio: Stdio)\n"
+        "    let x = 5\n"
+        "    let s = \"hi\"\n"
+        "    let t: Int = 9\n"
+        "    var v = true\n"
+    )
+
+    def test_int_binding_hint(self):
+        hints = self.hints(self._SRC, "t.capa", 1, 100)
+        x = [h for h in hints if h.line == 2]
+        self.assertEqual(len(x), 1)
+        self.assertEqual(x[0].label, ": Int")
+
+    def test_string_binding_hint(self):
+        hints = self.hints(self._SRC, "t.capa", 1, 100)
+        s = [h for h in hints if h.line == 3]
+        self.assertEqual(len(s), 1)
+        self.assertEqual(s[0].label, ": String")
+
+    def test_var_binding_hint(self):
+        hints = self.hints(self._SRC, "t.capa", 1, 100)
+        v = [h for h in hints if h.line == 5]
+        self.assertEqual(len(v), 1)
+        self.assertEqual(v[0].label, ": Bool")
+
+    def test_annotated_binding_no_hint(self):
+        hints = self.hints(self._SRC, "t.capa", 1, 100)
+        self.assertEqual([h for h in hints if h.line == 4], [])
+
+    def test_range_filtering(self):
+        # Only the let on line 2 is in range.
+        hints = self.hints(self._SRC, "t.capa", 2, 2)
+        self.assertEqual([h.line for h in hints], [2])
+
+    def test_unresolved_binding_no_hint(self):
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    let q = does_not_exist\n"
+        )
+        # The value type is unresolved; emit no hint rather than ``?``.
+        self.assertEqual(self.hints(src, "t.capa", 1, 100), [])
+
+    def test_hint_matches_hover(self):
+        from capa.lsp.hover import compute_hover
+        # A buffer where ``x`` is referenced, so hover has an Ident
+        # to report on. The inferred type the hint shows must agree
+        # with what hover reports for the same binding.
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    let x = 5\n"
+            "    let y = x\n"
+        )
+        # Hover on the reference to ``x`` on line 3 (col 13).
+        hov = compute_hover(src, "t.capa", 3, 13)
+        self.assertIsNotNone(hov)
+        markdown, _ident = hov
+        self.assertIn("Int", markdown)
+        hints = self.hints(src, "t.capa", 1, 100)
+        x = [h for h in hints if h.line == 2][0]
+        self.assertEqual(x.label, ": Int")
+
+    def test_broken_file_empty(self):
+        self.assertEqual(self.hints("fun main(\n", "t.capa", 1, 100), [])
+
+
+class TestWorkspaceSymbols(unittest.TestCase):
+    """``workspace/symbol`` searches top-level declarations across
+    files. Hits the compute helper directly with in-memory
+    ``(filename, source)`` pairs."""
+
+    def setUp(self):
+        from capa.lsp.workspace_symbols import compute_workspace_symbols
+        self.search = compute_workspace_symbols
+
+    _FILES = [
+        ("a.capa",
+         "fun add(a: Int) -> Int\n"
+         "    return a\n"
+         "type Point {\n"
+         "    x: Int\n"
+         "}\n"),
+        ("b.capa",
+         "const MAX: Int = 10\n"
+         "type Color =\n"
+         "    Red\n"
+         "    Blue\n"
+         "trait Drawable\n"
+         "    fun draw(self)\n"
+         "capability Logger\n"
+         "    fun log(self)\n"),
+        ("bad.capa", "fun broken(\n"),
+    ]
+
+    def test_match_across_files(self):
+        results = self.search("a", self._FILES)
+        names = {(s.name, s.kind, s.filename) for s in results}
+        self.assertIn(("add", "function", "a.capa"), names)
+        self.assertIn(("MAX", "constant", "b.capa"), names)
+        self.assertIn(("Drawable", "trait", "b.capa"), names)
+
+    def test_kinds_and_locations(self):
+        results = self.search("", self._FILES)
+        by_name = {s.name: s for s in results}
+        self.assertEqual(by_name["Point"].kind, "struct")
+        self.assertEqual(by_name["Color"].kind, "sum")
+        self.assertEqual(by_name["Logger"].kind, "capability")
+        self.assertEqual(by_name["Drawable"].kind, "trait")
+        # Location points at the declared name (line 1 for add).
+        self.assertEqual(by_name["add"].filename, "a.capa")
+        self.assertEqual(by_name["add"].pos.line, 1)
+
+    def test_empty_query_returns_all(self):
+        results = self.search("", self._FILES)
+        names = {s.name for s in results}
+        self.assertEqual(
+            names,
+            {"add", "Point", "MAX", "Color", "Drawable", "Logger"},
+        )
+
+    def test_unparseable_file_skipped(self):
+        # ``bad.capa`` must not crash or contribute symbols.
+        results = self.search("broken", self._FILES)
+        self.assertEqual(results, [])
+
+    def test_ranking_exact_before_prefix(self):
+        files = [
+            ("z.capa",
+             "fun map_keys()\n    return 0\n"
+             "fun map()\n    return 0\n"
+             "fun remap()\n    return 0\n"),
+        ]
+        results = self.search("map", files)
+        # Exact ``map`` first, then prefix ``map_keys``, then
+        # substring ``remap``.
+        self.assertEqual([s.name for s in results], ["map", "map_keys", "remap"])
+
+
+@unittest.skipUnless(
+    _HAVE_LSP and _HAVE_PYGLS,
+    "requires pygls + lsprotocol (pip install '.[lsp]')",
+)
+class TestLspSignatureHelpHandler(_LspHandlerHarness, unittest.TestCase):
+    """Integration: the registered ``textDocument/signatureHelp``
+    handler translates the Capa-native SignatureInfo to the LSP
+    wire types."""
+
+    def test_handler_emits_signature(self):
+        from lsprotocol import types as lsp
+        method = lsp.TEXT_DOCUMENT_SIGNATURE_HELP
+        self.assertIn(method, self.server.protocol.fm.features)
+        self._set_source(
+            "fun add(a: Int, b: Int) -> Int\n"
+            "    return a + b\n"
+            "\n"
+            "fun main(stdio: Stdio)\n"
+            "    let z = add(1, 2)\n"
+        )
+        # 0-based position on the second argument (line 4, after comma).
+        params = lsp.SignatureHelpParams(
+            text_document=self._text_doc_id(),
+            position=self._params_position(4, 18),
+        )
+        result = self._handler(method)(params)
+        self.assertIsNotNone(result)
+        self.assertEqual(len(result.signatures), 1)
+        self.assertEqual(
+            result.signatures[0].label, "fun add(a: Int, b: Int) -> Int",
+        )
+        self.assertEqual(result.active_parameter, 1)
+
+    def test_handler_returns_none_outside_call(self):
+        from lsprotocol import types as lsp
+        method = lsp.TEXT_DOCUMENT_SIGNATURE_HELP
+        self._set_source("fun main(stdio: Stdio)\n    let x = 5\n")
+        params = lsp.SignatureHelpParams(
+            text_document=self._text_doc_id(),
+            position=self._params_position(1, 8),
+        )
+        self.assertIsNone(self._handler(method)(params))
+
+
+@unittest.skipUnless(
+    _HAVE_LSP and _HAVE_PYGLS,
+    "requires pygls + lsprotocol (pip install '.[lsp]')",
+)
+class TestLspInlayHintHandler(_LspHandlerHarness, unittest.TestCase):
+    """Integration: the registered ``textDocument/inlayHint``
+    handler translates Capa-native hints to LSP InlayHint wire
+    types in the requested range."""
+
+    def test_handler_emits_type_hint(self):
+        from lsprotocol import types as lsp
+        method = lsp.TEXT_DOCUMENT_INLAY_HINT
+        self.assertIn(method, self.server.protocol.fm.features)
+        self._set_source(
+            "fun main(stdio: Stdio)\n"
+            "    let x = 5\n"
+        )
+        params = lsp.InlayHintParams(
+            text_document=self._text_doc_id(),
+            range=lsp.Range(
+                start=lsp.Position(line=0, character=0),
+                end=lsp.Position(line=10, character=0),
+            ),
+        )
+        result = self._handler(method)(params)
+        self.assertIsNotNone(result)
+        labels = [h.label for h in result]
+        self.assertIn(": Int", labels)
+        self.assertEqual(result[0].kind, lsp.InlayHintKind.Type)
+
+    def test_handler_returns_none_when_no_hints(self):
+        from lsprotocol import types as lsp
+        method = lsp.TEXT_DOCUMENT_INLAY_HINT
+        self._set_source(
+            "fun main(stdio: Stdio)\n"
+            "    let x: Int = 5\n"
+        )
+        params = lsp.InlayHintParams(
+            text_document=self._text_doc_id(),
+            range=lsp.Range(
+                start=lsp.Position(line=0, character=0),
+                end=lsp.Position(line=10, character=0),
+            ),
+        )
+        self.assertIsNone(self._handler(method)(params))
+
+
+@unittest.skipUnless(
+    _HAVE_LSP and _HAVE_PYGLS,
+    "requires pygls + lsprotocol (pip install '.[lsp]')",
+)
+class TestLspWorkspaceSymbolHandler(_LspHandlerHarness, unittest.TestCase):
+    """Integration: the registered ``workspace/symbol`` handler
+    enumerates .capa files under the workspace folders and
+    translates the matches to LSP WorkspaceSymbol wire types."""
+
+    def test_handler_finds_symbols_across_files(self):
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import MagicMock
+        from lsprotocol import types as lsp
+
+        method = lsp.WORKSPACE_SYMBOL
+        self.assertIn(method, self.server.protocol.fm.features)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "a.capa").write_text(
+                "fun greet(name: String)\n    return name\n",
+                encoding="utf-8",
+            )
+            (root / "b.capa").write_text(
+                "type Widget {\n    id: Int\n}\n",
+                encoding="utf-8",
+            )
+            (root / "bad.capa").write_text(
+                "fun broken(\n", encoding="utf-8",
+            )
+
+            folder = MagicMock()
+            folder.uri = root.as_uri()
+            self.workspace.folders = {folder.uri: folder}
+            self.workspace.text_documents = {}
+
+            params = lsp.WorkspaceSymbolParams(query="")
+            result = self._handler(method)(params)
+            names = {s.name for s in result}
+            self.assertIn("greet", names)
+            self.assertIn("Widget", names)
+            # The unparseable file contributes nothing.
+            self.assertNotIn("broken", names)
+            # Locations carry a file:// URI.
+            for s in result:
+                self.assertTrue(s.location.uri.startswith("file://"))
+
+    def test_handler_query_filters(self):
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import MagicMock
+        from lsprotocol import types as lsp
+
+        method = lsp.WORKSPACE_SYMBOL
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "a.capa").write_text(
+                "fun alpha()\n    return 0\n"
+                "fun beta()\n    return 0\n",
+                encoding="utf-8",
+            )
+            folder = MagicMock()
+            folder.uri = root.as_uri()
+            self.workspace.folders = {folder.uri: folder}
+            self.workspace.text_documents = {}
+
+            params = lsp.WorkspaceSymbolParams(query="alph")
+            result = self._handler(method)(params)
+            self.assertEqual({s.name for s in result}, {"alpha"})
 
 
 if __name__ == "__main__":

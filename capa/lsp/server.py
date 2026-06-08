@@ -26,6 +26,7 @@ from .document_symbols import compute_document_symbols
 from .folding import compute_folding_ranges
 from .formatting import compute_formatting, compute_range_formatting
 from .hover import compute_hover
+from .inlay_hint import compute_inlay_hints
 from .references import compute_references
 from .rename import compute_prepare_rename, compute_rename
 from .semantic_tokens import (
@@ -33,6 +34,8 @@ from .semantic_tokens import (
     TOKEN_TYPES as SEM_TOKEN_TYPES,
     compute_semantic_tokens,
 )
+from .signature_help import compute_signature_help
+from .workspace_symbols import compute_workspace_symbols
 
 
 SERVER_NAME = "capa-lsp"
@@ -587,7 +590,193 @@ def _build_server():
             changes={params.text_document.uri: text_edits},
         )
 
+    # -----------------------------------------------------------
+    # Signature help (textDocument/signatureHelp). Triggered on
+    # ``(`` and ``,`` so the popup tracks the active parameter as
+    # the user types arguments. Returns None when the cursor is
+    # not inside a resolvable call's argument list.
+    # -----------------------------------------------------------
+
+    @server.feature(
+        lsp.TEXT_DOCUMENT_SIGNATURE_HELP,
+        lsp.SignatureHelpOptions(trigger_characters=["(", ","]),
+    )
+    def signature_help(ls, params: "lsp.SignatureHelpParams"):
+        doc = ls.workspace.get_text_document(params.text_document.uri)
+        line, col = _inbound_line_col(doc, params.position)
+        info = compute_signature_help(
+            doc.source, params.text_document.uri, line, col,
+        )
+        if info is None:
+            return None
+        sig = lsp.SignatureInformation(
+            label=info.label,
+            parameters=[
+                lsp.ParameterInformation(label=p)
+                for p in info.parameters
+            ],
+            active_parameter=info.active_parameter,
+        )
+        return lsp.SignatureHelp(
+            signatures=[sig],
+            active_signature=0,
+            active_parameter=info.active_parameter,
+        )
+
+    # -----------------------------------------------------------
+    # Inlay hints (textDocument/inlayHint). Inline ``: T`` type
+    # hints for un-annotated let / var bindings within the
+    # requested range. The hint text is the analyzer's inferred
+    # type, so it agrees with hover.
+    # -----------------------------------------------------------
+
+    @server.feature(
+        lsp.TEXT_DOCUMENT_INLAY_HINT,
+        lsp.InlayHintOptions(resolve_provider=False),
+    )
+    def inlay_hint(ls, params: "lsp.InlayHintParams"):
+        doc = ls.workspace.get_text_document(params.text_document.uri)
+        start_line, _start_col = _inbound_line_col(doc, params.range.start)
+        end_line, _end_col = _inbound_line_col(doc, params.range.end)
+        hints = compute_inlay_hints(
+            doc.source, params.text_document.uri, start_line, end_line,
+        )
+        if not hints:
+            return None
+        return [
+            lsp.InlayHint(
+                position=_to_client_position(doc, lsp.Position(
+                    line=h.line - 1, character=h.col - 1,
+                )),
+                label=h.label,
+                kind=lsp.InlayHintKind.Type,
+                padding_left=False,
+                padding_right=False,
+            )
+            for h in hints
+        ]
+
+    # -----------------------------------------------------------
+    # Workspace symbols (workspace/symbol). Project-wide search
+    # across every .capa file under the workspace folders;
+    # unparseable files are skipped. Positions come back in
+    # codepoint space and are not codec-converted (the symbol box
+    # tolerates a one-char selection range and we have no doc to
+    # convert against for files that are not open).
+    # -----------------------------------------------------------
+
+    _wssym_kind = {
+        "constant":   lsp.SymbolKind.Constant,
+        "function":   lsp.SymbolKind.Function,
+        "struct":     lsp.SymbolKind.Struct,
+        "sum":        lsp.SymbolKind.Enum,
+        "trait":      lsp.SymbolKind.Interface,
+        "capability": lsp.SymbolKind.Interface,
+    }
+
+    @server.feature(lsp.WORKSPACE_SYMBOL)
+    def workspace_symbol(ls, params: "lsp.WorkspaceSymbolParams"):
+        files = _enumerate_workspace_capa_files(ls)
+        syms = compute_workspace_symbols(params.query, files)
+        out = []
+        for s in syms:
+            pos = lsp.Position(
+                line=max(s.pos.line - 1, 0),
+                character=max(s.pos.col - 1, 0),
+            )
+            end = lsp.Position(
+                line=pos.line, character=pos.character + len(s.name),
+            )
+            out.append(
+                lsp.WorkspaceSymbol(
+                    name=s.name,
+                    kind=_wssym_kind.get(s.kind, lsp.SymbolKind.Variable),
+                    location=lsp.Location(
+                        uri=_filename_to_uri(s.filename),
+                        range=lsp.Range(start=pos, end=end),
+                    ),
+                )
+            )
+        return out
+
     return server
+
+
+def _filename_to_uri(filename: str) -> str:
+    """Translate a local path back into a ``file://`` URI for
+    workspace-symbol locations."""
+    from pathlib import Path
+    from urllib.parse import quote
+    p = str(Path(filename).resolve()).replace("\\", "/")
+    if not p.startswith("/"):
+        p = "/" + p  # Windows ``c:/...`` -> ``/c:/...``
+    return "file://" + quote(p)
+
+
+def _enumerate_workspace_capa_files(ls) -> "list[tuple[str, str]]":
+    """Collect ``(filename, source)`` for every ``.capa`` file
+    under the client's workspace folders. Open documents use their
+    in-memory source (so unsaved edits are searchable); files only
+    on disk are read fresh. Unreadable files are skipped."""
+    from pathlib import Path
+
+    roots: list[Path] = []
+    try:
+        folders = ls.workspace.folders or {}
+    except Exception:
+        folders = {}
+    for folder in folders.values():
+        uri = getattr(folder, "uri", None)
+        if not uri:
+            continue
+        root = _uri_to_filename(uri)
+        try:
+            p = Path(root)
+            if p.is_dir():
+                roots.append(p)
+        except OSError:
+            continue
+
+    # Map of resolved-path -> in-memory source for open docs, so an
+    # unsaved edit is reflected in search results.
+    open_sources: dict[str, str] = {}
+    try:
+        for uri, doc in (ls.workspace.text_documents or {}).items():
+            src = getattr(doc, "source", None)
+            if not isinstance(src, str):
+                continue
+            try:
+                key = str(Path(_uri_to_filename(uri)).resolve())
+            except OSError:
+                continue
+            open_sources[key] = src
+    except Exception:
+        pass
+
+    out: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for root in roots:
+        try:
+            paths = sorted(root.rglob("*.capa"))
+        except OSError:
+            continue
+        for path in paths:
+            try:
+                key = str(path.resolve())
+            except OSError:
+                key = str(path)
+            if key in seen:
+                continue
+            seen.add(key)
+            if key in open_sources:
+                out.append((str(path), open_sources[key]))
+                continue
+            try:
+                source = path.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
+            out.append((str(path), source))
+    return out
 
 
 def serve() -> int:
