@@ -1,0 +1,415 @@
+"""Randomised (property-based) NONINTERFERENCE harness over the real
+Capa IFC analyzer + runtime.
+
+This is machine-RUN evidence (not a proof) that Capa's
+information-flow enforcement is sound at runtime: a program the
+analyzer ACCEPTS under ``@strict_ifc`` must actually be
+noninterferent - its PUBLIC output must not depend on its SECRET
+inputs.
+
+Soundness invariant (the valuable direction)
+---------------------------------------------
+For a generated program with ``@strict_ifc()`` on ``main``, IF the
+analyzer accepts it (compiles clean, no IFC error), THEN running it
+twice - with IDENTICAL public inputs but DIFFERING secret inputs (the
+environment variables that flow in as ``@secret`` via ``env.get``) -
+must produce BYTE-IDENTICAL stdout. A mismatch means the analyzer
+accepted a program that leaks a secret through a public channel = a
+noninterference SOUNDNESS BUG. We assert equality and, on mismatch,
+fail loudly with the program text, both outputs, and both secret
+environments.
+
+Completeness-ish invariant (weaker, secondary)
+----------------------------------------------
+A generated program that routes a secret to a public sink WITHOUT
+declassify, under ``@strict_ifc()``, must be REJECTED (hard error).
+Kept to clear explicit data-flow shapes (a secret read straight into
+``Stdio.println``); subtle implicit flows are not over-asserted here.
+
+How a program is run
+--------------------
+Same in-process path the existing Phase 3 property tests use: the
+program is analysed, transpiled to Python, then ``exec``'d with
+``__name__ == "__main__"`` so the transpiler's bootstrap
+``main(Stdio(), Env())`` fires. ``env.get(VAR)`` reads
+``os.environ`` at runtime, so the two runs are driven by patching
+``os.environ`` with two dicts that AGREE on public vars and DIFFER on
+secret vars. stdout is captured with ``contextlib.redirect_stdout``.
+
+Generated programs are deterministic by construction: no Clock /
+Random / Net, only ``Stdio`` + ``Env``, so the only thing that can
+make two runs differ is a genuine secret-to-public flow.
+"""
+
+from __future__ import annotations
+
+import contextlib
+import io
+import os
+import textwrap
+import unittest
+from unittest import mock
+
+try:
+    import hypothesis.strategies as st
+    from hypothesis import HealthCheck, given, settings
+except ImportError:  # pragma: no cover - exercised only without the extra
+    raise unittest.SkipTest(
+        "hypothesis is not installed; install with `pip install -e .[test]`"
+    )
+
+from capa import Lexer, Parser, analyze, transpile
+from capa.parser import ParserError
+
+
+# ===========================================================
+# Generator grammar
+# ===========================================================
+#
+# Every program has the shape::
+#
+#     [type Box { f_secret: String, f_open: String }]   # optional
+#     @strict_ifc()
+#     fun main(stdio: Stdio, env: Env)
+#         let s0 = env.get("SECRET0").unwrap_or("d0")    # secret source(s)
+#         ...
+#         <body statements>
+#         stdio.println(<sink expr>)                     # at least one sink
+#
+# The secret sources are one or more ``env.get(VAR).unwrap_or(...)``
+# bindings - VAR names are the SECRET environment variables the two
+# runs disagree on. Public inputs are literals and a fixed public
+# env-independent constant. Operations cover string concat /
+# interpolation, integer arithmetic (including an int derived from a
+# secret string's ``.length()``), and booleans. Control flow branches
+# on PUBLIC conditions for the soundness direction; a separate
+# "leaky" generator deliberately routes a secret to the sink (and,
+# optionally, branches on a secret) to feed the rejection direction.
+#
+# ``Env`` is a declared capability and Capa requires every declared
+# capability be USED, so ``main`` always performs at least one
+# ``env.get`` - which also makes the secret source present by
+# construction.
+
+# Secret environment variable names. The two runs share public state
+# and differ on exactly these keys.
+_SECRET_VARS = ["SECRET0", "SECRET1", "SECRET2"]
+
+# Fixed public values reused across both runs (a public, env-independent
+# constant pool the generator draws from).
+_PUB_STR = st.sampled_from(["alpha", "beta", "gamma", "", "x-y"])
+_PUB_INT = st.integers(min_value=0, max_value=99)
+_INT_OP = st.sampled_from(["+", "-", "*"])
+_CMP_OP = st.sampled_from(["<", "<=", ">", ">=", "==", "!="])
+
+
+def _public_int_expr(draw, depth):
+    """An always-public, always-Int expression: integer literals and
+    +/-/* over them. No identifier references (keeps it well-typed by
+    construction and provably public)."""
+    if depth <= 0:
+        return str(draw(_PUB_INT))
+    left = _public_int_expr(draw, depth - 1)
+    right = _public_int_expr(draw, depth - 1)
+    op = draw(_INT_OP)
+    return f"({left} {op} {right})"
+
+
+def _public_str_expr(draw):
+    """An always-public String expression: a literal, or a concat /
+    interpolation of public literals and a public int."""
+    kind = draw(st.sampled_from(["lit", "concat", "interp"]))
+    if kind == "lit":
+        return f'"{draw(_PUB_STR)}"'
+    if kind == "concat":
+        return f'("{draw(_PUB_STR)}" + "{draw(_PUB_STR)}")'
+    n = _public_int_expr(draw, 1)
+    return f'"v=${{{n}}}"'
+
+
+@st.composite
+def _accepted_program(draw):
+    """Generate a program that SHOULD be accepted under @strict_ifc:
+    secrets are read and may be stored / derived from, but only PUBLIC
+    values ever reach a sink. Returns ``(source, declassifies)`` where
+    ``declassifies`` is True when the program intentionally leaks via
+    ``declassify`` (excluded from the outputs-must-match invariant).
+
+    Shapes drawn from:
+      - secret source(s): one to three ``env.get(VAR).unwrap_or(d)``;
+      - store a secret in a struct's secret field, sink the OPEN field
+        (exercises per-field precision: accepted, must be noninterferent);
+      - derive an int from a secret's ``.length()`` but sink only a
+        PUBLIC int (the secret int is computed and discarded);
+      - if / while on a PUBLIC condition with a public sink in the body;
+      - declassify(secret) then sink (intentional leak; compiles, but
+        excluded from outputs-must-match).
+    """
+    n_secrets = draw(st.integers(min_value=1, max_value=3))
+    secret_vars = _SECRET_VARS[:n_secrets]
+
+    use_struct = draw(st.booleans())
+    shape = draw(st.sampled_from(
+        ["public_sink", "struct_open_field", "len_then_public",
+         "if_public", "while_public", "declassify"]
+    ))
+    # struct_open_field needs the struct decl regardless of use_struct.
+    if shape == "struct_open_field":
+        use_struct = True
+
+    header = []
+    if use_struct:
+        header.append("type Box { f_secret: String, f_open: String }")
+
+    lines = ["@strict_ifc()", "fun main(stdio: Stdio, env: Env)"]
+    for i, var in enumerate(secret_vars):
+        lines.append(
+            f'    let s{i} = env.get("{var}").unwrap_or("d{i}")'
+        )
+
+    declassifies = False
+
+    if shape == "public_sink":
+        lines.append(f"    stdio.println({_public_str_expr(draw)})")
+
+    elif shape == "struct_open_field":
+        lines.append(
+            f'    let b = Box {{ f_secret: s0, f_open: {_public_str_expr(draw)} }}'
+        )
+        lines.append("    stdio.println(b.f_open)")
+
+    elif shape == "len_then_public":
+        # Derive a SECRET int from the secret string, but never sink it;
+        # sink a public int instead. Accepted, noninterferent.
+        lines.append("    let _ln = s0.length()")
+        lines.append(f'    stdio.println("n=${{{_public_int_expr(draw, 1)}}}")')
+
+    elif shape == "if_public":
+        cond = f"{_public_int_expr(draw, 1)} {draw(_CMP_OP)} {_public_int_expr(draw, 1)}"
+        lines.append(f"    if {cond}")
+        lines.append(f"        stdio.println({_public_str_expr(draw)})")
+        lines.append("    else")
+        lines.append(f"        stdio.println({_public_str_expr(draw)})")
+
+    elif shape == "while_public":
+        bound = draw(st.integers(min_value=0, max_value=3))
+        lines.append("    var i = 0")
+        lines.append(f"    while i < {bound}")
+        lines.append(f"        stdio.println({_public_str_expr(draw)})")
+        lines.append("        i = i + 1")
+
+    elif shape == "declassify":
+        declassifies = True
+        reason = draw(st.sampled_from(["audit", "intended", "demo"]))
+        lines.append(
+            f'    stdio.println(declassify(s0, reason: "{reason}"))'
+        )
+
+    source = "\n".join(header + lines) + "\n"
+    return source, declassifies
+
+
+@st.composite
+def _leaky_program(draw):
+    """Generate a program that DOES route a secret to a public sink
+    without declassify - the analyzer MUST reject it under
+    @strict_ifc. Restricted to clear explicit data-flow shapes (no
+    over-assertion of subtle implicit flows). Returns ``source``.
+
+    Shapes:
+      - sink the secret directly;
+      - concat the secret with a public string, sink the result;
+      - interpolate the secret into a string, sink it;
+      - store the secret in a struct field and sink THAT field.
+    """
+    var = _SECRET_VARS[0]
+    shape = draw(st.sampled_from(
+        ["direct", "concat", "interp", "struct_secret_field"]
+    ))
+    header = []
+    lines = ["@strict_ifc()", "fun main(stdio: Stdio, env: Env)"]
+    lines.append(f'    let s = env.get("{var}").unwrap_or("d")')
+
+    if shape == "direct":
+        lines.append("    stdio.println(s)")
+    elif shape == "concat":
+        lines.append(f'    let m = "{draw(_PUB_STR)}" + s')
+        lines.append("    stdio.println(m)")
+    elif shape == "interp":
+        lines.append('    stdio.println("leak=${s}")')
+    elif shape == "struct_secret_field":
+        header.append("type Box { f_secret: String, f_open: String }")
+        lines.append(
+            f'    let b = Box {{ f_secret: s, f_open: "{draw(_PUB_STR)}" }}'
+        )
+        lines.append("    stdio.println(b.f_secret)")
+
+    return "\n".join(header + lines) + "\n"
+
+
+# ===========================================================
+# Execution helpers
+# ===========================================================
+
+
+def _public_env() -> dict:
+    """The shared PUBLIC environment both runs see (agrees across
+    runs). Kept fixed so any difference between runs can only come
+    from the secret vars."""
+    return {"PUBLIC_CONST": "shared"}
+
+
+def _run_capa(code: str, env_overrides: dict) -> str:
+    """Exec transpiled Capa ``code`` in-process under a patched
+    ``os.environ`` (public + the given secret overrides) and return
+    captured stdout. ``env.get`` reads ``os.environ`` at runtime, so
+    the overrides are exactly the values that flow in as @secret."""
+    full_env = {**_public_env(), **env_overrides}
+    buf = io.StringIO()
+    run_globals: dict = {"__name__": "__main__"}
+    with mock.patch.dict(os.environ, full_env, clear=False):
+        with contextlib.redirect_stdout(buf):
+            try:
+                exec(compile(code, "<noninterference-test>", "exec"), run_globals)
+            except SystemExit:
+                pass
+    return buf.getvalue()
+
+
+def _compile_or_skip(testcase, source: str):
+    """Lex + parse + analyse ``source``. Returns ``(module, result)``
+    if it compiles clean, or ``None`` if it failed for a NON-IFC
+    reason (a generator imperfection - discarded via ``assume`` by the
+    caller, never counted as a finding). IFC rejections are returned
+    as ``(module, result)`` with ``result.ok == False`` so the caller
+    can distinguish them."""
+    try:
+        module = Parser(Lexer(source).lex(), source=source).parse_module()
+    except ParserError:
+        return None
+    result = analyze(module, source=source)
+    return module, result
+
+
+def _is_ifc_rejection(result) -> bool:
+    """True if the analysis failure is (entirely) an information-flow
+    rejection - the rejection direction wants exactly these."""
+    if result.ok:
+        return False
+    return all("information-flow" in e.message for e in result.errors)
+
+
+# ===========================================================
+# The harness
+# ===========================================================
+
+
+class TestIfcNoninterference(unittest.TestCase):
+    """Randomised noninterference over the real analyzer + runtime."""
+
+    @given(_accepted_program())
+    @settings(
+        max_examples=150,
+        deadline=8000,
+        suppress_health_check=[
+            HealthCheck.too_slow,
+            HealthCheck.function_scoped_fixture,
+        ],
+    )
+    def test_accepted_strict_ifc_is_noninterferent(self, program):
+        """SOUNDNESS: a program accepted under @strict_ifc must produce
+        byte-identical public output for identical public inputs and
+        differing secret inputs. A mismatch is a noninterference
+        soundness bug in the analyzer.
+        """
+        source, declassifies = program
+        compiled = _compile_or_skip(self, source)
+        if compiled is None:
+            # Non-IFC compile failure: generator noise, discard.
+            from hypothesis import assume
+            assume(False)
+        module, result = compiled
+
+        if not result.ok:
+            # The analyzer rejected this program. For the SOUNDNESS
+            # direction we only care about ACCEPTED programs, so a
+            # rejection is simply out of scope here (not a finding):
+            # discard it. (The accepted generator aims to stay clean,
+            # but if a shape trips an IFC rule, that is the analyzer
+            # being conservative, which is sound.)
+            from hypothesis import assume
+            assume(False)
+
+        code = transpile(module, types=result.types)
+
+        # Two runs: identical public inputs, DIFFERING secret inputs.
+        secret_a = {v: f"AAA-{v}-aaaaa" for v in _SECRET_VARS}
+        secret_b = {v: f"ZZ-{v}-z" for v in _SECRET_VARS}
+        out_a = _run_capa(code, secret_a)
+        out_b = _run_capa(code, secret_b)
+
+        if declassifies:
+            # declassify deliberately reveals the secret, so the two
+            # outputs are EXPECTED to differ. We only assert the
+            # program compiled and ran; it is excluded from the
+            # outputs-must-match invariant by design.
+            return
+
+        self.assertEqual(
+            out_a,
+            out_b,
+            msg=(
+                "NONINTERFERENCE SOUNDNESS BUG: a program accepted under "
+                "@strict_ifc produced DIFFERENT public output for "
+                "identical public inputs and differing secret inputs.\n"
+                f"program:\n{textwrap.indent(source, '    ')}\n"
+                f"secret env A: {secret_a}\n"
+                f"secret env B: {secret_b}\n"
+                f"stdout A: {out_a!r}\n"
+                f"stdout B: {out_b!r}\n"
+            ),
+        )
+
+    @given(_leaky_program())
+    @settings(
+        max_examples=100,
+        deadline=8000,
+        suppress_health_check=[
+            HealthCheck.too_slow,
+            HealthCheck.function_scoped_fixture,
+        ],
+    )
+    def test_explicit_leak_is_rejected(self, source):
+        """COMPLETENESS-ish (secondary): a program that routes a secret
+        to a public sink WITHOUT declassify, under @strict_ifc, must be
+        REJECTED with an information-flow error. Restricted to clear
+        explicit data-flow shapes."""
+        compiled = _compile_or_skip(self, source)
+        if compiled is None:
+            from hypothesis import assume
+            assume(False)
+        module, result = compiled
+
+        self.assertFalse(
+            result.ok,
+            msg=(
+                "COMPLETENESS GAP: a program that explicitly routes a "
+                "@secret to Stdio.println without declassify was "
+                "ACCEPTED under @strict_ifc (expected a hard IFC error).\n"
+                f"program:\n{textwrap.indent(source, '    ')}"
+            ),
+        )
+        self.assertTrue(
+            _is_ifc_rejection(result),
+            msg=(
+                "explicit-leak program was rejected, but NOT (only) for "
+                "an information-flow reason - the generator emitted a "
+                "program with an unrelated error:\n"
+                f"{textwrap.indent(source, '    ')}\n"
+                f"errors: {[e.message for e in result.errors]}"
+            ),
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()
