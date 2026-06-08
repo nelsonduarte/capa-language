@@ -361,6 +361,673 @@ mechanisation they would cite is already in tree.
 
 ---
 
+## 9. Noninterference (information-flow soundness)
+
+> **Status: pen-and-paper, NOT machine-checked.** Everything in
+> Section 9 is a hand proof. Sections 1 to 8 above describe the
+> capability calculus λ_cap, whose soundness *is* mechanised in
+> [`proofs/`](../proofs/). Section 9 is a *different* property
+> about a *different* calculus: termination-insensitive
+> noninterference for a store-based imperative core λ_if that
+> models Capa's information-flow control (the analyser in
+> [`capa/analyzer/_ifc.py`](../capa/analyzer/_ifc.py) over the
+> two-point lattice in [`capa/_labels.py`](../capa/_labels.py)).
+> No Agda exists for λ_if yet. This section is written as the
+> blueprint for that mechanisation: explicit syntax, explicit
+> rules, explicit lemmas, proofs structured for transcription.
+> It uses the same honesty conventions as
+> [`proofs/README.md`](../proofs/README.md): the *calculus* is
+> what is proved sound; fidelity between λ_if and the Python
+> analyser is argued informally (Section 9.8), and we do **not**
+> claim the Python analyser is verified.
+
+The result is the standard Volpano-Smith / Sabelfeld-Myers
+noninterference theorem for a flow-sensitive type system,
+specialised to Capa's two-point lattice and extended with an
+explicit declassification primitive (delimited release in the
+Sabelfeld-Sands sense). The lineage is cited in the references;
+nothing here is novel as a *theorem*. What is load-bearing is
+that the rules of λ_if are a faithful core of what
+[`capa/analyzer/_ifc.py`](../capa/analyzer/_ifc.py) actually
+does, so that a referee reading "Capa's IFC is sound" has a
+precise statement to check.
+
+### 9.1 Syntax of λ_if
+
+λ_if is a small imperative language: pure expressions, and
+statements over a mutable store, with one secret *source*
+(`env_get`), one explicit *downgrade* (`declassify`), and one
+public *observable* (`sink`).
+
+```
+e ::=  n                            integer / base literal
+    |  x                            variable
+    |  e1 ⊕ e2                      binary operation (⊕ ranges over a fixed set)
+    |  env_get()                    the single secret source
+    |  declassify(e)                explicit downgrade to PUBLIC
+
+s ::=  skip                         no-op
+    |  x := e                       assignment
+    |  s1 ; s2                      sequencing
+    |  if e then s1 else s2         conditional
+    |  while e do s                 loop
+    |  sink(e)                      the single public observable
+```
+
+A *store* `σ : Var ⇀ Val` is a finite partial map from variables
+to values. A *public output trace* `o : List Val` records, in
+order, the values emitted by `sink`. The only modelled base type
+is integers (Booleans encoded as `0` / non-`0`); adding strings
+and further base types is orthogonal and changes none of the
+arguments.
+
+`env_get()` abstracts the analyser's single modelled secret
+source `("Env", "get")` (the `_SECRET_SOURCES` set in
+`_ifc.py`). `sink(e)` abstracts the public-exfiltration sinks
+`_PUBLIC_SINKS` (`Stdio.println` / `print` / `eprintln`,
+`Net.get` / `post`, `Fs.write`, `Db.exec` / `query`). `e1 ⊕ e2`
+abstracts every label-joining expression form in `_compute_label`
+(BinOp, interpolation, indexing, aggregate literals, pure call
+results): each is a join of operand labels, so a single n-ary
+join former is representative.
+
+### 9.2 Lattice and labels
+
+The lattice is exactly the two-point lattice of
+[`capa/_labels.py`](../capa/_labels.py):
+
+```
+PUBLIC ⊑ SECRET          (PUBLIC is bottom, SECRET is top)
+```
+
+with join `⊔` = least upper bound. Writing `L` for `{PUBLIC,
+SECRET}` and ranking `rank(PUBLIC) = 0`, `rank(SECRET) = 1`:
+
+```
+ℓ1 ⊔ ℓ2  =  the ℓi with the larger rank        (L.join)
+ℓ1 ⊑ ℓ2  ⇔  rank(ℓ1) ≤ rank(ℓ2)                (L.flows_to)
+```
+
+`⊔` is commutative, associative, idempotent, with PUBLIC as
+unit; `(L, ⊑)` is a two-element bounded lattice. These are the
+algebraic facts the proofs use; they are immediate from the
+rank table and mirror `join` / `join_all` / `flows_to` in
+`_labels.py`.
+
+A *label environment* `Γ : Var ⇀ L` assigns a security label to
+each variable. It is *flow-sensitive*: statement typing updates
+`Γ` as it goes (mirroring `Symbol.label` being raised in place
+by `_label_binding`, `_ifc_field_store`,
+`_check_ifc_container_mutation`). A distinguished *program-counter
+label* `pc ∈ L` tracks the confidentiality of the control-flow
+context (the analyser's `self._pc_label`, raised by `_pc_raise`).
+
+### 9.3 Expression labelling
+
+The judgement `Γ ⊢ e : ℓ` reads "under `Γ`, expression `e` has
+security label `ℓ`". The rules are exactly `_compute_label`:
+
+```
+                                        (L-Lit)
+─────────────────
+Γ ⊢ n : PUBLIC
+
+
+Γ(x) = ℓ                                (L-Var)
+─────────────────
+Γ ⊢ x : ℓ
+
+
+Γ ⊢ e1 : ℓ1     Γ ⊢ e2 : ℓ2            (L-Op)
+─────────────────────────────────
+Γ ⊢ e1 ⊕ e2 : ℓ1 ⊔ ℓ2
+
+
+                                        (L-Env)
+─────────────────────
+Γ ⊢ env_get() : SECRET
+
+
+Γ ⊢ e : ℓ                               (L-Declassify)
+─────────────────────────
+Γ ⊢ declassify(e) : PUBLIC
+```
+
+`L-Lit` is the literal case of `_compute_label`; `L-Var` is the
+`A.Ident` case reading `Symbol.label`; `L-Op` is the
+join-of-operands core shared by BinOp / interpolation / index /
+aggregate / pure-call; `L-Env` is the `_SECRET_SOURCES` case;
+`L-Declassify` is the `_is_declassify_call` override that returns
+`PUBLIC` regardless of the argument's label (`_compute_label`,
+the declassify branch). Labelling is deterministic and total: a
+unique `ℓ` exists for every `e` under a `Γ` defined on `e`'s free
+variables (immediate by structural induction).
+
+### 9.4 Statement typing
+
+The judgement `pc ⊢ Γ { s } Γ'` reads "under program-counter
+label `pc`, statement `s` transforms label environment `Γ` into
+`Γ'`". It is flow-sensitive (`Γ` may change) and carries `pc`.
+
+```
+                                        (T-Skip)
+──────────────────────
+pc ⊢ Γ { skip } Γ
+
+
+Γ ⊢ e : ℓ                               (T-Assign)
+──────────────────────────────────────────────
+pc ⊢ Γ { x := e } Γ[x ↦ ℓ ⊔ pc]
+
+
+pc ⊢ Γ { s1 } Γ1     pc ⊢ Γ1 { s2 } Γ2  (T-Seq)
+──────────────────────────────────────────────
+pc ⊢ Γ { s1 ; s2 } Γ2
+
+
+Γ ⊢ e : ℓ
+(pc ⊔ ℓ) ⊢ Γ { s1 } Γ1
+(pc ⊔ ℓ) ⊢ Γ { s2 } Γ2                  (T-If)
+──────────────────────────────────────────────
+pc ⊢ Γ { if e then s1 else s2 } (Γ1 ⊔ Γ2)
+
+
+Γ ⊢ e : ℓ     (pc ⊔ ℓ) ⊢ Γ { s } Γ
+Γ a fixpoint of the body                (T-While)
+──────────────────────────────────────────────
+pc ⊢ Γ { while e do s } Γ
+
+
+Γ ⊢ e : ℓ     ℓ ⊔ pc ⊑ PUBLIC           (T-Sink)
+──────────────────────────────────────────────
+pc ⊢ Γ { sink(e) } Γ
+```
+
+Notes on the rules and their analyser counterparts:
+
+- **T-Assign** sets `Γ(x) := label(e) ⊔ pc`. The `⊔ pc`
+  conjunct is the implicit-flow guard: a public expression
+  assigned under a secret `pc` still yields a SECRET variable.
+  The explicit-flow half is the label join of the RHS value
+  (`_join_decl_and_value_label` at a `let` / `var` binding, the
+  reassignment branch of `_check_assign` for `x = e`, and
+  `_ifc_field_store` for a `p.f = e` field store). The `⊔ pc`
+  implicit-flow half is `_join_pc_if_strict`, the single helper
+  every one of those three assignment sites routes its result
+  through, which joins the current `_pc_label` into the assigned
+  label. This `⊔ pc` join is the `@strict_ifc` regime that λ_if
+  models: `_join_pc_if_strict` is a no-op unless `@strict_ifc` is
+  active, so the default warn tier deliberately does not fold the
+  pc into assigned labels and therefore does not enforce this
+  implicit flow (Section 9.8, item 6).
+
+- **T-If / T-While** check the body under `pc' = pc ⊔ ℓ` where
+  `ℓ` is the condition's label. This is exactly `_pc_raise`,
+  which joins the condition labels into `self._pc_label` for the
+  duration of the guarded body and restores it afterwards.
+  `_check_if` raises the pc over each branch by the conditions
+  that select it, and `_check_while` / `_check_for` raise it over
+  the loop body by the controlling condition / iterated
+  collection (`_pc_raise(s.cond)` and `_pc_raise(s.iter)`
+  respectively, restored in a `finally` so the raise scopes to
+  the body only). The raised pc only becomes an enforced
+  *rejection* under `@strict_ifc`, via the implicit-flow clause
+  of T-Sink below; this is the regime λ_if models.
+
+- **T-While** requires `Γ` to be a *fixpoint* of the body: the
+  body, checked from `Γ`, must return `Γ` unchanged. This is the
+  monotone-join-to-fixpoint that `_ifc.py` realises by raising
+  labels *in place* with monotonic joins (the same `Symbol`
+  object is carried across iterations, and labels only ever
+  rise), so a loop's post-environment is the least fixpoint
+  above its entry environment. Existence is guaranteed because
+  `L` has finite height (2) and the body transfer function is
+  monotone, so iterating from the entry `Γ` reaches a fixpoint
+  in finitely many steps; in the rule we take that fixpoint as
+  the typing `Γ`.
+
+- **T-If** joins the two branch environments pointwise
+  (`(Γ1 ⊔ Γ2)(x) = Γ1(x) ⊔ Γ2(x)`). This is the post-branch
+  merge of the in-place monotonic raises across the two arms.
+
+- **T-Sink** is well-typed only if `label(e) ⊔ pc ⊑ PUBLIC`,
+  i.e. both the argument and the control-flow context are
+  PUBLIC. The `label(e) ⊑ PUBLIC` half is `_check_ifc_sink`'s
+  explicit-flow rule (a SECRET argument to a sink position is a
+  violation); the `pc ⊑ PUBLIC` half is the `@strict_ifc`
+  implicit-flow clause in `_check_ifc_sink` (a sink running
+  under a SECRET `pc` is a violation). λ_if models the
+  `@strict_ifc` regime, where both are hard errors; the default
+  warn-only tier of the analyser is a deliberate usability
+  relaxation discussed in Section 9.8.
+
+A program `s` is *well-typed* (under `Γ_0`) if `PUBLIC ⊢ Γ_0 { s }
+Γ'` for some `Γ'`, i.e. it type-checks from the public initial
+`pc`.
+
+### 9.5 Operational semantics
+
+Big-step over configurations `(σ, s)`, producing a final store
+and an output trace. The judgement `(σ, s) ⇓ (σ', o)` reads
+"from store `σ`, statement `s` terminates in store `σ'` emitting
+output trace `o`". Expression evaluation `σ ⊢ e ⇓ v` is the
+obvious total function on a store defined over `e`'s free
+variables, with the two nonstandard cases:
+
+```
+σ ⊢ env_get() ⇓ κ          (κ the ambient secret value)
+σ ⊢ declassify(e) ⇓ v       if σ ⊢ e ⇓ v   (identity on the value)
+```
+
+`declassify` is the identity on values; it changes only the
+*label*, never the value, matching `_check_declassify` ("declassify
+is identity on the value; only its security label changes"). The
+secret value read by `env_get()` is an ambient parameter `κ` of
+the run; two runs may differ in `κ` (this is precisely what
+noninterference quantifies over).
+
+```
+                                        (E-Skip)
+─────────────────────────
+(σ, skip) ⇓ (σ, ε)
+
+
+σ ⊢ e ⇓ v                               (E-Assign)
+─────────────────────────────────
+(σ, x := e) ⇓ (σ[x ↦ v], ε)
+
+
+(σ, s1) ⇓ (σ1, o1)   (σ1, s2) ⇓ (σ2, o2)  (E-Seq)
+──────────────────────────────────────────────────
+(σ, s1 ; s2) ⇓ (σ2, o1 · o2)
+
+
+σ ⊢ e ⇓ v   v ≠ 0   (σ, s1) ⇓ (σ', o)   (E-IfT)
+──────────────────────────────────────────────────
+(σ, if e then s1 else s2) ⇓ (σ', o)
+
+
+σ ⊢ e ⇓ v   v = 0   (σ, s2) ⇓ (σ', o)   (E-IfF)
+──────────────────────────────────────────────────
+(σ, if e then s1 else s2) ⇓ (σ', o)
+
+
+σ ⊢ e ⇓ v   v = 0                       (E-WhileF)
+──────────────────────────────────────────────────
+(σ, while e do s) ⇓ (σ, ε)
+
+
+σ ⊢ e ⇓ v   v ≠ 0
+(σ, s) ⇓ (σ1, o1)
+(σ1, while e do s) ⇓ (σ2, o2)           (E-WhileT)
+──────────────────────────────────────────────────
+(σ, while e do s) ⇓ (σ2, o1 · o2)
+
+
+σ ⊢ e ⇓ v                               (E-Sink)
+─────────────────────────────────
+(σ, sink(e)) ⇓ (σ, [v])
+```
+
+`ε` is the empty trace and `·` is trace concatenation. `sink(e)`
+appends the value of `e` to the public output trace; nothing
+else affects it. The semantics is termination-insensitive by
+construction: `⇓` is only defined for terminating runs, and the
+theorem below quantifies only over runs that do converge.
+
+### 9.6 Low-equivalence and the noninterference theorem
+
+The observer sees PUBLIC-labelled variables and the public
+output trace. Low-equivalence is taken *with respect to a label
+environment* `Γ`.
+
+> **Definition (low-equivalence of stores).** For label
+> environment `Γ`, two stores `σ` and `σ'` are *low-equivalent*,
+> written `σ ≈_Γ σ'`, iff for every variable `x` with `Γ(x) =
+> PUBLIC` and `x ∈ dom(σ) ∩ dom(σ')` we have `σ(x) = σ'(x)`.
+
+SECRET-labelled variables may differ freely; PUBLIC-labelled
+variables must agree.
+
+> **Theorem 3 (Noninterference, declassify-free fragment).**
+> Let `s` be a well-typed statement of λ_if that contains no
+> `declassify`, with `PUBLIC ⊢ Γ_0 { s } Γ'`. Let `σ_1 ≈_{Γ_0}
+> σ_2` be two low-equivalent initial stores. Fix two arbitrary
+> secret source values `κ_1`, `κ_2` for the two runs. If both
+> runs converge,
+>
+> ```
+> (σ_1, s) ⇓ (σ_1', o_1)   and   (σ_2, s) ⇓ (σ_2', o_2),
+> ```
+>
+> then the final stores are low-equivalent at the final
+> environment, `σ_1' ≈_{Γ'} σ_2'`, and the public output traces
+> are identical, `o_1 = o_2`.
+
+In words: a well-typed declassify-free program reveals nothing
+about the secret source `κ` (nor about the initial values of
+SECRET variables) through either its PUBLIC variables or its
+public output. The quantification over arbitrary `κ_1 ≠ κ_2` is
+what makes this a confidentiality statement about `env_get()`.
+
+**Termination-insensitivity is the honest match.** The theorem
+says nothing about runs that diverge, and a SECRET-conditioned
+`while` can diverge on one `κ` and converge on the other. This
+is deliberate and faithful: the static analyser in `_ifc.py`
+performs no termination reasoning whatsoever (it has no progress
+measure, no ranking functions, it only raises labels), so it
+cannot and does not rule out the termination channel. Claiming
+termination-*sensitive* noninterference would over-state what
+the implementation enforces. Termination-insensitive
+noninterference is exactly the guarantee a Volpano-Smith-style
+flow type system delivers, and exactly what Capa's analyser
+delivers. The progress / timing channels are out of scope here
+and are partially addressed by the separate `@constant_time`
+discipline (`_ct_reject`, `_check_ct_index`, `_check_ct_arith`
+in `_ifc.py`), which is *not* modelled by λ_if.
+
+### 9.7 Proof
+
+The proof is the textbook two-lemma structure: an expression
+soundness lemma for the explicit-flow case, and a confinement
+lemma for the implicit-flow (high-`pc`) case. Both are stated so
+they transcribe directly to Agda (structural induction on the
+labelling derivation and on the typing derivation respectively).
+
+> **Lemma 1 (Expression label soundness).** If `Γ ⊢ e : PUBLIC`
+> and `σ_1 ≈_Γ σ_2`, and both `σ_1 ⊢ e ⇓ v_1` and `σ_2 ⊢ e ⇓
+> v_2` (with the same ambient secret values for whichever
+> `env_get` occurrences appear), then `v_1 = v_2`. Here the
+> declassify-free restriction is in force, so `e` contains no
+> `declassify`.
+
+*Proof.* Induction on the derivation of `Γ ⊢ e : PUBLIC`.
+
+- `L-Lit`: `e = n`. Then `v_1 = n = v_2`.
+- `L-Var`: `e = x` and `Γ(x) = PUBLIC`. By `σ_1 ≈_Γ σ_2`,
+  `σ_1(x) = σ_2(x)`, so `v_1 = v_2`.
+- `L-Op`: `e = e1 ⊕ e2 : PUBLIC`. By `L-Op` the label is `ℓ1 ⊔
+  ℓ2 = PUBLIC`, and since PUBLIC is the bottom and `⊔` is a
+  least upper bound, `ℓ1 = ℓ2 = PUBLIC`. The IH applies to `e1`
+  and `e2`, giving equal sub-values; `⊕` is a (pure,
+  deterministic) function, so the results are equal.
+- `L-Env`: cannot occur, since `L-Env` gives label SECRET, not
+  PUBLIC.
+- `L-Declassify`: cannot occur in the declassify-free fragment.
+
+∎
+
+> **Lemma 2 (Confinement / high-pc).** If `SECRET ⊢ Γ { s } Γ'`
+> (the statement is typed under a SECRET program-counter) and
+> `(σ, s) ⇓ (σ', o)`, then:
+> (i) `o = ε` (the run emits no public output); and
+> (ii) for every `x` with `Γ(x) = PUBLIC`, `σ'(x) = σ(x)` and
+> moreover `Γ'(x) = PUBLIC ⟹ Γ(x) = PUBLIC` with the value
+> unchanged. Equivalently, a statement typed under SECRET `pc`
+> assigns only to variables whose resulting label is SECRET, and
+> emits nothing.
+
+*Proof.* Induction on the derivation of `(σ, s) ⇓ (σ', o)`,
+inverting the typing derivation `SECRET ⊢ Γ { s } Γ'` at each
+step.
+
+- **E-Skip** (`s = skip`, `T-Skip`): `σ' = σ`, `o = ε`. Both
+  parts hold trivially.
+- **E-Assign** (`s = x := e`, `T-Assign`): `o = ε`, discharging
+  (i). For (ii), `Γ' = Γ[x ↦ ℓ ⊔ pc]` with `pc = SECRET`, so
+  `Γ'(x) = ℓ ⊔ SECRET = SECRET`. Thus the *only* variable whose
+  value changed, `x`, has `Γ'(x) = SECRET`, not PUBLIC. Every
+  PUBLIC-labelled variable under `Γ'` is `≠ x`, hence unchanged
+  in the store and already PUBLIC under `Γ`.
+- **E-Seq** (`T-Seq` with `SECRET ⊢ Γ { s1 } Γ1` and `SECRET ⊢
+  Γ1 { s2 } Γ2`): apply the IH to each sub-derivation. The first
+  gives `o1 = ε` and that no PUBLIC variable changed value
+  through `s1`, with each surviving-PUBLIC variable still PUBLIC
+  in `Γ1`; the second gives `o2 = ε` likewise from `Γ1`.
+  Composing, `o = o1 · o2 = ε`, and no PUBLIC variable changed
+  across the sequence.
+- **E-IfT / E-IfF** (`T-If`): the chosen branch `si` is typed
+  under `(pc ⊔ ℓ)` with `pc = SECRET`, so under SECRET. The IH
+  on the branch's evaluation gives `o = ε` and no PUBLIC change
+  for that branch; the post-environment is `Γ1 ⊔ Γ2` and a
+  variable PUBLIC there is PUBLIC in both `Γ1` and `Γ2`, hence
+  (by the IH applied to whichever branch ran) unchanged.
+- **E-WhileF** (`T-While`): zero iterations, `σ' = σ`, `o = ε`.
+- **E-WhileT** (`T-While`): the body is typed under `(pc ⊔ ℓ) =
+  SECRET` and the loop is a fixpoint (`Γ` in, `Γ` out). The IH
+  on the body gives `o1 = ε` and no PUBLIC value change; the IH
+  on the recursive while-evaluation (same SECRET typing, same
+  fixpoint `Γ`) gives `o2 = ε` and no PUBLIC change. Compose.
+- **E-Sink** (`s = sink(e)`, `T-Sink`): `T-Sink` requires
+  `label(e) ⊔ pc ⊑ PUBLIC`. With `pc = SECRET` this demands
+  `SECRET ⊑ PUBLIC`, which is false. So `sink(e)` is **not**
+  typable under SECRET `pc`; this case is vacuous. (This is the
+  one place confinement leans on the `pc` conjunct of T-Sink,
+  i.e. the `@strict_ifc` implicit-flow clause.)
+
+∎
+
+> **Theorem 3 (restated) and its proof.**
+
+*Proof of Theorem 3.* We prove the stronger statement by
+induction on the *shape of the two evaluation derivations run in
+lock-step*, generalised over the typing `pc ⊢ Γ { s } Γ'` and
+the invariant: for low-equivalent inputs `σ_1 ≈_Γ σ_2`, if both
+runs converge then `σ_1' ≈_{Γ'} σ_2'` and `o_1 = o_2`. The
+top-level theorem is the `pc = PUBLIC`, `Γ = Γ_0` instance.
+
+Proceed by induction on the first run's derivation `(σ_1, s) ⇓
+(σ_1', o_1)`, case-splitting on whether `pc = PUBLIC` or `pc =
+SECRET` where the cases need it.
+
+- **skip**: both runs use E-Skip; stores unchanged, both traces
+  `ε`. `σ_1 ≈_Γ σ_2` and `Γ' = Γ` close it.
+
+- **x := e** (`T-Assign`, `Γ' = Γ[x ↦ ℓ ⊔ pc]`): both runs use
+  E-Assign, no output, so `o_1 = o_2 = ε`. For low-equivalence
+  at `Γ'`, take any `y` with `Γ'(y) = PUBLIC`.
+  - If `y ≠ x`: `Γ'(y) = Γ(y) = PUBLIC` and the store value of
+    `y` is unchanged in both runs, so `σ_1'(y) = σ_1(y) =
+    σ_2(y) = σ_2'(y)` by the hypothesis `σ_1 ≈_Γ σ_2`.
+  - If `y = x`: `Γ'(x) = ℓ ⊔ pc = PUBLIC` forces `ℓ = PUBLIC`
+    *and* `pc = PUBLIC`. Then `Γ ⊢ e : PUBLIC`, and by Lemma 1
+    (using `σ_1 ≈_Γ σ_2`) the assigned values agree: `σ_1'(x) =
+    σ_2'(x)`.
+
+- **s1 ; s2** (`T-Seq`): IH on `s1` from `σ_1 ≈_Γ σ_2` gives
+  `σ_{1,1} ≈_{Γ1} σ_{2,1}` and equal first outputs; IH on `s2`
+  from there gives `σ_1' ≈_{Γ2} σ_2'` and equal second outputs.
+  Concatenated outputs are equal.
+
+- **if e then s1 else s2** (`T-If`, condition label `ℓ`,
+  `Γ' = Γ1 ⊔ Γ2`). Two sub-cases on `ℓ`.
+  - **`ℓ = PUBLIC` (low branch).** By Lemma 1 the condition
+    evaluates equally in both runs, so both take the *same*
+    branch `si`. That branch is typed under `pc ⊔ ℓ = pc`. Apply
+    the IH to `si` from `σ_1 ≈_Γ σ_2`: equal outputs, and
+    `σ_1' ≈_{Γi} σ_2'`. Since `Γ' = Γ1 ⊔ Γ2` and a variable
+    PUBLIC in `Γ'` is PUBLIC in `Γi`, low-equivalence lifts from
+    `Γi` to `Γ'`.
+  - **`ℓ = SECRET` (high branch).** The two runs may take
+    different branches. But each branch is typed under `pc ⊔ ℓ =
+    SECRET`. Apply Confinement (Lemma 2) to whichever branch run
+    each side took: each emits `o = ε` (so `o_1 = ε = o_2`,
+    equal) and changes no PUBLIC-at-`Γ'` variable's value (a
+    variable PUBLIC in `Γ' = Γ1 ⊔ Γ2` is PUBLIC in both `Γ1` and
+    `Γ2`, hence within scope of Lemma 2(ii) for whichever branch
+    ran). Therefore each run's PUBLIC variables equal their
+    initial values, which agreed by `σ_1 ≈_Γ σ_2`; so
+    `σ_1' ≈_{Γ'} σ_2'`. (Note this high case can only arise when
+    `pc = PUBLIC` at entry but `ℓ = SECRET` raises it; when `pc`
+    is already SECRET the whole statement is governed by Lemma 2
+    directly and the theorem's conclusion is immediate.)
+
+- **while e do s** (`T-While`, fixpoint `Γ`, `Γ' = Γ`). Sub-case
+  on the condition label `ℓ`.
+  - **`ℓ = PUBLIC`.** By Lemma 1 the guard evaluates equally in
+    both runs, so both take the same number of iterations and
+    in lock-step (a standard induction on the number of
+    iterations, using the IH on the body, which is typed under
+    `pc ⊔ ℓ = pc` and returns the same fixpoint `Γ`). Each
+    iteration preserves `σ_1 ≈_Γ σ_2` and equal accumulated
+    output; the result follows.
+  - **`ℓ = SECRET`.** The body is typed under `pc ⊔ ℓ = SECRET`,
+    and the two runs may iterate different numbers of times.
+    Apply Confinement (Lemma 2) to each iteration of each run:
+    every iteration emits `ε` and changes no PUBLIC variable's
+    value. Hence both whole loops emit `ε` (equal) and leave
+    every PUBLIC variable at its initial, agreeing value, so
+    `σ_1' ≈_Γ σ_2'`. (Termination-insensitivity is used exactly
+    here: if one run loops forever it has no `⇓` derivation and
+    is outside the theorem's hypothesis; we only relate runs
+    that both converge.)
+
+- **sink(e)** (`T-Sink`, requires `label(e) ⊔ pc ⊑ PUBLIC`).
+  Well-typedness forces `label(e) = PUBLIC` and `pc = PUBLIC`.
+  By Lemma 1 the emitted value agrees: `v_1 = v_2`, so `o_1 =
+  [v_1] = [v_2] = o_2`. The store is unchanged, preserving
+  `σ_1 ≈_Γ σ_2 = σ_1' ≈_{Γ'} σ_2'`.
+
+Every case preserves both conjuncts; the induction closes. ∎
+
+### 9.7.1 Declassify-relaxed form (delimited release)
+
+With `declassify` reintroduced, strict noninterference is by
+design false: `declassify` *is* a deliberate downgrade. The
+honest statement is *delimited release* / *relaxed
+noninterference* in the Sabelfeld-Sands sense: the program
+leaks nothing *beyond the values it explicitly declassifies*.
+
+Let `D(s)` be the (multiset of) sub-expressions appearing inside
+`declassify(·)` positions in `s`. Given a run, write `⟦D(s)⟧_σ^κ`
+for the tuple of values those declassified expressions evaluate
+to during that run.
+
+> **Theorem 4 (Relaxed noninterference, delimited release).**
+> Let `s` be well-typed with `PUBLIC ⊢ Γ_0 { s } Γ'`. Let
+> `σ_1 ≈_{Γ_0} σ_2` with ambient secrets `κ_1`, `κ_2`. If both
+> runs converge and additionally the two runs *agree on every
+> declassified value*, i.e.
+>
+> ```
+> ⟦D(s)⟧_{σ_1}^{κ_1}  =  ⟦D(s)⟧_{σ_2}^{κ_2},
+> ```
+>
+> then `σ_1' ≈_{Γ'} σ_2'` and `o_1 = o_2`.
+
+*Proof.* Identical to the proof of Theorem 3, with one extra
+labelling case to discharge in Lemma 1:
+
+- `L-Declassify`: `e = declassify(e_0) : PUBLIC`. We must show
+  the two runs assign it equal values. By the *hypothesis* of
+  Theorem 4, the two runs agree on every declassified value, and
+  `e_0 ∈ D(s)`; therefore `v_1 = ⟦e_0⟧_{σ_1}^{κ_1} =
+  ⟦e_0⟧_{σ_2}^{κ_2} = v_2` directly. (We do *not* recurse into
+  `e_0`; the agreement is assumed, which is precisely what
+  "released modulo the declassified expressions" means.)
+
+Every other case of Lemma 1, and of the main induction, is
+unchanged. The escape hatch is contained to `L-Declassify`: a
+SECRET value can become PUBLIC only by passing through a
+`declassify`, and the theorem then relates only those runs that
+already agree on what was released. ∎
+
+This matches the analyser's `declassify(value, reason: "...")`:
+the label drops to PUBLIC (`_compute_label`), the value is
+unchanged (`_check_declassify`), and the `reason` string is the
+audit record that, in the deployed system, is what an auditor
+inspects to decide whether the released values were appropriate.
+λ_if models the *flow* effect of declassify; the SBOM audit
+trail is orthogonal and not part of the calculus.
+
+### 9.8 Model-versus-implementation gap
+
+λ_if is a faithful *core*, not a transcription, of
+[`capa/analyzer/_ifc.py`](../capa/analyzer/_ifc.py). The
+fidelity between λ_if and the analyser is argued informally; in
+the honesty convention of [`proofs/README.md`](../proofs/README.md),
+**the calculus is what is proved, and we do not claim the Python
+analyser is verified.** What λ_if deliberately abstracts away:
+
+1. **Per-field struct precision and escape analysis.** The
+   analyser tracks a per-field label map per struct binding
+   (`_record_field_map`, `_precise_field_label`,
+   `_ifc_field_store`) plus an escape set
+   (`_escaped_struct_syms`, `_mark_struct_escape`) so a public
+   field of a struct that also holds a secret is not
+   over-tainted. λ_if has only scalar variables. The analyser's
+   per-field map is a *precision* refinement that always falls
+   back to the sound whole-value join on escape / aliasing /
+   unknown shape, so λ_if's whole-value treatment is the sound
+   over-approximation the analyser degrades to. λ_if does not
+   prove the per-field refinement itself sound; the analyser's
+   own comments record two known false negatives there that
+   remain abstracted away (cross-function self-mutation, and
+   embed-then-mutate staleness of an embedded struct binding).
+   The implicit-flow case (a public field assigned under a secret
+   pc) is *not* among them under `@strict_ifc`: `_ifc_field_store`
+   folds the pc into the stored field's label via
+   `_join_pc_if_strict` (the struct analogue of the scalar
+   implicit-assign rule of T-Assign), so the strict tier λ_if
+   models enforces it.
+
+2. **Mutable-container taint and reference aliasing.**
+   `_check_ifc_container_mutation` (List.push / Set.add /
+   Map.set) and `_ifc_alias_link` / `_struct_aliases` model
+   secrets injected into mutable containers and shared through
+   reference aliases. λ_if's single n-ary join expression
+   (`L-Op`) and scalar store abstract these as the same
+   join-of-operands rule; the aliasing bookkeeping is not in the
+   calculus.
+
+3. **Cross-function summaries.** `_ifc_summary`,
+   `_check_ifc_call_summary`, `_check_ifc_method_call_summary`
+   compute, to a fixpoint, which parameters of each function /
+   method reach a sink, including a sound union over dynamic
+   (trait / capability) dispatch. λ_if is intra-procedural: it
+   has no function calls at the statement level; `e1 ⊕ e2`
+   stands in for the join-of-arguments rule a pure call uses.
+
+4. **Constant-time / timing channels.** `_ct_reject`,
+   `_check_ct_index`, `_check_ct_method_index`, `_check_ct_arith`
+   enforce a separate `@constant_time` discipline (no secret
+   branch conditions, no secret indices, no variable-time
+   arithmetic on secrets). This is a *timing* property, distinct
+   from noninterference over the value/trace observation that
+   λ_if models, and it is not part of λ_if. The
+   termination-insensitivity of Theorem 3 is the matching
+   statement: λ_if proves nothing about timing or progress.
+
+5. **The real AST and type system.** λ_if has integers and one
+   binary-op former; Capa has the full type system of
+   Sections 1 to 4, interpolated strings, pattern matching
+   (`_label_pattern_binds`), the `?` operator (`A.Try`), and so
+   on. Each maps to an `L-Op`-style join in the analyser; λ_if
+   takes the representative case.
+
+6. **Warn-then-enforce tiering.** The analyser emits IFC
+   findings as non-fatal *warnings* by default and as hard
+   *errors* only under `@strict_ifc` (`_check_ifc_sink`,
+   `_emit_ifc_call_leak`). λ_if models the `@strict_ifc` regime,
+   where T-Sink is a hard typing requirement. Under the default
+   tier a program that violates T-Sink still compiles (with a
+   warning), so Theorem 3 characterises the guarantee of
+   `@strict_ifc` code specifically, not of every program the
+   compiler accepts.
+
+**Next step.** Section 9 is pen-and-paper. The planned
+mechanisation is an Agda development for λ_if paralleling
+[`proofs/CapaSoundness.agda`](../proofs/CapaSoundness.agda):
+syntax, the labelling and statement-typing relations, the
+big-step semantics, Lemmas 1 and 2, and Theorems 3 and 4. The
+two-point lattice, finite loop-fixpoint, and lock-step induction
+make it a PLFA-scale development comparable to the existing
+capability proof. Until that lands, the noninterference claim
+should be cited as a *hand* proof, exactly as the capability
+claim was before its Stage 1 to 4 mechanisation.
+
+---
+
 ## References (placeholder)
 
 - Wadler, *Linear types can change the world*. The linear
@@ -374,6 +1041,17 @@ mechanisation they would cite is already in tree.
 - WebAssembly Component Model and WIT. Adjacent system at
   module rather than function granularity; the comparison
   belongs in the related-work section of the paper.
+- Volpano, Smith, Irvine, *A sound type system for secure flow
+  analysis*. The flow type system and the
+  termination-insensitive noninterference theorem of Section 9
+  are this lineage.
+- Sabelfeld, Myers, *Language-based information-flow security*.
+  The survey framing for the lattice, low-equivalence, and
+  noninterference statement used in Section 9.
+- Sabelfeld, Sands, *Declassification: dimensions and
+  principles*, and Sabelfeld, Myers, *A model for delimited
+  release*. The relaxed-noninterference / delimited-release
+  treatment of `declassify` in Section 9.7.1.
 
 (Full references list to be assembled in the workshop-paper
 submission.)

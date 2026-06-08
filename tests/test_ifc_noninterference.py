@@ -23,8 +23,13 @@ Completeness-ish invariant (weaker, secondary)
 ----------------------------------------------
 A generated program that routes a secret to a public sink WITHOUT
 declassify, under ``@strict_ifc()``, must be REJECTED (hard error).
-Kept to clear explicit data-flow shapes (a secret read straight into
-``Stdio.println``); subtle implicit flows are not over-asserted here.
+Two complementary generators feed this direction: an EXPLICIT
+data-flow one (a secret read straight into ``Stdio.println``) and an
+IMPLICIT control-flow one (a public sink under a secret-conditioned
+loop, and the implicit assign-then-sink channel). The implicit
+generator specifically guards the loop-pc-raise and pc-into-assignment
+rules, which the soundness generator - branching only on PUBLIC
+conditions - could not exercise.
 
 How a program is run
 --------------------
@@ -247,6 +252,82 @@ def _leaky_program(draw):
     return "\n".join(header + lines) + "\n"
 
 
+@st.composite
+def _leaky_implicit_program(draw):
+    """Generate a program that leaks a secret through an IMPLICIT
+    (control-flow) channel - no @secret value reaches a sink directly,
+    but the program's PUBLIC output still depends on a secret. Under
+    @strict_ifc the analyzer MUST reject every shape here. These are
+    exactly the shapes the explicit-data-flow generator above cannot
+    reach (it branches on PUBLIC conditions), so they guard the
+    loop-pc-raise and implicit-assign rules specifically. Returns
+    ``source``.
+
+    Shapes:
+      - a public sink inside a ``while`` whose guard is secret;
+      - a public sink inside a ``for`` over a secret collection;
+      - the implicit-assign channel: a public var made secret by an
+        assignment under a secret ``if``, then sunk;
+      - the same channel where the assignment happens under a secret
+        loop body;
+      - the struct-field analogue: a public field assigned under a
+        secret ``if``, then sunk.
+    """
+    shape = draw(st.sampled_from(
+        ["while_secret_guard", "for_secret_collection",
+         "assign_under_secret_if", "assign_under_secret_loop",
+         "field_assign_under_secret_if"]
+    ))
+    pub = draw(_PUB_STR)
+    header = []
+    lines = ["@strict_ifc()", "fun main(stdio: Stdio, env: Env)"]
+    # A secret String source is always present (Env must be used).
+    lines.append(f'    let s = env.get("{_SECRET_VARS[0]}").unwrap_or("d")')
+
+    if shape == "while_secret_guard":
+        # Loop a secret number of times (the secret string's length),
+        # with a public sink in the body: the iteration count - hence
+        # whether/how often the sink fires - depends on the secret.
+        lines.append("    var i = 0")
+        lines.append("    while i < s.length()")
+        lines.append(f'        stdio.println("{pub}")')
+        lines.append("        i = i + 1")
+
+    elif shape == "for_secret_collection":
+        # Iterate a secret-derived collection (the secret string split
+        # into parts inherits the secret's label); the body's public
+        # sink then runs a secret number of times.
+        lines.append('    let parts = s.split("-")')
+        lines.append("    for _p in parts")
+        lines.append(f'        stdio.println("{pub}")')
+
+    elif shape == "assign_under_secret_if":
+        # Classic implicit-assign channel: leaked is public at decl,
+        # made secret-by-context inside a secret-conditioned branch.
+        lines.append(f'    var leaked = "{pub}"')
+        lines.append("    if s.length() > 3")
+        lines.append('        leaked = "long"')
+        lines.append("    stdio.println(leaked)")
+
+    elif shape == "assign_under_secret_loop":
+        # The assignment happens inside a secret-conditioned loop body.
+        lines.append(f'    var leaked = "{pub}"')
+        lines.append("    var i = 0")
+        lines.append("    while i < s.length()")
+        lines.append('        leaked = "seen"')
+        lines.append("        i = i + 1")
+        lines.append("    stdio.println(leaked)")
+
+    elif shape == "field_assign_under_secret_if":
+        header.append("type Box { f: String }")
+        lines.append(f'    var b = Box {{ f: "{pub}" }}')
+        lines.append("    if s.length() > 3")
+        lines.append('        b.f = "long"')
+        lines.append("    stdio.println(b.f)")
+
+    return "\n".join(header + lines) + "\n"
+
+
 # ===========================================================
 # Execution helpers
 # ===========================================================
@@ -403,6 +484,58 @@ class TestIfcNoninterference(unittest.TestCase):
             _is_ifc_rejection(result),
             msg=(
                 "explicit-leak program was rejected, but NOT (only) for "
+                "an information-flow reason - the generator emitted a "
+                "program with an unrelated error:\n"
+                f"{textwrap.indent(source, '    ')}\n"
+                f"errors: {[e.message for e in result.errors]}"
+            ),
+        )
+
+    @given(_leaky_implicit_program())
+    @settings(
+        max_examples=100,
+        deadline=8000,
+        suppress_health_check=[
+            HealthCheck.too_slow,
+            HealthCheck.function_scoped_fixture,
+        ],
+    )
+    def test_implicit_leak_is_rejected(self, source):
+        """COMPLETENESS-ish (implicit flows): a program that leaks a
+        secret through CONTROL FLOW - a public sink under a
+        secret-conditioned loop, or a value made secret by an
+        assignment under a secret pc and then sunk - must be REJECTED
+        under @strict_ifc. These are exactly the shapes the
+        soundness/explicit generators cannot reach (they never branch
+        or loop on a secret), so this is the regression guard for the
+        loop-pc-raise and pc-into-assignment enforcement.
+
+        Non-vacuous by construction: each generated program compiles
+        (no unrelated error -> the rejection assertion is reached) and
+        the analyzer must reject it for an information-flow reason. If
+        the loop/implicit-assign enforcement regressed, the program
+        would be ACCEPTED and this would fail."""
+        compiled = _compile_or_skip(self, source)
+        if compiled is None:
+            from hypothesis import assume
+            assume(False)
+        module, result = compiled
+
+        self.assertFalse(
+            result.ok,
+            msg=(
+                "IMPLICIT-FLOW GAP: a program that leaks a @secret "
+                "through control flow (a public sink under a "
+                "secret-conditioned loop, or an assign-under-secret-pc "
+                "channel) was ACCEPTED under @strict_ifc (expected a "
+                "hard information-flow error).\n"
+                f"program:\n{textwrap.indent(source, '    ')}"
+            ),
+        )
+        self.assertTrue(
+            _is_ifc_rejection(result),
+            msg=(
+                "implicit-leak program was rejected, but NOT (only) for "
                 "an information-flow reason - the generator emitted a "
                 "program with an unrelated error:\n"
                 f"{textwrap.indent(source, '    ')}\n"
