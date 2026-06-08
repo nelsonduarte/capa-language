@@ -196,6 +196,19 @@ class _StatementsMixin:
         value_ty = self._check_expr(s.value)
         if isinstance(s.target, A.Ident):
             sym = self.bindings.get(id(s.target))
+            # Roadmap S2.implicit (strict only): a reassignment performed
+            # under a secret pc raises the target's label monotonically,
+            # so a value written inside a secret-conditioned branch / loop
+            # becomes secret -- catching the classic implicit channel
+            # ``var x = "no"; if secret { x = "yes" }; sink(x)``. Joined
+            # with the RHS value's label too, so an explicit secret store
+            # under strict is also reflected on the same Symbol carried
+            # across branches (monotonic; never lowers). Gated to strict
+            # so the default tier's reassignment behaviour is unchanged.
+            if sym is not None and getattr(self, "_strict_ifc", False):
+                sym.label = self._join_pc_if_strict(
+                    L.join(getattr(sym, "label", None), self._label_of(s.value))
+                )
             if sym is not None and sym.kind == SymbolKind.LOCAL:
                 self._err(
                     f"cannot assign to immutable binding {sym.name!r} "
@@ -422,6 +435,16 @@ class _StatementsMixin:
         # Roadmap S4: a @constant_time function cannot loop on a secret
         # (the iteration count would leak it).
         self._ct_reject(self._label_of(s.cond), s.cond.pos, "a while-condition")
+        # Roadmap S2.implicit: the loop body runs under a pc raised by
+        # the controlling condition -- whether (and how many times) the
+        # body executes depends on ``cond``, so a public sink inside a
+        # secret-conditioned loop leaks the same one bit an ``if`` would.
+        # ``_pc_raise`` joins the condition's label into pc and returns
+        # the previous value; restore it in the ``finally`` so the raise
+        # scopes only to the loop body (no pc leak into later statements).
+        # Harmless to the default tier: the implicit-sink clause it feeds
+        # is itself strict-gated.
+        saved_pc = self._pc_raise(s.cond)
         # Two-pass fixed-point flow analysis. Pass 1 (dry-run):
         # visit the body silently to discover which caps will be
         # consumed. Pass 2 (real): pre-mark those caps and run
@@ -438,6 +461,7 @@ class _StatementsMixin:
             self._check_block(s.body)
         finally:
             self._loop_depth -= 1
+            self._pc_label = saved_pc
 
     def _check_for(self, s: A.ForStmt) -> None:
         iter_ty = self._check_expr(s.iter)
@@ -511,6 +535,14 @@ class _StatementsMixin:
                 s.iter.pos,
             )
 
+        # Roadmap S2.implicit: whether (and how many times) the body
+        # runs depends on the iterated collection, so the body runs under
+        # a pc raised by the collection expression's label. A secret
+        # collection makes a public sink in the body an implicit leak
+        # (the iteration count reveals information about the secret).
+        # Restored in the ``finally`` so the raise scopes to the body
+        # only; strict-gated downstream, so the default tier is unaffected.
+        saved_pc = self._pc_raise(s.iter)
         # Same two-pass dry-run / real-run dance as ``_check_while``.
         self._loop_depth += 1
         try:
@@ -533,6 +565,7 @@ class _StatementsMixin:
             self._pop_scope()
         finally:
             self._loop_depth -= 1
+            self._pc_label = saved_pc
 
     def _check_return(self, s: A.ReturnStmt) -> None:
         if s.value is None:

@@ -741,6 +741,191 @@ class TestImplicitFlow(unittest.TestCase):
         self.assertTrue(r.ok, [e.message for e in r.errors])
 
 
+class TestImplicitFlowLoopsAndAssign(unittest.TestCase):
+    """Roadmap S2.implicit, loop + assignment gaps: a public sink inside
+    a secret-conditioned LOOP body, and a value ASSIGNED under a secret
+    pc, are implicit flows just like the if/match cases. Strengthened
+    under @strict_ifc only; the default warn tier is deliberately
+    unchanged (implicit flows stay out of it)."""
+
+    def _analyze(self, src: str):
+        from capa import analyze
+        m = _parse(src)
+        return analyze(m, source=src)
+
+    # ---- gap 1: secret-conditioned loops raise the pc -------------
+
+    def test_while_secret_cond_sink_errors_under_strict(self):
+        r = self._analyze(
+            "@strict_ifc()\n"
+            "fun f(token: @secret Bool, stdio: Stdio)\n"
+            "    while token\n"
+            "        stdio.println(\"x\")\n"
+        )
+        self.assertFalse(r.ok)
+        self.assertTrue(
+            all("information-flow (strict)" in e.message for e in r.errors),
+            [e.message for e in r.errors],
+        )
+        self.assertEqual(len(r.errors), 1)
+
+    def test_while_secret_cond_not_flagged_in_default_tier(self):
+        # No @strict_ifc: the implicit loop flow is invisible to the
+        # default tier (no explicit data leak), so no new warning.
+        r = self._analyze(
+            "fun f(token: @secret Bool, stdio: Stdio)\n"
+            "    while token\n"
+            "        stdio.println(\"x\")\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(len(r.warnings), 0)
+
+    def test_for_secret_collection_sink_errors_under_strict(self):
+        r = self._analyze(
+            "@strict_ifc()\n"
+            "fun f(xs: @secret List<Int>, stdio: Stdio)\n"
+            "    for _x in xs\n"
+            "        stdio.println(\"x\")\n"
+        )
+        self.assertFalse(r.ok)
+        self.assertTrue(
+            all("information-flow (strict)" in e.message for e in r.errors),
+            [e.message for e in r.errors],
+        )
+        self.assertEqual(len(r.errors), 1)
+
+    def test_for_secret_collection_not_flagged_in_default_tier(self):
+        r = self._analyze(
+            "fun f(xs: @secret List<Int>, stdio: Stdio)\n"
+            "    for _x in xs\n"
+            "        stdio.println(\"x\")\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(len(r.warnings), 0)
+
+    # ---- gap 3: assignment joins the pc into the assigned label ---
+
+    def test_implicit_assign_channel_errors_under_strict(self):
+        # The classic implicit channel: leaked is public at decl, made
+        # secret by an assignment under a secret pc, then sunk.
+        r = self._analyze(
+            "@strict_ifc()\n"
+            "fun f(token: @secret Bool, stdio: Stdio)\n"
+            "    var leaked = \"no\"\n"
+            "    if token\n"
+            "        leaked = \"yes\"\n"
+            "    stdio.println(leaked)\n"
+        )
+        self.assertFalse(r.ok)
+        self.assertTrue(
+            any("information-flow" in e.message for e in r.errors),
+            [e.message for e in r.errors],
+        )
+
+    def test_implicit_assign_channel_not_flagged_in_default_tier(self):
+        # Same program without @strict_ifc: the default tier does not
+        # join pc into assigned labels, so leaked stays public -> clean.
+        r = self._analyze(
+            "fun f(token: @secret Bool, stdio: Stdio)\n"
+            "    var leaked = \"no\"\n"
+            "    if token\n"
+            "        leaked = \"yes\"\n"
+            "    stdio.println(leaked)\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(len(r.warnings), 0)
+
+    def test_implicit_assign_via_struct_field_errors_under_strict(self):
+        r = self._analyze(
+            "type Box { f: String }\n"
+            "@strict_ifc()\n"
+            "fun f(token: @secret Bool, stdio: Stdio)\n"
+            "    var b = Box { f: \"no\" }\n"
+            "    if token\n"
+            "        b.f = \"yes\"\n"
+            "    stdio.println(b.f)\n"
+        )
+        self.assertFalse(r.ok)
+        self.assertTrue(
+            any("information-flow" in e.message for e in r.errors),
+            [e.message for e in r.errors],
+        )
+
+    def test_implicit_assign_via_struct_field_not_flagged_in_default(self):
+        r = self._analyze(
+            "type Box { f: String }\n"
+            "fun f(token: @secret Bool, stdio: Stdio)\n"
+            "    var b = Box { f: \"no\" }\n"
+            "    if token\n"
+            "        b.f = \"yes\"\n"
+            "    stdio.println(b.f)\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(len(r.warnings), 0)
+
+    # ---- pc-restore: no leak into following statements -----------
+
+    def test_sink_after_secret_while_is_clean_under_strict(self):
+        # pc is restored after the loop, so a sink AFTER it does not run
+        # under secret control flow.
+        r = self._analyze(
+            "@strict_ifc()\n"
+            "fun f(token: @secret Bool, stdio: Stdio)\n"
+            "    while token\n"
+            "        let _x = 1\n"
+            "    stdio.println(\"always\")\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+
+    def test_sink_after_secret_for_is_clean_under_strict(self):
+        r = self._analyze(
+            "@strict_ifc()\n"
+            "fun f(xs: @secret List<Int>, stdio: Stdio)\n"
+            "    for _x in xs\n"
+            "        let _y = 1\n"
+            "    stdio.println(\"always\")\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+
+    # ---- public-conditioned loops / assigns: no false positive ---
+
+    def test_public_while_with_assign_clean_under_strict(self):
+        r = self._analyze(
+            "@strict_ifc()\n"
+            "fun f(n: Int, stdio: Stdio)\n"
+            "    var i = 0\n"
+            "    var msg = \"a\"\n"
+            "    while i < n\n"
+            "        msg = \"b\"\n"
+            "        stdio.println(msg)\n"
+            "        i = i + 1\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+
+    def test_public_for_with_assign_clean_under_strict(self):
+        r = self._analyze(
+            "@strict_ifc()\n"
+            "fun f(xs: List<Int>, stdio: Stdio)\n"
+            "    var msg = \"a\"\n"
+            "    for _x in xs\n"
+            "        msg = \"b\"\n"
+            "        stdio.println(msg)\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+
+    def test_public_if_assign_then_sink_clean_under_strict(self):
+        # A public-conditioned assignment under strict does not taint.
+        r = self._analyze(
+            "@strict_ifc()\n"
+            "fun f(flag: Bool, stdio: Stdio)\n"
+            "    var msg = \"a\"\n"
+            "    if flag\n"
+            "        msg = \"b\"\n"
+            "    stdio.println(msg)\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+
+
 class TestConstantTime(unittest.TestCase):
     """Roadmap S4: a @constant_time function must not let a @secret
     value drive control flow (timing) or memory access (cache timing),

@@ -386,8 +386,28 @@ class _IfcMixin:
         ``@secret``/``@public`` annotation (``decl_label``, may be
         ``None``) and the label already computed for its RHS value.
         So ``let x: @secret Int = 1`` is secret by annotation, and
-        ``let y = secret_x`` is secret by flow -- both surface here."""
-        return L.join(decl_label, self._label_of(value))
+        ``let y = secret_x`` is secret by flow -- both surface here.
+
+        Under ``@strict_ifc`` the current pc-label is also joined in: a
+        value assigned under a secret control-flow context (inside a
+        secret-conditioned branch / loop) becomes secret, so the classic
+        implicit channel ``var x = ...; if secret { x = ... }; sink(x)``
+        is caught. The join is monotonic (it can only RAISE a label),
+        and it is gated to strict so the default tier's value labels are
+        unchanged (the design keeps implicit flows out of the default
+        warn tier; see ``_check_ifc_sink``)."""
+        return self._join_pc_if_strict(L.join(decl_label, self._label_of(value)))
+
+    def _join_pc_if_strict(self, label: str) -> str:
+        """Monotonically join the current pc-label into ``label`` when
+        ``@strict_ifc`` is active; return ``label`` unchanged otherwise.
+        The single place implicit-flow taint enters an ASSIGNED label, so
+        the gating (and the default-tier invariance it guarantees) lives
+        in one spot. Never lowers a label -- ``L.join`` is the lattice
+        least-upper-bound."""
+        if not getattr(self, "_strict_ifc", False):
+            return label
+        return L.join(label, getattr(self, "_pc_label", L.PUBLIC))
 
     def _label_binding(self, name: str, decl_label, value: A.Expr) -> None:
         """Set the IFC label on the in-scope ``Symbol`` for ``name``
@@ -792,7 +812,15 @@ class _IfcMixin:
         whole-value label still rises (handled below) so the store can
         never make a value LESS secret than the conservative rule."""
         root = self._struct_root_sym(target)
-        incoming = self._label_of(value)
+        # Roadmap S2.implicit (strict only): a field stored under a secret
+        # pc joins pc into the stored field's label, so a field made
+        # secret only by the control-flow context it is written in is
+        # tracked too (the struct analogue of the scalar implicit-assign
+        # channel). Folding pc into ``incoming`` here applies it uniformly
+        # to every store path below (alias group, whole-value fallback,
+        # per-field map). Strict-gated and monotonic, so the default
+        # tier's field labels are unchanged and a label is never lowered.
+        incoming = self._join_pc_if_strict(self._label_of(value))
         if root is None:
             return
         # Aliasing soundness: if this binding is in an alias group
