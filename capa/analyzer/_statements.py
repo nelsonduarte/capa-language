@@ -113,12 +113,26 @@ class _StatementsMixin:
         # ``@secret``/``@public`` annotation and the label of the RHS
         # value -- so ``let x = secret_value`` makes x secret even
         # without an annotation, the core taint-propagation rule.
+        # Roadmap S2 (per-field IFC, soundness): a struct value used as
+        # a WHOLE on the RHS (aliasing ``let y = x``, or stored into an
+        # aggregate / sub-struct) escapes -- structs are reference types,
+        # so per-field tracking through it could go stale on a later
+        # mutation. Mark escapes before labelling the new binding so the
+        # alias does not inherit a map that may become unsound.
+        self._mark_struct_escape(s.value)
         if isinstance(s.pattern, A.IdentPat):
             self._label_binding(
                 s.pattern.name,
                 s.type_expr.label if s.type_expr is not None else None,
                 s.value,
             )
+            # Aliasing (``let b2 = b``): link the new binding into the
+            # source's alias group so a later field store through either
+            # taints both (structs are reference types).
+            if isinstance(s.value, (A.Ident, A.FieldAccess)):
+                self._ifc_alias_link(
+                    self.scope.lookup_local(s.pattern.name), s.value,
+                )
         # Roadmap S1: a ``let h = open()`` of a linear-typed value
         # opens a must-consume obligation under the bound name. Only
         # a simple identifier pattern carries it (a destructure of a
@@ -146,16 +160,34 @@ class _StatementsMixin:
             self._check_no_capability(actual, s.pos, "a 'var' binding")
         if self.scope.lookup_local(s.name) is not None:
             self._err(f"duplicate declaration of {s.name!r}", s.pos)
-        _var_label = self._join_decl_and_value_label(
-            s.type_expr.label if s.type_expr is not None else None,
-            s.value,
+        _decl_label = s.type_expr.label if s.type_expr is not None else None
+        _var_label = self._join_decl_and_value_label(_decl_label, s.value)
+        # Roadmap S2 (per-field IFC, soundness): mark any whole-struct
+        # value used on the RHS as escaped before defining the binding
+        # (same rule as ``let``; structs are reference types).
+        self._mark_struct_escape(s.value)
+        sym = Symbol(
+            name=s.name, kind=SymbolKind.LOCAL_VAR,
+            pos=s.pos, ty=actual, label=_var_label,
         )
-        self.scope.define(
-            Symbol(
-                name=s.name, kind=SymbolKind.LOCAL_VAR,
-                pos=s.pos, ty=actual, label=_var_label,
-            )
-        )
+        # Carry the per-field map when the RHS is a tracked struct
+        # literal / precise sub-struct read (not a bare alias / field
+        # chain, and not when an explicit @secret raised the whole
+        # value). Deep-copied so later field stores do not alias the
+        # literal's recorded map.
+        from ._ifc import _deepcopy_field_map
+        _fmap = self._field_map_of(s.value)
+        if (
+            _fmap is not None
+            and L.normalize(_decl_label) != L.SECRET
+            and not isinstance(s.value, (A.Ident, A.FieldAccess))
+        ):
+            sym.field_labels = _deepcopy_field_map(_fmap)
+        self.scope.define(sym)
+        # Aliasing (``var b2 = b``): link into the source's alias group
+        # so a later field store through either taints both.
+        if isinstance(s.value, (A.Ident, A.FieldAccess)):
+            self._ifc_alias_link(sym, s.value)
 
     def _check_assign(self, s: A.AssignStmt) -> None:
         from . import SymbolKind
@@ -235,6 +267,14 @@ class _StatementsMixin:
                 f"{ty_str(target_ty)}",
                 s.value.pos,
             )
+        # Roadmap S2 (per-field IFC): a field store ``p.f = x`` raises
+        # that field's per-field label monotonically (and the binding's
+        # collapsed label), so a field made secret by a later assignment
+        # is tracked precisely while never lowering an already-secret
+        # field. Only ``=`` is handled here; an augmented ``+=`` already
+        # reads the old (tracked) field on its RHS, so the join is sound.
+        if isinstance(s.target, A.FieldAccess):
+            self._ifc_field_store(s.target, s.value)
 
     def _snapshot_for_dry_run(self) -> dict:
         """Capture mutable analyzer state before a speculative

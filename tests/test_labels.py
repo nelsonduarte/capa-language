@@ -447,6 +447,223 @@ class TestMutableContainerTaint(unittest.TestCase):
         self.assertEqual(len(r.warnings), 0)
 
 
+class TestPerFieldIfc(unittest.TestCase):
+    """Roadmap S2 (per-field precision): a struct-typed value carries a
+    per-field label map alongside its collapsed whole-value label. A
+    field read on a TRACKED, NON-ESCAPED binding reads the precise field
+    label -- so a public field of a struct whose OTHER field is secret no
+    longer warns. Soundness is preserved at every boundary: a field
+    store raises the field's label monotonically; aliasing / escape /
+    destructure fall back to the conservative whole-value label, so a
+    real leak is never under-reported (a false negative)."""
+
+    def _analyze(self, src: str):
+        from capa import analyze
+        m = _parse(src)
+        return analyze(m, source=src)
+
+    # ---- precision (previously over-flagged, now clean) ----------
+
+    def test_public_field_of_mixed_struct_is_clean(self):
+        # The headline imprecision fix: reading the PUBLIC field of a
+        # struct whose OTHER field is secret no longer warns.
+        r = self._analyze(
+            "type S { secret_v: String, public_v: String }\n"
+            "fun f(stdio: Stdio, token: @secret String)\n"
+            "    let b = S { secret_v: token, public_v: \"ok\" }\n"
+            "    stdio.println(b.public_v)\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(len(r.warnings), 0)
+
+    def test_secret_field_of_mixed_struct_still_flagged(self):
+        r = self._analyze(
+            "type S { secret_v: String, public_v: String }\n"
+            "fun f(stdio: Stdio, token: @secret String)\n"
+            "    let b = S { secret_v: token, public_v: \"ok\" }\n"
+            "    stdio.println(b.secret_v)\n"
+        )
+        self.assertEqual(len(r.warnings), 1)
+        self.assertIn("information-flow", r.warnings[0].message)
+
+    # ---- nested-struct precision --------------------------------
+
+    def test_nested_public_field_is_clean(self):
+        r = self._analyze(
+            "type Inner { x: String, y: String }\n"
+            "type Outer { sec: Inner, plain: Inner }\n"
+            "fun f(stdio: Stdio, token: @secret String)\n"
+            "    let o = Outer { sec: Inner { x: token, y: \"a\" }, "
+            "plain: Inner { x: \"b\", y: \"c\" } }\n"
+            "    stdio.println(o.plain.x)\n"
+        )
+        self.assertEqual(len(r.warnings), 0)
+
+    def test_nested_secret_field_is_flagged(self):
+        r = self._analyze(
+            "type Inner { x: String, y: String }\n"
+            "type Outer { sec: Inner, plain: Inner }\n"
+            "fun f(stdio: Stdio, token: @secret String)\n"
+            "    let o = Outer { sec: Inner { x: token, y: \"a\" }, "
+            "plain: Inner { x: \"b\", y: \"c\" } }\n"
+            "    stdio.println(o.sec.x)\n"
+        )
+        self.assertEqual(len(r.warnings), 1)
+
+    # ---- field store / mutation ---------------------------------
+
+    def test_field_store_secret_then_sink_flagged(self):
+        r = self._analyze(
+            "type S { sv: String, pv: String }\n"
+            "fun f(stdio: Stdio, token: @secret String)\n"
+            "    var p = S { sv: \"a\", pv: \"ok\" }\n"
+            "    p.sv = token\n"
+            "    stdio.println(p.sv)\n"
+        )
+        self.assertEqual(len(r.warnings), 1)
+
+    def test_field_store_secret_other_field_clean(self):
+        r = self._analyze(
+            "type S { sv: String, pv: String }\n"
+            "fun f(stdio: Stdio, token: @secret String)\n"
+            "    var p = S { sv: \"a\", pv: \"ok\" }\n"
+            "    p.sv = token\n"
+            "    stdio.println(p.pv)\n"
+        )
+        self.assertEqual(len(r.warnings), 0)
+
+    def test_nested_field_store_is_precise(self):
+        r = self._analyze(
+            "type Inner { x: String, y: String }\n"
+            "type Outer { sec: Inner, plain: Inner }\n"
+            "fun f(stdio: Stdio, token: @secret String)\n"
+            "    var o = Outer { sec: Inner { x: \"a\", y: \"b\" }, "
+            "plain: Inner { x: \"c\", y: \"d\" } }\n"
+            "    o.sec.x = token\n"
+            "    stdio.println(o.plain.x)\n"
+        )
+        self.assertEqual(len(r.warnings), 0)
+
+    # ---- branch-join (monotone over all paths) ------------------
+
+    def test_field_secret_in_one_branch_then_sunk_is_flagged(self):
+        # A field made secret in only one branch of an if must be
+        # treated as secret after the if (the join over all paths).
+        r = self._analyze(
+            "type S { sv: String, pv: String }\n"
+            "fun f(stdio: Stdio, flag: Bool, token: @secret String)\n"
+            "    var p = S { sv: \"a\", pv: \"ok\" }\n"
+            "    if flag\n"
+            "        p.sv = token\n"
+            "    stdio.println(p.sv)\n"
+        )
+        self.assertEqual(len(r.warnings), 1)
+
+    def test_other_field_stays_public_across_branch(self):
+        r = self._analyze(
+            "type S { sv: String, pv: String }\n"
+            "fun f(stdio: Stdio, flag: Bool, token: @secret String)\n"
+            "    var p = S { sv: \"a\", pv: \"ok\" }\n"
+            "    if flag\n"
+            "        p.sv = token\n"
+            "    stdio.println(p.pv)\n"
+        )
+        self.assertEqual(len(r.warnings), 0)
+
+    # ---- escape boundaries (fall back to whole-value) -----------
+
+    def test_escape_via_function_then_field_read_conservative(self):
+        # Once a struct is passed to a function, intraprocedural
+        # per-field tracking can no longer follow it -- a later field
+        # read falls back to the conservative whole-value label.
+        r = self._analyze(
+            "type S { sv: String, pv: String }\n"
+            "fun sink_it(x: S)\n"
+            "    let _ = x\n"
+            "fun f(stdio: Stdio, token: @secret String)\n"
+            "    let b = S { sv: token, pv: \"ok\" }\n"
+            "    sink_it(b)\n"
+            "    stdio.println(b.pv)\n"
+        )
+        self.assertEqual(len(r.warnings), 1)
+
+    def test_escape_via_list_then_field_read_conservative(self):
+        r = self._analyze(
+            "type S { sv: String, pv: String }\n"
+            "fun f(stdio: Stdio, token: @secret String)\n"
+            "    let b = S { sv: token, pv: \"ok\" }\n"
+            "    let xs = [b]\n"
+            "    stdio.println(b.pv)\n"
+        )
+        self.assertEqual(len(r.warnings), 1)
+
+    def test_escape_via_match_destructure_conservative(self):
+        r = self._analyze(
+            "type S { sv: String, pv: String }\n"
+            "fun f(stdio: Stdio, token: @secret String)\n"
+            "    let b = S { sv: token, pv: \"ok\" }\n"
+            "    match b\n"
+            "        S { sv: a, pv: c } -> stdio.println(c)\n"
+        )
+        self.assertEqual(len(r.warnings), 1)
+
+    def test_struct_from_call_uses_whole_value(self):
+        # A struct produced by a function call has no statically-known
+        # field map, so any field read uses the conservative whole-value
+        # label (the builder's secret field taints the whole result).
+        r = self._analyze(
+            "type S { sv: String, pv: String }\n"
+            "fun build(token: @secret String) -> S\n"
+            "    return S { sv: token, pv: \"ok\" }\n"
+            "fun f(stdio: Stdio, token: @secret String)\n"
+            "    let b = build(token)\n"
+            "    stdio.println(b.pv)\n"
+        )
+        self.assertEqual(len(r.warnings), 1)
+
+    # ---- aliasing (reference semantics) -------------------------
+
+    def test_alias_then_mutate_taints_original(self):
+        # ``var b2 = b`` aliases the same struct (reference semantics):
+        # a field store through b2 is visible through b, so reading b
+        # afterwards must stay flagged (conservative).
+        r = self._analyze(
+            "type S { sv: String, pv: String }\n"
+            "fun f(stdio: Stdio, token: @secret String)\n"
+            "    var b = S { sv: \"a\", pv: \"ok\" }\n"
+            "    var b2 = b\n"
+            "    b2.sv = token\n"
+            "    stdio.println(b.sv)\n"
+        )
+        self.assertEqual(len(r.warnings), 1)
+
+    def test_alias_then_mutate_public_read_conservative(self):
+        # After an aliased mutation, even reading a field that was not
+        # touched falls back to whole-value (we cannot prove the alias
+        # did not touch it cheaply) -- conservative, never a false neg.
+        r = self._analyze(
+            "type S { sv: String, pv: String }\n"
+            "fun f(stdio: Stdio, token: @secret String)\n"
+            "    var b = S { sv: \"a\", pv: \"ok\" }\n"
+            "    var b2 = b\n"
+            "    b2.sv = token\n"
+            "    stdio.println(b.pv)\n"
+        )
+        self.assertEqual(len(r.warnings), 1)
+
+    # ---- whole-aggregate rule for lists/tuples unchanged --------
+
+    def test_list_remains_whole_aggregate(self):
+        # Lists stay whole-aggregate (this slice is per-STRUCT-field
+        # only): a secret element taints the whole list.
+        r = self._analyze(
+            "fun f(stdio: Stdio, token: @secret String)\n"
+            "    let xs = [token, \"other\"]\n"
+            "    stdio.println(xs.get(1).unwrap_or(\"\"))\n"
+        )
+        self.assertEqual(len(r.warnings), 1)
+
+
 class TestImplicitFlow(unittest.TestCase):
     """Roadmap S2.implicit: a sink that fires inside a branch guarded by
     a @secret condition leaks whether the branch was taken (the pc-label

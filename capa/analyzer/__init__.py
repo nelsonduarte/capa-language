@@ -165,6 +165,17 @@ class Symbol:
     # / ``@public`` annotation; ``None`` means unlabelled (= public).
     # Read when an Ident referencing this symbol is given its label.
     label: Optional[str] = None
+    # Roadmap S2 (per-field IFC precision). For a struct-typed
+    # LOCAL / LOCAL_VAR binding: a per-field label map
+    # ``{field_name: label_or_submap}`` (nested for nested structs;
+    # leaves are label strings), set when the binding is constructed
+    # from a struct literal whose field labels are statically known.
+    # ``None`` means no per-field tracking (fall back to ``label``, the
+    # collapsed whole-value join). Updated monotonically by a field
+    # store ``p.f = x`` (join, never lowers). Trusted for a precise
+    # field read only while the symbol's id is NOT in
+    # ``_escaped_struct_syms``.
+    field_labels: Optional[dict] = None
     # Roadmap S3.5: for a method registered from ``impl Type[State]``,
     # the typestate state the receiver must be in for the call to be
     # legal. ``None`` for an ordinary (state-agnostic) method.
@@ -337,6 +348,37 @@ class Analyzer(
         # from its children's labels. Read by sink-enforcement /
         # SBOM-emission in later S2 slices.
         self._expr_labels: dict[int, str] = {}
+        # Roadmap S2 (per-field IFC precision). Parallel to
+        # ``self._expr_labels`` but only for STRUCT-typed expressions:
+        # id(expr) -> a per-field label map ``{field_name: label_or_submap}``
+        # (nested for nested structs; leaves are label strings). Carries
+        # the structured label alongside the collapsed whole-value label
+        # in ``_expr_labels`` so a precise field read can be narrower than
+        # the struct's join while the collapsed label stays the sound
+        # fallback. Set for ``StructLit`` and for a precise field-read
+        # chain whose result is itself a struct.
+        self._expr_field_labels: dict[int, dict] = {}
+        # Roadmap S2 (per-field IFC precision, soundness). The set of
+        # ``id(Symbol)`` for struct bindings whose per-field map can no
+        # longer be trusted because the value ESCAPED or was ALIASED
+        # (passed to a function, returned, stored in an aggregate,
+        # destructured, or bound to a second name -- structs are
+        # reference types, so a mutation through one alias is visible
+        # through another). A read through an escaped binding falls back
+        # to the collapsed whole-value label. Monotonic: once escaped,
+        # stays escaped for the rest of the function.
+        self._escaped_struct_syms: set[int] = set()
+        # Roadmap S2 (per-field IFC precision, aliasing soundness).
+        # Maps id(Symbol) -> the shared list of co-aliased struct
+        # Symbols (including itself) created by ``let/var y = x`` on a
+        # struct binding. Structs are reference types, so a field store
+        # through any alias is visible through all of them; on such a
+        # store we raise the COLLAPSED whole-value label of every member
+        # of the group, keeping the aliased-mutation case conservative
+        # (flagged) rather than under-reporting a leak. The list object
+        # is shared by every member id so a later alias extends the
+        # whole group at once.
+        self._struct_aliases: dict[int, list] = {}
         # Roadmap S2.4 -- True inside a function annotated
         # ``@strict_ifc``: information-flow sink violations become
         # hard errors instead of warnings. Set per-function in

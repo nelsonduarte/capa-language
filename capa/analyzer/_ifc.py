@@ -24,12 +24,17 @@ parent the children's labels are already in ``self._expr_labels``.
 Aggregate literals (struct / list / tuple) carry the join of their
 element labels, so a secret stashed in one and read back is not
 laundered to public; the read rules above already inherit the
-receiver's label. The granularity is whole-aggregate (per-field
-precision is a follow-up) and the flow is intra-procedural (crossing a
+receiver's label. Structs additionally carry a per-field label map so
+reading a public field of a struct that also holds a secret field is
+not over-tainted (see the per-field section below for the precision
+rules and the known pre-existing limitations); lists / tuples / maps
+remain whole-aggregate. The flow is intra-procedural (crossing a
 function boundary still relies on an explicit ``@secret`` parameter).
 """
 
 from __future__ import annotations
+
+from typing import Optional
 
 from .. import capa_ast as A
 from .. import _labels as L
@@ -120,12 +125,261 @@ class _IfcMixin:
         present. The result is stored in ``self._expr_labels``."""
         label = self._compute_label(e)
         self._expr_labels[id(e)] = label
+        self._record_field_map(e)
+        self._mark_escapes_for(e)
         return label
+
+    def _mark_escapes_for(self, e: A.Expr) -> None:
+        """Mark struct bindings that ESCAPE through ``e`` (roadmap S2
+        per-field soundness). A struct passed whole to a call, stored in
+        an aggregate / sub-struct, or indexed-through can be mutated or
+        aliased beyond what intraprocedural per-field tracking can see,
+        so we drop its precise map (reads fall back to the whole-value
+        label). Field READS that select a leaf do NOT escape -- handled
+        inside ``_mark_struct_escape``."""
+        if isinstance(e, A.Call):
+            for a in e.args:
+                self._mark_struct_escape(a)
+        elif isinstance(e, A.MethodCall):
+            # A user method takes ``self`` by reference and may MUTATE a
+            # field of the receiver (``self.f = secret``); structs are
+            # reference types, so that mutation is visible through the
+            # binding afterwards. Per-field tracking cannot follow into
+            # the callee in this slice, so escape the receiver binding --
+            # later field reads through it fall back to the conservative
+            # whole-value label. (A FieldAccess receiver that selects a
+            # leaf does not escape; ``_mark_struct_escape`` handles the
+            # leaf-vs-struct distinction and escapes the root only when
+            # the receiver denotes a struct value.)
+            self._mark_struct_escape(e.receiver)
+            for a in e.args:
+                self._mark_struct_escape(a)
+        elif isinstance(e, A.StructLit):
+            for _name, v in e.fields:
+                self._mark_struct_escape(v)
+        elif isinstance(e, (A.ListLit, A.TupleLit)):
+            for el in e.elements:
+                self._mark_struct_escape(el)
+        elif isinstance(e, A.Index):
+            self._mark_struct_escape(e.receiver)
+
+    def _record_field_map(self, e: A.Expr) -> None:
+        """Record the per-field label map for a struct-typed expression
+        in ``self._expr_field_labels`` (roadmap S2 per-field precision),
+        leaving non-struct expressions untouched. Two sources:
+
+        * a struct LITERAL carries the map of its field values;
+        * a field-read CHAIN that lands on a tracked struct sub-value
+          carries that sub-value's nested map (so ``outer.inner`` can be
+          read field-by-field downstream).
+
+        Only stores a map; the collapsed label is already in
+        ``_expr_labels`` and remains the sound fallback."""
+        if isinstance(e, A.StructLit):
+            self._expr_field_labels[id(e)] = self._struct_lit_field_map(e)
+            return
+        if isinstance(e, A.FieldAccess):
+            node = self._precise_field_label(e)
+            if isinstance(node, dict):
+                self._expr_field_labels[id(e)] = node
 
     def _label_of(self, e: A.Expr) -> str:
         """The recorded label of an already-visited expression, or
         PUBLIC if it has none (e.g. a node the walk doesn't label)."""
         return self._expr_labels.get(id(e), L.PUBLIC)
+
+    # ---- per-field IFC precision (roadmap S2) --------------------
+    #
+    # A struct-typed value carries, besides its collapsed whole-value
+    # label, a per-field label map ``{field: label_or_submap}`` (nested
+    # for nested structs; leaves are label strings). Construction
+    # records it; a field READ on a tracked, non-escaped binding reads
+    # the precise field label instead of the conservative whole-value
+    # join; a field STORE raises that field's label monotonically. The
+    # collapsed label is always kept correct in parallel and is the
+    # sound fallback used the moment precision cannot apply (escape /
+    # aliasing / unknown shape).
+    #
+    # KNOWN PRE-EXISTING LIMITATIONS (false negatives). All three are
+    # present at HEAD and are NOT introduced by per-field precision;
+    # they are recorded here so the field-level reads above are not
+    # mistaken for full guarantees:
+    #   (a) cross-function self-mutation: a callee that mutates a field
+    #       of a struct passed to it as a parameter is tracked only at
+    #       whole-value granularity, not propagated back per field (the
+    #       deferred cross-function-self-mutation slice).
+    #   (b) embed-then-mutate staleness: a bare struct binding embedded
+    #       into another struct literal snapshots its field labels at
+    #       construction time, so a later mutation of the still-live
+    #       source binding is not re-propagated to reads through the
+    #       embedding.
+    #   (c) implicit flow via a public assignment performed under a
+    #       secret pc that escapes the conditioned branch (pre-existing
+    #       for scalars too, not specific to structs).
+
+    def _field_map_of(self, e: A.Expr) -> Optional[dict]:
+        """The recorded per-field label map of a struct-typed
+        expression, or ``None`` if it has none."""
+        return self._expr_field_labels.get(id(e))
+
+    def _struct_root_sym(self, e: A.Expr):
+        """If ``e`` is an Ident-rooted, statically-resolvable chain of
+        struct fields (``b``, ``b.inner``, ...), return its ROOT
+        Symbol; else ``None``. Used to find the binding whose per-field
+        map governs a field access / escape."""
+        if isinstance(e, A.Ident):
+            return self.bindings.get(id(e))
+        if isinstance(e, A.FieldAccess):
+            return self._struct_root_sym(e.receiver)
+        return None
+
+    def _field_path_from_root(self, e: A.Expr) -> Optional[list]:
+        """The list of field names from the root binding down to ``e``
+        (``b`` -> ``[]``, ``b.inner.x`` -> ``["inner", "x"]``), or
+        ``None`` if ``e`` is not an Ident-rooted field chain."""
+        if isinstance(e, A.Ident):
+            return []
+        if isinstance(e, A.FieldAccess):
+            base = self._field_path_from_root(e.receiver)
+            if base is None:
+                return None
+            return base + [e.field_name]
+        return None
+
+    def _precise_field_label(self, e: A.FieldAccess):
+        """Try to read the precise per-field label for a field-access
+        chain on a TRACKED, NON-ESCAPED binding. Returns the leaf label
+        (a string) when the whole chain resolves through the binding's
+        field map; a nested SUBMAP when the chain lands on a struct
+        field (so the caller can keep tracking the sub-struct); or
+        ``None`` when precision does not apply (no map, escaped, unknown
+        field, dynamic receiver) and the caller must fall back to the
+        conservative whole-value label.
+
+        SOUNDNESS: precision is used only when (1) the receiver chain is
+        rooted at a simple binding, (2) that binding has a field map,
+        (3) the binding has NOT escaped / been aliased, and (4) every
+        field on the path is present in the map. Any failure -> ``None``
+        -> whole-value fallback. Because the field map is mutated in
+        place with monotonic joins (field store, and the post-if merge
+        relies on the same in-place symbol carried across branches), a
+        read sees the join over every path that reached it."""
+        sym = self._struct_root_sym(e)
+        if sym is None:
+            return None
+        if getattr(sym, "field_labels", None) is None:
+            return None
+        if id(sym) in self._escaped_struct_syms:
+            return None
+        path = self._field_path_from_root(e)
+        if not path:  # the bare binding itself, or unresolvable
+            return None
+        node = sym.field_labels
+        for name in path:
+            if not isinstance(node, dict) or name not in node:
+                return None
+            node = node[name]
+        return node
+
+    def _struct_lit_field_map(self, e: A.StructLit) -> dict:
+        """Build the per-field label map for a struct literal: a field
+        whose value is itself a struct LITERAL carries that literal's
+        nested map (a fresh value with no outside aliases, so precise
+        sub-field tracking is sound); any other field -- including a
+        bare struct binding embedded whole (``S { inner: b }``), which
+        SHARES identity with ``b`` (reference semantics) and could go
+        stale on a later mutation of ``b`` -- collapses to the value's
+        whole-value label. This keeps nested precision only where it is
+        provably alias-free."""
+        out: dict = {}
+        for name, v in e.fields:
+            if isinstance(v, A.StructLit):
+                out[name] = self._deep_collapse_or_map(v)
+            else:
+                out[name] = self._label_of(v)
+        return out
+
+    def _deep_collapse_or_map(self, v: A.StructLit) -> dict:
+        """The recorded nested map for a struct literal (already built
+        when ``v`` was labelled)."""
+        sub = self._field_map_of(v)
+        return sub if sub is not None else self._struct_lit_field_map(v)
+
+    def _collapse_field_map(self, node) -> str:
+        """The collapsed whole-value label of a (possibly nested) field
+        map: the join of every leaf label. Used to keep the collapsed
+        label in sync with the structured one (e.g. after a store)."""
+        if isinstance(node, dict):
+            return L.join_all(self._collapse_field_map(v) for v in node.values())
+        return L.normalize(node)
+
+    def _mark_struct_escape(self, e: A.Expr) -> None:
+        """Mark every tracked struct binding USED AS A WHOLE VALUE
+        anywhere inside ``e`` as escaped, so later field reads through it
+        fall back to the conservative whole-value label. Call this at
+        every escape site: a call/method argument, a return value, an
+        aggregate element, a match scrutinee, an index, or an aliasing
+        bind (``let y = x``).
+
+        A field READ off a struct that lands on a LEAF (a non-struct
+        field) does NOT escape the binding: only that scalar leaves, and
+        its own label governs it. But a field chain that denotes a STRUCT
+        sub-value used wholesale DOES escape the root binding, because
+        the sub-struct shares identity with the parent (structs are
+        reference types: a later mutation through the escaped sub-struct
+        is visible through the parent). Conservative throughout: when in
+        doubt, escape the root."""
+        if e is None:
+            return
+        if isinstance(e, A.Ident):
+            sym = self.bindings.get(id(e))
+            if sym is not None and getattr(sym, "field_labels", None) is not None:
+                self._escaped_struct_syms.add(id(sym))
+            return
+        if isinstance(e, A.FieldAccess):
+            # A field chain in a value position. If it resolves to a
+            # struct sub-value (its per-field map is tracked), escape the
+            # root binding. If it resolves to a leaf, it does not escape
+            # -- but the receiver chain itself must still be walked for
+            # other escaping uses nested in it (rare). We only treat the
+            # chain as a leaf read when its precise label is a string.
+            node = self._precise_field_label(e)
+            if isinstance(node, dict):
+                root = self._struct_root_sym(e)
+                if root is not None:
+                    self._escaped_struct_syms.add(id(root))
+            elif node is None:
+                # Untracked / already-escaped receiver: nothing precise
+                # to protect; the whole-value rule already governs it.
+                pass
+            return
+        # Recurse into the sub-expressions that carry struct values in a
+        # value position. A struct literal that stores a binding whole
+        # into a field escapes that binding.
+        if isinstance(e, A.StructLit):
+            for _name, v in e.fields:
+                self._mark_struct_escape(v)
+            return
+        if isinstance(e, (A.ListLit, A.TupleLit)):
+            for el in e.elements:
+                self._mark_struct_escape(el)
+            return
+        if isinstance(e, A.Call):
+            for a in e.args:
+                self._mark_struct_escape(a)
+            return
+        if isinstance(e, A.MethodCall):
+            self._mark_struct_escape(e.receiver)
+            for a in e.args:
+                self._mark_struct_escape(a)
+            return
+        if isinstance(e, A.Index):
+            self._mark_struct_escape(e.receiver)
+            self._mark_struct_escape(e.index)
+            return
+        if isinstance(e, A.Try):
+            self._mark_struct_escape(e.expr)
+            return
 
     def _join_decl_and_value_label(self, decl_label, value: A.Expr) -> str:
         """The label a binding receives: the join of an explicit
@@ -138,10 +392,33 @@ class _IfcMixin:
     def _label_binding(self, name: str, decl_label, value: A.Expr) -> None:
         """Set the IFC label on the in-scope ``Symbol`` for ``name``
         to the join of its annotation and its RHS value's label.
-        Used by ``_check_let`` after the pattern is bound."""
+        Used by ``_check_let`` after the pattern is bound.
+
+        Per-field precision (roadmap S2): if the RHS is a struct whose
+        field map is statically known (a struct literal or a precise
+        field-read of a sub-struct), copy that map onto the binding so
+        later field reads through ``name`` are precise. A bare-identifier
+        RHS (``let y = x``) is an ALIAS: structs are reference types, so
+        ``y`` and ``x`` share identity; tracking would go stale on a
+        mutation through either, so we DO NOT copy the map and we mark
+        the source binding escaped (handled at the let site). The
+        binding's field map is also skipped when an explicit @secret
+        annotation raises the whole value -- the collapsed label already
+        covers it and a per-field map could under-report."""
         sym = self.scope.lookup_local(name)
-        if sym is not None:
-            sym.label = self._join_decl_and_value_label(decl_label, value)
+        if sym is None:
+            return
+        sym.label = self._join_decl_and_value_label(decl_label, value)
+        fmap = self._field_map_of(value)
+        if (
+            fmap is not None
+            and L.normalize(decl_label) != L.SECRET
+            and not isinstance(value, A.Ident)
+            and not isinstance(value, A.FieldAccess)
+        ):
+            # Deep-copy so a later store on this binding does not mutate
+            # the literal's recorded map (shared dicts would alias).
+            sym.field_labels = _deepcopy_field_map(fmap)
 
     def _label_pattern_binds(self, pat: A.Pattern, scrutinee_label: str) -> None:
         """Propagate a scrutinee's IFC label to every name a pattern
@@ -197,8 +474,20 @@ class _IfcMixin:
             # An element drawn from a tainted container is tainted.
             return L.join(self._label_of(e.receiver), self._label_of(e.index))
         if isinstance(e, A.FieldAccess):
-            # Conservative: a field read inherits the receiver's label.
-            # (Per-field labels are a v2 refinement.)
+            # Per-field precision (roadmap S2): when the receiver is a
+            # TRACKED, NON-ESCAPED binding whose field map resolves the
+            # whole access path, use the precise field label -- which may
+            # be narrower than the struct's whole-value join. A leaf
+            # resolves to its label; a struct-valued field resolves to a
+            # submap, whose collapsed label is the right whole-value for
+            # the sub-struct. Any failure (no map, escaped, aliased,
+            # unknown field, dynamic receiver) falls back to the
+            # conservative receiver label -- the original, sound rule.
+            node = self._precise_field_label(e)
+            if node is not None:
+                if isinstance(node, dict):
+                    return self._collapse_field_map(node)
+                return L.normalize(node)
             return self._label_of(e.receiver)
 
         # Calls / method-calls. A method call on a built-in source
@@ -445,6 +734,114 @@ class _IfcMixin:
         if sym is not None:
             sym.label = L.join(sym.label, L.SECRET)
 
+    def _ifc_alias_link(self, new_sym, src_expr: A.Expr) -> None:
+        """Record that ``new_sym`` aliases the struct binding named by
+        ``src_expr`` (a bare Ident or field chain rooted at a struct
+        binding), so a later field store through EITHER raises the
+        collapsed label of BOTH (structs are reference types). No-op
+        unless the source resolves to a struct-typed binding. The two
+        bindings join a shared alias group; a store on any member taints
+        the whole group (see ``_ifc_field_store``)."""
+        if new_sym is None:
+            return
+        src = self._struct_root_sym(src_expr)
+        if src is None:
+            return
+        from . import SymbolKind
+        if new_sym.kind not in (SymbolKind.LOCAL, SymbolKind.LOCAL_VAR):
+            return
+        # Only link struct-typed bindings (a struct has fields; cheap
+        # check via the resolved type name's struct symbol).
+        if not self._is_struct_binding(src):
+            return
+        group = self._struct_aliases.get(id(src))
+        if group is None:
+            group = [src]
+            self._struct_aliases[id(src)] = group
+        if new_sym not in group:
+            group.append(new_sym)
+        self._struct_aliases[id(new_sym)] = group
+        # Seed the new binding's collapsed label from the source so an
+        # already-secret aliased value stays secret through the alias.
+        new_sym.label = L.join(getattr(new_sym, "label", None),
+                               getattr(src, "label", None))
+
+    def _is_struct_binding(self, sym) -> bool:
+        """True if ``sym``'s type resolves to a user struct type, so it
+        is a candidate for per-field tracking / reference-aliasing."""
+        from . import SymbolKind
+        from ..typesys import TyName
+        ty = getattr(sym, "ty", None)
+        if not isinstance(ty, TyName):
+            return False
+        tsym = self.global_scope.lookup(ty.name)
+        return tsym is not None and tsym.kind == SymbolKind.TYPE_STRUCT
+
+    def _ifc_field_store(self, target: A.FieldAccess, value: A.Expr) -> None:
+        """A field store ``p.f = x`` (or a nested ``p.a.b = x``) raises
+        that field's per-field label MONOTONICALLY (join with the
+        incoming value's label), and keeps the binding's collapsed
+        whole-value label in sync. Monotonic so it is sound under
+        conditional / looping stores: once a field is secret it stays
+        secret, and a store on one path is not lowered on another (the
+        same Symbol object is carried across if/while branches, so the
+        post-merge map is the join over all paths).
+
+        Only applies to a tracked, NON-ESCAPED binding whose field map
+        already resolves the path's prefix; otherwise the collapsed
+        whole-value label still rises (handled below) so the store can
+        never make a value LESS secret than the conservative rule."""
+        root = self._struct_root_sym(target)
+        incoming = self._label_of(value)
+        if root is None:
+            return
+        # Aliasing soundness: if this binding is in an alias group
+        # (``var b2 = b``), a store through ANY member is visible through
+        # all of them (structs are reference types). Per-field tracking
+        # cannot model that precisely, so taint the whole group at
+        # WHOLE-VALUE granularity and escape every member -- conservative
+        # (the aliased-mutation leak stays flagged), never under-reports.
+        group = self._struct_aliases.get(id(root))
+        if group is not None:
+            for member in group:
+                member.label = L.join(getattr(member, "label", None), incoming)
+                self._escaped_struct_syms.add(id(member))
+            return
+        # Always keep the collapsed label monotonically correct: a store
+        # of a secret into any field of the binding makes the whole value
+        # at least that secret. This preserves the pre-existing
+        # whole-value soundness even when per-field tracking is absent.
+        if getattr(root, "field_labels", None) is None or \
+                id(root) in self._escaped_struct_syms:
+            root.label = L.join(getattr(root, "label", None), incoming)
+            return
+        path = self._field_path_from_root(target)
+        if not path:
+            root.label = L.join(getattr(root, "label", None), incoming)
+            return
+        node = root.field_labels
+        for name in path[:-1]:
+            nxt = node.get(name) if isinstance(node, dict) else None
+            if not isinstance(nxt, dict):
+                # The store reaches into something not tracked as a
+                # struct sub-map; fall back to raising the whole value.
+                root.label = L.join(getattr(root, "label", None), incoming)
+                return
+            node = nxt
+        leaf = path[-1]
+        sub = self._field_map_of(value)
+        if sub is not None:
+            # Storing a whole struct into a field: keep its sub-map but
+            # join it monotonically with any existing tracking.
+            old = node.get(leaf)
+            node[leaf] = _join_field_map(old, _deepcopy_field_map(sub))
+        else:
+            old = node.get(leaf)
+            node[leaf] = L.join(self._collapse_field_map(old) if old is not None
+                                else L.PUBLIC, incoming)
+        root.label = L.join(getattr(root, "label", None),
+                            self._collapse_field_map(root.field_labels))
+
     # ---- sink enforcement (roadmap S2.4) -------------------------
 
     def _check_ifc_sink(self, e: A.MethodCall, recv_ty) -> None:
@@ -654,6 +1051,37 @@ class _IfcMixin:
             src = self.sources[pos.filename]
             fname = pos.filename
         self.warnings.append(AnalysisError(message, pos, src, fname))
+
+
+def _deepcopy_field_map(node):
+    """Recursively copy a per-field label map so a binding's map is
+    independent of the source expression's (later stores must not alias
+    back into the literal's recorded map)."""
+    if isinstance(node, dict):
+        return {k: _deepcopy_field_map(v) for k, v in node.items()}
+    return node
+
+
+def _join_field_map(a, b):
+    """Monotonic join of two per-field label maps (or leaf labels):
+    field-wise join where both are maps, lattice join where either is a
+    leaf. Used when a field store overwrites a struct-valued field --
+    the result is never less secret than what was there before."""
+    if a is None:
+        return b
+    if b is None:
+        return a
+    if isinstance(a, dict) and isinstance(b, dict):
+        out = dict(a)
+        for k, v in b.items():
+            out[k] = _join_field_map(out.get(k), v)
+        return out
+    # One (or both) is a leaf: collapse both and join.
+    def _collapse(n):
+        if isinstance(n, dict):
+            return L.join_all(_collapse(v) for v in n.values())
+        return L.normalize(n)
+    return L.join(_collapse(a), _collapse(b))
 
 
 def _is_ty_name(ty) -> bool:

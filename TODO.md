@@ -995,8 +995,13 @@ Listed so the design space is explicit.
   call site (warn by default, hard error under `@strict_ifc`), covering
   free functions, concrete methods, and trait/capability dynamic
   dispatch (by-name over-approximation); `declassify` breaks the chain.
-  Remaining (v2): per-field precision and a mechanised noninterference
-  proof.
+  Per-field precision SHIPPED this session: per-struct-field label maps
+  (reading a public field of a struct that also holds a secret field is
+  no longer over-tainted) with a conservative escape/alias boundary
+  falling back to whole-value; lists/tuples/maps stay whole-aggregate.
+  Remaining (v2): a mechanised noninterference proof, plus the
+  documented per-field follow-ups (cross-function self-mutation and
+  embed-then-mutate staleness).
 - **Typestate / session types**. SHIPPED (S3.1 + S3.2, Python
   backend): the state lives in the type (`typestate Name` +
   `Name[State]`), a value is linear, and the type checker enforces the
