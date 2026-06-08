@@ -53,9 +53,18 @@ an external Component Model runtime in
 the guest's own linear memory (closing the handle leak that
 blocked the three demos under `--component --run`).
 
-The Wasm CM backend is functionally complete for the demo
-surface. Remaining work shifts to P1 (study, polish, paper)
-and P2 (LLM tool-use demo).
+The Wasm CM backend has since grown well past the demo
+surface: a full generics + traits parity arc landed
+2026-06-08 (see "Wasm generics + traits parity" under P1),
+covering generic methods on generic types, monomorphisation
+inside control flow, generic free functions over generic
+structs, nested generic sum payloads, multi-impl trait
+dynamic dispatch (struct and sum targets), trait-typed values
+in every container, and structural equality of trait values.
+The only remaining honest limit is a trait used as a Map key
+or Set element (a precise loud error, by design). Remaining
+work shifts to P1 (study, polish, paper) and P2 (LLM tool-use
+demo).
 
 ---
 
@@ -69,6 +78,62 @@ No remaining work in this priority.
 
 Strengthens the capability + supply-chain claim, but isn't on
 the current Wasm critical path.
+
+- [x] **Wasm generics + traits parity (2026-06-08)** (closed
+  2026-06-08). A completion arc that takes the Wasm backend
+  from demo-surface generics/traits to full parity with the
+  Python backend across the parity corpus. Suite went from
+  ~2350 to 2372 passed / 8 skipped / 9 subtests, CI green.
+  Landed in order:
+  - `a5bc5ac` - top-level non-i64 consts now pushed in the
+    correct calling shape (a String const is pushed as
+    ptr/len, including String struct-field initializers).
+    Aggregate consts stay a loud error rather than silently
+    miscompiling.
+  - `e43e112` - trait-typed receiver method calls resolve the
+    method's declared return type for both the `capability`
+    and the `trait` keyword receivers, so non-i64 returns are
+    stored in the correct shape. Multi-impl traits raised a
+    precise loud error at this point (lifted by `7688c0d`).
+  - `7abd609` - generic methods on generic types: impl blocks
+    are specialised per instantiation for generic structs AND
+    generic sums.
+  - `af2fe1c` - generic struct/sum literals are monomorphised
+    inside control-flow blocks (if/else, for, while, and match
+    arms), not just at top level.
+  - `d3dda27` - refactor: the monomorphiser is split into a
+    package (`_typestr` / `_functions` / `_types` / `_calls`).
+    Pure structural move, public API unchanged.
+  - `24b0825` - core generics gaps closed: generic struct
+    literal types are annotated before call-site inference so
+    generic free functions over generic structs resolve their
+    monomorphised callee; full rewrite of nested generic sum
+    payload types and inner match-arm binders.
+  - `7688c0d` - multi-impl trait dynamic dispatch via a
+    per-concrete-type type-id header plus an if-chain (struct
+    impl targets). The trait value stays a single i32 pointer
+    (no fat pointer).
+  - `7927ad2` - SUM types usable as multi-impl trait targets;
+    the type-id moved to a uniform offset (4) shared by struct
+    and sum participants.
+  - `0938d16` - trait-typed values usable as Option/Result
+    payloads, Map values, List elements, tuple components, and
+    struct fields (recognised as i32 pointer-shape in the
+    uniform-slot encoders).
+  - `3236fbe` - structural equality of trait values dispatched
+    by runtime type-id (`==`/`!=`, and trait-as-value equality
+    inside List/Option/Result/Map/tuple/struct). Also hardened
+    the parity inventory gate to require an executing test per
+    parity program, which recovered 3 latent untested programs.
+  Remaining honest limit: a trait used as a Map KEY or a Set
+  ELEMENT stays a precise loud error. This mirrors a Python
+  hashability divergence (a struct dynamic type is hashable but
+  a sum dynamic type is not), so it is a by-design boundary
+  rather than a gap. Cross-reference (separate repo, not part
+  of this repo's TODO): the website
+  (nelsonduarte/capa-language-website) was updated to reflect
+  this arc and the test count bumped to 2372 (commit `aed6a32`
+  in that repo).
 
 - [x] **Compiler bugs surfaced by capa_governance_pack stress
   test 2026-05-26** (closed 2026-05-27). All five findings
