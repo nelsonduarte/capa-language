@@ -1,179 +1,59 @@
-# Positioning: what is and is not unique about Capa
+# Positioning of Capa
 
-A note for reviewers, prospective contributors, and anyone preparing
-to publish work that depends on Capa. The honest case for the
-language, with the marketing turned off.
+This document explains where Capa sits in the landscape of capability-typed languages and supply-chain tooling. It is meant for reviewers who want to understand whether the project is genuinely different from what already exists, and for contributors trying to decide if their time is better spent here or upstream of someone else's effort.
 
-## TL;DR
+## What is actually new
 
-Capa is, first, a capability-typed language: every function
-declares the authorities it holds, the analyzer enforces it
-statically, attenuation is monotonic by construction. That alone
-is unremarkable, dialects of the idea exist in Pony, Koka, Roc,
-and the WebAssembly Component Model. What is genuinely novel is
-the *epistemic basis of any SBOM Capa emits*: capability claims
-are derived from the type system at compile time, by construction,
-and the compiler rejects programs that would let those claims be
-wrong. The audit pipeline is the visible payoff of that property,
-not the contribution itself.
+Given a CycloneDX SBOM whose components carry per-function capability declarations and a policy file listing which functions may declare which capabilities, comparing the two sets is roughly thirty lines of Python. The audit example in `examples/sbom_capability_audit.capa` is short for the same reason. So the audit pipeline itself is not the contribution; if it were, the right move would be to write the comparator in Go and skip the language.
 
-## The trivial part
+The contribution is upstream of the audit: making the SBOM's capability claims true in the first place. In every ecosystem I know about, the source of those claims is one of three things, and none of them gives an auditor what they need.
 
-Given a CycloneDX SBOM whose components carry per-function
-capability declarations and a JSON policy that says which functions
-are allowed which capabilities, comparing the two sets is a
-five-line operation in every general-purpose programming language.
-Python in 30 lines; Go in 50; Rust in 100. The audit demo at
-`examples/sbom_capability_audit.capa` is short for the same reason.
+The first option is asking the author. npm has `permissions`, Deno has `--allow-*` flags, Android has `AndroidManifest.xml`. The author writes down the authorities the program uses, the runtime enforces them. The static picture relies on the author being honest and complete. They are usually neither. A previous release's manifest gets copy-pasted into the next one and the discrepancies pile up release by release.
 
-If the contribution were the audit itself, no new language would be
-warranted.
+The second option is heuristic static analysis: Slither, Joern, CodeQL, Semgrep, the long tail of security scanners. The output has false negatives when the analyser fails to model some indirect call pattern, and false positives when it conservatively flags safe code. Adversarial code can hide deliberately by routing through patterns the analyser does not understand. A reviewer who reads "no Net usage detected" cannot distinguish between "this code is safe" and "the analyser missed something".
 
-## What is genuinely hard, today
+The third option is runtime sandbox observation: seccomp, the Linux audit subsystem, Deno's permission prompts, eBPF tracing. The log records what the program did during one run; it cannot describe what the program could do on a path that was not exercised during that run. Absence of an entry is ambiguous between "never touches X" and "did not touch X during this test".
 
-The hard part is making the SBOM's capability claims *true*. In
-existing ecosystems, the source of those claims is one of:
+What an auditor wants is a different shape entirely: a declaration that lists every authority the program could possibly use, with a compiler that refuses to ship programs whose actual code reaches authorities the declaration omits. That is the property Capa is built around.
 
-1. **Author-authored manifest** (npm `permissions`, Deno's
-   `--allow-*` flags, Android's `AndroidManifest.xml`). The author
-   declares by hand. The runtime enforces. The static side relies
-   on trust that the author was honest and complete; humans are
-   neither.
+## Adjacent languages
 
-2. **Heuristic static analysis** (Slither for Solidity, Joern and
-   CodeQL for C / Java / Python, Semgrep, security scanners). A
-   post-hoc taint analysis approximates the capability surface from
-   the source. Output is incomplete (false negatives on indirect
-   call patterns the analyser does not model) and noisy (false
-   positives on patterns it conservatively flags). Adversarial code
-   can hide deliberately.
+The capability-typing idea is older than I am and has been explored in several language families. None of them targets the same use case.
 
-3. **Runtime sandbox observation** (seccomp filters, Linux audit
-   subsystem, Deno permission prompts, eBPF tracing). Records what
-   the program *did* during a run. Cannot describe what the program
-   *can do* on a code path that was not exercised. A reviewer has
-   to read the absence of an entry as either "this code never
-   touches X" or "this code did not touch X during this test", and
-   the two are indistinguishable from the log alone.
+Pony attaches reference capabilities (`iso`, `trn`, `ref`, `val`, `box`, `tag`) to types. The discipline is about aliasing and data-race freedom in a concurrent actor model. The intellectual family is the same; the problem is different.
 
-None of these supports the property an auditor wants: *the SBOM
-declares everything this program could touch, and the compiler
-rejected the program if the declaration was less than that.* That
-is the contract Capa is built around.
+Koka, Eff, and OCaml 5's effect handlers provide effect systems where rows can stand in for capabilities. A function whose row includes `<net>` is shape-equivalent to a function taking a `Net` parameter. The ecosystems are research-grade and there is no SBOM tooling story today.
 
-## Other languages with related approaches
+Haskell can simulate capabilities with phantom types and the `ReaderT`-of-capability-record pattern. The soundness property is close to what Capa offers, but it is a library convention rather than a language guarantee. Any new contributor who imports `IO` directly bypasses it.
 
-The capability-typing idea is not new and not unique to Capa. Honest
-adjacencies:
+Roc, from Richard Feldman, ships capabilities through its platform: the platform provides effectful primitives and the program receives them as values. Of the production-aimed new languages, Roc is closest in spirit. It is still pre-1.0 and the SBOM angle has not been explored upstream.
 
-- **Pony** has reference capabilities (`iso`, `trn`, `ref`, `val`,
-  `box`, `tag`) attached to types. Pony's discipline is about
-  aliasing and data-race freedom in a concurrent actor model, not
-  about who is authorised to perform external IO. Different problem,
-  same intellectual family.
+The WebAssembly Component Model with WIT is the most credible production contender. Each component declares its imports in a WIT interface, and those imports are effectively its capability surface. Deriving an SBOM from a `.wit` file is mechanical. The crucial difference is granularity: Wasm-CM operates at the module boundary, while Capa operates at the function boundary. For CRA-style audit work, the function-level view matters because most CVEs are caused by a small set of functions inside an otherwise-trusted module. Capa compiles to Wasm-CM, so the two are complementary rather than competing.
 
-- **Koka** and **Eff** (and OCaml 5's effect handlers) provide
-  effect systems. Effects can stand in for capabilities in
-  principle: a function whose effect row includes `<net>` is the
-  same shape as a function that takes a `Net` parameter. The
-  ecosystem around these languages is research-grade; there is no
-  SBOM tooling story today.
-
-- **Haskell** can simulate capabilities with phantom types and the
-  `ReaderT`-of-capability-record pattern. `RankNTypes` plus
-  `IORef`-style tokens give you a soundness property close to
-  Capa's, but it is a library convention, not a language guarantee.
-  A new contributor to a Haskell codebase can bypass it by
-  importing `IO` directly.
-
-- **Roc** (Richard Feldman) ships capabilities by platform: the
-  platform provides effectful primitives, the program receives them
-  as values. Closest in spirit to Capa among production-aimed new
-  languages. Still pre-1.0; the SBOM story is not there yet.
-
-- **WebAssembly Component Model + WIT** is the most credible
-  *production* contender. Each component declares its imports in a
-  WIT interface; those imports are effectively the component's
-  capability surface. Deriving a capability SBOM from a `.wit`
-  file is mechanical. **The key difference**: Wasm-CM operates at
-  the **module** boundary, not at the **function** boundary. A
-  reviewer looking at a Wasm-CM SBOM learns *which modules can
-  touch the network*; they do not learn *which functions inside
-  those modules can*. For CRA-style audit work, the function-level
-  granularity is what matters.
-
-- **Zero** (Vercel Labs, May 2026) is the most recent entrant
-  and the only one that shares Capa's capability-based-I/O
-  headline. It is a systems language in the C / Rust space:
-  native binaries under 10 KB without LLVM, explicit memory
-  control, capability-based I/O where every function declares
-  the side effects it can perform. The distinctive design
-  choice is that the toolchain (`zero check --json`) emits
-  stable error codes and typed repair categories so AI agents
-  can read, repair, and ship code without a human translation
-  step. **The key differences**: Zero's audience is the
-  AI-agent toolchain, not the supply-chain auditor; Zero's
-  runtime story is native binaries, not Python; and Zero
-  documents no regulatory mapping or standard-SBOM emission
-  (CycloneDX / SPDX / VEX / SLSA). Capa and Zero share an
-  intellectual root (capability discipline as the right
-  default for 2026) and split on the application: Zero is the
-  *AI-agent-first* flavour, Capa is the *supply-chain-audit-
-  first* flavour. A reviewer asking "which language emits the
-  CRA-aligned governance artefact set per-function" still
-  finds only Capa in that column.
+Zero (Vercel Labs, May 2026) is the most recent entrant and the only other language with capability-based I/O as its headline. Zero is a systems language in the C and Rust space: small native binaries, explicit memory control, every function declaring its side effects. The distinctive choice is that the toolchain emits stable error codes and typed repair categories so AI agents can read and repair code without a human in the loop. Zero's audience is the AI-agent toolchain. Capa's audience is the supply-chain auditor. The languages share an intellectual root and split on application.
 
 ## What Capa can claim
 
-- **By-construction soundness**: the type checker enforces that
-  every external capability use is reachable only through a
-  capability parameter in the function's signature. There is no
-  back-door (ambient state, global IO, hidden import). The
-  underlying property is stated formally in
-  [`docs/semantics.md`](semantics.md) as the *Capability
-  Soundness* theorem over the *λ_cap* calculus; the proof
-  sketch is in section 6 of that document.
-- **Function-level SBOM granularity**: each function in
-  `--cyclonedx` carries its own `capa:declared_capability` list,
-  not an aggregate over a module.
-- **Mechanical SBOM ↔ source correspondence**: an auditor can
-  verify, deterministically, that the SBOM was produced from the
-  source by running `capa --cyclonedx` themselves. No additional
-  analyser, no calibration, no false positives.
-- **Diff-comparable SBOMs across releases**: the SBOM diff tool
-  ([`examples/sbom_diff.capa`](../examples/sbom_diff.capa))
-  reports per-function capability widenings and narrowings
-  between two SBOMs. Because granularity is per-function, the
-  diff catches authority changes that PURL-level SBOM diffs
-  cannot see (a dependency widening internally without bumping
-  its version).
+The type checker enforces, by construction, that every external capability use is reachable only through a capability parameter in the function's signature. There is no back-door: no ambient state, no global IO, no hidden import. The Capability Soundness theorem over the λ_cap calculus in [`docs/semantics.md`](semantics.md) captures the property formally, and the four soundness theorems are mechanised in Agda under [`proofs/`](../proofs/).
+
+Each function in `--cyclonedx` carries its own list of declared capabilities. That granularity is what makes a per-function audit possible.
+
+The SBOM-to-source correspondence is mechanical: an auditor can verify an SBOM by running `capa --cyclonedx` against the source themselves. No second analyser, no calibration, no false positives.
+
+The SBOM diff tool at [`examples/sbom_diff.capa`](../examples/sbom_diff.capa) reports per-function widenings and narrowings between releases. Because the granularity is per-function, the diff catches authority changes that a PURL-level diff cannot see, including a dependency widening internally without bumping its version.
 
 ## What Capa cannot claim
 
-- **Novel theoretical mechanism**: capability typing as an idea
-  predates Capa by decades. The mechanism is well understood.
-- **Production readiness**: Capa is pre-1.0 beta; the runtime
-  performance is Python's; there is no native backend yet.
-- **Language ecosystem maturity**: Capa has a CLI, an LSP, a
-  formatter, an SBOM emitter, an SBOM diff tool, a runtime-
-  overhead benchmark suite, a CRA article-by-article mapping,
-  six CVE case studies, an empirical SBOM-diff
-  micro-validation, and a small standard library. It does not
-  have a package manager, a debugger story beyond Python's,
-  third-party libraries, or industrial adopters.
-- **A monopoly on the auditable supply chain pitch**: WebAssembly
-  Component Model is genuinely competing for the same role at the
-  module granularity, and it has a much larger ecosystem.
+Capability typing predates Capa by decades. The mechanism is well-understood. The contribution is in the combination, not the primitive.
 
-## The one-sentence thesis claim
+Capa is at 1.0, but it is a one-person project. The default runtime is CPython, with overhead between 1.00x and 1.45x against hand-Python on the benchmark suite. The WebAssembly Component Model backend has shipped and is functional, with full generics and trait parity: generic structs, sums, and methods, including nested and monomorphic forms, dynamic multi-impl trait dispatch over both struct and sum targets, trait-typed values in containers, and structural trait equality. There is no from-scratch native LLVM backend, and that is a deliberate deferral: Wasm AOT through Cranelift and wasmtime already covers native execution, and a dedicated LLVM backend waits for a concrete driver (see [`docs/design/llvm-backend-feasibility.md`](design/llvm-backend-feasibility.md)).
 
-> Capa's contribution is a capability-typed language whose
-> discipline holds *by construction*, and whose type system can
-> therefore back machine-verifiable, per-function audit artefacts
-> with the property that the compiler rejects any program whose
-> SBOM would be smaller than its actual capability footprint.
+The ecosystem is shallow. There is a CLI, an LSP server, a formatter, an SBOM emitter, an SBOM diff tool, a package manager with a signed registry index (`capa install` and `capa add` over `capa.toml` and a SHA-pinned `capa.lock`), a runtime benchmark suite, an article-by-article CRA mapping, six CVE case studies, an empirical SBOM-diff micro-validation, and a small standard library. There is no debugger story beyond CPython's, no third-party libraries, no industrial adopters.
 
-If a reviewer challenges Capa with "you could do the audit in
-Python", the right reply is "you could, but the SBOM you would be
-auditing would not have the property that justifies the audit".
-The language is the thing; the artefacts follow from it.
+The WebAssembly Component Model competes for the same role at module granularity, and it has a much larger ecosystem behind it.
+
+## The thesis in one sentence
+
+Capa is a capability-typed language whose discipline holds by construction, and whose type system therefore backs machine-verifiable per-function audit artefacts with one specific property: the compiler rejects any program whose SBOM would be smaller than its actual capability footprint.
+
+If a reviewer challenges that with "you could do the audit in Python", the reply is that the SBOM you would be auditing in Python would not have the property that makes the audit meaningful. The language is the contribution; the artefacts follow from it.
