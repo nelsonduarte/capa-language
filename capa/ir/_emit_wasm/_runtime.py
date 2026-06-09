@@ -1023,7 +1023,7 @@ class _RuntimeHelpersMixin:
         self._write(")")
 
     def _emit_str_codepoint_count_function(self) -> None:
-        """``$str_codepoint_count(p: i32, l: i32) -> i32`` — return
+        """``$str_codepoint_count(p: i32, l: i32) -> i32`` - return
         the number of Unicode code points in the UTF-8 byte slice
         ``[p, p+l)``. Counts bytes whose high bits are NOT
         ``10xxxxxx`` (continuation bytes). Audit fix 2026-05-29
@@ -1088,7 +1088,7 @@ class _RuntimeHelpersMixin:
 
     def _emit_str_cp_to_byte_offset_function(self) -> None:
         """``$str_cp_to_byte_offset(p: i32, l: i32, cp_idx: i32)
-        -> i32`` — return the byte offset of the ``cp_idx``-th
+        -> i32`` - return the byte offset of the ``cp_idx``-th
         code-point boundary in the UTF-8 byte slice ``[p, p+l)``.
         Returns ``l`` if ``cp_idx`` is at or past the end (so the
         caller doesn't need a separate length check; clamps to

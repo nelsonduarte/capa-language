@@ -35,7 +35,7 @@ SCHEMA_VERSION = 1
 # field so the auditor still sees which import the symbol came from.
 _MANGLE_RE = re.compile(r"^_capa_m(\d+)__(.+)$")
 # Inline form for rewriting mangled identifiers that appear inside
-# a type-text string (``List<_capa_m1__Foo>``) — anchored at a
+# a type-text string (``List<_capa_m1__Foo>``) - anchored at a
 # word boundary so it doesn't munge unrelated names.
 _MANGLE_INLINE_RE = re.compile(r"\b_capa_m\d+__([A-Za-z_]\w*)")
 
@@ -120,7 +120,7 @@ def build_manifest(
     # Audit slice 21 closure (2026-05-29): compute per-impl
     # reachability so the regulator-facing exclusion list reflects
     # what each function can *transitively* exercise via user-cap
-    # impls and cap-bearing struct field caps — not just what it
+    # impls and cap-bearing struct field caps - not just what it
     # names in its signature. ``user_cap_names_mangled`` is the
     # analyzer-internal name set (loader-prefixed); the
     # reachability machinery stays in that namespace to line up

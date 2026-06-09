@@ -320,13 +320,13 @@ class Pattern:
 
 @dataclass
 class PatWildcard(Pattern):
-    """``_`` — matches anything, binds nothing."""
+    """``_`` - matches anything, binds nothing."""
     pass
 
 
 @dataclass
 class PatIdent(Pattern):
-    """A bare identifier in pattern position — binds the scrutinee
+    """A bare identifier in pattern position - binds the scrutinee
     (or sub-scrutinee for nested patterns) to ``name`` in the arm
     body's scope."""
     name: str

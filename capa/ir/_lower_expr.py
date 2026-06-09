@@ -235,7 +235,7 @@ class _LowerExprMixin:
                 self._cap_params[p.name] = ty_name
         # Body: an expression body produces a value the lambda must
         # ``return``. A block body that ends in an ExprStmt uses
-        # Capa's implicit-result-block semantics — the tail
+        # Capa's implicit-result-block semantics - the tail
         # expression is the lambda's return value (matches
         # ``_lower_match_expr``'s arm-body handling at
         # _lower_expr.py:174-185). Otherwise the block lowers
@@ -244,7 +244,7 @@ class _LowerExprMixin:
         # Audit slice 24 (2026-05-30): pre-fix the Block branch
         # always fell through, so a non-Unit lambda like
         # ``fun (x) -> Int => { let y = x*2; y + 1 }`` returned
-        # None on Python and trapped on Wasm — silent divergence
+        # None on Python and trapped on Wasm - silent divergence
         # that no parity test exercised because every existing
         # block-body lambda used explicit ``return``.
         self._enter_scope()

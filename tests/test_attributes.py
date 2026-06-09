@@ -681,7 +681,7 @@ class TestCycloneDX(unittest.TestCase):
         # Slice 23 (2026-05-29): the audit's per-impl reachability
         # reproducer. A function whose signature touches a cap-
         # bearing struct must surface the wrapped built-in cap
-        # as both a property and a dep edge — without these the
+        # as both a property and a dep edge - without these the
         # CycloneDX consumer can't see the authority chain that
         # slice 21 made sound at the manifest layer.
         sbom = cyclonedx_of(
@@ -1038,7 +1038,7 @@ class TestSPDX(unittest.TestCase):
 
     def test_transitively_reachable_cap_surfaces_in_spdx(self):
         # Slice 23 (2026-05-29): SPDX mirror of the CycloneDX
-        # regression test — the audit's per-impl reachability
+        # regression test - the audit's per-impl reachability
         # reproducer must surface the wrapped Stdio as both an
         # annotation and a DEPENDS_ON edge.
         spdx = spdx_of(

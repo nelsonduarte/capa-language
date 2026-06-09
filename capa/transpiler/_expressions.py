@@ -195,7 +195,7 @@ class _ExpressionsMixin:
         arguments (``lambda x, _i=i: ...``) which binds the
         value at the lambda's creation site, matching Wasm.
         Reference-typed captures (lists, maps, strings) still
-        share the same object — default args bind the reference,
+        share the same object - default args bind the reference,
         not a copy, which is also what the Wasm side does (it
         captures the i32 pointer to the heap record, not a
         deep copy).
@@ -231,7 +231,7 @@ class _ExpressionsMixin:
             self.em.indent()
             # Audit slice 24 (2026-05-30): a block-body lambda with
             # a non-Unit return type uses Capa's implicit-result-
-            # block semantics — the trailing ExprStmt is the
+            # block semantics - the trailing ExprStmt is the
             # lambda's return value. Without this, Python emits the
             # expression as a discarded statement and the lambda
             # returns None, while the CIR-side fix wraps the tail

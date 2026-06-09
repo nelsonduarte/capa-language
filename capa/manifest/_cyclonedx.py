@@ -148,7 +148,7 @@ def build_cyclonedx(
     # resolve those reach claims to a real bom-ref. Without this
     # the CycloneDX graph would carry the (now sound) per-impl
     # reachability claim only as a flat property and not as a
-    # walkable dependency edge — graph-tooling consumers would
+    # walkable dependency edge - graph-tooling consumers would
     # miss the authority chain that slice 21 made visible at the
     # manifest layer.
     reached_builtins: set[str] = set()

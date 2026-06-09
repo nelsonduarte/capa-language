@@ -190,7 +190,7 @@ def _contains_fun_type(t: Optional[A.TypeExpr]) -> bool:
     Unit => stdio.println("x")`` has the same type as a closure
     that captures no caps at all. So any function that takes /
     returns / nests a ``Fun(...)`` value cannot honestly claim
-    to **provably exclude** any capability — the lambda could
+    to **provably exclude** any capability - the lambda could
     carry any cap the caller has in scope. Audit slice 18
     (2026-05-29): a function declared as
     ``fun b(f: Fun() -> Unit) { f() }`` exercises whatever cap

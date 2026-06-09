@@ -2018,7 +2018,7 @@ class TestTranspileExamples(unittest.TestCase):
         # ``provably_excluded_capabilities`` is computed against
         # the transitive set. The AnthropicLlmClient impl in this
         # file holds ``u: Unsafe`` in its struct, so LlmClient
-        # transitively reaches Unsafe — agent_loop therefore
+        # transitively reaches Unsafe - agent_loop therefore
         # honestly cannot claim to provably exclude Unsafe (any
         # built-in cap). The headline claim survives in the
         # weaker form: ``declared_capabilities`` is exactly the
@@ -2150,7 +2150,7 @@ class TestTranspileExamples(unittest.TestCase):
 
     def test_llm_anthropic_real_manifest_run_chat_caps(self):
         # ``run_chat`` declares Stdio + LlmClient at the signature
-        # level — Unsafe is NOT in the declared list. Under per-
+        # level - Unsafe is NOT in the declared list. Under per-
         # impl reachability (audit slice 21 closure, 2026-05-29)
         # the manifest also surfaces what the user-cap impls
         # transitively bring along: AnthropicClient holds Unsafe
@@ -2186,7 +2186,7 @@ class TestTranspileExamples(unittest.TestCase):
     def test_llm_tool_sandbox_manifest_excludes_runcode(self):
         # The headline audit claim: process_request provably
         # excludes RunCode. Per-impl reachability (audit slice
-        # 21 closure, 2026-05-29) sharpens this — it now also
+        # 21 closure, 2026-05-29) sharpens this - it now also
         # surfaces Net in the transitive reachable set because
         # the SearchWeb / SendEmail impls hold ``net: Net`` for
         # the actual HTTP/SMTP calls. RunCode and Unsafe stay
@@ -2215,12 +2215,12 @@ class TestTranspileExamples(unittest.TestCase):
         self.assertNotIn("RunCode", process["declared_capabilities"])
         # Transitive: also Net (via the tools' Net field).
         self.assertIn("Net", process["transitively_reachable_capabilities"])
-        # RunCode and Unsafe remain provably excluded — no impl
+        # RunCode and Unsafe remain provably excluded - no impl
         # in this function's reach holds either.
         excluded = process["provably_excluded_capabilities"]
         self.assertIn("RunCode", excluded)
         self.assertIn("Unsafe", excluded)
-        # Net is NOT excluded — it's transitively reachable.
+        # Net is NOT excluded - it's transitively reachable.
         self.assertNotIn("Net", excluded)
         self.assertFalse(process["has_unsafe"])
 

@@ -35,7 +35,7 @@ def _caps_via_type(
     (via direct mention or via known per-type reachable sets) and
     ``has_fun`` is True if any ``FunType`` is encountered. A
     ``FunType`` in an impl method signature lets the impl exercise
-    any cap the caller captures into the closure — unprovable, so
+    any cap the caller captures into the closure - unprovable, so
     the caller must downgrade fully."""
     if t is None:
         return set(), False
@@ -96,7 +96,7 @@ def compute_reachability(
       every cap-bearing struct in the module.
 
     - ``unprovable`` is the set of type names whose reachable set
-      is *not* a sound upper bound — typically because an impl
+      is *not* a sound upper bound - typically because an impl
       method takes or returns a ``Fun(...)`` type, which lets the
       impl exercise any cap the caller captures into the closure.
       A function with a sig touching an unprovable type must
@@ -211,12 +211,12 @@ def caps_reachable_via_sig(
 
     ``extra_caps`` is the union of built-in caps reachable through
     each param, return type, and the impl-method ``self``
-    container — beyond what's directly named in the signature.
+    container - beyond what's directly named in the signature.
 
     ``sig_unprovable`` is True if any sig element touches an
     unprovable type (transitive Fun) or has its own ``FunType``.
     Caller treats this the same as ``has_fun_in_sig`` /
-    ``has_unsafe`` — downgrade ``provably_excluded`` to empty."""
+    ``has_unsafe`` - downgrade ``provably_excluded`` to empty."""
     extra: set[str] = set()
     sig_unprovable = False
 
