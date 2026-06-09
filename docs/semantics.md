@@ -363,23 +363,29 @@ mechanisation they would cite is already in tree.
 
 ## 9. Noninterference (information-flow soundness)
 
-> **Status: pen-and-paper, NOT machine-checked.** Everything in
-> Section 9 is a hand proof. Sections 1 to 8 above describe the
-> capability calculus λ_cap, whose soundness *is* mechanised in
-> [`proofs/`](../proofs/). Section 9 is a *different* property
-> about a *different* calculus: termination-insensitive
-> noninterference for a store-based imperative core λ_if that
-> models Capa's information-flow control (the analyser in
+> **Status: machine-checked.** Section 9 is now mechanised in Agda
+> ([`proofs/CapaIF.agda`](../proofs/CapaIF.agda) and
+> [`proofs/CapaNoninterference.agda`](../proofs/CapaNoninterference.agda),
+> under `--safe`, no postulates): Lemma 1, Lemma 2, Theorem 3 (the
+> declassify-free fragment) AND Theorem 4 (delimited release, with
+> `declassify`) are all proved and typechecked in CI. Sections 1
+> to 8 above describe the capability calculus λ_cap, whose
+> soundness is mechanised in the same directory. Section 9 is a
+> *different* property about a *different* calculus:
+> termination-insensitive noninterference for a store-based
+> imperative core λ_if that models Capa's information-flow control
+> (the analyser in
 > [`capa/analyzer/_ifc.py`](../capa/analyzer/_ifc.py) over the
 > two-point lattice in [`capa/_labels.py`](../capa/_labels.py)).
-> No Agda exists for λ_if yet. This section is written as the
-> blueprint for that mechanisation: explicit syntax, explicit
-> rules, explicit lemmas, proofs structured for transcription.
-> It uses the same honesty conventions as
-> [`proofs/README.md`](../proofs/README.md): the *calculus* is
-> what is proved sound; fidelity between λ_if and the Python
-> analyser is argued informally (Section 9.8), and we do **not**
-> claim the Python analyser is verified.
+> The prose below states the rules and proofs; the Agda is the
+> artefact a referee re-checks. It uses the same honesty
+> conventions as [`proofs/README.md`](../proofs/README.md): the
+> *calculus* is what is proved sound; fidelity between λ_if and the
+> Python analyser is argued informally (Section 9.8), and we do
+> **not** claim the Python analyser is verified. Three encoding
+> deviations (D1 total stores, D2 inductive big-step semantics, D3
+> the release-log form of the Theorem 4 agreement hypothesis) are
+> documented in `proofs/README.md` and inline in the Agda.
 
 The result is the standard Volpano-Smith / Sabelfeld-Myers
 noninterference theorem for a flow-sensitive type system,
@@ -932,6 +938,37 @@ SECRET value can become PUBLIC only by passing through a
 `declassify`, and the theorem then relates only those runs that
 already agree on what was released. ∎
 
+> **Mechanisation note (encoding of the agreement hypothesis,
+> deviation D3).** Theorems 3 and 4 are now machine-checked in
+> Agda ([`proofs/CapaNoninterference.agda`](../proofs/CapaNoninterference.agda),
+> `noninterference` and `theorem4`, under `--safe`, no postulates).
+> The Agda development encodes the agreement hypothesis
+> `⟦D(s)⟧_{σ_1}^{κ_1} = ⟦D(s)⟧_{σ_2}^{κ_2}` not as one flat
+> multiset equality but in two structural forms (in
+> [`proofs/CapaIF.agda`](../proofs/CapaIF.agda)): `EAgree` on
+> expressions ("the two runs agree on every declassified value
+> inside `e`") and `Agree` on the two big-step derivations
+> ("...along the actual execution paths"). A concrete per-
+> expression *release log* `releases κ σ e` is also defined (the
+> sequence of declassified values an expression produces, the
+> `declassify` analogue of the `sink` output trace `o`), and
+> `EAgree` is proved EQUIVALENT to release-log equality
+> `releases κ_1 σ_1 e = releases κ_2 σ_2 e` (`eagree->releq` /
+> `releq->eagree`). So the Agda hypothesis IS the release-set
+> agreement above, only phrased per declassify position so the
+> `L-Op` and `L-Declassify` cases decompose without list-append
+> reasoning. The derivation-indexed `Agree` is the faithful
+> operational reading of `⟦D(s)⟧` evaluated at the store each
+> declassify is actually reached in; where the two runs diverge
+> under a SECRET guard it demands agreement only on the guard's
+> releases, since the divergent declassifies are confined by
+> Lemma 2 exactly as in the proof above. This keeps the hypothesis
+> non-vacuous: a worked example in the Agda file
+> (`sink(declassify(env_get))`) is covered by Theorem 4 but
+> excluded from Theorem 3, and its agreement hypothesis reduces to
+> secret equality `κ_1 = κ_2`, so Theorem 4 does not collapse into
+> Theorem 3.
+
 This matches the analyser's `declassify(value, reason: "...")`:
 the label drops to PUBLIC (`_compute_label`), the value is
 unchanged (`_check_declassify`), and the `reason` string is the
@@ -1015,16 +1052,18 @@ analyser is verified.** What λ_if deliberately abstracts away:
    `@strict_ifc` code specifically, not of every program the
    compiler accepts.
 
-**Next step.** Section 9 is pen-and-paper. The planned
-mechanisation is an Agda development for λ_if paralleling
+**Mechanisation status.** Section 9 is now mechanised. The Agda
+development for λ_if parallels
 [`proofs/CapaSoundness.agda`](../proofs/CapaSoundness.agda):
-syntax, the labelling and statement-typing relations, the
-big-step semantics, Lemmas 1 and 2, and Theorems 3 and 4. The
-two-point lattice, finite loop-fixpoint, and lock-step induction
-make it a PLFA-scale development comparable to the existing
-capability proof. Until that lands, the noninterference claim
-should be cited as a *hand* proof, exactly as the capability
-claim was before its Stage 1 to 4 mechanisation.
+[`proofs/CapaIF.agda`](../proofs/CapaIF.agda) has the syntax, the
+labelling and statement-typing relations, the big-step semantics,
+and the release-log machinery; and
+[`proofs/CapaNoninterference.agda`](../proofs/CapaNoninterference.agda)
+has Lemmas 1 and 2 and Theorems 3 and 4. The two-point lattice,
+finite loop-fixpoint, and lock-step induction made it a PLFA-scale
+development comparable to the existing capability proof. The
+noninterference claim is therefore now a *machine-checked* result
+(under `--safe`, no postulates), not a hand proof.
 
 ---
 
