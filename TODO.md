@@ -999,9 +999,19 @@ Listed so the design space is explicit.
   (reading a public field of a struct that also holds a secret field is
   no longer over-tainted) with a conservative escape/alias boundary
   falling back to whole-value; lists/tuples/maps stay whole-aggregate.
-  Remaining (v2): a mechanised noninterference proof, plus the
-  documented per-field follow-ups (cross-function self-mutation and
-  embed-then-mutate staleness).
+  Mechanised noninterference SHIPPED this session: a machine-checked
+  Agda proof of termination-insensitive noninterference for the
+  `lambda_if` core calculus (declassify-free fragment) -
+  `proofs/CapaIF.agda` + `proofs/CapaNoninterference.agda`, checked
+  under `--safe` (no postulates/holes) by the agda CI workflow, with
+  the pen-and-paper blueprint in `docs/semantics.md` Section 9. The
+  oracle-first effort also surfaced and fixed a real implicit-flow
+  soundness gap in `@strict_ifc` enforcement (loops/assignments now
+  raise/join the pc-label). Remaining (v2): mechanising Theorem 4
+  (delimited release / `declassify`); the two documented per-field
+  follow-ups (cross-function self-mutation and embed-then-mutate
+  staleness); and fidelity between `lambda_if` and the Python analyzer
+  remains argued informally (the analyzer itself is not verified).
 - **Typestate / session types**. SHIPPED (S3.1 + S3.2, Python
   backend): the state lives in the type (`typestate Name` +
   `Name[State]`), a value is linear, and the type checker enforces the
