@@ -29,6 +29,33 @@ from .. import capa_ast as A
 # obvious to the reader that a manifest is not the source of truth.
 _MAX_ARG_REPR = 80
 
+# Maximum byte/char length for a single user-controlled attribute
+# value interpolated into an SBOM property / annotation. Audit
+# 2026-05-25 M1: ``@security(...)`` (and any other attribute) arg
+# values flow verbatim into CycloneDX ``properties[]`` and SPDX
+# ``annotations[]``. JSON-injection is already closed by the JSON
+# encoder's escaping, but a hostile upstream can ship a multi-megabyte
+# attribute value that blows up downstream SBOM-diff / ingest tooling.
+# 4 KiB is generous for any honest CVE id, justification, or detail
+# string while putting a hard ceiling on the abuse case.
+_MAX_SBOM_VALUE_LEN = 4096
+
+_SBOM_TRUNCATION_MARKER = "...[capa: value truncated]"
+
+
+def _cap_sbom_value(value: str) -> str:
+    """Cap a user-controlled SBOM property/annotation value at
+    ``_MAX_SBOM_VALUE_LEN`` characters, appending a clear marker when
+    truncation happens. Non-str inputs are returned unchanged (the
+    caller only ever feeds attribute-arg strings, but stay defensive).
+    """
+    if not isinstance(value, str):
+        return value
+    if len(value) <= _MAX_SBOM_VALUE_LEN:
+        return value
+    keep = _MAX_SBOM_VALUE_LEN - len(_SBOM_TRUNCATION_MARKER)
+    return value[:keep] + _SBOM_TRUNCATION_MARKER
+
 
 def _stringify_expr(e) -> str:
     """Render an expression as a short source-like string for the

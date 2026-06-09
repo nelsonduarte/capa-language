@@ -99,7 +99,14 @@ def build_vex_entries(
                 analysis["justification"] = args["justification"]
             if "detail" in args:
                 analysis["detail"] = args["detail"]
-            analysis["firstIssued"] = timestamp
+            # ``firstIssued`` is, per the CycloneDX spec, "the date and
+            # time the analysis was first issued" - i.e. when the VEX
+            # statement was first published, not when this SBOM was
+            # built. Honour a ``first_issued`` arg on the ``@vex``
+            # attribute when the author declares one; otherwise fall
+            # back to the build timestamp (an acceptable default for a
+            # freshly-emitted statement). Audit 2026-05-25 L2.
+            analysis["firstIssued"] = args.get("first_issued") or timestamp
             entries.append({
                 "bom-ref": f"capa:vex:{bom_basename}:{qualname}:{cve}",
                 "id": cve,

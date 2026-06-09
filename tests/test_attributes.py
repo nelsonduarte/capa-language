@@ -616,6 +616,29 @@ class TestCycloneDX(unittest.TestCase):
         self.assertEqual(props["capa:attribute:security:cve"], ["CVE-2024-99"])
         self.assertEqual(props["capa:attribute:security:severity"], ["high"])
 
+    def test_cyclonedx_caps_oversized_attribute_value(self):
+        # Audit 2026-05-25 M1: a hostile attribute value of unbounded
+        # length must be truncated at the emitter (4 KiB) with a clear
+        # marker so downstream SBOM-diff tooling is not blown up.
+        from capa.manifest._strings import (
+            _MAX_SBOM_VALUE_LEN, _SBOM_TRUNCATION_MARKER,
+        )
+        long_val = "A" * 50_000
+        sbom = cyclonedx_of(
+            f'@security(cve: "CVE-2024-99", description: "{long_val}")\n'
+            'fun verify(token: String) -> Bool\n'
+            '    return true\n'
+        )
+        fn = sbom["components"][0]
+        props = props_dict(fn["properties"])
+        emitted = props["capa:attribute:security:description"][0]
+        self.assertEqual(len(emitted), _MAX_SBOM_VALUE_LEN)
+        self.assertTrue(emitted.endswith(_SBOM_TRUNCATION_MARKER))
+        # A short value is untouched.
+        self.assertEqual(
+            props["capa:attribute:security:cve"], ["CVE-2024-99"],
+        )
+
     def test_user_defined_capability_becomes_component(self):
         sbom = cyclonedx_of(
             'capability SendEmail\n'
@@ -1161,6 +1184,28 @@ class TestSPDX(unittest.TestCase):
                 f"{pkg['name']}: downloadLocation missing/wrong",
             )
 
+    def test_spdx_caps_oversized_attribute_value(self):
+        # Audit 2026-05-25 M1: the SPDX annotation path interpolates
+        # attribute values verbatim the same way the CycloneDX
+        # property path does, so it carries the same per-value cap.
+        from capa.manifest._strings import _SBOM_TRUNCATION_MARKER
+        long_val = "B" * 50_000
+        spdx = spdx_of(
+            f'@security(cve: "CVE-2024-99", description: "{long_val}")\n'
+            'fun verify(token: String) -> Bool\n'
+            '    return true\n'
+        )
+        pkg = _pkg_by_name(spdx, "verify")
+        desc_annots = [
+            c for c in _annot_comments(pkg)
+            if c.startswith("capa:attribute:security:description=")
+        ]
+        self.assertEqual(len(desc_annots), 1)
+        # Annotation is "capa:<key>=<value>"; the value is the capped
+        # portion and must carry the truncation marker.
+        self.assertTrue(desc_annots[0].endswith(_SBOM_TRUNCATION_MARKER))
+        self.assertLess(len(desc_annots[0]), 5_000)
+
 
 # =============================================================
 # VEX (CycloneDX vulnerabilities) emission
@@ -1291,6 +1336,49 @@ class TestVEX(unittest.TestCase):
         self.assertFalse(result.ok)
         msgs = " ".join(e.format() for e in result.errors)
         self.assertIn("bogus", msgs)
+
+    def test_vex_first_issued_defaults_to_build_timestamp(self):
+        # Audit 2026-05-25 L2: with no first_issued declared, the
+        # field falls back to the build timestamp (acceptable for a
+        # freshly-emitted statement).
+        entries = vex_entries_of(
+            '@vex(cve: "CVE-X", status: "not_affected", '
+            'justification: "code_not_reachable")\n'
+            'fun foo(s: String) -> String\n'
+            '    return s\n'
+        )
+        self.assertEqual(
+            entries[0]["analysis"]["firstIssued"], "2026-05-12T00:00:00Z",
+        )
+
+    def test_vex_first_issued_passes_through_declared_date(self):
+        # Audit 2026-05-25 L2: when @vex declares first_issued, that
+        # publication date - not the build timestamp - is emitted.
+        entries = vex_entries_of(
+            '@vex(cve: "CVE-X", status: "not_affected", '
+            'justification: "code_not_reachable", '
+            'first_issued: "2025-01-15T09:00:00Z")\n'
+            'fun foo(s: String) -> String\n'
+            '    return s\n'
+        )
+        self.assertEqual(
+            entries[0]["analysis"]["firstIssued"], "2025-01-15T09:00:00Z",
+        )
+
+    def test_vex_first_issued_key_accepted_by_analyzer(self):
+        # The strict attribute schema must accept the new key.
+        from capa.analyzer import analyze
+        source = (
+            '@vex(cve: "CVE-X", status: "not_affected", '
+            'justification: "code_not_reachable", '
+            'first_issued: "2025-01-15T09:00:00Z")\n'
+            'fun foo(s: String) -> String\n'
+            '    return s\n'
+        )
+        tokens = Lexer(source).lex()
+        module = Parser(tokens, source=source).parse_module()
+        result = analyze(module, source=source)
+        self.assertTrue(result.ok, [e.format() for e in result.errors])
 
 
 # =============================================================

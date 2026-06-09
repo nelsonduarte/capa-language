@@ -34,6 +34,7 @@ from typing import Any, Optional
 from .. import capa_ast as A
 
 from ._funrec import build_manifest
+from ._strings import _cap_sbom_value
 from ._vex import build_vex_entries
 
 
@@ -279,7 +280,7 @@ def build_cyclonedx(
             for k, v in attr["args"].items():
                 props.append({
                     "name": f"capa:attribute:{attr['name']}:{k}",
-                    "value": v,
+                    "value": _cap_sbom_value(v),
                 })
             if not attr["args"]:
                 props.append({

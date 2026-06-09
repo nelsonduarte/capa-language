@@ -663,5 +663,65 @@ class TestBlockBodyInParensRestriction(unittest.TestCase):
         self.assertEqual(len(m.items), 2)
 
 
+class TestExpressionDepthCap(unittest.TestCase):
+    """Audit 2026-05-25 M2: pathological expression nesting must yield
+    a clean parse diagnostic instead of a raw ``RecursionError``."""
+
+    def test_pathological_nesting_raises_clean_diagnostic(self):
+        from capa.parser._expressions import MAX_EXPR_DEPTH
+
+        depth = MAX_EXPR_DEPTH * 30
+        src = (
+            "fun f() -> Int\n"
+            "    return " + "(" * depth + "1" + ")" * depth + "\n"
+        )
+        with self.assertRaises(ParserError) as ctx:
+            parse(src)
+        self.assertIn("nesting too deep", ctx.exception.message)
+
+    def test_pathological_nesting_does_not_raise_recursionerror(self):
+        # The whole point: the guest gets a diagnostic, not a crash.
+        depth = 6000
+        src = (
+            "fun f() -> Int\n"
+            "    return " + "(" * depth + "1" + ")" * depth + "\n"
+        )
+        try:
+            parse(src)
+        except ParserError:
+            pass  # expected
+        except RecursionError:  # pragma: no cover
+            self.fail("parser leaked a RecursionError on deep nesting")
+
+    def test_recursion_limit_restored_after_parse(self):
+        import sys
+
+        before = sys.getrecursionlimit()
+        src = "fun f() -> Int\n    return (((1)))\n"
+        parse(src)
+        self.assertEqual(sys.getrecursionlimit(), before)
+
+    def test_legitimately_nested_program_still_parses(self):
+        # Far deeper than any real Capa program (the whole corpus tops
+        # out at 7 levels of _parse_expr), but well under the cap.
+        depth = 60
+        src = (
+            "fun f() -> Int\n"
+            "    return " + "(" * depth + "1 + 2" + ")" * depth + "\n"
+        )
+        m = parse(src)
+        self.assertEqual(len(m.items), 1)
+
+    def test_corpus_deep_real_expression_parses(self):
+        # A realistically nested expression with mixed constructs.
+        src = (
+            "fun f(a: Int, b: Int, c: Int) -> Int\n"
+            "    return if a > b then (a + (b * (c - 1))) "
+            "else ((a - b) + c)\n"
+        )
+        m = parse(src)
+        self.assertEqual(len(m.items), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

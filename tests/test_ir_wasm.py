@@ -6044,5 +6044,43 @@ class TestWasmNetExecutes(unittest.TestCase):
             thread.join(timeout=2)
 
 
+@unittest.skipUnless(_has_wasmtime_py(), "wasmtime-py not installed")
+class TestWasmHostAllocGuard(unittest.TestCase):
+    """Audit 2026-05-25 L1: a failed guest ``$alloc`` (returns 0)
+    must raise a clean host error instead of writing the buffer at
+    address 0 and scribbling the data segment."""
+
+    def test_failed_alloc_raises_host_error(self):
+        from capa.runtime._wasm_host import WasmHost, WasmHostError
+
+        host = WasmHost()
+        # Stand in for the module's exported $alloc returning 0 (OOM).
+        host._alloc_export = lambda caller, n: 0
+        with self.assertRaises(WasmHostError) as ctx:
+            host._host_alloc(object(), 32)
+        self.assertIn("out of memory", str(ctx.exception))
+
+    def test_zero_length_alloc_returns_zero_without_calling_export(self):
+        from capa.runtime._wasm_host import WasmHost
+
+        host = WasmHost()
+        called = []
+
+        def _boom(caller, n):  # pragma: no cover - must not run
+            called.append(n)
+            return 0
+
+        host._alloc_export = _boom
+        self.assertEqual(host._host_alloc(object(), 0), 0)
+        self.assertEqual(called, [])
+
+    def test_successful_alloc_returns_pointer(self):
+        from capa.runtime._wasm_host import WasmHost
+
+        host = WasmHost()
+        host._alloc_export = lambda caller, n: 4096
+        self.assertEqual(host._host_alloc(object(), 8), 4096)
+
+
 if __name__ == "__main__":
     unittest.main()

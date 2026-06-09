@@ -14,8 +14,31 @@
 > - H4 (bundled JSON parser depth limit): closed `3752972`.
 > - H5 (SBOM / SPDX missing compliance fields): closed `2570eec`.
 >
-> The medium / low / informational items (M1-M5, L1-L2, I1) are not
-> claimed remediated here.
+> The medium / low / informational items (M1-M5, L1-L2, I1) were
+> triaged in a later security-hardening pass; their individual status
+> markers below were verified against the code and `git log` at that
+> time:
+>
+> - M1 (SBOM property length): FIXED in the hardening pass (per-value
+>   4 KiB cap at the CycloneDX and SPDX emitters).
+> - M2 (parser recursion cap): FIXED in the hardening pass (clean
+>   diagnostic at MAX_EXPR_DEPTH = 200, recursion limit raised for the
+>   parse so the cap fires before `RecursionError`).
+> - M3 (install.sh same-channel hash): by-design trade-off; an honest
+>   threat-model comment was added to `deploy/install.sh`.
+> - M4 (SLSA verify fail-open): doc clarification added to
+>   `docs/packages.md`; the `verify_provenance = "required"` config
+>   field is deferred.
+> - M5 (Wasm `Env.get` attenuation): REMEDIATED `292a566` (core host)
+>   + `6a79ac7` (Component Model host), via the cap-handle-table work,
+>   not the inline-emit C2 commit alone.
+> - L1 (alloc-at-0 on OOM): FIXED in the hardening pass (`_host_alloc`
+>   guard raises `WasmHostError`).
+> - L2 (VEX `firstIssued`): FIXED in the hardening pass (pass-through
+>   from a `first_issued` `@vex` arg, build timestamp otherwise).
+> - I1 (Net Wasm bridge): now present (`fa23ec9` core host,
+>   `6a79ac7` CM host); the informational note is updated to reflect
+>   that Net has Wasm host parity.
 
 Scope as briefed: capability discipline, `Unsafe` / `py_interop`,
 package manager + supply chain, SBOM / SLSA emissions, lexer / parser
@@ -263,21 +286,38 @@ component. Then run `spdx-tool validate` and `cyclonedx-cli validate
 
 ## Medium / low / informational
 
-- **M1. SBOM properties accept user `@security(...)` attrs verbatim.**
+- **[FIXED in the security-hardening pass] M1. SBOM properties accept
+  user `@security(...)` attrs verbatim.**
   [`capa/manifest/_cyclonedx.py:196-206`](capa/manifest/_cyclonedx.py#L196)
   interpolates `attr["args"]` values into `properties[]` without
   shape validation. The JSON encoder escapes JSON-special characters
   so injection into the document is closed, but a hostile attribute
   arg of unbounded length can blow downstream SBOM diff tools. Add a
   per-value length cap (4 KiB) at the emitter.
-- **M2. Parser has no recursion cap.**
+  Resolution: a shared `_cap_sbom_value` helper in
+  `capa/manifest/_strings.py` caps each user-controlled attribute
+  value at 4096 chars with a clear truncation marker. Wired into both
+  the CycloneDX `properties[]` path and the SPDX `annotations[]` path
+  (the SPDX emitter had the same verbatim-interpolation shape).
+- **[FIXED in the security-hardening pass] M2. Parser has no
+  recursion cap.**
   [`capa/parser/_expressions.py:45`](capa/parser/_expressions.py#L45)
   recursive descent on `_parse_expr` with no depth limit. Adversarial
   source like `((((((((...))))))))` hits Python's `RecursionError`
   before useful work happens, but since `capa --check` is one of the
   surfaces a build farm would point at untrusted input, a depth cap
   (say 200) with a clean diagnostic is cheap insurance.
-- **M3. `install.sh` SHA-256 fetched over the same redirect chain as
+  Resolution: `_parse_expr` now tracks an `_expr_depth` counter and
+  raises a clean `ParserError` past `MAX_EXPR_DEPTH = 200`.
+  `parse_module` raises the interpreter recursion limit for the
+  duration of the parse (measured from the current stack depth) so
+  the cap - not `RecursionError` - is what fires, then restores the
+  limit in `finally`. 200 is ~28x the deepest legitimately-nested
+  program in the entire corpus (which re-enters `_parse_expr` only 7
+  levels), so no real Capa source is rejected. Verified by parsing
+  the whole corpus and by boundary tests at depth 199/200/201.
+- **[BY DESIGN / TRADE-OFF; comment added in the hardening pass] M3.
+  `install.sh` SHA-256 fetched over the same redirect chain as
   the binary.** [`deploy/install.sh:91-99`](deploy/install.sh#L91)
   fetches `$URL` and `$URL.sha256` from the same GitHub release
   endpoint. A MITM that owns the redirect chain (or a CDN-level
@@ -287,7 +327,15 @@ component. Then run `spdx-tool validate` and `cyclonedx-cli validate
   origin / over a different channel) raises the bar. Trade-off: hash
   pinning means the script can't be the "latest" entry point any
   more.
-- **M4. `gh attestation verify` graceful-skip is fail-open by design.**
+  Resolution: this is a genuine trade-off, not a fixable bug, while
+  the script remains the "latest" one-line installer. We did not
+  force a risky hash-pin change; instead `deploy/install.sh` now
+  carries an explicit threat-model comment stating what the
+  same-origin SHA check does and does not defend against, and
+  pointing users who need a stronger guarantee at installing a
+  specific tag + verifying the GitHub build attestation out of band.
+- **[DOC CLARIFICATION added; config field DEFERRED] M4. `gh
+  attestation verify` graceful-skip is fail-open by design.**
   [`capa/pkg/_install.py:332-417`](capa/pkg/_install.py#L332) silently
   skips when the asset is missing or `gh` is not on PATH. The
   comment acknowledges this and proposes a future
@@ -296,7 +344,16 @@ component. Then run `spdx-tool validate` and `cyclonedx-cli validate
   `CHANGELOG.md` (2026-05-23) phrase the three-layer stack as if it
   fires whenever `verify_key` is set. Worth a doc clarification at
   minimum.
-- **M5. Wasm `env.get` and `env.args` expose host environment
+  Resolution: `docs/packages.md` now carries an explicit
+  "Security posture (best-effort / fail-open)" note stating that only
+  the lockfile-SHA and GPG-fingerprint layers are unconditional and
+  that the SLSA layer is a fail-open bonus, not a guarantee. The
+  `verify_provenance = "required"` config field (which would touch the
+  manifest parser, the `Dependency` shape, the lockfile, and every
+  skip path) is a larger feature and is DEFERRED, not implemented in
+  this pass.
+- **[REMEDIATED 292a566 (core host) + 6a79ac7 (CM host)] M5. Wasm
+  `env.get` and `env.args` expose host environment
   unconditionally.**
   [`_wasm_host.py:163-202`](capa/runtime/_wasm_host.py#L163) /
   [`_wasm_component_host.py:81-88`](capa/runtime/_wasm_component_host.py#L81)
@@ -304,25 +361,56 @@ component. Then run `spdx-tool validate` and `cyclonedx-cli validate
   `Env.restrict_to_keys` is unenforced in both Wasm hosts (same root
   cause as C2). Lower severity because Env exposure is
   read-only and far less damaging than Fs writes.
-- **L1. `_alloc_export` calls in the Wasm host are unchecked.** If a
+  Verification: the `Env.get` host op now routes through a
+  per-instance cap-handle table and enforces `env.allows(name)`
+  before touching `os.environ` - in the core host (`env_get` looks
+  up the Env cap by handle, returns `None` on a denied / unknown key,
+  closed in `292a566`) and in the Component Model host
+  (`env_get` / `_lookup_or`, closed in `6a79ac7`). Confirmed by
+  reading both emit paths. This is the cap-handle-table line of work
+  (slices 25.2-25.8), a stronger guarantee than the inline-emit C2
+  commit `2a2f566` alone, so M5 is attributed to those commits rather
+  than to C2. `env.args` stays unattenuated by design: argv does not
+  depend on the Env allow-list, matching the Python runtime's
+  `Env.args()`.
+- **[FIXED in the security-hardening pass] L1. `_alloc_export` calls
+  in the Wasm host are unchecked.** If a
   guest's `$alloc` returns 0 (OOM in the bump allocator), the host
   writes a UTF-8 buffer at address 0, scribbling on the data
   segment. Not exploitable across the trust boundary (the guest's
   own memory) but breaks the diagnostic for OOM. Surface in
   `_alloc_utf8` / `_alloc_string` ([`_wasm_host.py:302`](capa/runtime/_wasm_host.py#L302),
   [`:469`](capa/runtime/_wasm_host.py#L469)).
-- **L2. CycloneDX VEX `analysis.firstIssued` reuses build timestamp.**
+  Resolution: a new `WasmHost._host_alloc(caller, n)` wraps the
+  exported `$alloc`; it returns 0 for a zero-length request (no write
+  follows) and raises `WasmHostError` when `$alloc` returns 0 for a
+  non-empty allocation, instead of writing at address 0. All 16
+  `self._alloc_export(caller, ...)` call sites in the core host were
+  routed through it.
+- **[FIXED in the security-hardening pass] L2. CycloneDX VEX
+  `analysis.firstIssued` reuses build timestamp.**
   [`capa/manifest/_vex.py:102`](capa/manifest/_vex.py#L102) stamps
   every VEX entry with the build's timestamp. The spec means
   "when the VEX statement was first published"; downstream tooling
   reading the field as a real publication date will be misled. Pass
   the date through from the `@vex` attribute if declared.
-- **I1. `Net` capability has no Wasm host bridge at all.** Capa
-  programs that take `Net` cannot be compiled to Wasm in the current
-  shape; this is consistent with the documented Phase 6/7 scope, but
-  it means the `examples/cve_*.capa` Net-using studies do not have
-  Wasm parity coverage. Not a finding against current claims,
-  documented for context.
+  Resolution: `@vex` now accepts a `first_issued` key (added to the
+  analyzer's strict attribute schema); `firstIssued` is emitted from
+  that declared date when present, falling back to the build
+  timestamp otherwise (an acceptable default for a freshly-emitted
+  statement).
+- **[NOW PRESENT - informational update] I1. `Net` capability Wasm
+  host bridge.** The original note recorded that `Net` had no Wasm
+  host bridge, so Net-using programs could not run on the Wasm
+  backend. This is no longer the case: the core host
+  ([`_wasm_host.py`](capa/runtime/_wasm_host.py)
+  `_register_net` with `net_get` / `net_post` / `restrict-to`,
+  closed `fa23ec9`) and the Component Model host
+  ([`_wasm_component_host.py`](capa/runtime/_wasm_component_host.py)
+  `_register_net`, closed `6a79ac7`) both expose the `capa:host/net`
+  interface with handle-threaded attenuation. Net now has Wasm host
+  parity; the informational note is updated to reflect that. No new
+  bridge was built in this pass - the marker is a verification update.
 
 ## Out of scope / explicitly cleared
 

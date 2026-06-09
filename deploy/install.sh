@@ -88,6 +88,19 @@ fi
 # chmod or expose anything. Aborting on mismatch leaves the
 # tampered binary on disk so the user can inspect it; remove
 # it explicitly first so a re-run starts clean.
+#
+# Threat model (audit 2026-05-25 M3): the binary and its .sha256 are
+# fetched from the same GitHub release origin over the same TLS-
+# protected redirect chain. This catches accidental corruption and an
+# attacker who can tamper with the binary blob but NOT the .sha256
+# (e.g. a partial CDN cache poisoning). It does NOT defend against an
+# adversary who fully controls that origin / redirect chain: such an
+# attacker can rewrite both files consistently. Pinning a hash inside
+# this script would raise that bar, but it is fundamentally
+# incompatible with being the "latest" entry point (the pinned hash
+# would have to change every release). Users who need that guarantee
+# should install a specific tagged version and verify the GitHub
+# build attestation with ``gh attestation verify`` out of band.
 fetch_bin "$URL" "$DEST"
 
 EXPECTED_SHA="$(fetch_text "$SHA_URL" | awk '{print $1}')"

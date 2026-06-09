@@ -131,6 +131,19 @@ the GPG fingerprint. A future opt-in `verify_provenance =
 "required"` field can flip every skip path to fail-closed for
 consumers who want the strictest mode.
 
+> **Security posture (best-effort / fail-open).** The SLSA
+> provenance check is *best-effort*: it is a fail-open layer
+> today. When `gh` is absent, the asset is missing, or the
+> network is down, the install **continues without** the SLSA
+> check rather than refusing. Do not read "the three-layer
+> stack" as "SLSA provenance is always verified whenever
+> `verify_key` is set" - only the lockfile-SHA and GPG-
+> fingerprint layers are unconditional; the SLSA layer fires
+> only when all of its preconditions hold. A `verify_provenance
+> = "required"` config field that makes the SLSA layer fail-
+> closed is **deferred** (see audit 2026-05-25 M4); until it
+> lands, treat SLSA verification as a bonus, not a guarantee.
+
 The reference seed libraries (capa_cli, capa_datetime,
 capa_log, capa_http) ship attestations from v0.1.2 onwards;
 each repo's `.github/workflows/release.yml` is the canonical

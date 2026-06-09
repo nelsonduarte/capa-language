@@ -86,6 +86,11 @@ class Parser(
         # inline match arms rather than `match (SomeVariant { ... })`.
         # To use a struct literal as scrutinee, wrap it in parentheses.
         self._no_struct_lit = False
+        # Current expression-nesting depth, guarded by MAX_EXPR_DEPTH
+        # in the expressions mixin so adversarial ``((((...))))`` input
+        # yields a clean parse diagnostic rather than a raw
+        # ``RecursionError`` (audit 2026-05-25 M2).
+        self._expr_depth = 0
 
     def _build_string_lit(self, value: str, pos, interp_positions=None) -> A.Expr:
         """Builds a string literal. If it contains ``${...}``, returns
@@ -236,11 +241,51 @@ class Parser(
     # Main entry point
     # ===========================================================
 
+    @staticmethod
+    def _stack_depth() -> int:
+        """Number of frames currently on the call stack. Used to size
+        the recursion-limit bump from the current depth (the limit is
+        an absolute interpreter-wide value)."""
+        import sys
+
+        depth = 0
+        frame = sys._getframe()
+        while frame is not None:
+            depth += 1
+            frame = frame.f_back
+        return depth
+
     def parse_module(self) -> A.Module:
-        start = self._peek().start
-        self._skip_newlines()
-        items: list[A.Item] = []
-        while not self._at_end():
-            items.append(self._parse_item())
+        # Raise the interpreter recursion limit for the duration of the
+        # parse so the MAX_EXPR_DEPTH cap (a clean diagnostic) fires
+        # before Python's RecursionError on pathological nesting. Each
+        # expression-nesting level costs ~17 Python frames in the
+        # precedence-climbing descent; budget 25/level plus headroom,
+        # measured from the current depth so a deep caller stack still
+        # leaves room. Restored in ``finally`` to avoid leaking the
+        # raised limit to the rest of the process. Audit 2026-05-25 M2.
+        import sys
+        from ._expressions import MAX_EXPR_DEPTH
+
+        prev_limit = sys.getrecursionlimit()
+        # Bump the ceiling relative to the frames already on the stack:
+        # parsing may be invoked from deep within a caller (LSP, REPL,
+        # nested string interpolation), and the limit is an absolute
+        # interpreter-wide value. ``_stack_depth`` walks the current
+        # frame chain so the headroom is measured from here, not zero.
+        floor = self._stack_depth() + MAX_EXPR_DEPTH * 25 + 2000
+        raised = False
+        if prev_limit < floor:
+            sys.setrecursionlimit(floor)
+            raised = True
+        try:
+            start = self._peek().start
             self._skip_newlines()
-        return A.Module(pos=start, items=items)
+            items: list[A.Item] = []
+            while not self._at_end():
+                items.append(self._parse_item())
+                self._skip_newlines()
+            return A.Module(pos=start, items=items)
+        finally:
+            if raised:
+                sys.setrecursionlimit(prev_limit)

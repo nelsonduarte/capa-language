@@ -51,6 +51,18 @@ from ._cap_handles import (
 )
 
 
+class WasmHostError(RuntimeError):
+    """A host-side failure while servicing a guest import.
+
+    Raised when the host cannot honour a guest request through no
+    fault of the guest's bytecode - e.g. the module's exported
+    ``$alloc`` returns 0 (out of memory in the bump allocator) for a
+    non-empty allocation. Surfacing this as a clean host error (rather
+    than writing the buffer at address 0 and scribbling the data
+    segment) keeps the OOM diagnostic intact. Audit 2026-05-25 L1.
+    """
+
+
 class WasmHost:
     """A wasmtime-based host that wires Capa's built-in capabilities
     into a compiled Wasm module."""
@@ -103,6 +115,27 @@ class WasmHost:
         self._register_net()
         self._register_db()
         self._register_proc()
+
+    def _host_alloc(self, caller, n: int) -> int:
+        """Allocate ``n`` bytes in guest memory via the module's
+        exported ``$alloc``, guarding against a failed allocation.
+
+        The bump allocator returns 0 when it cannot satisfy the
+        request (OOM). Address 0 is the start of the guest's data
+        segment, so writing the buffer there would silently corrupt
+        the module's static data. Instead, raise ``WasmHostError`` so
+        the OOM surfaces as a clean diagnostic. A zero-length request
+        legitimately returns 0 (no write follows). Audit 2026-05-25 L1.
+        """
+        if n == 0:
+            return 0
+        ptr = self._alloc_export(caller, n)
+        if not ptr:
+            raise WasmHostError(
+                f"guest $alloc returned 0 for a {n}-byte allocation "
+                "(out of memory); refusing to write at address 0"
+            )
+        return ptr
 
     def _register_stdio(self) -> None:
         """Register the ``capa:stdio`` interface methods. Each
@@ -205,7 +238,7 @@ class WasmHost:
             encoded = text.encode("utf-8")
             if not encoded:
                 return 0, 0
-            ptr = self._alloc_export(caller, len(encoded))
+            ptr = self._host_alloc(caller, len(encoded))
             self._memory.write(caller, encoded, ptr)
             return ptr, len(encoded)
 
@@ -489,7 +522,7 @@ class WasmHost:
                 return
             encoded = value.encode("utf-8")
             if encoded:
-                s_ptr = self._alloc_export(caller, len(encoded))
+                s_ptr = self._host_alloc(caller, len(encoded))
                 self._memory.write(caller, encoded, s_ptr)
             else:
                 s_ptr = 0
@@ -535,11 +568,11 @@ class WasmHost:
             # byte layout Capa's packed-i64 string convention
             # produces, so downstream List<String> iteration
             # works unchanged.
-            data_ptr = self._alloc_export(caller, n * 8) if n else 0
+            data_ptr = self._host_alloc(caller, n * 8) if n else 0
             for i, arg in enumerate(self._args):
                 encoded = arg.encode("utf-8")
                 if encoded:
-                    s_ptr = self._alloc_export(caller, len(encoded))
+                    s_ptr = self._host_alloc(caller, len(encoded))
                     self._memory.write(caller, encoded, s_ptr)
                 else:
                     # Empty string: a valid (0, 0) slot; pointer
@@ -669,7 +702,7 @@ class WasmHost:
             encoded = text.encode("utf-8")
             if not encoded:
                 return 0, 0
-            ptr = self._alloc_export(caller, len(encoded))
+            ptr = self._host_alloc(caller, len(encoded))
             self._memory.write(caller, encoded, ptr)
             return ptr, len(encoded)
 
@@ -1018,11 +1051,11 @@ class WasmHost:
                 _write_result_err_ioerror(caller, ret_area, str(e))
                 return
             n = len(entries)
-            data_ptr = self._alloc_export(caller, n * 8) if n else 0
+            data_ptr = self._host_alloc(caller, n * 8) if n else 0
             for i, entry in enumerate(entries):
                 encoded = entry.encode("utf-8")
                 if encoded:
-                    s_ptr = self._alloc_export(caller, len(encoded))
+                    s_ptr = self._host_alloc(caller, len(encoded))
                     self._memory.write(caller, encoded, s_ptr)
                 else:
                     s_ptr = 0
@@ -1123,7 +1156,7 @@ class WasmHost:
             encoded = text.encode("utf-8")
             if not encoded:
                 return 0, 0
-            ptr = self._alloc_export(caller, len(encoded))
+            ptr = self._host_alloc(caller, len(encoded))
             self._memory.write(caller, encoded, ptr)
             return ptr, len(encoded)
 
@@ -1364,7 +1397,7 @@ class WasmHost:
             encoded = text.encode("utf-8")
             if not encoded:
                 return 0, 0
-            ptr = self._alloc_export(caller, len(encoded))
+            ptr = self._host_alloc(caller, len(encoded))
             self._memory.write(caller, encoded, ptr)
             return ptr, len(encoded)
 
@@ -1614,7 +1647,7 @@ class WasmHost:
             encoded = text.encode("utf-8")
             if not encoded:
                 return 0, 0
-            ptr = self._alloc_export(caller, len(encoded))
+            ptr = self._host_alloc(caller, len(encoded))
             self._memory.write(caller, encoded, ptr)
             return ptr, len(encoded)
 
@@ -1841,7 +1874,7 @@ class WasmHost:
             encoded = text.encode("utf-8")
             if not encoded:
                 return 0, 0
-            ptr = self._alloc_export(caller, len(encoded))
+            ptr = self._host_alloc(caller, len(encoded))
             self._memory.write(caller, encoded, ptr)
             return ptr, len(encoded)
 
@@ -1856,7 +1889,7 @@ class WasmHost:
             """Allocate a 16-byte JsonValue record with ``tag`` and
             a zero payload slot. Caller fills the payload via the
             appropriate _write_* on offset 8."""
-            jv_ptr = self._alloc_export(caller, 16)
+            jv_ptr = self._host_alloc(caller, 16)
             _write_u32(caller, jv_ptr, tag)
             _write_i64(caller, jv_ptr + 8, 0)
             return jv_ptr
@@ -1869,8 +1902,8 @@ class WasmHost:
             data array uses 4-byte slots, NOT 8-byte ones."""
             n = len(items)
             cap = max(n, 8)
-            header_ptr = self._alloc_export(caller, 16)
-            data_ptr = self._alloc_export(caller, cap * 4) if cap else 0
+            header_ptr = self._host_alloc(caller, 16)
+            data_ptr = self._host_alloc(caller, cap * 4) if cap else 0
             _write_u32(caller, header_ptr, n)
             _write_u32(caller, header_ptr + 4, cap)
             _write_u32(caller, header_ptr + 8, data_ptr)
@@ -1884,8 +1917,8 @@ class WasmHost:
             array (key_ptr, key_len, value-as-i64)."""
             n = len(items)
             cap = max(n, 8)
-            header_ptr = self._alloc_export(caller, 16)
-            data_ptr = self._alloc_export(caller, cap * 16) if cap else 0
+            header_ptr = self._host_alloc(caller, 16)
+            data_ptr = self._host_alloc(caller, cap * 16) if cap else 0
             _write_u32(caller, header_ptr, n)
             _write_u32(caller, header_ptr + 4, cap)
             _write_u32(caller, header_ptr + 8, data_ptr)

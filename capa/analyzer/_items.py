@@ -42,7 +42,8 @@ class _ItemsMixin:
         "security":   {"cve", "cwe", "severity", "fixed_in", "description"},
         "deprecated": {"reason", "since", "use", "removed_in"},
         "audited":    {"date", "by", "scope", "notes"},
-        "vex":        {"cve", "status", "justification", "detail"},
+        "vex":        {"cve", "status", "justification", "detail",
+                       "first_issued"},
         # Roadmap S2.4: opt into fail-closed information-flow checking
         # for this function. Without it, a secret-reaches-public-sink
         # flow is a warning (warn-then-enforce); with it, a hard error.

@@ -70,8 +70,35 @@ _BITWISE_AND_OPS = {T.AMPERSAND: "&"}
 _SHIFT_OPS = {T.LSHIFT: "<<", T.RSHIFT: ">>"}
 
 
+# Maximum expression-nesting depth the parser accepts before it
+# raises a clean diagnostic instead of letting the recursive descent
+# run into Python's ``RecursionError``. Audit 2026-05-25 M2:
+# adversarial source like ``((((...))))`` aimed at ``capa --check`` of
+# untrusted input would otherwise surface a raw ``RecursionError``
+# (a crash, not a diagnostic). The deepest legitimately-nested program
+# in the entire corpus re-enters ``_parse_expr`` only 7 levels, so 200
+# is ~28x headroom over any real Capa source while still capping the
+# DoS surface. ``parse_module`` raises the interpreter recursion limit
+# for the duration of the parse so this cap (not ``RecursionError``)
+# is what fires first.
+MAX_EXPR_DEPTH = 200
+
+
 class _ExpressionsMixin:
     def _parse_expr(self) -> A.Expr:
+        self._expr_depth += 1
+        if self._expr_depth > MAX_EXPR_DEPTH:
+            self._expr_depth -= 1
+            raise self._error(
+                f"expression nesting too deep (limit {MAX_EXPR_DEPTH}); "
+                "simplify or split the expression"
+            )
+        try:
+            return self._parse_expr_inner()
+        finally:
+            self._expr_depth -= 1
+
+    def _parse_expr_inner(self) -> A.Expr:
         # if-expression: ``if cond then e1 else e2``. The ``then`` is
         # the discriminator - without it, ``if`` is a statement
         # elsewhere in the parser and this path is not taken.

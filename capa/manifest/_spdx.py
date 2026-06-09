@@ -42,6 +42,7 @@ from .. import capa_ast as A
 
 from ..typesys import CAPABILITY_NAMES as _BUILTIN_CAPABILITY_NAMES
 from ._funrec import build_manifest
+from ._strings import _cap_sbom_value
 
 
 # Target SPDX specification version. 2.3 is the current stable
@@ -280,7 +281,8 @@ def build_spdx(
         for attr in fn["attributes"]:
             for k, v in attr["args"].items():
                 annots.append(_annot(
-                    timestamp, f"attribute:{attr['name']}:{k}", v,
+                    timestamp, f"attribute:{attr['name']}:{k}",
+                    _cap_sbom_value(v),
                 ))
             if not attr["args"]:
                 annots.append(_annot(
