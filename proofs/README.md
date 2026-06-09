@@ -2,15 +2,27 @@
 
 [![agda](https://github.com/nelsonduarte/capa-language/actions/workflows/agda.yml/badge.svg)](https://github.com/nelsonduarte/capa-language/actions/workflows/agda.yml)
 
-> **Status (2026-05-20): all four soundness theorems proved;
-> mechanically typechecked in CI; no postulates remain.** This
-> directory holds the λ_cap formalisation in Agda. Syntax,
-> typing, reduction, PLFA-style parallel substitution, the
+> **Status (2026-06-09): all four capability soundness theorems
+> proved, PLUS Lemma 1, Lemma 2, and the declassify-free
+> noninterference theorem for λ_if; mechanically typechecked in
+> CI; no postulates remain.** This directory holds two
+> formalisations in Agda. (1) The λ_cap capability calculus:
+> syntax, typing, reduction, PLFA-style parallel substitution, the
 > inductive `_∈caps_` relation, and the reflexive-transitive
-> closure `_==>*_` are all mechanised. Progress, Preservation,
-> Capability Soundness, and Manifest Completeness
-> ([`docs/semantics.md`](../docs/semantics.md) Theorems 1 and 2)
-> are proved. The mechanisation arc is complete.
+> closure `_==>*_`; Progress, Preservation, Capability Soundness,
+> and Manifest Completeness ([`docs/semantics.md`](../docs/semantics.md)
+> Theorems 1 and 2) are proved. (2) The λ_if information-flow
+> calculus ([`docs/semantics.md`](../docs/semantics.md) Section 9):
+> the two-point security lattice, expression labelling,
+> flow-sensitive statement typing, an inductive big-step
+> semantics, low-equivalence, and the noninterference theorem
+> (Theorem 3) with its two supporting lemmas. The
+> noninterference modules typecheck under Agda's `--safe` flag,
+> which mechanically forbids postulates, `trustMe`, and unsafe
+> pragmas. **Theorem 4 (delimited release for `declassify`) is
+> NOT yet mechanised**; it is recorded as an honest future item
+> (a documented obligation, not a postulate) at the foot of
+> `CapaNoninterference.agda`.
 
 ## What this directory is for
 
@@ -54,11 +66,37 @@ tactics differ.
   capability uses, attenuation, consume), contexts, typing
   relation, small-step reduction relation, values.
 
-- `CapaSoundness.agda`: statements of the two theorems as
-  `postulate` declarations. Each comes with a comment block
-  describing the expected proof structure (the proof technique
-  is induction on the typing derivation, in the Wright-
-  Felleisen style; same shape as PLFA chapter "Properties").
+- `CapaSoundness.agda`: Progress, Preservation, Capability
+  Soundness, and Manifest Completeness for λ_cap, proved by
+  induction on the typing / reduction derivations in the
+  Wright-Felleisen style (same shape as PLFA chapter
+  "Properties"). No postulates remain.
+
+- `CapaIF.agda`: the λ_if information-flow calculus
+  ([`docs/semantics.md`](../docs/semantics.md) Section 9). Syntax
+  of expressions and statements, the two-point security lattice
+  (`PUBLIC`/`SECRET` with join and flows-to), expression
+  labelling `_|-e_~>_`, flow-sensitive statement typing
+  `_,_|-s_~>_` (carrying a program-counter label), and the
+  big-step operational semantics `_,_,_=>_,_` with a public
+  output trace. Two encoding choices are documented inline as
+  deviations D1 / D2 (total-function stores instead of partial
+  maps; the big-step semantics as an inductive relation rather
+  than a recursive function, which is the standard
+  termination-insensitive encoding the while rule needs).
+
+- `CapaNoninterference.agda`: the noninterference development.
+  Lemma 1 (expression label soundness, `lemma1`), Lemma 2
+  (confinement / high-pc, `confinement`), and Theorem 3
+  (termination-insensitive noninterference for the
+  declassify-free fragment, `noninterference`). Two supporting
+  lemmas the paper proof uses implicitly are made explicit and
+  proved: `mono-secret` (a SECRET-pc statement never lowers a
+  label to PUBLIC) and `while-high-conf` (a SECRET-guarded loop
+  emits nothing and touches no PUBLIC variable). Theorem 4
+  (delimited release) is left as a clearly-marked future item
+  (a precise commented obligation, NOT a postulate). The whole
+  module is checked under `--safe`.
 
 ## How to typecheck
 
@@ -73,9 +111,11 @@ sudo apt install agda
 # Typecheck (from this directory):
 agda CapaSyntax.agda
 agda CapaSoundness.agda
+agda CapaIF.agda
+agda CapaNoninterference.agda   # checks under --safe too
 ```
 
-CI also typechecks both files on every push that touches
+CI typechecks all four files on every push that touches
 `proofs/` (see `.github/workflows/agda.yml`).
 
 ## Mechanisation plan (incremental)
@@ -159,7 +199,49 @@ Honest tracking:
 | Stage 2: Preservation | landed |
 | Stage 3: Capability Soundness | landed |
 | Stage 4: Manifest Completeness | landed |
+| λ_if: syntax + lattice + typing + big-step semantics | landed |
+| λ_if Lemma 1: expression label soundness | landed |
+| λ_if Lemma 2: confinement / high-pc | landed |
+| λ_if Theorem 3: declassify-free noninterference | landed |
+| λ_if Theorem 4: delimited release | future (honest gap, not a postulate) |
 
-All four soundness theorems are now machine-verified. The
-paper can cite them as such; the Agda source in this directory
-is the artefact a referee opens.
+The four capability soundness theorems and the λ_if
+noninterference theorem (Theorem 3, with Lemmas 1 and 2) are
+machine-verified; the noninterference modules pass under
+`--safe`. The paper can cite them as such; the Agda source in
+this directory is the artefact a referee opens. Theorem 4
+(delimited release) is the one remaining future item, recorded
+as a precise obligation at the foot of `CapaNoninterference.agda`.
+
+## λ_if: deviations from the Section 9 paper proof
+
+The mechanisation is faithful to
+[`docs/semantics.md`](../docs/semantics.md) Section 9 rule for
+rule. Two encoding choices differ from the prose, both documented
+inline in `CapaIF.agda` and neither weakening the theorem:
+
+- **D1 (total stores).** Stores and label environments are total
+  functions `Var -> Nat` / `Var -> L` rather than finite partial
+  maps. This is the standard PLFA store encoding; it removes the
+  "x in dom" side condition from low-equivalence, which becomes
+  the clean pointwise "agree on every PUBLIC variable".
+
+- **D2 (inductive big-step semantics).** The big-step relation is
+  a `data` type, not a recursive function. The `while` rule is not
+  structurally terminating as a function (its recursive call is
+  not on a subterm) -- exactly the termination-insensitivity the
+  paper flags. As an inductive relation the derivations are finite
+  objects to induct over, the textbook encoding of a
+  termination-insensitive semantics, and the noninterference proof
+  relates only runs for which both derivations exist (both
+  converge), matching the theorem's hypothesis.
+
+The proof also makes explicit two facts the paper proof uses
+silently: `mono-secret` (under SECRET pc, no rule manufactures a
+fresh PUBLIC label) and `while-high-conf` (a SECRET-guarded loop
+is confined per-iteration). Both are proved, not assumed.
+
+As in the capability development, **the calculus is what is
+proved sound; fidelity between λ_if and the Python analyser is
+argued informally** in `docs/semantics.md` Section 9.8, and we do
+not claim the analyser itself is verified.

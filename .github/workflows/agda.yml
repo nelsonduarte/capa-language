@@ -27,7 +27,13 @@ jobs:
           agda-version: '2.6.4.3'
       - name: Typecheck CapaSyntax
         working-directory: proofs
-        run: agda CapaSyntax.agda
+        run: agda --safe CapaSyntax.agda
       - name: Typecheck CapaSoundness
         working-directory: proofs
-        run: agda CapaSoundness.agda
+        run: agda --safe CapaSoundness.agda
+      - name: Typecheck CapaIF
+        working-directory: proofs
+        run: agda --safe CapaIF.agda
+      - name: Typecheck CapaNoninterference
+        working-directory: proofs
+        run: agda --safe CapaNoninterference.agda
