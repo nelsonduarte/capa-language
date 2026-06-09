@@ -307,15 +307,22 @@ component. Then run `spdx-tool validate` and `cyclonedx-cli validate
   before useful work happens, but since `capa --check` is one of the
   surfaces a build farm would point at untrusted input, a depth cap
   (say 200) with a clean diagnostic is cheap insurance.
-  Resolution: `_parse_expr` now tracks an `_expr_depth` counter and
-  raises a clean `ParserError` past `MAX_EXPR_DEPTH = 200`.
-  `parse_module` raises the interpreter recursion limit for the
-  duration of the parse (measured from the current stack depth) so
-  the cap - not `RecursionError` - is what fires, then restores the
-  limit in `finally`. 200 is ~28x the deepest legitimately-nested
-  program in the entire corpus (which re-enters `_parse_expr` only 7
-  levels), so no real Capa source is rejected. Verified by parsing
-  the whole corpus and by boundary tests at depth 199/200/201.
+  Resolution: two layers, neither of which raises the interpreter
+  recursion limit (raising it risks overflowing the native C stack -
+  a hard crash, not a clean `RecursionError` - on platforms with a
+  smaller thread stack, notably Windows). (1) `_parse_expr` tracks an
+  `_expr_depth` counter and raises a clean `ParserError` past
+  `MAX_EXPR_DEPTH = 200`; this is the deterministic guard that fires
+  when there is recursion headroom. (2) `parse_module` converts any
+  `RecursionError` into the same clean `ParserError`, so pathological
+  input gets a diagnostic rather than a stack trace even when the
+  ambient recursion limit is below 200 levels of descent. 200 is ~28x
+  the deepest legitimately-nested program in the corpus (which
+  re-enters `_parse_expr` only 7 levels), so no real Capa source is
+  rejected. Verified by parsing the whole corpus, a boundary test of
+  the explicit counter under a generous limit, and a pathological
+  6000-deep input that yields a clean diagnostic at the default
+  limit.
 - **[BY DESIGN / TRADE-OFF; comment added in the hardening pass] M3.
   `install.sh` SHA-256 fetched over the same redirect chain as
   the binary.** [`deploy/install.sh:91-99`](deploy/install.sh#L91)

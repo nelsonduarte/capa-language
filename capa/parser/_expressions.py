@@ -78,9 +78,14 @@ _SHIFT_OPS = {T.LSHIFT: "<<", T.RSHIFT: ">>"}
 # (a crash, not a diagnostic). The deepest legitimately-nested program
 # in the entire corpus re-enters ``_parse_expr`` only 7 levels, so 200
 # is ~28x headroom over any real Capa source while still capping the
-# DoS surface. ``parse_module`` raises the interpreter recursion limit
-# for the duration of the parse so this cap (not ``RecursionError``)
-# is what fires first.
+# DoS surface. This deterministic counter is the primary guard; it is
+# what trips when there is enough recursion headroom (a high
+# ``sys.setrecursionlimit``). When the ambient recursion limit is
+# lower than 200 levels of descent, ``parse_module`` converts the
+# resulting ``RecursionError`` into the same clean ``ParserError`` -
+# we deliberately do NOT raise the interpreter limit, since that risks
+# overflowing the native C stack (a hard crash) on platforms with a
+# smaller thread stack than the limit implies (notably Windows).
 MAX_EXPR_DEPTH = 200
 
 

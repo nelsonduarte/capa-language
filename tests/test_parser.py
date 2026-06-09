@@ -693,7 +693,10 @@ class TestExpressionDepthCap(unittest.TestCase):
         except RecursionError:  # pragma: no cover
             self.fail("parser leaked a RecursionError on deep nesting")
 
-    def test_recursion_limit_restored_after_parse(self):
+    def test_parse_does_not_touch_recursion_limit(self):
+        # The guard must not raise (or otherwise mutate) the
+        # interpreter recursion limit - doing so risks overflowing the
+        # native stack on platforms with a smaller thread stack.
         import sys
 
         before = sys.getrecursionlimit()
@@ -701,10 +704,32 @@ class TestExpressionDepthCap(unittest.TestCase):
         parse(src)
         self.assertEqual(sys.getrecursionlimit(), before)
 
+    def test_explicit_depth_cap_fires_under_generous_limit(self):
+        # With ample recursion headroom, the deterministic
+        # MAX_EXPR_DEPTH counter (not RecursionError) is what trips,
+        # producing the dedicated "nesting too deep (limit N)" message.
+        import sys
+        from capa.parser._expressions import MAX_EXPR_DEPTH
+
+        before = sys.getrecursionlimit()
+        sys.setrecursionlimit(MAX_EXPR_DEPTH * 40 + 5000)
+        try:
+            depth = MAX_EXPR_DEPTH + 5
+            src = (
+                "fun f() -> Int\n"
+                "    return " + "(" * depth + "1" + ")" * depth + "\n"
+            )
+            with self.assertRaises(ParserError) as ctx:
+                parse(src)
+            self.assertIn(f"limit {MAX_EXPR_DEPTH}", ctx.exception.message)
+        finally:
+            sys.setrecursionlimit(before)
+
     def test_legitimately_nested_program_still_parses(self):
         # Far deeper than any real Capa program (the whole corpus tops
-        # out at 7 levels of _parse_expr), but well under the cap.
-        depth = 60
+        # out at 7 levels of _parse_expr), but shallow enough to parse
+        # under the default recursion limit on every platform.
+        depth = 15
         src = (
             "fun f() -> Int\n"
             "    return " + "(" * depth + "1 + 2" + ")" * depth + "\n"
