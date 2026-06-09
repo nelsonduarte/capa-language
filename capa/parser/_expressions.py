@@ -75,18 +75,25 @@ _SHIFT_OPS = {T.LSHIFT: "<<", T.RSHIFT: ">>"}
 # run into Python's ``RecursionError``. Audit 2026-05-25 M2:
 # adversarial source like ``((((...))))`` aimed at ``capa --check`` of
 # untrusted input would otherwise surface a raw ``RecursionError``
-# (a crash, not a diagnostic). The deepest legitimately-nested program
-# in the entire corpus re-enters ``_parse_expr`` only 7 levels, so 200
-# is ~28x headroom over any real Capa source while still capping the
-# DoS surface. This deterministic counter is the primary guard; it is
-# what trips when there is enough recursion headroom (a high
-# ``sys.setrecursionlimit``). When the ambient recursion limit is
-# lower than 200 levels of descent, ``parse_module`` converts the
-# resulting ``RecursionError`` into the same clean ``ParserError`` -
-# we deliberately do NOT raise the interpreter limit, since that risks
-# overflowing the native C stack (a hard crash) on platforms with a
-# smaller thread stack than the limit implies (notably Windows).
-MAX_EXPR_DEPTH = 200
+# (a crash, not a diagnostic).
+#
+# The deepest legitimately-nested program in the entire corpus
+# re-enters ``_parse_expr`` only 7 levels, so 40 is ~6x headroom over
+# any real Capa source while still capping the DoS surface. The cap is
+# kept deliberately MODEST (not the audit's suggested 200): each
+# nesting level costs ~18 Python frames in the precedence-climbing
+# descent, so 40 levels is ~720 frames - comfortably below the default
+# recursion limit of 1000, which means this deterministic counter
+# trips FIRST on every platform, without us having to raise the
+# interpreter limit. Raising the limit to make a larger cap reachable
+# is exactly what we avoid: it risks overflowing the native C stack
+# (a hard process crash, not a catchable RecursionError) on platforms
+# with a smaller thread stack than the Python limit implies (Windows
+# 3.10 crashes well before 200 levels regardless of the limit).
+# ``parse_module`` additionally converts any RecursionError into the
+# same clean ParserError as a belt-and-braces fallback for hosts that
+# lowered the recursion limit below this cap.
+MAX_EXPR_DEPTH = 40
 
 
 class _ExpressionsMixin:

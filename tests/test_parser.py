@@ -704,26 +704,31 @@ class TestExpressionDepthCap(unittest.TestCase):
         parse(src)
         self.assertEqual(sys.getrecursionlimit(), before)
 
-    def test_explicit_depth_cap_fires_under_generous_limit(self):
-        # With ample recursion headroom, the deterministic
-        # MAX_EXPR_DEPTH counter (not RecursionError) is what trips,
-        # producing the dedicated "nesting too deep (limit N)" message.
-        import sys
+    def test_explicit_depth_cap_fires_within_stack_budget(self):
+        # The deterministic MAX_EXPR_DEPTH counter must fire (producing
+        # the dedicated "nesting too deep (limit N)" message) at a
+        # depth that is still safely within the native stack budget on
+        # every platform - i.e. WITHOUT raising the interpreter
+        # recursion limit, which on tight-stack platforms (Windows
+        # 3.10) would overflow the native C stack and crash hard.
         from capa.parser._expressions import MAX_EXPR_DEPTH
 
-        before = sys.getrecursionlimit()
-        sys.setrecursionlimit(MAX_EXPR_DEPTH * 40 + 5000)
-        try:
-            depth = MAX_EXPR_DEPTH + 5
-            src = (
-                "fun f() -> Int\n"
-                "    return " + "(" * depth + "1" + ")" * depth + "\n"
-            )
-            with self.assertRaises(ParserError) as ctx:
-                parse(src)
-            self.assertIn(f"limit {MAX_EXPR_DEPTH}", ctx.exception.message)
-        finally:
-            sys.setrecursionlimit(before)
+        # The cap is sized to be reachable under the default recursion
+        # limit (each level costs ~18 frames), so the counter - not
+        # RecursionError - is what trips, portably.
+        self.assertLessEqual(
+            MAX_EXPR_DEPTH * 18, 1000,
+            "MAX_EXPR_DEPTH must be reachable before the default "
+            "recursion limit so the explicit cap fires portably",
+        )
+        depth = MAX_EXPR_DEPTH + 5
+        src = (
+            "fun f() -> Int\n"
+            "    return " + "(" * depth + "1" + ")" * depth + "\n"
+        )
+        with self.assertRaises(ParserError) as ctx:
+            parse(src)
+        self.assertIn(f"limit {MAX_EXPR_DEPTH}", ctx.exception.message)
 
     def test_legitimately_nested_program_still_parses(self):
         # Far deeper than any real Capa program (the whole corpus tops

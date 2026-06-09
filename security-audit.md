@@ -310,19 +310,23 @@ component. Then run `spdx-tool validate` and `cyclonedx-cli validate
   Resolution: two layers, neither of which raises the interpreter
   recursion limit (raising it risks overflowing the native C stack -
   a hard crash, not a clean `RecursionError` - on platforms with a
-  smaller thread stack, notably Windows). (1) `_parse_expr` tracks an
-  `_expr_depth` counter and raises a clean `ParserError` past
-  `MAX_EXPR_DEPTH = 200`; this is the deterministic guard that fires
-  when there is recursion headroom. (2) `parse_module` converts any
-  `RecursionError` into the same clean `ParserError`, so pathological
-  input gets a diagnostic rather than a stack trace even when the
-  ambient recursion limit is below 200 levels of descent. 200 is ~28x
-  the deepest legitimately-nested program in the corpus (which
-  re-enters `_parse_expr` only 7 levels), so no real Capa source is
-  rejected. Verified by parsing the whole corpus, a boundary test of
-  the explicit counter under a generous limit, and a pathological
-  6000-deep input that yields a clean diagnostic at the default
-  limit.
+  smaller thread stack, notably Windows 3.10, which crashes well
+  before 200 levels regardless of the limit). (1) `_parse_expr` tracks
+  an `_expr_depth` counter and raises a clean `ParserError` past
+  `MAX_EXPR_DEPTH = 40`; the cap is deliberately modest so that, at
+  ~18 Python frames per nesting level, the counter (~720 frames)
+  trips before the default recursion limit of 1000 on every platform.
+  (2) `parse_module` converts any `RecursionError` into the same
+  clean `ParserError` as a belt-and-braces fallback for hosts that
+  lowered the recursion limit below the cap. 40 is ~6x the deepest
+  legitimately-nested program in the corpus (which re-enters
+  `_parse_expr` only 7 levels), so no real Capa source is rejected.
+  Verified by parsing the whole corpus, a deterministic boundary test
+  (the counter trips at depth 40 with the dedicated "limit 40"
+  message under the default recursion limit), and a pathological
+  6000-deep input that yields a clean diagnostic. The audit suggested
+  200, but a cap that large cannot fire portably without raising the
+  recursion limit, which is unsafe; 40 is the safe generous value.
 - **[BY DESIGN / TRADE-OFF; comment added in the hardening pass] M3.
   `install.sh` SHA-256 fetched over the same redirect chain as
   the binary.** [`deploy/install.sh:91-99`](deploy/install.sh#L91)
