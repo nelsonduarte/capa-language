@@ -498,10 +498,27 @@ fun ok(env: Env, stdio: Stdio)
         None -> stdio.println("no key")
 ```
 
-The analysis is intra-procedural by design (a secret crossing a
-function boundary needs an explicit `@secret` parameter, the
-explicit-flow model) and whole-aggregate in granularity (per-field
-precision is future work).
+The analysis is cross-function: it builds modular per-function
+summaries (which parameters reach a public sink, and which writes a
+parameter or `self` field) so that a secret reaching a public sink
+inside a callee, or stored into a parameter / `self` field by a
+callee, is caught at the call site, including through dynamic trait /
+capability dispatch. No explicit `@secret` parameter is required for
+the flow to be tracked. Struct labels are per-field: reading a public
+field of a struct that also holds a secret is no longer over-tainted;
+lists, tuples, and maps remain whole-aggregate. Under `@strict_ifc`
+the analyzer additionally enforces implicit flows, secrets that
+influence control through `if` / `while` / `match` guards and the
+assignments they govern; the default (warn) tier stays focused on
+explicit data flows.
+
+`declassify` is the audited downgrade. The model is backed by a
+machine-checked Agda noninterference proof (termination-insensitive,
+Theorems 3 and 4 including delimited release) over the `lambda_if`
+core calculus, and a differential fidelity harness gives evidence
+that the analyzer matches the model. The Python analyzer itself is
+not machine-verified: the model-vs-implementation gap is argued
+informally and cross-checked by that harness, not closed by proof.
 
 ### 6.5. Constant-time functions
 

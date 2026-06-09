@@ -1,5 +1,12 @@
 # Wasm capability handle tables, architecture (slice 25, 2026-05-30)
 
+> **STATUS: RESOLVED (historical record).** The cap-attenuation bug
+> described below has been fixed: handle tables shipped, and
+> capability attenuation is now sound on the Wasm backend (restriction
+> state travels with the handle across function boundaries, matching
+> the Python backend). This document is kept as the design record for
+> how the fix was reasoned out; it does not describe a live defect.
+
 ## Problem (audit slice 25 F1)
 
 Capa's regulator-facing pitch, "the manifest's `provably_excluded_capabilities`

@@ -183,8 +183,10 @@ audit signal pointing at the one place that needs human review.
 - **Performance.** Capa transpiles to Python. Runtime overhead is
   1.00x to 1.45x against hand-Python on benchmarked workloads
   ([`benchmarks/`](../benchmarks/README.md)). Acceptable for most
-  application code, but native-backend tracks (Cranelift, LLVM,
-  Wasm-CM) are not yet here.
+  application code. The Wasm Component Model backend has shipped and
+  is functional (full generics / traits parity; AOT compilation
+  available), but a from-scratch native LLVM backend remains genuine
+  future work.
 - **No incremental compilation.** Each `capa --run` re-lexes / re-parses
   / re-analyses / re-transpiles the whole program. For files in this
   size class it is invisible; for large projects it would matter.

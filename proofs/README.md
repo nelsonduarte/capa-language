@@ -36,8 +36,11 @@ properties for the Capa capability discipline:
 
 The proof sketches in [`docs/semantics.md`](../docs/semantics.md)
 are pen-and-paper. A workshop or journal reviewer reasonably
-asks for a mechanised version. This directory is the
-mechanisation skeleton.
+asks for a mechanised version. This directory contains that
+mechanisation: the capability soundness theorems and the
+`lambda_if` noninterference theorems (Theorems 3 and 4) are
+machine-checked Agda, with the noninterference modules passing
+under `--safe`. The status table below tracks each landed stage.
 
 ## Why Agda (and not Coq, Lean, Isabelle)
 
@@ -126,10 +129,10 @@ agda CapaNoninterference.agda   # checks under --safe too
 CI typechecks all four files on every push that touches
 `proofs/` (see `.github/workflows/agda.yml`).
 
-## Mechanisation plan (incremental)
+## Mechanisation stages (all landed)
 
-The path from this skeleton to a fully-verified soundness
-proof:
+The mechanisation proceeded in the stages below; all are now
+complete (see the status table at the end):
 
 1. **Stage 0 (done)**: syntax + theorem statements +
    postulates. The reviewer can read the file and see that
@@ -178,7 +181,7 @@ proof:
 
 Each stage is a few hundred lines of Agda in the PLFA style.
 The total is workshop-paper-sized: roughly 1500 to 2500 lines
-of mechanised Agda when complete.
+of mechanised Agda.
 
 ## Out of scope (deliberate)
 
