@@ -2953,5 +2953,295 @@ class TestLspWorkspaceSymbolHandler(_LspHandlerHarness, unittest.TestCase):
             self.assertEqual({s.name for s in result}, {"alpha"})
 
 
+class TestSelectionRangeCompute(unittest.TestCase):
+    """Compute-level coverage for ``compute_selection_ranges``: the
+    AST-driven smart-select chain. No pygls / lsprotocol needed -
+    the helper is pure Python over Capa-native types."""
+
+    def _chain(self, source, line, col):
+        from capa.lsp.selection_range import compute_selection_ranges
+        return compute_selection_ranges(source, [(line, col)])[0]
+
+    def _flatten(self, link):
+        """Innermost-to-outermost list of (start, end) tuples."""
+        out = []
+        while link is not None:
+            out.append((link.start, link.end))
+            link = link.parent
+        return out
+
+    def test_expands_innermost_to_outermost(self):
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    let x = foo(a + b)\n"
+        )
+        line = "    let x = foo(a + b)"
+        col = line.index("a", line.index("foo")) + 1  # the 'a' inside foo(...)
+        chain = self._chain(src, 2, col)
+        self.assertIsNotNone(chain)
+        spans = self._flatten(chain)
+        # Innermost selects exactly the identifier 'a'.
+        self.assertEqual(spans[0], ((2, col), (2, col + 1)))
+        # Each link is contained in the next (well-formed hierarchy).
+        for inner, outer in zip(spans, spans[1:]):
+            self.assertLessEqual(outer[0], inner[0])
+            self.assertGreaterEqual(outer[1], inner[1])
+        # The chain grows strictly: at least identifier -> a+b ->
+        # foo(a+b) -> statement -> ... so several distinct levels.
+        self.assertGreaterEqual(len(spans), 4)
+        # The 'a + b' sub-expression appears as a level wider than
+        # the identifier but narrower than the whole statement.
+        widths = [(e[0] - s[0], e[1] - s[1]) for (s, e) in spans]
+        self.assertNotEqual(spans[0], spans[1])
+
+    def test_handles_multiple_positions(self):
+        from capa.lsp.selection_range import compute_selection_ranges
+        src = (
+            "fun f(fs: Fs)\n"
+            "    let y = 1 + 2\n"
+        )
+        line2 = "    let y = 1 + 2"
+        col_y = line2.index("y") + 1
+        col_one = line2.index("1") + 1
+        results = compute_selection_ranges(src, [(2, col_y), (2, col_one)])
+        self.assertEqual(len(results), 2)
+        for chain in results:
+            self.assertIsNotNone(chain)
+            spans = self._flatten(chain)
+            for inner, outer in zip(spans, spans[1:]):
+                self.assertLessEqual(outer[0], inner[0])
+                self.assertGreaterEqual(outer[1], inner[1])
+
+    def test_broken_file_returns_none_per_position(self):
+        from capa.lsp.selection_range import compute_selection_ranges
+        results = compute_selection_ranges("fun broken(", [(1, 5), (1, 2)])
+        self.assertEqual(results, [None, None])
+
+    def test_position_outside_any_node_is_none(self):
+        # A position far past the source returns None for that slot.
+        chain = self._chain("fun f()\n    return 0\n", 99, 1)
+        self.assertIsNone(chain)
+
+
+class TestCodeLensCompute(unittest.TestCase):
+    """Compute-level coverage for ``compute_code_lenses``: the
+    capability-surface lens. Confirms the lens sources its caps from
+    the manifest builder (not a heuristic)."""
+
+    def _lenses(self, source, filename="<t>"):
+        from capa.lsp.code_lens import compute_code_lenses
+        return compute_code_lenses(source, filename)
+
+    def test_capability_function_lists_caps(self):
+        src = (
+            "fun handler(fs: Fs, net: Net)\n"
+            "    return 0\n"
+        )
+        lenses = self._lenses(src)
+        self.assertEqual(len(lenses), 1)
+        self.assertEqual(lenses[0].line, 1)
+        self.assertEqual(lenses[0].title, "caps: Fs, Net")
+
+    def test_pure_function_reads_as_pure(self):
+        src = "fun pure_fn()\n    return 0\n"
+        lenses = self._lenses(src)
+        self.assertEqual(len(lenses), 1)
+        self.assertEqual(lenses[0].title, "caps: none (pure)")
+
+    def test_one_lens_per_function(self):
+        src = (
+            "fun a(fs: Fs)\n    return 0\n"
+            "fun b()\n    return 0\n"
+            "fun c(net: Net)\n    return 0\n"
+        )
+        lenses = self._lenses(src)
+        self.assertEqual(len(lenses), 3)
+        titles = [cl.title for cl in lenses]
+        self.assertEqual(
+            titles,
+            ["caps: Fs", "caps: none (pure)", "caps: Net"],
+        )
+
+    def test_caps_match_manifest_declared_capabilities(self):
+        """The lens caps must equal the manifest's
+        ``declared_capabilities`` for the same function - the
+        authoritative SBOM source, not a re-derivation."""
+        from capa.lexer import Lexer
+        from capa.parser import Parser
+        from capa.analyzer import analyze
+        from capa.manifest import build_manifest
+
+        src = (
+            "type Logger { out: Stdio }\n"
+            "fun use(fs: Fs, l: Logger)\n"
+            "    return 0\n"
+        )
+        toks = Lexer(src, filename="<t>").lex()
+        mod = Parser(toks, source=src, filename="<t>").parse_module()
+        analyze(mod, source=src, filename="<t>")
+        manifest = build_manifest(mod, filename="<t>")
+        declared = {
+            r["name"]: r["declared_capabilities"]
+            for r in manifest["functions"] if r.get("container") is None
+        }
+        lenses = self._lenses(src)
+        self.assertEqual(len(lenses), 1)
+        # declared_capabilities for 'use' is exactly ['Fs'].
+        self.assertEqual(declared["use"], ["Fs"])
+        self.assertEqual(lenses[0].title, "caps: Fs")
+
+    def test_broken_file_returns_empty(self):
+        self.assertEqual(self._lenses("fun broken("), [])
+
+    def test_imported_functions_get_no_phantom_lens(self):
+        """When the open file ``import``s another module, the loader
+        inlines that module's top-level functions into the analyzed
+        AST tagged with the *imported* file's position. A lens must be
+        emitted only for functions declared in the OPEN file, at their
+        own positions; the imported module's functions must NOT paint
+        phantom lenses onto unrelated lines of the open document."""
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "mymod.capa").write_text(
+                "pub fun helper(fs: Fs)\n    return 0\n",
+                encoding="utf-8",
+            )
+            app = root / "app.capa"
+            app.write_text(
+                "import mymod\n"
+                "fun run(net: Net)\n"
+                "    return 0\n",
+                encoding="utf-8",
+            )
+            lenses = self._lenses(
+                app.read_text(encoding="utf-8"), str(app),
+            )
+
+        # Exactly one lens: app.capa's own ``run`` only. ``helper`` is
+        # imported and must not appear, and no lens lands on line 1
+        # (the ``import`` line) or any other phantom position.
+        self.assertEqual(len(lenses), 1)
+        self.assertEqual(lenses[0].title, "caps: Net")
+        # ``run`` is on line 2 of app.capa (1-based).
+        self.assertEqual(lenses[0].line, 2)
+        self.assertNotIn(1, [cl.line for cl in lenses])
+
+
+@unittest.skipUnless(
+    _HAVE_LSP and _HAVE_PYGLS,
+    "requires pygls + lsprotocol (pip install '.[lsp]')",
+)
+class TestLspSelectionRangeHandler(_LspHandlerHarness, unittest.TestCase):
+    """Integration: the registered ``textDocument/selectionRange``
+    handler translates Capa-native chains to nested
+    ``lsp.SelectionRange`` wire types, one per requested position."""
+
+    def test_handler_emits_nested_ranges(self):
+        from lsprotocol import types as lsp
+        method = lsp.TEXT_DOCUMENT_SELECTION_RANGE
+        self.assertIn(method, self.server.protocol.fm.features)
+        self._set_source(
+            "fun main(stdio: Stdio)\n"
+            "    let x = foo(a + b)\n"
+        )
+        line = "    let x = foo(a + b)"
+        col0 = line.index("a", line.index("foo"))  # 0-based 'a'
+        params = lsp.SelectionRangeParams(
+            text_document=self._text_doc_id(),
+            positions=[self._params_position(1, col0)],  # line index 1
+        )
+        result = self._handler(method)(params)
+        self.assertEqual(len(result), 1)
+        # The chain is non-trivial: at least one parent link.
+        link = result[0]
+        self.assertIsNotNone(link.parent)
+        # Each range is contained in its parent.
+        while link.parent is not None:
+            inner, outer = link.range, link.parent.range
+            self.assertTrue(
+                (outer.start.line, outer.start.character)
+                <= (inner.start.line, inner.start.character)
+            )
+            self.assertTrue(
+                (inner.end.line, inner.end.character)
+                <= (outer.end.line, outer.end.character)
+            )
+            link = link.parent
+
+    def test_handler_multiple_positions_aligned(self):
+        from lsprotocol import types as lsp
+        method = lsp.TEXT_DOCUMENT_SELECTION_RANGE
+        self._set_source("fun f(fs: Fs)\n    let y = 1 + 2\n")
+        params = lsp.SelectionRangeParams(
+            text_document=self._text_doc_id(),
+            positions=[
+                self._params_position(1, 8),
+                self._params_position(1, 12),
+            ],
+        )
+        result = self._handler(method)(params)
+        self.assertEqual(len(result), 2)
+        for link in result:
+            self.assertIsNotNone(link.range)
+
+    def test_handler_broken_file_returns_position_ranges(self):
+        from lsprotocol import types as lsp
+        method = lsp.TEXT_DOCUMENT_SELECTION_RANGE
+        self._set_source("fun broken(\n")
+        params = lsp.SelectionRangeParams(
+            text_document=self._text_doc_id(),
+            positions=[self._params_position(0, 4)],
+        )
+        result = self._handler(method)(params)
+        # One result per input; the unparseable buffer yields a
+        # zero-width range at the position (no crash).
+        self.assertEqual(len(result), 1)
+        self.assertIsNone(result[0].parent)
+        self.assertEqual(
+            (result[0].range.start.line, result[0].range.start.character),
+            (result[0].range.end.line, result[0].range.end.character),
+        )
+
+
+@unittest.skipUnless(
+    _HAVE_LSP and _HAVE_PYGLS,
+    "requires pygls + lsprotocol (pip install '.[lsp]')",
+)
+class TestLspCodeLensHandler(_LspHandlerHarness, unittest.TestCase):
+    """Integration: the registered ``textDocument/codeLens`` handler
+    translates Capa-native capability lenses to LSP CodeLens wire
+    types above each top-level function."""
+
+    def test_handler_emits_capability_lens(self):
+        from lsprotocol import types as lsp
+        method = lsp.TEXT_DOCUMENT_CODE_LENS
+        self.assertIn(method, self.server.protocol.fm.features)
+        self._set_source(
+            "fun handler(fs: Fs, net: Net)\n"
+            "    return 0\n"
+            "fun pure_fn()\n"
+            "    return 0\n"
+        )
+        params = lsp.CodeLensParams(text_document=self._text_doc_id())
+        result = self._handler(method)(params)
+        self.assertIsNotNone(result)
+        self.assertEqual(len(result), 2)
+        titles = [cl.command.title for cl in result]
+        self.assertIn("caps: Fs, Net", titles)
+        self.assertIn("caps: none (pure)", titles)
+        # The first lens anchors at the first function's line.
+        self.assertEqual(result[0].range.start.line, 0)
+
+    def test_handler_broken_file_returns_none(self):
+        from lsprotocol import types as lsp
+        method = lsp.TEXT_DOCUMENT_CODE_LENS
+        self._set_source("fun broken(\n")
+        params = lsp.CodeLensParams(text_document=self._text_doc_id())
+        self.assertIsNone(self._handler(method)(params))
+
+
 if __name__ == "__main__":
     unittest.main()

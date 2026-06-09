@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 from .. import __version__ as _CAPA_VERSION
 from ..tokens import Pos
 from .code_actions import compute_code_actions
+from .code_lens import compute_code_lenses
 from .completion import compute_completions
 from .definition import compute_definition
 from .diagnostics import compute_diagnostics
@@ -29,6 +30,7 @@ from .hover import compute_hover
 from .inlay_hint import compute_inlay_hints
 from .references import compute_references
 from .rename import compute_prepare_rename, compute_rename
+from .selection_range import compute_selection_ranges
 from .semantic_tokens import (
     TOKEN_MODIFIERS as SEM_TOKEN_MODIFIERS,
     TOKEN_TYPES as SEM_TOKEN_TYPES,
@@ -698,6 +700,86 @@ def _build_server():
                 )
             )
         return out
+
+    # -----------------------------------------------------------
+    # Selection range (textDocument/selectionRange). Smart-select /
+    # expand-selection: for each requested position, the chain of
+    # enclosing AST node ranges innermost->outermost, linked via
+    # ``parent``. Backed by an AST span reconstruction that returns
+    # an all-empty result on parse failure so a mid-edit buffer does
+    # not crash the request.
+    # -----------------------------------------------------------
+
+    def _selrange_to_lsp(doc, link):
+        """Translate a Capa-native ``SelectionRange`` chain (1-based,
+        codepoint columns) into nested ``lsp.SelectionRange`` wire
+        types, converting each range to client UTF-16 units."""
+        wire = None
+        if link.parent is not None:
+            wire = _selrange_to_lsp(doc, link.parent)
+        rng = _to_client_range(doc, lsp.Range(
+            start=lsp.Position(
+                line=link.start[0] - 1, character=link.start[1] - 1,
+            ),
+            end=lsp.Position(
+                line=link.end[0] - 1, character=link.end[1] - 1,
+            ),
+        ))
+        return lsp.SelectionRange(range=rng, parent=wire)
+
+    @server.feature(lsp.TEXT_DOCUMENT_SELECTION_RANGE)
+    def selection_range(ls, params: "lsp.SelectionRangeParams"):
+        doc = ls.workspace.get_text_document(params.text_document.uri)
+        positions = [
+            _inbound_line_col(doc, p) for p in (params.positions or [])
+        ]
+        chains = compute_selection_ranges(doc.source, positions)
+        # The protocol expects exactly one result per input position;
+        # fall back to a zero-width range at the position when no node
+        # covers it so the result list stays aligned with the input.
+        out = []
+        for (line, col), chain in zip(positions, chains):
+            if chain is None:
+                pos = _to_client_position(doc, lsp.Position(
+                    line=line - 1, character=col - 1,
+                ))
+                out.append(lsp.SelectionRange(
+                    range=lsp.Range(start=pos, end=pos), parent=None,
+                ))
+            else:
+                out.append(_selrange_to_lsp(doc, chain))
+        return out
+
+    # -----------------------------------------------------------
+    # Code lens (textDocument/codeLens). An informational lens above
+    # every top-level function declaration showing its capability
+    # surface (``caps: Fs, Net`` / ``caps: none (pure)``). The
+    # capability set comes from the manifest builder, so the lens
+    # matches the SBOM. Title-only (no command). Empty on parse /
+    # analyse failure.
+    # -----------------------------------------------------------
+
+    @server.feature(lsp.TEXT_DOCUMENT_CODE_LENS)
+    def code_lens(ls, params: "lsp.CodeLensParams"):
+        doc = ls.workspace.get_text_document(params.text_document.uri)
+        lenses = compute_code_lenses(doc.source, params.text_document.uri)
+        if not lenses:
+            return None
+        return [
+            lsp.CodeLens(
+                range=_to_client_range(doc, lsp.Range(
+                    start=lsp.Position(
+                        line=cl.line - 1, character=cl.col - 1,
+                    ),
+                    end=lsp.Position(
+                        line=cl.line - 1,
+                        character=cl.col - 1 + 1,
+                    ),
+                )),
+                command=lsp.Command(title=cl.title, command=""),
+            )
+            for cl in lenses
+        ]
 
     return server
 
