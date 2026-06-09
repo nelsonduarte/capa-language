@@ -3,26 +3,25 @@
 [![agda](https://github.com/nelsonduarte/capa-language/actions/workflows/agda.yml/badge.svg)](https://github.com/nelsonduarte/capa-language/actions/workflows/agda.yml)
 
 > **Status (2026-06-09): all four capability soundness theorems
-> proved, PLUS Lemma 1, Lemma 2, and the declassify-free
-> noninterference theorem for λ_if; mechanically typechecked in
-> CI; no postulates remain.** This directory holds two
-> formalisations in Agda. (1) The λ_cap capability calculus:
-> syntax, typing, reduction, PLFA-style parallel substitution, the
-> inductive `_∈caps_` relation, and the reflexive-transitive
-> closure `_==>*_`; Progress, Preservation, Capability Soundness,
-> and Manifest Completeness ([`docs/semantics.md`](../docs/semantics.md)
+> proved, PLUS Lemma 1, Lemma 2, the declassify-free
+> noninterference theorem (Theorem 3) AND the delimited-release
+> theorem (Theorem 4) for λ_if; mechanically typechecked in CI; no
+> postulates remain.** This directory holds two formalisations in
+> Agda. (1) The λ_cap capability calculus: syntax, typing,
+> reduction, PLFA-style parallel substitution, the inductive
+> `_∈caps_` relation, and the reflexive-transitive closure
+> `_==>*_`; Progress, Preservation, Capability Soundness, and
+> Manifest Completeness ([`docs/semantics.md`](../docs/semantics.md)
 > Theorems 1 and 2) are proved. (2) The λ_if information-flow
 > calculus ([`docs/semantics.md`](../docs/semantics.md) Section 9):
 > the two-point security lattice, expression labelling,
 > flow-sensitive statement typing, an inductive big-step
-> semantics, low-equivalence, and the noninterference theorem
-> (Theorem 3) with its two supporting lemmas. The
-> noninterference modules typecheck under Agda's `--safe` flag,
-> which mechanically forbids postulates, `trustMe`, and unsafe
-> pragmas. **Theorem 4 (delimited release for `declassify`) is
-> NOT yet mechanised**; it is recorded as an honest future item
-> (a documented obligation, not a postulate) at the foot of
-> `CapaNoninterference.agda`.
+> semantics, low-equivalence, the noninterference theorem
+> (Theorem 3) with its two supporting lemmas, AND the
+> delimited-release / relaxed-noninterference theorem (Theorem 4)
+> for the full calculus WITH `declassify`. The noninterference
+> modules typecheck under Agda's `--safe` flag, which mechanically
+> forbids postulates, `trustMe`, and unsafe pragmas.
 
 ## What this directory is for
 
@@ -87,16 +86,25 @@ tactics differ.
 
 - `CapaNoninterference.agda`: the noninterference development.
   Lemma 1 (expression label soundness, `lemma1`), Lemma 2
-  (confinement / high-pc, `confinement`), and Theorem 3
+  (confinement / high-pc, `confinement`), Theorem 3
   (termination-insensitive noninterference for the
-  declassify-free fragment, `noninterference`). Two supporting
-  lemmas the paper proof uses implicitly are made explicit and
-  proved: `mono-secret` (a SECRET-pc statement never lowers a
-  label to PUBLIC) and `while-high-conf` (a SECRET-guarded loop
-  emits nothing and touches no PUBLIC variable). Theorem 4
-  (delimited release) is left as a clearly-marked future item
-  (a precise commented obligation, NOT a postulate). The whole
-  module is checked under `--safe`.
+  declassify-free fragment, `noninterference`), and Theorem 4
+  (delimited release / relaxed noninterference for the full
+  calculus with `declassify`, `theorem4`). Two supporting lemmas
+  the paper proof uses implicitly are made explicit and proved:
+  `mono-secret` (a SECRET-pc statement never lowers a label to
+  PUBLIC) and `while-high-conf` (a SECRET-guarded loop emits
+  nothing and touches no PUBLIC variable). Theorem 4 reuses
+  `lemma1-decl` (Lemma 1 re-admitting `declassify`, discharged in
+  the L-Declassify case by the agreement hypothesis) and the
+  release-log machinery from `CapaIF.agda`. The whole module is
+  checked under `--safe`. A small worked example at the foot of
+  the module (`example-prog = sink(declassify(env-get))`) shows a
+  declassify-and-sink program that is covered by Theorem 4 but
+  EXCLUDED from Theorem 3 (it has no `DFStmt` derivation), and
+  proves the agreement hypothesis for it is exactly secret
+  equality `k1 == k2`, so Theorem 4 does not collapse into
+  Theorem 3.
 
 ## How to typecheck
 
@@ -203,22 +211,23 @@ Honest tracking:
 | λ_if Lemma 1: expression label soundness | landed |
 | λ_if Lemma 2: confinement / high-pc | landed |
 | λ_if Theorem 3: declassify-free noninterference | landed |
-| λ_if Theorem 4: delimited release | future (honest gap, not a postulate) |
+| λ_if Theorem 4: delimited release | landed (machine-checked, `--safe`) |
 
-The four capability soundness theorems and the λ_if
-noninterference theorem (Theorem 3, with Lemmas 1 and 2) are
-machine-verified; the noninterference modules pass under
-`--safe`. The paper can cite them as such; the Agda source in
-this directory is the artefact a referee opens. Theorem 4
-(delimited release) is the one remaining future item, recorded
-as a precise obligation at the foot of `CapaNoninterference.agda`.
+The four capability soundness theorems and BOTH λ_if
+noninterference theorems (Theorem 3 for the declassify-free
+fragment and Theorem 4, delimited release, for the full calculus
+with `declassify`, with Lemmas 1 and 2) are machine-verified; the
+noninterference modules pass under `--safe`. The paper can cite
+them as such; the Agda source in this directory is the artefact a
+referee opens. No future-item gap remains in the λ_if
+development.
 
 ## λ_if: deviations from the Section 9 paper proof
 
 The mechanisation is faithful to
 [`docs/semantics.md`](../docs/semantics.md) Section 9 rule for
-rule. Two encoding choices differ from the prose, both documented
-inline in `CapaIF.agda` and neither weakening the theorem:
+rule. Three encoding choices differ from the prose, all documented
+inline in `CapaIF.agda` and none weakening the theorem:
 
 - **D1 (total stores).** Stores and label environments are total
   functions `Var -> Nat` / `Var -> L` rather than finite partial
@@ -235,6 +244,30 @@ inline in `CapaIF.agda` and neither weakening the theorem:
   termination-insensitive semantics, and the noninterference proof
   relates only runs for which both derivations exist (both
   converge), matching the theorem's hypothesis.
+
+- **D3 (release-log agreement for Theorem 4).** Section 9.7.1
+  writes the delimited-release hypothesis as equality of the
+  multiset/tuple of declassified values,
+  `[| D(s) |]_{σ1}^{κ1} == [| D(s) |]_{σ2}^{κ2}`. The Agda
+  encoding uses two structural forms (in `CapaIF.agda`):
+  `EAgree` on expressions ("the two runs agree on every
+  declassified value inside `e`") and `Agree` on the two big-step
+  derivations ("...along the actual execution paths"). `EAgree` is
+  proved EQUIVALENT to equality of the expression release logs
+  `releases k1 s1 e == releases k2 s2 e` (`eagree<->releq`:
+  `eagree->releq` and `releq->eagree` in
+  `CapaNoninterference.agda`), where `releases` is the concrete
+  per-expression release log -- declassify's analogue of the `sink`
+  output trace. So the hypothesis IS release-log equality, phrased
+  per-position so the L-Op / L-Declassify cases decompose without
+  list-append surgery. The derivation-indexed `Agree` is the
+  faithful operational reading of `[| D(s) |]` evaluated at the
+  store each declassify is actually reached in: where the two runs
+  diverge under a SECRET guard it demands agreement only on the
+  guard releases (the divergent declassifies are confined by
+  Lemma 2, exactly as the paper proof handles them), so the
+  hypothesis is a real, non-vacuous condition on the low-context
+  declassifies and Theorem 4 does NOT collapse into Theorem 3.
 
 The proof also makes explicit two facts the paper proof uses
 silently: `mono-secret` (under SECRET pc, no rule manufactures a

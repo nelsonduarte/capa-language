@@ -6,7 +6,9 @@
 -- flow-sensitive statement typing, and big-step operational
 -- semantics for the lambda_if information-flow calculus described
 -- in docs/semantics.md Section 9. This is the syntax/semantics
--- layer; the noninterference theorems are in
+-- layer; it also defines the release-log machinery (`releases`,
+-- `EAgree`, `Agree`) that the delimited-release Theorem 4 needs.
+-- The noninterference theorems (3 and 4) are in
 -- CapaNoninterference.agda.
 --
 -- STATUS: Typechecks on Agda >= 2.6.4 (developed and checked
@@ -428,6 +430,132 @@ data _,_,_=>_,_ (kappa : Nat) : Stmt -> Store -> Store -> Trace -> Set where
 infix 4 _,_,_=>_,_
 
 ------------------------------------------------------------------
+-- The unit type (a trivial agreement obligation).
+------------------------------------------------------------------
+
+record Unit : Set where
+  constructor tt
+
+------------------------------------------------------------------
+-- Non-dependent product (used to conjoin agreement obligations
+-- here, and the theorem conclusions in CapaNoninterference.agda,
+-- which re-uses this same record).
+------------------------------------------------------------------
+
+record _×_ (A B : Set) : Set where
+  constructor _,_
+  field
+    fst : A
+    snd : B
+
+open _×_ public
+
+infixr 2 _×_
+
+------------------------------------------------------------------
+-- Release log of an expression (Section 9.7.1 machinery).
+--
+-- `releases k s e` is the sequence of values that the declassify
+-- nodes inside `e` produce when `e` is evaluated under ambient
+-- secret `k` and store `s`, in left-to-right evaluation order,
+-- innermost-first. This is the concrete "release log" the
+-- delimited-release statement is about: it is to `declassify` what
+-- the public output trace `o` is to `sink`. A declassify-free
+-- expression releases nothing.
+------------------------------------------------------------------
+
+releases : Nat -> Store -> Expr -> Trace
+releases k s (lit n)        = []
+releases k s (evar x)       = []
+releases k s (op a b)       = releases k s a ++ releases k s b
+releases k s env-get        = []
+releases k s (declassify e) = releases k s e ++ (eval k s e :: [])
+
+------------------------------------------------------------------
+-- Expression-level release agreement (Section 9.7.1).
+--
+-- `EAgree k1 s1 k2 s2 e` says the two runs (ambient secret k1 over
+-- store s1, and k2 over s2) AGREE ON EVERY DECLASSIFIED VALUE
+-- inside `e`. This is the structural, per-declassify-position form
+-- of the paper's hypothesis `[| D(e) |]_{s1}^{k1} ==
+-- [| D(e) |]_{s2}^{k2}`. It is provably equivalent to equality of
+-- the release logs (`eagree<->releq` in CapaNoninterference.agda),
+-- so it is exactly "the two release logs are equal" phrased so the
+-- L-Op case decomposes without any list-append cancellation.
+------------------------------------------------------------------
+
+data EAgree (k1 : Nat) (s1 : Store) (k2 : Nat) (s2 : Store) : Expr -> Set where
+  ea-lit  : forall {n} -> EAgree k1 s1 k2 s2 (lit n)
+  ea-var  : forall {x} -> EAgree k1 s1 k2 s2 (evar x)
+  ea-op   : forall {a b}
+          -> EAgree k1 s1 k2 s2 a
+          -> EAgree k1 s1 k2 s2 b
+          -> EAgree k1 s1 k2 s2 (op a b)
+  ea-env  : EAgree k1 s1 k2 s2 env-get
+  -- the declassified value itself agrees, AND its sub-releases agree
+  ea-decl : forall {e}
+          -> EAgree k1 s1 k2 s2 e
+          -> eval k1 s1 e == eval k2 s2 e
+          -> EAgree k1 s1 k2 s2 (declassify e)
+
+------------------------------------------------------------------
+-- Statement-level release agreement, indexed by the TWO big-step
+-- derivations (Section 9.7.1).
+--
+-- `Agree d1 d2` says the two runs agree on every declassified
+-- value PRODUCED ALONG THE ACTUAL EXECUTION PATHS d1 and d2 -- the
+-- faithful operational reading of the paper's ` [| D(s) |] == ...`
+-- with `[| . |]` evaluated at the stores each declassify is
+-- actually reached in. It is defined by recursion on the paired
+-- derivations, so it composes exactly with the lock-step induction
+-- of Theorem 4 and never needs list-append cancellation.
+--
+-- When the two runs take different control-flow paths (a SECRET
+-- guard), only the guard's release agreement is recorded; the
+-- divergent branches' declassifies are confined by Lemma 2 and
+-- need no cross-run agreement, so no constraint is imposed there.
+------------------------------------------------------------------
+
+Agree : forall {k1 k2 s sigma1 sigma1' sigma2 sigma2' o1 o2}
+      -> k1 , s , sigma1 => sigma1' , o1
+      -> k2 , s , sigma2 => sigma2' , o2
+      -> Set
+-- skip
+Agree E-Skip E-Skip = Unit
+-- assignment: agree on the released values of the RHS
+Agree {k1 = k1} {k2 = k2} {sigma1 = s1} {sigma2 = s2}
+  (E-Assign {e = e}) E-Assign = EAgree k1 s1 k2 s2 e
+-- sequencing: agree on both halves
+Agree (E-Seq d1a d1b) (E-Seq d2a d2b) = Agree d1a d2a × Agree d1b d2b
+-- conditional, same branch: guard releases agree, and the branch
+Agree {k1 = k1} {k2 = k2} {sigma1 = s1} {sigma2 = s2}
+  (E-IfT {e = e} _ d1) (E-IfT _ d2) = EAgree k1 s1 k2 s2 e × Agree d1 d2
+Agree {k1 = k1} {k2 = k2} {sigma1 = s1} {sigma2 = s2}
+  (E-IfF {e = e} _ d1) (E-IfF _ d2) = EAgree k1 s1 k2 s2 e × Agree d1 d2
+-- conditional, divergent branches (only possible under a SECRET
+-- guard): only the guard releases must agree
+Agree {k1 = k1} {k2 = k2} {sigma1 = s1} {sigma2 = s2}
+  (E-IfT {e = e} _ _) (E-IfF _ _) = EAgree k1 s1 k2 s2 e
+Agree {k1 = k1} {k2 = k2} {sigma1 = s1} {sigma2 = s2}
+  (E-IfF {e = e} _ _) (E-IfT _ _) = EAgree k1 s1 k2 s2 e
+-- while, both stop: guard releases agree
+Agree {k1 = k1} {k2 = k2} {sigma1 = s1} {sigma2 = s2}
+  (E-WhileF {e = e} _) (E-WhileF _) = EAgree k1 s1 k2 s2 e
+-- while, both iterate: guard, body, and the rest all agree
+Agree {k1 = k1} {k2 = k2} {sigma1 = s1} {sigma2 = s2}
+  (E-WhileT {e = e} _ b1 r1) (E-WhileT _ b2 r2)
+    = EAgree k1 s1 k2 s2 e × (Agree b1 b2 × Agree r1 r2)
+-- while, divergent iteration counts (only under a SECRET guard):
+-- only the guard releases must agree
+Agree {k1 = k1} {k2 = k2} {sigma1 = s1} {sigma2 = s2}
+  (E-WhileF {e = e} _) (E-WhileT _ _ _) = EAgree k1 s1 k2 s2 e
+Agree {k1 = k1} {k2 = k2} {sigma1 = s1} {sigma2 = s2}
+  (E-WhileT {e = e} _ _ _) (E-WhileF _) = EAgree k1 s1 k2 s2 e
+-- sink: agree on the released values of the sunk expression
+Agree {k1 = k1} {k2 = k2} {sigma1 = s1} {sigma2 = s2}
+  (E-Sink {e = e}) E-Sink = EAgree k1 s1 k2 s2 e
+
+------------------------------------------------------------------
 -- That is the syntax + semantics. Lemma 1, Lemma 2, Theorem 3,
--- and the Theorem 4 status are in CapaNoninterference.agda.
+-- and Theorem 4 are in CapaNoninterference.agda.
 ------------------------------------------------------------------
