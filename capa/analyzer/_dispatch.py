@@ -175,6 +175,11 @@ class _DispatchMixin:
                         # parameter order, so it doubles as the
                         # param-index -> arg-index map.
                         self._check_ifc_call_summary(e, sym, perm)
+                        # Cross-function field-write effect: a callee
+                        # that stores a secret-derived value into a
+                        # field of one of its parameters taints the
+                        # caller's binding whole-value (closes gap 1).
+                        self._check_ifc_call_field_effect(e, sym, perm)
                         reordered_args = [e.args[j] for j in perm]
                         reordered_tys = [arg_tys[j] for j in perm]
                         ret_ty = self._check_call_with_inference(
@@ -520,6 +525,12 @@ class _DispatchMixin:
         # the receiver binds to ``self`` (summary param index 0).
         self._check_ifc_method_call_summary(
             e, type_sym, method_sym, recv_ty, perm,
+        )
+        # Cross-function field-write effect (closes gap 1): a method
+        # that stores a secret-derived value into a field of ``self`` /
+        # a parameter taints the caller's binding whole-value.
+        self._check_ifc_method_call_field_effect(
+            e, method_sym, recv_ty, perm,
         )
         reordered_args = [e.args[j] for j in perm]
         reordered_tys = [arg_tys[j] for j in perm]

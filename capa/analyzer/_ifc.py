@@ -200,22 +200,44 @@ class _IfcMixin:
     # sound fallback used the moment precision cannot apply (escape /
     # aliasing / unknown shape).
     #
-    # KNOWN PRE-EXISTING LIMITATIONS (false negatives). All three are
-    # present at HEAD and are NOT introduced by per-field precision;
-    # they are recorded here so the field-level reads above are not
-    # mistaken for full guarantees:
-    #   (a) cross-function self-mutation: a callee that mutates a field
-    #       of a struct passed to it as a parameter is tracked only at
-    #       whole-value granularity, not propagated back per field (the
-    #       deferred cross-function-self-mutation slice).
-    #   (b) embed-then-mutate staleness: a bare struct binding embedded
-    #       into another struct literal snapshots its field labels at
-    #       construction time, so a later mutation of the still-live
-    #       source binding is not re-propagated to reads through the
-    #       embedding.
+    # KNOWN LIMITATIONS. Gaps (a) and (b) below were per-field
+    # soundness false negatives; both are now CLOSED (recorded here so
+    # the closure is documented alongside the precision rules). Gap (c)
+    # remains.
+    #   (a) cross-function self/param field-write: CLOSED. A callee that
+    #       stores a secret-derived value into a field of one of its
+    #       parameters (incl ``self``) now taints the caller's binding
+    #       whole-value, via a modular FIELD-WRITE EFFECT computed to a
+    #       fixpoint in ``_ifc_summary`` and propagated at the call site
+    #       (``_check_ifc_call_field_effect`` /
+    #       ``_check_ifc_method_call_field_effect``). Conservative:
+    #       whole-value on the caller binding (no per-field cross-function
+    #       precision), default-warn / strict-error like the other
+    #       cross-function check. The field-write effect is recorded for
+    #       EVERY store op, not just ``=``: an augmented store
+    #       (``box.f += v``) joins the value into the old field and so can
+    #       only raise the label, so recording it is sound (FN-1). The
+    #       cross-function whole-value taint walks the binding's alias
+    #       group, so an embed alias (see (b)) mutated across a function
+    #       boundary still taints every aliased binding (FN-2).
+    #   (b) embed-then-mutate staleness: CLOSED. A struct EXPRESSION
+    #       embedded into another struct literal (``Outer { inner: b }``,
+    #       or a field-access chain ``Outer { inner: m.inner }``) names a
+    #       live heap object, so the outer binding is linked into the
+    #       embedded source's alias group (``_ifc_link_embedded_structs``).
+    #       A bare-Ident embed links into that binding's group directly; a
+    #       field-chain embed links into the chain ROOT's group (an over-
+    #       approximation: the outer is tainted whenever any part of the
+    #       root's subtree is, which is sound). A later mutation of either
+    #       binding -- intra-procedural (``_ifc_field_store``'s alias-group
+    #       path) or cross-function (the field-write effect's alias-group-
+    #       aware whole-value taint) -- taints the whole group whole-value.
+    #       An embed whose origin cannot be resolved to a tracked binding
+    #       escapes the outer binding whole-value rather than dropping it.
     #   (c) implicit flow via a public assignment performed under a
     #       secret pc that escapes the conditioned branch (pre-existing
-    #       for scalars too, not specific to structs).
+    #       for scalars too, not specific to structs). Still open;
+    #       handled under ``@strict_ifc`` via the pc-label machinery.
 
     def _field_map_of(self, e: A.Expr) -> Optional[dict]:
         """The recorded per-field label map of a struct-typed
@@ -786,6 +808,55 @@ class _IfcMixin:
         new_sym.label = L.join(getattr(new_sym, "label", None),
                                getattr(src, "label", None))
 
+    def _ifc_link_embedded_structs(self, new_sym, value: A.Expr) -> None:
+        """Closes the embed-then-mutate staleness gap. When a bare
+        struct IDENTIFIER ``b`` is embedded into a struct literal field
+        (``let o = Outer { inner: b, ... }``), ``o.inner`` and ``b`` are
+        the SAME heap object (structs are reference types), so a later
+        mutation of the still-live ``b`` must be visible through ``o``.
+        Link ``new_sym`` (``o``) into the alias group of every such
+        embedded source binding, so a field store through ANY member
+        taints the whole group whole-value (handled in
+        ``_ifc_field_store``). Whole-value and conservative: tainting
+        ``o`` whenever ``b`` is tainted is sound because they share
+        identity. Nested struct LITERALS are fresh (no outside alias),
+        so they are not linked.
+
+        A non-identifier embed that is a field-access chain rooted at a
+        tracked struct binding (``Outer { inner: m.inner }``) names the
+        SAME heap object as ``m.inner``, so it must be linked too.
+        ``m.inner`` cannot be its own alias-group root (the group keys on
+        whole-binding identity, not a sub-path), so link ``new_sym`` into
+        the ROOT binding's alias group (here ``m``). This over-
+        approximates: ``o`` is tainted whenever ANY part of ``m``'s
+        subtree is tainted, which is sound (never under-reports) because
+        the embedded sub-object is part of that subtree. If the embedded
+        value is some other shape (a call, an index, ...) whose root is
+        not a resolvable tracked binding, escape the new binding whole-
+        value so a later read of it cannot narrow -- never silently
+        drop."""
+        if new_sym is None or not isinstance(value, A.StructLit):
+            return
+        for _name, v in value.fields:
+            if isinstance(v, A.Ident):
+                src = self._struct_root_sym(v)
+                if src is not None and self._is_struct_binding(src):
+                    self._ifc_alias_link(new_sym, v)
+            elif isinstance(v, A.FieldAccess):
+                root = self._struct_root_sym(v)
+                if root is not None and self._is_struct_binding(root):
+                    # Link into the ROOT binding's group via a bare Ident
+                    # for the root (``_ifc_alias_link`` resolves the root
+                    # symbol). Over-approximate but sound.
+                    self._ifc_alias_link(new_sym, v)
+                elif self._is_struct_binding(new_sym):
+                    # Embedded sub-struct whose origin we cannot resolve
+                    # to a tracked binding: escape the outer binding so a
+                    # later per-field read of it falls back to its
+                    # (conservative) whole-value label instead of reading
+                    # a stale precise label.
+                    self._escaped_struct_syms.add(id(new_sym))
+
     def _is_struct_binding(self, sym) -> bool:
         """True if ``sym``'s type resolves to a user struct type, so it
         is a candidate for per-field tracking / reference-aliasing."""
@@ -1068,6 +1139,112 @@ class _IfcMixin:
             self._err(msg, pos)
         else:
             self._warn_ifc(msg, pos)
+
+    # ---- cross-function field-write effect (closes gap 1) --------
+
+    def _check_ifc_call_field_effect(
+        self, e: A.Call, sym, perm: list[int],
+    ) -> None:
+        """At a user free-function call, apply the callee's field-write
+        effects to the CALLER's bindings. ``perm`` is in parameter
+        order: ``e.args[perm[i]]`` is the argument bound to parameter
+        ``i``. The effect ``{j -> sources}`` means the callee writes a
+        field of the object passed as parameter ``j`` from those
+        sources; when a source fires (a @secret real-param argument, or
+        the unconditional internal-secret sentinel), the caller's
+        binding for parameter ``j`` is tainted whole-value secret."""
+        effects = self._ifc_field_effects.get(("fun", sym.name))
+        if not effects:
+            return
+        self._apply_field_effects(effects, perm, e.args)
+
+    def _check_ifc_method_call_field_effect(
+        self, e: A.MethodCall, method_sym, recv_ty, perm: list[int],
+    ) -> None:
+        """Method-call form of the field-write-effect propagation.
+        Parameter index 0 is ``self`` (the receiver); the explicit
+        parameters follow. Builds the full-order argument list
+        (receiver first) and the full-order ``param_idx -> arg_idx``
+        map, then applies every candidate impl's effects (the same
+        by-name over-approximation the summary uses) -- whole-value and
+        conservative, so a dynamic-dispatch receiver never drops the
+        taint."""
+        from ._ifc_summary import methods_by_name
+        exact_key = ("method", recv_ty.name, e.method)
+        keys = [exact_key] if exact_key in self._ifc_field_effects else \
+            methods_by_name(self._ifc_field_effects).get(e.method, ())
+        if not keys:
+            return
+        has_self = getattr(method_sym, "has_self", False)
+        full_args = [e.receiver] + list(e.args)
+        full_perm: dict[int, int] = {}
+        if has_self:
+            full_perm[0] = 0
+        for local_idx, arg_idx in enumerate(perm):
+            full_idx = local_idx + 1 if has_self else local_idx
+            full_perm[full_idx] = arg_idx + 1
+        for key in keys:
+            effects = self._ifc_field_effects.get(key)
+            if effects:
+                self._apply_field_effects(effects, full_perm, full_args)
+
+    def _apply_field_effects(self, effects: dict, perm, args: list) -> None:
+        """Shared effect application: ``perm`` maps a callee parameter
+        index to an index into ``args``. For each target param whose
+        effect fires, taint the caller's binding for that target's
+        argument whole-value secret. ``perm`` may be a list (free call,
+        parameter-ordered) or a dict (method call, full order)."""
+        def arg_for(pidx):
+            if isinstance(perm, dict):
+                idx = perm.get(pidx)
+            else:
+                idx = perm[pidx] if pidx < len(perm) else None
+            if idx is None or idx >= len(args):
+                return None
+            return args[idx]
+
+        from ._ifc_summary import INTERNAL_SECRET
+        for target_pidx, sources in effects.items():
+            fires = False
+            for s in sources:
+                if s == INTERNAL_SECRET:
+                    fires = True
+                    break
+                src_arg = arg_for(s)
+                if src_arg is not None and \
+                        L.normalize(self._label_of(src_arg)) == L.SECRET:
+                    fires = True
+                    break
+            if not fires:
+                continue
+            target_arg = arg_for(target_pidx)
+            if target_arg is None:
+                continue
+            self._taint_binding_whole_value(target_arg)
+
+    def _taint_binding_whole_value(self, e: A.Expr) -> None:
+        """Raise the binding rooted at ``e`` to whole-value @secret and
+        escape it, so a later read of ANY field of it is caught. The
+        conservative, sound granularity for a cross-function field-write
+        effect (per-field precision across the boundary is not
+        attempted). No-op when ``e`` is not rooted at a binding.
+
+        Aliasing soundness: if the binding is in an alias group (an embed
+        alias ``Outer { inner: b }`` links ``o`` and ``b``, or ``var
+        b2 = b``), every member names the SAME heap object, so the
+        cross-function whole-value taint must reach all of them. Mirror
+        ``_ifc_field_store``'s alias-group path exactly: taint AND escape
+        every member, so a later read of any field of any aliased binding
+        is caught."""
+        sym = self._struct_root_sym(e)
+        if sym is None:
+            return
+        group = self._struct_aliases.get(id(sym))
+        members = group if group is not None else [sym]
+        for member in members:
+            member.label = L.join(getattr(member, "label", None), L.SECRET)
+            if getattr(member, "field_labels", None) is not None:
+                self._escaped_struct_syms.add(id(member))
 
     def _warn_ifc(self, message: str, pos) -> None:
         """Record a non-fatal IFC warning (does not affect ``ok``).

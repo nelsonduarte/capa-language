@@ -34,12 +34,50 @@ over-approximation: a method call whose receiver type is not known
 statically is matched against every user method of that name, so the
 analysis never under-reports a leak. It only ADDS detection; no
 existing label or check is relaxed.
+
+FIELD-WRITE EFFECTS (closes the cross-function self/param field-write
+false negative). Alongside the sink-reaching set, every callable also
+gets a **field-write effect**: a map ``target_param_idx -> set of
+sources`` recording that the callee writes a field of the object bound
+to ``target_param_idx`` (``self`` is index 0) from a value tainted by
+either another parameter (the source's index) or an internal secret
+source within the body (the sentinel ``INTERNAL_SECRET``), directly or
+transitively (the field is written from a value passed to a further
+call that itself has the effect). It is computed to the SAME fixpoint.
+
+The call site (see ``_check_ifc_field_write_effect`` in :mod:`._ifc`)
+propagates it CONSERVATIVELY: when the callee writes a field of param
+``j`` from param ``i`` and the caller's argument for ``i`` is @secret,
+the caller's binding bound to ``j`` is tainted at WHOLE-VALUE secret
+(so a later read of any field of it is caught); an internal-secret
+source taints the caller's binding-``j`` unconditionally. This is an
+explicit data-flow taint, default-warn / strict-error like the
+sink-reaching check, and whole-value (never per-field) on the caller
+side -- the sound approximation.
 """
 
 from __future__ import annotations
 
 from .. import capa_ast as A
-from ._ifc import _PUBLIC_SINKS, _CONTAINER_MUTATORS, _pattern_bound_names
+from ._ifc import (
+    _PUBLIC_SINKS, _CONTAINER_MUTATORS, _SECRET_SOURCES,
+    _pattern_bound_names,
+)
+
+
+# Sentinel source for a field written from an internal secret source
+# (``env.get(...)``) rather than from another parameter. Distinct from
+# any real 0-based parameter index.
+INTERNAL_SECRET = -1
+
+# Capability type names whose source methods (``_SECRET_SOURCES``)
+# produce secret data. Used to recognise an internal secret source at
+# summary time (no resolved types here) by matching a method call whose
+# receiver is a parameter of that capability type. Keeps the source
+# recognition precise (so e.g. ``List.get`` / ``Map.get`` are not
+# mistaken for the ``Env.get`` source).
+_SECRET_SOURCE_CAPS: frozenset = frozenset(cap for cap, _m in _SECRET_SOURCES)
+_SECRET_SOURCE_METHODS: frozenset = frozenset(m for _c, m in _SECRET_SOURCES)
 
 
 # A callable's parameters, in the canonical order the analyzer uses:
@@ -52,13 +90,21 @@ from ._ifc import _PUBLIC_SINKS, _CONTAINER_MUTATORS, _pattern_bound_names
 #   ("method", type_name, method)  -- an impl / trait method
 
 
-def compute_ifc_summaries(module: A.Module, global_scope) -> dict:
-    """Return ``{callable_key: frozenset(sink_reaching_param_indices)}``.
+def compute_ifc_summaries(module: A.Module, global_scope) -> tuple[dict, dict]:
+    """Return ``(sink_summaries, field_effects)``:
+
+    * ``sink_summaries``: ``{callable_key: frozenset(sink_reaching
+      param indices)}`` -- a value parameter whose value reaches a
+      public sink inside the body.
+    * ``field_effects``: ``{callable_key: {target_param_idx:
+      frozenset(source_param_idx | INTERNAL_SECRET)}}`` -- the callee
+      writes a field of the object at ``target_param_idx`` from the
+      named source(s).
 
     ``global_scope`` is the analyzer's populated global scope, used to
     tell user functions / variants / capabilities apart at call sites.
-    The result is the least fixpoint of the monotone summary operator,
-    so recursion (self or mutual) terminates.
+    Both results are the least fixpoint of the monotone summary
+    operator, so recursion (self or mutual) terminates.
     """
     builder = _SummaryBuilder(module, global_scope)
     return builder.run()
@@ -89,11 +135,18 @@ class _SummaryBuilder:
         self.global_scope = global_scope
         # callable_key -> set of sink-reaching param indices.
         self.summaries: dict = {}
+        # callable_key -> {target param idx -> set of source param idx /
+        # INTERNAL_SECRET}: the field-write effect (see module docstring).
+        self.field_effects: dict = {}
         # callable_key -> (param_names_in_order, A.FunDecl, is_method).
         # ``param_names_in_order`` includes ``self`` at index 0 for a
         # method, so a positional / named argument binds to the right
         # index uniformly with the call-site logic.
         self.callables: dict = {}
+        # callable_key -> set of parameter names that are typed as a
+        # secret-source capability (e.g. ``Env``). Used to recognise an
+        # internal secret source (``env.get(...)``) at summary time.
+        self.secret_source_params: dict = {}
         # method name -> list of method callable_keys (for the
         # receiver-type-unknown over-approximation at method calls).
         self.methods_by_name: dict[str, list] = {}
@@ -108,6 +161,10 @@ class _SummaryBuilder:
                 names = [p.name for p in item.params]
                 self.callables[key] = (names, item, False)
                 self.summaries[key] = set()
+                self.field_effects[key] = {}
+                self.secret_source_params[key] = self._secret_source_params(
+                    item.params,
+                )
             elif isinstance(item, A.ImplBlock):
                 for method in item.methods:
                     key = ("method", item.type_name, method.name)
@@ -118,38 +175,87 @@ class _SummaryBuilder:
                     names = [p.name for p in method.params]
                     self.callables[key] = (names, method, True)
                     self.summaries[key] = set()
+                    self.field_effects[key] = {}
+                    self.secret_source_params[key] = (
+                        self._secret_source_params(method.params)
+                    )
                     self.methods_by_name.setdefault(
                         method.name, []
                     ).append(key)
 
+    @staticmethod
+    def _secret_source_params(params) -> set:
+        """The names of parameters whose declared type is a
+        secret-source capability (``Env``), so a ``param.get(...)`` on
+        them is an internal secret source."""
+        out: set = set()
+        for p in params:
+            te = getattr(p, "type_expr", None)
+            if te is not None and getattr(te, "name", None) in \
+                    _SECRET_SOURCE_CAPS:
+                out.add(p.name)
+        return out
+
     # ---- fixpoint ---------------------------------------------------
 
-    def run(self) -> dict:
+    def run(self) -> tuple[dict, dict]:
         changed = True
-        # The summary operator is monotone over a finite lattice
-        # (each summary is a subset of its parameter indices), so the
-        # ascending chain stabilises; the loop is bounded.
+        # The summary operator is monotone over a finite lattice (each
+        # sink summary is a subset of parameter indices; each field
+        # effect maps a finite set of target indices to a finite set of
+        # source indices), so the ascending chain stabilises and the
+        # loop is bounded.
         while changed:
             changed = False
             for key in self.callables:
                 names, decl, _is_method = self.callables[key]
-                reaching = self._analyze_body(names, decl)
+                reaching, effects = self._analyze_body(names, decl, key)
                 if not reaching <= self.summaries[key]:
                     self.summaries[key] |= reaching
                     changed = True
-        return {k: frozenset(v) for k, v in self.summaries.items()}
+                if self._merge_effects(self.field_effects[key], effects):
+                    changed = True
+        sinks = {k: frozenset(v) for k, v in self.summaries.items()}
+        feffects = {
+            k: {t: frozenset(s) for t, s in v.items()}
+            for k, v in self.field_effects.items()
+        }
+        return sinks, feffects
+
+    @staticmethod
+    def _merge_effects(acc: dict, new: dict) -> bool:
+        """Monotonically merge field-write effect map ``new`` into
+        ``acc`` (target idx -> set of sources). Return True if ``acc``
+        grew (drives the fixpoint)."""
+        grew = False
+        for target, sources in new.items():
+            cur = acc.get(target)
+            if cur is None:
+                acc[target] = set(sources)
+                grew = grew or bool(sources)
+            elif not sources <= cur:
+                cur |= sources
+                grew = True
+        return grew
 
     # ---- per-body taint analysis ------------------------------------
 
-    def _analyze_body(self, param_names: list[str], decl: A.FunDecl) -> set:
-        """Compute which parameter indices of ``decl`` reach a sink,
-        using the summaries computed so far for transitive calls.
+    def _analyze_body(
+        self, param_names: list[str], decl: A.FunDecl, key,
+    ) -> tuple[set, dict]:
+        """Compute (a) which parameter indices of ``decl`` reach a sink
+        and (b) the field-write effects, using the summaries computed so
+        far for transitive calls.
 
         Taint is tracked as ``name -> set(param indices)``: the set of
-        source parameters whose value flows into that name. A sink
-        position taints those source params (adds them to the result).
-        ``declassify(...)`` yields the empty source set, breaking the
-        chain.
+        source parameters (or ``INTERNAL_SECRET``) whose value flows
+        into that name. A sink position taints those source params
+        (adds them to ``reaching``); a field store on a param-rooted
+        object records a field-write effect. ``declassify(...)`` yields
+        the empty source set, breaking the chain. The set of names that
+        ALIAS a parameter's object (for the field-store target) is the
+        same taint set, since a struct binding carries its source
+        params' indices by reference.
         """
         env: dict[str, set] = {}
         for idx, pname in enumerate(param_names):
@@ -159,8 +265,17 @@ class _SummaryBuilder:
             # seeding it is harmless and keeps the index alignment.
             env[pname] = {idx}
         reaching: set = set()
+        effects: dict = {}
+        # Per-callable analysis state consulted inside the walk (which
+        # threads only ``env`` / ``reaching`` through its signatures):
+        # the names of secret-source-capability params, and the
+        # accumulating field-write effect map.
+        self._cur_secret_source_params = self.secret_source_params.get(
+            key, set(),
+        )
+        self._cur_effects = effects
         self._walk_block(decl.body, env, reaching)
-        return reaching
+        return reaching, effects
 
     def _walk_block(self, block: A.Block, env: dict, reaching: set) -> None:
         for stmt in block.stmts:
@@ -180,6 +295,19 @@ class _SummaryBuilder:
                 env[stmt.target.name] = (
                     env.get(stmt.target.name, set()) | src
                 )
+            elif isinstance(stmt.target, A.FieldAccess):
+                # A field store ``obj.f = value`` (or ``obj.a.b = ...``):
+                # if the written object is rooted at a parameter (or a
+                # binding that aliases one), record a field-write effect
+                # from each source flowing into ``value`` onto each
+                # target param the object aliases. Whole-value on both
+                # sides (the conservative, sound granularity). ANY store
+                # op is recorded: an augmented store (``box.f += v``) reads
+                # the old field and joins ``value`` into it, so it can only
+                # RAISE the field's label, never lower it -- recording the
+                # effect for every op is sound and closes the augmented-
+                # store cross-function leak.
+                self._record_field_write(stmt.target, src, env)
         elif isinstance(stmt, A.IfStmt):
             self._taint_of(stmt.cond, env, reaching)
             self._walk_block(stmt.then_block, env, reaching)
@@ -211,6 +339,37 @@ class _SummaryBuilder:
             return
         for name in _pattern_bound_names(pat):
             env[name] = env.get(name, set()) | src
+
+    def _record_field_write(
+        self, target: A.FieldAccess, value_src: set, env: dict,
+    ) -> None:
+        """Record a field-write effect for ``target.f = value``. The
+        written object's identity is the env taint set of the chain's
+        ROOT name (a struct binding carries the param indices of every
+        param it aliases by reference). For each such target param
+        ``j``, every source flowing into the value becomes a field-write
+        effect ``j <- source``. A source that is itself a parameter
+        index (or ``INTERNAL_SECRET``) is recorded; transitive sources
+        already collapsed into ``value_src`` by ``_taint_of``."""
+        root = self._chain_root_name(target)
+        if root is None:
+            return
+        target_params = env.get(root, set())
+        if not target_params or not value_src:
+            return
+        for j in target_params:
+            if j == INTERNAL_SECRET:
+                continue
+            self._cur_effects.setdefault(j, set()).update(value_src)
+
+    @staticmethod
+    def _chain_root_name(e: A.Expr):
+        """The root identifier name of a field-access chain
+        (``b`` -> ``"b"``, ``b.inner.x`` -> ``"b"``), or ``None`` if the
+        chain is not rooted at a plain identifier."""
+        while isinstance(e, A.FieldAccess):
+            e = e.receiver
+        return e.name if isinstance(e, A.Ident) else None
 
     # ---- taint of an expression ------------------------------------
 
@@ -337,6 +496,14 @@ class _SummaryBuilder:
             for pidx, arg_idx in perm.items():
                 if pidx in sink_params and arg_idx < len(arg_srcs):
                     reaching |= arg_srcs[arg_idx]
+            # Transitive field-write effect: ``g`` writes a field of its
+            # param ``j`` from sources ``S``; if the argument bound to
+            # ``j`` here is rooted at one of MY params, that object's
+            # field is written, so I inherit the effect (with ``S``
+            # translated from g's params to my taint).
+            self._propagate_callee_effects(
+                self.field_effects.get(key, {}), perm, e.args, arg_srcs, env,
+            )
         # Either way the call RESULT joins argument taints (the
         # conservative result-label rule, mirrored here).
         out = set()
@@ -349,6 +516,20 @@ class _SummaryBuilder:
     ) -> set:
         recv_src = self._taint_of(e.receiver, env, reaching)
         arg_srcs = [self._taint_of(a, env, reaching) for a in e.args]
+
+        # Internal secret source (``env.get(...)``): a method named in
+        # ``_SECRET_SOURCE_METHODS`` called on a parameter typed as a
+        # secret-source capability yields a value carrying the
+        # INTERNAL_SECRET sentinel, so a field stored from it records an
+        # unconditional field-write effect. Matched precisely (the
+        # receiver is a known Env-typed parameter) so List/Map ``get``
+        # are not misread as a source.
+        if (
+            e.method in _SECRET_SOURCE_METHODS
+            and isinstance(e.receiver, A.Ident)
+            and e.receiver.name in self._cur_secret_source_params
+        ):
+            return {INTERNAL_SECRET}
 
         # Built-in public sink (Stdio.println, Net.post, ...): a
         # param-derived value in a sink argument position reaches a
@@ -411,11 +592,81 @@ class _SummaryBuilder:
                 if full_pidx in sink_params and arg_idx < len(arg_srcs):
                     reaching |= arg_srcs[arg_idx]
 
+        # Transitive field-write effect across the (possibly
+        # over-approximated) candidate methods. The full-order argument
+        # map binds ``self`` (param 0) to the receiver and the explicit
+        # params to their call arguments.
+        for key in candidate_keys:
+            names, _decl, _is_method = self.callables[key]
+            effects = self.field_effects.get(key, {})
+            if not effects:
+                continue
+            full_perm, full_args = self._method_full_perm(e, names)
+            full_srcs = [recv_src] + arg_srcs
+            self._propagate_callee_effects(
+                effects, full_perm, full_args, full_srcs, env,
+            )
+
         # Result joins receiver + argument taints (conservative).
         out = set(recv_src)
         for s in arg_srcs:
             out |= s
         return out
+
+    def _method_full_perm(self, e: A.MethodCall, names: list[str]):
+        """Full-order ``{param_idx: full_arg_idx}`` map and the matching
+        argument list for a method call, where index 0 is ``self`` (the
+        receiver) and the explicit params follow. ``full_arg_idx`` 0 is
+        the receiver; explicit args are shifted by 1 so they line up
+        with the ``[recv] + args`` source list."""
+        has_self = bool(names) and names[0] == "self"
+        explicit = names[1:] if has_self else names
+        explicit_perm = _bind(e.args, e.arg_names, explicit)
+        full_perm: dict = {}
+        if has_self:
+            full_perm[0] = 0
+        for local_pidx, arg_idx in explicit_perm.items():
+            full_pidx = local_pidx + 1 if has_self else local_pidx
+            full_perm[full_pidx] = arg_idx + 1
+        full_args = [e.receiver] + list(e.args)
+        return full_perm, full_args
+
+    def _propagate_callee_effects(
+        self, effects: dict, perm: dict, args: list,
+        arg_srcs: list, env: dict,
+    ) -> None:
+        """Inherit a callee's field-write effects at a call site. For
+        each callee target param ``j`` with sources ``S``: the argument
+        bound to ``j`` is the written object; if it is rooted at one of
+        MY bindings, record a field-write effect on every param that
+        object aliases, with ``S`` translated from the callee's params
+        to my taint (a real source param ``i`` -> the taint of my
+        argument bound to ``i``; ``INTERNAL_SECRET`` stays itself).
+        Conservative and whole-value throughout."""
+        for target_pidx, sources in effects.items():
+            arg_idx = perm.get(target_pidx)
+            if arg_idx is None or arg_idx >= len(args):
+                continue
+            root = self._chain_root_name(args[arg_idx])
+            if root is None:
+                continue
+            my_targets = env.get(root, set())
+            if not my_targets:
+                continue
+            translated: set = set()
+            for s in sources:
+                if s == INTERNAL_SECRET:
+                    translated.add(INTERNAL_SECRET)
+                else:
+                    src_arg = perm.get(s)
+                    if src_arg is not None and src_arg < len(arg_srcs):
+                        translated |= arg_srcs[src_arg]
+            if not translated:
+                continue
+            for j in my_targets:
+                if j == INTERNAL_SECRET:
+                    continue
+                self._cur_effects.setdefault(j, set()).update(translated)
 
     # ---- argument binding ------------------------------------------
 

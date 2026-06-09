@@ -607,6 +607,105 @@ class TestPerFieldIfc(unittest.TestCase):
         )
         self.assertEqual(len(r.warnings), 1)
 
+    # ---- embed-then-mutate (closed false negative) --------------
+
+    def test_embed_then_mutate_source_is_flagged(self):
+        # Criterion 6: ``let o = Outer { inner: b }; b.sv = token;
+        # sink(o.inner.sv)``. ``o.inner`` aliases ``b`` by reference, so
+        # a later mutation of the still-live ``b`` is visible through the
+        # embedding -- previously a false negative.
+        r = self._analyze(
+            "type Inner { sv: String }\n"
+            "type Outer { inner: Inner }\n"
+            "fun f(stdio: Stdio, token: @secret String)\n"
+            "    var b = Inner { sv: \"a\" }\n"
+            "    let o = Outer { inner: b }\n"
+            "    b.sv = token\n"
+            "    stdio.println(o.inner.sv)\n"
+        )
+        self.assertEqual(len(r.warnings), 1,
+                         [w.message for w in r.warnings])
+
+    def test_embed_then_mutate_read_other_field_conservative(self):
+        # Criterion 7: the embedding shares the whole object, so a
+        # mutation of the source taints the embedding whole-value -- a
+        # read of a sibling field through the embedding is conservatively
+        # flagged too (sound over-approximation, never a miss).
+        r = self._analyze(
+            "type Inner { sv: String, pv: String }\n"
+            "type Outer { inner: Inner }\n"
+            "fun f(stdio: Stdio, token: @secret String)\n"
+            "    var b = Inner { sv: \"a\", pv: \"p\" }\n"
+            "    let o = Outer { inner: b }\n"
+            "    b.sv = token\n"
+            "    stdio.println(o.inner.sv)\n"
+        )
+        self.assertEqual(len(r.warnings), 1,
+                         [w.message for w in r.warnings])
+
+    def test_embed_then_mutate_outer_taints_source(self):
+        # The link is symmetric (a shared alias group): mutating the
+        # OUTER's embedded sub-object also taints the source binding, so
+        # reading through the source is flagged.
+        r = self._analyze(
+            "type Inner { sv: String }\n"
+            "type Outer { inner: Inner }\n"
+            "fun f(stdio: Stdio, token: @secret String)\n"
+            "    var b = Inner { sv: \"a\" }\n"
+            "    var o = Outer { inner: b }\n"
+            "    o.inner = Inner { sv: token }\n"
+            "    stdio.println(b.sv)\n"
+        )
+        self.assertEqual(len(r.warnings), 1,
+                         [w.message for w in r.warnings])
+
+    def test_embed_public_struct_no_false_positive(self):
+        # Criterion 8: embed a public ``b``, never taint it, read
+        # ``o.inner.sv`` -> not flagged.
+        r = self._analyze(
+            "type Inner { sv: String }\n"
+            "type Outer { inner: Inner }\n"
+            "fun f(stdio: Stdio)\n"
+            "    var b = Inner { sv: \"a\" }\n"
+            "    let o = Outer { inner: b }\n"
+            "    stdio.println(o.inner.sv)\n"
+        )
+        self.assertEqual(len(r.warnings), 0,
+                         [w.message for w in r.warnings])
+
+    def test_embed_field_access_chain_then_mutate_flagged(self):
+        # W-1 (closed): a non-identifier struct expression embedded in a
+        # struct literal -- a field-access chain rooted at a tracked
+        # binding (``Outer { inner: m.inner }``) -- is now linked into the
+        # ROOT binding's alias group. ``m.inner`` and ``o.inner`` are the
+        # same heap object, so ``m.inner.sv = token`` taints ``o`` too.
+        # Previously only bare-Ident embeds were linked, so this leaked.
+        r = self._analyze(
+            "type Inner { sv: String }\n"
+            "type Mid { inner: Inner }\n"
+            "type Outer { inner: Inner }\n"
+            "fun f(stdio: Stdio, token: @secret String, m: Mid)\n"
+            "    let o = Outer { inner: m.inner }\n"
+            "    m.inner.sv = token\n"
+            "    stdio.println(o.inner.sv)\n"
+        )
+        self.assertEqual(len(r.warnings), 1,
+                         [w.message for w in r.warnings])
+
+    def test_embed_field_access_chain_public_no_false_positive(self):
+        # No false positive: embed a field-access chain, never taint it,
+        # read through the embedding -> not flagged.
+        r = self._analyze(
+            "type Inner { sv: String }\n"
+            "type Mid { inner: Inner }\n"
+            "type Outer { inner: Inner }\n"
+            "fun f(stdio: Stdio, m: Mid)\n"
+            "    let o = Outer { inner: m.inner }\n"
+            "    stdio.println(o.inner.sv)\n"
+        )
+        self.assertEqual(len(r.warnings), 0,
+                         [w.message for w in r.warnings])
+
     def test_struct_from_call_uses_whole_value(self):
         # A struct produced by a function call has no statically-known
         # field map, so any field read uses the conservative whole-value

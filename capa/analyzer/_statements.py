@@ -133,6 +133,13 @@ class _StatementsMixin:
                 self._ifc_alias_link(
                     self.scope.lookup_local(s.pattern.name), s.value,
                 )
+            # Embed-then-mutate (``let o = Outer { inner: b }``): link
+            # the new binding into the alias group of every bare struct
+            # binding embedded into the literal, so a later mutation of
+            # the still-live source is visible through the embedding.
+            self._ifc_link_embedded_structs(
+                self.scope.lookup_local(s.pattern.name), s.value,
+            )
         # Roadmap S1: a ``let h = open()`` of a linear-typed value
         # opens a must-consume obligation under the bound name. Only
         # a simple identifier pattern carries it (a destructure of a
@@ -188,6 +195,9 @@ class _StatementsMixin:
         # so a later field store through either taints both.
         if isinstance(s.value, (A.Ident, A.FieldAccess)):
             self._ifc_alias_link(sym, s.value)
+        # Embed-then-mutate: link into the alias group of every bare
+        # struct binding embedded into a struct literal RHS.
+        self._ifc_link_embedded_structs(sym, s.value)
 
     def _check_assign(self, s: A.AssignStmt) -> None:
         from . import SymbolKind

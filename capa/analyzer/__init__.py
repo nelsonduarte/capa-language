@@ -459,6 +459,14 @@ class Analyzer(
         # user call / method-call site to catch a @secret argument
         # bound to a parameter that reaches a sink inside the callee.
         self._ifc_summaries: dict = {}
+        # Cross-function FIELD-WRITE EFFECTS: callable_key -> {target
+        # param index -> frozenset of source param indices /
+        # INTERNAL_SECRET}. The callee writes a field of the object at
+        # ``target`` from the named source(s); the call site propagates
+        # it as a whole-value taint on the caller's binding for
+        # ``target`` (closes the cross-function self/param field-write
+        # false negative).
+        self._ifc_field_effects: dict = {}
 
     # Type-substitution machinery (_fresh_ty_var, _resolve_ty,
     # _commit_fresh_substitutions, _apply_mapping) lives in
@@ -509,7 +517,9 @@ class Analyzer(
         # callables are distinguished from variants / capabilities) and
         # before body checking (which reads the summaries).
         from ._ifc_summary import compute_ifc_summaries
-        self._ifc_summaries = compute_ifc_summaries(module, self.global_scope)
+        self._ifc_summaries, self._ifc_field_effects = compute_ifc_summaries(
+            module, self.global_scope,
+        )
         # Phase 2: visit bodies of functions, impls, etc.
         for item in module.items:
             self._check_item(item)

@@ -1007,11 +1007,17 @@ Listed so the design space is explicit.
   the pen-and-paper blueprint in `docs/semantics.md` Section 9. The
   oracle-first effort also surfaced and fixed a real implicit-flow
   soundness gap in `@strict_ifc` enforcement (loops/assignments now
-  raise/join the pc-label). Remaining (v2): mechanising Theorem 4
-  (delimited release / `declassify`); the two documented per-field
-  follow-ups (cross-function self-mutation and embed-then-mutate
-  staleness); and fidelity between `lambda_if` and the Python analyzer
-  remains argued informally (the analyzer itself is not verified).
+  raise/join the pc-label). Per-field follow-ups SHIPPED this session:
+  (1) cross-function field-write effect summaries - a method/function
+  that stores a secret-derived value into a parameter/self field now
+  taints the caller's binding, computed to a fixpoint over the call
+  graph, including augmented stores and dynamic dispatch; (2)
+  embed-then-mutate staleness closed via alias-group linkage of
+  bare-identifier and field-chain embedded structs. Remaining (v2): the
+  inherent fidelity gap between the `lambda_if` model and the Python
+  analyzer is argued informally (the analyzer itself is not
+  machine-verified); a differential fidelity harness to narrow it is
+  planned/next.
 - **Typestate / session types**. SHIPPED (S3.1 + S3.2, Python
   backend): the state lives in the type (`typestate Name` +
   `Name[State]`), a value is linear, and the type checker enforces the

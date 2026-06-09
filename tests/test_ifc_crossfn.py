@@ -440,5 +440,293 @@ class TestCrossFnStrictTier(unittest.TestCase):
         self.assertEqual(len(_crossfn_warnings(r)), 0)
 
 
+class TestCrossFnFieldWriteEffect(unittest.TestCase):
+    """Cross-function self/param field-write effect (closed false
+    negative): a callee that stores a secret-derived value into a field
+    of one of its parameters (incl ``self``) taints the caller's
+    binding whole-value, so a later read of any field of it is caught.
+    Default-warn / strict-error, matching the sink-reaching tier."""
+
+    def _flow_warnings(self, r):
+        return [w for w in r.warnings if "information-flow" in w.message]
+
+    def _flow_errors(self, r):
+        return [e for e in r.errors if "information-flow" in e.message]
+
+    def test_method_self_field_write_then_read_flagged(self):
+        # Criterion 1: obj.stash(secret); sink(obj.f) -> flagged.
+        r = _analyze(
+            "type Box { f: String }\n"
+            "impl Box\n"
+            "    fun stash(self, v: String)\n"
+            "        self.f = v\n"
+            "fun caller(stdio: Stdio, token: @secret String, obj: Box)\n"
+            "    obj.stash(token)\n"
+            "    stdio.println(obj.f)\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(len(self._flow_warnings(r)), 1,
+                         [w.message for w in r.warnings])
+
+    def test_method_self_field_write_hard_error_under_strict(self):
+        r = _analyze(
+            "type Box { f: String }\n"
+            "impl Box\n"
+            "    fun stash(self, v: String)\n"
+            "        self.f = v\n"
+            "@strict_ifc()\n"
+            "fun caller(stdio: Stdio, token: @secret String, obj: Box)\n"
+            "    obj.stash(token)\n"
+            "    stdio.println(obj.f)\n"
+        )
+        self.assertFalse(r.ok)
+        self.assertEqual(len(self._flow_errors(r)), 1)
+
+    def test_free_function_param_field_write_flagged(self):
+        # Criterion 2: put(b, secret); sink(b.f) -> flagged.
+        r = _analyze(
+            "type Box { f: String }\n"
+            "fun put(box: Box, v: String)\n"
+            "    box.f = v\n"
+            "fun caller(stdio: Stdio, token: @secret String, b: Box)\n"
+            "    put(b, token)\n"
+            "    stdio.println(b.f)\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(len(self._flow_warnings(r)), 1,
+                         [w.message for w in r.warnings])
+
+    def test_internal_secret_source_field_write_flagged(self):
+        # Criterion 3: the callee writes a field from an internal
+        # env.get secret source -> caller's obj.field leaked.
+        r = _analyze(
+            "type Box { f: String }\n"
+            "fun load(box: Box, env: Env)\n"
+            "    match env.get(\"K\")\n"
+            "        Some(k) -> box.f = k\n"
+            "        None -> box.f = \"x\"\n"
+            "fun caller(stdio: Stdio, env: Env, b: Box)\n"
+            "    load(b, env)\n"
+            "    stdio.println(b.f)\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(len(self._flow_warnings(r)), 1,
+                         [w.message for w in r.warnings])
+
+    def test_public_value_into_field_not_flagged(self):
+        # Criterion 4: callee writes a PUBLIC value into the field ->
+        # no false positive.
+        r = _analyze(
+            "type Box { f: String }\n"
+            "fun put(box: Box, v: String)\n"
+            "    box.f = \"public\"\n"
+            "fun caller(stdio: Stdio, token: @secret String, b: Box)\n"
+            "    put(b, token)\n"
+            "    stdio.println(b.f)\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(len(self._flow_warnings(r)), 0,
+                         [w.message for w in r.warnings])
+
+    def test_public_arg_to_source_param_not_flagged(self):
+        # Criterion 5: callee writes the field from param i, caller
+        # passes a PUBLIC arg for i -> no false positive.
+        r = _analyze(
+            "type Box { f: String }\n"
+            "fun put(box: Box, v: String)\n"
+            "    box.f = v\n"
+            "fun caller(stdio: Stdio, b: Box)\n"
+            "    put(b, \"plain\")\n"
+            "    stdio.println(b.f)\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(len(self._flow_warnings(r)), 0,
+                         [w.message for w in r.warnings])
+
+    def test_transitive_field_write_effect_flagged(self):
+        # The effect is transitive: ``outer`` calls ``inner`` which
+        # performs the field write; a secret routed through ``outer``
+        # still taints the caller's binding.
+        r = _analyze(
+            "type Box { f: String }\n"
+            "fun inner(box: Box, v: String)\n"
+            "    box.f = v\n"
+            "fun outer(box: Box, v: String)\n"
+            "    inner(box, v)\n"
+            "fun caller(stdio: Stdio, token: @secret String, b: Box)\n"
+            "    outer(b, token)\n"
+            "    stdio.println(b.f)\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(len(self._flow_warnings(r)), 1,
+                         [w.message for w in r.warnings])
+
+
+class TestCrossFnAugmentedFieldWrite(unittest.TestCase):
+    """FN-1 (closed): an AUGMENTED field store in a callee
+    (``box.f += v``, ``-=`` ...) records a field-write effect too. An
+    augmented store joins the incoming value into the old field, so it
+    can only RAISE the field's label -- recording it for every op is
+    sound. Previously only ``=`` was recorded, so the cross-function
+    check missed the leak (the intra-procedural ``b.f += token`` IS
+    flagged, proving ``+=`` carries the secret into the field)."""
+
+    def _flow_warnings(self, r):
+        return [w for w in r.warnings if "information-flow" in w.message]
+
+    def _flow_errors(self, r):
+        return [e for e in r.errors if "information-flow" in e.message]
+
+    def test_free_fn_augmented_field_write_flagged(self):
+        r = _analyze(
+            "type Box { f: String }\n"
+            "fun put(box: Box, v: String)\n"
+            "    box.f += v\n"
+            "fun caller(stdio: Stdio, token: @secret String, b: Box)\n"
+            "    put(b, token)\n"
+            "    stdio.println(b.f)\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(len(self._flow_warnings(r)), 1,
+                         [w.message for w in r.warnings])
+
+    def test_self_method_augmented_field_write_flagged(self):
+        r = _analyze(
+            "type Box { f: String }\n"
+            "impl Box\n"
+            "    fun stash(self, v: String)\n"
+            "        self.f += v\n"
+            "fun caller(stdio: Stdio, token: @secret String, obj: Box)\n"
+            "    obj.stash(token)\n"
+            "    stdio.println(obj.f)\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(len(self._flow_warnings(r)), 1,
+                         [w.message for w in r.warnings])
+
+    def test_transitive_augmented_field_write_flagged(self):
+        # 2-hop transitive chain through an augmented store.
+        r = _analyze(
+            "type Box { f: String }\n"
+            "fun inner(box: Box, v: String)\n"
+            "    box.f += v\n"
+            "fun outer(box: Box, v: String)\n"
+            "    inner(box, v)\n"
+            "fun caller(stdio: Stdio, token: @secret String, b: Box)\n"
+            "    outer(b, token)\n"
+            "    stdio.println(b.f)\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(len(self._flow_warnings(r)), 1,
+                         [w.message for w in r.warnings])
+
+    def test_augmented_field_write_hard_error_under_strict(self):
+        r = _analyze(
+            "type Box { f: String }\n"
+            "fun put(box: Box, v: String)\n"
+            "    box.f += v\n"
+            "@strict_ifc()\n"
+            "fun caller(stdio: Stdio, token: @secret String, b: Box)\n"
+            "    put(b, token)\n"
+            "    stdio.println(b.f)\n"
+        )
+        self.assertFalse(r.ok)
+        self.assertEqual(len(self._flow_errors(r)), 1)
+
+    def test_subtract_assign_field_write_flagged(self):
+        # A different augmented op (``-=``) is also recorded.
+        r = _analyze(
+            "type Box { f: Int }\n"
+            "fun put(box: Box, v: Int)\n"
+            "    box.f -= v\n"
+            "fun caller(stdio: Stdio, token: @secret Int, b: Box)\n"
+            "    put(b, token)\n"
+            "    stdio.println(\"${b.f}\")\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(len(self._flow_warnings(r)), 1,
+                         [w.message for w in r.warnings])
+
+    def test_augmented_public_value_not_flagged(self):
+        # No false positive: the augmented store uses a PUBLIC value.
+        r = _analyze(
+            "type Box { f: String }\n"
+            "fun put(box: Box, v: String)\n"
+            "    box.f += \"public\"\n"
+            "fun caller(stdio: Stdio, token: @secret String, b: Box)\n"
+            "    put(b, token)\n"
+            "    stdio.println(b.f)\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(len(self._flow_warnings(r)), 0,
+                         [w.message for w in r.warnings])
+
+
+class TestCrossFnEmbedThenCrossfnMutate(unittest.TestCase):
+    """FN-2 (closed): the cross-function whole-value taint propagates
+    through an embed alias group. ``let o = Outer { inner: b }`` links
+    ``o`` and ``b`` (same heap object); a later CROSS-FUNCTION mutation
+    of ``b`` (``put(b, token)``) must taint ``o`` too. Previously the
+    cross-function whole-value taint raised only the single root symbol
+    and missed the alias group, so a read through the embedding was
+    missed."""
+
+    def _flow_warnings(self, r):
+        return [w for w in r.warnings if "information-flow" in w.message]
+
+    def _flow_errors(self, r):
+        return [e for e in r.errors if "information-flow" in e.message]
+
+    def test_embed_first_then_crossfn_mutate_free_sinker(self):
+        # Embed FIRST, then cross-fn mutate ``b``, then read through the
+        # embedding via a free sinker chain.
+        r = _analyze(
+            "type Inner { sv: String }\n"
+            "type Outer { inner: Inner }\n"
+            "fun put(box: Inner, v: String)\n"
+            "    box.sv = v\n"
+            "fun caller(stdio: Stdio, token: @secret String, b: Inner)\n"
+            "    let o = Outer { inner: b }\n"
+            "    put(b, token)\n"
+            "    stdio.println(o.inner.sv)\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(len(self._flow_warnings(r)), 1,
+                         [w.message for w in r.warnings])
+
+    def test_embed_first_then_crossfn_mutate_self_method(self):
+        # Same, but the mutation is a self-method field write.
+        r = _analyze(
+            "type Inner { sv: String }\n"
+            "type Outer { inner: Inner }\n"
+            "impl Inner\n"
+            "    fun stash(self, v: String)\n"
+            "        self.sv = v\n"
+            "fun caller(stdio: Stdio, token: @secret String, b: Inner)\n"
+            "    let o = Outer { inner: b }\n"
+            "    b.stash(token)\n"
+            "    stdio.println(o.inner.sv)\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(len(self._flow_warnings(r)), 1,
+                         [w.message for w in r.warnings])
+
+    def test_embed_first_then_crossfn_mutate_public_clean(self):
+        # No false positive: the cross-fn mutation writes a PUBLIC value.
+        r = _analyze(
+            "type Inner { sv: String }\n"
+            "type Outer { inner: Inner }\n"
+            "fun put(box: Inner, v: String)\n"
+            "    box.sv = \"public\"\n"
+            "fun caller(stdio: Stdio, token: @secret String, b: Inner)\n"
+            "    let o = Outer { inner: b }\n"
+            "    put(b, token)\n"
+            "    stdio.println(o.inner.sv)\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(len(self._flow_warnings(r)), 0,
+                         [w.message for w in r.warnings])
+
+
 if __name__ == "__main__":
     unittest.main()
