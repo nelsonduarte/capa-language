@@ -1,5 +1,22 @@
 # Capa security audit, 2026-05-25
 
+> **Status (historical record).** This is a dated audit report. All
+> findings below have since been remediated; this document is kept as
+> a historical record and the body analysis is preserved verbatim.
+> Closing commits, all verified against `git log`:
+>
+> - C1 (dependency-name path traversal): closed `b21dd73`.
+> - C2 (Wasm `Fs.restrict_to` no-op): closed `2a2f566` (compile-time
+>   inline attenuation checks; no longer a no-op).
+> - H1 (consume discipline on FieldAccess, hole D): closed `022cb13`.
+> - H2 (git pin string unvalidated): closed `47bbdc4`.
+> - H3 (lockfile rewrite ordering): closed `0d57139`.
+> - H4 (bundled JSON parser depth limit): closed `3752972`.
+> - H5 (SBOM / SPDX missing compliance fields): closed `2570eec`.
+>
+> The medium / low / informational items (M1-M5, L1-L2, I1) are not
+> claimed remediated here.
+
 Scope as briefed: capability discipline, `Unsafe` / `py_interop`,
 package manager + supply chain, SBOM / SLSA emissions, lexer / parser
 robustness, runtime privilege posture. Read-only on source. Findings
@@ -8,14 +25,14 @@ supply-chain pair) are omitted.
 
 ## Executive summary
 
-- **Hole D (new): consume-discipline is `Ident`-only.**
+- **[REMEDIATED 022cb13] Hole D (new): consume-discipline is `Ident`-only.**
   `_mark_consumed_args` in
   [`capa/analyzer/_discipline.py:42-65`](capa/analyzer/_discipline.py#L42)
   skips every non-`A.Ident` argument, so `f(consume box.cap)` followed
   by `box.cap.use()` passes the analyzer. The fix for holes A+B
   canonicalised FieldAccess paths for the aliasing check but did not
   thread the same canonicalisation through use-after-consume.
-- **`vendor/<name>` path-traversal at install time.** TOML allows
+- **[REMEDIATED b21dd73] `vendor/<name>` path-traversal at install time.** TOML allows
   arbitrary quoted keys in `[dependencies."../evil"]`. The manifest
   parser does not validate `dep.name`, so
   [`capa/pkg/_install.py:186`](capa/pkg/_install.py#L186)
@@ -23,7 +40,7 @@ supply-chain pair) are omitted.
   A malicious upstream that publishes a `capa.toml` with a crafted
   dependency name can overwrite paths anywhere the install user can
   write.
-- **Git pin (`tag` / `rev`) strings are never validated.** The
+- **[REMEDIATED 47bbdc4] Git pin (`tag` / `rev`) strings are never validated.** The
   `478edb3` allow-list locked down the `git` URL but the pin string
   is passed straight to `git clone --branch <pin>`,
   `git checkout --detach <pin>`, and `git verify-tag <pin>`. A pin
@@ -32,14 +49,16 @@ supply-chain pair) are omitted.
   flow into `git verify-tag --raw <pin>` where it is the sole
   positional and easier to abuse. Same shape as the URL hole, half
   closed.
-- **Wasm host bridges blindly trust the guest for attenuation.**
-  `Fs.restrict_to` is a documented no-op
+- **[REMEDIATED 2a2f566] Wasm host bridges blindly trust the guest for attenuation.**
+  `Fs.restrict_to` is a documented no-op (now closed: the Wasm
+  emitter emits an inline compile-time attenuation check, so it is no
+  longer a no-op)
   ([`capa/runtime/_wasm_host.py:398-403`](capa/runtime/_wasm_host.py#L398),
   [`capa/runtime/_wasm_component_host.py:117-122`](capa/runtime/_wasm_component_host.py#L117)).
   Static discipline is enforced only against Capa-compiled WAT; a
   hand-rolled or modified Wasm module loaded by `WasmHost.run_main`
   has unrestricted `fs.read` / `fs.write` on the host filesystem.
-- **SBOM/SPDX emit missing required-by-some-consumers fields.**
+- **[REMEDIATED 2570eec] SBOM/SPDX emit missing required-by-some-consumers fields.**
   Neither `_spdx.py` nor `_cyclonedx.py` populate `licenseConcluded`
   / `licenseDeclared` / `downloadLocation` (other than `NOASSERTION`)
   / `supplier` / `copyrightText`. OpenChain-grade consumers and

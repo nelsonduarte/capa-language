@@ -39,6 +39,15 @@ In scope:
 - A way to obtain a built-in capability without it being a function
   parameter (other than through `Unsafe` / Python interop, which is
   explicitly out of scope of the discipline by design).
+- Compilation accepts a program where a `@secret` value reaches a
+  public sink that the analyzer should reject: an information-flow /
+  noninterference violation (for example under `@strict_ifc`). Capa's
+  information-flow control is a first-class, machine-checked security
+  property (cross-function and per-field IFC, implicit-flow
+  enforcement under `@strict_ifc`), backed by the Agda `lambda_if`
+  noninterference proof. The analyzer itself is not formally verified;
+  the proof is over the `lambda_if` model, so a soundness gap between
+  the analyzer and that model is in scope.
 - Crash or arbitrary code execution in the analyzer / transpiler when
   given a malformed `.capa` input. While Capa is not yet positioned
   as a sandbox for untrusted source, defensible behaviour matters.
@@ -55,14 +64,14 @@ Out of scope:
 
 ## Supported versions
 
-The project is in alpha. Only the latest tagged release is supported
-for security fixes. We may publish patch releases for the latest
-minor when a fix is significant.
+Capa is at version 1.0 and is a one-person project. Only the latest
+tagged release is supported for security fixes. I may publish patch
+releases for the latest minor when a fix is significant.
 
 | Version | Supported |
 | ------- | --------- |
-| 0.2.x   | yes       |
-| < 0.2   | no, please upgrade |
+| 1.0.x   | yes       |
+| < 1.0   | no, please upgrade |
 
 ## Public disclosure
 
