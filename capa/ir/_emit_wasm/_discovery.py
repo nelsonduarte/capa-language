@@ -672,7 +672,25 @@ class _DiscoveryMixin:
                     # needed. ``Clock.allows`` is the exception
                     # (no string arg, needs the live wall clock)
                     # and still uses the host bridge.
-                    pass
+                    #
+                    # Pre-intern every string the dynamic-arg emit
+                    # path will reference. The literal-arg path
+                    # collapses to a const so it needs nothing here,
+                    # but the dynamic-arg path
+                    # (``_emit_atten_allows_runtime``) interns the
+                    # boundary-aware prefix forms while emitting the
+                    # function body -- AFTER the data segment has
+                    # been written. An offset interned that late
+                    # points at uninitialised memory. The classic
+                    # symptom (audit C2): a no-trailing-slash prefix
+                    # like ``restrict_to("/home/data")`` needs the
+                    # slash-suffixed ``"/home/data/"`` for the
+                    # ``starts_with`` arm, but that string never
+                    # appears as a literal Value so discovery never
+                    # sees it. Mirror the exact strings the emit
+                    # path will reference so they land in the data
+                    # segment.
+                    self._discover_attenuation_strings(cap, instr)
                 elif cap == "Random" and instr.method in (
                     "with_seed", "int_range", "float_unit",
                 ):
@@ -734,6 +752,64 @@ class _DiscoveryMixin:
             elif isinstance(instr, Match):
                 for arm in instr.arms:
                     self._discover_instrs(arm.body)
+
+    def _discover_attenuation_strings(
+        self, cap: str, instr: MethodCall,
+    ) -> None:
+        """Pre-intern the data-segment strings the dynamic-arg
+        ``.allows()`` emit path will reference, so they land in the
+        data segment that is written before any function body.
+
+        Mirrors ``_emit_atten_allows_runtime`` /
+        ``_emit_one_attenuation`` exactly:
+        - Fs / Db: each ``restrict_to`` prefix needs both the
+          exact-match form and the boundary-aware slash-suffixed
+          form (``prefix + '/'``) for the ``starts_with`` arm.
+        - Proc: each ``restrict_to`` prefix is interned verbatim
+          (the ``$proc_allows`` basename check reads it directly).
+        - Env: each key in every ``restrict_to_keys`` list.
+
+        Only the dynamic-arg shape reaches the runtime emit path;
+        the literal-arg shape collapses to a const and needs no
+        interned strings. Pre-interning the dynamic strings even
+        for a literal-arg call is harmless (the data segment just
+        carries an extra unused string), so we do not special-case
+        the arg kind here.
+        """
+        from ._caps import (
+            _unquote_attenuation_arg, _parse_attenuation_key_list,
+        )
+        attenuations = getattr(instr, "attenuations", None) or []
+        for att in attenuations:
+            if cap in ("Fs", "Db"):
+                if att.get("method") != "restrict_to":
+                    continue
+                args = att.get("args", [])
+                if not args:
+                    continue
+                try:
+                    prefix = _unquote_attenuation_arg(args[0])
+                except WasmEmissionError:
+                    continue
+                self._intern_string(prefix)
+                slash = prefix if prefix.endswith("/") else prefix + "/"
+                self._intern_string(slash)
+            elif cap == "Proc":
+                if att.get("method") != "restrict_to":
+                    continue
+                args = att.get("args", [])
+                if not args:
+                    continue
+                try:
+                    prefix = _unquote_attenuation_arg(args[0])
+                except WasmEmissionError:
+                    continue
+                self._intern_string(prefix)
+            elif cap == "Env":
+                if att.get("method") != "restrict_to_keys":
+                    continue
+                for key in _parse_attenuation_key_list(att.get("args", [])):
+                    self._intern_string(key)
 
     @staticmethod
     def _values_of(instr: Instr) -> list[Value]:

@@ -76,9 +76,24 @@ for i in 1..=5            // 1, 2, 3, 4, 5
 let n = 4
 let xs = (n - 1)..(n * 2) // 3..8, arithmetic endpoints
 
-let evens = (0..10).filter(fun (x: Int) -> Bool => x % 2 == 0)
-                              // ranges support the full List API
+// A Range is a lazy iterable, NOT a List: it does not carry the
+// List method API (`map` / `filter` / `fold` / ...). Build a List
+// explicitly when you need it:
+let evens = [0, 2, 4, 6, 8].filter(fun (x: Int) -> Bool => x % 2 == 0)
 ```
+
+Ranges are first-class iterables in `for` loops on **both** the
+Python and Wasm backends; the loop consumes a range directly
+without materialising it.
+
+`Range<T>` also has a small query surface - `length() -> Int`,
+`contains(x: T) -> Bool`, `is_empty() -> Bool`, and
+`to_list() -> List<T>` - but these methods are currently
+implemented **only on the Python backend**. The Wasm backend
+rejects every Range method at compile time (only `for` iteration
+is supported there). Until the Wasm backend gains Range methods,
+write portable code by iterating with `for` rather than calling a
+Range method.
 
 Range precedence sits between addition and comparison, so
 `1+2..5+3` parses as `(1+2)..(5+3)` and `a..b == c..d` as

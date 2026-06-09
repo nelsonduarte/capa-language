@@ -390,6 +390,129 @@ class _GrisuEmissionMixin:
         self._indent -= 1
         self._write(")")
 
+    def _emit_grisu_round_weed_function(self) -> None:
+        """``$grisu_round_weed(buf, count, dist_too_high, unsafe,
+        rest, ten_kappa) -> ()``: the final last-digit nudge of
+        Grisu2 (double-conversion's ``RoundWeed``). Audit C1
+        (2026-06-09): the original WAT port omitted this step, which
+        is why ``${100.0/7.0}`` came out ``14.285714285714287``
+        (one ulp high) instead of Python's
+        ``14.285714285714286``. The digit-generation loop returns
+        the FIRST digit string inside the rounding interval, which
+        is not necessarily the one closest to W; RoundWeed walks the
+        last digit down while the represented value stays both
+        strictly inside the unsafe interval (``delta``) and closer
+        to W than the boundary.
+
+        All six params are passed on the operand stack:
+        - ``buf`` (i32): digits buffer base pointer.
+        - ``count`` (i32): number of digits written (>= 1).
+        - ``dist_too_high`` (i64): ``Wp_f - Wf``, scaled by the same
+          power of ten as ``rest`` / ``ten_kappa`` at the call site.
+        - ``unsafe`` (i64): ``delta`` (``Wp_f - Wm_f``), scaled to
+          match.
+        - ``rest`` (i64): the unconsumed remainder at the exit point.
+        - ``ten_kappa`` (i64): the value of one last-digit step in
+          the same scaled units.
+
+        Line-by-line port of the validated Python reference
+        (``round_weed`` in the oracle): while
+        ``rest < dist_too_high`` and ``unsafe - rest >= ten_kappa``
+        and (``rest + ten_kappa < dist_too_high`` or
+        ``dist_too_high - rest >= rest + ten_kappa - dist_too_high``):
+        decrement the last digit, ``rest += ten_kappa``. All
+        comparisons are unsigned i64.
+
+        This does NOT chase the ~0.5% Grisu2-inherent hard cases that
+        need a Dragon4 / Bignum slow-path fallback; those stay
+        xfail-tracked in the parity harness with a pointer to the
+        C1 scoping note."""
+        self._write(
+            "(func $grisu_round_weed "
+            "(param $buf i32) (param $count i32) "
+            "(param $dist_too_high i64) (param $unsafe i64) "
+            "(param $rest i64) (param $ten_kappa i64)"
+        )
+        self._indent += 1
+        self._write("(local $last_ptr i32)")
+        self._write("(local $cond i32)")
+        # last_ptr = buf + count - 1 (the digit RoundWeed mutates).
+        self._write("local.get $buf")
+        self._write("local.get $count")
+        self._write("i32.add")
+        self._write("i32.const 1")
+        self._write("i32.sub")
+        self._write("local.set $last_ptr")
+        self._block_counter += 1
+        rwloop = f"$grw{self._block_counter}_loop"
+        rwexit = f"$grw{self._block_counter}_exit"
+        self._write(f"block {rwexit}")
+        self._indent += 1
+        self._write(f"loop {rwloop}")
+        self._indent += 1
+        # Guard 1: rest < dist_too_high  (else exit).
+        self._write("local.get $rest")
+        self._write("local.get $dist_too_high")
+        self._write("i64.ge_u")
+        self._write(f"br_if {rwexit}")
+        # Guard 2: unsafe - rest >= ten_kappa  (else exit).
+        self._write("local.get $unsafe")
+        self._write("local.get $rest")
+        self._write("i64.sub")
+        self._write("local.get $ten_kappa")
+        self._write("i64.lt_u")
+        self._write(f"br_if {rwexit}")
+        # Guard 3 (closeness): rest + ten_kappa < dist_too_high
+        #   OR  dist_too_high - rest >= (rest + ten_kappa) - dist_too_high
+        # cond = (rest + ten_kappa < dist_too_high)
+        self._write("local.get $rest")
+        self._write("local.get $ten_kappa")
+        self._write("i64.add")
+        self._write("local.get $dist_too_high")
+        self._write("i64.lt_u")
+        self._write("local.set $cond")
+        # if !cond: cond = (dist_too_high - rest) >= ((rest+ten_kappa) - dist_too_high)
+        self._write("local.get $cond")
+        self._write("i32.eqz")
+        self._write("if")
+        self._indent += 1
+        # lhs = dist_too_high - rest
+        self._write("local.get $dist_too_high")
+        self._write("local.get $rest")
+        self._write("i64.sub")
+        # rhs = (rest + ten_kappa) - dist_too_high
+        self._write("local.get $rest")
+        self._write("local.get $ten_kappa")
+        self._write("i64.add")
+        self._write("local.get $dist_too_high")
+        self._write("i64.sub")
+        self._write("i64.ge_u")
+        self._write("local.set $cond")
+        self._indent -= 1
+        self._write("end")
+        # if !cond: exit.
+        self._write("local.get $cond")
+        self._write("i32.eqz")
+        self._write(f"br_if {rwexit}")
+        # Body: *last_ptr -= 1 ; rest += ten_kappa.
+        self._write("local.get $last_ptr")
+        self._write("local.get $last_ptr")
+        self._write("i32.load8_u")
+        self._write("i32.const 1")
+        self._write("i32.sub")
+        self._write("i32.store8")
+        self._write("local.get $rest")
+        self._write("local.get $ten_kappa")
+        self._write("i64.add")
+        self._write("local.set $rest")
+        self._write(f"br {rwloop}")
+        self._indent -= 1
+        self._write("end")
+        self._indent -= 1
+        self._write("end")
+        self._indent -= 1
+        self._write(")")
+
     def _emit_grisu2_function(self) -> None:
         """``$grisu2(v: f64) -> (i32 digits_ptr, i32 digits_len, i32 K)``:
         shortest-round-trip decimal mantissa + decimal exponent.
@@ -430,6 +553,10 @@ class _GrisuEmissionMixin:
         self._write("(local $Wp_f i64)")
         self._write("(local $Wm_f i64)")
         self._write("(local $delta i64)")
+        # RoundWeed distance: how far the upper boundary Wp sits from
+        # W itself. Scaled with delta in the fractional loop so the
+        # last-digit nudge compares in consistent units (audit C1).
+        self._write("(local $dist_too_high i64)")
         # Digit generation state.
         self._write("(local $one_f i64)")
         self._write("(local $p1 i64)")
@@ -613,6 +740,11 @@ class _GrisuEmissionMixin:
         self._write("local.get $Wm_f")
         self._write("i64.sub")
         self._write("local.set $delta")
+        # dist_too_high = Wp_f - Wf (RoundWeed distance from W).
+        self._write("local.get $Wp_f")
+        self._write("local.get $Wf")
+        self._write("i64.sub")
+        self._write("local.set $dist_too_high")
         # Step 6: digit generation.
         # one_f = 1 << -We   (We is negative for in-range floats).
         # p1 = Wp_f >>_u -We; p2 = Wp_f & (one_f - 1)
@@ -716,12 +848,27 @@ class _GrisuEmissionMixin:
         self._write("local.get $p2")
         self._write("i64.add")
         self._write("local.set $rest")
-        # if rest < delta: return (buf, digit_count, kappa - c_dexp)
+        # if rest < delta: RoundWeed, then return (buf, digit_count,
+        # kappa - c_dexp). ten_kappa at this exit is div << (-We).
         self._write("local.get $rest")
         self._write("local.get $delta")
         self._write("i64.lt_u")
         self._write("if")
         self._indent += 1
+        # $grisu_round_weed(buf, digit_count, dist_too_high, delta,
+        #                   rest, div << (-We))
+        self._write("local.get $buf")
+        self._write("local.get $digit_count")
+        self._write("local.get $dist_too_high")
+        self._write("local.get $delta")
+        self._write("local.get $rest")
+        self._write("local.get $div")
+        self._write("i32.const 0")
+        self._write("local.get $We")
+        self._write("i32.sub")
+        self._write("i64.extend_i32_u")
+        self._write("i64.shl")
+        self._write("call $grisu_round_weed")
         self._write("local.get $buf")
         self._write("local.get $digit_count")
         self._write("local.get $kappa")
@@ -743,7 +890,8 @@ class _GrisuEmissionMixin:
         self._indent += 1
         self._write(f"loop {floop}")
         self._indent += 1
-        # p2 *= 10; delta *= 10
+        # p2 *= 10; delta *= 10; dist_too_high *= 10 (keep the
+        # RoundWeed distance in the same scaled units as delta / p2).
         self._write("local.get $p2")
         self._write("i64.const 10")
         self._write("i64.mul")
@@ -752,6 +900,10 @@ class _GrisuEmissionMixin:
         self._write("i64.const 10")
         self._write("i64.mul")
         self._write("local.set $delta")
+        self._write("local.get $dist_too_high")
+        self._write("i64.const 10")
+        self._write("i64.mul")
+        self._write("local.set $dist_too_high")
         # d = p2 >>_u -We
         self._write("local.get $p2")
         self._write("i32.const 0")
@@ -785,12 +937,21 @@ class _GrisuEmissionMixin:
         self._write("i32.const 1")
         self._write("i32.sub")
         self._write("local.set $kappa")
-        # if p2 < delta: return
+        # if p2 < delta: RoundWeed (ten_kappa = one_f), then return.
         self._write("local.get $p2")
         self._write("local.get $delta")
         self._write("i64.lt_u")
         self._write("if")
         self._indent += 1
+        # $grisu_round_weed(buf, digit_count, dist_too_high, delta,
+        #                   p2, one_f)
+        self._write("local.get $buf")
+        self._write("local.get $digit_count")
+        self._write("local.get $dist_too_high")
+        self._write("local.get $delta")
+        self._write("local.get $p2")
+        self._write("local.get $one_f")
+        self._write("call $grisu_round_weed")
         self._write("local.get $buf")
         self._write("local.get $digit_count")
         self._write("local.get $kappa")

@@ -44,3 +44,31 @@ fun main(stdio: Stdio, fs: Fs, env: Env, db: Db)
 
     // Unrestricted: dynamic-arg + no attenuations -> always yes.
     show(stdio, "unrestricted fs.allows(/etc)", fs.allows(bad_path))
+
+    // Audit C2 (2026-06-09): no-trailing-slash prefix + dynamic arg.
+    // The boundary-aware check has to synthesise ``prefix + '/'`` for
+    // the starts-with arm; that slash-suffixed string never appears as
+    // a source literal, so the discovery pass must pre-intern it or the
+    // runtime check reads uninitialised memory and silently denies an
+    // allowed path. The sibling case ("/home/database") shares the
+    // prefix STRING but is NOT under the prefix PATH - the classic
+    // boundary bug - and must be denied on both backends.
+    let scoped_noslash = fs.restrict_to("/home/data")
+    let c2_under = "/home/data/users.csv"
+    let c2_sibling = "/home/database"
+    let c2_exact = "/home/data"
+    show(stdio, "noslash fs.allows(/home/data/users.csv)",
+        scoped_noslash.allows(c2_under))
+    show(stdio, "noslash fs.allows(/home/database) sibling",
+        scoped_noslash.allows(c2_sibling))
+    show(stdio, "noslash fs.allows(/home/data) exact",
+        scoped_noslash.allows(c2_exact))
+
+    // Same no-trailing-slash boundary matrix for Db.allows.
+    let scoped_db_noslash = db.restrict_to("/var/data")
+    let c2_db_under = "/var/data/users.db"
+    let c2_db_sibling = "/var/database"
+    show(stdio, "noslash db.allows(/var/data/users.db)",
+        scoped_db_noslash.allows(c2_db_under))
+    show(stdio, "noslash db.allows(/var/database) sibling",
+        scoped_db_noslash.allows(c2_db_sibling))

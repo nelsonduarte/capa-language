@@ -525,6 +525,7 @@ class WasmEmitter(
                     self._emit_pow10_i32_function()
                     self._emit_mul_high_u64_function()
                     self._emit_grisu_cached_power_function()
+                    self._emit_grisu_round_weed_function()
                     self._emit_grisu2_function()
                     self._emit_ftoa_function()
             # parse_int / parse_float are built-in free functions

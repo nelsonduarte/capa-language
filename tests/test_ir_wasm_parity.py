@@ -572,6 +572,21 @@ _PARITY_PROGRAMS: list[str] = [
     # the two backends cannot agree at compile time.)
     "trait_value_eq.capa",
     "trait_eq_in_containers.capa",
+    # Audit C1 (2026-06-09): Float interpolation parity. The harness
+    # historically EXCLUDED Float interpolation, which hid a silent
+    # cross-backend miscompile - the Wasm Grisu2 port printed
+    # ``14.285714285714287`` for ``100.0 / 7.0`` where Python's repr
+    # gives ``...286``, because the WAT omitted Grisu2's RoundWeed
+    # last-digit nudge. With RoundWeed ported, every computed-float
+    # class in this program (sums, ratios, divisions, averages) is
+    # byte-identical across backends. A Grisu2-inherent residual
+    # remains and is a KNOWN float-formatting correctness hole: it is
+    # reachable from ordinary arithmetic (e.g. 86.0 / 7018.0 emits a
+    # decimal that does NOT round-trip, naming the wrong double), NOT
+    # an extreme-exponent-only curiosity. It needs a Dragon4 / Bignum
+    # (or Ryu) slow-path fallback and is xfail-tracked in
+    # TestWasmFtoaResidual (see the C1 scoping note in that class).
+    "float_interpolation.capa",
 ]
 
 # Programs deliberately excluded from parity and why; documented
@@ -1108,7 +1123,29 @@ class TestPythonWasmParity(unittest.TestCase):
         # crashed compile on Wasm with "requires a literal string
         # argument"; now both backends emit the same yes/no per
         # cap-mediated query for a runtime String arg.
+        #
+        # Audit C2 (2026-06-09): extended with no-trailing-slash
+        # prefixes + dynamic args. ``restrict_to("/home/data")``
+        # needs the slash-suffixed ``/home/data/`` for the
+        # boundary-aware starts-with arm; that string never appears
+        # as a source literal, so the discovery pass must pre-intern
+        # it or the runtime check reads uninitialised memory and
+        # silently DENIES an allowed path (``/home/data/users.csv``)
+        # while Python ALLOWS it. The sibling ``/home/database``
+        # shares the prefix string but is not under the path - it
+        # must be denied on both backends.
         self._assert_parity("allows_dynamic.capa")
+
+    def test_float_interpolation(self):
+        # Audit C1 (2026-06-09): computed-float interpolation parity.
+        # The pre-fix Wasm Grisu2 port omitted RoundWeed and printed
+        # ``14.285714285714287`` for ``100.0 / 7.0`` (one ulp high)
+        # while Python's repr gives ``...286``. With RoundWeed ported
+        # into $grisu2, every sum / ratio / division / average in the
+        # program is byte-identical across backends. Float interp was
+        # excluded from this harness before, which is exactly why the
+        # divergence reached audit instead of CI.
+        self._assert_parity("float_interpolation.capa")
 
     def test_closure_loop_capture(self):
         # Slice 19 (2026-05-29): for-loop lambda captures bind

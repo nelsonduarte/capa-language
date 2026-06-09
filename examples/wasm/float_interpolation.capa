@@ -1,0 +1,54 @@
+// Float interpolation parity (audit C1, 2026-06-09).
+//
+// The parity harness historically EXCLUDED Float interpolation,
+// which is why audit C1 (the Wasm Grisu2 port printed
+// ``14.285714285714287`` for ``100.0 / 7.0`` where Python's
+// ``repr`` gives ``14.285714285714286``) was invisible to CI.
+// The root cause was a missing RoundWeed last-digit nudge in the
+// WAT port; with it, every computed-float class below
+// (sums, ratios, divisions, averages) is byte-identical across
+// the Python and Wasm backends.
+//
+// This program deliberately exercises the HARD-rounding shapes
+// (repeating decimals, averages, ratios) that the pre-fix port
+// got wrong, so the regression net covers the cases that DO work.
+// A Grisu2-inherent residual remains and is a KNOWN float-formatting
+// correctness hole: it is reachable from ordinary arithmetic (a
+// plain division like 86.0 / 7018.0 emits a decimal that does NOT
+// round-trip, naming the wrong double), NOT an extreme-exponent-only
+// curiosity. It is tracked separately and needs a Dragon4 / Bignum
+// (or Ryu) slow-path fallback - see the C1 scoping note and the
+// xfail repros in TestWasmFtoaResidual.
+
+fun main(stdio: Stdio)
+    // The headline audit case and its siblings.
+    stdio.println("${100.0 / 7.0}")
+    stdio.println("${(1.0 + 2.0 + 4.0) / 3.0}")
+    stdio.println("${1.0 / 7.0}")
+    stdio.println("${10.0 / 3.0}")
+    stdio.println("${1.0 / 3.0}")
+    stdio.println("${2.0 / 3.0}")
+    stdio.println("${1.0 / 6.0}")
+
+    // Averages of small integer sets (a common real shape).
+    stdio.println("${(3.0 + 5.0 + 8.0 + 11.0) / 4.0}")
+    stdio.println("${(1.0 + 1.0 + 1.0) / 7.0}")
+    stdio.println("${(2.0 + 4.0 + 6.0 + 8.0 + 10.0) / 5.0}")
+
+    // Ratios that land on repeating binary fractions.
+    stdio.println("${22.0 / 7.0}")
+    stdio.println("${355.0 / 113.0}")
+    stdio.println("${1.0 / 29.0}")
+    stdio.println("${17.0 / 13.0}")
+
+    // Mixed arithmetic chains.
+    stdio.println("${(123.0 * 456.0) / 789.0}")
+    stdio.println("${1000.0 / 7.0 + 0.5}")
+    stdio.println("${0.1 + 0.2}")
+
+    // Short / exact floats (already worked pre-fix; kept so the net
+    // covers the easy path alongside the hard one).
+    stdio.println("${3.14159}")
+    stdio.println("${2.5}")
+    stdio.println("${100.0}")
+    stdio.println("${0.125}")
