@@ -1067,6 +1067,85 @@ noninterference claim is therefore now a *machine-checked* result
 
 ---
 
+### 9.9 Fidelity evidence (differential harness)
+
+Section 9.8 argues the λ_if-versus-analyser fidelity *informally*.
+[`tests/test_ifc_fidelity.py`](../tests/test_ifc_fidelity.py) adds
+**machine-run evidence** for it: a differential, property-based
+harness that cross-checks the real analyser
+([`capa/analyzer/_ifc.py`](../capa/analyzer/_ifc.py)) against an
+*independent, executable* model of λ_if
+([`tests/_lambda_if_ref.py`](../tests/_lambda_if_ref.py)) on the
+fragment λ_if models.
+
+The reference module is a hand transcription of
+[`proofs/CapaIF.agda`](../proofs/CapaIF.agda) - the two-point
+lattice, the expression labelling judgement (`L-Lit` / `L-Var` /
+`L-Op` / `L-Env` / `L-Declassify`), the flow-sensitive, pc-carrying
+statement typing (`T-Skip` / `T-Assign` / `T-Seq` / `T-If` /
+`T-While` / `T-Sink`, with the `T-Sink` side condition
+`(l ⊔ pc) flows PUBLIC` as the single hard constraint of the
+`@strict_ifc` regime), and the big-step semantics with a public
+output trace. The value carrier is the one implementation choice
+Section 9 leaves open (CapaIF.agda takes `op` as "any deterministic
+binary function"): the harness fixes it to **strings** with `op` =
+concatenation, so `env-get` maps onto `env.get(...).unwrap_or(...)`
+with no parsing glue and the model trace is byte-comparable with
+`stdio.println` output. Every IFC-relevant rule is transcribed
+unchanged; only the carrier is chosen.
+
+A Hypothesis generator emits small λ_if-fragment programs (scalar
+variables, `env-get` as the secret source, `declassify`, assignment,
+sequencing, `if` / `while`, `sink`) in both well-typed and ill-typed
+(leaky) shapes, a renderer turns each into the equivalent
+`@strict_ifc` Capa program 1:1, and two differential checks run:
+
+- **Typing agreement.** The reference's well-typed verdict must
+  equal the analyser's "accepts under `@strict_ifc`" verdict on every
+  program. Because the Agda proof guarantees the λ_if verdict
+  enforces noninterference, a disagreement is a fidelity finding - an
+  analyser soundness gap (it accepts what λ_if rejects) or an
+  over-restriction (it rejects what λ_if accepts).
+- **Runtime agreement.** For every well-typed program, the analyser-
+  backed Capa runtime and the λ_if reference interpreter must produce
+  the same public output trace on the same secret input; run twice
+  with differing secrets, a well-typed program's trace must also be
+  independent of the secret (excluding `declassify`, which reveals by
+  design - there the model and Capa still *agree* on the revealed
+  value). A mismatch is a semantics-fidelity finding.
+
+The harness reports non-vacuity counters confirming both the accept
+and the reject branches are reached and that runtime agreement runs
+on real (non-discarded) programs. The counters also confirm the
+*confinement frontier* is exercised: a SECRET-guarded `if` / `while`
+whose body assigns but sinks nothing (pc raised, assignment tainted,
+nothing released) is well-typed in λ_if by confinement and the
+analyser must - and does - accept it, so this is the case where the
+reference and analyser reason most differently yet must reach the
+same verdict.
+
+**Honest caveats.** This is *evidence, not proof*, and it does **not
+close the model-versus-implementation gap of Section 9.8**:
+
+- it is **coverage-bounded** - Hypothesis *sampling*, not an
+  exhaustive check of all programs;
+- it is **fragment-only** - it covers exactly what λ_if models
+  (scalar variables, `env-get`, `declassify`, assign, seq, `if`,
+  `while`, `sink`) and *not* the analyser features Section 9.8 lists
+  as abstracted away (per-field struct precision and escape analysis,
+  mutable-container taint and reference aliasing, cross-function
+  summaries, constant-time / timing, the full AST and type system);
+- it shares the same *value carrier choice* as a deliberate
+  simplification, so it tests the IFC verdict and the value/trace
+  observation, not Capa's full value semantics.
+
+What it does buy: independent, re-runnable confirmation that on the
+modelled fragment the analyser's accept/reject decisions and runtime
+traces *match the proven-safe calculus*, narrowing the informal gap
+to the explicitly-listed unmodelled features.
+
+---
+
 ## References (placeholder)
 
 - Wadler, *Linear types can change the world*. The linear
