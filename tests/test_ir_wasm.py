@@ -5840,6 +5840,46 @@ class TestWasmMemoryCap(unittest.TestCase):
         finally:
             sys.stdout = saved
 
+    def test_large_data_segment_sizes_initial_pages(self):
+        # Fix (2026-06-10): the initial page count must cover the
+        # static data segment. Pre-fix the declaration hard-coded
+        # ``1`` initial page, so a module whose interned literals
+        # crossed 64 KiB trapped at INSTANTIATION ("out of bounds
+        # memory access" placing the active data segment) before
+        # ``$alloc`` could ever grow -- which is also why
+        # ``--wasm-memory-cap`` had no effect on the symptom.
+        from capa.ir import compile_wat
+        from capa.ir._emit_wasm import MEMORY_CAP_DEFAULT_PAGES
+        big = "x" * 70000  # > one 64 KiB page of string data
+        src = (
+            'fun main(stdio: Stdio)\n'
+            f'    stdio.println("{big}")\n'
+        )
+        _, types, ast_mod = _parse_lower(src)
+        wat = compile_wat(ast_mod, types=types)
+        self.assertIn(
+            f'(memory (export "memory") 2 {MEMORY_CAP_DEFAULT_PAGES})',
+            wat,
+        )
+
+    def test_cap_below_data_segment_is_a_loud_error(self):
+        # When the static data alone needs more pages than the cap
+        # allows, the module could never instantiate; the emitter
+        # refuses loudly at compile time (pointing at the
+        # --wasm-memory-cap knob) instead of producing a WAT whose
+        # limits clause is invalid (min > max).
+        from capa.ir import compile_wat
+        from capa.ir._emit_wasm import WasmEmissionError
+        big = "x" * 70000
+        src = (
+            'fun main(stdio: Stdio)\n'
+            f'    stdio.println("{big}")\n'
+        )
+        _, types, ast_mod = _parse_lower(src)
+        with self.assertRaises(WasmEmissionError) as ctx:
+            compile_wat(ast_mod, types=types, memory_cap_pages=1)
+        self.assertIn("--wasm-memory-cap", str(ctx.exception))
+
 
 @unittest.skipUnless(
     _has_wasm_tools() and _has_wasmtime_py(),

@@ -446,6 +446,21 @@ class WasmEmitter(
             or self._uses_heap_alloc(module)
         )
         if needs_memory:
+            # Initial page count must cover the full static data
+            # segment (interned string literals + the Grisu2 table),
+            # not a hard-coded single page. Pre-fix (2026-06-10) the
+            # declaration was always ``(memory 1 cap)``: any module
+            # whose interned literals crossed 64 KiB failed at
+            # INSTANTIATION time with "out of bounds memory access"
+            # (active data segments are bounds-checked against the
+            # initial size, before ``$alloc`` ever runs, which is
+            # why ``--wasm-memory-cap`` had no effect). A 70 KiB
+            # string literal -- printed, interpolated, or fed to
+            # ``parse_json`` -- was enough to trap where the Python
+            # backend ran fine.
+            initial_pages = max(
+                1, (self._string_data_offset + 65535) // 65536,
+            )
             # Audit H1 (2026-05): bake the per-module memory cap
             # into the limits clause so ``$alloc``'s ``memory.grow``
             # traps at a deterministic page count rather than at
@@ -453,11 +468,19 @@ class WasmEmitter(
             # the cap (host decides). 1 page = 64 KiB; default cap
             # is ``MEMORY_CAP_DEFAULT_PAGES`` (256 pages = 16 MiB).
             if self._memory_cap_pages is not None:
+                if self._memory_cap_pages < initial_pages:
+                    raise WasmEmissionError(
+                        f"static string data needs {initial_pages} "
+                        f"memory page(s) (64 KiB each) but the memory "
+                        f"cap is {self._memory_cap_pages} page(s); "
+                        f"raise it via --wasm-memory-cap"
+                    )
                 self._write(
-                    f'(memory (export "memory") 1 {self._memory_cap_pages})'
+                    f'(memory (export "memory") {initial_pages} '
+                    f'{self._memory_cap_pages})'
                 )
             else:
-                self._write('(memory (export "memory") 1)')
+                self._write(f'(memory (export "memory") {initial_pages})')
             for text, (offset, _len) in sorted(
                 self._strings.items(), key=lambda kv: kv[1][0],
             ):
