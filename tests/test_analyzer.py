@@ -6361,5 +6361,76 @@ class TestDeadUnsafeWarning(unittest.TestCase):
         self.assertEqual(r.warnings, [])
 
 
+class TestInternalBuiltinRejection(unittest.TestCase):
+    """Underscore-prefixed builtin functions (``_capa_chr``) are
+    compiler-internal plumbing for the bundled JSON parser
+    (``capa/ir/_builtin_json.capa``), not language surface. They
+    became reachable from user code when ``_capa_chr`` landed in
+    ``FREE_FUNCTIONS`` (2026-06-10); the analyzer now rejects user
+    calls and bare references with a clear message. The bundled
+    source itself is analyzed with ``internal=True`` and keeps
+    access (pinned here by loading its IR)."""
+
+    def test_user_call_to_capa_chr_is_rejected(self):
+        errs = errors_of(
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(_capa_chr(65))\n"
+        )
+        self.assertTrue(
+            any("internal compiler builtin" in e for e in errs),
+            errs,
+        )
+
+    def test_bare_reference_to_capa_chr_is_rejected(self):
+        # Aliasing would smuggle the builtin past the call check.
+        errs = errors_of(
+            "fun main(stdio: Stdio)\n"
+            "    let f = _capa_chr\n"
+            "    stdio.println(f(65))\n"
+        )
+        self.assertTrue(
+            any("internal compiler builtin" in e for e in errs),
+            errs,
+        )
+
+    def test_user_underscore_function_still_callable(self):
+        # A user-defined function that happens to start with ``_``
+        # has a real source position (never BUILTIN_POS) and stays
+        # callable.
+        r = check(
+            "fun _helper() -> Int\n"
+            "    return 7\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"${_helper()}\")\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+    def test_bundled_json_parser_keeps_internal_access(self):
+        # The bundled parser calls _capa_chr to decode \uXXXX; its
+        # loader analyzes with internal=True. Re-analyze the shipped
+        # source both ways: internal=True must be clean, and the
+        # user-mode analysis of the same source must trip the
+        # rejection (proving the gate actually guards _capa_chr).
+        from capa.ir._builtin_json import _BUNDLED_SOURCE_PATH
+        source = _BUNDLED_SOURCE_PATH.read_text(encoding="utf-8")
+        tokens = Lexer(source).lex()
+        module = Parser(tokens, source=source).parse_module()
+        internal = analyze(module, source=source, internal=True)
+        self.assertEqual([e.message for e in internal.errors], [])
+        # Fresh parse for the user-mode run so the two analyses
+        # cannot share AST-keyed state.
+        module2 = Parser(
+            Lexer(source).lex(), source=source,
+        ).parse_module()
+        as_user = analyze(module2, source=source)
+        self.assertTrue(
+            any(
+                "internal compiler builtin" in e.message
+                for e in as_user.errors
+            ),
+            [e.message for e in as_user.errors],
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

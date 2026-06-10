@@ -32,6 +32,23 @@ from ..typesys import (
 
 
 class _DispatchMixin:
+    def _is_internal_builtin(self, sym) -> bool:
+        """True when ``sym`` is an underscore-prefixed BUILTIN
+        function (compiler-internal plumbing such as ``_capa_chr``)
+        and the current source is user code. The bundled JSON
+        parser (``capa/ir/_builtin_json.capa``) is analyzed with
+        ``internal=True`` and keeps access. User-defined functions
+        whose names start with ``_`` carry a real source position,
+        never ``BUILTIN_POS``, so they are unaffected."""
+        from . import SymbolKind
+        from ..builtins import BUILTIN_POS
+        return (
+            not self.internal
+            and sym.kind == SymbolKind.FUNCTION
+            and sym.name.startswith("_")
+            and sym.pos == BUILTIN_POS
+        )
+
     def _resolve_named_args(
         self,
         e: "A.Call | A.MethodCall",
@@ -151,6 +168,23 @@ class _DispatchMixin:
                     )
                     return TyName(sym.name)
                 if sym.kind == SymbolKind.FUNCTION:
+                    # Underscore-prefixed BUILTIN functions (e.g.
+                    # ``_capa_chr``) are compiler-internal plumbing
+                    # for the bundled JSON parser, not language
+                    # surface. Only internal sources (the bundled
+                    # ``capa/ir/_builtin_json.capa``, analyzed with
+                    # ``internal=True``) may call them; user-defined
+                    # functions that happen to start with ``_`` have
+                    # a real source position and are unaffected.
+                    if self._is_internal_builtin(sym):
+                        self._err(
+                            f"{sym.name!r} is an internal compiler "
+                            f"builtin and cannot be called from user "
+                            f"code; it is not part of the Capa "
+                            f"language surface",
+                            e.pos,
+                        )
+                        return TyUnknown
                     # Roadmap S2.5: declassify has a bespoke call shape
                     # (a required ``reason:`` string literal) that the
                     # generic named-arg path cannot express, so it is

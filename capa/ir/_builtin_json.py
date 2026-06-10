@@ -80,9 +80,19 @@ def _load_builtin_ir() -> Module:
         source, filename=str(_BUNDLED_SOURCE_PATH),
     ).lex()
     ast_module = Parser(tokens).parse_module()
+    # ``internal=True``: the bundled parser calls the internal
+    # ``_capa_chr`` builtin, which the analyzer rejects in user code.
     result = analyze(
         ast_module, source=source, filename=str(_BUNDLED_SOURCE_PATH),
+        internal=True,
     )
+    if result.errors:
+        # The bundled source is compiler-shipped; an analysis error
+        # here is a compiler bug. Lowering anyway would miscompile
+        # silently, so fail loudly with the first diagnostic.
+        raise RuntimeError(
+            f"bundled JSON parser failed analysis: {result.errors[0]}"
+        )
     _cached_ir = lower(ast_module, types=result.types)
     return _cached_ir
 

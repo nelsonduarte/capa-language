@@ -301,9 +301,15 @@ class Analyzer(
         filename: str = "<input>",
         sources: Optional[dict[str, str]] = None,
         module_privates: Optional[dict[str, set[str]]] = None,
+        internal: bool = False,
     ):
         self.source = source
         self.filename = filename
+        # True only for compiler-internal sources (the bundled JSON
+        # parser at ``capa/ir/_builtin_json.capa``). Internal sources
+        # may call underscore-prefixed internal builtins such as
+        # ``_capa_chr``; user code is rejected with a clear error.
+        self.internal = internal
         # Per-file source map for the loader-linked case. When set,
         # _err looks up the source string for the position's
         # filename here so errors that originate in an imported
@@ -790,6 +796,7 @@ def analyze(
     filename: str = "<input>",
     sources: Optional[dict[str, str]] = None,
     module_privates: Optional[dict[str, set[str]]] = None,
+    internal: bool = False,
 ) -> AnalysisResult:
     """Analyze a Module and return the result.
 
@@ -803,8 +810,13 @@ def analyze(
     unresolved reference whose name appears in any of these sets
     produces a specialised "private to module 'X'" diagnostic
     instead of the generic "did you mean" hint.
+
+    ``internal``: True only for compiler-bundled sources (the JSON
+    parser at ``capa/ir/_builtin_json.capa``), which may reference
+    underscore-prefixed internal builtins like ``_capa_chr``. User
+    code (the default) gets a clear rejection instead.
     """
     return Analyzer(
         source=source, filename=filename, sources=sources,
-        module_privates=module_privates,
+        module_privates=module_privates, internal=internal,
     ).analyze(module)

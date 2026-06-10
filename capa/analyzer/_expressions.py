@@ -541,6 +541,18 @@ class _ExpressionsMixin:
             self._err(f"undefined name {e.name!r}{hint}", e.pos)
             return TyUnknown
         self.bindings[id(e)] = sym
+        # Bare reference to an underscore-prefixed internal builtin
+        # (e.g. ``let f = _capa_chr``): rejected like the direct
+        # call in ``_check_call``, otherwise the alias would smuggle
+        # the internal builtin into user code.
+        if self._is_internal_builtin(sym):
+            self._err(
+                f"{e.name!r} is an internal compiler builtin and "
+                f"cannot be referenced from user code; it is not "
+                f"part of the Capa language surface",
+                e.pos,
+            )
+            return TyUnknown
         if e.name in self._consumed:
             self._err(
                 f"capability {e.name!r} was consumed earlier and cannot "
