@@ -244,7 +244,7 @@ capa/                 # Python package: compiler + runtime + pkg manager
   lexer/  parser/  analyzer/  transpiler/  runtime/
   ir/                 # CIR + Wasm Component Model backend + WIT emitter
   manifest/  docgen/  lsp/    pkg/    cli.py
-tests/                # 2478 unit, end-to-end, and property tests
+tests/                # 2593 unit, end-to-end, and property tests
 examples/             # .capa programs (basics, CVE case studies, LLM sandbox)
 # (seed libraries now all live in standalone repos; see Standard library section)
 docs/                 # public website (HTML) + design writeups (.md)
@@ -265,7 +265,7 @@ typestate protocols) and the fully functional Wasm backend (see
 breaking changes to the covered surfaces require a major bump, and
 deprecations get one minor release of warning first.
 
-**2478 tests** spanning the lexer, parser, analyzer, transpiler,
+**2593 tests** spanning the lexer, parser, analyzer, transpiler,
 LSP, formatter, attribute-schema validation, package manager, the
 information-flow / constant-time / typestate checkers, the Wasm
 backend (with a Python/Wasm output parity harness), and
