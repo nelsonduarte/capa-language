@@ -1,0 +1,154 @@
+// Outer payload binders that are SIBLINGS of a nested variant
+// pattern. Pre-fix (2026-06-10) the Wasm nested-variant arm paths
+// bound only the nested variant's own payloads and never the outer
+// siblings, so ``Pair(n, Some(m))`` left ``n`` reading its local's
+// default 0 while Python gave the real value - a silent
+// cross-backend divergence. The arm now binds every outer
+// non-variant payload (binders and wildcards on either side of the
+// nested variant) from the outer record before the inner binds.
+// The same slice generalised the arm to SEVERAL nested-variant
+// siblings (``Duo(Some(a), Some(b))`` previously checked only the
+// FIRST sibling's inner tag, taking the wrong arm) and lifted the
+// loud "nested variant pattern with arm guard not yet supported"
+// rejection, so a guard can now read the outer + inner binders.
+
+// Binder BEFORE the nested variant.
+type P =
+    Pair(Int, Option<Int>)
+    PNada
+
+// Binder AFTER the nested variant.
+type Q =
+    Rev(Option<Int>, Int)
+    QNada
+
+// Two binders AROUND the nested variant; also exercises the
+// outer-literal + outer-binder + nested-variant combination.
+type T =
+    Trip(Int, Int, Option<Int>)
+    TNada
+
+// Two nested-variant SIBLINGS in one payload list.
+type D =
+    Duo(Option<Int>, Option<Int>)
+    DNada
+
+// Non-Int outer siblings: String / Float / Bool bind shapes.
+type M =
+    Mix(String, Option<Int>, Float, Bool)
+    MNada
+
+fun before(p: P) -> String
+    match p
+        Pair(n, Some(m)) -> return "pair ${n} ${m}"
+        Pair(n, None) -> return "lone ${n}"
+        PNada -> return "pnada"
+
+fun after(q: Q) -> String
+    match q
+        Rev(Some(m), n) -> return "rev ${m} ${n}"
+        Rev(None, n) -> return "rev none ${n}"
+        QNada -> return "qnada"
+
+fun around(t: T) -> String
+    match t
+        Trip(1, n, Some(m)) -> return "one ${n} ${m}"
+        Trip(k, n, Some(m)) -> return "any ${k} ${n} ${m}"
+        Trip(k, _, None) -> return "none ${k}"
+        TNada -> return "tnada"
+
+// Wildcard sibling next to a binder sibling.
+fun wild(t: T) -> String
+    match t
+        Trip(_, n, Some(m)) -> return "wild ${n} ${m}"
+        Trip(_, n, None) -> return "wild ${n} -"
+        TNada -> return "wild tnada"
+
+fun duo(d: D) -> String
+    match d
+        Duo(Some(a), Some(b)) -> return "both ${a} ${b}"
+        Duo(Some(a), None) -> return "left ${a}"
+        Duo(None, Some(b)) -> return "right ${b}"
+        Duo(None, None) -> return "neither"
+        DNada -> return "dnada"
+
+fun mix(m: M) -> String
+    match m
+        Mix(s, Some(k), f, true) -> return "mix ${s} ${k} ${f} T"
+        Mix(s, Some(k), f, b) -> return "mix ${s} ${k} ${f} ${b}"
+        Mix(s, None, f, b) -> return "mix ${s} - ${f} ${b}"
+        MNada -> return "mnada"
+
+// Guarded nested arms: the guard reads the OUTER binder (and the
+// inner one), exercising the flat-block guarded emission path.
+// Pre-fix this raised a loud WasmEmissionError.
+fun cmp(p: P) -> String
+    match p
+        Pair(n, Some(m)) if n > m -> return "gt ${n} ${m}"
+        Pair(n, Some(m)) if n == m -> return "eq ${n} ${m}"
+        Pair(n, Some(m)) -> return "lt ${n} ${m}"
+        Pair(n, None) if n > 10 -> return "big ${n}"
+        Pair(n, None) -> return "small ${n}"
+        PNada -> return "pnada"
+
+// Guard-free nested arm inside a guarded match (the path that was
+// reachable pre-fix and silently mis-bound the outer binder).
+fun guarded_match(p: P, strict: Bool) -> String
+    match p
+        Pair(n, Some(m)) if strict -> return "strict ${n} ${m}"
+        Pair(n, Some(m)) -> return "loose ${n} ${m}"
+        Pair(n, None) -> return "lone ${n}"
+        PNada -> return "pnada"
+
+// Expression-form match through a nested arm with outer binders.
+fun expr_form(p: P) -> Int
+    let v = match p
+        Pair(n, Some(m)) -> n * 100 + m
+        Pair(n, None) -> n
+        PNada -> 0 - 1
+    return v
+
+fun main(stdio: Stdio)
+    stdio.println(before(Pair(3, Some(4))))
+    stdio.println(before(Pair(7, None)))
+    stdio.println(before(PNada))
+
+    stdio.println(after(Rev(Some(4), 3)))
+    stdio.println(after(Rev(None, 7)))
+    stdio.println(after(QNada))
+
+    stdio.println(around(Trip(1, 5, Some(9))))
+    stdio.println(around(Trip(2, 6, Some(8))))
+    stdio.println(around(Trip(3, 7, None)))
+    stdio.println(around(TNada))
+
+    stdio.println(wild(Trip(1, 2, Some(3))))
+    stdio.println(wild(Trip(4, 5, None)))
+    stdio.println(wild(TNada))
+
+    stdio.println(duo(Duo(Some(1), Some(2))))
+    stdio.println(duo(Duo(Some(3), None)))
+    stdio.println(duo(Duo(None, Some(4))))
+    stdio.println(duo(Duo(None, None)))
+    stdio.println(duo(DNada))
+
+    stdio.println(mix(Mix("a", Some(2), 1.5, true)))
+    stdio.println(mix(Mix("b", Some(3), 2.5, false)))
+    stdio.println(mix(Mix("c", None, 3.5, true)))
+    stdio.println(mix(MNada))
+
+    stdio.println(cmp(Pair(5, Some(3))))
+    stdio.println(cmp(Pair(4, Some(4))))
+    stdio.println(cmp(Pair(2, Some(9))))
+    stdio.println(cmp(Pair(11, None)))
+    stdio.println(cmp(Pair(2, None)))
+    stdio.println(cmp(PNada))
+
+    stdio.println(guarded_match(Pair(3, Some(4)), true))
+    stdio.println(guarded_match(Pair(3, Some(4)), false))
+    stdio.println(guarded_match(Pair(7, None), true))
+    stdio.println(guarded_match(PNada, false))
+
+    stdio.println("${expr_form(Pair(7, Some(8)))}")
+    stdio.println("${expr_form(Pair(9, None))}")
+    stdio.println("${expr_form(PNada)}")

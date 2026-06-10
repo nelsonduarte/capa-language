@@ -624,6 +624,29 @@ _PARITY_PROGRAMS: list[str] = [
     # nested variant pattern; and literal arms under a guard (the
     # flat-block guarded emission path).
     "match_variant_payload_literal.capa",
+    # Nested-variant outer-sibling bind slice (2026-06-10): a match
+    # arm whose variant payload mixes a nested variant pattern with
+    # OUTER sibling binders (``Pair(n, Some(m))``) silently
+    # miscompiled on Wasm - the nested-arm paths bound only the
+    # nested variant's own payloads, so the outer binder read its
+    # local's default 0 ("pair 0 4" where Python printed "pair 3
+    # 4"). The arm now binds every outer non-variant payload from
+    # the outer record before the inner binds, in both the cascade
+    # and the flat-block guarded paths. The same slice generalised
+    # the arm to SEVERAL nested-variant siblings (``Duo(Some(a),
+    # Some(b))`` previously tag-checked only the FIRST sibling and
+    # took the wrong arm) and lifted the loud "nested variant
+    # pattern with arm guard not yet supported" rejection (binds
+    # land ahead of the guard, so a guard can read the outer +
+    # inner binders). Covers binder before / after / around the
+    # nested variant, wildcard + binder siblings, outer literal +
+    # outer binder + nested variant in one payload list, String /
+    # Float / Bool / Int sibling bind shapes, two nested siblings
+    # (all four tag combinations), guards reading outer + inner
+    # binders, a guard-free nested arm inside a guarded match,
+    # payloadless nested variants (None arms), and expression-form
+    # match.
+    "match_nested_variant_outer_binds.capa",
 ]
 
 # Programs deliberately excluded from parity and why; documented
@@ -1394,6 +1417,17 @@ class TestPythonWasmParity(unittest.TestCase):
         # Wasm backend raised "Phase 6C: nested pattern PatLiteral
         # inside variant payload not yet supported".
         self._assert_parity("match_variant_payload_literal.capa")
+
+    def test_match_nested_variant_outer_binds(self):
+        # Nested-variant outer-sibling bind slice (2026-06-10):
+        # ``Pair(n, Some(m))`` bound ``m`` but never ``n`` on Wasm
+        # (read 0; Python gave the real value) - a silent divergence
+        # in both nested-arm emission paths. Also locks the
+        # two-nested-siblings arm (wrong-arm selection pre-fix) and
+        # guards on nested-variant arms (loud rejection pre-fix).
+        # See the _PARITY_PROGRAMS entry for the full coverage
+        # matrix.
+        self._assert_parity("match_nested_variant_outer_binds.capa")
 
     def test_match_or_bind(self):
         # Bound or-pattern slice (2026-06-04): or-patterns whose

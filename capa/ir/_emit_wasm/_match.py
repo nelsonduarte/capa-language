@@ -385,100 +385,145 @@ class _MatchEmissionMixin:
         self, arm: MatchArm, scrut_local: str, tag_local: str,
         sum_layout: dict,
     ) -> int:
-        """Emit a variant arm whose payload contains a nested
-        PatVariant (one level deep). Cascades into the next arm
-        on mismatch like the flat case, but the if's condition
-        combines outer + inner tag checks via i32.and so a
-        partial match (outer tag matches, inner does not) still
-        falls through to the next arm.
+        """Emit a variant arm whose payload contains one or more
+        nested PatVariants (one level deep). Cascades into the next
+        arm on mismatch like the flat case, but the if's condition
+        combines the outer tag check with each nested variant's
+        inner tag check (short-circuited behind the outer check, so
+        an inner-sum pointer is only ever decoded from a slot the
+        outer tag proved valid).
 
         Example: ``Err(Missing(name))`` against
         ``Result<Args, ArgError>``:
 
         - Outer tag check: result.tag == 1 (Err)
-        - Eagerly extract Err's payload at offset 8 as an i32
-          pointer (the ArgError), stash in $_m_scrut_inner
-        - Inner tag check: argerror.tag == <Missing's tag>
-        - AND the two; the arm's if takes both at once
-        - In then: extract Missing's own payloads (the name
-          binder) from $_m_scrut_inner
+        - Gated on it: extract Err's payload at offset 8 as an i32
+          pointer (the ArgError) into $_m_scrut_inner and check
+          argerror.tag == <Missing's tag>
+        - In then: bind the outer non-variant payload siblings from
+          the outer record, then extract each nested variant's own
+          payloads (the name binder) from $_m_scrut_inner
         - else cascades to the next arm
 
         Limitation: only one level of nesting is implemented. A
-        triple-nested ``Some(Err(Missing(x)))`` would need a
-        $_m_scrut_inner2 scratch and another AND clause; the
-        emit code would generalise straightforwardly but no
-        program in the demo set needs it."""
+        triple-nested ``Some(Err(Missing(x)))`` raises a precise
+        error in ``_emit_inner_variant_payload_binds``."""
         pat = arm.pattern
-        outer_tag, outer_payloads = sum_layout["variants"][pat.name]
-        # Exactly one nested PatVariant; the analyzer guarantees
-        # the payload arity matches the variant's declared shape.
-        nested_idx, nested_pat = next(
-            (i, p) for i, p in enumerate(pat.payloads)
-            if isinstance(p, PatVariant)
+        outer_tag, outer_payloads, nested = self._nested_arm_parts(
+            pat, sum_layout,
         )
-        outer_offset, _outer_size, outer_payload_ty = outer_payloads[nested_idx]
-        # Resolve the inner sum layout. The lowerer leaves the
-        # payload type as 'Any' for builtin sums (Option/Result),
-        # so we look up the nested variant's owning sum via
-        # _variant_to_sum.
-        inner_sum_name = self._variant_to_sum.get(nested_pat.name)
-        if inner_sum_name is None:
-            raise WasmEmissionError(
-                f"nested variant {nested_pat.name!r} has no known "
-                f"parent sum; was the type declared in module.types?"
-            )
-        inner_sum_layout = self._sum_layouts[inner_sum_name]
-        inner_tag, inner_payloads = inner_sum_layout["variants"][nested_pat.name]
-
-        # 1. Eager extract: outer's inner-ptr payload into scratch.
-        # The slot is i64-uniform (sum payloads always go via the
-        # i64.extend / i64.load path); we read it back as i32.
-        self._write(f"local.get ${scrut_local}")
-        self._write(f"i64.load offset={outer_offset}")
-        self._write("i32.wrap_i64")
-        self._write("local.set $_m_scrut_inner")
-
-        # 2. Combined tag check: outer.tag == outer_tag AND
-        #    inner.tag == inner_tag. Literal payloads (outer
-        #    siblings of the nested variant, and literals inside the
-        #    nested variant's own payload, e.g. ``Some(Ok(0))``)
-        #    refine the combined predicate; the literal loads are
-        #    short-circuited behind the tag checks so they only run
-        #    when $_m_scrut_inner is a valid inner-sum pointer.
-        self._write(f"local.get ${tag_local}")
-        self._write(f"i32.const {outer_tag}")
-        self._write("i32.eq")
-        self._write("local.get $_m_scrut_inner")
-        self._write("i32.load")
-        self._write(f"i32.const {inner_tag}")
-        self._write("i32.eq")
-        self._write("i32.and")
-        self._refine_predicate_with_payload_literals(
-            _literal_payload_checks(pat, outer_payloads, scrut_local)
-            + _literal_payload_checks(
-                nested_pat, inner_payloads, "_m_scrut_inner",
-            ),
+        self._push_nested_arm_predicate(
+            pat, outer_tag, outer_payloads, nested, scrut_local,
+            tag_local,
         )
-
-        # 3. Single if for the combined check; the else carries
-        # the next arm's cascade.
+        # Single if for the combined check; the else carries the
+        # next arm's cascade.
         self._write("if")
         self._indent += 1
-
-        # 4. Extract the inner variant's payload binders. Mirrors
-        # the flat PatVariant binding code but reads from
-        # $_m_scrut_inner.
-        self._emit_inner_variant_payload_binds(nested_pat, inner_payloads)
-
-        # 5. Run the arm body.
+        self._emit_nested_arm_binds(pat, outer_payloads, nested, scrut_local)
         self._emit_body(arm.body)
-
-        # 6. Open the else cascade for the next arm.
+        # Open the else cascade for the next arm.
         self._indent -= 1
         self._write("else")
         self._indent += 1
         return 1
+
+    def _nested_arm_parts(self, pat: PatVariant, sum_layout: dict):
+        """Resolve the layout facts a nested-variant arm needs:
+        the outer variant's tag + payload layouts, and one
+        ``(slot_offset, nested_pat, inner_tag, inner_payloads)``
+        entry per nested PatVariant payload (``Duo(Some(a),
+        Some(b))`` yields two entries). The lowerer leaves the
+        payload type as 'Any' for builtin sums (Option/Result), so
+        each nested variant's owning sum resolves via
+        ``_variant_to_sum``."""
+        outer_tag, outer_payloads = sum_layout["variants"][pat.name]
+        nested = []
+        for idx, sub in enumerate(pat.payloads):
+            if not isinstance(sub, PatVariant):
+                continue
+            inner_sum_name = self._variant_to_sum.get(sub.name)
+            if inner_sum_name is None:
+                raise WasmEmissionError(
+                    f"nested variant {sub.name!r} has no known "
+                    f"parent sum; was the type declared in "
+                    f"module.types?"
+                )
+            inner_sum_layout = self._sum_layouts[inner_sum_name]
+            inner_tag, inner_payloads = inner_sum_layout["variants"][sub.name]
+            offset, _size, _ty = outer_payloads[idx]
+            nested.append((offset, sub, inner_tag, inner_payloads))
+        return outer_tag, outer_payloads, nested
+
+    def _push_nested_arm_predicate(
+        self, pat: PatVariant, outer_tag: int, outer_payloads: list,
+        nested: list, scrut_local: str, tag_local: str,
+    ) -> None:
+        """Push the i32 0/1 predicate for a nested-variant arm:
+        outer tag matched AND every outer literal payload equals its
+        slot AND, for each nested PatVariant payload, the inner tag
+        (and the inner literal payloads) match too. Each nested
+        check is gated behind the accumulated predicate via ``if
+        (result i32)`` so the inner-sum pointer extraction only runs
+        once the outer tag proved the slot holds one; the shared
+        ``$_m_scrut_inner`` scratch is reused sequentially across
+        nested siblings (each check finishes with the scratch before
+        the next overwrites it; the binds re-extract per sibling)."""
+        self._write(f"local.get ${tag_local}")
+        self._write(f"i32.const {outer_tag}")
+        self._write("i32.eq")
+        self._refine_predicate_with_payload_literals(
+            _literal_payload_checks(pat, outer_payloads, scrut_local),
+        )
+        for offset, nested_pat, inner_tag, inner_payloads in nested:
+            self._write("if (result i32)")
+            self._indent += 1
+            # The slot is i64-uniform (sum payloads always go via
+            # the i64.extend / i64.load path); read it back as i32.
+            self._write(f"local.get ${scrut_local}")
+            self._write(f"i64.load offset={offset}")
+            self._write("i32.wrap_i64")
+            self._write("local.tee $_m_scrut_inner")
+            self._write("i32.load")
+            self._write(f"i32.const {inner_tag}")
+            self._write("i32.eq")
+            self._refine_predicate_with_payload_literals(
+                _literal_payload_checks(
+                    nested_pat, inner_payloads, "_m_scrut_inner",
+                ),
+            )
+            self._indent -= 1
+            self._write("else")
+            self._indent += 1
+            self._write("i32.const 0")
+            self._indent -= 1
+            self._write("end")
+
+    def _emit_nested_arm_binds(
+        self, pat: PatVariant, outer_payloads: list, nested: list,
+        scrut_local: str,
+    ) -> None:
+        """Bind everything a matched nested-variant arm names: the
+        OUTER payload siblings that are not nested variants first
+        (binders / wildcards on either side of the nested variant,
+        read from the outer record), then each nested variant's own
+        payload binders (re-extracting its pointer into
+        ``$_m_scrut_inner`` per sibling, since the predicate's
+        scratch holds only the LAST nested sibling). The outer binds
+        were missing before 2026-06-10: ``Pair(n, Some(m))`` bound
+        ``m`` but left ``n`` reading its local's default 0, a silent
+        Python/Wasm divergence."""
+        self._emit_variant_payload_binds(
+            pat, tuple(outer_payloads), scrut_local, skip_nested=True,
+        )
+        for offset, nested_pat, _inner_tag, inner_payloads in nested:
+            self._write(f"local.get ${scrut_local}")
+            self._write(f"i64.load offset={offset}")
+            self._write("i32.wrap_i64")
+            self._write("local.set $_m_scrut_inner")
+            self._emit_inner_variant_payload_binds(
+                nested_pat, inner_payloads,
+            )
 
     def _emit_inner_variant_payload_binds(
         self, nested_pat: PatVariant, inner_payloads: list,
@@ -1657,20 +1702,10 @@ class _MatchEmissionMixin:
             if isinstance(pat, PatVariant) and any(
                 isinstance(p, PatVariant) for p in pat.payloads
             ):
-                # Nested-variant arms with guards are a separate
-                # restructure (the outer eager-extract has to land
-                # AHEAD of the predicate, not inside the body). Not
-                # used by any demo today; raise a precise error
-                # rather than silently producing wrong code.
-                if arm.guard is not None:
-                    raise WasmEmissionError(
-                        "nested variant pattern with arm guard "
-                        "not yet supported in the Wasm backend; "
-                        "rewrite as two nested matches or move "
-                        "the guard condition outside"
-                    )
-                # No guard: emit the nested arm via the same flat
-                # contract by inlining its predicate + bind here.
+                # Nested-variant arm (with or without its own
+                # guard): the binds run inside the arm's if before
+                # the guard, so a guard can reference both the
+                # outer siblings' binders and the inner ones.
                 self._emit_nested_variant_arm_guarded(
                     arm, scrut_local, tag_local, sum_layout,
                     done_label,
@@ -1734,13 +1769,18 @@ class _MatchEmissionMixin:
 
     def _emit_variant_payload_binds(
         self, pat: PatVariant, payload_layouts: tuple,
-        scrut_local: str,
+        scrut_local: str, skip_nested: bool = False,
     ) -> None:
         """Bind a PatVariant's sub-patterns from the scrutinee
-        record. Shared by the flat cascade path and the guard-present
+        record. Shared by the flat cascade path, the guard-present
         path (both call it from inside the arm's if without the
-        cascade-opening boilerplate). PatLiteral sub-patterns bind
-        nothing: they were already consumed by the arm predicate via
+        cascade-opening boilerplate), and - with
+        ``skip_nested=True`` - the nested-variant arm paths, which
+        use it for the OUTER payload siblings and bind each nested
+        PatVariant's own payloads separately via
+        ``_emit_inner_variant_payload_binds``. PatLiteral
+        sub-patterns bind nothing: they were already consumed by the
+        arm predicate via
         ``_refine_predicate_with_payload_literals``."""
         for sub_pat, (offset, size, _ty) in zip(
             pat.payloads, payload_layouts,
@@ -1751,6 +1791,8 @@ class _MatchEmissionMixin:
                     scrut_local_name=scrut_local,
                 )
             elif isinstance(sub_pat, (PatWildcard, PatLiteral)):
+                continue
+            elif skip_nested and isinstance(sub_pat, PatVariant):
                 continue
             else:
                 # PatVariant payloads route through
@@ -1767,57 +1809,29 @@ class _MatchEmissionMixin:
         self, arm: MatchArm, scrut_local: str, tag_local: str,
         sum_layout: dict, done_label: str,
     ) -> None:
-        """Flat-block emission for a nested-variant arm (no guard).
-        Mirrors ``_emit_nested_variant_arm`` but exits via ``br
+        """Flat-block emission for a nested-variant arm, with or
+        without its own guard. Mirrors ``_emit_nested_variant_arm``
+        (same predicate + binds helpers) but exits via ``br
         $match_done<N>`` instead of cascading into an else block.
-        Guards on nested-variant arms are rejected at the caller."""
+        The inner-sum pointer extraction lives INSIDE the predicate,
+        gated behind the outer tag check, so nothing has to escape
+        the arm's if; the binds run inside the if ahead of the guard
+        (see ``_emit_guarded_arm``), so a guard like ``Pair(n,
+        Some(m)) if n > m`` reads fully-populated binders."""
         pat = arm.pattern
-        outer_tag, outer_payloads = sum_layout["variants"][pat.name]
-        nested_idx, nested_pat = next(
-            (i, p) for i, p in enumerate(pat.payloads)
-            if isinstance(p, PatVariant)
+        outer_tag, outer_payloads, nested = self._nested_arm_parts(
+            pat, sum_layout,
         )
-        outer_offset, _outer_size, _outer_payload_ty = outer_payloads[nested_idx]
-        inner_sum_name = self._variant_to_sum.get(nested_pat.name)
-        if inner_sum_name is None:
-            raise WasmEmissionError(
-                f"nested variant {nested_pat.name!r} has no known "
-                f"parent sum; was the type declared in module.types?"
-            )
-        inner_sum_layout = self._sum_layouts[inner_sum_name]
-        inner_tag, inner_payloads = inner_sum_layout["variants"][nested_pat.name]
-
-        # Eager extract of the outer's inner-ptr payload into the
-        # scratch local; must happen BEFORE the predicate so the
-        # inner tag load can read from $_m_scrut_inner. This is the
-        # only side effect that has to escape the if; it's safe
-        # because the scratch only persists across the predicate
-        # and either gets overwritten by the next arm's nested
-        # extract or goes unused.
-        self._write(f"local.get ${scrut_local}")
-        self._write(f"i64.load offset={outer_offset}")
-        self._write("i32.wrap_i64")
-        self._write("local.set $_m_scrut_inner")
 
         def push_predicate():
-            self._write(f"local.get ${tag_local}")
-            self._write(f"i32.const {outer_tag}")
-            self._write("i32.eq")
-            self._write("local.get $_m_scrut_inner")
-            self._write("i32.load")
-            self._write(f"i32.const {inner_tag}")
-            self._write("i32.eq")
-            self._write("i32.and")
-            self._refine_predicate_with_payload_literals(
-                _literal_payload_checks(pat, outer_payloads, scrut_local)
-                + _literal_payload_checks(
-                    nested_pat, inner_payloads, "_m_scrut_inner",
-                ),
+            self._push_nested_arm_predicate(
+                pat, outer_tag, outer_payloads, nested, scrut_local,
+                tag_local,
             )
 
         def bind_payloads():
-            self._emit_inner_variant_payload_binds(
-                nested_pat, inner_payloads,
+            self._emit_nested_arm_binds(
+                pat, outer_payloads, nested, scrut_local,
             )
 
         self._emit_guarded_arm(

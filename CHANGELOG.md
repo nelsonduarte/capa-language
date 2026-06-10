@@ -9,6 +9,47 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+### Bug fix: silent Wasm divergence in nested-variant match arms with outer sibling binders
+
+A `match` arm whose variant payload mixes a nested variant pattern
+with sibling binders (`Pair(n, Some(m))` against
+`type P = Pair(Int, Option<Int>)`) silently miscompiled on the Wasm
+backend: the nested-arm emission paths bound only the nested
+variant's own payloads and never the outer siblings, so the outer
+binder read its Wasm local's default value. Python printed
+`pair 3 4`, Wasm printed `pair 0 4`, with no error on either side -
+the worst class of divergence. Both nested-arm paths (the nested
+if/else cascade and the flat-block guarded form) now bind every
+outer non-variant payload (binders and wildcards before and after
+the nested variant, in any count) from the outer record before the
+inner binds, reusing the same payload-bind helper as flat variant
+arms.
+
+The same audit found and fixed two more defects in the nested-arm
+emitter:
+
+- **Several nested-variant siblings took the wrong arm.**
+  `Duo(Some(a), Some(b))` only tag-checked and bound the FIRST
+  nested sibling, so `Duo(Some(3), None)` matched the
+  `Duo(Some(a), Some(b))` arm with `b` reading 0. The arm predicate
+  now checks every nested sibling's inner tag (each extraction
+  short-circuited behind the accumulated predicate, so an inner-sum
+  pointer is only decoded from a slot the outer tag proved valid)
+  and binds each sibling's payloads.
+- **Guards on nested-variant arms are now supported.** Previously a
+  loud `WasmEmissionError` ("nested variant pattern with arm guard
+  not yet supported"); the binds land ahead of the guard check, so
+  `Pair(n, Some(m)) if n > m` works and the guard can read both the
+  outer and inner binders.
+
+Covered by the new cross-backend parity program
+`examples/wasm/match_nested_variant_outer_binds.capa` (binder
+before / after / around the nested variant, wildcard + binder
+siblings, outer literal + outer binder + nested variant together,
+String / Float / Bool / Int sibling shapes, two nested siblings
+across all four tag combinations, guards reading outer + inner
+binders, payloadless nested variants, expression-form match).
+
 ### Wasm backend: literal patterns inside variant payloads
 
 `match flag { Some(true) -> ..., Some(false) -> ..., None -> ... }`
