@@ -142,6 +142,57 @@ def _arg_may_carry(arg: str, targets: set[str]) -> bool:
 # ===========================================================
 
 
+def _collect_bound_names(node, out: set[str]) -> None:
+    """Collect every name a function body can bind (or rebind) locally.
+
+    Capa functions are first-class values: a body can ``let``/``var``
+    bind a reference to one function under the *name of another* and
+    call through it, so a callee name that the body also binds cannot
+    be resolved against the module's top-level functions. The binding
+    forms are:
+
+    - ``let`` patterns and ``for`` patterns and ``match`` arm patterns
+      (every ``IdentPat`` is a binding occurrence);
+    - ``var`` declarations;
+    - plain-identifier assignment targets (a rebinding of a param or
+      outer ``var``);
+    - lambda parameters (call records inside a lambda body land in the
+      same per-function call list).
+
+    The walk mirrors the manifest's generic traversal so it sees the
+    same nesting the call records were collected from.
+    """
+    if node is None:
+        return
+    if isinstance(node, A.IdentPat):
+        out.add(node.name)
+        return
+    if isinstance(node, A.VarStmt):
+        out.add(node.name)
+    elif isinstance(node, A.AssignStmt):
+        if isinstance(node.target, A.Ident):
+            out.add(node.target.name)
+    elif isinstance(node, A.LambdaExpr):
+        for p in node.params:
+            out.add(p.name)
+    if isinstance(node, A.Node):
+        for f in node.__dataclass_fields__.values():
+            if f.name == "pos":
+                continue
+            v = getattr(node, f.name)
+            if isinstance(v, A.Node):
+                _collect_bound_names(v, out)
+            elif isinstance(v, list):
+                for item in v:
+                    if isinstance(item, A.Node):
+                        _collect_bound_names(item, out)
+                    elif isinstance(item, tuple):
+                        # struct-pattern fields, elif arms, etc.
+                        for it in item:
+                            if isinstance(it, A.Node):
+                                _collect_bound_names(it, out)
+
+
 @dataclass(kw_only=True)
 class _CallGraph:
     """Resolution context for the transitive removable analysis.
@@ -153,13 +204,33 @@ class _CallGraph:
     reachability fixpoint and answer "can this type smuggle Unsafe".
     ``memo`` caches reach results; a result computed under a non-empty
     cycle stack may be conservatively True, which only ever
-    under-reports removability.
+    under-reports removability. ``bound_memo`` caches each function's
+    locally-bound name set (see :func:`_collect_bound_names`), computed
+    lazily because it is only needed when a token-carrying call
+    resolves to a top-level name.
     """
     by_name: dict[str, tuple[dict[str, Any], A.FunDecl]]
     ambiguous: set[str]
     reachable: dict[str, set[str]]
     unprovable: set[str]
     memo: dict[tuple[str, Optional[str]], bool] = field(default_factory=dict)
+    bound_memo: dict[tuple[str, Optional[str]], frozenset[str]] = field(
+        default_factory=dict,
+    )
+
+
+def _body_bound_names(
+    rec: dict[str, Any], decl: A.FunDecl, graph: _CallGraph,
+) -> frozenset[str]:
+    """The (cached) set of names ``decl``'s body binds locally."""
+    key = (rec["name"], rec["container"])
+    cached = graph.bound_memo.get(key)
+    if cached is None:
+        names: set[str] = set()
+        _collect_bound_names(decl.body, names)
+        cached = frozenset(names)
+        graph.bound_memo[key] = cached
+    return cached
 
 
 def _build_graph(
@@ -257,14 +328,22 @@ def _signature_poison(
 
 
 def _token_callees(
-    rec: dict[str, Any], targets: set[str], graph: _CallGraph,
+    rec: dict[str, Any], decl: A.FunDecl, targets: set[str],
+    graph: _CallGraph,
 ) -> Optional[list[str]]:
     """Resolve every call that may carry one of ``targets``.
 
     Returns the loader-time names of the resolved top-level callees,
     or None when any token-carrying call cannot be resolved (method
-    call, callback parameter, unknown or ambiguous name): the token
-    then escapes our sight and the function must count as using it.
+    call, callback parameter, locally bound or rebindable name,
+    unknown or ambiguous name): the token then escapes our sight and
+    the function must count as using it.
+
+    The locally-bound guard matters because functions are first-class:
+    a body can shadow a top-level function's name with a ``let``/``var``
+    binding to a *different* function and call through it, so a callee
+    name the body also binds must not resolve to the homonymous
+    top-level declaration.
     """
     out: list[str] = []
     param_names = {p["name"] for p in rec["params"]}
@@ -280,6 +359,8 @@ def _token_callees(
             return None  # callback parameter, body unknown
         if callee in graph.ambiguous or callee not in graph.by_name:
             return None  # builtin / unknown / ambiguous
+        if callee in _body_bound_names(rec, decl, graph):
+            return None  # may be shadowed by a local binding
         out.append(callee)
     return out
 
@@ -314,7 +395,9 @@ def _compute_reach(
     The first route is tracked textually via the manifest call
     records; the other two are poisoned wholesale by
     :func:`_signature_poison` and the opaque-argument rule in
-    :func:`_arg_may_carry`.
+    :func:`_arg_may_carry`. Function *references*, unlike tokens, can
+    be locally bound under any name, so callee names the body also
+    binds refuse to resolve (see :func:`_token_callees`).
     """
     if _bridge_call_count(rec) > 0:
         return True
@@ -325,7 +408,7 @@ def _compute_reach(
         # No trackable token can enter this function, and Unsafe
         # cannot be minted: it cannot reach a bridge on our behalf.
         return False
-    callees = _token_callees(rec, targets, graph)
+    callees = _token_callees(rec, decl, targets, graph)
     if callees is None:
         return True
     for name in callees:
@@ -359,7 +442,7 @@ def _removability(
         return False, []
     if _reaches_bridge(rec, decl, graph, frozenset()):
         return False, []
-    callees = _token_callees(rec, set(targets), graph) or []
+    callees = _token_callees(rec, decl, set(targets), graph) or []
     depends = sorted({graph.by_name[n][0]["source_name"] for n in callees})
     return True, depends
 

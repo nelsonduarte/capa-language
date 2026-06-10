@@ -217,6 +217,66 @@ class TestTransitiveRemovable(unittest.TestCase):
         rep = migrate_report(_module_from_source(src))
         self.assertEqual(rep["removable"], [])
 
+    def test_shadowed_callee_is_not_removable(self):
+        # Functions are first-class: third let-binds the name of the
+        # dead function to a reference to the bridging one and calls
+        # through it. The callee name must NOT resolve to the dead
+        # top-level homonym; the token genuinely reaches py_import, so
+        # neither third nor main may be flagged. Only dead's own
+        # silenced parameter is genuinely removable.
+        src = (
+            "fun bridge(u: Unsafe)\n"
+            "    let os_mod = py_import(u, \"os\")\n"
+            "\n"
+            "fun dead(_u: Unsafe) -> Int\n"
+            "    return 1\n"
+            "\n"
+            "fun third(u: Unsafe)\n"
+            "    let dead = bridge\n"
+            "    dead(u)\n"
+            "\n"
+            "fun main(u: Unsafe)\n"
+            "    third(u)\n"
+        )
+        removable = self._removable_by_name(src)
+        self.assertNotIn("third", removable)
+        self.assertNotIn("main", removable)
+        self.assertEqual(set(removable), {"dead"})
+
+    def test_var_shadowed_callee_is_not_removable(self):
+        # Same hole through a mutable binding: a var (or a later
+        # reassignment) can also rebind a top-level function's name.
+        src = (
+            "fun bridge(u: Unsafe)\n"
+            "    let os_mod = py_import(u, \"os\")\n"
+            "\n"
+            "fun dead(_u: Unsafe) -> Int\n"
+            "    return 1\n"
+            "\n"
+            "fun third(u: Unsafe)\n"
+            "    var dead = bridge\n"
+            "    dead(u)\n"
+        )
+        removable = self._removable_by_name(src)
+        self.assertNotIn("third", removable)
+        self.assertEqual(set(removable), {"dead"})
+
+    def test_local_function_binding_without_collision_stays_conservative(self):
+        # The local name collides with no top-level function: the
+        # callee is unknown to the resolver and the analysis must stay
+        # on the conservative side (g not removable), exactly as before
+        # the shadowing fix.
+        src = (
+            "fun bridge(u: Unsafe)\n"
+            "    let os_mod = py_import(u, \"os\")\n"
+            "\n"
+            "fun g(u: Unsafe)\n"
+            "    let go = bridge\n"
+            "    go(u)\n"
+        )
+        removable = self._removable_by_name(src)
+        self.assertNotIn("g", removable)
+
     def test_token_smuggled_via_cap_bearing_struct_is_not_removable(self):
         # pack embeds the token in a cap-bearing struct it returns; the
         # signature-poison rule must keep the whole chain non-removable

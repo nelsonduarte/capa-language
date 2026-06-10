@@ -977,7 +977,10 @@ class TestWarningDiagnostics(unittest.TestCase):
             self.assertIn("hi", out)
             self.assertIn("warning:", err)
 
-    def test_error_and_warning_error_dominates_exit(self):
+    def test_error_suppresses_lint_and_dominates_exit(self):
+        # When the module has errors the lint phase is skipped: the
+        # CLI prints only the error (advice about a program that does
+        # not compile would be misleading) and exits non-zero.
         with tempfile.TemporaryDirectory() as td:
             src = _write_capa(
                 Path(td), "warn_err.capa",
@@ -986,8 +989,8 @@ class TestWarningDiagnostics(unittest.TestCase):
             )
             rc, _out, err = _run_main(["--check", str(src)])
             self.assertEqual(rc, 1)
-            self.assertIn("warning:", err)
             self.assertIn("error:", err)
+            self.assertNotIn("warning:", err)
 
 
 if __name__ == "__main__":

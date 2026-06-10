@@ -526,8 +526,12 @@ class Analyzer(
         # Phase 3: non-fatal lints. One for now (migrate tooling
         # slice 2): an ``Unsafe`` parameter whose token provably never
         # reaches py_import/py_invoke can be dropped. Warnings never
-        # affect ``ok``.
-        self._warn_dead_unsafe(module)
+        # affect ``ok``. Skipped entirely when the analysis produced
+        # errors: advice computed over a module that does not compile
+        # is misleading (and the lint may not even be meaningful on a
+        # malformed module).
+        if not self.errors:
+            self._warn_dead_unsafe(module)
         return AnalysisResult(
             errors=self.errors,
             warnings=self.warnings,
@@ -582,14 +586,26 @@ class Analyzer(
         param is already a hard error, so the live target is the
         ``_u: Unsafe`` that was silenced and has since gone dead.
 
-        A diagnostics nicety must never turn a compile into a crash:
-        any failure here (e.g. a malformed AST that already produced
-        errors) just skips the lint.
+        A diagnostics nicety must never turn a compile into a crash,
+        but a failure must not pass silently either: the caller only
+        runs this lint on error-free modules, so an exception here is
+        a detection regression. A ``RecursionError`` (a pathologically
+        deep AST blowing the interpreter stack) skips the lint quietly;
+        anything else is surfaced as an internal-failure warning so
+        test suites and users see the regression while the compile
+        still succeeds.
         """
         try:
             from ..migrate import find_dead_unsafe
             entries = find_dead_unsafe(module, filename=self.filename)
-        except Exception:
+        except RecursionError:
+            return
+        except Exception as exc:
+            self._warn(
+                "internal: the dead-Unsafe lint failed "
+                f"({type(exc).__name__}: {exc}); please report this bug",
+                module.pos,
+            )
             return
         for e in entries:
             if e.transitive:

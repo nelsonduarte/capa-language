@@ -6281,9 +6281,48 @@ class TestDeadUnsafeWarning(unittest.TestCase):
         self.assertTrue(r.ok, r.errors)
         self.assertEqual(r.warnings, [])
 
-    def test_warning_coexists_with_unrelated_error(self):
-        # An error elsewhere in the module does not suppress the
-        # warning (the CLI prints both; only errors gate the exit).
+    def test_shadowed_callee_does_not_warn(self):
+        # third let-binds the dead function's name to a reference to
+        # the bridging function and calls through it: the token DOES
+        # reach py_import, so neither third nor main may be advised to
+        # drop Unsafe. Only dead's own silenced parameter warns.
+        r = check(
+            "fun bridge(u: Unsafe)\n"
+            "    let os_mod = py_import(u, \"os\")\n"
+            "\n"
+            "fun dead(_u: Unsafe) -> Int\n"
+            "    return 1\n"
+            "\n"
+            "fun third(u: Unsafe)\n"
+            "    let dead = bridge\n"
+            "    dead(u)\n"
+            "\n"
+            "fun main(u: Unsafe)\n"
+            "    third(u)\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+        self.assertEqual(len(r.warnings), 1)
+        self.assertIn("'dead'", r.warnings[0].message)
+
+    def test_lint_failure_warns_instead_of_crashing_or_hiding(self):
+        # A regression inside the detection must not crash the compile,
+        # but it must not pass silently either: it surfaces as an
+        # internal-failure warning.
+        from unittest import mock
+        with mock.patch(
+            "capa.migrate.find_dead_unsafe",
+            side_effect=ValueError("boom"),
+        ):
+            r = check("fun f(_u: Unsafe) -> Int\n    return 1\n")
+        self.assertTrue(r.ok, r.errors)
+        self.assertEqual(len(r.warnings), 1)
+        self.assertIn("internal", r.warnings[0].message)
+        self.assertIn("ValueError", r.warnings[0].message)
+
+    def test_lint_skipped_when_module_has_errors(self):
+        # Advice over a module that does not compile is misleading:
+        # an error anywhere suppresses the lint phase entirely, so the
+        # dead-Unsafe nudge never accompanies errors.
         r = check(
             "fun f(_u: Unsafe) -> Int\n"
             "    return 1\n"
@@ -6292,10 +6331,7 @@ class TestDeadUnsafeWarning(unittest.TestCase):
             "    return missing_name\n"
         )
         self.assertFalse(r.ok)
-        self.assertTrue(
-            any("'_u: Unsafe'" in w.message for w in r.warnings),
-            r.warnings,
-        )
+        self.assertEqual(r.warnings, [])
 
 
 if __name__ == "__main__":
