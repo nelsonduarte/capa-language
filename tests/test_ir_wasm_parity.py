@@ -607,6 +607,23 @@ _PARITY_PROGRAMS: list[str] = [
     "list_query_methods.capa",
     "range_methods.capa",
     "net_allows.capa",
+    # Variant-payload literal slice (2026-06-10): literal patterns
+    # nested inside a variant payload (``Some(true)``), found by a
+    # downstream capa_cli smoke pass. Pre-fix the Wasm sum-match path
+    # raised "Phase 6C: nested pattern PatLiteral inside variant
+    # payload not yet supported" while Python ran fine. The literal
+    # check now refines the variant tag predicate (short-circuited
+    # behind the tag check so a mismatched variant's slot bits are
+    # never decoded under the wrong encoding) with fall-through to
+    # the next arm on mismatch. Covers Bool (builtin 8-byte "Any"
+    # slot AND a declared 4-byte Bool slot), Int, String, and Float
+    # literals; several literal arms ending in a binder / wildcard
+    # arm; a non-exhaustive literal set with a wildcard fallback; a
+    # literal + binder in one payload list; a two-level nested
+    # literal (``Some(Ok(0))``); an outer literal sibling next to a
+    # nested variant pattern; and literal arms under a guard (the
+    # flat-block guarded emission path).
+    "match_variant_payload_literal.capa",
 ]
 
 # Programs deliberately excluded from parity and why; documented
@@ -1367,6 +1384,16 @@ class TestPythonWasmParity(unittest.TestCase):
         # struct layout offsets. Pre-fix the CIR lowerer raised
         # "match pattern StructPat".
         self._assert_parity("match_struct_pattern.capa")
+
+    def test_match_variant_payload_literal(self):
+        # Variant-payload literal slice (2026-06-10): ``Some(true)``
+        # and friends. The literal equality (Int / Bool / String /
+        # Float) composes with the variant tag check and falls
+        # through to the next arm on mismatch; covers flat, guarded,
+        # multi-payload, and two-level nested shapes. Pre-fix the
+        # Wasm backend raised "Phase 6C: nested pattern PatLiteral
+        # inside variant payload not yet supported".
+        self._assert_parity("match_variant_payload_literal.capa")
 
     def test_match_or_bind(self):
         # Bound or-pattern slice (2026-06-04): or-patterns whose

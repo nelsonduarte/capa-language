@@ -41,6 +41,22 @@ from ._layout import (
 )
 
 
+def _variant_pattern_has_str_literal(pat) -> bool:
+    """True iff ``pat`` is a variant pattern carrying a String
+    literal anywhere in its payload tree (flat ``Ok("yes")`` or
+    nested ``Some(Ok("yes"))``). The per-slot equality check for
+    such a literal calls ``$str_eq``, so the helper must be
+    registered in the module."""
+    if not isinstance(pat, PatVariant):
+        return False
+    for sub in pat.payloads:
+        if isinstance(sub, PatLiteral) and sub.kind == "str":
+            return True
+        if _variant_pattern_has_str_literal(sub):
+            return True
+    return False
+
+
 class _DiscoveryMixin:
     def _uses_heap_alloc(self, module: Module) -> bool:
         """Detect whether any function body contains an instruction
@@ -554,6 +570,12 @@ class _DiscoveryMixin:
                                 if (isinstance(sub, PatLiteral)
                                         and sub.kind == "str"):
                                     return True
+                        # Variant-payload String literal (flat
+                        # ``Ok("yes")`` or nested ``Some(Ok("y"))``):
+                        # the arm predicate compares the payload slot
+                        # against the interned literal via $str_eq.
+                        if _variant_pattern_has_str_literal(arm.pattern):
+                            return True
                         if visit(arm.body):
                             return True
             return False

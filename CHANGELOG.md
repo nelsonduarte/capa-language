@@ -9,6 +9,21 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+### Wasm backend: literal patterns inside variant payloads
+
+`match flag { Some(true) -> ..., Some(false) -> ..., None -> ... }`
+now compiles and runs on the Wasm backend (`--wasm --run`),
+byte-identical with the Python reference. Previously the Wasm
+sum-match emitter raised "Phase 6C: nested pattern PatLiteral inside
+variant payload not yet supported" (found by a downstream `capa_cli`
+smoke pass). The literal equality check (Int, Bool, String, Float)
+refines the variant tag predicate, short-circuited behind the tag
+check so a non-matching variant's payload slot is never decoded
+under the wrong encoding, and a literal mismatch falls through to
+the next arm. Works in flat and guard-bearing matches, alongside
+binders in multi-payload variants, and one level deep inside a
+nested variant pattern (`Some(Ok(0))`).
+
 ### Per-function positions on SBOM surfaces: right file, root-relative
 
 Bug fix with observable value on every surface that displays the

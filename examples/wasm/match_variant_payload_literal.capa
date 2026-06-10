@@ -1,0 +1,147 @@
+// Literal patterns nested inside a variant payload. Found by a
+// downstream smoke pass: ``Some(true)`` compiled and ran on the
+// Python backend but the Wasm emitter raised "Phase 6C: nested
+// pattern PatLiteral inside variant payload not yet supported".
+// The literal check now composes with the variant tag check
+// (short-circuited so a mismatched variant's slot bits are never
+// decoded under the wrong encoding), falling through to the next
+// arm when the literal does not match.
+
+// User sum with a Bool payload: a declared Bool slot is 4 bytes
+// (i32), unlike Option's uniform 8-byte "Any" slot, so this
+// exercises the size-4 literal compare.
+type Toggle =
+    Set(Bool)
+    Unset
+
+// Multi-payload variant: a literal check composed with a binder
+// in the same payload list.
+type Entry =
+    KV(Int, String)
+    Empty
+
+// Multi-payload variant whose second payload is itself a variant
+// pattern: an outer literal sibling composes with the two-level
+// tag check.
+type Pairing =
+    Pair(Int, Option<Int>)
+    Nothing
+
+fun describe_flag(flag: Option<Bool>) -> String
+    match flag
+        Some(true) -> return "on"
+        Some(false) -> return "off"
+        None -> return "unset"
+
+fun describe_toggle(t: Toggle) -> String
+    match t
+        Set(true) -> return "set: yes"
+        Set(false) -> return "set: no"
+        Unset -> return "unset"
+
+fun grade(score: Option<Int>) -> String
+    match score
+        Some(0) -> return "zero"
+        Some(1) -> return "one"
+        Some(n) -> return "many: ${n}"
+        None -> return "no score"
+
+fun answer(reply: Result<String, String>) -> String
+    match reply
+        Ok("yes") -> return "agreed"
+        Ok("no") -> return "declined"
+        Ok(other) -> return "unclear: ${other}"
+        Err(e) -> return "error: ${e}"
+
+// Non-exhaustive literal arms with a wildcard fallback.
+fun fallback(score: Option<Int>) -> String
+    match score
+        Some(7) -> return "lucky"
+        _ -> return "ordinary"
+
+// Two-level nesting: a literal inside a variant inside a variant.
+fun deep(v: Option<Result<Int, String>>) -> String
+    match v
+        Some(Ok(0)) -> return "deep zero"
+        Some(Ok(n)) -> return "deep ok: ${n}"
+        Some(Err(e)) -> return "deep err: ${e}"
+        None -> return "deep none"
+
+// Literal + binder in one payload list.
+fun entry(e: Entry) -> String
+    match e
+        KV(1, name) -> return "first: ${name}"
+        KV(k, name) -> return "other ${k}: ${name}"
+        Empty -> return "empty"
+
+// Float literal inside a payload: f64.eq against the slot.
+fun ratio(r: Option<Float>) -> String
+    match r
+        Some(1.5) -> return "exact"
+        Some(v) -> return "approx: ${v}"
+        None -> return "no ratio"
+
+// Outer literal sibling next to a nested variant pattern: the
+// literal composes with the combined outer + inner tag check.
+fun pairing(p: Pairing) -> String
+    match p
+        Pair(1, Some(m)) -> return "one with ${m}"
+        Pair(_, Some(m)) -> return "other with ${m}"
+        Pair(_, None) -> return "no inner"
+        Nothing -> return "nothing"
+
+// A guard in the match routes the whole match through the
+// flat-block guarded emission path; the literal payload check
+// must compose with the tag predicate there too.
+fun guarded(flag: Option<Bool>, strict: Bool) -> String
+    match flag
+        Some(true) if strict -> return "strictly on"
+        Some(true) -> return "on"
+        Some(b) -> return "other: ${b}"
+        None -> return "none"
+
+fun main(stdio: Stdio)
+    stdio.println(describe_flag(Some(true)))
+    stdio.println(describe_flag(Some(false)))
+    stdio.println(describe_flag(None))
+
+    stdio.println(describe_toggle(Set(true)))
+    stdio.println(describe_toggle(Set(false)))
+    stdio.println(describe_toggle(Unset))
+
+    stdio.println(grade(Some(0)))
+    stdio.println(grade(Some(1)))
+    stdio.println(grade(Some(42)))
+    stdio.println(grade(None))
+
+    stdio.println(answer(Ok("yes")))
+    stdio.println(answer(Ok("no")))
+    stdio.println(answer(Ok("maybe")))
+    stdio.println(answer(Err("timeout")))
+
+    stdio.println(fallback(Some(7)))
+    stdio.println(fallback(Some(8)))
+    stdio.println(fallback(None))
+
+    stdio.println(deep(Some(Ok(0))))
+    stdio.println(deep(Some(Ok(5))))
+    stdio.println(deep(Some(Err("boom"))))
+    stdio.println(deep(None))
+
+    stdio.println(entry(KV(1, "alpha")))
+    stdio.println(entry(KV(9, "beta")))
+    stdio.println(entry(Empty))
+
+    stdio.println(ratio(Some(1.5)))
+    stdio.println(ratio(Some(2.0)))
+    stdio.println(ratio(None))
+
+    stdio.println(pairing(Pair(1, Some(4))))
+    stdio.println(pairing(Pair(2, Some(9))))
+    stdio.println(pairing(Pair(1, None)))
+    stdio.println(pairing(Nothing))
+
+    stdio.println(guarded(Some(true), true))
+    stdio.println(guarded(Some(true), false))
+    stdio.println(guarded(Some(false), true))
+    stdio.println(guarded(None, false))

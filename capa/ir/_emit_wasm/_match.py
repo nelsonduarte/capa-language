@@ -41,6 +41,22 @@ def _match_has_guards(instr: Match) -> bool:
     return any(arm.guard is not None for arm in instr.arms)
 
 
+def _literal_payload_checks(
+    pat: PatVariant, payload_layouts, scrut_local: str,
+) -> list:
+    """Collect the PatLiteral sub-patterns of a variant pattern's
+    payload list as ``(lit_pat, offset, size, scrut_local)`` check
+    tuples for ``_refine_predicate_with_payload_literals``. The
+    ``scrut_local`` rides along so a nested arm can mix outer checks
+    (against ``$_m_scrut``) with inner ones (against
+    ``$_m_scrut_inner``) in one predicate."""
+    return [
+        (sub, offset, size, scrut_local)
+        for sub, (offset, size, _ty) in zip(pat.payloads, payload_layouts)
+        if isinstance(sub, PatLiteral)
+    ]
+
+
 class _MatchEmissionMixin:
     def _emit_match(self, instr: Match) -> None:
         """Lower a sum-type match. The scrutinee is an i32 pointer;
@@ -424,7 +440,12 @@ class _MatchEmissionMixin:
         self._write("local.set $_m_scrut_inner")
 
         # 2. Combined tag check: outer.tag == outer_tag AND
-        #    inner.tag == inner_tag.
+        #    inner.tag == inner_tag. Literal payloads (outer
+        #    siblings of the nested variant, and literals inside the
+        #    nested variant's own payload, e.g. ``Some(Ok(0))``)
+        #    refine the combined predicate; the literal loads are
+        #    short-circuited behind the tag checks so they only run
+        #    when $_m_scrut_inner is a valid inner-sum pointer.
         self._write(f"local.get ${tag_local}")
         self._write(f"i32.const {outer_tag}")
         self._write("i32.eq")
@@ -433,6 +454,12 @@ class _MatchEmissionMixin:
         self._write(f"i32.const {inner_tag}")
         self._write("i32.eq")
         self._write("i32.and")
+        self._refine_predicate_with_payload_literals(
+            _literal_payload_checks(pat, outer_payloads, scrut_local)
+            + _literal_payload_checks(
+                nested_pat, inner_payloads, "_m_scrut_inner",
+            ),
+        )
 
         # 3. Single if for the combined check; the else carries
         # the next arm's cascade.
@@ -442,23 +469,7 @@ class _MatchEmissionMixin:
         # 4. Extract the inner variant's payload binders. Mirrors
         # the flat PatVariant binding code but reads from
         # $_m_scrut_inner.
-        for sub_pat, (offset, size, _ty) in zip(
-            nested_pat.payloads, inner_payloads,
-        ):
-            if isinstance(sub_pat, PatIdent):
-                self._bind_variant_payload(
-                    sub_pat, offset, size, _ty,
-                    scrut_local_name="_m_scrut_inner",
-                )
-            elif isinstance(sub_pat, PatWildcard):
-                continue
-            else:
-                raise WasmEmissionError(
-                    f"Phase 6J: triple-nested pattern "
-                    f"{type(sub_pat).__name__} inside "
-                    f"{nested_pat.name!r}'s payload not yet "
-                    f"supported (max nesting depth is 2)"
-                )
+        self._emit_inner_variant_payload_binds(nested_pat, inner_payloads)
 
         # 5. Run the arm body.
         self._emit_body(arm.body)
@@ -468,6 +479,32 @@ class _MatchEmissionMixin:
         self._write("else")
         self._indent += 1
         return 1
+
+    def _emit_inner_variant_payload_binds(
+        self, nested_pat: PatVariant, inner_payloads: list,
+    ) -> None:
+        """Bind the payload sub-patterns of a depth-1 nested variant
+        pattern from ``$_m_scrut_inner``. Shared by the cascade and
+        guarded nested-arm paths. PatLiteral sub-patterns were
+        consumed by the arm predicate; a PatVariant here would be
+        depth 2, which the emitter does not implement."""
+        for sub_pat, (offset, size, _ty) in zip(
+            nested_pat.payloads, inner_payloads,
+        ):
+            if isinstance(sub_pat, PatIdent):
+                self._bind_variant_payload(
+                    sub_pat, offset, size, _ty,
+                    scrut_local_name="_m_scrut_inner",
+                )
+            elif isinstance(sub_pat, (PatWildcard, PatLiteral)):
+                continue
+            else:
+                raise WasmEmissionError(
+                    f"Phase 6J: triple-nested pattern "
+                    f"{type(sub_pat).__name__} inside "
+                    f"{nested_pat.name!r}'s payload not yet "
+                    f"supported (max nesting depth is 2)"
+                )
 
     def _bind_variant_payload(
         self, sub_pat: PatIdent, offset: int, size: int,
@@ -522,6 +559,89 @@ class _MatchEmissionMixin:
         self._write(f"local.get ${scrut_local_name}")
         self._write(f"{_load_op_for_size(size)} offset={offset}")
         self._write(f"local.set ${sub_pat.name}")
+
+    def _refine_predicate_with_payload_literals(self, checks: list) -> None:
+        """Consume the i32 tag predicate on the stack and push the
+        refined 0/1: tag(s) matched AND every literal payload equals
+        its slot. ``checks`` is the ``_literal_payload_checks`` list;
+        empty means the pattern is literal-free and the predicate
+        passes through untouched. The literal loads run inside the
+        if's then-branch, short-circuited behind the tag check: a
+        DIFFERENT variant's slot bits decoded under the wrong
+        encoding could yield a garbage (ptr, len) whose ``$str_eq``
+        scan reads out of bounds, so the gating is load-bearing, not
+        an optimisation."""
+        if not checks:
+            return
+        self._write("if (result i32)")
+        self._indent += 1
+        for n, (lit_pat, offset, size, scrut_local) in enumerate(checks):
+            self._push_variant_literal_eq(lit_pat, offset, size, scrut_local)
+            if n > 0:
+                self._write("i32.and")
+        self._indent -= 1
+        self._write("else")
+        self._indent += 1
+        self._write("i32.const 0")
+        self._indent -= 1
+        self._write("end")
+
+    def _push_variant_literal_eq(
+        self, lit_pat: PatLiteral, offset: int, size: int,
+        scrut_local: str,
+    ) -> None:
+        """Push an i32 0/1: 1 iff the payload slot at ``offset`` of
+        the variant record in ``$scrut_local`` equals ``lit_pat``.
+        Slot encoding mirrors ``_bind_variant_payload``: Int = i64,
+        Float = f64, String = packed i64 (ptr | len << 32), Bool =
+        i64-extended in the builtin sums' uniform 8-byte "Any" slot
+        or a bare i32 in a declared 4-byte Bool slot. Callers must
+        gate this behind the variant tag check (see
+        ``_refine_predicate_with_payload_literals``)."""
+        kind = lit_pat.kind
+        if kind == "int":
+            # Int payloads always occupy an 8-byte slot (a declared
+            # Int and the builtin "Any" slot are both i64-stored).
+            self._write(f"local.get ${scrut_local}")
+            self._write(f"i64.load offset={offset}")
+            self._write(f"i64.const {int(lit_pat.value)}")
+            self._write("i64.eq")
+            return
+        if kind == "bool":
+            self._write(f"local.get ${scrut_local}")
+            self._write(f"{_load_op_for_size(size)} offset={offset}")
+            if size == 8:
+                self._write("i32.wrap_i64")
+            self._write(f"i32.const {1 if lit_pat.value else 0}")
+            self._write("i32.eq")
+            return
+        if kind == "float":
+            self._write(f"local.get ${scrut_local}")
+            self._write(f"f64.load offset={offset}")
+            self._write(f"f64.const {float(lit_pat.value)}")
+            self._write("f64.eq")
+            return
+        if kind == "str":
+            # Unpack the packed (ptr | len << 32) slot on the stack
+            # and compare against the interned literal via $str_eq;
+            # same idiom as ``_emit_tuple_slot_eq``.
+            lit_off, length = self._intern_string(lit_pat.value)
+            self._write(f"local.get ${scrut_local}")
+            self._write(f"i64.load offset={offset}")
+            self._write("local.tee $_alloc_tmp_i64")
+            self._write("i32.wrap_i64")
+            self._write("local.get $_alloc_tmp_i64")
+            self._write("i64.const 32")
+            self._write("i64.shr_u")
+            self._write("i32.wrap_i64")
+            self._write(f"i32.const {lit_off}")
+            self._write(f"i32.const {length}")
+            self._write("call $str_eq")
+            return
+        raise WasmEmissionError(
+            f"variant payload literal kind {lit_pat.kind!r} not "
+            f"supported"
+        )
 
     def _emit_string_match(self, instr: Match) -> None:
         """Lower a String-scrutinee match. Stashes the receiver
@@ -1065,79 +1185,17 @@ class _MatchEmissionMixin:
             self._write(f"local.get ${tag_local}")
             self._write(f"i32.const {tag}")
             self._write("i32.eq")
+            # Literal payload sub-patterns (``Some(true)``) refine
+            # the tag predicate; a literal mismatch falls through to
+            # the next arm exactly like a tag mismatch.
+            self._refine_predicate_with_payload_literals(
+                _literal_payload_checks(pat, payload_layouts, scrut_local),
+            )
             self._write("if")
             self._indent += 1
-            for sub_pat, (offset, size, _ty) in zip(
-                pat.payloads, payload_layouts,
-            ):
-                if isinstance(sub_pat, PatIdent):
-                    bind_ty = (
-                        self._current_fn.locals.get(sub_pat.name, "")
-                        if self._current_fn else ""
-                    )
-                    # If the analyzer didn't propagate a precise type
-                    # to the bind (Unknown / missing -- happens for
-                    # builtin sum types like JsonValue where the
-                    # pattern-side type inference is incomplete), fall
-                    # back to the payload type declared in the sum
-                    # layout. The layout always knows what the variant
-                    # carries.
-                    if bind_ty in ("", "Unknown", "?") or bind_ty.startswith("?"):
-                        bind_ty = _ty
-                        if self._current_fn is not None and bind_ty != "Any":
-                            self._current_fn.locals[sub_pat.name] = bind_ty
-                    if bind_ty == "String":
-                        # String payload is packed into the i64
-                        # slot: low 32 bits = ptr, high 32 bits =
-                        # len. Unpack into the bind's (ptr, len)
-                        # locals so downstream String operations
-                        # work transparently.
-                        self._write(f"local.get ${scrut_local}")
-                        self._write(f"i64.load offset={offset}")
-                        self._emit_unpack_i64_to_string(
-                            f"{sub_pat.name}_ptr", f"{sub_pat.name}_len",
-                        )
-                    elif size == 8 and self._is_pointer_shape_ty(bind_ty):
-                        # Pointer-shaped payload (struct / sum /
-                        # collection / tuple) stored in the uniform
-                        # 8-byte slot via i64.extend; unpack with
-                        # i32.wrap_i64. Tuples surfaced this when a
-                        # JSON parser used Result<(JsonValue, Int),
-                        # String> as the Ok arm; the previous code
-                        # fell through to the default branch and
-                        # tried to store an i64 into the i32 tuple
-                        # local.
-                        self._write(f"local.get ${scrut_local}")
-                        self._write(f"i64.load offset={offset}")
-                        self._write("i32.wrap_i64")
-                        self._write(f"local.set ${sub_pat.name}")
-                    elif bind_ty == "Float":
-                        # Float payload stored as f64 in the slot.
-                        self._write(f"local.get ${scrut_local}")
-                        self._write(f"f64.load offset={offset}")
-                        self._write(f"local.set ${sub_pat.name}")
-                    elif bind_ty == "Bool" and size == 8:
-                        # Bool stored i64-extended; narrow back.
-                        self._write(f"local.get ${scrut_local}")
-                        self._write(f"i64.load offset={offset}")
-                        self._write("i32.wrap_i64")
-                        self._write(f"local.set ${sub_pat.name}")
-                    else:
-                        self._write(f"local.get ${scrut_local}")
-                        self._write(f"{_load_op_for_size(size)} offset={offset}")
-                        self._write(f"local.set ${sub_pat.name}")
-                elif isinstance(sub_pat, PatWildcard):
-                    continue
-                else:
-                    # PatVariant is handled by _emit_nested_variant_arm
-                    # via the upfront detector at the top of this
-                    # method, so we only see non-variant nested
-                    # patterns here.
-                    raise WasmEmissionError(
-                        f"Phase 6C: nested pattern "
-                        f"{type(sub_pat).__name__} inside variant "
-                        f"payload not yet supported"
-                    )
+            self._emit_variant_payload_binds(
+                pat, tuple(payload_layouts), scrut_local,
+            )
             self._emit_body(arm.body)
             # Cascade into the else block where the next arm lives.
             self._indent -= 1
@@ -1633,10 +1691,15 @@ class _MatchEmissionMixin:
             elif isinstance(pat, PatVariant):
                 tag, payload_layouts = sum_layout["variants"][pat.name]
 
-                def push_predicate(t=tag):
+                def push_predicate(
+                    p=pat, t=tag, layouts=tuple(payload_layouts),
+                ):
                     self._write(f"local.get ${tag_local}")
                     self._write(f"i32.const {t}")
                     self._write("i32.eq")
+                    self._refine_predicate_with_payload_literals(
+                        _literal_payload_checks(p, layouts, scrut_local),
+                    )
 
                 def bind_payloads(
                     p=pat, layouts=tuple(payload_layouts),
@@ -1674,9 +1737,11 @@ class _MatchEmissionMixin:
         scrut_local: str,
     ) -> None:
         """Bind a PatVariant's sub-patterns from the scrutinee
-        record. Factored out of ``_emit_match_arm`` so the
-        guard-present path can call it from inside the inner-if
-        without dragging in the cascade-opening boilerplate."""
+        record. Shared by the flat cascade path and the guard-present
+        path (both call it from inside the arm's if without the
+        cascade-opening boilerplate). PatLiteral sub-patterns bind
+        nothing: they were already consumed by the arm predicate via
+        ``_refine_predicate_with_payload_literals``."""
         for sub_pat, (offset, size, _ty) in zip(
             pat.payloads, payload_layouts,
         ):
@@ -1685,11 +1750,15 @@ class _MatchEmissionMixin:
                     sub_pat, offset, size, _ty,
                     scrut_local_name=scrut_local,
                 )
-            elif isinstance(sub_pat, PatWildcard):
+            elif isinstance(sub_pat, (PatWildcard, PatLiteral)):
                 continue
             else:
+                # PatVariant payloads route through
+                # _emit_nested_variant_arm before this loop runs, so
+                # only the still-unsupported nested shapes (PatTuple,
+                # PatStruct, PatOr) reach here.
                 raise WasmEmissionError(
-                    f"Sum match (guarded): nested pattern "
+                    f"Sum match: nested pattern "
                     f"{type(sub_pat).__name__} inside variant "
                     f"payload not yet supported"
                 )
@@ -1739,25 +1808,17 @@ class _MatchEmissionMixin:
             self._write(f"i32.const {inner_tag}")
             self._write("i32.eq")
             self._write("i32.and")
+            self._refine_predicate_with_payload_literals(
+                _literal_payload_checks(pat, outer_payloads, scrut_local)
+                + _literal_payload_checks(
+                    nested_pat, inner_payloads, "_m_scrut_inner",
+                ),
+            )
 
         def bind_payloads():
-            for sub_pat, (offset, size, _ty) in zip(
-                nested_pat.payloads, inner_payloads,
-            ):
-                if isinstance(sub_pat, PatIdent):
-                    self._bind_variant_payload(
-                        sub_pat, offset, size, _ty,
-                        scrut_local_name="_m_scrut_inner",
-                    )
-                elif isinstance(sub_pat, PatWildcard):
-                    continue
-                else:
-                    raise WasmEmissionError(
-                        f"Phase 6J: triple-nested pattern "
-                        f"{type(sub_pat).__name__} inside "
-                        f"{nested_pat.name!r}'s payload not yet "
-                        f"supported (max nesting depth is 2)"
-                    )
+            self._emit_inner_variant_payload_binds(
+                nested_pat, inner_payloads,
+            )
 
         self._emit_guarded_arm(
             arm, push_predicate, bind_payloads, done_label,
