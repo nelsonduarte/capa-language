@@ -612,16 +612,17 @@ is either in the parity list or in a documented-excluded dict
 with a one-line rationale. Forces any future example to either
 join parity coverage or declare why it can't.
 
-Four examples are deliberately excluded:
+Three examples are deliberately excluded:
 - `clock_demo.capa`: `Clock.now_secs` / `now_monotonic` are
   time-dependent.
 - `env_demo.capa`, `fs_demo.capa`: depend on host process state
   / real filesystem; need fixtures both backends agree on.
-- `json_demo.capa`: hits the known Float-printing divergence
-  (`$ftoa` truncates at 6 decimals; Python's `str(float)` is
-  variable-width). The Float-printing gap and the
-  `JsonValue.as_int` truncation divergence are now tracked in
-  [TODO.md](TODO.md) P1.
+
+(`json_demo.capa` was previously excluded for a Float-printing
+divergence where `$ftoa` truncated at 6 decimals; that gap is
+now closed - `$ftoa` is byte-exact with Python's `repr` via
+Grisu3 + a Dragon4 fallback - and `json_demo.capa` is a passing
+parity case.)
 
 Suite 1357 -> 1364. The parity tests skip cleanly on machines
 without `wasm-tools` + `wasmtime-py`; CI does not currently

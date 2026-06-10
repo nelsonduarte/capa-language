@@ -572,20 +572,18 @@ _PARITY_PROGRAMS: list[str] = [
     # the two backends cannot agree at compile time.)
     "trait_value_eq.capa",
     "trait_eq_in_containers.capa",
-    # Audit C1 (2026-06-09): Float interpolation parity. The harness
-    # historically EXCLUDED Float interpolation, which hid a silent
-    # cross-backend miscompile - the Wasm Grisu2 port printed
-    # ``14.285714285714287`` for ``100.0 / 7.0`` where Python's repr
-    # gives ``...286``, because the WAT omitted Grisu2's RoundWeed
-    # last-digit nudge. With RoundWeed ported, every computed-float
-    # class in this program (sums, ratios, divisions, averages) is
-    # byte-identical across backends. A Grisu2-inherent residual
-    # remains and is a KNOWN float-formatting correctness hole: it is
-    # reachable from ordinary arithmetic (e.g. 86.0 / 7018.0 emits a
-    # decimal that does NOT round-trip, naming the wrong double), NOT
-    # an extreme-exponent-only curiosity. It needs a Dragon4 / Bignum
-    # (or Ryu) slow-path fallback and is xfail-tracked in
-    # TestWasmFtoaResidual (see the C1 scoping note in that class).
+    # Audit C1 (2026-06-09) + F2 (2026-06-10): Float interpolation
+    # parity. The harness historically EXCLUDED Float interpolation,
+    # which hid a silent cross-backend miscompile - the Wasm Grisu2
+    # port printed ``14.285714285714287`` for ``100.0 / 7.0`` where
+    # Python's repr gives ``...286``, because the WAT omitted Grisu2's
+    # RoundWeed last-digit nudge. C1 ported RoundWeed; F2 added the
+    # Grisu3 confidence flag plus the exact limb-bignum Dragon4
+    # fallback for the sub-1% of values Grisu cannot prove shortest
+    # (including arithmetic-reachable ones like 86.0 / 7018.0 that
+    # Grisu2 alone rendered as a non-round-tripping decimal). Every
+    # computed-float class in this program is now byte-identical with
+    # Python repr across both backends, so the file is parity-clean.
     "float_interpolation.capa",
 ]
 
@@ -1137,14 +1135,18 @@ class TestPythonWasmParity(unittest.TestCase):
         self._assert_parity("allows_dynamic.capa")
 
     def test_float_interpolation(self):
-        # Audit C1 (2026-06-09): computed-float interpolation parity.
-        # The pre-fix Wasm Grisu2 port omitted RoundWeed and printed
-        # ``14.285714285714287`` for ``100.0 / 7.0`` (one ulp high)
-        # while Python's repr gives ``...286``. With RoundWeed ported
-        # into $grisu2, every sum / ratio / division / average in the
-        # program is byte-identical across backends. Float interp was
-        # excluded from this harness before, which is exactly why the
-        # divergence reached audit instead of CI.
+        # Audit C1 (2026-06-09) + F2 (2026-06-10): computed-float
+        # interpolation parity. The pre-fix Wasm Grisu2 port omitted
+        # RoundWeed and printed ``14.285714285714287`` for ``100.0 /
+        # 7.0`` (one ulp high) while Python's repr gives ``...286``.
+        # C1 ported RoundWeed into $grisu2; F2 added the Grisu3
+        # confidence flag plus the exact Dragon4 fallback, so the
+        # arithmetic-reachable residuals (e.g. 86.0 / 7018.0) that
+        # Grisu2 could not name correctly are now repr-exact too.
+        # Every sum / ratio / division / average / fallback case in
+        # the program is byte-identical across backends. Float interp
+        # was excluded from this harness before, which is exactly why
+        # the divergence reached audit instead of CI.
         self._assert_parity("float_interpolation.capa")
 
     def test_closure_loop_capture(self):

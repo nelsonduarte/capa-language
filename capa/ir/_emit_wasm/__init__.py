@@ -527,6 +527,11 @@ class WasmEmitter(
                     self._emit_grisu_cached_power_function()
                     self._emit_grisu_round_weed_function()
                     self._emit_grisu2_function()
+                    # Dragon4 exact fallback (limb bignum) for the
+                    # ~0.5% of values where Grisu cannot prove the
+                    # shortest digit string. Emitted before $ftoa,
+                    # which dispatches to it on the Grisu3 failure flag.
+                    self._emit_dragon4_functions()
                     self._emit_ftoa_function()
             # parse_int / parse_float are built-in free functions
             # routed to runtime helpers. Emit only when used.

@@ -1681,39 +1681,25 @@ class TestWasmFtoaRoundWeed(unittest.TestCase):
     "wasm-tools and/or wasmtime-py not installed",
 )
 class TestWasmFtoaResidual(unittest.TestCase):
-    """Audit C1 scoping note (2026-06-09): RoundWeed fixes the
-    headline cases and the bulk of f64 values, but Grisu2 is
-    INHERENTLY unable to produce the shortest-round-trip digit
-    string for a residual fraction of bit patterns. This is a
-    KNOWN float-formatting correctness hole, NOT an
-    extreme-exponent-only curiosity: the residual IS reachable
-    from ordinary arithmetic (plain division / multiplication),
-    and the wrong digit string it emits can FAIL to round-trip -
-    i.e. ``float(wasm_output) != value``, so the Wasm decimal
-    names a DIFFERENT double than the one computed. double-conversion
-    handles this by having Grisu2 return a "not certain" flag and
-    falling back to a slow exact path (Bignum / Dragon4); Capa's
-    WAT port does not (yet) carry that fallback.
+    """F2 (2026-06-10): the Grisu3-confidence + Dragon4 exact
+    fallback has LANDED, so the residual float-formatting hole is
+    closed. Grisu2 is INHERENTLY unable to produce the
+    shortest-round-trip digit string for a sub-1% fraction of bit
+    patterns; ``$grisu2`` now carries the RoundWeed
+    boundary-ambiguity success flag and ``$ftoa`` falls back to the
+    exact limb-bignum Dragon4 (``$dragon4`` + the ``$bn_*`` family)
+    when that flag is clear. Both paths feed the same (digits, K)
+    shape into the spelling layer, so the output is byte-exact with
+    Python ``repr(float)``.
 
-    The values below are CONFIRMED Grisu2-inherent divergences -
-    the validated Python Grisu2 reference produces the SAME wrong
-    digit as the WAT, so the gap is the algorithm, not the port.
-    They are marked ``expectedFailure`` so they stay VISIBLE (a
-    green xfail, a loud unexpected-pass if a future Dragon4
-    fallback closes them) rather than silently excluded. They
-    include a plain-arithmetic case (``86.0 / 7018.0``) so the
-    residual is shown as a realistic-value hole, not just
-    hand-picked literals.
-
-    Recommended scoping for a future slice (NOT done here per the
-    C1 brief, which forbids a Dragon4 / Ryu WAT port in this task):
-    add a Grisu2 success flag (the ``RoundWeed`` boundary-ambiguity
-    test) and a Bignum-based exact fallback (Dragon4) for the
-    ~0.5%, OR replace the whole path with a Ryu port. Rough effort:
-    a Dragon4 WAT fallback is ~1 - 1.5 weeks (big-integer add /
-    mul / compare in linear memory + the digit loop); a Ryu port
-    is comparable but needs its own 2KB lookup table. Either lands
-    these xfails as unexpected passes."""
+    The values below were CONFIRMED Grisu2-inherent divergences
+    before F2 - the validated Python Grisu2 reference produced the
+    SAME wrong digit as the WAT, proving the gap was the algorithm,
+    not the port. They are now real PASSING parity tests (the
+    Dragon4 fallback names the correct double), including a
+    plain-arithmetic case (``86.0 / 7018.0``) so the formerly-open
+    hole is pinned as a realistic-value regression guard, not just
+    hand-picked literals."""
 
     def _wat_ftoa(self, v: float) -> str:
         import io
@@ -1736,31 +1722,26 @@ class TestWasmFtoaResidual(unittest.TestCase):
             sys.stdout = saved
         return out.getvalue()
 
-    @unittest.expectedFailure
     def test_residual_decimal_range_a(self):
-        # Genuine Grisu2-inherent residual in the common decimal
-        # range. repr -> 76821.07266303091; WAT -> ...0309.
+        # Formerly Grisu2-inherent residual in the common decimal
+        # range (repr 76821.07266303091, old WAT ...0309); the
+        # Dragon4 fallback now matches repr.
         v = 76821.07266303091
         self.assertEqual(self._wat_ftoa(v), repr(v) + "\n")
 
-    @unittest.expectedFailure
     def test_residual_decimal_range_b(self):
-        # repr -> 0.08549800233840919; WAT -> ...092.
+        # Formerly repr 0.08549800233840919 vs old WAT ...092; now
+        # exact via the Dragon4 fallback.
         v = 0.08549800233840919
         self.assertEqual(self._wat_ftoa(v), repr(v) + "\n")
 
-    @unittest.expectedFailure
     def test_residual_from_ordinary_division(self):
         # Arithmetic-reachable residual (NOT a hand-picked literal).
-        # ``86.0 / 7018.0`` -> Python repr 0.012254203476774009, but
-        # the Wasm Grisu2 port emits 0.01225420347677401, which does
-        # NOT round-trip: float("0.01225420347677401") != the computed
-        # double. So the Wasm decimal names the WRONG double. This is
-        # the honest face of the C1 residual - a plain division
-        # produces a non-round-tripping string, pending the Dragon4 /
-        # Ryu fallback. (A multiplication, 39890.261 * 297.24217854,
-        # is similarly off by one ULP in the last digit but happens to
-        # still round-trip, so the division is the load-bearing repro.)
+        # ``86.0 / 7018.0`` -> repr 0.012254203476774009. The old
+        # Grisu2-only WAT emitted 0.01225420347677401, which did NOT
+        # round-trip (it named the WRONG double); the Dragon4 fallback
+        # now produces the shortest round-tripping string byte-for-byte
+        # equal to repr.
         v = 86.0 / 7018.0
         self.assertEqual(self._wat_ftoa(v), repr(v) + "\n")
 

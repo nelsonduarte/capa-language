@@ -104,7 +104,7 @@ _CACHED_POWERS = [
     (0xa59bc234db398c25, 508, 172),
     (0xf6c69a72a3989f5c, 534, 180),
     (0xb7dcbf5354e9bece, 561, 188),
-    (0x88fa513c149a3d75, 588, 196),
+    (0x88fcf317f22241e2, 588, 196),
     (0xcc20ce9bd35c78a5, 614, 204),
     (0x98165af37b2153df, 641, 212),
     (0xe2a0b5dc971f303a, 667, 220),
@@ -117,12 +117,12 @@ _CACHED_POWERS = [
     (0xe7109bfba19c0c9d, 853, 276),
     (0xac2820d9623bf429, 880, 284),
     (0x80444b5e7aa7cf85, 907, 292),
-    (0xbf21e44003acdd2c, 933, 300),
+    (0xbf21e44003acdd2d, 933, 300),
     (0x8e679c2f5e44ff8f, 960, 308),
     (0xd433179d9c8cb841, 986, 316),
     (0x9e19db92b4e31ba9, 1013, 324),
-    (0xeb96bf6ebadf77d8, 1039, 332),
-    (0xaf87023b9bf0ee6a, 1066, 340),
+    (0xeb96bf6ebadf77d9, 1039, 332),
+    (0xaf87023b9bf0ee6b, 1066, 340),
 ]
 
 
@@ -392,19 +392,27 @@ class _GrisuEmissionMixin:
 
     def _emit_grisu_round_weed_function(self) -> None:
         """``$grisu_round_weed(buf, count, dist_too_high, unsafe,
-        rest, ten_kappa) -> ()``: the final last-digit nudge of
-        Grisu2 (double-conversion's ``RoundWeed``). Audit C1
-        (2026-06-09): the original WAT port omitted this step, which
-        is why ``${100.0/7.0}`` came out ``14.285714285714287``
-        (one ulp high) instead of Python's
-        ``14.285714285714286``. The digit-generation loop returns
-        the FIRST digit string inside the rounding interval, which
-        is not necessarily the one closest to W; RoundWeed walks the
-        last digit down while the represented value stays both
-        strictly inside the unsafe interval (``delta``) and closer
-        to W than the boundary.
+        rest, ten_kappa, unit) -> i32``: the final last-digit nudge
+        of Grisu (double-conversion's ``RoundWeed``) PLUS the Grisu3
+        confidence flag. Audit C1 (2026-06-09): the original WAT
+        port omitted this step, which is why ``${100.0/7.0}`` came
+        out ``14.285714285714287`` (one ulp high) instead of
+        Python's ``14.285714285714286``. F2 (2026-06-09): the step
+        now returns whether Grisu produced a PROVABLY shortest
+        result (``ok``); when it cannot, ``$grisu2`` reports failure
+        and ``$ftoa`` falls back to the exact Dragon4 path.
 
-        All six params are passed on the operand stack:
+        Direct transliteration of ``tools/float_ref.py::_round_weed``.
+        Two windows bracket the true value:
+        ``small_distance = dist_too_high - unit`` (definitely inside)
+        and ``big_distance = dist_too_high + unit`` (possibly
+        outside). The last digit is pulled down while it stays within
+        ``small_distance``; if it could ALSO be pulled within
+        ``big_distance`` the interval is ambiguous and we return 0
+        (failure). Otherwise the digit string is provably shortest
+        iff ``2*unit <= rest <= unsafe - 4*unit``.
+
+        All seven params are passed on the operand stack:
         - ``buf`` (i32): digits buffer base pointer.
         - ``count`` (i32): number of digits written (>= 1).
         - ``dist_too_high`` (i64): ``Wp_f - Wf``, scaled by the same
@@ -423,19 +431,28 @@ class _GrisuEmissionMixin:
         decrement the last digit, ``rest += ten_kappa``. All
         comparisons are unsigned i64.
 
-        This does NOT chase the ~0.5% Grisu2-inherent hard cases that
-        need a Dragon4 / Bignum slow-path fallback; those stay
-        xfail-tracked in the parity harness with a pointer to the
-        C1 scoping note."""
+        The ~0.5% of values this cannot prove shortest are caught by
+        the success flag below and routed to the exact Dragon4
+        fallback (``$dragon4``) in ``$ftoa``; F2 (2026-06-10) landed
+        that fallback, so the formerly-xfail residual is now
+        repr-exact.
+
+        - ``unit`` (i64): the accumulated rounding error of the
+          scaled boundaries in the current digit's units (1 at the
+          integer-loop exit, multiplied by 10 each fractional step).
+          Drives the Grisu3 confidence windows."""
         self._write(
             "(func $grisu_round_weed "
             "(param $buf i32) (param $count i32) "
             "(param $dist_too_high i64) (param $unsafe i64) "
-            "(param $rest i64) (param $ten_kappa i64)"
+            "(param $rest i64) (param $ten_kappa i64) (param $unit i64) "
+            "(result i32)"
         )
         self._indent += 1
         self._write("(local $last_ptr i32)")
         self._write("(local $cond i32)")
+        self._write("(local $small_distance i64)")
+        self._write("(local $big_distance i64)")
         # last_ptr = buf + count - 1 (the digit RoundWeed mutates).
         self._write("local.get $buf")
         self._write("local.get $count")
@@ -443,6 +460,16 @@ class _GrisuEmissionMixin:
         self._write("i32.const 1")
         self._write("i32.sub")
         self._write("local.set $last_ptr")
+        # small_distance = dist_too_high - unit
+        self._write("local.get $dist_too_high")
+        self._write("local.get $unit")
+        self._write("i64.sub")
+        self._write("local.set $small_distance")
+        # big_distance = dist_too_high + unit
+        self._write("local.get $dist_too_high")
+        self._write("local.get $unit")
+        self._write("i64.add")
+        self._write("local.set $big_distance")
         self._block_counter += 1
         rwloop = f"$grw{self._block_counter}_loop"
         rwexit = f"$grw{self._block_counter}_exit"
@@ -450,9 +477,9 @@ class _GrisuEmissionMixin:
         self._indent += 1
         self._write(f"loop {rwloop}")
         self._indent += 1
-        # Guard 1: rest < dist_too_high  (else exit).
+        # Guard 1: rest < small_distance  (else exit).
         self._write("local.get $rest")
-        self._write("local.get $dist_too_high")
+        self._write("local.get $small_distance")
         self._write("i64.ge_u")
         self._write(f"br_if {rwexit}")
         # Guard 2: unsafe - rest >= ten_kappa  (else exit).
@@ -462,29 +489,29 @@ class _GrisuEmissionMixin:
         self._write("local.get $ten_kappa")
         self._write("i64.lt_u")
         self._write(f"br_if {rwexit}")
-        # Guard 3 (closeness): rest + ten_kappa < dist_too_high
-        #   OR  dist_too_high - rest >= (rest + ten_kappa) - dist_too_high
-        # cond = (rest + ten_kappa < dist_too_high)
+        # Guard 3 (closeness): rest + ten_kappa < small_distance
+        #   OR  small_distance - rest >= (rest+ten_kappa) - small_distance
+        # cond = (rest + ten_kappa < small_distance)
         self._write("local.get $rest")
         self._write("local.get $ten_kappa")
         self._write("i64.add")
-        self._write("local.get $dist_too_high")
+        self._write("local.get $small_distance")
         self._write("i64.lt_u")
         self._write("local.set $cond")
-        # if !cond: cond = (dist_too_high - rest) >= ((rest+ten_kappa) - dist_too_high)
+        # if !cond: cond = (small_distance - rest) >= ((rest+ten_kappa) - small_distance)
         self._write("local.get $cond")
         self._write("i32.eqz")
         self._write("if")
         self._indent += 1
-        # lhs = dist_too_high - rest
-        self._write("local.get $dist_too_high")
+        # lhs = small_distance - rest
+        self._write("local.get $small_distance")
         self._write("local.get $rest")
         self._write("i64.sub")
-        # rhs = (rest + ten_kappa) - dist_too_high
+        # rhs = (rest + ten_kappa) - small_distance
         self._write("local.get $rest")
         self._write("local.get $ten_kappa")
         self._write("i64.add")
-        self._write("local.get $dist_too_high")
+        self._write("local.get $small_distance")
         self._write("i64.sub")
         self._write("i64.ge_u")
         self._write("local.set $cond")
@@ -510,22 +537,102 @@ class _GrisuEmissionMixin:
         self._write("end")
         self._indent -= 1
         self._write("end")
+        # Ambiguity gate (Grisu3): if the last digit could ALSO be
+        # pulled within the OUTER window (big_distance), Grisu cannot
+        # prove which string is shortest -> return 0 (failure).
+        #   if rest < big_distance
+        #      and unsafe - rest >= ten_kappa
+        #      and (rest + ten_kappa < big_distance
+        #           or big_distance - rest > (rest+ten_kappa) - big_distance):
+        #       return 0
+        # cond accumulates the conjunction.
+        # cond = rest < big_distance
+        self._write("local.get $rest")
+        self._write("local.get $big_distance")
+        self._write("i64.lt_u")
+        self._write("local.set $cond")
+        # cond = cond && (unsafe - rest >= ten_kappa)
+        self._write("local.get $cond")
+        self._write("local.get $unsafe")
+        self._write("local.get $rest")
+        self._write("i64.sub")
+        self._write("local.get $ten_kappa")
+        self._write("i64.ge_u")
+        self._write("i32.and")
+        self._write("local.set $cond")
+        # inner = (rest + ten_kappa < big_distance)
+        #         || (big_distance - rest > (rest+ten_kappa) - big_distance)
+        # Only evaluated when cond still true; fold via i32.and.
+        self._write("local.get $cond")
+        self._write("if")
+        self._indent += 1
+        # cond_inner = rest + ten_kappa < big_distance
+        self._write("local.get $rest")
+        self._write("local.get $ten_kappa")
+        self._write("i64.add")
+        self._write("local.get $big_distance")
+        self._write("i64.lt_u")
+        self._write("local.set $cond")
+        # if !cond_inner: cond = (big_distance - rest) > ((rest+ten_kappa) - big_distance)
+        self._write("local.get $cond")
+        self._write("i32.eqz")
+        self._write("if")
+        self._indent += 1
+        self._write("local.get $big_distance")
+        self._write("local.get $rest")
+        self._write("i64.sub")
+        self._write("local.get $rest")
+        self._write("local.get $ten_kappa")
+        self._write("i64.add")
+        self._write("local.get $big_distance")
+        self._write("i64.sub")
+        self._write("i64.gt_u")
+        self._write("local.set $cond")
+        self._indent -= 1
+        self._write("end")
+        # if cond: ambiguous -> return 0.
+        self._write("local.get $cond")
+        self._write("if")
+        self._indent += 1
+        self._write("i32.const 0")
+        self._write("return")
+        self._indent -= 1
+        self._write("end")
+        self._indent -= 1
+        self._write("end")
+        # Final slack check: (2*unit) <= rest <= (unsafe - 4*unit).
+        # ok = (rest >= 2*unit) && (rest <= unsafe - 4*unit)
+        self._write("local.get $rest")
+        self._write("local.get $unit")
+        self._write("i64.const 1")
+        self._write("i64.shl")  # 2*unit
+        self._write("i64.ge_u")
+        self._write("local.get $rest")
+        self._write("local.get $unsafe")
+        self._write("local.get $unit")
+        self._write("i64.const 2")
+        self._write("i64.shl")  # 4*unit
+        self._write("i64.sub")
+        self._write("i64.le_u")
+        self._write("i32.and")
         self._indent -= 1
         self._write(")")
 
     def _emit_grisu2_function(self) -> None:
-        """``$grisu2(v: f64) -> (i32 digits_ptr, i32 digits_len, i32 K)``:
-        shortest-round-trip decimal mantissa + decimal exponent.
-        ``v`` must be positive, finite, non-zero; the caller
-        (``$ftoa``) handles the special cases.
+        """``$grisu2(v: f64) -> (i32 digits_ptr, i32 digits_len, i32 K,
+        i32 ok)``: shortest-round-trip decimal mantissa + decimal
+        exponent, with a Grisu3 confidence flag. ``v`` must be
+        positive, finite, non-zero; the caller (``$ftoa``) handles
+        the special cases. When ``ok`` is 0 the digit string is NOT
+        provably shortest and ``$ftoa`` must use the Dragon4 fallback.
 
         Line-by-line port of the validated Python reference at
-        ``grisu2_ref.py::grisu2``. See that file's docstring for
+        ``tools/float_ref.py::grisu``. See that file's docstring for
         the algorithm summary; comments here flag where i64 / i32
         decomposition diverges from Python's big-int form."""
         self._write(
             "(func $grisu2 (param $v f64) "
-            "(result i32 i32 i32)"
+            "(result i32 i32 i32 i32)"
         )
         self._indent += 1
         # IEEE 754 decomposition.
@@ -567,6 +674,11 @@ class _GrisuEmissionMixin:
         self._write("(local $div i64)")
         self._write("(local $d i64)")
         self._write("(local $rest i64)")
+        # Grisu3 confidence: per-digit rounding-error unit (1 at the
+        # integer-loop exit, multiplied by 10 each fractional step)
+        # and the success flag returned by $grisu_round_weed.
+        self._write("(local $unit i64)")
+        self._write("(local $ok i32)")
         # Step 1: extract IEEE 754.
         # bits = reinterpret(v) as i64
         self._write("local.get $v")
@@ -855,8 +967,8 @@ class _GrisuEmissionMixin:
         self._write("i64.lt_u")
         self._write("if")
         self._indent += 1
-        # $grisu_round_weed(buf, digit_count, dist_too_high, delta,
-        #                   rest, div << (-We))
+        # ok = $grisu_round_weed(buf, digit_count, dist_too_high,
+        #         delta, rest, div << (-We), unit=1)
         self._write("local.get $buf")
         self._write("local.get $digit_count")
         self._write("local.get $dist_too_high")
@@ -868,12 +980,15 @@ class _GrisuEmissionMixin:
         self._write("i32.sub")
         self._write("i64.extend_i32_u")
         self._write("i64.shl")
+        self._write("i64.const 1")  # unit = 1
         self._write("call $grisu_round_weed")
+        self._write("local.set $ok")
         self._write("local.get $buf")
         self._write("local.get $digit_count")
         self._write("local.get $kappa")
         self._write("local.get $c_dexp")
         self._write("i32.sub")
+        self._write("local.get $ok")
         self._write("return")
         self._indent -= 1
         self._write("end")
@@ -882,6 +997,9 @@ class _GrisuEmissionMixin:
         self._write("end")
         self._indent -= 1
         self._write("end")
+        # unit = 1 (scales by 10 each fractional step, like p2/delta).
+        self._write("i64.const 1")
+        self._write("local.set $unit")
         # Fractional loop: while True.
         self._block_counter += 1
         floop = f"$g2{self._block_counter}_floop"
@@ -890,8 +1008,9 @@ class _GrisuEmissionMixin:
         self._indent += 1
         self._write(f"loop {floop}")
         self._indent += 1
-        # p2 *= 10; delta *= 10; dist_too_high *= 10 (keep the
-        # RoundWeed distance in the same scaled units as delta / p2).
+        # p2 *= 10; delta *= 10; dist_too_high *= 10; unit *= 10 (keep
+        # the RoundWeed distance and confidence unit in the same scaled
+        # units as delta / p2).
         self._write("local.get $p2")
         self._write("i64.const 10")
         self._write("i64.mul")
@@ -904,6 +1023,10 @@ class _GrisuEmissionMixin:
         self._write("i64.const 10")
         self._write("i64.mul")
         self._write("local.set $dist_too_high")
+        self._write("local.get $unit")
+        self._write("i64.const 10")
+        self._write("i64.mul")
+        self._write("local.set $unit")
         # d = p2 >>_u -We
         self._write("local.get $p2")
         self._write("i32.const 0")
@@ -943,26 +1066,30 @@ class _GrisuEmissionMixin:
         self._write("i64.lt_u")
         self._write("if")
         self._indent += 1
-        # $grisu_round_weed(buf, digit_count, dist_too_high, delta,
-        #                   p2, one_f)
+        # ok = $grisu_round_weed(buf, digit_count, dist_too_high,
+        #         delta, p2, one_f, unit)
         self._write("local.get $buf")
         self._write("local.get $digit_count")
         self._write("local.get $dist_too_high")
         self._write("local.get $delta")
         self._write("local.get $p2")
         self._write("local.get $one_f")
+        self._write("local.get $unit")
         self._write("call $grisu_round_weed")
+        self._write("local.set $ok")
         self._write("local.get $buf")
         self._write("local.get $digit_count")
         self._write("local.get $kappa")
         self._write("local.get $c_dexp")
         self._write("i32.sub")
+        self._write("local.get $ok")
         self._write("return")
         self._indent -= 1
         self._write("end")
-        # if digit_count >= 17: return
+        # if digit_count >= 18: could not terminate confidently -
+        # return ok=0 (mirror of the reference's len>=18 guard).
         self._write("local.get $digit_count")
-        self._write("i32.const 17")
+        self._write("i32.const 18")
         self._write("i32.ge_s")
         self._write("if")
         self._indent += 1
@@ -971,6 +1098,7 @@ class _GrisuEmissionMixin:
         self._write("local.get $kappa")
         self._write("local.get $c_dexp")
         self._write("i32.sub")
+        self._write("i32.const 0")
         self._write("return")
         self._indent -= 1
         self._write("end")
@@ -984,6 +1112,1405 @@ class _GrisuEmissionMixin:
         self._write("unreachable")
         self._indent -= 1
         self._write(")")
+
+    # ----- Dragon4 exact fallback (limb bignum) -------------------
+
+    def _emit_wat_block(self, body: str) -> None:
+        """Emit a multi-line WAT fragment, one instruction per line,
+        at the current indent. WAT's folded control flow does not
+        depend on whitespace, so the Dragon4 helpers below are written
+        as readable transliterations of the limb-bignum reference
+        (``tools/float_ref.py``) rather than as opcode-per-call
+        Python. Blank lines and ``#``/``;;`` comment-only lines are
+        dropped; trailing ``# ...`` Python-style comments are
+        converted to WAT ``;;`` comments."""
+        for raw in body.splitlines():
+            line = raw.strip()
+            # Strip Python-style trailing comments (no WAT operand uses
+            # ``#``), then drop blank / comment-only lines.
+            hash_at = line.find("#")
+            if hash_at != -1:
+                line = line[:hash_at].strip()
+            if not line:
+                continue
+            self._write(line)
+
+    def _emit_dragon4_functions(self) -> None:
+        """Emit the exact Dragon4 fallback and its limb-bignum
+        helpers, a faithful transliteration of
+        ``tools/float_ref.py``'s ``dragon4`` + ``_bn_*`` family.
+
+        BIGNUM LAYOUT. A bignum is an i32 pointer to a buffer from
+        ``$alloc``: i32 limb-count at offset 0, then ``count`` 32-bit
+        limbs (least significant first) at offsets 4, 8, .... Limbs
+        hold values in [0, 2^32). Every operation returns a FRESH
+        bignum (the reference's list semantics); inputs are never
+        mutated, so aliasing is safe. Buffers are bounded (a few
+        hundred limbs for DBL_MAX / smallest subnormal) and never
+        freed - the bump allocator just advances.
+
+        HELPERS:
+        - ``$bn_alloc(n) -> ptr``   zeroed buffer, count = n
+        - ``$bn_norm(a) -> a``      drop high zero limbs in place
+        - ``$bn_from_u64(v) -> ptr``
+        - ``$bn_cmp(a, b) -> i32``  -1 / 0 / 1
+        - ``$bn_add(a, b) -> ptr``
+        - ``$bn_sub(a, b) -> ptr``  (a >= b)
+        - ``$bn_mul_small(a, m) -> ptr``  (m < 2^32)
+        - ``$bn_mul(a, b) -> ptr``  schoolbook
+        - ``$bn_shl(a, bits) -> ptr``
+        - ``$bn_mul_pow10(a, k) -> ptr``
+        - ``$bn_divmod_digit(num, den) -> (i32 q, ptr rem)``
+        - ``$dragon4(v) -> (i32 digits_ptr, i32 len, i32 K)``
+        """
+        # $bn_alloc(n) -> ptr : 4 + n*4 bytes, count=n, limbs zeroed.
+        self._emit_wat_block(
+            """
+            (func $bn_alloc (param $n i32) (result i32)
+              (local $ptr i32)
+              (local $i i32)
+              local.get $n
+              i32.const 1
+              i32.add
+              i32.const 2
+              i32.shl                 # (n+1) * 4 bytes
+              call $alloc
+              local.set $ptr
+              local.get $ptr
+              local.get $n
+              i32.store               # count = n
+              # zero the n limbs
+              i32.const 0
+              local.set $i
+              block $bz_exit
+                loop $bz_loop
+                  local.get $i
+                  local.get $n
+                  i32.ge_s
+                  br_if $bz_exit
+                  local.get $ptr
+                  local.get $i
+                  i32.const 1
+                  i32.add
+                  i32.const 2
+                  i32.shl
+                  i32.add               # &limb[i]
+                  i32.const 0
+                  i32.store
+                  local.get $i
+                  i32.const 1
+                  i32.add
+                  local.set $i
+                  br $bz_loop
+                end
+              end
+              local.get $ptr
+            )
+            """
+        )
+        # $bn_norm(a) -> a : shrink count while top limb is zero (keep
+        # at least one limb).
+        self._emit_wat_block(
+            """
+            (func $bn_norm (param $a i32) (result i32)
+              (local $count i32)
+              local.get $a
+              i32.load
+              local.set $count
+              block $bn_exit
+                loop $bn_loop
+                  local.get $count
+                  i32.const 1
+                  i32.le_s
+                  br_if $bn_exit          # keep >= 1 limb
+                  # if limb[count-1] != 0: break
+                  local.get $a
+                  local.get $count
+                  i32.const 2
+                  i32.shl                 # count*4 == &limb[count-1] + 4? -> offset (count)*4
+                  i32.add                 # a + count*4 == &limb[count-1]
+                  i32.load
+                  i32.const 0
+                  i32.ne
+                  br_if $bn_exit
+                  local.get $count
+                  i32.const 1
+                  i32.sub
+                  local.set $count
+                  br $bn_loop
+                end
+              end
+              local.get $a
+              local.get $count
+              i32.store
+              local.get $a
+            )
+            """
+        )
+        # $bn_from_u64(v) -> ptr : 1 or 2 limbs.
+        self._emit_wat_block(
+            """
+            (func $bn_from_u64 (param $v i64) (result i32)
+              (local $ptr i32)
+              (local $hi i64)
+              local.get $v
+              i64.const 32
+              i64.shr_u
+              local.set $hi
+              local.get $hi
+              i64.eqz
+              if (result i32)
+                i32.const 1
+                call $bn_alloc
+              else
+                i32.const 2
+                call $bn_alloc
+              end
+              local.set $ptr
+              # limb[0] = v & 0xFFFFFFFF
+              local.get $ptr
+              i32.const 4
+              i32.add
+              local.get $v
+              i32.wrap_i64
+              i32.store
+              local.get $hi
+              i64.eqz
+              i32.eqz
+              if
+                local.get $ptr
+                i32.const 8
+                i32.add
+                local.get $hi
+                i32.wrap_i64
+                i32.store
+              end
+              local.get $ptr
+            )
+            """
+        )
+        # $bn_cmp(a, b) -> i32 : -1 / 0 / 1.
+        self._emit_wat_block(
+            """
+            (func $bn_cmp (param $a i32) (param $b i32) (result i32)
+              (local $ca i32)
+              (local $cb i32)
+              (local $i i32)
+              (local $va i32)
+              (local $vb i32)
+              local.get $a
+              i32.load
+              local.set $ca
+              local.get $b
+              i32.load
+              local.set $cb
+              local.get $ca
+              local.get $cb
+              i32.ne
+              if
+                local.get $ca
+                local.get $cb
+                i32.lt_s
+                if
+                  i32.const -1
+                  return
+                end
+                i32.const 1
+                return
+              end
+              # equal length: compare from most significant limb down.
+              local.get $ca
+              i32.const 1
+              i32.sub
+              local.set $i
+              block $cmp_exit
+                loop $cmp_loop
+                  local.get $i
+                  i32.const 0
+                  i32.lt_s
+                  br_if $cmp_exit
+                  local.get $a
+                  local.get $i
+                  i32.const 1
+                  i32.add
+                  i32.const 2
+                  i32.shl
+                  i32.add
+                  i32.load
+                  local.set $va
+                  local.get $b
+                  local.get $i
+                  i32.const 1
+                  i32.add
+                  i32.const 2
+                  i32.shl
+                  i32.add
+                  i32.load
+                  local.set $vb
+                  local.get $va
+                  local.get $vb
+                  i32.ne
+                  if
+                    local.get $va
+                    local.get $vb
+                    i32.lt_u
+                    if
+                      i32.const -1
+                      return
+                    end
+                    i32.const 1
+                    return
+                  end
+                  local.get $i
+                  i32.const 1
+                  i32.sub
+                  local.set $i
+                  br $cmp_loop
+                end
+              end
+              i32.const 0
+            )
+            """
+        )
+        # $bn_add(a, b) -> ptr : limb-wise with carry.
+        self._emit_wat_block(
+            """
+            (func $bn_add (param $a i32) (param $b i32) (result i32)
+              (local $ca i32)
+              (local $cb i32)
+              (local $n i32)
+              (local $out i32)
+              (local $i i32)
+              (local $s i64)
+              (local $carry i64)
+              local.get $a
+              i32.load
+              local.set $ca
+              local.get $b
+              i32.load
+              local.set $cb
+              # n = max(ca, cb)
+              local.get $ca
+              local.get $cb
+              i32.gt_s
+              if (result i32)
+                local.get $ca
+              else
+                local.get $cb
+              end
+              local.set $n
+              # out has n+1 limbs to hold the final carry.
+              local.get $n
+              i32.const 1
+              i32.add
+              call $bn_alloc
+              local.set $out
+              i64.const 0
+              local.set $carry
+              i32.const 0
+              local.set $i
+              block $add_exit
+                loop $add_loop
+                  local.get $i
+                  local.get $n
+                  i32.ge_s
+                  br_if $add_exit
+                  # s = a[i] + b[i] + carry
+                  local.get $i
+                  local.get $ca
+                  i32.lt_s
+                  if (result i64)
+                    local.get $a
+                    local.get $i
+                    i32.const 1
+                    i32.add
+                    i32.const 2
+                    i32.shl
+                    i32.add
+                    i32.load
+                    i64.extend_i32_u
+                  else
+                    i64.const 0
+                  end
+                  local.get $i
+                  local.get $cb
+                  i32.lt_s
+                  if (result i64)
+                    local.get $b
+                    local.get $i
+                    i32.const 1
+                    i32.add
+                    i32.const 2
+                    i32.shl
+                    i32.add
+                    i32.load
+                    i64.extend_i32_u
+                  else
+                    i64.const 0
+                  end
+                  i64.add
+                  local.get $carry
+                  i64.add
+                  local.set $s
+                  # out[i] = s & 0xFFFFFFFF
+                  local.get $out
+                  local.get $i
+                  i32.const 1
+                  i32.add
+                  i32.const 2
+                  i32.shl
+                  i32.add
+                  local.get $s
+                  i32.wrap_i64
+                  i32.store
+                  # carry = s >> 32
+                  local.get $s
+                  i64.const 32
+                  i64.shr_u
+                  local.set $carry
+                  local.get $i
+                  i32.const 1
+                  i32.add
+                  local.set $i
+                  br $add_loop
+                end
+              end
+              # out[n] = carry (the extra limb)
+              local.get $out
+              local.get $n
+              i32.const 1
+              i32.add
+              i32.const 2
+              i32.shl
+              i32.add
+              local.get $carry
+              i32.wrap_i64
+              i32.store
+              local.get $out
+              call $bn_norm
+            )
+            """
+        )
+        # $bn_sub(a, b) -> ptr : a - b for a >= b, limb-wise borrow.
+        self._emit_wat_block(
+            """
+            (func $bn_sub (param $a i32) (param $b i32) (result i32)
+              (local $ca i32)
+              (local $cb i32)
+              (local $out i32)
+              (local $i i32)
+              (local $d i64)
+              (local $borrow i64)
+              local.get $a
+              i32.load
+              local.set $ca
+              local.get $b
+              i32.load
+              local.set $cb
+              local.get $ca
+              call $bn_alloc
+              local.set $out
+              i64.const 0
+              local.set $borrow
+              i32.const 0
+              local.set $i
+              block $sub_exit
+                loop $sub_loop
+                  local.get $i
+                  local.get $ca
+                  i32.ge_s
+                  br_if $sub_exit
+                  # d = a[i] - b[i] - borrow   (as signed i64)
+                  local.get $a
+                  local.get $i
+                  i32.const 1
+                  i32.add
+                  i32.const 2
+                  i32.shl
+                  i32.add
+                  i32.load
+                  i64.extend_i32_u
+                  local.get $i
+                  local.get $cb
+                  i32.lt_s
+                  if (result i64)
+                    local.get $b
+                    local.get $i
+                    i32.const 1
+                    i32.add
+                    i32.const 2
+                    i32.shl
+                    i32.add
+                    i32.load
+                    i64.extend_i32_u
+                  else
+                    i64.const 0
+                  end
+                  i64.sub
+                  local.get $borrow
+                  i64.sub
+                  local.set $d
+                  # if d < 0: d += 2^32; borrow = 1 else borrow = 0
+                  local.get $d
+                  i64.const 0
+                  i64.lt_s
+                  if
+                    local.get $d
+                    i64.const 0x100000000
+                    i64.add
+                    local.set $d
+                    i64.const 1
+                    local.set $borrow
+                  else
+                    i64.const 0
+                    local.set $borrow
+                  end
+                  # out[i] = d & 0xFFFFFFFF
+                  local.get $out
+                  local.get $i
+                  i32.const 1
+                  i32.add
+                  i32.const 2
+                  i32.shl
+                  i32.add
+                  local.get $d
+                  i32.wrap_i64
+                  i32.store
+                  local.get $i
+                  i32.const 1
+                  i32.add
+                  local.set $i
+                  br $sub_loop
+                end
+              end
+              local.get $out
+              call $bn_norm
+            )
+            """
+        )
+        # $bn_mul_small(a, m) -> ptr : a * m, m in [0, 2^32).
+        self._emit_wat_block(
+            """
+            (func $bn_mul_small (param $a i32) (param $m i64) (result i32)
+              (local $ca i32)
+              (local $out i32)
+              (local $i i32)
+              (local $p i64)
+              (local $carry i64)
+              local.get $a
+              i32.load
+              local.set $ca
+              # result needs at most ca + 2 limbs (carry can be 2 limbs).
+              local.get $ca
+              i32.const 2
+              i32.add
+              call $bn_alloc
+              local.set $out
+              i64.const 0
+              local.set $carry
+              i32.const 0
+              local.set $i
+              block $ms_exit
+                loop $ms_loop
+                  local.get $i
+                  local.get $ca
+                  i32.ge_s
+                  br_if $ms_exit
+                  # p = a[i] * m + carry
+                  local.get $a
+                  local.get $i
+                  i32.const 1
+                  i32.add
+                  i32.const 2
+                  i32.shl
+                  i32.add
+                  i32.load
+                  i64.extend_i32_u
+                  local.get $m
+                  i64.mul
+                  local.get $carry
+                  i64.add
+                  local.set $p
+                  # out[i] = p & 0xFFFFFFFF
+                  local.get $out
+                  local.get $i
+                  i32.const 1
+                  i32.add
+                  i32.const 2
+                  i32.shl
+                  i32.add
+                  local.get $p
+                  i32.wrap_i64
+                  i32.store
+                  # carry = p >> 32
+                  local.get $p
+                  i64.const 32
+                  i64.shr_u
+                  local.set $carry
+                  local.get $i
+                  i32.const 1
+                  i32.add
+                  local.set $i
+                  br $ms_loop
+                end
+              end
+              # Spill remaining carry across the extra limbs.
+              block $msc_exit
+                loop $msc_loop
+                  local.get $carry
+                  i64.eqz
+                  br_if $msc_exit
+                  local.get $out
+                  local.get $i
+                  i32.const 1
+                  i32.add
+                  i32.const 2
+                  i32.shl
+                  i32.add
+                  local.get $carry
+                  i32.wrap_i64
+                  i32.store
+                  local.get $carry
+                  i64.const 32
+                  i64.shr_u
+                  local.set $carry
+                  local.get $i
+                  i32.const 1
+                  i32.add
+                  local.set $i
+                  br $msc_loop
+                end
+              end
+              local.get $out
+              call $bn_norm
+            )
+            """
+        )
+        # $bn_mul(a, b) -> ptr : schoolbook, 32x32->64 partials.
+        self._emit_wat_block(
+            """
+            (func $bn_mul (param $a i32) (param $b i32) (result i32)
+              (local $ca i32)
+              (local $cb i32)
+              (local $out i32)
+              (local $i i32)
+              (local $j i32)
+              (local $k i32)
+              (local $ai i64)
+              (local $p i64)
+              (local $carry i64)
+              local.get $a
+              i32.load
+              local.set $ca
+              local.get $b
+              i32.load
+              local.set $cb
+              local.get $ca
+              local.get $cb
+              i32.add
+              call $bn_alloc          # ca + cb limbs, zeroed
+              local.set $out
+              i32.const 0
+              local.set $i
+              block $mo_exit
+                loop $mo_loop
+                  local.get $i
+                  local.get $ca
+                  i32.ge_s
+                  br_if $mo_exit
+                  i64.const 0
+                  local.set $carry
+                  local.get $a
+                  local.get $i
+                  i32.const 1
+                  i32.add
+                  i32.const 2
+                  i32.shl
+                  i32.add
+                  i32.load
+                  i64.extend_i32_u
+                  local.set $ai
+                  i32.const 0
+                  local.set $j
+                  block $mi_exit
+                    loop $mi_loop
+                      local.get $j
+                      local.get $cb
+                      i32.ge_s
+                      br_if $mi_exit
+                      # p = ai*b[j] + out[i+j] + carry
+                      local.get $ai
+                      local.get $b
+                      local.get $j
+                      i32.const 1
+                      i32.add
+                      i32.const 2
+                      i32.shl
+                      i32.add
+                      i32.load
+                      i64.extend_i32_u
+                      i64.mul
+                      local.get $out
+                      local.get $i
+                      local.get $j
+                      i32.add
+                      i32.const 1
+                      i32.add
+                      i32.const 2
+                      i32.shl
+                      i32.add
+                      i32.load
+                      i64.extend_i32_u
+                      i64.add
+                      local.get $carry
+                      i64.add
+                      local.set $p
+                      # out[i+j] = p & 0xFFFFFFFF
+                      local.get $out
+                      local.get $i
+                      local.get $j
+                      i32.add
+                      i32.const 1
+                      i32.add
+                      i32.const 2
+                      i32.shl
+                      i32.add
+                      local.get $p
+                      i32.wrap_i64
+                      i32.store
+                      local.get $p
+                      i64.const 32
+                      i64.shr_u
+                      local.set $carry
+                      local.get $j
+                      i32.const 1
+                      i32.add
+                      local.set $j
+                      br $mi_loop
+                    end
+                  end
+                  # propagate carry into out[i+cb], out[i+cb+1], ...
+                  local.get $i
+                  local.get $cb
+                  i32.add
+                  local.set $k
+                  block $mc_exit
+                    loop $mc_loop
+                      local.get $carry
+                      i64.eqz
+                      br_if $mc_exit
+                      local.get $out
+                      local.get $k
+                      i32.const 1
+                      i32.add
+                      i32.const 2
+                      i32.shl
+                      i32.add
+                      i32.load
+                      i64.extend_i32_u
+                      local.get $carry
+                      i64.add
+                      local.set $p
+                      local.get $out
+                      local.get $k
+                      i32.const 1
+                      i32.add
+                      i32.const 2
+                      i32.shl
+                      i32.add
+                      local.get $p
+                      i32.wrap_i64
+                      i32.store
+                      local.get $p
+                      i64.const 32
+                      i64.shr_u
+                      local.set $carry
+                      local.get $k
+                      i32.const 1
+                      i32.add
+                      local.set $k
+                      br $mc_loop
+                    end
+                  end
+                  local.get $i
+                  i32.const 1
+                  i32.add
+                  local.set $i
+                  br $mo_loop
+                end
+              end
+              local.get $out
+              call $bn_norm
+            )
+            """
+        )
+        # $bn_shl(a, bits) -> ptr : whole-limb + intra-limb shift.
+        self._emit_wat_block(
+            """
+            (func $bn_shl (param $a i32) (param $bits i32) (result i32)
+              (local $ca i32)
+              (local $limb_shift i32)
+              (local $bit_shift i32)
+              (local $out i32)
+              (local $n i32)
+              (local $i i32)
+              (local $v i64)
+              (local $carry i64)
+              local.get $a
+              i32.load
+              local.set $ca
+              local.get $bits
+              i32.const 32
+              i32.div_u
+              local.set $limb_shift
+              local.get $bits
+              i32.const 32
+              i32.rem_u
+              local.set $bit_shift
+              # out has ca + limb_shift + 1 limbs (room for intra-limb carry)
+              local.get $ca
+              local.get $limb_shift
+              i32.add
+              i32.const 1
+              i32.add
+              local.set $n
+              local.get $n
+              call $bn_alloc
+              local.set $out
+              # copy a into out shifted up by limb_shift limbs, with the
+              # intra-limb shift folded in.
+              i64.const 0
+              local.set $carry
+              i32.const 0
+              local.set $i
+              block $shl_exit
+                loop $shl_loop
+                  local.get $i
+                  local.get $ca
+                  i32.ge_s
+                  br_if $shl_exit
+                  # v = (a[i] << bit_shift) | carry
+                  local.get $a
+                  local.get $i
+                  i32.const 1
+                  i32.add
+                  i32.const 2
+                  i32.shl
+                  i32.add
+                  i32.load
+                  i64.extend_i32_u
+                  local.get $bit_shift
+                  i64.extend_i32_u
+                  i64.shl
+                  local.get $carry
+                  i64.or
+                  local.set $v
+                  # out[i+limb_shift] = v & 0xFFFFFFFF
+                  local.get $out
+                  local.get $i
+                  local.get $limb_shift
+                  i32.add
+                  i32.const 1
+                  i32.add
+                  i32.const 2
+                  i32.shl
+                  i32.add
+                  local.get $v
+                  i32.wrap_i64
+                  i32.store
+                  # carry = v >> 32
+                  local.get $v
+                  i64.const 32
+                  i64.shr_u
+                  local.set $carry
+                  local.get $i
+                  i32.const 1
+                  i32.add
+                  local.set $i
+                  br $shl_loop
+                end
+              end
+              # final carry limb
+              local.get $out
+              local.get $ca
+              local.get $limb_shift
+              i32.add
+              i32.const 1
+              i32.add
+              i32.const 2
+              i32.shl
+              i32.add
+              local.get $carry
+              i32.wrap_i64
+              i32.store
+              local.get $out
+              call $bn_norm
+            )
+            """
+        )
+        # $bn_mul_pow10(a, k) -> ptr : repeated *10^9 then *10^r.
+        self._emit_wat_block(
+            """
+            (func $bn_mul_pow10 (param $a i32) (param $k i32) (result i32)
+              (local $cur i32)
+              local.get $a
+              local.set $cur
+              block $p10_exit
+                loop $p10_loop
+                  local.get $k
+                  i32.const 9
+                  i32.lt_s
+                  br_if $p10_exit
+                  local.get $cur
+                  i64.const 1000000000
+                  call $bn_mul_small
+                  local.set $cur
+                  local.get $k
+                  i32.const 9
+                  i32.sub
+                  local.set $k
+                  br $p10_loop
+                end
+              end
+              local.get $k
+              i32.const 0
+              i32.gt_s
+              if
+                local.get $cur
+                local.get $k
+                call $pow10_i32
+                i64.extend_i32_u
+                call $bn_mul_small
+                local.set $cur
+              end
+              local.get $cur
+            )
+            """
+        )
+        # $bn_divmod_digit(num, den) -> (q, rem) : repeated subtraction,
+        # at most 9 iterations (num < 10*den at the call site).
+        self._emit_wat_block(
+            """
+            (func $bn_divmod_digit (param $num i32) (param $den i32) (result i32 i32)
+              (local $q i32)
+              (local $cur i32)
+              local.get $num
+              local.set $cur
+              i32.const 0
+              local.set $q
+              block $dd_exit
+                loop $dd_loop
+                  local.get $cur
+                  local.get $den
+                  call $bn_cmp
+                  i32.const 0
+                  i32.lt_s
+                  br_if $dd_exit          # cur < den -> stop
+                  local.get $cur
+                  local.get $den
+                  call $bn_sub
+                  local.set $cur
+                  local.get $q
+                  i32.const 1
+                  i32.add
+                  local.set $q
+                  br $dd_loop
+                end
+              end
+              local.get $q
+              local.get $cur
+            )
+            """
+        )
+        self._emit_dragon4_main()
+
+    def _emit_dragon4_main(self) -> None:
+        """``$dragon4(v: f64) -> (i32 digits_ptr, i32 len, i32 K)``:
+        exact shortest free-format formatting (Steele and White /
+        Burger and Dubois) using only the limb-bignum helpers above.
+        ``v`` must be positive, finite, non-zero. Returns the ASCII
+        digit string and decimal exponent K such that value ==
+        int(digits) * 10^K. Faithful transliteration of
+        ``tools/float_ref.py::dragon4``."""
+        self._emit_wat_block(
+            """
+            (func $dragon4 (param $v f64) (result i32 i32 i32)
+              (local $bits i64)
+              (local $biased i32)
+              (local $mant i64)
+              (local $f i64)
+              (local $e i32)
+              (local $even i32)
+              (local $low_ok i32)
+              (local $high_ok i32)
+              (local $unequal i32)
+              (local $R i32)
+              (local $S i32)
+              (local $Mp i32)
+              (local $Mm i32)
+              (local $scale i32)
+              (local $k i32)
+              (local $e2 i32)
+              (local $blen i32)
+              (local $prod i64)
+              (local $big i32)
+              (local $too_small i32)
+              (local $digits i32)
+              (local $dcount i32)
+              (local $d i32)
+              (local $tmp i32)
+              (local $c i32)
+              (local $tc1 i32)
+              (local $tc2 i32)
+              # ---- decompose v into f * 2^e (hidden bit folded in) ----
+              local.get $v
+              i64.reinterpret_f64
+              local.set $bits
+              local.get $bits
+              i64.const 52
+              i64.shr_u
+              i64.const 0x7FF
+              i64.and
+              i32.wrap_i64
+              local.set $biased
+              local.get $bits
+              i64.const 0x000FFFFFFFFFFFFF
+              i64.and
+              local.set $mant
+              local.get $biased
+              i32.eqz
+              if
+                local.get $mant
+                local.set $f
+                i32.const -1074
+                local.set $e
+              else
+                local.get $mant
+                i64.const 0x0010000000000000
+                i64.or
+                local.set $f
+                local.get $biased
+                i32.const 1075
+                i32.sub
+                local.set $e
+              end
+              # even = (f & 1) == 0 ; low_ok = high_ok = even
+              local.get $f
+              i64.const 1
+              i64.and
+              i64.eqz
+              local.set $even
+              local.get $even
+              local.set $low_ok
+              local.get $even
+              local.set $high_ok
+              # unequal_gap = (mant == 0) && (biased > 1)
+              local.get $mant
+              i64.eqz
+              local.get $biased
+              i32.const 1
+              i32.gt_s
+              i32.and
+              local.set $unequal
+              # ---- set up R / S / Mp / Mm ----
+              local.get $e
+              i32.const 0
+              i32.ge_s
+              if
+                # e >= 0
+                local.get $unequal
+                i32.eqz
+                if
+                  # R = (f * 2^e) << 1 ; S = 2 ; Mp = Mm = 2^e
+                  local.get $f
+                  call $bn_from_u64
+                  i32.const 1
+                  call $bn_shl
+                  local.get $e
+                  call $bn_shl
+                  local.set $R
+                  i64.const 2
+                  call $bn_from_u64
+                  local.set $S
+                  i64.const 1
+                  call $bn_from_u64
+                  local.get $e
+                  call $bn_shl
+                  local.set $Mp
+                  local.get $Mp
+                  local.set $Mm
+                else
+                  # R = (f * 2^(e+1)) << 1 ; S = 4 ; Mp = 2^(e+1) ; Mm = 2^e
+                  local.get $f
+                  call $bn_from_u64
+                  i32.const 1
+                  call $bn_shl
+                  local.get $e
+                  i32.const 1
+                  i32.add
+                  call $bn_shl
+                  local.set $R
+                  i64.const 4
+                  call $bn_from_u64
+                  local.set $S
+                  i64.const 1
+                  call $bn_from_u64
+                  local.get $e
+                  i32.const 1
+                  i32.add
+                  call $bn_shl
+                  local.set $Mp
+                  i64.const 1
+                  call $bn_from_u64
+                  local.get $e
+                  call $bn_shl
+                  local.set $Mm
+                end
+              else
+                # e < 0
+                local.get $unequal
+                i32.eqz
+                if
+                  # R = f << 1 ; S = 1 << (1 - e) ; Mp = Mm = 1
+                  local.get $f
+                  call $bn_from_u64
+                  i32.const 1
+                  call $bn_shl
+                  local.set $R
+                  i64.const 1
+                  call $bn_from_u64
+                  i32.const 1
+                  local.get $e
+                  i32.sub
+                  call $bn_shl
+                  local.set $S
+                  i64.const 1
+                  call $bn_from_u64
+                  local.set $Mp
+                  i64.const 1
+                  call $bn_from_u64
+                  local.set $Mm
+                else
+                  # R = f << 2 ; S = 1 << (2 - e) ; Mp = 2 ; Mm = 1
+                  local.get $f
+                  call $bn_from_u64
+                  i32.const 2
+                  call $bn_shl
+                  local.set $R
+                  i64.const 1
+                  call $bn_from_u64
+                  i32.const 2
+                  local.get $e
+                  i32.sub
+                  call $bn_shl
+                  local.set $S
+                  i64.const 2
+                  call $bn_from_u64
+                  local.set $Mp
+                  i64.const 1
+                  call $bn_from_u64
+                  local.set $Mm
+                end
+              end
+              # ---- estimate k = ceil(log10(value)) via fixed point ----
+              # bit_length(f): blen = 64 - clz(f)
+              i32.const 64
+              local.get $f
+              i64.clz
+              i32.wrap_i64
+              i32.sub
+              local.set $blen
+              # e2 = (blen - 1) + e  == floor(log2(value))
+              local.get $blen
+              i32.const 1
+              i32.sub
+              local.get $e
+              i32.add
+              local.set $e2
+              # k = ceil((e2 + 1) * log10(2))   (log10(2) ~ 1292913986/2^32)
+              # use prod = (e2 + 1) * 1292913986 ; k = ceil(prod / 2^32)
+              local.get $e2
+              i32.const 1
+              i32.add
+              i64.extend_i32_s
+              i64.const 1292913986
+              i64.mul
+              local.set $prod
+              # k = floor; then +1 if remainder != 0 (ceil)
+              local.get $prod
+              i64.const 32
+              i64.shr_s
+              i32.wrap_i64
+              local.get $prod
+              local.get $prod
+              i64.const 32
+              i64.shr_s
+              i64.const 32
+              i64.shl
+              i64.sub
+              i64.const 0
+              i64.ne
+              i32.add
+              local.set $k
+              # ---- scale by 10^k ----
+              local.get $k
+              i32.const 0
+              i32.ge_s
+              if
+                local.get $S
+                local.get $k
+                call $bn_mul_pow10
+                local.set $S
+              else
+                i64.const 1
+                call $bn_from_u64
+                i32.const 0
+                local.get $k
+                i32.sub
+                call $bn_mul_pow10
+                local.set $scale
+                local.get $R
+                local.get $scale
+                call $bn_mul
+                local.set $R
+                local.get $Mp
+                local.get $scale
+                call $bn_mul
+                local.set $Mp
+                local.get $Mm
+                local.get $scale
+                call $bn_mul
+                local.set $Mm
+              end
+              # ---- fixup: too-small loop (leading digit would be 0) ----
+              block $ts_exit
+                loop $ts_loop
+                  # big = (R*10) + (Mp*10)
+                  local.get $R
+                  i64.const 10
+                  call $bn_mul_small
+                  local.get $Mp
+                  i64.const 10
+                  call $bn_mul_small
+                  call $bn_add
+                  local.set $big
+                  # too_small = high_ok ? big <= S : big < S
+                  local.get $big
+                  local.get $S
+                  call $bn_cmp
+                  local.set $c
+                  local.get $high_ok
+                  if (result i32)
+                    local.get $c
+                    i32.const 0
+                    i32.le_s
+                  else
+                    local.get $c
+                    i32.const 0
+                    i32.lt_s
+                  end
+                  local.set $too_small
+                  local.get $too_small
+                  i32.eqz
+                  br_if $ts_exit
+                  local.get $R
+                  i64.const 10
+                  call $bn_mul_small
+                  local.set $R
+                  local.get $Mp
+                  i64.const 10
+                  call $bn_mul_small
+                  local.set $Mp
+                  local.get $Mm
+                  i64.const 10
+                  call $bn_mul_small
+                  local.set $Mm
+                  local.get $k
+                  i32.const 1
+                  i32.sub
+                  local.set $k
+                  br $ts_loop
+                end
+              end
+              # ---- fixup: too-large loop (leading digit would be >= 10) ----
+              block $tl_exit
+                loop $tl_loop
+                  # high_over = high_ok ? (R+Mp >= S) : (R+Mp > S)
+                  local.get $R
+                  local.get $Mp
+                  call $bn_add
+                  local.get $S
+                  call $bn_cmp
+                  local.set $c
+                  local.get $high_ok
+                  if (result i32)
+                    local.get $c
+                    i32.const 0
+                    i32.ge_s
+                  else
+                    local.get $c
+                    i32.const 0
+                    i32.gt_s
+                  end
+                  i32.eqz
+                  br_if $tl_exit
+                  local.get $S
+                  i64.const 10
+                  call $bn_mul_small
+                  local.set $S
+                  local.get $k
+                  i32.const 1
+                  i32.add
+                  local.set $k
+                  br $tl_loop
+                end
+              end
+              # ---- digit generation ----
+              i32.const 32
+              call $alloc
+              local.set $digits
+              i32.const 0
+              local.set $dcount
+              block $gen_exit
+                loop $gen_loop
+                  # R *= 10 ; Mp *= 10 ; Mm *= 10
+                  local.get $R
+                  i64.const 10
+                  call $bn_mul_small
+                  local.set $R
+                  local.get $Mp
+                  i64.const 10
+                  call $bn_mul_small
+                  local.set $Mp
+                  local.get $Mm
+                  i64.const 10
+                  call $bn_mul_small
+                  local.set $Mm
+                  # (d, R) = divmod_digit(R, S)
+                  local.get $R
+                  local.get $S
+                  call $bn_divmod_digit
+                  local.set $R
+                  local.set $d
+                  # tc1: low boundary. c_low = cmp(R, Mm)
+                  local.get $R
+                  local.get $Mm
+                  call $bn_cmp
+                  local.set $c
+                  local.get $low_ok
+                  if (result i32)
+                    local.get $c
+                    i32.const 0
+                    i32.le_s
+                  else
+                    local.get $c
+                    i32.const 0
+                    i32.lt_s
+                  end
+                  local.set $tc1
+                  # tc2: high boundary. c_high = cmp(R + Mp, S)
+                  local.get $R
+                  local.get $Mp
+                  call $bn_add
+                  local.get $S
+                  call $bn_cmp
+                  local.set $c
+                  local.get $high_ok
+                  if (result i32)
+                    local.get $c
+                    i32.const 0
+                    i32.ge_s
+                  else
+                    local.get $c
+                    i32.const 0
+                    i32.gt_s
+                  end
+                  local.set $tc2
+                  # if not tc1 and not tc2: append d, continue
+                  local.get $tc1
+                  i32.eqz
+                  local.get $tc2
+                  i32.eqz
+                  i32.and
+                  if
+                    local.get $digits
+                    local.get $dcount
+                    i32.add
+                    local.get $d
+                    i32.const 48
+                    i32.add
+                    i32.store8
+                    local.get $dcount
+                    i32.const 1
+                    i32.add
+                    local.set $dcount
+                    br $gen_loop
+                  end
+                  # terminate: choose final digit.
+                  # if tc2 and not tc1: d += 1
+                  local.get $tc2
+                  local.get $tc1
+                  i32.eqz
+                  i32.and
+                  if
+                    local.get $d
+                    i32.const 1
+                    i32.add
+                    local.set $d
+                  else
+                    # if tc1 and tc2: round on 2*R vs S
+                    local.get $tc1
+                    local.get $tc2
+                    i32.and
+                    if
+                      local.get $R
+                      i32.const 1
+                      call $bn_shl
+                      local.get $S
+                      call $bn_cmp
+                      local.set $c
+                      # if c > 0 or (c == 0 and d odd): d += 1
+                      local.get $c
+                      i32.const 0
+                      i32.gt_s
+                      local.get $c
+                      i32.eqz
+                      local.get $d
+                      i32.const 1
+                      i32.and
+                      i32.and
+                      i32.or
+                      if
+                        local.get $d
+                        i32.const 1
+                        i32.add
+                        local.set $d
+                      end
+                    end
+                  end
+                  local.get $digits
+                  local.get $dcount
+                  i32.add
+                  local.get $d
+                  i32.const 48
+                  i32.add
+                  i32.store8
+                  local.get $dcount
+                  i32.const 1
+                  i32.add
+                  local.set $dcount
+                  br $gen_exit
+                end
+              end
+              # return (digits, dcount, k - dcount)
+              local.get $digits
+              local.get $dcount
+              local.get $k
+              local.get $dcount
+              i32.sub
+            )
+            """
+        )
 
     def _emit_ftoa_function(self) -> None:
         """``$ftoa(f: f64) -> (i32 ptr, i32 len)``: format a double
@@ -1014,6 +2541,7 @@ class _GrisuEmissionMixin:
         self._write("(local $i i32)")
         self._write("(local $exp_value i32)")
         self._write("(local $exp_abs i32)")
+        self._write("(local $ok i32)")
         # bits = reinterpret(f) as i64; sign = bits >> 63.
         self._write("local.get $f")
         self._write("i64.reinterpret_f64")
@@ -1096,12 +2624,27 @@ class _GrisuEmissionMixin:
         self._write("local.set $abs")
         self._indent -= 1
         self._write("end")
-        # (digits_ptr, digits_len, K) = grisu2(abs)
+        # (digits_ptr, digits_len, K, ok) = grisu2(abs)
         self._write("local.get $abs")
         self._write("call $grisu2")
+        self._write("local.set $ok")
         self._write("local.set $K")
         self._write("local.set $digits_len")
         self._write("local.set $digits_ptr")
+        # Grisu3 fallback: if not provably shortest, recompute the
+        # digit string exactly with Dragon4. Both paths feed the same
+        # (digits_ptr, digits_len, K) shape into the spelling layer.
+        self._write("local.get $ok")
+        self._write("i32.eqz")
+        self._write("if")
+        self._indent += 1
+        self._write("local.get $abs")
+        self._write("call $dragon4")
+        self._write("local.set $K")
+        self._write("local.set $digits_len")
+        self._write("local.set $digits_ptr")
+        self._indent -= 1
+        self._write("end")
         # n = digits_len + K
         self._write("local.get $digits_len")
         self._write("local.get $K")

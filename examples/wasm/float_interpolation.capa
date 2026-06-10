@@ -1,24 +1,22 @@
-// Float interpolation parity (audit C1, 2026-06-09).
+// Float interpolation parity (audit C1, 2026-06-09; F2, 2026-06-10).
 //
 // The parity harness historically EXCLUDED Float interpolation,
 // which is why audit C1 (the Wasm Grisu2 port printed
 // ``14.285714285714287`` for ``100.0 / 7.0`` where Python's
 // ``repr`` gives ``14.285714285714286``) was invisible to CI.
-// The root cause was a missing RoundWeed last-digit nudge in the
-// WAT port; with it, every computed-float class below
-// (sums, ratios, divisions, averages) is byte-identical across
-// the Python and Wasm backends.
+// C1 ported Grisu2's RoundWeed last-digit nudge; F2 added the
+// Grisu3 confidence flag plus an exact limb-bignum Dragon4
+// fallback for the sub-1% of values Grisu cannot prove shortest.
+// Every computed-float class below (sums, ratios, divisions,
+// averages, and the formerly-divergent arithmetic) is now
+// byte-identical with Python ``repr`` across both backends.
 //
 // This program deliberately exercises the HARD-rounding shapes
-// (repeating decimals, averages, ratios) that the pre-fix port
-// got wrong, so the regression net covers the cases that DO work.
-// A Grisu2-inherent residual remains and is a KNOWN float-formatting
-// correctness hole: it is reachable from ordinary arithmetic (a
-// plain division like 86.0 / 7018.0 emits a decimal that does NOT
-// round-trip, naming the wrong double), NOT an extreme-exponent-only
-// curiosity. It is tracked separately and needs a Dragon4 / Bignum
-// (or Ryu) slow-path fallback - see the C1 scoping note and the
-// xfail repros in TestWasmFtoaResidual.
+// (repeating decimals, averages, ratios) plus the arithmetic that
+// used to need the missing Dragon4 fallback (e.g. 86.0 / 7018.0,
+// which Grisu2 alone rendered as a non-round-tripping decimal that
+// named the WRONG double). With the fallback landed those are
+// repr-exact, so they belong in the parity net as PASSING cases.
 
 fun main(stdio: Stdio)
     // The headline audit case and its siblings.
@@ -29,6 +27,14 @@ fun main(stdio: Stdio)
     stdio.println("${1.0 / 3.0}")
     stdio.println("${2.0 / 3.0}")
     stdio.println("${1.0 / 6.0}")
+
+    // Formerly Grisu2-inherent divergences: these REQUIRE the
+    // Dragon4 exact fallback to round-trip. Pre-F2 the Wasm output
+    // named a different double than Python computed.
+    stdio.println("${86.0 / 7018.0}")
+    stdio.println("${39890.261 * 297.24217854}")
+    stdio.println("${76821.07266303091}")
+    stdio.println("${0.08549800233840919}")
 
     // Averages of small integer sets (a common real shape).
     stdio.println("${(3.0 + 5.0 + 8.0 + 11.0) / 4.0}")
