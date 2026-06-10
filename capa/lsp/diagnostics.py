@@ -26,16 +26,18 @@ class Diagnostic:
     """One diagnostic in Capa-native form."""
     pos: Pos
     message: str
-    severity: str = "error"   # always "error" in v1
+    severity: str = "error"   # "error" | "warning"
     source: str = "capa-lsp"
 
 
 def compute_diagnostics(source: str, filename: str) -> list[Diagnostic]:
-    """Run the pipeline and return one diagnostic per error.
+    """Run the pipeline and return one diagnostic per error or warning.
 
     Errors from the lexer and parser short-circuit (consistent
     with the CLI); analyzer errors are collected and returned
-    together. A clean buffer returns an empty list.
+    together, followed by the analyzer's non-fatal warnings (the
+    dead-Unsafe nudge, IFC warn-then-enforce) with severity
+    ``"warning"``. A clean buffer returns an empty list.
     """
     out: list[Diagnostic] = []
     fallback_pos = Pos(line=1, col=1, offset=0)
@@ -68,4 +70,8 @@ def compute_diagnostics(source: str, filename: str) -> list[Diagnostic]:
         return out
     for err in result.errors:
         out.append(Diagnostic(pos=err.pos, message=err.message))
+    for warn in result.warnings:
+        out.append(
+            Diagnostic(pos=warn.pos, message=warn.message, severity="warning")
+        )
     return out

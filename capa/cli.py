@@ -568,6 +568,11 @@ def _dispatch_build(argv: list[str]) -> int:
         sources=linked.sources,
         module_privates=linked.module_privates,
     )
+    # Non-fatal warnings mirror the main() compile flow: printed to
+    # stderr with "warning" severity, never affecting the exit code.
+    for warn in result.warnings:
+        print(warn.format(severity="warning"), file=sys.stderr)
+        print(file=sys.stderr)
     if not result.ok:
         for err in result.errors:
             print(err.format(), file=sys.stderr)
@@ -1069,9 +1074,10 @@ def main() -> int:
             sources=sources_map,
             module_privates=privates_map,
         )
-        # Non-fatal warnings (e.g. information-flow secret->sink under
-        # the warn-then-enforce roll-out, roadmap S2.4) print
-        # regardless of whether the program compiles.
+        # Non-fatal warnings (information-flow secret->sink under the
+        # warn-then-enforce roll-out, roadmap S2.4; the dead-Unsafe
+        # migrate nudge) print regardless of whether the program
+        # compiles and never change the exit code.
         for warn in getattr(result, "warnings", []):
             text = warn.format(severity="warning")
             if use_color:

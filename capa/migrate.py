@@ -31,6 +31,12 @@ Public API:
 
 ``render_report(report) -> str``
     A human-readable rendering of that report for the terminal.
+
+``find_dead_unsafe(module, *, filename="<input>") -> list[DeadUnsafe]``
+    The removable verdicts as per-parameter entries with source
+    positions. Single source of truth for the analyzer's dead-Unsafe
+    warning (surfaced by the CLI and the LSP); ``migrate_report``
+    renders the same verdicts per function.
 """
 
 from __future__ import annotations
@@ -47,6 +53,7 @@ from .manifest._reachability import (
     compute_reachability,
 )
 from .manifest._strings import _root_type_name
+from .tokens import Pos
 
 
 # The only builtins that consume an ``Unsafe`` token. A function whose
@@ -355,6 +362,83 @@ def _removability(
     callees = _token_callees(rec, set(targets), graph) or []
     depends = sorted({graph.by_name[n][0]["source_name"] for n in callees})
     return True, depends
+
+
+# ===========================================================
+# Dead-Unsafe entries (analyzer warning surface)
+# ===========================================================
+
+
+@dataclass(kw_only=True)
+class DeadUnsafe:
+    """One removable ``Unsafe`` parameter, with its source position.
+
+    ``transitive`` is True when the token is still forwarded to other
+    functions (all proven unable to reach a bridge call); those callees
+    are listed in ``depends_on`` and their call sites have to lose the
+    argument before this parameter can go.
+    """
+    source_name: str
+    param_name: str
+    pos: Pos
+    transitive: bool
+    depends_on: list[str]
+
+
+def _any_unsafe_param(module: A.Module) -> bool:
+    """Cheap pre-check: does any function declare an ``Unsafe``-rooted
+    parameter? Only those can ever be removable, so callers (notably
+    the analyzer, which runs on every compile and keystroke) skip the
+    manifest walk entirely for the common Unsafe-free program."""
+    def _has(fn: A.FunDecl) -> bool:
+        return any(
+            _root_type_name(p.type_expr) == "Unsafe" for p in fn.params
+        )
+    for item in module.items:
+        if isinstance(item, A.FunDecl) and _has(item):
+            return True
+        if isinstance(item, A.ImplBlock) and any(_has(m) for m in item.methods):
+            return True
+    return False
+
+
+def find_dead_unsafe(
+    module: A.Module, *, filename: str = "<input>",
+) -> list[DeadUnsafe]:
+    """Return every removable ``Unsafe`` parameter of the module.
+
+    This is the single source of truth behind the analyzer's
+    dead-Unsafe warning; :func:`migrate_report` applies the same
+    verdicts (via the shared :func:`_removability`) at function
+    granularity. One entry per parameter: a function with several
+    dead tokens yields several entries, each positioned at the
+    parameter name.
+    """
+    if not _any_unsafe_param(module):
+        return []
+    manifest = build_manifest(module, filename=filename)
+    pairs, graph = _build_graph(module, manifest["functions"])
+    out: list[DeadUnsafe] = []
+    for rec, decl in pairs:
+        if not rec["has_unsafe"]:
+            continue
+        is_removable, depends_on = _removability(rec, decl, graph)
+        if not is_removable:
+            continue
+        for name in _unsafe_param_names(rec):
+            pos = decl.pos
+            for p in decl.params:
+                if p.name == name:
+                    pos = p.name_pos or p.pos
+                    break
+            out.append(DeadUnsafe(
+                source_name=rec["source_name"],
+                param_name=name,
+                pos=pos,
+                transitive=bool(depends_on),
+                depends_on=depends_on,
+            ))
+    return out
 
 
 # ===========================================================

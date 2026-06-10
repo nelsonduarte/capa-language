@@ -924,17 +924,28 @@ right primitives. Listed at the top of this section accordingly.
   constant-time); README + CHANGELOG + LICENSE + .vscodeignore shipped.
   A first-party bundled LSP client remains a follow-up.
 
-- [~] **Migration path from Python** (slice 1 closed 2026-05-27).
+- [~] **Migration path from Python** (slice 1 closed 2026-05-27,
+  slice 2 closed 2026-06-10).
   Interop is one-way via `Unsafe`; the gradual-hardening *pattern*
   already shipped (`examples/migrate_logfetcher_step{1,2,3}` +
-  `docs/migration.md`). New `capa migrate <file>` tooling
-  (`capa/migrate.py`) now reports progress: % Unsafe-free,
+  `docs/migration.md`). `capa migrate <file>` tooling
+  (`capa/migrate.py`) reports progress: % Unsafe-free,
   removable-`Unsafe` detection (silenced-but-dead `_u: Unsafe`),
   and next-candidate ranking by bridge-call count; `--json` for
-  CI. Deferred: warning/info diagnostic severity in analyzer+LSP
-  for inline editor nudges, transitive call-graph analysis for
-  removable detection, and a website "Migrating from Python"
-  chapter.
+  CI. Slice 2 closed both deferred tooling items: removable
+  detection is now TRANSITIVE over the module call graph (a token
+  forwarded only into bridge-free chains is removable; the report
+  carries additive `transitive` + `depends_on` keys), resolving
+  every ambiguity to non-removable (cycles, callbacks, method
+  calls, elided argument renderings, cap-bearing-struct /
+  Fun-type signatures via the manifest reachability fixpoint);
+  and the analyzer grew a first-class non-fatal warnings channel
+  with the dead-Unsafe nudge as its first lint (single source of
+  truth `capa.migrate.find_dead_unsafe`): the CLI prints
+  `warning:` to stderr in --check / --run / build without
+  touching exit codes, and the LSP publishes
+  DiagnosticSeverity.Warning on the parameter name itself.
+  Still deferred: a website "Migrating from Python" chapter.
 
 - [x] **Package manager + minimal registry** (closed
   2026-05-27). Core install flow ships (`capa.toml` +

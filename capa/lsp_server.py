@@ -73,7 +73,11 @@ def compute_diagnostics(source: str, filename: str):
         out.append(
             lsp.Diagnostic(
                 range=lsp.Range(start=start, end=end),
-                severity=lsp.DiagnosticSeverity.Error,
+                severity=(
+                    lsp.DiagnosticSeverity.Warning
+                    if d.severity == "warning"
+                    else lsp.DiagnosticSeverity.Error
+                ),
                 source=d.source,
                 message=d.message,
             )

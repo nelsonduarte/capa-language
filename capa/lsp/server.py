@@ -181,7 +181,11 @@ def _build_server():
                     range=codec.range_to_client_units(
                         lines, _to_lsp_range(d.pos),
                     ),
-                    severity=lsp.DiagnosticSeverity.Error,
+                    severity=(
+                        lsp.DiagnosticSeverity.Warning
+                        if d.severity == "warning"
+                        else lsp.DiagnosticSeverity.Error
+                    ),
                     source=d.source,
                     message=d.message,
                 )

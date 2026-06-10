@@ -948,5 +948,47 @@ class TestCliRobustness(unittest.TestCase):
             self.assertIn("INT_LIT", out)
 
 
+class TestWarningDiagnostics(unittest.TestCase):
+    """Analyzer warnings on the CLI: printed to stderr with 'warning'
+    severity, never changing the exit code. The dead-Unsafe migrate
+    nudge is the first such lint."""
+
+    DEAD_UNSAFE = "fun helper(_u: Unsafe) -> Int\n    return 1\n"
+
+    def test_check_with_warning_only_exits_zero(self):
+        with tempfile.TemporaryDirectory() as td:
+            src = _write_capa(Path(td), "warn.capa", self.DEAD_UNSAFE)
+            rc, out, err = _run_main(["--check", str(src)])
+            self.assertEqual(rc, 0, err)
+            self.assertIn("ok", out)
+            self.assertIn("warning:", err)
+            self.assertIn("'_u: Unsafe'", err)
+            self.assertNotIn("error:", err)
+
+    def test_run_with_warning_only_exits_zero(self):
+        with tempfile.TemporaryDirectory() as td:
+            src = _write_capa(
+                Path(td), "warn_run.capa",
+                self.DEAD_UNSAFE
+                + "\nfun main(stdio: Stdio)\n    stdio.println(\"hi\")\n",
+            )
+            rc, out, err = _run_main(["--run", str(src)])
+            self.assertEqual(rc, 0, err)
+            self.assertIn("hi", out)
+            self.assertIn("warning:", err)
+
+    def test_error_and_warning_error_dominates_exit(self):
+        with tempfile.TemporaryDirectory() as td:
+            src = _write_capa(
+                Path(td), "warn_err.capa",
+                self.DEAD_UNSAFE
+                + "\nfun broken() -> Int\n    return missing_name\n",
+            )
+            rc, _out, err = _run_main(["--check", str(src)])
+            self.assertEqual(rc, 1)
+            self.assertIn("warning:", err)
+            self.assertIn("error:", err)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -6240,5 +6240,63 @@ class TestIndexAssignment(unittest.TestCase):
         self.assertTrue(r.ok, r.errors)
 
 
+# =============================================================
+# Dead-Unsafe warning (migrate tooling slice 2)
+# =============================================================
+
+class TestDeadUnsafeWarning(unittest.TestCase):
+    """The analyzer warns (non-fatally) on an Unsafe parameter whose
+    token provably never reaches py_import/py_invoke; the verdicts
+    come from capa.migrate.find_dead_unsafe."""
+
+    def test_dead_silenced_unsafe_param_warns(self):
+        r = check("fun f(_u: Unsafe) -> Int\n    return 1\n")
+        self.assertTrue(r.ok, r.errors)   # a warning never breaks ok
+        self.assertEqual(len(r.warnings), 1)
+        w = r.warnings[0]
+        self.assertIn("'_u: Unsafe'", w.message)
+        self.assertIn("never exercised", w.message)
+        # Positioned on the parameter name itself.
+        self.assertEqual((w.pos.line, w.pos.col), (1, 7))
+
+    def test_transitive_dead_unsafe_names_the_callee(self):
+        r = check(
+            "fun bottom(_u: Unsafe) -> Int\n"
+            "    return 1\n"
+            "\n"
+            "fun top(u: Unsafe) -> Int\n"
+            "    return bottom(u)\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+        self.assertEqual(len(r.warnings), 2)
+        top_warning = next(w for w in r.warnings if "'top'" in w.message)
+        self.assertIn("bottom", top_warning.message)
+        self.assertIn("forwarded", top_warning.message)
+
+    def test_exercised_unsafe_does_not_warn(self):
+        r = check(
+            "fun f(u: Unsafe)\n"
+            "    let os_mod = py_import(u, \"os\")\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+        self.assertEqual(r.warnings, [])
+
+    def test_warning_coexists_with_unrelated_error(self):
+        # An error elsewhere in the module does not suppress the
+        # warning (the CLI prints both; only errors gate the exit).
+        r = check(
+            "fun f(_u: Unsafe) -> Int\n"
+            "    return 1\n"
+            "\n"
+            "fun g() -> Int\n"
+            "    return missing_name\n"
+        )
+        self.assertFalse(r.ok)
+        self.assertTrue(
+            any("'_u: Unsafe'" in w.message for w in r.warnings),
+            r.warnings,
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

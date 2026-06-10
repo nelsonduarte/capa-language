@@ -814,6 +814,31 @@ class TestComputeDiagnostics(unittest.TestCase):
         self.assertEqual(diags[0].severity, lsp.DiagnosticSeverity.Error)
         self.assertEqual(diags[0].source, "capa-lsp")
 
+    def test_dead_unsafe_param_publishes_warning_severity(self):
+        # Analyzer warnings (the dead-Unsafe migrate nudge) surface as
+        # LSP Warning diagnostics, positioned on the parameter name.
+        from lsprotocol import types as lsp
+        src = "fun helper(_u: Unsafe) -> Int\n    return 1\n"
+        diags = self.compute(src, "t.capa")
+        self.assertEqual(len(diags), 1)
+        d = diags[0]
+        self.assertEqual(d.severity, lsp.DiagnosticSeverity.Warning)
+        # `_u` sits at line 1, col 12 (1-based) -> 0-based (0, 11).
+        self.assertEqual(d.range.start.line, 0)
+        self.assertEqual(d.range.start.character, 11)
+        self.assertIn("'_u: Unsafe'", d.message)
+        self.assertIn("can be removed", d.message)
+        self.assertEqual(d.source, "capa-lsp")
+
+    def test_native_diagnostics_carry_warning_severity_string(self):
+        # The Capa-native diagnostic shape distinguishes severities so
+        # the server can map them to the LSP enum.
+        from capa.lsp.diagnostics import compute_diagnostics as native
+        src = "fun helper(_u: Unsafe) -> Int\n    return 1\n"
+        self.assertEqual(
+            [d.severity for d in native(src, "t.capa")], ["warning"],
+        )
+
     def test_lexer_error_short_circuits(self):
         # When the lexer fails, parser and analyzer are skipped:
         # we expect exactly one diagnostic carrying the lexer

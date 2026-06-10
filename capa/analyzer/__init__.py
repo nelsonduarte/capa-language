@@ -523,6 +523,11 @@ class Analyzer(
         # Phase 2: visit bodies of functions, impls, etc.
         for item in module.items:
             self._check_item(item)
+        # Phase 3: non-fatal lints. One for now (migrate tooling
+        # slice 2): an ``Unsafe`` parameter whose token provably never
+        # reaches py_import/py_invoke can be dropped. Warnings never
+        # affect ``ok``.
+        self._warn_dead_unsafe(module)
         return AnalysisResult(
             errors=self.errors,
             warnings=self.warnings,
@@ -551,6 +556,60 @@ class Analyzer(
             src = self.sources[pos.filename]
             fname = pos.filename
         self.errors.append(AnalysisError(message, pos, src, fname))
+
+    def _warn(self, message: str, pos: Pos) -> None:
+        """Record a non-fatal warning (does not affect ``ok``).
+        Mirrors ``_err`` but routes to ``self.warnings``. Producers:
+        the IFC warn-then-enforce roll-out (roadmap S2.4) and the
+        dead-Unsafe lint below."""
+        src = self.source
+        fname = self.filename
+        if pos.filename and pos.filename in self.sources:
+            src = self.sources[pos.filename]
+            fname = pos.filename
+        self.warnings.append(AnalysisError(message, pos, src, fname))
+
+    def _warn_dead_unsafe(self, module: A.Module) -> None:
+        """Warn on every ``Unsafe`` parameter whose token provably
+        never reaches a bridge call (``py_import`` / ``py_invoke``).
+
+        The verdicts come from :func:`capa.migrate.find_dead_unsafe`,
+        the same single source of truth behind ``capa migrate``; this
+        method only phrases them as analyzer warnings so the CLI and
+        the LSP surface the nudge inline. The detection is transitive
+        and conservative: it can under-report, but a flagged token can
+        always be removed. An unreferenced non-underscored capability
+        param is already a hard error, so the live target is the
+        ``_u: Unsafe`` that was silenced and has since gone dead.
+
+        A diagnostics nicety must never turn a compile into a crash:
+        any failure here (e.g. a malformed AST that already produced
+        errors) just skips the lint.
+        """
+        try:
+            from ..migrate import find_dead_unsafe
+            entries = find_dead_unsafe(module, filename=self.filename)
+        except Exception:
+            return
+        for e in entries:
+            if e.transitive:
+                deps = ", ".join(e.depends_on)
+                hint = (
+                    f"it is only forwarded to {deps}, which can never "
+                    f"reach py_import/py_invoke; drop the dead Unsafe "
+                    f"there and the forwarding argument first, then "
+                    f"remove this parameter"
+                )
+            else:
+                hint = (
+                    "the token reaches no py_import/py_invoke call; "
+                    "the parameter can be removed from the signature"
+                )
+            self._warn(
+                f"parameter '{e.param_name}: Unsafe' of "
+                f"{e.source_name!r} is never exercised: {hint}",
+                e.pos,
+            )
 
     def _push_scope(self, is_function_root: bool = False) -> None:
         self.scope = Scope(parent=self.scope, is_function_root=is_function_root)

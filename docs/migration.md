@@ -246,8 +246,22 @@ It surfaces three things:
   capability parameter referenced *nowhere*, so this specifically catches
   the param you silenced with a leading underscore, `_u: Unsafe`, and
   then left behind once its last `py_invoke` was migrated away.)
+  The detection is transitive over the call graph: a token that is only
+  ever forwarded into functions that can never reach `py_import` /
+  `py_invoke` counts as removable too, and the report names the callees
+  whose call sites have to lose the argument first. It is conservative
+  by construction; anything ambiguous (callbacks, method calls, cycles,
+  cap-bearing structs) stays "in use", so a flagged `Unsafe` can always
+  be dropped.
 - **Next candidates.** The still-`Unsafe` functions ranked by how few
   bridge calls they make, so you tackle the cheapest hardening step next.
 
 Add `--json` for the machine-readable form (useful in a CI gate that
 watches the percentage trend upward over a migration).
+
+You do not have to run `capa migrate` to get the removable nudge: the
+same detection backs a compiler warning. `capa --check` (and every
+compile) prints it to stderr with `warning:` severity without changing
+the exit code, and the LSP publishes it as a Warning diagnostic on the
+parameter itself, so the editor underlines the dead `_u: Unsafe` the
+moment its last bridge call is migrated away.

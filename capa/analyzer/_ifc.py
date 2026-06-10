@@ -736,7 +736,7 @@ class _IfcMixin:
         # annotation claims a disclosure that the data flow does not
         # actually contain. Warn so it does not mislead an auditor.
         if L.normalize(self._label_of(e.args[0])) != L.SECRET:
-            self._warn_ifc(
+            self._warn(
                 "declassify of a @public value is a no-op (the value is "
                 "not @secret); remove it or re-check the data flow",
                 e.pos,
@@ -977,7 +977,7 @@ class _IfcMixin:
             if getattr(self, "_strict_ifc", False):
                 self._err(msg, arg.pos)
             else:
-                self._warn_ifc(msg, arg.pos)
+                self._warn(msg, arg.pos)
 
         # Implicit control flow (roadmap S2.implicit): the sink fires
         # under a secret pc -- it is inside a branch whose condition is
@@ -1138,7 +1138,7 @@ class _IfcMixin:
         if getattr(self, "_strict_ifc", False):
             self._err(msg, pos)
         else:
-            self._warn_ifc(msg, pos)
+            self._warn(msg, pos)
 
     # ---- cross-function field-write effect (closes gap 1) --------
 
@@ -1245,18 +1245,6 @@ class _IfcMixin:
             member.label = L.join(getattr(member, "label", None), L.SECRET)
             if getattr(member, "field_labels", None) is not None:
                 self._escaped_struct_syms.add(id(member))
-
-    def _warn_ifc(self, message: str, pos) -> None:
-        """Record a non-fatal IFC warning (does not affect ``ok``).
-        Mirrors ``_err`` but routes to ``self.warnings``."""
-        from . import AnalysisError
-        src = self.source
-        fname = self.filename
-        if pos.filename and pos.filename in self.sources:
-            src = self.sources[pos.filename]
-            fname = pos.filename
-        self.warnings.append(AnalysisError(message, pos, src, fname))
-
 
 def _deepcopy_field_map(node):
     """Recursively copy a per-field label map so a binding's map is
