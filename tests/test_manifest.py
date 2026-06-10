@@ -315,7 +315,9 @@ class TestSourceNameDemangle(unittest.TestCase):
         # Regression (migrate slice 3 groundwork): an imported
         # function's manifest ``pos`` used to stamp the ROOT file's
         # name onto the imported file's line/col, i.e. a position in
-        # the wrong file. It must carry the declaring file instead.
+        # the wrong file. It must carry the declaring file instead --
+        # in root-relative form, so the manifest never embeds the
+        # builder machine's absolute directory layout.
         d = self._tmpdir()
         self._write(
             d, "util.capa",
@@ -331,12 +333,77 @@ class TestSourceNameDemangle(unittest.TestCase):
         m = self._link_and_build(root)
         helper = self._find_fn(m, "helper")
         self.assertTrue(
-            helper["pos"].startswith(str(d / "util.capa") + ":"),
-            helper["pos"],
+            helper["pos"].startswith("util.capa:"), helper["pos"],
         )
         main = self._find_fn(m, "main")
         self.assertTrue(
-            main["pos"].startswith(str(root) + ":"), main["pos"],
+            main["pos"].startswith("root.capa:"), main["pos"],
+        )
+
+    def test_subdirectory_import_pos_is_relative_posix(self):
+        # A module imported from a subdirectory (the vendored-deps
+        # shape) records a root-relative path with '/' separators on
+        # every OS, so the same project produces byte-identical
+        # manifests on Windows and Linux and across machines. The raw
+        # loader path is absolute (and machine-specific); none of that
+        # may leak into the manifest.
+        d = self._tmpdir()
+        (d / "vendor").mkdir()
+        self._write(
+            d / "vendor", "lib.capa",
+            "pub fun helper(x: Int) -> Int\n"
+            "    return x + 1\n",
+        )
+        root = self._write(
+            d, "root.capa",
+            "import vendor.lib\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"hi\")\n",
+        )
+        m = self._link_and_build(root)
+        helper = self._find_fn(m, "helper")
+        self.assertTrue(
+            helper["pos"].startswith("vendor/lib.capa:"), helper["pos"],
+        )
+        self.assertNotIn("\\", helper["pos"])
+        self.assertNotIn(str(d), helper["pos"])
+
+    def test_module_outside_root_tree_keeps_its_path(self):
+        # A module resolved from OUTSIDE the root file's directory
+        # (e.g. via a CAPA_PATH search root) has no stable base to
+        # relativise against; its path stays exactly as the loader
+        # lexed it, which also tells the auditor the code came from
+        # outside the project tree.
+        from capa.loader import ModuleLoader
+        d = self._tmpdir()
+        lib_dir = d / "elsewhere"
+        lib_dir.mkdir()
+        self._write(
+            lib_dir, "ext.capa",
+            "pub fun helper(x: Int) -> Int\n"
+            "    return x + 1\n",
+        )
+        proj = d / "proj"
+        proj.mkdir()
+        root = self._write(
+            proj, "root.capa",
+            "import ext\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"hi\")\n",
+        )
+        loader = ModuleLoader(search_paths=[lib_dir])
+        linked = loader.load_root(
+            root.read_text(encoding="utf-8"), str(root),
+        )
+        result = analyze(
+            linked.module, source=root.read_text(encoding="utf-8"),
+        )
+        self.assertTrue(result.ok, result.errors)
+        m = build_manifest(linked.module, filename=str(root))
+        helper = self._find_fn(m, "helper")
+        expected = str((lib_dir / "ext.capa").resolve())
+        self.assertTrue(
+            helper["pos"].startswith(expected + ":"), helper["pos"],
         )
 
     def test_imported_pub_function_is_not_mangled(self):

@@ -9,6 +9,36 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+### Per-function positions on SBOM surfaces: right file, root-relative
+
+Bug fix with observable value on every surface that displays the
+manifest's per-function `pos` (`--manifest`, CycloneDX `capa:pos`,
+SPDX annotations, `--doc`, `capa migrate`): in a linked multi-file
+program, an imported function's position stamped the ROOT file's
+name onto the imported file's line/col, i.e. it pointed into the
+wrong file. Each declaration now records the file it was actually
+declared in.
+
+Recorded paths are also root-relative and separator-stable now: a
+declaration file under the root file's directory (vendored modules
+included) is written relative to that directory with `/` separators
+on every OS. Previously imported declarations would have carried the
+loader's absolute paths, leaking the builder machine's directory
+layout (and username) into SBOMs and breaking byte-reproducibility
+across machines. A file resolved from outside the root tree (e.g.
+via `CAPA_PATH`) keeps its path as lexed, which preserves the
+"this code came from outside the project" signal.
+
+### `capa migrate`: per-file breakdown and next-file ranking
+
+`capa migrate --json` gains two additive keys for multi-file
+projects: `files` (per-source-file totals, still-Unsafe count,
+removable count and Unsafe-free percentage) and `file_ranking` (the
+next files to harden, least remaining migration cost first). The
+human-readable report grows the matching "Per-file progress" section
+only when the program spans more than one file; all pre-existing JSON
+keys keep their program-wide meaning.
+
 ### Attestation and SBOM URIs move to capa-language.com
 
 Observable format change for downstream consumers that pin these

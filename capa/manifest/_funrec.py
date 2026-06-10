@@ -13,6 +13,7 @@ recognise.
 from __future__ import annotations
 
 import re
+from pathlib import Path
 from typing import Any, Optional
 
 from .. import capa_ast as A
@@ -38,6 +39,39 @@ _MANGLE_RE = re.compile(r"^_capa_m(\d+)__(.+)$")
 # a type-text string (``List<_capa_m1__Foo>``) - anchored at a
 # word boundary so it doesn't munge unrelated names.
 _MANGLE_INLINE_RE = re.compile(r"\b_capa_m\d+__([A-Za-z_]\w*)")
+
+
+def _display_path(decl_file: str, root_filename: str) -> str:
+    """Root-relative, separator-stable display form of a declaration's
+    source path.
+
+    The loader lexes every imported module under its *resolved
+    absolute* path, so a raw ``fn.pos.filename`` would stamp the
+    builder machine's directory layout (and username) into every
+    surface that displays the manifest ``pos``: the manifest itself,
+    CycloneDX ``capa:pos``, SPDX annotations, docgen and ``capa
+    migrate``. For the normal self-contained project -- every source
+    file under the root file's directory, vendored modules included --
+    the path is therefore recorded relative to that directory, in
+    POSIX form (``/`` separators on every OS), so the same project
+    produces identical audit artefacts on Windows and Linux and on any
+    two builders' machines.
+
+    A file that resolves OUTSIDE the root file's directory (e.g. a
+    module found via ``CAPA_PATH``) keeps its path exactly as lexed:
+    there is no stable base to relativise against, and "this code came
+    from outside the project tree" is information the auditor wants.
+    """
+    if not decl_file or not root_filename:
+        return decl_file
+    try:
+        root_dir = Path(root_filename).resolve().parent
+        rel = Path(decl_file).resolve().relative_to(root_dir)
+    except (ValueError, OSError):
+        # ValueError: not under the root directory. OSError: a path
+        # the OS cannot resolve (synthetic placeholder names).
+        return decl_file
+    return rel.as_posix()
 
 
 def _demangle(name: str) -> tuple[str, Optional[int]]:
@@ -394,10 +428,14 @@ def _fun_record(
     # declared in (the loader lexes each module under its own path).
     # The ``filename`` argument only backs synthetic positions: an
     # empty string (built-ins, fallbacks) or the lexer's ``"<input>"``
-    # placeholder for unnamed in-memory sources.
+    # placeholder for unnamed in-memory sources. The display form is
+    # root-relative and separator-stable (see :func:`_display_path`)
+    # so the recorded position never leaks the builder's absolute
+    # directory layout.
     decl_file = fn.pos.filename
     if not decl_file or decl_file == "<input>":
         decl_file = filename
+    decl_file = _display_path(decl_file, filename)
 
     return {
         "name": fn.name,

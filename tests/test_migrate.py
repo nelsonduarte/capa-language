@@ -608,6 +608,32 @@ class TestPerFileBreakdown(unittest.TestCase):
         # clean root.capa is done and must not appear at all.
         self.assertEqual(ranking, ["extra.capa", "util.capa"])
 
+    def test_per_file_paths_are_root_relative_posix(self):
+        # Reproducibility: the report's per-file paths (and every
+        # per-entry pos) are root-relative with '/' separators, never
+        # the loader's machine-specific absolute paths, so the same
+        # project reports identically on any machine and OS.
+        d = self._tmpdir()
+        (d / "sub").mkdir()
+        self._write(
+            d / "sub", "inner.capa",
+            "pub fun s_one(u: Unsafe)\n"
+            "    let m = py_import(u, \"os\")\n",
+        )
+        root = self._write(
+            d, "root.capa",
+            "import sub.inner\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"hi\")\n",
+        )
+        rep = self._report_for(root)
+        files = {e["file"] for e in rep["files"]}
+        self.assertEqual(files, {"sub/inner.capa", "root.capa"})
+        self.assertEqual(rep["file_ranking"], ["sub/inner.capa"])
+        for c in rep["next_candidates"]:
+            self.assertNotIn("\\", c["pos"])
+            self.assertFalse(Path(c["pos"].rsplit(":", 2)[0]).is_absolute())
+
     def test_summary_still_covers_the_whole_program(self):
         # Backwards compatibility: every pre-slice-3 key keeps its
         # program-wide meaning; the breakdown is purely additive.
