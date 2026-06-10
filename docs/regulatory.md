@@ -37,11 +37,11 @@ And how each maps across the five frameworks:
 
 | Capa output | CRA Annex I | NIS2 Art. 21 | DORA Chapters II-V | NIST SSDF | OWASP SCVS |
 |---|---|---|---|---|---|
-| Manifest | I-II(1) direct | 21(2)(d) indirect | Art. 8 indirect | PS.1, PS.2 indirect | Domain 1 partial |
+| Manifest | I-II(1) direct | 21(2)(d) indirect | Art. 8 indirect | PS.1 indirect | Domain 1 partial |
 | CycloneDX SBOM | I-II(1) **direct** | 21(2)(d) **direct** | Art. 8 **direct** | PS.3 **direct** | Domain 2 **direct** |
 | SPDX SBOM | I-II(1) **direct** | 21(2)(d) **direct** | Art. 8 **direct** | PS.3 **direct** | Domain 2 **direct** |
 | CycloneDX VEX | I-II(2) partial | Art. 23 indirect | Arts. 17-19 partial | RV.1, RV.2 **direct** | Domain 5 **direct** |
-| SLSA L1 provenance | I-I(2)(f) indirect | 21(2)(d) indirect | Art. 28-30 partial | PS.3, PS.4 **direct** | Domain 6 **direct** |
+| SLSA L1 provenance | I-I(2)(f) indirect | 21(2)(d) indirect | Art. 28-30 partial | PS.2, PS.3 partial | Domain 6 **direct** |
 | Audit pipeline | I-II(1) indirect | 21(2)(d) **direct** | Arts. 28-30 **direct** | PO.5 indirect | Domain 1 partial |
 | SBOM diff tool | I-II(2) indirect | 21(2)(d) partial | Arts. 17-19 partial | RV.1 partial | Domain 2 partial |
 | Machine-checked soundness | I-I(2)(b) indirect | n/a | n/a | PW.4 indirect | n/a |
@@ -84,10 +84,9 @@ Where Capa lands, by practice:
 
 | Practice | What Capa provides |
 |---|---|
-| PS.1 (Protect all forms of code) | Manifest declares the access boundary per function; widening is loud in diffs |
-| PS.2 (Provide a mechanism for verifying software release integrity) | SLSA L1 provenance attestation, source SHA-256 |
-| PS.3 (Archive and protect each release) | CycloneDX, SPDX, and provenance bundled as a release-artefact set |
-| PS.4 (Build artefacts from source) | Provenance names the builder, the source, and the parameters |
+| PS.1 (Protect all forms of code) | Manifest declares the access boundary per function; widening is loud in diffs. Repository access control stays organisational |
+| PS.2 (Provide a mechanism for verifying software release integrity) | SLSA L1 provenance names the builder, the source, and the parameters, with the source SHA-256. Signing is external at L1 |
+| PS.3 (Archive and protect each release) | CycloneDX, SPDX, and provenance bundled as a release-artefact set; PS.3.2 names provenance data and SBOMs explicitly. Archival itself stays organisational |
 | PW.4 (Reuse existing, well-secured software) | Capability discipline rules out ambient-authority abuse in third-party Capa code |
 | RV.1 (Identify and confirm vulnerabilities) | VEX entries make per-function exploitability assertions; SBOM diff catches supplier widening |
 | RV.2 (Assess, prioritise, and remediate) | VEX `state` and `justification` shape feeds standard tooling |

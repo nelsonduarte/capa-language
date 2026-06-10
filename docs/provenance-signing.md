@@ -238,8 +238,10 @@ exactly that source through the declared build process.
   verify the binary came from the declared source.
 - **DORA Articles 28-30** (ICT third-party risk): same
   argument, financial-sector specific.
-- **NIST SSDF PS.4** (build artefacts from source): the
-  attestation is the direct evidence.
+- **NIST SSDF PS.2 and PS.3** (verify release integrity;
+  archive and protect each release): the signed attestation is
+  the verification mechanism PS.2 asks for, and the provenance
+  data PS.3.2 expects to travel with each release.
 - **OWASP SCVS Domain 6** (Pedigree and Provenance): L1
   satisfies baseline, signed provenance lifts toward L2 and
   L3 of SCVS depending on the signing infrastructure.
