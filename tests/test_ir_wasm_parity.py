@@ -2005,6 +2005,14 @@ _CM_HOST_BRIDGE_SUBSET: list[str] = [
     "proc_cross_function_attenuation.capa",
     "env_cross_function_attenuation.capa",
     "clock_cross_function_attenuation.capa",
+    # Match-emission slice (2026-06-10): guest-only programs, but
+    # both carry freshly-written nested-match emitter paths
+    # (variant-payload literals; outer sibling binders alongside a
+    # nested variant), so they get the full CM shipping pivot as
+    # cheap insurance alongside the core-host parity run, the same
+    # way hello.capa anchors the trivial guest surface.
+    "match_variant_payload_literal.capa",
+    "match_nested_variant_outer_binds.capa",
 ]
 
 
@@ -2194,6 +2202,19 @@ class TestPythonWasmComponentParity(unittest.TestCase):
 
     def test_clock_cross_function_attenuation_under_cm(self):
         self._assert_cm_parity("clock_cross_function_attenuation.capa")
+
+    def test_match_variant_payload_literal_under_cm(self):
+        # Match-emission slice (2026-06-10) under the CM pivot:
+        # locks the new variant-payload literal-pattern emitter
+        # paths through the full --component --run shipping path.
+        self._assert_cm_parity("match_variant_payload_literal.capa")
+
+    def test_match_nested_variant_outer_binds_under_cm(self):
+        # Match-emission slice (2026-06-10) under the CM pivot:
+        # locks the outer-sibling-binder fix (the silent
+        # ``Pair(n, Some(m))`` divergence) through the full
+        # --component --run shipping path.
+        self._assert_cm_parity("match_nested_variant_outer_binds.capa")
 
     def test_subset_membership(self):
         # Soundness check: every entry in _CM_HOST_BRIDGE_SUBSET

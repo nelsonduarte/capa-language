@@ -302,9 +302,10 @@ path-aware, not string-prefix. Traversal patterns
 are both denied.
 
 The data operations `read` and `write` additionally verify the
-opened *handle*, closing the TOCTOU race between `allows()` and
-the underlying `open()`: after opening, the OS is asked for the
-true path of the open file descriptor (Linux `/proc/self/fd`,
+opened *handle*, closing the symlink-swap TOCTOU race between
+`allows()` and the underlying `open()`: after opening, the OS is
+asked for the symlink-resolved path of the open file descriptor
+(Linux `/proc/self/fd`,
 macOS `fcntl F_GETPATH`, Windows `GetFinalPathNameByHandle`) and
 that path is re-checked against the allowed prefixes before any
 byte is read or written. `write` opens without truncating and
@@ -322,9 +323,17 @@ What remains open: the query/metadata operations (`exists`,
 can change what they observe or where `mkdir` creates a
 directory; on a platform with none of the three handle-path
 mechanisms, `read`/`write` fall back to the up-front check
-alone; and a denied `write` may leave behind an *empty* file when
+alone; a denied `write` may leave behind an *empty* file when
 the swapped target did not previously exist (pre-existing data is
-never touched).
+never touched); and hard links are not distinguished: a hard
+link created inside a prefix to an out-of-prefix file passes
+both the up-front check and the handle check, because the OS
+reports the link's own in-prefix name for both (realpath does
+not resolve hard links either, so this is a containment limit
+the prefix check always had, not a regression). A possible
+future hardening is to refuse multi-link files (`st_nlink > 1`)
+on restricted capabilities, at the cost of denying legitimately
+multi-link files.
 
 ### `Env`
 

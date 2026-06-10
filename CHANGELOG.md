@@ -9,14 +9,15 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
-### Security: Fs read/write TOCTOU window closed via post-open handle verification
+### Security: Fs read/write symlink-swap TOCTOU window closed via post-open handle verification
 
-The long-documented race between `Fs.allows()` (realpath + prefix
-check) and the underlying `open()` is closed for the data
-operations. `read` and `write` on a restricted `Fs` now verify the
-*open handle*: after opening, the OS reports the true path of the
-file descriptor (Linux `/proc/self/fd`, macOS `fcntl F_GETPATH`,
-Windows `GetFinalPathNameByHandle`; new module
+The long-documented symlink-swap race between `Fs.allows()`
+(realpath + prefix check) and the underlying `open()` is closed
+for the data operations. `read` and `write` on a restricted `Fs`
+now verify the *open handle*: after opening, the OS reports the
+symlink-resolved path of the file descriptor (Linux
+`/proc/self/fd`, macOS `fcntl F_GETPATH`, Windows
+`GetFinalPathNameByHandle`; new module
 `capa/runtime/_fs_guard.py`) and that path is re-validated against
 the allowed prefixes before any byte moves. A symlink swapped in
 any path component, at any moment, can no longer leak or modify a
@@ -32,9 +33,13 @@ hardened (they are the data vectors). `exists` / `is_dir` /
 `list_dir` / `mkdir` still check-then-act and keep their TOCTOU
 window; on a platform with none of the three handle-path
 mechanisms the data ops fall back to the pre-open check alone
-(explicit, commented fallback); and a denied `write` may leave a
+(explicit, commented fallback); a denied `write` may leave a
 zero-byte file behind when the swapped target did not previously
-exist. User-visible semantics are unchanged: same deny messages,
+exist; and hard links are not distinguished: a hard link created
+inside a prefix to an out-of-prefix file passes both the pre-open
+realpath check and the post-open handle check (the OS reports the
+link's own in-prefix name for both), a containment limit shared
+with the previous realpath-only check rather than a regression. User-visible semantics are unchanged: same deny messages,
 same `IoError` shapes, UTF-8 and newline behaviour identical, and
 unrestricted `Fs` instances skip the guard entirely.
 

@@ -3514,6 +3514,13 @@ Remaining open items (no concrete driver yet):
   same-channel SHA pinning. M4: defaulting
   `verify_provenance="required"`. Both are honest trade-offs
   documented in SECURITY.md rather than gaps.
+- **Fs hardlink hardening (`st_nlink`).** A hard link created
+  inside an allowed prefix to an out-of-prefix file passes both
+  the realpath pre-check and the post-open handle check (the OS
+  reports the link's own in-prefix name); documented residual in
+  `docs/stdlib.md`. Possible hardening: refuse multi-link files
+  (`st_nlink > 1`) on restricted caps, with the trade-off of
+  false negatives on legitimately multi-link files.
 - **Niche Wasm attenuation gap.** A dynamic (non-literal)
   `restrict_to` prefix is not inline-enforced on the Wasm
   backend; cross-function attenuation chains still rely on the

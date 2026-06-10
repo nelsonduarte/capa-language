@@ -129,9 +129,10 @@ class Fs:
         Fs().restrict_to("data/").allows("data/../etc/passwd")  # False
         Fs().restrict_to("data/").allows(<symlink to /etc/passwd>)  # False
 
-    TOCTOU hardening (2026-06-10): the data operations ``read`` and
-    ``write`` no longer trust the pre-open ``allows()`` check alone.
-    After opening, the true path of the open *handle* is resolved
+    TOCTOU hardening (2026-06-10), closing the symlink-swap race:
+    the data operations ``read`` and ``write`` no longer trust the
+    pre-open ``allows()`` check alone. After opening, the
+    symlink-resolved path of the open *handle* is obtained
     (Linux ``/proc/self/fd``, macOS ``fcntl F_GETPATH``, Windows
     ``GetFinalPathNameByHandle``; see ``_fs_guard``) and re-validated
     against the allowed prefixes; on mismatch the handle is closed
@@ -147,9 +148,13 @@ class Fs:
     their TOCTOU window remains; on a platform with none of the
     three handle-path mechanisms, ``read``/``write`` fall back to
     the pre-open check alone (explicit fallback in
-    ``_fs_guard._verify_fd``); and a denied ``write`` may leave
+    ``_fs_guard._verify_fd``); a denied ``write`` may leave
     behind an empty file it created when the swapped target did not
-    previously exist (pre-existing bytes are never touched).
+    previously exist (pre-existing bytes are never touched); and
+    hard links are not distinguished: a hard link created inside a
+    prefix to an out-of-prefix file passes both checks, because the
+    OS reports the link's own in-prefix name (the same blind spot
+    the realpath-only check always had).
     """
 
     __slots__ = ("_allowed_prefixes",)
