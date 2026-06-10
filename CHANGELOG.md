@@ -9,6 +9,80 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+### Bug fix: parse_json accepted NaN/Infinity on Python (and to_json could crash); both backends now reject them
+
+Python's `json.loads` accepts the non-RFC constants `NaN` /
+`Infinity` / `-Infinity` by default (`allow_nan`), so
+`parse_json("Infinity")` returned `Ok` on the Python backend where
+the bundled Wasm parser returned `Err`; worse,
+`to_json(parse_json("Infinity").unwrap())` CRASHED the Python
+backend with `OverflowError` in the integer collapse of
+`capa/runtime/_json.py` (a non-Result crash reachable from data).
+The strict RFC 8259 reading wins: the wrapper now rejects the
+constants via a `parse_constant` hook (`Err` on both backends),
+and the collapse is `isfinite`-guarded so `to_json` stays total
+even for a hand-built `JNum(inf)` (it serialises as `Infinity`,
+`json.dumps`'s rendering). Covered by
+`tests/test_ir_wasm_parity.py::TestJsonStrictNumbersDepthAndSignParity`
+and `tests/test_runtime_classes.py`.
+
+### Bug fix: silent Wasm divergence, parse_json accepted malformed number tokens (01, -01, 1., .5, +1)
+
+The bundled Wasm-side parser scanned number tokens greedily over
+`0123456789.eE+-` and handed the raw text to the lenient
+`parse_float`, accepting `01`, `-01`, `1.`, `.5`, `+1`, `1e`,
+`--1` and similar shapes that Python's `json.loads` rejects. The
+token is now validated against the exact RFC 8259 number grammar
+(`-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?`) before
+conversion, so both backends `Err` on every malformed shape and
+agree byte-for-byte on the valid ones. (The Wasm `parse_float`
+scientific-notation limitation is unchanged and stays tracked in
+TODO.md.)
+
+### Bug fix: the parse_json nesting cap (100) now applies on the Python backend too
+
+`__CJ_MAX_DEPTH = 100` only existed in the bundled Wasm parser;
+the Python wrapper happily parsed arbitrarily deep documents (up
+to the interpreter recursion limit), a silent Ok/Err divergence
+and an asymmetric DoS surface. `capa/runtime/_json.py` now
+pre-scans for the same cap with the same rule (a value inside
+more than 100 enclosing containers errors; brackets inside string
+literals don't nest) and produces the identical message at the
+identical code-point position: `max nesting depth 100 exceeded at
+N`. Probed at 99/100 (Ok) and 101 (Err, message pinned verbatim)
+on both backends.
+
+### Bug fix: to_json of negative zero gave three different answers; both backends now emit -0.0
+
+`to_json(JNum(-0.0))` returned `0` on Python (the `int()` collapse
+drops the sign) and `-0` on Wasm (the fraction-stripper kept the
+sign but lost the `.0`). The agreed form is what `json.dumps`
+produces for the real value: `-0.0` on both backends, with
+`0.0` still collapsing to `0`. The parse side also matches
+Python's semantics exactly: `parse_json("-0.0")` keeps IEEE -0.0
+(round-trips as `-0.0`) while the integer-form `"-0"` collapses
+to `0` like `json.loads` (which parses integer tokens through
+`int()`). Round-trip parity pinned for `-0`, `-0.0`, and arrays
+mixing the three zeros.
+
+### Bug fix: the internal _capa_chr builtin was callable from user code; the analyzer now rejects it
+
+Registering `_capa_chr` in `FREE_FUNCTIONS` (for the bundled JSON
+parser's `\uXXXX` decoding) made it reachable from ordinary Capa
+programs, silently widening the language surface with an
+undocumented builtin. Underscore-prefixed builtin functions are
+compiler-internal by rule: the analyzer rejects user calls AND
+bare references (`let f = _capa_chr`) with "'_capa_chr' is an
+internal compiler builtin and cannot be called from user code".
+The bundled source keeps access through a new `internal=True`
+analysis mode used only by `capa/ir/_builtin_json.py`, whose
+loader now also fails loudly if the bundled source ever stops
+analysing clean. User-defined functions that happen to start with
+`_` are unaffected (the gate keys on `BUILTIN_POS`). Covered by
+`tests/test_analyzer.py::TestInternalBuiltinRejection` plus a
+parity re-pin that `\uXXXX` decoding still works on both
+backends.
+
 ### Bug fix: silent Wasm divergence, parse_json passed \uXXXX escapes through verbatim instead of decoding them
 
 The bundled Wasm-side JSON parser (`capa/ir/_builtin_json.capa`)

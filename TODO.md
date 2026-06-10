@@ -3537,6 +3537,22 @@ Remaining open items (no concrete driver yet):
   Lemire class, the inverse of the Dragon4 work), oracle-first
   with a Python reference like `tools/float_ref.py`; out of scope
   for the JSON parser slices.
+- **Bump-allocator O(n^2) bytes on loop string concat.** Noted
+  during the 2026-06-10 JSON bug-hunt: `out = out + chunk` in a
+  loop re-copies the whole accumulator through the no-free bump
+  allocator every iteration (the JSON serialiser and the escape
+  decode pass both have this shape). Fine at config-file sizes;
+  a ~MB `to_json` pays quadratic allocation. Wants either a
+  rope/builder runtime helper or allocator reuse of the
+  just-freed accumulator.
+- **`parse_json` chars list costs O(n) handles per document.**
+  The bundled parser materialises a `List<String>` of
+  one-codepoint views for O(1) probes (`capa/ir/_builtin_json.capa`,
+  representation note). Each view is a heap handle, so a ~MB
+  document allocates ~1M small objects up front on the Wasm
+  side. Acceptable for the typical config/record workload; for
+  large documents the parser wants byte-offset cursor probes
+  over the source string instead of a per-codepoint list.
 - **Debugger: DAP + per-expression source maps.** Statement-level
   source maps + caret snippets ship; a real stepping DAP adapter
   and per-sub-expression granularity remain open (deferred as
