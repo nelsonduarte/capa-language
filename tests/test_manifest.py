@@ -774,6 +774,153 @@ class TestDeterminism(unittest.TestCase):
         self.assertEqual(m1, m2)
 
 
+class TestInvocationStyleReproducibility(unittest.TestCase):
+    """Artefact-level byte-reproducibility across invocation styles.
+
+    The same project, built with the root path passed absolute,
+    relative from inside the project directory, or relative from a
+    different cwd, must produce byte-identical manifest / CycloneDX /
+    SPDX / provenance output modulo timestamps (pinned here so the
+    comparison is exact). Pre-fix, the top-level ``filename`` field
+    echoed the raw CLI argument and the deterministic uuid5 seeds
+    (CycloneDX ``serialNumber``, SPDX ``documentNamespace``,
+    provenance ``invocationId``) derived from it, so the artefacts
+    varied with the invocation style and across machines even though
+    every per-function ``pos`` was already root-relative.
+    """
+
+    _TS = "2026-01-01T00:00:00Z"
+
+    def setUp(self):
+        import os
+        self.addCleanup(os.chdir, os.getcwd())
+        d = Path(tempfile.mkdtemp(prefix="capa_repro_test_")).resolve()
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        (d / "vendor").mkdir()
+        (d / "vendor" / "lib.capa").write_text(
+            "pub fun helper(x: Int) -> Int\n"
+            "    return x + 1\n",
+            encoding="utf-8",
+        )
+        self.root = d / "root.capa"
+        self.root.write_text(
+            "import vendor.lib\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"hi\")\n",
+            encoding="utf-8",
+        )
+        self.project_dir = d
+
+    def _artefacts(self, filename: str) -> dict[str, str]:
+        """Build all four artefacts for the project under the given
+        root-path spelling, timestamps pinned, serialised to the same
+        JSON shape the CLI prints."""
+        from capa.loader import ModuleLoader
+        from capa.manifest import build_provenance
+        source = self.root.read_text(encoding="utf-8")
+        linked = ModuleLoader().load_root(source, filename)
+        result = analyze(linked.module, source=source)
+        self.assertTrue(result.ok, result.errors)
+        return {
+            "manifest": json.dumps(
+                build_manifest(linked.module, filename=filename),
+                indent=2,
+            ),
+            "cyclonedx": json.dumps(
+                build_cyclonedx(
+                    linked.module, filename=filename, timestamp=self._TS,
+                ),
+                indent=2,
+            ),
+            "spdx": json.dumps(
+                build_spdx(
+                    linked.module, filename=filename, timestamp=self._TS,
+                ),
+                indent=2,
+            ),
+            "provenance": json.dumps(
+                build_provenance(
+                    source, filename=filename,
+                    started_on=self._TS, finished_on=self._TS,
+                ),
+                indent=2,
+            ),
+        }
+
+    def test_invocation_styles_produce_byte_identical_artefacts(self):
+        import os
+        absolute = self._artefacts(str(self.root))
+        os.chdir(self.project_dir)
+        relative = self._artefacts("root.capa")
+        os.chdir(self.project_dir.parent)
+        from_other_cwd = self._artefacts(
+            str(Path(self.project_dir.name) / "root.capa"),
+        )
+        for kind in ("manifest", "cyclonedx", "spdx", "provenance"):
+            self.assertEqual(absolute[kind], relative[kind], kind)
+            self.assertEqual(absolute[kind], from_other_cwd[kind], kind)
+
+    def test_no_artefact_embeds_the_project_directory(self):
+        # The builder machine's directory layout (and username) must
+        # never appear anywhere in any artefact, even when the CLI is
+        # handed the absolute path. Compare against the JSON-escaped
+        # spelling so Windows backslashes are matched as serialised.
+        arts = self._artefacts(str(self.root))
+        leak = json.dumps(str(self.project_dir))[1:-1]
+        for kind, text in arts.items():
+            self.assertNotIn(leak, text, kind)
+
+    def test_top_level_filename_is_display_form(self):
+        m = json.loads(self._artefacts(str(self.root))["manifest"])
+        self.assertEqual(m["filename"], "root.capa")
+
+
+class TestInMemoryPlaceholderSeeds(unittest.TestCase):
+    """The lexer's synthetic in-memory placeholder (``<input>``) must
+    pass through the display relativisation unchanged, on every OS
+    and from any cwd. Pinned to literal uuid5 values so any drift in
+    the seed input (e.g. the placeholder accidentally being resolved
+    against the cwd) fails loudly."""
+
+    _SRC = "fun f()\n    return\n"
+
+    def test_manifest_filename_stays_placeholder(self):
+        m = build_manifest(_analysed(self._SRC))
+        self.assertEqual(m["filename"], "<input>")
+
+    def test_cyclonedx_serial_number_pinned(self):
+        sbom = build_cyclonedx(
+            _analysed(self._SRC), timestamp="2026-01-01T00:00:00Z",
+        )
+        self.assertEqual(
+            sbom["serialNumber"],
+            "urn:uuid:44ab6878-887a-5ddc-ae18-523dcab90daa",
+        )
+
+    def test_spdx_document_namespace_pinned(self):
+        spdx = build_spdx(
+            _analysed(self._SRC), timestamp="2026-01-01T00:00:00Z",
+        )
+        self.assertEqual(
+            spdx["documentNamespace"],
+            "https://capa-language.com/spdx/"
+            "aa90f747-81b3-5561-9c4c-85d02c079a81",
+        )
+
+    def test_provenance_invocation_id_pinned(self):
+        from capa.manifest import build_provenance
+        att = build_provenance(
+            self._SRC,
+            started_on="2026-01-01T00:00:00Z",
+            finished_on="2026-01-01T00:00:00Z",
+        )
+        self.assertEqual(
+            att["predicate"]["runDetails"]["metadata"]["invocationId"],
+            "a0497d00-9e75-5a80-bad6-69e19c60947c",
+        )
+        self.assertEqual(att["subject"][0]["name"], "<input>")
+
+
 class TestMultiImplementor(unittest.TestCase):
     """When multiple structs implement one user-defined capability,
     the manifest must list all of them in sorted order so two runs

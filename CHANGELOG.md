@@ -29,6 +29,29 @@ across machines. A file resolved from outside the root tree (e.g.
 via `CAPA_PATH`) keeps its path as lexed, which preserves the
 "this code came from outside the project" signal.
 
+Note the change of *shape* this implies for consumers that parse
+`pos`: functions declared in the root file used to echo the path
+exactly as passed on the command line (possibly absolute, native
+separators); they now display the root-relative form, i.e. the root
+file's basename. The same display form now also backs the manifest's
+top-level `filename` field, the `file` field and header of
+`capa migrate`, and the filename-derived identifier seeds (see the
+identifier entry below), so the whole artefact, not just each `pos`,
+is byte-identical regardless of invocation style, cwd, or machine.
+
+### New subcommand: `capa migrate`
+
+`capa migrate <file.capa>` reports gradual-hardening progress for a
+Python-to-Capa migration: how many functions are already
+`Unsafe`-free, which functions declare an `Unsafe` they provably
+never exercise (removable now; the detection is transitive over the
+call graph and conservative by construction), and which still-using
+functions are cheapest to harden next (fewest `py_import` /
+`py_invoke` bridge calls first). `--json` emits the same report
+machine-readably for CI gates. The same removable-`Unsafe` detection
+also backs a compiler warning on every compile and an LSP diagnostic.
+See `docs/migration.md`.
+
 ### `capa migrate`: per-file breakdown and next-file ranking
 
 `capa migrate --json` gains two additive keys for multi-file
@@ -39,25 +62,38 @@ human-readable report grows the matching "Per-file progress" section
 only when the program spans more than one file; all pre-existing JSON
 keys keep their program-wide meaning.
 
-### Attestation and SBOM URIs move to capa-language.com
+### Attestation and SBOM identifiers: capa-language.com URIs, reproducible seeds
 
-Observable format change for downstream consumers that pin these
-values. The project's domain is capa-language.com; the URIs
-emitted in audit artefacts previously pointed at capa-lang.org,
+One combined, observable format change for downstream consumers that
+pin these values; both halves land in this release window, so
+deterministic identifiers change exactly once.
+
+First, the domain. The project's domain is capa-language.com; the
+URIs emitted in audit artefacts previously pointed at capa-lang.org,
 a domain the project does not own.
 
 - **SLSA provenance** (`--provenance`): `buildType` is now
   `https://capa-language.com/build/transpile-to-python/v1` and
   `runDetails.builder.id` is `https://capa-language.com/cli`.
   Verifiers that pinned the old `capa-lang.org` URIs must update.
-  The deterministic `invocationId` UUID namespace moved with the
-  domain, so invocation IDs change for identical inputs.
 - **SPDX** (`--spdx`): `documentNamespace` now starts with
-  `https://capa-language.com/spdx/` (UUID component also changes,
-  same reason).
+  `https://capa-language.com/spdx/`.
 - **CycloneDX** (`--cyclonedx`): the deterministic `serialNumber`
-  UUID namespace moved, so serial numbers change for identical
-  inputs. No URI is visible in the output.
+  UUID namespace moved with the domain. No URI is visible in the
+  output.
+
+Second, the seeds. The deterministic UUIDv5 identifiers (CycloneDX
+`serialNumber`, the UUID component of the SPDX `documentNamespace`,
+the provenance `invocationId`) were seeded from the root filename
+exactly as passed on the command line, so the same project produced
+different identifiers depending on invocation style (relative vs
+absolute path, cwd) and on each builder's directory layout. They are
+now seeded from the same root-relative display form as the
+per-function `pos` (for the root file, its basename), and the
+manifest's top-level `filename` field records that form too. Two
+builders on different machines, or two invocation styles on the same
+machine, now produce byte-identical manifests, SBOMs, and provenance
+modulo timestamps.
 
 The JSON schemas are unchanged; only these values differ.
 

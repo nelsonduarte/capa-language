@@ -50,6 +50,7 @@ from typing import Any, Optional
 
 from . import capa_ast as A
 from .manifest import build_manifest
+from .manifest._funrec import _display_filename
 from .manifest._reachability import (
     _caps_via_type,
     _type_mentions_any,
@@ -686,7 +687,12 @@ def migrate_report(module, *, filename: str = "<input>") -> dict[str, Any]:
     ]
 
     return {
-        "file": filename,
+        # Display form (the root file's basename), matching the
+        # root-relative POSIX form of every per-entry / per-file
+        # ``pos`` below; the raw CLI argument would echo the
+        # invocation style (native separators, possibly an absolute
+        # path) into both the JSON and the rendered header.
+        "file": _display_filename(filename),
         "summary": {
             "total_functions": total,
             "functions_using_unsafe": n_using,
@@ -760,12 +766,21 @@ def render_report(report: dict[str, Any]) -> str:
                 - nxt["functions_removable_unsafe"]
             )
             n_rem = nxt["functions_removable_unsafe"]
-            detail = (
-                f"{genuine} function{'s' if genuine != 1 else ''} "
-                "genuinely using Unsafe"
-            )
-            if n_rem:
-                detail += f", {n_rem} removable"
+            if genuine == 0:
+                # Ranked file with zero genuine Unsafe: everything
+                # left is removable, so say that naturally instead
+                # of "0 functions genuinely using Unsafe".
+                detail = (
+                    f"only removable Unsafe left, in "
+                    f"{n_rem} function{'s' if n_rem != 1 else ''}"
+                )
+            else:
+                detail = (
+                    f"{genuine} function{'s' if genuine != 1 else ''} "
+                    "genuinely using Unsafe"
+                )
+                if n_rem:
+                    detail += f", {n_rem} removable"
             lines.append(
                 f"  Next file to harden: {nxt['file']} "
                 f"({detail}; files with the least genuine Unsafe "

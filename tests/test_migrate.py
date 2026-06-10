@@ -640,15 +640,27 @@ class TestPerFileBreakdown(unittest.TestCase):
         rep = self._report_for(root)
         ranking = [Path(f).name for f in rep["file_ranking"]]
         self.assertEqual(ranking, ["deadonly.capa", "bridge.capa"])
-        # The human rendering reports the genuine count for the
-        # recommended file, not the raw still-using count.
+        # The human rendering must say naturally that only removable
+        # Unsafe is left in the recommended file, not the awkward
+        # "0 functions genuinely using Unsafe".
         out = render_report(rep)
         next_line = next(
             ln for ln in out.splitlines() if "Next file to harden:" in ln
         )
         self.assertIn("deadonly.capa", next_line)
-        self.assertIn("0 functions genuinely using Unsafe", next_line)
-        self.assertIn("1 removable", next_line)
+        self.assertIn("only removable Unsafe left, in 1 function", next_line)
+        self.assertNotIn("genuinely using", next_line)
+
+    def test_next_file_with_genuine_unsafe_keeps_genuine_phrasing(self):
+        # Counterpart of the dead-only case: a recommended file with a
+        # real bridge call still reports its genuine count.
+        rep = self._project()
+        out = render_report(rep)
+        next_line = next(
+            ln for ln in out.splitlines() if "Next file to harden:" in ln
+        )
+        self.assertIn("1 function genuinely using Unsafe", next_line)
+        self.assertNotIn("only removable", next_line)
 
     def test_genuine_tie_breaks_on_fewer_removables(self):
         # Same genuine count (1 each); the file with fewer removable
@@ -728,6 +740,25 @@ class TestPerFileBreakdown(unittest.TestCase):
             ln for ln in out.splitlines() if "Next file to harden:" in ln
         )
         self.assertIn("extra.capa", next_line)
+
+    def test_report_file_and_header_use_display_form(self):
+        # Reproducibility finish: the JSON ``file`` field and the
+        # rendered "Migration progress for ..." header show the same
+        # root-relative display form as the pos lines (the basename
+        # for the root file), never the native-separator absolute
+        # path the command was invoked with.
+        d = self._tmpdir()
+        root = self._write(
+            d, "root.capa",
+            "pub fun d_dead(_u: Unsafe) -> Int\n"
+            "    return 1\n",
+        )
+        rep = self._report_for(root)  # invoked with the absolute path
+        self.assertEqual(rep["file"], "root.capa")
+        out = render_report(rep)
+        self.assertEqual(
+            out.splitlines()[0], "Migration progress for root.capa",
+        )
 
     def test_single_file_render_has_no_per_file_section(self):
         # A single-file program must render exactly as before slice 3:

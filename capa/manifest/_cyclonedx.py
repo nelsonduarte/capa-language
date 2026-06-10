@@ -33,7 +33,7 @@ from typing import Any, Optional
 
 from .. import capa_ast as A
 
-from ._funrec import build_manifest
+from ._funrec import _display_filename, build_manifest
 from ._strings import _cap_sbom_value
 from ._vex import build_vex_entries
 
@@ -83,13 +83,19 @@ def build_cyclonedx(
 
     if timestamp is None:
         timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    # Seed every filename-derived identifier from the display form
+    # (root-relative; the basename for the root file), never the raw
+    # CLI argument: the raw form varies with the invocation style
+    # (relative vs absolute, cwd) and across machines, which would
+    # break byte-reproducibility of the serial number.
+    display_filename = _display_filename(filename)
     if serial_number is None:
         # Deterministic UUID per filename, reruns produce identical
         # serial numbers, which is friendly to SBOM diffing.
         ns = uuid.uuid5(uuid.NAMESPACE_URL, "https://capa-language.com/sbom")
-        serial_number = "urn:uuid:" + str(uuid.uuid5(ns, filename))
+        serial_number = "urn:uuid:" + str(uuid.uuid5(ns, display_filename))
 
-    bom_basename = os.path.basename(filename) or filename
+    bom_basename = os.path.basename(display_filename) or display_filename
     program_bom_ref = f"capa:program:{bom_basename}"
 
     # ----- Top-level metadata block -----

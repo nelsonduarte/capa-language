@@ -228,7 +228,7 @@ capa migrate examples/migrate_logfetcher_step2_mixed.capa
 ```
 
 ```
-Migration progress for examples/migrate_logfetcher_step2_mixed.capa
+Migration progress for migrate_logfetcher_step2_mixed.capa
   [########----------------] 33% Unsafe-free
   1/3 function(s) are Unsafe-free; 2 still use Unsafe.
 
@@ -266,8 +266,11 @@ functions *genuinely* use `Unsafe`, i.e. still-using minus removable. A
 removable `Unsafe` is nearly free to drop, so a file whose only
 remaining `Unsafe` is dead outranks one with a real bridge call. Ties
 are broken by ascending removable count, then declaration order. A
-single-file program prints exactly what it always did, with no extra
-section.
+single-file program gets no per-file section or next-file
+recommendation; the report keeps its original program-wide shape.
+(Positions and the header now display the path in root-relative
+form, the basename for a single file, so the report is identical
+regardless of how the path was passed on the command line.)
 
 Add `--json` for the machine-readable form (useful in a CI gate that
 watches the percentage trend upward over a migration). The per-file

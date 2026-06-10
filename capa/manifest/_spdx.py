@@ -41,7 +41,7 @@ from typing import Any, Optional
 from .. import capa_ast as A
 
 from ..typesys import CAPABILITY_NAMES as _BUILTIN_CAPABILITY_NAMES
-from ._funrec import build_manifest
+from ._funrec import _display_filename, build_manifest
 from ._strings import _cap_sbom_value
 
 
@@ -117,13 +117,19 @@ def build_spdx(
 
     if timestamp is None:
         timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    # Seed the namespace from the display form (root-relative; the
+    # basename for the root file), never the raw CLI argument: the
+    # raw form varies with the invocation style (relative vs
+    # absolute, cwd) and across machines, which would break
+    # byte-reproducibility of the document namespace.
+    display_filename = _display_filename(filename)
     if document_namespace is None:
         ns = uuid.uuid5(uuid.NAMESPACE_URL, "https://capa-language.com/spdx")
         document_namespace = (
-            f"https://capa-language.com/spdx/{uuid.uuid5(ns, filename)}"
+            f"https://capa-language.com/spdx/{uuid.uuid5(ns, display_filename)}"
         )
 
-    bom_basename = os.path.basename(filename) or filename
+    bom_basename = os.path.basename(display_filename) or display_filename
 
     program_id = _spdx_id("Package", bom_basename)
     document_id = "SPDXRef-DOCUMENT"

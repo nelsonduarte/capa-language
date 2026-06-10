@@ -75,6 +75,26 @@ def _display_path(decl_file: str, root_filename: str) -> str:
     return rel.as_posix()
 
 
+def _display_filename(filename: str) -> str:
+    """Display form of the root filename itself.
+
+    The CLI hands the builders the root path exactly as the user
+    typed it (absolute or relative, native separators), so the
+    manifest's top-level ``filename`` field -- and every
+    deterministic identifier seeded from it: the CycloneDX
+    ``serialNumber``, the SPDX ``documentNamespace``, the provenance
+    ``invocationId`` -- used to vary with the invocation style and
+    leak the builder machine's directory layout. Routing the root
+    through the same relativisation as the per-function ``pos``
+    (for the root file that is its basename) makes two builders on
+    different machines, or two invocation styles on the same
+    machine, produce byte-identical artefacts modulo timestamps.
+    Synthetic placeholders (the lexer's ``<input>``) pass through
+    unchanged, exactly as they do for ``pos``.
+    """
+    return _display_path(filename, filename)
+
+
 def _demangle(name: str) -> tuple[str, Optional[int]]:
     """Return ``(source_name, module_index)`` for a possibly-mangled
     identifier. ``module_index`` is None when the name carried no
@@ -239,7 +259,11 @@ def build_manifest(
     return {
         "capa_version": capa_version,
         "schema_version": SCHEMA_VERSION,
-        "filename": filename,
+        # Display form (root-relative, i.e. the basename for the root
+        # file), never the raw CLI argument: the raw form varies with
+        # the invocation style and embeds the builder's directory
+        # layout, breaking artefact-level byte-reproducibility.
+        "filename": _display_filename(filename),
         "user_defined_capabilities": user_caps,
         "typestates": protocol_states,
         "functions": functions,
