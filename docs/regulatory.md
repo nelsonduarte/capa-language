@@ -41,7 +41,7 @@ And how each maps across the five frameworks:
 | CycloneDX SBOM | I-II(1) **direct** | 21(2)(d) **direct** | Art. 8 **direct** | PS.3 **direct** | Domain 2 **direct** |
 | SPDX SBOM | I-II(1) **direct** | 21(2)(d) **direct** | Art. 8 **direct** | PS.3 **direct** | Domain 2 **direct** |
 | CycloneDX VEX | I-II(2) partial | Art. 23 indirect | Arts. 17-19 partial | RV.1, RV.2 **direct** | Domain 5 **direct** |
-| SLSA L1 provenance | I-I(2)(f) indirect | 21(2)(d) indirect | Art. 28-30 partial | PS.2, PS.3 partial | Domain 6 **direct** |
+| SLSA L1 provenance | I-I(2)(f) indirect | 21(2)(d) indirect | Art. 28-30 partial | PS.2 partial, PS.3 partial | Domain 6 **direct** |
 | Audit pipeline | I-II(1) indirect | 21(2)(d) **direct** | Arts. 28-30 **direct** | PO.5 indirect | Domain 1 partial |
 | SBOM diff tool | I-II(2) indirect | 21(2)(d) partial | Arts. 17-19 partial | RV.1 partial | Domain 2 partial |
 | Machine-checked soundness | I-I(2)(b) indirect | n/a | n/a | PW.4 indirect | n/a |
