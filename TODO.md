@@ -79,6 +79,52 @@ No remaining work in this priority.
 Strengthens the capability + supply-chain claim, but isn't on
 the current Wasm critical path.
 
+- [x] **Wasm float-to-string byte-exact via Dragon4 fallback**
+  (closed 2026-06-10, commit `a1a4abd`). A stdlib-parity audit
+  found the Grisu shortest-digit path could diverge from Python
+  `repr` on the rare inputs where Grisu cannot prove the result
+  is shortest. Closed by porting a Dragon4 limb-bignum fallback
+  to WAT that runs whenever Grisu declines, so Wasm float
+  formatting is now BYTE-EXACT with Python `repr` across the
+  curated corpus. Validated against the Python reference at
+  `tools/float_ref.py` (oracle-first). A follow-up
+  (`233304d`) fixed two further Wasm silent-divergence bugs the
+  same audit surfaced.
+
+- [x] **Loud-error Wasm stdlib gaps closed** (closed 2026-06-10,
+  commit `83777cb`). The same parity audit found a set of stdlib
+  methods that raised on the Wasm backend while working on
+  Python. All now implemented with Python parity: `List.first` /
+  `last` / `find` / `find_index` / `sorted_by` (stable merge
+  sort), `Range.length` / `contains` / `is_empty` / `to_list`,
+  and `Net.allows`. With this batch and the Dragon4 fix above,
+  the Wasm backend has NO known silent divergences from the
+  Python reference.
+
+- [x] **Security audit medium / low / informational hardening**
+  (closed 2026-06-10). The 2026-05-25 audit's remaining
+  medium / low / informational findings were triaged and either
+  hardened or honestly documented. SECURITY.md was refreshed to
+  1.0 and the 2026-05-25 audit marked as remediated (`7846b4b`);
+  the medium / low findings were hardened (`2ea7740`), with two
+  parser depth-cap fixes alongside (`a0fc2f0`, `0cba6f7`). An
+  em-dash / en-dash cleanup of the Python source landed in the
+  same window (`7780006`). Two findings are deferred by design
+  (see remaining list): M3 (install.sh same-channel SHA) and M4
+  (`verify_provenance="required"` default).
+
+- [x] **Feasibility studies: async/await + native LLVM backend,
+  both DEFERRED** (closed 2026-06-10, commit `2934da4`). Wrote
+  `docs/design/async-feasibility.md` and
+  `docs/design/llvm-backend-feasibility.md`. Both are DEFERRED
+  with a concrete trigger rather than left as vague far-future
+  items. LLVM trigger: a perf-bound consumer the Wasm-AOT
+  sandbox provably cannot serve, or a native-FFI requirement.
+  async trigger: a real I/O-bound workload plus GC, with the
+  explicit caveat that async reopens the mechanised
+  noninterference proof. Do NOT re-propose starting either
+  without such a driver.
+
 - [x] **Wasm generics + traits parity (2026-06-08)** (closed
   2026-06-08). A completion arc that takes the Wasm backend
   from demo-surface generics/traits to full parity with the
@@ -799,7 +845,7 @@ right primitives. Listed at the top of this section accordingly.
   three-layer supply-chain stack (signed tag + SLSA L2
   attestation in Sigstore Rekor).
 
-- [~] **LSP server v2 polish**. v1 covers diagnostics, hover,
+- [x] **LSP server v2 polish** (closed 2026-06-10). v1 covers diagnostics, hover,
   go-to-definition, find-references, documentSymbol, code
   actions, rename, completion (floor + module scope + receiver
   methods), semantic tokens.
@@ -824,10 +870,12 @@ right primitives. Listed at the top of this section accordingly.
   textual fallback). 11 new compute-level tests + 4 new
   server-handler integration tests. Full suite 1770 / 5
   skipped / 0 fail (was 1734 + 36 new).
-  Remaining v2 polish (not yet identified as user-blocking;
-  re-evaluate after a real-user session): signatureHelp,
-  inlayHint, workspace/symbol, codeLens, selectionRange.
-  ⏱ depends on what surfaces.
+  The remaining v2 surface landed 2026-06-10 in two commits:
+  `473b367` added signatureHelp, inlayHint, and workspace/symbol;
+  `4cd4844` added codeLens (the capability surface per function,
+  shown inline above each declaration) and selectionRange. The
+  full LSP feature set Capa targeted is now shipped; no v2 polish
+  items remain open.
 
 - [x] **REPL v2** (closed 2026-05-27). MVP at `capa/repl.py`
   re-ran everything on each input (no incremental state). v2
@@ -1053,14 +1101,22 @@ Listed so the design space is explicit.
 
 ### Backend / runtime
 
-- **Native LLVM backend**. The single biggest adoption blocker
-  long-term. Python target is fine for prototyping; production
-  deployment requires real performance.
+- **Native LLVM backend**. FEASIBILITY-STUDIED + DEFERRED
+  2026-06-10 (`docs/design/llvm-backend-feasibility.md`, commit
+  `2934da4`). The single biggest adoption blocker long-term, but
+  the Wasm-AOT path covers the current performance story. Do NOT
+  start without a concrete driver: a perf-bound consumer the
+  Wasm-AOT sandbox provably cannot serve, or a native-FFI
+  requirement.
 - **Self-hosting**. Very far future.
-- **Async / await with capability-aware semantics**. Hard part
-  is the semantics: capabilities cannot leak across `await`
-  boundaries; cancellation must not strand resources
-  (intersects with linear handles).
+- **Async / await with capability-aware semantics**.
+  FEASIBILITY-STUDIED + DEFERRED 2026-06-10
+  (`docs/design/async-feasibility.md`, commit `2934da4`). The
+  hard part is the semantics: capabilities cannot leak across
+  `await` boundaries; cancellation must not strand resources
+  (intersects with linear handles); and async reopens the
+  mechanised noninterference proof. Do NOT start without a
+  concrete driver: a real I/O-bound workload plus GC.
 - **Tail-call optimisation**. SHIPPED (roadmap P4, Wasm backend):
   `return f(x)` lowers to `return_call` via an emitter peephole, so
   accumulator-style + mutually recursive functions run in constant
@@ -3418,10 +3474,38 @@ What an adopter should know is not yet there. Surfaced in
   compilation already exists via `capa build --release` (roadmap
   P1: serialise the wasmtime/Cranelift module so it is compiled
   once and run many times). A native LLVM backend remains the
-  long-term performance play. (P3 long-term)
+  long-term performance play; FEASIBILITY-STUDIED + DEFERRED
+  2026-06-10 (`docs/design/llvm-backend-feasibility.md`), gated on
+  a perf-bound consumer the Wasm-AOT sandbox provably cannot
+  serve, or native FFI. (P3 long-term)
 - **No async / await**. Keywords are reserved; no
-  implementation. Capability-aware async is a research
-  question. (P3)
+  implementation. Capability-aware async is a research question;
+  FEASIBILITY-STUDIED + DEFERRED 2026-06-10
+  (`docs/design/async-feasibility.md`), gated on a real I/O-bound
+  workload plus GC, and noted to reopen the noninterference
+  proof. (P3)
+
+Remaining open items (no concrete driver yet):
+
+- **Security M3 / M4 deferred by design.** M3: `install.sh`
+  same-channel SHA pinning. M4: defaulting
+  `verify_provenance="required"`. Both are honest trade-offs
+  documented in SECURITY.md rather than gaps.
+- **Niche Wasm attenuation gap.** A dynamic (non-literal)
+  `restrict_to` prefix is not inline-enforced on the Wasm
+  backend; cross-function attenuation chains still rely on the
+  analyzer's static discipline check (intra-function inline
+  enforcement only, per the C2 note above).
+- **Debugger: DAP + per-expression source maps.** Statement-level
+  source maps + caret snippets ship; a real stepping DAP adapter
+  and per-sub-expression granularity remain open (deferred as
+  high-effort / fragile).
+- **Paper -> LaTeX.** Draft v1.9 is local-only; LaTeX conversion
+  is 2027 work, on venue submission.
+- **Website Tier 2 leftovers** (separate repo): `regulatory.html`
+  dedicated page, the "From source to SBOM" tutorial chapter
+  (ch14), home-page trim, the `why.html` thesis pull-quote, and
+  the stale website test count (2372 vs ~2531).
 
 Resolved since this list was first written: **typestate** is now full
 (S3.1-S3.5: state-indexed types, `become`, fields/payload, and
