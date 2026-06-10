@@ -45,8 +45,8 @@ from typing import Any, Optional
 # future change in build semantics (e.g. a native backend) can
 # bump the URI without breaking verifiers that pinned the v1
 # shape.
-CAPA_BUILD_TYPE = "https://capa-lang.org/build/transpile-to-python/v1"
-CAPA_BUILDER_ID = "https://capa-lang.org/cli"
+CAPA_BUILD_TYPE = "https://capa-language.com/build/transpile-to-python/v1"
+CAPA_BUILDER_ID = "https://capa-language.com/cli"
 
 # Provenance predicate schema we emit.
 SLSA_PREDICATE_TYPE = "https://slsa.dev/provenance/v1"
@@ -92,7 +92,7 @@ def build_provenance(
     if invocation_id is None:
         # Deterministic-per-source: a verifier that re-runs the
         # build with the same input gets the same invocation ID.
-        ns = uuid.uuid5(uuid.NAMESPACE_URL, "https://capa-lang.org/provenance")
+        ns = uuid.uuid5(uuid.NAMESPACE_URL, "https://capa-language.com/provenance")
         invocation_id = str(uuid.uuid5(ns, f"{filename}:{source_digest}"))
 
     statement: dict[str, Any] = {

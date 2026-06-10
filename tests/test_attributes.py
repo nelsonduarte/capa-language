@@ -977,7 +977,7 @@ class TestSPDX(unittest.TestCase):
         self.assertEqual(spdx["SPDXID"], "SPDXRef-DOCUMENT")
         self.assertEqual(spdx["creationInfo"]["created"], "2026-05-12T00:00:00Z")
         self.assertTrue(
-            spdx["documentNamespace"].startswith("https://capa-lang.org/spdx/"),
+            spdx["documentNamespace"].startswith("https://capa-language.com/spdx/"),
             spdx["documentNamespace"],
         )
 
@@ -1415,7 +1415,7 @@ class TestProvenance(unittest.TestCase):
         bdef = att["predicate"]["buildDefinition"]
         self.assertEqual(
             bdef["buildType"],
-            "https://capa-lang.org/build/transpile-to-python/v1",
+            "https://capa-language.com/build/transpile-to-python/v1",
         )
         self.assertEqual(bdef["externalParameters"]["source"], "demo.capa")
         self.assertIn("capaVersion", bdef["internalParameters"])
@@ -1424,7 +1424,7 @@ class TestProvenance(unittest.TestCase):
     def test_run_details_fields(self):
         att = provenance_of('fun f()\n    return\n')
         run = att["predicate"]["runDetails"]
-        self.assertEqual(run["builder"]["id"], "https://capa-lang.org/cli")
+        self.assertEqual(run["builder"]["id"], "https://capa-language.com/cli")
         self.assertEqual(run["metadata"]["startedOn"], "2026-05-12T00:00:00Z")
         self.assertEqual(run["metadata"]["finishedOn"], "2026-05-12T00:00:01Z")
         self.assertIn("invocationId", run["metadata"])

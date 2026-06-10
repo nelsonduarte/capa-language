@@ -118,9 +118,9 @@ def build_spdx(
     if timestamp is None:
         timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     if document_namespace is None:
-        ns = uuid.uuid5(uuid.NAMESPACE_URL, "https://capa-lang.org/spdx")
+        ns = uuid.uuid5(uuid.NAMESPACE_URL, "https://capa-language.com/spdx")
         document_namespace = (
-            f"https://capa-lang.org/spdx/{uuid.uuid5(ns, filename)}"
+            f"https://capa-language.com/spdx/{uuid.uuid5(ns, filename)}"
         )
 
     bom_basename = os.path.basename(filename) or filename

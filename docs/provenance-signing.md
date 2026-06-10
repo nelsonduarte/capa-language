@@ -56,7 +56,7 @@ The output is a single JSON document:
   ],
   "predicate": {
     "buildDefinition": {
-      "buildType": "https://capa-lang.org/build/transpile-to-python/v1",
+      "buildType": "https://capa-language.com/build/transpile-to-python/v1",
       "externalParameters": { "source": "hello.capa" },
       "internalParameters": {
         "capaVersion": "1.0.0",
@@ -66,7 +66,7 @@ The output is a single JSON document:
     },
     "runDetails": {
       "builder": {
-        "id": "https://capa-lang.org/cli",
+        "id": "https://capa-language.com/cli",
         "version": { "capa": "1.0.0" }
       },
       "metadata": {

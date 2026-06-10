@@ -9,6 +9,28 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+### Attestation and SBOM URIs move to capa-language.com
+
+Observable format change for downstream consumers that pin these
+values. The project's domain is capa-language.com; the URIs
+emitted in audit artefacts previously pointed at capa-lang.org,
+a domain the project does not own.
+
+- **SLSA provenance** (`--provenance`): `buildType` is now
+  `https://capa-language.com/build/transpile-to-python/v1` and
+  `runDetails.builder.id` is `https://capa-language.com/cli`.
+  Verifiers that pinned the old `capa-lang.org` URIs must update.
+  The deterministic `invocationId` UUID namespace moved with the
+  domain, so invocation IDs change for identical inputs.
+- **SPDX** (`--spdx`): `documentNamespace` now starts with
+  `https://capa-language.com/spdx/` (UUID component also changes,
+  same reason).
+- **CycloneDX** (`--cyclonedx`): the deterministic `serialNumber`
+  UUID namespace moved, so serial numbers change for identical
+  inputs. No URI is visible in the output.
+
+The JSON schemas are unchanged; only these values differ.
+
 ### Bug-hunt fixes: cross-backend parity, soundness, and Wasm patterns
 
 A deep bug hunt across both backends fixed a batch of correctness gaps.

@@ -86,7 +86,7 @@ def build_cyclonedx(
     if serial_number is None:
         # Deterministic UUID per filename, reruns produce identical
         # serial numbers, which is friendly to SBOM diffing.
-        ns = uuid.uuid5(uuid.NAMESPACE_URL, "https://capa-lang.org/sbom")
+        ns = uuid.uuid5(uuid.NAMESPACE_URL, "https://capa-language.com/sbom")
         serial_number = "urn:uuid:" + str(uuid.uuid5(ns, filename))
 
     bom_basename = os.path.basename(filename) or filename
