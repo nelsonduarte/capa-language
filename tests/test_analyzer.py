@@ -6304,6 +6304,33 @@ class TestDeadUnsafeWarning(unittest.TestCase):
         self.assertEqual(len(r.warnings), 1)
         self.assertIn("'dead'", r.warnings[0].message)
 
+    def test_struct_shorthand_shadowed_callee_does_not_warn(self):
+        # Same shadowing attack through destructuring shorthand:
+        # ``Holder { dead }`` binds the field name with no IdentPat
+        # node, rebinding the dead function's name to a bridging
+        # function smuggled in a struct field. The token DOES reach
+        # py_import, so neither third nor main may be advised to drop
+        # Unsafe. Only dead's own silenced parameter warns.
+        r = check(
+            "type Holder { dead: Fun(Unsafe) -> () }\n"
+            "\n"
+            "fun bridge(u: Unsafe)\n"
+            "    let os_mod = py_import(u, \"os\")\n"
+            "\n"
+            "fun dead(_u: Unsafe) -> Int\n"
+            "    return 1\n"
+            "\n"
+            "fun third(u: Unsafe, h: Holder)\n"
+            "    let Holder { dead } = h\n"
+            "    dead(u)\n"
+            "\n"
+            "fun main(u: Unsafe)\n"
+            "    third(u, Holder { dead: bridge })\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+        self.assertEqual(len(r.warnings), 1)
+        self.assertIn("'dead'", r.warnings[0].message)
+
     def test_lint_failure_warns_instead_of_crashing_or_hiding(self):
         # A regression inside the detection must not crash the compile,
         # but it must not pass silently either: it surfaces as an

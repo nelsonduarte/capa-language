@@ -153,6 +153,12 @@ def _collect_bound_names(node, out: set[str]) -> None:
 
     - ``let`` patterns and ``for`` patterns and ``match`` arm patterns
       (every ``IdentPat`` is a binding occurrence);
+    - struct-pattern shorthand fields: ``P { name }`` binds ``name``
+      with NO ``IdentPat`` node at all -- the parser records the field
+      as ``(name, None)`` (see ``_parse_struct_pattern_fields``), so
+      the field name must be collected from the ``StructPat`` itself.
+      The explicit form ``P { field: pat }`` carries its bindings
+      inside ``pat`` and is covered by the generic walk;
     - ``var`` declarations;
     - plain-identifier assignment targets (a rebinding of a param or
       outer ``var``);
@@ -167,7 +173,11 @@ def _collect_bound_names(node, out: set[str]) -> None:
     if isinstance(node, A.IdentPat):
         out.add(node.name)
         return
-    if isinstance(node, A.VarStmt):
+    if isinstance(node, A.StructPat):
+        for fname, sub in node.fields:
+            if sub is None:
+                out.add(fname)
+    elif isinstance(node, A.VarStmt):
         out.add(node.name)
     elif isinstance(node, A.AssignStmt):
         if isinstance(node.target, A.Ident):

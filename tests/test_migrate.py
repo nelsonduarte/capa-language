@@ -5,7 +5,8 @@ import unittest
 from pathlib import Path
 
 from capa import Lexer, Parser, analyze
-from capa.migrate import migrate_report, render_report
+from capa import capa_ast as A
+from capa.migrate import _collect_bound_names, migrate_report, render_report
 
 
 _EXAMPLES = Path(__file__).resolve().parent.parent / "examples"
@@ -261,6 +262,83 @@ class TestTransitiveRemovable(unittest.TestCase):
         self.assertNotIn("third", removable)
         self.assertEqual(set(removable), {"dead"})
 
+    def test_struct_shorthand_shadowed_callee_is_not_removable(self):
+        # Same hole through destructuring shorthand: ``Holder { dead }``
+        # binds the field name with NO IdentPat node (the parser records
+        # the field as ``(name, None)``), so a collector that only looks
+        # for IdentPat misses it. third shadows the dead function's name
+        # with a bridging function smuggled in a struct field and calls
+        # through it; the token genuinely reaches py_import, so neither
+        # third nor main may be flagged.
+        src = (
+            "type Holder { dead: Fun(Unsafe) -> () }\n"
+            "\n"
+            "fun bridge(u: Unsafe)\n"
+            "    let os_mod = py_import(u, \"os\")\n"
+            "\n"
+            "fun dead(_u: Unsafe) -> Int\n"
+            "    return 1\n"
+            "\n"
+            "fun third(u: Unsafe, h: Holder)\n"
+            "    let Holder { dead } = h\n"
+            "    dead(u)\n"
+            "\n"
+            "fun main(u: Unsafe)\n"
+            "    third(u, Holder { dead: bridge })\n"
+        )
+        removable = self._removable_by_name(src)
+        self.assertNotIn("third", removable)
+        self.assertNotIn("main", removable)
+        self.assertEqual(set(removable), {"dead"})
+
+    def test_struct_explicit_field_pattern_shadow_is_not_removable(self):
+        # The explicit field-colon-pattern form binds through an
+        # ordinary IdentPat sub-pattern (``Holder { fn: dead }`` binds
+        # ``dead``); the generic walk must keep covering it.
+        src = (
+            "type Holder { fn: Fun(Unsafe) -> () }\n"
+            "\n"
+            "fun bridge(u: Unsafe)\n"
+            "    let os_mod = py_import(u, \"os\")\n"
+            "\n"
+            "fun dead(_u: Unsafe) -> Int\n"
+            "    return 1\n"
+            "\n"
+            "fun third(u: Unsafe, h: Holder)\n"
+            "    let Holder { fn: dead } = h\n"
+            "    dead(u)\n"
+            "\n"
+            "fun main(u: Unsafe)\n"
+            "    third(u, Holder { fn: bridge })\n"
+        )
+        removable = self._removable_by_name(src)
+        self.assertNotIn("third", removable)
+        self.assertNotIn("main", removable)
+        self.assertEqual(set(removable), {"dead"})
+
+    def test_struct_explicit_field_name_does_not_poison_resolution(self):
+        # Precision check on the explicit form: ``Holder { dead: n }``
+        # binds ``n``, NOT the field name ``dead``, so a field that is
+        # merely named like the dead function must not push the
+        # analysis to the conservative side. The direct ``dead(u)``
+        # call resolves to the genuinely dead top-level function and
+        # the whole forwarding chain stays removable.
+        src = (
+            "type Holder { dead: Int }\n"
+            "\n"
+            "fun dead(_u: Unsafe) -> Int\n"
+            "    return 1\n"
+            "\n"
+            "fun third(u: Unsafe, h: Holder)\n"
+            "    let Holder { dead: n } = h\n"
+            "    dead(u)\n"
+            "\n"
+            "fun main(u: Unsafe)\n"
+            "    third(u, Holder { dead: 3 })\n"
+        )
+        removable = self._removable_by_name(src)
+        self.assertEqual(set(removable), {"dead", "third", "main"})
+
     def test_local_function_binding_without_collision_stays_conservative(self):
         # The local name collides with no top-level function: the
         # callee is unknown to the resolver and the analysis must stay
@@ -299,6 +377,118 @@ class TestTransitiveRemovable(unittest.TestCase):
         )
         rep = migrate_report(_module_from_source(src))
         self.assertEqual(rep["removable"], [])
+
+
+class TestBoundNameCollectorParserSync(unittest.TestCase):
+    """Parser/collector synchronization guard.
+
+    ``_collect_bound_names`` feeds the callee-resolution veto of the
+    removable-Unsafe detection: any binding form it cannot see reopens
+    the shadowed-callee false positive (the struct-shorthand hole was
+    exactly such a miss, a binding with no IdentPat node). This suite
+    pins the contract from both sides: one program exercises every
+    pattern form the grammar has today and asserts the collector sees
+    every name those forms really bind; a class-coverage check fails
+    as soon as a new ``Pattern`` subclass appears in the AST without
+    this program (and therefore the collector) being revisited.
+    """
+
+    # Exercises every binding form: plain let, tuple destructuring,
+    # struct pattern (explicit field sub-pattern AND shorthand), var,
+    # reassignment, lambda params, for-loop pattern, match arms with
+    # variant payloads, literal and wildcard sub-patterns, and a bound
+    # or-pattern (alternatives binding the same name via IdentPat).
+    _SRC = (
+        "type Pt { x: Int, y: Int }\n"
+        "\n"
+        "type Box =\n"
+        "    One(Int)\n"
+        "    Two(Int, Int)\n"
+        "    Nil\n"
+        "\n"
+        "fun everything(pt: Pt, b: Box) -> Int\n"
+        "    let plain = 1\n"
+        "    let (ta, tb) = (2, 3)\n"
+        "    let Pt { x: ex, y } = pt\n"
+        "    var mut_name = 4\n"
+        "    mut_name = 5\n"
+        "    let f = fun(lam: Int) => lam + 1\n"
+        "    var acc = 0\n"
+        "    for it in [1, 2]\n"
+        "        acc = acc + it\n"
+        "    let m = match b\n"
+        "        One(0) -> 0\n"
+        "        One(payload) -> payload\n"
+        "        Two(s, _) -> s\n"
+        "        Nil -> 9\n"
+        "    let o = match b\n"
+        "        One(shared) | Two(shared, _) -> shared\n"
+        "        _ -> 0\n"
+        "    return plain + ta + tb + ex + y + mut_name + f(1) + acc + m + o\n"
+    )
+
+    # Every name the program above actually binds locally.
+    _EXPECTED = {
+        "plain", "ta", "tb", "ex", "y", "mut_name", "f", "lam",
+        "acc", "it", "payload", "s", "shared", "m", "o",
+    }
+
+    def _fun_decl(self):
+        module = _module_from_source(self._SRC)
+        return next(
+            it for it in module.items
+            if isinstance(it, A.FunDecl) and it.name == "everything"
+        )
+
+    @staticmethod
+    def _walk(node):
+        """Generic AST walk mirroring the collector's traversal."""
+        yield node
+        for fld in node.__dataclass_fields__.values():
+            if fld.name == "pos":
+                continue
+            v = getattr(node, fld.name)
+            if isinstance(v, A.Node):
+                yield from TestBoundNameCollectorParserSync._walk(v)
+            elif isinstance(v, list):
+                for item in v:
+                    if isinstance(item, A.Node):
+                        yield from TestBoundNameCollectorParserSync._walk(item)
+                    elif isinstance(item, tuple):
+                        for it in item:
+                            if isinstance(it, A.Node):
+                                yield from (
+                                    TestBoundNameCollectorParserSync._walk(it)
+                                )
+
+    def test_collector_sees_every_binding_form(self):
+        decl = self._fun_decl()
+        collected: set = set()
+        _collect_bound_names(decl.body, collected)
+        self.assertEqual(
+            self._EXPECTED - collected, set(),
+            "binding form(s) invisible to _collect_bound_names",
+        )
+
+    def test_program_exercises_every_pattern_class(self):
+        # If the AST grows a new Pattern subclass, this fails until the
+        # program above (and, if the form binds names, the collector)
+        # is updated, so a future binding form cannot slip by silently.
+        def all_subclasses(cls):
+            out = set()
+            for sub in cls.__subclasses__():
+                out.add(sub)
+                out |= all_subclasses(sub)
+            return out
+
+        decl = self._fun_decl()
+        seen = {
+            type(n) for n in self._walk(decl) if isinstance(n, A.Pattern)
+        }
+        self.assertEqual(
+            all_subclasses(A.Pattern), seen,
+            "pattern form not exercised by the sync program",
+        )
 
 
 class TestRenderAndDispatch(unittest.TestCase):
