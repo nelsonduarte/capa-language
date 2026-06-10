@@ -738,16 +738,38 @@ class TestCycloneDX(unittest.TestCase):
         self.assertEqual(props["capa:summary:functions_with_capabilities"], ["1"])
 
     def test_serial_number_is_deterministic_for_same_filename(self):
+        # Library callers that hold only the analysed module (no
+        # ``source``) get the filename-only fallback seed: same
+        # filename -> same UUID across runs.
         a = cyclonedx_of('fun a()\n    return\n', filename="same.capa")
         b = cyclonedx_of('fun b()\n    return\n', filename="same.capa")
-        # Different sources, same filename -> same UUID (intentional;
-        # for SBOM diffability across releases).
         self.assertEqual(a["serialNumber"], b["serialNumber"])
 
     def test_serial_number_differs_across_filenames(self):
         a = cyclonedx_of('fun a()\n    return\n', filename="one.capa")
         b = cyclonedx_of('fun a()\n    return\n', filename="two.capa")
         self.assertNotEqual(a["serialNumber"], b["serialNumber"])
+
+    def _cyclonedx_with_source(self, src: str, filename: str) -> dict:
+        tokens = Lexer(src).lex()
+        module = Parser(tokens, source=src).parse_module()
+        return build_cyclonedx(
+            module, filename=filename, source=src,
+            timestamp="2026-05-12T00:00:00Z",
+        )
+
+    def test_serial_number_with_source_distinguishes_same_basename(self):
+        # The CLI passes ``source``: two unrelated projects that share
+        # a root basename must not collide on the serial number.
+        a = self._cyclonedx_with_source('fun a()\n    return\n', "same.capa")
+        b = self._cyclonedx_with_source('fun b()\n    return\n', "same.capa")
+        self.assertNotEqual(a["serialNumber"], b["serialNumber"])
+
+    def test_serial_number_with_source_is_deterministic(self):
+        src = 'fun a()\n    return\n'
+        a = self._cyclonedx_with_source(src, "same.capa")
+        b = self._cyclonedx_with_source(src, "same.capa")
+        self.assertEqual(a["serialNumber"], b["serialNumber"])
 
     def test_function_to_function_call_becomes_dependency_edge(self):
         sbom = cyclonedx_of(
@@ -1095,8 +1117,9 @@ class TestSPDX(unittest.TestCase):
         self.assertIsNotNone(edge, "expected DEPENDS_ON edge from main to helper")
 
     def test_namespace_deterministic_per_filename(self):
-        # Same filename -> same documentNamespace across runs, which is
-        # what the SPDX-diff workflow depends on.
+        # Library callers that hold only the analysed module (no
+        # ``source``) get the filename-only fallback seed: same
+        # filename -> same documentNamespace across runs.
         a = spdx_of('fun f()\n    return\n', filename="x.capa")
         b = spdx_of('fun g()\n    return\n', filename="x.capa")
         self.assertEqual(a["documentNamespace"], b["documentNamespace"])
@@ -1105,6 +1128,27 @@ class TestSPDX(unittest.TestCase):
         a = spdx_of('fun f()\n    return\n', filename="one.capa")
         b = spdx_of('fun f()\n    return\n', filename="two.capa")
         self.assertNotEqual(a["documentNamespace"], b["documentNamespace"])
+
+    def _spdx_with_source(self, src: str, filename: str) -> dict:
+        tokens = Lexer(src).lex()
+        module = Parser(tokens, source=src).parse_module()
+        return build_spdx(
+            module, filename=filename, source=src,
+            timestamp="2026-05-12T00:00:00Z",
+        )
+
+    def test_namespace_with_source_distinguishes_same_basename(self):
+        # The CLI passes ``source``: two unrelated projects that share
+        # a root basename must not collide on the namespace.
+        a = self._spdx_with_source('fun f()\n    return\n', "x.capa")
+        b = self._spdx_with_source('fun g()\n    return\n', "x.capa")
+        self.assertNotEqual(a["documentNamespace"], b["documentNamespace"])
+
+    def test_namespace_with_source_is_deterministic(self):
+        src = 'fun f()\n    return\n'
+        a = self._spdx_with_source(src, "x.capa")
+        b = self._spdx_with_source(src, "x.capa")
+        self.assertEqual(a["documentNamespace"], b["documentNamespace"])
 
     def test_spdxids_are_syntactically_valid(self):
         # SPDXRef-[a-zA-Z0-9.-]+ per the spec. Function names with

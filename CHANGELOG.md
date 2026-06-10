@@ -87,13 +87,19 @@ Second, the seeds. The deterministic UUIDv5 identifiers (CycloneDX
 the provenance `invocationId`) were seeded from the root filename
 exactly as passed on the command line, so the same project produced
 different identifiers depending on invocation style (relative vs
-absolute path, cwd) and on each builder's directory layout. They are
-now seeded from the same root-relative display form as the
-per-function `pos` (for the root file, its basename), and the
-manifest's top-level `filename` field records that form too. Two
-builders on different machines, or two invocation styles on the same
-machine, now produce byte-identical manifests, SBOMs, and provenance
-modulo timestamps.
+absolute path, cwd) and on each builder's directory layout. All
+three are now seeded the way the provenance `invocationId` already
+was: from the root-relative display form of the filename (for the
+root file, its basename) plus the sha256 of the root source, and
+the manifest's top-level `filename` field records the display form
+too. Two builders on different machines, or two invocation styles
+on the same machine, now produce byte-identical manifests, SBOMs,
+and provenance modulo timestamps; two unrelated projects that share
+a root basename (every project called `main.capa`) no longer
+collide on the same identifier. Consequence of the digest in the
+seed: the CycloneDX `serialNumber` and SPDX `documentNamespace` now
+change whenever the source changes, identifying a concrete build
+input rather than a file name.
 
 The JSON schemas are unchanged; only these values differ.
 

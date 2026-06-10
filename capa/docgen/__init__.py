@@ -37,7 +37,7 @@ from __future__ import annotations
 from typing import Optional
 
 from .. import capa_ast as A
-from ..manifest import build_manifest
+from ..manifest import build_manifest, display_filename
 
 from ._collect import _collect_traits, _collect_types
 from ._entries import (
@@ -69,7 +69,12 @@ def build_html(
     if capa_version is None:
         from .. import __version__ as capa_version
     if title is None:
-        title = filename
+        # Same display form as the manifest's top-level ``filename``
+        # (the basename for the root file), never the raw CLI
+        # argument: the raw form varies with the invocation style
+        # and would stamp the builder machine's directory layout
+        # (and username) into the page title and header.
+        title = display_filename(filename)
 
     manifest = build_manifest(
         module, filename=filename, capa_version=capa_version,

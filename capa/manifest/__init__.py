@@ -38,7 +38,7 @@ The package is split internally:
 from __future__ import annotations
 
 from ._cyclonedx import CYCLONEDX_SPEC_VERSION, build_cyclonedx
-from ._funrec import SCHEMA_VERSION, build_manifest
+from ._funrec import SCHEMA_VERSION, build_manifest, display_filename
 from ._provenance import (
     CAPA_BUILD_TYPE, CAPA_BUILDER_ID, SLSA_PREDICATE_TYPE,
     build_provenance,
@@ -61,4 +61,5 @@ __all__ = [
     "build_vex_document",
     "build_vex_entries",
     "build_provenance",
+    "display_filename",
 ]

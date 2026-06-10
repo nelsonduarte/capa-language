@@ -38,7 +38,7 @@ from typing import Any, Optional
 
 from .. import capa_ast as A
 
-from ._funrec import build_manifest
+from ._funrec import build_manifest, display_filename
 
 
 # CycloneDX VEX vocabulary, used for soft validation (warning, not
@@ -77,7 +77,11 @@ def build_vex_entries(
         timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     inner = build_manifest(module, filename=filename, capa_version=capa_version)
-    bom_basename = os.path.basename(filename) or filename
+    # Same display form as every other emitter, so the ``affects``
+    # refs here match the CycloneDX component bom-refs byte for byte
+    # regardless of how the root path was spelled on the CLI.
+    display = display_filename(filename)
+    bom_basename = os.path.basename(display) or display
 
     entries: list[dict[str, Any]] = []
 
@@ -137,7 +141,8 @@ def build_vex_document(
     if timestamp is None:
         timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    bom_basename = os.path.basename(filename) or filename
+    display = display_filename(filename)
+    bom_basename = os.path.basename(display) or display
     entries = build_vex_entries(
         module,
         filename=filename,

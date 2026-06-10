@@ -33,7 +33,7 @@ from typing import Any, Optional
 
 from .. import capa_ast as A
 
-from ._funrec import _display_filename, build_manifest
+from ._funrec import _identifier_seed, build_manifest, display_filename
 from ._strings import _cap_sbom_value
 from ._vex import build_vex_entries
 
@@ -69,13 +69,17 @@ def build_cyclonedx(
     capa_version: Optional[str] = None,
     timestamp: Optional[str] = None,
     serial_number: Optional[str] = None,
+    source: Optional[str] = None,
 ) -> dict[str, Any]:
     """Build a CycloneDX 1.5 SBOM with embedded Capa capability metadata.
 
     ``timestamp`` and ``serial_number`` are exposed as parameters for
     deterministic test output; production callers should leave them
     as the defaults. The serial number defaults to a UUIDv5 derived
-    from the filename (deterministic across runs of the same file).
+    from the display filename plus, when ``source`` (the raw .capa
+    text) is given, the source's sha256, so two unrelated projects
+    that share a root basename get distinct serial numbers. The CLI
+    always passes ``source``.
     """
     if capa_version is None:
         from .. import __version__ as capa_version
@@ -87,15 +91,18 @@ def build_cyclonedx(
     # (root-relative; the basename for the root file), never the raw
     # CLI argument: the raw form varies with the invocation style
     # (relative vs absolute, cwd) and across machines, which would
-    # break byte-reproducibility of the serial number.
-    display_filename = _display_filename(filename)
+    # break byte-reproducibility of the serial number. The source
+    # digest joins the seed (see ``_identifier_seed``) so two
+    # projects sharing a basename do not collide.
+    display = display_filename(filename)
     if serial_number is None:
-        # Deterministic UUID per filename, reruns produce identical
-        # serial numbers, which is friendly to SBOM diffing.
+        # Deterministic UUID per (filename, source): reruns produce
+        # identical serial numbers, which is friendly to SBOM diffing.
         ns = uuid.uuid5(uuid.NAMESPACE_URL, "https://capa-language.com/sbom")
-        serial_number = "urn:uuid:" + str(uuid.uuid5(ns, display_filename))
+        seed = _identifier_seed(filename, source)
+        serial_number = "urn:uuid:" + str(uuid.uuid5(ns, seed))
 
-    bom_basename = os.path.basename(display_filename) or display_filename
+    bom_basename = os.path.basename(display) or display
     program_bom_ref = f"capa:program:{bom_basename}"
 
     # ----- Top-level metadata block -----

@@ -267,6 +267,35 @@ class TestDocgen(unittest.TestCase):
         self.assertIn("@security", html)
         self.assertIn("CVE-2024-1", html)
 
+
+class TestDocgenTitleDisplayForm(unittest.TestCase):
+    """The default page title must be the same display form the
+    manifest records (the root file's basename), never the raw CLI
+    argument: an absolute path would stamp the builder machine's
+    directory layout (and username) into the <title> and <h1>."""
+
+    def test_absolute_path_title_is_basename(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory(prefix="capa_doc_test_") as d:
+            root = Path(d).resolve() / "prog.capa"
+            src = "fun f()\n    return\n"
+            root.write_text(src, encoding="utf-8")
+            html = build_html(parse(src), filename=str(root))
+        self.assertIn("<title>prog.capa</title>", html)
+        self.assertIn("<h1>prog.capa</h1>", html)
+        self.assertNotIn(str(root), html)
+
+    def test_explicit_title_still_wins(self):
+        src = "fun f()\n    return\n"
+        html = build_html(parse(src), filename="t.capa", title="My Program")
+        self.assertIn("<title>My Program</title>", html)
+
+    def test_placeholder_filename_passes_through(self):
+        src = "fun f()\n    return\n"
+        html = build_html(parse(src))
+        self.assertIn("<title>&lt;input&gt;</title>", html)
+
     def test_capability_section_appears(self):
         m = parse(
             "/// emails\n"

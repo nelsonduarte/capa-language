@@ -12,6 +12,7 @@ recognise.
 
 from __future__ import annotations
 
+import hashlib
 import re
 from pathlib import Path
 from typing import Any, Optional
@@ -75,7 +76,7 @@ def _display_path(decl_file: str, root_filename: str) -> str:
     return rel.as_posix()
 
 
-def _display_filename(filename: str) -> str:
+def display_filename(filename: str) -> str:
     """Display form of the root filename itself.
 
     The CLI hands the builders the root path exactly as the user
@@ -93,6 +94,26 @@ def _display_filename(filename: str) -> str:
     unchanged, exactly as they do for ``pos``.
     """
     return _display_path(filename, filename)
+
+
+def _identifier_seed(filename: str, source: Optional[str]) -> str:
+    """Seed string for the deterministic uuid5 identifiers
+    (CycloneDX ``serialNumber``, the UUID component of the SPDX
+    ``documentNamespace``, the provenance ``invocationId``).
+
+    The display form alone would make two unrelated projects that
+    share a root basename (every project called ``main.capa``)
+    collide on the same identifier, so when the source text is
+    available the seed is ``<display>:<sha256(source)>``, exactly
+    the shape the provenance ``invocationId`` has always used.
+    Without the source (library callers that only hold the analysed
+    module) the seed falls back to the display form alone.
+    """
+    display = display_filename(filename)
+    if source is None:
+        return display
+    digest = hashlib.sha256(source.encode("utf-8")).hexdigest()
+    return f"{display}:{digest}"
 
 
 def _demangle(name: str) -> tuple[str, Optional[int]]:
@@ -263,7 +284,7 @@ def build_manifest(
         # file), never the raw CLI argument: the raw form varies with
         # the invocation style and embeds the builder's directory
         # layout, breaking artefact-level byte-reproducibility.
-        "filename": _display_filename(filename),
+        "filename": display_filename(filename),
         "user_defined_capabilities": user_caps,
         "typestates": protocol_states,
         "functions": functions,

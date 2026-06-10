@@ -49,8 +49,7 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from . import capa_ast as A
-from .manifest import build_manifest
-from .manifest._funrec import _display_filename
+from .manifest import build_manifest, display_filename
 from .manifest._reachability import (
     _caps_via_type,
     _type_mentions_any,
@@ -692,7 +691,7 @@ def migrate_report(module, *, filename: str = "<input>") -> dict[str, Any]:
         # ``pos`` below; the raw CLI argument would echo the
         # invocation style (native separators, possibly an absolute
         # path) into both the JSON and the rendered header.
-        "file": _display_filename(filename),
+        "file": display_filename(filename),
         "summary": {
             "total_functions": total,
             "functions_using_unsafe": n_using,

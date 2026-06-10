@@ -1110,12 +1110,12 @@ def main() -> int:
             return 0
         if args.cyclonedx:
             import json
-            sbom = build_cyclonedx(module, filename=filename)
+            sbom = build_cyclonedx(module, filename=filename, source=source)
             print(json.dumps(sbom, indent=2))
             return 0
         if args.spdx:
             import json
-            sbom = build_spdx(module, filename=filename)
+            sbom = build_spdx(module, filename=filename, source=source)
             print(json.dumps(sbom, indent=2))
             return 0
         if args.vex:

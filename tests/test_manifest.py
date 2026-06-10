@@ -829,12 +829,14 @@ class TestInvocationStyleReproducibility(unittest.TestCase):
             "cyclonedx": json.dumps(
                 build_cyclonedx(
                     linked.module, filename=filename, timestamp=self._TS,
+                    source=source,
                 ),
                 indent=2,
             ),
             "spdx": json.dumps(
                 build_spdx(
                     linked.module, filename=filename, timestamp=self._TS,
+                    source=source,
                 ),
                 indent=2,
             ),
@@ -873,6 +875,92 @@ class TestInvocationStyleReproducibility(unittest.TestCase):
     def test_top_level_filename_is_display_form(self):
         m = json.loads(self._artefacts(str(self.root))["manifest"])
         self.assertEqual(m["filename"], "root.capa")
+
+
+class TestBasenameCollisionResistance(unittest.TestCase):
+    """Two unrelated projects whose root files share a basename
+    (every project called ``main.capa``) must NOT collide on the
+    deterministic identifiers. Seeding from the display form alone
+    would collide; the source digest in the seed (the shape the
+    provenance ``invocationId`` always had) keeps them apart while
+    the display form keeps the same project byte-identical across
+    invocation styles (covered by
+    :class:`TestInvocationStyleReproducibility`)."""
+
+    _TS = "2026-01-01T00:00:00Z"
+
+    def _project(self, body: str):
+        d = Path(tempfile.mkdtemp(prefix="capa_collide_test_")).resolve()
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        root = d / "main.capa"
+        root.write_text(body, encoding="utf-8")
+        source = root.read_text(encoding="utf-8")
+        from capa.loader import ModuleLoader
+        linked = ModuleLoader().load_root(source, str(root))
+        result = analyze(linked.module, source=source)
+        self.assertTrue(result.ok, result.errors)
+        return linked.module, source, str(root)
+
+    def setUp(self):
+        self.mod_a, self.src_a, self.file_a = self._project(
+            "fun main(stdio: Stdio)\n    stdio.println(\"project a\")\n"
+        )
+        self.mod_b, self.src_b, self.file_b = self._project(
+            "fun main(stdio: Stdio)\n    stdio.println(\"project b\")\n"
+        )
+
+    def test_cyclonedx_serial_numbers_differ(self):
+        a = build_cyclonedx(
+            self.mod_a, filename=self.file_a, source=self.src_a,
+            timestamp=self._TS,
+        )
+        b = build_cyclonedx(
+            self.mod_b, filename=self.file_b, source=self.src_b,
+            timestamp=self._TS,
+        )
+        self.assertNotEqual(a["serialNumber"], b["serialNumber"])
+
+    def test_spdx_document_namespaces_differ(self):
+        a = build_spdx(
+            self.mod_a, filename=self.file_a, source=self.src_a,
+            timestamp=self._TS,
+        )
+        b = build_spdx(
+            self.mod_b, filename=self.file_b, source=self.src_b,
+            timestamp=self._TS,
+        )
+        self.assertNotEqual(a["documentNamespace"], b["documentNamespace"])
+
+    def test_provenance_invocation_ids_differ(self):
+        from capa.manifest import build_provenance
+        a = build_provenance(
+            self.src_a, filename=self.file_a,
+            started_on=self._TS, finished_on=self._TS,
+        )
+        b = build_provenance(
+            self.src_b, filename=self.file_b,
+            started_on=self._TS, finished_on=self._TS,
+        )
+        self.assertNotEqual(
+            a["predicate"]["runDetails"]["metadata"]["invocationId"],
+            b["predicate"]["runDetails"]["metadata"]["invocationId"],
+        )
+
+    def test_same_project_same_identifiers_across_invocation_styles(self):
+        # The digest must not reintroduce invocation-style variance:
+        # absolute vs relative spelling of the same root still agree.
+        import os
+        self.addCleanup(os.chdir, os.getcwd())
+        os.chdir(Path(self.file_a).parent)
+        absolute = build_cyclonedx(
+            self.mod_a, filename=self.file_a, source=self.src_a,
+            timestamp=self._TS,
+        )
+        relative = build_cyclonedx(
+            self.mod_a, filename="main.capa", source=self.src_a,
+            timestamp=self._TS,
+        )
+        self.assertEqual(absolute["serialNumber"], relative["serialNumber"])
 
 
 class TestInMemoryPlaceholderSeeds(unittest.TestCase):

@@ -40,7 +40,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from ._funrec import _display_filename
+from ._funrec import _identifier_seed, display_filename
 
 
 # Stable URI identifying the Capa build process. Versioned so a
@@ -90,19 +90,20 @@ def build_provenance(
     source_bytes = source.encode("utf-8")
     source_digest = _sha256(source_bytes)
     # Seed the invocation ID from the display form of the filename
-    # (root-relative; the basename for the root file), never the raw
-    # CLI argument: the raw form varies with the invocation style
-    # (relative vs absolute, cwd) and across machines, which would
-    # break the "re-run the build, get the same attestation" property
-    # between two builders.
-    display_filename = _display_filename(filename)
-    bom_basename = os.path.basename(display_filename) or display_filename
+    # (root-relative; the basename for the root file) plus the source
+    # digest (see ``_identifier_seed``), never the raw CLI argument:
+    # the raw form varies with the invocation style (relative vs
+    # absolute, cwd) and across machines, which would break the
+    # "re-run the build, get the same attestation" property between
+    # two builders.
+    display = display_filename(filename)
+    bom_basename = os.path.basename(display) or display
 
     if invocation_id is None:
         # Deterministic-per-source: a verifier that re-runs the
         # build with the same input gets the same invocation ID.
         ns = uuid.uuid5(uuid.NAMESPACE_URL, "https://capa-language.com/provenance")
-        invocation_id = str(uuid.uuid5(ns, f"{display_filename}:{source_digest}"))
+        invocation_id = str(uuid.uuid5(ns, _identifier_seed(filename, source)))
 
     statement: dict[str, Any] = {
         "_type": INTOTO_STATEMENT_TYPE,

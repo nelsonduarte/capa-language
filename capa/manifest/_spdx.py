@@ -41,7 +41,7 @@ from typing import Any, Optional
 from .. import capa_ast as A
 
 from ..typesys import CAPABILITY_NAMES as _BUILTIN_CAPABILITY_NAMES
-from ._funrec import _display_filename, build_manifest
+from ._funrec import _identifier_seed, build_manifest, display_filename
 from ._strings import _cap_sbom_value
 
 
@@ -102,14 +102,17 @@ def build_spdx(
     capa_version: Optional[str] = None,
     timestamp: Optional[str] = None,
     document_namespace: Optional[str] = None,
+    source: Optional[str] = None,
 ) -> dict[str, Any]:
     """Build an SPDX 2.3 document with embedded Capa capability metadata.
 
     ``timestamp`` and ``document_namespace`` are exposed for
     deterministic test output; production callers should leave them
     as the defaults. The namespace defaults to a UUIDv5-stable URN
-    derived from the filename (so reruns of the same file produce
-    identical output, friendly to SBOM diffing).
+    derived from the display filename plus, when ``source`` (the raw
+    .capa text) is given, the source's sha256, so two unrelated
+    projects that share a root basename get distinct namespaces.
+    The CLI always passes ``source``.
     """
     if capa_version is None:
         from .. import __version__ as capa_version
@@ -121,15 +124,18 @@ def build_spdx(
     # basename for the root file), never the raw CLI argument: the
     # raw form varies with the invocation style (relative vs
     # absolute, cwd) and across machines, which would break
-    # byte-reproducibility of the document namespace.
-    display_filename = _display_filename(filename)
+    # byte-reproducibility of the document namespace. The source
+    # digest joins the seed (see ``_identifier_seed``) so two
+    # projects sharing a basename do not collide.
+    display = display_filename(filename)
     if document_namespace is None:
         ns = uuid.uuid5(uuid.NAMESPACE_URL, "https://capa-language.com/spdx")
+        seed = _identifier_seed(filename, source)
         document_namespace = (
-            f"https://capa-language.com/spdx/{uuid.uuid5(ns, display_filename)}"
+            f"https://capa-language.com/spdx/{uuid.uuid5(ns, seed)}"
         )
 
-    bom_basename = os.path.basename(display_filename) or display_filename
+    bom_basename = os.path.basename(display) or display
 
     program_id = _spdx_id("Package", bom_basename)
     document_id = "SPDXRef-DOCUMENT"
