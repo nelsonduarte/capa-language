@@ -75,6 +75,64 @@ fun __cj_is_valid_escape(e: String) -> Bool
 fun __cj_is_number_char(c: String) -> Bool
     return "0123456789.eE+-".contains(c)
 
+fun __cj_is_digit(c: String) -> Bool
+    return "0123456789".contains(c)
+
+// First position >= pos that is not a decimal digit (capped at end).
+fun __cj_skip_digits(chars: List<String>, pos: Int, end: Int) -> Int
+    var p = pos
+    while p < end
+        if __cj_is_digit(chars[p])
+            p = p + 1
+        else
+            return p
+    return p
+
+// RFC 8259 number grammar:
+//   -?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?
+// The token scan in __cj_parse_number is deliberately greedy over
+// "0123456789.eE+-", so the raw token can be garbage Python's json
+// rejects ("01", "-01", "1.", ".5", "+1", "1e", "--1"). Validate
+// the exact shape before handing the text to parse_float -- the
+// Wasm parse_float is lenient about leading zeros and bare dots,
+// which made the bundled parser accept non-JSON numbers the
+// Python backend errors on.
+fun __cj_number_token_valid(chars: List<String>, start: Int, end: Int) -> Bool
+    var p = start
+    if p < end
+        if chars[p] == "-"
+            p = p + 1
+    if p >= end
+        return false
+    // Integer part: a single 0, or a 1-9 digit run. A leading zero
+    // followed by more digits ("01") fails the p == end check below.
+    if chars[p] == "0"
+        p = p + 1
+    else
+        let after_int = __cj_skip_digits(chars, p, end)
+        if after_int == p
+            return false
+        p = after_int
+    // Optional fraction: "." requires at least one digit after it.
+    if p < end
+        if chars[p] == "."
+            let after_frac = __cj_skip_digits(chars, p + 1, end)
+            if after_frac == p + 1
+                return false
+            p = after_frac
+    // Optional exponent: e/E, optional sign, at least one digit.
+    if p < end
+        if chars[p] == "e" or chars[p] == "E"
+            p = p + 1
+            if p < end
+                if chars[p] == "+" or chars[p] == "-"
+                    p = p + 1
+            let after_exp = __cj_skip_digits(chars, p, end)
+            if after_exp == p
+                return false
+            p = after_exp
+    return p == end
+
 fun __cj_skip_ws(chars: List<String>, pos: Int) -> Int
     var p = pos
     let n = chars.length()
@@ -280,13 +338,23 @@ fun __cj_parse_number(s: String, chars: List<String>, pos: Int) -> Result<(JsonV
         if __cj_is_number_char(chars[p])
             p = p + 1
         else
-            return __cj_finish_number(s, pos, p)
-    return __cj_finish_number(s, pos, p)
+            return __cj_finish_number(s, chars, pos, p)
+    return __cj_finish_number(s, chars, pos, p)
 
-fun __cj_finish_number(s: String, start: Int, end: Int) -> Result<(JsonValue, Int), String>
+fun __cj_finish_number(s: String, chars: List<String>, start: Int, end: Int) -> Result<(JsonValue, Int), String>
     if start == end
         return Err("expected number at ${start}")
     let text = s.substring(start, end)
+    if not __cj_number_token_valid(chars, start, end)
+        return Err("bad number '${text}' at ${start}")
+    // Python's json parses integer-form tokens (no fraction, no
+    // exponent) through int(), so "-0" collapses to integer zero
+    // and the sign is lost (json.loads("-0") == 0). parse_float
+    // would keep IEEE -0.0 here; collapse to +0.0 to match. The
+    // grammar above guarantees "-0" is the only integer-form
+    // negative-zero spelling ("-00" is invalid).
+    if text == "-0"
+        return Ok((JNum(0.0), end))
     match parse_float(text)
         Some(f) -> return Ok((JNum(f), end))
         None    -> return Err("bad number '${text}' at ${start}")
@@ -403,7 +471,14 @@ fun __cj_num_to_string(f: Float) -> String
     while end > dot + 1 and raw.substring(end - 1, end) == "0"
         end = end - 1
     if end == dot + 1
-        return raw.substring(0, dot)
+        let ipart = raw.substring(0, dot)
+        // Negative zero: json.dumps(-0.0) keeps both the sign and
+        // the fraction ("-0.0"); collapsing to "-0" loses the
+        // round-trip with the Python backend, which keeps -0.0 as
+        // a float exactly so the sign survives serialisation.
+        if ipart == "-0"
+            return "-0.0"
+        return ipart
     return raw.substring(0, end)
 
 // Quote + escape a string value, chunked: the runs between

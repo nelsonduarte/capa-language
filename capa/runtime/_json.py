@@ -13,6 +13,7 @@ that matches its own shape.
 from __future__ import annotations
 
 import json as _stdlib_json
+import math as _math
 from dataclasses import dataclass
 
 from ._list import CapaList
@@ -168,10 +169,26 @@ def _json_value_to_python(j):
     if isinstance(j, JBool):
         return j.value
     if isinstance(j, JNum):
-        # Keep integers whenever possible for cleaner output.
-        if j.value == int(j.value):
-            return int(j.value)
-        return j.value
+        # Keep integers whenever possible for cleaner output
+        # (json.dumps(3.0) prints "3.0"; Capa's to_json prints "3"
+        # on both backends). Two guards on the collapse:
+        #
+        # - non-finite floats: int(inf) raises OverflowError and
+        #   int(nan) raises ValueError; a JNum can hold them even
+        #   though parse_json rejects the NaN/Infinity constants,
+        #   and to_json must never crash on data.
+        # - negative zero: int(-0.0) is 0, which silently drops the
+        #   sign. json.dumps with the real value emits "-0.0", and
+        #   the bundled Wasm serialiser agrees, so -0.0 stays float.
+        v = j.value
+        if (
+            isinstance(v, float)
+            and _math.isfinite(v)
+            and v == int(v)
+            and not (v == 0.0 and _math.copysign(1.0, v) < 0.0)
+        ):
+            return int(v)
+        return v
     if isinstance(j, JStr):
         return j.value
     if isinstance(j, JArr):
@@ -181,11 +198,79 @@ def _json_value_to_python(j):
     raise TypeError(f"not a JsonValue: {j!r}")
 
 
+# Mirror of ``__CJ_MAX_DEPTH`` in ``capa/ir/_builtin_json.capa``:
+# the bundled Wasm-side parser caps recursive nesting at 100 (its
+# recursion runs on the real Wasm stack, where an adversarial
+# ``[[[[...]]]]`` would otherwise trap or DoS). Python's json
+# module has no such cap below the interpreter recursion limit,
+# so the wrapper enforces the same one for cross-backend parity.
+_MAX_DEPTH = 100
+
+
+def _reject_constant(name):
+    """``parse_constant`` hook: RFC 8259 has no NaN / Infinity /
+    -Infinity. Python's ``json.loads`` accepts them by default
+    (``allow_nan``); the bundled Wasm-side parser never did, and the
+    strict reading wins, so both backends return ``Err``."""
+    raise ValueError(
+        f"{name} is not valid JSON (RFC 8259 has no NaN or Infinity)"
+    )
+
+
+def _depth_error(s):
+    """Pre-scan for the nesting cap, mirroring the Wasm parser's
+    rule: a value parsed inside more than ``_MAX_DEPTH`` enclosing
+    containers is an error (a container may still OPEN at depth
+    ``_MAX_DEPTH``; its elements are what overflow). The scan walks
+    code points, skipping string literals (a bracket inside a quoted
+    string nests nothing), and reports the same message at the same
+    code-point position as the Wasm side's ``__cj_parse_value``.
+
+    For inputs that are malformed BEFORE the depth overflow the two
+    backends can word the error differently (this scan fires first
+    where the Wasm parser errors at the earlier position); both
+    sides still return ``Err``, which is the parity surface.
+    """
+    depth = 0
+    in_str = False
+    esc = False
+    for i, ch in enumerate(s):
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch in " \t\n\r,:":
+            continue
+        if ch in "]}":
+            if depth > 0:
+                depth -= 1
+            continue
+        # Everything else starts a value (container, string, or
+        # scalar token; garbage is json.loads's problem).
+        if depth > _MAX_DEPTH:
+            return f"max nesting depth {_MAX_DEPTH} exceeded at {i}"
+        if ch in "[{":
+            depth += 1
+        elif ch == '"':
+            in_str = True
+    return None
+
+
 def parse_json(s):
     """Parses a JSON string. Returns ``Ok(JsonValue)`` on success or
     ``Err(message)`` on syntax error."""
     try:
-        return Ok(_python_to_json_value(_stdlib_json.loads(s)))
+        if isinstance(s, str):
+            depth_err = _depth_error(s)
+            if depth_err is not None:
+                return Err(depth_err)
+        return Ok(_python_to_json_value(
+            _stdlib_json.loads(s, parse_constant=_reject_constant)
+        ))
     except (ValueError, AttributeError) as e:
         return Err(str(e))
 

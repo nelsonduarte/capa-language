@@ -2652,5 +2652,175 @@ class TestJsonUnicodeEscapeAndExtraDataParity(unittest.TestCase):
             self._assert_src_parity(src, expect="Ok\n")
 
 
+@unittest.skipUnless(
+    _has_wasm_tools() and _has_wasmtime_py(),
+    "wasm-tools and/or wasmtime-py not installed",
+)
+class TestJsonStrictNumbersDepthAndSignParity(unittest.TestCase):
+    r"""Closing round for five pre-existing parse_json / to_json
+    cross-backend divergences (2026-06-10, follow-up to
+    TestJsonUnicodeEscapeAndExtraDataParity). Oracle: both backends
+    identical AND RFC 8259-conformant.
+
+    1. NaN / Infinity / -Infinity: Python's json.loads accepted
+       them (allow_nan default) where the Wasm parser never did,
+       and to_json(parse_json("Infinity")...) CRASHED the Python
+       backend with OverflowError in the int() collapse. Strict
+       wins: Err on both, and the collapse is isfinite-guarded.
+    2. Number grammar: the Wasm parser accepted 01 / -01 / 1. /
+       .5 / +1 that Python rejects; the token shape is now
+       validated against the RFC 8259 grammar before conversion.
+    3. Nesting cap: __CJ_MAX_DEPTH=100 existed only on Wasm; the
+       Python wrapper now enforces the same cap with the same
+       message at the same position (probed at 99/100/101).
+    4. Negative zero: to_json gave "0" on Python (int() collapse
+       drops the sign) and "-0" on Wasm; both now emit "-0.0",
+       what json.dumps does with the real -0.0 value, and the
+       integer-form "-0" input collapses to 0 like json.loads.
+    5. _capa_chr stays internal (analyzer rejection covered in
+       tests/test_analyzer.py::TestInternalBuiltinRejection); the
+       \uXXXX decode path it backs keeps working on both backends,
+       re-pinned here through a round-trip probe.
+
+    Err MESSAGES for malformed numbers / constants are worded per
+    backend (Python surfaces json.loads's wording); those probes
+    pin Ok/Err only. The depth message is identical on both sides
+    and is pinned verbatim.
+    """
+
+    def _assert_src_parity(self, src: str, expect: str | None = None) -> None:
+        py_out = _capture_stdout(lambda: _run_python(src))
+        wasm_out = _capture_stdout(lambda: _run_wasm(src))
+        self.assertEqual(
+            py_out, wasm_out,
+            msg=(
+                f"Python/Wasm output divergence.\n"
+                f"--- python ---\n{py_out}\n"
+                f"--- wasm ---\n{wasm_out}"
+            ),
+        )
+        if expect is not None:
+            # Pin the agreed-upon output too: both backends agreeing
+            # on the WRONG answer must not pass.
+            self.assertEqual(py_out, expect)
+
+    @staticmethod
+    def _ok_err_probe(doc_literal: str) -> str:
+        """A main() that parses ``doc_literal`` (a Capa string
+        literal) and prints Ok plus the to_json round-trip, or Err."""
+        return (
+            "fun main(stdio: Stdio)\n"
+            f"    let doc = {doc_literal}\n"
+            "    match parse_json(doc)\n"
+            '        Ok(jv) -> stdio.println("Ok ${to_json(jv)}")\n'
+            '        Err(m) -> stdio.println("Err")\n'
+        )
+
+    # ----- 1: NaN / Infinity constants are Err on both ------------
+
+    def test_nan_and_infinity_constants_are_err(self):
+        # Pre-fix: Python Ok (and the Infinity round-trip CRASHED
+        # with OverflowError in the int() collapse), Wasm Err.
+        for doc in ('"NaN"', '"Infinity"', '"-Infinity"',
+                    '"[NaN]"', '"{\\"x\\": Infinity}"'):
+            src = self._ok_err_probe(doc)
+            self._assert_src_parity(src, expect="Err\n")
+
+    # ----- 2: RFC 8259 number grammar ------------------------------
+
+    def test_malformed_number_tokens_are_err(self):
+        # Pre-fix the Wasm side accepted every one of these through
+        # its lenient parse_float; Python rejects them all.
+        for doc in ('"01"', '"-01"', '"1."', '".5"', '"+1"',
+                    '"1e"', '"1e+"', '"--1"', '"1.2.3"', '"-"',
+                    '"[01]"'):
+            src = self._ok_err_probe(doc)
+            self._assert_src_parity(src, expect="Err\n")
+
+    def test_valid_number_tokens_round_trip(self):
+        # Grammar-valid numbers keep parsing, with byte-identical
+        # round-trips. (Exponent forms are excluded: the Wasm
+        # parse_float scientific-notation limitation is documented
+        # in TODO.md and out of scope here.)
+        for doc, out in (
+            ('"0"', "0"),
+            ('"10"', "10"),
+            ('"-7"', "-7"),
+            ('"1.25"', "1.25"),
+            ('"-0.5"', "-0.5"),
+            ('"[0.0, 12.75]"', "[0, 12.75]"),
+        ):
+            src = self._ok_err_probe(doc)
+            self._assert_src_parity(src, expect=f"Ok {out}\n")
+
+    # ----- 3: nesting depth cap ------------------------------------
+
+    @staticmethod
+    def _depth_probe(levels: int) -> str:
+        """A main() that builds ``[ * levels + 1 + ] * levels`` at
+        runtime, parses it, and prints Ok / the full Err message
+        (identical on both backends, position included)."""
+        return (
+            "fun main(stdio: Stdio)\n"
+            '    var doc = "1"\n'
+            "    var i = 0\n"
+            f"    while i < {levels}\n"
+            '        doc = "[" + doc + "]"\n'
+            "        i = i + 1\n"
+            "    match parse_json(doc)\n"
+            '        Ok(jv) -> stdio.println("Ok")\n'
+            '        Err(m) -> stdio.println("Err ${m}")\n'
+        )
+
+    def test_depth_99_and_100_are_ok(self):
+        for levels in (99, 100):
+            self._assert_src_parity(self._depth_probe(levels), expect="Ok\n")
+
+    def test_depth_101_is_err_with_identical_message(self):
+        # Pre-fix: Wasm Err, Python Ok (json.loads has no cap below
+        # the interpreter recursion limit). The message and position
+        # are pinned verbatim: the innermost value sits at code
+        # point 101, exactly where __cj_parse_value gives up.
+        self._assert_src_parity(
+            self._depth_probe(101),
+            expect="Err max nesting depth 100 exceeded at 101\n",
+        )
+
+    # ----- 4: negative zero ----------------------------------------
+
+    def test_negative_zero_serialises_like_json_dumps(self):
+        # to_json(JNum(-0.0)) was "0" on Python (int() collapse) and
+        # "-0" on Wasm (strip loses the fraction): three answers for
+        # one value. Both now emit "-0.0", which is what json.dumps
+        # produces for the real -0.0.
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(to_json(JNum(-0.0)))\n"
+            "    stdio.println(to_json(JNum(0.0)))\n"
+        )
+        self._assert_src_parity(src, expect="-0.0\n0\n")
+
+    def test_negative_zero_parse_round_trips(self):
+        # "-0.0" keeps the sign through the round-trip; the
+        # integer-form "-0" collapses to 0 exactly like
+        # json.loads("-0") (int() drops the sign).
+        for doc, out in (
+            ('"-0.0"', "-0.0"),
+            ('"-0"', "0"),
+            ('"[-0.0, 0.0, -0]"', "[-0.0, 0, 0]"),
+        ):
+            src = self._ok_err_probe(doc)
+            self._assert_src_parity(src, expect=f"Ok {out}\n")
+
+    # ----- 5: the \uXXXX path _capa_chr backs still works ----------
+
+    def test_unicode_escape_still_decodes_after_internal_gate(self):
+        # _capa_chr is now analyzer-rejected in user code; the
+        # bundled parser (analyzed with internal=True) must keep
+        # using it. Round-trip re-pin on both backends.
+        src = self._ok_err_probe(r'"\"caf\\u00e9 \\ud83d\\ude00\""')
+        self._assert_src_parity(src, expect='Ok "café \U0001f600"\n')
+
+
 if __name__ == "__main__":
     unittest.main()

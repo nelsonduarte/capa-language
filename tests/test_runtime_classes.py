@@ -363,6 +363,55 @@ class TestJsonParseRoundtrip(unittest.TestCase):
         r = parse_json('{not: valid}')
         self.assertTrue(r.is_err())
 
+    def test_nan_infinity_constants_rejected(self):
+        # RFC 8259 has no NaN / Infinity / -Infinity. json.loads
+        # accepts them by default (allow_nan); the wrapper rejects
+        # via parse_constant so both backends Err (the bundled
+        # Wasm-side parser never accepted them).
+        for doc in ("NaN", "Infinity", "-Infinity", "[NaN]",
+                    '{"x": -Infinity}'):
+            r = parse_json(doc)
+            self.assertTrue(r.is_err(), doc)
+
+    def test_to_json_never_crashes_on_non_finite(self):
+        # Pre-fix, the int() collapse in _json_value_to_python
+        # raised OverflowError on inf and ValueError on nan: a
+        # non-Result crash reachable from data. A JNum can still
+        # hold a non-finite float even though parse_json rejects
+        # the constants, so to_json must stay total.
+        self.assertEqual(to_json(JNum(float("inf"))), "Infinity")
+        self.assertEqual(to_json(JNum(float("-inf"))), "-Infinity")
+        self.assertEqual(to_json(JNum(float("nan"))), "NaN")
+
+    def test_to_json_negative_zero_keeps_sign(self):
+        # int(-0.0) is 0, so the integer collapse silently dropped
+        # the sign ("0" on Python vs "-0" on Wasm pre-fix). The
+        # agreed form is json.dumps's rendering of the real value.
+        self.assertEqual(to_json(JNum(-0.0)), "-0.0")
+        self.assertEqual(to_json(JNum(0.0)), "0")
+        self.assertEqual(
+            to_json(JArr([JNum(-0.0), JNum(0.0)])), "[-0.0, 0]"
+        )
+
+    def test_nesting_depth_cap_mirrors_wasm(self):
+        # __CJ_MAX_DEPTH=100 in capa/ir/_builtin_json.capa; the
+        # wrapper enforces the same cap with the same message at
+        # the same code-point position.
+        ok_100 = "[" * 100 + "1" + "]" * 100
+        self.assertTrue(parse_json(ok_100).is_ok())
+        deep_101 = "[" * 101 + "1" + "]" * 101
+        r = parse_json(deep_101)
+        self.assertTrue(r.is_err())
+        self.assertEqual(
+            r.error, "max nesting depth 100 exceeded at 101"
+        )
+
+    def test_depth_scan_ignores_brackets_inside_strings(self):
+        # The pre-scan must not count brackets in string values:
+        # 200 '[' inside a quoted string nest nothing.
+        doc = '{"k": "' + "[" * 200 + '"}'
+        self.assertTrue(parse_json(doc).is_ok())
+
     def test_to_json_roundtrip(self):
         # Build a small JsonValue and round-trip through to_json /
         # parse_json. The semantic content should survive.
