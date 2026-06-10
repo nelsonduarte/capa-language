@@ -262,9 +262,12 @@ function count, how many still use `Unsafe`, how many of those are
 removable, and its own Unsafe-free percentage. It also recommends the
 **next file to harden**, least remaining cost first: files that are
 already Unsafe-free are done and omitted, the rest are ranked by how few
-functions still use `Unsafe` (the file closest to fully hardened comes
-first), ties broken by declaration order. A single-file program prints
-exactly what it always did, with no extra section.
+functions *genuinely* use `Unsafe`, i.e. still-using minus removable. A
+removable `Unsafe` is nearly free to drop, so a file whose only
+remaining `Unsafe` is dead outranks one with a real bridge call. Ties
+are broken by ascending removable count, then declaration order. A
+single-file program prints exactly what it always did, with no extra
+section.
 
 Add `--json` for the machine-readable form (useful in a CI gate that
 watches the percentage trend upward over a migration). The per-file

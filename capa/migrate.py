@@ -591,9 +591,10 @@ def migrate_report(module, *, filename: str = "<input>") -> dict[str, Any]:
 
     ``file_ranking`` recommends the next file to harden, least
     remaining cost first: files already Unsafe-free are omitted, the
-    rest sort by ascending number of functions still using ``Unsafe``
-    (the file closest to fully hardened comes first), ties broken by
-    declaration order.
+    rest sort by ascending number of functions *genuinely* using
+    ``Unsafe`` (still-using minus removable: a removable ``Unsafe`` is
+    nearly free to drop, so it must not count against a file), ties
+    broken by ascending removable count, then declaration order.
     """
     manifest = build_manifest(module, filename=filename)
     functions = manifest["functions"]
@@ -667,13 +668,20 @@ def migrate_report(module, *, filename: str = "<input>") -> dict[str, Any]:
             ),
         })
     # Least remaining cost first: clean files are done and stay out;
-    # the rest sort by how few functions still use Unsafe. The sort is
-    # stable, so ties keep declaration order.
+    # the rest sort by how few functions GENUINELY use Unsafe (a
+    # removable Unsafe is nearly free to drop, so a file whose only
+    # remaining Unsafe is dead outranks one with a real bridge), ties
+    # broken by ascending removable count. The sort is stable, so
+    # remaining ties keep declaration order.
     file_ranking = [
         e["file"]
         for e in sorted(
             (e for e in files if e["functions_using_unsafe"] > 0),
-            key=lambda e: e["functions_using_unsafe"],
+            key=lambda e: (
+                e["functions_using_unsafe"]
+                - e["functions_removable_unsafe"],
+                e["functions_removable_unsafe"],
+            ),
         )
     ]
 
@@ -744,12 +752,21 @@ def render_report(report: dict[str, Any]) -> str:
         ranking = report["file_ranking"]
         if ranking:
             nxt = next(e for e in files if e["file"] == ranking[0])
-            n = nxt["functions_using_unsafe"]
+            genuine = (
+                nxt["functions_using_unsafe"]
+                - nxt["functions_removable_unsafe"]
+            )
+            n_rem = nxt["functions_removable_unsafe"]
+            detail = (
+                f"{genuine} function{'s' if genuine != 1 else ''} "
+                "genuinely using Unsafe"
+            )
+            if n_rem:
+                detail += f", {n_rem} removable"
             lines.append(
                 f"  Next file to harden: {nxt['file']} "
-                f"({n} function{'s' if n != 1 else ''} still using "
-                "Unsafe; files closest to Unsafe-free come first, "
-                "already-clean files are done)"
+                f"({detail}; files with the least genuine Unsafe "
+                "come first, already-clean files are done)"
             )
 
     removable = report["removable"]

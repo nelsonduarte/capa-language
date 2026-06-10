@@ -495,8 +495,10 @@ class TestBoundNameCollectorParserSync(unittest.TestCase):
 
 class TestPerFileBreakdown(unittest.TestCase):
     """Slice 3: the report decomposes the progress by source file and
-    recommends the next file to harden (fewest functions still using
-    Unsafe first; clean files omitted; ties keep declaration order).
+    recommends the next file to harden (fewest functions genuinely
+    using Unsafe first, i.e. still-using minus removable; clean files
+    omitted; ties broken by ascending removable count, then
+    declaration order).
 
     Drives the real loader through tmpdir source files, the same
     harness ``tests/test_loader.py`` / ``tests/test_manifest.py`` use,
@@ -601,12 +603,81 @@ class TestPerFileBreakdown(unittest.TestCase):
         self.assertEqual(root["functions_using_unsafe"], 0)
         self.assertEqual(root["percent_unsafe_free"], 100)
 
-    def test_ranking_fewest_unsafe_first_and_clean_files_omitted(self):
+    def test_ranking_fewest_genuine_unsafe_first_and_clean_files_omitted(self):
         rep = self._project()
         ranking = [Path(f).name for f in rep["file_ranking"]]
-        # extra has 1 function still using Unsafe, util has 2; the
+        # Both have 1 function genuinely using Unsafe (util's second
+        # one is removable, which must not count against it); the tie
+        # breaks on ascending removable count (extra 0, util 1). The
         # clean root.capa is done and must not appear at all.
         self.assertEqual(ranking, ["extra.capa", "util.capa"])
+
+    def test_dead_only_file_outranks_genuine_bridge_file(self):
+        # A file whose ONLY Unsafe is removable costs nearly nothing
+        # to finish, so it must come before a file with a genuine
+        # bridge call, even though both have one function "still
+        # using" Unsafe and the bridge file is declared first (the
+        # old still-using criterion would have ranked bridge.capa
+        # first on declaration order).
+        d = self._tmpdir()
+        self._write(
+            d, "bridge.capa",
+            "pub fun b_one(u: Unsafe)\n"
+            "    let m = py_import(u, \"os\")\n",
+        )
+        self._write(
+            d, "deadonly.capa",
+            "pub fun d_dead(_u: Unsafe) -> Int\n"
+            "    return 1\n",
+        )
+        root = self._write(
+            d, "root.capa",
+            "import bridge\n"
+            "import deadonly\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"hi\")\n",
+        )
+        rep = self._report_for(root)
+        ranking = [Path(f).name for f in rep["file_ranking"]]
+        self.assertEqual(ranking, ["deadonly.capa", "bridge.capa"])
+        # The human rendering reports the genuine count for the
+        # recommended file, not the raw still-using count.
+        out = render_report(rep)
+        next_line = next(
+            ln for ln in out.splitlines() if "Next file to harden:" in ln
+        )
+        self.assertIn("deadonly.capa", next_line)
+        self.assertIn("0 functions genuinely using Unsafe", next_line)
+        self.assertIn("1 removable", next_line)
+
+    def test_genuine_tie_breaks_on_fewer_removables(self):
+        # Same genuine count (1 each); the file with fewer removable
+        # entries is less total work and must come first even though
+        # it is declared second.
+        d = self._tmpdir()
+        self._write(
+            d, "mixed.capa",
+            "pub fun m_bridge(u: Unsafe)\n"
+            "    let m = py_import(u, \"os\")\n"
+            "\n"
+            "pub fun m_dead(_u: Unsafe) -> Int\n"
+            "    return 1\n",
+        )
+        self._write(
+            d, "pure.capa",
+            "pub fun p_bridge(u: Unsafe)\n"
+            "    let m = py_import(u, \"json\")\n",
+        )
+        root = self._write(
+            d, "root.capa",
+            "import mixed\n"
+            "import pure\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"hi\")\n",
+        )
+        rep = self._report_for(root)
+        ranking = [Path(f).name for f in rep["file_ranking"]]
+        self.assertEqual(ranking, ["pure.capa", "mixed.capa"])
 
     def test_per_file_paths_are_root_relative_posix(self):
         # Reproducibility: the report's per-file paths (and every
