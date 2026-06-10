@@ -2233,5 +2233,208 @@ class TestPythonWasmComponentParity(unittest.TestCase):
             )
 
 
+@unittest.skipUnless(
+    _has_wasm_tools() and _has_wasmtime_py(),
+    "wasm-tools and/or wasmtime-py not installed",
+)
+class TestJsonAndLargeStringParity(unittest.TestCase):
+    """Adversarial-review fixes (2026-06-10): two silent
+    cross-backend divergences found through ``parse_json``.
+
+    C1: the bundled Wasm-side JSON parser accepted RAW control
+    characters (newline, tab, anything < 0x20) inside JSON strings,
+    returning ``Ok`` where Python's ``json.loads`` returns ``Err``
+    (RFC 8259 section 7 requires them escaped). It also accepted
+    invalid escape introducers (``\\q``) and decoded ``\\b`` /
+    ``\\f`` verbatim as ``b`` / ``f``.
+
+    C2: any string over ~64 KiB trapped the Wasm backend with
+    "out of bounds memory access" where Python returned ``Ok``.
+    Two distinct causes shared the symptom: (a) the module's
+    ``(memory ...)`` declaration hard-coded ONE initial page, so a
+    static data segment past 64 KiB failed at instantiation (which
+    is why ``--wasm-memory-cap`` had no effect, and why even
+    *printing* a 70 KiB literal trapped); (b) the bundled parser
+    accumulated string contents one character at a time through the
+    no-free bump allocator -- O(n^2) bytes -- so even runtime-built
+    large inputs blew the 16 MiB cap inside ``$alloc``.
+
+    These tests build their sources inline (a 100 KiB literal has
+    no business being a checked-in example file) but assert the
+    same property as the file-based harness above: bit-identical
+    stdout across the Python and Wasm backends.
+    """
+
+    def _assert_src_parity(self, src: str, expect: str | None = None) -> None:
+        py_out = _capture_stdout(lambda: _run_python(src))
+        wasm_out = _capture_stdout(lambda: _run_wasm(src))
+        self.assertEqual(
+            py_out, wasm_out,
+            msg=(
+                f"Python/Wasm output divergence.\n"
+                f"--- python ---\n{py_out}\n"
+                f"--- wasm ---\n{wasm_out}"
+            ),
+        )
+        if expect is not None:
+            # Pin the agreed-upon output too: both backends agreeing
+            # on the WRONG answer must not pass.
+            self.assertEqual(py_out, expect)
+
+    @staticmethod
+    def _ok_err_probe(doc_literal: str) -> str:
+        """A main() that parses ``doc_literal`` (a Capa string
+        literal, escapes included) and prints just Ok / Err."""
+        return (
+            "fun main(stdio: Stdio)\n"
+            f"    let doc = {doc_literal}\n"
+            "    match parse_json(doc)\n"
+            '        Ok(jv) -> stdio.println("Ok")\n'
+            '        Err(m) -> stdio.println("Err")\n'
+        )
+
+    # ----- C1: raw control characters inside JSON strings --------
+
+    def test_raw_newline_in_json_string_is_err(self):
+        # The exact reported repro: an object whose string value
+        # contains a literal 0x0A. Pre-fix: Python Err, Wasm Ok.
+        src = self._ok_err_probe(r'"{\"k\": \"a\nb\"}"')
+        self._assert_src_parity(src, expect="Err\n")
+
+    def test_raw_tab_in_json_string_is_err(self):
+        src = self._ok_err_probe(r'"{\"k\": \"a\tb\"}"')
+        self._assert_src_parity(src, expect="Err\n")
+
+    def test_raw_ctrl_chars_in_json_string_are_err(self):
+        # Boundary sweep of the < 0x20 range: 0x00, 0x01, 0x0D,
+        # 0x1F raw inside a string value or key are all Err; 0x20
+        # (space) is fine.
+        for esc in ("\\u{0}", "\\u{1}", "\\u{d}", "\\u{1f}"):
+            src = self._ok_err_probe(f'"[\\"a{esc}b\\"]"')
+            self._assert_src_parity(src, expect="Err\n")
+        src = self._ok_err_probe(r'"{\"a' + "\\u{1}" + r'\": 1}"')
+        self._assert_src_parity(src, expect="Err\n")
+        src = self._ok_err_probe(r'"[\"a b\"]"')
+        self._assert_src_parity(src, expect="Ok\n")
+
+    def test_valid_escapes_round_trip(self):
+        # \n \t \r \b \f \" \\ \/ all decode to the same value on
+        # both backends; the value is pinned by serialising the
+        # parsed tree back out (json.dumps on Python, the bundled
+        # serialiser on Wasm).
+        src = (
+            "fun main(stdio: Stdio)\n"
+            '    let doc = "{\\"a\\": \\"x\\\\ny\\\\tz\\", '
+            '\\"b\\": \\"q\\\\\\"w\\\\\\\\e\\\\/r\\", '
+            '\\"c\\": \\"\\\\b\\\\f\\\\r\\"}"\n'
+            "    match parse_json(doc)\n"
+            '        Ok(jv) -> stdio.println("Ok ${to_json(jv)}")\n'
+            '        Err(m) -> stdio.println("Err")\n'
+        )
+        self._assert_src_parity(
+            src,
+            expect='Ok {"a": "x\\ny\\tz", "b": "q\\"w\\\\e/r", '
+                   '"c": "\\b\\f\\r"}\n',
+        )
+
+    def test_unicode_escape_is_ok_on_both(self):
+        # \uXXXX parses Ok on both backends. (The DECODED VALUE
+        # still diverges -- the Wasm-side parser passes the four
+        # hex digits through verbatim, a documented v1 limitation
+        # -- so this probe pins Ok-ness only.)
+        src = self._ok_err_probe(r'"\"a\\u0041b\""')
+        self._assert_src_parity(src, expect="Ok\n")
+
+    def test_invalid_escape_is_err(self):
+        # \q is not a JSON escape: Err on both (Python: "Invalid
+        # \escape"). Pre-fix Wasm passed it through verbatim as Ok.
+        src = self._ok_err_probe(r'"\"a\\qb\""')
+        self._assert_src_parity(src, expect="Err\n")
+
+    # ----- C2: large strings ---------------------------------------
+
+    def test_parse_json_100kib_string_literal(self):
+        # The exact reported repro shape: a >64 KiB literal handed
+        # to parse_json. Pre-fix the module trapped at INSTANTIATION
+        # ("out of bounds memory access": the data segment did not
+        # fit the hard-coded single initial page). Value-checked:
+        # length plus head and tail slices.
+        big = "ab" * 51200  # 102400 chars
+        src = (
+            "fun main(stdio: Stdio)\n"
+            f'    let doc = "\\"{big}\\""\n'
+            "    match parse_json(doc)\n"
+            "        Ok(jv) ->\n"
+            "            match jv.as_string()\n"
+            '                Some(v) -> stdio.println("Ok ${v.length()} '
+            '${v.substring(0, 8)} ${v.substring(102392, 102400)}")\n'
+            '                None    -> stdio.println("not a string")\n'
+            '        Err(m) -> stdio.println("Err")\n'
+        )
+        self._assert_src_parity(src, expect="Ok 102400 abababab abababab\n")
+
+    def test_parse_json_runtime_built_100kib_string(self):
+        # Same size but built by runtime concatenation, so the data
+        # segment stays small: this pins the OTHER trap (quadratic
+        # per-character accumulation through the bump allocator that
+        # blew the 16 MiB cap inside $alloc).
+        src = (
+            "fun main(stdio: Stdio)\n"
+            '    var body = "0123456789"\n'
+            "    while body.length() < 100000\n"
+            "        body = body + body\n"
+            '    let doc = "\\"" + body + "\\""\n'
+            "    match parse_json(doc)\n"
+            "        Ok(jv) ->\n"
+            "            match jv.as_string()\n"
+            '                Some(v) -> stdio.println("Ok ${v.length()}")\n'
+            '                None    -> stdio.println("not a string")\n'
+            '        Err(m) -> stdio.println("Err")\n'
+        )
+        self._assert_src_parity(src, expect="Ok 163840\n")
+
+    def test_parse_json_document_over_128kib(self):
+        # A >128 KiB DOCUMENT (not just one big string): an array of
+        # eight 20 KiB strings plus scalar elements. Checks element
+        # count and the summed string lengths so a silently
+        # truncated value cannot pass.
+        chunk = "z" * 20000
+        elems = ", ".join(
+            [f'\\"{chunk}{i}\\"' for i in range(8)]
+            + ["1", "2.5", "null", "true"]
+        )
+        src = (
+            "fun main(stdio: Stdio)\n"
+            f'    let doc = "[{elems}]"\n'
+            "    match parse_json(doc)\n"
+            "        Ok(jv) ->\n"
+            "            match jv.as_array()\n"
+            "                Some(xs) ->\n"
+            "                    var total = 0\n"
+            "                    for x in xs\n"
+            "                        match x.as_string()\n"
+            "                            Some(v) -> total = total + v.length()\n"
+            "                            None    -> total = total + 0\n"
+            '                    stdio.println("Ok ${xs.length()} ${total}")\n'
+            '                None -> stdio.println("not an array")\n'
+            '        Err(m) -> stdio.println("Err")\n'
+        )
+        self._assert_src_parity(src, expect="Ok 12 160008\n")
+
+    def test_large_string_literal_shared_infra(self):
+        # The C2 root cause was NOT parse_json-specific: any module
+        # whose interned literals crossed 64 KiB trapped at
+        # instantiation. Interpolating + printing a 70 KiB literal
+        # pins the general fix (initial pages sized to the data
+        # segment).
+        big = "x" * 70000
+        src = (
+            "fun main(stdio: Stdio)\n"
+            f'    let s = "{big}"\n'
+            '    stdio.println("${s.length()}")\n'
+        )
+        self._assert_src_parity(src, expect="70000\n")
+
+
 if __name__ == "__main__":
     unittest.main()

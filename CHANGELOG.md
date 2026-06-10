@@ -9,6 +9,55 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+### Bug fix: silent Wasm divergence, parse_json accepted raw control characters in JSON strings
+
+The bundled Wasm-side JSON parser (`capa/ir/_builtin_json.capa`)
+accepted raw control characters (newline, tab, anything below
+0x20) inside a JSON string and returned `Ok` with the character
+embedded, where the Python backend's `json.loads` correctly
+returns `Err` (RFC 8259 section 7 requires control characters to
+be escaped). The same scan also accepted invalid escape
+introducers (`"\q"` parsed `Ok` as a literal `q`; Python: Err
+"Invalid \escape") and decoded `\b` / `\f` to the letters `b` /
+`f` instead of U+0008 / U+000C. All three now match Python:
+raw control characters and invalid escapes are `Err` on both
+backends, `\b` / `\f` decode to the real control characters, and
+the serialiser emits `\b`, `\f` and `\u00XX` for control
+characters exactly like `json.dumps`. (`\uXXXX` escapes still
+parse `Ok` but pass the hex digits through verbatim on Wasm, a
+pre-existing documented v1 limitation; pinned Ok-parity only.)
+Covered by `tests/test_ir_wasm_parity.py::TestJsonAndLargeStringParity`
+(raw newline / tab / 0x00 / 0x01 / 0x0D / 0x1F in values and keys,
+valid-escape round-trip, invalid escape, `\u` Ok-parity).
+
+### Bug fix: Wasm trap ("out of bounds memory access") on strings over ~64 KiB where Python returned Ok
+
+Passing a string past ~64 KiB to `parse_json` -- or merely
+printing a 70 KiB string literal -- trapped the Wasm backend while
+the Python backend ran fine. Two distinct causes shared the
+symptom. (a) The emitted `(memory ...)` declaration hard-coded ONE
+initial page, so any module whose static string data crossed
+64 KiB failed at instantiation when the active data segment was
+bounds-checked against the initial size; `--wasm-memory-cap` never
+mattered because `$alloc`'s grow path never ran. The initial page
+count is now sized to the data segment (and a cap smaller than the
+static data is a loud compile-time `WasmEmissionError` instead of
+an invalid `min > max` limits clause). (b) The bundled JSON parser
+accumulated string contents one character at a time through the
+no-free bump allocator, O(n^2) bytes, so even runtime-built large
+inputs blew the 16 MiB default cap inside `$alloc`; per-character
+probes also went through `substring`'s O(n) code-point translation,
+O(n^2) time. The parser now threads a `List<String>` of
+one-codepoint views (O(1) probes) and extracts string values with
+a single `substring` (or between-escape chunks), so 100 KiB+
+strings and >128 KiB documents parse in linear memory on both
+backends with identical values. Covered by
+`tests/test_ir_wasm_parity.py::TestJsonAndLargeStringParity`
+(100 KiB literal, runtime-built 100 KiB, >128 KiB document,
+70 KiB literal interpolation) and
+`tests/test_ir_wasm.py::TestWasmMemoryCap` (WAT initial-pages
+shape, loud cap-below-data error).
+
 ### Security: Fs read/write symlink-swap TOCTOU window closed via post-open handle verification
 
 The long-documented symlink-swap race between `Fs.allows()`
