@@ -11,7 +11,10 @@ function at a time to typed Capa until no ``Unsafe`` remains. The shipped
 ``docs/migration.md`` walk through exactly that.
 
 This module answers the two questions a developer mid-migration keeps
-asking: *how far along am I*, and *which ``Unsafe`` can I drop next*. It
+asking: *how far along am I*, and *which ``Unsafe`` can I drop next*. In
+a multi-file project the report also breaks the progress down per source
+file and recommends the next file to harden (slice 3; see
+:func:`migrate_report` for the ranking criterion). It
 reuses :func:`capa.manifest.build_manifest` rather than re-walking the AST,
 so the progress report is computed from the same per-function records that
 back the SBOM (``has_unsafe``, ``params``, ``calls``).
@@ -556,7 +559,18 @@ def migrate_report(module, *, filename: str = "<input>") -> dict[str, Any]:
             {source_name, pos, param_name, transitive, depends_on},
             ...
           ],
-          "next_candidates": [ {source_name, pos, bridge_call_count}, ... ]
+          "next_candidates": [ {source_name, pos, bridge_call_count}, ... ],
+          "files": [  # slice 3: per-source-file breakdown
+            {
+              "file": "<path>",
+              "total_functions": int,
+              "functions_using_unsafe": int,
+              "functions_removable_unsafe": int,
+              "percent_unsafe_free": int  # 0..100
+            },
+            ...
+          ],
+          "file_ranking": [ "<path>", ... ]
         }
 
     ``removable`` lists functions whose ``Unsafe`` can be dropped now.
@@ -566,6 +580,20 @@ def migrate_report(module, *, filename: str = "<input>") -> dict[str, Any]:
     first. ``next_candidates`` ranks the functions that still genuinely
     use ``Unsafe`` by how few bridge calls they make (cheapest to
     harden first), ties broken by source position.
+
+    ``files`` decomposes the same counts by the source file each
+    function was *declared* in (the loader lexes every imported module
+    under its own path, so a linked multi-file program groups
+    correctly), listed in the declaration order of the linked program
+    (imports in load order, then the root file). The program-wide
+    ``summary`` keeps covering the whole linked program, exactly as
+    before slice 3.
+
+    ``file_ranking`` recommends the next file to harden, least
+    remaining cost first: files already Unsafe-free are omitted, the
+    rest sort by ascending number of functions still using ``Unsafe``
+    (the file closest to fully hardened comes first), ties broken by
+    declaration order.
     """
     manifest = build_manifest(module, filename=filename)
     functions = manifest["functions"]
@@ -576,13 +604,31 @@ def migrate_report(module, *, filename: str = "<input>") -> dict[str, Any]:
     removable: list[dict[str, Any]] = []
     candidates: list[dict[str, Any]] = []
 
+    # Per-file aggregation, keyed by the file prefix of the manifest's
+    # per-function ``pos`` ("<file>:<line>:<col>"): the same string the
+    # report's removable / next_candidates entries display, so the
+    # breakdown and the per-entry positions can never disagree on
+    # which file a function belongs to. Insertion order is declaration
+    # order.
+    file_order: list[str] = []
+    file_stats: dict[str, dict[str, int]] = {}
+
     for rec, decl in pairs:
+        fname = rec["pos"].rsplit(":", 2)[0]
+        stats = file_stats.get(fname)
+        if stats is None:
+            stats = {"total": 0, "using": 0, "removable": 0}
+            file_stats[fname] = stats
+            file_order.append(fname)
+        stats["total"] += 1
         if not rec["has_unsafe"]:
             continue
         unsafe_names = _unsafe_param_names(rec)
         using_unsafe.append(rec)
+        stats["using"] += 1
         is_removable, depends_on = _removability(rec, decl, graph)
         if is_removable:
+            stats["removable"] += 1
             removable.append({
                 "source_name": rec["source_name"],
                 "pos": rec["pos"],
@@ -608,6 +654,29 @@ def migrate_report(module, *, filename: str = "<input>") -> dict[str, Any]:
     else:
         percent = round((total - n_using) / total * 100)
 
+    files: list[dict[str, Any]] = []
+    for fname in file_order:
+        st = file_stats[fname]
+        files.append({
+            "file": fname,
+            "total_functions": st["total"],
+            "functions_using_unsafe": st["using"],
+            "functions_removable_unsafe": st["removable"],
+            "percent_unsafe_free": round(
+                (st["total"] - st["using"]) / st["total"] * 100
+            ),
+        })
+    # Least remaining cost first: clean files are done and stay out;
+    # the rest sort by how few functions still use Unsafe. The sort is
+    # stable, so ties keep declaration order.
+    file_ranking = [
+        e["file"]
+        for e in sorted(
+            (e for e in files if e["functions_using_unsafe"] > 0),
+            key=lambda e: e["functions_using_unsafe"],
+        )
+    ]
+
     return {
         "file": filename,
         "summary": {
@@ -618,6 +687,8 @@ def migrate_report(module, *, filename: str = "<input>") -> dict[str, Any]:
         },
         "removable": removable,
         "next_candidates": candidates,
+        "files": files,
+        "file_ranking": file_ranking,
     }
 
 
@@ -652,6 +723,34 @@ def render_report(report: dict[str, Any]) -> str:
         lines.append("")
         lines.append("Done: this module is fully hardened, no Unsafe remains.")
         return "\n".join(lines)
+
+    # Per-file breakdown, only when the program actually spans several
+    # files: a single-file report renders exactly as it always has.
+    files = report["files"]
+    if len(files) > 1:
+        lines.append("")
+        lines.append("Per-file progress:")
+        for e in files:
+            f_total = e["total_functions"]
+            f_free = f_total - e["functions_using_unsafe"]
+            line = (
+                f"  - {e['file']}  {e['percent_unsafe_free']}% "
+                f"Unsafe-free ({f_free}/{f_total})"
+            )
+            n_rem = e["functions_removable_unsafe"]
+            if n_rem:
+                line += f", {n_rem} removable Unsafe"
+            lines.append(line)
+        ranking = report["file_ranking"]
+        if ranking:
+            nxt = next(e for e in files if e["file"] == ranking[0])
+            n = nxt["functions_using_unsafe"]
+            lines.append(
+                f"  Next file to harden: {nxt['file']} "
+                f"({n} function{'s' if n != 1 else ''} still using "
+                "Unsafe; files closest to Unsafe-free come first, "
+                "already-clean files are done)"
+            )
 
     removable = report["removable"]
     if removable:

@@ -256,8 +256,20 @@ It surfaces three things:
 - **Next candidates.** The still-`Unsafe` functions ranked by how few
   bridge calls they make, so you tackle the cheapest hardening step next.
 
+In a multi-file project (the root file plus its `import`s) the report
+additionally breaks the progress down **per source file**: each file's
+function count, how many still use `Unsafe`, how many of those are
+removable, and its own Unsafe-free percentage. It also recommends the
+**next file to harden**, least remaining cost first: files that are
+already Unsafe-free are done and omitted, the rest are ranked by how few
+functions still use `Unsafe` (the file closest to fully hardened comes
+first), ties broken by declaration order. A single-file program prints
+exactly what it always did, with no extra section.
+
 Add `--json` for the machine-readable form (useful in a CI gate that
-watches the percentage trend upward over a migration).
+watches the percentage trend upward over a migration). The per-file
+breakdown lands in two additive keys, `files` and `file_ranking`; all
+pre-existing keys keep referring to the whole linked program.
 
 You do not have to run `capa migrate` to get the removable nudge: the
 same detection backs a compiler warning. `capa --check` (and every

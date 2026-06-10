@@ -311,6 +311,34 @@ class TestSourceNameDemangle(unittest.TestCase):
         self.assertEqual(fn["source_name"], "helper")
         self.assertEqual(fn["source_module_index"], expected_index)
 
+    def test_imported_function_pos_carries_its_own_file(self):
+        # Regression (migrate slice 3 groundwork): an imported
+        # function's manifest ``pos`` used to stamp the ROOT file's
+        # name onto the imported file's line/col, i.e. a position in
+        # the wrong file. It must carry the declaring file instead.
+        d = self._tmpdir()
+        self._write(
+            d, "util.capa",
+            "pub fun helper(x: Int) -> Int\n"
+            "    return x + 1\n",
+        )
+        root = self._write(
+            d, "root.capa",
+            "import util\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"hi\")\n",
+        )
+        m = self._link_and_build(root)
+        helper = self._find_fn(m, "helper")
+        self.assertTrue(
+            helper["pos"].startswith(str(d / "util.capa") + ":"),
+            helper["pos"],
+        )
+        main = self._find_fn(m, "main")
+        self.assertTrue(
+            main["pos"].startswith(str(root) + ":"), main["pos"],
+        )
+
     def test_imported_pub_function_is_not_mangled(self):
         d = self._tmpdir()
         self._write(

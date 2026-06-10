@@ -925,7 +925,7 @@ right primitives. Listed at the top of this section accordingly.
   A first-party bundled LSP client remains a follow-up.
 
 - [~] **Migration path from Python** (slice 1 closed 2026-05-27,
-  slice 2 closed 2026-06-10).
+  slices 2 + 3 closed 2026-06-10).
   Interop is one-way via `Unsafe`; the gradual-hardening *pattern*
   already shipped (`examples/migrate_logfetcher_step{1,2,3}` +
   `docs/migration.md`). `capa migrate <file>` tooling
@@ -945,6 +945,18 @@ right primitives. Listed at the top of this section accordingly.
   `warning:` to stderr in --check / --run / build without
   touching exit codes, and the LSP publishes
   DiagnosticSeverity.Warning on the parameter name itself.
+  Slice 3 (2026-06-10) made the report multi-file aware: the
+  JSON gains additive `files` (per-source-file totals / using /
+  removable / % Unsafe-free, grouped by each declaration's own
+  `pos` file) + `file_ranking` (next file to harden: clean files
+  omitted, fewest functions still using Unsafe first, ties in
+  declaration order); the human rendering adds a compact
+  per-file section + next-file recommendation only when the
+  program spans >1 file (single-file output byte-identical).
+  Building it surfaced + fixed a manifest bug: an imported
+  function's `pos` stamped the ROOT file's name onto the
+  imported file's line/col (wrong file in every SBOM surface);
+  it now carries the declaring file.
   Still deferred: a website "Migrating from Python" chapter.
 
 - [x] **Package manager + minimal registry** (closed

@@ -1,6 +1,8 @@
 """Tests for ``capa migrate`` gradual-hardening progress reporting."""
 
 import json
+import shutil
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -489,6 +491,155 @@ class TestBoundNameCollectorParserSync(unittest.TestCase):
             all_subclasses(A.Pattern), seen,
             "pattern form not exercised by the sync program",
         )
+
+
+class TestPerFileBreakdown(unittest.TestCase):
+    """Slice 3: the report decomposes the progress by source file and
+    recommends the next file to harden (fewest functions still using
+    Unsafe first; clean files omitted; ties keep declaration order).
+
+    Drives the real loader through tmpdir source files, the same
+    harness ``tests/test_loader.py`` / ``tests/test_manifest.py`` use,
+    so imported functions group by the file they were actually
+    declared in (their ``pos.filename``), not the root file.
+    """
+
+    def _tmpdir(self) -> Path:
+        d = Path(tempfile.mkdtemp(prefix="capa_migrate_files_test_"))
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        return d
+
+    def _write(self, root: Path, name: str, body: str) -> Path:
+        p = root / name
+        p.write_text(body, encoding="utf-8")
+        return p
+
+    def _report_for(self, root: Path) -> dict:
+        from capa.loader import ModuleLoader
+        loader = ModuleLoader()
+        source = root.read_text(encoding="utf-8")
+        linked = loader.load_root(source, str(root))
+        result = analyze(
+            linked.module, source=source, filename=str(root),
+            sources=linked.sources,
+            module_privates=linked.module_privates,
+        )
+        assert result.ok, result.errors
+        return migrate_report(linked.module, filename=str(root))
+
+    def _project(self) -> dict:
+        """Three files: util (1 bridge + 1 dead + 1 clean), extra
+        (1 bridge), root (clean main)."""
+        d = self._tmpdir()
+        self._write(
+            d, "util.capa",
+            "pub fun u_bridge(u: Unsafe)\n"
+            "    let m = py_import(u, \"os\")\n"
+            "\n"
+            "pub fun u_dead(_u: Unsafe) -> Int\n"
+            "    return 1\n"
+            "\n"
+            "pub fun u_clean() -> Int\n"
+            "    return 2\n",
+        )
+        self._write(
+            d, "extra.capa",
+            "pub fun e_one(u: Unsafe)\n"
+            "    let m = py_import(u, \"json\")\n",
+        )
+        root = self._write(
+            d, "root.capa",
+            "import util\n"
+            "import extra\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"hi\")\n",
+        )
+        return self._report_for(root)
+
+    def _by_basename(self, rep: dict) -> dict:
+        return {Path(e["file"]).name: e for e in rep["files"]}
+
+    def test_functions_group_by_their_declaring_file(self):
+        rep = self._project()
+        files = self._by_basename(rep)
+        self.assertEqual(
+            set(files), {"util.capa", "extra.capa", "root.capa"},
+        )
+        # Imported functions land under their own file, with the
+        # file's real totals; the root file only holds main.
+        self.assertEqual(files["util.capa"]["total_functions"], 3)
+        self.assertEqual(files["extra.capa"]["total_functions"], 1)
+        self.assertEqual(files["root.capa"]["total_functions"], 1)
+
+    def test_imported_function_pos_points_into_its_own_file(self):
+        # Regression for the manifest pos bug: imported declarations
+        # used to report the ROOT file's name with the imported file's
+        # line numbers. u_dead is declared in util.capa line 4.
+        rep = self._project()
+        dead = next(
+            r for r in rep["removable"] if r["source_name"] == "u_dead"
+        )
+        self.assertEqual(Path(dead["pos"].rsplit(":", 2)[0]).name, "util.capa")
+        candidate_files = {
+            Path(c["pos"].rsplit(":", 2)[0]).name
+            for c in rep["next_candidates"]
+        }
+        self.assertEqual(candidate_files, {"util.capa", "extra.capa"})
+
+    def test_per_file_counts_and_percentages(self):
+        rep = self._project()
+        files = self._by_basename(rep)
+        util = files["util.capa"]
+        self.assertEqual(util["functions_using_unsafe"], 2)
+        self.assertEqual(util["functions_removable_unsafe"], 1)
+        self.assertEqual(util["percent_unsafe_free"], 33)
+        extra = files["extra.capa"]
+        self.assertEqual(extra["functions_using_unsafe"], 1)
+        self.assertEqual(extra["functions_removable_unsafe"], 0)
+        self.assertEqual(extra["percent_unsafe_free"], 0)
+        root = files["root.capa"]
+        self.assertEqual(root["functions_using_unsafe"], 0)
+        self.assertEqual(root["percent_unsafe_free"], 100)
+
+    def test_ranking_fewest_unsafe_first_and_clean_files_omitted(self):
+        rep = self._project()
+        ranking = [Path(f).name for f in rep["file_ranking"]]
+        # extra has 1 function still using Unsafe, util has 2; the
+        # clean root.capa is done and must not appear at all.
+        self.assertEqual(ranking, ["extra.capa", "util.capa"])
+
+    def test_summary_still_covers_the_whole_program(self):
+        # Backwards compatibility: every pre-slice-3 key keeps its
+        # program-wide meaning; the breakdown is purely additive.
+        rep = self._project()
+        self.assertEqual(rep["summary"]["total_functions"], 5)
+        self.assertEqual(rep["summary"]["functions_using_unsafe"], 3)
+        self.assertEqual(rep["summary"]["functions_removable_unsafe"], 1)
+        self.assertEqual(rep["summary"]["percent_unsafe_free"], 40)
+        for key in ("file", "summary", "removable", "next_candidates",
+                    "files", "file_ranking"):
+            self.assertIn(key, rep)
+        json.dumps(rep)  # still JSON-serialisable
+
+    def test_multi_file_render_has_breakdown_and_next_file(self):
+        rep = self._project()
+        out = render_report(rep)
+        self.assertIn("Per-file progress:", out)
+        self.assertIn("Next file to harden:", out)
+        # The recommendation names the top-ranked file.
+        next_line = next(
+            ln for ln in out.splitlines() if "Next file to harden:" in ln
+        )
+        self.assertIn("extra.capa", next_line)
+
+    def test_single_file_render_has_no_per_file_section(self):
+        # A single-file program must render exactly as before slice 3:
+        # no per-file section, no next-file recommendation.
+        rep = _report_for_example("migrate_logfetcher_step2_mixed.capa")
+        self.assertEqual(len(rep["files"]), 1)
+        out = render_report(rep)
+        self.assertNotIn("Per-file", out)
+        self.assertNotIn("Next file to harden", out)
 
 
 class TestRenderAndDispatch(unittest.TestCase):

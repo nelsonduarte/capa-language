@@ -405,14 +405,17 @@ def _dispatch_migrate(argv: list[str]) -> int:
     Reports gradual-hardening progress: what fraction of functions are
     already Unsafe-free, which functions declare an Unsafe they never
     exercise (and can drop it now), and which still-Unsafe functions are
-    cheapest to harden next. See :mod:`capa.migrate`.
+    cheapest to harden next. A multi-file project additionally gets a
+    per-file breakdown and a next-file-to-harden recommendation. See
+    :mod:`capa.migrate`.
     """
     sub = argparse.ArgumentParser(
         prog="capa migrate",
         description=(
             "Report Python->Capa gradual-hardening progress for a .capa "
             "file: how far the migration has come and which Unsafe to "
-            "drop next."
+            "drop next. Multi-file projects also get a per-file "
+            "breakdown and a next-file recommendation."
         ),
     )
     sub.add_argument("file", help=".capa file to analyse")

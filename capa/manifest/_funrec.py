@@ -388,13 +388,24 @@ def _fun_record(
         if fn.return_type else False
     )
 
+    # The declaration's own lexed filename, not the root file the
+    # manifest was built for: in a linked multi-file program an
+    # imported function's ``fn.pos`` carries the file it was actually
+    # declared in (the loader lexes each module under its own path).
+    # The ``filename`` argument only backs synthetic positions: an
+    # empty string (built-ins, fallbacks) or the lexer's ``"<input>"``
+    # placeholder for unnamed in-memory sources.
+    decl_file = fn.pos.filename
+    if not decl_file or decl_file == "<input>":
+        decl_file = filename
+
     return {
         "name": fn.name,
         "source_name": source_name,
         "container": container,
         "source_container": source_container,
         "source_module_index": module_index,
-        "pos": f"{filename}:{fn.pos.line}:{fn.pos.col}",
+        "pos": f"{decl_file}:{fn.pos.line}:{fn.pos.col}",
         "is_pub": fn.is_pub,
         "doc": fn.doc,
         "params": param_records,
