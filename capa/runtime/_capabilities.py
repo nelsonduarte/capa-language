@@ -37,6 +37,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from . import _fs_guard
 from ._list import CapaList
 from ._result import Err, None_, Ok, Some
 
@@ -128,10 +129,27 @@ class Fs:
         Fs().restrict_to("data/").allows("data/../etc/passwd")  # False
         Fs().restrict_to("data/").allows(<symlink to /etc/passwd>)  # False
 
-    Known residual: a TOCTOU race between ``allows()`` and the
-    actual ``open()`` call can be exploited by swapping a symlink in
-    between. Fully closing that gap needs ``O_NOFOLLOW`` + open-at-
-    dirfd, which is outside the v1 surface.
+    TOCTOU hardening (2026-06-10): the data operations ``read`` and
+    ``write`` no longer trust the pre-open ``allows()`` check alone.
+    After opening, the true path of the open *handle* is resolved
+    (Linux ``/proc/self/fd``, macOS ``fcntl F_GETPATH``, Windows
+    ``GetFinalPathNameByHandle``; see ``_fs_guard``) and re-validated
+    against the allowed prefixes; on mismatch the handle is closed
+    and the usual deny ``Err`` returned, with nothing read or
+    written. ``write`` opens without truncating and truncates only
+    after the handle passes, so a symlink swapped mid-race can never
+    destroy data outside the prefixes. ``O_NOFOLLOW`` is applied to
+    the final component where supported, as defence in depth.
+    Unrestricted ``Fs`` instances skip the guard entirely.
+
+    Known residuals: the query/metadata operations (``exists``,
+    ``is_dir``, ``list_dir``, ``mkdir``) still check-then-act, so
+    their TOCTOU window remains; on a platform with none of the
+    three handle-path mechanisms, ``read``/``write`` fall back to
+    the pre-open check alone (explicit fallback in
+    ``_fs_guard._verify_fd``); and a denied ``write`` may leave
+    behind an empty file it created when the swapped target did not
+    previously exist (pre-existing bytes are never touched).
     """
 
     __slots__ = ("_allowed_prefixes",)
@@ -165,12 +183,53 @@ class Fs:
             f"current allowed prefixes: {sorted(self._allowed_prefixes)}",
         ))
 
+    def _post_open_allows(self, true_path: str) -> bool:
+        """Containment check for the kernel-resolved path of an
+        already-open handle. The path arrives symlink-free from the
+        OS (see ``_fs_guard.fd_true_path``), so it is compared
+        directly against the stored canonical prefixes; it must NOT
+        be re-resolved through ``realpath`` (that would walk the
+        filesystem again and reopen the race)."""
+        if self._allowed_prefixes is None:
+            return True
+        try:
+            canon = Path(true_path)
+        except ValueError:
+            return False
+        for p in self._allowed_prefixes:
+            if not canon.is_relative_to(p):
+                return False
+        return True
+
+    def _open_read(self, path: str):
+        """Open ``path`` for UTF-8 text reading. Restricted caps get
+        the post-open handle verification (raises
+        ``_fs_guard.PostOpenDenied`` on a swapped target);
+        unrestricted caps take the plain ``open`` and pay nothing.
+        Shared with the Wasm host bridges so both backends close the
+        same TOCTOU window."""
+        if self._allowed_prefixes is None:
+            return open(path, encoding="utf-8")
+        return _fs_guard.open_verified_read(path, self._post_open_allows)
+
+    def _open_write(self, path: str):
+        """Open ``path`` for UTF-8 text writing with ``open(p, "w")``
+        semantics. Restricted caps open WITHOUT truncating, verify
+        the handle, then truncate (so a denied write never destroys
+        out-of-prefix data); unrestricted caps take the plain
+        ``open``. Shared with the Wasm host bridges."""
+        if self._allowed_prefixes is None:
+            return open(path, "w", encoding="utf-8")
+        return _fs_guard.open_verified_write(path, self._post_open_allows)
+
     def read(self, path: str) -> "Result[str, IoError]":
         if not self.allows(path):
             return self._deny("read", path)
         try:
-            with open(path, encoding="utf-8") as f:
+            with self._open_read(path) as f:
                 return Ok(f.read())
+        except _fs_guard.PostOpenDenied:
+            return self._deny("read", path)
         except OSError as e:
             return Err(IoError(f"failed to read {path!r}", str(e)))
 
@@ -178,9 +237,11 @@ class Fs:
         if not self.allows(path):
             return self._deny("write", path)
         try:
-            with open(path, "w", encoding="utf-8") as f:
+            with self._open_write(path) as f:
                 f.write(content)
             return Ok(None)
+        except _fs_guard.PostOpenDenied:
+            return self._deny("write", path)
         except OSError as e:
             return Err(IoError(f"failed to write {path!r}", str(e)))
 

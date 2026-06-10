@@ -9,6 +9,45 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+### Security: Fs read/write TOCTOU window closed via post-open handle verification
+
+The long-documented race between `Fs.allows()` (realpath + prefix
+check) and the underlying `open()` is closed for the data
+operations. `read` and `write` on a restricted `Fs` now verify the
+*open handle*: after opening, the OS reports the true path of the
+file descriptor (Linux `/proc/self/fd`, macOS `fcntl F_GETPATH`,
+Windows `GetFinalPathNameByHandle`; new module
+`capa/runtime/_fs_guard.py`) and that path is re-validated against
+the allowed prefixes before any byte moves. A symlink swapped in
+any path component, at any moment, can no longer leak or modify a
+file outside the prefixes. The destructive vector is handled
+explicitly: `write` opens without `O_TRUNC` and truncates only
+after the handle passes, so a denied write leaves pre-existing
+out-of-prefix data byte-for-byte intact. `O_NOFOLLOW` is applied
+to the final component where supported, as defence in depth (with
+a retry so legitimate in-prefix symlinks keep working).
+
+Scope and residuals, stated precisely: only `read`/`write` are
+hardened (they are the data vectors). `exists` / `is_dir` /
+`list_dir` / `mkdir` still check-then-act and keep their TOCTOU
+window; on a platform with none of the three handle-path
+mechanisms the data ops fall back to the pre-open check alone
+(explicit, commented fallback); and a denied `write` may leave a
+zero-byte file behind when the swapped target did not previously
+exist. User-visible semantics are unchanged: same deny messages,
+same `IoError` shapes, UTF-8 and newline behaviour identical, and
+unrestricted `Fs` instances skip the guard entirely.
+
+Both backends are covered: the core-Wasm and Component Model host
+shims (`_wasm_host.py`, `_wasm_component_host.py`) now route file
+IO through the same shared `Fs._open_read` / `Fs._open_write`
+guarded helpers instead of calling `open()` directly. Covered by
+`tests/test_fs_toctou.py`: helper unit tests, a deterministic
+race simulation (pre-check forced open, post-check must deny, on
+both the Python and Wasm paths), final-component and
+intermediate-component symlink swaps, and the
+no-truncation-on-denial regression test.
+
 ### Bug fix: silent Wasm divergence in nested-variant match arms with outer sibling binders
 
 A `match` arm whose variant payload mixes a nested variant pattern

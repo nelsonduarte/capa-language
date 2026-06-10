@@ -299,10 +299,32 @@ through `os.path.realpath` (resolves `..` / `.` segments and
 follows symlinks) before comparison; the containment check is
 path-aware, not string-prefix. Traversal patterns
 (`data/../etc/passwd`) and symlinks pointing outside the prefix
-are both denied. A TOCTOU race between `allows()` and the
-underlying `open()` remains possible against an actively
-hostile attacker; fully closing it requires open-at-dirfd
-semantics, planned for a later iteration.
+are both denied.
+
+The data operations `read` and `write` additionally verify the
+opened *handle*, closing the TOCTOU race between `allows()` and
+the underlying `open()`: after opening, the OS is asked for the
+true path of the open file descriptor (Linux `/proc/self/fd`,
+macOS `fcntl F_GETPATH`, Windows `GetFinalPathNameByHandle`) and
+that path is re-checked against the allowed prefixes before any
+byte is read or written. `write` opens without truncating and
+truncates only after the handle passes, so a symlink swapped
+mid-race can never destroy or alter data outside the prefixes; a
+denied operation returns the same deny error as the up-front
+check. `O_NOFOLLOW` is applied to the final path component where
+the platform supports it, as defence in depth. Unrestricted `Fs`
+instances skip the verification. Both backends are covered: the
+Wasm host shims route file IO through the same guarded open
+helpers.
+
+What remains open: the query/metadata operations (`exists`,
+`is_dir`, `list_dir`, `mkdir`) still check-then-act, so a race
+can change what they observe or where `mkdir` creates a
+directory; on a platform with none of the three handle-path
+mechanisms, `read`/`write` fall back to the up-front check
+alone; and a denied `write` may leave behind an *empty* file when
+the swapped target did not previously exist (pre-existing data is
+never touched).
 
 ### `Env`
 

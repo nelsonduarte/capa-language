@@ -44,6 +44,7 @@ from typing import Optional
 import wasmtime
 
 from ._capabilities import Clock, Db, Env, Fs, Net, Proc, Stdio, _write_safe
+from ._fs_guard import PostOpenDenied
 from ._cap_handles import (
     CapHandleError,
     CapHandleTable,
@@ -791,10 +792,22 @@ class WasmHost:
                     f"Fs capability does not permit read: {path}",
                 )
                 return
+            # TOCTOU hardening (2026-06-10): route through the same
+            # Fs._open_read used by the Python backend, which
+            # re-validates the true path of the open handle on
+            # restricted caps. A symlink swapped between allows()
+            # and the open lands here as PostOpenDenied and surfaces
+            # as the same deny message as the pre-check.
             try:
-                content = open(path, encoding="utf-8").read()
+                with fs._open_read(path) as f:
+                    content = f.read()
                 s_ptr, s_len = _alloc_utf8(caller, content)
                 _write_result_ok_string(caller, ret_area, s_ptr, s_len)
+            except PostOpenDenied:
+                _write_result_err_ioerror(
+                    caller, ret_area,
+                    f"Fs capability does not permit read: {path}",
+                )
             except OSError as e:
                 _write_result_err_ioerror(caller, ret_area, str(e))
 
@@ -833,10 +846,19 @@ class WasmHost:
                     f"Fs capability does not permit write: {path}",
                 )
                 return
+            # TOCTOU hardening: same routing as fs_read; on a
+            # restricted cap the open does NOT truncate until the
+            # handle's true path passes verification, so a denied
+            # write never destroys data outside the prefixes.
             try:
-                with open(path, "w", encoding="utf-8") as f:
+                with fs._open_write(path) as f:
                     f.write(content)
                 _write_result_ok_unit(caller, ret_area)
+            except PostOpenDenied:
+                _write_result_err_ioerror(
+                    caller, ret_area,
+                    f"Fs capability does not permit write: {path}",
+                )
             except OSError as e:
                 _write_result_err_ioerror(caller, ret_area, str(e))
 

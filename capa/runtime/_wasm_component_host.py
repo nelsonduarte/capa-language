@@ -49,6 +49,7 @@ import wasmtime
 import wasmtime.component as wc
 
 from ._capabilities import Clock, Db, Env, Fs, Net, Proc, Stdio, _write_safe
+from ._fs_guard import PostOpenDenied
 from ._cap_handles import (
     CapHandleError,
     CapHandleTable,
@@ -289,9 +290,17 @@ class WasmComponentHost:
                 return IoErrorRecord(
                     message=f"Fs capability does not permit read: {path}",
                 )
+            # TOCTOU hardening (2026-06-10): same shared Fs._open_read
+            # as the Python backend and the core-Wasm host; on a
+            # restricted cap the open handle's true path is
+            # re-validated before any byte is read.
             try:
-                with open(path, encoding="utf-8") as f:
+                with fs._open_read(path) as f:
                     return f.read()
+            except PostOpenDenied:
+                return IoErrorRecord(
+                    message=f"Fs capability does not permit read: {path}",
+                )
             except OSError as e:
                 return IoErrorRecord(
                     message=str(e), cause=type(e).__name__,
@@ -310,10 +319,16 @@ class WasmComponentHost:
                 return IoErrorRecord(
                     message=f"Fs capability does not permit write: {path}",
                 )
+            # TOCTOU hardening: no truncation until the handle's true
+            # path passes verification (shared Fs._open_write).
             try:
-                with open(path, "w", encoding="utf-8") as f:
+                with fs._open_write(path) as f:
                     f.write(content)
                 return None
+            except PostOpenDenied:
+                return IoErrorRecord(
+                    message=f"Fs capability does not permit write: {path}",
+                )
             except OSError as e:
                 return IoErrorRecord(
                     message=str(e), cause=type(e).__name__,
