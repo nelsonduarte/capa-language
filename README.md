@@ -146,6 +146,9 @@ capa --doc                  file.capa   # HTML doc page from /// comments
 capa --fmt                  file.capa   # canonical-style rewrite
 capa init                   my-project  # project scaffold
 capa install                            # fetch capa.toml dependencies
+capa migrate                file.capa   # Python->Capa hardening progress
+                                        # (--json for the machine form;
+                                        # see docs/migration.md)
 capa lsp                                # language server (stdio)
 ```
 

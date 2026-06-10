@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from .. import capa_ast as A
+from ..lexer import SYNTHETIC_FILENAME
 from ..typesys import CAPABILITY_NAMES
 
 from ._calls import _collect_calls, _collect_declassifications
@@ -427,13 +428,13 @@ def _fun_record(
     # imported function's ``fn.pos`` carries the file it was actually
     # declared in (the loader lexes each module under its own path).
     # The ``filename`` argument only backs synthetic positions: an
-    # empty string (built-ins, fallbacks) or the lexer's ``"<input>"``
-    # placeholder for unnamed in-memory sources. The display form is
-    # root-relative and separator-stable (see :func:`_display_path`)
-    # so the recorded position never leaks the builder's absolute
-    # directory layout.
+    # empty string (built-ins, fallbacks) or the lexer's
+    # ``SYNTHETIC_FILENAME`` placeholder for unnamed in-memory
+    # sources. The display form is root-relative and separator-stable
+    # (see :func:`_display_path`) so the recorded position never leaks
+    # the builder's absolute directory layout.
     decl_file = fn.pos.filename
-    if not decl_file or decl_file == "<input>":
+    if not decl_file or decl_file == SYNTHETIC_FILENAME:
         decl_file = filename
     decl_file = _display_path(decl_file, filename)
 

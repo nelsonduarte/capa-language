@@ -734,7 +734,10 @@ def render_report(report: dict[str, Any]) -> str:
 
     # Per-file breakdown, only when the program actually spans several
     # files: a single-file report renders exactly as it always has.
-    files = report["files"]
+    # Defensive .get(): a report serialised before slice 3 (stored
+    # JSON re-fed to the renderer) has no files / file_ranking keys
+    # and must still render.
+    files = report.get("files") or []
     if len(files) > 1:
         lines.append("")
         lines.append("Per-file progress:")
@@ -749,7 +752,7 @@ def render_report(report: dict[str, Any]) -> str:
             if n_rem:
                 line += f", {n_rem} removable Unsafe"
             lines.append(line)
-        ranking = report["file_ranking"]
+        ranking = report.get("file_ranking") or []
         if ranking:
             nxt = next(e for e in files if e["file"] == ranking[0])
             genuine = (

@@ -51,6 +51,14 @@ from ._literals import _LiteralsMixin
 from ._tokens import _TokensMixin
 
 
+# Placeholder filename for unnamed in-memory sources (REPL snippets,
+# test fixtures, API callers that pass no filename). Positions lexed
+# under this name are synthetic: consumers that need a real source
+# file (notably the manifest builder's per-declaration paths) compare
+# against this constant rather than re-spelling the literal.
+SYNTHETIC_FILENAME = "<input>"
+
+
 def _strip_block_doc_margins(raw: str) -> str:
     """Normalise the body of a ``/** ... */`` doc block.
 
@@ -105,7 +113,7 @@ class Lexer(
     def __init__(
         self,
         source: str,
-        filename: str = "<input>",
+        filename: str = SYNTHETIC_FILENAME,
         start_line: int = 1,
         start_col: int = 1,
         start_offset: int = 0,

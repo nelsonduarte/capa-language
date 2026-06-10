@@ -54,7 +54,7 @@ wasm = ["wasmtime>=20"]
 capa = "capa.cli:main"
 
 [project.urls]
-# Homepage = "..."
+Homepage = "https://capa-language.com"
 # Repository = "..."
 
 [tool.setuptools.packages.find]

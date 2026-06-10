@@ -746,6 +746,17 @@ class TestRenderAndDispatch(unittest.TestCase):
         self.assertIn("Migration progress", out)
         self.assertIn("Unsafe-free", out)
 
+    def test_render_tolerates_pre_slice3_report_without_files_keys(self):
+        # A report serialised before slice 3 (e.g. stored JSON re-fed
+        # to the renderer) has no files / file_ranking keys; rendering
+        # must not crash and must keep the program-wide sections.
+        rep = _report_for_example("migrate_logfetcher_step2_mixed.capa")
+        del rep["files"]
+        del rep["file_ranking"]
+        out = render_report(rep)
+        self.assertIn("Migration progress", out)
+        self.assertNotIn("Per-file", out)
+
     def test_dispatch_json_is_valid(self):
         # The CLI --json path must emit parseable JSON with the
         # documented keys.
