@@ -112,6 +112,135 @@ class TestRemovableDetection(unittest.TestCase):
         self.assertEqual(rep["summary"]["percent_unsafe_free"], 100)
 
 
+class TestTransitiveRemovable(unittest.TestCase):
+    """Slice 2: removable detection follows the call graph, so a token
+    forwarded only into bridge-free chains counts as removable, while
+    every ambiguous shape stays conservatively non-removable."""
+
+    def _removable_by_name(self, src: str) -> dict:
+        rep = migrate_report(_module_from_source(src))
+        return {r["source_name"]: r for r in rep["removable"]}
+
+    def test_two_level_chain_is_removable(self):
+        # top forwards its token to bottom, whose own Unsafe is dead:
+        # the token can never reach a bridge, so both are removable.
+        src = (
+            "fun bottom(_u: Unsafe) -> Int\n"
+            "    return 1\n"
+            "\n"
+            "fun top(u: Unsafe) -> Int\n"
+            "    return bottom(u)\n"
+        )
+        removable = self._removable_by_name(src)
+        self.assertIn("bottom", removable)
+        self.assertIn("top", removable)
+        self.assertFalse(removable["bottom"]["transitive"])
+        self.assertEqual(removable["bottom"]["depends_on"], [])
+        self.assertTrue(removable["top"]["transitive"])
+        self.assertEqual(removable["top"]["depends_on"], ["bottom"])
+
+    def test_three_level_chain_is_removable(self):
+        src = (
+            "fun bottom(_u: Unsafe) -> Int\n"
+            "    return 1\n"
+            "\n"
+            "fun middle(u: Unsafe) -> Int\n"
+            "    return bottom(u)\n"
+            "\n"
+            "fun top(u: Unsafe) -> Int\n"
+            "    return middle(u)\n"
+        )
+        removable = self._removable_by_name(src)
+        self.assertEqual(set(removable), {"bottom", "middle", "top"})
+        self.assertEqual(removable["top"]["depends_on"], ["middle"])
+        self.assertEqual(removable["middle"]["depends_on"], ["bottom"])
+
+    def test_chain_ending_in_bridge_is_not_removable(self):
+        # The bottom of the chain still does py_import: nothing in the
+        # chain may drop its Unsafe.
+        src = (
+            "fun bottom(u: Unsafe)\n"
+            "    let os_mod = py_import(u, \"os\")\n"
+            "\n"
+            "fun middle(u: Unsafe)\n"
+            "    bottom(u)\n"
+            "\n"
+            "fun top(u: Unsafe)\n"
+            "    middle(u)\n"
+        )
+        rep = migrate_report(_module_from_source(src))
+        self.assertEqual(rep["removable"], [])
+        names = {c["source_name"] for c in rep["next_candidates"]}
+        self.assertEqual(names, {"bottom", "middle", "top"})
+
+    def test_mutual_recursion_cycle_is_not_removable(self):
+        # a and b only pass the token to each other and never bridge,
+        # but a call-graph cycle resolves to the conservative side.
+        src = (
+            "fun a(u: Unsafe)\n"
+            "    b(u)\n"
+            "\n"
+            "fun b(u: Unsafe)\n"
+            "    a(u)\n"
+        )
+        rep = migrate_report(_module_from_source(src))
+        self.assertEqual(rep["removable"], [])
+
+    def test_self_recursion_is_not_removable(self):
+        src = (
+            "fun f(u: Unsafe)\n"
+            "    f(u)\n"
+        )
+        rep = migrate_report(_module_from_source(src))
+        self.assertEqual(rep["removable"], [])
+
+    def test_forward_to_callback_param_is_not_removable(self):
+        # The callee is a Fun-typed parameter: its body is unknown, so
+        # the forwarded token must count as exercised.
+        src = (
+            "fun g(f: Fun(Unsafe) -> Unit, u: Unsafe)\n"
+            "    f(u)\n"
+        )
+        rep = migrate_report(_module_from_source(src))
+        self.assertEqual(rep["removable"], [])
+
+    def test_forward_via_method_call_is_not_removable(self):
+        # The token escapes through a method call on a user capability:
+        # the receiver's impl is not resolvable by name, so conservative.
+        src = (
+            "capability Sink\n"
+            "    fun take(self, u: Unsafe)\n"
+            "\n"
+            "fun g(s: Sink, u: Unsafe)\n"
+            "    s.take(u)\n"
+        )
+        rep = migrate_report(_module_from_source(src))
+        self.assertEqual(rep["removable"], [])
+
+    def test_token_smuggled_via_cap_bearing_struct_is_not_removable(self):
+        # pack embeds the token in a cap-bearing struct it returns; the
+        # signature-poison rule must keep the whole chain non-removable
+        # even though no bridge call is syntactically in sight.
+        src = (
+            "capability Wrap\n"
+            "    fun ping(self) -> Int\n"
+            "\n"
+            "type Holder { u: Unsafe }\n"
+            "\n"
+            "impl Wrap for Holder\n"
+            "    fun ping(self) -> Int\n"
+            "        return 1\n"
+            "\n"
+            "fun pack(u: Unsafe) -> Holder\n"
+            "    return Holder { u: u }\n"
+            "\n"
+            "fun g(u: Unsafe) -> Holder\n"
+            "    return pack(u)\n"
+        )
+        rep = migrate_report(_module_from_source(src))
+        self.assertEqual(rep["removable"], [])
+
+
 class TestRenderAndDispatch(unittest.TestCase):
     def test_render_is_nonempty_text(self):
         rep = _report_for_example("migrate_logfetcher_step2_mixed.capa")
