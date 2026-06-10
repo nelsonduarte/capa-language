@@ -71,6 +71,19 @@ class _ListEmissionMixin:
             self._emit_list_get(recv, instr.args[0], elem_size, elem_ty,
                                 instr.dst)
             return
+        if method in ("first", "last"):
+            self._emit_list_first_last(
+                recv, method, elem_size, elem_ty, instr.dst,
+            )
+            return
+        if method in ("find", "find_index"):
+            self._emit_list_find(
+                instr, method, elem_size, elem_ty,
+            )
+            return
+        if method == "sorted_by":
+            self._emit_list_sorted_by(instr, elem_size, elem_ty)
+            return
         if method == "contains":
             # Pointer-shape elements (struct / sum / tuple / nested
             # List) compare structurally via the element's generated
@@ -543,7 +556,22 @@ class _ListEmissionMixin:
         self._write(f"i32.const {elem_size}")
         self._write("i32.mul")
         self._write("i32.add")
-        # Stack: [result_ptr, elem_addr]
+        # Stack: [result_ptr, elem_addr]; load + store into the
+        # Option's 8-byte Some slot per the element shape.
+        self._emit_load_elem_store_option_payload(elem_ty)
+        self._indent -= 1
+        self._write("end")
+        # Bind result Option pointer to dst.
+        self._write(f"local.get ${result_local}")
+        self._write(f"local.set ${dst}")
+
+    def _emit_load_elem_store_option_payload(self, elem_ty: str) -> None:
+        """Operand stack on entry: ``[result_ptr, elem_addr]``. Load the
+        list element at ``elem_addr`` and store it into the Some payload
+        slot (offset 8) of the Option record at ``result_ptr``,
+        choosing the load / store widths from the element shape. Shared
+        by ``get`` / ``first`` / ``last`` / ``find`` so the payload
+        encoding never drifts between them."""
         if elem_ty == "Float":
             self._write("f64.load")
             self._write("f64.store offset=8")
@@ -565,11 +593,561 @@ class _ListEmissionMixin:
             # Int (or unknown defaulting to i64). Direct i64 copy.
             self._write("i64.load")
             self._write("i64.store offset=8")
+
+    def _emit_list_first_last(
+        self, recv: Value, method: str, elem_size: int, elem_ty: str, dst,
+    ) -> None:
+        """``xs.first()`` / ``xs.last() -> Option<T>``. Returns
+        ``Some(xs[0])`` / ``Some(xs[len-1])`` on a non-empty list and
+        ``None`` on an empty one (matching the Python ``CapaList.first``
+        / ``last``: ``Some(self[0])``/``Some(self[-1])`` if ``len > 0``
+        else ``None``). Allocates a fresh 16-byte Option record."""
+        if dst is None:
+            return
+        list_local = "_m_scrut"
+        result_local = "_alloc_tmp_result"
+        self._push_value(recv)
+        self._write(f"local.set ${list_local}")
+        # Alloc the Option record up front; tag filled by the branch.
+        self._write(f"i32.const {_OPTION_LAYOUT['size']}")
+        self._write("call $alloc")
+        self._write(f"local.set ${result_local}")
+        # len == 0 -> None.
+        self._write(f"local.get ${list_local}")
+        self._write(f"i32.load offset={_LIST_LEN_OFFSET}")
+        self._write("i32.eqz")
+        self._write("if")
+        self._indent += 1
+        self._write(f"local.get ${result_local}")
+        self._write("i32.const 1")
+        self._write("i32.store")
+        self._indent -= 1
+        self._write("else")
+        self._indent += 1
+        # Some(elem). tag = 0.
+        self._write(f"local.get ${result_local}")
+        self._write("i32.const 0")
+        self._write("i32.store")
+        # Element address. first -> idx 0; last -> idx len-1.
+        self._write(f"local.get ${result_local}")
+        self._write(f"local.get ${list_local}")
+        self._write(f"i32.load offset={_LIST_DATA_OFFSET}")
+        if method == "last":
+            self._write(f"local.get ${list_local}")
+            self._write(f"i32.load offset={_LIST_LEN_OFFSET}")
+            self._write("i32.const 1")
+            self._write("i32.sub")
+            self._write(f"i32.const {elem_size}")
+            self._write("i32.mul")
+            self._write("i32.add")
+        # first: address is just data_ptr (idx 0).
+        self._emit_load_elem_store_option_payload(elem_ty)
         self._indent -= 1
         self._write("end")
-        # Bind result Option pointer to dst.
         self._write(f"local.get ${result_local}")
         self._write(f"local.set ${dst}")
+
+    def _emit_list_find(
+        self, instr: MethodCall, method: str, elem_size: int, elem_ty: str,
+    ) -> None:
+        """``xs.find(pred) -> Option<T>`` / ``xs.find_index(pred) ->
+        Option<Int>``. Linear scan invoking the predicate closure on
+        each element via the shared closure-call ABI; returns the first
+        match (the element for ``find``, its index for ``find_index``)
+        wrapped in ``Some``, or ``None`` when nothing matches. Matches
+        the Python ``CapaList.find`` / ``find_index`` first-match-wins
+        order, including a match at index 0 and at the last index."""
+        recv = instr.receiver
+        pred = instr.args[0]
+        dst = instr.dst
+        if dst is None:
+            return
+        sig_key = self._closure_sig_key_for([elem_ty], "Bool")
+        if sig_key not in self._closure_sig_keys:
+            raise WasmEmissionError(
+                f"List.{method}: no closure registered with sig "
+                f"{sig_key!r} (elem={elem_ty!r})"
+            )
+        sig_idx = self._closure_sig_keys[sig_key]
+        list_local = "_m_scrut"
+        idx_local = "_m_tag"
+        result_local = "_alloc_tmp_result"
+        # Stash the list pointer + the closure value.
+        self._push_value(recv)
+        self._write(f"local.set ${list_local}")
+        self._push_value(pred)
+        self._write("local.set $_lam_fn_tmp")
+        # Alloc the Option record up front; default to None (tag = 1).
+        self._write(f"i32.const {_OPTION_LAYOUT['size']}")
+        self._write("call $alloc")
+        self._write(f"local.set ${result_local}")
+        self._write(f"local.get ${result_local}")
+        self._write("i32.const 1")
+        self._write("i32.store")
+        self._write("i32.const 0")
+        self._write(f"local.set ${idx_local}")
+        self._block_counter += 1
+        loop_label = f"$Lfind{self._block_counter}_loop"
+        exit_label = f"$Lfind{self._block_counter}_exit"
+        self._write(f"block {exit_label}")
+        self._indent += 1
+        self._write(f"loop {loop_label}")
+        self._indent += 1
+        # Guard: idx >= len -> exit (result stays None).
+        self._write(f"local.get ${idx_local}")
+        self._write(f"local.get ${list_local}")
+        self._write(f"i32.load offset={_LIST_LEN_OFFSET}")
+        self._write("i32.ge_s")
+        self._write(f"br_if {exit_label}")
+        # Call pred(xs[idx]): push env_ptr, the decoded element,
+        # then fn_idx + call_indirect.
+        self._write("local.get $_lam_fn_tmp")
+        self._write("i32.wrap_i64")
+        # Element address -> decode into closure-arg shape.
+        self._write(f"local.get ${list_local}")
+        self._write(f"i32.load offset={_LIST_DATA_OFFSET}")
+        self._write(f"local.get ${idx_local}")
+        self._write(f"i32.const {elem_size}")
+        self._write("i32.mul")
+        self._write("i32.add")
+        self._emit_load_elem_for_call(elem_ty)
+        self._emit_invoke_closure_inline(sig_idx, "_lam_fn_tmp")
+        # If the predicate returned true, build Some and exit.
+        self._write("if")
+        self._indent += 1
+        self._write(f"local.get ${result_local}")
+        self._write("i32.const 0")
+        self._write("i32.store")
+        if method == "find_index":
+            # Payload is the index as i64.
+            self._write(f"local.get ${result_local}")
+            self._write(f"local.get ${idx_local}")
+            self._write("i64.extend_i32_s")
+            self._write("i64.store offset=8")
+        else:
+            # Payload is the element xs[idx].
+            self._write(f"local.get ${result_local}")
+            self._write(f"local.get ${list_local}")
+            self._write(f"i32.load offset={_LIST_DATA_OFFSET}")
+            self._write(f"local.get ${idx_local}")
+            self._write(f"i32.const {elem_size}")
+            self._write("i32.mul")
+            self._write("i32.add")
+            self._emit_load_elem_store_option_payload(elem_ty)
+        self._write(f"br {exit_label}")
+        self._indent -= 1
+        self._write("end")
+        # Advance index and loop.
+        self._write(f"local.get ${idx_local}")
+        self._write("i32.const 1")
+        self._write("i32.add")
+        self._write(f"local.set ${idx_local}")
+        self._write(f"br {loop_label}")
+        self._indent -= 1
+        self._write("end")
+        self._indent -= 1
+        self._write("end")
+        self._write(f"local.get ${result_local}")
+        self._write(f"local.set ${dst}")
+
+    def _emit_list_sorted_by(
+        self, instr: MethodCall, elem_size: int, elem_ty: str,
+    ) -> None:
+        """``xs.sorted_by(cmp) -> List<T>``: a NEW list sorted by the
+        user comparator (``cmp(a, b)`` returns Int < 0 / 0 / > 0). The
+        receiver is not mutated.
+
+        Stability: Python's ``sorted`` (Timsort) is stable, so equal-
+        comparing elements keep their input order. We reproduce that
+        with an iterative bottom-up MERGE sort whose merge takes the
+        left element when ``cmp(left, right) <= 0`` (left-biased on
+        ties), which is the textbook stable merge. The classic
+        in-place quicksort / heapsort are NOT stable and would diverge
+        from Python on ties, so merge sort is the only correct choice
+        here.
+
+        Layout: copy the receiver's data array into a fresh buffer
+        ``A`` (the result list's storage), allocate a scratch buffer
+        ``B`` of the same size, then merge runs of width ``w = 1, 2,
+        4, ...`` from ``A`` into ``B`` and swap the roles each pass.
+        After the final pass the sorted data lives in whichever buffer
+        the loop left it in; we point the result header at that one.
+        Every element slot is ``elem_size`` bytes (8 for Int / Float /
+        String / pointer-packed, 4 for Bool / pointer-shape), copied
+        verbatim with ``memory.copy`` so the encoding is shape-
+        agnostic; only the comparator call decodes the element."""
+        recv = instr.receiver
+        cmp = instr.args[0]
+        dst = instr.dst
+        if dst is None:
+            return
+        sig_key = self._closure_sig_key_for([elem_ty, elem_ty], "Int")
+        if sig_key not in self._closure_sig_keys:
+            raise WasmEmissionError(
+                f"List.sorted_by: no closure registered with sig "
+                f"{sig_key!r} (elem={elem_ty!r})"
+            )
+        sig_idx = self._closure_sig_keys[sig_key]
+        es = elem_size
+        # Locals (all already declared by the sorted_by gate in
+        # _collect_locals):
+        #   $_srt_n     length (element count)
+        #   $_srt_a     buffer A base pointer (source this pass)
+        #   $_srt_b     buffer B base pointer (dest this pass)
+        #   $_srt_w     current run width
+        #   $_srt_i     left-run start index
+        #   $_srt_lo / $_srt_mid / $_srt_hi   run boundaries
+        #   $_srt_li / $_srt_ri / $_srt_k     left / right / dest cursors
+        #   $_srt_tmp   swap scratch
+        # Result header.
+        self._push_value(recv)
+        self._write("local.set $_m_scrut")
+        self._push_value(cmp)
+        self._write("local.set $_lam_fn_tmp")
+        self._write("local.get $_m_scrut")
+        self._write(f"i32.load offset={_LIST_LEN_OFFSET}")
+        self._write("local.set $_srt_n")
+        # Allocate the result list header.
+        self._write(f"i32.const {_LIST_HEADER_SIZE}")
+        self._write("call $alloc")
+        self._write(f"local.set ${dst}")
+        self._write(f"local.get ${dst}")
+        self._write("local.get $_srt_n")
+        self._write(f"i32.store offset={_LIST_LEN_OFFSET}")
+        self._write(f"local.get ${dst}")
+        self._write("local.get $_srt_n")
+        self._write(f"i32.store offset={_LIST_CAP_OFFSET}")
+        # Buffer A = fresh copy of the receiver's data (n slots, but at
+        # least 1 slot so $alloc(0) on an empty list still yields a
+        # valid pointer). Buffer B = scratch of the same size.
+        self._write("local.get $_srt_n")
+        self._write("i32.const 1")
+        self._write("i32.lt_s")
+        self._write("if (result i32)")
+        self._indent += 1
+        self._write("i32.const 1")
+        self._indent -= 1
+        self._write("else")
+        self._indent += 1
+        self._write("local.get $_srt_n")
+        self._indent -= 1
+        self._write("end")
+        self._write(f"i32.const {es}")
+        self._write("i32.mul")
+        self._write("local.set $_srt_tmp")  # byte size of a buffer
+        self._write("local.get $_srt_tmp")
+        self._write("call $alloc")
+        self._write("local.set $_srt_a")
+        self._write("local.get $_srt_tmp")
+        self._write("call $alloc")
+        self._write("local.set $_srt_b")
+        # Copy receiver data -> A: dst=A, src=recv.data, n=n*es bytes.
+        self._write("local.get $_srt_a")
+        self._write("local.get $_m_scrut")
+        self._write(f"i32.load offset={_LIST_DATA_OFFSET}")
+        self._write("local.get $_srt_n")
+        self._write(f"i32.const {es}")
+        self._write("i32.mul")
+        self._write("memory.copy")
+        # Bottom-up merge: for (w = 1; w < n; w *= 2) merge A -> B,
+        # then swap A and B.
+        self._write("i32.const 1")
+        self._write("local.set $_srt_w")
+        self._block_counter += 1
+        wloop = f"$Lsrt{self._block_counter}_wloop"
+        wexit = f"$Lsrt{self._block_counter}_wexit"
+        iloop = f"$Lsrt{self._block_counter}_iloop"
+        iexit = f"$Lsrt{self._block_counter}_iexit"
+        mloop = f"$Lsrt{self._block_counter}_mloop"
+        mexit = f"$Lsrt{self._block_counter}_mexit"
+        self._write(f"block {wexit}")
+        self._indent += 1
+        self._write(f"loop {wloop}")
+        self._indent += 1
+        # while w < n.
+        self._write("local.get $_srt_w")
+        self._write("local.get $_srt_n")
+        self._write("i32.ge_s")
+        self._write(f"br_if {wexit}")
+        # for (i = 0; i < n; i += 2*w): merge [i, i+w) and [i+w, i+2w)
+        # from A into B[i..].
+        self._write("i32.const 0")
+        self._write("local.set $_srt_i")
+        self._write(f"block {iexit}")
+        self._indent += 1
+        self._write(f"loop {iloop}")
+        self._indent += 1
+        self._write("local.get $_srt_i")
+        self._write("local.get $_srt_n")
+        self._write("i32.ge_s")
+        self._write(f"br_if {iexit}")
+        # lo = i; mid = min(i+w, n); hi = min(i+2w, n).
+        self._write("local.get $_srt_i")
+        self._write("local.set $_srt_lo")
+        self._emit_srt_min("_srt_mid", "_srt_i", "_srt_w")
+        # hi = min(i + 2w, n): reuse mid path with 2w. Compute i+2w.
+        self._write("local.get $_srt_i")
+        self._write("local.get $_srt_w")
+        self._write("i32.const 2")
+        self._write("i32.mul")
+        self._write("i32.add")
+        self._write("local.get $_srt_n")
+        self._emit_srt_min_pair("_srt_hi")
+        # Merge runs [lo, mid) and [mid, hi) into B[lo..].
+        self._write("local.get $_srt_lo")
+        self._write("local.set $_srt_li")  # left cursor
+        self._write("local.get $_srt_mid")
+        self._write("local.set $_srt_ri")  # right cursor
+        self._write("local.get $_srt_lo")
+        self._write("local.set $_srt_k")   # dest cursor
+        self._write(f"block {mexit}")
+        self._indent += 1
+        self._write(f"loop {mloop}")
+        self._indent += 1
+        # Stop when k >= hi (all merged).
+        self._write("local.get $_srt_k")
+        self._write("local.get $_srt_hi")
+        self._write("i32.ge_s")
+        self._write(f"br_if {mexit}")
+        # Decide which side supplies B[k]:
+        #   take left  iff  li < mid AND (ri >= hi OR cmp(A[li], A[ri]) <= 0)
+        #   else take right.
+        # Compute the "take left" predicate into $_srt_tmp.
+        self._write("local.get $_srt_li")
+        self._write("local.get $_srt_mid")
+        self._write("i32.lt_s")
+        self._write("if (result i32)")
+        self._indent += 1
+        # left has remaining; check right exhausted OR cmp<=0.
+        self._write("local.get $_srt_ri")
+        self._write("local.get $_srt_hi")
+        self._write("i32.ge_s")
+        self._write("if (result i32)")
+        self._indent += 1
+        self._write("i32.const 1")
+        self._indent -= 1
+        self._write("else")
+        self._indent += 1
+        # cmp(A[li], A[ri]) <= 0 ?  (left-biased -> stable)
+        self._emit_srt_cmp_call(sig_idx, elem_ty, es, "_srt_li", "_srt_ri")
+        self._write("i64.const 0")
+        self._write("i64.le_s")
+        self._indent -= 1
+        self._write("end")
+        self._indent -= 1
+        self._write("else")
+        self._indent += 1
+        # left exhausted -> take right.
+        self._write("i32.const 0")
+        self._indent -= 1
+        self._write("end")
+        # Branch on the predicate: copy one element A[src] -> B[k].
+        self._write("if")
+        self._indent += 1
+        # take left: B[k] = A[li]; li++.
+        self._emit_srt_copy_slot("_srt_b", "_srt_k", "_srt_a", "_srt_li", es)
+        self._write("local.get $_srt_li")
+        self._write("i32.const 1")
+        self._write("i32.add")
+        self._write("local.set $_srt_li")
+        self._indent -= 1
+        self._write("else")
+        self._indent += 1
+        # take right: B[k] = A[ri]; ri++.
+        self._emit_srt_copy_slot("_srt_b", "_srt_k", "_srt_a", "_srt_ri", es)
+        self._write("local.get $_srt_ri")
+        self._write("i32.const 1")
+        self._write("i32.add")
+        self._write("local.set $_srt_ri")
+        self._indent -= 1
+        self._write("end")
+        # k++.
+        self._write("local.get $_srt_k")
+        self._write("i32.const 1")
+        self._write("i32.add")
+        self._write("local.set $_srt_k")
+        self._write(f"br {mloop}")
+        self._indent -= 1
+        self._write("end")  # loop mloop
+        self._indent -= 1
+        self._write("end")  # block mexit
+        # i += 2*w.
+        self._write("local.get $_srt_i")
+        self._write("local.get $_srt_w")
+        self._write("i32.const 2")
+        self._write("i32.mul")
+        self._write("i32.add")
+        self._write("local.set $_srt_i")
+        self._write(f"br {iloop}")
+        self._indent -= 1
+        self._write("end")  # loop iloop
+        self._indent -= 1
+        self._write("end")  # block iexit
+        # Swap A and B (the merged data is now in B; it becomes the
+        # source for the next, wider pass).
+        self._write("local.get $_srt_a")
+        self._write("local.set $_srt_tmp")
+        self._write("local.get $_srt_b")
+        self._write("local.set $_srt_a")
+        self._write("local.get $_srt_tmp")
+        self._write("local.set $_srt_b")
+        # w *= 2.
+        self._write("local.get $_srt_w")
+        self._write("i32.const 2")
+        self._write("i32.mul")
+        self._write("local.set $_srt_w")
+        self._write(f"br {wloop}")
+        self._indent -= 1
+        self._write("end")  # loop wloop
+        self._indent -= 1
+        self._write("end")  # block wexit
+        # The sorted data lives in $_srt_a (after the final swap).
+        self._write(f"local.get ${dst}")
+        self._write("local.get $_srt_a")
+        self._write(f"i32.store offset={_LIST_DATA_OFFSET}")
+
+    def _emit_srt_min(self, out_local: str, base_local: str, add_local: str) -> None:
+        """``$out = min($base + $add, $_srt_n)``. Leaves nothing on the
+        stack; used to compute the mid boundary of a merge run."""
+        self._write(f"local.get ${base_local}")
+        self._write(f"local.get ${add_local}")
+        self._write("i32.add")
+        self._write("local.get $_srt_n")
+        self._emit_srt_min_pair(out_local)
+
+    def _emit_srt_min_pair(self, out_local: str) -> None:
+        """Operand stack on entry: ``[x, y]``. Stores ``min(x, y)`` into
+        ``$out_local``."""
+        # Stack: [x, y]. select x if x < y else y.
+        self._write("local.set $_srt_tmp")  # y
+        self._write("local.set $_srt_k")    # x (k is free here)
+        self._write("local.get $_srt_k")
+        self._write("local.get $_srt_tmp")
+        self._write("i32.lt_s")
+        self._write("if (result i32)")
+        self._indent += 1
+        self._write("local.get $_srt_k")
+        self._indent -= 1
+        self._write("else")
+        self._indent += 1
+        self._write("local.get $_srt_tmp")
+        self._indent -= 1
+        self._write("end")
+        self._write(f"local.set ${out_local}")
+
+    def _emit_srt_copy_slot(
+        self, dst_base: str, dst_idx: str, src_base: str, src_idx: str,
+        es: int,
+    ) -> None:
+        """Copy one ``es``-byte element from ``$src_base[$src_idx]`` to
+        ``$dst_base[$dst_idx]`` via ``memory.copy``. Shape-agnostic: the
+        raw slot bytes carry whatever encoding the element type uses."""
+        # dst address.
+        self._write(f"local.get ${dst_base}")
+        self._write(f"local.get ${dst_idx}")
+        self._write(f"i32.const {es}")
+        self._write("i32.mul")
+        self._write("i32.add")
+        # src address.
+        self._write(f"local.get ${src_base}")
+        self._write(f"local.get ${src_idx}")
+        self._write(f"i32.const {es}")
+        self._write("i32.mul")
+        self._write("i32.add")
+        # n bytes.
+        self._write(f"i32.const {es}")
+        self._write("memory.copy")
+
+    def _emit_srt_cmp_call(
+        self, sig_idx: int, elem_ty: str, es: int,
+        li_local: str, ri_local: str,
+    ) -> None:
+        """Emit ``cmp(A[$li], A[$ri])`` via the closure-call ABI and
+        leave the i64 result on the operand stack. ``$_srt_a`` is the
+        source buffer base for this pass."""
+        # env_ptr.
+        self._write("local.get $_lam_fn_tmp")
+        self._write("i32.wrap_i64")
+        # arg 0 = A[li].
+        self._write("local.get $_srt_a")
+        self._write(f"local.get ${li_local}")
+        self._write(f"i32.const {es}")
+        self._write("i32.mul")
+        self._write("i32.add")
+        self._emit_load_elem_for_call(elem_ty)
+        self._srt_stash_elem(elem_ty)
+        # arg 1 = A[ri].
+        self._write("local.get $_srt_a")
+        self._write(f"local.get ${ri_local}")
+        self._write(f"i32.const {es}")
+        self._write("i32.mul")
+        self._write("i32.add")
+        self._emit_load_elem_for_call(elem_ty)
+        # Now the stack has: [env, <arg0 wire>, <arg1 wire>] only if
+        # arg0 survived; but loading arg1 happened AFTER stashing arg0,
+        # so re-push arg0 between env and arg1. Rebuild the frame.
+        self._srt_rebuild_cmp_frame(elem_ty)
+        # fn_idx + call_indirect.
+        self._emit_invoke_closure_inline(sig_idx, "_lam_fn_tmp")
+
+    def _srt_stash_elem(self, elem_ty: str) -> None:
+        """Pop arg0's decoded value(s) into dedicated comparator-arg
+        scratch so arg1 can be loaded without disturbing the frame."""
+        if elem_ty == "String":
+            # _emit_load_elem_for_call left ptr/len in $_str_a_*, and
+            # duplicates on the stack; drop the duplicates and move
+            # arg0 into $_str_b_* so the second element load (which
+            # overwrites $_str_a_*) does not clobber it.
+            self._write("drop")
+            self._write("drop")
+            self._write("local.get $_str_a_ptr")
+            self._write("local.set $_str_b_ptr")
+            self._write("local.get $_str_a_len")
+            self._write("local.set $_str_b_len")
+            return
+        if elem_ty == "Float":
+            self._write("local.set $_srt_arg0_f64")
+            return
+        if elem_ty == "Int":
+            self._write("local.set $_srt_arg0_i64")
+            return
+        # Bool / pointer-shape: i32.
+        self._write("local.set $_srt_arg0_i32")
+
+    def _srt_rebuild_cmp_frame(self, elem_ty: str) -> None:
+        """Stack on entry: ``[env, <arg1 wire tys>]`` (arg0 was stashed
+        by ``_srt_stash_elem``). The call needs ``[env, <arg0>,
+        <arg1>]``, so splice arg0 back in between. Stash arg1, push
+        arg0, then push arg1 again."""
+        if elem_ty == "String":
+            # arg1's ptr/len are in $_str_a_* plus duplicated on stack;
+            # drop the stack duplicates, then push arg0 (from $_str_b_*)
+            # and arg1 (from $_str_a_*).
+            self._write("drop")
+            self._write("drop")
+            # arg0 was left in $_str_a_* by the FIRST load, but the
+            # SECOND load overwrote $_str_a_*. To avoid that we stash
+            # arg0 into $_str_b_* in _srt_stash_elem instead. Handled
+            # there; here just push both pairs.
+            self._write("local.get $_str_b_ptr")
+            self._write("local.get $_str_b_len")
+            self._write("local.get $_str_a_ptr")
+            self._write("local.get $_str_a_len")
+            return
+        if elem_ty == "Float":
+            self._write("local.set $_srt_arg1_f64")
+            self._write("local.get $_srt_arg0_f64")
+            self._write("local.get $_srt_arg1_f64")
+            return
+        if elem_ty == "Int":
+            self._write("local.set $_srt_arg1_i64")
+            self._write("local.get $_srt_arg0_i64")
+            self._write("local.get $_srt_arg1_i64")
+            return
+        # Bool / pointer-shape.
+        self._write("local.set $_srt_arg1_i32")
+        self._write("local.get $_srt_arg0_i32")
+        self._write("local.get $_srt_arg1_i32")
 
     def _emit_make_list(self, instr: MakeList) -> None:
         """Allocate a List<T> header (16 bytes) + an element data
@@ -894,6 +1472,228 @@ class _ListEmissionMixin:
         self._indent -= 1
         self._write("end")
         self._loop_labels.pop()
+
+    def _emit_range_method_call(self, instr: MethodCall) -> None:
+        """Dispatch a method on a ``Range`` receiver used as a value.
+        The Range record is ``{start_i64@0, end_i64@8, inclusive_i32@16}``.
+        The Python ``CapaRange`` wraps ``range(start, stop)`` where
+        ``stop = end + 1`` for an inclusive (``a..=b``) range and
+        ``stop = end`` for an exclusive (``a..b``) one, so every method
+        is defined against the half-open ``[start, stop)`` interval with
+        step 1.
+
+        - ``length() -> Int``: ``max(0, stop - start)``.
+        - ``contains(n) -> Bool``: ``start <= n < stop``.
+        - ``is_empty() -> Bool``: ``stop - start <= 0``.
+        - ``to_list() -> List<Int>``: materialise ``[start, ..., stop-1]``.
+        """
+        method = instr.method
+        recv = instr.receiver
+        if method == "length":
+            self._emit_range_length(recv)
+            if instr.dst is not None:
+                self._write(f"local.set ${instr.dst}")
+            return
+        if method == "is_empty":
+            # is_empty == (length <= 0). length is always >= 0, so
+            # compare the raw (stop - start) against 0 directly.
+            self._emit_range_count(recv)
+            self._write("i64.const 0")
+            self._write("i64.le_s")
+            if instr.dst is not None:
+                self._write(f"local.set ${instr.dst}")
+            return
+        if method == "contains":
+            self._emit_range_contains(recv, instr.args[0])
+            if instr.dst is not None:
+                self._write(f"local.set ${instr.dst}")
+            return
+        if method == "to_list":
+            self._emit_range_to_list(recv, instr.dst)
+            return
+        raise WasmEmissionError(
+            f"Range method {method!r} is not implemented on the Wasm backend"
+        )
+
+    def _emit_range_stop(self, recv: Value) -> None:
+        """Push the half-open ``stop`` bound (i64) of the Range: ``end +
+        1`` when inclusive, ``end`` otherwise. Consumes nothing else off
+        the stack. Uses ``$_alloc_tmp`` to stash the record pointer."""
+        self._push_value(recv)
+        self._write("local.set $_alloc_tmp")
+        self._write("local.get $_alloc_tmp")
+        self._write("i64.load offset=8")  # end
+        self._write("local.get $_alloc_tmp")
+        self._write("i32.load offset=16")  # inclusive (i32 0/1)
+        self._write("i64.extend_i32_u")
+        self._write("i64.add")  # end + inclusive
+
+    def _emit_range_count(self, recv: Value) -> None:
+        """Push ``stop - start`` (i64) on the stack -- the signed
+        element count BEFORE clamping at 0. ``length`` clamps; the
+        ``is_empty`` ``<= 0`` test does not need to."""
+        self._push_value(recv)
+        self._write("local.set $_alloc_tmp")
+        # stop = end + inclusive.
+        self._write("local.get $_alloc_tmp")
+        self._write("i64.load offset=8")
+        self._write("local.get $_alloc_tmp")
+        self._write("i32.load offset=16")
+        self._write("i64.extend_i32_u")
+        self._write("i64.add")
+        # - start.
+        self._write("local.get $_alloc_tmp")
+        self._write("i64.load offset=0")
+        self._write("i64.sub")
+
+    def _emit_range_length(self, recv: Value) -> None:
+        """Push ``max(0, stop - start)`` (i64). Matches Python's
+        ``len(range(start, stop))`` which never goes negative."""
+        self._emit_range_count(recv)
+        self._write("local.set $_alloc_tmp_i64")
+        self._write("local.get $_alloc_tmp_i64")
+        self._write("i64.const 0")
+        self._write("i64.lt_s")
+        self._write("if (result i64)")
+        self._indent += 1
+        self._write("i64.const 0")
+        self._indent -= 1
+        self._write("else")
+        self._indent += 1
+        self._write("local.get $_alloc_tmp_i64")
+        self._indent -= 1
+        self._write("end")
+
+    def _emit_range_contains(self, recv: Value, n: Value) -> None:
+        """Push an i32 0/1: ``start <= n AND n < stop``. Mirrors
+        Python's ``n in range(start, stop)`` for the step-1 case."""
+        self._push_value(n)
+        self._write("local.set $_alloc_tmp_i64")  # n
+        self._push_value(recv)
+        self._write("local.set $_alloc_tmp")
+        # start <= n.
+        self._write("local.get $_alloc_tmp")
+        self._write("i64.load offset=0")
+        self._write("local.get $_alloc_tmp_i64")
+        self._write("i64.le_s")
+        # n < stop  (stop = end + inclusive).
+        self._write("local.get $_alloc_tmp_i64")
+        self._write("local.get $_alloc_tmp")
+        self._write("i64.load offset=8")
+        self._write("local.get $_alloc_tmp")
+        self._write("i32.load offset=16")
+        self._write("i64.extend_i32_u")
+        self._write("i64.add")
+        self._write("i64.lt_s")
+        # AND.
+        self._write("i32.and")
+
+    def _emit_range_to_list(self, recv: Value, dst) -> None:
+        """``r.to_list() -> List<Int>``: materialise ``[start, start+1,
+        ..., stop-1]``. Allocates a List<Int> header + data array sized
+        ``max(0, stop - start)`` (cap clamped to >= 1 so $alloc returns
+        a usable pointer), then fills it with a counted loop."""
+        if dst is None:
+            return
+        from ._layout import _LIST_HEADER_SIZE
+        # Stash start / stop in i64 scratch, n in i32.
+        self._push_value(recv)
+        self._write("local.set $_alloc_tmp")
+        self._write("local.get $_alloc_tmp")
+        self._write("i64.load offset=0")
+        self._write("local.set $_srt_start_i64")  # start
+        # stop = end + inclusive.
+        self._write("local.get $_alloc_tmp")
+        self._write("i64.load offset=8")
+        self._write("local.get $_alloc_tmp")
+        self._write("i32.load offset=16")
+        self._write("i64.extend_i32_u")
+        self._write("i64.add")
+        self._write("local.set $_srt_stop_i64")  # stop
+        # n = max(0, stop - start) as i32.
+        self._write("local.get $_srt_stop_i64")
+        self._write("local.get $_srt_start_i64")
+        self._write("i64.sub")
+        self._write("local.set $_alloc_tmp_i64")
+        self._write("local.get $_alloc_tmp_i64")
+        self._write("i64.const 0")
+        self._write("i64.lt_s")
+        self._write("if (result i64)")
+        self._indent += 1
+        self._write("i64.const 0")
+        self._indent -= 1
+        self._write("else")
+        self._indent += 1
+        self._write("local.get $_alloc_tmp_i64")
+        self._indent -= 1
+        self._write("end")
+        self._write("i32.wrap_i64")
+        self._write("local.set $_m_tag")  # n (count)
+        # Allocate header.
+        self._write(f"i32.const {_LIST_HEADER_SIZE}")
+        self._write("call $alloc")
+        self._write(f"local.set ${dst}")
+        self._write(f"local.get ${dst}")
+        self._write("local.get $_m_tag")
+        self._write(f"i32.store offset={_LIST_LEN_OFFSET}")
+        self._write(f"local.get ${dst}")
+        self._write("local.get $_m_tag")
+        self._write(f"i32.store offset={_LIST_CAP_OFFSET}")
+        # Data array: max(n, 1) * 8 bytes (Int stride is 8).
+        self._write("local.get $_m_tag")
+        self._write("i32.const 1")
+        self._write("i32.lt_s")
+        self._write("if (result i32)")
+        self._indent += 1
+        self._write("i32.const 1")
+        self._indent -= 1
+        self._write("else")
+        self._indent += 1
+        self._write("local.get $_m_tag")
+        self._indent -= 1
+        self._write("end")
+        self._write("i32.const 8")
+        self._write("i32.mul")
+        self._write("call $alloc")
+        self._write("local.set $_alloc_tmp")
+        self._write(f"local.get ${dst}")
+        self._write("local.get $_alloc_tmp")
+        self._write(f"i32.store offset={_LIST_DATA_OFFSET}")
+        # Fill: i = 0; while i < n: data[i] = start + i; i++.
+        self._write("i32.const 0")
+        self._write("local.set $_m_scrut")  # i (index)
+        self._block_counter += 1
+        loop_label = f"$Rtl{self._block_counter}_loop"
+        exit_label = f"$Rtl{self._block_counter}_exit"
+        self._write(f"block {exit_label}")
+        self._indent += 1
+        self._write(f"loop {loop_label}")
+        self._indent += 1
+        self._write("local.get $_m_scrut")
+        self._write("local.get $_m_tag")
+        self._write("i32.ge_s")
+        self._write(f"br_if {exit_label}")
+        # data[i] = start + i.
+        self._write("local.get $_alloc_tmp")
+        self._write("local.get $_m_scrut")
+        self._write("i32.const 8")
+        self._write("i32.mul")
+        self._write("i32.add")
+        self._write("local.get $_srt_start_i64")
+        self._write("local.get $_m_scrut")
+        self._write("i64.extend_i32_s")
+        self._write("i64.add")
+        self._write("i64.store")
+        # i++.
+        self._write("local.get $_m_scrut")
+        self._write("i32.const 1")
+        self._write("i32.add")
+        self._write("local.set $_m_scrut")
+        self._write(f"br {loop_label}")
+        self._indent -= 1
+        self._write("end")
+        self._indent -= 1
+        self._write("end")
 
     def _emit_make_range(self, instr: MakeRange) -> None:
         """Allocate a Range record: 24 bytes laid out as

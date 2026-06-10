@@ -1,0 +1,126 @@
+// List query + ordering methods on the Wasm backend:
+// first / last / find / find_index / sorted_by. Each was previously
+// a clean WasmEmissionError; this program exercises every method,
+// including the edge cases where a wrong implementation silently
+// diverges from the Python reference (empty list -> None, no-match
+// -> None, match at index 0 and at the last index, sorted_by
+// stability on equal-comparing elements and over a non-Int element
+// type).
+
+type Item {
+    name: String,
+    rank: Int
+}
+
+fun show_opt_int(stdio: Stdio, label: String, o: Option<Int>)
+    if o.is_some()
+        stdio.println("${label}: Some(${o.unwrap_or(-999)})")
+    else
+        stdio.println("${label}: None")
+
+fun show_opt_str(stdio: Stdio, label: String, o: Option<String>)
+    if o.is_some()
+        let v = o.unwrap_or("<none>")
+        stdio.println("${label}: Some(${v})")
+    else
+        stdio.println("${label}: None")
+
+fun main(stdio: Stdio)
+    let nums = [5, 2, 8, 2, 9, 1]
+    let empty: List<Int> = []
+
+    // ---- first / last ----
+    show_opt_int(stdio, "first", nums.first())
+    show_opt_int(stdio, "last", nums.last())
+    show_opt_int(stdio, "empty.first", empty.first())
+    show_opt_int(stdio, "empty.last", empty.last())
+
+    // ---- find ----
+    // Match at a middle index.
+    show_opt_int(stdio, "find >7", nums.find(fun (x: Int) -> Bool => x > 7))
+    // No match -> None.
+    show_opt_int(stdio, "find >100", nums.find(fun (x: Int) -> Bool => x > 100))
+    // Match at index 0.
+    show_opt_int(stdio, "find ==5", nums.find(fun (x: Int) -> Bool => x == 5))
+    // Match at the last index.
+    show_opt_int(stdio, "find ==1", nums.find(fun (x: Int) -> Bool => x == 1))
+    // Empty list -> None.
+    show_opt_int(stdio, "empty.find", empty.find(fun (x: Int) -> Bool => x > 0))
+
+    // ---- find_index ----
+    show_opt_int(stdio, "idx >7", nums.find_index(fun (x: Int) -> Bool => x > 7))
+    show_opt_int(stdio, "idx >100", nums.find_index(fun (x: Int) -> Bool => x > 100))
+    show_opt_int(stdio, "idx ==5", nums.find_index(fun (x: Int) -> Bool => x == 5))
+    show_opt_int(stdio, "idx ==1", nums.find_index(fun (x: Int) -> Bool => x == 1))
+    show_opt_int(stdio, "empty.idx", empty.find_index(fun (x: Int) -> Bool => x > 0))
+
+    // ---- sorted_by: Int, ascending ----
+    let asc = nums.sorted_by(fun (a: Int, b: Int) -> Int => a - b)
+    var out_asc = ""
+    for x in asc
+        out_asc = out_asc + "${x},"
+    stdio.println("asc: ${out_asc}")
+
+    // sorted_by: descending.
+    let desc = nums.sorted_by(fun (a: Int, b: Int) -> Int => b - a)
+    var out_desc = ""
+    for x in desc
+        out_desc = out_desc + "${x},"
+    stdio.println("desc: ${out_desc}")
+
+    // Already-sorted input stays sorted.
+    let pre = [1, 2, 3, 4]
+    let pre_sorted = pre.sorted_by(fun (a: Int, b: Int) -> Int => a - b)
+    var out_pre = ""
+    for x in pre_sorted
+        out_pre = out_pre + "${x},"
+    stdio.println("pre: ${out_pre}")
+
+    // Reverse-sorted input.
+    let rev = [4, 3, 2, 1]
+    let rev_sorted = rev.sorted_by(fun (a: Int, b: Int) -> Int => a - b)
+    var out_rev = ""
+    for x in rev_sorted
+        out_rev = out_rev + "${x},"
+    stdio.println("rev: ${out_rev}")
+
+    // Empty + single element.
+    let empty_sorted = empty.sorted_by(fun (a: Int, b: Int) -> Int => a - b)
+    stdio.println("empty len: ${empty_sorted.length()}")
+    let single = [42]
+    let single_sorted = single.sorted_by(fun (a: Int, b: Int) -> Int => a - b)
+    var out_single = ""
+    for x in single_sorted
+        out_single = out_single + "${x},"
+    stdio.println("single: ${out_single}")
+
+    // ---- sorted_by stability over a struct element type ----
+    // Sort by rank only; items with the SAME rank must keep their
+    // input order (stable). The comparator + element shape (i32
+    // pointer) are exercised here. b,d,a all have rank 2.
+    let items = [
+        Item { name: "b", rank: 2 },
+        Item { name: "d", rank: 2 },
+        Item { name: "a", rank: 1 },
+        Item { name: "c", rank: 3 },
+        Item { name: "e", rank: 2 },
+    ]
+    let by_rank = items.sorted_by(fun (x: Item, y: Item) -> Int => x.rank - y.rank)
+    var out_items = ""
+    for it in by_rank
+        out_items = out_items + "${it.name}${it.rank} "
+    stdio.println("by_rank: ${out_items}")
+
+    // sorted_by over a String element type (lexicographic by length
+    // then ties keep input order -> stability on equal length).
+    let words = ["pear", "fig", "kiwi", "ace", "lime"]
+    let by_len = words.sorted_by(fun (a: String, b: String) -> Int =>
+        a.length() - b.length())
+    var out_words = ""
+    for w in by_len
+        out_words = out_words + "${w},"
+    stdio.println("by_len: ${out_words}")
+
+    // find over a String list: match at index 0 and no-match.
+    show_opt_str(stdio, "find fig", words.find(fun (w: String) -> Bool => w == "fig"))
+    show_opt_str(stdio, "find zzz", words.find(fun (w: String) -> Bool => w == "zzz"))

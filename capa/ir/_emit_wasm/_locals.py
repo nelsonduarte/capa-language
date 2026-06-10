@@ -81,6 +81,19 @@ class _LocalsCollectionMixin:
         has_optres_method = False
         has_list_method = False
         has_set_method = False
+        # List.sorted_by runs a bottom-up merge sort with comparator
+        # callbacks; it needs a block of i32 cursor / boundary scratch
+        # locals plus per-element-shape comparator-arg stash slots.
+        has_list_sorted_by = False
+        has_list_sorted_by_i64 = False
+        has_list_sorted_by_f64 = False
+        has_list_sorted_by_i32 = False
+        # Range method calls (length / contains / is_empty / to_list)
+        # on a Range used as a value: need the i64 / i32 scratch plus,
+        # for to_list, the merge-sort i64 start/stop slots and a List
+        # data array.
+        has_range_method = False
+        has_range_to_list = False
         # Set when any MethodCall has a multi-impl-trait-typed receiver
         # (dynamic dispatch). The if-chain dispatcher stashes the
         # receiver pointer in $_trait_recv and the loaded type-id tag
@@ -162,6 +175,9 @@ class _LocalsCollectionMixin:
             nonlocal has_json_method, has_json_parse
             nonlocal has_list_string, has_optres_method
             nonlocal has_list_method, has_set_method
+            nonlocal has_list_sorted_by, has_list_sorted_by_i64
+            nonlocal has_list_sorted_by_f64, has_list_sorted_by_i32
+            nonlocal has_range_method, has_range_to_list
             nonlocal has_set_string, has_set_pointer
             nonlocal has_tuple, has_int_match, has_float_match, has_int_modulo
             nonlocal has_int_overflow_check
@@ -437,6 +453,14 @@ class _LocalsCollectionMixin:
                         key_ty = _map_key_type(recv_ty)
                         if key_ty and self._is_pointer_shape_ty(key_ty):
                             has_map_pointer_key = True
+                    if recv_ty.startswith("Range"):
+                        # Range value methods reuse $_alloc_tmp (record
+                        # ptr), $_alloc_tmp_i64 (count / n stash), and
+                        # $_m_scrut / $_m_tag for to_list's fill loop.
+                        has_range_method = True
+                        if instr.method == "to_list":
+                            has_range_to_list = True
+                            has_list_method = True
                     if recv_ty == "String":
                         has_string_method = True
                     if instr.cap_used and (
@@ -460,7 +484,7 @@ class _LocalsCollectionMixin:
                     if getattr(instr, "attenuations", None):
                         cap = instr.cap_used or ""
                         m = instr.method
-                        if (cap in ("Fs", "Env", "Db", "Proc")
+                        if (cap in ("Fs", "Env", "Db", "Proc", "Net")
                                 and m == "allows"
                                 and instr.args
                                 and instr.args[0].kind != "lit_str"):
@@ -560,6 +584,47 @@ class _LocalsCollectionMixin:
                         # List<String>.push packs (ptr, len) via
                         # _alloc_tmp_i64.
                         has_list_string = True
+                    if (instr.method in ("first", "last")
+                            and recv_ty.startswith("List")):
+                        # first / last build an Option<T> result in
+                        # $_alloc_tmp_result, reuse $_m_scrut for the
+                        # list pointer, and use the i64 / f64 stash for
+                        # the Some payload of Int / Float elements.
+                        has_optres_method = True
+                        has_list_method = True
+                        el = _element_type_of_list(recv_ty)
+                        if el == "String":
+                            has_list_string = True
+                    if (instr.method in ("find", "find_index")
+                            and recv_ty.startswith("List")):
+                        # find / find_index invoke a Bool predicate
+                        # closure per element (the List HOF scratch:
+                        # $_lam_fn_tmp etc.) and build an Option result.
+                        has_list_hof = True
+                        has_optres_method = True
+                        has_list_method = True
+                        el = _element_type_of_list(recv_ty)
+                        if el == "String":
+                            has_list_string = True
+                            has_string_method = True
+                    if (instr.method == "sorted_by"
+                            and recv_ty.startswith("List")):
+                        # sorted_by runs a bottom-up merge sort that
+                        # invokes the comparator closure; reuse the HOF
+                        # closure scratch and add the merge-sort locals.
+                        has_list_hof = True
+                        has_list_method = True
+                        has_list_sorted_by = True
+                        el = _element_type_of_list(recv_ty)
+                        if el == "String":
+                            has_list_string = True
+                            has_string_method = True
+                        elif el == "Float":
+                            has_list_sorted_by_f64 = True
+                        elif el == "Int":
+                            has_list_sorted_by_i64 = True
+                        else:
+                            has_list_sorted_by_i32 = True
                     if (instr.method == "get"
                             and recv_ty.startswith("List")):
                         # List.get builds an Option<T> result and
@@ -899,6 +964,36 @@ class _LocalsCollectionMixin:
             out.setdefault("_alloc_tmp_f64", "f64")
             out.setdefault("_str_a_ptr", "i32")
             out.setdefault("_str_a_len", "i32")
+        if has_list_sorted_by:
+            # Merge-sort cursors / boundaries (all i32) + the two
+            # buffer pointers. $_lam_fn_tmp (closure stash) comes from
+            # the has_list_hof block above. The comparator-arg stash
+            # slots are element-shape specific (declared below).
+            for name in (
+                "_srt_n", "_srt_a", "_srt_b", "_srt_w", "_srt_i",
+                "_srt_lo", "_srt_mid", "_srt_hi",
+                "_srt_li", "_srt_ri", "_srt_k", "_srt_tmp",
+            ):
+                out.setdefault(name, "i32")
+            if has_list_sorted_by_i64:
+                out.setdefault("_srt_arg0_i64", "i64")
+                out.setdefault("_srt_arg1_i64", "i64")
+            if has_list_sorted_by_f64:
+                out.setdefault("_srt_arg0_f64", "f64")
+                out.setdefault("_srt_arg1_f64", "f64")
+            if has_list_sorted_by_i32:
+                out.setdefault("_srt_arg0_i32", "i32")
+                out.setdefault("_srt_arg1_i32", "i32")
+            # String comparator args reuse the $_str_a_* / $_str_b_*
+            # scratch pairs (declared via has_string_method gate).
+        if has_range_method:
+            out.setdefault("_alloc_tmp", "i32")
+            out.setdefault("_alloc_tmp_i64", "i64")
+        if has_range_to_list:
+            out.setdefault("_m_scrut", "i32")
+            out.setdefault("_m_tag", "i32")
+            out.setdefault("_srt_start_i64", "i64")
+            out.setdefault("_srt_stop_i64", "i64")
         if has_string_method:
             # Scratch locals for the String method handlers. All i32:
             # one pair of (ptr, len) for the receiver, one for the

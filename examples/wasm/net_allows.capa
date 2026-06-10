@@ -1,0 +1,44 @@
+// Net.allows(host) on the Wasm backend. Previously a clean
+// WasmEmissionError ("no WIT/Wasm encoding"); now inlined at emit
+// time on both backends, mirroring Fs/Env/Db.allows.
+//
+// Net.allows is EXACT host-set membership (``host in self._allowed``),
+// NOT a prefix check: a host that merely shares a prefix with an
+// allowed host is denied. Net.restrict_to intersects single-host
+// sets, so chaining two distinct hosts narrows to the empty set
+// (nothing allowed). Both backends apply the same rule, so the
+// per-call yes/no answers are byte-identical.
+
+fun show(stdio: Stdio, label: String, flag: Bool)
+    if flag
+        stdio.println("${label}: yes")
+    else
+        stdio.println("${label}: no")
+
+fun main(stdio: Stdio, net: Net)
+    let scoped = net.restrict_to("api.example.com")
+
+    // ---- literal-arg path (collapses to a const at emit time) ----
+    show(stdio, "lit allowed", scoped.allows("api.example.com"))
+    show(stdio, "lit denied", scoped.allows("evil.example.com"))
+    // Boundary: shares a prefix with the allowed host but is NOT it.
+    show(stdio, "lit prefix-share", scoped.allows("api.example.com.evil.net"))
+
+    // ---- dynamic-arg path (runtime $str_eq) ----
+    let allowed_host = "api.example.com"
+    let denied_host = "other.example.com"
+    let prefix_share = "api.example.co"
+    show(stdio, "dyn allowed", scoped.allows(allowed_host))
+    show(stdio, "dyn denied", scoped.allows(denied_host))
+    show(stdio, "dyn prefix-share", scoped.allows(prefix_share))
+
+    // ---- unrestricted: no attenuations -> always yes ----
+    show(stdio, "unrestricted lit", net.allows("anything.invalid"))
+    show(stdio, "unrestricted dyn", net.allows(denied_host))
+
+    // ---- chained restrict_to to two distinct hosts -> empty set ----
+    // After intersecting {api.example.com} with {other}, nothing is
+    // allowed, so even the originally-allowed host is denied.
+    let narrowed = scoped.restrict_to("other.example.com")
+    show(stdio, "narrowed api", narrowed.allows("api.example.com"))
+    show(stdio, "narrowed other", narrowed.allows("other.example.com"))

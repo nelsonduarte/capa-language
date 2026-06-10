@@ -327,6 +327,10 @@ _GUEST_ONLY_METHODS: dict[str, frozenset[str]] = {
     "Fs":  frozenset({"allows"}),
     "Env": frozenset({"allows"}),
     "Db":  frozenset({"allows"}),
+    # Net.allows is exact host-set membership (``host in self._allowed``),
+    # inlined at emit time on both backends; no host import / WIT
+    # signature, same rationale as Fs/Env/Db.allows.
+    "Net": frozenset({"allows"}),
     # Proc.allows is inlined at emit time too (slice 15): the
     # basename + suffix-boundary check runs entirely in the
     # guest via the ``$proc_allows`` runtime helper, so no

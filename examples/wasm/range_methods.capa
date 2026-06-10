@@ -1,0 +1,76 @@
+// Range value methods on the Wasm backend: length / contains /
+// is_empty / to_list. Previously these raised a clean
+// WasmEmissionError (for-iteration over a range already worked; this
+// covers a Range used as a value). Semantics mirror Python's
+// CapaRange, which wraps range(start, stop) with stop = end + 1 for
+// the inclusive a..=b form and stop = end for the exclusive a..b
+// form. Edge cases: empty (5..5), single element, boundaries of
+// contains, and an inclusive range.
+
+fun show(stdio: Stdio, label: String, n: Int)
+    stdio.println("${label}: ${n}")
+
+fun show_bool(stdio: Stdio, label: String, b: Bool)
+    if b
+        stdio.println("${label}: true")
+    else
+        stdio.println("${label}: false")
+
+fun main(stdio: Stdio)
+    let r = 2..8          // exclusive: 2,3,4,5,6,7
+    let ri = 1..=5        // inclusive: 1,2,3,4,5
+    let empty = 5..5      // empty
+    let single = 3..4     // single: 3
+    let single_i = 7..=7  // single (inclusive): 7
+
+    // ---- length ----
+    show(stdio, "2..8 length", r.length())
+    show(stdio, "1..=5 length", ri.length())
+    show(stdio, "5..5 length", empty.length())
+    show(stdio, "3..4 length", single.length())
+    show(stdio, "7..=7 length", single_i.length())
+
+    // ---- is_empty ----
+    show_bool(stdio, "2..8 empty?", r.is_empty())
+    show_bool(stdio, "5..5 empty?", empty.is_empty())
+    show_bool(stdio, "3..4 empty?", single.is_empty())
+
+    // ---- contains (boundaries) ----
+    show_bool(stdio, "2..8 has 2", r.contains(2))   // start: in
+    show_bool(stdio, "2..8 has 7", r.contains(7))   // last: in
+    show_bool(stdio, "2..8 has 8", r.contains(8))   // stop: out
+    show_bool(stdio, "2..8 has 1", r.contains(1))   // below: out
+    show_bool(stdio, "1..=5 has 5", ri.contains(5)) // inclusive end: in
+    show_bool(stdio, "1..=5 has 6", ri.contains(6)) // past end: out
+    show_bool(stdio, "5..5 has 5", empty.contains(5)) // empty: out
+
+    // ---- to_list ----
+    let xs = r.to_list()
+    var out = ""
+    for x in xs
+        out = out + "${x},"
+    stdio.println("2..8 to_list: ${out}")
+
+    let xi = ri.to_list()
+    var out_i = ""
+    for x in xi
+        out_i = out_i + "${x},"
+    stdio.println("1..=5 to_list: ${out_i}")
+
+    let xe = empty.to_list()
+    stdio.println("5..5 to_list len: ${xe.length()}")
+
+    let xs1 = single.to_list()
+    var out_s = ""
+    for x in xs1
+        out_s = out_s + "${x},"
+    stdio.println("3..4 to_list: ${out_s}")
+
+    // to_list with variable bounds.
+    let lo = 10
+    let hi = 13
+    let xv = (lo..hi).to_list()
+    var out_v = ""
+    for x in xv
+        out_v = out_v + "${x},"
+    stdio.println("lo..hi to_list: ${out_v}")

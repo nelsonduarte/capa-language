@@ -48,7 +48,9 @@ class _DiscoveryMixin:
         module needs the ``$alloc`` helper and the ``$heap_top``
         global."""
         # Method names that allocate when called.
-        _ALLOC_METHODS_LIST = {"push"}
+        _ALLOC_METHODS_LIST = {
+            "push", "first", "last", "find", "find_index", "sorted_by",
+        }
         _ALLOC_METHODS_STRING = {"substring", "to_upper", "to_lower"}
 
         def visit(instrs: list[Instr]) -> bool:
@@ -68,6 +70,9 @@ class _DiscoveryMixin:
                     # Set.add grows / appends, Set.to_list allocates a
                     # fresh List<T>; both need the heap.
                     if recv_ty.startswith("Set") and instr.method in ("add", "to_list"):
+                        return True
+                    # Range.to_list materialises a fresh List<Int>.
+                    if recv_ty.startswith("Range") and instr.method == "to_list":
                         return True
                 if isinstance(instr, If):
                     if visit(instr.then_body) or visit(instr.else_body):
@@ -467,6 +472,17 @@ class _DiscoveryMixin:
                 # helper-emit, matching the locked design.
                 if isinstance(instr, MethodCall):
                     recv_ty = instr.receiver.ty or ""
+                    # Net.allows with a dynamic (non-literal) arg emits
+                    # ``$str_eq`` for the exact host comparison against
+                    # each restricted host. Literal-arg Net.allows
+                    # collapses to a const and needs no helper, but
+                    # over-emitting $str_eq for the literal case is
+                    # harmless (a few unused bytes).
+                    if ((instr.cap_used == "Net"
+                         or recv_ty == "Net")
+                            and instr.method == "allows"
+                            and getattr(instr, "attenuations", None)):
+                        return True
                     if recv_ty.startswith("Map"):
                         if _map_key_type(recv_ty) == "String":
                             return True
@@ -664,7 +680,7 @@ class _DiscoveryMixin:
                     "restrict_to", "restrict_to_keys", "restrict_to_after",
                 ):
                     pass
-                elif (cap in ("Fs", "Env", "Db", "Proc")
+                elif (cap in ("Fs", "Env", "Db", "Proc", "Net")
                       and instr.method == "allows"):
                     # Fs.allows / Env.allows / Db.allows / Proc.allows
                     # lower to inline-attenuation checks at emit time
@@ -805,6 +821,20 @@ class _DiscoveryMixin:
                 except WasmEmissionError:
                     continue
                 self._intern_string(prefix)
+            elif cap == "Net":
+                # Net.allows is exact host equality (``host in
+                # self._allowed``), so each restrict_to host is interned
+                # verbatim for the dynamic-arg ``$str_eq`` compare.
+                if att.get("method") != "restrict_to":
+                    continue
+                args = att.get("args", [])
+                if not args:
+                    continue
+                try:
+                    host = _unquote_attenuation_arg(args[0])
+                except WasmEmissionError:
+                    continue
+                self._intern_string(host)
             elif cap == "Env":
                 if att.get("method") != "restrict_to_keys":
                     continue

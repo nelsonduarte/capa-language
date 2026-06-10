@@ -97,6 +97,9 @@ class _InstrDispatchMixin:
             if recv_ty.startswith("Set"):
                 self._emit_set_method_call(instr)
                 return
+            if recv_ty.startswith("Range"):
+                self._emit_range_method_call(instr)
+                return
             if recv_ty == "String":
                 self._emit_string_method_call(instr)
                 return

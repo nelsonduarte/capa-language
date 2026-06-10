@@ -444,7 +444,7 @@ class _CapDispatchMixin:
         # it through a host call that consults the handle's
         # ``not_before`` deadline against the live wall clock) - see
         # the cap == "Clock" + method == "allows" branch below.
-        if method == "allows" and cap in ("Fs", "Env", "Db", "Proc"):
+        if method == "allows" and cap in ("Fs", "Env", "Db", "Proc", "Net"):
             self._emit_atten_allows(instr, cap)
             return
         # Slice 25.6 (2026-05-30): Clock.allows now takes a handle
@@ -876,6 +876,27 @@ class _CapDispatchMixin:
             prefix = _unquote_attenuation_arg(args[0])
             self._emit_path_prefix_check(prefix)
             return
+        if cap == "Net":
+            # Net.allows is EXACT host equality: ok &= (host == arg).
+            # Net.restrict_to intersects single-host sets, so the AND
+            # over the chain reproduces the intersection (two distinct
+            # hosts collapse to never-allowed).
+            if att_method != "restrict_to" or not args:
+                raise WasmEmissionError(
+                    f"unsupported Net attenuation: {att_method!r} "
+                    f"with args {args!r}"
+                )
+            host = _unquote_attenuation_arg(args[0])
+            offset, length = self._intern_string(host)
+            self._write("local.get $_atten_path_ptr")
+            self._write("local.get $_atten_path_len")
+            self._write(f"i32.const {offset}")
+            self._write(f"i32.const {length}")
+            self._write("call $str_eq")
+            self._write("local.get $_atten_ok")
+            self._write("i32.and")
+            self._write("local.set $_atten_ok")
+            return
         if cap == "Proc":
             # Basename + suffix-boundary check via the
             # ``$proc_allows`` runtime helper (matches Python's
@@ -1062,6 +1083,29 @@ class _CapDispatchMixin:
                 prefix = _unquote_attenuation_arg(args[0])
                 sep = prefix if prefix.endswith("/") else prefix + "/"
                 if not (literal == prefix or literal.startswith(sep)):
+                    result = False
+                    break
+        elif cap == "Net":
+            # AND over each restrict_to(host): the literal host must
+            # equal EVERY host in the chain (Net.restrict_to intersects
+            # single-host sets, so any two distinct hosts narrow to the
+            # empty set -> never allowed). Net.allows is EXACT equality
+            # (``host in self._allowed``), not a prefix check, so a host
+            # that merely shares a prefix is NOT allowed.
+            result = True
+            for att in attenuations:
+                if att.get("method") != "restrict_to":
+                    raise WasmEmissionError(
+                        f"unsupported Net attenuation on .allows: "
+                        f"{att.get('method')!r}"
+                    )
+                args = att.get("args", [])
+                if not args:
+                    raise WasmEmissionError(
+                        "Net.restrict_to attenuation with no arg"
+                    )
+                host = _unquote_attenuation_arg(args[0])
+                if literal != host:
                     result = False
                     break
         elif cap == "Proc":

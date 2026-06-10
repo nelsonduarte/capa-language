@@ -585,6 +585,28 @@ _PARITY_PROGRAMS: list[str] = [
     # computed-float class in this program is now byte-identical with
     # Python repr across both backends, so the file is parity-clean.
     "float_interpolation.capa",
+    # Loud-error stdlib gap closure (2026-06-10): three method families
+    # that previously raised a clean WasmEmissionError now compile to
+    # Wasm with Python parity.
+    #   list_query_methods: List.first / last / find / find_index /
+    #     sorted_by. Covers empty-list -> None, no-match -> None, match
+    #     at index 0 and the last index, and sorted_by stability
+    #     (equal-comparing elements keep input order) over Int, struct,
+    #     and String element types via a bottom-up STABLE merge sort
+    #     (Python's sorted is Timsort = stable; the left-biased merge
+    #     reproduces that exactly).
+    #   range_methods: Range.length / contains / is_empty / to_list on a
+    #     Range used as a value. Half-open [start, stop) with stop =
+    #     end + (inclusive ? 1 : 0), matching CapaRange's range(start,
+    #     stop). Covers empty (5..5), single, inclusive (a..=b),
+    #     contains at the boundaries, and to_list materialisation.
+    #   net_allows: Net.allows(host) inlined at emit time (exact host-
+    #     set membership, NOT a prefix check), literal + dynamic arg,
+    #     allowed / denied / prefix-share boundary, and chained
+    #     restrict_to narrowing to the empty set.
+    "list_query_methods.capa",
+    "range_methods.capa",
+    "net_allows.capa",
 ]
 
 # Programs deliberately excluded from parity and why; documented
@@ -1148,6 +1170,29 @@ class TestPythonWasmParity(unittest.TestCase):
         # was excluded from this harness before, which is exactly why
         # the divergence reached audit instead of CI.
         self._assert_parity("float_interpolation.capa")
+
+    def test_list_query_methods(self):
+        # Loud-error stdlib gap (2026-06-10): List.first / last / find /
+        # find_index / sorted_by, previously a clean WasmEmissionError.
+        # sorted_by is a STABLE merge sort matching Python's Timsort, so
+        # equal-comparing elements keep input order; the program checks
+        # that over Int, struct, and String element shapes. Edge cases:
+        # empty -> None, no-match -> None, match at index 0 / last.
+        self._assert_parity("list_query_methods.capa")
+
+    def test_range_methods(self):
+        # Loud-error stdlib gap (2026-06-10): Range.length / contains /
+        # is_empty / to_list on a Range used as a value. Half-open
+        # [start, stop) semantics matching CapaRange; covers empty
+        # (5..5), single, inclusive (a..=b), and contains boundaries.
+        self._assert_parity("range_methods.capa")
+
+    def test_net_allows(self):
+        # Loud-error stdlib gap (2026-06-10): Net.allows(host) inlined
+        # at emit time (exact host-set membership, NOT a prefix check).
+        # Covers literal + dynamic arg, allowed / denied / prefix-share
+        # boundary, and chained restrict_to narrowing to the empty set.
+        self._assert_parity("net_allows.capa")
 
     def test_closure_loop_capture(self):
         # Slice 19 (2026-05-29): for-loop lambda captures bind
