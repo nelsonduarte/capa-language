@@ -9,6 +9,64 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+### Bug fix: silent Wasm divergence, parse_json passed \uXXXX escapes through verbatim instead of decoding them
+
+The bundled Wasm-side JSON parser (`capa/ir/_builtin_json.capa`)
+left `\uXXXX` escapes undecoded: `"\u0041"` parsed `Ok` but the
+string value held the five characters `u0041` where Python's
+`json.loads` decodes the code point (`A`). The parser now decodes
+for real, replicating Python's `json` semantics exactly:
+
+- BMP code points (`\u00e9` -> `é`, `\u4e2d` -> `中`) and
+  escape-only control characters (`\u0001`) decode to the real
+  character; upper / lower / mixed-case hex digits are accepted.
+- A high surrogate (`\uD800..\uDBFF`) immediately followed by a
+  low-surrogate escape (`\uDC00..\uDFFF`) combines into one astral
+  code point (`\ud83d\ude00` -> 😀, one code point).
+- An UNPAIRED surrogate is NOT an error: like `json.loads`, it
+  yields a string holding the lone surrogate code point
+  (`json.loads('"\ud800"')` returns `'\ud800'`, length 1). On the
+  Wasm side the lone surrogate is stored as WTF-8 bytes, which
+  keeps `length()` (code-point count) identical to Python; note
+  Python itself cannot print such a string (`UnicodeEncodeError`
+  at the stdout encoder), so the parity surface for unpaired
+  surrogates is Ok-ness plus code-point count, and that is what
+  the tests pin.
+- Invalid escapes (`\uZZZZ`, `\u0x41`, truncation by the closing
+  quote) are `Err` on both backends ("Invalid \uXXXX escape" in
+  Python's wording).
+
+Decoding is backed by a new internal `_capa_chr` builtin
+(Int code point -> one-codepoint String; Python side `chr`, Wasm
+side a new `$chr` runtime helper that UTF-8/WTF-8-encodes into
+linear memory and traps loudly out of range). The serialiser side
+needed no change: `json.dumps(ensure_ascii=False)` emits the raw
+characters, which the chunked `__cj_quote_string` already copies
+byte-for-byte, so `to_json` round-trips agree. Covered by
+`tests/test_ir_wasm_parity.py::TestJsonUnicodeEscapeAndExtraDataParity`
+(BMP, control-char escape, astral pair incl. uppercase hex, lone
+high / low surrogate, high surrogate followed by BMP escape /
+plain text / a full pair, escapes mixed with text, invalid
+escapes, and to_json round-trips). The Wasm `parse_float`
+limitation (no scientific notation, so a JSON `1e3` still
+diverges) remains documented and is now tracked as a short
+TODO.md item; closing it requires correctly rounded
+decimal-to-binary conversion and is out of scope here.
+
+### Bug fix: silent Wasm divergence, parse_json accepted trailing garbage after the top-level value
+
+`parse_json("1 2")` returned `Ok(1)` on the Wasm backend where
+Python's `json.loads` raises "Extra data": the wrapper
+`__capa_parse_json` simply discarded the position the recursive
+descent returned. The wrapper now skips trailing whitespace and
+returns `Err("Extra data at N")` when any byte remains after the
+top-level value, on any value shape (`{} x`, `"a" "b"`, `[1] ,`).
+Trailing whitespace alone (space, tab, newline, CR) stays `Ok`,
+matching Python. Covered by the same
+`TestJsonUnicodeEscapeAndExtraDataParity` class (extra data after
+number / object / string / array, legitimate trailing
+whitespace).
+
 ### Bug fix: silent Wasm divergence, parse_json accepted raw control characters in JSON strings
 
 The bundled Wasm-side JSON parser (`capa/ir/_builtin_json.capa`)
@@ -23,9 +81,10 @@ introducers (`"\q"` parsed `Ok` as a literal `q`; Python: Err
 raw control characters and invalid escapes are `Err` on both
 backends, `\b` / `\f` decode to the real control characters, and
 the serialiser emits `\b`, `\f` and `\u00XX` for control
-characters exactly like `json.dumps`. (`\uXXXX` escapes still
-parse `Ok` but pass the hex digits through verbatim on Wasm, a
-pre-existing documented v1 limitation; pinned Ok-parity only.)
+characters exactly like `json.dumps`. (At the time of this fix,
+`\uXXXX` escapes still parsed `Ok` but passed the hex digits
+through verbatim on Wasm; that gap is closed by the dedicated
+`\uXXXX` entry above in this same release.)
 Covered by `tests/test_ir_wasm_parity.py::TestJsonAndLargeStringParity`
 (raw newline / tab / 0x00 / 0x01 / 0x0D / 0x1F in values and keys,
 valid-escape round-trip, invalid escape, `\u` Ok-parity).

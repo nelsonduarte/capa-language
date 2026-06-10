@@ -3526,6 +3526,17 @@ Remaining open items (no concrete driver yet):
   backend; cross-function attenuation chains still rely on the
   analyzer's static discipline check (intra-function inline
   enforcement only, per the C2 note above).
+- **Wasm `parse_float` has no scientific notation.** The
+  `$parse_float` runtime helper accepts only the canonical
+  `-12.345` shape (documented in its docstring in
+  `capa/ir/_emit_wasm/_runtime.py`); `parse_float("1e3")` and a
+  JSON number with an exponent return None / Err on Wasm where
+  Python parses them. Re-confirmed still documented during the
+  2026-06-10 JSON `\uXXXX` hardening. Closing it requires a
+  correctly ROUNDED decimal-to-binary conversion (Clinger/Eisel-
+  Lemire class, the inverse of the Dragon4 work), oracle-first
+  with a Python reference like `tools/float_ref.py`; out of scope
+  for the JSON parser slices.
 - **Debugger: DAP + per-expression source maps.** Statement-level
   source maps + caret snippets ship; a real stepping DAP adapter
   and per-sub-expression granularity remain open (deferred as

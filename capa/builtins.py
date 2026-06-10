@@ -268,6 +268,16 @@ FREE_FUNCTIONS: dict[str, tuple[TyFun, list[str]]] = {
     "py_invoke":   (fun(TyName("Unsafe"), TyUnknown, lst(TyUnknown), TyUnknown),   []),
     "parse_json":  (fun(TyString, res(_json_ty, TyString)),                        []),
     "to_json":     (fun(_json_ty, TyString),                                       []),
+    # Internal (underscore-prefixed, undocumented): build a
+    # one-codepoint String from a Unicode scalar / code-unit value.
+    # Exists so the bundled Wasm-side JSON parser
+    # (``capa/ir/_builtin_json.capa``) can decode ``\uXXXX`` escapes
+    # to real characters; Python side maps to ``chr``. Accepts
+    # 0..0x10FFFF including lone surrogates (stored as WTF-8 bytes on
+    # the Wasm side, mirroring Python's ability to hold lone
+    # surrogates in ``str``); out-of-range traps / raises on both
+    # backends.
+    "_capa_chr":   (fun(TyInt, TyString),                                          []),
     # Roadmap S2.5: the single auditable @secret -> @public bridge.
     # ``declassify(value, reason: "...")`` returns ``value`` with a
     # @public label. The analyzer special-cases its call shape (the

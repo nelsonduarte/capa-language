@@ -89,6 +89,22 @@ def to_int(f):
     return int(f)
 
 
+def _capa_chr(cp):
+    """Internal: one-codepoint String from an Int code point.
+
+    Backs the (undocumented, underscore-prefixed) ``_capa_chr``
+    builtin that the bundled Wasm-side JSON parser uses to decode
+    ``\\uXXXX`` escapes. Python's ``chr`` already accepts the full
+    0..0x10FFFF range including lone surrogates (which Python ``str``
+    can hold, exactly like ``json.loads`` produces for an unpaired
+    ``\\ud800``); the Wasm runtime helper ``$chr`` mirrors that by
+    storing lone surrogates as WTF-8 bytes. Out of range raises here
+    and traps on the Wasm side: loud on both backends."""
+    if not 0 <= cp <= 0x10FFFF:
+        raise ValueError(f"_capa_chr: code point {cp!r} out of range")
+    return chr(cp)
+
+
 def _propagate_err(result):
     """Helper used by the transpilation of the `?` operator.
 

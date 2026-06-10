@@ -50,6 +50,7 @@ from ._capabilities import (
     _StubCapability,
 )
 from ._convert import (
+    _capa_chr,
     _propagate_err,
     parse_float,
     parse_int,
@@ -126,4 +127,5 @@ __all__ = [
     "_capa_shr",
     "_capa_list_get",
     "_capa_substring",
+    "_capa_chr",
 ]

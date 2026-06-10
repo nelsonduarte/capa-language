@@ -2338,12 +2338,23 @@ class TestJsonAndLargeStringParity(unittest.TestCase):
         )
 
     def test_unicode_escape_is_ok_on_both(self):
-        # \uXXXX parses Ok on both backends. (The DECODED VALUE
-        # still diverges -- the Wasm-side parser passes the four
-        # hex digits through verbatim, a documented v1 limitation
-        # -- so this probe pins Ok-ness only.)
-        src = self._ok_err_probe(r'"\"a\\u0041b\""')
-        self._assert_src_parity(src, expect="Ok\n")
+        # \uXXXX parses Ok on both backends AND decodes to the real
+        # code point. (Until 2026-06-10 the Wasm-side parser passed
+        # the four hex digits through verbatim; the decoded value is
+        # now pinned by TestJsonUnicodeEscapeAndExtraDataParity
+        # below; here the historical Ok-ness probe is kept, value
+        # strengthened.)
+        src = (
+            "fun main(stdio: Stdio)\n"
+            '    let doc = "\\"a\\\\u0041b\\""\n'
+            "    match parse_json(doc)\n"
+            "        Ok(jv) ->\n"
+            "            match jv.as_string()\n"
+            '                Some(v) -> stdio.println("Ok ${v}")\n'
+            '                None    -> stdio.println("not a string")\n'
+            '        Err(m) -> stdio.println("Err")\n'
+        )
+        self._assert_src_parity(src, expect="Ok aAb\n")
 
     def test_invalid_escape_is_err(self):
         # \q is not a JSON escape: Err on both (Python: "Invalid
@@ -2434,6 +2445,211 @@ class TestJsonAndLargeStringParity(unittest.TestCase):
             '    stdio.println("${s.length()}")\n'
         )
         self._assert_src_parity(src, expect="70000\n")
+
+
+@unittest.skipUnless(
+    _has_wasm_tools() and _has_wasmtime_py(),
+    "wasm-tools and/or wasmtime-py not installed",
+)
+class TestJsonUnicodeEscapeAndExtraDataParity(unittest.TestCase):
+    r"""Bundled-JSON-parser hardening (2026-06-10, follow-up to
+    TestJsonAndLargeStringParity): two more pre-existing silent
+    divergences against the Python ``json`` oracle.
+
+    D1 (\uXXXX escapes): the Wasm-side parser passed the four hex
+    digits through VERBATIM ("A" decoded to the five characters
+    ``u0041``) where Python decodes the code point. Now decoded for
+    real, including surrogate pairs (``\ud83d\ude00`` -> one astral
+    code point) and Python's exact unpaired-surrogate semantics:
+    ``json.loads('"\ud800"')`` does NOT error -- it returns a string
+    holding the lone surrogate, length 1. The Wasm side stores that
+    lone surrogate as WTF-8 bytes, which keeps ``length()`` (code
+    point count) identical. Note that Python itself cannot PRINT a
+    lone surrogate (``UnicodeEncodeError`` at the stdout encoder),
+    so the unpaired-surrogate probes pin Ok-ness + length, never the
+    raw character.
+
+    D2 (extra data): ``parse_json("1 2")`` returned ``Ok(1)`` on
+    Wasm where Python raises "Extra data" -- the wrapper simply
+    discarded the trailing position. Any non-whitespace after the
+    top-level value is now Err; trailing whitespace stays Ok.
+    """
+
+    def _assert_src_parity(self, src: str, expect: str | None = None) -> None:
+        py_out = _capture_stdout(lambda: _run_python(src))
+        wasm_out = _capture_stdout(lambda: _run_wasm(src))
+        self.assertEqual(
+            py_out, wasm_out,
+            msg=(
+                f"Python/Wasm output divergence.\n"
+                f"--- python ---\n{py_out}\n"
+                f"--- wasm ---\n{wasm_out}"
+            ),
+        )
+        if expect is not None:
+            # Pin the agreed-upon output too: both backends agreeing
+            # on the WRONG answer must not pass.
+            self.assertEqual(py_out, expect)
+
+    @staticmethod
+    def _ok_err_probe(doc_literal: str) -> str:
+        """A main() that parses ``doc_literal`` (a Capa string
+        literal, escapes included) and prints just Ok / Err."""
+        return (
+            "fun main(stdio: Stdio)\n"
+            f"    let doc = {doc_literal}\n"
+            "    match parse_json(doc)\n"
+            '        Ok(jv) -> stdio.println("Ok")\n'
+            '        Err(m) -> stdio.println("Err")\n'
+        )
+
+    @staticmethod
+    def _string_value_probe(doc_literal: str, body: str) -> str:
+        """A main() that parses ``doc_literal``, projects the string
+        value ``v`` out, and prints ``body`` (an interpolation over
+        ``v`` / ``jv``)."""
+        return (
+            "fun main(stdio: Stdio)\n"
+            f"    let doc = {doc_literal}\n"
+            "    match parse_json(doc)\n"
+            "        Ok(jv) ->\n"
+            "            match jv.as_string()\n"
+            f'                Some(v) -> stdio.println("{body}")\n'
+            '                None    -> stdio.println("not a string")\n'
+            '        Err(m) -> stdio.println("Err")\n'
+        )
+
+    # ----- D1: \uXXXX decodes to the real code point ---------------
+
+    def test_unicode_escape_bmp(self):
+        # Two-byte (é, U+00E9) and three-byte (中, U+4E2D) BMP code
+        # points: decoded value, code point count, and the to_json
+        # round-trip (json.dumps with ensure_ascii=False emits the
+        # raw characters) all byte-identical.
+        src = self._string_value_probe(
+            r'"\"caf\\u00e9 \\u4e2d\""',
+            "Ok ${v} ${v.length()} ${to_json(jv)}",
+        )
+        self._assert_src_parity(src, expect='Ok café 中 6 "café 中"\n')
+
+    def test_unicode_escape_control_char(self):
+        # \u0001 decodes to the raw control code point U+0001; the
+        # round-trip re-escapes it exactly like json.dumps. The
+        # value is pinned through to_json rather than printed raw so
+        # the expected string stays readable; length pins that ONE
+        # code point landed in the value.
+        src = self._string_value_probe(
+            r'"\"\\u0001\""',
+            "Ok ${v.length()} ${to_json(jv)}",
+        )
+        self._assert_src_parity(src, expect='Ok 1 "\\u0001"\n')
+
+    def test_surrogate_pair_astral(self):
+        # \ud83d\ude00 combines into U+1F600 (one emoji code point),
+        # printable on both backends, round-trips through to_json.
+        src = self._string_value_probe(
+            r'"\"\\ud83d\\ude00\""',
+            "Ok ${v} ${v.length()} ${to_json(jv)}",
+        )
+        self._assert_src_parity(src, expect='Ok \U0001f600 1 "\U0001f600"\n')
+
+    def test_surrogate_pair_uppercase_hex(self):
+        # Python json accepts upper / mixed-case hex digits.
+        src = self._string_value_probe(
+            r'"\"\\uD83D\\udE00\""',
+            "Ok ${v} ${v.length()}",
+        )
+        self._assert_src_parity(src, expect="Ok \U0001f600 1\n")
+
+    def test_lone_surrogate_is_ok_like_python(self):
+        # Python's exact semantics, replicated: json.loads accepts
+        # an UNPAIRED surrogate escape and produces a string holding
+        # the lone surrogate code point (length 1). High and low
+        # alike. The raw character is deliberately NOT printed:
+        # Python cannot encode a lone surrogate to stdout
+        # (UnicodeEncodeError), so Ok-ness + code point count is the
+        # whole observable surface shared by the two backends.
+        for esc in (r"\\ud800", r"\\udc00"):
+            src = self._string_value_probe(
+                f'"\\"{esc}\\""',
+                "Ok ${v.length()}",
+            )
+            self._assert_src_parity(src, expect="Ok 1\n")
+
+    def test_lone_high_surrogate_then_bmp_escape(self):
+        # \ud800 followed by A: Python pairs ONLY a contiguous
+        # low-surrogate escape, so this is the lone surrogate plus
+        # "A" -- two code points.
+        src = self._string_value_probe(
+            r'"\"\\ud800\\u0041\""',
+            "Ok ${v.length()}",
+        )
+        self._assert_src_parity(src, expect="Ok 2\n")
+
+    def test_lone_high_surrogate_then_text(self):
+        # \ud800 followed by a plain character: lone surrogate + x.
+        src = self._string_value_probe(
+            r'"\"\\ud800x\""',
+            "Ok ${v.length()}",
+        )
+        self._assert_src_parity(src, expect="Ok 2\n")
+
+    def test_high_surrogate_then_full_pair(self):
+        # \ud800 then \ud83d\ude00: the first high surrogate stays lone
+        # (the next escape is another HIGH surrogate, not a low
+        # one), then the \ud83d\ude00 pair combines. Python: 2 code points.
+        src = self._string_value_probe(
+            r'"\"\\ud800\\ud83d\\ude00\""',
+            "Ok ${v.length()}",
+        )
+        self._assert_src_parity(src, expect="Ok 2\n")
+
+    def test_escapes_mixed_with_text(self):
+        # Escapes interleaved with plain runs: the chunked decode
+        # pass must splice runs and decoded code points in order.
+        src = self._string_value_probe(
+            r'"\"a\\u00e9b \\ud83d\\ude00 c\\u4e2dd\""',
+            "Ok ${v} ${v.length()} ${to_json(jv)}",
+        )
+        self._assert_src_parity(
+            src,
+            expect='Ok aéb \U0001f600 c中d 9 "aéb \U0001f600 c中d"\n',
+        )
+
+    def test_invalid_unicode_escapes_are_err(self):
+        # Non-hex digits, truncation by the closing quote, and
+        # Python's quirky-but-real rejection of "0x41" are all
+        # "Invalid \uXXXX escape" -> Err on both backends.
+        for esc in (r"\\uZZZZ", r"\\u00", r"\\u12", r"\\u0x41"):
+            src = self._ok_err_probe(f'"\\"{esc}\\""')
+            self._assert_src_parity(src, expect="Err\n")
+
+    # ----- D2: extra data after the top-level value -----------------
+
+    def test_extra_data_after_number(self):
+        # The exact reported repro: Python Err ("Extra data"),
+        # pre-fix Wasm Ok(1).
+        src = self._ok_err_probe(r'"1 2"')
+        self._assert_src_parity(src, expect="Err\n")
+
+    def test_extra_data_after_object(self):
+        src = self._ok_err_probe(r'"{\"a\": 1} {}"')
+        self._assert_src_parity(src, expect="Err\n")
+
+    def test_extra_data_after_string(self):
+        src = self._ok_err_probe(r'"\"a\" \"b\""')
+        self._assert_src_parity(src, expect="Err\n")
+
+    def test_extra_data_after_array(self):
+        src = self._ok_err_probe(r'"[1] ,"')
+        self._assert_src_parity(src, expect="Err\n")
+
+    def test_trailing_whitespace_is_ok(self):
+        # Whitespace (space, tab, newline, CR) after the value is
+        # legitimate JSON; only non-whitespace bytes are extra data.
+        for doc in (r'"1\n"', r'"  {\"a\": 1}\t \r\n"'):
+            src = self._ok_err_probe(doc)
+            self._assert_src_parity(src, expect="Ok\n")
 
 
 if __name__ == "__main__":

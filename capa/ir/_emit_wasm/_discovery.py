@@ -220,6 +220,17 @@ class _DiscoveryMixin:
             return False
         return self._uses_builtin_free_fn(module, "parse_float")
 
+    def _uses_capa_chr(self, module: Module) -> bool:
+        """Gates emission of the ``$chr`` runtime helper backing the
+        internal ``_capa_chr`` builtin (used by the bundled JSON
+        parser to decode ``\\uXXXX`` escapes). The discovery walk
+        runs after ``_builtin_json.inject_into`` splices the parser
+        functions in, so the call inside ``__cj_parse_string`` is
+        visible here."""
+        if any(fn.name == "_capa_chr" for fn in module.functions):
+            return False
+        return self._uses_builtin_free_fn(module, "_capa_chr")
+
     def _uses_builtin_free_fn(self, module: Module, name: str) -> bool:
         """True if any function or impl-method body Calls
         ``name``. Used to gate emission of optional runtime

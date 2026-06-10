@@ -867,6 +867,165 @@ class _RuntimeHelpersMixin:
         self._indent -= 1
         self._write(")")
 
+    def _emit_chr_function(self) -> None:
+        """Emit ``$chr(cp: i64) -> (i32 ptr, i32 len)``: a
+        freshly-allocated one-codepoint String holding the UTF-8
+        encoding of ``cp``. Backs the internal ``_capa_chr`` builtin
+        (Python side: ``chr``), which the bundled JSON parser uses to
+        decode ``\\uXXXX`` escapes.
+
+        Surrogate code points (U+D800..U+DFFF) are encoded through
+        the ordinary 3-byte branch -- i.e. WTF-8. That is deliberate:
+        Python's ``json.loads`` decodes an unpaired ``\\ud800`` to a
+        ``str`` holding the lone surrogate (length 1), and the WTF-8
+        bytes give the same observable codepoint count on the Wasm
+        side. Out-of-range input (< 0 or > 0x10FFFF) traps, mirroring
+        the ``ValueError`` from the Python runtime's ``_capa_chr``."""
+        self._write("(func $chr (param $cp i64) (result i32 i32)")
+        self._indent += 1
+        self._write("(local $c i32)")
+        self._write("(local $dst i32)")
+        # Range check: 0 <= cp <= 0x10FFFF, else trap (loud, like
+        # the Python runtime's ValueError).
+        self._write("local.get $cp")
+        self._write("i64.const 0")
+        self._write("i64.lt_s")
+        self._write("local.get $cp")
+        self._write("i64.const 1114111")
+        self._write("i64.gt_s")
+        self._write("i32.or")
+        self._write("if")
+        self._indent += 1
+        self._write("unreachable")
+        self._indent -= 1
+        self._write("end")
+        self._write("local.get $cp")
+        self._write("i32.wrap_i64")
+        self._write("local.set $c")
+        # 1 byte: cp < 0x80.
+        self._write("local.get $c")
+        self._write("i32.const 128")
+        self._write("i32.lt_u")
+        self._write("if")
+        self._indent += 1
+        self._write("i32.const 1")
+        self._write("call $alloc")
+        self._write("local.set $dst")
+        self._write("local.get $dst")
+        self._write("local.get $c")
+        self._write("i32.store8")
+        self._write("local.get $dst")
+        self._write("i32.const 1")
+        self._write("return")
+        self._indent -= 1
+        self._write("end")
+        # 2 bytes: cp < 0x800. 110xxxxx 10xxxxxx.
+        self._write("local.get $c")
+        self._write("i32.const 2048")
+        self._write("i32.lt_u")
+        self._write("if")
+        self._indent += 1
+        self._write("i32.const 2")
+        self._write("call $alloc")
+        self._write("local.set $dst")
+        self._write("local.get $dst")
+        self._write("local.get $c")
+        self._write("i32.const 6")
+        self._write("i32.shr_u")
+        self._write("i32.const 192")
+        self._write("i32.or")
+        self._write("i32.store8")
+        self._write("local.get $dst")
+        self._write("local.get $c")
+        self._write("i32.const 63")
+        self._write("i32.and")
+        self._write("i32.const 128")
+        self._write("i32.or")
+        self._write("i32.store8 offset=1")
+        self._write("local.get $dst")
+        self._write("i32.const 2")
+        self._write("return")
+        self._indent -= 1
+        self._write("end")
+        # 3 bytes: cp < 0x10000 (surrogates included: WTF-8).
+        # 1110xxxx 10xxxxxx 10xxxxxx.
+        self._write("local.get $c")
+        self._write("i32.const 65536")
+        self._write("i32.lt_u")
+        self._write("if")
+        self._indent += 1
+        self._write("i32.const 3")
+        self._write("call $alloc")
+        self._write("local.set $dst")
+        self._write("local.get $dst")
+        self._write("local.get $c")
+        self._write("i32.const 12")
+        self._write("i32.shr_u")
+        self._write("i32.const 224")
+        self._write("i32.or")
+        self._write("i32.store8")
+        self._write("local.get $dst")
+        self._write("local.get $c")
+        self._write("i32.const 6")
+        self._write("i32.shr_u")
+        self._write("i32.const 63")
+        self._write("i32.and")
+        self._write("i32.const 128")
+        self._write("i32.or")
+        self._write("i32.store8 offset=1")
+        self._write("local.get $dst")
+        self._write("local.get $c")
+        self._write("i32.const 63")
+        self._write("i32.and")
+        self._write("i32.const 128")
+        self._write("i32.or")
+        self._write("i32.store8 offset=2")
+        self._write("local.get $dst")
+        self._write("i32.const 3")
+        self._write("return")
+        self._indent -= 1
+        self._write("end")
+        # 4 bytes: cp <= 0x10FFFF. 11110xxx 10xxxxxx 10xxxxxx 10xxxxxx.
+        self._write("i32.const 4")
+        self._write("call $alloc")
+        self._write("local.set $dst")
+        self._write("local.get $dst")
+        self._write("local.get $c")
+        self._write("i32.const 18")
+        self._write("i32.shr_u")
+        self._write("i32.const 240")
+        self._write("i32.or")
+        self._write("i32.store8")
+        self._write("local.get $dst")
+        self._write("local.get $c")
+        self._write("i32.const 12")
+        self._write("i32.shr_u")
+        self._write("i32.const 63")
+        self._write("i32.and")
+        self._write("i32.const 128")
+        self._write("i32.or")
+        self._write("i32.store8 offset=1")
+        self._write("local.get $dst")
+        self._write("local.get $c")
+        self._write("i32.const 6")
+        self._write("i32.shr_u")
+        self._write("i32.const 63")
+        self._write("i32.and")
+        self._write("i32.const 128")
+        self._write("i32.or")
+        self._write("i32.store8 offset=2")
+        self._write("local.get $dst")
+        self._write("local.get $c")
+        self._write("i32.const 63")
+        self._write("i32.and")
+        self._write("i32.const 128")
+        self._write("i32.or")
+        self._write("i32.store8 offset=3")
+        self._write("local.get $dst")
+        self._write("i32.const 4")
+        self._indent -= 1
+        self._write(")")
+
     def _emit_alloc_function(self) -> None:
         """Emit a bump allocator: ``$alloc(size: i32) -> i32`` that
         returns the current heap_top, aligned to 8, and advances it

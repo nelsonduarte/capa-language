@@ -10,8 +10,10 @@
 // (.as_object / .as_string / ...) which dereferences pointers.
 
 // Returns ``Ok((value, new_pos))`` on a parse, ``Err(msg)`` on
-// failure. The wrapper ``__capa_parse_json`` discards the trailing
-// position; everything internal threads it through.
+// failure. The wrapper ``__capa_parse_json`` uses the trailing
+// position to reject garbage after the top-level value (Python's
+// json.loads raises "Extra data" for ``1 2``); everything internal
+// threads it through.
 
 // Representation note (2026-06-10): the parser threads a
 // ``List<String>`` of one-codepoint views built once per
@@ -45,7 +47,13 @@ pub fun __capa_parse_json(s: String) -> Result<JsonValue, String>
     let start = __cj_skip_ws(chars, 0)
     match __cj_parse_value(s, chars, start, 0)
         Ok(jv_pos) ->
-            let (jv, _trailing_pos) = jv_pos
+            let (jv, after) = jv_pos
+            // RFC 8259: a JSON text is ONE value (plus whitespace).
+            // Anything left after the top-level value is an error;
+            // Python's json.loads raises "Extra data" for ``1 2``.
+            let trailing = __cj_skip_ws(chars, after)
+            if trailing < chars.length()
+                return Err("Extra data at ${trailing}")
             return Ok(jv)
         Err(msg) -> return Err(msg)
 
@@ -114,21 +122,60 @@ fun __cj_parse_bool(chars: List<String>, pos: Int) -> Result<(JsonValue, Int), S
             return Ok((JBool(false), pos + 5))
     return Err("expected true/false at ${pos}")
 
+// Hex digit value for one character: 0..15, or -1 when ``c`` is
+// not a hex digit. Both cases accepted, like Python's json.
+fun __cj_hex_val(c: String) -> Int
+    match "0123456789abcdef".index_of(c)
+        Some(i) -> return i
+        None ->
+            match "ABCDEF".index_of(c)
+                Some(i) -> return i + 10
+                None    -> return -1
+
+// Parse the four hex digits of a \uXXXX escape starting at ``p``
+// (the first digit, i.e. just after the "u"). Returns the value
+// 0..0xFFFF, or -1 when a digit is missing or invalid -- the same
+// inputs Python's json rejects with "Invalid \uXXXX escape".
+fun __cj_u4(chars: List<String>, p: Int) -> Int
+    if p + 3 >= chars.length()
+        return -1
+    var v = 0
+    var i = 0
+    while i < 4
+        let d = __cj_hex_val(chars[p + i])
+        if d < 0
+            return -1
+        v = v * 16 + d
+        i = i + 1
+    return v
+
 // Parse a JSON string starting at ``pos`` (the opening quote).
 // Returns the decoded String and the position just after the
 // closing quote.
 //
 // Two passes. The scan pass finds the closing quote, rejects raw
-// control characters (RFC 8259 section 7) and invalid escape
-// introducers, and records whether any escape occurred. When the
-// scan saw no escape, the value is one ``substring`` -- a single
-// allocation, so 100 KiB+ strings parse in linear memory. With
-// escapes, the decode pass copies the runs between escapes as
-// chunks and splices the decoded escape characters in between.
+// control characters (RFC 8259 section 7), invalid escape
+// introducers, and \u escapes without four hex digits, and records
+// whether any escape occurred. When the scan saw no escape, the
+// value is one ``substring`` -- a single allocation, so 100 KiB+
+// strings parse in linear memory. With escapes, the decode pass
+// copies the runs between escapes as chunks and splices the decoded
+// escape characters in between.
 //
-// Handles \" \\ \/ \b \f \n \r \t. Unicode \uXXXX escapes are
-// passed through as-is in v1 ("u" plus the four hex digits land
-// verbatim in the output); a follow-up could lift them to UTF-8.
+// Handles \" \\ \/ \b \f \n \r \t and \uXXXX. \uXXXX decodes to
+// the real code point via the internal ``_capa_chr`` builtin,
+// replicating Python's json semantics exactly:
+//
+// - a high surrogate (D800..DBFF) immediately followed by a low
+//   surrogate escape (\uDC00..\uDFFF) combines into one astral
+//   code point ("😀" -> U+1F600, the emoji);
+// - an UNPAIRED surrogate is kept as-is as a lone code point
+//   (json.loads('"\ud800"') returns '\ud800', length 1 -- it does
+//   NOT error). On the Wasm side the lone surrogate is stored as
+//   WTF-8 bytes, which keeps length() / substring() / comparisons
+//   in codepoint parity with Python; note Python itself cannot
+//   PRINT that string (UnicodeEncodeError at the stdout encoder),
+//   so byte-exact print parity is moot for unpaired surrogates.
 fun __cj_parse_string(s: String, chars: List<String>, pos: Int) -> Result<(JsonValue, Int), String>
     let n = chars.length()
     var p = pos + 1
@@ -143,9 +190,19 @@ fun __cj_parse_string(s: String, chars: List<String>, pos: Int) -> Result<(JsonV
             has_escape = true
             if p + 1 >= n
                 return Err("bad escape at ${p}")
-            if not __cj_is_valid_escape(chars[p + 1])
+            let e = chars[p + 1]
+            if not __cj_is_valid_escape(e)
                 return Err("invalid escape at ${p}")
-            p = p + 2
+            if e == "u"
+                // Four hex digits required; the closing quote is
+                // not a hex digit, so a truncated escape ("\u00")
+                // fails here exactly like Python's
+                // "Invalid \uXXXX escape".
+                if __cj_u4(chars, p + 2) < 0
+                    return Err("invalid \\uXXXX escape at ${p}")
+                p = p + 6
+            else
+                p = p + 2
         else
             if __cj_is_ctrl(c)
                 return Err("invalid control character at ${p}")
@@ -163,26 +220,44 @@ fun __cj_parse_string(s: String, chars: List<String>, pos: Int) -> Result<(JsonV
             if run_start < p
                 out = out + s.substring(run_start, p)
             let e = chars[p + 1]
-            if e == "n"
-                out = out + "\n"
+            if e == "u"
+                // Scan pass guaranteed four valid hex digits for
+                // every \u inside the string, this one included.
+                let h1 = __cj_u4(chars, p + 2)
+                var cp = h1
+                var consumed = 6
+                if h1 >= 55296 and h1 <= 56319
+                    // High surrogate: combine with an immediately
+                    // following low-surrogate escape (Python json
+                    // pairs ONLY the contiguous \uXXXX\uXXXX shape;
+                    // anything else leaves the surrogate unpaired).
+                    if p + 7 < n
+                        if chars[p + 6] == "\\" and chars[p + 7] == "u"
+                            let h2 = __cj_u4(chars, p + 8)
+                            if h2 >= 56320 and h2 <= 57343
+                                cp = 65536 + (h1 - 55296) * 1024 + (h2 - 56320)
+                                consumed = 12
+                out = out + _capa_chr(cp)
+                p = p + consumed
             else
-                if e == "t"
-                    out = out + "\t"
+                if e == "n"
+                    out = out + "\n"
                 else
-                    if e == "r"
-                        out = out + "\r"
+                    if e == "t"
+                        out = out + "\t"
                     else
-                        if e == "b"
-                            out = out + "\u{8}"
+                        if e == "r"
+                            out = out + "\r"
                         else
-                            if e == "f"
-                                out = out + "\u{c}"
+                            if e == "b"
+                                out = out + "\u{8}"
                             else
-                                // " \ / decode to themselves; \u
-                                // keeps the verbatim pass-through
-                                // documented above.
-                                out = out + e
-            p = p + 2
+                                if e == "f"
+                                    out = out + "\u{c}"
+                                else
+                                    // " \ / decode to themselves.
+                                    out = out + e
+                p = p + 2
             run_start = p
         else
             p = p + 1

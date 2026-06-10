@@ -562,6 +562,11 @@ class WasmEmitter(
                 self._emit_parse_int_function()
             if self._uses_parse_float(module):
                 self._emit_parse_float_function()
+            # _capa_chr (internal): one-codepoint String from an Int
+            # code point; backs \uXXXX decoding in the bundled JSON
+            # parser. Emit only when used.
+            if self._uses_capa_chr(module):
+                self._emit_chr_function()
             # Generated structural-equality helpers ($eq_<Type>) for
             # any compound type compared with == / != (or used as a
             # pointer-shape List.contains element). Emitted here, at
@@ -757,6 +762,7 @@ class WasmEmitter(
     _TAIL_CALL_INTRINSICS = frozenset({
         "Random", "parse_json", "to_json",
         "parse_int", "parse_float", "to_float", "to_int",
+        "_capa_chr",
     })
 
     def _emit_body(self, instrs: list) -> None:
@@ -1371,6 +1377,19 @@ class WasmEmitter(
             self._write(f"call ${instr.callee_name}")
             if instr.dst is not None:
                 self._write(f"local.set ${instr.dst}")
+            return
+        # _capa_chr (internal builtin): Int code point -> one-codepoint
+        # String, via the $chr runtime helper (multi-value ptr/len).
+        if instr.callee_name == "_capa_chr" \
+                and len(instr.args) == 1 \
+                and instr.callee_name not in self._user_fn_names:
+            self._push_value(instr.args[0])
+            self._write("call $chr")
+            if instr.dst is not None:
+                self._set_string_dst(instr.dst)
+            else:
+                self._write("drop")
+                self._write("drop")
             return
         # Numeric conversion intrinsics. These lower to one Wasm
         # instruction each; faster (and simpler) than a host bridge.
