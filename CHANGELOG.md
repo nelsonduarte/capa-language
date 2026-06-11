@@ -9,6 +9,50 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+### Wasm backend: discovery gates were blind to impl methods and lambda bodies
+
+Every pre-emit "does this module use feature X?" gate in the Wasm
+backend hand-rolled its own walk over the IR, and several of the
+copies had drifted: some never looked inside `impl` method bodies,
+some never recursed into lambda (`MakeLambda`) bodies. A feature
+whose ONLY use lived in one of those contexts then compiled into a
+call against a runtime helper the module never defined, failing
+loudly at `wasm-tools parse` time ("unknown func") or aborting
+emission outright. Affected features and contexts:
+
+- `String` `==` / `!=`, String-scrutinee `match`, `Set<String>` /
+  `Map<String, _>` operations inside an impl method (the `$str_eq`
+  gate walked only top-level functions);
+- structural equality (`==` on `List` / `Map` / `Set` / struct /
+  sum / tuple) inside an impl method or a lambda body (the
+  `$eq_*` helper collection missed both, and with it the
+  String-leaf `$str_eq` backstop);
+- `Float` interpolation inside an impl method (`$ftoa`);
+- ANY lambda inside an impl method (the lambda-lift discovery
+  never visited methods, so emission aborted with "MakeLambda not
+  registered by the discover pass");
+- `parse_json` / `to_json` inside an impl method (the bundled JSON
+  parser was never injected) or a lambda body;
+- `Random` used only inside a lambda body (`$rand_state` /
+  SplitMix64 helpers);
+- on the `--component` path, the WIT generator missed capability
+  calls inside impl methods AND lambda bodies, so a program whose
+  only capability use lived there produced a WIT/core-import
+  mismatch and failed at component link time.
+
+All of these now consume one shared traversal (`capa.ir._walk`)
+that covers every top-level function, every impl method, every
+lambda body, and every nested instruction list including match-arm
+guard preludes; the previously-correct gates (`$itoa`, codepoint
+helpers, panic, parse_int / parse_float, attenuation checks, the
+cap-import discovery, the WIT collector) migrated onto it too, so
+the next instruction-bearing slot is added in exactly one place.
+Covered by `tests/test_ir_wasm_parity.py`
+(`TestDiscoveryGateCoverageParity`): one cross-backend parity test
+per previously-failing (gate, context) pair, the two guard-prelude
+shapes that already worked pinned against regression, and the two
+WIT cases exercised through the full `--component --run` path.
+
 ### New builtin: `panic(message)` aborts the program, loudly, on every backend
 
 Capa had no deliberate way for a program to terminate with a

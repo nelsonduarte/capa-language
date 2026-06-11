@@ -2822,5 +2822,310 @@ class TestJsonStrictNumbersDepthAndSignParity(unittest.TestCase):
         self._assert_src_parity(src, expect='Ok "café \U0001f600"\n')
 
 
+@unittest.skipUnless(
+    _has_wasm_tools() and _has_wasmtime_py(),
+    "wasm-tools and/or wasmtime-py not installed",
+)
+class TestDiscoveryGateCoverageParity(unittest.TestCase):
+    """Shared-traversal slice (2026-06-11): every pre-emit Wasm
+    discovery gate now consumes ``capa.ir._walk`` (top-level
+    functions + impl methods + MakeLambda bodies + every nested
+    instruction list, match-arm guard preludes included).
+
+    Pre-fix each gate hand-rolled its own IR walk and several were
+    blind to impl-method bodies and/or lambda bodies, so a feature
+    used ONLY in one of those contexts emitted calls to runtime
+    helpers the module never defined ("unknown func: failed to
+    find name $str_eq / $ftoa / $__capa_parse_json / ..." from
+    wasm-tools parse) or aborted emission outright (any lambda in
+    an impl method: "MakeLambda ... not registered by the discover
+    pass"). One test per previously-blind (gate, context) pair,
+    each the minimal program that failed loudly, asserted as
+    cross-backend output parity; plus the two match-guard shapes
+    that already worked, pinned against regression; plus the
+    WIT-side capability collection under the full
+    ``--component --run`` path."""
+
+    def _assert_src_parity(self, src: str, expect: str | None = None) -> None:
+        py_out = _capture_stdout(lambda: _run_python(src))
+        wasm_out = _capture_stdout(lambda: _run_wasm(src))
+        self.assertEqual(
+            py_out, wasm_out,
+            msg=(
+                f"Python/Wasm output divergence.\n"
+                f"--- python ---\n{py_out}\n"
+                f"--- wasm ---\n{wasm_out}"
+            ),
+        )
+        if expect is not None:
+            # Pin the agreed-upon output too: both backends agreeing
+            # on the WRONG answer must not pass.
+            self.assertEqual(py_out, expect)
+
+    def _assert_src_cm_parity(self, src: str, expect: str | None = None) -> None:
+        """Component Model flavour: the WIT generated for ``src``
+        and the core module's imports must agree, or the component
+        link fails before anything runs."""
+        py_out = _capture_stdout(lambda: _run_python(src))
+        cm_out = _capture_stdout(lambda: _run_wasm_component(src))
+        self.assertEqual(
+            py_out, cm_out,
+            msg=(
+                f"Python/Wasm-Component output divergence.\n"
+                f"--- python ---\n{py_out}\n"
+                f"--- wasm-component ---\n{cm_out}"
+            ),
+        )
+        if expect is not None:
+            self.assertEqual(py_out, expect)
+
+    # ----- $str_eq (_uses_map_ops) ------------------------------
+
+    def test_str_eq_in_method(self):
+        # Pre-fix: "unknown func: failed to find name $str_eq".
+        src = (
+            "type Box { s: String }\n"
+            "impl Box\n"
+            "    fun is_hi(self) -> Bool\n"
+            '        return self.s == "hi"\n'
+            "\n"
+            "fun main(stdio: Stdio)\n"
+            '    let b = Box { s: "hi" }\n'
+            "    if b.is_hi()\n"
+            '        stdio.println("method str eq")\n'
+        )
+        self._assert_src_parity(src, expect="method str eq\n")
+
+    def test_str_eq_in_lambda_inside_method(self):
+        # The doubly-nested context: a String == that only exists
+        # inside a lambda which itself only exists inside an impl
+        # method. Pre-fix this aborted at lambda registration
+        # before $str_eq even mattered.
+        src = (
+            "type Box { s: String }\n"
+            "impl Box\n"
+            "    fun check(self) -> Bool\n"
+            "        let f = fun (x: String) -> Bool => x == \"yes\"\n"
+            "        return f(self.s)\n"
+            "\n"
+            "fun main(stdio: Stdio)\n"
+            '    let b = Box { s: "yes" }\n'
+            "    if b.check()\n"
+            '        stdio.println("lambda in method str eq")\n'
+        )
+        self._assert_src_parity(src, expect="lambda in method str eq\n")
+
+    def test_string_match_in_method(self):
+        # String-scrutinee match calls $str_eq per arm; the Match
+        # branch of _uses_map_ops was blind to impl methods.
+        src = (
+            "type Tagger { t: String }\n"
+            "impl Tagger\n"
+            "    fun label(self) -> Int\n"
+            "        match self.t\n"
+            '            "a" -> return 1\n'
+            '            "b" -> return 2\n'
+            "            _ -> return 0\n"
+            "\n"
+            "fun main(stdio: Stdio)\n"
+            '    let t = Tagger { t: "b" }\n'
+            '    stdio.println("label = ${t.label()}")\n'
+        )
+        self._assert_src_parity(src, expect="label = 2\n")
+
+    def test_set_and_map_of_string_in_method(self):
+        # Set<String>.add/contains and Map<String, _>.set/get both
+        # compare keys/elements via $str_eq.
+        src = (
+            "type Registry { n: Int }\n"
+            "impl Registry\n"
+            "    fun probe(self, stdio: Stdio)\n"
+            "        var tags = new_set()\n"
+            '        tags.add("red")\n'
+            '        tags.add("red")\n'
+            '        stdio.println("set has red: ${tags.contains(\\"red\\")}")\n'
+            "        var m = new_map()\n"
+            '        m.set("k", 7)\n'
+            '        match m.get("k")\n'
+            '            Some(v) -> stdio.println("map k = ${v}")\n'
+            '            None -> stdio.println("map miss")\n'
+            "\n"
+            "fun main(stdio: Stdio)\n"
+            "    let r = Registry { n: 1 }\n"
+            "    r.probe(stdio)\n"
+        )
+        self._assert_src_parity(
+            src, expect="set has red: true\nmap k = 7\n",
+        )
+
+    # ----- $eq_* structural helpers (_collect_eq_types) ---------
+
+    def test_list_string_eq_in_method(self):
+        # List<String> == needs $eq_List_String AND $str_eq for the
+        # element leaves; _collect_eq_types / _eq_needs_str_eq were
+        # both blind to impl methods.
+        src = (
+            "type Holder { n: Int }\n"
+            "impl Holder\n"
+            "    fun same(self, a: List<String>, b: List<String>) -> Bool\n"
+            "        return a == b\n"
+            "\n"
+            "fun main(stdio: Stdio)\n"
+            "    let h = Holder { n: 0 }\n"
+            '    let xs = ["a", "b"]\n'
+            '    let ys = ["a", "b"]\n'
+            '    let zs = ["a", "c"]\n'
+            '    stdio.println("xs == ys: ${h.same(xs, ys)}")\n'
+            '    stdio.println("xs == zs: ${h.same(xs, zs)}")\n'
+        )
+        self._assert_src_parity(
+            src, expect="xs == ys: true\nxs == zs: false\n",
+        )
+
+    def test_list_string_eq_in_toplevel_lambda(self):
+        # Same gate, lambda-body context inside a plain function.
+        src = (
+            "fun main(stdio: Stdio)\n"
+            '    let xs = ["a", "b"]\n'
+            '    let ys = ["a", "b"]\n'
+            "    let same = fun (p: List<String>, q: List<String>) -> Bool => p == q\n"
+            '    stdio.println("lambda list eq: ${same(xs, ys)}")\n'
+        )
+        self._assert_src_parity(src, expect="lambda list eq: true\n")
+
+    # ----- $ftoa (_uses_float_format) ----------------------------
+
+    def test_float_interpolation_in_method(self):
+        # Pre-fix: "unknown func: failed to find name $ftoa".
+        src = (
+            "type Reading { f: Float }\n"
+            "impl Reading\n"
+            "    fun show(self, stdio: Stdio)\n"
+            '        stdio.println("f = ${self.f}")\n'
+            "\n"
+            "fun main(stdio: Stdio)\n"
+            "    let r = Reading { f: 1.5 }\n"
+            "    r.show(stdio)\n"
+        )
+        self._assert_src_parity(src, expect="f = 1.5\n")
+
+    # ----- lambda lift (_discover_lambdas) -----------------------
+
+    def test_lambda_in_method(self):
+        # Pre-fix: ANY lambda inside an impl method aborted with
+        # "MakeLambda ... not registered by the discover pass".
+        src = (
+            "type Box { n: Int }\n"
+            "impl Box\n"
+            "    fun doubled(self) -> Int\n"
+            "        let f = fun (x: Int) -> Int => x * 2\n"
+            "        return f(self.n)\n"
+            "\n"
+            "fun main(stdio: Stdio)\n"
+            "    let b = Box { n: 21 }\n"
+            '    stdio.println("doubled = ${b.doubled()}")\n'
+        )
+        self._assert_src_parity(src, expect="doubled = 42\n")
+
+    # ----- bundled JSON parser (uses_json_builtins) --------------
+
+    def test_parse_json_in_method(self):
+        # Pre-fix: the injector never saw the call, so the emitted
+        # "call $__capa_parse_json" had no target function.
+        src = (
+            "type P { s: String }\n"
+            "impl P\n"
+            "    fun first_ok(self) -> Bool\n"
+            "        match parse_json(self.s)\n"
+            "            Ok(j) -> return true\n"
+            "            Err(m) -> return false\n"
+            "\n"
+            "fun main(stdio: Stdio)\n"
+            '    let good = P { s: "[1, 2]" }\n'
+            '    let bad = P { s: "[1, " }\n'
+            '    stdio.println("good: ${good.first_ok()}")\n'
+            '    stdio.println("bad: ${bad.first_ok()}")\n'
+        )
+        self._assert_src_parity(src, expect="good: true\nbad: false\n")
+
+    # ----- SplitMix64 helpers (_uses_random) ---------------------
+
+    def test_random_in_lambda(self):
+        # Pre-fix: "unknown global: failed to find name $rand_state".
+        # Seeded so both backends draw the identical sequence.
+        src = (
+            "fun main(stdio: Stdio, rng: Random)\n"
+            "    let draw = fun () -> Int => rng.with_seed(42).int_range(0, 100)\n"
+            '    stdio.println("draw = ${draw()}")\n'
+        )
+        self._assert_src_parity(src)
+
+    # ----- match-arm guard preludes (pinned, were already OK) ----
+
+    def test_str_eq_only_in_match_guard(self):
+        # The guard_setup walk: a String == whose ONLY occurrence
+        # is a match-arm guard. Verified working before the shared
+        # traversal landed; pinned so it stays that way.
+        src = (
+            "fun pick(n: Int, s: String) -> Int\n"
+            "    match n\n"
+            '        x if s == "go" -> return x * 10\n'
+            "        x -> return x\n"
+            "\n"
+            "fun main(stdio: Stdio)\n"
+            '    stdio.println("go: ${pick(3, \\"go\\")}")\n'
+            '    stdio.println("stop: ${pick(3, \\"stop\\")}")\n'
+        )
+        self._assert_src_parity(src, expect="go: 30\nstop: 3\n")
+
+    def test_list_eq_only_in_match_guard(self):
+        # Same pin for the structural-equality gate: a List<String>
+        # == that only exists inside a guard prelude.
+        src = (
+            "fun pick(n: Int, xs: List<String>, ys: List<String>) -> Int\n"
+            "    match n\n"
+            "        x if xs == ys -> return x * 10\n"
+            "        x -> return x\n"
+            "\n"
+            "fun main(stdio: Stdio)\n"
+            '    let a = ["a", "b"]\n'
+            '    let b = ["a", "b"]\n'
+            '    let c = ["a", "c"]\n'
+            '    stdio.println("eq: ${pick(3, a, b)}")\n'
+            '    stdio.println("ne: ${pick(3, a, c)}")\n'
+        )
+        self._assert_src_parity(src, expect="eq: 30\nne: 3\n")
+
+    # ----- WIT capability collection under --component --run -----
+
+    def test_cap_only_in_method_under_cm(self):
+        # The program's ONLY capability use lives in an impl
+        # method. Pre-fix collect_used_capabilities returned an
+        # empty WIT while the core module imported
+        # capa:host/stdio, so the component link failed loudly.
+        src = (
+            "type Greeter { n: Int }\n"
+            "impl Greeter\n"
+            "    fun hello(self, stdio: Stdio)\n"
+            '        stdio.println("hi from method ${self.n}")\n'
+            "\n"
+            "fun main(stdio: Stdio)\n"
+            "    let g = Greeter { n: 7 }\n"
+            "    g.hello(stdio)\n"
+        )
+        self._assert_src_cm_parity(src, expect="hi from method 7\n")
+
+    def test_cap_only_in_lambda_under_cm(self):
+        # Same mismatch, lambda-body context: the core-wasm side
+        # discovered the import (its lambda walk fed
+        # _discover_instrs) but the WIT side never saw it.
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    let say = fun () -> Unit => stdio.println(\"hi from lambda\")\n"
+            "    say()\n"
+        )
+        self._assert_src_cm_parity(src, expect="hi from lambda\n")
+
+
 if __name__ == "__main__":
     unittest.main()

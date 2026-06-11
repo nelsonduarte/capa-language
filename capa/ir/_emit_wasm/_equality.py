@@ -26,7 +26,8 @@ a sum payload / tuple / list slot (packed i64).
 
 from __future__ import annotations
 
-from .._nodes import BinOp, MethodCall, If, While, For, Match
+from .._nodes import BinOp, MethodCall
+from .._walk import walk_module
 from ._layout import (
     WasmEmissionError,
     _LIST_LEN_OFFSET, _LIST_DATA_OFFSET,
@@ -137,59 +138,47 @@ class _EqualityMixin:
             for sub in self._eq_subtypes(ty):
                 add(sub)
 
-        def visit(instrs) -> None:
-            for instr in instrs:
-                if isinstance(instr, BinOp) and instr.op in ("==", "!="):
-                    lt = self._normalize_eq_ty(instr.left.ty or "")
-                    rt = self._normalize_eq_ty(instr.right.ty or "")
-                    # Pick whichever side names a helper-bearing type:
-                    # a compound (struct / sum / tuple / List / Map / Set)
-                    # or a trait (dispatched structurally by type-id).
-                    cand = lt if (self._is_compound_eq_ty(lt)
-                                  or self._is_trait_eq_ty(lt)) else rt
-                    if self._is_compound_eq_ty(cand) or self._is_trait_eq_ty(cand):
-                        add(cand)
-                elif isinstance(instr, MethodCall) and instr.method == "contains":
-                    elem = self._list_elem_ty(instr.receiver.ty or "")
-                    if elem and self._is_pointer_shape_ty(elem):
-                        add(elem)
-                elif (isinstance(instr, MethodCall)
-                        and instr.method in ("add", "contains", "remove")
-                        and (instr.receiver.ty or "").startswith("Set")):
-                    # Set<pointer-shape> dedup / membership / removal
-                    # scans compare elements via the element's $eq_*
-                    # helper, so pull it into the discovery set just
-                    # like List.contains does.
-                    elem = self._set_elem_ty(instr.receiver.ty or "")
-                    if elem and self._is_pointer_shape_ty(elem):
-                        add(elem)
-                elif (isinstance(instr, MethodCall)
-                        and instr.method in ("get", "set", "contains_key")
-                        and (instr.receiver.ty or "").startswith("Map")):
-                    # Map<pointer-shape, V> set / get / contains_key
-                    # compares keys via the key's $eq_* helper, so
-                    # pull it into the discovery set just like Set's
-                    # add / contains / remove branch above. Scalar
-                    # (String / Int / Bool) keys never need a helper.
-                    key_ty = _map_key_type(instr.receiver.ty or "")
-                    if key_ty and self._is_pointer_shape_ty(key_ty):
-                        add(key_ty)
-                # Recurse into nested instruction bodies (mirrors the
-                # traversal in _discovery / _locals).
-                if isinstance(instr, If):
-                    visit(instr.then_body)
-                    visit(instr.else_body)
-                elif isinstance(instr, While):
-                    visit(instr.cond_setup)
-                    visit(instr.body)
-                elif isinstance(instr, For):
-                    visit(instr.body)
-                elif isinstance(instr, Match):
-                    for arm in instr.arms:
-                        visit(arm.body)
-
-        for fn in module.functions:
-            visit(fn.body)
+        # The shared module walk reaches every body the emitter
+        # will compile: impl methods and MakeLambda bodies included
+        # (a ``==`` that only appears inside a method or a closure
+        # still needs its $eq_* helper emitted), plus match-arm
+        # guard preludes.
+        for _fn, instr in walk_module(module):
+            if isinstance(instr, BinOp) and instr.op in ("==", "!="):
+                lt = self._normalize_eq_ty(instr.left.ty or "")
+                rt = self._normalize_eq_ty(instr.right.ty or "")
+                # Pick whichever side names a helper-bearing type:
+                # a compound (struct / sum / tuple / List / Map / Set)
+                # or a trait (dispatched structurally by type-id).
+                cand = lt if (self._is_compound_eq_ty(lt)
+                              or self._is_trait_eq_ty(lt)) else rt
+                if self._is_compound_eq_ty(cand) or self._is_trait_eq_ty(cand):
+                    add(cand)
+            elif isinstance(instr, MethodCall) and instr.method == "contains":
+                elem = self._list_elem_ty(instr.receiver.ty or "")
+                if elem and self._is_pointer_shape_ty(elem):
+                    add(elem)
+            elif (isinstance(instr, MethodCall)
+                    and instr.method in ("add", "contains", "remove")
+                    and (instr.receiver.ty or "").startswith("Set")):
+                # Set<pointer-shape> dedup / membership / removal
+                # scans compare elements via the element's $eq_*
+                # helper, so pull it into the discovery set just
+                # like List.contains does.
+                elem = self._set_elem_ty(instr.receiver.ty or "")
+                if elem and self._is_pointer_shape_ty(elem):
+                    add(elem)
+            elif (isinstance(instr, MethodCall)
+                    and instr.method in ("get", "set", "contains_key")
+                    and (instr.receiver.ty or "").startswith("Map")):
+                # Map<pointer-shape, V> set / get / contains_key
+                # compares keys via the key's $eq_* helper, so
+                # pull it into the discovery set just like Set's
+                # add / contains / remove branch above. Scalar
+                # (String / Int / Bool) keys never need a helper.
+                key_ty = _map_key_type(instr.receiver.ty or "")
+                if key_ty and self._is_pointer_shape_ty(key_ty):
+                    add(key_ty)
         return order
 
     def _eq_subtypes(self, ty: str) -> list[str]:

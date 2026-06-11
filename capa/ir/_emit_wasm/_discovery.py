@@ -15,10 +15,14 @@ The Wasm emitter does two pre-emit walks of every IR module:
   declarations pick the right Wasm shape on emit.
 
 Plus a handful of ``_uses_*`` predicates that answer "does this
-module need helper X?" for the runtime emitter. Each one walks
-all instructions; the cost is dwarfed by the per-instruction emit
-work. Kept here so each predicate sits next to the others and
-the per-instr dispatch in ``__init__`` stays focused on emission.
+module need helper X?" for the runtime emitter. Every predicate
+consumes the shared traversal in ``capa.ir._walk`` (top-level
+functions + impl methods + lambda bodies + every nested
+instruction list, match-arm guard preludes included) so a feature
+used only inside an impl method or a closure body still flips its
+gate; pre-2026-06-11 each predicate hand-rolled its own walk and
+several missed those bodies, emitting calls to helpers the module
+never defined ("unknown func" at wasm-tools parse time).
 
 Extracted from ``__init__.py`` in May 2026 alongside ``_caps.py``
 and ``_locals.py`` so the top-level file stays focused on
@@ -29,12 +33,13 @@ from __future__ import annotations
 
 from .._nodes import (
     Module, Instr, Value, Function,
-    BinOp, Call, MethodCall, For, FormatStr, If, While, Match,
+    BinOp, Call, MethodCall, FormatStr, Match,
     MakeList, MakeMap, MakeSet, MakeLambda,
     PatIdent, PatLiteral, PatTuple, PatVariant,
 )
 from .._capa_types import BUILTIN_CAPS
 from .._emit_wit import _WIT_SIGNATURES
+from .._walk import iter_functions, walk_instrs, walk_module
 from ._layout import (
     _element_type_of_list, _element_type_of_set, _map_key_type,
     WasmEmissionError,
@@ -69,97 +74,73 @@ class _DiscoveryMixin:
         }
         _ALLOC_METHODS_STRING = {"substring", "to_upper", "to_lower"}
 
-        def visit(instrs: list[Instr]) -> bool:
-            for instr in instrs:
-                if isinstance(instr, (MakeList, MakeMap, MakeSet, FormatStr, MakeLambda)):
-                    return True
-                if isinstance(instr, MethodCall):
-                    recv_ty = instr.receiver.ty or ""
-                    if recv_ty.startswith("List") and instr.method in _ALLOC_METHODS_LIST:
-                        return True
-                    if recv_ty == "String" and instr.method in _ALLOC_METHODS_STRING:
-                        return True
-                    if recv_ty.startswith("Map") and instr.method in ("set", "get"):
-                        return True
-                    if recv_ty.startswith("List") and instr.method in ("map", "filter", "fold"):
-                        return True
-                    # Set.add grows / appends, Set.to_list allocates a
-                    # fresh List<T>; both need the heap.
-                    if recv_ty.startswith("Set") and instr.method in ("add", "to_list"):
-                        return True
-                    # Range.to_list materialises a fresh List<Int>.
-                    if recv_ty.startswith("Range") and instr.method == "to_list":
-                        return True
-                if isinstance(instr, If):
-                    if visit(instr.then_body) or visit(instr.else_body):
-                        return True
-                if isinstance(instr, While):
-                    if visit(instr.cond_setup) or visit(instr.body):
-                        return True
-                if isinstance(instr, For):
-                    if visit(instr.body):
-                        return True
-                if isinstance(instr, Match):
-                    for arm in instr.arms:
-                        if visit(arm.body):
-                            return True
-            return False
-        for fn in module.functions:
-            if visit(fn.body):
+        for _fn, instr in walk_module(module):
+            if isinstance(instr, (MakeList, MakeMap, MakeSet,
+                                  FormatStr, MakeLambda)):
                 return True
+            if isinstance(instr, MethodCall):
+                recv_ty = instr.receiver.ty or ""
+                if recv_ty.startswith("List") and instr.method in _ALLOC_METHODS_LIST:
+                    return True
+                if recv_ty == "String" and instr.method in _ALLOC_METHODS_STRING:
+                    return True
+                if recv_ty.startswith("Map") and instr.method in ("set", "get"):
+                    return True
+                if recv_ty.startswith("List") and instr.method in ("map", "filter", "fold"):
+                    return True
+                # Set.add grows / appends, Set.to_list allocates a
+                # fresh List<T>; both need the heap.
+                if recv_ty.startswith("Set") and instr.method in ("add", "to_list"):
+                    return True
+                # Range.to_list materialises a fresh List<Int>.
+                if recv_ty.startswith("Range") and instr.method == "to_list":
+                    return True
         return False
 
     def _refine_pattern_binder_types(
         self, fn: Function, instrs: list[Instr],
     ) -> None:
-        """Walk every Match in ``instrs`` and update ``fn.locals``
-        for PatVariant payload binders whose recorded type is
-        Unknown / missing. The variant's payload layout owns the
+        """Walk every Match reachable from ``instrs`` (including
+        inside lambda bodies -- the lowerer's flat ``fn.locals``
+        map covers those locals too) and update ``fn.locals`` for
+        PatVariant payload binders whose recorded type is Unknown /
+        missing. The variant's payload layout owns the
         authoritative type."""
-        for instr in instrs:
-            if isinstance(instr, Match):
-                scrut_head = (instr.scrutinee.ty or "").split("<", 1)[0]
-                sum_layout = self._sum_layouts.get(scrut_head)
-                if sum_layout is not None:
-                    for arm in instr.arms:
-                        if not isinstance(arm.pattern, PatVariant):
-                            continue
-                        entry = sum_layout["variants"].get(arm.pattern.name)
-                        if entry is None:
-                            continue
-                        _tag, payload_layouts = entry
-                        for sub_pat, (_off, _sz, payload_ty) in zip(
-                            arm.pattern.payloads, payload_layouts,
-                        ):
-                            if not isinstance(sub_pat, PatIdent):
-                                continue
-                            cur = fn.locals.get(sub_pat.name, "")
-                            if (cur in ("", "Unknown", "?", "Any")
-                                    or cur.startswith("?")):
-                                if payload_ty and payload_ty != "Any":
-                                    fn.locals[sub_pat.name] = payload_ty
-                # String-scrutinee match: PatIdent arm binds the
-                # whole scrutinee value. The emitter routes binds
-                # to ${name}_ptr / ${name}_len, so fn.locals must
-                # record "String" for the local-decl sweep to
-                # allocate the pair.
-                if (instr.scrutinee.ty or "") == "String":
-                    for arm in instr.arms:
-                        if isinstance(arm.pattern, PatIdent):
-                            cur = fn.locals.get(arm.pattern.name, "")
-                            if (cur in ("", "Unknown", "?")
-                                    or cur.startswith("?")):
-                                fn.locals[arm.pattern.name] = "String"
+        for instr in walk_instrs(instrs):
+            if not isinstance(instr, Match):
+                continue
+            scrut_head = (instr.scrutinee.ty or "").split("<", 1)[0]
+            sum_layout = self._sum_layouts.get(scrut_head)
+            if sum_layout is not None:
                 for arm in instr.arms:
-                    self._refine_pattern_binder_types(fn, arm.body)
-            elif isinstance(instr, If):
-                self._refine_pattern_binder_types(fn, instr.then_body)
-                self._refine_pattern_binder_types(fn, instr.else_body)
-            elif isinstance(instr, While):
-                self._refine_pattern_binder_types(fn, instr.cond_setup)
-                self._refine_pattern_binder_types(fn, instr.body)
-            elif isinstance(instr, For):
-                self._refine_pattern_binder_types(fn, instr.body)
+                    if not isinstance(arm.pattern, PatVariant):
+                        continue
+                    entry = sum_layout["variants"].get(arm.pattern.name)
+                    if entry is None:
+                        continue
+                    _tag, payload_layouts = entry
+                    for sub_pat, (_off, _sz, payload_ty) in zip(
+                        arm.pattern.payloads, payload_layouts,
+                    ):
+                        if not isinstance(sub_pat, PatIdent):
+                            continue
+                        cur = fn.locals.get(sub_pat.name, "")
+                        if (cur in ("", "Unknown", "?", "Any")
+                                or cur.startswith("?")):
+                            if payload_ty and payload_ty != "Any":
+                                fn.locals[sub_pat.name] = payload_ty
+            # String-scrutinee match: PatIdent arm binds the
+            # whole scrutinee value. The emitter routes binds
+            # to ${name}_ptr / ${name}_len, so fn.locals must
+            # record "String" for the local-decl sweep to
+            # allocate the pair.
+            if (instr.scrutinee.ty or "") == "String":
+                for arm in instr.arms:
+                    if isinstance(arm.pattern, PatIdent):
+                        cur = fn.locals.get(arm.pattern.name, "")
+                        if (cur in ("", "Unknown", "?")
+                                or cur.startswith("?")):
+                            fn.locals[arm.pattern.name] = "String"
 
     def _uses_float_format(self, module: Module) -> bool:
         """True if any ``FormatStr`` instruction has a Float value
@@ -176,35 +157,11 @@ class _DiscoveryMixin:
             if p.kind in ("local", "param") and p.name in fn.locals:
                 return fn.locals[p.name]
             return p.ty or ""
-        for fn in module.functions:
-            def visit(instrs: list[Instr], fn=fn) -> bool:
-                for instr in instrs:
-                    if isinstance(instr, FormatStr):
-                        for p in instr.parts:
-                            if isinstance(p, Value) and _eff_ty(p, fn) == "Float":
-                                return True
-                    if isinstance(instr, MakeLambda):
-                        # Recurse into the lambda body so a Float-
-                        # interpolation inside a closure still
-                        # triggers $ftoa emission.
-                        if visit(instr.body):
-                            return True
-                    if isinstance(instr, If):
-                        if visit(instr.then_body) or visit(instr.else_body):
-                            return True
-                    if isinstance(instr, While):
-                        if visit(instr.cond_setup) or visit(instr.body):
-                            return True
-                    if isinstance(instr, For):
-                        if visit(instr.body):
-                            return True
-                    if isinstance(instr, Match):
-                        for arm in instr.arms:
-                            if visit(arm.body):
-                                return True
-                return False
-            if visit(fn.body):
-                return True
+        for fn, instr in walk_module(module):
+            if isinstance(instr, FormatStr):
+                for p in instr.parts:
+                    if isinstance(p, Value) and _eff_ty(p, fn) == "Float":
+                        return True
         return False
 
     def _uses_parse_int(self, module: Module) -> bool:
@@ -241,86 +198,23 @@ class _DiscoveryMixin:
         return self._uses_builtin_free_fn(module, "panic")
 
     def _uses_builtin_free_fn(self, module: Module, name: str) -> bool:
-        """True if any function or impl-method body Calls
+        """True if any function / impl-method / lambda body Calls
         ``name``. Used to gate emission of optional runtime
-        helpers like ``$parse_int`` / ``$parse_float``. Recurses
-        into ``MakeLambda`` bodies so a builtin called only inside
-        a closure still triggers the helper / import emission."""
-        def visit(instrs: list[Instr]) -> bool:
-            for instr in instrs:
-                if isinstance(instr, Call) and instr.callee_name == name:
-                    return True
-                if isinstance(instr, MakeLambda):
-                    if visit(instr.body):
-                        return True
-                if isinstance(instr, If):
-                    if visit(instr.then_body) or visit(instr.else_body):
-                        return True
-                if isinstance(instr, While):
-                    if visit(instr.cond_setup) or visit(instr.body):
-                        return True
-                if isinstance(instr, For):
-                    if visit(instr.body):
-                        return True
-                if isinstance(instr, Match):
-                    for arm in instr.arms:
-                        if visit(arm.body):
-                            return True
-            return False
-        for fn in module.functions:
-            if visit(fn.body):
-                return True
-        for impl in module.impls:
-            for method in impl.methods:
-                if visit(method.body):
-                    return True
-        return False
+        helpers like ``$parse_int`` / ``$parse_float``."""
+        return any(
+            isinstance(instr, Call) and instr.callee_name == name
+            for _fn, instr in walk_module(module)
+        )
 
     def _uses_format_str(self, module: Module) -> bool:
-        """True if any function OR impl-method body contains a
-        ``FormatStr`` instruction. Drives the emission of the
+        """True if any function / impl-method / lambda body contains
+        a ``FormatStr`` instruction. Drives the emission of the
         ``$itoa`` helper (and pre-interning of ``"true"`` /
-        ``"false"`` for Bool parts). Recurses into ``MakeLambda``
-        bodies so a format string nested inside a lambda still
-        triggers the helper emission (otherwise the lifted lambda's
-        body references ``$itoa`` that the module never defined).
-
-        Impl-method bodies are walked alongside top-level functions
-        (mirroring ``_uses_string_codepoint_index`` / the Random /
-        cap discovery walks): a format string that appears ONLY
-        inside an impl method - e.g. ``Beat(n) -> "beat ${n}"`` in
-        an ``impl Token for Note`` - must still emit ``$itoa``, or
-        the impl method's body references a helper the module never
-        defined."""
-        def visit(instrs: list[Instr]) -> bool:
-            for instr in instrs:
-                if isinstance(instr, FormatStr):
-                    return True
-                if isinstance(instr, MakeLambda):
-                    if visit(instr.body):
-                        return True
-                if isinstance(instr, If):
-                    if visit(instr.then_body) or visit(instr.else_body):
-                        return True
-                if isinstance(instr, While):
-                    if visit(instr.cond_setup) or visit(instr.body):
-                        return True
-                if isinstance(instr, For):
-                    if visit(instr.body):
-                        return True
-                if isinstance(instr, Match):
-                    for arm in instr.arms:
-                        if visit(arm.body):
-                            return True
-            return False
-        for fn in module.functions:
-            if visit(fn.body):
-                return True
-        for impl in module.impls:
-            for method in impl.methods:
-                if visit(method.body):
-                    return True
-        return False
+        ``"false"`` for Bool parts)."""
+        return any(
+            isinstance(instr, FormatStr)
+            for _fn, instr in walk_module(module)
+        )
 
     def _uses_string_codepoint_index(self, module: Module) -> bool:
         """True when any function in the module calls a String
@@ -332,57 +226,18 @@ class _DiscoveryMixin:
         ``$str_cp_to_byte_offset``, which must therefore be
         present in the module when these methods appear.
 
-        Recurses into ``MakeLambda.body`` so a closure-body call
-        like ``names.filter(fun (n) -> Bool => n.length() > 3)``
-        also triggers the gate (lambda-lift happens after
-        discovery; the body is in the MakeLambda Instr at this
-        point)."""
-        def visit(instrs: list[Instr]) -> bool:
-            for instr in instrs:
-                if isinstance(instr, MethodCall):
-                    recv_ty = instr.receiver.ty or ""
-                    if recv_ty == "String" and instr.method in (
-                        "length", "substring",
-                    ):
-                        return True
-                if isinstance(instr, If):
-                    if visit(instr.then_body) or visit(instr.else_body):
-                        return True
-                if isinstance(instr, While):
-                    if visit(instr.cond_setup) or visit(instr.body):
-                        return True
-                if isinstance(instr, For):
-                    # ``for c in s`` walks the receiver's UTF-8 code
-                    # points; the for-string emit path itself does the
-                    # leading-byte classification inline, but a body
-                    # that calls length / substring still needs the
-                    # helpers, so recurse either way. The String-iter
-                    # walk does not call $str_codepoint_count /
-                    # $str_cp_to_byte_offset directly (it inlines the
-                    # classification), so no extra gate is required for
-                    # the loop itself.
-                    if visit(instr.body):
-                        return True
-                if isinstance(instr, Match):
-                    for arm in instr.arms:
-                        # Match arm guards lower to a prelude of
-                        # ANF instructions + a Value; a guard like
-                        # ``x if x.length() > 0`` puts the
-                        # ``length()`` call in the guard prelude.
-                        if visit(getattr(arm, "guard_setup", []) or []):
-                            return True
-                        if visit(arm.body):
-                            return True
-                if isinstance(instr, MakeLambda):
-                    if visit(instr.body):
-                        return True
-            return False
-        for fn in module.functions:
-            if visit(fn.body):
-                return True
-        for impl in module.impls:
-            for m in impl.methods:
-                if visit(m.body):
+        ``for c in s`` walks the receiver's UTF-8 code points but
+        inlines the leading-byte classification, so the loop itself
+        never needs these helpers -- only ``length`` / ``substring``
+        calls do, wherever they appear (match-arm guard preludes
+        included: a guard like ``x if x.length() > 0`` puts the
+        ``length()`` call in the guard's ANF prelude)."""
+        for _fn, instr in walk_module(module):
+            if isinstance(instr, MethodCall):
+                recv_ty = instr.receiver.ty or ""
+                if recv_ty == "String" and instr.method in (
+                    "length", "substring",
+                ):
                     return True
         return False
 
@@ -391,46 +246,22 @@ class _DiscoveryMixin:
         ``$rand_state`` global. Triggered by either a ``Random()``
         constructor call (``Call(callee_name="Random")``) or a
         ``MethodCall`` on a Random-typed receiver (``with_seed``,
-        ``int_range``, ``float_unit``). Walks every function body
-        plus impl-method bodies so a Random use inside an impl
-        method still flips the gate.
+        ``int_range``, ``float_unit``).
 
         Mirrors the WIT-side rule in
         ``capa.ir._emit_wit.collect_used_capabilities``: any Random
         touch-point pulls in the ``system-seed`` host import via
         the lazy-init path."""
-        def visit(instrs: list[Instr]) -> bool:
-            for instr in instrs:
-                if isinstance(instr, Call) and instr.callee_name == "Random":
-                    return True
-                if isinstance(instr, MethodCall):
-                    cap = instr.cap_used
-                    if cap is None:
-                        rty = instr.receiver.ty or ""
-                        if rty in BUILTIN_CAPS:
-                            cap = rty
-                    if cap == "Random":
-                        return True
-                if isinstance(instr, If):
-                    if visit(instr.then_body) or visit(instr.else_body):
-                        return True
-                if isinstance(instr, While):
-                    if visit(instr.cond_setup) or visit(instr.body):
-                        return True
-                if isinstance(instr, For):
-                    if visit(instr.body):
-                        return True
-                if isinstance(instr, Match):
-                    for arm in instr.arms:
-                        if visit(arm.body):
-                            return True
-            return False
-        for fn in module.functions:
-            if visit(fn.body):
+        for _fn, instr in walk_module(module):
+            if isinstance(instr, Call) and instr.callee_name == "Random":
                 return True
-        for impl in module.impls:
-            for m in impl.methods:
-                if visit(m.body):
+            if isinstance(instr, MethodCall):
+                cap = instr.cap_used
+                if cap is None:
+                    rty = instr.receiver.ty or ""
+                    if rty in BUILTIN_CAPS:
+                        cap = rty
+                if cap == "Random":
                     return True
         return False
 
@@ -455,40 +286,21 @@ class _DiscoveryMixin:
         is needed)."""
         needs_starts_with = False
         needs_proc_allows = False
-
-        def visit(instrs: list[Instr]) -> None:
-            nonlocal needs_starts_with, needs_proc_allows
-            for instr in instrs:
-                if isinstance(instr, MethodCall) and instr.attenuations:
-                    cap = instr.cap_used or ""
-                    # Conservatively flag the helper whenever
-                    # ``.allows()`` exists with a tracked
-                    # attenuation chain: the literal-arg fast-path
-                    # collapses to a const without the helper, the
-                    # dynamic-arg path needs it. Deciding which is
-                    # which lives at emit time; over-emitting one
-                    # unused helper adds <100 bytes to the WAT.
-                    if (cap in ("Fs", "Db")
-                            and instr.method == "allows"):
-                        needs_starts_with = True
-                    if cap == "Proc" and instr.method == "allows":
-                        needs_proc_allows = True
-                if isinstance(instr, If):
-                    visit(instr.then_body)
-                    visit(instr.else_body)
-                elif isinstance(instr, While):
-                    visit(instr.cond_setup)
-                    visit(instr.body)
-                elif isinstance(instr, For):
-                    visit(instr.body)
-                elif isinstance(instr, Match):
-                    for arm in instr.arms:
-                        visit(arm.body)
-        for fn in module.functions:
-            visit(fn.body)
-        for impl in module.impls:
-            for m in impl.methods:
-                visit(m.body)
+        for _fn, instr in walk_module(module):
+            if isinstance(instr, MethodCall) and instr.attenuations:
+                cap = instr.cap_used or ""
+                # Conservatively flag the helper whenever
+                # ``.allows()`` exists with a tracked
+                # attenuation chain: the literal-arg fast-path
+                # collapses to a const without the helper, the
+                # dynamic-arg path needs it. Deciding which is
+                # which lives at emit time; over-emitting one
+                # unused helper adds <100 bytes to the WAT.
+                if (cap in ("Fs", "Db")
+                        and instr.method == "allows"):
+                    needs_starts_with = True
+                if cap == "Proc" and instr.method == "allows":
+                    needs_proc_allows = True
         return needs_starts_with, needs_proc_allows
 
     def _uses_map_ops(self, module: Module) -> bool:
@@ -500,113 +312,84 @@ class _DiscoveryMixin:
         on byte-string equality (contains / starts_with /
         ends_with) and for List<String>.contains /
         Set<String>.{add,contains,remove}."""
-        def visit(instrs: list[Instr]) -> bool:
-            for instr in instrs:
-                # MakeMap alone never calls ``$str_eq`` (the allocator
-                # just zero-initialises the header and data array);
-                # the per-key compare emitted by ``_emit_map_*``
-                # method handlers is what may need it. So the gate
-                # is keyed off the MethodCall recv type below: a
-                # String-key receiver triggers, an Int / Bool key
-                # never does. Constructing an empty Map<Int, V> and
-                # never calling .set / .get on it is therefore zero-
-                # helper-emit, matching the locked design.
-                if isinstance(instr, MethodCall):
-                    recv_ty = instr.receiver.ty or ""
-                    # Net.allows with a dynamic (non-literal) arg emits
-                    # ``$str_eq`` for the exact host comparison against
-                    # each restricted host. Literal-arg Net.allows
-                    # collapses to a const and needs no helper, but
-                    # over-emitting $str_eq for the literal case is
-                    # harmless (a few unused bytes).
-                    if ((instr.cap_used == "Net"
-                         or recv_ty == "Net")
-                            and instr.method == "allows"
-                            and getattr(instr, "attenuations", None)):
+        for _fn, instr in walk_module(module):
+            # MakeMap alone never calls ``$str_eq`` (the allocator
+            # just zero-initialises the header and data array);
+            # the per-key compare emitted by ``_emit_map_*``
+            # method handlers is what may need it. So the gate
+            # is keyed off the MethodCall recv type below: a
+            # String-key receiver triggers, an Int / Bool key
+            # never does. Constructing an empty Map<Int, V> and
+            # never calling .set / .get on it is therefore zero-
+            # helper-emit, matching the locked design.
+            if isinstance(instr, MethodCall):
+                recv_ty = instr.receiver.ty or ""
+                # Net.allows with a dynamic (non-literal) arg emits
+                # ``$str_eq`` for the exact host comparison against
+                # each restricted host. Literal-arg Net.allows
+                # collapses to a const and needs no helper, but
+                # over-emitting $str_eq for the literal case is
+                # harmless (a few unused bytes).
+                if ((instr.cap_used == "Net"
+                     or recv_ty == "Net")
+                        and instr.method == "allows"
+                        and getattr(instr, "attenuations", None)):
+                    return True
+                if recv_ty.startswith("Map"):
+                    if _map_key_type(recv_ty) == "String":
                         return True
-                    if recv_ty.startswith("Map"):
-                        if _map_key_type(recv_ty) == "String":
-                            return True
-                    if recv_ty == "String" and instr.method in (
-                        "contains", "starts_with", "ends_with",
-                        "index_of", "replace",
-                    ):
+                if recv_ty == "String" and instr.method in (
+                    "contains", "starts_with", "ends_with",
+                    "index_of", "replace",
+                ):
+                    return True
+                # List<String>.contains compares the needle to
+                # each element via $str_eq.
+                if (recv_ty.startswith("List")
+                        and instr.method == "contains"
+                        and _element_type_of_list(recv_ty) == "String"):
+                    return True
+                # Set<String> add / contains / remove compare the
+                # needle to each element via $str_eq.
+                if (recv_ty.startswith("Set")
+                        and instr.method in ("add", "contains", "remove")
+                        and _element_type_of_set(recv_ty) == "String"):
+                    return True
+            if isinstance(instr, BinOp) and instr.op in ("==", "!="):
+                # BinOp ``==`` / ``!=`` on String operands lowers
+                # to a ``call $str_eq`` (see __init__.py's
+                # ``_emit_binop`` String branch). The shared walk
+                # reaches the comparison wherever it lives --
+                # impl-method body, lifted-lambda body (e.g. an
+                # Option.map closure doing ``s == "retry"``), or a
+                # match-arm guard prelude.
+                if (instr.left.ty == "String"
+                        or instr.right.ty == "String"):
+                    return True
+            if isinstance(instr, Match):
+                # String-scrutinee match calls $str_eq per arm.
+                if (instr.scrutinee.ty or "") == "String":
+                    return True
+                # Tuple-scrutinee match with a String literal
+                # sub-pattern: the per-slot equality check calls
+                # $str_eq to compare the slot against the interned
+                # literal. Without this branch a program like
+                # ``match (s, n) ; ("yes", x) -> ...`` would emit
+                # a $str_eq call into a module that never imported
+                # the helper, and wasm-tools parse would refuse
+                # with "unknown func: failed to find name $str_eq".
+                for arm in instr.arms:
+                    if isinstance(arm.pattern, PatTuple):
+                        for sub in arm.pattern.elements:
+                            if (isinstance(sub, PatLiteral)
+                                    and sub.kind == "str"):
+                                return True
+                    # Variant-payload String literal (flat
+                    # ``Ok("yes")`` or nested ``Some(Ok("y"))``):
+                    # the arm predicate compares the payload slot
+                    # against the interned literal via $str_eq.
+                    if _variant_pattern_has_str_literal(arm.pattern):
                         return True
-                    # List<String>.contains compares the needle to
-                    # each element via $str_eq.
-                    if (recv_ty.startswith("List")
-                            and instr.method == "contains"
-                            and _element_type_of_list(recv_ty) == "String"):
-                        return True
-                    # Set<String> add / contains / remove compare the
-                    # needle to each element via $str_eq.
-                    if (recv_ty.startswith("Set")
-                            and instr.method in ("add", "contains", "remove")
-                            and _element_type_of_set(recv_ty) == "String"):
-                        return True
-                if isinstance(instr, BinOp) and instr.op in ("==", "!="):
-                    # BinOp ``==`` / ``!=`` on String operands lowers
-                    # to a ``call $str_eq`` (see __init__.py's
-                    # ``_emit_binop`` String branch). Without this
-                    # check a function whose only String comparison
-                    # lives in a lifted lambda (e.g. an Option.map
-                    # closure body doing ``s == "retry"``) would
-                    # emit a $str_eq call into a module that never
-                    # registered the helper.
-                    if (instr.left.ty == "String"
-                            or instr.right.ty == "String"):
-                        return True
-                if isinstance(instr, MakeLambda):
-                    # Lambdas are lifted into top-level Wasm
-                    # functions before emission, but the lift
-                    # happens AFTER discovery; at this point the
-                    # lambda body still lives inside ``MakeLambda``.
-                    # Recursing into it catches String comparisons
-                    # (BinOp ``==``) and similar str_eq-needing
-                    # patterns that only appear in closure bodies
-                    # (e.g. ``some.map(fun (e: String) -> Bool =>
-                    # e == "retry")``).
-                    if visit(instr.body):
-                        return True
-                if isinstance(instr, If):
-                    if visit(instr.then_body) or visit(instr.else_body):
-                        return True
-                if isinstance(instr, While):
-                    if visit(instr.cond_setup) or visit(instr.body):
-                        return True
-                if isinstance(instr, For):
-                    if visit(instr.body):
-                        return True
-                if isinstance(instr, Match):
-                    # String-scrutinee match calls $str_eq per arm.
-                    if (instr.scrutinee.ty or "") == "String":
-                        return True
-                    # Tuple-scrutinee match with a String literal
-                    # sub-pattern: the per-slot equality check calls
-                    # $str_eq to compare the slot against the interned
-                    # literal. Without this branch a program like
-                    # ``match (s, n) ; ("yes", x) -> ...`` would emit
-                    # a $str_eq call into a module that never imported
-                    # the helper, and wasm-tools parse would refuse
-                    # with "unknown func: failed to find name $str_eq".
-                    for arm in instr.arms:
-                        if isinstance(arm.pattern, PatTuple):
-                            for sub in arm.pattern.elements:
-                                if (isinstance(sub, PatLiteral)
-                                        and sub.kind == "str"):
-                                    return True
-                        # Variant-payload String literal (flat
-                        # ``Ok("yes")`` or nested ``Some(Ok("y"))``):
-                        # the arm predicate compares the payload slot
-                        # against the interned literal via $str_eq.
-                        if _variant_pattern_has_str_literal(arm.pattern):
-                            return True
-                        if visit(arm.body):
-                            return True
-            return False
-        for fn in module.functions:
-            if visit(fn.body):
-                return True
         return False
 
     # ----- discovery pass ---------------------------------------
@@ -619,10 +402,12 @@ class _DiscoveryMixin:
         emitted Wasm never references something the host did not
         provide.
 
-        Also walks every impl method body so the cap calls inside
+        Covers every impl-method body and every ``MakeLambda``
+        body via the shared module walk, so the cap calls inside
         impl methods (e.g. ``self.stdio.println(...)`` in
-        ``impl Logger for StdioLogger``) contribute their imports
-        to the module just like top-level function bodies.
+        ``impl Logger for StdioLogger``) and inside closures
+        contribute their imports + string literals to the module
+        just like top-level function bodies.
 
         Slice 7 (D5, 2026-05): scans every function signature for
         an ``Unsafe`` capability parameter and rejects with an
@@ -637,11 +422,8 @@ class _DiscoveryMixin:
         is more honest and points the user at the correct
         workaround (Python backend or refactor the call site)."""
         self._reject_unsafe_signatures(module)
-        for fn in module.functions:
+        for fn in iter_functions(module):
             self._discover_instrs(fn.body)
-        for impl in module.impls:
-            for method in impl.methods:
-                self._discover_instrs(method.body)
 
     def _reject_unsafe_signatures(self, module: Module) -> None:
         """Surface ``Unsafe``-typed parameters at discovery time
@@ -680,7 +462,7 @@ class _DiscoveryMixin:
         )
 
     def _discover_instrs(self, instrs: list[Instr]) -> None:
-        for instr in instrs:
+        for instr in walk_instrs(instrs):
             # Cap dispatch: prefer instr.cap_used, fall back to the
             # receiver type for impl-method-internal calls where
             # the analyzer doesn't propagate cap_used through. The
@@ -804,17 +586,6 @@ class _DiscoveryMixin:
                 for part in instr.parts:
                     if isinstance(part, str) and part:
                         self._intern_string(part)
-            if isinstance(instr, If):
-                self._discover_instrs(instr.then_body)
-                self._discover_instrs(instr.else_body)
-            elif isinstance(instr, While):
-                self._discover_instrs(instr.cond_setup)
-                self._discover_instrs(instr.body)
-            elif isinstance(instr, For):
-                self._discover_instrs(instr.body)
-            elif isinstance(instr, Match):
-                for arm in instr.arms:
-                    self._discover_instrs(arm.body)
 
     def _discover_attenuation_strings(
         self, cap: str, instr: MethodCall,

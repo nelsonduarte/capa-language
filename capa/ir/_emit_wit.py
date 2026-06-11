@@ -28,10 +28,8 @@ from __future__ import annotations
 
 from typing import List, Optional
 
-from ._nodes import (
-    Module, Function, Instr,
-    Call, MakeLambda, MethodCall, If, While, For, Match,
-)
+from ._nodes import Module, Call, MethodCall
+from ._walk import walk_module
 
 
 # Per-capability method table: maps (capability_name, method_name)
@@ -372,84 +370,72 @@ def collect_used_capabilities(module: Module) -> dict[str, set[str]]:
     artifact."""
     out: dict[str, set[str]] = {}
 
-    def visit(instrs: list[Instr]) -> None:
-        for instr in instrs:
-            if isinstance(instr, MethodCall):
-                cap = instr.cap_used
-                if cap is None:
-                    rty = instr.receiver.ty or ""
-                    if rty in BUILTIN_CAPS:
-                        cap = rty
-                if cap is not None:
-                    # ``restrict_to`` / ``restrict_to_keys`` /
-                    # ``restrict_to_after`` are pure attenuators
-                    # tracked in the analyzer + the Wasm emit's
-                    # attenuation chain. They never become host
-                    # calls, so they must not appear in the WIT
-                    # interface (which would force the host to
-                    # provide a matching no-op stub it never
-                    # calls). The core-wasm discovery pass
-                    # already filters them; this mirrors that rule
-                    # so WIT and core imports stay in lockstep.
-                    #
-                    # Slice 25.2 - 25.6 exception (2026-05-30):
-                    # ``Fs.restrict_to`` / ``Net.restrict_to`` /
-                    # ``Db.restrict_to`` / ``Proc.restrict_to`` /
-                    # ``Env.restrict_to_keys`` /
-                    # ``Clock.restrict_to_after`` graduated to real
-                    # host calls that take the parent handle + the
-                    # attenuation arg and return a child handle, so
-                    # they stay in the WIT.
-                    if (
-                        cap in ("Fs", "Net", "Db", "Proc")
-                        and instr.method == "restrict_to"
-                    ):
-                        pass
-                    elif (
-                        cap == "Env"
-                        and instr.method == "restrict_to_keys"
-                    ):
-                        pass
-                    elif (
-                        cap == "Clock"
-                        and instr.method == "restrict_to_after"
-                    ):
-                        pass
-                    elif instr.method in (
-                        "restrict_to",
-                        "restrict_to_keys",
-                        "restrict_to_after",
-                    ):
-                        continue
-                    out.setdefault(cap, set()).add(instr.method)
-                    # Slice 13 (2026-05-29): Clock.sleep with a
-                    # restrict_to_after chain compiles to an
-                    # inline ``$Clock_now_secs >= deadline`` gate
-                    # around the host sleep. The core-wasm
-                    # discovery agrees with this rule; WIT must
-                    # advertise ``now-secs`` too or the component
-                    # link fails on "import interface is missing
-                    # function now-secs".
-                    if (cap == "Clock"
-                            and instr.method == "sleep"
-                            and getattr(instr, "attenuations", None)):
-                        out.setdefault(cap, set()).add("now_secs")
-            # Recurse into nested instruction lists so we don't miss
-            # method calls inside if/while/for/match arm bodies.
-            if isinstance(instr, If):
-                visit(instr.then_body)
-                visit(instr.else_body)
-            elif isinstance(instr, While):
-                visit(instr.cond_setup)
-                visit(instr.body)
-            elif isinstance(instr, For):
-                visit(instr.body)
-            elif isinstance(instr, Match):
-                for arm in instr.arms:
-                    visit(arm.body)
-
-    for fn in module.functions:
-        visit(fn.body)
+    # The shared module walk covers impl-method bodies, MakeLambda
+    # bodies, and match-arm guard preludes -- the same coverage the
+    # core-wasm ``_discover`` pass has. A capability used ONLY
+    # inside a method or a closure must appear in the WIT too, or
+    # the component link fails with a missing-import mismatch.
+    for _fn, instr in walk_module(module):
+        if isinstance(instr, MethodCall):
+            cap = instr.cap_used
+            if cap is None:
+                rty = instr.receiver.ty or ""
+                if rty in BUILTIN_CAPS:
+                    cap = rty
+            if cap is not None:
+                # ``restrict_to`` / ``restrict_to_keys`` /
+                # ``restrict_to_after`` are pure attenuators
+                # tracked in the analyzer + the Wasm emit's
+                # attenuation chain. They never become host
+                # calls, so they must not appear in the WIT
+                # interface (which would force the host to
+                # provide a matching no-op stub it never
+                # calls). The core-wasm discovery pass
+                # already filters them; this mirrors that rule
+                # so WIT and core imports stay in lockstep.
+                #
+                # Slice 25.2 - 25.6 exception (2026-05-30):
+                # ``Fs.restrict_to`` / ``Net.restrict_to`` /
+                # ``Db.restrict_to`` / ``Proc.restrict_to`` /
+                # ``Env.restrict_to_keys`` /
+                # ``Clock.restrict_to_after`` graduated to real
+                # host calls that take the parent handle + the
+                # attenuation arg and return a child handle, so
+                # they stay in the WIT.
+                if (
+                    cap in ("Fs", "Net", "Db", "Proc")
+                    and instr.method == "restrict_to"
+                ):
+                    pass
+                elif (
+                    cap == "Env"
+                    and instr.method == "restrict_to_keys"
+                ):
+                    pass
+                elif (
+                    cap == "Clock"
+                    and instr.method == "restrict_to_after"
+                ):
+                    pass
+                elif instr.method in (
+                    "restrict_to",
+                    "restrict_to_keys",
+                    "restrict_to_after",
+                ):
+                    continue
+                out.setdefault(cap, set()).add(instr.method)
+                # Slice 13 (2026-05-29): Clock.sleep with a
+                # restrict_to_after chain compiles to an
+                # inline ``$Clock_now_secs >= deadline`` gate
+                # around the host sleep. The core-wasm
+                # discovery agrees with this rule; WIT must
+                # advertise ``now-secs`` too or the component
+                # link fails on "import interface is missing
+                # function now-secs".
+                if (cap == "Clock"
+                        and instr.method == "sleep"
+                        and getattr(instr, "attenuations", None)):
+                    out.setdefault(cap, set()).add("now_secs")
     # ``Random`` is special: source-level methods (``with_seed``,
     # ``int_range``, ``float_unit``) all run guest-side in pure WAT
     # (SplitMix64 over a module-local i64 state). The only host
@@ -477,37 +463,10 @@ def _module_calls_panic(module: Module) -> bool:
     and produces no import."""
     if any(fn.name == "panic" for fn in module.functions):
         return False
-
-    def visit(instrs: list[Instr]) -> bool:
-        for instr in instrs:
-            if isinstance(instr, Call) and instr.callee_name == "panic":
-                return True
-            if isinstance(instr, MakeLambda):
-                if visit(instr.body):
-                    return True
-            if isinstance(instr, If):
-                if visit(instr.then_body) or visit(instr.else_body):
-                    return True
-            if isinstance(instr, While):
-                if visit(instr.cond_setup) or visit(instr.body):
-                    return True
-            if isinstance(instr, For):
-                if visit(instr.body):
-                    return True
-            if isinstance(instr, Match):
-                for arm in instr.arms:
-                    if visit(arm.body):
-                        return True
-        return False
-
-    for fn in module.functions:
-        if visit(fn.body):
-            return True
-    for impl in module.impls:
-        for method in impl.methods:
-            if visit(method.body):
-                return True
-    return False
+    return any(
+        isinstance(instr, Call) and instr.callee_name == "panic"
+        for _fn, instr in walk_module(module)
+    )
 
 
 def emit_wit(module: Module, world_name: str = "program") -> str:

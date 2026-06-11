@@ -33,6 +33,7 @@ from .._nodes import (
     Pattern, PatIdent, PatVariant,
 )
 from .._capa_types import BUILTIN_CAPS
+from .._walk import walk_instrs
 from ._layout import (
     WasmEmissionError,
     _LIST_HEADER_SIZE, _LIST_LEN_OFFSET, _LIST_CAP_OFFSET, _LIST_DATA_OFFSET,
@@ -362,12 +363,19 @@ class _ClosureEmissionMixin:
     # ----- discovery --------------------------------------------
 
     def _discover_lambdas(self, module: Module) -> None:
-        """Walk every function's body, collect MakeLambda
-        instructions, compute the env layout + signature for each
-        and assign fn_idx (function table index). Also intern
-        strings that appear in lambda bodies; discovery passes
-        normally see the function body, but MakeLambda bodies are
-        a separate Instr list.
+        """Walk every function AND impl-method body, collect
+        MakeLambda instructions, compute the env layout +
+        signature for each and assign fn_idx (function table
+        index). String literals inside lambda bodies are interned
+        by ``_discover`` (the shared module walk recurses into
+        MakeLambda bodies), so this pass only handles the lift
+        bookkeeping.
+
+        Impl methods go through ``_impl_method_view`` so the
+        registration is keyed on the MANGLED method name -- the
+        name ``self._current_fn.name`` carries when the method
+        body is emitted -- and so capture-type lookup sees
+        ``self``'s concrete type.
 
         Nested lambdas use flat envs: every inner closure gets its
         own env record holding all the names it references from
@@ -375,21 +383,24 @@ class _ClosureEmissionMixin:
         ``scopes`` carries the immediate-enclosing-lambda's
         ``params`` / ``locals`` / ``captures`` so the inner's
         capture-type lookup can walk the outer's view; the
-        ``parent_fn`` parameter stays the top-level function so
-        ``_register_lambda`` can find a body-local's type in the
-        lowerer's flat ``fn.locals`` map."""
+        ``parent_fn`` parameter stays the enclosing function /
+        method so ``_register_lambda`` can find a body-local's
+        type in the lowerer's flat ``fn.locals`` map."""
 
         def visit(
             instrs: list[Instr],
             parent_fn: Function,
             scopes: list[dict],
         ) -> None:
-            for instr in instrs:
+            # ``into_lambdas=False``: each nesting level handles
+            # its own MakeLambda instructions so the scope stack
+            # is pushed/popped around exactly one lambda body.
+            for instr in walk_instrs(instrs, into_lambdas=False):
                 if isinstance(instr, MakeLambda):
                     # ``parent_scope_name`` is the immediate
                     # enclosing emission unit's name. At MakeLambda
                     # emit time ``self._current_fn`` is either the
-                    # top-level Function (no scopes pushed) or the
+                    # enclosing Function (no scopes pushed) or the
                     # synthesised lifted function for the outer
                     # lambda (scopes[-1]["name"]); key the
                     # registration the same way.
@@ -402,7 +413,6 @@ class _ClosureEmissionMixin:
                         parent_scope_name=parent_scope_name,
                         outer_scope=scopes[-1] if scopes else None,
                     )
-                    self._discover_instrs(instr.body)
                     # Push this lambda's scope, recurse into its
                     # body, pop. The freshly registered lambda is
                     # at the end of ``_lifted_lambdas`` -- its
@@ -414,20 +424,12 @@ class _ClosureEmissionMixin:
                         visit(instr.body, parent_fn, scopes)
                     finally:
                         scopes.pop()
-                if isinstance(instr, If):
-                    visit(instr.then_body, parent_fn, scopes)
-                    visit(instr.else_body, parent_fn, scopes)
-                elif isinstance(instr, While):
-                    visit(instr.cond_setup, parent_fn, scopes)
-                    visit(instr.body, parent_fn, scopes)
-                elif isinstance(instr, For):
-                    visit(instr.body, parent_fn, scopes)
-                elif isinstance(instr, Match):
-                    for arm in instr.arms:
-                        visit(arm.body, parent_fn, scopes)
 
         for fn in module.functions:
             visit(fn.body, fn, [])
+        for impl in module.impls:
+            for method in impl.methods:
+                visit(method.body, self._impl_method_view(impl, method), [])
 
     def _register_lambda(
         self,

@@ -48,6 +48,7 @@ from .._nodes import (
 # ``_discovery.py`` (early validation); not referenced directly
 # from this module any more after the mixin extraction.
 from .._capa_types import BUILTIN_CAPS
+from .._walk import iter_functions
 from ._layout import (
     WasmEmissionError,
     _TYPE_SIZE,
@@ -336,7 +337,11 @@ class WasmEmitter(
         # incomplete for builtin sum types (JsonValue / Option /
         # Result with non-Int payloads), leaving binders as Unknown.
         # The sum layout always knows what each variant carries.
-        for fn in module.functions:
+        # Impl-method bodies are refined too (iter_functions yields
+        # them after the top-level functions): a match inside a
+        # method writes its binder types into the METHOD's locals
+        # map, which the emission view clones.
+        for fn in iter_functions(module):
             self._refine_pattern_binder_types(fn, fn.body)
 
         # First pass: walk the module to discover used capability

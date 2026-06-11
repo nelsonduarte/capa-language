@@ -212,11 +212,24 @@ class _TraitEmissionMixin:
                 self._emit_one_impl_method(impl, method)
 
     def _emit_one_impl_method(self, impl, method: Function) -> None:
-        """Synthesise a Function with the mangled name and the
-        ``self`` param retyped, then call the standard
-        ``_emit_function``. We don't mutate the original method
-        object so re-running emit on the same Module is
-        idempotent."""
+        """Emit one impl method through the standard
+        ``_emit_function`` path, via the synthesised emission view
+        (mangled name, ``self`` retyped)."""
+        self._emit_function(self._impl_method_view(impl, method))
+
+    def _impl_method_view(self, impl, method: Function) -> Function:
+        """Synthesise the emission view of an impl method: a
+        Function with the mangled name and the ``self`` param
+        retyped to the impl's owning type (signature generation
+        and field-access lookups need the concrete type, not
+        ``Unknown``). The original method object is never mutated
+        so re-running emit on the same Module is idempotent.
+
+        The lambda-lift discovery (``_discover_lambdas``) consumes
+        the same view so a ``MakeLambda`` inside a method body is
+        registered under the SAME parent name the emit site will
+        look up (``self._current_fn.name`` is the mangled name when
+        the method body is being emitted)."""
         mangled_name = _impl_method_name(impl.type_name, method.name)
         # Clone params so we don't mutate the IR module.
         new_params = []
@@ -234,7 +247,7 @@ class _TraitEmissionMixin:
         # receiver type of a self.method() / self.field call.
         new_locals = dict(method.locals)
         new_locals["self"] = impl.type_name
-        synth_fn = Function(
+        return Function(
             name=mangled_name,
             params=new_params,
             return_type=method.return_type or "Unit",
@@ -242,7 +255,6 @@ class _TraitEmissionMixin:
             body=method.body,
             locals=new_locals,
         )
-        self._emit_function(synth_fn)
 
     def _emit_trait_method_call(self, instr: MethodCall) -> None:
         """Route a MethodCall whose receiver is either a user-

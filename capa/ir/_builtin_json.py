@@ -20,41 +20,26 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
-from ._nodes import (
-    Call, Function, If, Instr, Match, Module, While, For, MethodCall,
-)
+from ._nodes import Call, Module
+from ._walk import walk_module
 
 
 _BUNDLED_SOURCE_PATH = Path(__file__).parent / "_builtin_json.capa"
 
 
 def uses_json_builtins(ir_module: Module) -> bool:
-    """True when any function in ``ir_module`` references the
-    built-in ``parse_json`` or ``to_json`` free functions. Walks
-    every nested instruction body so we don't miss calls inside
-    if / while / for / match arms."""
-    def visit(instrs: list[Instr]) -> bool:
-        for instr in instrs:
-            if isinstance(instr, Call) and instr.callee_name in (
-                "parse_json", "to_json",
-            ):
-                return True
-            if isinstance(instr, If):
-                if visit(instr.then_body) or visit(instr.else_body):
-                    return True
-            elif isinstance(instr, While):
-                if visit(instr.cond_setup) or visit(instr.body):
-                    return True
-            elif isinstance(instr, For):
-                if visit(instr.body):
-                    return True
-            elif isinstance(instr, Match):
-                for arm in instr.arms:
-                    if visit(arm.body):
-                        return True
-        return False
-
-    return any(visit(fn.body) for fn in ir_module.functions)
+    """True when anything in ``ir_module`` references the built-in
+    ``parse_json`` or ``to_json`` free functions. The shared module
+    walk covers every nested instruction body -- if / while / for /
+    match arms (guard preludes included), impl-method bodies, and
+    lambda bodies -- so a call that only appears inside a method or
+    a closure still triggers the injection."""
+    return any(
+        isinstance(instr, Call) and instr.callee_name in (
+            "parse_json", "to_json",
+        )
+        for _fn, instr in walk_module(ir_module)
+    )
 
 
 _cached_ir: Optional[Module] = None
