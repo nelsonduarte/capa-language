@@ -3553,28 +3553,6 @@ Remaining open items (no concrete driver yet):
   side. Acceptable for the typical config/record workload; for
   large documents the parser wants byte-offset cursor probes
   over the source string instead of a per-codepoint list.
-- **Wasm: match binding a builtin Option/Result payload inside a
-  lambda body miscompiles (loud).** Noted during the 2026-06-10
-  bug-hunt, pre-existing: a match inside a lambda body that binds
-  the payload of a builtin Option / Result trips a wasmtime
-  i32/i64 type mismatch at instantiation. Consequence:
-  `parse_json` called inside a lambda still breaks under `--wasm`.
-  Lead: the binder-type refinement writes into the enclosing
-  function's flat `fn.locals`, but the lifted lambda's locals
-  sweep doesn't derive the right Wasm shape from it (files
-  `capa/ir/_emit_wasm/_locals.py` and
-  `capa/ir/_emit_wasm/_closures.py`). `_locals.py` ~line 169
-  still carries the last duplicated hand-rolled walker
-  (`visit`); migrating it to the shared traversal in
-  `capa/ir/_walk.py` likely resolves this.
-- **Lambda local shadowing the closure-holding variable emits a
-  `return_call` to a nonexistent function (loud).** Same
-  bug-hunt, pre-existing: when a local inside a lambda body
-  shadows the variable that holds the closure itself, the
-  emitter produces a `return_call` against a function that does
-  not exist and the module is rejected. The analyzer permits the
-  shadowing across the lambda boundary, which is what lets the
-  shape reach the emitter.
 - **Debugger: DAP + per-expression source maps.** Statement-level
   source maps + caret snippets ship; a real stepping DAP adapter
   and per-sub-expression granularity remain open (deferred as

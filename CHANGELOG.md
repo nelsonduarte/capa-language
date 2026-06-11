@@ -9,6 +9,50 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+### Wasm backend: lambda tail-match miscompile + closure-variable shadowing
+
+Two loud Wasm-only miscompiles found by the 2026-06-10 bug-hunt
+walk, both correct on the Python reference, both fixed at the
+CIR-lowerer root:
+
+- **A lambda whose block-body tail is a `match` where every arm
+  exits via an explicit `return` failed wasmtime compilation**
+  with "type mismatch: expected i32, found i64". The tail lowers
+  through `_lower_match_expr`, and since no arm yields a value the
+  analyzer types the match `?`; the lowerer's result temp then
+  defaulted to the i64 Wasm shape while the trailing `Return`
+  (unreachable, but still validated) had to produce the lambda's
+  declared result shape, so any String / Float / pointer-returning
+  lambda of this shape was rejected. Practical consequence:
+  `parse_json` or `parse_int` matched inside a lambda broke under
+  `--wasm`. The lowerer now re-types the never-typed temp (and any
+  chained temp a nested tail match feeds into it) from the
+  lambda's declared return type; the temp is dead on that path, so
+  no reachable value changes shape on either backend.
+- **A lambda body local shadowing the variable the closure itself
+  is bound to** (`let f = fun ... =>` with `let f = ...` inside,
+  then `f()` after) was rejected at `wasm-tools parse` with
+  "unknown func: failed to find name `$f`". The lambda body lowers
+  before the outer `let f` binds, so the body's local claims the
+  bare name and the alpha-renamer gives the OUTER binding a fresh
+  name; `_lower_call` then failed to resolve the callee through
+  the alias stack, emitting a direct (tail-)call against a
+  function that does not exist. Callee identifiers now resolve
+  through the same alias stack every value position already uses.
+  The analyzer's shadowing rules are unchanged: shadowing across
+  the lambda boundary stays legal (lambda parameters shadowing
+  outer locals are documented behaviour, and the Python backend
+  always executed this shape correctly), so the fix restores
+  execution parity rather than introducing a new rejection.
+
+Covered by `tests/test_ir_wasm_parity.py`
+(`TestLambdaMatchResultAndShadowParity`): the exact bug-hunt
+repros, String / Float / List payload binders in `Some` / `Ok` /
+`Err` arms inside top-level and impl-method lambdas, `parse_int` /
+`parse_json` inside lambdas, a nested match inside a lambda, the
+shadowing repro plus an inner-use shadowing pin, and the
+arms-yield-values regression pin.
+
 ### Wasm backend: discovery gates were blind to impl methods and lambda bodies
 
 Every pre-emit "does this module use feature X?" gate in the Wasm

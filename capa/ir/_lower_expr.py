@@ -259,11 +259,14 @@ class _LowerExprMixin:
                 for s in stmts[:-1]:
                     self._lower_stmt(s)
                 v = self._lower_expr(stmts[-1].expr)
+                v = self._retype_lambda_result(v, ret_ty_name)
                 self._instrs.append(Return(value=v))
             else:
                 self._lower_block(e.body)
         else:
             v = self._lower_expr(e.body)
+            ret_ty_name = _type_name(e.return_type) if e.return_type else ""
+            v = self._retype_lambda_result(v, ret_ty_name)
             self._instrs.append(Return(value=v))
         self._exit_scope()
         body = self._instrs
@@ -288,6 +291,67 @@ class _LowerExprMixin:
             )
         )
         return Value(kind="local", name=name, ty=fun_ty)
+
+    def _retype_lambda_result(self, v: Value, ret_ty: str) -> Value:
+        """A lambda's implicit tail expression IS the lambda's
+        return value, so its static type is the lambda's declared
+        return type. When every arm of a tail match exits via an
+        explicit ``return``, the analyzer types the match
+        expression ``?`` (no arm yields a value), the lowerer's
+        result temp inherits that, and the Wasm backend then
+        declares the temp with the default i64 shape -- so the
+        (unreachable but still validated) trailing ``Return``
+        pushes the wrong shape for a String / Float / pointer
+        result ("type mismatch: expected i32, found i64" at
+        wasmtime compile). Re-typing the temp from the declared
+        return type gives every backend a consistent shape; the
+        temp is dead on the all-arms-return path, so the value
+        itself never flows."""
+        if not ret_ty or ret_ty in ("Unit", "Unknown"):
+            return v
+        cur = v.ty or ""
+        if cur not in ("", "?", "Unknown", "Any") and not cur.startswith("?"):
+            return v
+        if v.kind == "local" and v.name:
+            rec = self._locals.get(v.name, "")
+            if rec in ("", "?", "Unknown", "Any") or rec.startswith("?"):
+                self._locals[v.name] = ret_ty
+                # A nested tail match feeds its own (equally
+                # never-typed) result temp into this one via a dead
+                # ``AssignConst`` inside an arm body; retype the
+                # whole chain so e.g. a match-inside-a-match arm
+                # doesn't leave an i64-shaped temp assigned into a
+                # String (ptr, len) pair.
+                self._retype_chained_unknowns(
+                    self._instrs, v.name, ret_ty, {v.name},
+                )
+        from dataclasses import replace
+        return replace(v, ty=ret_ty)
+
+    def _retype_chained_unknowns(
+        self, instrs, name: str, ret_ty: str, seen: set,
+    ) -> None:
+        """Follow ``AssignConst`` writes into ``name`` (anywhere in
+        the instruction tree -- match arms included) and retype any
+        unknown-typed source local to ``ret_ty``, recursively. Only
+        fully-unknown locals are touched, and an unknown source
+        local can only be another diverging match / if temp on the
+        same dead path, so the retype never changes a reachable
+        value's shape."""
+        from ._walk import walk_instrs
+        for instr in walk_instrs(instrs):
+            if not isinstance(instr, AssignConst) or instr.dst != name:
+                continue
+            src = instr.src
+            if src.kind != "local" or not src.name or src.name in seen:
+                continue
+            rec = self._locals.get(src.name, "")
+            if rec in ("", "?", "Unknown", "Any") or rec.startswith("?"):
+                self._locals[src.name] = ret_ty
+                seen.add(src.name)
+                self._retype_chained_unknowns(
+                    instrs, src.name, ret_ty, seen,
+                )
 
     def _lower_try(self, e: A.Try) -> Value:
         # Three-address IR uses a single TryUnwrap instruction for
@@ -444,6 +508,20 @@ class _LowerExprMixin:
                 f"call with callee {type(e.callee).__name__}"
             )
         callee_name = e.callee.name
+        # Resolve the callee through the alpha-renaming alias stack,
+        # exactly like ``_lower_ident`` does for value positions. A
+        # lambda body that shadows the very local the closure is
+        # bound to (``let f = fun ... => { let f = ...; ... }``)
+        # makes the lowerer rename the OUTER binding (the lambda
+        # body lowers first and claims the bare name in the flat
+        # locals map), so a later call ``f()`` must follow the
+        # rename to the closure local -- otherwise the Call carries
+        # the source name, the emitter sees a non-Fun local of that
+        # name, and falls through to ``call $f`` against a function
+        # that does not exist ("unknown func" at wasm-tools parse).
+        resolved_callee = self._resolve_name(callee_name)
+        if resolved_callee != callee_name and resolved_callee in self._locals:
+            callee_name = resolved_callee
         # Capa exposes ``new_map()`` / ``new_set()`` as builtins that
         # construct empty collections. They have no runtime function
         # of the same name, so we recognise them here and emit

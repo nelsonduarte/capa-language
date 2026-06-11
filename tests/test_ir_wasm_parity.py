@@ -3127,5 +3127,337 @@ class TestDiscoveryGateCoverageParity(unittest.TestCase):
         self._assert_src_cm_parity(src, expect="hi from lambda\n")
 
 
+@unittest.skipUnless(
+    _has_wasm_tools() and _has_wasmtime_py(),
+    "wasm-tools and/or wasmtime-py not installed",
+)
+class TestLambdaMatchResultAndShadowParity(unittest.TestCase):
+    """Lambda-body match / shadowing slice (2026-06-11): two loud
+    Wasm miscompiles found by the bug-hunt walk, both correct on
+    the Python reference.
+
+    (1) A lambda whose block-body TAIL is a match where every arm
+    exits via an explicit ``return`` lowers through
+    ``_lower_match_expr``; the analyzer types that match ``?`` (no
+    arm yields a value), so the lowerer's result temp defaulted to
+    the i64 Wasm shape while the (unreachable but still validated)
+    trailing ``Return`` had to produce the lambda's declared
+    result shape: "type mismatch: expected i32, found i64" at
+    wasmtime compile for String / Float / pointer results.
+    Practical consequence: ``parse_json`` / ``parse_int`` matched
+    inside a lambda broke under ``--wasm``. The lowerer now
+    re-types the temp (and any chained nested-match temp) from the
+    declared return type.
+
+    (2) A lambda body local shadowing the very variable the
+    closure is bound to (``let f = fun ... => { let f = ...; }``;
+    ``f()`` after) made the lowerer alpha-rename the OUTER binding
+    (the lambda body lowers first and claims the bare name), but
+    ``_lower_call`` did not resolve the callee through the alias
+    stack, so the Call carried the source name and the Wasm
+    emitter fell through to ``return_call $f`` against a function
+    that does not exist ("unknown func" at wasm-tools parse). The
+    callee now resolves through the same alias stack value
+    positions already use; the analyzer keeps permitting the
+    shadowing (lambda params shadowing outer locals are documented
+    behaviour, and the Python backend always ran this shape
+    correctly), so the fix is execution parity, not a new error."""
+
+    def _assert_src_parity(self, src: str, expect: str | None = None) -> None:
+        py_out = _capture_stdout(lambda: _run_python(src))
+        wasm_out = _capture_stdout(lambda: _run_wasm(src))
+        self.assertEqual(
+            py_out, wasm_out,
+            msg=(
+                f"Python/Wasm output divergence.\n"
+                f"--- python ---\n{py_out}\n"
+                f"--- wasm ---\n{wasm_out}"
+            ),
+        )
+        if expect is not None:
+            self.assertEqual(py_out, expect)
+
+    # ----- (1) all-arms-return tail match inside a lambda --------
+
+    def test_err_string_binder_return_in_lambda(self):
+        # Exact bug-hunt repro (red5). Pre-fix: wasmtime "type
+        # mismatch: expected i32, found i64" compiling lambda_0.
+        src = (
+            "fun helper() -> Result<Int, String>\n"
+            "    return Ok(1)\n"
+            "\n"
+            "fun feat() -> String\n"
+            "    let f = fun () -> String =>\n"
+            "        match helper()\n"
+            '            Ok(_) -> return "ok"\n'
+            "            Err(m) -> return m\n"
+            "    return f()\n"
+            "\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(feat())\n"
+        )
+        self._assert_src_parity(src, expect="ok\n")
+
+    def test_some_string_binder_return_in_lambda(self):
+        # Exact bug-hunt repro (red7), Err-arm taken at runtime in
+        # the sibling test above; here the Some payload is the one
+        # that flows.
+        src = (
+            "fun helper() -> Option<String>\n"
+            '    return Some("hi")\n'
+            "\n"
+            "fun feat() -> String\n"
+            "    let f = fun () -> String =>\n"
+            "        match helper()\n"
+            "            Some(m) -> return m\n"
+            '            None -> return "none"\n'
+            "    return f()\n"
+            "\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(feat())\n"
+        )
+        self._assert_src_parity(src, expect="hi\n")
+
+    def test_err_arm_taken_at_runtime_in_lambda(self):
+        # The String payload actually flows out of the binder (the
+        # repros above exercise the Ok/Some arm at runtime).
+        src = (
+            "fun helper() -> Result<Int, String>\n"
+            '    return Err("boom")\n'
+            "\n"
+            "fun feat() -> String\n"
+            "    let f = fun () -> String =>\n"
+            "        match helper()\n"
+            '            Ok(_) -> return "ok"\n'
+            "            Err(m) -> return m\n"
+            "    return f()\n"
+            "\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(feat())\n"
+        )
+        self._assert_src_parity(src, expect="boom\n")
+
+    def test_parse_int_some_binder_in_lambda(self):
+        # Exact bug-hunt repro (red11).
+        src = (
+            "fun feat() -> String\n"
+            "    let f = fun () -> String =>\n"
+            '        match parse_int("41")\n'
+            '            Some(n) -> return "p=${n + 1}"\n'
+            '            None -> return "err"\n'
+            "    return f()\n"
+            "\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(feat())\n"
+        )
+        self._assert_src_parity(src, expect="p=42\n")
+
+    def test_some_float_binder_return_in_lambda(self):
+        src = (
+            "fun helper() -> Option<Float>\n"
+            "    return Some(2.5)\n"
+            "\n"
+            "fun feat() -> String\n"
+            "    let f = fun () -> String =>\n"
+            "        match helper()\n"
+            '            Some(x) -> return "x=${x}"\n'
+            '            None -> return "none"\n'
+            "    return f()\n"
+            "\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(feat())\n"
+        )
+        self._assert_src_parity(src, expect="x=2.5\n")
+
+    def test_some_list_binder_return_in_lambda(self):
+        src = (
+            "fun helper() -> Option<List<Int>>\n"
+            "    return Some([7, 8])\n"
+            "\n"
+            "fun feat() -> String\n"
+            "    let f = fun () -> String =>\n"
+            "        match helper()\n"
+            '            Some(xs) -> return "x=${xs[1]}"\n'
+            '            None -> return "none"\n'
+            "    return f()\n"
+            "\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(feat())\n"
+        )
+        self._assert_src_parity(src, expect="x=8\n")
+
+    def test_float_returning_lambda_all_arms_return(self):
+        # Non-String result shapes were broken too: the '?' temp
+        # defaulted to i64 against the lambda's f64 result.
+        src = (
+            "fun helper() -> Option<Float>\n"
+            "    return Some(2.5)\n"
+            "\n"
+            "fun feat() -> Float\n"
+            "    let f = fun () -> Float =>\n"
+            "        match helper()\n"
+            "            Some(x) -> return x + 1.0\n"
+            "            None -> return 0.0\n"
+            "    return f()\n"
+            "\n"
+            "fun main(stdio: Stdio)\n"
+            '    stdio.println("v=${feat()}")\n'
+        )
+        self._assert_src_parity(src, expect="v=3.5\n")
+
+    def test_err_string_binder_in_method_lambda(self):
+        # Same shape, lambda inside an impl method (the lifted
+        # lambda is registered against the mangled method name).
+        src = (
+            "type Box { n: Int }\n"
+            "\n"
+            "fun helper() -> Result<Int, String>\n"
+            '    return Err("nope")\n'
+            "\n"
+            "impl Box\n"
+            "    fun describe(self) -> String\n"
+            "        let f = fun () -> String =>\n"
+            "            match helper()\n"
+            '                Ok(_) -> return "ok"\n'
+            "                Err(m) -> return m\n"
+            "        return f()\n"
+            "\n"
+            "fun main(stdio: Stdio)\n"
+            "    let b = Box { n: 10 }\n"
+            "    stdio.println(b.describe())\n"
+        )
+        self._assert_src_parity(src, expect="nope\n")
+
+    def test_parse_int_in_method_lambda(self):
+        src = (
+            "type Box { n: Int }\n"
+            "\n"
+            "impl Box\n"
+            "    fun describe(self) -> String\n"
+            "        let base = self.n\n"
+            "        let f = fun () -> String =>\n"
+            '            match parse_int("7")\n'
+            '                Some(k) -> return "k=${k}"\n'
+            '                None -> return "err"\n'
+            '        return "${f()} n=${base}"\n'
+            "\n"
+            "fun main(stdio: Stdio)\n"
+            "    let b = Box { n: 10 }\n"
+            "    stdio.println(b.describe())\n"
+        )
+        self._assert_src_parity(src, expect="k=7 n=10\n")
+
+    def test_parse_json_in_lambda(self):
+        # The practical consequence the bug-hunt called out:
+        # parse_json matched inside a lambda broke under --wasm.
+        src = (
+            "fun feat() -> String\n"
+            "    let f = fun () -> String =>\n"
+            '        match parse_json("{\\"a\\": 1}")\n'
+            '            Ok(v) -> return "parsed"\n'
+            "            Err(e) -> return e\n"
+            "    return f()\n"
+            "\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(feat())\n"
+        )
+        self._assert_src_parity(src, expect="parsed\n")
+
+    def test_parse_json_payload_used_in_lambda(self):
+        # The JsonValue payload flows through a nested match, all
+        # inside the lambda.
+        src = (
+            "fun feat() -> String\n"
+            "    let f = fun () -> String =>\n"
+            '        match parse_json("\\"hello\\"")\n'
+            "            Ok(v) ->\n"
+            "                match v.as_string()\n"
+            '                    Some(s) -> return "got=${s}"\n'
+            '                    None -> return "not a string"\n'
+            "            Err(e) -> return e\n"
+            "    return f()\n"
+            "\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(feat())\n"
+        )
+        self._assert_src_parity(src, expect="got=hello\n")
+
+    def test_nested_match_in_lambda(self):
+        # The inner match's result temp is itself never-typed and
+        # feeds the outer's via a dead arm AssignConst; the retype
+        # must follow the chain ("cannot bind String dst" pre-fix).
+        src = (
+            "fun helper() -> Option<Result<Int, String>>\n"
+            '    return Some(Err("inner"))\n'
+            "\n"
+            "fun feat() -> String\n"
+            "    let f = fun () -> String =>\n"
+            "        match helper()\n"
+            "            Some(r) ->\n"
+            "                match r\n"
+            '                    Ok(_) -> return "ok"\n'
+            "                    Err(m) -> return m\n"
+            '            None -> return "none"\n'
+            "    return f()\n"
+            "\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(feat())\n"
+        )
+        self._assert_src_parity(src, expect="inner\n")
+
+    def test_yield_arms_lambda_regression(self):
+        # Regression pin: arms that YIELD values (no returns) were
+        # always typed precisely and must keep working.
+        src = (
+            "fun helper() -> Option<String>\n"
+            '    return Some("hi")\n'
+            "\n"
+            "fun feat() -> String\n"
+            "    let f = fun () -> String =>\n"
+            "        match helper()\n"
+            "            Some(m) -> m\n"
+            '            None -> "none"\n'
+            "    return f()\n"
+            "\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(feat())\n"
+        )
+        self._assert_src_parity(src, expect="hi\n")
+
+    # ----- (2) lambda local shadowing the closure variable --------
+
+    def test_lambda_local_shadows_closure_var(self):
+        # Exact bug-hunt repro (red10). Pre-fix: "unknown func:
+        # failed to find name $f" at wasm-tools parse
+        # (return_call against a nonexistent function).
+        src = (
+            "fun feat() -> String\n"
+            "    let f = fun () -> String =>\n"
+            "        let f = 1.0 / 8.0\n"
+            '        return "v=${f}"\n'
+            "    return f()\n"
+            "\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(feat())\n"
+        )
+        self._assert_src_parity(src, expect="v=0.125\n")
+
+    def test_lambda_local_shadow_inner_use_regression(self):
+        # Regression pin: a lambda body local shadowing an outer
+        # name and USED inside the body keeps its own value while
+        # the outer call still resolves to the closure.
+        src = (
+            "fun feat() -> String\n"
+            "    let g = fun (x: Int) -> Int =>\n"
+            "        let g = x * 2\n"
+            "        return g + 1\n"
+            '    return "v=${g(5)}"\n'
+            "\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(feat())\n"
+        )
+        self._assert_src_parity(src, expect="v=11\n")
+
+
 if __name__ == "__main__":
     unittest.main()
