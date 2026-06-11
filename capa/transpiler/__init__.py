@@ -53,7 +53,7 @@ Known limitations (v1):
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Mapping, Optional
 
 from .. import capa_ast as A
 from ..tokens import Pos
@@ -218,7 +218,7 @@ class Transpiler(
         self,
         filename: str = "<input>",
         types: Optional[dict[int, Ty]] = None,
-        bindings: Optional[dict[int, "object"]] = None,
+        bindings: Optional[Mapping[int, object]] = None,
     ):
         self.filename = filename
         self.em = Emitter()
@@ -238,8 +238,10 @@ class Transpiler(
         # (``INFO`` -> ``INFO``). When absent, falls back to the
         # uppercase-is-variant heuristic; that heuristic is wrong
         # for all-caps constants and the bindings map is the proper
-        # fix.
-        self.bindings: dict[int, "object"] = bindings or {}
+        # fix. Typed as a covariant Mapping (read-only here: every
+        # consumer is a ``.get``) so callers can pass the analyzer's
+        # ``dict[int, Symbol]`` without tripping dict invariance.
+        self.bindings: Mapping[int, object] = bindings or {}
         # Set of type names with a ``fun to_string(self) -> String``
         # declared in an impl block. The interpolated-string emitter
         # consults this to route ``${value}`` of such a type through
@@ -425,7 +427,7 @@ def transpile_repl(
     new_items: list,
     new_stmts: list,
     types: Optional[dict[int, Ty]] = None,
-    bindings: Optional[dict[int, "object"]] = None,
+    bindings: Optional[Mapping[int, object]] = None,
 ) -> str:
     """Render REPL turn code (new top-level items + new main-body
     statements) as Python for module-scope exec into the REPL's
@@ -497,7 +499,7 @@ def transpile(
     module: A.Module,
     filename: str = "<input>",
     types: Optional[dict[int, Ty]] = None,
-    bindings: Optional[dict[int, "object"]] = None,
+    bindings: Optional[Mapping[int, object]] = None,
     out_line_map: Optional[dict[int, Pos]] = None,
 ) -> str:
     """Transpiles a Capa Module to a Python source string.
