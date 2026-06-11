@@ -23,6 +23,11 @@ It lives in ``capa.ir`` (not under ``_emit_wasm``) because the WIT
 generator (``_emit_wit``) and the bundled-JSON injector
 (``_builtin_json``) consume the same traversal; importing only
 ``_nodes`` keeps it cycle-free for all three.
+
+``ConstDecl.body`` is deliberately OUTSIDE the traversal: computed
+consts fail loudly at their use site today, so no gate needs their
+prelude instructions. If computed consts ever become supported,
+this traversal must include their bodies too.
 """
 
 from __future__ import annotations
