@@ -146,6 +146,10 @@ capa --doc                  file.capa   # HTML doc page from /// comments
 capa --fmt                  file.capa   # canonical-style rewrite
 capa init                   my-project  # project scaffold
 capa install                            # fetch capa.toml dependencies
+capa test                               # run tests/test_*.capa; exit 0 = pass
+                                        # (--wasm: Wasm backend; --both: run on
+                                        # both backends AND diff their stdout,
+                                        # divergence fails; see docs/testing.md)
 capa migrate                file.capa   # Python->Capa hardening progress
                                         # (--json for the machine form;
                                         # see docs/migration.md)
@@ -339,6 +343,7 @@ code they describe.
 | [`docs/reference.md`](docs/reference.md) | language reference (syntax + semantics) |
 | [`docs/stdlib.md`](docs/stdlib.md) | runtime + library APIs |
 | [`docs/packages.md`](docs/packages.md) | `capa.toml` + `capa install` + lockfile semantics |
+| [`docs/testing.md`](docs/testing.md) | `capa test`: discovery, result contract, `--both` parity diff |
 | [`docs/positioning.md`](docs/positioning.md) | honest comparison vs Pony, Koka, Roc, Wasm CM, Zero |
 | [`docs/semantics.md`](docs/semantics.md) | lambda_cap calculus sketch + soundness theorems |
 | [`docs/cra.md`](docs/cra.md) + [`regulatory.md`](docs/regulatory.md) | EU CRA + multi-jurisdiction regulatory mapping |

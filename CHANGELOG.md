@@ -9,6 +9,25 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+### New subcommand: `capa test` (with cross-backend parity via `--both`)
+
+`capa test` discovers `tests/test_*.capa` under the project root
+(nearest ancestor with a `capa.toml`, else the cwd) and runs each
+file through the same pipeline as `capa --run`, in sorted order.
+Result contract: exit 0 = pass, anything else = fail; since Capa
+has no `exit()` builtin and `main`'s return value is ignored, a
+test fails by letting a runtime error escape `main` (division by
+zero, out-of-bounds index, a Wasm trap). One report line per file
+with duration, captured stdout/stderr inline for failures, a final
+summary, and a non-zero exit when anything failed. `--wasm` runs
+on the Wasm backend; `--both` runs every test on BOTH backends and
+additionally diffs their stdout, reporting divergence as its own
+failure kind (DIVERGED) with a unified diff, the cheapest
+cross-backend parity check a library can run. Unvendored deps
+(including dev-deps) are reported up front with a pointer at
+`capa install`; nothing is installed implicitly. See
+docs/testing.md.
+
 ### Package manager: `[dev-dependencies]` in capa.toml + `capa add --dev`
 
 Test- and tooling-only dependencies now live in their own

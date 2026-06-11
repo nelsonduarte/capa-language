@@ -680,6 +680,74 @@ def _dispatch_run_aot(argv: list[str]) -> int:
     return 0
 
 
+def _dispatch_test(argv: list[str]) -> int:
+    """Handle ``python -m capa test [--wasm | --both]``.
+
+    Discovers ``tests/test_*.capa`` under the project root (the
+    nearest ancestor of the cwd with a ``capa.toml``, else the cwd)
+    and runs each file through the same pipeline as ``capa --run``,
+    in deterministic (sorted) order. See :mod:`capa.testrunner`.
+    """
+    sub = argparse.ArgumentParser(
+        prog="capa test",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description=(
+            "Run the project's Capa tests: every tests/test_*.capa "
+            "under the project root (nearest ancestor directory with "
+            "a capa.toml, or the cwd), in sorted order, each executed "
+            "exactly like `capa --run`."
+        ),
+        epilog=(
+            "result contract:\n"
+            "  A test passes when its process exits 0 and fails otherwise.\n"
+            "  Capa has no exit() builtin and main's return value is\n"
+            "  ignored, so a Capa program exits 0 exactly when main runs\n"
+            "  to completion and 1 when a runtime error escapes it\n"
+            "  (division by zero, out-of-bounds index, a Wasm trap). A\n"
+            "  test signals failure by letting a runtime error escape on\n"
+            "  its failing path.\n"
+            "\n"
+            "  With --both, a test additionally fails (DIVERGED) when the\n"
+            "  two backends both exit 0 but print different stdout; the\n"
+            "  report shows the unified diff.\n"
+            "\n"
+            "  Dev-dependencies declared in capa.toml must be vendored\n"
+            "  (run `capa install`) before testing; capa test never\n"
+            "  installs anything itself."
+        ),
+    )
+    backend = sub.add_mutually_exclusive_group()
+    backend.add_argument(
+        "--wasm",
+        action="store_true",
+        help="run every test on the Wasm backend (capa --wasm --run)",
+    )
+    backend.add_argument(
+        "--both",
+        action="store_true",
+        help=(
+            "run every test on BOTH backends and diff their stdout; "
+            "matching output and exit 0 on both is required to pass"
+        ),
+    )
+    args = sub.parse_args(argv)
+
+    mode = "both" if args.both else ("wasm" if args.wasm else "python")
+    if mode in ("wasm", "both") and not _wasm_tooling_available():
+        print(
+            "capa test: the Wasm toolchain is required for "
+            f"--{mode if mode == 'wasm' else 'both'} (wasm-tools on "
+            "PATH + the 'wasmtime' Python package). Install both and "
+            "retry.",
+            file=sys.stderr,
+        )
+        return 2
+
+    from capa.testrunner import find_project_root, run_tests
+    root = find_project_root(Path.cwd())
+    return run_tests(root, mode=mode)
+
+
 def main() -> int:
     # Make stdout/stderr UTF-8 with replacement so CLI output never
     # crashes the process on a non-ASCII byte. The token dump uses a
@@ -712,6 +780,8 @@ def main() -> int:
         return _dispatch_build(sys.argv[2:])
     if len(sys.argv) >= 2 and sys.argv[1] == "run-aot":
         return _dispatch_run_aot(sys.argv[2:])
+    if len(sys.argv) >= 2 and sys.argv[1] == "test":
+        return _dispatch_test(sys.argv[2:])
     if len(sys.argv) >= 2 and sys.argv[1] == "lsp":
         from capa.lsp_server import serve
         return serve()
