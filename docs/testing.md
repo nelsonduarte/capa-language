@@ -28,12 +28,26 @@ Each test file is a **plain Capa program** executed exactly like
 - exit code 0 = the test **passed**
 - anything else = the test **failed**
 
-Capa has no `exit()` builtin and `main`'s return value is ignored
-by the bootstrap on both backends, so a Capa program exits 0
-exactly when `main` runs to completion, and 1 when a **runtime
-error escapes `main`**: division by zero, an out-of-bounds index,
-a Wasm trap, an uncaught host error. A test signals failure by
-letting a runtime error escape on its failing path.
+`main`'s return value is ignored by the bootstrap on both
+backends, so a Capa program exits 0 exactly when `main` runs to
+completion, and 1 when it **aborts**: a deliberate `panic(...)`,
+or a runtime error escaping `main` (division by zero, an
+out-of-bounds index, a Wasm trap, an uncaught host error).
+
+**The recommended way to fail a test is `panic(message)`**:
+
+```capa
+fun main(stdio: Stdio)
+    let got = parse_int("42").unwrap_or(0)
+    if got != 42
+        panic("expected 42, got ${got}")
+    stdio.println("parse_int round-trips")
+```
+
+`panic` aborts immediately on every backend with the same shape:
+`panic: <message>` on stderr (which `capa test` shows inline on
+failure), nothing extra on stdout, non-zero exit. Unlike provoking
+a division by zero, the failure line says *what* failed.
 
 On failure, `capa test` prints the file's captured stdout and
 stderr inline, then keeps going; the final exit code is 1 when any
@@ -108,6 +122,6 @@ myproject/
 ```
 
 To make a helper-based suite fail the run (and not only print
-`FAIL` lines), let the failure path end in a runtime error, e.g.
-finish `main` with an intentional trap when the failure count is
-non-zero.
+`FAIL` lines), end the failure path with `panic`, e.g. finish
+`main` with `panic("${failures} assertion(s) failed")` when the
+failure count is non-zero.

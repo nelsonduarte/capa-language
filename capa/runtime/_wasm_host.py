@@ -108,6 +108,7 @@ class WasmHost:
         self._root_clock: Optional[Clock] = None
         self._root_stdio: Optional[Stdio] = None
         self._register_stdio()
+        self._register_panic()
         self._register_clock()
         self._register_env()
         self._register_fs()
@@ -285,6 +286,42 @@ class WasmHost:
         self.linker.define_func(
             "capa:host/stdio", "read-line", ft_read_line,
             stdio_read_line, access_caller=True,
+        )
+
+    def _register_panic(self) -> None:
+        """Register the ``capa:host/panic`` import backing the
+        ``panic`` builtin. The guest passes the message as a
+        (ptr, len) UTF-8 slice; the host writes the canonical
+        ``panic: <message>`` line to stderr (flushing stdout first
+        so prior program output is not reordered past it) and
+        returns. The guest then executes ``unreachable``, so the
+        trap that aborts execution is deterministic and guest-side;
+        the host import is a pure write."""
+        ft_string_to_unit = wasmtime.FuncType(
+            [wasmtime.ValType.i32(), wasmtime.ValType.i32()], [],
+        )
+
+        def panic_write(caller, ptr, length):
+            if self._memory is None:
+                raise RuntimeError(
+                    "panic called before instance memory was set"
+                )
+            data = self._memory.read(caller, ptr, ptr + length)
+            try:
+                sys.stdout.flush()
+            except Exception:
+                pass
+            _write_safe(
+                sys.stderr,
+                "panic: "
+                + bytes(data).decode("utf-8", errors="replace")
+                + "\n",
+            )
+            sys.stderr.flush()
+
+        self.linker.define_func(
+            "capa:host/panic", "panic", ft_string_to_unit,
+            panic_write, access_caller=True,
         )
 
     def _register_clock(self) -> None:

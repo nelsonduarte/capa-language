@@ -20,13 +20,14 @@ both layouts in the wild resolve with zero configuration:
     running ``CAPA_PATH=.. capa --run tests/test_x.capa``).
 
 **Result contract.** Exit code 0 means the test passed; anything
-else means it failed. Capa has no ``exit()`` builtin and ``main``'s
-return value is ignored by the bootstrap on both backends, so a
-Capa program's exit code is 0 exactly when ``main`` runs to
-completion and non-zero (1) when a runtime error escapes it:
-division by zero, an out-of-bounds index, a Wasm trap, an uncaught
-host error. A test therefore signals failure by letting a runtime
-error escape ``main`` on its failing path.
+else means it failed. ``main``'s return value is ignored by the
+bootstrap on both backends, so a Capa program's exit code is 0
+exactly when ``main`` runs to completion and non-zero (1) when it
+aborts: a deliberate ``panic("message")`` (the recommended way for
+a test to fail; the message lands on stderr, which the runner
+shows inline) or a runtime error escaping ``main`` (division by
+zero, an out-of-bounds index, a Wasm trap, an uncaught host
+error).
 
 **Backends.** The default runs the Python pipeline. ``--wasm``
 runs ``capa --wasm --run`` instead. ``--both`` runs every test on

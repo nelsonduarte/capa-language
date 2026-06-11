@@ -108,6 +108,7 @@ class WasmComponentHost:
     def _register_all(self) -> None:
         root = self._linker.root()
         self._register_stdio(root)
+        self._register_panic(root)
         self._register_clock(root)
         self._register_env(root)
         self._register_fs(root)
@@ -159,6 +160,25 @@ class WasmComponentHost:
 
         stdio.add_func("read-line", stdio_read_line)
         stdio.close()
+
+    def _register_panic(self, root: wc.LinkerInstance) -> None:
+        """Register the ``capa:host/panic`` interface backing the
+        ``panic`` builtin. Same contract as the core host: write
+        the canonical ``panic: <message>`` line to stderr (stdout
+        flushed first) and return; the guest then traps via
+        ``unreachable``, which surfaces as the run_main exception
+        the CLI translates to a non-zero exit."""
+        def do_panic(_store, msg: str) -> None:
+            try:
+                sys.stdout.flush()
+            except Exception:
+                pass
+            _write_safe(sys.stderr, "panic: " + msg + "\n")
+            sys.stderr.flush()
+
+        panic_ifc = root.add_instance("capa:host/panic")
+        panic_ifc.add_func("panic", do_panic)
+        panic_ifc.close()
 
     # ---- handle-lookup helpers ---------------------------------
 

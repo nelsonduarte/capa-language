@@ -41,7 +41,7 @@ _BUILTIN_VARIANTS = ["Some", "None", "Ok", "Err"]
 _BUILTIN_FUNCTIONS = [
     "parse_int", "parse_float", "to_int", "to_float",
     "new_map", "new_set", "parse_json", "to_json",
-    "py_import", "py_invoke",
+    "py_import", "py_invoke", "panic",
 ]
 
 

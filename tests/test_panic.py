@@ -1,0 +1,462 @@
+"""Tests for the ``panic`` builtin.
+
+``panic(message: String)`` aborts the program: the canonical
+``panic: <message>`` line goes to stderr, nothing goes to stdout,
+and the process exits non-zero on every backend (exit 1 on Python
+via ``SystemExit``; a guest-side ``unreachable`` trap on the core
+Wasm and Component Model paths, which the CLI translates to exit
+1). No unwinding, no catch.
+
+Layers covered here:
+
+  * analyzer: registration (Unit-returning free function), arg
+    typing / arity, user-function shadowing;
+  * Python backend in-process: exit semantics + stderr / stdout
+    contract, panic inside a callee, interpolated message;
+  * core Wasm + Component Model hosts in-process: trap raised,
+    message on stderr, nothing on stdout (skipped without the
+    toolchain), plus the WIT ``import panic;`` surface;
+  * CLI subprocess parity: the real exit-code contract on all
+    three ``--run`` paths;
+  * IFC: panic is a public sink like Stdio.eprintln (warn by
+    default, error under ``@strict_ifc``, declassify clears it,
+    cross-function summary catches a panicking callee);
+  * ``capa test`` integration: a test file that panics is FAILed.
+"""
+
+from __future__ import annotations
+
+import io
+import shutil
+import subprocess
+import sys
+import tempfile
+import textwrap
+import unittest
+from pathlib import Path
+
+from capa import Lexer, Parser, analyze, transpile
+from capa.typesys import TyUnit
+
+
+def _parse_analyze(src: str):
+    tokens = Lexer(src).lex()
+    module = Parser(tokens, source=src).parse_module()
+    result = analyze(module, source=src)
+    return module, result
+
+
+def _has_wasm_toolchain() -> bool:
+    if shutil.which("wasm-tools") is None:
+        return False
+    try:
+        import wasmtime  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
+def _capture_streams(thunk) -> tuple[str, str, object]:
+    """Run ``thunk`` with stdout/stderr redirected; return
+    (stdout, stderr, exception-or-None). ``SystemExit`` is captured
+    like any other exception so the Python backend's abort can be
+    asserted on."""
+    out, err = io.StringIO(), io.StringIO()
+    saved_out, saved_err = sys.stdout, sys.stderr
+    sys.stdout, sys.stderr = out, err
+    exc = None
+    try:
+        thunk()
+    except BaseException as e:  # noqa: BLE001 - SystemExit included
+        exc = e
+    finally:
+        sys.stdout, sys.stderr = saved_out, saved_err
+    return out.getvalue(), err.getvalue(), exc
+
+
+def _run_python_backend(src: str) -> tuple[str, str, object]:
+    module, result = _parse_analyze(src)
+    assert result.ok, f"analyzer errors: {result.errors}"
+    code = transpile(module, types=result.types, bindings=result.bindings)
+
+    def thunk():
+        ns: dict = {"__name__": "__main__"}
+        exec(compile(code, "<panic-test>", "exec"), ns)
+
+    return _capture_streams(thunk)
+
+
+_BOOM = (
+    'fun main(stdio: Stdio)\n'
+    '    stdio.println("before")\n'
+    '    panic("boom")\n'
+    '    stdio.println("after")\n'
+)
+
+_BOOM_IN_CALLEE = (
+    'fun fail(code: Int)\n'
+    '    panic("bad code ${code}")\n'
+    '\n'
+    'fun main()\n'
+    '    fail(7)\n'
+)
+
+_NO_PANIC = (
+    'fun main(stdio: Stdio)\n'
+    '    stdio.println("fine")\n'
+)
+
+# Panic reached only through a lambda body: exercises the
+# MakeLambda recursion in the Wasm discovery / WIT walkers (without
+# it the module references an import it never declared).
+_BOOM_IN_LAMBDA = (
+    'fun main(stdio: Stdio)\n'
+    '    let xs: List<Int> = [1, 2, 3]\n'
+    '    let f = fun (n: Int) -> Int =>\n'
+    '        if n == 2\n'
+    '            panic("lambda boom")\n'
+    '        return n\n'
+    '    let ys = xs.map(f)\n'
+    '    stdio.println("${ys.length()}")\n'
+)
+
+
+class TestPanicAnalyzer(unittest.TestCase):
+    def test_panic_is_a_unit_returning_free_function(self):
+        src = 'fun main()\n    panic("x")\n'
+        module, result = _parse_analyze(src)
+        self.assertTrue(result.ok, result.errors)
+        # The call expression itself types as Unit.
+        call = module.items[0].body.stmts[0].expr
+        self.assertEqual(result.types.get(id(call)), TyUnit)
+
+    def test_panic_rejects_non_string_argument(self):
+        _, result = _parse_analyze('fun main()\n    panic(42)\n')
+        self.assertFalse(result.ok)
+        self.assertTrue(
+            any("panic" in e.message for e in result.errors),
+            [e.message for e in result.errors],
+        )
+
+    def test_panic_rejects_wrong_arity(self):
+        _, result = _parse_analyze('fun main()\n    panic()\n')
+        self.assertFalse(result.ok)
+
+    def test_user_function_named_panic_shadows_builtin(self):
+        src = (
+            'fun panic(msg: String) -> Int\n'
+            '    return msg.length()\n'
+            '\n'
+            'fun main()\n'
+            '    let n = panic("hi")\n'
+            '    let m = n + 1\n'
+        )
+        _, result = _parse_analyze(src)
+        self.assertTrue(result.ok, result.errors)
+
+
+class TestPanicPythonBackend(unittest.TestCase):
+    def test_panic_aborts_with_exit_1_and_message_on_stderr(self):
+        out, err, exc = _run_python_backend(_BOOM)
+        self.assertIsInstance(exc, SystemExit)
+        self.assertEqual(exc.code, 1)
+        self.assertEqual(out, "before\n")
+        self.assertEqual(err, "panic: boom\n")
+
+    def test_panic_inside_callee_with_interpolation(self):
+        out, err, exc = _run_python_backend(_BOOM_IN_CALLEE)
+        self.assertIsInstance(exc, SystemExit)
+        self.assertEqual(exc.code, 1)
+        self.assertEqual(out, "")
+        self.assertEqual(err, "panic: bad code 7\n")
+
+    def test_panic_inside_lambda(self):
+        out, err, exc = _run_python_backend(_BOOM_IN_LAMBDA)
+        self.assertIsInstance(exc, SystemExit)
+        self.assertEqual(exc.code, 1)
+        self.assertEqual(out, "")
+        self.assertEqual(err, "panic: lambda boom\n")
+
+    def test_program_without_panic_is_unchanged(self):
+        out, err, exc = _run_python_backend(_NO_PANIC)
+        self.assertIsNone(exc)
+        self.assertEqual(out, "fine\n")
+        self.assertEqual(err, "")
+
+    def test_user_panic_function_runs_instead_of_builtin(self):
+        src = (
+            'fun panic(msg: String) -> Int\n'
+            '    return msg.length()\n'
+            '\n'
+            'fun main(stdio: Stdio)\n'
+            '    let n = panic("four")\n'
+            '    stdio.println("${n}")\n'
+        )
+        out, err, exc = _run_python_backend(src)
+        self.assertIsNone(exc)
+        self.assertEqual(out, "4\n")
+        self.assertEqual(err, "")
+
+
+@unittest.skipUnless(_has_wasm_toolchain(), "wasm toolchain not installed")
+class TestPanicWasmBackend(unittest.TestCase):
+    def _run_core(self, src: str) -> tuple[str, str, object]:
+        from capa.ir import compile_wasm
+        from capa.runtime._wasm_host import WasmHost
+        module, result = _parse_analyze(src)
+        assert result.ok, f"analyzer errors: {result.errors}"
+        blob = compile_wasm(module, types=result.types)
+
+        def thunk():
+            WasmHost().run_main(blob)
+
+        return _capture_streams(thunk)
+
+    def _run_component(self, src: str) -> tuple[str, str, object]:
+        from capa.cli import _wrap_as_component
+        from capa.ir import compile_wasm, compile_wit
+        from capa.runtime._wasm_component_host import WasmComponentHost
+        module, result = _parse_analyze(src)
+        assert result.ok, f"analyzer errors: {result.errors}"
+        core = compile_wasm(module, types=result.types)
+        component = _wrap_as_component(
+            core, compile_wit(module, types=result.types),
+        )
+
+        def thunk():
+            WasmComponentHost().run_main(component)
+
+        return _capture_streams(thunk)
+
+    def test_core_panic_traps_with_message_on_stderr(self):
+        out, err, exc = self._run_core(_BOOM)
+        self.assertIsNotNone(exc, "panic must trap on the Wasm backend")
+        self.assertNotIsInstance(exc, SystemExit)
+        self.assertEqual(out, "before\n")
+        self.assertEqual(err, "panic: boom\n")
+
+    def test_core_panic_in_callee_with_interpolation(self):
+        out, err, exc = self._run_core(_BOOM_IN_CALLEE)
+        self.assertIsNotNone(exc)
+        self.assertEqual(out, "")
+        self.assertEqual(err, "panic: bad code 7\n")
+
+    def test_core_panic_inside_lambda(self):
+        out, err, exc = self._run_core(_BOOM_IN_LAMBDA)
+        self.assertIsNotNone(exc)
+        self.assertEqual(out, "")
+        self.assertEqual(err, "panic: lambda boom\n")
+
+    def test_component_panic_traps_with_message_on_stderr(self):
+        out, err, exc = self._run_component(_BOOM)
+        self.assertIsNotNone(exc, "panic must trap on the CM backend")
+        self.assertEqual(out, "before\n")
+        self.assertEqual(err, "panic: boom\n")
+
+    def test_component_panic_in_callee_with_interpolation(self):
+        out, err, exc = self._run_component(_BOOM_IN_CALLEE)
+        self.assertIsNotNone(exc)
+        self.assertEqual(out, "")
+        self.assertEqual(err, "panic: bad code 7\n")
+
+
+class TestPanicWit(unittest.TestCase):
+    """The WIT surface is pure text generation; no toolchain needed."""
+
+    def _wit(self, src: str) -> str:
+        from capa.ir import compile_wit
+        module, result = _parse_analyze(src)
+        assert result.ok, f"analyzer errors: {result.errors}"
+        return compile_wit(module, types=result.types)
+
+    def test_wit_declares_panic_interface_when_used(self):
+        wit = self._wit(_BOOM_IN_CALLEE)
+        self.assertIn("interface panic {", wit)
+        self.assertIn("panic: func(msg: string);", wit)
+        self.assertIn("import panic;", wit)
+
+    def test_wit_sees_panic_inside_lambda(self):
+        wit = self._wit(_BOOM_IN_LAMBDA)
+        self.assertIn("import panic;", wit)
+
+    def test_wit_omits_panic_interface_when_unused(self):
+        wit = self._wit(_NO_PANIC)
+        self.assertNotIn("interface panic", wit)
+        self.assertNotIn("import panic;", wit)
+
+    def test_wit_omits_panic_when_shadowed_by_user_function(self):
+        src = (
+            'fun panic(msg: String) -> Int\n'
+            '    return msg.length()\n'
+            '\n'
+            'fun main(stdio: Stdio)\n'
+            '    let n = panic("x")\n'
+            '    stdio.println("${n}")\n'
+        )
+        wit = self._wit(src)
+        self.assertNotIn("import panic;", wit)
+
+
+class TestPanicCliExitCodes(unittest.TestCase):
+    """The real process-level contract, via one subprocess per
+    backend: exit 1 (non-zero), ``panic: <msg>`` on stderr, nothing
+    on stdout. This is what ``capa test`` builds on."""
+
+    def setUp(self) -> None:
+        self._tmp = Path(tempfile.mkdtemp(prefix="capa_panic_"))
+        self._file = self._tmp / "boom.capa"
+        self._file.write_text(
+            'fun main()\n    panic("boom")\n', encoding="utf-8",
+        )
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self._tmp, ignore_errors=True)
+
+    def _run(self, *flags: str) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [sys.executable, "-m", "capa", *flags, str(self._file)],
+            capture_output=True, text=True, timeout=120,
+        )
+
+    def test_python_run_exits_1_clean_stderr_line(self):
+        proc = self._run("--run")
+        self.assertEqual(proc.returncode, 1)
+        self.assertEqual(proc.stdout, "")
+        # Clean abort: exactly the panic line, no traceback.
+        self.assertEqual(proc.stderr, "panic: boom\n")
+
+    @unittest.skipUnless(_has_wasm_toolchain(), "wasm toolchain not installed")
+    def test_wasm_run_exits_nonzero_with_message(self):
+        proc = self._run("--wasm", "--run")
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertEqual(proc.stdout, "")
+        self.assertTrue(
+            proc.stderr.startswith("panic: boom\n"),
+            f"stderr was: {proc.stderr!r}",
+        )
+
+    @unittest.skipUnless(_has_wasm_toolchain(), "wasm toolchain not installed")
+    def test_component_run_exits_nonzero_with_message(self):
+        proc = self._run("--wasm", "--component", "--run")
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertEqual(proc.stdout, "")
+        self.assertTrue(
+            proc.stderr.startswith("panic: boom\n"),
+            f"stderr was: {proc.stderr!r}",
+        )
+
+
+class TestPanicIfc(unittest.TestCase):
+    """``panic`` is a public sink (the message goes to stderr),
+    treated exactly like Stdio.eprintln: warn by default, hard
+    error under ``@strict_ifc``, declassify clears the flow, and
+    the cross-function summary catches a callee that panics with
+    its parameter."""
+
+    def _panic_warnings(self, result):
+        return [w for w in result.warnings if "panic" in w.message]
+
+    def test_secret_to_panic_warns(self):
+        src = (
+            'fun main(env: Env, stdio: Stdio)\n'
+            '    match env.get("API_KEY")\n'
+            '        Some(k) -> panic(k)\n'
+            '        None -> stdio.println("no key")\n'
+        )
+        _, result = _parse_analyze(src)
+        self.assertTrue(result.ok, result.errors)
+        self.assertEqual(len(self._panic_warnings(result)), 1,
+                         [w.message for w in result.warnings])
+
+    def test_secret_to_panic_is_error_under_strict_ifc(self):
+        src = (
+            '@strict_ifc()\n'
+            'fun main(env: Env)\n'
+            '    let k = env.get("API_KEY").unwrap_or("none")\n'
+            '    panic(k)\n'
+        )
+        _, result = _parse_analyze(src)
+        self.assertFalse(result.ok)
+        self.assertTrue(
+            any("panic" in e.message for e in result.errors),
+            [e.message for e in result.errors],
+        )
+
+    def test_declassified_secret_to_panic_is_clean(self):
+        src = (
+            'fun main(env: Env)\n'
+            '    let k = env.get("API_KEY").unwrap_or("none")\n'
+            '    panic(declassify(k, reason: "operator-visible abort"))\n'
+        )
+        _, result = _parse_analyze(src)
+        self.assertTrue(result.ok, result.errors)
+        self.assertEqual(self._panic_warnings(result), [])
+
+    def test_public_message_to_panic_is_clean(self):
+        _, result = _parse_analyze(_BOOM)
+        self.assertTrue(result.ok, result.errors)
+        self.assertEqual(self._panic_warnings(result), [])
+
+    def test_callee_that_panics_param_flags_secret_at_call_site(self):
+        src = (
+            'fun die(msg: String)\n'
+            '    panic(msg)\n'
+            '\n'
+            'fun main(env: Env)\n'
+            '    let k = env.get("API_KEY").unwrap_or("none")\n'
+            '    die(k)\n'
+        )
+        _, result = _parse_analyze(src)
+        self.assertTrue(result.ok, result.errors)
+        boundary = [
+            w for w in result.warnings
+            if "reaches a public sink inside" in w.message
+        ]
+        self.assertEqual(len(boundary), 1,
+                         [w.message for w in result.warnings])
+
+
+class TestPanicUnderCapaTest(unittest.TestCase):
+    """A ``tests/test_*.capa`` file that panics is reported FAIL by
+    ``capa test`` and drives the overall exit code to 1; panic is
+    the recommended way for a Capa test to fail (docs/testing.md)."""
+
+    def setUp(self) -> None:
+        self._tmp = Path(tempfile.mkdtemp(prefix="capa_panic_test_"))
+        root = self._tmp / "proj"
+        (root / "tests").mkdir(parents=True)
+        (root / "capa.toml").write_text(textwrap.dedent('''\
+            [package]
+            name = "demo"
+            version = "0.1.0"
+        '''), encoding="utf-8")
+        (root / "tests" / "test_boom.capa").write_text(
+            'fun main(stdio: Stdio)\n'
+            '    stdio.println("checking")\n'
+            '    panic("assertion failed: 1 != 2")\n',
+            encoding="utf-8",
+        )
+        (root / "tests" / "test_fine.capa").write_text(
+            'fun main(stdio: Stdio)\n    stdio.println("ok")\n',
+            encoding="utf-8",
+        )
+        self._root = root
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self._tmp, ignore_errors=True)
+
+    def test_panicking_test_file_is_reported_failed(self):
+        proc = subprocess.run(
+            [sys.executable, "-m", "capa", "test"],
+            capture_output=True, text=True, timeout=300,
+            cwd=str(self._root),
+        )
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("test_boom.capa ... FAIL", proc.stdout)
+        self.assertIn("test_fine.capa ... ok", proc.stdout)
+        self.assertIn("panic: assertion failed: 1 != 2", proc.stdout)
+        self.assertIn("1 passed, 1 failed", proc.stdout)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -1008,6 +1008,42 @@ class _IfcMixin:
                 e.pos,
             )
 
+    def _check_ifc_panic_sink(self, e: A.Call) -> None:
+        """``panic(message)`` writes its message to stderr, so it is a
+        public sink exactly like ``Stdio.eprintln``: a ``@secret``
+        message is a disclosure. Same warn-then-enforce tier as
+        ``_check_ifc_sink`` (warning by default, hard error under
+        ``@strict_ifc``), and the same implicit-flow rule under
+        ``@strict_ifc`` (a panic in a secret-conditioned branch leaks
+        whether the branch was taken through the abort itself).
+
+        Called from ``_check_call`` only for the BUILTIN panic (a
+        user function named ``panic`` shadows the builtin and is
+        covered by the regular cross-function summary instead)."""
+        if e.args and L.normalize(self._label_of(e.args[0])) == L.SECRET:
+            msg = (
+                f"information-flow: a @secret value reaches panic "
+                f"(argument 1), a public sink that writes the message "
+                f"to stderr. Route it through declassify(value, "
+                f"reason: \"...\") if this disclosure is intended."
+            )
+            if getattr(self, "_strict_ifc", False):
+                self._err(msg, e.args[0].pos)
+            else:
+                self._warn(msg, e.args[0].pos)
+        if (
+            getattr(self, "_strict_ifc", False)
+            and L.normalize(getattr(self, "_pc_label", L.PUBLIC)) == L.SECRET
+        ):
+            self._err(
+                f"information-flow (strict): panic runs under secret "
+                f"control flow (inside a branch whose condition is "
+                f"@secret), which leaks whether that branch was taken. "
+                f"Move the panic outside the secret-conditioned branch "
+                f"so its execution does not depend on the secret.",
+                e.pos,
+            )
+
     # ---- cross-function sink-parameter flow (roadmap S2.6) -------
 
     def _check_ifc_call_summary(

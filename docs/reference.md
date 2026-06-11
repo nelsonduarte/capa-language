@@ -698,8 +698,38 @@ fun main(stdio: Stdio, fs: Fs, env: Env)
     stdio.println("received ${argv.length()} arguments")
 ```
 
-If `main` returns `Result<(), E>`, an `Err` causes a non-zero exit
-code.
+`main`'s return value is ignored by the bootstrap: the process
+exits 0 when `main` runs to completion, regardless of what it
+returns.
+
+### 8.1. Aborting: the `panic` builtin
+
+`panic(message: String)` terminates the program immediately. It is
+**not** an exception: there is no stack unwinding and no catch.
+The contract is identical on every backend:
+
+- `panic: <message>` is written to stderr (one line);
+- nothing is written to stdout;
+- the process exits non-zero (exit 1 on the Python backend; the
+  Wasm and Component Model backends trap, which the CLI and
+  `capa test` translate to exit 1).
+
+```capa
+fun withdraw(balance: Int, amount: Int) -> Int
+    if amount > balance
+        panic("withdraw of ${amount} exceeds balance ${balance}")
+    return balance - amount
+```
+
+`panic` is declared as returning `Unit` (Capa has no bottom /
+`Never` type), so it cannot yet be used where a value of another
+type is expected; control never actually continues past the call.
+It is the recommended way for a test program to fail (see
+[`testing.md`](testing.md)). Because the message goes to stderr,
+`panic` is a **public sink** for information-flow purposes: passing
+a `@secret` value warns by default and is a hard error under
+`@strict_ifc()`, exactly like `stdio.eprintln` (route deliberate
+disclosures through `declassify`).
 
 ---
 

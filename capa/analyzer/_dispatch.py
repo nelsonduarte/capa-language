@@ -209,6 +209,14 @@ class _DispatchMixin:
                         # parameter order, so it doubles as the
                         # param-index -> arg-index map.
                         self._check_ifc_call_summary(e, sym, perm)
+                        # ``panic(message)`` writes to stderr, so the
+                        # builtin is a public sink like Stdio.eprintln.
+                        # A user function named ``panic`` shadows the
+                        # builtin (real source pos, not BUILTIN_POS)
+                        # and is covered by the summary check above.
+                        from ..builtins import BUILTIN_POS
+                        if sym.name == "panic" and sym.pos == BUILTIN_POS:
+                            self._check_ifc_panic_sink(e)
                         # Cross-function field-write effect: a callee
                         # that stores a secret-derived value into a
                         # field of one of its parameters taints the

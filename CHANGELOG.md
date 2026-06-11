@@ -9,15 +9,52 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+### New builtin: `panic(message)` aborts the program, loudly, on every backend
+
+Capa had no deliberate way for a program to terminate with a
+non-zero exit code; only an escaping runtime error did that.
+`panic(message: String)` closes the gap: it writes the canonical
+`panic: <message>` line to stderr (never stdout) and aborts. Exit
+1 on the Python backend (a clean `SystemExit`, no traceback); on
+the core Wasm and Component Model backends the guest calls the new
+`capa:host/panic` import (the host writes the message to stderr)
+and then executes `unreachable`, so the trap is deterministic and
+guest-side, and the CLI translates it to exit 1 as it does for any
+trap. No stack unwinding, no catch: panic is an abort, not an
+exception. It requires no capability, and a user-defined function
+named `panic` shadows the builtin on every backend.
+
+Design notes: `panic` is declared as returning `Unit` because the
+type system has no bottom / `Never` type today (it is the first
+candidate to adopt one if added). Because the message reaches
+stderr, the information-flow checker treats `panic` as a public
+sink exactly like `Stdio.eprintln`: a `@secret` argument warns by
+default, errors under `@strict_ifc()`, is cleared by `declassify`,
+and the cross-function summary flags a callee that panics with its
+parameter.
+
+This is the failure primitive `capa test` was missing: a test now
+fails by panicking with a message that says what broke (the runner
+shows the stderr line inline), instead of provoking a division by
+zero. docs/testing.md and the `capa test` help now recommend it;
+docs/reference.md 8.1 + docs/stdlib.md document the builtin. The
+stale reference.md claim that `main` returning `Err` exits
+non-zero was fixed along the way (it never did; `main`'s return
+value is ignored). Covered by `tests/test_panic.py`: analyzer
+typing + shadowing, all three `--run` paths (exit code, stderr
+line, empty stdout, panic inside a callee, interpolated message),
+WIT surface, the IFC tiers, and a `capa test` integration run.
+
 ### New subcommand: `capa test` (with cross-backend parity via `--both`)
 
 `capa test` discovers `tests/test_*.capa` under the project root
 (nearest ancestor with a `capa.toml`, else the cwd) and runs each
 file through the same pipeline as `capa --run`, in sorted order.
-Result contract: exit 0 = pass, anything else = fail; since Capa
-has no `exit()` builtin and `main`'s return value is ignored, a
-test fails by letting a runtime error escape `main` (division by
-zero, out-of-bounds index, a Wasm trap). One report line per file
+Result contract: exit 0 = pass, anything else = fail; `main`'s
+return value is ignored, so a test fails by aborting: a deliberate
+`panic("message")` (recommended; see the panic entry above) or a
+runtime error escaping `main` (division by zero, out-of-bounds
+index, a Wasm trap). One report line per file
 with duration, captured stdout/stderr inline for failures, a final
 summary, and a non-zero exit when anything failed. `--wasm` runs
 on the Wasm backend; `--both` runs every test on BOTH backends and

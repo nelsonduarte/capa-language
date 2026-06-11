@@ -268,6 +268,14 @@ FREE_FUNCTIONS: dict[str, tuple[TyFun, list[str]]] = {
     "py_invoke":   (fun(TyName("Unsafe"), TyUnknown, lst(TyUnknown), TyUnknown),   []),
     "parse_json":  (fun(TyString, res(_json_ty, TyString)),                        []),
     "to_json":     (fun(_json_ty, TyString),                                       []),
+    # ``panic(message)`` aborts the program: message to stderr in the
+    # ``panic: <message>`` shape, exit code 1 on the Python backend, a
+    # trap on the Wasm backends. No unwinding, no catch. Declared as
+    # returning Unit because Capa's type system has no bottom / Never
+    # type today; control never actually continues past the call. If a
+    # Never type is ever added, panic is the first candidate to adopt
+    # it (would let ``let x = if c { v } else { panic("...") }`` type).
+    "panic":       (fun(TyString, TyUnit),                                         []),
     # Internal (underscore-prefixed, undocumented): build a
     # one-codepoint String from a Unicode scalar / code-unit value.
     # Exists so the bundled Wasm-side JSON parser

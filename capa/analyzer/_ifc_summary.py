@@ -479,6 +479,20 @@ class _SummaryBuilder:
 
         arg_srcs = [self._taint_of(a, env, reaching) for a in e.args]
 
+        # The builtin ``panic(message)`` is a public sink (the message
+        # goes to stderr, like Stdio.eprintln): a parameter flowing
+        # into its argument is sink-reaching, so a caller passing a
+        # @secret to a function that panics with it is flagged at the
+        # boundary. A user function named ``panic`` shadows the
+        # builtin and takes the regular summary path below instead.
+        if (
+            isinstance(e.callee, A.Ident)
+            and e.callee.name == "panic"
+            and ("fun", "panic") not in self.callables
+            and arg_srcs
+        ):
+            reaching |= arg_srcs[0]
+
         if not isinstance(e.callee, A.Ident):
             # Non-Ident callee (lambda result, etc.): conservatively
             # join the argument taints into the result; no summary.

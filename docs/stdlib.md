@@ -247,6 +247,22 @@ fun avg(sum: Float, count: Int) -> Float
 
 ---
 
+## Aborting: `panic`
+
+| Function | Type | Notes |
+|---|---|---|
+| `panic(message: String)` | `Unit` (never returns) | Aborts the program: `panic: <message>` to stderr, non-zero exit |
+
+`panic` terminates the program immediately on every backend (exit 1
+on Python; a trap on Wasm / Component Model, which the CLI
+translates to exit 1). No unwinding, no catch. It requires no
+capability, but its message goes to stderr, so the information-flow
+checker treats it as a public sink like `stdio.eprintln`. See
+[`reference.md`](reference.md) section 8.1 and
+[`testing.md`](testing.md) for the testing idiom it enables.
+
+---
+
 ## Python interoperability
 
 The two functions below cross the Capa/Python trust boundary. Both

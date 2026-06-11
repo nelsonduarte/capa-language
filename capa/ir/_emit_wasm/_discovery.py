@@ -231,14 +231,28 @@ class _DiscoveryMixin:
             return False
         return self._uses_builtin_free_fn(module, "_capa_chr")
 
+    def _uses_panic(self, module: Module) -> bool:
+        """Gates the ``capa:host/panic`` import emission. A
+        user-defined ``panic`` shadows the builtin (the user
+        function is emitted and called instead), matching the
+        Python backend and the parse_int rule above."""
+        if any(fn.name == "panic" for fn in module.functions):
+            return False
+        return self._uses_builtin_free_fn(module, "panic")
+
     def _uses_builtin_free_fn(self, module: Module, name: str) -> bool:
         """True if any function or impl-method body Calls
         ``name``. Used to gate emission of optional runtime
-        helpers like ``$parse_int`` / ``$parse_float``."""
+        helpers like ``$parse_int`` / ``$parse_float``. Recurses
+        into ``MakeLambda`` bodies so a builtin called only inside
+        a closure still triggers the helper / import emission."""
         def visit(instrs: list[Instr]) -> bool:
             for instr in instrs:
                 if isinstance(instr, Call) and instr.callee_name == name:
                     return True
+                if isinstance(instr, MakeLambda):
+                    if visit(instr.body):
+                        return True
                 if isinstance(instr, If):
                     if visit(instr.then_body) or visit(instr.else_body):
                         return True

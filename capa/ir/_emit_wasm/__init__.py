@@ -434,6 +434,19 @@ class WasmEmitter(
                 f'(import "{import_module}" "{import_name}" '
                 f'(func ${cap}_{method}{(" " + params_str) if params_str else ""}{result_str}))'
             )
+        # The ``panic`` builtin is a host import (the message must
+        # reach the host's stderr) outside the capability system: it
+        # needs no declared cap, mirroring the Python backend where
+        # ``panic`` is a plain runtime function. The guest calls it
+        # with (ptr, len) of the UTF-8 message and then executes
+        # ``unreachable``, so the trap is deterministic and guest-
+        # side regardless of host behaviour. A user-defined ``panic``
+        # shadows the builtin and suppresses the import.
+        if self._uses_panic(module):
+            self._write(
+                '(import "capa:host/panic" "panic" '
+                '(func $panic (param i32) (param i32)))'
+            )
         # Memory + data segment for string literals. Always declare
         # at least one page (64KB) so any string fits without growth
         # logic; the host reads from this memory to materialise
@@ -444,6 +457,10 @@ class WasmEmitter(
             or self._struct_layouts
             or self._sum_layouts
             or self._uses_heap_alloc(module)
+            # The panic host import reads the message out of linear
+            # memory; belt-and-braces (a String message implies
+            # interned literals or heap use already).
+            or self._uses_panic(module)
         )
         if needs_memory:
             # Initial page count must cover the full static data
@@ -762,7 +779,7 @@ class WasmEmitter(
     _TAIL_CALL_INTRINSICS = frozenset({
         "Random", "parse_json", "to_json",
         "parse_int", "parse_float", "to_float", "to_int",
-        "_capa_chr",
+        "_capa_chr", "panic",
     })
 
     def _emit_body(self, instrs: list) -> None:
@@ -1377,6 +1394,24 @@ class WasmEmitter(
             self._write(f"call ${instr.callee_name}")
             if instr.dst is not None:
                 self._write(f"local.set ${instr.dst}")
+            return
+        # panic (builtin): write the message to the host's stderr via
+        # the ``capa:host/panic`` import, then trap. The ``unreachable``
+        # is guest-side so the abort is deterministic; everything after
+        # it in this block is dead and validates under Wasm's
+        # unreachable-mode typing.
+        if instr.callee_name == "panic" \
+                and len(instr.args) == 1 \
+                and instr.callee_name not in self._user_fn_names:
+            arg = instr.args[0]
+            if arg.kind == "lit_str":
+                offset, length = self._intern_string(arg.literal)
+                self._write(f"i32.const {offset}")
+                self._write(f"i32.const {length}")
+            else:
+                self._push_string_value_as_ptr_len(arg)
+            self._write("call $panic")
+            self._write("unreachable")
             return
         # _capa_chr (internal builtin): Int code point -> one-codepoint
         # String, via the $chr runtime helper (multi-value ptr/len).

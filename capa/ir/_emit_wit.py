@@ -30,7 +30,7 @@ from typing import List, Optional
 
 from ._nodes import (
     Module, Function, Instr,
-    MethodCall, If, While, For, Match,
+    Call, MakeLambda, MethodCall, If, While, For, Match,
 )
 
 
@@ -467,6 +467,49 @@ def collect_used_capabilities(module: Module) -> dict[str, set[str]]:
 from ._capa_types import BUILTIN_CAPS
 
 
+def _module_calls_panic(module: Module) -> bool:
+    """True when the module reaches the BUILTIN ``panic`` free
+    function, in which case the WIT world must import the
+    ``capa:host/panic`` interface (the core module declares the
+    matching import; see ``_emit_wasm.__init__``). Mirrors the
+    Wasm emitter's ``_uses_panic`` discovery exactly, including
+    the shadowing rule: a user-defined ``panic`` function wins
+    and produces no import."""
+    if any(fn.name == "panic" for fn in module.functions):
+        return False
+
+    def visit(instrs: list[Instr]) -> bool:
+        for instr in instrs:
+            if isinstance(instr, Call) and instr.callee_name == "panic":
+                return True
+            if isinstance(instr, MakeLambda):
+                if visit(instr.body):
+                    return True
+            if isinstance(instr, If):
+                if visit(instr.then_body) or visit(instr.else_body):
+                    return True
+            if isinstance(instr, While):
+                if visit(instr.cond_setup) or visit(instr.body):
+                    return True
+            if isinstance(instr, For):
+                if visit(instr.body):
+                    return True
+            if isinstance(instr, Match):
+                for arm in instr.arms:
+                    if visit(arm.body):
+                        return True
+        return False
+
+    for fn in module.functions:
+        if visit(fn.body):
+            return True
+    for impl in module.impls:
+        for method in impl.methods:
+            if visit(method.body):
+                return True
+    return False
+
+
 def emit_wit(module: Module, world_name: str = "program") -> str:
     """Generate a WIT document for ``module``. The document declares
     one ``interface`` per capability that the program touches, plus
@@ -525,10 +568,26 @@ def emit_wit(module: Module, world_name: str = "program") -> str:
         lines.append("}")
         lines.append("")
 
+    # ``panic`` is a host import outside the capability system (the
+    # message must reach the host's stderr before the guest traps);
+    # it gets its own one-function interface when, and only when,
+    # the program reaches the builtin. Kept in lockstep with the
+    # core module's ``capa:host/panic`` import via
+    # ``_module_calls_panic`` (the WIT and the core imports must
+    # agree or the Component Model link fails).
+    uses_panic = _module_calls_panic(module)
+    if uses_panic:
+        lines.append("interface panic {")
+        lines.append("  panic: func(msg: string);")
+        lines.append("}")
+        lines.append("")
+
     lines.append(f"world {world_name} {{")
     for cap in sorted(used.keys()):
         if cap in _KNOWN_CAPABILITIES:
             lines.append(f"  import {cap.lower()};")
+    if uses_panic:
+        lines.append("  import panic;")
     # Export the Capa program's entry point so external Component
     # Model runtimes can call it. ``main`` matches the Capa
     # source-level convention and the core wasm's existing
