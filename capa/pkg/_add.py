@@ -3,8 +3,8 @@
 ``capa add`` is the ergonomic front for ``capa install``: instead
 of hand-editing ``capa.toml`` and then running ``install``, the
 caller names the dep + its git URL + a pin and this module appends
-the ``[dependencies.<name>]`` block, then the CLI runs the existing
-install flow.
+the ``[dependencies.<name>]`` block (``[dev-dependencies.<name>]``
+with ``--dev``), then the CLI runs the existing install flow.
 
 The same validators the parser uses at load time
 (``_validate_git_url``, ``_validate_pin``, ``_validate_dep_name``)
@@ -41,13 +41,18 @@ def add_dependency(
     branch: Optional[str] = None,
     verify_key: Optional[str] = None,
     force: bool = False,
+    dev: bool = False,
 ) -> str:
-    """Edit capa.toml to declare ``[dependencies.<name>]``.
+    """Edit capa.toml to declare ``[dependencies.<name>]`` (or
+    ``[dev-dependencies.<name>]`` when ``dev=True``).
 
     Returns the pin description string (e.g.
     ``'git=..., tag=v1.0.0'``). Raises ``ManifestError`` on a bad
     URL, a bad pin, a duplicate without ``force``, or a missing
-    capa.toml. Does NOT run install (the caller decides).
+    capa.toml. A name already declared in the *other* table is a
+    duplicate too: with ``force`` the old block is removed and the
+    dependency moves to the requested table. Does NOT run install
+    (the caller decides).
     """
     manifest_path = project_dir / MANIFEST_FILENAME
     if not manifest_path.is_file():
@@ -93,9 +98,22 @@ def add_dependency(
             )
 
     # Parse first so the existing file is known-valid and so a
-    # duplicate can be reported with its current pin.
+    # duplicate can be reported with its current pin and table.
+    # Both tables are consulted: a name may live in only one of
+    # [dependencies] / [dev-dependencies] (the parser enforces the
+    # same rule), so adding into the other table is a duplicate as
+    # well, not a silent second declaration.
     manifest = read_manifest(manifest_path)
-    existing = next((d for d in manifest.dependencies if d.name == name), None)
+    existing = None
+    existing_table = None
+    for table, deps in (
+        ("dependencies", manifest.dependencies),
+        ("dev-dependencies", manifest.dev_dependencies),
+    ):
+        found = next((d for d in deps if d.name == name), None)
+        if found is not None:
+            existing, existing_table = found, table
+            break
     if existing is not None and not force:
         if existing.is_path:
             current = f"path={existing.path}"
@@ -107,13 +125,17 @@ def add_dependency(
             current = f"git={existing.git}, {existing_pin}"
         raise ManifestError(
             f"dependency {name!r} already declared in {MANIFEST_FILENAME} "
-            f"({current}); pass --force to overwrite it"
+            f"under [{existing_table}] ({current}); pass --force to "
+            f"overwrite it"
         )
 
-    block = _render_block(name, git_url, field_kind, pin_value, normalised_key)
+    target_table = "dev-dependencies" if dev else "dependencies"
+    block = _render_block(
+        target_table, name, git_url, field_kind, pin_value, normalised_key,
+    )
     text = manifest_path.read_text(encoding="utf-8")
     if existing is not None:
-        text = _strip_block(text, name)
+        text = _strip_block(text, existing_table, name)
     if text and not text.endswith("\n"):
         text += "\n"
     if text and not text.endswith("\n\n"):
@@ -124,6 +146,7 @@ def add_dependency(
 
 
 def _render_block(
+    table: str,
     name: str,
     git_url: str,
     field_kind: str,
@@ -131,7 +154,7 @@ def _render_block(
     verify_key: Optional[str],
 ) -> str:
     lines = [
-        f"[dependencies.{name}]",
+        f"[{table}.{name}]",
         f'git = "{git_url}"',
         f'{field_kind} = "{pin_value}"',
     ]
@@ -140,14 +163,14 @@ def _render_block(
     return "\n".join(lines) + "\n"
 
 
-def _strip_block(text: str, name: str) -> str:
-    """Remove an existing ``[dependencies.<name>]`` block so a
+def _strip_block(text: str, table: str, name: str) -> str:
+    """Remove an existing ``[<table>.<name>]`` block so a
     ``--force`` overwrite does not leave a stale duplicate.
 
     Drops the header line and every subsequent line up to (but not
     including) the next table header or end of file.
     """
-    header = f"[dependencies.{name}]"
+    header = f"[{table}.{name}]"
     out: list[str] = []
     lines = text.splitlines(keepends=True)
     i = 0

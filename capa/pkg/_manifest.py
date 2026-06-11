@@ -10,6 +10,16 @@ dependencies. Each dependency is either:
     paths directly. Useful during development of a library
     alongside its consumers.
 
+Besides ``[dependencies]`` the manifest may declare a
+``[dev-dependencies]`` table with exactly the same per-entry
+schema and the same validation rules. Dev-dependencies are
+test/tooling-only deps: ``capa install`` fetches them when run
+on the project itself (the invocation root), and they are never
+pulled in when the package is consumed as a dependency of
+another project (Capa v1 reads only the root manifest, so a
+consumer never sees them by construction). A name declared in
+both tables is a hard error.
+
 A dependency must use exactly one of those sources. The
 parser is intentionally strict: any unrecognised key, missing
 required key, or wrong type is a ``ManifestError`` with a
@@ -118,6 +128,10 @@ class Manifest:
     version: str
     capa_requirement: Optional[str]
     dependencies: list[Dependency] = field(default_factory=list)
+    # ``[dev-dependencies]`` entries. Same shape and validation as
+    # ``dependencies``; installed only when this manifest is the
+    # invocation root (see capa.pkg._install).
+    dev_dependencies: list[Dependency] = field(default_factory=list)
     manifest_dir: Path = field(default_factory=Path.cwd)
 
 
@@ -135,6 +149,12 @@ class LockedDependency:
     # so an auditor can confirm what key signed each frozen pin
     # without re-running the verification.
     signing_key: str = ""
+    # True when the dependency came from ``[dev-dependencies]``.
+    # Recorded in the lockfile (``dev = true``) so an auditor can
+    # tell which frozen pins are test/tooling-only and a future
+    # ``--no-dev`` install mode can skip them without re-reading
+    # the manifest.
+    dev: bool = False
 
 
 def read_manifest(path: Path) -> Manifest:
@@ -167,24 +187,24 @@ def read_manifest(path: Path) -> Manifest:
             f"{path}: [package].capa must be a string (version requirement)"
         )
 
-    deps_raw = data.get("dependencies", {})
-    if not isinstance(deps_raw, dict):
-        raise ManifestError(
-            f"{path}: [dependencies] must be a table"
-        )
-    deps: list[Dependency] = []
-    for dep_name, spec in deps_raw.items():
-        _validate_dep_name(path, dep_name)
-        if not isinstance(spec, dict):
+    deps = _parse_dep_table(path, data, "dependencies")
+    dev_deps = _parse_dep_table(path, data, "dev-dependencies")
+
+    # A name in both tables would race for the same ``vendor/<name>``
+    # directory (and make the import surface ambiguous); refuse it
+    # at parse time with both kinds named.
+    dep_names = {d.name for d in deps}
+    for d in dev_deps:
+        if d.name in dep_names:
             raise ManifestError(
-                f"{path}: dependency {dep_name!r} must be a table "
-                f"(use the inline form: {dep_name} = {{ git = \"...\", tag = \"...\" }})"
+                f"{path}: {d.name!r} is declared in both [dependencies] "
+                f"and [dev-dependencies]; a name can appear in only one "
+                f"table (both would vendor into vendor/{d.name})"
             )
-        deps.append(_parse_dep(path, dep_name, spec))
 
     # Remaining unknown top-level keys: a strict parser rejects them
     # so a typo in the manifest cannot turn into a silent ignore.
-    allowed_top = {"package", "dependencies"}
+    allowed_top = {"package", "dependencies", "dev-dependencies"}
     extras = set(data.keys()) - allowed_top
     if extras:
         raise ManifestError(
@@ -196,8 +216,31 @@ def read_manifest(path: Path) -> Manifest:
         version=version,
         capa_requirement=capa_req,
         dependencies=deps,
+        dev_dependencies=dev_deps,
         manifest_dir=path.parent.resolve(),
     )
+
+
+def _parse_dep_table(path: Path, data: dict, table: str) -> list[Dependency]:
+    """Parse one dependency table (``[dependencies]`` or
+    ``[dev-dependencies]``). Both share the exact same per-entry
+    schema and security validation; only the table name differs.
+    """
+    raw = data.get(table, {})
+    if not isinstance(raw, dict):
+        raise ManifestError(
+            f"{path}: [{table}] must be a table"
+        )
+    deps: list[Dependency] = []
+    for dep_name, spec in raw.items():
+        _validate_dep_name(path, dep_name)
+        if not isinstance(spec, dict):
+            raise ManifestError(
+                f"{path}: dependency {dep_name!r} must be a table "
+                f"(use the inline form: {dep_name} = {{ git = \"...\", tag = \"...\" }})"
+            )
+        deps.append(_parse_dep(path, dep_name, spec))
+    return deps
 
 
 def _validate_dep_name(path: Path, name: str) -> None:
@@ -408,6 +451,11 @@ def read_lock(path: Path) -> list[LockedDependency]:
             raise ManifestError(
                 f"{path}: lock entry 'signing_key' must be a string"
             )
+        dev = entry.get("dev", False)
+        if not isinstance(dev, bool):
+            raise ManifestError(
+                f"{path}: lock entry 'dev' must be a boolean"
+            )
         dep_name = _require_str(path, entry, "name", "lock entry")
         _validate_dep_name(path, dep_name)
         pin_kind = _require_str(path, entry, "pin_kind", "lock entry")
@@ -420,6 +468,7 @@ def read_lock(path: Path) -> list[LockedDependency]:
             pin_kind=pin_kind,
             commit=_require_str(path, entry, "commit", "lock entry"),
             signing_key=signing_key,
+            dev=dev,
         ))
     return out
 
@@ -442,5 +491,7 @@ def write_lock(path: Path, locked: list[LockedDependency]) -> None:
         lines.append(f'commit = "{d.commit}"')
         if d.signing_key:
             lines.append(f'signing_key = "{d.signing_key}"')
+        if d.dev:
+            lines.append("dev = true")
         lines.append("")
     path.write_text("\n".join(lines), encoding="utf-8")

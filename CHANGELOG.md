@@ -9,6 +9,21 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+### Package manager: `[dev-dependencies]` in capa.toml + `capa add --dev`
+
+Test- and tooling-only dependencies now live in their own
+`[dev-dependencies]` table, with exactly the same per-entry schema
+as `[dependencies]` (git + `tag`/`rev` + optional `verify_key`, or
+`path`) and the same security validation (URL/name/pin allow-lists,
+GPG + SLSA verification). `capa install` fetches them into the same
+`./vendor/` dir when run on the project itself, so test files
+import them like regular deps; a package consumed as a dependency
+of another project never pulls them in. Lockfile entries for
+dev-deps carry `dev = true` (older lockfiles parse unchanged). A
+name declared in both tables is a parse error. `capa add --dev`
+declares one from the CLI; `--force` moves an existing entry
+between tables. See docs/packages.md.
+
 ### Bug fix: parse_json accepted NaN/Infinity on Python (and to_json could crash); both backends now reject them
 
 Python's `json.loads` accepts the non-RFC constants `NaN` /

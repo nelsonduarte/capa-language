@@ -230,6 +230,13 @@ capa_log = { git = "https://github.com/nelsonduarte/capa_log", rev = "<commit-sh
 git = "https://github.com/nelsonduarte/capa_log"
 tag = "v0.1"
 verify_key = "1234 5678 90AB CDEF 1234 5678 90AB CDEF 1234 5678"
+
+# Test/tooling-only deps go under [dev-dependencies]: same schema,
+# same validation, installed only when THIS project is the install
+# root. Consumers of your package never fetch them. Declare from
+# the CLI with `capa add --dev <name> ...`.
+[dev-dependencies]
+capa_testkit = { git = "https://github.com/user/capa_testkit", tag = "v0.2" }
 ```
 
 Then `capa install` materialises the deps under `./vendor/` and

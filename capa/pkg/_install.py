@@ -11,6 +11,14 @@ For each path dependency, nothing is fetched - the loader
 later reads the path directly off the manifest. Path deps do
 not appear in the lockfile.
 
+``[dev-dependencies]`` are treated exactly like
+``[dependencies]`` here: ``install`` always operates on the
+manifest of the project it was invoked on (the root), and that
+is precisely the only place dev-deps should be materialised.
+They are never fetched transitively because Capa v1 never reads
+a vendored dependency's own ``capa.toml`` at all. In the
+lockfile a dev-dep entry carries ``dev = true``.
+
 When a ``capa.lock`` already exists, ``install`` *enforces* the
 recorded SHA. For tag pins the check runs BEFORE the clone (via
 ``git ls-remote``), so a moved upstream tag does not overwrite
@@ -119,6 +127,16 @@ def install(
     existing_lock = read_lock(lock_path) if lock_path.exists() else []
     existing_by_name = {d.name: d for d in existing_lock}
 
+    # Regular deps first, then dev-deps. Dev-deps follow the exact
+    # same fetch / verify / lock pipeline; the only difference is
+    # the ``dev = true`` marker on their lockfile entries. The
+    # manifest parser already guarantees the two name sets are
+    # disjoint.
+    all_deps: list[tuple[Dependency, bool]] = (
+        [(d, False) for d in manifest.dependencies]
+        + [(d, True) for d in manifest.dev_dependencies]
+    )
+
     # First pass: when the lockfile already pins a commit for a
     # tag dep, verify the remote tag still points at that commit
     # BEFORE we touch ``vendor/<name>``. The pre-2026-05-25 shape
@@ -134,7 +152,7 @@ def install(
     # (a rev pin IS the SHA, so the deliberate-edit path is the
     # only way the lock would mismatch). Path deps and rev pins
     # skip the pre-check.
-    for dep in manifest.dependencies:
+    for dep, _ in all_deps:
         if dep.is_path or dep.tag is None:
             continue
         prior = existing_by_name.get(dep.name)
@@ -171,11 +189,11 @@ def install(
 
     locked: list[LockedDependency] = []
     mismatches: list[tuple[str, str, str, str, str]] = []
-    for dep in manifest.dependencies:
+    for dep, is_dev in all_deps:
         if dep.is_path:
             _check_path_dep(manifest, dep)
             continue
-        fresh = _fetch_git_dep(vendor_dir, dep)
+        fresh = _fetch_git_dep(vendor_dir, dep, dev=is_dev)
         prior = existing_by_name.get(dep.name)
         # Second-pass safety net for rev pins (and any tag-pin
         # path that slipped through the pre-check above, e.g. a
@@ -282,8 +300,11 @@ def _check_path_dep(manifest: Manifest, dep: Dependency) -> None:
         )
 
 
-def _fetch_git_dep(vendor_dir: Path, dep: Dependency) -> LockedDependency:
-    """Clone, checkout, and resolve the SHA for one git dependency."""
+def _fetch_git_dep(
+    vendor_dir: Path, dep: Dependency, *, dev: bool = False,
+) -> LockedDependency:
+    """Clone, checkout, and resolve the SHA for one git dependency.
+    ``dev`` marks the resulting lock entry as a dev-dependency."""
     assert dep.git is not None
     dest = vendor_dir / dep.name
     # Drop any previous checkout so re-runs of ``install`` are
@@ -348,6 +369,7 @@ def _fetch_git_dep(vendor_dir: Path, dep: Dependency) -> LockedDependency:
         pin_kind=pin_kind,
         commit=commit,
         signing_key=signing_key,
+        dev=dev,
     )
 
 

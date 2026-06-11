@@ -160,6 +160,41 @@ a git source without `tag`/`rev` are all errors with a pointer
 at the offending entry. Typos in a config file should be loud,
 not silent.
 
+### `[dev-dependencies]`
+
+Test- and tooling-only dependencies live in their own table with
+**exactly the same per-entry schema** (git + `tag`/`rev` +
+optional `verify_key`, or `path`) and the same security
+validation (URL allow-list, name allow-list, pin shape, GPG /
+SLSA verification):
+
+```toml
+[dev-dependencies]
+capa_testkit = { git = "https://github.com/user/capa_testkit", tag = "v0.2" }
+```
+
+Semantics:
+
+- `capa install` fetches dev-deps when run **on the project
+  itself** (the invocation root), into the same `./vendor/`
+  directory, so test files import them exactly like regular
+  deps.
+- When your package is consumed **as a dependency** of another
+  project, its dev-deps are never fetched. (Capa v1 reads only
+  the root manifest, so this holds by construction; it stays
+  the contract when transitive resolution lands in v2.)
+- A name declared in both `[dependencies]` and
+  `[dev-dependencies]` is a parse error: both would vendor into
+  `vendor/<name>`.
+- In `capa.lock`, dev-dep entries carry `dev = true` so an
+  auditor can tell test-only pins from shipping pins without
+  re-reading the manifest. Entries without the marker are
+  regular deps (older lockfiles parse unchanged).
+
+`capa add --dev <name> ...` declares a dev-dependency from the
+command line; with `--force` it also moves an existing entry
+from one table to the other.
+
 ## Sources, in detail
 
 ### Git
@@ -191,7 +226,9 @@ not reproducible across machines.
 `capa.lock` records, for every git dep, the URL, the pin
 (`tag` or `rev`) declared in the manifest, and the resolved
 commit SHA. Lockfile entries are emitted in dependency-order
-so diffs against `git diff` stay readable.
+(regular deps first, then dev-deps, each in manifest order) so
+diffs against `git diff` stay readable. Dev-dep entries carry
+`dev = true`.
 
 Commit `capa.lock` alongside `capa.toml`.
 
@@ -231,8 +268,8 @@ project, it walks the following search paths, in order:
 2. Every directory listed in the `CAPA_PATH` environment
    variable.
 3. `./vendor/`: when `capa.toml` declares at least one git
-   dependency.
-4. The parent of every `path = "..."` dependency.
+   dependency (in `[dependencies]` or `[dev-dependencies]`).
+4. The parent of every `path = "..."` dependency (both tables).
 5. `./libraries/`: conventional fallback for hand-vendored
    projects.
 6. The directory of the root file (so a submodule can import a
@@ -280,8 +317,9 @@ The same process applies to any user-authored library.
   not read; if `mylib` depends on `helperlib`, the top-level
   manifest has to declare both. Cargo / npm-style transitive
   resolution + version unification is planned for v2.
-- **No `capa add` / `capa remove`.** Edit `capa.toml` by hand
-  for now.
+- **No `capa remove`.** `capa add` (with `--dev`, `--force`,
+  `--no-install`) covers declaring deps; removal is still a
+  hand edit of `capa.toml`.
 - **No `capa install --frozen`.** Today every `capa install`
   re-fetches against the current pin. A future iteration will
   honour `capa.lock` as authoritative when `--frozen` is

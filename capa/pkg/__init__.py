@@ -10,6 +10,13 @@ The loader consults ``vendor/`` (when ``capa.toml`` exists in
 the cwd) automatically, so a project that runs through
 ``capa install`` does not need to set ``CAPA_PATH``.
 
+``[dev-dependencies]`` share the schema and validation of
+``[dependencies]`` and vendor into the same ``vendor/`` dir,
+but only when the manifest is the install root: consuming a
+package as a dependency never pulls in its dev-deps (v1 reads
+only the root manifest, so this holds by construction). Lock
+entries for dev-deps carry ``dev = true``.
+
 Public surface:
 
 - ``Manifest`` + ``Dependency``: in-memory parsed shape.

@@ -1938,5 +1938,394 @@ class TestRegistryIndexSignature(_TempDirMixin, unittest.TestCase):
                 )
 
 
+class TestDevDependenciesManifest(_TempDirMixin, unittest.TestCase):
+    """``[dev-dependencies]`` parsing: same schema and the same
+    security validation as ``[dependencies]``, plus the cross-table
+    name-collision rule."""
+
+    def _manifest(self, body: str) -> Path:
+        p = self._tmp / "capa.toml"
+        _write(p, body)
+        return p
+
+    def test_dev_dependencies_parsed_separately(self):
+        p = self._manifest('''
+            [package]
+            name = "demo"
+            version = "0.1.0"
+
+            [dependencies]
+            mylib = { git = "https://github.com/u/mylib", tag = "v0.1" }
+
+            [dev-dependencies]
+            testlib = { git = "https://github.com/u/testlib", rev = "abc123" }
+            localtool = { path = "../localtool" }
+        ''')
+        m = read_manifest(p)
+        self.assertEqual([d.name for d in m.dependencies], ["mylib"])
+        self.assertEqual(
+            [d.name for d in m.dev_dependencies], ["testlib", "localtool"],
+        )
+        self.assertEqual(m.dev_dependencies[0].rev, "abc123")
+        self.assertTrue(m.dev_dependencies[1].is_path)
+
+    def test_dev_dependencies_absent_means_empty_list(self):
+        p = self._manifest('''
+            [package]
+            name = "demo"
+            version = "0.1.0"
+        ''')
+        self.assertEqual(read_manifest(p).dev_dependencies, [])
+
+    def test_dev_dep_dangerous_git_url_rejected(self):
+        # The ext:: transport allow-list applies to the dev table too.
+        p = self._manifest('''
+            [package]
+            name = "demo"
+            version = "0.1.0"
+
+            [dev-dependencies]
+            evil = { git = "ext::sh -c whoami", tag = "v1" }
+        ''')
+        with self.assertRaises(ManifestError) as ctx:
+            read_manifest(p)
+        self.assertIn("transport", str(ctx.exception))
+
+    def test_dev_dep_traversal_name_rejected(self):
+        p = self._manifest('''
+            [package]
+            name = "demo"
+            version = "0.1.0"
+
+            [dev-dependencies]
+            "../evil" = { git = "https://github.com/u/evil", tag = "v1" }
+        ''')
+        with self.assertRaises(ManifestError) as ctx:
+            read_manifest(p)
+        self.assertIn("invalid dependency name", str(ctx.exception))
+
+    def test_dev_dep_without_pin_rejected(self):
+        p = self._manifest('''
+            [package]
+            name = "demo"
+            version = "0.1.0"
+
+            [dev-dependencies]
+            foo = { git = "https://github.com/u/foo" }
+        ''')
+        with self.assertRaises(ManifestError) as ctx:
+            read_manifest(p)
+        self.assertIn("needs a pin", str(ctx.exception))
+
+    def test_name_in_both_tables_rejected(self):
+        p = self._manifest('''
+            [package]
+            name = "demo"
+            version = "0.1.0"
+
+            [dependencies]
+            mylib = { git = "https://github.com/u/mylib", tag = "v0.1" }
+
+            [dev-dependencies]
+            mylib = { git = "https://github.com/u/mylib", tag = "v0.2" }
+        ''')
+        with self.assertRaises(ManifestError) as ctx:
+            read_manifest(p)
+        msg = str(ctx.exception)
+        self.assertIn("both [dependencies] and [dev-dependencies]", msg)
+        self.assertIn("mylib", msg)
+
+    def test_lock_round_trips_dev_marker(self):
+        from capa.pkg._manifest import LockedDependency, write_lock
+        lock_path = self._tmp / "capa.lock"
+        entries = [
+            LockedDependency(
+                name="mylib", git="https://github.com/u/mylib",
+                pin="v0.1", pin_kind="tag", commit="a" * 40,
+            ),
+            LockedDependency(
+                name="testlib", git="https://github.com/u/testlib",
+                pin="v0.2", pin_kind="tag", commit="b" * 40, dev=True,
+            ),
+        ]
+        write_lock(lock_path, entries)
+        text = lock_path.read_text(encoding="utf-8")
+        # Only the dev entry carries the marker.
+        self.assertEqual(text.count("dev = true"), 1)
+        back = read_lock(lock_path)
+        self.assertEqual([(d.name, d.dev) for d in back],
+                         [("mylib", False), ("testlib", True)])
+
+    def test_lock_rejects_non_bool_dev(self):
+        _write(self._tmp / "capa.lock", '''
+            [[dependencies]]
+            name = "mylib"
+            git = "https://github.com/u/mylib"
+            pin = "v0.1"
+            pin_kind = "tag"
+            commit = "abc"
+            dev = "yes"
+        ''')
+        with self.assertRaises(ManifestError) as ctx:
+            read_lock(self._tmp / "capa.lock")
+        self.assertIn("'dev' must be a boolean", str(ctx.exception))
+
+
+class TestDevDependenciesInstall(_TempDirMixin, unittest.TestCase):
+    """Install semantics: dev-deps are fetched for the invocation
+    root and never for a package consumed as a dependency."""
+
+    def test_dev_path_dep_is_validated(self):
+        project = self._tmp / "proj"
+        _write(project / "capa.toml", '''
+            [package]
+            name = "proj"
+            version = "0.1.0"
+
+            [dev-dependencies]
+            tool = { path = "../does-not-exist" }
+        ''')
+        with self.assertRaises(InstallError) as ctx:
+            install(project)
+        self.assertIn("does not exist", str(ctx.exception))
+
+    def test_consumed_as_dep_does_not_install_its_dev_deps(self):
+        # Project A depends (by path) on package B; B declares a git
+        # dev-dependency whose URL does not even resolve. install(A)
+        # must succeed without ever reading B's manifest: no clone is
+        # attempted, nothing lands in vendor/, the lock stays empty.
+        lib = self._tmp / "libB"
+        _write(lib / "capa.toml", '''
+            [package]
+            name = "libB"
+            version = "0.1.0"
+
+            [dev-dependencies]
+            ghost = { git = "file:///nonexistent/ghost", tag = "v9.9" }
+        ''')
+        _write(lib / "b.capa", 'pub fun b() -> Int\n    return 1\n')
+        project = self._tmp / "proj"
+        _write(project / "capa.toml", '''
+            [package]
+            name = "proj"
+            version = "0.1.0"
+
+            [dependencies]
+            libB = { path = "../libB" }
+        ''')
+        manifest = install(project)
+        self.assertEqual(manifest.name, "proj")
+        self.assertFalse((project / "vendor" / "ghost").exists())
+        self.assertEqual(read_lock(project / "capa.lock"), [])
+
+
+@unittest.skipUnless(_has_git(), "git not on PATH")
+class TestDevDependenciesInstallGit(_TempDirMixin, unittest.TestCase):
+    """Root install vendors git dev-deps and marks them in the lock."""
+
+    def _make_local_git_repo(self, repo_dir: Path, body: str) -> str:
+        repo_dir.mkdir(parents=True, exist_ok=True)
+        env = {
+            **os.environ,
+            "GIT_AUTHOR_NAME": "capa-test",
+            "GIT_AUTHOR_EMAIL": "test@example.invalid",
+            "GIT_COMMITTER_NAME": "capa-test",
+            "GIT_COMMITTER_EMAIL": "test@example.invalid",
+        }
+
+        def git(*args: str) -> None:
+            r = subprocess.run(
+                ["git", "-C", str(repo_dir), *args],
+                capture_output=True, text=True, encoding="utf-8", env=env,
+            )
+            if r.returncode != 0:
+                raise RuntimeError(f"git {args}: {r.stderr}")
+
+        git("init", "-b", "main")
+        (repo_dir / "lib.capa").write_text(body, encoding="utf-8")
+        git("add", "lib.capa")
+        git("commit", "-m", "initial")
+        git("tag", "v0.1")
+        return repo_dir.as_uri()
+
+    def test_root_install_vendors_dev_dep_and_marks_lock(self):
+        dep_url = self._make_local_git_repo(
+            self._tmp / "updep",
+            'pub fun real() -> Int\n    return 1\n',
+        )
+        dev_url = self._make_local_git_repo(
+            self._tmp / "updev",
+            'pub fun check(stdio: Stdio, ok: Bool)\n'
+            '    stdio.println("${ok}")\n',
+        )
+        project = self._tmp / "proj"
+        _write(project / "capa.toml", f'''
+            [package]
+            name = "proj"
+            version = "0.1.0"
+
+            [dependencies]
+            mylib = {{ git = "{dep_url}", tag = "v0.1" }}
+
+            [dev-dependencies]
+            testlib = {{ git = "{dev_url}", tag = "v0.1" }}
+        ''')
+        install(project)
+        self.assertTrue((project / "vendor" / "mylib" / "lib.capa").exists())
+        self.assertTrue((project / "vendor" / "testlib" / "lib.capa").exists())
+        lock = {d.name: d for d in read_lock(project / "capa.lock")}
+        self.assertEqual(set(lock), {"mylib", "testlib"})
+        self.assertFalse(lock["mylib"].dev)
+        self.assertTrue(lock["testlib"].dev)
+        # The lockfile text itself carries the auditable marker.
+        text = (project / "capa.lock").read_text(encoding="utf-8")
+        self.assertEqual(text.count("dev = true"), 1)
+
+    def test_install_is_idempotent_with_dev_deps(self):
+        # A second install against the written lock must succeed (the
+        # lock pre-check covers dev entries with the same SHA logic).
+        dev_url = self._make_local_git_repo(
+            self._tmp / "updev",
+            'pub fun t() -> Int\n    return 2\n',
+        )
+        project = self._tmp / "proj"
+        _write(project / "capa.toml", f'''
+            [package]
+            name = "proj"
+            version = "0.1.0"
+
+            [dev-dependencies]
+            testlib = {{ git = "{dev_url}", tag = "v0.1" }}
+        ''')
+        install(project)
+        first = read_lock(project / "capa.lock")
+        install(project)
+        self.assertEqual(read_lock(project / "capa.lock"), first)
+
+
+class TestDevDependenciesLoader(_TempDirMixin, unittest.TestCase):
+    """Modules from dev-deps are importable by the root project's
+    test files exactly like regular deps (same vendor / search-path
+    plumbing)."""
+
+    def test_dev_path_dep_resolves_for_test_file(self):
+        helper = self._tmp / "helpers" / "testkit"
+        _write(
+            helper / "asserts.capa",
+            'pub fun label() -> String\n    return "from dev dep"\n',
+        )
+        project = self._tmp / "proj"
+        _write(project / "capa.toml", '''
+            [package]
+            name = "proj"
+            version = "0.1.0"
+
+            [dev-dependencies]
+            testkit = { path = "../helpers/testkit" }
+        ''')
+        _write(project / "tests" / "test_smoke.capa", '''
+            import testkit.asserts
+            fun main(stdio: Stdio)
+                stdio.println(label())
+        ''')
+        install(project)
+        result = subprocess.run(
+            [sys.executable, "-m", "capa", "--run",
+             str(Path("tests") / "test_smoke.capa")],
+            cwd=project,
+            capture_output=True, text=True, encoding="utf-8",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "from dev dep\n")
+
+
+class TestCapaAddDev(_TempDirMixin, unittest.TestCase):
+    """``capa add --dev`` writes into [dev-dependencies] and the
+    duplicate check spans both tables."""
+
+    _BASE = '''\
+        [package]
+        name = "demo"
+        version = "0.1.0"
+    '''
+
+    def _project(self, manifest: str = None) -> Path:
+        _write(
+            self._tmp / "capa.toml",
+            manifest if manifest is not None else self._BASE,
+        )
+        return self._tmp
+
+    def test_add_dev_writes_dev_dependency_block(self):
+        project = self._project()
+        add_dependency(
+            project, "testlib", "https://github.com/example/testlib",
+            tag="v1.0.0", dev=True,
+        )
+        text = (project / "capa.toml").read_text(encoding="utf-8")
+        self.assertIn("[dev-dependencies.testlib]", text)
+        self.assertNotIn("[dependencies.testlib]", text)
+        m = read_manifest(project / "capa.toml")
+        self.assertEqual(m.dependencies, [])
+        self.assertEqual([d.name for d in m.dev_dependencies], ["testlib"])
+
+    def test_add_dev_rejects_name_already_a_regular_dep(self):
+        project = self._project('''\
+            [package]
+            name = "demo"
+            version = "0.1.0"
+
+            [dependencies.foo]
+            git = "https://github.com/example/foo"
+            tag = "v0.1.0"
+        ''')
+        with self.assertRaises(ManifestError) as ctx:
+            add_dependency(
+                project, "foo", "https://github.com/example/foo",
+                tag="v0.2.0", dev=True,
+            )
+        self.assertIn("[dependencies]", str(ctx.exception))
+        # The manifest is untouched after the refusal.
+        m = read_manifest(project / "capa.toml")
+        self.assertEqual([d.name for d in m.dependencies], ["foo"])
+        self.assertEqual(m.dev_dependencies, [])
+
+    def test_add_dev_force_moves_dep_between_tables(self):
+        project = self._project('''\
+            [package]
+            name = "demo"
+            version = "0.1.0"
+
+            [dependencies.foo]
+            git = "https://github.com/example/foo"
+            tag = "v0.1.0"
+        ''')
+        add_dependency(
+            project, "foo", "https://github.com/example/foo",
+            tag="v0.2.0", dev=True, force=True,
+        )
+        m = read_manifest(project / "capa.toml")
+        self.assertEqual(m.dependencies, [])
+        self.assertEqual([d.name for d in m.dev_dependencies], ["foo"])
+        self.assertEqual(m.dev_dependencies[0].tag, "v0.2.0")
+
+    def test_add_regular_rejects_name_already_a_dev_dep(self):
+        project = self._project('''\
+            [package]
+            name = "demo"
+            version = "0.1.0"
+
+            [dev-dependencies.bar]
+            git = "https://github.com/example/bar"
+            tag = "v0.1.0"
+        ''')
+        with self.assertRaises(ManifestError) as ctx:
+            add_dependency(
+                project, "bar", "https://github.com/example/bar",
+                tag="v0.2.0",
+            )
+        self.assertIn("[dev-dependencies]", str(ctx.exception))
+
+
 if __name__ == "__main__":
     unittest.main()

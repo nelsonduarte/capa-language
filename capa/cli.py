@@ -139,10 +139,15 @@ def _capa_search_paths() -> list[Path]:
         try:
             from capa.pkg import read_manifest
             manifest = read_manifest(manifest_path)
-            has_git = any(d.is_git for d in manifest.dependencies)
+            # Dev-dependencies resolve exactly like regular deps:
+            # ``capa install`` vendors them into the same ./vendor
+            # dir, so test files in the invocation root import them
+            # with no extra configuration.
+            all_deps = manifest.dependencies + manifest.dev_dependencies
+            has_git = any(d.is_git for d in all_deps)
             if has_git:
                 _append(Path.cwd() / "vendor")
-            for d in manifest.dependencies:
+            for d in all_deps:
                 if d.is_path and d.path is not None:
                     dep_path = (manifest.manifest_dir / d.path).resolve()
                     _append(dep_path.parent)
@@ -191,6 +196,20 @@ def _dispatch_init(argv: list[str]) -> int:
     return init_project(Path(args.name), capa_version=_CAPA_VERSION)
 
 
+def _install_summary(manifest) -> str:
+    """One-line ``capa install`` report: dep counts by kind, with
+    the dev-dependency count appended only when there are any."""
+    n_git = sum(1 for d in manifest.dependencies if d.is_git)
+    n_path = sum(1 for d in manifest.dependencies if d.is_path)
+    parts = [f"{n_git} git", f"{n_path} path"]
+    if manifest.dev_dependencies:
+        parts.append(f"{len(manifest.dev_dependencies)} dev")
+    return (
+        f"capa install: {manifest.name} {manifest.version} "
+        f"({', '.join(parts)})"
+    )
+
+
 def _dispatch_install(argv: list[str]) -> int:
     """Handle ``python -m capa install [directory]``.
 
@@ -234,12 +253,7 @@ def _dispatch_install(argv: list[str]) -> int:
     except (InstallError, ManifestError) as e:
         print(f"capa install: {e}", file=sys.stderr)
         return 2
-    n_git = sum(1 for d in manifest.dependencies if d.is_git)
-    n_path = sum(1 for d in manifest.dependencies if d.is_path)
-    print(
-        f"capa install: {manifest.name} {manifest.version} "
-        f"({n_git} git, {n_path} path)"
-    )
+    print(_install_summary(manifest))
     return 0
 
 
@@ -272,6 +286,15 @@ def _dispatch_add(argv: list[str]) -> int:
     sub.add_argument(
         "--verify-key", metavar="FINGERPRINT", dest="verify_key",
         help="40-char GPG fingerprint the dep's tag/commit must be signed by",
+    )
+    sub.add_argument(
+        "--dev", action="store_true",
+        help=(
+            "declare under [dev-dependencies] instead of "
+            "[dependencies]. Dev-dependencies are installed only "
+            "when this project is the install root; consumers of "
+            "this package never fetch them."
+        ),
     )
     sub.add_argument(
         "--force", action="store_true",
@@ -326,12 +349,13 @@ def _dispatch_add(argv: list[str]) -> int:
         pin_desc = add_dependency(
             project_dir, args.name, git_url,
             tag=tag, rev=rev, branch=branch,
-            verify_key=verify_key, force=args.force,
+            verify_key=verify_key, force=args.force, dev=args.dev,
         )
     except ManifestError as e:
         print(f"capa add: {e}", file=sys.stderr)
         return 2
-    print(f"added {args.name} ({pin_desc}) to capa.toml")
+    table = "dev-dependencies" if args.dev else "dependencies"
+    print(f"added {args.name} ({pin_desc}) to capa.toml [{table}]")
     if args.no_install:
         return 0
     try:
@@ -339,12 +363,7 @@ def _dispatch_add(argv: list[str]) -> int:
     except (InstallError, ManifestError) as e:
         print(f"capa add: {e}", file=sys.stderr)
         return 2
-    n_git = sum(1 for d in manifest.dependencies if d.is_git)
-    n_path = sum(1 for d in manifest.dependencies if d.is_path)
-    print(
-        f"capa install: {manifest.name} {manifest.version} "
-        f"({n_git} git, {n_path} path)"
-    )
+    print(_install_summary(manifest))
     return 0
 
 
