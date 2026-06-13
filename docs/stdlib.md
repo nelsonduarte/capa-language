@@ -279,6 +279,52 @@ checker treats it as a public sink like `stdio.eprintln`. See
 
 ---
 
+## Declassification: `declassify`
+
+| Function | Type | Notes |
+|---|---|---|
+| `declassify<T>(value: T, reason: "...")` | `T` | The single auditable `@secret` -> `@public` bridge |
+
+`declassify` returns its first argument unchanged at runtime, it is
+the identity on the value. What it changes is the static
+**information-flow label**: the result is `@public` by construction,
+regardless of the value's incoming label. It is the one sanctioned way
+to let a `@secret` value reach a public sink (`stdio.println`,
+`net.post`, `fs.write`, `panic`, ...) without tripping the
+information-flow checker.
+
+The call shape is deliberately rigid so the SBOM can record a
+meaningful audit trail:
+
+- exactly two arguments;
+- the first is the value (positional);
+- the second is a `reason:` **named** argument that must be a plain
+  string literal (not an interpolation or a computed value), so it can
+  be recorded verbatim.
+
+A `declassify` of a value that is *not* `@secret` is a no-op and is
+flagged as a warning: a dead security annotation is dangerous noise in
+a regulated SBOM.
+
+```capa
+fun main(env: Env, stdio: Stdio)
+    match env.get("API_KEY")              // env.get yields @secret data
+        Some(k) -> stdio.println(declassify(k, reason: "echo for demo"))
+        None    -> stdio.println("no key")
+```
+
+Every call site is recorded in the capability manifest. Each function
+that contains one carries a `declassifications` list of
+`{reason, value, pos}` entries (the reason verbatim, the
+source-stringified value, and the `line:col` position), and the
+manifest `summary` exposes a program-wide `declassification_sites`
+count, the regulator-facing record of every point where the program
+deliberately lets secret data cross to public. See
+[`reference.md`](reference.md) for the information-flow model and
+[`cra.md`](cra.md) for the SBOM surface.
+
+---
+
 ## Python interoperability
 
 The two functions below cross the Capa/Python trust boundary. Both
@@ -371,16 +417,34 @@ multi-link files.
 
 | Method | Type | Description |
 |---|---|---|
-| `get(name: String)` | `Option<String>` | Environment variable |
-| `args()` | `List<String>` | Command-line arguments |
+| `get(name: String)` | `Option<String>` | Environment variable, or `None` if unset **or denied** |
+| `args()` | `List<String>` | Command-line arguments (not gated) |
+| `restrict_to_keys(keys: List<String>)` | `Env` | Attenuate: a fresh `Env` whose authority is the **intersection** of the current allowed-key set with `keys`. Monotonic, restrictions only narrow. |
+| `allows(name: String)` | `Bool` | Test whether the current `Env` would permit reading `name`; performs no I/O. |
+
+A fresh `Env` from `main` is unrestricted and reads the host's entire
+environment verbatim, including secrets. A denied variable is
+indistinguishable from an unset one: `get` returns `None`, so the cap
+does not leak the existence of variables outside its allowed set; use
+`allows(name)` to distinguish denied from absent. On Windows the key
+set is matched case-insensitively (both the allow-list and the lookup
+key are upper-cased) so `restrict_to_keys(["path"])` means the same
+thing on Windows and Linux.
 
 ### `Clock`
 
 | Method | Type | Description |
 |---|---|---|
-| `now_secs()` | `Float` | Unix time in seconds |
-| `now_monotonic()` | `Float` | Monotonic time |
-| `sleep(seconds: Float)` | `()` | Pause execution |
+| `now_secs()` | `Float` | Unix time in seconds (not gated) |
+| `now_monotonic()` | `Float` | Monotonic time (not gated) |
+| `sleep(seconds: Float)` | `()` | Pause execution; a silent no-op on a denied `Clock` |
+| `restrict_to_after(t: Float)` | `Clock` | Attenuate: a fresh `Clock` whose `not-before` threshold (Unix seconds) is raised to `max(current, t)`. Monotonic, the threshold only rises. |
+| `allows()` | `Bool` | True once wall-clock time has reached the threshold (`true` on an unrestricted `Clock`); performs no I/O. |
+
+Reading the current time (`now_secs`, `now_monotonic`) is a pure query
+and is never gated. Only the action method `sleep` is gated: on a
+denied `Clock` (threshold still in the future) it becomes a silent
+no-op, the same fail-closed convention as `Fs.exists` and `Env.get`.
 
 ### `Random`
 
@@ -388,6 +452,16 @@ multi-link files.
 |---|---|---|
 | `int_range(low: Int, high: Int)` | `Int` | Integer in [low, high) |
 | `float_unit()` | `Float` | Float in [0, 1) |
+| `with_seed(seed: Int)` | `Random` | A fresh `Random` whose sequence is a deterministic function of `seed`. |
+
+`Random` has no denied state: a seeded `Random` still generates
+numbers, just reproducibly, so the narrowing is over the *space of
+possible sequences*, not over the *authority to generate*. Chained
+`with_seed` calls re-seed via fresh instances and the last seed wins;
+the manifest records every call in source order so an auditor sees an
+RNG was made deterministic before being handed onward. The PRNG is
+SplitMix64 on both backends, so a seeded `Random` produces a
+byte-identical sequence on Python and Wasm.
 
 ### `Net`
 
@@ -396,6 +470,7 @@ multi-link files.
 | `restrict_to(host: String)` | `Net` | Attenuate: return a fresh `Net` whose authority is the **intersection** of the current allowed-host set with `{host}`. Monotonic, restrictions only narrow. |
 | `allows(host: String)` | `Bool` | Query the current restriction set; performs no I/O. |
 | `get(url: String)` | `Result<String, IoError>` | Real HTTP GET (via `urllib.request`). Returns `Err` immediately if the URL's host is outside the current restriction set, *before* any system call. |
+| `post(url: String, body: String)` | `Result<String, IoError>` | Real HTTP POST: sends `body` as a UTF-8 byte string with Content-Type `application/octet-stream` and returns the response body. Same host attenuation gate as `get`, enforced *before* any system call. |
 
 A `Net` received from `main` is unrestricted; restrictions accumulate
 through `restrict_to`. The result of `restrict_to` is a fresh
@@ -418,6 +493,92 @@ fun main(net: Net, stdio: Stdio)
 See `examples/net_attenuation.capa` for a fuller demonstration,
 including the monotonic-narrowing property (chaining two disjoint
 restrictions yields a `Net` that allows nothing).
+
+### `Db`
+
+SQLite-backed database access, with first-class path-prefix
+attenuation that mirrors `Fs`. Storage is SQLite via the stdlib
+`sqlite3`; each call opens a fresh connection, runs, and closes, so
+the cap is stateless from the program's point of view, and both
+backends agree on outcomes for the same on-disk file.
+
+| Method | Type | Description |
+|---|---|---|
+| `restrict_to(path: String)` | `Db` | Attenuate: a fresh `Db` whose authority is the **intersection** of the current allowed-prefix set with `{path}`. Monotonic, restrictions only narrow. |
+| `allows(path: String)` | `Bool` | Test whether the current `Db` would permit `path`; performs no I/O. |
+| `exec(path: String, sql: String)` | `Result<(), IoError>` | Run DDL / DML against the SQLite file at `path`. Multiple statements separated by `;` are supported (via SQLite's `executescript`). |
+| `query(path: String, sql: String)` | `Result<String, IoError>` | Run a `SELECT` and return the rows as a JSON-encoded `[[col, col, ...], ...]` string. Parse it with `parse_json`. |
+
+Attenuation is a **boundary-aware** prefix match, not a raw string
+prefix: a path is admitted only on an exact match with an allowed
+prefix or where the prefix lines up with a `/` path-component
+boundary. `db.restrict_to("/var/data")` admits `/var/data` and
+`/var/data/app.db` but rejects `/var/data_evil/secrets.db`. The same
+rule runs in the Python runtime and the Wasm hosts.
+
+`query` returns a single cross-backend wire shape: a JSON array of
+rows, each row a JSON array of strings (one per selected column).
+Every value is stringified, and a SQL `NULL` becomes the JSON string
+`"null"` (so a consumer can disambiguate on the exact bytes). The
+caller parses with `parse_json` and projects / re-casts columns
+explicitly:
+
+```capa
+fun main(db: Db, stdio: Stdio)
+    let d = db.restrict_to("/var/app")
+    match d.query("/var/app/users.db", "SELECT id, name FROM users")
+        Ok(rows) -> match parse_json(rows)
+            Ok(j) -> stdio.println("rows: ${rows}")
+            Err(e) -> stdio.eprintln("bad json: ${e}")
+        Err(e) -> stdio.eprintln("${e}")
+```
+
+`ATTACH DATABASE` / `DETACH DATABASE` are denied at SQLite's parser
+level (via a `set_authorizer` callback on every connection), so a
+`Db` scoped to one prefix cannot open a second file outside it from
+inside SQL; the statement fails with `not authorized`, surfaced as an
+`Err(IoError(...))`. Every other operation (CREATE / SELECT / INSERT /
+UPDATE / DELETE / DROP / transactions) stays allowed. Both backends
+install the same authorizer.
+
+### `Proc`
+
+Sandboxed subprocess execution, with first-class basename-prefix
+attenuation. Execution is `subprocess.run(argv, capture_output=True,
+timeout=30, shell=False)`; `shell=False` is always enforced, so
+`proc.exec("rm -rf /", "[]")` passes `"rm -rf /"` as `argv[0]` and
+fails with a spawn error rather than invoking a shell. The cap is
+stateless: each `exec` spawns a fresh child and waits for it (30s
+timeout).
+
+| Method | Type | Description |
+|---|---|---|
+| `restrict_to(cmd_prefix: String)` | `Proc` | Attenuate: a fresh `Proc` whose authority is the **intersection** of the current allowed-prefix set with `{cmd_prefix}`. Monotonic, restrictions only narrow. |
+| `allows(cmd: String)` | `Bool` | Test whether the current `Proc` would permit running `cmd`; performs no I/O. |
+| `exec(cmd: String, args_json: String)` | `Result<String, IoError>` | Run `cmd`. `args_json` is a JSON-encoded array of strings consumed as the argv tail. Returns `Ok(stdout)` on a zero exit; `Err` on non-zero exit, timeout, malformed argv JSON, or denial. |
+
+Attenuation matches on the command's **basename** (so a
+fully-qualified `/usr/bin/git` still gates against a
+`restrict_to("git")` cap) plus a `-` suffix boundary:
+`restrict_to("git")` admits `git` and `git-lfs` (a git plugin) but
+rejects `gitlab` (a different binary that happens to share a prefix).
+The same rule runs in the Python runtime, the core Wasm host, and the
+Component Model host, so `allows(cmd)` returns the same `Bool` on
+every backend.
+
+`exec` passes `args_json` as the argv tail, so
+`proc.exec("git", "[\"status\", \"--short\"]")` runs
+`git status --short`. The wire shape (a `Result<String, IoError>`
+carrying captured stdout) reuses the same materialiser as `Fs.read`
+and `Db.query`:
+
+```capa
+fun main(proc: Proc, stdio: Stdio)
+    let git = proc.restrict_to("git")
+    match git.exec("git", "[\"status\", \"--short\"]")
+        Ok(out) -> stdio.println(out)
+        Err(e)  -> stdio.eprintln("${e}")
+```
 
 ### `Unsafe`
 

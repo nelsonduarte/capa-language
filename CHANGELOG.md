@@ -20,6 +20,26 @@ but were missing from the reference: `Map.pairs`, `Option.or_else` /
 `JsonValue.as_number` / `JsonValue.as_int`. Documentation only; no
 code change.
 
+### docs: document `Db` and `Proc` capabilities, attenuation methods, and `declassify`
+
+A follow-up sweep over `docs/stdlib.md` closed the remaining gaps
+between the documented surface and `capa/builtins.py`. Two whole
+capabilities had no section at all and now do: `Db` (SQLite-backed,
+boundary-aware path-prefix attenuation, JSON-row `query` wire shape,
+`ATTACH`/`DETACH` denied at the parser level) and `Proc` (sandboxed
+subprocess execution, basename + `-`-suffix-boundary attenuation,
+`shell=False`, JSON argv-tail `exec`). The attenuation / config
+methods missing from the existing capability tables were added too:
+`Env.restrict_to_keys` / `Env.allows`, `Clock.restrict_to_after` /
+`Clock.allows`, `Random.with_seed`, and `Net.post`. Finally the
+`@secret` -> `@public` bridge `declassify(value, reason: "...")` is
+now documented, including the rigid call shape and the manifest
+record (per-function `declassifications` and the program-wide
+`declassification_sites` count). Every attenuation rule and edge
+behaviour was read from the runtime (`capa/runtime/_capabilities.py`)
+and the `Db`/`Proc` boundary cases confirmed by running a probe on
+both backends. Documentation only; no code change.
+
 ### Wasm backend: `panic` now aborts cleanly, with no host traceback
 
 The `panic` builtin writes the canonical `panic: <message>` line to
