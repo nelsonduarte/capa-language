@@ -107,6 +107,13 @@ class WasmHost:
         self._root_env: Optional[Env] = None
         self._root_clock: Optional[Clock] = None
         self._root_stdio: Optional[Stdio] = None
+        # Set True by the panic host import once it has written the
+        # canonical ``panic: <message>`` line. The guest then traps
+        # via ``unreachable``; the CLI uses this flag to tell a
+        # deliberate panic abort (already reported, exit clean) apart
+        # from a genuine runtime trap (out-of-bounds, integer
+        # divide-by-zero, ...) that still warrants a host traceback.
+        self.panicked = False
         self._register_stdio()
         self._register_panic()
         self._register_clock()
@@ -318,6 +325,10 @@ class WasmHost:
                 + "\n",
             )
             sys.stderr.flush()
+            # Mark the abort as a deliberate panic so the CLI can
+            # exit cleanly on the trap the guest's ``unreachable``
+            # is about to raise, instead of dumping a host traceback.
+            self.panicked = True
 
         self.linker.define_func(
             "capa:host/panic", "panic", ft_string_to_unit,

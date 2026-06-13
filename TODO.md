@@ -3537,6 +3537,22 @@ Remaining open items (no concrete driver yet):
   Lemire class, the inverse of the Dragon4 work), oracle-first
   with a Python reference like `tools/float_ref.py`; out of scope
   for the JSON parser slices.
+- **Wasm: `self` captured by a lambda inside an impl method.** A
+  lambda defined inside an `impl` method that closes over `self`
+  and reads one of its fields (`let f = fun () -> String => return
+  "n=${self.n}"` inside `impl Box`) fails loud on the Wasm backend
+  with `--wasm: FieldAccess on receiver of type 'Unknown': no
+  struct layout known`. The Python backend runs it correctly
+  (`n=5`). The receiver's type is lost when the lambda body is
+  lifted: the lifted function's locals do not carry `self`'s
+  concrete impl type, so the field-access emitter cannot find the
+  struct layout. Pre-existing, surfaced by the 2026-06-13
+  guarded-lambda bug-hunt walk; not fixed in that slice. Likely
+  fix locus: thread the enclosing impl's owning type for `self`
+  into the lifted lambda's locals (the same place the guarded-arm
+  `guard_setup` sweep was added). Workaround: bind the field to a
+  local before the lambda (`let n = self.n`) and capture that
+  instead, or use the Python backend.
 - **Bump-allocator O(n^2) bytes on loop string concat.** Noted
   during the 2026-06-10 JSON bug-hunt: `out = out + chunk` in a
   loop re-copies the whole accumulator through the no-free bump

@@ -9,6 +9,32 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+### Wasm backend: `panic` now aborts cleanly, with no host traceback
+
+The `panic` builtin writes the canonical `panic: <message>` line to
+stderr and then aborts. On the Python backend the abort is clean
+(exactly that one line, exit 1). On the Wasm and Component Model
+`--run` paths the guest aborts via an `unreachable` trap, which
+surfaced as a `wasmtime.Trap` that the CLI's generic exception
+handler dumped as a full host Python traceback right after the
+`panic:` line. The Wasm panic now aborts identically in spirit to
+the Python one: the `panic:` line on stderr, a non-zero exit, no
+host traceback, and nothing on stdout.
+
+The panic host import records a per-host `panicked` flag once it has
+written its line; the CLI exits cleanly on the follow-up trap only
+when that flag is set. A genuine runtime trap (out-of-bounds index,
+integer divide-by-zero, ...) does not go through the panic import,
+leaves the flag clear, and still reports with the full traceback,
+because those point at real defects worth surfacing. Same clean
+behaviour on both `--wasm --run` and `--wasm --component --run`.
+
+Covered by `tests/test_panic.py`: the existing CLI exit-code tests
+now also assert the absence of a traceback on both Wasm paths; a new
+`TestPanicCrossBackendCleanAbort` compares stdout / stderr / exit
+between the Python and Wasm backends for a panic, and pins that a
+genuine (non-panic) out-of-bounds trap still reports with detail.
+
 ### Wasm backend: guarded arm in a lambda tail-match miscompiled
 
 Follow-up to the lambda tail-match slice below. That fix closed

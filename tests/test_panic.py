@@ -326,24 +326,90 @@ class TestPanicCliExitCodes(unittest.TestCase):
         self.assertEqual(proc.stderr, "panic: boom\n")
 
     @unittest.skipUnless(_has_wasm_toolchain(), "wasm toolchain not installed")
-    def test_wasm_run_exits_nonzero_with_message(self):
+    def test_wasm_run_exits_1_clean_stderr_line(self):
+        # The Wasm panic must abort exactly as cleanly as the Python
+        # backend: exit 1, the single ``panic:`` line on stderr, and
+        # NO host traceback after it (a panic aborts via the guest's
+        # ``unreachable``, which the CLI used to print as a full
+        # wasmtime traceback).
         proc = self._run("--wasm", "--run")
-        self.assertNotEqual(proc.returncode, 0)
+        self.assertEqual(proc.returncode, 1)
         self.assertEqual(proc.stdout, "")
-        self.assertTrue(
-            proc.stderr.startswith("panic: boom\n"),
-            f"stderr was: {proc.stderr!r}",
+        self.assertEqual(proc.stderr, "panic: boom\n")
+        self.assertNotIn("Traceback", proc.stderr)
+
+    @unittest.skipUnless(_has_wasm_toolchain(), "wasm toolchain not installed")
+    def test_component_run_exits_1_clean_stderr_line(self):
+        proc = self._run("--wasm", "--component", "--run")
+        self.assertEqual(proc.returncode, 1)
+        self.assertEqual(proc.stdout, "")
+        self.assertEqual(proc.stderr, "panic: boom\n")
+        self.assertNotIn("Traceback", proc.stderr)
+
+
+class TestPanicCrossBackendCleanAbort(unittest.TestCase):
+    """The Wasm panic abort must match the Python abort in spirit:
+    same single ``panic:`` line on stderr, same clean non-zero exit,
+    no host traceback, nothing on stdout. Crucially, a GENUINE
+    runtime trap (an out-of-bounds index, not a deliberate panic)
+    must still report with a host traceback, because those point at
+    real defects worth surfacing. One subprocess per backend so the
+    real process-level stderr / exit contract is asserted."""
+
+    def setUp(self) -> None:
+        self._tmp = Path(tempfile.mkdtemp(prefix="capa_panic_cross_"))
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self._tmp, ignore_errors=True)
+
+    def _write(self, name: str, src: str) -> Path:
+        p = self._tmp / name
+        p.write_text(src, encoding="utf-8")
+        return p
+
+    def _run(self, path: Path, *flags: str) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [sys.executable, "-m", "capa", *flags, str(path)],
+            capture_output=True, text=True, timeout=120,
         )
 
     @unittest.skipUnless(_has_wasm_toolchain(), "wasm toolchain not installed")
-    def test_component_run_exits_nonzero_with_message(self):
-        proc = self._run("--wasm", "--component", "--run")
-        self.assertNotEqual(proc.returncode, 0)
-        self.assertEqual(proc.stdout, "")
-        self.assertTrue(
-            proc.stderr.startswith("panic: boom\n"),
-            f"stderr was: {proc.stderr!r}",
+    def test_panic_stderr_and_exit_match_python_and_wasm(self):
+        # ``before`` reaches stdout, then the panic line reaches
+        # stderr, on BOTH backends, with the same exit code and no
+        # traceback on either.
+        path = self._write("boom.capa", _BOOM)
+        py = self._run(path, "--run")
+        wasm = self._run(path, "--wasm", "--run")
+        self.assertEqual(py.returncode, wasm.returncode)
+        self.assertEqual(py.returncode, 1)
+        self.assertEqual(py.stdout, wasm.stdout)
+        self.assertEqual(py.stdout, "before\n")
+        # The panic line is identical on both; neither carries a
+        # traceback.
+        self.assertEqual(py.stderr, "panic: boom\n")
+        self.assertEqual(wasm.stderr, "panic: boom\n")
+        self.assertNotIn("Traceback", wasm.stderr)
+
+    @unittest.skipUnless(_has_wasm_toolchain(), "wasm toolchain not installed")
+    def test_genuine_runtime_trap_still_reports_with_detail(self):
+        # An out-of-bounds list index is NOT a panic: the Wasm guest
+        # traps without going through the panic host import, so the
+        # CLI must still surface the full host traceback (the
+        # ``panicked`` flag stays False). This guards against the
+        # clean-panic path swallowing real defects.
+        oob = (
+            'fun main(stdio: Stdio)\n'
+            '    let xs: List<Int> = [1, 2, 3]\n'
+            '    stdio.println("${xs[10]}")\n'
         )
+        path = self._write("oob.capa", oob)
+        wasm = self._run(path, "--wasm", "--run")
+        self.assertNotEqual(wasm.returncode, 0)
+        # No panic line was written (this is not a panic), but the
+        # host traceback IS present so the defect is visible.
+        self.assertNotIn("panic:", wasm.stderr)
+        self.assertIn("Traceback", wasm.stderr)
 
 
 class TestPanicIfc(unittest.TestCase):

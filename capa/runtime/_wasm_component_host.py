@@ -103,6 +103,12 @@ class WasmComponentHost:
         self._root_env: Optional[Env] = None
         self._root_clock: Optional[Clock] = None
         self._root_stdio: Optional[Stdio] = None
+        # Set True by the panic host import once it has written the
+        # canonical ``panic: <message>`` line; the CLI uses it to
+        # exit cleanly on the guest's follow-up ``unreachable`` trap
+        # rather than print a host traceback. A genuine runtime trap
+        # leaves it False and still reports with detail.
+        self.panicked = False
         self._register_all()
 
     def _register_all(self) -> None:
@@ -175,6 +181,7 @@ class WasmComponentHost:
                 pass
             _write_safe(sys.stderr, "panic: " + msg + "\n")
             sys.stderr.flush()
+            self.panicked = True
 
         panic_ifc = root.add_instance("capa:host/panic")
         panic_ifc.add_func("panic", do_panic)

@@ -1353,6 +1353,7 @@ def main() -> int:
         # Component Model component first and dispatches to the
         # component-aware host (different lift/lower semantics,
         # see capa.runtime._wasm_component_host).
+        host = None
         try:
             if args.component:
                 from capa.runtime._wasm_component_host import (
@@ -1374,6 +1375,18 @@ def main() -> int:
                 host.run_main(blob)
             return 0
         except Exception as e:
+            # A deliberate ``panic`` aborts via the guest's
+            # ``unreachable``, which surfaces here as a wasmtime
+            # trap. The panic host import already wrote the canonical
+            # ``panic: <message>`` line to stderr and set
+            # ``host.panicked``; in that case exit non-zero WITHOUT a
+            # host traceback, matching the Python backend's clean
+            # abort. A genuine runtime trap (out-of-bounds access,
+            # integer divide-by-zero, ...) leaves ``panicked`` False
+            # and still gets the full traceback, since those point at
+            # real defects worth surfacing.
+            if host is not None and getattr(host, "panicked", False):
+                return 1
             import traceback
             traceback.print_exc(file=sys.stderr)
             return 1

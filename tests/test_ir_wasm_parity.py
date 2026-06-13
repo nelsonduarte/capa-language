@@ -3622,5 +3622,41 @@ class TestLambdaGuardedTailMatchParity(unittest.TestCase):
         self._assert_src_parity(src, expect="big=10\n")
 
 
+@unittest.skipUnless(
+    _has_wasm_tools() and _has_wasmtime_py(),
+    "wasm-tools and/or wasmtime-py not installed",
+)
+class TestSelfCapturedInImplMethodLambda(unittest.TestCase):
+    """Known limitation pin (TODO.md "Known limitations"): a lambda
+    inside an impl method that captures ``self`` and reads one of
+    its fields fails loud on Wasm with "FieldAccess on receiver of
+    type 'Unknown': no struct layout known" while the Python backend
+    runs it correctly. The receiver's concrete impl type is lost
+    when the lambda body is lifted. Marked ``expectedFailure`` so
+    this gives a clear signal (an unexpected pass) the day the
+    lifter threads ``self``'s owning type through; flip it to a
+    normal assertion then."""
+
+    @unittest.expectedFailure
+    def test_self_field_access_in_impl_method_lambda(self):
+        src = (
+            "type Box { n: Int }\n"
+            "\n"
+            "impl Box\n"
+            "    fun describe(self) -> String\n"
+            "        let f = fun () -> String =>\n"
+            '            return "n=${self.n}"\n'
+            "        return f()\n"
+            "\n"
+            "fun main(stdio: Stdio)\n"
+            "    let b = Box { n: 5 }\n"
+            "    stdio.println(b.describe())\n"
+        )
+        py_out = _capture_stdout(lambda: _run_python(src))
+        wasm_out = _capture_stdout(lambda: _run_wasm(src))
+        self.assertEqual(py_out, wasm_out)
+        self.assertEqual(py_out, "n=5\n")
+
+
 if __name__ == "__main__":
     unittest.main()
