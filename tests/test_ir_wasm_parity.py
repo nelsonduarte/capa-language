@@ -93,6 +93,16 @@ _PARITY_PROGRAMS: list[str] = [
     "string_replace.capa",
     "string_char_at.capa",
     "string_index_of.capa",
+    # Slice (2026-06-13): String.bytes() returns the receiver's UTF-8
+    # bytes as a List<Int> (each 0..255). The Wasm backend stores
+    # strings as their raw UTF-8 byte slice so it copies the bytes
+    # straight through; the Python backend encodes via
+    # ``str.encode('utf-8', 'surrogatepass')``. Covers ASCII,
+    # multi-byte BMP (2-/3-byte), astral (4-byte emoji), the empty
+    # string, the code-point-count vs byte-count relationship for a
+    # mixed string, and a lone surrogate (from a JSON \uD800 escape)
+    # whose 3-byte WTF-8 form is byte-identical on both backends.
+    "string_bytes.capa",
     "tuple_arity_n.capa",
     # Slice (2026-06-03): nested tuple indexing. Pre-fix the Wasm
     # emitter stored a raw i64 into the i32 tuple local for a
@@ -983,6 +993,16 @@ class TestPythonWasmParity(unittest.TestCase):
         # previously returned the byte offset and diverged from
         # Python's code-point-indexed ``str.find``.
         self._assert_parity("string_index_of.capa")
+
+    def test_string_bytes(self):
+        # Slice (2026-06-13): ``String.bytes`` returns the receiver's
+        # UTF-8 bytes as a ``List<Int>`` (each 0..255). The Wasm
+        # backend copies the raw UTF-8 byte slice straight through;
+        # the Python backend encodes via ``surrogatepass``. Covers
+        # ASCII, multi-byte BMP, astral, the empty string, the
+        # code-point-vs-byte-count relationship, and a lone surrogate
+        # (JSON \uD800) whose 3-byte WTF-8 form matches on both backends.
+        self._assert_parity("string_bytes.capa")
 
     def test_tuple_arity_n(self):
         # Slice 5 (2026-05): the 2-arity tuple cap was lifted; the
@@ -3725,6 +3745,111 @@ class TestSelfCapturedInImplMethodLambda(unittest.TestCase):
         wasm_out = _capture_stdout(lambda: _run_wasm(src))
         self.assertEqual(py_out, wasm_out)
         self.assertEqual(py_out, "n=5\n")
+
+
+class TestStringBytesParity(unittest.TestCase):
+    """``String.bytes() -> List<Int>`` parity (slice 2026-06-13).
+
+    The receiver's UTF-8 bytes, each element 0..255. The Wasm
+    backend stores strings as their raw UTF-8 byte slice and copies
+    them straight through; the Python backend encodes via
+    ``str.encode('utf-8', 'surrogatepass')``. For well-formed text
+    both equal the canonical UTF-8 from Python's ``str.encode``;
+    a lone surrogate (which the WTF-8 internal representation holds
+    as its 3-byte form) is byte-identical across backends rather
+    than raising, matching ``surrogatepass``."""
+
+    def _dump_src(self, build_str: str) -> str:
+        # Prints the byte list of a String produced by ``build_str``
+        # (a Capa expression of type String), one byte per line.
+        return (
+            "fun main(stdio: Stdio)\n"
+            f"    let s = {build_str}\n"
+            "    for b in s.bytes()\n"
+            "        stdio.println(\"${b}\")\n"
+        )
+
+    def _assert_parity(self, src: str, expect: str) -> None:
+        py_out = _capture_stdout(lambda: _run_python(src))
+        wasm_out = _capture_stdout(lambda: _run_wasm(src))
+        self.assertEqual(
+            py_out, wasm_out,
+            msg=(
+                f"Python/Wasm bytes() divergence.\n"
+                f"--- python ---\n{py_out}\n--- wasm ---\n{wasm_out}"
+            ),
+        )
+        self.assertEqual(py_out, expect)
+
+    @staticmethod
+    def _expect(text: str) -> str:
+        # The Python oracle: strict canonical UTF-8 for well-formed
+        # text. One byte per line, matching the dump program.
+        return "".join(f"{b}\n" for b in text.encode("utf-8"))
+
+    def test_ascii(self):
+        self._assert_parity(self._dump_src('"hello"'), self._expect("hello"))
+
+    def test_bmp_two_byte(self):
+        # U+00E9 LATIN SMALL LETTER E WITH ACUTE -> 2 bytes.
+        self._assert_parity(self._dump_src('"é"'), self._expect("é"))
+
+    def test_bmp_three_byte(self):
+        # U+4E2D CJK -> 3 bytes.
+        self._assert_parity(self._dump_src('"中"'), self._expect("中"))
+
+    def test_astral_four_byte(self):
+        # U+1F98A FOX FACE -> 4 bytes (astral plane).
+        self._assert_parity(self._dump_src('"🦊"'), self._expect("🦊"))
+
+    def test_empty_is_empty_list(self):
+        # Empty string -> empty byte list -> no output lines.
+        self._assert_parity(self._dump_src('""'), "")
+
+    def test_mixed_length_vs_byte_count(self):
+        # 4 code points; 1 + 2 + 3 + 4 = 10 UTF-8 bytes. The oracle
+        # below pins the exact byte sequence on both backends.
+        mixed = "aé中🦊"
+        self._assert_parity(self._dump_src(f'"{mixed}"'), self._expect(mixed))
+
+    def test_length_vs_bytes_counts(self):
+        # Pin the code-point count vs byte count relationship: the
+        # mixed string has 4 code points but 10 bytes.
+        src = (
+            "fun main(stdio: Stdio)\n"
+            '    let s = "aé中🦊"\n'
+            '    stdio.println("cps=${s.length()} bytes=${s.bytes().length()}")\n'
+        )
+        py_out = _capture_stdout(lambda: _run_python(src))
+        wasm_out = _capture_stdout(lambda: _run_wasm(src))
+        self.assertEqual(py_out, wasm_out)
+        self.assertEqual(py_out, "cps=4 bytes=10\n")
+
+    def test_lone_surrogate_wtf8(self):
+        # A JSON "\\uD800" escape decodes to an unpaired surrogate
+        # code point, kept as its 3-byte WTF-8 form internally. Both
+        # backends expose [237, 160, 128] -- equal to Python's
+        # ``'\\ud800'.encode('utf-8', 'surrogatepass')``. The JSON
+        # source uses \\u{...} escapes (\\u{22}='"', \\u{5c}='\\') so
+        # the Capa lexer leaves the literal \\uD800 for the parser.
+        src = (
+            "fun main(stdio: Stdio)\n"
+            '    let json = "\\u{22}\\u{5c}uD800\\u{22}"\n'
+            "    match parse_json(json)\n"
+            "        Ok(j) ->\n"
+            "            match j.as_string()\n"
+            "                Some(s) ->\n"
+            "                    for b in s.bytes()\n"
+            '                        stdio.println("${b}")\n'
+            '                None -> stdio.println("not a string")\n'
+            '        Err(e) -> stdio.println("parse error")\n'
+        )
+        expect = "".join(
+            f"{b}\n" for b in "\ud800".encode("utf-8", "surrogatepass")
+        )
+        self._assert_parity(src, expect)
+        # Sanity: surrogatepass gives the canonical 3-byte WTF-8 form.
+        self.assertEqual(expect, "237\n160\n128\n")
 
 
 if __name__ == "__main__":

@@ -764,6 +764,12 @@ class PythonEmitter:
                 f"(lambda _i: Some(_i) if _i >= 0 else None_)"
                 f"({r}.find({a[0]}))"
             )
+        if m == "bytes":
+            # List<Int> of UTF-8 bytes (each 0..255). ``surrogatepass``
+            # keeps a lone surrogate as its 3-byte WTF-8 form (matching
+            # the Wasm backend's internal string bytes) rather than
+            # raising; identical to strict UTF-8 for well-formed text.
+            return f"CapaList({r}.encode('utf-8', 'surrogatepass'))"
         return None
 
     def _list_method(self, m: str, r: str, a: list[str]) -> str | None:

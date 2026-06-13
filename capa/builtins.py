@@ -136,6 +136,13 @@ METHODS: dict[str, list[tuple[str, TyFun, list[str]]]] = {
         ("char_at",     fun(TyInt, opt(TyString)),                                 []),
         ("substring",   fun(TyInt, TyInt, TyString),                               []),
         ("index_of",    fun(TyString, opt(TyInt)),                                 []),
+        # ``bytes() -> List<Int>``: the receiver's UTF-8 bytes, each
+        # element in 0..255. The inverse of the internal ``_capa_chr``
+        # (Int -> String); the only public String -> bytes door, which
+        # hashing / base64 / encoding libraries need. Lone surrogates
+        # encode as their 3-byte WTF-8 form (the internal string
+        # representation), identical on both backends.
+        ("bytes",       fun(lst(TyInt)),                                           []),
     ],
     "Map": [
         ("length",       fun(TyInt),                                               []),

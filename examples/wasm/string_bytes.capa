@@ -1,0 +1,40 @@
+// String.bytes() parity. ``bytes()`` returns the receiver's UTF-8
+// bytes as a List<Int> (each element 0..255). The Wasm backend
+// stores strings as their raw UTF-8 byte slice, so it copies the
+// bytes straight through; the Python backend encodes via
+// ``str.encode('utf-8', 'surrogatepass')``. For well-formed text
+// both equal the canonical UTF-8 from Python's str.encode('utf-8').
+//
+// Covers: pure ASCII, multi-byte BMP (2-byte e-accent, 3-byte CJK),
+// astral (4-byte emoji), the empty string (empty list), the
+// length-in-code-points vs number-of-bytes relationship for a mixed
+// string, and a lone surrogate (decoded from a JSON \uD800 escape)
+// whose WTF-8 bytes are byte-identical on both backends.
+
+fun dump(stdio: Stdio, label: String, s: String)
+    let bs = s.bytes()
+    stdio.println("${label}: cps=${s.length()} bytes=${bs.length()}")
+    for b in bs
+        stdio.println("  ${b}")
+
+fun main(stdio: Stdio)
+    dump(stdio, "ascii", "hello")
+    dump(stdio, "accent", "é")
+    dump(stdio, "cjk", "中")
+    dump(stdio, "emoji", "🦊")
+    dump(stdio, "empty", "")
+    dump(stdio, "mixed", "aé中🦊")
+
+    // Lone surrogate: a JSON "\uD800" escape decodes to an unpaired
+    // surrogate code point, kept as its 3-byte WTF-8 form internally.
+    // bytes() exposes those bytes ([237, 160, 128]) identically on
+    // both backends. The JSON source is built with \u{...} escapes
+    // (\u{22} = '"', \u{5c} = '\\') so the Capa lexer leaves the
+    // literal backslash-u-D800 for the JSON parser to decode.
+    let json = "\u{22}\u{5c}uD800\u{22}"
+    match parse_json(json)
+        Ok(j) ->
+            match j.as_string()
+                Some(s) -> dump(stdio, "surrogate", s)
+                None -> stdio.println("surrogate: not a string")
+        Err(e) -> stdio.println("surrogate: parse error")

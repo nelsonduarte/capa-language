@@ -199,6 +199,9 @@ class _StringEmissionMixin:
         if method == "index_of":
             self._emit_string_index_of(recv, instr.args[0], dst)
             return
+        if method == "bytes":
+            self._emit_string_bytes(recv, dst)
+            return
         raise WasmEmissionError(
             f"String method {method!r} is not implemented on the Wasm "
             f"backend"
@@ -1379,6 +1382,90 @@ class _StringEmissionMixin:
         # Bind dst.
         self._write("local.get $_alloc_tmp_result")
         self._write(f"local.set ${dst}")
+
+    def _emit_string_bytes(self, recv: Value, dst) -> None:
+        """``recv.bytes() -> List<Int>``. Strings are stored as their
+        raw UTF-8 byte slice throughout the Wasm backend, so this is a
+        direct copy: allocate a ``List<Int>`` of ``recv.len`` elements
+        and zero-extend each receiver byte into its 8-byte i64 slot
+        (every value lands in 0..255).
+
+        No UTF-8 decode happens -- the bytes ARE the result. A lone
+        surrogate already lives as its 3-byte WTF-8 form in the
+        buffer (the ``$chr`` runtime stores it that way), so its
+        bytes come straight through, matching the Python backend's
+        ``encode('utf-8', 'surrogatepass')``. For well-formed text
+        the bytes equal a strict ``str.encode('utf-8')``.
+
+        Reuses the String-method scratch locals: ``$_str_a_ptr`` /
+        ``$_str_a_len`` hold the receiver, ``$_str_new_ptr`` the
+        data-array base, ``$_str_i`` the byte cursor."""
+        if dst is None:
+            return
+        # Receiver (ptr, len). len doubles as the element count.
+        self._push_string_value_as_ptr_len(recv)
+        self._write("local.set $_str_a_len")
+        self._write("local.set $_str_a_ptr")
+        # Allocate the list header.
+        self._write(f"i32.const {_LIST_HEADER_SIZE}")
+        self._write("call $alloc")
+        self._write(f"local.set ${dst}")
+        # Allocate the data array: len slots * 8 bytes each. ``alloc``
+        # accepts 0 (empty string -> empty list), returning a valid
+        # base we simply never write through.
+        self._write("local.get $_str_a_len")
+        self._write("i32.const 8")
+        self._write("i32.mul")
+        self._write("call $alloc")
+        self._write("local.set $_str_new_ptr")
+        # Header: len = cap = recv.len; data = the fresh array.
+        self._write(f"local.get ${dst}")
+        self._write("local.get $_str_a_len")
+        self._write(f"i32.store offset={_LIST_LEN_OFFSET}")
+        self._write(f"local.get ${dst}")
+        self._write("local.get $_str_a_len")
+        self._write(f"i32.store offset={_LIST_CAP_OFFSET}")
+        self._write(f"local.get ${dst}")
+        self._write("local.get $_str_new_ptr")
+        self._write(f"i32.store offset={_LIST_DATA_OFFSET}")
+        # Copy loop: for i in [0, recv.len): slot[i] = (i64) recv[i].
+        self._write("i32.const 0")
+        self._write("local.set $_str_i")
+        self._block_counter += 1
+        loop = f"$Sby{self._block_counter}_loop"
+        exit_ = f"$Sby{self._block_counter}_exit"
+        self._write(f"block {exit_}")
+        self._indent += 1
+        self._write(f"loop {loop}")
+        self._indent += 1
+        # if i >= len: done.
+        self._write("local.get $_str_i")
+        self._write("local.get $_str_a_len")
+        self._write("i32.ge_s")
+        self._write(f"br_if {exit_}")
+        # slot_addr = data + i * 8.
+        self._write("local.get $_str_new_ptr")
+        self._write("local.get $_str_i")
+        self._write("i32.const 8")
+        self._write("i32.mul")
+        self._write("i32.add")
+        # byte = recv.ptr[i], zero-extended to i64 (0..255).
+        self._write("local.get $_str_a_ptr")
+        self._write("local.get $_str_i")
+        self._write("i32.add")
+        self._write("i32.load8_u")
+        self._write("i64.extend_i32_u")
+        self._write("i64.store")
+        # i++.
+        self._write("local.get $_str_i")
+        self._write("i32.const 1")
+        self._write("i32.add")
+        self._write("local.set $_str_i")
+        self._write(f"br {loop}")
+        self._indent -= 1
+        self._write("end")
+        self._indent -= 1
+        self._write("end")
 
     def _emit_byte_is_whitespace(self) -> None:
         """Consume an i32 byte on the stack; push i32 1 if it is

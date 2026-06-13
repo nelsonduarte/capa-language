@@ -9,6 +9,21 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+### feat: `String.bytes()` exposes a string's UTF-8 bytes
+
+New public `String` method `bytes() -> List<Int>` returns the
+receiver's UTF-8 bytes, each element in `0..255`. This is the first
+public `String` to bytes door, which hashing, base64, and other
+byte-level encoding libraries need (the inverse direction already
+existed internally). `length()` counts code points; `bytes().length()`
+counts bytes. For well-formed text the result is exactly the canonical
+UTF-8 encoding; an unpaired surrogate code point (for example from a
+JSON `\uD800` escape, which Capa keeps rather than rejecting) is
+returned as its 3-byte WTF-8 form, matching the internal string
+representation. Byte-identical on the Python and Wasm backends in every
+case. The Wasm backend, which already stores strings as their raw UTF-8
+byte slice, copies the bytes straight through.
+
 ### docs: document `char_at`/`substring`/`index_of` and other missing builtins
 
 `docs/stdlib.md` now documents the `String` methods `char_at`,

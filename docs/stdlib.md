@@ -35,11 +35,21 @@ Capa program, no imports required.
 | `char_at(i: Int)` | `Option<String>` | The single character (a one-codepoint `String`) at code-point index `i`, or `None` if `i` is negative or `>= length()`. |
 | `substring(start: Int, end: Int)` | `String` | The slice over the half-open code-point range `[start, end)`. Aborts the program if `start < 0`, `end < 0`, `start > end`, or `end > length()`; it never clamps or silently returns a shorter slice. `substring(i, i)` is the empty string. |
 | `index_of(sub: String)` | `Option<Int>` | `Some(i)` with the code-point index of the first occurrence of `sub`, or `None` if `sub` is absent. The empty needle matches at index `0`. |
+| `bytes()` | `List<Int>` | The string's UTF-8 bytes, each element in `0..255`. `length()` counts code points; `bytes().length()` counts bytes (`"é".length()` is `1`, `"é".bytes().length()` is `2`). The inverse direction (bytes to string) is not part of the surface. |
 
 Indexing for `char_at`, `substring`, and `index_of` is by Unicode
 code point, not byte, and is identical on the Python and Wasm
 backends (`"abcé".char_at(3)` is `Some("é")`, `"abcé".substring(0, 4)`
 is `"abcé"`).
+
+`bytes()` is the public door to a string's encoded form, for hashing,
+base64, and other byte-level libraries. For well-formed text the
+result is exactly the canonical UTF-8 encoding. A string may also hold
+an unpaired surrogate code point (for example from a JSON `\uD800`
+escape, which Capa keeps rather than rejecting); Capa stores such a
+code point in its 3-byte WTF-8 form internally, and `bytes()` returns
+those WTF-8 bytes. This keeps `bytes()` byte-identical on both backends
+in every case, well-formed or not.
 
 ---
 

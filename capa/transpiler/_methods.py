@@ -113,6 +113,14 @@ class _MethodsMixin:
                 f"(lambda _i: Some(_i) if _i >= 0 else None_)"
                 f"({recv}.find({args[0]}))"
             )
+        if method == "bytes":
+            # List<Int> of UTF-8 bytes (each 0..255). ``surrogatepass``
+            # so a lone surrogate (which Python ``str`` can hold, e.g.
+            # from a JSON ``\\uXXXX`` escape) yields its 3-byte WTF-8
+            # form - the same bytes the Wasm backend stores internally
+            # - instead of raising. For well-formed text this is
+            # byte-identical to a strict ``encode('utf-8')``.
+            return f"CapaList({recv}.encode('utf-8', 'surrogatepass'))"
         return f"{recv}.{_safe_ident(method)}({', '.join(args)})"
 
     def _emit_list_method(
