@@ -9,6 +9,17 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+### docs: document `char_at`/`substring`/`index_of` and other missing builtins
+
+`docs/stdlib.md` now documents the `String` methods `char_at`,
+`substring`, and `index_of` (all real and shipping on both backends),
+with their verified code-point indexing and edge behaviour. The same
+sweep filled in other built-in methods that existed in the compiler
+but were missing from the reference: `Map.pairs`, `Option.or_else` /
+`Option.filter`, `Result.or_else` / `Result.ok` / `Result.err`, and
+`JsonValue.as_number` / `JsonValue.as_int`. Documentation only; no
+code change.
+
 ### Wasm backend: `panic` now aborts cleanly, with no host traceback
 
 The `panic` builtin writes the canonical `panic: <message>` line to

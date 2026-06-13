@@ -32,6 +32,14 @@ Capa program, no imports required.
 | `ends_with(s: String)` | `Bool` | |
 | `split(sep: String)` | `List<String>` | Split by separator |
 | `replace(old: String, new: String)` | `String` | Replace every occurrence |
+| `char_at(i: Int)` | `Option<String>` | The single character (a one-codepoint `String`) at code-point index `i`, or `None` if `i` is negative or `>= length()`. |
+| `substring(start: Int, end: Int)` | `String` | The slice over the half-open code-point range `[start, end)`. Aborts the program if `start < 0`, `end < 0`, `start > end`, or `end > length()`; it never clamps or silently returns a shorter slice. `substring(i, i)` is the empty string. |
+| `index_of(sub: String)` | `Option<Int>` | `Some(i)` with the code-point index of the first occurrence of `sub`, or `None` if `sub` is absent. The empty needle matches at index `0`. |
+
+Indexing for `char_at`, `substring`, and `index_of` is by Unicode
+code point, not byte, and is identical on the Python and Wasm
+backends (`"abcé".char_at(3)` is `Some("é")`, `"abcé".substring(0, 4)`
+is `"abcé"`).
 
 ---
 
@@ -114,6 +122,7 @@ Hash map. Construct via `new_map()` with a required type annotation.
 | `contains_key(k: K)` | `Bool` | |
 | `keys()` | `List<K>` | |
 | `values()` | `List<V>` | |
+| `pairs()` | `List<(K, V)>` | Key/value pairs as tuples; destructure with `let (k, v) = pair` |
 
 ```capa
 let m: Map<String, Int> = new_map()
@@ -158,6 +167,8 @@ type Option<T> =
 | `map<U>(f: Fun(T) -> U)` | `Option<U>` | Transform if `Some` |
 | `and_then<U>(f: Fun(T) -> Option<U>)` | `Option<U>` | Monadic bind |
 | `ok_or<E>(err: E)` | `Result<T, E>` | Convert to a `Result` |
+| `or_else(f: Fun() -> Option<T>)` | `Option<T>` | The receiver if `Some`, otherwise the result of `f()` |
+| `filter(p: Fun(T) -> Bool)` | `Option<T>` | The receiver if `Some(x)` and `p(x)`, otherwise `None` |
 
 ---
 
@@ -179,6 +190,9 @@ type Result<T, E> =
 | `map<U>(f: Fun(T) -> U)` | `Result<U, E>` | Transform the success value |
 | `and_then<U>(f: Fun(T) -> Result<U, E>)` | `Result<U, E>` | Monadic bind |
 | `map_err<F>(f: Fun(E) -> F)` | `Result<T, F>` | Transform only the error |
+| `or_else<F>(f: Fun(E) -> Result<T, F>)` | `Result<T, F>` | The receiver if `Ok`, otherwise `f(err)` |
+| `ok()` | `Option<T>` | `Some(v)` if `Ok(v)`, otherwise `None` |
+| `err()` | `Option<E>` | `Some(e)` if `Err(e)`, otherwise `None` |
 
 The `?` operator: automatically propagates `Err` in functions that
 return `Result`:
@@ -212,6 +226,8 @@ type JsonValue =
 | `is_null()` | `Bool` | |
 | `as_bool()` | `Option<Bool>` | `Some(b)` if `JBool(b)` |
 | `as_num()` | `Option<Float>` | `Some(n)` if `JNum(n)` |
+| `as_number()` | `Option<Float>` | Alias of `as_num()` |
+| `as_int()` | `Option<Int>` | `Some(i)` if `JNum(n)` and `n` is integral |
 | `as_string()` | `Option<String>` | `Some(s)` if `JStr(s)` |
 | `as_array()` | `Option<List<JsonValue>>` | `Some(xs)` if `JArr(xs)` |
 | `as_object()` | `Option<Map<String, JsonValue>>` | `Some(m)` if `JObj(m)` |
