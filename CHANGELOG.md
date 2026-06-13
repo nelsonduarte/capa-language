@@ -9,6 +9,36 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+### Wasm backend: guarded arm in a lambda tail-match miscompiled
+
+Follow-up to the lambda tail-match slice below. That fix closed
+the miscompile when every arm of a lambda's tail `match` returns,
+but the same lambda shape with a **guarded** arm
+(`Some(n) if n > 5 -> ...`) still failed wasmtime compilation with
+"type mismatch: expected i64, found i32" in `lambda_0`, on both the
+all-arms-return and the arms-yield-values forms. The Python
+reference was correct throughout.
+
+Root cause: a guard's ANF prelude introduces its own temporary
+(the Bool `n > 5` comparison lands in a fresh `_ir_tN`), but the
+closure lifter's body-local discovery (`_emit_wasm/_closures.py`,
+`collect_defs`) walked only each match arm's body and pattern,
+never its `guard_setup`. The guard temp was therefore absent from
+the lifted function's body-locals copy, so the locals sweep fell
+back to the default i64 shape while the guard comparison produces
+an i32, and the validator rejected the function. The lifter now
+sweeps each arm's `guard_setup` into the defined-in-body set so the
+guard temp inherits its real Bool (i32) shape.
+
+The same guarded match in a top-level function already had parity
+(its locals come straight from the real `fn.locals` with the Bool
+type intact), which is why only the lambda-lifted path was
+affected. Covered by `tests/test_ir_wasm_parity.py`
+(`TestLambdaGuardedTailMatchParity`): the all-arms-return and
+arms-yield-values guarded shapes for String and Int results, a
+guard-fails-falls-through runtime case, `parse_int` with a guard
+inside a lambda, and the top-level-function control.
+
 ### Wasm backend: lambda tail-match miscompile + closure-variable shadowing
 
 Two loud Wasm-only miscompiles found by the 2026-06-10 bug-hunt

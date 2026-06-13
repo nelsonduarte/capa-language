@@ -473,6 +473,17 @@ class _ClosureEmissionMixin:
                     collect_defs(i.body)
                 elif isinstance(i, Match):
                     for arm in i.arms:
+                        # A guard's ANF prelude introduces its own
+                        # temporaries (a ``Some(n) if n > 5`` guard
+                        # lowers to a Bool BinOp into ``_ir_tN``).
+                        # They are defined in this lambda body just
+                        # like body temps, so they must enter
+                        # ``defined_in_body`` -- otherwise the lifted
+                        # function's locals sweep falls back to the
+                        # default i64 shape and a Bool guard result
+                        # (i32) trips the Wasm validator (i32 vs i64).
+                        if getattr(arm, "guard_setup", None):
+                            collect_defs(arm.guard_setup)
                         collect_defs(arm.body)
                         # Pattern-bound names also count as defined.
                         self._collect_pattern_names(arm.pattern, defined_in_body)

@@ -304,9 +304,20 @@ class _LowerExprMixin:
         pushes the wrong shape for a String / Float / pointer
         result ("type mismatch: expected i32, found i64" at
         wasmtime compile). Re-typing the temp from the declared
-        return type gives every backend a consistent shape; the
-        temp is dead on the all-arms-return path, so the value
-        itself never flows."""
+        return type gives every backend a consistent shape.
+
+        On the all-arms-return path the temp is dead, so the
+        re-typed value never flows. But the temp is NOT universally
+        dead: when the tail match has expression-body arms (each arm
+        ``AssignConst``s its value into the temp and the trailing
+        ``Return`` reads it back), the temp is live, and a guarded
+        arm of that shape (``Some(n) if n > 5 -> "..."``) keeps it
+        live too. In the live case the analyzer already types the
+        match from its arm values, so the re-type is a no-op there;
+        the guarded-lambda shape mismatch that case once tripped
+        lived in the closure-lifting locals sweep
+        (``_emit_wasm/_closures.py``, which now sweeps each arm's
+        ``guard_setup`` temporaries), not here."""
         if not ret_ty or ret_ty in ("Unit", "Unknown"):
             return v
         cur = v.ty or ""

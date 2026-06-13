@@ -3459,5 +3459,168 @@ class TestLambdaMatchResultAndShadowParity(unittest.TestCase):
         self._assert_src_parity(src, expect="v=11\n")
 
 
+@unittest.skipUnless(
+    _has_wasm_tools() and _has_wasmtime_py(),
+    "wasm-tools and/or wasmtime-py not installed",
+)
+class TestLambdaGuardedTailMatchParity(unittest.TestCase):
+    """Guarded tail-match inside a lambda (2026-06-13 follow-up to
+    the 941c12b lambda-tail-match slice).
+
+    941c12b closed the lambda-tail-match miscompile when every arm
+    returns, but the same lambda shape with a GUARDED arm
+    (``Some(n) if n > 5 -> ...``) still failed wasmtime compile
+    with "type mismatch: expected i64, found i32" in lambda_0. Root
+    cause: a guard's ANF prelude introduces its own temporary (the
+    Bool ``n > 5`` BinOp lands in ``_ir_tN``), but the closure
+    lifter's ``collect_defs`` walked only each arm's body and
+    pattern, never its ``guard_setup``. The temp was therefore
+    absent from the lifted function's body-locals copy, so the
+    locals sweep fell back to the default i64 shape while the guard
+    comparison produces an i32 -- the validator rejected the
+    function. The control proves it is lambda-specific: the same
+    guarded match in a TOP-LEVEL function already had parity (its
+    locals come straight from the real ``fn.locals`` with the Bool
+    type intact), and a lambda with an unguarded tail match (the
+    941c12b fix) was already green.
+
+    The lifter now sweeps each arm's ``guard_setup`` into the
+    defined-in-body set, so the guard temp inherits its real Bool
+    (i32) shape."""
+
+    def _assert_src_parity(self, src: str, expect: str | None = None) -> None:
+        py_out = _capture_stdout(lambda: _run_python(src))
+        wasm_out = _capture_stdout(lambda: _run_wasm(src))
+        self.assertEqual(
+            py_out, wasm_out,
+            msg=(
+                f"Python/Wasm output divergence.\n"
+                f"--- python ---\n{py_out}\n"
+                f"--- wasm ---\n{wasm_out}"
+            ),
+        )
+        if expect is not None:
+            self.assertEqual(py_out, expect)
+
+    def test_guarded_arm_return_string_result(self):
+        # Exact bug-hunt repro (a5_guard). Pre-fix: wasmtime "type
+        # mismatch: expected i64, found i32" compiling lambda_0.
+        src = (
+            "fun helper() -> Option<Int>\n"
+            "    return Some(10)\n"
+            "\n"
+            "fun feat() -> String\n"
+            "    let f = fun () -> String =>\n"
+            "        match helper()\n"
+            '            Some(n) if n > 5 -> return "big=${n}"\n'
+            '            Some(n) -> return "small=${n}"\n'
+            '            None -> return "none"\n'
+            "    return f()\n"
+            "\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(feat())\n"
+        )
+        self._assert_src_parity(src, expect="big=10\n")
+
+    def test_guarded_arm_return_int_result(self):
+        # Int result; the guard temp (i32 Bool) still must not get
+        # the i64 default. (a5b)
+        src = (
+            "fun helper() -> Option<Int>\n"
+            "    return Some(10)\n"
+            "\n"
+            "fun feat() -> Int\n"
+            "    let f = fun () -> Int =>\n"
+            "        match helper()\n"
+            "            Some(n) if n > 5 -> return n + 100\n"
+            "            Some(n) -> return n\n"
+            "            None -> return 0\n"
+            "    return f()\n"
+            "\n"
+            "fun main(stdio: Stdio)\n"
+            '    stdio.println("${feat()}")\n'
+        )
+        self._assert_src_parity(src, expect="110\n")
+
+    def test_guarded_arm_yield_string_result(self):
+        # Arms YIELD (no return) + guard: the result temp is LIVE
+        # here (each arm assigns into it, the trailing Return reads
+        # it back), which is the case the 941c12b docstring premise
+        # did not cover. (a5d)
+        src = (
+            "fun helper() -> Option<Int>\n"
+            "    return Some(10)\n"
+            "\n"
+            "fun feat() -> String\n"
+            "    let f = fun () -> String =>\n"
+            "        match helper()\n"
+            '            Some(n) if n > 5 -> "big=${n}"\n'
+            '            Some(n) -> "small=${n}"\n'
+            '            None -> "none"\n'
+            "    return f()\n"
+            "\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(feat())\n"
+        )
+        self._assert_src_parity(src, expect="big=10\n")
+
+    def test_guarded_arm_guard_fails_falls_through(self):
+        # The guard fails at runtime (n is not > 5), so the
+        # fall-through to the next arm is what produces the value;
+        # exercises the live guarded path end to end.
+        src = (
+            "fun helper() -> Option<Int>\n"
+            "    return Some(3)\n"
+            "\n"
+            "fun feat() -> String\n"
+            "    let f = fun () -> String =>\n"
+            "        match helper()\n"
+            '            Some(n) if n > 5 -> return "big=${n}"\n'
+            '            Some(n) -> return "small=${n}"\n'
+            '            None -> return "none"\n'
+            "    return f()\n"
+            "\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(feat())\n"
+        )
+        self._assert_src_parity(src, expect="small=3\n")
+
+    def test_guarded_parse_int_in_lambda(self):
+        # The practical case from the brief: parse_int with a guard
+        # inside a lambda. (a5f)
+        src = (
+            "fun feat() -> String\n"
+            "    let f = fun () -> String =>\n"
+            '        match parse_int("41")\n'
+            '            Some(n) if n > 0 -> return "pos=${n}"\n'
+            '            Some(n) -> return "nonpos=${n}"\n'
+            '            None -> return "err"\n'
+            "    return f()\n"
+            "\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(feat())\n"
+        )
+        self._assert_src_parity(src, expect="pos=41\n")
+
+    def test_guarded_match_top_level_control(self):
+        # Control that ALREADY had parity: the same guarded match in
+        # a top-level function (no lambda lifting). Pins that the
+        # fix does not regress the non-lambda path.
+        src = (
+            "fun helper() -> Option<Int>\n"
+            "    return Some(10)\n"
+            "\n"
+            "fun feat() -> String\n"
+            "    match helper()\n"
+            '        Some(n) if n > 5 -> return "big=${n}"\n'
+            '        Some(n) -> return "small=${n}"\n'
+            '        None -> return "none"\n'
+            "\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(feat())\n"
+        )
+        self._assert_src_parity(src, expect="big=10\n")
+
+
 if __name__ == "__main__":
     unittest.main()
