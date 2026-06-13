@@ -3747,6 +3747,10 @@ class TestSelfCapturedInImplMethodLambda(unittest.TestCase):
         self.assertEqual(py_out, "n=5\n")
 
 
+@unittest.skipUnless(
+    _has_wasm_tools() and _has_wasmtime_py(),
+    "wasm-tools and/or wasmtime-py not installed",
+)
 class TestStringBytesParity(unittest.TestCase):
     """``String.bytes() -> List<Int>`` parity (slice 2026-06-13).
 
