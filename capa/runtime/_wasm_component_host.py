@@ -107,7 +107,9 @@ class WasmComponentHost:
         # canonical ``panic: <message>`` line; the CLI uses it to
         # exit cleanly on the guest's follow-up ``unreachable`` trap
         # rather than print a host traceback. A genuine runtime trap
-        # leaves it False and still reports with detail.
+        # leaves it False and still reports with detail. Re-cleared at
+        # the start of every run (see ``run_main``) so a reused host
+        # cannot carry a stale latch from one program into the next.
         self.panicked = False
         self._register_all()
 
@@ -734,6 +736,10 @@ class WasmComponentHost:
         thread the right cap to each slot. Pure ``fun main()``
         programs (no handle-bearing cap params) keep the trivial
         zero-arg dispatch."""
+        # Clear the per-host panic latch at the start of every run so
+        # a host reused across programs cannot let a deliberate panic
+        # from one run silence a genuine trap in the next.
+        self.panicked = False
         if isinstance(wasm_blob_or_path, (bytes, bytearray)):
             # wasmtime.Component has no from_bytes; round-trip
             # through a temp file so the same surface as

@@ -412,6 +412,88 @@ class TestPanicCrossBackendCleanAbort(unittest.TestCase):
         self.assertIn("Traceback", wasm.stderr)
 
 
+_OOB = (
+    'fun main(stdio: Stdio)\n'
+    '    let xs: List<Int> = [1, 2, 3]\n'
+    '    stdio.println("${xs[10]}")\n'
+)
+
+
+@unittest.skipUnless(_has_wasm_toolchain(), "wasm toolchain not installed")
+class TestPanicHostReuseResetsLatch(unittest.TestCase):
+    """The ``panicked`` latch is per-host, but a single host reused
+    across runs (a documented use of ``_wasm_host`` / the Component
+    host) must not carry a stale latch from one run into the next.
+
+    If the latch were only cleared in ``__init__``, a deliberate
+    panic in the first program would leave ``panicked`` True, and the
+    CLI's trap guard (``if host.panicked: return 1`` without a
+    traceback) would then silence a GENUINE trap in a second program
+    run on the same host. Both run entry points (core + Component)
+    now clear the latch at the start of every run, so the second
+    run's trap is reported with full detail."""
+
+    def _blob(self, src: str) -> bytes:
+        from capa.ir import compile_wasm
+        module, result = _parse_analyze(src)
+        assert result.ok, f"analyzer errors: {result.errors}"
+        return compile_wasm(module, types=result.types)
+
+    def _component(self, src: str) -> bytes:
+        from capa.cli import _wrap_as_component
+        from capa.ir import compile_wasm, compile_wit
+        module, result = _parse_analyze(src)
+        assert result.ok, f"analyzer errors: {result.errors}"
+        core = compile_wasm(module, types=result.types)
+        return _wrap_as_component(
+            core, compile_wit(module, types=result.types),
+        )
+
+    def test_core_host_reset_between_panic_then_trap(self):
+        from capa.runtime._wasm_host import WasmHost
+        panic_blob = self._blob(_BOOM)
+        oob_blob = self._blob(_OOB)
+        host = WasmHost()
+
+        # First run: a deliberate panic latches ``panicked``.
+        _capture_streams(lambda: host.run_main(panic_blob))
+        self.assertTrue(
+            host.panicked,
+            "the panic run must latch the per-host flag",
+        )
+
+        # Second run on the SAME host: a genuine out-of-bounds trap.
+        # The latch must have been cleared at run entry, so the CLI
+        # guard would NOT silence this trap (panicked stays False).
+        out, err, exc = _capture_streams(lambda: host.run_main(oob_blob))
+        self.assertIsNotNone(exc, "the OOB access must trap")
+        self.assertFalse(
+            host.panicked,
+            "a reused host must clear the panic latch so a genuine "
+            "trap in the next run is not silenced",
+        )
+
+    def test_component_host_reset_between_panic_then_trap(self):
+        from capa.runtime._wasm_component_host import WasmComponentHost
+        panic_comp = self._component(_BOOM)
+        oob_comp = self._component(_OOB)
+        host = WasmComponentHost()
+
+        _capture_streams(lambda: host.run_main(panic_comp))
+        self.assertTrue(
+            host.panicked,
+            "the panic run must latch the per-host flag",
+        )
+
+        out, err, exc = _capture_streams(lambda: host.run_main(oob_comp))
+        self.assertIsNotNone(exc, "the OOB access must trap")
+        self.assertFalse(
+            host.panicked,
+            "a reused Component host must clear the panic latch so a "
+            "genuine trap in the next run is not silenced",
+        )
+
+
 class TestPanicIfc(unittest.TestCase):
     """``panic`` is a public sink (the message goes to stderr),
     treated exactly like Stdio.eprintln: warn by default, hard

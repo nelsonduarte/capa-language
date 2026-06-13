@@ -29,11 +29,26 @@ leaves the flag clear, and still reports with the full traceback,
 because those point at real defects worth surfacing. Same clean
 behaviour on both `--wasm --run` and `--wasm --component --run`.
 
+That `panicked` flag is per-host but was only initialised in the
+host constructor, so a single host reused across runs (a documented
+use of `_wasm_host` / the Component host) kept a stale latch: a
+deliberate panic in the first program left the flag True, and a
+genuine trap in a second program run on the same host would then be
+silenced by the CLI guard with no useful traceback. The CLI always
+builds a fresh host so it never hit this, but in-process reuse is
+supported. Every run entry point (`WasmHost.run_main` /
+`run_main_aot` and `WasmComponentHost.run_main`) now clears the flag
+at the start of each run, so a reused host cannot carry a panic
+latch from one program into the next.
+
 Covered by `tests/test_panic.py`: the existing CLI exit-code tests
-now also assert the absence of a traceback on both Wasm paths; a new
+now also assert the absence of a traceback on both Wasm paths; a
 `TestPanicCrossBackendCleanAbort` compares stdout / stderr / exit
 between the Python and Wasm backends for a panic, and pins that a
-genuine (non-panic) out-of-bounds trap still reports with detail.
+genuine (non-panic) out-of-bounds trap still reports with detail;
+and a new `TestPanicHostReuseResetsLatch` reuses one in-process host
+to run a panicking program then a genuine-trap program (core +
+Component), asserting the second run's trap is not silenced.
 
 ### Wasm backend: guarded arm in a lambda tail-match miscompiled
 

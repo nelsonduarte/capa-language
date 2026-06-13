@@ -113,6 +113,9 @@ class WasmHost:
         # deliberate panic abort (already reported, exit clean) apart
         # from a genuine runtime trap (out-of-bounds, integer
         # divide-by-zero, ...) that still warrants a host traceback.
+        # Re-cleared at the start of every run (see ``_invoke_main``)
+        # so a host reused across programs cannot carry a stale latch
+        # from one run into the next.
         self.panicked = False
         self._register_stdio()
         self._register_panic()
@@ -2219,6 +2222,15 @@ class WasmHost:
         stable across invocations). Unknown / missing param names fall
         back to Fs (the legacy slice-25.2 behaviour) so a blob without
         usable names still runs."""
+        # ``panicked`` is a per-host latch the panic builtin sets so
+        # the CLI can suppress the wasmtime traceback for a deliberate
+        # abort. It is per-host, not per-run, so a host reused for a
+        # second program must clear it first -- otherwise a genuine
+        # trap (out-of-bounds, etc.) in the second run would be
+        # silenced by the stale latch and report without a useful
+        # traceback. Cleared at every entry (both run_main and
+        # run_main_aot funnel through here).
+        self.panicked = False
         if self._root_fs is None:
             self._root_fs = Fs()
         if self._root_net is None:
