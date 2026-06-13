@@ -3621,6 +3621,75 @@ class TestLambdaGuardedTailMatchParity(unittest.TestCase):
         )
         self._assert_src_parity(src, expect="big=10\n")
 
+    def test_guard_captures_enclosing_param(self):
+        # Symmetric half of cf6740c: the guard reads a name captured
+        # from the ENCLOSING function's parameter (``threshold``),
+        # used ONLY inside the guard, never in any arm body. Pre-fix
+        # the free-var collector skipped ``arm.guard`` /
+        # ``arm.guard_setup``, so ``threshold`` never entered the
+        # env layout and the lifted body emitted ``local.get`` for an
+        # unallocated local (unknown local at Wasm validate time).
+        src = (
+            "fun helper() -> Option<Int>\n"
+            "    return Some(10)\n"
+            "\n"
+            "fun feat(threshold: Int) -> String\n"
+            "    let f = fun () -> String =>\n"
+            "        match helper()\n"
+            '            Some(n) if n > threshold -> return "big=${n}"\n'
+            '            Some(n) -> return "small=${n}"\n'
+            '            None -> return "none"\n'
+            "    return f()\n"
+            "\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(feat(5))\n"
+        )
+        self._assert_src_parity(src, expect="big=10\n")
+
+    def test_guard_captures_enclosing_let_local(self):
+        # Same shape but the guard captures a let-LOCAL of the
+        # enclosing function (``cutoff``) rather than a param. Also
+        # guard-only; never referenced in any arm body.
+        src = (
+            "fun helper() -> Option<Int>\n"
+            "    return Some(10)\n"
+            "\n"
+            "fun feat() -> String\n"
+            "    let cutoff = 5\n"
+            "    let f = fun () -> String =>\n"
+            "        match helper()\n"
+            '            Some(n) if n > cutoff -> return "big=${n}"\n'
+            '            Some(n) -> return "small=${n}"\n'
+            '            None -> return "none"\n'
+            "    return f()\n"
+            "\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(feat())\n"
+        )
+        self._assert_src_parity(src, expect="big=10\n")
+
+    def test_guard_captures_let_local_guard_fails(self):
+        # The captured-local guard fails at runtime (n is not >
+        # cutoff), proving the captured value is genuinely threaded
+        # into the closure body and compared, not just allocated.
+        src = (
+            "fun helper() -> Option<Int>\n"
+            "    return Some(3)\n"
+            "\n"
+            "fun feat() -> String\n"
+            "    let cutoff = 5\n"
+            "    let f = fun () -> String =>\n"
+            "        match helper()\n"
+            '            Some(n) if n > cutoff -> return "big=${n}"\n'
+            '            Some(n) -> return "small=${n}"\n'
+            '            None -> return "none"\n'
+            "    return f()\n"
+            "\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(feat())\n"
+        )
+        self._assert_src_parity(src, expect="small=3\n")
+
 
 @unittest.skipUnless(
     _has_wasm_tools() and _has_wasmtime_py(),

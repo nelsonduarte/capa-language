@@ -544,6 +544,8 @@ class _ClosureEmissionMixin:
                                     nested_defs(ii.body)
                                 elif isinstance(ii, Match):
                                     for arm in ii.arms:
+                                        if getattr(arm, "guard_setup", None):
+                                            nested_defs(arm.guard_setup)
                                         nested_defs(arm.body)
                                         self._collect_pattern_names(
                                             arm.pattern, inner_defs,
@@ -575,6 +577,21 @@ class _ClosureEmissionMixin:
                     elif isinstance(i, Match):
                         collect(i.scrutinee)
                         for arm in i.arms:
+                            # A guard (and its ANF prelude) can read
+                            # captured names that the arm body never
+                            # touches -- ``Some(n) if n > threshold``
+                            # references the enclosing ``threshold``
+                            # only inside the guard. Symmetric to
+                            # ``collect_defs`` above, both must be
+                            # walked or the capture is dropped from the
+                            # env layout and the lifted body emits a
+                            # ``local.get`` for a name that was never
+                            # allocated (unknown local at Wasm validate
+                            # time).
+                            if getattr(arm, "guard_setup", None):
+                                walk(arm.guard_setup)
+                            if getattr(arm, "guard", None) is not None:
+                                collect(arm.guard)
                             walk(arm.body)
 
             walk(body_instrs)

@@ -56,6 +56,19 @@ an i32, and the validator rejected the function. The lifter now
 sweeps each arm's `guard_setup` into the defined-in-body set so the
 guard temp inherits its real Bool (i32) shape.
 
+The same fix had a symmetric other half. The defined-names walk
+(`collect_defs`) now sweeps `guard_setup`, but the closure's
+free-variable walk in the same file walked only each arm's body,
+never its `guard` or `guard_setup`. A name captured from the
+enclosing function (a parameter or a let-local) and used **only**
+inside a guard (`Some(n) if n > threshold -> ...`) was therefore
+never collected as free, never entered the env layout, and the
+lifted body emitted a `local.get` for a name that was never
+allocated, failing loud with an unknown-local error at Wasm
+validate time. The free-variable walk now visits `arm.guard` and
+recurses into `arm.guard_setup`, symmetric to `collect_defs` (and
+the nested-lambda shadowing walk picks up `guard_setup` defs too).
+
 The same guarded match in a top-level function already had parity
 (its locals come straight from the real `fn.locals` with the Bool
 type intact), which is why only the lambda-lifted path was
@@ -63,7 +76,10 @@ affected. Covered by `tests/test_ir_wasm_parity.py`
 (`TestLambdaGuardedTailMatchParity`): the all-arms-return and
 arms-yield-values guarded shapes for String and Int results, a
 guard-fails-falls-through runtime case, `parse_int` with a guard
-inside a lambda, and the top-level-function control.
+inside a lambda, the top-level-function control, and new cases for a
+guard capturing the enclosing function's parameter and a let-local
+(both guard-only references), including a guard-fails runtime check
+that the captured value is genuinely threaded into the closure.
 
 ### Wasm backend: lambda tail-match miscompile + closure-variable shadowing
 
