@@ -78,6 +78,34 @@ class _LinearMixin:
             self._consumed.add(name)
             self._linear_names.add(name)
 
+    def _linear_reassign(self, name: str, ty: Optional[Ty], pos: Pos) -> None:
+        """Handle ``h = <expr>`` re-assignment to an existing name.
+
+        Re-binding a name whose current value is a still-live linear
+        obligation DROPS that value (it is overwritten and can never be
+        consumed again), so report it like any other drop. Then the new
+        value is registered: if it is itself linear, ``_linear_bind``
+        parks the fresh obligation under the name (and lifts any consume
+        poison); if it is not, the name simply stops carrying a linear
+        obligation.
+
+        Valid: re-assigning to a name whose previous value was already
+        consumed (``close(h); h = open()``) -- the old value is gone
+        from ``_live_linear``, so nothing is reported, and the fresh
+        value re-arms the obligation."""
+        old_pos = self._live_linear.get(name)
+        if old_pos is not None:
+            self._err(
+                f"linear value {name!r} is dropped without being "
+                f"consumed; re-assigning to it overwrites the old value, "
+                f"which a `linear type` / typestate value cannot be -- "
+                f"consume the current value (e.g. a `consume self` method "
+                f"like `close`, or `become`) before re-assigning",
+                pos,
+            )
+            del self._live_linear[name]
+        self._linear_bind(name, ty, pos)
+
     # ---- anonymous drop (``let _ = ...`` / bare expr stmt) -------
 
     def _linear_check_anonymous_drop(

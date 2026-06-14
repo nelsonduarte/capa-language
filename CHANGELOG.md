@@ -30,6 +30,44 @@ a drop is now rejected (`linear value is dropped without being
 consumed`), exactly as a named drop already was, closing the
 resource-leak / dropped-authorization hole at those sites.
 
+**Bug fix (soundness): `var` and re-assignment of a linear / typestate
+value.** A `var` binding never registered the must-consume obligation
+its `let` counterpart does, and a re-assignment (`h = open()`) never
+touched the live set, so a linear value bound with `var` (or
+re-assigned) escaped both the leak check and the double-consume check.
+A `var` of a linear value now carries the same obligation as a `let`
+(`var` only makes the slot re-assignable, it does not waive use-once),
+and re-assigning a name whose current value is still live is rejected as
+a drop (`linear value 'h' is dropped without being consumed;
+re-assigning to it overwrites the old value`). Re-assigning a name whose
+value was already consumed re-arms a fresh obligation, so the legitimate
+`close(h); h = open(); close(h)` pattern keeps compiling.
+
+**Bug fix (soundness): partial consume of a linear / typestate value in
+a `match`.** A `match` in statement position merged the `_consumed` set
+across arms like an `if` but never snapshotted / merged the live linear
+obligations, so consuming a value in a single arm removed its obligation
+permanently and masked the leak on the other arms. A linear value live
+at the entry of a `match` must now be consumed on **every** non-diverging
+arm or on **none**: the post-match live set is the union of each
+reachable arm's survivors (diverging arms excluded), so consuming it in
+some arms but not others surfaces the leak, while consuming it in every
+arm and then using it after the match is reported as use-after-consume.
+Consuming the same value in all arms, or in none and then once after the
+match, keeps compiling.
+
+These three completed the use-once guarantee for `var`, re-assignment,
+and `match`, the same class the previous two fixes closed for `let`. The
+remaining laundering-by-container case (placing a linear value in a
+tuple / list / struct field) was found to be **already** structurally
+closed: the obligation on the inner value is discharged only by a direct
+consume position (a `consume` argument, a `become` operand, or a
+bare-identifier `return`), never by being embedded in a container, so
+the obligation stays live and is reported at scope exit no matter what
+becomes of the container. Regression tests lock that behaviour in; no
+language change was needed, and forcing a construction-site rejection
+would only have moved the diagnostic at the risk of false positives.
+
 **Diagnostics.** When registry index signature verification fails, the
 error now adds a line-ending hint if a CRLF/LF-normalised form of the
 served bytes would validate under the pinned root key. This points at a

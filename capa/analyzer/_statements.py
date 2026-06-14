@@ -208,10 +208,23 @@ class _StatementsMixin:
         # Embed-then-mutate: link into the alias group of every bare
         # struct binding embedded into a struct literal RHS.
         self._ifc_link_embedded_structs(sym, s.value)
+        # Roadmap S1: a ``var h = open()`` of a linear-typed value opens
+        # the same must-consume obligation a ``let`` does -- ``var`` only
+        # makes the slot re-assignable, it does not waive the obligation.
+        self._linear_bind(s.name, actual, s.pos)
 
     def _check_assign(self, s: A.AssignStmt) -> None:
         from . import SymbolKind
 
+        # Roadmap S1: the left side of ``h = ...`` is a WRITE target, not
+        # a use, so reading a poisoned (already-consumed) linear name here
+        # must not raise use-after-consume -- ``close(h); h = open()`` is
+        # the legitimate re-arm. Lift the poison on a bare-identifier
+        # target before evaluating it; ``_linear_reassign`` below restores
+        # the correct obligation state from the fresh RHS.
+        if isinstance(s.target, A.Ident) and s.target.name in self._consumed:
+            self._consumed.discard(s.target.name)
+            self._linear_names.discard(s.target.name)
         target_ty = self._check_expr(s.target)
         value_ty = self._check_expr(s.value)
         if isinstance(s.target, A.Ident):
@@ -243,6 +256,14 @@ class _StatementsMixin:
                 self._err(
                     f"cannot assign to parameter {sym.name!r}", s.pos,
                 )
+            # Roadmap S1: re-assigning a name (``h = open()``) that still
+            # holds a live linear obligation drops the old value (a leak);
+            # the fresh RHS re-arms the obligation if it is itself linear.
+            # Only the legal-mutation case (an immutable ``let`` was not
+            # rejected above) reaches a useful state, but running this
+            # unconditionally is harmless: a poisoned/consumed name simply
+            # is not in ``_live_linear`` and the fresh value re-binds.
+            self._linear_reassign(s.target.name, value_ty, s.pos)
         elif isinstance(s.target, (A.FieldAccess, A.Index)):
             # A bare index-element target (``xs[i] = v`` and the
             # augmented ``xs[i] += 1``) has no sound lowering on

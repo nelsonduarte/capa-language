@@ -198,6 +198,20 @@ class _ExpressionsMixin:
         arm_types: list[Ty | None] = []
         before = set(self._consumed)
         branch_results: list[set[str]] = []
+        # Roadmap S1: snapshot the live linear obligations before each arm
+        # and merge the survivors after, exactly as ``_check_if`` does. A
+        # value live at the match entry must be consumed on EVERY
+        # non-diverging arm or on NONE: the post-match live set is the
+        # UNION of each reachable arm's survivors, so consuming it in some
+        # arms but not others leaves it outstanding here (the leak surfaces
+        # at the merge, and a later consume after the match is rejected as
+        # use-after-consume on the arms that already consumed it). Diverging
+        # arms are excluded -- their path does not reach the merge.
+        before_live = dict(self._live_linear)
+        branch_live: list[dict] = []
+        # A scrutinee that is a bare identifier holding a live linear value
+        # is moved into the match; whether it is consumed is decided
+        # per-arm, so it stays in ``before_live`` and each arm sees it.
 
         # Roadmap S2: the scrutinee's IFC label flows to every name a
         # pattern binds. ``match env.get(...) { Some(key) -> ... }``
@@ -213,6 +227,7 @@ class _ExpressionsMixin:
         arm_pc = L.join(saved_pc, scrutinee_label)
         for arm in s.arms:
             self._consumed = set(before)
+            self._live_linear = dict(before_live)
             self._push_scope()
             self._bind_pattern(arm.pattern, scrutinee_ty, mutable=False)
             self._label_pattern_binds(arm.pattern, scrutinee_label)
@@ -255,6 +270,7 @@ class _ExpressionsMixin:
             # simply does not contribute to ``branch_results``.
             if not arm_diverges:
                 branch_results.append(self._consumed)
+                branch_live.append(dict(self._live_linear))
 
         # Restore the pc-label raised for the arm bodies (S2.implicit).
         self._pc_label = saved_pc
@@ -264,11 +280,18 @@ class _ExpressionsMixin:
             for r in branch_results:
                 merged |= r
             self._consumed = merged
+            # Union of surviving linear obligations across reachable arms:
+            # a value still live after any arm is still outstanding.
+            merged_live: dict = {}
+            for live in branch_live:
+                merged_live.update(live)
+            self._live_linear = merged_live
         else:
             # All arms diverge: the code after this match is
-            # unreachable. Keep ``_consumed`` at the pre-match
-            # state.
+            # unreachable. Keep ``_consumed`` / ``_live_linear`` at the
+            # pre-match state.
             self._consumed = before
+            self._live_linear = before_live
 
         self._check_match_exhaustiveness(s, scrutinee_ty)
 

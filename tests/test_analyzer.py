@@ -6176,6 +6176,265 @@ class TestLinearAnonymousDrop(unittest.TestCase):
         )
 
 
+class TestLinearVarAndReassign(unittest.TestCase):
+    """Soundness: a ``var`` binding of a linear / typestate value carries
+    the same must-consume obligation a ``let`` does -- ``var`` only makes
+    the slot re-assignable, it does not waive use-once. Re-assigning a name
+    that still holds a live linear value DROPS that value (a leak), while
+    re-assigning a name whose value was already consumed re-arms a fresh
+    obligation.
+
+    Before this fix ``_check_var`` never registered the obligation and
+    ``_check_assign`` never touched the live set, so a linear value bound
+    with ``var`` (or re-assigned) escaped both the leak and the
+    double-consume checks."""
+
+    _LIN = (
+        "linear type Handle { id: Int }\n"
+        "fun open() -> Handle\n"
+        "    return Handle { id: 1 }\n"
+        "fun close(consume h: Handle) -> Unit\n"
+        "    return ()\n"
+    )
+
+    def _errs(self, body: str) -> list[str]:
+        return [e for e in errors_of(body) if "never used" not in e]
+
+    def test_var_linear_leak_rejected(self):
+        errs = self._errs(
+            self._LIN + "fun main(_s: Stdio)\n    var h = open()\n"
+        )
+        self.assertTrue(
+            any("dropped without being consumed" in e for e in errs), errs,
+        )
+
+    def test_var_double_consume_rejected(self):
+        errs = self._errs(
+            self._LIN
+            + "fun main(_s: Stdio)\n"
+            "    var h = open()\n"
+            "    close(h)\n"
+            "    close(h)\n"
+        )
+        self.assertTrue(
+            any(
+                "linear value 'h' was consumed earlier and cannot "
+                "be used again" in e
+                for e in errs
+            ),
+            errs,
+        )
+
+    def test_reassign_drops_live_linear_rejected(self):
+        # ``h = open()`` while h still holds an unconsumed value overwrites
+        # (and so drops) the old value -- a leak.
+        errs = self._errs(
+            self._LIN
+            + "fun main(_s: Stdio)\n"
+            "    var h = open()\n"
+            "    h = open()\n"
+            "    close(h)\n"
+        )
+        self.assertTrue(
+            any(
+                "linear value 'h' is dropped without being consumed; "
+                "re-assigning to it overwrites the old value" in e
+                for e in errs
+            ),
+            errs,
+        )
+
+    # ---- positives that must keep compiling ----------------------
+
+    def test_var_single_consume_ok(self):
+        self.assertEqual(
+            self._errs(
+                self._LIN
+                + "fun main(_s: Stdio)\n"
+                "    var h = open()\n"
+                "    close(h)\n"
+            ),
+            [],
+        )
+
+    def test_reassign_after_consume_ok(self):
+        # The old value was consumed before the re-assignment, so the
+        # name re-arms a fresh obligation that the final close discharges.
+        self.assertEqual(
+            self._errs(
+                self._LIN
+                + "fun main(_s: Stdio)\n"
+                "    var h = open()\n"
+                "    close(h)\n"
+                "    h = open()\n"
+                "    close(h)\n"
+            ),
+            [],
+        )
+
+
+class TestLinearMatchPartialConsume(unittest.TestCase):
+    """Soundness: a linear / typestate value live at the entry of a
+    ``match`` must be consumed on EVERY non-diverging arm or on NONE.
+    Consuming it in some arms but not others leaks it on the paths that
+    did not consume -- the obligation survives the merge (the union of
+    each reachable arm's survivors), so the leak surfaces, and a later
+    consume after the match is a use-after-consume on the arms that
+    already consumed it.
+
+    Before this fix ``_check_match_expr`` merged ``_consumed`` like
+    ``_check_if`` but never snapshotted / merged ``_live_linear``, so
+    consuming in a single arm removed the obligation permanently and the
+    leak on the other arms went unreported."""
+
+    _M = (
+        "linear type Handle { id: Int }\n"
+        "fun open() -> Handle\n"
+        "    return Handle { id: 1 }\n"
+        "fun close(consume h: Handle) -> Unit\n"
+        "    return ()\n"
+        "fun pick() -> Option<Int>\n"
+        "    return Some(1)\n"
+    )
+
+    def _errs(self, body: str) -> list[str]:
+        return [e for e in errors_of(body) if "never used" not in e]
+
+    def test_match_partial_consume_rejected(self):
+        errs = self._errs(
+            self._M
+            + "fun main(_s: Stdio)\n"
+            "    let h = open()\n"
+            "    match pick()\n"
+            "        Some(n) -> close(h)\n"
+            "        None -> ()\n"
+        )
+        self.assertTrue(
+            any("dropped without being consumed" in e for e in errs), errs,
+        )
+
+    def test_match_consume_all_arms_ok(self):
+        self.assertEqual(
+            self._errs(
+                self._M
+                + "fun main(_s: Stdio)\n"
+                "    let h = open()\n"
+                "    match pick()\n"
+                "        Some(n) -> close(h)\n"
+                "        None -> close(h)\n"
+            ),
+            [],
+        )
+
+    def test_match_consume_none_then_after_ok(self):
+        # Consumed in no arm, then consumed once after the match.
+        self.assertEqual(
+            self._errs(
+                self._M
+                + "fun main(_s: Stdio)\n"
+                "    let h = open()\n"
+                "    match pick()\n"
+                "        Some(n) -> ()\n"
+                "        None -> ()\n"
+                "    close(h)\n"
+            ),
+            [],
+        )
+
+    def test_match_consume_all_arms_then_after_rejected(self):
+        # Consumed in every arm, then used again after the match: a
+        # use-after-consume on whichever arm ran.
+        errs = self._errs(
+            self._M
+            + "fun main(_s: Stdio)\n"
+            "    let h = open()\n"
+            "    match pick()\n"
+            "        Some(n) -> close(h)\n"
+            "        None -> close(h)\n"
+            "    close(h)\n"
+        )
+        self.assertTrue(
+            any(
+                "linear value 'h' was consumed earlier" in e for e in errs
+            ),
+            errs,
+        )
+
+
+class TestLinearContainerLaundering(unittest.TestCase):
+    """Soundness (already structurally closed): a linear / typestate value
+    cannot be laundered into a non-linear container (tuple / list / struct
+    field) to make its must-consume obligation disappear.
+
+    The obligation on the inner value is discharged ONLY by a direct
+    consume position -- a ``consume`` argument, a ``become`` operand, or a
+    bare-identifier ``return``. Embedding the value in a container never
+    discharges it, so the obligation stays live and is reported at scope
+    exit no matter what happens to the container (dropped, returned,
+    consumed). The language therefore admits no linear container, and no
+    laundering escape exists. These tests lock that in."""
+
+    _LIN = (
+        "linear type Handle { id: Int }\n"
+        "fun open() -> Handle\n"
+        "    return Handle { id: 1 }\n"
+        "fun close(consume h: Handle) -> Unit\n"
+        "    return ()\n"
+    )
+
+    def _errs(self, body: str) -> list[str]:
+        return [e for e in errors_of(body) if "never used" not in e]
+
+    def test_launder_into_tuple_rejected(self):
+        errs = self._errs(
+            self._LIN
+            + "fun main(_s: Stdio)\n"
+            "    let h = open()\n"
+            "    let t = (h, 1)\n"
+        )
+        self.assertTrue(
+            any("dropped without being consumed" in e for e in errs), errs,
+        )
+
+    def test_launder_into_list_rejected(self):
+        errs = self._errs(
+            self._LIN
+            + "fun main(_s: Stdio)\n"
+            "    let h = open()\n"
+            "    let xs = [h]\n"
+        )
+        self.assertTrue(
+            any("dropped without being consumed" in e for e in errs), errs,
+        )
+
+    def test_launder_into_struct_field_rejected(self):
+        errs = self._errs(
+            "type Box { h: Handle }\n"
+            + self._LIN
+            + "fun main(_s: Stdio)\n"
+            "    let h = open()\n"
+            "    let b = Box { h: h }\n"
+        )
+        self.assertTrue(
+            any("dropped without being consumed" in e for e in errs), errs,
+        )
+
+    def test_launder_into_returned_tuple_rejected(self):
+        # Returning a tuple that holds the linear value does NOT discharge
+        # it (only a bare-identifier return does), so the leak is caught.
+        errs = self._errs(
+            self._LIN
+            + "fun stash() -> (Handle, Int)\n"
+            "    let h = open()\n"
+            "    return (h, 1)\n"
+            "fun main(_s: Stdio)\n"
+            "    let t = stash()\n"
+        )
+        self.assertTrue(
+            any("dropped without being consumed" in e for e in errs), errs,
+        )
+
+
 class TestIntLiteralRange(unittest.TestCase):
     """Slice 26 residual / P3: a bare 2**63 is out of i64 range; only
     ``-2**63`` (i64::MIN) is representable. The lexer admits the
