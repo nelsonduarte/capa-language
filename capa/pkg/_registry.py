@@ -150,6 +150,58 @@ class RegistryEntry:
     description: Optional[str] = None
 
 
+def _diagnose_lineending_mismatch(
+    index_bytes: bytes, sig_text: str, expected: str
+) -> bool:
+    """Diagnostic-only re-check for a CRLF/LF publishing slip.
+
+    Re-verify line-ending-NORMALISED copies of ``index_bytes`` (one with
+    CRLF collapsed to LF, one with LF expanded to CRLF) against the SAME
+    detached signature and the SAME pinned ``expected`` root key, each in
+    its own temp file. Returns ``True`` iff one of those forms produces a
+    VALIDSIG whose fingerprint equals ``expected``.
+
+    SECURITY INVARIANT: this function NEVER accepts an index. Its caller
+    has already decided to fail-closed over the raw bytes; the only effect
+    of a ``True`` return is a clearer diagnostic sentence. A normalised
+    form validating does not make the raw served bytes trustworthy, it
+    only signals a likely CRLF/LF mangling after signing. Do not wire this
+    into the accept path.
+    """
+    raw = index_bytes
+    # Normalise to a canonical LF form first so both transforms are
+    # well-defined regardless of the input's current line endings.
+    lf = raw.replace(b"\r\n", b"\n")
+    candidates = {lf, lf.replace(b"\n", b"\r\n")}
+    candidates.discard(raw)  # the raw form already failed; skip it.
+
+    for candidate in candidates:
+        try:
+            with tempfile.TemporaryDirectory(prefix="capa_idxdiag_") as td:
+                tmp = Path(td)
+                index_file = tmp / "index.json"
+                sig_file = tmp / "index.json.asc"
+                index_file.write_bytes(candidate)
+                sig_file.write_text(sig_text, encoding="utf-8")
+                r = subprocess.run(
+                    [
+                        "gpg", "--status-fd", "1", "--verify",
+                        str(sig_file), str(index_file),
+                    ],
+                    capture_output=True, text=True, encoding="utf-8",
+                )
+        except FileNotFoundError:
+            return False
+        if r.returncode != 0:
+            continue
+        for line in r.stdout.splitlines():
+            if line.startswith("[GNUPG:] VALIDSIG "):
+                parts = line.split()
+                if len(parts) >= 3 and parts[2].upper() == expected:
+                    return True
+    return False
+
+
 def _verify_index_signature(
     index_bytes: bytes, sig_text: Optional[str]
 ) -> None:
@@ -249,6 +301,31 @@ def _verify_index_signature(
             return
 
     if r.returncode != 0:
+        # Defence-in-depth diagnostic ONLY. The accept gate above
+        # (write_bytes of the RAW index + this gpg --verify) has already
+        # failed and we WILL fail-closed below no matter what. The
+        # following re-check verifies LINE-ENDING-NORMALISED copies of the
+        # index against the SAME signature and the SAME pinned root key,
+        # in a separate temp file, purely to pick a clearer diagnostic
+        # sentence. It NEVER accepts the index: a normalised form that
+        # validates only tells us the publisher likely mangled CRLF/LF
+        # after signing, not that the raw bytes are trustworthy. Refusing
+        # the raw bytes is the security-relevant outcome and is preserved.
+        crlf_hint = ""
+        if _diagnose_lineending_mismatch(index_bytes, sig_text, expected):
+            crlf_hint = (
+                "\n\nDIAGNOSTIC: the signature DOES validate over a "
+                "line-ending-normalised form of these exact bytes "
+                "(CRLF<->LF), under the correct root key. This strongly "
+                "suggests a CRLF/LF conversion in how the index is "
+                "published or served (for example a git autocrlf or a "
+                "proxy rewriting line endings AFTER signing), rather than "
+                "deliberate tampering. The toolchain still refuses the "
+                "index, because acceptance is only ever over the raw "
+                "signed bytes. Please report this to the registry "
+                "maintainer so the published index matches what was "
+                "signed."
+            )
         raise RegistryError(
             "registry index signature verification FAILED: ``gpg "
             "--verify`` returned non-zero. The detached signature does "
@@ -258,6 +335,7 @@ def _verify_index_signature(
             f"gpg output:\n{(r.stdout + r.stderr).strip()}\n\n"
             f"The expected root key is {expected}; import it out of band:\n"
             f"  gpg --recv-keys {expected}"
+            f"{crlf_hint}"
         )
 
     # ``--status-fd 1`` routes the machine-readable status lines to

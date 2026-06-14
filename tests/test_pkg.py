@@ -1905,6 +1905,85 @@ class TestRegistryIndexSignature(_TempDirMixin, unittest.TestCase):
     @unittest.skipUnless(
         _gpg_available(), "gpg binary not on PATH",
     )
+    @unittest.skipIf(
+        sys.platform == "win32",
+        "ephemeral GNUPGHOME path mangling under MSYS; see "
+        "test_valid_signature_resolves.",
+    )
+    def test_crlf_served_index_fails_closed_with_lineending_hint(self):
+        # Sign the index over its LF bytes, then SERVE it with CRLF line
+        # endings (a publishing/transport mangling, not tampering). The
+        # raw served bytes no longer match the signature, so acceptance
+        # must STILL fail-closed (we never normalise to accept). The
+        # diagnostic re-check should recognise the LF form validates and
+        # add the CRLF/LF hint to the error message.
+        from unittest.mock import patch
+        _, fpr, env = self._make_gpg_home()
+        idx = self._tmp / "index.json"
+        # Sign over canonical LF bytes.
+        lf_bytes = self._good_index().replace("\r\n", "\n").encode("utf-8")
+        idx.write_bytes(lf_bytes)
+        self._sign(idx, env, fpr)
+        # Now serve the SAME content with CRLF endings (write_bytes to keep
+        # exact control over line endings; write_text would re-translate).
+        crlf_bytes = lf_bytes.replace(b"\n", b"\r\n")
+        idx.write_bytes(crlf_bytes)
+        url = idx.as_uri()
+        with patch.dict(os.environ, env, clear=False), \
+                patch("capa.pkg._registry._REGISTRY_ROOT_KEY", fpr):
+            with self.assertRaises(RegistryError) as ctx:
+                resolve_name(
+                    "capa_http", registry_url=url,
+                    cache_dir=self._cache_dir(),
+                )
+        msg = str(ctx.exception).lower()
+        # Fail-closed proof: it did NOT silently accept.
+        self.assertIn("signature verification failed", msg)
+        # Diagnostic proof: the CRLF/LF hint is present.
+        self.assertIn("line-ending", msg)
+        self.assertIn("crlf", msg)
+
+    @unittest.skipUnless(
+        _gpg_available(), "gpg binary not on PATH",
+    )
+    @unittest.skipIf(
+        sys.platform == "win32",
+        "ephemeral GNUPGHOME path mangling under MSYS; see "
+        "test_valid_signature_resolves.",
+    )
+    def test_tampered_index_has_no_lineending_hint(self):
+        # A genuine content tamper (not just line endings) must fail
+        # closed WITHOUT the CRLF/LF hint, so the diagnostic does not emit
+        # false positives that would downplay real tampering.
+        from unittest.mock import patch
+        _, fpr, env = self._make_gpg_home()
+        idx = self._tmp / "index.json"
+        lf_bytes = self._good_index().replace("\r\n", "\n").encode("utf-8")
+        idx.write_bytes(lf_bytes)
+        self._sign(idx, env, fpr)
+        # Tamper the content (swap the git URL); keep LF line endings so
+        # the only difference from the signed form is real tampering.
+        tampered = (
+            self._good_index().replace("\r\n", "\n").replace(
+                "nelsonduarte/capa_http", "attacker/evil"
+            ).encode("utf-8")
+        )
+        idx.write_bytes(tampered)
+        url = idx.as_uri()
+        with patch.dict(os.environ, env, clear=False), \
+                patch("capa.pkg._registry._REGISTRY_ROOT_KEY", fpr):
+            with self.assertRaises(RegistryError) as ctx:
+                resolve_name(
+                    "capa_http", registry_url=url,
+                    cache_dir=self._cache_dir(),
+                )
+        msg = str(ctx.exception).lower()
+        self.assertIn("signature verification failed", msg)
+        self.assertNotIn("line-ending", msg)
+
+    @unittest.skipUnless(
+        _gpg_available(), "gpg binary not on PATH",
+    )
     def test_poisoned_cache_without_matching_sig_fails_closed(self):
         # Cache-poisoning vector: a fresh, well-formed cache entry with a
         # swapped git+verify_key but NO valid matching .asc, root key

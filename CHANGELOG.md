@@ -9,7 +9,13 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
-Nothing yet.
+**Diagnostics.** When registry index signature verification fails, the
+error now adds a line-ending hint if a CRLF/LF-normalised form of the
+served bytes would validate under the pinned root key. This points at a
+likely CRLF/LF mangling in publication rather than tampering. The check
+is purely diagnostic: verification stays fail-closed and acceptance is
+still only ever over the raw signed bytes; the normalised re-check only
+chooses a clearer message, never accepts the index.
 
 ## [1.1.0], 2026-06-14
 
