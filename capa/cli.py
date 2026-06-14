@@ -1202,12 +1202,17 @@ def main() -> int:
             print(json.dumps(manifest, indent=2))
             return 0
         if args.cyclonedx or args.spdx or args.vex or args.provenance:
-            # Resolve the build timestamp once per invocation so all
-            # artefacts share exactly one instant. When SOURCE_DATE_EPOCH
-            # is set, this makes the output byte-reproducible across
-            # runs and machines; when it is unset, ``None`` lets the
-            # emitters fall back to wall-clock time. An invalid value is
-            # a hard error rather than a silent wall-clock fallback.
+            # Each invocation emits exactly one artefact (every branch
+            # below returns), so the instant is derived deterministically
+            # from SOURCE_DATE_EPOCH: four separate invocations (one per
+            # artefact) with the same value share the same timestamp, and
+            # within CycloneDX-with-VEX the one instant feeds both
+            # metadata.timestamp and the per-vulnerability firstIssued.
+            # When SOURCE_DATE_EPOCH is set, this makes the output
+            # byte-reproducible across runs and machines; when it is
+            # unset, ``None`` lets the emitters fall back to wall-clock
+            # time. An invalid value is a hard error rather than a silent
+            # wall-clock fallback.
             try:
                 build_ts = resolve_build_timestamp()
             except SourceDateEpochError as e:

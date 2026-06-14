@@ -1128,6 +1128,19 @@ class TestSbomReproducibility(unittest.TestCase):
         self.assertEqual(rc, 2)
         self.assertIn("SOURCE_DATE_EPOCH", err)
 
+    def test_out_of_range_epoch_errors_cleanly_in_every_mode(self):
+        # A non-negative integer that is nonetheless out of the
+        # representable date range used to reach datetime and raise an
+        # uncaught OverflowError (a raw traceback, exit non-clean). It
+        # must now be a controlled non-zero exit in all four modes,
+        # exactly like other invalid values.
+        env = {"SOURCE_DATE_EPOCH": "99999999999999999999"}
+        for mode in _ARTEFACT_MODES:
+            rc, out, err = self._emit(mode, env)
+            self.assertEqual(rc, 2, f"{mode} should reject huge epoch")
+            self.assertEqual(out, "")
+            self.assertIn("SOURCE_DATE_EPOCH", err)
+
     def test_deterministic_identifiers_unaffected_by_epoch(self):
         # The source-derived identifiers (serialNumber, etc.) were
         # already deterministic; they must stay stable whether or not
@@ -1156,6 +1169,102 @@ class TestSbomReproducibility(unittest.TestCase):
         self.assertEqual(len(serials), 1)
         self.assertEqual(len(namespaces), 1)
         self.assertEqual(len(invocations), 1)
+
+
+# A deliberately rich program for the cross-process reproducibility
+# guard below. It exercises every serialisation path whose ordering a
+# stray ``set`` iteration could perturb: several functions, two
+# user-defined capabilities each with multiple implementors,
+# cap-bearing structs (so transitively_reachable_capabilities is
+# non-trivial), functions that provably exclude built-in caps, a
+# declassification site, and a @vex annotation (so the VEX/CycloneDX
+# firstIssued path is exercised). Implementors and built-in caps are
+# declared out of alphabetical order so any unsorted iteration would
+# surface as a seed-dependent ordering difference.
+_RICH_PROGRAM = (
+    'capability Logger\n'
+    '    fun log(self, msg: String) -> Bool\n'
+    'capability Mailer\n'
+    '    fun send(self, to: String) -> Bool\n'
+    'type ZSink { out: Stdio }\n'
+    'type ASink { out: Stdio }\n'
+    'type MSink { sock: Net }\n'
+    'type SmtpMailer { sock: Net }\n'
+    'type FileMailer { disk: Fs }\n'
+    'impl Logger for ZSink\n'
+    '    fun log(self, msg: String) -> Bool\n'
+    '        self.out.println(msg)\n'
+    '        return true\n'
+    'impl Logger for ASink\n'
+    '    fun log(self, msg: String) -> Bool\n'
+    '        self.out.println(msg)\n'
+    '        return true\n'
+    'impl Logger for MSink\n'
+    '    fun log(self, msg: String) -> Bool\n'
+    '        return true\n'
+    'impl Mailer for SmtpMailer\n'
+    '    fun send(self, to: String) -> Bool\n'
+    '        return true\n'
+    'impl Mailer for FileMailer\n'
+    '    fun send(self, to: String) -> Bool\n'
+    '        return true\n'
+    '@vex(cve: "CVE-9999-0001", status: "not_affected", '
+    'justification: "code_not_reachable")\n'
+    'fun audit(token: @secret String, stdio: Stdio)\n'
+    '    stdio.println(declassify(token, reason: "audited"))\n'
+    'fun broadcast(lg: Logger, m: Mailer) -> Bool\n'
+    '    return lg.log("x")\n'
+    'fun pure_calc(n: Int) -> Int\n'
+    '    return n + 1\n'
+    'fun main(stdio: Stdio)\n'
+    '    stdio.println("hi")\n'
+)
+
+
+class TestCrossProcessSeedReproducibility(unittest.TestCase):
+    """The central promise is byte-identity *across machines*, and the
+    sharpest proxy for that within one machine is byte-identity across
+    *processes* with a different ``PYTHONHASHSEED``. Set iteration order
+    is hash-seed-dependent, so a regression that serialised a ``set``
+    without sorting would diverge between two seeds here while passing
+    every same-process determinism test. This is the guard against that.
+
+    Each artefact is generated in a fresh subprocess (``python -m capa``)
+    so the hash seed genuinely differs between runs, over the rich
+    program above and with ``SOURCE_DATE_EPOCH`` pinned.
+    """
+
+    def _emit_in_subprocess(self, mode, seed, path):
+        import os as _os
+        import subprocess
+        import sys as _sys
+        env = dict(_os.environ)
+        env["PYTHONHASHSEED"] = str(seed)
+        env["SOURCE_DATE_EPOCH"] = _FIXED_EPOCH
+        proc = subprocess.run(
+            [_sys.executable, "-m", "capa", mode, str(path)],
+            capture_output=True, text=True, env=env,
+            cwd=str(Path(path).parent),
+        )
+        self.assertEqual(
+            proc.returncode, 0,
+            f"{mode} seed={seed} failed: {proc.stderr}",
+        )
+        return proc.stdout
+
+    def test_artefacts_byte_identical_across_hash_seeds(self):
+        with tempfile.TemporaryDirectory() as td:
+            p = _write_capa(Path(td), "rich.capa", _RICH_PROGRAM)
+            for mode in _ARTEFACT_MODES:
+                out0 = self._emit_in_subprocess(mode, 0, p)
+                out1 = self._emit_in_subprocess(mode, 1, p)
+                self.assertEqual(
+                    out0, out1,
+                    f"{mode} differs between PYTHONHASHSEED 0 and 1",
+                )
+                # Guard against a degenerate pass: the run must have
+                # produced real artefact content, not an empty string.
+                self.assertTrue(out0.strip(), f"{mode} produced no output")
 
 
 if __name__ == "__main__":

@@ -58,9 +58,9 @@ SOURCE_DATE_EPOCH=1609459200 capa --cyclonedx app.capa > b.json
 diff a.json b.json   # empty: byte-for-byte identical
 ```
 
-When `SOURCE_DATE_EPOCH` is set, the CycloneDX `metadata.timestamp`, the SPDX `created`/`annotationDate`, the VEX `timestamp`/`firstIssued`, and the provenance `startedOn`/`finishedOn` all derive from that one instant, resolved once per invocation so the four artefacts never skew against each other. Rebuild on a different machine with the same value and the artefacts are identical, which is what lets a downstream consumer rebuild your SBOM from source and confirm it matches the one you published, rather than trusting it.
+When `SOURCE_DATE_EPOCH` is set, the CycloneDX `metadata.timestamp`, the SPDX `created`/`annotationDate`, the VEX `timestamp`/`firstIssued`, and the provenance `startedOn`/`finishedOn` all derive deterministically from that one instant. Each invocation emits a single artefact, so four separate invocations (one per artefact) that share the same `SOURCE_DATE_EPOCH` produce the same timestamp; inside a CycloneDX document carrying VEX entries, the one instant feeds both `metadata.timestamp` and every `firstIssued`. Rebuild on a different machine with the same value and the artefacts are identical, which is what lets a downstream consumer rebuild your SBOM from source and confirm it matches the one you published, rather than trusting it.
 
-When `SOURCE_DATE_EPOCH` is unset, the timestamps record real wall-clock time, so an interactive build still says when it ran. Determinism is opt-in via the standard variable. A value that is not a non-negative integer is rejected with a clear error and a non-zero exit, rather than silently falling back to wall-clock time, because a build that asked for determinism should fail loudly if it cannot get it.
+When `SOURCE_DATE_EPOCH` is unset, the timestamps record real wall-clock time, so an interactive build still says when it ran. Determinism is opt-in via the standard variable. A value that is not a plain non-negative decimal integer, including one that is out of the representable date range, is rejected with a clear error and a non-zero exit, rather than silently falling back to wall-clock time, because a build that asked for determinism should fail loudly if it cannot get it.
 
 ## CRA: Cyber Resilience Act
 

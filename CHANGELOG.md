@@ -21,15 +21,20 @@ build timestamp. The CLI now honours the
 convention (an integer of Unix UTC seconds): when it is set, every
 artefact's timestamp (CycloneDX `metadata.timestamp`, SPDX `created`
 and `annotationDate`, VEX `timestamp` and `firstIssued`, provenance
-`startedOn` and `finishedOn`) derives from that one instant, resolved
-once per invocation so the four artefacts never skew against each
-other. Rebuild the same source with the same value, on any machine,
-and the artefacts are byte-for-byte identical, which lets a downstream
-consumer rebuild and diff your SBOM rather than trust it. Unset, the
-timestamps record real wall-clock time as before. A value that is not
-a non-negative integer is rejected with a clear error and a non-zero
-exit, never a silent wall-clock fallback. Documented in
-`docs/regulatory.md` and `docs/cra.md`.
+`startedOn` and `finishedOn`) derives deterministically from that one
+instant, so four separate invocations (one per artefact) with the same
+value share the same timestamp. Rebuild the same source with the same
+value, on any machine, and the artefacts are byte-for-byte identical,
+which lets a downstream consumer rebuild and diff your SBOM rather than
+trust it. Unset, the timestamps record real wall-clock time as before.
+The value is parsed as a plain decimal integer per the
+reproducible-builds.org grammar (a leading `+`, underscore grouping,
+non-decimal bases, and other `int()`-isms are rejected for
+cross-toolchain interoperability), and any value that is not a
+non-negative integer within the representable date range, including a
+huge value or one past year 9999, is rejected with a clear error and a
+non-zero exit, never a raw traceback or a silent wall-clock fallback.
+Documented in `docs/regulatory.md` and `docs/cra.md`.
 
 ### feat: `String.bytes()` exposes a string's UTF-8 bytes
 

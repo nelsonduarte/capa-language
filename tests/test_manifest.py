@@ -806,6 +806,57 @@ class TestBuildTimestampResolution(unittest.TestCase):
         with self.assertRaises(SourceDateEpochError):
             resolve_build_timestamp(environ={"SOURCE_DATE_EPOCH": "-5"})
 
+    def test_huge_value_raises_controlled_not_traceback(self):
+        # Out of any time_t / datetime range. ``fromtimestamp`` would
+        # raise OverflowError; the resolver must convert it into the
+        # same controlled SourceDateEpochError, never a raw traceback.
+        from capa.manifest import resolve_build_timestamp, SourceDateEpochError
+        with self.assertRaises(SourceDateEpochError):
+            resolve_build_timestamp(
+                environ={"SOURCE_DATE_EPOCH": "99999999999999999999"}
+            )
+
+    def test_year_10000_raises_controlled(self):
+        # 253402300800 is 10000-01-01T00:00:00Z, one second past
+        # datetime.MAXYEAR; ``fromtimestamp`` raises ValueError/OSError
+        # depending on the platform. Must be a controlled error.
+        from capa.manifest import resolve_build_timestamp, SourceDateEpochError
+        with self.assertRaises(SourceDateEpochError):
+            resolve_build_timestamp(
+                environ={"SOURCE_DATE_EPOCH": "253402300800"}
+            )
+
+    def test_far_future_but_representable_passes(self):
+        # A distant-but-valid epoch (32503680000 == 3000-01-01Z, well
+        # inside year 9999) must format cleanly, not be over-rejected
+        # by an off-by-one upper bound.
+        from capa.manifest import resolve_build_timestamp
+        self.assertEqual(
+            resolve_build_timestamp(
+                environ={"SOURCE_DATE_EPOCH": "32503680000"}
+            ),
+            "3000-01-01T00:00:00Z",
+        )
+
+    def test_zero_epoch_is_unix_origin(self):
+        from capa.manifest import resolve_build_timestamp
+        self.assertEqual(
+            resolve_build_timestamp(environ={"SOURCE_DATE_EPOCH": "0"}),
+            "1970-01-01T00:00:00Z",
+        )
+
+    def test_strict_decimal_rejects_non_canonical_forms(self):
+        # reproducible-builds.org mandates a plain decimal integer.
+        # ``int()`` is laxer than that; these forms must all be
+        # rejected so two toolchains agree on what is valid.
+        from capa.manifest import resolve_build_timestamp, SourceDateEpochError
+        for bad in ("+1", "1_000", "08", "0x10", "123.0", "", "  "):
+            with self.subTest(value=bad):
+                with self.assertRaises(SourceDateEpochError):
+                    resolve_build_timestamp(
+                        environ={"SOURCE_DATE_EPOCH": bad}
+                    )
+
 
 class TestInvocationStyleReproducibility(unittest.TestCase):
     """Artefact-level byte-reproducibility across invocation styles.
