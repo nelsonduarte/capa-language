@@ -763,6 +763,138 @@ class TestPerFieldIfc(unittest.TestCase):
         self.assertEqual(len(r.warnings), 1)
 
 
+class TestDeclaredSecretField(unittest.TestCase):
+    """Roadmap S2 (soundness fix): a struct field whose TYPE is declared
+    ``@secret`` (``type Emp { iban: @secret String }``) produces a
+    @secret value when READ -- the struct-type analogue of a @secret
+    parameter. Closes the laundering hole where reading a declared-secret
+    field dropped its label, so PII stashed in a struct field could reach
+    a public sink with no warning. Precision is preserved: a field
+    declared PUBLIC (or unlabelled) reading off a struct that ALSO holds
+    a declared-secret field stays public (no over-tainting)."""
+
+    def _analyze(self, src: str):
+        from capa import analyze
+        m = _parse(src)
+        return analyze(m, source=src)
+
+    # ---- negatives (now flagged) --------------------------------
+
+    def test_declared_secret_field_to_sink_warns(self):
+        # Facet 1: a declared-@secret field sunk directly in the same
+        # function now warns (previously silent).
+        r = self._analyze(
+            "type Emp { id: String, iban: @secret String }\n"
+            "fun leak(e: Emp, stdio: Stdio)\n"
+            "    stdio.println(e.iban)\n"
+        )
+        self.assertEqual(len(r.warnings), 1)
+        self.assertIn("information-flow", r.warnings[0].message)
+
+    def test_declared_secret_field_via_local_to_sink_warns(self):
+        r = self._analyze(
+            "type Emp { id: String, iban: @secret String }\n"
+            "fun leak(e: Emp, stdio: Stdio)\n"
+            "    let x: @secret String = e.iban\n"
+            "    stdio.println(x)\n"
+        )
+        self.assertEqual(len(r.warnings), 1)
+
+    def test_declared_secret_field_under_strict_is_hard_error(self):
+        r = self._analyze(
+            "type Emp { id: String, iban: @secret String }\n"
+            "@strict_ifc()\n"
+            "fun leak(e: Emp, stdio: Stdio)\n"
+            "    stdio.println(e.iban)\n"
+        )
+        self.assertFalse(r.ok)
+        self.assertTrue(
+            any("information-flow" in e.message for e in r.errors)
+        )
+
+    def test_declared_secret_field_sunk_in_callee_warns(self):
+        # Cross-function: a callee that reads a declared-@secret field of
+        # a struct PARAMETER and sinks it is flagged at the call site.
+        r = self._analyze(
+            "type Emp { id: String, iban: @secret String }\n"
+            "fun show(e: Emp, stdio: Stdio)\n"
+            "    stdio.println(e.iban)\n"
+            "fun caller(e: Emp, stdio: Stdio)\n"
+            "    show(e, stdio)\n"
+        )
+        self.assertEqual(len(r.warnings), 1)
+
+    def test_declared_secret_field_returned_then_sunk_warns(self):
+        # Facet 3: a callee returns a value derived from a declared-secret
+        # field; the caller sinks the return. The return-secret effect
+        # carries the label across the boundary.
+        r = self._analyze(
+            "type Emp { id: String, iban: @secret String }\n"
+            "fun get_it(e: Emp) -> String\n"
+            "    return e.iban\n"
+            "fun leak(e: Emp, stdio: Stdio)\n"
+            "    stdio.println(get_it(e))\n"
+        )
+        self.assertEqual(len(r.warnings), 1)
+
+    def test_declared_secret_field_on_self_to_sink_warns(self):
+        r = self._analyze(
+            "type Emp { id: String, iban: @secret String }\n"
+            "impl Emp\n"
+            "    fun dump(self, stdio: Stdio)\n"
+            "        stdio.println(self.iban)\n"
+            "fun caller(e: Emp, stdio: Stdio)\n"
+            "    e.dump(stdio)\n"
+        )
+        self.assertEqual(len(r.warnings), 1)
+
+    # ---- positives (stay clean) ---------------------------------
+
+    def test_public_field_of_struct_with_secret_field_is_clean(self):
+        # The precision guarantee: reading the PUBLIC field of a struct
+        # that ALSO declares a @secret field does NOT over-taint.
+        r = self._analyze(
+            "type Emp { id: String, iban: @secret String }\n"
+            "fun ok(e: Emp, stdio: Stdio)\n"
+            "    stdio.println(e.id)\n"
+        )
+        self.assertEqual(len(r.warnings), 0)
+
+    def test_declassify_of_declared_secret_field_is_clean(self):
+        r = self._analyze(
+            "type Emp { id: String, iban: @secret String }\n"
+            "fun ok(e: Emp, stdio: Stdio)\n"
+            "    stdio.println(declassify(e.iban, reason: \"audit\"))\n"
+        )
+        self.assertEqual(len(r.warnings), 0)
+        self.assertTrue(r.ok)
+
+    def test_public_field_returned_then_sunk_is_clean(self):
+        r = self._analyze(
+            "type Emp { id: String, iban: @secret String }\n"
+            "fun get_id(e: Emp) -> String\n"
+            "    return e.id\n"
+            "fun ok(e: Emp, stdio: Stdio)\n"
+            "    stdio.println(get_id(e))\n"
+        )
+        self.assertEqual(len(r.warnings), 0)
+
+    def test_same_named_field_in_other_struct_no_false_positive(self):
+        # A field named ``iban`` is @secret in one struct and PUBLIC in
+        # another. Reading the PUBLIC one (and returning it cross-fn)
+        # must NOT be tainted by the unrelated secret declaration.
+        r = self._analyze(
+            "type A { iban: @secret String }\n"
+            "type B { iban: String }\n"
+            "fun get_b(b: B) -> String\n"
+            "    return b.iban\n"
+            "fun ok(b: B, stdio: Stdio)\n"
+            "    stdio.println(get_b(b))\n"
+        )
+        self.assertEqual(len(r.warnings), 0)
+        self.assertTrue(r.ok)
+
+
 class TestImplicitFlow(unittest.TestCase):
     """Roadmap S2.implicit: a sink that fires inside a branch guarded by
     a @secret condition leaks whether the branch was taken (the pc-label

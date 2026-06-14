@@ -239,6 +239,31 @@ class _IfcMixin:
     #       for scalars too, not specific to structs). Still open;
     #       handled under ``@strict_ifc`` via the pc-label machinery.
 
+    def _declared_field_label(self, e: A.FieldAccess) -> str:
+        """The information-flow label DECLARED on the field ``e`` reads,
+        resolved from the receiver's struct type (roadmap S2). Returns
+        the field's declared label (``secret`` / ``public``) when the
+        receiver types to a user struct that declares that field with a
+        label, else ``PUBLIC`` (unlabelled field, non-struct receiver,
+        or unresolved type). Always a sound contribution: an unlabelled
+        field adds the lattice bottom and so never over-taints.
+
+        This is what makes ``type Emp { iban: @secret String }`` /
+        ``e.iban`` produce a @secret value: the label travels with the
+        struct's TYPE, independent of the receiver binding's per-field
+        tracking, so it propagates through both an intra-procedural sink
+        and a cross-function return (the summary builder mirrors this in
+        ``_ifc_summary``)."""
+        from . import SymbolKind
+        from ..typesys import TyName
+        recv_ty = self.types.get(id(e.receiver))
+        if not isinstance(recv_ty, TyName):
+            return L.PUBLIC
+        sym = self.global_scope.lookup(recv_ty.name)
+        if sym is None or sym.kind != SymbolKind.TYPE_STRUCT:
+            return L.PUBLIC
+        return L.normalize(sym.struct_field_labels.get(e.field_name))
+
     def _field_map_of(self, e: A.Expr) -> Optional[dict]:
         """The recorded per-field label map of a struct-typed
         expression, or ``None`` if it has none."""
@@ -516,6 +541,16 @@ class _IfcMixin:
             # An element drawn from a tainted container is tainted.
             return L.join(self._label_of(e.receiver), self._label_of(e.index))
         if isinstance(e, A.FieldAccess):
+            # A field whose TYPE is declared ``@secret`` produces a
+            # @secret value when READ (``type Emp { iban: @secret String
+            # }``; reading ``e.iban`` yields secret), the struct-type
+            # analogue of a ``@secret`` parameter. This declared label is
+            # joined into whatever the flow rules below compute, so it is
+            # never dropped -- closing the laundering hole where reading a
+            # declared-secret field came out public. A field declared
+            # @public (or unlabelled) contributes PUBLIC and so does not
+            # over-taint a sibling-secret struct's public field.
+            decl_label = self._declared_field_label(e)
             # Per-field precision (roadmap S2): when the receiver is a
             # TRACKED, NON-ESCAPED binding whose field map resolves the
             # whole access path, use the precise field label -- which may
@@ -528,9 +563,9 @@ class _IfcMixin:
             node = self._precise_field_label(e)
             if node is not None:
                 if isinstance(node, dict):
-                    return self._collapse_field_map(node)
-                return L.normalize(node)
-            return self._label_of(e.receiver)
+                    return L.join(decl_label, self._collapse_field_map(node))
+                return L.join(decl_label, L.normalize(node))
+            return L.join(decl_label, self._label_of(e.receiver))
 
         # Calls / method-calls. A method call on a built-in source
         # cap (``env.get(...)``) yields secret data regardless of its
@@ -546,16 +581,26 @@ class _IfcMixin:
             # value's label (roadmap S2.5).
             if self._is_declassify_call(e):
                 return L.PUBLIC
-            return L.join_all(self._label_of(a) for a in e.args)
+            base = L.join_all(self._label_of(a) for a in e.args)
+            # A callee that RETURNS a secret-derived value taints the
+            # call result even when no argument is whole-value secret --
+            # e.g. it reads a declared-@secret field of a struct argument
+            # and returns it (cross-function return-secret effect).
+            if self._call_returns_secret(e):
+                return L.SECRET
+            return base
         if isinstance(e, A.MethodCall):
             recv_ty = self.types.get(id(e.receiver))
             cap_name = getattr(recv_ty, "name", None)
             if cap_name is not None and (cap_name, e.method) in _SECRET_SOURCES:
                 return L.SECRET
-            return L.join(
+            base = L.join(
                 self._label_of(e.receiver),
                 L.join_all(self._label_of(a) for a in e.args),
             )
+            if self._method_call_returns_secret(e, recv_ty):
+                return L.SECRET
+            return base
 
         # Aggregate literals carry the join of the labels of the values
         # they hold, so a secret placed in a struct field / list / tuple
@@ -1045,6 +1090,76 @@ class _IfcMixin:
             )
 
     # ---- cross-function sink-parameter flow (roadmap S2.6) -------
+
+    def _call_returns_secret(self, e: A.Call) -> bool:
+        """True if the free function ``e`` calls returns a secret-derived
+        value (cross-function return-secret effect): an unconditional
+        internal secret (``INTERNAL_SECRET`` -- e.g. a declared-@secret
+        field read returned, or ``env.get`` returned), or a return
+        derived from a parameter whose bound argument here is @secret.
+        Used to taint the call RESULT label so the secret is not
+        laundered through a function boundary on return."""
+        if not isinstance(e.callee, A.Ident):
+            return False
+        sources = self._ifc_return_effects.get(("fun", e.callee.name))
+        if not sources:
+            return False
+        sym = self.bindings.get(id(e.callee))
+        param_names = getattr(sym, "param_names", []) if sym is not None else []
+        from ._ifc_summary import _bind
+        perm = _bind(e.args, e.arg_names, param_names)
+        return self._return_sources_fire(sources, perm, e.args)
+
+    def _method_call_returns_secret(self, e: A.MethodCall, recv_ty) -> bool:
+        """Method-call form of the return-secret check. Parameter index 0
+        is ``self`` (the receiver); explicit parameters follow. Uses the
+        same by-name over-approximation as the summary (a dynamic-dispatch
+        receiver matches every impl method of this name), so a secret
+        return is never missed across the boundary."""
+        recv_name = getattr(recv_ty, "name", None)
+        if recv_name is None:
+            return False
+        from ._ifc_summary import methods_by_name
+        exact_key = ("method", recv_name, e.method)
+        keys = ([exact_key] if exact_key in self._ifc_return_effects
+                else methods_by_name(self._ifc_return_effects).get(e.method, ()))
+        # Full-order arg list: receiver is index 0, explicit args follow.
+        # ``self`` (param 0) maps to the receiver; explicit param i+1 maps
+        # to explicit argument i (positional; the common case). The
+        # dominant return-secret source for the field-read case is the
+        # unconditional INTERNAL_SECRET sentinel, which fires regardless
+        # of this mapping, so a positional approximation is sound.
+        full_args = [e.receiver] + list(e.args)
+        perm: dict = {0: 0}
+        for i in range(len(e.args)):
+            perm[i + 1] = i + 1
+        for key in keys:
+            sources = self._ifc_return_effects.get(key)
+            if sources and self._return_sources_fire(sources, perm, full_args):
+                return True
+        return False
+
+    def _return_sources_fire(self, sources, perm, args) -> bool:
+        """True if any return-secret source fires: the unconditional
+        internal-secret sentinel, or a real parameter index whose bound
+        argument is @secret. ``perm`` maps a parameter index to an index
+        into ``args`` (a list for free calls, a dict for method calls)."""
+        from ._ifc_summary import INTERNAL_SECRET
+        def arg_for(pidx):
+            if isinstance(perm, dict):
+                idx = perm.get(pidx)
+            else:
+                idx = perm[pidx] if pidx < len(perm) else None
+            if idx is None or idx >= len(args):
+                return None
+            return args[idx]
+        for s in sources:
+            if s == INTERNAL_SECRET:
+                return True
+            a = arg_for(s)
+            if a is not None and L.normalize(self._label_of(a)) == L.SECRET:
+                return True
+        return False
 
     def _check_ifc_call_summary(
         self, e: A.Call, sym, perm: list[int],

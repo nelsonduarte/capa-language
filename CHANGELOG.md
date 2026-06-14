@@ -9,6 +9,30 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+**Bug fix (soundness): reading a struct field whose type is declared
+`@secret` now preserves the security label.** A field declared
+`@secret` in a type (`type Emp { iban: @secret String }`) lost its
+label on READ: `e.iban` produced a `@public` value, so routing it to a
+public sink (`stdio.println(e.iban)`) compiled clean with no warning --
+a silent laundering of PII through a struct field, directly undermining
+the core guarantee that the compiler proves `@secret` data does not
+reach public sinks. The declared field label was parsed but discarded
+(only the field's TYPE was recorded, not its label), so the field-read
+rule never saw it. Reading a declared-`@secret` field now yields a
+`@secret` value -- the struct-type analogue of a `@secret` parameter --
+and the label propagates exactly like a `@secret` parameter does:
+through a same-function sink (warn by default, hard error under
+`@strict_ifc`), through a callee that reads and sinks the field of a
+struct argument, and through a callee that reads the field and RETURNS
+it (a new cross-function return-secret summary carries it to the call
+result). Precision is preserved: a field declared PUBLIC (or
+unlabelled) reading off a struct that ALSO holds a declared-`@secret`
+field stays public (no over-tainting), and a same-named field that is
+`@secret` in an unrelated struct does not taint a public field of a
+different struct. `declassify(e.iban, reason: "...")` clears the flow
+as for any other secret. The per-field tracking that keeps a public
+field of a struct holding a RUNTIME secret value clean is unchanged.
+
 **Bug fix (cross-backend parity): Wasm monomorphisation of a generic
 function instantiated by call-site context, not by arguments.** A
 generic function whose type parameter no value argument carries -- a

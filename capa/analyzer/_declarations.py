@@ -201,6 +201,7 @@ class _DeclarationsMixin:
                             fty, fld.pos, f"struct field {fld.name!r}",
                         )
                     sym.struct_fields[fld.name] = fty
+                    self._record_field_label(sym, fld)
                 self._pop_type_params()
             elif isinstance(item, A.TypestateDecl):
                 # Roadmap S3.4: a typestate is a state-indexed struct;
@@ -216,6 +217,7 @@ class _DeclarationsMixin:
                         fty, fld.pos, f"typestate field {fld.name!r}",
                     )
                     sym.struct_fields[fld.name] = fty
+                    self._record_field_label(sym, fld)
             elif isinstance(item, A.TypeSum):
                 sym = self.global_scope.lookup(item.name)
                 if sym is None:
@@ -413,6 +415,20 @@ class _DeclarationsMixin:
         )
         self._pop_type_params()
         return TyFun(tuple(params), ret)
+
+    def _record_field_label(self, sym, fld) -> None:
+        """Record a struct / typestate field's DECLARED information-flow
+        label (roadmap S2). A field whose type carried ``@secret`` /
+        ``@public`` (``iban: @secret String``) stores that label on the
+        owning type symbol's ``struct_field_labels`` map, so a later
+        field READ inherits it -- the struct-type analogue of a
+        ``@secret`` parameter. Unlabelled fields are left out (= public),
+        keeping the map sparse."""
+        from .. import _labels as L
+        te = getattr(fld, "type_expr", None)
+        label = getattr(te, "label", None) if te is not None else None
+        if label in L.VALID_LABELS:
+            sym.struct_field_labels[fld.name] = label
 
     def _declare_global(self, sym) -> None:
         """Define a Symbol in the global scope, rejecting

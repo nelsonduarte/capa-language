@@ -121,6 +121,16 @@ class Symbol:
     ty: Optional[Ty] = None
     type_params: list[str] = field(default_factory=list)
     struct_fields: dict[str, Ty] = field(default_factory=dict)
+    # Information-flow security label DECLARED on each struct field's
+    # type (roadmap S2). ``{field_name: "secret" | "public"}`` for any
+    # field whose type carried a ``@secret`` / ``@public`` annotation
+    # (``type Emp { iban: @secret String }``). A field absent from the
+    # map is unlabelled (= public). Read when a field is ACCESSED
+    # (``e.iban``) so the read inherits the field's declared label --
+    # the struct-type analogue of a ``@secret`` parameter -- closing
+    # the laundering hole where reading a declared-secret field
+    # dropped its label.
+    struct_field_labels: dict[str, str] = field(default_factory=dict)
     sum_variants: dict[str, "Symbol"] = field(default_factory=dict)
     trait_methods: set[str] = field(default_factory=set)
     # For TRAIT: signatures of declared methods (name -> TyFun).
@@ -481,6 +491,13 @@ class Analyzer(
         # ``target`` (closes the cross-function self/param field-write
         # false negative).
         self._ifc_field_effects: dict = {}
+        # Cross-function RETURN-SECRET EFFECTS: callable_key -> frozenset
+        # of source param indices / INTERNAL_SECRET that flow into a
+        # returned value. Consulted when labelling a call result so a
+        # callee's secret-derived return (a @secret param echoed back, or
+        # a declared-@secret field read and returned) taints the result
+        # in the caller -- closes the field-return laundering hole.
+        self._ifc_return_effects: dict = {}
 
     # Type-substitution machinery (_fresh_ty_var, _resolve_ty,
     # _commit_fresh_substitutions, _apply_mapping) lives in
@@ -531,9 +548,11 @@ class Analyzer(
         # callables are distinguished from variants / capabilities) and
         # before body checking (which reads the summaries).
         from ._ifc_summary import compute_ifc_summaries
-        self._ifc_summaries, self._ifc_field_effects = compute_ifc_summaries(
-            module, self.global_scope,
-        )
+        (
+            self._ifc_summaries,
+            self._ifc_field_effects,
+            self._ifc_return_effects,
+        ) = compute_ifc_summaries(module, self.global_scope)
         # Phase 2: visit bodies of functions, impls, etc.
         for item in module.items:
             self._check_item(item)

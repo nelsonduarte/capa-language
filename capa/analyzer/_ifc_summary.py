@@ -90,8 +90,10 @@ _SECRET_SOURCE_METHODS: frozenset = frozenset(m for _c, m in _SECRET_SOURCES)
 #   ("method", type_name, method)  -- an impl / trait method
 
 
-def compute_ifc_summaries(module: A.Module, global_scope) -> tuple[dict, dict]:
-    """Return ``(sink_summaries, field_effects)``:
+def compute_ifc_summaries(
+    module: A.Module, global_scope,
+) -> tuple[dict, dict, dict]:
+    """Return ``(sink_summaries, field_effects, return_effects)``:
 
     * ``sink_summaries``: ``{callable_key: frozenset(sink_reaching
       param indices)}`` -- a value parameter whose value reaches a
@@ -100,10 +102,15 @@ def compute_ifc_summaries(module: A.Module, global_scope) -> tuple[dict, dict]:
       frozenset(source_param_idx | INTERNAL_SECRET)}}`` -- the callee
       writes a field of the object at ``target_param_idx`` from the
       named source(s).
+    * ``return_effects``: ``{callable_key: frozenset(source_param_idx |
+      INTERNAL_SECRET)}`` -- the callee returns a value derived from the
+      named source(s); the call result is @secret when one fires (a real
+      param whose argument is @secret, or the unconditional internal
+      secret, which includes a declared-@secret field read).
 
     ``global_scope`` is the analyzer's populated global scope, used to
     tell user functions / variants / capabilities apart at call sites.
-    Both results are the least fixpoint of the monotone summary
+    All three results are the least fixpoint of the monotone summary
     operator, so recursion (self or mutual) terminates.
     """
     builder = _SummaryBuilder(module, global_scope)
@@ -138,6 +145,15 @@ class _SummaryBuilder:
         # callable_key -> {target param idx -> set of source param idx /
         # INTERNAL_SECRET}: the field-write effect (see module docstring).
         self.field_effects: dict = {}
+        # callable_key -> set of source param idx / INTERNAL_SECRET that
+        # flow into a RETURNED value -- the return-secret effect. The
+        # call result is @secret when one of these sources fires (a real
+        # param whose argument is @secret, or the unconditional internal
+        # secret, which includes a declared-@secret field read). This is
+        # what carries a callee's secret-derived return across the
+        # boundary to the caller's call-result label, mirroring the
+        # intra-procedural rule and closing the field-return laundering.
+        self.return_effects: dict = {}
         # callable_key -> (param_names_in_order, A.FunDecl, is_method).
         # ``param_names_in_order`` includes ``self`` at index 0 for a
         # method, so a positional / named argument binds to the right
@@ -147,10 +163,40 @@ class _SummaryBuilder:
         # secret-source capability (e.g. ``Env``). Used to recognise an
         # internal secret source (``env.get(...)``) at summary time.
         self.secret_source_params: dict = {}
+        # callable_key -> {param name: struct type name}. The declared
+        # struct type of each struct-typed parameter (``self`` resolves
+        # to the impl's owner type), so a field read off it can be
+        # resolved to the field's declared label precisely.
+        self.param_struct_types: dict = {}
         # method name -> list of method callable_keys (for the
         # receiver-type-unknown over-approximation at method calls).
         self.methods_by_name: dict[str, list] = {}
+        # struct type name -> {field name: declared label}. Records
+        # which struct fields are DECLARED ``@secret`` (roadmap S2), so a
+        # field read off a parameter of that struct type is recognised as
+        # an internal secret source at summary time -- the cross-function
+        # analogue of the intra-procedural declared-field-label rule.
+        self.struct_field_labels: dict[str, dict[str, str]] = {}
+        self._collect_secret_fields()
         self._collect_callables()
+
+    def _collect_secret_fields(self) -> None:
+        """Populate ``struct_field_labels`` from every struct (and
+        typestate) declaration's field labels, so the body walk can
+        recognise a declared-@secret field read off a parameter of that
+        struct type (``_field_read_is_secret``)."""
+        from .. import _labels as L
+        for item in self.module.items:
+            fields = getattr(item, "fields", None)
+            name = getattr(item, "name", None)
+            if not fields or name is None:
+                continue
+            for fld in fields:
+                te = getattr(fld, "type_expr", None)
+                label = getattr(te, "label", None) if te is not None else None
+                if label in L.VALID_LABELS:
+                    self.struct_field_labels.setdefault(name, {})[fld.name] = \
+                        label
 
     # ---- collection -------------------------------------------------
 
@@ -162,7 +208,11 @@ class _SummaryBuilder:
                 self.callables[key] = (names, item, False)
                 self.summaries[key] = set()
                 self.field_effects[key] = {}
+                self.return_effects[key] = set()
                 self.secret_source_params[key] = self._secret_source_params(
+                    item.params,
+                )
+                self.param_struct_types[key] = self._param_struct_types(
                     item.params,
                 )
             elif isinstance(item, A.ImplBlock):
@@ -176,12 +226,33 @@ class _SummaryBuilder:
                     self.callables[key] = (names, method, True)
                     self.summaries[key] = set()
                     self.field_effects[key] = {}
+                    self.return_effects[key] = set()
                     self.secret_source_params[key] = (
                         self._secret_source_params(method.params)
+                    )
+                    self.param_struct_types[key] = self._param_struct_types(
+                        method.params, owner=item.type_name,
                     )
                     self.methods_by_name.setdefault(
                         method.name, []
                     ).append(key)
+
+    def _param_struct_types(self, params, owner: str = None) -> dict:
+        """``{param name: struct type name}`` for parameters whose
+        declared type names a struct that has at least one declared-label
+        field. ``self`` (no ``type_expr``) resolves to the impl ``owner``
+        type. Restricting to structs we actually track keeps the map
+        small and the field-read recognition precise."""
+        out: dict = {}
+        for p in params:
+            te = getattr(p, "type_expr", None)
+            if p.name == "self" and te is None and owner is not None:
+                tyname = owner
+            else:
+                tyname = getattr(te, "name", None) if te is not None else None
+            if tyname is not None and tyname in self.struct_field_labels:
+                out[p.name] = tyname
+        return out
 
     @staticmethod
     def _secret_source_params(params) -> set:
@@ -209,18 +280,24 @@ class _SummaryBuilder:
             changed = False
             for key in self.callables:
                 names, decl, _is_method = self.callables[key]
-                reaching, effects = self._analyze_body(names, decl, key)
+                reaching, effects, returns = self._analyze_body(
+                    names, decl, key,
+                )
                 if not reaching <= self.summaries[key]:
                     self.summaries[key] |= reaching
                     changed = True
                 if self._merge_effects(self.field_effects[key], effects):
+                    changed = True
+                if not returns <= self.return_effects[key]:
+                    self.return_effects[key] |= returns
                     changed = True
         sinks = {k: frozenset(v) for k, v in self.summaries.items()}
         feffects = {
             k: {t: frozenset(s) for t, s in v.items()}
             for k, v in self.field_effects.items()
         }
-        return sinks, feffects
+        reffects = {k: frozenset(v) for k, v in self.return_effects.items()}
+        return sinks, feffects, reffects
 
     @staticmethod
     def _merge_effects(acc: dict, new: dict) -> bool:
@@ -242,10 +319,10 @@ class _SummaryBuilder:
 
     def _analyze_body(
         self, param_names: list[str], decl: A.FunDecl, key,
-    ) -> tuple[set, dict]:
-        """Compute (a) which parameter indices of ``decl`` reach a sink
-        and (b) the field-write effects, using the summaries computed so
-        far for transitive calls.
+    ) -> tuple[set, dict, set]:
+        """Compute (a) which parameter indices of ``decl`` reach a sink,
+        (b) the field-write effects, and (c) the return-secret sources,
+        using the summaries computed so far for transitive calls.
 
         Taint is tracked as ``name -> set(param indices)``: the set of
         source parameters (or ``INTERNAL_SECRET``) whose value flows
@@ -266,16 +343,24 @@ class _SummaryBuilder:
             env[pname] = {idx}
         reaching: set = set()
         effects: dict = {}
+        returns: set = set()
         # Per-callable analysis state consulted inside the walk (which
         # threads only ``env`` / ``reaching`` through its signatures):
-        # the names of secret-source-capability params, and the
-        # accumulating field-write effect map.
+        # the names of secret-source-capability params, the accumulating
+        # field-write effect map, and the return-secret source set.
         self._cur_secret_source_params = self.secret_source_params.get(
             key, set(),
         )
+        self._cur_param_struct_types = self.param_struct_types.get(key, {})
         self._cur_effects = effects
+        self._cur_returns = returns
         self._walk_block(decl.body, env, reaching)
-        return reaching, effects
+        # A function body's trailing bare expression is an implicit
+        # return (unit / expression-bodied functions), so its taint is a
+        # return source too -- mirroring the analyzer's block-as-value
+        # rule and the match-arm tail handling below.
+        returns |= self._block_tail_taint(decl.body, env, reaching)
+        return reaching, effects, returns
 
     def _walk_block(self, block: A.Block, env: dict, reaching: set) -> None:
         for stmt in block.stmts:
@@ -325,7 +410,10 @@ class _SummaryBuilder:
             self._walk_block(stmt.body, env, reaching)
         elif isinstance(stmt, A.ReturnStmt):
             if stmt.value is not None:
-                self._taint_of(stmt.value, env, reaching)
+                # The returned value's source set is a return-secret
+                # effect: it carries the callee's secret-derived result
+                # to the caller's call-result label cross-function.
+                self._cur_returns |= self._taint_of(stmt.value, env, reaching)
         elif isinstance(stmt, A.ExprStmt):
             self._taint_of(stmt.expr, env, reaching)
         # break / continue carry no value.
@@ -361,6 +449,28 @@ class _SummaryBuilder:
             if j == INTERNAL_SECRET:
                 continue
             self._cur_effects.setdefault(j, set()).update(value_src)
+
+    def _field_read_is_secret(self, e: A.FieldAccess) -> bool:
+        """True if reading field ``e`` yields a value declared
+        ``@secret``, resolved PRECISELY: the receiver must be a parameter
+        whose struct type we know (``param_struct_types``), and that
+        struct must declare this exact field ``@secret``. Deliberately
+        precise (no by-name over-approximation): a same-named field that
+        is @secret in some UNRELATED struct must NOT taint a public field
+        read here, so the cross-function summary never raises a false
+        positive on a public field. The intra-procedural pass (resolved
+        types) is the precise primary check; this only adds the
+        cross-function carry for the common parameter-struct shape that
+        the required facets use (a callee that reads a declared-@secret
+        field of a struct PARAMETER and sinks / returns it)."""
+        from .. import _labels as L
+        recv = e.receiver
+        if isinstance(recv, A.Ident):
+            tyname = self._cur_param_struct_types.get(recv.name)
+            if tyname is not None:
+                labels = self.struct_field_labels.get(tyname, {})
+                return labels.get(e.field_name) == L.SECRET
+        return False
 
     @staticmethod
     def _chain_root_name(e: A.Expr):
@@ -407,7 +517,18 @@ class _SummaryBuilder:
                 | self._taint_of(e.index, env, reaching)
             )
         if isinstance(e, A.FieldAccess):
-            return self._taint_of(e.receiver, env, reaching)
+            recv_src = self._taint_of(e.receiver, env, reaching)
+            # A field whose declared type is ``@secret`` (``type Emp {
+            # iban: @secret String }``) is an internal secret source when
+            # READ: the value carries the INTERNAL_SECRET sentinel so it
+            # reaches a sink / return cross-function, mirroring the
+            # intra-procedural declared-field-label rule. Precise when the
+            # receiver is a parameter whose struct type we resolved; a
+            # by-name over-approximation (any struct declares this field
+            # @secret) otherwise -- sound, never under-reports.
+            if self._field_read_is_secret(e):
+                return recv_src | {INTERNAL_SECRET}
+            return recv_src
         if isinstance(e, A.RangeExpr):
             return (
                 self._taint_of(e.start, env, reaching)
