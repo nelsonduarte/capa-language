@@ -9,6 +9,25 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+**Bug fix (cross-backend parity): Wasm monomorphisation of a generic
+function instantiated by call-site context, not by arguments.** A
+generic function whose type parameter no value argument carries -- a
+zero-arg factory like `fun empty_tally<T>() -> Tally<T>` -- passed
+`--check` and ran correctly under `--run` (the Python backend never
+monomorphises) but failed to emit on the Wasm backend with
+`unknown func: failed to find name $empty_tally`. The Wasm
+monomorphiser inferred each instantiation only from argument types, so
+when `T` was fixed solely by the call site's expected type (an
+annotated binding `var t: Tally<String> = empty_tally()`, the enclosing
+`return` type, or a consuming call's parameter type) it never produced
+the specialised clone and emitted a call to a function that did not
+exist. The monomorphiser now recovers those type parameters from the
+expected result type the analyzer already resolved -- covering the
+annotated-binding, direct-return, consuming-argument, multi-parameter
+(some from arguments, some from context), and nested generic-factory
+(`G<G<T>>`) cases -- while existing argument-driven inference is
+unchanged.
+
 **Bug fix (soundness): use-after-consume of a linear / typestate
 value.** A `linear type` value (and a typestate value, which is linear
 by nature) that had already been consumed -- passed to a `consume`

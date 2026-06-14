@@ -10,7 +10,14 @@ from typing import Optional
 
 from .. import _nodes as N
 from ._functions import _specialise_function
-from ._typestr import _mangle, _strip_head, _unify_ty
+from ._typestr import (
+    _has_question_mark,
+    _mangle,
+    _parse_ty,
+    _strip_head,
+    _substitute_ty,
+    _unify_ty,
+)
 from ._types import _infer_make_struct_subst, monomorphise_generic_types
 
 
@@ -19,13 +26,38 @@ from ._types import _infer_make_struct_subst, monomorphise_generic_types
 # ============================================================
 
 
+def _is_concrete_ty(ty: str) -> bool:
+    """True when a type string is usable to drive return-type
+    inference: present, not a placeholder, and free of unresolved
+    type-variable markers (``?...``)."""
+    if not ty or ty in ("?", "Unknown", ""):
+        return False
+    if ty.startswith("?") or _has_question_mark(ty):
+        return False
+    return True
+
+
 def _infer_subst_for_call(
-    call: N.Call, callee: N.Function,
+    call: N.Call,
+    callee: N.Function,
+    expected_return: Optional[str] = None,
 ) -> Optional[dict[str, str]]:
     """Walk the call's args against the generic function's params
     to infer a substitution for every ``type_params`` entry.
-    Returns None when any type parameter cannot be resolved or
-    when a structural mismatch shows up."""
+
+    Type parameters that no value argument carries (a zero-arg
+    factory like ``empty_tally<T>() -> Tally<T>``, or a param list
+    that simply never mentions ``T``) are filled from
+    ``expected_return``: the concrete type the call's result is
+    used at (the annotated binding, the enclosing ``return`` type,
+    or a consuming call's parameter type). This is the
+    cross-backend parity fix -- the Python backend never
+    monomorphises, so it accepts these calls; the Wasm backend
+    must derive the same instantiation the analyzer already
+    resolved.
+
+    Returns None when any type parameter still cannot be resolved
+    or when a structural mismatch shows up."""
     if not callee.type_params:
         return {}
     if len(call.args) != len(callee.params):
@@ -42,6 +74,24 @@ def _infer_subst_for_call(
             return None
         if not _unify_ty(p.ty, arg.ty, type_param_set, mapping):
             return None
+    # Type parameters the arguments did not pin down are recovered
+    # from the expected result type (the call-site context the
+    # analyzer already resolved), by unifying the callee's declared
+    # return type against it.
+    if (
+        any(tp not in mapping for tp in callee.type_params)
+        and expected_return
+        and _is_concrete_ty(expected_return)
+    ):
+        # Unify into a copy first: a structural mismatch against the
+        # expected type must not corrupt the argument-derived
+        # bindings (those are trustworthy on their own).
+        ret_mapping = dict(mapping)
+        if _unify_ty(
+            callee.return_type, expected_return,
+            type_param_set, ret_mapping,
+        ):
+            mapping = ret_mapping
     # Every declared type param must be resolved.
     for tp in callee.type_params:
         if tp not in mapping:
@@ -192,6 +242,193 @@ def _retype_local_refs(node, concrete: dict[str, str]):
     return node
 
 
+def _retype_placeholder_refs(node, retyped: dict[str, str]):
+    """Rewrite the ``ty`` of any Value referencing a local that the
+    monomorphiser retyped from a ``?`` placeholder to a concrete
+    instantiation. Unlike ``_retype_local_refs`` (which keys off the
+    bare generic head), this matches the placeholder form a generic
+    factory's dst temp carries (``Tally<?>`` -> ``Tally<String>``)."""
+    if node is None:
+        return node
+    if isinstance(node, N.Value):
+        if node.name in retyped and node.ty != retyped[node.name]:
+            return N.Value(
+                kind=node.kind, name=node.name,
+                literal=node.literal, ty=retyped[node.name],
+            )
+        return node
+    if isinstance(node, list):
+        return [_retype_placeholder_refs(x, retyped) for x in node]
+    if isinstance(node, tuple):
+        return tuple(_retype_placeholder_refs(x, retyped) for x in node)
+    if is_dataclass(node):
+        changes = {}
+        for f in fields(node):
+            old = getattr(node, f.name)
+            new = _retype_placeholder_refs(old, retyped)
+            if new is not old:
+                changes[f.name] = new
+        if changes:
+            return replace(node, **changes)
+        return node
+    return node
+
+
+# ============================================================
+# Expected-return-type resolution
+# ============================================================
+#
+# A generic factory whose type parameter no value argument carries
+# (``empty_tally<T>() -> Tally<T>``) leaves the monomorphiser nothing
+# to infer ``T`` from at the call site -- unless it consults the
+# context the call's result flows into. The analyzer already resolved
+# that context (``--check`` passes, Python runs correctly), and the
+# lowerer preserved it on the surrounding IR:
+#
+#   * an annotated binding (``var t: Tally<String> = factory()``)
+#     types the bound local ``t`` concretely; the call's own dst temp
+#     stays ``Tally<?>`` but an ``AssignConst`` aliases it to ``t``.
+#   * a direct return (``return factory()``) flows the temp into a
+#     ``Return`` whose type is the enclosing function's return type.
+#   * a function argument (``count(factory())``) passes the temp into
+#     a consuming call whose parameter type is concrete.
+#
+# ``_expected_return_types`` walks one function body and builds a map
+# from each ``Call.dst`` temp to the concrete type its result is used
+# at, following all three edges. The inference above unifies the
+# callee's declared return type against that concrete type to recover
+# the missing type parameters.
+
+
+def _struct_field_types(
+    type_name: str, struct_ty: str, struct_decls: dict[str, N.StructDecl],
+) -> dict[str, str]:
+    """Field-name -> field-type map for a struct literal whose
+    instantiation ``struct_ty`` (``Wrap<Int>``) is concretely known.
+    Returns the field types with the struct's type parameters
+    substituted (``inner: Box<T>`` -> ``inner: Box<Int>``). Returns
+    an empty map when the struct is not generic, not declared, or its
+    instantiation is unknown/abstract -- callers treat that as "no
+    context"."""
+    decl = struct_decls.get(type_name)
+    if decl is None or not decl.type_params:
+        # Non-generic struct: field types are already concrete and the
+        # plain decl serves directly.
+        if decl is None:
+            return {}
+        return {f.name: f.ty for f in decl.fields}
+    if not _is_concrete_ty(struct_ty):
+        return {}
+    head, args = _parse_ty(struct_ty)
+    if head != type_name or len(args) != len(decl.type_params):
+        return {}
+    subst = dict(zip(decl.type_params, args))
+    return {f.name: _substitute_ty(f.ty, subst) for f in decl.fields}
+
+
+def _expected_return_types(
+    fn: N.Function,
+    module_funcs: dict[str, N.Function],
+    struct_decls: dict[str, N.StructDecl],
+) -> dict[str, str]:
+    """Map each local that a ``Call`` result is bound to onto the
+    concrete type its value is consumed at within ``fn``. Covers the
+    annotated-binding, direct-return, concrete-callee-argument, and
+    known-instantiation struct-field cases. Locals whose use site is
+    not concretely typed are omitted; the inference treats a missing
+    entry as "no context"."""
+    # Forward alias edges: ``dst = src`` (AssignConst / Reassign) means
+    # the value in ``src`` reaches ``dst``. We resolve a temp to the
+    # first concretely-typed local it aliases into, plus the direct
+    # uses below.
+    expected: dict[str, str] = {}
+    aliases: dict[str, str] = {}
+    make_structs: list[N.MakeStruct] = []
+    params_by_name = {p.name: p.ty for p in fn.params}
+
+    def record(name: Optional[str], ty: Optional[str]) -> None:
+        if name and ty and _is_concrete_ty(ty) and name not in expected:
+            expected[name] = ty
+
+    def scan(instrs: list[N.Instr]) -> None:
+        for instr in instrs:
+            if isinstance(instr, (N.AssignConst, N.Reassign)):
+                src = instr.src
+                if src.kind in ("local", "param") and src.name:
+                    aliases.setdefault(src.name, instr.dst)
+            elif isinstance(instr, N.Return):
+                v = instr.value
+                if v is not None and v.kind in ("local", "param") and v.name:
+                    record(v.name, fn.return_type)
+            elif isinstance(instr, N.Call):
+                # A temp passed as an argument to a NON-generic callee
+                # is pinned by that callee's parameter type. (A generic
+                # consuming callee's param may itself mention a type
+                # variable, so it is not a reliable concrete context.)
+                callee = module_funcs.get(instr.callee_name)
+                if callee is not None and not callee.type_params:
+                    for arg, p in zip(instr.args, callee.params):
+                        if arg.kind in ("local", "param") and arg.name:
+                            record(arg.name, p.ty)
+            elif isinstance(instr, N.MakeStruct):
+                make_structs.append(instr)
+            for sub in _child_bodies(instr):
+                scan(sub)
+
+    scan(fn.body)
+
+    # Resolve alias chains: a temp aliased to a concretely-typed local
+    # inherits that type. ``var t: Tally<String> = factory()`` records
+    # ``_ir_t0 -> t`` here and ``t``'s concrete type via fn.locals.
+    def resolve_local_ty(name: str) -> Optional[str]:
+        """Concrete type of a local: its expected-use type if known,
+        else its declared type, following alias chains forward."""
+        if name in expected:
+            return expected[name]
+        seen: set[str] = set()
+        cur: Optional[str] = name
+        while cur and cur not in seen:
+            seen.add(cur)
+            if cur in expected:
+                return expected[cur]
+            ty = fn.locals.get(cur) or params_by_name.get(cur)
+            if ty and _is_concrete_ty(ty):
+                return ty
+            cur = aliases.get(cur)
+        return None
+
+    # A temp used as a struct-literal field value is pinned by that
+    # field's type, with the struct's type arguments resolved from the
+    # struct literal's own (possibly use-derived) instantiation. Run
+    # after alias resolution so a struct whose only concrete anchor is
+    # how the struct itself is later used (``return Wrap { ... }`` ->
+    # ``Wrap<Int>``) still types its field values -- this is what makes
+    # nested generic-factory-into-generic-struct chains resolve.
+    for ms in make_structs:
+        struct_ty = resolve_local_ty(ms.dst) or fn.locals.get(ms.dst, "")
+        field_ctx = _struct_field_types(
+            ms.type_name, struct_ty, struct_decls,
+        )
+        for fname, fval in ms.fields:
+            if fval.kind in ("local", "param") and fval.name:
+                record(fval.name, field_ctx.get(fname))
+
+    for temp, target in aliases.items():
+        if temp in expected:
+            continue
+        # Walk forward through chained aliases to a concrete local.
+        seen: set[str] = set()
+        cur = target
+        while cur and cur not in seen:
+            seen.add(cur)
+            ty = fn.locals.get(cur) or params_by_name.get(cur)
+            if ty and _is_concrete_ty(ty):
+                expected[temp] = ty
+                break
+            cur = aliases.get(cur)
+    return expected
+
+
 # ============================================================
 # Top-level pass
 # ============================================================
@@ -226,13 +463,24 @@ def monomorphise(module: N.Module) -> N.Module:
     # the same instantiation reuses one clone.
     specialised: dict[str, N.Function] = {}
 
+    # Concrete return-type context for the function currently being
+    # walked, keyed by ``Call.dst``. Re-derived per function so a
+    # zero-value-arg generic factory (``empty_tally<T>()``) can recover
+    # ``T`` from the binding / return / argument the analyzer resolved.
+    current_expected: dict[str, str] = {}
+    # The locals dict of the function currently being walked, so a
+    # rewritten call's dst temp can be retyped from the placeholder
+    # (``Tally<?>``) to the concrete instantiated return type.
+    current_locals: dict[str, str] = {}
+
     def specialise_call(call: N.Call) -> None:
         """Try to rewrite ``call`` in place; queue any newly-
         produced specialisations for subsequent passes."""
         if call.callee_name not in generics:
             return
         callee = generics[call.callee_name]
-        subst = _infer_subst_for_call(call, callee)
+        expected = current_expected.get(call.dst) if call.dst else None
+        subst = _infer_subst_for_call(call, callee, expected)
         if subst is None:
             return
         mangled = _mangle(call.callee_name, subst, callee.type_params)
@@ -241,6 +489,15 @@ def monomorphise(module: N.Module) -> N.Module:
                 callee, subst, mangled,
             )
         call.callee_name = mangled
+        # Retype the call's dst temp to the concrete instantiated
+        # return type. The lowerer leaves it as a placeholder
+        # (``Tally<?>``) when no value argument fixed the type
+        # parameter; without this the Wasm backend hits the temp's
+        # un-encodable ``?`` even though the clone now exists.
+        if call.dst and call.dst in current_locals:
+            concrete_ret = specialised[mangled].return_type
+            if _is_concrete_ty(concrete_ret):
+                current_locals[call.dst] = concrete_ret
         # Mutate the dst type so downstream typing flows through.
         # Use the callee's substituted return type.
         # (Call.dst is a string, not a Value, so the dst's type
@@ -252,22 +509,59 @@ def monomorphise(module: N.Module) -> N.Module:
         if isinstance(instr, N.Call):
             specialise_call(instr)
 
+    struct_decls = {
+        ty.name: ty
+        for ty in module.types
+        if isinstance(ty, N.StructDecl)
+    }
+
+    def walk_function(fn: N.Function, module_funcs: dict[str, N.Function]) -> None:
+        # Re-derive the return-type context for this function, then
+        # walk its calls. ``current_expected`` / ``current_locals`` are
+        # the closure channels ``specialise_call`` reads and patches.
+        current_expected.clear()
+        current_expected.update(
+            _expected_return_types(fn, module_funcs, struct_decls)
+        )
+        current_locals.clear()
+        current_locals.update(fn.locals)
+        _walk_calls(fn.body, visitor)
+        # Propagate any dst-temp retypes ``specialise_call`` recorded
+        # back onto the function and its Value operands, so a temp the
+        # backend reads (a call argument, a return value) no longer
+        # carries the un-encodable ``?`` placeholder.
+        retyped = {
+            name: ty
+            for name, ty in current_locals.items()
+            if fn.locals.get(name) != ty
+        }
+        if retyped:
+            fn.locals.update(retyped)
+            fn.body = [
+                _retype_placeholder_refs(instr, retyped) for instr in fn.body
+            ]
+
     # Fixed-point: each iteration walks all non-generic functions
     # and any clones produced so far. Stops when an iteration
     # produces zero new clones.
     seen_clone_names: set[str] = set()
     while True:
         before = len(specialised)
+        # Table of every callable in play (module functions plus
+        # clones produced so far) so consuming-call argument contexts
+        # can read a callee's concrete parameter types.
+        module_funcs = {fn.name: fn for fn in module.functions}
+        module_funcs.update(specialised)
         for fn in module.functions:
             if fn.type_params:
                 continue  # skip the originals; they go away below
-            _walk_calls(fn.body, visitor)
+            walk_function(fn, module_funcs)
         # Walk new clones, which may themselves call other generics.
         for name, fn in list(specialised.items()):
             if name in seen_clone_names:
                 continue
             seen_clone_names.add(name)
-            _walk_calls(fn.body, visitor)
+            walk_function(fn, module_funcs)
             # The clone's own locals dict needs the dst types of
             # rewritten calls patched. _walk_calls already updated
             # call.callee_name; the local's ty was substituted

@@ -3856,5 +3856,133 @@ class TestStringBytesParity(unittest.TestCase):
         self.assertEqual(expect, "237\n160\n128\n")
 
 
+@unittest.skipUnless(
+    _has_wasm_tools() and _has_wasmtime_py(),
+    "wasm-tools and/or wasmtime-py not installed",
+)
+class TestContextDrivenMonomorphParity(unittest.TestCase):
+    """Generic factories whose type parameter is fixed by the call-
+    site context (annotated binding / return type / consuming
+    argument), not by any value argument (bug fix 2026-06-14).
+
+    The Python backend never monomorphises, so it accepts these
+    programs and runs correctly; the Wasm backend used to infer the
+    instantiation from argument types alone and so never emitted the
+    specialised clone, failing with ``unknown func`` at parse. Each
+    case below must run bit-identically across both backends."""
+
+    def _assert_parity(self, src: str, expect: str) -> None:
+        py_out = _capture_stdout(lambda: _run_python(src))
+        wasm_out = _capture_stdout(lambda: _run_wasm(src))
+        self.assertEqual(
+            py_out, wasm_out,
+            msg=(
+                f"Python/Wasm monomorph divergence.\n"
+                f"--- python ---\n{py_out}\n--- wasm ---\n{wasm_out}"
+            ),
+        )
+        self.assertEqual(py_out, expect)
+
+    def test_annotated_binding(self):
+        # The reported repro: zero-value-arg factory, T fixed by the
+        # binding's type annotation.
+        src = (
+            "type Tally<T> { items: List<T> }\n"
+            "fun empty_tally<T>() -> Tally<T>\n"
+            "    let xs: List<T> = []\n"
+            "    return Tally { items: xs }\n"
+            "fun main(out: Stdio)\n"
+            "    var t: Tally<String> = empty_tally()\n"
+            '    t.items.push("hi")\n'
+            '    out.println("len=${t.items.length()}")\n'
+        )
+        self._assert_parity(src, "len=1\n")
+
+    def test_direct_return(self):
+        # T fixed by the enclosing function's declared return type.
+        src = (
+            "type Tally<T> { items: List<T> }\n"
+            "fun empty_tally<T>() -> Tally<T>\n"
+            "    let xs: List<T> = []\n"
+            "    return Tally { items: xs }\n"
+            "fun make_string_tally() -> Tally<String>\n"
+            "    return empty_tally()\n"
+            "fun main(out: Stdio)\n"
+            "    var t: Tally<String> = make_string_tally()\n"
+            '    t.items.push("hi")\n'
+            '    out.println("len=${t.items.length()}")\n'
+        )
+        self._assert_parity(src, "len=1\n")
+
+    def test_consuming_argument(self):
+        # T fixed by the parameter type of a non-generic consuming
+        # call (``count(empty_tally())``).
+        src = (
+            "type Tally<T> { items: List<T> }\n"
+            "fun empty_tally<T>() -> Tally<T>\n"
+            "    let xs: List<T> = []\n"
+            "    return Tally { items: xs }\n"
+            "fun count(t: Tally<String>) -> Int\n"
+            "    return t.items.length()\n"
+            "fun main(out: Stdio)\n"
+            "    let n: Int = count(empty_tally())\n"
+            '    out.println("n=${n}")\n'
+        )
+        self._assert_parity(src, "n=0\n")
+
+    def test_nested_generic_factory(self):
+        # Generic factory whose result feeds a generic struct literal
+        # in another generic factory; T threads through G<G<T>>. The
+        # inner call's only concrete anchor is the outer factory's
+        # use site.
+        src = (
+            "type Box<T> { value: List<T> }\n"
+            "fun empty_box<T>() -> Box<T>\n"
+            "    let xs: List<T> = []\n"
+            "    return Box { value: xs }\n"
+            "type Wrap<T> { inner: Box<T> }\n"
+            "fun empty_wrap<T>() -> Wrap<T>\n"
+            "    return Wrap { inner: empty_box() }\n"
+            "fun main(out: Stdio)\n"
+            "    var w: Wrap<Int> = empty_wrap()\n"
+            "    w.inner.value.push(7)\n"
+            '    out.println("len=${w.inner.value.length()}")\n'
+        )
+        self._assert_parity(src, "len=1\n")
+
+    def test_mixed_arg_and_annotation_params(self):
+        # Two type params: A pinned by a value argument, B only by the
+        # binding annotation. Both must resolve.
+        src = (
+            "type Pair<A, B> { first: List<A>, second: List<B> }\n"
+            "fun seeded<A, B>(a: A) -> Pair<A, B>\n"
+            "    let xs: List<A> = []\n"
+            "    xs.push(a)\n"
+            "    let ys: List<B> = []\n"
+            "    return Pair { first: xs, second: ys }\n"
+            "fun main(out: Stdio)\n"
+            "    var p: Pair<Int, String> = seeded(7)\n"
+            '    p.second.push("hi")\n'
+            '    out.println("f=${p.first.length()} s=${p.second.length()}")\n'
+        )
+        self._assert_parity(src, "f=1 s=1\n")
+
+    def test_arg_driven_still_works(self):
+        # Regression guard: a factory whose T IS carried by a value
+        # argument keeps monomorphising via argument inference, with
+        # no call-site context needed.
+        src = (
+            "type Tally<T> { items: List<T> }\n"
+            "fun one_tally<T>(seed: T) -> Tally<T>\n"
+            "    let xs: List<T> = []\n"
+            "    xs.push(seed)\n"
+            "    return Tally { items: xs }\n"
+            "fun main(out: Stdio)\n"
+            "    let t = one_tally(42)\n"
+            '    out.println("len=${t.items.length()}")\n'
+        )
+        self._assert_parity(src, "len=1\n")
+
+
 if __name__ == "__main__":
     unittest.main()
