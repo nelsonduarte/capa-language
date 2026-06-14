@@ -27,6 +27,7 @@ from capa.manifest import (
     build_vex_document, build_provenance,
     resolve_build_timestamp, SourceDateEpochError,
 )
+from capa._artifact_io import emit_artifact
 from capa.docgen import build_html as build_doc_html
 from capa.formatter import format_source, is_formatted
 from capa.init_project import init_project
@@ -1199,7 +1200,7 @@ def main() -> int:
         if args.manifest:
             import json
             manifest = build_manifest(module, filename=filename)
-            print(json.dumps(manifest, indent=2))
+            emit_artifact(json.dumps(manifest, indent=2))
             return 0
         if args.cyclonedx or args.spdx or args.vex or args.provenance:
             # Each invocation emits exactly one artefact (every branch
@@ -1223,21 +1224,21 @@ def main() -> int:
             sbom = build_cyclonedx(
                 module, filename=filename, source=source, timestamp=build_ts,
             )
-            print(json.dumps(sbom, indent=2))
+            emit_artifact(json.dumps(sbom, indent=2))
             return 0
         if args.spdx:
             import json
             sbom = build_spdx(
                 module, filename=filename, source=source, timestamp=build_ts,
             )
-            print(json.dumps(sbom, indent=2))
+            emit_artifact(json.dumps(sbom, indent=2))
             return 0
         if args.vex:
             import json
             doc = build_vex_document(
                 module, filename=filename, timestamp=build_ts,
             )
-            print(json.dumps(doc, indent=2))
+            emit_artifact(json.dumps(doc, indent=2))
             return 0
         if args.provenance:
             import json
@@ -1245,7 +1246,7 @@ def main() -> int:
                 source, filename=filename,
                 started_on=build_ts, finished_on=build_ts,
             )
-            print(json.dumps(doc, indent=2))
+            emit_artifact(json.dumps(doc, indent=2))
             return 0
         if args.doc:
             html = build_doc_html(module, filename=filename)

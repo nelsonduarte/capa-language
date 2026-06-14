@@ -9,6 +9,24 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+### fix: verifiable artefacts emit LF newlines on every OS
+
+The verifiable artefacts (`--manifest`, `--cyclonedx`, `--spdx`,
+`--vex`, `--provenance`) are now written with canonical LF (`\n`) line
+endings regardless of host operating system. They were previously
+printed through the text-mode stdout, which on Windows rewrites every
+`\n` to `\r\n` while Linux keeps `\n`. That broke the cross-machine
+half of the byte-reproducibility promise: the same source emitted a
+CRLF artefact on Windows and an LF artefact on Linux, so the two were
+not byte-identical even with `SOURCE_DATE_EPOCH` pinned. The CLI now
+writes these artefacts' UTF-8 bytes straight to the binary stdout
+buffer, bypassing platform newline translation, so a rebuild-and-diff
+matches across Windows, Linux, and macOS. Scope is surgical: only the
+reproducible artefacts are LF-pinned; the stdout of a Capa program run
+with `--run` (or `--wasm --run`), and all diagnostics, keep ordinary
+platform line endings, since a program a user runs is not a
+reproducible artefact.
+
 ### feat: byte-reproducible SBOMs and attestations via `SOURCE_DATE_EPOCH`
 
 The four supply-chain artefacts (`--cyclonedx`, `--spdx`, `--vex`,

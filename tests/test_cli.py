@@ -1267,5 +1267,147 @@ class TestCrossProcessSeedReproducibility(unittest.TestCase):
                 self.assertTrue(out0.strip(), f"{mode} produced no output")
 
 
+_ARTEFACT_MODES_LF = ["--manifest", *_ARTEFACT_MODES]
+
+
+class _FakeWindowsStdout:
+    """A stand-in for ``sys.stdout`` that reproduces Windows text-mode
+    newline translation on a Linux runner.
+
+    The real ``sys.stdout`` on Windows is a text stream in text mode:
+    its ``.write(text)`` rewrites every ``\n`` to ``\r\n`` before the
+    bytes reach the OS, while its binary ``.buffer.write(bytes)`` does
+    no translation at all. We model both halves explicitly:
+
+    * ``.write(text)`` CRLF-translates, then encodes to the captured
+      byte sink (what a naive ``print()`` would do, and the source of
+      the cross-OS divergence this fix targets).
+    * ``.buffer`` is a raw byte sink that writes through verbatim.
+
+    A test can then assert that the artefact path wrote through
+    ``.buffer`` (LF-clean) rather than through ``.write`` (CRLF). This
+    is the property that genuinely fails on Windows; modelling the
+    translation here lets a Linux CI reproduce it.
+    """
+
+    def __init__(self):
+        self.buffer = io.BytesIO()
+        self.encoding = "utf-8"
+
+    def write(self, text):
+        # Mimic os.linesep translation of a Windows text stream.
+        self.buffer.write(text.replace("\n", "\r\n").encode("utf-8"))
+        return len(text)
+
+    def flush(self):
+        pass
+
+    def reconfigure(self, *args, **kwargs):
+        # main() calls sys.stdout.reconfigure(); the real Windows text
+        # stream accepts it and stays in text mode (still translating).
+        pass
+
+    def isatty(self):
+        return False
+
+    def getbytes(self):
+        return self.buffer.getvalue()
+
+
+class TestArtefactNewlinesAreLfCanonical(unittest.TestCase):
+    """The verifiable artefacts emit LF newlines on every OS.
+
+    The reproducibility promise ("rebuild on any machine and diff
+    byte-for-byte") is broken if the same artefact leaves Windows as
+    CRLF and Linux as LF. CI runs on Linux, where ``\n`` is already
+    ``\n``, so a naive stdout-capture test cannot see the regression.
+    These tests instead drive the real emission path through a stdout
+    double that reproduces Windows text-mode translation, then inspect
+    the raw bytes: a ``\n`` in the artefact must never reach the sink
+    as ``\r\n``.
+    """
+
+    def _emit_to_fake_windows(self, mode, program=_VEX_PROGRAM):
+        """Drive the real ``main()`` for *mode* against a stdout that
+        translates newlines like Windows, and return the raw bytes
+        that reached the byte sink."""
+        fake = _FakeWindowsStdout()
+        with tempfile.TemporaryDirectory() as td:
+            p = _write_capa(Path(td), "hello.capa", program)
+            full_argv = ["capa", mode, str(p)]
+            with mock.patch.object(sys, "argv", full_argv), \
+                    mock.patch.object(sys, "stdout", fake), \
+                    mock.patch.object(sys, "stderr", io.StringIO()):
+                original_cwd = os.getcwd()
+                try:
+                    os.chdir(td)
+                    rc = main()
+                finally:
+                    os.chdir(original_cwd)
+        return rc, fake.getbytes()
+
+    def test_negative_control_naive_print_would_emit_crlf(self):
+        # Sanity-check the fixture itself: a plain text-stream write
+        # through the Windows double DOES introduce CR. If this ever
+        # stops holding, the assertions below would pass vacuously.
+        fake = _FakeWindowsStdout()
+        fake.write("a\nb\n")
+        self.assertIn(b"\r\n", fake.getbytes())
+
+    def test_every_artefact_mode_emits_lf_only(self):
+        # The load-bearing assertion: across all five reproducible
+        # artefacts, the bytes that reach the sink carry LF and never a
+        # CR, even though the sink would have CRLF-translated any text
+        # written through the text layer.
+        for mode in _ARTEFACT_MODES_LF:
+            rc, raw = self._emit_to_fake_windows(mode)
+            self.assertEqual(rc, 0, f"{mode} failed")
+            self.assertIn(b"\n", raw, f"{mode} produced no newline")
+            self.assertNotIn(
+                b"\r", raw,
+                f"{mode} leaked a CR: artefact is not LF-canonical, so "
+                f"it would not be byte-identical between Windows and Linux",
+            )
+
+    def test_emitted_bytes_decode_to_expected_json(self):
+        # The LF bytes still decode to the same JSON the text path
+        # would have produced (we did not corrupt the payload, only the
+        # line endings).
+        import json
+        rc, raw = self._emit_to_fake_windows("--cyclonedx")
+        self.assertEqual(rc, 0)
+        doc = json.loads(raw.decode("utf-8"))
+        self.assertEqual(doc["bomFormat"], "CycloneDX")
+
+
+class TestEmitArtifactHelper(unittest.TestCase):
+    """Unit-level proof of the emission helper in isolation."""
+
+    def test_writes_through_binary_buffer_bypassing_text_translation(self):
+        from capa._artifact_io import emit_artifact
+        fake = _FakeWindowsStdout()
+        emit_artifact("{\n  \"a\": 1\n}", stream=fake)
+        raw = fake.getbytes()
+        self.assertNotIn(b"\r", raw)
+        self.assertEqual(raw, b'{\n  "a": 1\n}\n')
+
+    def test_canonicalizes_preexisting_crlf_in_content(self):
+        # Content that itself carries CRLF (e.g. a file name copied
+        # from a CRLF source) is normalised to LF, so the byte stream
+        # is LF-only regardless of input.
+        from capa._artifact_io import emit_artifact
+        fake = _FakeWindowsStdout()
+        emit_artifact("line1\r\nline2\rline3", stream=fake)
+        self.assertEqual(fake.getbytes(), b"line1\nline2\nline3\n")
+
+    def test_stringio_fallback_keeps_lf(self):
+        # A stream without a .buffer (the StringIO under the test
+        # harness) gets the canonicalised text, still LF.
+        from capa._artifact_io import emit_artifact
+        sink = io.StringIO()
+        emit_artifact("a\r\nb", stream=sink)
+        self.assertEqual(sink.getvalue(), "a\nb\n")
+
+
 if __name__ == "__main__":
     unittest.main()
