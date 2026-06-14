@@ -25,6 +25,7 @@ from capa import __version__ as _CAPA_VERSION
 from capa.manifest import (
     build_manifest, build_cyclonedx, build_spdx,
     build_vex_document, build_provenance,
+    resolve_build_timestamp, SourceDateEpochError,
 )
 from capa.docgen import build_html as build_doc_html
 from capa.formatter import format_source, is_formatted
@@ -864,7 +865,10 @@ def main() -> int:
         help=(
             "emit a CycloneDX 1.5 SBOM with the capability manifest "
             "embedded as standard properties[] entries (consumable by "
-            "Dependency-Track, OSV-Scanner, syft, etc.)"
+            "Dependency-Track, OSV-Scanner, syft, etc.). Set "
+            "SOURCE_DATE_EPOCH (Unix UTC seconds) to pin the build "
+            "timestamp and make this and the other SBOM/attestation "
+            "artefacts byte-reproducible."
         ),
     )
     parser.add_argument(
@@ -1197,24 +1201,45 @@ def main() -> int:
             manifest = build_manifest(module, filename=filename)
             print(json.dumps(manifest, indent=2))
             return 0
+        if args.cyclonedx or args.spdx or args.vex or args.provenance:
+            # Resolve the build timestamp once per invocation so all
+            # artefacts share exactly one instant. When SOURCE_DATE_EPOCH
+            # is set, this makes the output byte-reproducible across
+            # runs and machines; when it is unset, ``None`` lets the
+            # emitters fall back to wall-clock time. An invalid value is
+            # a hard error rather than a silent wall-clock fallback.
+            try:
+                build_ts = resolve_build_timestamp()
+            except SourceDateEpochError as e:
+                print(f"capa: {e}", file=sys.stderr)
+                return 2
         if args.cyclonedx:
             import json
-            sbom = build_cyclonedx(module, filename=filename, source=source)
+            sbom = build_cyclonedx(
+                module, filename=filename, source=source, timestamp=build_ts,
+            )
             print(json.dumps(sbom, indent=2))
             return 0
         if args.spdx:
             import json
-            sbom = build_spdx(module, filename=filename, source=source)
+            sbom = build_spdx(
+                module, filename=filename, source=source, timestamp=build_ts,
+            )
             print(json.dumps(sbom, indent=2))
             return 0
         if args.vex:
             import json
-            doc = build_vex_document(module, filename=filename)
+            doc = build_vex_document(
+                module, filename=filename, timestamp=build_ts,
+            )
             print(json.dumps(doc, indent=2))
             return 0
         if args.provenance:
             import json
-            doc = build_provenance(source, filename=filename)
+            doc = build_provenance(
+                source, filename=filename,
+                started_on=build_ts, finished_on=build_ts,
+            )
             print(json.dumps(doc, indent=2))
             return 0
         if args.doc:

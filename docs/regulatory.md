@@ -46,6 +46,22 @@ And how each maps across the five frameworks:
 | SBOM diff tool | I-II(2) indirect | 21(2)(d) partial | Arts. 17-19 partial | RV.1 partial | Domain 2 partial |
 | Machine-checked soundness | I-I(2)(b) indirect | n/a | n/a | PW.4 indirect | n/a |
 
+## Reproducible SBOMs: rebuild and diff byte-for-byte
+
+The four supply-chain artefacts (`--cyclonedx`, `--spdx`, `--vex`, `--provenance`) are byte-reproducible. Every identifier they carry, the CycloneDX `serialNumber`, the SPDX `documentNamespace`, the provenance `invocationId`, is derived deterministically from the source file's SHA-256, so two builds of the same source produce the same identifiers on any machine. The one field that would otherwise vary is the build timestamp.
+
+To pin it, set `SOURCE_DATE_EPOCH` to an integer of Unix UTC seconds, the [reproducible-builds.org convention](https://reproducible-builds.org/specs/source-date-epoch/) that `dpkg` and other toolchains already honour:
+
+```
+SOURCE_DATE_EPOCH=1609459200 capa --cyclonedx app.capa > a.json
+SOURCE_DATE_EPOCH=1609459200 capa --cyclonedx app.capa > b.json
+diff a.json b.json   # empty: byte-for-byte identical
+```
+
+When `SOURCE_DATE_EPOCH` is set, the CycloneDX `metadata.timestamp`, the SPDX `created`/`annotationDate`, the VEX `timestamp`/`firstIssued`, and the provenance `startedOn`/`finishedOn` all derive from that one instant, resolved once per invocation so the four artefacts never skew against each other. Rebuild on a different machine with the same value and the artefacts are identical, which is what lets a downstream consumer rebuild your SBOM from source and confirm it matches the one you published, rather than trusting it.
+
+When `SOURCE_DATE_EPOCH` is unset, the timestamps record real wall-clock time, so an interactive build still says when it ran. Determinism is opt-in via the standard variable. A value that is not a non-negative integer is rejected with a clear error and a non-zero exit, rather than silently falling back to wall-clock time, because a build that asked for determinism should fail loudly if it cannot get it.
+
 ## CRA: Cyber Resilience Act
 
 The CRA entered into force on 10 December 2024 and applies most of its obligations from 11 December 2027. It binds manufacturers placing products with digital elements on the EU market. The clauses that matter most for a compiler are Annex I Part I (the essential cybersecurity requirements: secure by default, attack-surface minimisation, data minimisation, exploitation mitigation, integrity protection), Annex I Part II (1) (machine-readable SBOM covering at least top-level dependencies), and Annex I Part II (2)-(7) (vulnerability handling processes).
@@ -103,7 +119,7 @@ The six domains are inventory, SBOM, build environment, package management, comp
 |---|---|
 | 1. Inventory | Per-function inventory finer than SCVS asks for; the manifest is the canonical list |
 | 2. SBOM | CycloneDX 1.5 and SPDX 2.3 satisfy L1 through L3 |
-| 3. Build Environment | Out of reach; reproducible builds are a toolchain concern |
+| 3. Build Environment | Artefacts are byte-reproducible under `SOURCE_DATE_EPOCH` (rebuild and diff); the build environment itself is out of scope |
 | 4. Package Management | `capa.toml` + `capa install` + `capa.lock` with a signed registry index; lockfile SHA pinning and GPG-verified tags |
 | 5. Component Analysis | VEX entries feed component-analysis tooling at function granularity |
 | 6. Pedigree and Provenance | SLSA L1 provenance attestation; signing for L3 is external |

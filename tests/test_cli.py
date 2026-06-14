@@ -26,6 +26,29 @@ from unittest import mock
 from capa.cli import _wasm_tooling_available, main
 
 
+class _EnvKeyRemoval:
+    """Start/stop patch object that removes an env key for its lifetime
+    and restores the prior value on stop. Shaped like the other
+    ``mock.patch`` objects so ``_run_main`` can drive it uniformly.
+    """
+
+    def __init__(self, key):
+        self._key = key
+        self._had = False
+        self._prev = None
+
+    def start(self):
+        self._had = self._key in os.environ
+        if self._had:
+            self._prev = os.environ.pop(self._key)
+
+    def stop(self):
+        if self._had:
+            os.environ[self._key] = self._prev
+        else:
+            os.environ.pop(self._key, None)
+
+
 def _run_main(argv, stdin=None, cwd=None, env=None):
     """Drive ``main()`` in-process. Returns ``(rc, stdout, stderr)``.
 
@@ -33,7 +56,9 @@ def _run_main(argv, stdin=None, cwd=None, env=None):
     ``cwd``: optional directory to ``chdir`` into for the duration
     of the call (restored afterwards).
     ``env``: optional mapping merged into ``os.environ`` for the
-    duration of the call. Only the keys supplied are patched.
+    duration of the call. Only the keys supplied are patched; a key
+    mapped to ``None`` is removed for the duration (lets a test assert
+    behaviour when a variable is *absent*).
     """
     out, err = io.StringIO(), io.StringIO()
     full_argv = ["capa"] + list(argv)
@@ -45,7 +70,12 @@ def _run_main(argv, stdin=None, cwd=None, env=None):
     if stdin is not None:
         patches.append(mock.patch.object(sys, "stdin", io.StringIO(stdin)))
     if env is not None:
-        patches.append(mock.patch.dict(os.environ, env, clear=False))
+        set_keys = {k: v for k, v in env.items() if v is not None}
+        del_keys = [k for k, v in env.items() if v is None]
+        if set_keys:
+            patches.append(mock.patch.dict(os.environ, set_keys, clear=False))
+        for k in del_keys:
+            patches.append(_EnvKeyRemoval(k))
     original_cwd = os.getcwd()
     try:
         if cwd is not None:
@@ -991,6 +1021,141 @@ class TestWarningDiagnostics(unittest.TestCase):
             self.assertEqual(rc, 1)
             self.assertIn("error:", err)
             self.assertNotIn("warning:", err)
+
+
+_VEX_PROGRAM = (
+    '@vex(cve: "CVE-X", status: "not_affected", '
+    'justification: "code_not_reachable")\n'
+    'fun helper(s: String) -> String\n'
+    '    return s\n'
+    'fun main(stdio: Stdio)\n'
+    '    stdio.println("Hi")\n'
+)
+
+# A single arbitrary instant: 2021-01-01T00:00:00Z.
+_FIXED_EPOCH = "1609459200"
+_FIXED_TIMESTAMP = "2021-01-01T00:00:00Z"
+
+_ARTEFACT_MODES = ["--cyclonedx", "--spdx", "--vex", "--provenance"]
+
+
+class TestSbomReproducibility(unittest.TestCase):
+    """SOURCE_DATE_EPOCH makes every SBOM/attestation byte-reproducible.
+
+    With the env var set, a rebuild of the same source produces the
+    four artefacts byte-for-byte identical (rebuild and diff); the
+    only previously non-deterministic field, the build timestamp,
+    derives from the epoch. Unset, the emitters keep wall-clock time.
+    An invalid value is a hard error, never a silent fallback.
+    """
+
+    def _emit(self, mode, env, program=_VEX_PROGRAM):
+        with tempfile.TemporaryDirectory() as td:
+            td_path = Path(td)
+            p = _write_capa(td_path, "hello.capa", program)
+            return _run_main([mode, str(p)], cwd=td_path, env=env)
+
+    def test_fixed_epoch_is_byte_reproducible(self):
+        # Two independent builds with the same SOURCE_DATE_EPOCH yield
+        # byte-identical output for every artefact.
+        env = {"SOURCE_DATE_EPOCH": _FIXED_EPOCH}
+        for mode in _ARTEFACT_MODES:
+            rc1, out1, err1 = self._emit(mode, env)
+            rc2, out2, err2 = self._emit(mode, env)
+            self.assertEqual(rc1, 0, err1)
+            self.assertEqual(rc2, 0, err2)
+            self.assertEqual(out1, out2, f"{mode} not byte-reproducible")
+
+    def test_fixed_epoch_timestamp_matches(self):
+        # The emitted build timestamp is exactly the epoch instant.
+        import json
+        env = {"SOURCE_DATE_EPOCH": _FIXED_EPOCH}
+        rc, out, err = self._emit("--cyclonedx", env)
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(
+            json.loads(out)["metadata"]["timestamp"], _FIXED_TIMESTAMP
+        )
+
+        rc, out, err = self._emit("--spdx", env)
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(
+            json.loads(out)["creationInfo"]["created"], _FIXED_TIMESTAMP
+        )
+
+        rc, out, err = self._emit("--vex", env)
+        self.assertEqual(rc, 0, err)
+        doc = json.loads(out)
+        self.assertEqual(doc["metadata"]["timestamp"], _FIXED_TIMESTAMP)
+        self.assertEqual(
+            doc["vulnerabilities"][0]["analysis"]["firstIssued"],
+            _FIXED_TIMESTAMP,
+        )
+
+        rc, out, err = self._emit("--provenance", env)
+        self.assertEqual(rc, 0, err)
+        meta = json.loads(out)["predicate"]["runDetails"]["metadata"]
+        self.assertEqual(meta["startedOn"], _FIXED_TIMESTAMP)
+        self.assertEqual(meta["finishedOn"], _FIXED_TIMESTAMP)
+
+    def test_unset_keeps_real_time_and_stays_well_formed(self):
+        # Without the env var the artefacts still emit cleanly; we do
+        # not pin the timestamp, only confirm the rest is sound.
+        import json
+        env = {"SOURCE_DATE_EPOCH": None}  # explicitly absent
+        rc, out, err = self._emit("--cyclonedx", env)
+        self.assertEqual(rc, 0, err)
+        doc = json.loads(out)
+        self.assertEqual(doc["bomFormat"], "CycloneDX")
+        # A plausible ISO-8601 UTC timestamp, not the empty default.
+        self.assertRegex(
+            doc["metadata"]["timestamp"],
+            r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$",
+        )
+
+    def test_invalid_epoch_errors_in_every_mode(self):
+        # Garbage -> a clear error and a non-zero exit in all four
+        # modes, never a silent wall-clock fallback.
+        env = {"SOURCE_DATE_EPOCH": "not-a-number"}
+        for mode in _ARTEFACT_MODES:
+            rc, out, err = self._emit(mode, env)
+            self.assertEqual(rc, 2, f"{mode} should reject bad epoch")
+            self.assertEqual(out, "")
+            self.assertIn("SOURCE_DATE_EPOCH", err)
+
+    def test_negative_epoch_errors(self):
+        env = {"SOURCE_DATE_EPOCH": "-1"}
+        rc, out, err = self._emit("--provenance", env)
+        self.assertEqual(rc, 2)
+        self.assertIn("SOURCE_DATE_EPOCH", err)
+
+    def test_deterministic_identifiers_unaffected_by_epoch(self):
+        # The source-derived identifiers (serialNumber, etc.) were
+        # already deterministic; they must stay stable whether or not
+        # SOURCE_DATE_EPOCH is set, and across two epochs.
+        import json
+        env_a = {"SOURCE_DATE_EPOCH": _FIXED_EPOCH}
+        env_b = {"SOURCE_DATE_EPOCH": "1700000000"}
+        env_none = {"SOURCE_DATE_EPOCH": None}
+
+        serials = set()
+        namespaces = set()
+        invocations = set()
+        for env in (env_a, env_b, env_none):
+            rc, out, _ = self._emit("--cyclonedx", env)
+            self.assertEqual(rc, 0)
+            serials.add(json.loads(out)["serialNumber"])
+            rc, out, _ = self._emit("--spdx", env)
+            self.assertEqual(rc, 0)
+            namespaces.add(json.loads(out)["documentNamespace"])
+            rc, out, _ = self._emit("--provenance", env)
+            self.assertEqual(rc, 0)
+            invocations.add(
+                json.loads(out)["predicate"]["runDetails"]
+                ["metadata"]["invocationId"]
+            )
+        self.assertEqual(len(serials), 1)
+        self.assertEqual(len(namespaces), 1)
+        self.assertEqual(len(invocations), 1)
 
 
 if __name__ == "__main__":

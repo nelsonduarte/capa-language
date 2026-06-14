@@ -9,6 +9,28 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+### feat: byte-reproducible SBOMs and attestations via `SOURCE_DATE_EPOCH`
+
+The four supply-chain artefacts (`--cyclonedx`, `--spdx`, `--vex`,
+`--provenance`) are now byte-reproducible. Their identifiers
+(CycloneDX `serialNumber`, SPDX `documentNamespace`, provenance
+`invocationId`) were already derived deterministically from the
+source SHA-256; the one remaining non-deterministic field was the
+build timestamp. The CLI now honours the
+[`SOURCE_DATE_EPOCH`](https://reproducible-builds.org/specs/source-date-epoch/)
+convention (an integer of Unix UTC seconds): when it is set, every
+artefact's timestamp (CycloneDX `metadata.timestamp`, SPDX `created`
+and `annotationDate`, VEX `timestamp` and `firstIssued`, provenance
+`startedOn` and `finishedOn`) derives from that one instant, resolved
+once per invocation so the four artefacts never skew against each
+other. Rebuild the same source with the same value, on any machine,
+and the artefacts are byte-for-byte identical, which lets a downstream
+consumer rebuild and diff your SBOM rather than trust it. Unset, the
+timestamps record real wall-clock time as before. A value that is not
+a non-negative integer is rejected with a clear error and a non-zero
+exit, never a silent wall-clock fallback. Documented in
+`docs/regulatory.md` and `docs/cra.md`.
+
 ### feat: `String.bytes()` exposes a string's UTF-8 bytes
 
 New public `String` method `bytes() -> List<Int>` returns the

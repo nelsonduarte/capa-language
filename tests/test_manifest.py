@@ -774,6 +774,39 @@ class TestDeterminism(unittest.TestCase):
         self.assertEqual(m1, m2)
 
 
+class TestBuildTimestampResolution(unittest.TestCase):
+    """The SOURCE_DATE_EPOCH resolver: valid -> formatted UTC string,
+    absent -> None (wall-clock fallback), invalid -> hard error."""
+
+    def test_absent_returns_none(self):
+        from capa.manifest import resolve_build_timestamp
+        self.assertIsNone(resolve_build_timestamp(environ={}))
+
+    def test_valid_epoch_formats_utc(self):
+        from capa.manifest import resolve_build_timestamp
+        ts = resolve_build_timestamp(
+            environ={"SOURCE_DATE_EPOCH": "1609459200"}
+        )
+        self.assertEqual(ts, "2021-01-01T00:00:00Z")
+
+    def test_surrounding_whitespace_tolerated(self):
+        from capa.manifest import resolve_build_timestamp
+        self.assertEqual(
+            resolve_build_timestamp(environ={"SOURCE_DATE_EPOCH": " 1609459200 "}),
+            "2021-01-01T00:00:00Z",
+        )
+
+    def test_garbage_raises(self):
+        from capa.manifest import resolve_build_timestamp, SourceDateEpochError
+        with self.assertRaises(SourceDateEpochError):
+            resolve_build_timestamp(environ={"SOURCE_DATE_EPOCH": "xyz"})
+
+    def test_negative_raises(self):
+        from capa.manifest import resolve_build_timestamp, SourceDateEpochError
+        with self.assertRaises(SourceDateEpochError):
+            resolve_build_timestamp(environ={"SOURCE_DATE_EPOCH": "-5"})
+
+
 class TestInvocationStyleReproducibility(unittest.TestCase):
     """Artefact-level byte-reproducibility across invocation styles.
 

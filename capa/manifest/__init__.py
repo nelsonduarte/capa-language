@@ -45,6 +45,7 @@ from ._provenance import (
 )
 from ._spdx import SPDX_SPEC_VERSION, build_spdx
 from ._strings import _ty_text
+from ._timestamp import SourceDateEpochError, resolve_build_timestamp
 from ._vex import build_vex_document, build_vex_entries
 
 
@@ -62,4 +63,6 @@ __all__ = [
     "build_vex_entries",
     "build_provenance",
     "display_filename",
+    "resolve_build_timestamp",
+    "SourceDateEpochError",
 ]

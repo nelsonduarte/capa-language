@@ -186,7 +186,13 @@ A CRA-aligned development workflow with Capa:
 1. **Build time.** `capa --cyclonedx my-project.capa > sbom.json`
    produces the SBOM with capability metadata embedded. This
    becomes one of the conformity-assessment artefacts the
-   manufacturer keeps under Article 31.
+   manufacturer keeps under Article 31. Set `SOURCE_DATE_EPOCH`
+   (Unix UTC seconds) in the build environment to make this and
+   the SPDX, VEX, and provenance artefacts byte-reproducible: an
+   auditor can rebuild them from the pinned source and confirm
+   they match the published copies, rather than trusting them.
+   See [the reproducible-artefacts section of the regulatory
+   note](regulatory.md#reproducible-sboms-rebuild-and-diff-byte-for-byte).
 
 2. **Policy authoring.** The security manager writes a JSON
    policy file mapping function names to allowed capabilities
