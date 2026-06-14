@@ -5893,6 +5893,289 @@ class TestLinearTypes(unittest.TestCase):
         )
 
 
+class TestLinearUseAfterConsume(unittest.TestCase):
+    """Soundness: a linear / typestate value consumed *exactly once*
+    cannot be used again. Passing it to a ``consume`` parameter, a
+    ``consume self`` method, transitioning it with ``become``, or
+    returning it consumes it; any later read / pass is a compile error.
+
+    Before this fix a discharge merely cleared the must-consume
+    obligation (``_live_linear``) without poisoning the name against
+    later use, so a double-consume (settle the same authorization
+    twice) type-checked and ran."""
+
+    _LIN = (
+        "linear type Handle { id: Int }\n"
+        "fun open() -> Handle\n"
+        "    return Handle { id: 1 }\n"
+        "fun close(consume h: Handle) -> Unit\n"
+        "    return ()\n"
+    )
+    _TS = (
+        "typestate Claim\n    Draft\n    Approved\n"
+        "fun mk() -> Claim[Draft]\n"
+        "    return Claim[Draft] {}\n"
+        "fun settle(consume c: Claim[Approved]) -> Unit\n"
+        "    return ()\n"
+    )
+
+    def _errs(self, body: str) -> list[str]:
+        return [e for e in errors_of(body) if "never used" not in e]
+
+    def test_double_consume_linear_param_rejected(self):
+        errs = self._errs(
+            self._LIN
+            + "fun main(_s: Stdio)\n"
+            "    let h = open()\n"
+            "    close(h)\n"
+            "    close(h)\n"
+        )
+        self.assertTrue(
+            any(
+                "linear value 'h' was consumed earlier and cannot "
+                "be used again" in e
+                for e in errs
+            ),
+            errs,
+        )
+
+    def test_read_field_after_consume_linear_rejected(self):
+        errs = self._errs(
+            self._LIN
+            + "fun main(_s: Stdio)\n"
+            "    let h = open()\n"
+            "    close(h)\n"
+            "    let bad = h.id\n"
+        )
+        self.assertTrue(
+            any(
+                "linear value 'h' was consumed earlier" in e for e in errs
+            ),
+            errs,
+        )
+
+    def test_use_after_consume_self_method_rejected(self):
+        errs = self._errs(
+            "linear type Handle { id: Int }\n"
+            "impl Handle\n"
+            "    fun shut(consume self) -> Unit\n"
+            "        return ()\n"
+            "fun open() -> Handle\n"
+            "    return Handle { id: 1 }\n"
+            "fun main(_s: Stdio)\n"
+            "    let h = open()\n"
+            "    h.shut()\n"
+            "    h.shut()\n"
+        )
+        self.assertTrue(
+            any(
+                "linear value 'h' was consumed earlier" in e for e in errs
+            ),
+            errs,
+        )
+
+    def test_double_consume_typestate_after_become_rejected(self):
+        # ``become(c, Approved)`` consumes c; a second become of c is
+        # a use-after-consume of the old-state value.
+        errs = self._errs(
+            self._TS
+            + "fun main(_s: Stdio)\n"
+            "    let c = mk()\n"
+            "    let a = become(c, Approved)\n"
+            "    let b = become(c, Approved)\n"
+            "    settle(a)\n"
+            "    settle(b)\n"
+        )
+        self.assertTrue(
+            any(
+                "linear value 'c' was consumed earlier" in e for e in errs
+            ),
+            errs,
+        )
+
+    def test_settle_typestate_twice_rejected(self):
+        errs = self._errs(
+            self._TS
+            + "fun main(_s: Stdio)\n"
+            "    let c = mk()\n"
+            "    let a = become(c, Approved)\n"
+            "    settle(a)\n"
+            "    settle(a)\n"
+        )
+        self.assertTrue(
+            any(
+                "linear value 'a' was consumed earlier" in e for e in errs
+            ),
+            errs,
+        )
+
+    # ---- positives that must keep compiling ----------------------
+
+    def test_single_consume_linear_ok(self):
+        self.assertEqual(
+            self._errs(
+                self._LIN
+                + "fun main(_s: Stdio)\n"
+                "    let h = open()\n"
+                "    close(h)\n"
+            ),
+            [],
+        )
+
+    def test_consume_self_once_ok(self):
+        self.assertEqual(
+            self._errs(
+                "linear type Handle { id: Int }\n"
+                "impl Handle\n"
+                "    fun shut(consume self) -> Unit\n"
+                "        return ()\n"
+                "fun open() -> Handle\n"
+                "    return Handle { id: 1 }\n"
+                "fun main(_s: Stdio)\n"
+                "    let h = open()\n"
+                "    h.shut()\n"
+            ),
+            [],
+        )
+
+    def test_typestate_chain_distinct_names_ok(self):
+        # The idiomatic chain: each step binds a fresh name and consumes
+        # the previous. Must stay legal after the poison fix.
+        self.assertEqual(
+            self._errs(
+                self._TS
+                + "fun main(_s: Stdio)\n"
+                "    let c = mk()\n"
+                "    let a = become(c, Approved)\n"
+                "    settle(a)\n"
+            ),
+            [],
+        )
+
+    def test_return_transfers_obligation_ok(self):
+        self.assertEqual(
+            self._errs(
+                self._TS
+                + "fun promote() -> Claim[Approved]\n"
+                "    let c = mk()\n"
+                "    return become(c, Approved)\n"
+                "fun main(_s: Stdio)\n"
+                "    settle(promote())\n"
+            ),
+            [],
+        )
+
+
+class TestLinearAnonymousDrop(unittest.TestCase):
+    """Soundness: a linear / typestate value cannot be dropped into an
+    anonymous slot -- a wildcard binding ``let _ = open()`` or a bare
+    expression statement ``open()`` / ``become(c, S)`` -- any more than
+    it can be dropped under a named binding.
+
+    Before this fix the must-consume obligation was keyed only by the
+    bound name, so an anonymous drop registered no obligation and the
+    value silently vanished unconsumed."""
+
+    _LIN = (
+        "linear type Handle { id: Int }\n"
+        "fun open() -> Handle\n"
+        "    return Handle { id: 1 }\n"
+        "fun close(consume h: Handle) -> Unit\n"
+        "    return ()\n"
+    )
+    _TS = (
+        "typestate Claim\n    Draft\n    Approved\n"
+        "fun mk() -> Claim[Draft]\n"
+        "    return Claim[Draft] {}\n"
+        "fun settle(consume c: Claim[Approved]) -> Unit\n"
+        "    return ()\n"
+    )
+
+    def _errs(self, body: str) -> list[str]:
+        return [e for e in errors_of(body) if "never used" not in e]
+
+    def test_wildcard_let_drops_linear_rejected(self):
+        errs = self._errs(
+            self._LIN + "fun main(_s: Stdio)\n    let _ = open()\n"
+        )
+        self.assertTrue(
+            any("dropped without being consumed" in e for e in errs),
+            errs,
+        )
+
+    def test_bare_expr_stmt_drops_linear_rejected(self):
+        errs = self._errs(
+            self._LIN + "fun main(_s: Stdio)\n    open()\n"
+        )
+        self.assertTrue(
+            any("dropped without being consumed" in e for e in errs),
+            errs,
+        )
+
+    def test_bare_become_stmt_drops_typestate_rejected(self):
+        errs = self._errs(
+            self._TS
+            + "fun main(_s: Stdio)\n"
+            "    let c = mk()\n"
+            "    become(c, Approved)\n"
+        )
+        self.assertTrue(
+            any("dropped without being consumed" in e for e in errs),
+            errs,
+        )
+
+    def test_wildcard_let_drops_typestate_become_rejected(self):
+        errs = self._errs(
+            self._TS
+            + "fun main(_s: Stdio)\n"
+            "    let c = mk()\n"
+            "    let _ = become(c, Approved)\n"
+        )
+        self.assertTrue(
+            any("dropped without being consumed" in e for e in errs),
+            errs,
+        )
+
+    def test_wildcard_let_moves_linear_reported_once(self):
+        # ``let _ = h`` moves the live binding into the void; it must be
+        # reported once at the drop site and not again at function exit.
+        errs = self._errs(
+            self._LIN
+            + "fun main(_s: Stdio)\n"
+            "    let h = open()\n"
+            "    let _ = h\n"
+        )
+        drops = [e for e in errs if "dropped without being consumed" in e]
+        self.assertEqual(len(drops), 1, errs)
+
+    # ---- positives that must keep compiling ----------------------
+
+    def test_bare_consume_call_stmt_ok(self):
+        # ``close(h)`` as a bare statement returns Unit (not linear), so
+        # it is a legal consume, not a drop.
+        self.assertEqual(
+            self._errs(
+                self._LIN
+                + "fun main(_s: Stdio)\n"
+                "    let h = open()\n"
+                "    close(h)\n"
+            ),
+            [],
+        )
+
+    def test_wildcard_let_nonlinear_ok(self):
+        self.assertEqual(
+            self._errs(
+                "type Plain { x: Int }\n"
+                "fun mk() -> Plain\n"
+                "    return Plain { x: 1 }\n"
+                "fun main(_s: Stdio)\n"
+                "    let _ = mk()\n"
+            ),
+            [],
+        )
+
+
 class TestIntLiteralRange(unittest.TestCase):
     """Slice 26 residual / P3: a bare 2**63 is out of i64 range; only
     ``-2**63`` (i64::MIN) is representable. The lexer admits the

@@ -71,7 +71,13 @@ class _StatementsMixin:
             # IR and transpiler rely on happens as usual.)
             if isinstance(stmt.expr, A.MatchExpr):
                 self._stmt_position_matches.add(id(stmt.expr))
-            self._check_expr(stmt.expr)
+            expr_ty = self._check_expr(stmt.expr)
+            # A bare expression statement whose value is linear /
+            # typestate drops it unconsumed (``open()`` /
+            # ``become(c, S)`` as a statement). Flag it like a named
+            # leak. ``become`` has already discharged its operand, so
+            # only the freshly-produced (now dropped) value is reported.
+            self._linear_check_anonymous_drop(stmt.expr, expr_ty, stmt.pos)
         else:
             self._err(
                 f"unknown statement type {type(stmt).__name__}", stmt.pos,
@@ -149,6 +155,10 @@ class _StatementsMixin:
         # the obligation source.
         if isinstance(s.pattern, A.IdentPat):
             self._linear_bind(s.pattern.name, actual, s.pos)
+        elif isinstance(s.pattern, A.WildcardPat):
+            # ``let _ = open()`` drops a linear value into a slot that
+            # holds no obligation; flag it like a named leak.
+            self._linear_check_anonymous_drop(s.value, actual, s.pos)
 
     def _check_var(self, s: A.VarStmt) -> None:
         from . import Symbol, SymbolKind

@@ -46,14 +46,70 @@ class _LinearMixin:
     def _linear_bind(self, name: str, ty: Optional[Ty], pos: Pos) -> None:
         """Record a new outstanding linear obligation for ``name`` when
         ``ty`` is linear. Called when a ``let`` / ``var`` binds the
-        result of an expression that produces a linear value."""
+        result of an expression that produces a linear value.
+
+        Re-binding a name clears any earlier use-after-consume poison on
+        it (``_consumed`` / ``_linear_names``): a fresh ``let h = ...``
+        introduces a brand-new value under that name, so a prior consume
+        of the old value must not flag uses of the new one. Typestate
+        chains re-bind the same name (``let s = become(s, ...)``) and
+        rely on this."""
         if self._ty_is_linear(ty):
             self._live_linear[name] = pos
+            self._consumed.discard(name)
+            self._linear_names.discard(name)
 
     def _linear_discharge(self, name: str) -> None:
         """Clear the obligation for ``name`` (it was consumed /
-        transferred). No-op if ``name`` carried none."""
+        transferred) and POISON the name against later use.
+
+        A linear value is consumed *exactly once*: once it has been
+        passed to a ``consume`` parameter / ``consume self`` method,
+        transitioned by ``become``, or returned, the binding must not be
+        used again. We record the name in ``_consumed`` (the same flow
+        set the capability discipline keys its use-after-consume check
+        on) and in ``_linear_names`` (so the use-site picks the
+        ``linear value`` wording instead of ``capability``). Poisoning a
+        name that carried no live obligation is harmless -- a later
+        ``_linear_bind`` of the same name lifts the poison."""
+        had = name in self._live_linear
         self._live_linear.pop(name, None)
+        if had:
+            self._consumed.add(name)
+            self._linear_names.add(name)
+
+    # ---- anonymous drop (``let _ = ...`` / bare expr stmt) -------
+
+    def _linear_check_anonymous_drop(
+        self, expr: "A.Expr", ty: Optional[Ty], pos: Pos,
+    ) -> None:
+        """Error when a linear / typestate value is dropped into a slot
+        that holds no obligation: a wildcard binding ``let _ = open()``
+        or a bare expression statement ``open()`` / ``become(c, S)``.
+
+        A named binding parks the obligation under its name and the
+        scope-exit check catches a later leak; an anonymous one has no
+        name to track, so the value would silently vanish unconsumed.
+        We flag it at the drop site with the same intent as the named
+        case. ``ty`` is the value's type as computed by ``_check_expr``.
+
+        If the dropped expression is a bare identifier naming a still
+        live linear binding (``let _ = h``), discharge that binding too:
+        the value has moved into the anonymous slot and is reported once
+        here, not again at function exit."""
+        if not self._ty_is_linear(ty):
+            return
+        from .. import capa_ast as _A
+        if isinstance(expr, _A.Ident):
+            self._live_linear.pop(expr.name, None)
+        self._err(
+            "linear value is dropped without being consumed; a "
+            "`linear type` / typestate value must be passed to a "
+            "consuming function (e.g. a `consume self` method like "
+            "`close`), transitioned with `become`, or returned -- it "
+            "cannot be discarded into `_` or a bare expression statement",
+            pos,
+        )
 
     # ---- enforcement at scope / function exit --------------------
 

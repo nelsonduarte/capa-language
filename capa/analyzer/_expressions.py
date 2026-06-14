@@ -554,8 +554,12 @@ class _ExpressionsMixin:
             )
             return TyUnknown
         if e.name in self._consumed:
+            kind = (
+                "linear value" if e.name in self._linear_names
+                else "capability"
+            )
             self._err(
-                f"capability {e.name!r} was consumed earlier and cannot "
+                f"{kind} {e.name!r} was consumed earlier and cannot "
                 f"be used again",
                 e.pos,
             )
@@ -698,8 +702,12 @@ class _ExpressionsMixin:
         # we recorded at the consume site is compared here.
         path = self._path_of(e)
         if path is not None and path in self._consumed:
+            kind = (
+                "linear value" if path in self._linear_names
+                else "capability"
+            )
             self._err(
-                f"capability {path!r} was consumed earlier and cannot "
+                f"{kind} {path!r} was consumed earlier and cannot "
                 f"be used again",
                 e.pos,
             )

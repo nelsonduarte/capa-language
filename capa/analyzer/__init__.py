@@ -421,6 +421,14 @@ class Analyzer(
         # (a value still-live on every path stays live; one consumed on
         # some-but-not-all paths is an error, surfaced at merge).
         self._live_linear: dict[str, "Pos"] = {}
+        # Names that were consumed *as linear / typestate values* in the
+        # current flow (a subset of the keys recorded in ``_consumed``).
+        # ``_consumed`` is shared with the capability discipline and
+        # drives the single use-after-consume check; this set only tells
+        # the use-site which wording to emit -- ``linear value`` for a
+        # consumed linear / typestate binding, ``capability`` otherwise.
+        # Reset per function alongside ``_consumed``.
+        self._linear_names: set[str] = set()
         # Stack of "names local to the lambda" for flow analysis in
         # closures. When inside a lambda, consuming a name that is NOT
         # in this stack means we are consuming a cap captured from the

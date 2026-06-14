@@ -9,6 +9,27 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+**Bug fix (soundness): use-after-consume of a linear / typestate
+value.** A `linear type` value (and a typestate value, which is linear
+by nature) that had already been consumed -- passed to a `consume`
+parameter, to a `consume self` method, transitioned with `become`, or
+returned -- could still be used again: passing the same token to a
+second consuming call, reading a field of it, or transitioning it twice
+type-checked and ran. A consume now poisons the binding, so any later
+use is a compile error (`linear value 'x' was consumed earlier and
+cannot be used again`). This is what makes a use-once payment
+authorization actually use-once: settling the same authorization twice
+no longer compiles.
+
+**Bug fix (soundness): anonymous drop of a linear / typestate value.**
+A linear / typestate value dropped into an anonymous slot -- a wildcard
+binding (`let _ = open()`) or a bare expression statement (`open()`, or
+a `become(c, State)` whose result is discarded) -- escaped the
+must-consume check, which only tracked obligations by binding name. Such
+a drop is now rejected (`linear value is dropped without being
+consumed`), exactly as a named drop already was, closing the
+resource-leak / dropped-authorization hole at those sites.
+
 **Diagnostics.** When registry index signature verification fails, the
 error now adds a line-ending hint if a CRLF/LF-normalised form of the
 served bytes would validate under the pinned root key. This points at a

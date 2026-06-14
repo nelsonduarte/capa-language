@@ -185,6 +185,10 @@ class _ItemsMixin:
         # Fresh ``_consumed`` set for the function body.
         prev_consumed = self._consumed
         self._consumed = set()
+        # Fresh linear-name set (which consumed names are linear /
+        # typestate values, for the use-after-consume wording).
+        prev_linear_names = self._linear_names
+        self._linear_names = set()
         # Fresh ``_live_linear`` map for the function body (roadmap
         # S1), saved/restored so a nested function's obligations do
         # not bleed into the enclosing one. Function parameters do NOT
@@ -235,6 +239,7 @@ class _ItemsMixin:
         self._live_linear = prev_live_linear
 
         self._consumed = prev_consumed
+        self._linear_names = prev_linear_names
         self._ty_subs = prev_subs
 
         new_bindings = {
