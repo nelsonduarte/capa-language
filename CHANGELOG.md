@@ -9,6 +9,50 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [1.1.0], 2026-06-14
+
+**Capa 1.1.0.** First minor release since 1.0.0. Backward-compatible
+additions and fixes; no breaking change under the
+[`STABILITY.md`](STABILITY.md) policy.
+
+**New.** Byte-reproducible SBOMs and attestations via
+`SOURCE_DATE_EPOCH` (`--cyclonedx` / `--spdx` / `--vex` /
+`--provenance` artefacts are byte-identical for the same source on any
+machine; verifiable artefacts are written with LF newlines on every
+OS). `String.bytes()` exposes a string's UTF-8 bytes as `List<Int>`.
+`panic(message)` aborts the program with a non-zero exit and a `panic:`
+line on stderr, identical on both backends. New `capa test` subcommand
+(discovers and runs `tests/test_*.capa`, with `--both` for
+cross-backend parity). New `capa migrate` subcommand (Python-to-Capa
+migration progress, `--json` for CI). Test-only dependencies via
+`[dev-dependencies]` in `capa.toml` plus `capa add --dev`. Wasm
+backend: tail-call optimisation. Typestate completed (state-specific
+methods via `impl Type[State]`; typestates carrying data).
+
+**Observable value changes (same schema, update pins if needed).**
+SBOM / attestation identifiers and URIs moved from `capa-lang.org` to
+`capa-language.com`, and the deterministic seeds (CycloneDX
+`serialNumber`, SPDX `documentNamespace`, provenance `invocationId`)
+now derive from the root-relative form of the file name plus the
+SHA-256 of the source; verifiers that pinned the old URIs / UUIDs must
+update; the JSON schemas did not change. Per-function positions on the
+SBOM surfaces now point at the right file and in a root-relative path
+(they no longer leak the build machine's layout).
+
+**Security.** A TOCTOU symlink-swap window in `Fs.read` / `Fs.write` is
+closed via a post-open handle check (visible semantics unchanged);
+`@constant_time` now rejects `/` and `%` when one operand is `@secret`
+(CWE-208).
+
+**Fixes.** A broad batch of cross-backend parity and soundness fixes,
+mostly in the Wasm backend and the JSON parser (consistent
+floor-rounding integer division, consistent traps on overflow and
+divide-by-zero, strict RFC 8259 conformance in `parse_json`, several
+`match` and lambda miscompiles on Wasm). See the entries below for the
+full list.
+
 ### fix: verifiable artefacts emit LF newlines on every OS
 
 The verifiable artefacts (`--manifest`, `--cyclonedx`, `--spdx`,
