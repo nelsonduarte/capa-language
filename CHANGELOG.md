@@ -9,6 +9,27 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+**Bug fix (soundness): extracting a declared-`@secret` struct field by
+DESTRUCTURING now preserves the security label.** This completes the
+closure of the field-laundering hole: the prior fix caught a direct
+field READ (`e.iban`), but pulling the same field out by a pattern bind
+still dropped its label. `let Emp { id, iban } = e` (and the `match`
+form `Emp { id, iban } -> ...`) bound `iban` as `@public`, so routing
+it to a public sink (`stdio.println(iban)`) compiled clean with no
+warning -- a silent laundering of PII identical in class to the
+field-read leak. The pattern-bind label propagation only carried the
+scrutinee's whole-value label and never consulted the struct's declared
+field labels. A name bound to a field declared `@secret` now receives
+the `@secret` label, exactly as a direct `e.iban` read does, on both the
+`let` and `match` paths, intra-procedurally (warn by default, hard error
+under `@strict_ifc`) and cross-function (a destructured field carried to
+a sink inside a callee, or returned and then sunk). Precision is
+preserved and resolution is by the pattern's STRUCT TYPE: a name bound
+to a PUBLIC sibling field stays public, a same-named field of an
+UNRELATED struct is never tainted, a nested destructure taints only the
+declared-secret sub-field, and `declassify` of the bound name clears the
+flow.
+
 **Bug fix (soundness): reading a struct field whose type is declared
 `@secret` now preserves the security label.** A field declared
 `@secret` in a type (`type Emp { iban: @secret String }`) lost its

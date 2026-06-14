@@ -895,6 +895,167 @@ class TestDeclaredSecretField(unittest.TestCase):
         self.assertTrue(r.ok)
 
 
+class TestDestructuredSecretField(unittest.TestCase):
+    """Roadmap S2 (soundness fix): extracting a struct field declared
+    ``@secret`` by DESTRUCTURING (``let Emp { iban } = e`` or a ``match``
+    arm) preserves the field's @secret label, exactly as a direct
+    ``e.iban`` read does. Closes the last field-laundering hole of the
+    same class the field-access fix closed: a pattern bind no longer
+    drops the declared-field label. Precision is preserved -- a name
+    bound to a PUBLIC field (even of a struct that also holds a secret
+    field) stays public, and a same-named field of an UNRELATED struct
+    is never tainted (resolution is by the pattern's struct type)."""
+
+    def _analyze(self, src: str):
+        from capa import analyze
+        m = _parse(src)
+        return analyze(m, source=src)
+
+    # ---- negatives (now flagged) --------------------------------
+
+    def test_let_destructure_secret_field_to_sink_warns(self):
+        r = self._analyze(
+            "type Emp { id: String, iban: @secret String }\n"
+            "fun leak(e: Emp, stdio: Stdio)\n"
+            "    let Emp { id, iban } = e\n"
+            "    stdio.println(iban)\n"
+        )
+        self.assertEqual(len(r.warnings), 1)
+        self.assertIn("information-flow", r.warnings[0].message)
+
+    def test_match_destructure_secret_field_to_sink_warns(self):
+        r = self._analyze(
+            "type Emp { id: String, iban: @secret String }\n"
+            "fun leak(e: Emp, stdio: Stdio)\n"
+            "    match e\n"
+            "        Emp { id, iban } -> stdio.println(iban)\n"
+        )
+        self.assertEqual(len(r.warnings), 1)
+        self.assertIn("information-flow", r.warnings[0].message)
+
+    def test_let_destructure_under_strict_is_hard_error(self):
+        r = self._analyze(
+            "type Emp { id: String, iban: @secret String }\n"
+            "@strict_ifc()\n"
+            "fun leak(e: Emp, stdio: Stdio)\n"
+            "    let Emp { id, iban } = e\n"
+            "    stdio.println(iban)\n"
+        )
+        self.assertFalse(r.ok)
+        self.assertTrue(
+            any("information-flow" in e.message for e in r.errors)
+        )
+
+    def test_match_destructure_under_strict_is_hard_error(self):
+        r = self._analyze(
+            "type Emp { id: String, iban: @secret String }\n"
+            "@strict_ifc()\n"
+            "fun leak(e: Emp, stdio: Stdio)\n"
+            "    match e\n"
+            "        Emp { id, iban } -> stdio.println(iban)\n"
+        )
+        self.assertFalse(r.ok)
+        self.assertTrue(
+            any("information-flow" in e.message for e in r.errors)
+        )
+
+    def test_destructured_secret_field_sunk_in_callee_warns(self):
+        # Cross-function: a callee destructures a declared-@secret field
+        # of a struct PARAMETER and passes the bound name to a sink.
+        r = self._analyze(
+            "type Emp { id: String, iban: @secret String }\n"
+            "fun sink_it(s: String, stdio: Stdio)\n"
+            "    stdio.println(s)\n"
+            "fun caller(e: Emp, stdio: Stdio)\n"
+            "    let Emp { id, iban } = e\n"
+            "    sink_it(iban, stdio)\n"
+        )
+        self.assertEqual(len(r.warnings), 1)
+        self.assertIn("information-flow", r.warnings[0].message)
+
+    def test_destructured_secret_field_returned_then_sunk_warns(self):
+        # Cross-function: a callee destructures a declared-secret field
+        # and RETURNS it; the caller sinks the return.
+        r = self._analyze(
+            "type Emp { id: String, iban: @secret String }\n"
+            "fun extract(e: Emp) -> String\n"
+            "    let Emp { id, iban } = e\n"
+            "    return iban\n"
+            "fun leak(e: Emp, stdio: Stdio)\n"
+            "    stdio.println(extract(e))\n"
+        )
+        self.assertEqual(len(r.warnings), 1)
+
+    def test_nested_destructure_secret_subfield_flagged(self):
+        r = self._analyze(
+            "type Inner { tag: String, sec: @secret String }\n"
+            "type Outer { inner: Inner, name: String }\n"
+            "fun leak(o: Outer, stdio: Stdio)\n"
+            "    let Outer { inner: Inner { tag, sec }, name } = o\n"
+            "    stdio.println(sec)\n"
+        )
+        self.assertEqual(len(r.warnings), 1)
+
+    # ---- positives (stay clean) ---------------------------------
+
+    def test_let_destructure_public_field_is_clean(self):
+        # The precision guarantee: destructuring the PUBLIC field of a
+        # struct that ALSO declares a @secret field does NOT over-taint.
+        r = self._analyze(
+            "type Emp { id: String, iban: @secret String }\n"
+            "fun ok(e: Emp, stdio: Stdio)\n"
+            "    let Emp { id, iban } = e\n"
+            "    stdio.println(id)\n"
+        )
+        self.assertEqual(len(r.warnings), 0)
+        self.assertTrue(r.ok)
+
+    def test_match_destructure_public_field_is_clean(self):
+        r = self._analyze(
+            "type Emp { id: String, iban: @secret String }\n"
+            "fun ok(e: Emp, stdio: Stdio)\n"
+            "    match e\n"
+            "        Emp { id, iban } -> stdio.println(id)\n"
+        )
+        self.assertEqual(len(r.warnings), 0)
+        self.assertTrue(r.ok)
+
+    def test_same_named_field_in_other_struct_no_false_positive(self):
+        # ``iban`` is @secret in A and PUBLIC in B. Destructuring the
+        # PUBLIC one must NOT be tainted by the unrelated secret
+        # declaration (resolution is by the pattern's STRUCT TYPE).
+        r = self._analyze(
+            "type A { iban: @secret String }\n"
+            "type B { iban: String, name: String }\n"
+            "fun ok(b: B, stdio: Stdio)\n"
+            "    let B { iban, name } = b\n"
+            "    stdio.println(iban)\n"
+        )
+        self.assertEqual(len(r.warnings), 0)
+        self.assertTrue(r.ok)
+
+    def test_nested_destructure_public_only_is_clean(self):
+        r = self._analyze(
+            "type Inner { tag: String, sec: @secret String }\n"
+            "type Outer { inner: Inner, name: String }\n"
+            "fun ok(o: Outer, stdio: Stdio)\n"
+            "    let Outer { inner: Inner { tag, sec }, name } = o\n"
+            "    stdio.println(tag)\n"
+        )
+        self.assertEqual(len(r.warnings), 0)
+        self.assertTrue(r.ok)
+
+    def test_declassify_of_destructured_secret_field_is_clean(self):
+        r = self._analyze(
+            "type Emp { id: String, iban: @secret String }\n"
+            "fun ok(e: Emp, stdio: Stdio)\n"
+            "    let Emp { id, iban } = e\n"
+            "    stdio.println(declassify(iban, reason: \"audit\"))\n"
+        )
+        self.assertEqual(len(r.warnings), 0)
+        self.assertTrue(r.ok)
+
+
 class TestImplicitFlow(unittest.TestCase):
     """Roadmap S2.implicit: a sink that fires inside a branch guarded by
     a @secret condition leaks whether the branch was taken (the pc-label

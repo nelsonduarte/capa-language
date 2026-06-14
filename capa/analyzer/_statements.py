@@ -146,6 +146,15 @@ class _StatementsMixin:
             self._ifc_link_embedded_structs(
                 self.scope.lookup_local(s.pattern.name), s.value,
             )
+        else:
+            # A DESTRUCTURING ``let`` (``let Emp { id, iban } = e``)
+            # carries the RHS label to its binds exactly as a ``match``
+            # arm does, and -- independent of that whole-value label --
+            # gives a name bound to a DECLARED-``@secret`` field the same
+            # @secret label a direct ``e.iban`` read would. This closes
+            # the destructuring laundering hole: extracting a declared-
+            # secret field by pattern no longer launders it to public.
+            self._label_pattern_binds(s.pattern, self._label_of(s.value))
         # Roadmap S1: a ``let h = open()`` of a linear-typed value
         # opens a must-consume obligation under the bound name. Only
         # a simple identifier pattern carries it (a destructure of a

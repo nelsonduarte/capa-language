@@ -421,12 +421,51 @@ class _SummaryBuilder:
     def _bind_pattern_taint(self, pat: A.Pattern, src: set, env: dict) -> None:
         """Propagate a scrutinee / value's source-param set to every
         name the pattern binds (whole-value granularity, matching
-        ``_label_pattern_binds``)."""
+        ``_label_pattern_binds``).
+
+        A name bound to a struct field DECLARED ``@secret`` additionally
+        carries the ``INTERNAL_SECRET`` sentinel, independent of the
+        scrutinee's own taint -- the cross-function analogue of
+        ``_field_read_is_secret`` for a pattern bind. So a callee that
+        destructures a declared-@secret field of a struct parameter and
+        sinks / returns the bound name is caught across the boundary,
+        exactly like one that reads ``param.iban`` directly. Resolved by
+        the pattern's STRUCT TYPE NAME (never by bound-name spelling), so
+        a same-named public field of an unrelated struct is not tainted."""
         if isinstance(pat, A.IdentPat):
             env[pat.name] = env.get(pat.name, set()) | src
             return
         for name in _pattern_bound_names(pat):
             env[name] = env.get(name, set()) | src
+        self._bind_pattern_field_secrets(pat, env)
+
+    def _bind_pattern_field_secrets(self, pat: A.Pattern, env: dict) -> None:
+        """Taint every name bound to a DECLARED-``@secret`` struct field
+        with ``INTERNAL_SECRET``, walking nested patterns. Mirrors the
+        intra-procedural ``_label_pattern_field_secrets``; see
+        ``_bind_pattern_taint`` for why resolution is by the pattern's
+        struct type name."""
+        from .. import _labels as L
+        if isinstance(pat, A.StructPat):
+            labels = self.struct_field_labels.get(pat.type_name, {})
+            for fname, fpat in pat.fields:
+                if labels.get(fname) == L.SECRET:
+                    if fpat is None:
+                        env[fname] = env.get(fname, set()) | {INTERNAL_SECRET}
+                    else:
+                        for name in _pattern_bound_names(fpat):
+                            env[name] = (
+                                env.get(name, set()) | {INTERNAL_SECRET}
+                            )
+                if fpat is not None:
+                    self._bind_pattern_field_secrets(fpat, env)
+            return
+        if isinstance(pat, A.VariantPat):
+            for sub in pat.payloads:
+                self._bind_pattern_field_secrets(sub, env)
+        elif isinstance(pat, A.TuplePat):
+            for sub in pat.elements:
+                self._bind_pattern_field_secrets(sub, env)
 
     def _record_field_write(
         self, target: A.FieldAccess, value_src: set, env: dict,
@@ -462,7 +501,14 @@ class _SummaryBuilder:
         types) is the precise primary check; this only adds the
         cross-function carry for the common parameter-struct shape that
         the required facets use (a callee that reads a declared-@secret
-        field of a struct PARAMETER and sinks / returns it)."""
+        field of a struct PARAMETER and sinks / returns it).
+
+        PARITY (field-read / field-pattern): the SAME declared-@secret
+        field reached by DESTRUCTURING (``let Emp { iban } = e`` / a
+        ``match`` arm) is covered too -- see
+        ``_bind_pattern_field_secrets``, the pattern-bind analogue of
+        this read rule -- so a field cannot launder its label through a
+        pattern bind any more than through a direct ``e.iban`` read."""
         from .. import _labels as L
         recv = e.receiver
         if isinstance(recv, A.Ident):

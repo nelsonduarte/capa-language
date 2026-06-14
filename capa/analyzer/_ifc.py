@@ -496,16 +496,77 @@ class _IfcMixin:
         caught. Conservative: a sub-payload inherits the whole
         scrutinee's label (no per-field refinement in this slice).
 
-        A ``public`` scrutinee leaves the binds untouched, so an
-        explicit ``@secret`` annotation on the bound name (rare in a
-        pattern, but possible via the surrounding ``let`` type) is not
-        clobbered."""
+        A ``public`` scrutinee leaves the whole-value binds untouched,
+        so an explicit ``@secret`` annotation on the bound name (rare in
+        a pattern, but possible via the surrounding ``let`` type) is not
+        clobbered. Independently of the scrutinee label, a name bound to
+        a struct field that is DECLARED ``@secret`` is labelled secret
+        (``_label_pattern_field_secrets``): destructuring is a field
+        read, so it must preserve the declared-field label exactly as a
+        direct ``e.field`` access does -- a public scrutinee struct that
+        holds a declared-@secret field still taints only the name bound
+        to THAT field, never its public siblings."""
+        self._label_pattern_field_secrets(pat)
         if L.normalize(scrutinee_label) != L.SECRET:
             return
         for name in _pattern_bound_names(pat):
             sym = self.scope.lookup_local(name)
             if sym is not None:
                 sym.label = L.join(sym.label, L.SECRET)
+
+    def _label_pattern_field_secrets(self, pat: A.Pattern) -> None:
+        """Label every name bound to a DECLARED-``@secret`` struct field
+        as secret, walking nested patterns. This is the pattern-binding
+        analogue of ``_declared_field_label`` for a direct field read:
+        ``let Emp { id, iban } = e`` (or the ``match`` form) must give
+        ``iban`` the same @secret label that ``e.iban`` would, closing
+        the destructuring laundering hole.
+
+        Resolution is by the pattern's STRUCT TYPE NAME (``StructPat.
+        type_name``), not by bound-name spelling, so a public ``iban``
+        field of an UNRELATED struct is never tainted by a same-named
+        @secret field elsewhere. Only the field's own name is consulted,
+        so a public sibling field stays public. The raise is a monotonic
+        join, never lowering an existing label."""
+        if isinstance(pat, A.StructPat):
+            labels = self._struct_decl_field_labels(pat.type_name)
+            for fname, fpat in pat.fields:
+                if L.normalize(labels.get(fname)) == L.SECRET:
+                    # Shorthand ``{ iban }`` binds the field's own name;
+                    # ``{ iban: alias }`` binds the sub-pattern's names.
+                    if fpat is None:
+                        self._raise_local_secret(fname)
+                    else:
+                        for name in _pattern_bound_names(fpat):
+                            self._raise_local_secret(name)
+                if fpat is not None:
+                    self._label_pattern_field_secrets(fpat)
+            return
+        if isinstance(pat, A.VariantPat):
+            for sub in pat.payloads:
+                self._label_pattern_field_secrets(sub)
+        elif isinstance(pat, A.TuplePat):
+            for sub in pat.elements:
+                self._label_pattern_field_secrets(sub)
+
+    def _struct_decl_field_labels(self, type_name: str) -> dict:
+        """``{field name: declared label}`` for the user struct
+        ``type_name``, or an empty map when the name does not resolve to
+        a struct (the binder reports the bad type separately). Mirrors
+        ``_declared_field_label``'s resolution, but keyed by the
+        pattern's explicit type name rather than the receiver's type."""
+        from . import SymbolKind
+        sym = self.global_scope.lookup(type_name)
+        if sym is None or sym.kind != SymbolKind.TYPE_STRUCT:
+            return {}
+        return getattr(sym, "struct_field_labels", {}) or {}
+
+    def _raise_local_secret(self, name: str) -> None:
+        """Monotonically raise the in-scope local ``name``'s label to
+        ``@secret`` (join, never lower)."""
+        sym = self.scope.lookup_local(name)
+        if sym is not None:
+            sym.label = L.join(getattr(sym, "label", None), L.SECRET)
 
     def _compute_label(self, e: A.Expr) -> str:
         # Literals are public.
