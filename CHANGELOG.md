@@ -9,6 +9,20 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+**Bug fix (Wasm parity): `env.restrict_to_keys(k)` now compiles when `k`
+is not an inline list literal.** Passing a key list produced by a call
+(or any `List<String>` built outside the function body) failed Wasm
+assembly with "unknown local `$_alloc_tmp`" -- the emitter stashed the
+list-header pointer through a scratch local that the locals walker only
+declares when a list `MakeList` / list-method gate fires in the body. A
+key list arriving as a call-result tripped no gate, so the emitted WAT
+referenced an undeclared local; an inline `["A", "B"]` argument tripped
+the gate and so worked. The emitter now pushes the header value twice
+and loads one field from each copy (the same scratch-free pattern the
+`IoError` formatter uses), so every argument shape -- call-result,
+inline literal, let-bound local -- compiles and runs identically on both
+backends.
+
 **Bug fix (Wasm parity): `for _ in <range/iterable>` now compiles on the
 Wasm backend.** A wildcard for-pattern (`for _ in 0..3`) passed
 `--check` and ran on the Python backend but failed `--wasm` with "CIR

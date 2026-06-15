@@ -670,6 +670,20 @@ _PARITY_PROGRAMS: list[str] = [
     # (forelem path), a nested wildcard loop, and the named-binder
     # for-loop alongside (regression).
     "for_wildcard.capa",
+    # Env.restrict_to_keys non-inline-list-arg slice (2026-06-15): a
+    # key list arriving from a function call-result (or any List<String>
+    # with no MakeList / list-method in the body) crashed the Wasm
+    # emitter with "unknown local $_alloc_tmp" - the restrict_to_keys
+    # emit stashed the list-header pointer through $_alloc_tmp, but the
+    # locals walker only declares that scratch when a list gate fires.
+    # An inline ``["A","B"]`` argument tripped has_list and so worked.
+    # The emitter now pushes the header value twice and loads one field
+    # from each copy (the IoError-formatter pattern), needing no scratch
+    # local. Covers a call-result argument (the failing case), an inline
+    # list literal (regression), and a let-bound list local; each scoped
+    # Env then denies a key outside its allow-set for a deterministic
+    # None on both backends.
+    "env_restrict_to_keys_callarg.capa",
 ]
 
 # Programs deliberately excluded from parity and why; documented
@@ -1941,6 +1955,9 @@ class TestPythonWasmParity(unittest.TestCase):
 
     def test_for_wildcard(self):
         self._assert_parity("for_wildcard.capa")
+
+    def test_env_restrict_to_keys_callarg(self):
+        self._assert_parity("env_restrict_to_keys_callarg.capa")
 
     def test_inventory_matches_examples_dir(self):
         # Soundness check: every .capa under examples/wasm/ is

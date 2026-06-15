@@ -1,0 +1,42 @@
+// Env.restrict_to_keys with a key list that is NOT an inline list
+// literal. Pre-fix (2026-06-15) the Wasm emitter for restrict_to_keys
+// stashed the list-header pointer through the scratch local
+// $_alloc_tmp, but the locals walker only declares $_alloc_tmp when a
+// list MakeList / list-method gate fires in the function body. A key
+// list arriving from a function call-result (a List<String> with no
+// MakeList and no list-method call) tripped no gate, so the emitted
+// WAT referenced an undeclared local ("unknown local $_alloc_tmp").
+// An inline `["A", "B"]` argument tripped has_list and so worked. The
+// emitter now pushes the header value twice and loads one field from
+// each copy (the IoError-formatter pattern), needing no scratch local
+// at all, so every argument shape works. This program exercises:
+//   - restrict_to_keys with a CALL-RESULT argument (the failing case)
+//   - restrict_to_keys with an inline list literal (regression)
+//   - restrict_to_keys with a let-bound list local
+// Each scoped Env then denies a key outside its allow-set, giving a
+// deterministic None on both backends without depending on the actual
+// environment (the queried keys are restricted away first).
+
+fun allowed_keys() -> List<String>
+    return ["ALLOWED_ONE", "ALLOWED_TWO"]
+
+fun probe(stdio: Stdio, env: Env, label: String)
+    // FORBIDDEN_KEY is never in any allow-set below, so the scoped
+    // Env returns None regardless of the host environment.
+    match env.get("FORBIDDEN_KEY")
+        Some(_) -> stdio.println("${label}: leaked")
+        None -> stdio.println("${label}: denied")
+
+fun main(stdio: Stdio, env: Env)
+    // 1. Call-result argument (the previously-failing case).
+    let e_call = env.restrict_to_keys(allowed_keys())
+    probe(stdio, e_call, "call-result")
+
+    // 2. Inline list literal (regression).
+    let e_inline = env.restrict_to_keys(["ALLOWED_ONE", "ALLOWED_TWO"])
+    probe(stdio, e_inline, "inline")
+
+    // 3. Let-bound list local.
+    let ks = ["ALLOWED_ONE", "ALLOWED_TWO"]
+    let e_local = env.restrict_to_keys(ks)
+    probe(stdio, e_local, "let-bound")

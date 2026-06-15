@@ -739,15 +739,22 @@ class _CapDispatchMixin:
         # Receiver handle first.
         self._push_cap_handle(instr.receiver, "Env")
         # The list arg is an i32 pointer to the List<String> header;
-        # push (data_ptr, len) as the host expects.
+        # push (data_ptr, len) as the host expects. Push the header
+        # value twice and load one field from each copy rather than
+        # stashing through a scratch local: the arg is a re-pushable
+        # Value (a local or a constant pointer, no side effects), so a
+        # second push is cheap and -- unlike ``$_alloc_tmp`` -- needs no
+        # cooperation from the locals walker, which only declares that
+        # scratch when a list MakeList / list-method gate fires. A list
+        # arriving from a call-result fires none of those gates, so the
+        # tee/get form referenced an undeclared local. Mirrors the
+        # IoError formatter's twice-push in _strings.py.
         arg = instr.args[0]
         self._push_value(arg)
-        # Stash header pointer so we can load two fields.
-        self._write("local.tee $_alloc_tmp")
         # data_ptr at offset 8
         self._write("i32.load offset=8")
         # Re-push header to load len.
-        self._write("local.get $_alloc_tmp")
+        self._push_value(arg)
         # len at offset 0
         self._write("i32.load offset=0")
         self._write("call $Env_restrict_to_keys")
