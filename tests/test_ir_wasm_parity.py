@@ -657,6 +657,19 @@ _PARITY_PROGRAMS: list[str] = [
     # payloadless nested variants (None arms), and expression-form
     # match.
     "match_nested_variant_outer_binds.capa",
+    # Wildcard for-pattern slice (2026-06-15): ``for _ in <range/
+    # iterable>`` iterates without binding a visible loop variable.
+    # Pre-fix the Wasm CIR lowerer's _lower_for accepted only IdentPat
+    # and TuplePat and rejected a WildcardPat ("CIR lowering does not
+    # yet support: for-pattern WildcardPat"), while the Python backend
+    # already mapped it to a ``_`` loop variable. The lowerer now binds
+    # a fresh throwaway induction local (the emitter consumes the For's
+    # bind name whether or not the body reads it), mirroring the
+    # ``let _ = expr`` and tuple ``forelem`` discardable-local patterns.
+    # Covers ``for _`` over an exclusive / inclusive Range, over a List
+    # (forelem path), a nested wildcard loop, and the named-binder
+    # for-loop alongside (regression).
+    "for_wildcard.capa",
 ]
 
 # Programs deliberately excluded from parity and why; documented
@@ -1925,6 +1938,9 @@ class TestPythonWasmParity(unittest.TestCase):
         out = _capture_stdout(lambda: _run_wasm(src))
         # 1_000_000 * 1_000_001 / 2
         self.assertEqual(out, "500000500000\n")
+
+    def test_for_wildcard(self):
+        self._assert_parity("for_wildcard.capa")
 
     def test_inventory_matches_examples_dir(self):
         # Soundness check: every .capa under examples/wasm/ is

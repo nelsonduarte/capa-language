@@ -9,6 +9,17 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+**Bug fix (Wasm parity): `for _ in <range/iterable>` now compiles on the
+Wasm backend.** A wildcard for-pattern (`for _ in 0..3`) passed
+`--check` and ran on the Python backend but failed `--wasm` with "CIR
+lowering does not yet support: for-pattern WildcardPat" -- the CIR
+lowerer's `_lower_for` accepted only an identifier or tuple loop
+pattern. It now binds a fresh throwaway induction local for the wildcard
+(mirroring the `let _ = expr` and tuple-destructure discardable-local
+patterns), so the loop iterates without a visible binder on both
+backends. Covers `for _` over an exclusive / inclusive range, over a
+list, and nested wildcard loops; the named-binder for-loop is unchanged.
+
 **Bug fix (soundness): extracting a declared-`@secret` struct field by
 DESTRUCTURING now preserves the security label.** This completes the
 closure of the field-laundering hole: the prior fix caught a direct

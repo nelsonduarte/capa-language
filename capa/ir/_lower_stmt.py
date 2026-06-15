@@ -337,11 +337,15 @@ class _LowerStmtMixin:
         )
 
     def _lower_for(self, s: A.ForStmt) -> None:
-        # Two for-pattern shapes are supported: a single ``IdentPat``
-        # (``for x in xs``) and a ``TuplePat`` (``for (a, b) in pairs``)
-        # that destructures each element positionally. Any other
-        # pattern shape is rejected loudly rather than miscompiled.
-        if not isinstance(s.pattern, (A.IdentPat, A.TuplePat)):
+        # Three for-pattern shapes are supported: a single ``IdentPat``
+        # (``for x in xs``), a wildcard ``WildcardPat`` (``for _ in xs``)
+        # that iterates without binding a visible name, and a
+        # ``TuplePat`` (``for (a, b) in pairs``) that destructures each
+        # element positionally. Any other pattern shape is rejected
+        # loudly rather than miscompiled.
+        if not isinstance(
+            s.pattern, (A.IdentPat, A.WildcardPat, A.TuplePat)
+        ):
             raise UnsupportedInIR(
                 f"for-pattern {type(s.pattern).__name__}"
             )
@@ -376,6 +380,17 @@ class _LowerStmtMixin:
         if isinstance(s.pattern, A.IdentPat):
             bound = self._bind_local(s.pattern.name, bind_ty)
             destructure: list[Instr] = []
+        elif isinstance(s.pattern, A.WildcardPat):
+            # ``for _ in xs``: the loop must still bind an induction
+            # local for the emitter to consume (the Wasm emitter reads
+            # the For's ``name`` as a local whether or not the body
+            # references it), but no source name resolves here. Bind a
+            # fresh throwaway local carrying the element type, mirroring
+            # the ``let _ = expr`` and tuple ``forelem`` discardable-
+            # local patterns, so the body iterates with nothing visible.
+            bound = fresh_local(self._counter, prefix="wildfor")
+            self._locals[bound] = bind_ty
+            destructure = []
         else:
             # Tuple-destructuring for-pattern. Bind each iteration's
             # element to a fresh temporary carrying the tuple type,

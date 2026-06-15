@@ -1,0 +1,46 @@
+// Wildcard for-pattern: `for _ in <range/iterable>` iterates without
+// binding a visible loop variable. Pre-fix (2026-06-15) the Wasm CIR
+// lowerer's _lower_for only accepted IdentPat and TuplePat and rejected
+// a WildcardPat with "CIR lowering does not yet support: for-pattern
+// WildcardPat", while the Python backend already mapped it to a `_`
+// loop variable. The lowerer now binds a fresh throwaway induction
+// local (the emitter consumes the For's bind name whether or not the
+// body reads it), mirroring the `let _ = expr` and tuple `forelem`
+// discardable-local patterns. This program exercises:
+//   - `for _` over a Range (exclusive and inclusive)
+//   - `for _` over a List (forelem path)
+//   - a nested `for _` inside another `for _`
+//   - the named-binder for-loop alongside it (regression)
+
+fun main(stdio: Stdio)
+    // 1. Range, exclusive: count three iterations without using the var.
+    var c = 0
+    for _ in 0..3
+        c = c + 1
+    stdio.println("range excl: ${c}")
+
+    // 2. Range, inclusive.
+    var ci = 0
+    for _ in 1..=4
+        ci = ci + 1
+    stdio.println("range incl: ${ci}")
+
+    // 3. List iteration (forelem path), element type ignored.
+    let xs = ["a", "b", "c", "d"]
+    var cl = 0
+    for _ in xs
+        cl = cl + 1
+    stdio.println("list: ${cl}")
+
+    // 4. Nested wildcard loops: 2 * 3 = 6 inner iterations.
+    var cn = 0
+    for _ in 0..2
+        for _ in 0..3
+            cn = cn + 1
+    stdio.println("nested: ${cn}")
+
+    // 5. Named binder alongside (regression: still binds and reads x).
+    var total = 0
+    for x in [10, 20, 30]
+        total = total + x
+    stdio.println("named: ${total}")
