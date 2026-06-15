@@ -27,9 +27,14 @@ fun main(stdio: Stdio)
     let r2 = Err("failed")       // Result<?, String>
     let o1 = Some(3.14)          // Option<Float>
 
-    // Inference in a simple generic function.
+    // Inference in a simple generic function. An Option has no
+    // to_string, so format it explicitly with a match rather than
+    // interpolating it directly.
     let n = first([1, 2, 3])
-    stdio.println("first: ${n}")
+    let n_str = match n
+        Some(v) -> "Some(${v})"
+        None -> "None"
+    stdio.println("first: ${n_str}")
 
     // Inference in a multi-param generic function.
     let p = pair(1, "one")        // Pair<Int, String>

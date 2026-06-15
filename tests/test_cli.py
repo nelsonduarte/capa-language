@@ -890,11 +890,14 @@ class TestCliInProcess(unittest.TestCase):
         "wasm-tools / wasmtime missing",
     )
     def test_wasm_compile_error_returns_nonzero(self):
-        # A construct outside the Phase-6 subset. ``async`` is not
-        # supported by the Wasm backend; whatever the rejection
-        # path, the CLI must return non-zero with a "--wasm:"
-        # diagnostic. We use a tuple in a way the CIR rejects
-        # (best-effort: this exercises the except branch).
+        # An unrenderable interpolation (``${xs}`` where ``xs`` is a
+        # nested List, which has no to_string) is now rejected at the
+        # analysis stage, in BOTH backends, rather than only by the
+        # Wasm emitter. The CLI must return non-zero with a clear
+        # "cannot interpolate" diagnostic; the rejection no longer
+        # carries a "--wasm" tag because it fires before backend
+        # selection (that is the whole point of closing the
+        # divergence).
         src = (
             'fun main(stdio: Stdio)\n'
             '    let xs: List<List<Int>> = []\n'
@@ -906,12 +909,8 @@ class TestCliInProcess(unittest.TestCase):
             rc, _out, err = _run_main(
                 ["--wasm", "--transpile", str(p)], cwd=td_path,
             )
-            # Either succeeds (in which case the Wasm backend has
-            # expanded) or fails with a "--wasm:" line. Both are
-            # acceptable; only the error branch increases coverage,
-            # so we accept the success path silently when it occurs.
-            if rc != 0:
-                self.assertIn("--wasm", err)
+            self.assertNotEqual(rc, 0, err)
+            self.assertIn("cannot interpolate", err)
 
 
 class TestCliRobustness(unittest.TestCase):

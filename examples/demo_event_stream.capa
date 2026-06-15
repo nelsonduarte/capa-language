@@ -43,5 +43,13 @@ fun main(stdio: Stdio)
     ]
     let words = explode_words(input)
     stdio.println("flat_map produced ${words.length()} words from ${input.length()} lines")
-    stdio.println("first word: ${words.first()}")
-    stdio.println("last word:  ${words.last()}")
+    // `first` / `last` return an Option, which has no to_string;
+    // format it with a match rather than interpolating it directly.
+    let first_word = match words.first()
+        Some(w) -> "Some(${w})"
+        None -> "None"
+    let last_word = match words.last()
+        Some(w) -> "Some(${w})"
+        None -> "None"
+    stdio.println("first word: ${first_word}")
+    stdio.println("last word:  ${last_word}")

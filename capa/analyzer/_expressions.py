@@ -41,6 +41,44 @@ _I64_MIN_MAGNITUDE = 1 << 63
 
 
 class _ExpressionsMixin:
+    # Built-in types both backends know how to render in a string
+    # interpolation without a user ``to_string``. Mirrors the Wasm
+    # FormatStr emitter (``_emit_format_part_stash``): String / Int /
+    # Float / Bool plus the IoError special case. ``Char`` is here
+    # too: a Capa Char is a single-codepoint String at the value
+    # level, and the Wasm path normalises the ``Char`` type token to
+    # ``String`` (``_normalize_char``) before the FormatStr emitter
+    # runs, so ``${c}`` renders as that one character on both sides.
+    _FORMATTABLE_BUILTINS = frozenset({
+        "Int", "Float", "Bool", "String", "Char", "IoError",
+    })
+
+    def _is_formattable(self, ty: Ty) -> bool:
+        """True when a value of type ``ty`` can be rendered into a
+        string interpolation by BOTH backends.
+
+        Mirrors the Wasm FormatStr emitter exactly: a built-in
+        renderable type, OR a user type (struct / sum) whose head
+        declares a ``to_string`` method (inherent or via a trait
+        impl -- both land in the type symbol's ``methods`` table).
+        Unresolved types (``?`` / type variables) stay permissive:
+        the Wasm emitter defaults an unknown FormatStr value to Int,
+        so rejecting them here would invent a new divergence."""
+        from . import SymbolKind
+
+        if ty is TyUnknown or isinstance(ty, TyVar):
+            return True
+        if not isinstance(ty, TyName):
+            return False
+        if ty.name in self._FORMATTABLE_BUILTINS:
+            return True
+        sym = self.global_scope.lookup(ty.name)
+        if sym is not None and sym.kind in (
+            SymbolKind.TYPE_STRUCT, SymbolKind.TYPE_SUM,
+        ):
+            return "to_string" in sym.methods
+        return False
+
     def _check_lambda(self, e: A.LambdaExpr) -> Ty:
         """Type a lambda expression. The body is checked in a
         local scope with the parameters as bindings.
@@ -348,12 +386,28 @@ class _ExpressionsMixin:
         if isinstance(e, A.StringLit):
             return TyString
         if isinstance(e, A.InterpolatedString):
-            # Every expression part is typed; the runtime
-            # converts each value via str(). The literal text
+            # Every expression part is typed; the value is rendered
+            # into the string. Both backends only know how to render
+            # a fixed set of types, so a part whose type is outside
+            # that set is rejected here (in ``--check``) rather than
+            # accepted by the Python backend (via dataclass ``repr``)
+            # and rejected only by the Wasm backend. The literal text
             # parts are plain Python ``str`` instances.
             for part in e.parts:
-                if not isinstance(part, str):
-                    self._check_expr(part)
+                if isinstance(part, str):
+                    continue
+                pty = self._check_expr(part)
+                if not self._is_formattable(pty):
+                    self._err(
+                        f"cannot interpolate a value of type "
+                        f"{ty_str(pty)} in a string: it has no "
+                        f"`to_string` method, so neither backend can "
+                        f"render it. Use a `match` expression to format "
+                        f"it explicitly, or define "
+                        f"`fun to_string(self) -> String` for "
+                        f"{ty_str(pty)}.",
+                        part.pos,
+                    )
             return TyString
         if isinstance(e, A.CharLit):
             return TyChar

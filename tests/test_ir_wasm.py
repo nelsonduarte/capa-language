@@ -4375,20 +4375,28 @@ class TestWasmStructToStringDisplay(unittest.TestCase):
         )
         self.assertEqual(self._run_capturing_stdout(src), "p = Point<3, 4>\n")
 
-    def test_struct_without_to_string_raises_actionable_error(self):
-        # Pre-fix the message pointed at ${value.field}; post-fix
-        # it points at adding `fun to_string(self) -> String` in
-        # an impl block, matching the new Display protocol.
+    def test_struct_without_to_string_rejected_at_analysis(self):
+        # A struct with no to_string cannot be interpolated. This is
+        # now caught at the ANALYSIS stage (``capa --check``), in both
+        # backends, rather than only by the Wasm emitter -- closing
+        # the divergence where the Python backend accepted it (via
+        # dataclass repr) and only Wasm rejected it. The message is
+        # actionable: it points at adding `fun to_string(self) ->
+        # String`. The Wasm emitter keeps its own raise as defense in
+        # depth, but it is unreachable through the analyzed path.
+        from capa import analyze
         src = (
             "type Point { x: Int, y: Int }\n"
             "fun main(stdio: Stdio)\n"
             "    let p = Point { x: 3, y: 4 }\n"
             "    stdio.println(\"p = ${p}\")\n"
         )
-        with self.assertRaises(WasmEmissionError) as ctx:
-            _, types, ast_mod = _parse_lower(src)
-            compile_wasm(ast_mod, types=types)
-        msg = str(ctx.exception)
+        tokens = Lexer(src).lex()
+        module = Parser(tokens, source=src).parse_module()
+        result = analyze(module, source=src)
+        self.assertFalse(result.ok)
+        msg = " ".join(e.message for e in result.errors)
+        self.assertIn("interpolate", msg)
         self.assertIn("to_string", msg)
         self.assertIn("Point", msg)
 

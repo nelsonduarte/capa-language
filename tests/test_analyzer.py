@@ -2287,7 +2287,13 @@ class TestStringBuiltinMethods(unittest.TestCase):
             "fun main(stdio: Stdio)\n"
             "    let s = \"hello\"\n"
             "    let c = s.char_at(1)\n"
-            "    stdio.println(\"${c}\")\n"
+            # ``c`` is Option<String>, which has no to_string, so it
+            # cannot be interpolated directly; match it to prove the
+            # binding typed as an Option carrying a String payload.
+            "    let shown = match c\n"
+            "        Some(ch) -> ch\n"
+            "        None -> \"?\"\n"
+            "    stdio.println(\"${shown}\")\n"
         )
         tokens = Lexer(src).lex()
         module = Parser(tokens, source=src).parse_module()
@@ -2461,6 +2467,138 @@ class TestInterpolatedString(unittest.TestCase):
         # 4 spaces + "stdio.println(" (14) + `"${x} and ${` (12) = 30,
         # then `y` is col 31.
         self.assertEqual(r.errors[0].pos.col, 31)
+
+
+class TestInterpolationFormattability(unittest.TestCase):
+    """A ``${value}`` part must render on BOTH backends. The analyzer
+    rejects a value whose type has no way to be formatted (no built-in
+    rendering and no user ``to_string``), instead of the Python backend
+    accepting it via dataclass repr while Wasm rejects it. Closes the
+    cross-backend FormatStr divergence."""
+
+    def test_primitives_are_formattable(self):
+        for ty, val in (
+            ("Int", "1"), ("Float", "1.5"), ("Bool", "true"),
+            ("String", "\"hi\""), ("Char", "'a'"),
+        ):
+            r = check(
+                "fun main(stdio: Stdio)\n"
+                f"    let x: {ty} = {val}\n"
+                "    stdio.println(\"${x}\")\n"
+            )
+            self.assertTrue(r.ok, f"{ty}: {r.errors}")
+
+    def test_option_rejected(self):
+        msgs = errors_of(
+            "fun main(stdio: Stdio)\n"
+            "    let o = Some(1)\n"
+            "    stdio.println(\"${o}\")\n"
+        )
+        self.assertTrue(any("cannot interpolate" in m for m in msgs), msgs)
+        self.assertTrue(any("to_string" in m for m in msgs), msgs)
+        self.assertTrue(any("Option" in m for m in msgs), msgs)
+
+    def test_result_rejected(self):
+        msgs = errors_of(
+            "fun main(stdio: Stdio)\n"
+            "    let r: Result<Int, String> = Ok(1)\n"
+            "    stdio.println(\"${r}\")\n"
+        )
+        self.assertTrue(any("cannot interpolate" in m for m in msgs), msgs)
+
+    def test_list_rejected(self):
+        msgs = errors_of(
+            "fun main(stdio: Stdio)\n"
+            "    let xs = [1, 2, 3]\n"
+            "    stdio.println(\"${xs}\")\n"
+        )
+        self.assertTrue(any("cannot interpolate" in m for m in msgs), msgs)
+
+    def test_tuple_rejected(self):
+        msgs = errors_of(
+            "fun main(stdio: Stdio)\n"
+            "    let t = (1, \"a\")\n"
+            "    stdio.println(\"${t}\")\n"
+        )
+        self.assertTrue(any("cannot interpolate" in m for m in msgs), msgs)
+
+    def test_sum_without_to_string_rejected(self):
+        msgs = errors_of(
+            "type Color =\n"
+            "    Red\n"
+            "    Green\n"
+            "    Blue\n"
+            "fun main(stdio: Stdio)\n"
+            "    let c = Red\n"
+            "    stdio.println(\"${c}\")\n"
+        )
+        self.assertTrue(any("cannot interpolate" in m for m in msgs), msgs)
+        self.assertTrue(any("Color" in m for m in msgs), msgs)
+
+    def test_struct_without_to_string_rejected(self):
+        msgs = errors_of(
+            "type Point { x: Int, y: Int }\n"
+            "fun main(stdio: Stdio)\n"
+            "    let p = Point { x: 1, y: 2 }\n"
+            "    stdio.println(\"${p}\")\n"
+        )
+        self.assertTrue(any("cannot interpolate" in m for m in msgs), msgs)
+
+    def test_struct_with_to_string_accepted(self):
+        r = check(
+            "type Point { x: Int, y: Int }\n"
+            "impl Point\n"
+            "    fun to_string(self) -> String\n"
+            "        return \"P(${self.x},${self.y})\"\n"
+            "fun main(stdio: Stdio)\n"
+            "    let p = Point { x: 1, y: 2 }\n"
+            "    stdio.println(\"${p}\")\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+    def test_sum_with_to_string_accepted(self):
+        r = check(
+            "type Color =\n"
+            "    Red\n"
+            "    Green\n"
+            "    Blue\n"
+            "impl Color\n"
+            "    fun to_string(self) -> String\n"
+            "        return match self\n"
+            "            Red -> \"red\"\n"
+            "            Green -> \"green\"\n"
+            "            Blue -> \"blue\"\n"
+            "fun main(stdio: Stdio)\n"
+            "    let c = Red\n"
+            "    stdio.println(\"${c}\")\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+    def test_struct_with_to_string_via_trait_impl_accepted(self):
+        r = check(
+            "trait Show\n"
+            "    fun to_string(self) -> String\n"
+            "type Point { x: Int, y: Int }\n"
+            "impl Show for Point\n"
+            "    fun to_string(self) -> String\n"
+            "        return \"P(${self.x},${self.y})\"\n"
+            "fun main(stdio: Stdio)\n"
+            "    let p = Point { x: 1, y: 2 }\n"
+            "    stdio.println(\"${p}\")\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+    def test_error_position_points_at_part(self):
+        r = check(
+            "fun main(stdio: Stdio)\n"
+            "    let o = Some(1)\n"
+            "    stdio.println(\"x = ${o}\")\n"
+        )
+        self.assertFalse(r.ok)
+        interp = [e for e in r.errors if "cannot interpolate" in e.message]
+        self.assertEqual(len(interp), 1)
+        # Points at ``o`` inside the ``${...}``, not the string's quote.
+        self.assertEqual(interp[0].pos.line, 3)
 
 
 # =============================================================

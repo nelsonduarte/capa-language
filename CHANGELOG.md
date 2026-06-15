@@ -9,6 +9,29 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+**Behaviour change (analyzer): interpolating a value with no way to be
+rendered is now a `--check` error in both backends, closing a
+cross-backend FormatStr divergence.** `"${o}"` where `o: Option<Int>`
+passed `--check` and printed `Some(1)` on the Python backend (via
+dataclass `repr`) but failed `--wasm` with "FormatStr value of type
+'Option<Int>' not supported" -- the Python backend accepted any type
+while the Wasm backend only renders a fixed set. The analyzer now
+rejects a `${value}` part whose type cannot be formatted by EITHER
+backend, before any backend runs, so both fail identically with an
+actionable message ("cannot interpolate a value of type 'Option<Int>'
+... it has no `to_string` method; use a `match` expression or define
+`fun to_string`"). Formattable types are unchanged from what the Wasm
+emitter already accepted: the primitives `Int` / `Float` / `Bool` /
+`String` / `Char`, the built-in `IoError`, and any struct or sum that
+declares `fun to_string(self) -> String` (inherent or via a trait
+impl). This is an observable change: a program that interpolated an
+`Option`, `Result`, `List`, `Map`, `Set`, tuple, or a sum / struct
+without `to_string` now needs an explicit `match` (or a `to_string`
+definition) at the interpolation site. The bundled examples
+`generics.capa` and `demo_event_stream.capa` were migrated to format
+their `Option` values with a `match`, producing the same `Some(...)`
+output as before on both backends.
+
 **Bug fix (analyzer): a list literal of mixed trait implementors now
 honours a `List<Trait>` annotation.** `let shapes: List<Shape> = [Sq {
 ... }, Rec { ... }]` (two distinct implementors of a common trait) was
