@@ -728,5 +728,126 @@ class TestCrossFnEmbedThenCrossfnMutate(unittest.TestCase):
                          [w.message for w in r.warnings])
 
 
+class TestCrossFnClosureInvokeSink(unittest.TestCase):
+    """Closure passed to a higher-order function that INVOKES it and
+    sinks the result (the invoke-sink-reaching parameter). The capture
+    label never reaches the callee's sink directly (only ``f()`` does),
+    so this was a cross-function false negative until the summary builder
+    learned to mark an invoked Fun parameter sink-reaching and the call
+    site to consult the closure's RESULT label."""
+
+    _APPLY = (
+        "fun apply(f: Fun() -> String, stdio: Stdio)\n"
+        "    stdio.println(f())\n"
+    )
+
+    def test_inline_secret_closure_warns_by_default(self):
+        r = _analyze(
+            self._APPLY
+            + "fun main(stdio: Stdio, env: Env)\n"
+            "    let s = env.get(\"SECRET\").unwrap_or(\"d\")\n"
+            "    apply(fun () -> String => s, stdio)\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        w = _crossfn_warnings(r)
+        self.assertEqual(len(w), 1, [x.message for x in r.warnings])
+        self.assertIn("apply", w[0].message)
+
+    def test_inline_secret_closure_hard_error_under_strict(self):
+        r = _analyze(
+            self._APPLY
+            + "@strict_ifc()\n"
+            "fun main(stdio: Stdio, env: Env)\n"
+            "    let s = env.get(\"SECRET\").unwrap_or(\"d\")\n"
+            "    apply(fun () -> String => s, stdio)\n"
+        )
+        self.assertFalse(r.ok)
+        self.assertEqual(len(_crossfn_errors(r)), 1)
+
+    def test_public_closure_is_clean(self):
+        # The closure captures nothing secret -> no false positive.
+        r = _analyze(
+            self._APPLY
+            + "@strict_ifc()\n"
+            "fun main(stdio: Stdio)\n"
+            "    let s = \"hello\"\n"
+            "    apply(fun () -> String => s, stdio)\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(len(_crossfn_warnings(r)), 0,
+                         [w.message for w in r.warnings])
+
+    def test_declassifying_closure_is_clean(self):
+        # The closure body declassifies the captured secret, so its
+        # RESULT is public -- no false positive even under strict.
+        r = _analyze(
+            self._APPLY
+            + "@strict_ifc()\n"
+            "fun main(stdio: Stdio, env: Env)\n"
+            "    let s = env.get(\"SECRET\").unwrap_or(\"d\")\n"
+            "    apply(fun () -> String => "
+            "declassify(s, reason: \"ok\"), stdio)\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(len(_crossfn_warnings(r)), 0,
+                         [w.message for w in r.warnings])
+
+    def test_fun_param_not_invoked_is_clean(self):
+        # ``store`` receives a Fun but only RETURNS it (never invokes /
+        # sinks it) -> the parameter is not invoke-sink-reaching.
+        r = _analyze(
+            "fun store(f: Fun() -> String) -> Fun() -> String\n"
+            "    return f\n"
+            "@strict_ifc()\n"
+            "fun main(env: Env)\n"
+            "    let s = env.get(\"SECRET\").unwrap_or(\"d\")\n"
+            "    let g = store(fun () -> String => s)\n"
+            "    let _ = g\n"
+            "    ()\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(len(_crossfn_warnings(r)), 0,
+                         [w.message for w in r.warnings])
+        self.assertEqual(len(_crossfn_errors(r)), 0,
+                         [e.message for e in r.errors])
+
+    def test_fun_param_result_returned_not_sunk_is_clean(self):
+        # ``apply`` invokes the closure and RETURNS the result without an
+        # internal sink -> the parameter is not invoke-sink-reaching. (A
+        # caller that then sinks the returned secret is caught by the
+        # separate return-secret effect, exercised elsewhere.)
+        r = _analyze(
+            "fun apply(f: Fun() -> String) -> String\n"
+            "    return f()\n"
+            "@strict_ifc()\n"
+            "fun main(env: Env)\n"
+            "    let s = env.get(\"SECRET\").unwrap_or(\"d\")\n"
+            "    let r = apply(fun () -> String => s)\n"
+            "    let _ = r\n"
+            "    ()\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(len(_crossfn_warnings(r)), 0,
+                         [w.message for w in r.warnings])
+
+    def test_method_invoke_sink_closure_warns(self):
+        # The method form: a struct method that invokes a Fun parameter
+        # and sinks its result.
+        r = _analyze(
+            "type Box { v: Int }\n"
+            "impl Box\n"
+            "    fun take(self, f: Fun() -> String, stdio: Stdio)\n"
+            "        stdio.println(f())\n"
+            "fun main(stdio: Stdio, env: Env)\n"
+            "    let s = env.get(\"SECRET\").unwrap_or(\"d\")\n"
+            "    let b = Box { v: 1 }\n"
+            "    b.take(fun () -> String => s, stdio)\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        w = _crossfn_warnings(r)
+        self.assertEqual(len(w), 1, [x.message for x in r.warnings])
+        self.assertIn("Box.take", w[0].message)
+
+
 if __name__ == "__main__":
     unittest.main()

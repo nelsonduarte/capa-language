@@ -184,6 +184,13 @@ class _ExpressionsMixin:
         # any captured @secret (computed before the scope is popped, while
         # the body's idents are still resolvable / labelled).
         self._lambda_capture_labels[id(e)] = self._lambda_capture_label(e)
+        # The label of the value an INVOCATION of this closure produces:
+        # its body's result label. Used by the invoke-sink-reaching
+        # boundary check, where what reaches the callee's sink is the
+        # closure's RESULT (``f()``), not the closure value itself. A body
+        # that declassifies its captured secret returns PUBLIC here even
+        # though the capture label above is SECRET.
+        self._lambda_result_labels[id(e)] = self._lambda_body_result_label(e)
 
         self._lambda_local_names_stack.pop()
         self._loop_depth = prev_loop_depth

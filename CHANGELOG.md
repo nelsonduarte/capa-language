@@ -45,6 +45,18 @@ variant payload, a Fun-bearing sum nested in a struct field, and a
 Fun-bearing struct nested in a variant payload all downgrade. A sum whose
 variants carry no `Fun` (a plain enum) still permits exclusion.
 
+**Security / soundness (IFC, 1 fix).** A `@secret` value can no longer be
+laundered to public by capturing it in a closure that is passed to a
+higher-order function which INVOKES the closure and sends its result to a
+public sink. The cross-function summary now marks an invoked `Fun`
+parameter sink-reaching, and the call site flags an inline closure argument
+whose RESULT label is `@secret` (a warning by default, a hard error under
+`@strict_ifc`). A closure whose body `declassify`s its captured secret, a
+non-capturing closure, and a `Fun` parameter that is stored / returned but
+never invoked-and-sunk are all clean (no false positive). A closure bound
+to a name and then passed by reference is left for a future iteration (a
+documented false negative, never a false positive).
+
 ## [1.2.0], 2026-06-15
 
 **Capa 1.2.0.** A MINOR release that hardens the soundness core (linear

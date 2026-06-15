@@ -811,6 +811,54 @@ class _IfcMixin:
             label = L.join(label, self._label_of(ident))
         return label
 
+    def _lambda_body_result_label(self, e: A.LambdaExpr) -> str:
+        """The IFC label of the value an INVOCATION of ``e`` produces --
+        its body's result label. An expression-bodied lambda returns its
+        expression; a block-bodied one returns its trailing bare
+        expression (block-as-expression), or Unit (PUBLIC) when there is
+        none. Unlike the capture label, this is what flows out of ``f()``,
+        so a body that DECLASSIFIES its captured secret returns PUBLIC
+        here -- the precise input to the invoke-sink-reaching boundary
+        check, avoiding a false positive on a declassifying closure."""
+        body = e.body
+        if isinstance(body, A.Block):
+            if body.stmts and isinstance(body.stmts[-1], A.ExprStmt):
+                return self._label_of(body.stmts[-1].expr)
+            return L.PUBLIC
+        return self._label_of(body)
+
+    def _sink_param_arg_label(self, arg: A.Expr, ptype):
+        """The label to test for an argument bound to a SINK-REACHING
+        parameter, or ``None`` when the boundary check does not apply.
+
+        Two parameter shapes reach a sink inside the callee, and they need
+        different labels:
+
+        * A DATA parameter whose value flows to a sink: the argument's own
+          whole-value label (the original cross-function S2.6 rule).
+        * A FUN parameter the callee INVOKES and sinks the result of (the
+          invoke-sink-reaching case): the label of what ``f()`` yields.
+          For an INLINE closure literal that is its RESULT label (so a
+          closure whose body DECLASSIFIES its captured secret is correctly
+          public and not flagged). For any other argument bound to a Fun
+          parameter (a closure passed by NAME, or borne in a struct field)
+          the only label available is the whole-value capture label, which
+          cannot see through an in-body declassify and would raise a FALSE
+          POSITIVE on a declassifying let-bound closure -- and a false
+          positive is the worst outcome -- so the check is SKIPPED
+          (``None``). That leaves a documented false NEGATIVE for the
+          let-bound / field-borne closure (module KNOWN LIMITATIONS); the
+          inline shape -- the common and most dangerous one -- is precise.
+
+        The parameter kind is told apart by its declared TYPE: a ``TyFun``
+        parameter is the invoke case, anything else the data case."""
+        from ..typesys import TyFun
+        if isinstance(ptype, TyFun):
+            if isinstance(arg, A.LambdaExpr):
+                return self._lambda_result_labels.get(id(arg), L.PUBLIC)
+            return None
+        return self._label_of(arg)
+
     def _lambda_body_stmts(self, e: A.LambdaExpr):
         """The statement list of a block-bodied lambda, or empty for an
         expression-bodied one."""
@@ -1414,13 +1462,16 @@ class _IfcMixin:
         sink_params = self._ifc_summaries.get(key)
         if not sink_params:
             return
+        param_tys = getattr(getattr(sym, "ty", None), "params", ())
         for param_idx, arg_idx in enumerate(perm):
             if param_idx not in sink_params:
                 continue
             if arg_idx >= len(e.args):
                 continue
             arg = e.args[arg_idx]
-            if L.normalize(self._label_of(arg)) != L.SECRET:
+            ptype = param_tys[param_idx] if param_idx < len(param_tys) else None
+            label = self._sink_param_arg_label(arg, ptype)
+            if label is None or L.normalize(label) != L.SECRET:
                 continue
             pname = (
                 sym.param_names[param_idx]
@@ -1492,6 +1543,7 @@ class _IfcMixin:
                 self._emit_ifc_call_leak(
                     repr(callee_name), "self (the receiver)", e.receiver.pos,
                 )
+        param_tys = getattr(getattr(method_sym, "ty", None), "params", ())
         for local_idx, arg_idx in enumerate(perm):
             full_idx = local_idx + 1 if has_self else local_idx
             if full_idx not in sink_params:
@@ -1499,7 +1551,9 @@ class _IfcMixin:
             if arg_idx >= len(e.args):
                 continue
             arg = e.args[arg_idx]
-            if L.normalize(self._label_of(arg)) != L.SECRET:
+            ptype = param_tys[local_idx] if local_idx < len(param_tys) else None
+            label = self._sink_param_arg_label(arg, ptype)
+            if label is None or L.normalize(label) != L.SECRET:
                 continue
             pname = (
                 method_sym.param_names[local_idx]

@@ -370,6 +370,15 @@ class Analyzer(
         # that secret in its result; the call site joins this in so the
         # value the closure RETURNS is not laundered to public.
         self._lambda_capture_labels: dict[int, str] = {}
+        # Roadmap S2 (IFC, closure invoke-sink boundary). ``id(LambdaExpr)``
+        # -> the label of the value the closure RETURNS when invoked (its
+        # body's result label). Distinct from the capture label: a closure
+        # whose body declassifies a captured secret RETURNS public even
+        # though it CAPTURES a secret. Consulted at a higher-order call
+        # site when the argument closure binds to an invoke-sink-reaching
+        # parameter of the callee (``_call_arg_invoke_label``), so the
+        # declassify-in-closure case is not a false positive.
+        self._lambda_result_labels: dict[int, str] = {}
         # Roadmap S2 (per-field IFC precision). Parallel to
         # ``self._expr_labels`` but only for STRUCT-typed expressions:
         # id(expr) -> a per-field label map ``{field_name: label_or_submap}``

@@ -670,6 +670,21 @@ class _SummaryBuilder:
             return out
 
         key = ("fun", e.callee.name)
+        # Invoking a Fun-typed PARAMETER: ``f()`` where ``f`` is parameter
+        # ``idx``. The result carries ``f``'s taint, so if it reaches a
+        # sink the parameter ``idx`` becomes sink-reaching -- the
+        # INVOKE-SINK-REACHING parameter (a Fun parameter the callee
+        # invokes and whose result it sinks). The call site disambiguates
+        # by the parameter's declared TYPE: a Fun-typed sink-reaching
+        # parameter consults a closure argument's RESULT label (so a
+        # declassifying closure is not flagged), a data-typed one its
+        # whole-value label. Only fires for a callee name that is NOT a
+        # known free function (those take the summary path) and that
+        # carries parameter taint in ``env`` (an ordinary public local
+        # does not).
+        invoke_src: set = set()
+        if key not in self.callables:
+            invoke_src = set(env.get(e.callee.name, set()))
         if key in self.callables:
             names, _decl, _is_method = self.callables[key]
             perm = self._bind_args(e, names)
@@ -686,8 +701,9 @@ class _SummaryBuilder:
                 self.field_effects.get(key, {}), perm, e.args, arg_srcs, env,
             )
         # Either way the call RESULT joins argument taints (the
-        # conservative result-label rule, mirrored here).
-        out = set()
+        # conservative result-label rule, mirrored here) plus the taint of
+        # an invoked Fun-typed parameter.
+        out = set(invoke_src)
         for s in arg_srcs:
             out |= s
         return out
