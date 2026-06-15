@@ -225,12 +225,18 @@ def _leaky_program(draw):
       - sink the secret directly;
       - concat the secret with a public string, sink the result;
       - interpolate the secret into a string, sink it;
-      - store the secret in a struct field and sink THAT field.
+      - store the secret in a struct field and sink THAT field;
+      - launder the secret through a ``match`` expression value, sink it;
+      - launder the secret through an ``if`` expression value, sink it;
+      - capture the secret in a closure, call it, sink the result;
+      - pass a secret-capturing closure to a HOF, sink the HOF result.
     """
     var = _SECRET_VARS[0]
     shape = draw(st.sampled_from(
-        ["direct", "concat", "interp", "struct_secret_field"]
+        ["direct", "concat", "interp", "struct_secret_field",
+         "match_expr", "if_expr", "closure_capture", "closure_hof"]
     ))
+    pub = draw(_PUB_STR)
     header = []
     lines = ["@strict_ifc()", "fun main(stdio: Stdio, env: Env)"]
     lines.append(f'    let s = env.get("{var}").unwrap_or("d")')
@@ -238,16 +244,37 @@ def _leaky_program(draw):
     if shape == "direct":
         lines.append("    stdio.println(s)")
     elif shape == "concat":
-        lines.append(f'    let m = "{draw(_PUB_STR)}" + s')
+        lines.append(f'    let m = "{pub}" + s')
         lines.append("    stdio.println(m)")
     elif shape == "interp":
         lines.append('    stdio.println("leak=${s}")')
     elif shape == "struct_secret_field":
         header.append("type Box { f_secret: String, f_open: String }")
         lines.append(
-            f'    let b = Box {{ f_secret: s, f_open: "{draw(_PUB_STR)}" }}'
+            f'    let b = Box {{ f_secret: s, f_open: "{pub}" }}'
         )
         lines.append("    stdio.println(b.f_secret)")
+    elif shape == "match_expr":
+        # The match-expression VALUE inherits the secret-bound arm body;
+        # sinking it must be caught (no laundering through ``match``).
+        lines.append(f'    let v = match true {{ true -> s, false -> "{pub}" }}')
+        lines.append("    stdio.println(v)")
+    elif shape == "if_expr":
+        # The if-expression VALUE is the join of both branches; the secret
+        # branch makes it secret. Sinking it must be caught.
+        lines.append(f'    let x = if true then s else "{pub}"')
+        lines.append("    stdio.println(x)")
+    elif shape == "closure_capture":
+        # A closure that captures the secret returns a secret value when
+        # called; sinking the call result must be caught.
+        lines.append("    let leak = fun () -> String => s")
+        lines.append("    stdio.println(leak())")
+    elif shape == "closure_hof":
+        # A secret-capturing closure passed to a higher-order function and
+        # invoked inside it launders the secret out via the HOF result.
+        header.append("fun apply(f: Fun() -> String) -> String")
+        header.append("    return f()")
+        lines.append("    stdio.println(apply(fun () -> String => s))")
 
     return "\n".join(header + lines) + "\n"
 

@@ -9,6 +9,17 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+**Security / soundness (IFC, 3 fixes).** A `@secret` value can no longer
+be laundered to public by routing it through a `match`-expression value,
+an `if`-expression value, or a closure that captures it: the value of a
+`match` / `if` now carries the join of its branch / arm labels (and, under
+`@strict_ifc`, the selector's label as an implicit flow), and calling a
+closure that captures a `@secret` binding yields a `@secret` result.
+Previously such a value came out public, so it reached a public sink with
+no warning (and a `@secret` index laundered this way slipped past a
+`@constant_time` function). All-public branches and non-capturing closures
+stay public (no over-tainting).
+
 ## [1.2.0], 2026-06-15
 
 **Capa 1.2.0.** A MINOR release that hardens the soundness core (linear

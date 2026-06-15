@@ -642,7 +642,20 @@ class _IfcMixin:
             # value's label (roadmap S2.5).
             if self._is_declassify_call(e):
                 return L.PUBLIC
-            base = L.join_all(self._label_of(a) for a in e.args)
+            # The callee's own label flows into the result: calling a
+            # local binding that holds a @secret-capturing CLOSURE
+            # produces a secret value (``let leak = fun () => s; leak()``).
+            # A top-level function name carries no label, so this is a
+            # no-op for ordinary calls and never over-taints them.
+            base = L.join(
+                self._callee_label(e.callee),
+                L.join_all(self._label_of(a) for a in e.args),
+            )
+            # A closure passed inline as an argument and invoked inside the
+            # callee can leak its captured secret too: a Fun-typed argument
+            # contributes its capture label to the result (HOF case, e.g.
+            # ``apply(fun () => s)``).
+            base = L.join(base, self._call_arg_closure_label(e))
             # A callee that RETURNS a secret-derived value taints the
             # call result even when no argument is whole-value secret --
             # e.g. it reads a declared-@secret field of a struct argument
@@ -676,12 +689,172 @@ class _IfcMixin:
         if isinstance(e, (A.ListLit, A.TupleLit)):
             return L.join_all(self._label_of(el) for el in e.elements)
 
-        # Anything else (lambda, match expr, ...) is public by default
-        # in this slice. Mutable containers are handled separately: a
-        # secret put into one via push / add / set taints the receiver
-        # binding (see ``_check_ifc_container_mutation``), so the read
-        # rules above inherit the now-secret receiver label.
+        # An if-expression's value is the join of both branch values --
+        # ``if c then s else "y"`` is secret iff either branch is. Under
+        # ``@strict_ifc`` the condition's label joins in too (an implicit
+        # flow: the chosen value reveals which branch ran, hence the
+        # condition). A public-branches if stays public (no over-taint).
+        if isinstance(e, A.IfExpr):
+            branches = L.join(
+                self._label_of(e.then_expr), self._label_of(e.else_expr),
+            )
+            return self._join_pc_if_strict_with(branches, e.cond)
+
+        # A match-expression's value is the join of every arm body's label
+        # (the value flows out of whichever arm is selected). Under
+        # ``@strict_ifc`` the scrutinee's label joins in as the implicit
+        # flow (which arm ran reveals the scrutinee). The pattern binds are
+        # already tainted by ``_label_pattern_binds``, so an arm body that
+        # uses a bound secret is secret here. All-public arms stay public.
+        if isinstance(e, A.MatchExpr):
+            arm_label = L.join_all(
+                self._match_arm_body_label(arm) for arm in e.arms
+            )
+            return self._join_pc_if_strict_with(arm_label, e.scrutinee)
+
+        # A lambda VALUE carries the join of the labels of the free
+        # variables it captures (computed in ``_check_lambda``). A bare
+        # ``fun () => s`` used as a value (assigned, passed, returned) is
+        # secret iff it closes over a secret, so the secret is not laundered
+        # through the closure boundary. The CALL of such a closure inherits
+        # this via ``_callee_label`` / ``_call_arg_closure_label``.
+        if isinstance(e, A.LambdaExpr):
+            return self._lambda_capture_labels.get(id(e), L.PUBLIC)
+
+        # Anything else is public by default. Mutable containers are
+        # handled separately: a secret put into one via push / add / set
+        # taints the receiver binding (see ``_check_ifc_container_mutation``),
+        # so the read rules above inherit the now-secret receiver label.
         return L.PUBLIC
+
+    def _join_pc_if_strict_with(self, label: str, cond: A.Expr) -> str:
+        """Join ``cond``'s label into ``label`` only under ``@strict_ifc``
+        -- the implicit-flow contribution for a branch/match selector. The
+        default tier keeps value labels free of implicit flow (mirrors
+        ``_join_pc_if_strict`` for assignments), so a public-branch
+        if/match is never over-tainted by a secret condition in the
+        default tier; strict opts into full noninterference."""
+        if not getattr(self, "_strict_ifc", False):
+            return label
+        return L.join(label, self._label_of(cond))
+
+    def _match_arm_body_label(self, arm: A.MatchArm) -> str:
+        """The IFC label of a match arm's RESULT value. An expression-
+        bodied arm is its expression's label. A block-bodied arm
+        evaluates to its trailing bare expression (block-as-expression);
+        a block with no trailing value yields Unit (public). A guard does
+        not contribute to the produced VALUE (it only selects the arm; its
+        implicit flow is covered by the scrutinee join under strict)."""
+        body = arm.body
+        if isinstance(body, A.Block):
+            if body.stmts and isinstance(body.stmts[-1], A.ExprStmt):
+                return self._label_of(body.stmts[-1].expr)
+            return L.PUBLIC
+        return self._label_of(body)
+
+    # ---- closure capture labelling (roadmap S2) ------------------
+
+    def _callee_label(self, callee: A.Expr) -> str:
+        """The IFC label of a call's callee. For a bare-identifier callee
+        bound to a local that holds a closure (``let leak = fun () => s``),
+        this is the binding's label -- which carries the closure's captured
+        secret. A top-level function symbol has no label, so this returns
+        PUBLIC and ordinary calls are unaffected. A lambda literal callee
+        (an immediately-invoked closure) reads its recorded capture label."""
+        if isinstance(callee, A.Ident):
+            sym = self.bindings.get(id(callee))
+            if sym is not None and getattr(sym, "label", None):
+                return L.normalize(sym.label)
+            return L.PUBLIC
+        if isinstance(callee, A.LambdaExpr):
+            return self._lambda_capture_labels.get(id(callee), L.PUBLIC)
+        return self._label_of(callee)
+
+    def _call_arg_closure_label(self, e: A.Call) -> str:
+        """The join of the capture labels of any CLOSURE LITERALS passed
+        as arguments to ``e``. A higher-order call ``apply(fun () => s)``
+        hands the callee a closure that captures a secret; invoking it
+        inside ``apply`` and returning the result would launder ``s``, so
+        the secret is reflected into the call result conservatively. A
+        non-lambda argument contributes nothing here (its own label is
+        already joined via ``base``)."""
+        label = L.PUBLIC
+        for a in e.args:
+            if isinstance(a, A.LambdaExpr):
+                label = L.join(
+                    label, self._lambda_capture_labels.get(id(a), L.PUBLIC),
+                )
+        return label
+
+    def _lambda_capture_label(self, e: A.LambdaExpr) -> str:
+        """The join of the IFC labels of the FREE variables ``e``'s body
+        captures from the enclosing scope. A lambda that closes over a
+        @secret binding produces a secret value when CALLED, so the call
+        site must inherit this (otherwise ``let leak = fun () => s; leak()``
+        would launder a captured secret ``s`` back to public).
+
+        A free variable is an identifier in the body whose name is NOT
+        introduced by the lambda itself (its parameters or its inner
+        ``let``/``var``/pattern binds). The labels of the free idents are
+        already recorded (the body was just checked), so this is a pure
+        read. Excluding the lambda's own locals avoids a false positive:
+        a @secret PARAMETER taints the result only when the closure is
+        CALLED WITH a secret argument, which the ordinary argument-label
+        join at the call site already handles -- not a capture."""
+        locals_: set[str] = set()
+        for p in e.params:
+            locals_.add(p.name)
+        for stmt in self._lambda_body_stmts(e):
+            self._collect_bound_names(stmt, locals_)
+        label = L.PUBLIC
+        for ident in self._lambda_free_idents(e.body, locals_):
+            label = L.join(label, self._label_of(ident))
+        return label
+
+    def _lambda_body_stmts(self, e: A.LambdaExpr):
+        """The statement list of a block-bodied lambda, or empty for an
+        expression-bodied one."""
+        if isinstance(e.body, A.Block):
+            return e.body.stmts
+        return ()
+
+    def _collect_bound_names(self, node, out: set) -> None:
+        """Add every name a statement introduces into ``out`` (the
+        lambda's local names, so they are not counted as captures). Covers
+        ``let``/``var`` and the names a destructuring ``let`` binds; a
+        nested lambda's own params are handled when that lambda is walked,
+        so they are not collected here."""
+        if isinstance(node, A.LetStmt):
+            out.update(_pattern_bound_names(node.pattern))
+        elif isinstance(node, A.VarStmt):
+            out.add(node.name)
+
+    def _lambda_free_idents(self, node, locals_: set):
+        """Yield every ``A.Ident`` reachable from ``node`` whose name is
+        not in ``locals_`` -- the free variables the lambda captures.
+        Walks the expression / statement tree generically; does not
+        descend into a NESTED lambda's body with the outer locals (a
+        nested closure is its own scope and its captures are this
+        lambda's captures only transitively, which the recursion below
+        still surfaces because the nested body's free idents are walked
+        with the SAME ``locals_`` -- sound: an over-approximation never
+        under-reports a captured secret)."""
+        import dataclasses
+        if isinstance(node, A.Ident):
+            if node.name not in locals_:
+                yield node
+            return
+        if node is None or isinstance(node, str):
+            return
+        if dataclasses.is_dataclass(node):
+            for f in dataclasses.fields(node):
+                yield from self._lambda_free_idents(
+                    getattr(node, f.name), locals_,
+                )
+            return
+        if isinstance(node, (list, tuple)):
+            for x in node:
+                yield from self._lambda_free_idents(x, locals_)
 
     # ---- implicit flow / pc-label (roadmap S2.implicit) ----------
 

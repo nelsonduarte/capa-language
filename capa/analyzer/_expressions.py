@@ -179,6 +179,12 @@ class _ExpressionsMixin:
             else:
                 ret_ty = body_ty
 
+        # Roadmap S2 (IFC): record the join of the labels of the free
+        # variables the body captures, so a call to this closure inherits
+        # any captured @secret (computed before the scope is popped, while
+        # the body's idents are still resolvable / labelled).
+        self._lambda_capture_labels[id(e)] = self._lambda_capture_label(e)
+
         self._lambda_local_names_stack.pop()
         self._loop_depth = prev_loop_depth
         self._consumed = prev_consumed

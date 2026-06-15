@@ -364,6 +364,12 @@ class Analyzer(
         # from its children's labels. Read by sink-enforcement /
         # SBOM-emission in later S2 slices.
         self._expr_labels: dict[int, str] = {}
+        # Roadmap S2 (IFC, closure capture). ``id(LambdaExpr)`` -> the
+        # join of the labels of the free (captured) variables its body
+        # references. A lambda that closes over a @secret binding carries
+        # that secret in its result; the call site joins this in so the
+        # value the closure RETURNS is not laundered to public.
+        self._lambda_capture_labels: dict[int, str] = {}
         # Roadmap S2 (per-field IFC precision). Parallel to
         # ``self._expr_labels`` but only for STRUCT-typed expressions:
         # id(expr) -> a per-field label map ``{field_name: label_or_submap}``
