@@ -64,6 +64,50 @@ def _caps_via_type(
     return set(), False
 
 
+def _contains_fun_via_structs(
+    t: Optional[A.TypeExpr],
+    structs_by_name: dict[str, A.TypeStruct],
+    known_fun_bearing: set[str],
+    _seen: Optional[set[str]] = None,
+) -> bool:
+    """True if ``t`` is, or transitively (through named struct fields)
+    contains, a ``Fun(...)`` type. Unlike ``_strings._contains_fun_type``,
+    this EXPANDS a named struct's field definitions, so a plain data
+    struct whose field holds a closure is detected. ``known_fun_bearing``
+    short-circuits structs already proven Fun-bearing by the fixpoint;
+    ``_seen`` guards against recursive struct definitions."""
+    if t is None:
+        return False
+    if isinstance(t, A.FunType):
+        return True
+    if isinstance(t, A.TupleType):
+        return any(
+            _contains_fun_via_structs(e, structs_by_name, known_fun_bearing)
+            for e in t.elements
+        )
+    if isinstance(t, A.TypeName):
+        if any(
+            _contains_fun_via_structs(a, structs_by_name, known_fun_bearing)
+            for a in (t.args or ())
+        ):
+            return True
+        if t.name in known_fun_bearing:
+            return True
+        td = structs_by_name.get(t.name)
+        if td is None:
+            return False
+        seen = _seen if _seen is not None else set()
+        if t.name in seen:
+            return False
+        seen = seen | {t.name}
+        for fld in td.fields:
+            if _contains_fun_via_structs(
+                fld.type_expr, structs_by_name, known_fun_bearing, seen,
+            ):
+                return True
+    return False
+
+
 def _type_mentions_any(
     t: Optional[A.TypeExpr], names: set[str]
 ) -> bool:
@@ -122,6 +166,31 @@ def compute_reachability(
         for item in module.items
         if isinstance(item, A.TypeStruct)
     }
+
+    # A struct whose fields TRANSITIVELY hold a ``Fun(...)`` value is
+    # unprovable EVEN IF it is a plain data struct (not cap-bearing): a
+    # closure stored in a field can exercise whatever capability the
+    # builder captured into it, so a function touching that struct in its
+    # signature cannot honestly claim to provably-exclude any cap. Without
+    # this, ``type Holder { action: Fun() -> Unit }`` (no impls) is
+    # invisible to the downgrade and ``runner(h: Holder)`` falsely
+    # provably-excludes every cap. Computed to a fixpoint so a struct that
+    # nests another Fun-bearing struct (``Outer { inner: Inner }``) is
+    # caught too.
+    fun_bearing_structs: set[str] = set()
+    fb_changed = True
+    while fb_changed:
+        fb_changed = False
+        for sname, td in structs_by_name.items():
+            if sname in fun_bearing_structs:
+                continue
+            for fld in td.fields:
+                if _contains_fun_via_structs(
+                    fld.type_expr, structs_by_name, fun_bearing_structs,
+                ):
+                    fun_bearing_structs.add(sname)
+                    fb_changed = True
+                    break
     impls_by_trait: dict[str, list[A.ImplBlock]] = {}
     for item in module.items:
         if isinstance(item, A.ImplBlock) and item.trait_name is not None:
@@ -130,7 +199,12 @@ def compute_reachability(
     reachable: dict[str, set[str]] = {}
     for name in user_cap_names | cap_bearing_structs:
         reachable[name] = set()
-    unprovable: set[str] = set()
+    # Seed ``unprovable`` with every Fun-bearing struct (cap-bearing or
+    # plain data), so ``_type_mentions_any(t, unprovable)`` downgrades any
+    # signature that touches one. A plain data struct gets no ``reachable``
+    # entry (it carries no statically-named caps), but its presence in
+    # ``unprovable`` is what forces the caller's exclusion list to empty.
+    unprovable: set[str] = set(fun_bearing_structs)
 
     changed = True
     while changed:

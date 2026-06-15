@@ -28,6 +28,13 @@ poisoned), and consuming a captured linear value is rejected exactly as
 consuming a captured capability already is. A single consume through an
 alias (`let h2 = h; close(h2)`) stays valid.
 
+**Manifest (1 fix).** `provably_excluded_capabilities` no longer falsely
+excludes a capability that a function can reach through a closure stored in
+a field of a plain (non-cap-bearing) data struct. A struct whose fields
+transitively hold a `Fun(...)` type is now treated as unprovable, so any
+function whose signature touches it downgrades its exclusion list. A struct
+with no `Fun` in its fields still permits exclusion (no over-approximation).
+
 ## [1.2.0], 2026-06-15
 
 **Capa 1.2.0.** A MINOR release that hardens the soundness core (linear
