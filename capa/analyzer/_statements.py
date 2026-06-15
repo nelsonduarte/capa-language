@@ -188,6 +188,11 @@ class _StatementsMixin:
         # ``_check_ident``; here the common ``let h = <call>`` case is
         # the obligation source.
         if isinstance(s.pattern, A.IdentPat):
+            # ``let h2 = h`` aliasing a live linear value MOVES the
+            # obligation onto the new name (poisoning the source) so the
+            # value stays single-owner; without this the source and alias
+            # would each be independently consumable -> double-consume.
+            self._linear_transfer_if_alias(s.value)
             self._linear_bind(s.pattern.name, actual, s.pos)
         elif isinstance(s.pattern, A.WildcardPat):
             # ``let _ = open()`` drops a linear value into a slot that
@@ -245,6 +250,9 @@ class _StatementsMixin:
         # Roadmap S1: a ``var h = open()`` of a linear-typed value opens
         # the same must-consume obligation a ``let`` does -- ``var`` only
         # makes the slot re-assignable, it does not waive the obligation.
+        # An aliasing ``var h2 = h`` MOVES the obligation off ``h`` (as in
+        # ``let``) so the value remains single-owner.
+        self._linear_transfer_if_alias(s.value)
         self._linear_bind(s.name, actual, s.pos)
 
     def _check_assign(self, s: A.AssignStmt) -> None:

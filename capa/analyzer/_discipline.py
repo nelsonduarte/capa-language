@@ -58,6 +58,23 @@ class _DisciplineMixin:
             # capabilities, so they don't match ``_is_capability_ident``
             # below; handle them first and continue.)
             if isinstance(arg, A.Ident) and arg.name in self._live_linear:
+                # Consuming a linear value CAPTURED from an enclosing scope
+                # is an error for the same reason a captured capability is:
+                # the closure may be invoked multiple times, but the value
+                # can only be consumed once. A name not local to any
+                # enclosing lambda frame is a capture.
+                if self._lambda_local_names_stack and not any(
+                    arg.name in frame
+                    for frame in self._lambda_local_names_stack
+                ):
+                    self._err(
+                        f"cannot consume linear value {arg.name!r} captured "
+                        f"from enclosing scope; closures may be invoked "
+                        f"multiple times, but a `linear type` / typestate "
+                        f"value can only be consumed once",
+                        arg.pos,
+                    )
+                    continue
                 self._linear_discharge(arg.name)
                 continue
             path = self._is_capability_ident(arg)

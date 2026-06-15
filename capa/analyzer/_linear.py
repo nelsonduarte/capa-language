@@ -78,6 +78,34 @@ class _LinearMixin:
             self._consumed.add(name)
             self._linear_names.add(name)
 
+    def _linear_transfer_if_alias(self, value: "A.Expr") -> None:
+        """When a ``let``/``var`` RHS is a bare identifier naming a still-
+        live linear obligation (``let h2 = h``), MOVE the obligation off
+        the source name rather than letting ``_linear_bind`` open a second
+        independent obligation under the new name. A linear value has a
+        single owner: ``h`` and ``h2`` denote the SAME value, so each must
+        not be separately consumable -- without the move, ``close(h)`` and
+        ``close(h2)`` would both type-check and double-consume.
+
+        The source is poisoned (``_consumed`` / ``_linear_names``) exactly
+        as a real consume / anonymous drop is, so a later use of the source
+        name (``close(h)`` after ``let h2 = h``) is rejected as use-after-
+        consume. The new name's fresh obligation is armed by the caller's
+        ``_linear_bind`` immediately after, so the single obligation now
+        lives under the new name (``let h2 = h; close(h2)`` stays valid).
+
+        No-op unless the RHS is a bare ``Ident`` that currently holds a
+        live obligation -- a non-identifier RHS (a call, ``become``, ...)
+        produces a fresh value, and an already-consumed source is gone from
+        ``_live_linear`` and handled by the ordinary use-after-consume
+        check on the RHS itself."""
+        from .. import capa_ast as _A
+        if not isinstance(value, _A.Ident):
+            return
+        if value.name not in self._live_linear:
+            return
+        self._linear_discharge(value.name)
+
     def _linear_reassign(self, name: str, ty: Optional[Ty], pos: Pos) -> None:
         """Handle ``h = <expr>`` re-assignment to an existing name.
 

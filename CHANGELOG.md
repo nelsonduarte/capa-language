@@ -20,6 +20,14 @@ no warning (and a `@secret` index laundered this way slipped past a
 `@constant_time` function). All-public branches and non-capturing closures
 stay public (no over-tainting).
 
+**Security / soundness (linear affinity, 1 fix).** A linear / typestate
+value can no longer be consumed twice by ALIASING it (`let h2 = h`) or by
+capturing it in a closure invoked more than once. An aliasing `let` / `var`
+now MOVES the must-consume obligation onto the new name (the source is
+poisoned), and consuming a captured linear value is rejected exactly as
+consuming a captured capability already is. A single consume through an
+alias (`let h2 = h; close(h2)`) stays valid.
+
 ## [1.2.0], 2026-06-15
 
 **Capa 1.2.0.** A MINOR release that hardens the soundness core (linear
