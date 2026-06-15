@@ -95,7 +95,32 @@ class _StatementsMixin:
             self._err(f"{kw} outside of a loop", stmt.pos)
 
     def _check_let(self, s: A.LetStmt) -> None:
-        actual = self._check_expr(s.value)
+        # Bidirectional typing for a list literal under a ``List<T>``
+        # annotation: thread the declared element type into the list-lit
+        # checker so each element is checked against ``T`` (trait /
+        # capability membership) instead of against the first element.
+        # This is confined to the list-literal shape -- tuple / struct
+        # literals are unchanged -- and only kicks in when the
+        # annotation is concretely ``List<T>``; every other RHS falls
+        # through to the ordinary inference path.
+        actual = None
+        if isinstance(s.value, A.ListLit) and s.type_expr is not None:
+            declared_ann = self._resolve_type(s.type_expr)
+            if (
+                isinstance(declared_ann, TyName)
+                and declared_ann.name == "List"
+                and len(declared_ann.args) == 1
+            ):
+                actual = self._check_list_lit(
+                    s.value, expected_elem=declared_ann.args[0]
+                )
+                # Replicate the bookkeeping _check_expr would have done
+                # (record the node's type, label it) since we bypassed
+                # it to pass the expected element type.
+                self.types[id(s.value)] = actual
+                self._label_expr(s.value)
+        if actual is None:
+            actual = self._check_expr(s.value)
         if s.type_expr is not None:
             declared = self._resolve_type(s.type_expr)
             if not self._assignable(declared, actual, s.value):

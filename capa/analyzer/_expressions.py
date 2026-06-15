@@ -911,11 +911,37 @@ class _ExpressionsMixin:
         )
         return TyName(sym.name, type_args)
 
-    def _check_list_lit(self, e: A.ListLit) -> Ty:
+    def _check_list_lit(
+        self, e: A.ListLit, expected_elem: Optional[Ty] = None,
+    ) -> Ty:
         if not e.elements:
             # Fresh TyVar: the element type will be refined by
-            # later uses (push, indexing, etc.).
+            # later uses (push, indexing, etc.). An annotated empty
+            # list (``let xs: List<Shape> = []``) keeps the declared
+            # element type so the later ``_assignable`` check passes.
+            if expected_elem is not None:
+                return TyName("List", (expected_elem,))
             return TyName("List", (self._fresh_ty_var("lst"),))
+        # With an annotated element type (``let xs: List<Shape> = [...]``)
+        # every element is checked against THAT type (trait / capability
+        # membership via ``_assignable``) rather than against the first
+        # element. This lets a heterogeneous list of distinct implementors
+        # of a common trait honour its annotation -- ``[Sq{...}, Rec{...}]``
+        # typed ``List<Shape>`` -- instead of inferring ``List<Sq>`` from
+        # the first element and then rejecting the rest. Without an
+        # annotation the element type is still inferred from the first
+        # element (unchanged behaviour), so an unannotated heterogeneous
+        # list is still an error.
+        if expected_elem is not None:
+            for el in e.elements:
+                ety = self._check_expr(el)
+                if not self._assignable(expected_elem, ety, el):
+                    self._err(
+                        f"list literal: element has type {ty_str(ety)}, "
+                        f"expected {ty_str(expected_elem)}",
+                        el.pos,
+                    )
+            return TyName("List", (expected_elem,))
         first_ty = self._check_expr(e.elements[0])
         for el in e.elements[1:]:
             ety = self._check_expr(el)

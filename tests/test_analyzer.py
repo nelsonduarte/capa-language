@@ -531,6 +531,79 @@ class TestTypeChecking(unittest.TestCase):
             any("element has type String, expected Int" in m for m in msgs)
         )
 
+    _SHAPE_PRELUDE = (
+        "trait Shape\n"
+        "    fun area(self) -> Int\n"
+        "type Sq { s: Int }\n"
+        "type Rec { w: Int, h: Int }\n"
+        "impl Shape for Sq\n"
+        "    fun area(self) -> Int\n"
+        "        return self.s * self.s\n"
+        "impl Shape for Rec\n"
+        "    fun area(self) -> Int\n"
+        "        return self.w * self.h\n"
+    )
+
+    def test_list_lit_trait_annotation_heterogeneous(self):
+        # Bidirectional typing: a heterogeneous list literal of distinct
+        # implementors of a common trait honours a ``List<Shape>``
+        # annotation instead of inferring ``List<Sq>`` from the first
+        # element and rejecting the rest.
+        r = check(
+            self._SHAPE_PRELUDE
+            + "fun f() -> Int\n"
+            "    let shapes: List<Shape> = [Sq { s: 2 }, Rec { w: 2, h: 3 }]\n"
+            "    return shapes.length()\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+    def test_list_lit_trait_annotation_homogeneous(self):
+        # A homogeneous annotated list still type-checks.
+        r = check(
+            self._SHAPE_PRELUDE
+            + "fun f() -> Int\n"
+            "    let shapes: List<Shape> = [Sq { s: 2 }, Sq { s: 3 }]\n"
+            "    return shapes.length()\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+    def test_list_lit_trait_annotation_empty(self):
+        # An empty annotated list keeps its declared element type.
+        r = check(
+            self._SHAPE_PRELUDE
+            + "fun f() -> Int\n"
+            "    let shapes: List<Shape> = []\n"
+            "    return shapes.length()\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+    def test_list_lit_concrete_annotation_incompatible_still_rejected(self):
+        # A list literal with a CONCRETE element annotation and an
+        # incompatible element is still an error (no false acceptance).
+        msgs = errors_of(
+            "fun f() -> Int\n"
+            "    let xs: List<Int> = [1, \"two\", 3]\n"
+            "    return xs.length()\n"
+        )
+        self.assertTrue(
+            any("element has type String, expected Int" in m for m in msgs)
+        )
+
+    def test_list_lit_unannotated_heterogeneous_still_rejected(self):
+        # Without an annotation the element type is still inferred from
+        # the first element, so an unannotated heterogeneous list still
+        # errors (the threading is confined to the annotated path).
+        msgs = errors_of(
+            "type Sq { s: Int }\n"
+            "type Rec { w: Int }\n"
+            "fun f() -> Int\n"
+            "    let xs = [Sq { s: 1 }, Rec { w: 2 }]\n"
+            "    return xs.length()\n"
+        )
+        self.assertTrue(
+            any("element has type Rec, expected Sq" in m for m in msgs)
+        )
+
 
 # =============================================================
 # Variants and match

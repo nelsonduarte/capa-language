@@ -1,0 +1,48 @@
+// List literal of mixed trait implementors under a `List<Shape>`
+// annotation. Pre-fix (2026-06-15) the analyzer inferred a list
+// literal's element type purely from its FIRST element and never saw
+// the let-binding's annotation, so `[Sq{...}, Rec{...}]` typed
+// `List<Sq>` and the heterogeneous-but-trait-compatible literal was
+// rejected ("element has type Rec, expected Sq" + "expected
+// List<Shape>, got List<Sq>"). `_check_let` now threads the declared
+// `List<T>` element type into the list-literal checker, which checks
+// each element against `T` (trait membership via the impl table)
+// instead of against the first element. This program exercises:
+//   - a heterogeneous list of two distinct Shape implementors
+//   - dispatching the trait method per element (single-impl path)
+//   - a homogeneous annotated list (regression)
+//   - an empty annotated list keeping its declared element type
+
+trait Shape
+    fun area(self) -> Int
+
+type Sq { s: Int }
+type Rec { w: Int, h: Int }
+
+impl Shape for Sq
+    fun area(self) -> Int
+        return self.s * self.s
+
+impl Shape for Rec
+    fun area(self) -> Int
+        return self.w * self.h
+
+fun total_area(shapes: List<Shape>) -> Int
+    var total = 0
+    for sh in shapes
+        total = total + sh.area()
+    return total
+
+fun main(stdio: Stdio)
+    // Heterogeneous list honouring the trait annotation.
+    let shapes: List<Shape> = [Sq { s: 2 }, Rec { w: 2, h: 3 }]
+    stdio.println("count: ${shapes.length()}")
+    stdio.println("areas: ${total_area(shapes)}")
+
+    // Homogeneous annotated list (regression).
+    let squares: List<Shape> = [Sq { s: 3 }, Sq { s: 4 }]
+    stdio.println("squares: ${total_area(squares)}")
+
+    // Empty annotated list keeps List<Shape> (regression).
+    let none: List<Shape> = []
+    stdio.println("empty: ${none.length()}")

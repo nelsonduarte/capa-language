@@ -684,6 +684,17 @@ _PARITY_PROGRAMS: list[str] = [
     # Env then denies a key outside its allow-set for a deterministic
     # None on both backends.
     "env_restrict_to_keys_callarg.capa",
+    # List-literal trait-annotation slice (2026-06-15): a list literal of
+    # mixed trait implementors under a ``List<Shape>`` annotation
+    # (``[Sq{...}, Rec{...}]``) was rejected because the analyzer inferred
+    # the element type purely from the FIRST element (``List<Sq>``) and
+    # never saw the annotation. ``_check_let`` now threads the declared
+    # ``List<T>`` element type into the list-literal checker, which checks
+    # each element against ``T`` (trait membership) instead of against the
+    # first element. Covers a heterogeneous list dispatching the trait
+    # method per element (multi-impl), a homogeneous annotated list, and
+    # an empty annotated list keeping its declared element type.
+    "list_lit_trait_annotation.capa",
 ]
 
 # Programs deliberately excluded from parity and why; documented
@@ -1958,6 +1969,9 @@ class TestPythonWasmParity(unittest.TestCase):
 
     def test_env_restrict_to_keys_callarg(self):
         self._assert_parity("env_restrict_to_keys_callarg.capa")
+
+    def test_list_lit_trait_annotation(self):
+        self._assert_parity("list_lit_trait_annotation.capa")
 
     def test_inventory_matches_examples_dir(self):
         # Soundness check: every .capa under examples/wasm/ is

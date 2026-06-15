@@ -9,6 +9,22 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+**Bug fix (analyzer): a list literal of mixed trait implementors now
+honours a `List<Trait>` annotation.** `let shapes: List<Shape> = [Sq {
+... }, Rec { ... }]` (two distinct implementors of a common trait) was
+rejected with "element has type Rec, expected Sq" + "expected
+List<Shape>, got List<Sq>" -- the analyzer inferred the list's element
+type purely from the FIRST element and never consulted the binding's
+annotation. The `let` checker now threads the declared `List<T>` element
+type into the list-literal checker, which checks each element against
+`T` (trait / capability membership) instead of against the first
+element, so a heterogeneous-but-trait-compatible literal type-checks
+without the prior `var` + `push` workaround. The threading is confined
+to the list-literal shape: an unannotated heterogeneous list still
+infers from the first element (and so still errors), a concrete-type
+annotation with an incompatible element is still rejected, and an empty
+annotated list keeps its declared element type.
+
 **Bug fix (Wasm parity): `env.restrict_to_keys(k)` now compiles when `k`
 is not an inline list literal.** Passing a key list produced by a call
 (or any `List<String>` built outside the function body) failed Wasm
