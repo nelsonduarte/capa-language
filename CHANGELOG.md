@@ -35,6 +35,16 @@ transitively hold a `Fun(...)` type is now treated as unprovable, so any
 function whose signature touches it downgrades its exclusion list. A struct
 with no `Fun` in its fields still permits exclusion (no over-approximation).
 
+**Manifest (1 fix).** The same `provably_excluded_capabilities` downgrade
+now also fires when the `Fun(...)` is hidden inside a SUM type's variant
+payload (`type Action = Run(Fun() -> Unit) | Noop`): the reachability walk
+previously expanded struct fields only, so `runner(a: Action)` falsely
+excluded every capability while `Run(f) -> f()` reached whatever the caller
+captured. Sums and structs are now folded into one fixpoint, so a Fun in a
+variant payload, a Fun-bearing sum nested in a struct field, and a
+Fun-bearing struct nested in a variant payload all downgrade. A sum whose
+variants carry no `Fun` (a plain enum) still permits exclusion.
+
 ## [1.2.0], 2026-06-15
 
 **Capa 1.2.0.** A MINOR release that hardens the soundness core (linear

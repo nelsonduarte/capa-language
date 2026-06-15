@@ -404,6 +404,83 @@ class TestIneligibilityProofs(unittest.TestCase):
         )
         self.assertEqual(excl, [])
 
+    def test_sum_variant_fun_voids_the_proof(self):
+        # A sum type whose variant carries a closure
+        # (``Run(Fun() -> Unit)``) hides the Fun the same way a
+        # struct field does: ``runner(a: Action)`` with
+        # ``Run(f) -> f()`` exercises whatever cap the caller
+        # captured, so the manifest must not claim provable
+        # exclusion. Pre-fix the reachability walk only expanded
+        # struct fields, never sum-variant payloads, so the
+        # manifest lied (it excluded Stdio while ``--run`` reached
+        # it).
+        excl = self._excl(
+            "type Action =\n"
+            "    Run(Fun() -> Unit)\n"
+            "    Noop\n"
+            "fun runner(a: Action)\n"
+            "    match a\n"
+            "        Run(f) -> f()\n"
+            "        Noop -> ()\n",
+            fn_name="runner",
+        )
+        self.assertEqual(excl, [])
+
+    def test_sum_in_struct_fun_voids_the_proof(self):
+        # Transitive: a plain struct field whose type is a
+        # Fun-bearing sum (``Holder { act: Action }``) downgrades
+        # too -- the fixpoint folds sums and structs together in
+        # either nesting order.
+        excl = self._excl(
+            "type Action =\n"
+            "    Run(Fun() -> Unit)\n"
+            "    Noop\n"
+            "type Holder { act: Action }\n"
+            "fun runner(h: Holder)\n"
+            "    match h.act\n"
+            "        Run(f) -> f()\n"
+            "        Noop -> ()\n",
+            fn_name="runner",
+        )
+        self.assertEqual(excl, [])
+
+    def test_struct_in_sum_fun_voids_the_proof(self):
+        # The other nesting order: a sum variant carrying a
+        # Fun-bearing struct (``Holds(Cb)`` where
+        # ``Cb { run: Fun() -> Unit }``) is caught too.
+        excl = self._excl(
+            "type Cb { run: Fun() -> Unit }\n"
+            "type Wrap =\n"
+            "    Holds(Cb)\n"
+            "    Empty\n"
+            "fun go(w: Wrap)\n"
+            "    match w\n"
+            "        Holds(c) ->\n"
+            "            let r = c.run\n"
+            "            r()\n"
+            "        Empty -> ()\n",
+            fn_name="go",
+        )
+        self.assertEqual(excl, [])
+
+    def test_sum_without_fun_still_proves(self):
+        # A sum type with NO Fun in any variant (a plain enum) does
+        # NOT downgrade: ``pick(c: Color)`` keeps its full exclusion
+        # claim. The sum walk must not over-approximate.
+        excl = self._excl(
+            "type Color =\n"
+            "    Red\n"
+            "    Green\n"
+            "fun pick(c: Color) -> Int\n"
+            "    return match c\n"
+            "        Red -> 1\n"
+            "        Green -> 2\n",
+            fn_name="pick",
+        )
+        self.assertIn("Stdio", excl)
+        self.assertIn("Fs", excl)
+        self.assertIn("Net", excl)
+
     def test_no_fun_in_sig_still_proves(self):
         # Sanity: the downgrade ONLY fires when Fun appears in
         # the signature. A plain function with no Fun param /

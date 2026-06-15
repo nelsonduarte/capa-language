@@ -68,43 +68,61 @@ def _contains_fun_via_structs(
     t: Optional[A.TypeExpr],
     structs_by_name: dict[str, A.TypeStruct],
     known_fun_bearing: set[str],
+    sum_payloads_by_name: Optional[dict[str, list]] = None,
     _seen: Optional[set[str]] = None,
 ) -> bool:
-    """True if ``t`` is, or transitively (through named struct fields)
-    contains, a ``Fun(...)`` type. Unlike ``_strings._contains_fun_type``,
-    this EXPANDS a named struct's field definitions, so a plain data
-    struct whose field holds a closure is detected. ``known_fun_bearing``
-    short-circuits structs already proven Fun-bearing by the fixpoint;
-    ``_seen`` guards against recursive struct definitions."""
+    """True if ``t`` is, or transitively (through named struct fields or
+    sum-variant payloads), contains a ``Fun(...)`` type. Unlike
+    ``_strings._contains_fun_type``, this EXPANDS a named struct's field
+    definitions AND a named sum type's variant payloads, so a plain data
+    struct whose field holds a closure -- or a sum type one of whose
+    variants carries a closure (``Run(Fun() -> Unit)``) -- is detected,
+    in either nesting order (sum inside struct, struct inside sum).
+    ``known_fun_bearing`` short-circuits names already proven Fun-bearing
+    by the fixpoint; ``_seen`` guards against recursive definitions."""
+    sums = sum_payloads_by_name or {}
     if t is None:
         return False
     if isinstance(t, A.FunType):
         return True
     if isinstance(t, A.TupleType):
         return any(
-            _contains_fun_via_structs(e, structs_by_name, known_fun_bearing)
+            _contains_fun_via_structs(
+                e, structs_by_name, known_fun_bearing, sums,
+            )
             for e in t.elements
         )
     if isinstance(t, A.TypeName):
         if any(
-            _contains_fun_via_structs(a, structs_by_name, known_fun_bearing)
+            _contains_fun_via_structs(
+                a, structs_by_name, known_fun_bearing, sums,
+            )
             for a in (t.args or ())
         ):
             return True
         if t.name in known_fun_bearing:
             return True
-        td = structs_by_name.get(t.name)
-        if td is None:
-            return False
         seen = _seen if _seen is not None else set()
         if t.name in seen:
             return False
-        seen = seen | {t.name}
-        for fld in td.fields:
-            if _contains_fun_via_structs(
-                fld.type_expr, structs_by_name, known_fun_bearing, seen,
-            ):
-                return True
+        td = structs_by_name.get(t.name)
+        if td is not None:
+            inner = seen | {t.name}
+            for fld in td.fields:
+                if _contains_fun_via_structs(
+                    fld.type_expr, structs_by_name, known_fun_bearing,
+                    sums, inner,
+                ):
+                    return True
+            return False
+        payloads = sums.get(t.name)
+        if payloads is not None:
+            inner = seen | {t.name}
+            for p in payloads:
+                if _contains_fun_via_structs(
+                    p, structs_by_name, known_fun_bearing, sums, inner,
+                ):
+                    return True
     return False
 
 
@@ -167,6 +185,18 @@ def compute_reachability(
         if isinstance(item, A.TypeStruct)
     }
 
+    # Sum types indexed by name to their flattened variant payloads, so a
+    # ``type Action = Run(Fun() -> Unit) | Noop`` whose variant carries a
+    # closure is walked for Fun-bearing-ness exactly like a struct field.
+    # Without this a function ``runner(a: Action)`` falsely
+    # provably-excludes every cap while ``Run(f) -> f()`` lets the impl
+    # exercise whatever the caller captured into the closure.
+    sum_payloads_by_name: dict[str, list] = {
+        item.name: [p for v in item.variants for p in v.payloads]
+        for item in module.items
+        if isinstance(item, A.TypeSum)
+    }
+
     # A struct whose fields TRANSITIVELY hold a ``Fun(...)`` value is
     # unprovable EVEN IF it is a plain data struct (not cap-bearing): a
     # closure stored in a field can exercise whatever capability the
@@ -177,6 +207,12 @@ def compute_reachability(
     # provably-excludes every cap. Computed to a fixpoint so a struct that
     # nests another Fun-bearing struct (``Outer { inner: Inner }``) is
     # caught too.
+    # A sum type counts the SAME WAY (one of its variant payloads is, or
+    # transitively contains, a ``Fun``): a function whose signature
+    # touches it cannot honestly provably-exclude any cap. Folded into
+    # the same fixpoint as structs (key ``fun_bearing_structs`` holds both
+    # struct and sum names) so a sum nesting a Fun-bearing struct and a
+    # struct nesting a Fun-bearing sum are both caught.
     fun_bearing_structs: set[str] = set()
     fb_changed = True
     while fb_changed:
@@ -187,6 +223,18 @@ def compute_reachability(
             for fld in td.fields:
                 if _contains_fun_via_structs(
                     fld.type_expr, structs_by_name, fun_bearing_structs,
+                    sum_payloads_by_name,
+                ):
+                    fun_bearing_structs.add(sname)
+                    fb_changed = True
+                    break
+        for sname, payloads in sum_payloads_by_name.items():
+            if sname in fun_bearing_structs:
+                continue
+            for p in payloads:
+                if _contains_fun_via_structs(
+                    p, structs_by_name, fun_bearing_structs,
+                    sum_payloads_by_name,
                 ):
                     fun_bearing_structs.add(sname)
                     fb_changed = True
