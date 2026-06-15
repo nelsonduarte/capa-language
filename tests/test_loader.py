@@ -15,6 +15,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from capa.cli import _wasm_tooling_available
 from capa.loader import LoaderError, ModuleLoader
 from capa import capa_ast as A
 
@@ -359,7 +360,7 @@ class TestQualifiedModuleAccess(_TempDirMixin, unittest.TestCase):
 class TestSelectiveImport(_TempDirMixin, unittest.TestCase):
     """``import foo (a, b as c)`` brings only the listed pub symbols,
     renaming where ``as`` is used, and hides everything else. This is
-    the higienic form that resolves a ``pub`` symbol collision between
+    the hygienic form that resolves a ``pub`` symbol collision between
     two dependencies (both exporting ``pub fun parse``)."""
 
     def test_selective_brings_only_requested(self):
@@ -569,6 +570,182 @@ class TestSelectiveImport(_TempDirMixin, unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout, "red\ngreen\n")
+
+    def _run_both_backends(self, root, expected_stdout):
+        # Python backend (always) plus the Wasm backend when its
+        # tooling is present, asserting identical stdout.
+        py = subprocess.run(
+            [sys.executable, "-m", "capa", "--run", str(root)],
+            capture_output=True, text=True, encoding="utf-8",
+        )
+        self.assertEqual(py.returncode, 0, py.stderr)
+        self.assertEqual(py.stdout, expected_stdout)
+        if _wasm_tooling_available():
+            wa = subprocess.run(
+                [sys.executable, "-m", "capa", "--wasm", "--run",
+                 str(root)],
+                capture_output=True, text=True, encoding="utf-8",
+            )
+            self.assertEqual(wa.returncode, 0, wa.stderr)
+            self.assertEqual(wa.stdout, expected_stdout)
+
+    def test_unselected_sum_variant_does_not_leak(self):
+        # C1: a non-selected pub sum type is hidden together with its
+        # variants. Using a variant constructor in the importer is
+        # ``undefined name`` (the leak is closed).
+        self._write(
+            "summod.capa",
+            "pub type Color =\n    Red\n    Green\n    Blue\n"
+            "pub fun describe(c: Color) -> String\n"
+            "    return match c\n"
+            '        Red -> "red"\n'
+            '        Green -> "green"\n'
+            '        Blue -> "blue"\n'
+        )
+        root = self._write(
+            "root.capa",
+            "import summod (describe)\n"
+            "fun main(stdio: Stdio)\n"
+            "    let c = Red\n"
+            "    stdio.println(\"x\")\n"
+        )
+        result = subprocess.run(
+            [sys.executable, "-m", "capa", "--check", str(root)],
+            capture_output=True, text=True, encoding="utf-8",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("undefined name 'Red'", result.stderr)
+        # No mangled internal name leaks into the diagnostic.
+        self.assertNotIn("__sel__", result.stderr)
+
+    def test_local_variant_homonym_no_longer_collides(self):
+        # Escalation case: the importer declares its own sum type with
+        # a variant homonymous to a hidden dependency's variant. Before
+        # the fix the leaked ``Green`` collided; now it compiles.
+        self._write(
+            "summod.capa",
+            "pub type Color =\n    Red\n    Green\n    Blue\n"
+            "pub fun describe(c: Color) -> String\n"
+            "    return match c\n"
+            '        Red -> "red"\n'
+            '        Green -> "green"\n'
+            '        Blue -> "blue"\n'
+        )
+        root = self._write(
+            "root.capa",
+            "import summod (describe)\n"
+            "type Light =\n    Off\n    Green\n"
+            "fun show(l: Light) -> String\n"
+            "    return match l\n"
+            '        Off -> "off"\n'
+            '        Green -> "on"\n'
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(show(Green))\n"
+        )
+        self._run_both_backends(root, "on\n")
+
+    def test_two_hidden_sums_homonymous_variants_coexist(self):
+        # The central case the feature promises: two dependencies whose
+        # hidden sum types share variant names, importing only their
+        # functions, coexist and compile (no collision, no mangled name
+        # leaking into any diagnostic).
+        self._write(
+            "m1.capa",
+            "pub type StatusA =\n    Fresh\n    Pending\n"
+            "fun classify_a(s: StatusA) -> String\n"
+            "    return match s\n"
+            '        Fresh -> "a-fresh"\n'
+            '        Pending -> "a-pending"\n'
+            "pub fun a() -> String\n"
+            "    return classify_a(Pending)\n"
+        )
+        self._write(
+            "m2.capa",
+            "pub type StatusB =\n    Done\n    Pending\n"
+            "fun classify_b(s: StatusB) -> String\n"
+            "    return match s\n"
+            '        Done -> "b-done"\n'
+            '        Pending -> "b-pending"\n'
+            "pub fun b() -> String\n"
+            "    return classify_b(Pending)\n"
+        )
+        root = self._write(
+            "root.capa",
+            "import m1 (a)\n"
+            "import m2 (b)\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(a())\n"
+            "    stdio.println(b())\n"
+        )
+        self._run_both_backends(root, "a-pending\nb-pending\n")
+
+    def test_selective_sum_variants_construct_and_match(self):
+        # Positive: a selected (unrenamed) sum type stays fully
+        # functional -- its variants are constructible and matchable in
+        # the importer, on both backends.
+        self._write(
+            "col.capa",
+            "pub type Color =\n    Red\n    Green(Int)\n    Blue\n"
+        )
+        root = self._write(
+            "root.capa",
+            "import col (Color)\n"
+            "fun describe(c: Color) -> String\n"
+            "    return match c\n"
+            '        Red -> "red"\n'
+            '        Green(n) -> "green"\n'
+            '        Blue -> "blue"\n'
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(describe(Red))\n"
+            "    stdio.println(describe(Green(3)))\n"
+            "    stdio.println(describe(Blue))\n"
+        )
+        self._run_both_backends(root, "red\ngreen\nblue\n")
+
+    def test_hidden_sum_still_works_inside_its_module(self):
+        # Positive: the hidden sum type keeps working inside its own
+        # module -- the function selected from it matches its variants
+        # correctly on both backends.
+        self._write(
+            "summod.capa",
+            "pub type Color =\n    Red\n    Green\n    Blue\n"
+            "pub fun describe(c: Color) -> String\n"
+            "    return match c\n"
+            '        Red -> "red"\n'
+            '        Green -> "green"\n'
+            '        Blue -> "blue"\n'
+            "pub fun a_green() -> Color\n"
+            "    return Green\n"
+        )
+        root = self._write(
+            "root.capa",
+            "import summod (describe, a_green)\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(describe(a_green()))\n"
+        )
+        self._run_both_backends(root, "green\n")
+
+    def test_renaming_sum_type_is_a_clear_error(self):
+        # Renaming a sum type via ``as`` in a selective import is not
+        # yet supported; the user gets an actionable error rather than
+        # half-broken variants.
+        self._write(
+            "col.capa",
+            "pub type Color =\n    Red\n    Green\n"
+        )
+        root = self._write(
+            "root.capa",
+            "import col (Color as C)\n"
+            "fun main(stdio: Stdio)\n"
+            '    stdio.println("hi")\n'
+        )
+        result = subprocess.run(
+            [sys.executable, "-m", "capa", "--check", str(root)],
+            capture_output=True, text=True, encoding="utf-8",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("renaming a sum type", result.stderr)
+        self.assertIn("without 'as'", result.stderr)
 
     def test_module_exports_reflects_visible_names(self):
         # Only the selected (final, aliased) names appear in

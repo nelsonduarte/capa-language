@@ -856,25 +856,38 @@ def _apply_selective_import(
     Validation happens before any rename: a selector that names a
     symbol the target module does not declare, or declares without
     ``pub``, raises a :class:`LoaderError` anchored at the importing
-    file. Sum-type *variants* are intentionally not selectable here
-    (and a selected sum type keeps its variants' names): variant
-    renaming is deferred (see module docstring / CHANGELOG). The
-    central case this unblocks -- two libraries that both export a
+    file. Sum-type *variants* are intentionally not selectable here.
+    A *selected* sum type (no ``as``) keeps its variants' original
+    names so its constructors and ``match`` patterns stay usable. A
+    *non-selected* (hidden) sum type has its variants hidden too:
+    each variant is mangled alongside the type declaration and every
+    reference to it inside the module (constructor or ``match``
+    pattern) is rewritten, so the variants do not leak into the
+    importer's scope and cannot collide with the importer's own
+    declarations or with another hidden dependency's variants.
+
+    Renaming a sum type via ``as`` is rejected with a clear error:
+    rewriting its variants to track the alias is deferred (see module
+    docstring / CHANGELOG), and a half-applied rename would leave the
+    variants dangling. Import the type without ``as`` to bring its
+    variants.
+
+    The central case this unblocks -- two libraries that both export a
     ``pub fun parse`` -- needs only function/type/const/capability
     renaming, which this covers.
     """
     assert imp.selectors is not None
     # Index the target module's *original* top-level names by their
     # ``pub`` status, so we can validate selectors and decide which
-    # pub items to hide. Privates were already mangled by the caller,
-    # but we index against the pre-mangle names is impossible now;
-    # instead we read the (post-private-mangle) items: a private item
-    # no longer carries its original name, so a selector that named a
+    # pub items to hide. Privates were already mangled by the caller;
+    # we index the (post-private-mangle) items: a private item no
+    # longer carries its original name, so a selector that named a
     # private will simply be "unknown" -- which is the right error
     # shape ("no public symbol"), since the user cannot select a
     # private regardless.
     pub_names: set[str] = set()
     all_pub_items: list[A.Item] = []
+    _item_by_name: dict[str, A.Item] = {}
     for it in module.items:
         if isinstance(it, A.Import):
             continue
@@ -884,6 +897,7 @@ def _apply_selective_import(
         if name is not None:
             pub_names.add(name)
             all_pub_items.append(it)
+            _item_by_name[name] = it
 
     selected_originals: set[str] = set()
     visible: dict[str, str] = {}
@@ -907,6 +921,24 @@ def _apply_selective_import(
                 pos=imp.pos,
                 filename=str(importer_path),
             )
+        if sel_alias is not None and isinstance(
+            _item_by_name.get(orig), A.TypeSum
+        ):
+            # Renaming a sum type would orphan its variants: the type
+            # declaration takes the alias but the variant constructors
+            # (and ``match`` patterns) still carry the original names,
+            # which no longer resolve to the renamed type. Tracking the
+            # alias through every variant is deferred, so reject this
+            # rather than emit a half-broken import.
+            joined = ".".join(imp.path)
+            raise LoaderError(
+                f"renaming a sum type ('{orig} as {sel_alias}') in a "
+                f"selective import is not yet supported; import it "
+                f"without 'as' to bring its variants. "
+                f"(module '{joined}')",
+                pos=imp.pos,
+                filename=str(importer_path),
+            )
         selected_originals.add(orig)
         target_name = sel_alias if sel_alias is not None else orig
         visible[orig] = target_name
@@ -914,10 +946,18 @@ def _apply_selective_import(
             rename[orig] = sel_alias
 
     # Hide every pub item that was not selected by mangling its name.
+    # For a hidden sum type, hide its variants too: each variant is
+    # mangled alongside the type so its constructors and ``match``
+    # patterns no longer resolve in the importer's scope (and cannot
+    # collide with the importer's own or another dependency's variants).
     for it in all_pub_items:
         name = _item_name(it)
-        if name is not None and name not in selected_originals:
-            rename[name] = f"{prefix}__sel__{name}"
+        if name is None or name in selected_originals:
+            continue
+        rename[name] = f"{prefix}__sel__{name}"
+        if isinstance(it, A.TypeSum):
+            for v in it.variants:
+                rename[v.name] = f"{prefix}__sel__{v.name}"
 
     if rename:
         # Rename declarations in place, then rewrite references.
@@ -925,6 +965,13 @@ def _apply_selective_import(
             name = _item_name(it)
             if name is not None and name in rename:
                 it.name = rename[name]
+            # A hidden sum type's variant declarations are renamed
+            # too, so the analyzer registers the variants under their
+            # mangled names and the originals leave the global scope.
+            if isinstance(it, A.TypeSum):
+                for v in it.variants:
+                    if v.name in rename:
+                        v.name = rename[v.name]
         _PrivateRenameWalker(rename).visit_module(module)
     return visible
 
@@ -982,15 +1029,24 @@ class _PrivateRenameWalker:
     refer to *top-level items*:
 
     - ``Ident.name`` (function / constant references; also the
-      receiver position of a method call before qualified rewrite).
+      receiver position of a method call before qualified rewrite,
+      and a no-payload variant constructor).
     - ``TypeName.name`` (named types in annotations).
     - ``ImplBlock.trait_name`` / ``ImplBlock.type_name``.
     - ``StructLit.type_name``.
+    - ``VariantPat.name`` / ``StructPat.type_name`` in ``match``
+      patterns (a variant constructor used as a pattern).
 
-    Pattern bindings, parameter names, local variables, struct
-    field names, sum-type variant names, attribute names, and
-    method names on traits are *not* rewritten because they do
-    not denote top-level items.
+    Variant names are rewritten only when they appear in ``rename``,
+    which happens for a *hidden* sum type (its variants are mangled
+    alongside the type so they do not leak into the importer). A
+    variant whose name is not in ``rename`` is left untouched, so the
+    variants of a visible or selected sum type keep their names.
+
+    Parameter names, local variables, struct field names, attribute
+    names, and method names on traits are *not* rewritten because
+    they do not denote top-level items. Identifier pattern bindings
+    are local and likewise never rewritten.
     """
 
     def __init__(self, rename: dict[str, str]) -> None:
@@ -1165,6 +1221,7 @@ class _PrivateRenameWalker:
         if isinstance(e, A.MatchExpr):
             self.visit_expr(e.scrutinee)
             for arm in e.arms:
+                self.visit_pattern(arm.pattern)
                 if arm.guard is not None:
                     self.visit_expr(arm.guard)
                 if isinstance(arm.body, A.Block):
@@ -1182,3 +1239,29 @@ class _PrivateRenameWalker:
             self.visit_expr(e.end)
             return
         # Leaf nodes (literals, BoolLit, etc.): nothing.
+
+    # ---- patterns ----
+
+    def visit_pattern(self, p) -> None:
+        # Only ``VariantPat.name`` denotes a top-level item (a sum-type
+        # constructor) and is rewritten when that variant was hidden.
+        # ``StructPat.type_name`` is also a top-level reference; struct
+        # types are not variant-hidden, but rewriting it keeps the pass
+        # consistent if a struct type was itself renamed. Identifier and
+        # wildcard bindings are local and never rewritten.
+        if isinstance(p, A.VariantPat):
+            p.name = self._r(p.name)
+            for sub in p.payloads:
+                self.visit_pattern(sub)
+        elif isinstance(p, A.StructPat):
+            p.type_name = self._r(p.type_name)
+            for _, sub in p.fields:
+                if sub is not None:
+                    self.visit_pattern(sub)
+        elif isinstance(p, A.TuplePat):
+            for sub in p.elements:
+                self.visit_pattern(sub)
+        elif isinstance(p, A.OrPat):
+            for alt in p.alternatives:
+                self.visit_pattern(alt)
+        # WildcardPat / IdentPat / LiteralPat: nothing to rewrite.

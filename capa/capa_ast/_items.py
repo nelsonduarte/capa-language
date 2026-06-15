@@ -54,7 +54,7 @@ class Import(Item):
     A selected item is brought into the importer's scope under its
     alias when one is given, otherwise under its original name;
     every other ``pub`` item of the target stays hidden. This is
-    the higienic, collision-resolving import form (two libraries
+    the hygienic, collision-resolving import form (two libraries
     that both export ``parse`` coexist when at least one is renamed).
     ``alias`` and ``selectors`` are mutually exclusive at parse time.
     """

@@ -22,10 +22,19 @@ capa_csv (parse as csv_parse)` + `import capa_cli (parse as cli_parse)`
 coexist (only one side needs a rename if the other's bare name is
 free). Selectors cover functions, types, consts, and capabilities;
 selecting an unrenamed `pub` sum type carries its variants along.
-Selecting a symbol the target does not declare, or declares without
-`pub`, is a clear load-time error (`module 'foo' has no public symbol
-'X'`). Renaming a sum type's *variants* is deferred to a follow-up
-(select the type unrenamed when you need its constructors). The change
+A `pub` sum type that is *not* selected is now hidden together with
+its variants: the variant constructors and their `match` patterns are
+mangled out of the importer's scope, so they no longer leak in (using
+an unselected variant is correctly `undefined name`), no longer
+collide with a homonymous variant the importer declares locally, and
+two dependencies whose hidden sum types share variant names coexist.
+Previously only the type *declaration* was hidden while the variant
+names leaked, which broke exactly the collisions selective import is
+meant to resolve. Selecting a symbol the target does not declare, or
+declares without `pub`, is a clear load-time error (`module 'foo' has
+no public symbol 'X'`). Renaming a sum type via `as` in a selective
+import is rejected with a clear error (its variants would be orphaned);
+import it without `as` to bring its constructors. The change
 is strictly additive: the loader, transpiler, and Wasm emitter still
 see a flat namespace, now without the collision. See
 [`reference.md` 7.1](docs/reference.md) and
