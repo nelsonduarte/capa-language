@@ -73,6 +73,18 @@ releases for the latest minor when a fix is significant.
 | 1.0.x   | yes       |
 | < 1.0   | no, please upgrade |
 
+## Published advisories
+
+Dated advisories are kept in [`docs/advisories/`](docs/advisories/).
+The 2026-05-25 audit record lives at the repository root in
+[`security-audit.md`](security-audit.md).
+
+- [`docs/advisories/2026-06-15-soundness.md`](docs/advisories/2026-06-15-soundness.md):
+  four linear / typestate affinity fixes (use-after-consume, anonymous
+  drop, `var` / re-assignment, partial consume in `match`) and two
+  information-flow fixes (`@secret` field read and destructure both
+  dropped the label), shipped in `1.2.0` under the security exception.
+
 ## Public disclosure
 
 I will coordinate public disclosure with the reporter. A typical

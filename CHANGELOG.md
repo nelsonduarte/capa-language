@@ -9,6 +9,51 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+## [1.2.0], 2026-06-15
+
+**Capa 1.2.0.** A MINOR release that hardens the soundness core (linear
+affinity and IFC) and closes Python / Wasm parity gaps. The static-
+analysis tightenings fall under the documented-bug / security carve-out
+of [`STABILITY.md`](STABILITY.md); the one new feature is strictly
+additive; see the security advisory at
+[`docs/advisories/2026-06-15-soundness.md`](docs/advisories/2026-06-15-soundness.md).
+
+**Security / soundness (the most important part, 6 fixes).** A `@secret`
+field now preserves its label both on read and on destructure (previously
+silent laundering of PII to public sinks). A consumed linear / typestate
+value can no longer be reused (end of the double-spend / use-after-consume
+hole). An anonymous drop of a linear value (`let _ =` / statement-expr)
+is now rejected. `var` and re-assignment carry the same must-consume
+obligation as `let`. A partial consume in a `match` must consume the value
+on every non-diverging arm or on none. Full rationale, per-finding impact,
+and the explicit security-exception justification (why each is a MINOR
+bump, not a MAJOR) are in
+[`docs/advisories/2026-06-15-soundness.md`](docs/advisories/2026-06-15-soundness.md).
+
+**New.** Selective import with renaming: `import foo (a, b as c)` brings
+in only the listed `pub` symbols and hides the rest, resolving `pub`
+name collisions between dependencies. Strictly additive: `import foo`
+and `import foo as bar` are unchanged.
+
+**Cross-backend parity (Wasm).** `for _ in ...` (wildcard for-pattern)
+now lowers on Wasm. `env.restrict_to_keys` compiles with any argument
+shape, not just an inline list literal. Generic functions instantiated
+by call-site context (zero-arg factories) are monomorphised. A
+`List<Trait>` annotation on a heterogeneous list literal is honoured.
+
+**Behaviour changes.** Interpolating a value that has no way to be
+rendered (for example `"${some_option}"`) is now a `--check` error on
+BOTH backends. Previously the Python backend printed the dataclass repr
+and the Wasm backend failed; both now reject identically. Use a `match`
+or define `to_string`. Formattable types: the primitives, `IoError`, and
+any struct / sum that declares `to_string`.
+
+**Diagnostics.** A CRLF/LF hint is added on registry index signature
+verification failure. This is purely diagnostic: verification stays
+fail-closed and acceptance is still only ever over the raw signed bytes.
+
+The detailed per-change notes follow.
+
 **Feature (module system): selective import with renaming, resolving
 `pub` symbol collisions between dependencies.** `import foo (a, b as
 c)` now brings only the listed `pub` symbols into scope -- `a` under

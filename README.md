@@ -268,7 +268,7 @@ LICENSE  STABILITY.md  CONTRIBUTING.md  SECURITY.md  README.md
 
 ## Status
 
-Capa ships as **`1.1.0`** (released 2026-06-14), with the full
+Capa ships as **`1.2.0`** (released 2026-06-15), with the full
 security axis (information-flow control, constant-time markers, and
 typestate protocols) and the fully functional Wasm backend (see
 [`CHANGELOG.md`](CHANGELOG.md)). The stability commitment in
