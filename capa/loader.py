@@ -386,6 +386,18 @@ class ModuleLoader:
         prefix = f"_capa_m{self._mangle_counter}"
         private_rename = _mangle_private_items(imported, prefix)
 
+        # Selective import (``import foo (a, b as c)``): hide every
+        # pub item the importer did not ask for, and apply per-symbol
+        # ``as`` renames. Runs after private mangling so the two
+        # rename maps key on disjoint (original) names. Validation
+        # (unknown / non-pub symbol) happens here against the just-
+        # parsed module, before any references are rewritten.
+        selective_rename: dict[str, str] = {}
+        if imp.selectors is not None:
+            selective_rename = _apply_selective_import(
+                imp, imported, prefix, module_path,
+            )
+
         self._loading.append(target)
         self._cache[target] = imported
         self._sources[target] = source
@@ -408,14 +420,21 @@ class ModuleLoader:
         # access either.
         alias = imp.alias or imp.path[-1]
         direct_names: set[str] = set()
-        for it in imported.items:
-            if isinstance(it, A.Import):
-                continue
-            if not getattr(it, "is_pub", False):
-                continue
-            name = _item_name(it)
-            if name is not None:
-                direct_names.add(name)
+        if imp.selectors is not None:
+            # Selective import: only the selected symbols are visible,
+            # under their final (aliased-or-original) names. The
+            # unselected pub items were mangled out of scope above, so
+            # ``foo.unselected()`` correctly fails to resolve.
+            direct_names = set(selective_rename.values())
+        else:
+            for it in imported.items:
+                if isinstance(it, A.Import):
+                    continue
+                if not getattr(it, "is_pub", False):
+                    continue
+                name = _item_name(it)
+                if name is not None:
+                    direct_names.add(name)
         # Two imports with the same alias would clash on the
         # rewrite side; the user wrote two `import foo` (or
         # `import a as F` and `import b as F`). Detect early and
@@ -809,6 +828,105 @@ class _Rewriter:
             return e
         # Leaf nodes (Ident, literals): return as-is.
         return e
+
+
+def _apply_selective_import(
+    imp: "A.Import",
+    module: "A.Module",
+    prefix: str,
+    importer_path: Path,
+) -> dict[str, str]:
+    """Restrict a selective ``import foo (a, b as c)`` to its listed
+    symbols, renaming where ``as`` was used.
+
+    Two rewrites are folded into one walker pass over ``module``:
+
+    - every ``pub`` top-level item the importer did *not* select is
+      renamed to ``<prefix>__sel__<name>`` so it disappears from the
+      merged global scope (the same trick :func:`_mangle_private_items`
+      uses for private items); and
+    - each selected item that carried an ``as`` alias is renamed to
+      that alias.
+
+    Returns ``{original_selected_name: visible_name}`` (the visible
+    name is the ``as`` alias when present, else the original). The
+    caller uses it to populate ``module_exports`` so qualified access
+    (``foo.visible_name()``) keeps working.
+
+    Validation happens before any rename: a selector that names a
+    symbol the target module does not declare, or declares without
+    ``pub``, raises a :class:`LoaderError` anchored at the importing
+    file. Sum-type *variants* are intentionally not selectable here
+    (and a selected sum type keeps its variants' names): variant
+    renaming is deferred (see module docstring / CHANGELOG). The
+    central case this unblocks -- two libraries that both export a
+    ``pub fun parse`` -- needs only function/type/const/capability
+    renaming, which this covers.
+    """
+    assert imp.selectors is not None
+    # Index the target module's *original* top-level names by their
+    # ``pub`` status, so we can validate selectors and decide which
+    # pub items to hide. Privates were already mangled by the caller,
+    # but we index against the pre-mangle names is impossible now;
+    # instead we read the (post-private-mangle) items: a private item
+    # no longer carries its original name, so a selector that named a
+    # private will simply be "unknown" -- which is the right error
+    # shape ("no public symbol"), since the user cannot select a
+    # private regardless.
+    pub_names: set[str] = set()
+    all_pub_items: list[A.Item] = []
+    for it in module.items:
+        if isinstance(it, A.Import):
+            continue
+        if not getattr(it, "is_pub", False):
+            continue
+        name = _item_name(it)
+        if name is not None:
+            pub_names.add(name)
+            all_pub_items.append(it)
+
+    selected_originals: set[str] = set()
+    visible: dict[str, str] = {}
+    rename: dict[str, str] = {}
+    seen_selectors: set[str] = set()
+    for (orig, sel_alias) in imp.selectors:
+        if orig in seen_selectors:
+            raise LoaderError(
+                f"symbol '{orig}' is selected more than once in "
+                f"'import {'.'.join(imp.path)} (...)'",
+                pos=imp.pos,
+                filename=str(importer_path),
+            )
+        seen_selectors.add(orig)
+        if orig not in pub_names:
+            joined = ".".join(imp.path)
+            raise LoaderError(
+                f"module '{joined}' has no public symbol '{orig}'. "
+                f"Selective imports can only bring 'pub' items; check "
+                f"the spelling and that '{orig}' is declared 'pub'.",
+                pos=imp.pos,
+                filename=str(importer_path),
+            )
+        selected_originals.add(orig)
+        target_name = sel_alias if sel_alias is not None else orig
+        visible[orig] = target_name
+        if sel_alias is not None:
+            rename[orig] = sel_alias
+
+    # Hide every pub item that was not selected by mangling its name.
+    for it in all_pub_items:
+        name = _item_name(it)
+        if name is not None and name not in selected_originals:
+            rename[name] = f"{prefix}__sel__{name}"
+
+    if rename:
+        # Rename declarations in place, then rewrite references.
+        for it in all_pub_items:
+            name = _item_name(it)
+            if name is not None and name in rename:
+                it.name = rename[name]
+        _PrivateRenameWalker(rename).visit_module(module)
+    return visible
 
 
 def _mangle_private_items(

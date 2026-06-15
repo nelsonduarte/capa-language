@@ -42,12 +42,25 @@ class Module(Node):
 
 @dataclass(kw_only=True)
 class Import(Item):
-    """import X            -> path=['X'], alias=None
-    import X.Y          -> path=['X','Y'], alias=None
-    import X as Z       -> path=['X'], alias='Z'
+    """import X                  -> path=['X'], alias=None, selectors=None
+    import X.Y                  -> path=['X','Y'], alias=None, selectors=None
+    import X as Z               -> path=['X'], alias='Z', selectors=None
+    import X (a, b as c)        -> path=['X'], selectors=[('a', None), ('b', 'c')]
+
+    ``selectors`` is ``None`` for the whole-module forms (every
+    ``pub`` item of the target becomes visible unqualified, the
+    historical behaviour). A non-``None`` list selects *only* the
+    named items: each entry is ``(original_name, alias_or_None)``.
+    A selected item is brought into the importer's scope under its
+    alias when one is given, otherwise under its original name;
+    every other ``pub`` item of the target stays hidden. This is
+    the higienic, collision-resolving import form (two libraries
+    that both export ``parse`` coexist when at least one is renamed).
+    ``alias`` and ``selectors`` are mutually exclusive at parse time.
     """
     path: list[str]
     alias: Optional[str] = None
+    selectors: Optional[list[tuple[str, Optional[str]]]] = None
 
 
 @dataclass(kw_only=True)

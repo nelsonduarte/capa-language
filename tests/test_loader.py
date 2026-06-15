@@ -356,6 +356,239 @@ class TestQualifiedModuleAccess(_TempDirMixin, unittest.TestCase):
         self.assertEqual(linked.module_exports["util"], {"a", "T"})
 
 
+class TestSelectiveImport(_TempDirMixin, unittest.TestCase):
+    """``import foo (a, b as c)`` brings only the listed pub symbols,
+    renaming where ``as`` is used, and hides everything else. This is
+    the higienic form that resolves a ``pub`` symbol collision between
+    two dependencies (both exporting ``pub fun parse``)."""
+
+    def test_selective_brings_only_requested(self):
+        self._write(
+            "lib.capa",
+            "pub fun keep() -> Int\n    return 1\n"
+            "pub fun hidden() -> Int\n    return 2\n"
+        )
+        root = self._write(
+            "root.capa",
+            "import lib (keep)\n"
+            "fun main(stdio: Stdio)\n"
+            '    stdio.println("${keep()}")\n'
+        )
+        result = subprocess.run(
+            [sys.executable, "-m", "capa", "--run", str(root)],
+            capture_output=True, text=True, encoding="utf-8",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "1\n")
+
+    def test_unselected_symbol_is_not_visible(self):
+        self._write(
+            "lib.capa",
+            "pub fun keep() -> Int\n    return 1\n"
+            "pub fun hidden() -> Int\n    return 2\n"
+        )
+        root = self._write(
+            "root.capa",
+            "import lib (keep)\n"
+            "fun main(stdio: Stdio)\n"
+            '    stdio.println("${hidden()}")\n'
+        )
+        result = subprocess.run(
+            [sys.executable, "-m", "capa", "--check", str(root)],
+            capture_output=True, text=True, encoding="utf-8",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("undefined name 'hidden'", result.stderr)
+
+    def test_selective_with_rename(self):
+        self._write(
+            "lib.capa",
+            "pub fun parse(s: String) -> String\n"
+            '    return "lib:" + s\n'
+        )
+        root = self._write(
+            "root.capa",
+            "import lib (parse as lib_parse)\n"
+            "fun main(stdio: Stdio)\n"
+            '    stdio.println(lib_parse("x"))\n'
+        )
+        result = subprocess.run(
+            [sys.executable, "-m", "capa", "--run", str(root)],
+            capture_output=True, text=True, encoding="utf-8",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "lib:x\n")
+        # The original name must NOT leak in alongside the alias.
+        root2 = self._write(
+            "root2.capa",
+            "import lib (parse as lib_parse)\n"
+            "fun main(stdio: Stdio)\n"
+            '    stdio.println(parse("x"))\n'
+        )
+        r2 = subprocess.run(
+            [sys.executable, "-m", "capa", "--check", str(root2)],
+            capture_output=True, text=True, encoding="utf-8",
+        )
+        self.assertNotEqual(r2.returncode, 0)
+        self.assertIn("undefined name 'parse'", r2.stderr)
+
+    def test_pub_fun_collision_resolved_by_rename(self):
+        # The central case: capa_cli and capa_csv both export
+        # ``pub fun parse``. Selective import with rename lets a
+        # single project use both.
+        self._write(
+            "csv.capa",
+            "pub fun parse(s: String) -> String\n"
+            '    return "csv:" + s\n'
+        )
+        self._write(
+            "cli.capa",
+            "pub fun parse(s: String) -> String\n"
+            '    return "cli:" + s\n'
+        )
+        root = self._write(
+            "root.capa",
+            "import csv (parse as csv_parse)\n"
+            "import cli (parse as cli_parse)\n"
+            "fun main(stdio: Stdio)\n"
+            '    stdio.println(csv_parse("a"))\n'
+            '    stdio.println(cli_parse("b"))\n'
+        )
+        result = subprocess.run(
+            [sys.executable, "-m", "capa", "--run", str(root)],
+            capture_output=True, text=True, encoding="utf-8",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "csv:a\ncli:b\n")
+
+    def test_collision_resolved_with_one_rename(self):
+        # Only one side needs a rename: the other keeps the bare name.
+        self._write(
+            "csv.capa",
+            "pub fun parse(s: String) -> String\n"
+            '    return "csv:" + s\n'
+        )
+        self._write(
+            "cli.capa",
+            "pub fun parse(s: String) -> String\n"
+            '    return "cli:" + s\n'
+        )
+        root = self._write(
+            "root.capa",
+            "import csv (parse)\n"
+            "import cli (parse as cli_parse)\n"
+            "fun main(stdio: Stdio)\n"
+            '    stdio.println(parse("a"))\n'
+            '    stdio.println(cli_parse("b"))\n'
+        )
+        result = subprocess.run(
+            [sys.executable, "-m", "capa", "--run", str(root)],
+            capture_output=True, text=True, encoding="utf-8",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "csv:a\ncli:b\n")
+
+    def test_unknown_symbol_errors(self):
+        self._write(
+            "lib.capa",
+            "pub fun ok() -> Int\n    return 1\n"
+        )
+        root = self._write(
+            "root.capa",
+            "import lib (nope)\n"
+            "fun main(stdio: Stdio)\n"
+            '    stdio.println("x")\n'
+        )
+        result = subprocess.run(
+            [sys.executable, "-m", "capa", "--check", str(root)],
+            capture_output=True, text=True, encoding="utf-8",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("has no public symbol 'nope'", result.stderr)
+
+    def test_non_pub_symbol_errors(self):
+        self._write(
+            "lib.capa",
+            "fun secret() -> Int\n    return 1\n"
+            "pub fun ok() -> Int\n    return 2\n"
+        )
+        root = self._write(
+            "root.capa",
+            "import lib (secret)\n"
+            "fun main(stdio: Stdio)\n"
+            '    stdio.println("x")\n'
+        )
+        result = subprocess.run(
+            [sys.executable, "-m", "capa", "--check", str(root)],
+            capture_output=True, text=True, encoding="utf-8",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("has no public symbol 'secret'", result.stderr)
+
+    def test_selective_type_and_use(self):
+        self._write(
+            "tbl.capa",
+            "pub type Table { rows: Int }\n"
+            "pub fun parse(s: String) -> Table\n"
+            "    return Table { rows: 1 }\n"
+        )
+        root = self._write(
+            "root.capa",
+            "import tbl (Table, parse as tparse)\n"
+            "fun main(stdio: Stdio)\n"
+            "    let t = tparse(\"x\")\n"
+            '    stdio.println("${t.rows}")\n'
+        )
+        result = subprocess.run(
+            [sys.executable, "-m", "capa", "--run", str(root)],
+            capture_output=True, text=True, encoding="utf-8",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "1\n")
+
+    def test_selective_sum_type_carries_variants(self):
+        # A selected (unrenamed) sum type brings its variants along.
+        self._write(
+            "col.capa",
+            "pub type Color =\n    Red\n    Green(Int)\n"
+        )
+        root = self._write(
+            "root.capa",
+            "import col (Color)\n"
+            "fun describe(c: Color) -> String\n"
+            "    return match c\n"
+            '        Red -> "red"\n'
+            '        Green(n) -> "green"\n'
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(describe(Red))\n"
+            "    stdio.println(describe(Green(3)))\n"
+        )
+        result = subprocess.run(
+            [sys.executable, "-m", "capa", "--run", str(root)],
+            capture_output=True, text=True, encoding="utf-8",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "red\ngreen\n")
+
+    def test_module_exports_reflects_visible_names(self):
+        # Only the selected (final, aliased) names appear in
+        # module_exports; the unselected pub item must not leak.
+        self._write(
+            "lib.capa",
+            "pub fun parse() -> Int\n    return 1\n"
+            "pub fun other() -> Int\n    return 2\n"
+        )
+        root = self._write(
+            "root.capa",
+            "import lib (parse as lib_parse)\n"
+            "fun main(stdio: Stdio)\n"
+            '    stdio.println("hi")\n'
+        )
+        loader = ModuleLoader()
+        linked = loader.load_root(root.read_text(), str(root))
+        self.assertEqual(linked.module_exports["lib"], {"lib_parse"})
+
+
 class TestLoaderErrorFormat(unittest.TestCase):
     """The ``LoaderError.format()`` shape is what the CLI feeds
     into its single-line diagnostic renderer. Two branches:

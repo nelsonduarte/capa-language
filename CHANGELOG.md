@@ -9,6 +9,28 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+**Feature (module system): selective import with renaming, resolving
+`pub` symbol collisions between dependencies.** `import foo (a, b as
+c)` now brings only the listed `pub` symbols into scope -- `a` under
+its own name, `b` under the alias `c` -- and hides every other `pub`
+item of `foo`. This is the hygienic counterpart to the existing
+whole-module `import foo` / `import foo as bar` (both unchanged) and
+the way to use two libraries that export the same `pub` name in one
+project: `capa_csv` and `capa_cli` both ship a `pub fun parse`, which
+previously failed to link with `name conflict: 'parse'`; now `import
+capa_csv (parse as csv_parse)` + `import capa_cli (parse as cli_parse)`
+coexist (only one side needs a rename if the other's bare name is
+free). Selectors cover functions, types, consts, and capabilities;
+selecting an unrenamed `pub` sum type carries its variants along.
+Selecting a symbol the target does not declare, or declares without
+`pub`, is a clear load-time error (`module 'foo' has no public symbol
+'X'`). Renaming a sum type's *variants* is deferred to a follow-up
+(select the type unrenamed when you need its constructors). The change
+is strictly additive: the loader, transpiler, and Wasm emitter still
+see a flat namespace, now without the collision. See
+[`reference.md` 7.1](docs/reference.md) and
+[`packages.md`](docs/packages.md).
+
 **Behaviour change (analyzer): interpolating a value with no way to be
 rendered is now a `--check` error in both backends, closing a
 cross-backend FormatStr divergence.** `"${o}"` where `o: Option<Int>`

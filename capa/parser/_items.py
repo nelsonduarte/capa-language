@@ -255,10 +255,45 @@ class _ItemsMixin:
                 self._expect(T.IDENT, "expected identifier after '.'").text
             )
         alias: Optional[str] = None
-        if self._match(T.KW_AS):
+        selectors: Optional[list[tuple[str, Optional[str]]]] = None
+        if self._check(T.LPAREN):
+            # Selective import: ``import foo (a, b as c)`` brings only
+            # the listed pub items, each optionally renamed via ``as``.
+            selectors = self._parse_import_selectors()
+        elif self._match(T.KW_AS):
             alias = self._expect(T.IDENT, "expected alias name").text
         self._expect_eos("after import declaration")
-        return A.Import(pos=start, path=path, alias=alias)
+        return A.Import(pos=start, path=path, alias=alias, selectors=selectors)
+
+    def _parse_import_selectors(
+        self,
+    ) -> list[tuple[str, Optional[str]]]:
+        """Parse ``(a, b as c, ...)`` after an import path. Each entry
+        is a pub symbol name with an optional ``as`` rename. Requires
+        at least one selector; a trailing comma is tolerated."""
+        self._expect(T.LPAREN, "expected '(' to begin selective import list")
+        selectors: list[tuple[str, Optional[str]]] = []
+        while not self._check(T.RPAREN):
+            name_tok = self._expect(
+                T.IDENT, "expected a symbol name in selective import list",
+            )
+            sel_alias: Optional[str] = None
+            if self._match(T.KW_AS):
+                sel_alias = self._expect(
+                    T.IDENT, "expected a name after 'as' in selective import",
+                ).text
+            selectors.append((name_tok.text, sel_alias))
+            if not self._match(T.COMMA):
+                break
+        self._expect(
+            T.RPAREN, "expected ')' to close selective import list",
+        )
+        if not selectors:
+            raise self._error(
+                "selective import '(...)' must list at least one symbol; "
+                "use 'import foo' to bring everything"
+            )
+        return selectors
 
     # -------- const --------
 

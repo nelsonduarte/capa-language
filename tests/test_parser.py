@@ -57,6 +57,34 @@ class TestImports(unittest.TestCase):
         m = parse("import a\nimport b\nimport c\n")
         self.assertEqual(len(m.items), 3)
 
+    def test_selective_import(self):
+        m = parse("import foo (parse, Table)\n")
+        imp = m.items[0]
+        self.assertIsInstance(imp, A.Import)
+        self.assertEqual(imp.path, ["foo"])
+        self.assertIsNone(imp.alias)
+        self.assertEqual(imp.selectors, [("parse", None), ("Table", None)])
+
+    def test_selective_import_with_rename(self):
+        m = parse("import foo (parse as csv_parse, Table)\n")
+        imp = m.items[0]
+        self.assertEqual(
+            imp.selectors, [("parse", "csv_parse"), ("Table", None)],
+        )
+
+    def test_selective_import_trailing_comma(self):
+        m = parse("import foo (a, b,)\n")
+        self.assertEqual(m.items[0].selectors, [("a", None), ("b", None)])
+
+    def test_selective_import_empty_is_error(self):
+        with self.assertRaises(ParserError):
+            parse("import foo ()\n")
+
+    def test_whole_module_import_has_no_selectors(self):
+        # Regression: the historical forms keep selectors=None.
+        self.assertIsNone(parse("import foo\n").items[0].selectors)
+        self.assertIsNone(parse("import foo as bar\n").items[0].selectors)
+
 
 # =============================================================
 # Const

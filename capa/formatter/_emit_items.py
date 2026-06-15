@@ -154,7 +154,13 @@ class _ItemsEmitterMixin:
     def _emit_import(self, imp: A.Import) -> None:
         self._indent()
         path = ".".join(imp.path)
-        if imp.alias is not None:
+        if imp.selectors is not None:
+            parts = [
+                f"{name} as {alias}" if alias is not None else name
+                for (name, alias) in imp.selectors
+            ]
+            self._write(f"import {path} ({', '.join(parts)})")
+        elif imp.alias is not None:
             self._write(f"import {path} as {imp.alias}")
         else:
             self._write(f"import {path}")

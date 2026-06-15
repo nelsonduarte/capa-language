@@ -36,6 +36,17 @@ class TestTrailingWhitespace(unittest.TestCase):
         self.assertEqual(format_source("a\n   \nb\n"), "a\n\nb\n")
 
 
+class TestSelectiveImportFormatting(unittest.TestCase):
+    def test_selective_import_round_trips(self):
+        src = "import foo (parse as csv_parse, Table)\n"
+        self.assertEqual(format_source(src), src)
+        self.assertTrue(is_formatted(src))
+
+    def test_plain_import_forms_unchanged(self):
+        for src in ("import foo\n", "import foo as bar\n"):
+            self.assertEqual(format_source(src), src)
+
+
 class TestIndentation(unittest.TestCase):
     def test_leading_tab_becomes_four_spaces(self):
         self.assertEqual(format_source("\tx\n"), "    x\n")

@@ -646,6 +646,8 @@ import util                     // sibling: ./util.capa
 import sinks.csv_sink           // nested: ./sinks/csv_sink.capa
 import capa_log.log             // package dep: <vendor_or_path>/capa_log/log.capa
 import util as U                // alias the module name
+import util (greet, Table)      // selective: bring only these
+import util (greet as hi)       // selective with rename
 ```
 
 Only items marked `pub` in the target module are visible to
@@ -654,7 +656,39 @@ the importer. After `import util`, every `pub` name from
 qualified call (`util.greet(...)`). With `import util as U`,
 qualified calls take the alias: `U.greet(...)`.
 
-### 7.1. Module resolution order
+### 7.1. Selective import (and renaming)
+
+`import foo (a, b as c)` brings **only** the listed `pub`
+symbols into scope: `a` under its own name, `b` under the alias
+`c`. Every other `pub` item of `foo` stays hidden. This is the
+hygienic form, and the way to resolve a symbol collision between
+two dependencies that export the same `pub` name:
+
+```capa
+import capa_csv (parse as csv_parse)
+import capa_cli (parse as cli_parse)
+
+fun main(stdio: Stdio)
+    stdio.println(csv_parse("a,b"))
+    stdio.println(cli_parse("--flag"))
+```
+
+Only one side needs a rename; the other may keep the bare name:
+
+```capa
+import capa_csv (parse)              // used as parse(...)
+import capa_cli (parse as cli_parse) // used as cli_parse(...)
+```
+
+Selectors work for functions, types, consts, and capabilities.
+Selecting a `pub` sum type (unrenamed) brings its variants along.
+A selector that names a symbol the target does not declare, or
+declares without `pub`, is a load-time error
+(`module 'foo' has no public symbol 'X'`). Renaming a sum type's
+**variants** is not yet supported; select the type unrenamed when
+you need its constructors.
+
+### 7.2. Module resolution order
 
 When the loader resolves `import x.y`, it tries each of the
 following search paths in order, and uses the first hit:
@@ -673,7 +707,7 @@ Each entry is deduplicated; a missing directory is silently
 skipped. See [`packages.md`](packages.md) for the package
 manager's role in resolution.
 
-### 7.2. Visibility
+### 7.3. Visibility
 
 - `pub fun`, `pub type`, `pub const`, `pub capability`: visible
   to importers.

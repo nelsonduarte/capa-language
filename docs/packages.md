@@ -311,6 +311,37 @@ to it and to any user-authored library:
 
 The same process applies to any user-authored library.
 
+## Resolving symbol collisions between dependencies
+
+Two dependencies can export the same `pub` name. `capa_csv` and
+`capa_cli` both ship a `pub fun parse`. A plain `import capa_csv`
++ `import capa_cli` merges both into one flat scope and the
+loader reports a `name conflict: 'parse'`.
+
+Use the **selective import** form to bring only what you need and
+rename one (or both) sides:
+
+```capa
+import capa_csv (parse as csv_parse)
+import capa_cli (parse as cli_parse)
+
+fun main(stdio: Stdio)
+    stdio.println(csv_parse(read_csv))
+    stdio.println(cli_parse(argv))
+```
+
+Only one side needs a rename if the other's bare name is free:
+
+```capa
+import capa_csv (parse)
+import capa_cli (parse as cli_parse)
+```
+
+Selectors cover functions, types, consts, and capabilities (see
+[`reference.md`](reference.md) section 7.1 for the full rules).
+This keeps the resolution explicit and auditable: the import line
+names exactly which symbol came from which dependency.
+
 ## Limitations (v1)
 
 - **No transitive resolution.** A dep's own `capa.toml` is
