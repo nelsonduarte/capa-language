@@ -764,223 +764,675 @@ class _RuntimeHelpersMixin:
         self._indent -= 1
         self._write(")")
 
-    def _emit_parse_float_function(self) -> None:
-        """Emit ``$parse_float(ptr: i32, len: i32) -> i32``
-        returning a freshly-allocated ``Option<Float>`` pointer.
+    def _parse_float_trim_leading(self) -> str:
+        """WAT fragment: advance ``$ptr`` / shrink ``$len`` past leading
+        ASCII whitespace (the same six bytes ``$parse_int`` trims)."""
+        return r"""
+            block $pf_tl_exit
+              loop $pf_tl_loop
+                local.get $len
+                i32.eqz
+                br_if $pf_tl_exit
+                local.get $ptr
+                i32.load8_u
+                local.set $byte
+                %WS%
+                i32.eqz
+                br_if $pf_tl_exit
+                local.get $ptr
+                i32.const 1
+                i32.add
+                local.set $ptr
+                local.get $len
+                i32.const 1
+                i32.sub
+                local.set $len
+                br $pf_tl_loop
+              end
+            end
+        """.replace("%WS%", self._parse_float_ws_predicate())
 
-        Algorithm: scan integer part, then optional '.' + fraction.
-        Accumulate as f64. Reject malformed input (returns None).
-        Doesn't handle scientific notation or hex; the demos that
-        need it stick to the canonical ``-12.345`` shape."""
-        self._write(
-            "(func $parse_float (param $ptr i32) (param $len i32) "
-            "(result i32)"
+    def _parse_float_trim_trailing(self) -> str:
+        """WAT fragment: shrink ``$len`` past trailing ASCII whitespace."""
+        return r"""
+            block $pf_tt_exit
+              loop $pf_tt_loop
+                local.get $len
+                i32.eqz
+                br_if $pf_tt_exit
+                local.get $ptr
+                local.get $len
+                i32.add
+                i32.const 1
+                i32.sub
+                i32.load8_u
+                local.set $byte
+                %WS%
+                i32.eqz
+                br_if $pf_tt_exit
+                local.get $len
+                i32.const 1
+                i32.sub
+                local.set $len
+                br $pf_tt_loop
+              end
+            end
+        """.replace("%WS%", self._parse_float_ws_predicate())
+
+    def _parse_float_ws_predicate(self) -> str:
+        """Leave 1 iff ``$byte`` is one of the six ASCII whitespace
+        bytes (space, tab, LF, VT, FF, CR)."""
+        return r"""
+            local.get $byte
+            i32.const 32
+            i32.eq
+            local.get $byte
+            i32.const 9
+            i32.ge_u
+            local.get $byte
+            i32.const 13
+            i32.le_u
+            i32.and
+            i32.or
+        """
+
+    def _parse_float_accum_digit(self) -> str:
+        """WAT fragment: fold the ASCII digit in ``$byte`` into the
+        running significand. Leading zeros (before the first non-zero
+        significant digit) are skipped from the significand span (they
+        do not change the value); fractional leading zeros still lower
+        ``$e10`` via the caller's per-fraction-digit decrement.
+
+        Once a non-zero digit is seen, ``$started`` is set, the digit
+        span ``[$dstart, $dend)`` is extended (the bignum slow path
+        reads the full significand from it), and ``$sig_digits`` counts
+        the significant digits. The i64 ``$mant`` accumulates the first
+        15 significant digits for the Clinger fast path; once
+        ``$sig_digits`` exceeds 15 the fast path is disabled
+        (``$overflow64``) and only the span keeps growing for the slow
+        path. ``$e10`` is NOT touched here: the slow path multiplies the
+        FULL significand (every span digit) by ``10^$e10`` directly,
+        exactly as ``tools/float_ref.py::strtod`` does."""
+        return r"""
+            block $pf_ad_done
+              # Skip leading zeros (not yet started, digit == 0).
+              local.get $started
+              i32.eqz
+              local.get $byte
+              i32.const 48
+              i32.eq
+              i32.and
+              br_if $pf_ad_done
+              # First significant digit: open the span, mark started.
+              local.get $started
+              i32.eqz
+              if
+                i32.const 1
+                local.set $started
+                local.get $ptr
+                local.get $i
+                i32.add
+                local.set $dstart
+              end
+              # dend = one past this digit.
+              local.get $ptr
+              local.get $i
+              i32.add
+              i32.const 1
+              i32.add
+              local.set $dend
+              local.get $sig_digits
+              i32.const 1
+              i32.add
+              local.set $sig_digits
+              # Accumulate into $mant while <= 15 significant digits;
+              # beyond that, disable the fast path (the slow path reads
+              # the span instead).
+              local.get $sig_digits
+              i32.const 15
+              i32.le_s
+              if
+                local.get $mant
+                i64.const 10
+                i64.mul
+                local.get $byte
+                i32.const 48
+                i32.sub
+                i64.extend_i32_u
+                i64.add
+                local.set $mant
+              else
+                i32.const 1
+                local.set $overflow64
+              end
+            end
+        """
+
+    def _emit_parse_float_function(self) -> None:
+        """Emit ``$parse_float(ptr: i32, len: i32) -> i32`` returning a
+        freshly-allocated ``Option<Float>`` (tag at offset 0: 1 == None,
+        0 == Some; f64 value at offset 8).
+
+        Correctly-rounded decimal-string -> f64, bit-identical to
+        CPython's ``float()`` on every grammar-valid, non-overflowing
+        input. Faithful transliteration of ``tools/float_ref.py::strtod``
+        (validated against ``float()`` on millions of cases):
+
+        - Grammar: surrounding ASCII whitespace (the six bytes
+          ``$parse_int`` trims), optional sign, a digit mantissa with an
+          optional ``.``, an optional ``[eE][+-]?digits`` exponent, and
+          nothing else. No inf / nan / underscores / hex -> None.
+        - Clinger fast path: when the significand fits exactly in f64
+          (<= 15 digits, < 2^53) and ``10^|e10|`` is exact (|e10| <= 22),
+          a single f64 multiply or divide is correctly rounded.
+        - Bignum slow path: otherwise round the exact rational
+          ``mantissa * 10^e10`` to nearest-even f64 using the shared
+          limb-bignum helpers ($bn_*). Overflow past DBL_MAX -> None;
+          underflow -> signed zero."""
+        self._emit_wat_block(
+            r"""
+            (func $parse_float (param $ptr i32) (param $len i32) (result i32)
+              (local $i i32)
+              (local $byte i32)
+              (local $neg i32)
+              (local $result i32)
+              (local $mant i64)
+              (local $sig_digits i32)   # count of significant (post leading-zero) digits
+              (local $e10 i32)          # decimal exponent of the significand
+              (local $any i32)          # saw at least one mantissa digit
+              (local $started i32)      # started accumulating non-zero significant digits
+              (local $exp_sign i32)
+              (local $exp_val i32)
+              (local $exp_any i32)
+              (local $overflow64 i32)   # mantissa exceeded 19 reliable digits -> need bignum from string
+              (local $dstart i32)       # byte offset of first accumulated significant digit
+              (local $dend i32)         # byte offset one past last significant digit
+              (local $f f64)
+              (local $p10 f64)
+              (local $k i32)
+              # bignum slow-path locals
+              (local $m i32)
+              (local $num i32)
+              (local $den i32)
+              (local $approx i32)
+              # Option<Float> result buffer; default tag = None (1).
+              i32.const 16
+              call $alloc
+              local.set $result
+              local.get $result
+              i32.const 1
+              i32.store
+              # Trim leading / trailing ASCII whitespace (mutates $ptr / $len).
+              %TRIM_LEADING%
+              %TRIM_TRAILING%
+              # Empty after trim -> None.
+              local.get $len
+              i32.eqz
+              if
+                local.get $result
+                return
+              end
+              # Optional sign.
+              i32.const 0
+              local.set $i
+              local.get $ptr
+              i32.load8_u
+              local.set $byte
+              local.get $byte
+              i32.const 45            # '-'
+              i32.eq
+              if
+                i32.const 1
+                local.set $neg
+                i32.const 1
+                local.set $i
+              else
+                local.get $byte
+                i32.const 43          # '+'
+                i32.eq
+                if
+                  i32.const 1
+                  local.set $i
+                end
+              end
+              # ---- Integer-part digits. ----
+              i32.const -1
+              local.set $dstart
+              block $pf_int_exit
+                loop $pf_int_loop
+                  local.get $i
+                  local.get $len
+                  i32.ge_s
+                  br_if $pf_int_exit
+                  local.get $ptr
+                  local.get $i
+                  i32.add
+                  i32.load8_u
+                  local.set $byte
+                  # stop at '.' or 'e'/'E'
+                  local.get $byte
+                  i32.const 46
+                  i32.eq
+                  br_if $pf_int_exit
+                  local.get $byte
+                  i32.const 101       # 'e'
+                  i32.eq
+                  local.get $byte
+                  i32.const 69        # 'E'
+                  i32.eq
+                  i32.or
+                  br_if $pf_int_exit
+                  # non-digit -> reject (None).
+                  local.get $byte
+                  i32.const 48
+                  i32.lt_u
+                  local.get $byte
+                  i32.const 57
+                  i32.gt_u
+                  i32.or
+                  if
+                    local.get $result
+                    return
+                  end
+                  i32.const 1
+                  local.set $any
+                  %ACCUM_DIGIT%
+                  local.get $i
+                  i32.const 1
+                  i32.add
+                  local.set $i
+                  br $pf_int_loop
+                end
+              end
+              # ---- Optional fraction. ----
+              local.get $i
+              local.get $len
+              i32.lt_s
+              if
+                local.get $ptr
+                local.get $i
+                i32.add
+                i32.load8_u
+                i32.const 46          # '.'
+                i32.eq
+                if
+                  local.get $i
+                  i32.const 1
+                  i32.add
+                  local.set $i
+                  block $pf_frac_exit
+                    loop $pf_frac_loop
+                      local.get $i
+                      local.get $len
+                      i32.ge_s
+                      br_if $pf_frac_exit
+                      local.get $ptr
+                      local.get $i
+                      i32.add
+                      i32.load8_u
+                      local.set $byte
+                      local.get $byte
+                      i32.const 101    # 'e'
+                      i32.eq
+                      local.get $byte
+                      i32.const 69     # 'E'
+                      i32.eq
+                      i32.or
+                      br_if $pf_frac_exit
+                      local.get $byte
+                      i32.const 48
+                      i32.lt_u
+                      local.get $byte
+                      i32.const 57
+                      i32.gt_u
+                      i32.or
+                      if
+                        local.get $result
+                        return
+                      end
+                      i32.const 1
+                      local.set $any
+                      # each fractional digit lowers e10 by 1.
+                      local.get $e10
+                      i32.const 1
+                      i32.sub
+                      local.set $e10
+                      %ACCUM_DIGIT%
+                      local.get $i
+                      i32.const 1
+                      i32.add
+                      local.set $i
+                      br $pf_frac_loop
+                    end
+                  end
+                end
+              end
+              # No mantissa digit at all -> None.
+              local.get $any
+              i32.eqz
+              if
+                local.get $result
+                return
+              end
+              # ---- Optional exponent. ----
+              local.get $i
+              local.get $len
+              i32.lt_s
+              if
+                local.get $ptr
+                local.get $i
+                i32.add
+                i32.load8_u
+                local.set $byte
+                local.get $byte
+                i32.const 101
+                i32.eq
+                local.get $byte
+                i32.const 69
+                i32.eq
+                i32.or
+                if
+                  local.get $i
+                  i32.const 1
+                  i32.add
+                  local.set $i
+                  i32.const 1
+                  local.set $exp_sign
+                  local.get $i
+                  local.get $len
+                  i32.lt_s
+                  if
+                    local.get $ptr
+                    local.get $i
+                    i32.add
+                    i32.load8_u
+                    local.set $byte
+                    local.get $byte
+                    i32.const 43
+                    i32.eq
+                    if
+                      local.get $i
+                      i32.const 1
+                      i32.add
+                      local.set $i
+                    else
+                      local.get $byte
+                      i32.const 45
+                      i32.eq
+                      if
+                        i32.const -1
+                        local.set $exp_sign
+                        local.get $i
+                        i32.const 1
+                        i32.add
+                        local.set $i
+                      end
+                    end
+                  end
+                  block $pf_exp_exit
+                    loop $pf_exp_loop
+                      local.get $i
+                      local.get $len
+                      i32.ge_s
+                      br_if $pf_exp_exit
+                      local.get $ptr
+                      local.get $i
+                      i32.add
+                      i32.load8_u
+                      local.set $byte
+                      local.get $byte
+                      i32.const 48
+                      i32.lt_u
+                      local.get $byte
+                      i32.const 57
+                      i32.gt_u
+                      i32.or
+                      if
+                        local.get $result
+                        return
+                      end
+                      i32.const 1
+                      local.set $exp_any
+                      # clamp exp_val to avoid i32 overflow; 100000 is far
+                      # past any representable magnitude and keeps the
+                      # overflow / underflow screens correct.
+                      local.get $exp_val
+                      i32.const 100000
+                      i32.lt_s
+                      if
+                        local.get $exp_val
+                        i32.const 10
+                        i32.mul
+                        local.get $byte
+                        i32.const 48
+                        i32.sub
+                        i32.add
+                        local.set $exp_val
+                      end
+                      local.get $i
+                      i32.const 1
+                      i32.add
+                      local.set $i
+                      br $pf_exp_loop
+                    end
+                  end
+                  # 'e' with no exponent digit -> None.
+                  local.get $exp_any
+                  i32.eqz
+                  if
+                    local.get $result
+                    return
+                  end
+                  # e10 += exp_sign * exp_val
+                  local.get $e10
+                  local.get $exp_sign
+                  local.get $exp_val
+                  i32.mul
+                  i32.add
+                  local.set $e10
+                end
+              end
+              # Trailing garbage -> None.
+              local.get $i
+              local.get $len
+              i32.lt_s
+              if
+                local.get $result
+                return
+              end
+              # ---- All-zero significand -> signed zero. ----
+              local.get $started
+              i32.eqz
+              if
+                f64.const 0
+                local.set $f
+                local.get $neg
+                if
+                  local.get $f
+                  f64.neg
+                  local.set $f
+                end
+                local.get $result
+                i32.const 0
+                i32.store
+                local.get $result
+                local.get $f
+                f64.store offset=8
+                local.get $result
+                return
+              end
+              # ---- Clinger fast path. ----
+              # sig_digits <= 15 (mantissa < 10^15 < 2^53) and not
+              # overflow64, and |e10| <= 22 (10^|e10| exact in f64).
+              local.get $overflow64
+              i32.eqz
+              local.get $sig_digits
+              i32.const 15
+              i32.le_s
+              i32.and
+              local.get $e10
+              i32.const 22
+              i32.le_s
+              i32.and
+              local.get $e10
+              i32.const -22
+              i32.ge_s
+              i32.and
+              if
+                local.get $mant
+                f64.convert_i64_u
+                local.set $f
+                # p10 = 10^|e10| built by exact repeated *10.
+                f64.const 1
+                local.set $p10
+                local.get $e10
+                i32.const 0
+                i32.ge_s
+                if (result i32)
+                  local.get $e10
+                else
+                  i32.const 0
+                  local.get $e10
+                  i32.sub
+                end
+                local.set $k
+                block $pf_p10_exit
+                  loop $pf_p10_loop
+                    local.get $k
+                    i32.eqz
+                    br_if $pf_p10_exit
+                    local.get $p10
+                    f64.const 10
+                    f64.mul
+                    local.set $p10
+                    local.get $k
+                    i32.const 1
+                    i32.sub
+                    local.set $k
+                    br $pf_p10_loop
+                  end
+                end
+                local.get $e10
+                i32.const 0
+                i32.ge_s
+                if
+                  local.get $f
+                  local.get $p10
+                  f64.mul
+                  local.set $f
+                else
+                  local.get $f
+                  local.get $p10
+                  f64.div
+                  local.set $f
+                end
+                local.get $neg
+                if
+                  local.get $f
+                  f64.neg
+                  local.set $f
+                end
+                local.get $result
+                i32.const 0
+                i32.store
+                local.get $result
+                local.get $f
+                f64.store offset=8
+                local.get $result
+                return
+              end
+              # ---- Overflow / underflow screens (bound bignum work). ----
+              # approx = sig_digits + e10  (~ log10 of |value|).
+              local.get $sig_digits
+              local.get $e10
+              i32.add
+              local.set $approx
+              local.get $approx
+              i32.const 309
+              i32.gt_s
+              if
+                local.get $result      # overflow -> None
+                return
+              end
+              local.get $approx
+              i32.const -324
+              i32.lt_s
+              if
+                f64.const 0            # underflow -> signed zero
+                local.set $f
+                local.get $neg
+                if
+                  local.get $f
+                  f64.neg
+                  local.set $f
+                end
+                local.get $result
+                i32.const 0
+                i32.store
+                local.get $result
+                local.get $f
+                f64.store offset=8
+                local.get $result
+                return
+              end
+              # ---- Bignum slow path. ----
+              # Build the significand bignum from the full digit span
+              # [$dstart, $dend); the span holds every significant digit
+              # (leading zeros already excluded), so $m * 10^e10 is the
+              # exact value, matching tools/float_ref.py::strtod.
+              local.get $dstart
+              local.get $dend
+              call $bn_from_digits
+              local.set $m
+              # num / den = m * 10^e10.
+              local.get $e10
+              i32.const 0
+              i32.ge_s
+              if
+                local.get $m
+                local.get $e10
+                call $bn_mul_pow10
+                local.set $num
+                i64.const 1
+                call $bn_from_u64
+                local.set $den
+              else
+                local.get $m
+                local.set $num
+                i64.const 1
+                call $bn_from_u64
+                i32.const 0
+                local.get $e10
+                i32.sub
+                call $bn_mul_pow10
+                local.set $den
+              end
+              # Round num/den to nearest-even f64; returns (f64 value,
+              # i32 overflow_flag). overflow -> None.
+              local.get $num
+              local.get $den
+              local.get $neg
+              call $bn_ratio_to_f64
+              local.set $overflow64    # reuse: 1 == overflow
+              local.set $f
+              local.get $overflow64
+              if
+                local.get $result
+                return
+              end
+              local.get $result
+              i32.const 0
+              i32.store
+              local.get $result
+              local.get $f
+              f64.store offset=8
+              local.get $result
+            )
+            """
+            .replace("%TRIM_LEADING%", self._parse_float_trim_leading())
+            .replace("%TRIM_TRAILING%", self._parse_float_trim_trailing())
+            .replace("%ACCUM_DIGIT%", self._parse_float_accum_digit())
         )
-        self._indent += 1
-        self._write("(local $i i32)")
-        self._write("(local $byte i32)")
-        self._write("(local $val f64)")
-        self._write("(local $frac f64)")
-        self._write("(local $neg i32)")
-        self._write("(local $any i32)")
-        self._write("(local $result i32)")
-        self._write("i32.const 16")
-        self._write("call $alloc")
-        self._write("local.set $result")
-        self._write("local.get $result")
-        self._write("i32.const 1")
-        self._write("i32.store")
-        # Empty -> None.
-        self._write("local.get $len")
-        self._write("i32.eqz")
-        self._write("if")
-        self._indent += 1
-        self._write("local.get $result")
-        self._write("return")
-        self._indent -= 1
-        self._write("end")
-        # Sign.
-        self._write("local.get $ptr")
-        self._write("i32.load8_u")
-        self._write("local.set $byte")
-        self._write("local.get $byte")
-        self._write("i32.const 45")
-        self._write("i32.eq")
-        self._write("if")
-        self._indent += 1
-        self._write("i32.const 1")
-        self._write("local.set $neg")
-        self._write("i32.const 1")
-        self._write("local.set $i")
-        self._indent -= 1
-        self._write("else")
-        self._indent += 1
-        self._write("local.get $byte")
-        self._write("i32.const 43")
-        self._write("i32.eq")
-        self._write("if")
-        self._indent += 1
-        self._write("i32.const 1")
-        self._write("local.set $i")
-        self._indent -= 1
-        self._write("end")
-        self._indent -= 1
-        self._write("end")
-        # Integer part.
-        self._block_counter += 1
-        iloop = f"$pf{self._block_counter}_iloop"
-        iexit = f"$pf{self._block_counter}_iexit"
-        self._write(f"block {iexit}")
-        self._indent += 1
-        self._write(f"loop {iloop}")
-        self._indent += 1
-        self._write("local.get $i")
-        self._write("local.get $len")
-        self._write("i32.ge_s")
-        self._write(f"br_if {iexit}")
-        self._write("local.get $ptr")
-        self._write("local.get $i")
-        self._write("i32.add")
-        self._write("i32.load8_u")
-        self._write("local.set $byte")
-        # Decimal point -> break to fraction.
-        self._write("local.get $byte")
-        self._write("i32.const 46")  # '.'
-        self._write("i32.eq")
-        self._write(f"br_if {iexit}")
-        # Non-digit and not '.': reject.
-        self._write("local.get $byte")
-        self._write("i32.const 48")
-        self._write("i32.lt_u")
-        self._write("local.get $byte")
-        self._write("i32.const 57")
-        self._write("i32.gt_u")
-        self._write("i32.or")
-        self._write("if")
-        self._indent += 1
-        self._write("local.get $result")
-        self._write("return")
-        self._indent -= 1
-        self._write("end")
-        self._write("local.get $val")
-        self._write("f64.const 10")
-        self._write("f64.mul")
-        self._write("local.get $byte")
-        self._write("i32.const 48")
-        self._write("i32.sub")
-        self._write("f64.convert_i32_u")
-        self._write("f64.add")
-        self._write("local.set $val")
-        self._write("i32.const 1")
-        self._write("local.set $any")
-        self._write("local.get $i")
-        self._write("i32.const 1")
-        self._write("i32.add")
-        self._write("local.set $i")
-        self._write(f"br {iloop}")
-        self._indent -= 1
-        self._write("end")
-        self._indent -= 1
-        self._write("end")
-        # If we stopped at '.', consume it and parse fraction.
-        self._write("local.get $i")
-        self._write("local.get $len")
-        self._write("i32.lt_s")
-        self._write("if")
-        self._indent += 1
-        # We're at '.'; advance past it.
-        self._write("local.get $i")
-        self._write("i32.const 1")
-        self._write("i32.add")
-        self._write("local.set $i")
-        # frac multiplier starts at 0.1.
-        self._write("f64.const 0.1")
-        self._write("local.set $frac")
-        self._block_counter += 1
-        floop = f"$pf{self._block_counter}_floop"
-        fexit = f"$pf{self._block_counter}_fexit"
-        self._write(f"block {fexit}")
-        self._indent += 1
-        self._write(f"loop {floop}")
-        self._indent += 1
-        self._write("local.get $i")
-        self._write("local.get $len")
-        self._write("i32.ge_s")
-        self._write(f"br_if {fexit}")
-        self._write("local.get $ptr")
-        self._write("local.get $i")
-        self._write("i32.add")
-        self._write("i32.load8_u")
-        self._write("local.set $byte")
-        self._write("local.get $byte")
-        self._write("i32.const 48")
-        self._write("i32.lt_u")
-        self._write("local.get $byte")
-        self._write("i32.const 57")
-        self._write("i32.gt_u")
-        self._write("i32.or")
-        self._write("if")
-        self._indent += 1
-        self._write("local.get $result")
-        self._write("return")
-        self._indent -= 1
-        self._write("end")
-        # val += digit * frac
-        self._write("local.get $byte")
-        self._write("i32.const 48")
-        self._write("i32.sub")
-        self._write("f64.convert_i32_u")
-        self._write("local.get $frac")
-        self._write("f64.mul")
-        self._write("local.get $val")
-        self._write("f64.add")
-        self._write("local.set $val")
-        # frac /= 10
-        self._write("local.get $frac")
-        self._write("f64.const 10")
-        self._write("f64.div")
-        self._write("local.set $frac")
-        self._write("i32.const 1")
-        self._write("local.set $any")
-        self._write("local.get $i")
-        self._write("i32.const 1")
-        self._write("i32.add")
-        self._write("local.set $i")
-        self._write(f"br {floop}")
-        self._indent -= 1
-        self._write("end")
-        self._indent -= 1
-        self._write("end")
-        self._indent -= 1
-        self._write("end")
-        # No digits at all -> None.
-        self._write("local.get $any")
-        self._write("i32.eqz")
-        self._write("if")
-        self._indent += 1
-        self._write("local.get $result")
-        self._write("return")
-        self._indent -= 1
-        self._write("end")
-        # Apply sign.
-        self._write("local.get $neg")
-        self._write("if")
-        self._indent += 1
-        self._write("local.get $val")
-        self._write("f64.neg")
-        self._write("local.set $val")
-        self._indent -= 1
-        self._write("end")
-        # Some(val).
-        self._write("local.get $result")
-        self._write("i32.const 0")
-        self._write("i32.store")
-        self._write("local.get $result")
-        self._write("local.get $val")
-        self._write("f64.store offset=8")
-        self._write("local.get $result")
-        self._indent -= 1
-        self._write(")")
 
     def _emit_chr_function(self) -> None:
         """Emit ``$chr(cp: i64) -> (i32 ptr, i32 len)``: a

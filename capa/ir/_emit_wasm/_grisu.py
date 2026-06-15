@@ -1136,9 +1136,17 @@ class _GrisuEmissionMixin:
             self._write(line)
 
     def _emit_dragon4_functions(self) -> None:
-        """Emit the exact Dragon4 fallback and its limb-bignum
-        helpers, a faithful transliteration of
-        ``tools/float_ref.py``'s ``dragon4`` + ``_bn_*`` family.
+        """Emit the exact Dragon4 fallback (``$dragon4``) on top of the
+        shared limb-bignum helpers. The helpers themselves are emitted
+        by ``_emit_bignum_helpers`` (which both the Dragon4 fallback and
+        the string-to-float parser depend on); this method emits them if
+        they are not already present, then ``$dragon4``."""
+        self._emit_bignum_helpers()
+        self._emit_dragon4_main()
+
+    def _emit_bignum_helpers(self) -> None:
+        """Emit the limb-bignum ``_bn_*`` family once. A faithful
+        transliteration of ``tools/float_ref.py``'s ``_bn_*`` helpers.
 
         BIGNUM LAYOUT. A bignum is an i32 pointer to a buffer from
         ``$alloc``: i32 limb-count at offset 0, then ``count`` 32-bit
@@ -1161,8 +1169,13 @@ class _GrisuEmissionMixin:
         - ``$bn_shl(a, bits) -> ptr``
         - ``$bn_mul_pow10(a, k) -> ptr``
         - ``$bn_divmod_digit(num, den) -> (i32 q, ptr rem)``
-        - ``$dragon4(v) -> (i32 digits_ptr, i32 len, i32 K)``
+        - ``$bn_bitlen(a) -> i32``   bit length (0 for zero)
+        - ``$bn_to_u64(a) -> i64``   value of a <= 64-bit bignum
+        - ``$bn_divmod_full(num, den) -> (ptr q, ptr rem)``
         """
+        if self._bignum_helpers_emitted:
+            return
+        self._bignum_helpers_emitted = True
         # $bn_alloc(n) -> ptr : 4 + n*4 bytes, count=n, limbs zeroed.
         self._emit_wat_block(
             """
@@ -2022,7 +2035,546 @@ class _GrisuEmissionMixin:
             )
             """
         )
-        self._emit_dragon4_main()
+        # $bn_bitlen(a) -> i32 : bit length (0 for zero). Top limb's
+        # bit length (32 - clz) plus 32 per lower limb.
+        self._emit_wat_block(
+            """
+            (func $bn_bitlen (param $a i32) (result i32)
+              (local $count i32)
+              (local $top i32)
+              local.get $a
+              i32.load
+              local.set $count
+              # zero bignum: single limb == 0 -> bitlen 0
+              local.get $a
+              i32.const 4
+              i32.add
+              i32.load
+              i32.eqz
+              local.get $count
+              i32.const 1
+              i32.eq
+              i32.and
+              if
+                i32.const 0
+                return
+              end
+              # top = limb[count-1]
+              local.get $a
+              local.get $count
+              i32.const 2
+              i32.shl
+              i32.add
+              i32.load
+              local.set $top
+              # 32 - clz(top) + 32*(count-1)
+              i32.const 32
+              local.get $top
+              i32.clz
+              i32.sub
+              local.get $count
+              i32.const 1
+              i32.sub
+              i32.const 5
+              i32.shl
+              i32.add
+            )
+            """
+        )
+        # $bn_to_u64(a) -> i64 : value of a bignum known to fit in 64
+        # bits (limb[0] | limb[1] << 32).
+        self._emit_wat_block(
+            """
+            (func $bn_to_u64 (param $a i32) (result i64)
+              (local $count i32)
+              (local $v i64)
+              local.get $a
+              i32.load
+              local.set $count
+              local.get $a
+              i32.const 4
+              i32.add
+              i32.load
+              i64.extend_i32_u
+              local.set $v
+              local.get $count
+              i32.const 1
+              i32.gt_s
+              if
+                local.get $a
+                i32.const 8
+                i32.add
+                i32.load
+                i64.extend_i32_u
+                i64.const 32
+                i64.shl
+                local.get $v
+                i64.or
+                local.set $v
+              end
+              local.get $v
+            )
+            """
+        )
+        # $bn_divmod_full(num, den) -> (q, rem) with num == q*den + rem,
+        # 0 <= rem < den. Binary long division: align den by shifting up
+        # to the bit-length gap, then subtract-and-shift down. q stays
+        # small (< 2^54) at every call site. Transliteration of
+        # ``tools/float_ref.py::_bn_divmod_full``.
+        self._emit_wat_block(
+            """
+            (func $bn_divmod_full (param $num i32) (param $den i32) (result i32 i32)
+              (local $shift i32)
+              (local $q i32)
+              (local $rem i32)
+              (local $ds i32)
+              (local $s i32)
+              # if num < den: q = 0, rem = num
+              local.get $num
+              local.get $den
+              call $bn_cmp
+              i32.const 0
+              i32.lt_s
+              if
+                i32.const 1
+                call $bn_alloc
+                local.get $num
+                return
+              end
+              # shift = bitlen(num) - bitlen(den)
+              local.get $num
+              call $bn_bitlen
+              local.get $den
+              call $bn_bitlen
+              i32.sub
+              local.set $shift
+              # if (den << shift) > num: shift -= 1
+              local.get $den
+              local.get $shift
+              call $bn_shl
+              local.get $num
+              call $bn_cmp
+              i32.const 0
+              i32.gt_s
+              if
+                local.get $shift
+                i32.const 1
+                i32.sub
+                local.set $shift
+              end
+              # q = 0 ; rem = num
+              i32.const 1
+              call $bn_alloc
+              local.set $q
+              local.get $num
+              local.set $rem
+              local.get $shift
+              local.set $s
+              block $df_exit
+                loop $df_loop
+                  local.get $s
+                  i32.const 0
+                  i32.lt_s
+                  br_if $df_exit
+                  # ds = den << s
+                  local.get $den
+                  local.get $s
+                  call $bn_shl
+                  local.set $ds
+                  # if rem >= ds: rem -= ds ; q += (1 << s)
+                  local.get $rem
+                  local.get $ds
+                  call $bn_cmp
+                  i32.const 0
+                  i32.ge_s
+                  if
+                    local.get $rem
+                    local.get $ds
+                    call $bn_sub
+                    local.set $rem
+                    local.get $q
+                    i64.const 1
+                    call $bn_from_u64
+                    local.get $s
+                    call $bn_shl
+                    call $bn_add
+                    local.set $q
+                  end
+                  local.get $s
+                  i32.const 1
+                  i32.sub
+                  local.set $s
+                  br $df_loop
+                end
+              end
+              local.get $q
+              call $bn_norm
+              local.get $rem
+              call $bn_norm
+            )
+            """
+        )
+        # $bn_from_digits(start, end) -> ptr : bignum from the ASCII
+        # decimal digits in the byte range [start, end), Horner over
+        # limbs (bn = bn*10 + digit). The span may straddle a single '.'
+        # (the integer/fraction join); any non-digit byte is skipped so
+        # the significand stays exact. Mirrors
+        # tools/float_ref.py::_bn_from_str over the concatenated digits.
+        self._emit_wat_block(
+            """
+            (func $bn_from_digits (param $start i32) (param $end i32) (result i32)
+              (local $a i32)
+              (local $p i32)
+              (local $byte i32)
+              i32.const 1
+              call $bn_alloc
+              local.set $a
+              local.get $start
+              local.set $p
+              block $bd_exit
+                loop $bd_loop
+                  local.get $p
+                  local.get $end
+                  i32.ge_u
+                  br_if $bd_exit
+                  local.get $p
+                  i32.load8_u
+                  local.set $byte
+                  # skip non-digits (the '.' separator).
+                  local.get $byte
+                  i32.const 48
+                  i32.ge_u
+                  local.get $byte
+                  i32.const 57
+                  i32.le_u
+                  i32.and
+                  if
+                    # a = a*10 + (byte - 48)
+                    local.get $a
+                    i64.const 10
+                    call $bn_mul_small
+                    local.get $byte
+                    i32.const 48
+                    i32.sub
+                    i64.extend_i32_u
+                    call $bn_from_u64
+                    call $bn_add
+                    local.set $a
+                  end
+                  local.get $p
+                  i32.const 1
+                  i32.add
+                  local.set $p
+                  br $bd_loop
+                end
+              end
+              local.get $a
+            )
+            """
+        )
+        # $bn_ratio_to_f64(num, den, neg) -> (f64 value, i32 overflow) :
+        # round the exact positive rational num/den (den > 0) to the
+        # nearest f64, ties to even, applying the sign $neg. Returns
+        # overflow = 1 (value f64 unused) when the magnitude exceeds
+        # DBL_MAX. Faithful transliteration of
+        # tools/float_ref.py::_round_bignum_ratio_to_f64 +
+        # _assemble_f64 / _assemble_subnormal_bits.
+        self._emit_wat_block(
+            """
+            (func $bn_ratio_to_f64 (param $num i32) (param $den i32) (param $neg i32) (result f64 i32)
+              (local $e i32)
+              (local $E i32)
+              (local $snum i32)
+              (local $sden i32)
+              (local $q i32)
+              (local $rem i32)
+              (local $two52 i32)
+              (local $two53 i32)
+              (local $qi i64)
+              (local $cmp i32)
+              (local $twice i32)
+              (local $bits i64)
+              (local $biased i64)
+              (local $frac i64)
+              (local $drop i32)
+              (local $kept i64)
+              (local $low i64)
+              (local $half i64)
+              (local $roundup i32)
+              # two52 / two53 constants as bignums.
+              i64.const 1
+              call $bn_from_u64
+              i32.const 52
+              call $bn_shl
+              local.set $two52
+              i64.const 1
+              call $bn_from_u64
+              i32.const 53
+              call $bn_shl
+              local.set $two53
+              # e = bitlen(num) - bitlen(den) - 53
+              local.get $num
+              call $bn_bitlen
+              local.get $den
+              call $bn_bitlen
+              i32.sub
+              i32.const 53
+              i32.sub
+              local.set $e
+              # initial scaling
+              %SCALE%
+              # refine e so q has exactly 53 bits.
+              block $rf_exit
+                loop $rf_loop
+                  local.get $snum
+                  local.get $sden
+                  call $bn_divmod_full
+                  local.set $rem
+                  local.set $q
+                  local.get $q
+                  local.get $two52
+                  call $bn_cmp
+                  i32.const 0
+                  i32.lt_s
+                  if
+                    local.get $e
+                    i32.const 1
+                    i32.sub
+                    local.set $e
+                    %SCALE%
+                    br $rf_loop
+                  end
+                  local.get $q
+                  local.get $two53
+                  call $bn_cmp
+                  i32.const 0
+                  i32.ge_s
+                  if
+                    local.get $e
+                    i32.const 1
+                    i32.add
+                    local.set $e
+                    %SCALE%
+                    br $rf_loop
+                  end
+                  br $rf_exit
+                end
+              end
+              # q in [2^52, 2^53); E = 52 + e.
+              local.get $q
+              call $bn_to_u64
+              local.set $qi
+              i32.const 52
+              local.get $e
+              i32.add
+              local.set $E
+              # ---- Subnormal regime: E < -1022. ----
+              local.get $E
+              i32.const -1022
+              i32.lt_s
+              if
+                # drop = -1022 - E
+                i32.const -1022
+                local.get $E
+                i32.sub
+                local.set $drop
+                local.get $drop
+                i32.const 54
+                i32.ge_s
+                if
+                  i64.const -9223372036854775808   # -0.0 bits
+                  i64.const 0                       # +0.0 bits
+                  local.get $neg
+                  select
+                  f64.reinterpret_i64
+                  i32.const 0
+                  return
+                end
+                # kept = qi >> drop ; low = qi & ((1<<drop)-1)
+                local.get $qi
+                local.get $drop
+                i64.extend_i32_u
+                i64.shr_u
+                local.set $kept
+                local.get $qi
+                i64.const 1
+                local.get $drop
+                i64.extend_i32_u
+                i64.shl
+                i64.const 1
+                i64.sub
+                i64.and
+                local.set $low
+                # half = 1 << (drop-1)
+                i64.const 1
+                local.get $drop
+                i32.const 1
+                i32.sub
+                i64.extend_i32_u
+                i64.shl
+                local.set $half
+                # roundup?
+                local.get $low
+                local.get $half
+                i64.gt_u
+                if
+                  i32.const 1
+                  local.set $roundup
+                else
+                  local.get $low
+                  local.get $half
+                  i64.eq
+                  if
+                    # tie at the q grid: remainder breaks it.
+                    local.get $rem
+                    i32.const 4
+                    i32.add
+                    i32.load           # rem limb[0]
+                    local.get $rem
+                    i32.load            # rem count
+                    i32.const 1
+                    i32.gt_s
+                    i32.or              # rem != 0  (count>1 or limb0!=0)
+                    if
+                      i32.const 1
+                      local.set $roundup
+                    else
+                      local.get $kept
+                      i64.const 1
+                      i64.and
+                      i64.const 1
+                      i64.eq
+                      if
+                        i32.const 1
+                        local.set $roundup
+                      end
+                    end
+                  end
+                end
+                local.get $roundup
+                if
+                  local.get $kept
+                  i64.const 1
+                  i64.add
+                  local.set $kept
+                end
+                # bits = kept (exp field 0; carry into bit52 -> normal).
+                # OR in the sign bit when negative.
+                local.get $kept
+                i64.const -9223372036854775808   # 1<<63
+                i64.const 0
+                local.get $neg
+                select
+                i64.or
+                f64.reinterpret_i64
+                i32.const 0
+                return
+              end
+              # ---- Normal regime: round 53-bit mantissa half-even. ----
+              # twice_rem = rem << 1 ; cmp vs sden
+              local.get $rem
+              i32.const 1
+              call $bn_shl
+              local.set $twice
+              local.get $twice
+              local.get $sden
+              call $bn_cmp
+              local.set $cmp
+              # roundup = cmp>0 || (cmp==0 && (qi&1)==1)
+              local.get $cmp
+              i32.const 0
+              i32.gt_s
+              local.get $cmp
+              i32.eqz
+              local.get $qi
+              i64.const 1
+              i64.and
+              i64.const 1
+              i64.eq
+              i32.and
+              i32.or
+              if
+                local.get $qi
+                i64.const 1
+                i64.add
+                local.set $qi
+                # carry 2^53-1 -> 2^53: halve, e += 1.
+                local.get $qi
+                i64.const 9007199254740992    # 2^53
+                i64.eq
+                if
+                  local.get $qi
+                  i64.const 1
+                  i64.shr_u
+                  local.set $qi
+                  local.get $e
+                  i32.const 1
+                  i32.add
+                  local.set $e
+                  i32.const 52
+                  local.get $e
+                  i32.add
+                  local.set $E
+                end
+              end
+              # overflow past DBL_MAX: E > 1023.
+              local.get $E
+              i32.const 1023
+              i32.gt_s
+              if
+                f64.const 0
+                i32.const 1
+                return
+              end
+              # bits = ((E+1023)<<52) | (qi - 2^52) | sign
+              local.get $E
+              i32.const 1023
+              i32.add
+              i64.extend_i32_u
+              i64.const 52
+              i64.shl
+              local.get $qi
+              i64.const 4503599627370496     # 2^52
+              i64.sub
+              i64.or
+              i64.const -9223372036854775808
+              i64.const 0
+              local.get $neg
+              select
+              i64.or
+              f64.reinterpret_i64
+              i32.const 0
+            )
+            """.replace("%SCALE%", self._bn_ratio_scale_fragment())
+        )
+
+    def _bn_ratio_scale_fragment(self) -> str:
+        """WAT fragment for ``$bn_ratio_to_f64``: set ``$snum`` /
+        ``$sden`` from ``$num`` / ``$den`` and the current ``$e``. When
+        ``e >= 0`` shift the denominator up by ``e``; otherwise shift the
+        numerator up by ``-e`` (so the quotient folds in ``2^-e``)."""
+        return """
+            local.get $e
+            i32.const 0
+            i32.ge_s
+            if
+              local.get $num
+              local.set $snum
+              local.get $den
+              local.get $e
+              call $bn_shl
+              local.set $sden
+            else
+              local.get $num
+              i32.const 0
+              local.get $e
+              i32.sub
+              call $bn_shl
+              local.set $snum
+              local.get $den
+              local.set $sden
+            end
+        """
 
     def _emit_dragon4_main(self) -> None:
         """``$dragon4(v: f64) -> (i32 digits_ptr, i32 len, i32 K)``:

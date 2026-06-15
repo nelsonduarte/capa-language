@@ -2823,9 +2823,10 @@ class TestJsonStrictNumbersDepthAndSignParity(unittest.TestCase):
 
     def test_valid_number_tokens_round_trip(self):
         # Grammar-valid numbers keep parsing, with byte-identical
-        # round-trips. (Exponent forms are excluded: the Wasm
-        # parse_float scientific-notation limitation is documented
-        # in TODO.md and out of scope here.)
+        # round-trips. Exponent forms are now included: the Wasm
+        # parse_float gained scientific notation and a correctly-rounded
+        # bignum conversion, so JSON numbers with exponents round-trip
+        # bit-identically across backends.
         for doc, out in (
             ('"0"', "0"),
             ('"10"', "10"),
@@ -2833,6 +2834,10 @@ class TestJsonStrictNumbersDepthAndSignParity(unittest.TestCase):
             ('"1.25"', "1.25"),
             ('"-0.5"', "-0.5"),
             ('"[0.0, 12.75]"', "[0, 12.75]"),
+            ('"2.5e2"', "250"),
+            ('"1.5e-10"', "1.5e-10"),
+            ('"6.022e23"', "6.022e+23"),
+            ('"1e308"', "1e+308"),
         ):
             src = self._ok_err_probe(doc)
             self._assert_src_parity(src, expect=f"Ok {out}\n")
@@ -4046,6 +4051,129 @@ class TestContextDrivenMonomorphParity(unittest.TestCase):
             '    out.println("len=${t.items.length()}")\n'
         )
         self._assert_parity(src, "len=1\n")
+
+
+@unittest.skipUnless(
+    _has_wasm_tools() and _has_wasmtime_py(),
+    "wasm-tools and/or wasmtime-py not installed",
+)
+class TestParseFloatBitParity(unittest.TestCase):
+    r"""Cross-backend BIT parity for ``parse_float`` and exponent-form
+    JSON numbers (2026-06-15, closing the float-PARSE slice deferred by
+    TestJsonStrictNumbersDepthAndSignParity).
+
+    Before this change the Wasm ``$parse_float`` was a hand-rolled
+    ``val*10+digit`` accumulator that (a) rejected scientific notation
+    and (b) produced an f64 with a DIFFERENT precision from CPython's
+    ``float()`` (a value miscompile). It is now a correctly-rounded
+    decimal-string -> f64 parser: a Clinger fast path (one exact f64
+    op) with a limb-bignum slow path for the hard-rounding cases, a
+    transliteration of ``tools/float_ref.py::strtod`` (validated
+    bit-for-bit against ``float()`` on millions of cases).
+
+    The probe parses a string and prints the resulting Float. Two f64
+    values with the same ``repr`` are bit-identical except for the
+    +0.0 / -0.0 pair, which the probe disambiguates by also printing
+    ``f * 2.0`` (still signed-zero) and the sign via ``f < 0.0`` is
+    not reliable for zero, so signed zero is pinned separately below.
+    Any 1-ULP divergence shows up as a different ``repr`` on the two
+    backends.
+    """
+
+    def _probe(self, value_literal: str) -> str:
+        return (
+            "fun main(stdio: Stdio)\n"
+            f"    match parse_float({value_literal})\n"
+            '        Some(f) -> stdio.println("${f}")\n'
+            '        None -> stdio.println("NONE")\n'
+        )
+
+    def _assert_parity(self, value_literal: str) -> None:
+        src = self._probe(value_literal)
+        py_out = _capture_stdout(lambda: _run_python(src))
+        wasm_out = _capture_stdout(lambda: _run_wasm(src))
+        self.assertEqual(
+            py_out, wasm_out,
+            msg=(
+                f"parse_float divergence for {value_literal}.\n"
+                f"--- python ---\n{py_out}\n--- wasm ---\n{wasm_out}"
+            ),
+        )
+
+    def test_representative_values_bit_identical(self):
+        for v in (
+            "123456789.987654321", "1.5e-10", "2.5e2", "0.1", "0.3",
+            "3.14159", "-0.5", "42", ".5", "12.", "007.5", "1E3",
+            "2.5E-3", "100.5", "0.0001", "6.022e23", "-7.5e-300",
+            "1.18e-38", "1e308", "1e-308", "5e-324", "4.9e-324",
+            "1.7976931348623157e308", "9007199254740993",
+            "2.2250738585072014e-308", "2.2250738585072011e-308",
+            "1234567890123456789", "99999999999999999999e-5",
+        ):
+            self._assert_parity(f'"{v}"')
+
+    def test_grammar_rejections_both_none(self):
+        # inf / nan / underscores / overflow -> NONE on both backends.
+        for v in ("inf", "nan", "infinity", "Infinity", "NaN",
+                  "1_000", "1.2.3", "1e", "1e+", "--1", "abc",
+                  "1e400", "1e309"):
+            self._assert_parity(f'"{v}"')
+
+    def test_signed_zero_and_underflow(self):
+        for v in ("0", "-0", "0.0", "-0.0", "1e-400", "-1e-400"):
+            self._assert_parity(f'"{v}"')
+
+    def test_whitespace_trim(self):
+        # The six ASCII whitespace bytes are trimmed on both backends;
+        # Unicode whitespace stays rejected (byte scanner cannot see it).
+        for v in (r'"  3.5  "', r'"\t-2.5\n"'):
+            self._assert_parity(v)
+
+    def test_random_corpus_bit_identical(self):
+        # A few thousand random number spellings (e-form + decimal +
+        # f64-bit-roundtrip) batched into single programs per backend,
+        # asserting byte-identical line-by-line output. Any 1-ULP
+        # precision divergence fails here.
+        import random
+        import struct
+
+        rng = random.Random(0xF10A7)
+
+        def gen() -> str:
+            k = rng.random()
+            if k < 0.4:
+                nd = rng.randint(1, 19)
+                s = "".join(rng.choice("0123456789") for _ in range(nd))
+                return s + "e" + str(rng.randint(-330, 330))
+            if k < 0.7:
+                a = "".join(rng.choice("0123456789")
+                            for _ in range(rng.randint(1, 10)))
+                b = "".join(rng.choice("0123456789")
+                            for _ in range(rng.randint(0, 10)))
+                return a + "." + b
+            bits = rng.getrandbits(64) & 0x7FFFFFFFFFFFFFFF
+            if (bits >> 52) == 0x7FF:
+                bits &= ~(0x7FF << 52)
+            return repr(struct.unpack("<d", struct.pack("<Q", bits))[0])
+
+        total = 0
+        for _ in range(8):
+            vals = [gen() for _ in range(200)]
+            vals = [v for v in vals if '"' not in v and "\\" not in v]
+            lines = ["fun main(stdio: Stdio)"]
+            for v in vals:
+                lines.append(f'    match parse_float("{v}")')
+                lines.append('        Some(f) -> stdio.println("${f}")')
+                lines.append('        None -> stdio.println("NONE")')
+            src = "\n".join(lines) + "\n"
+            py_out = _capture_stdout(lambda: _run_python(src))
+            wasm_out = _capture_stdout(lambda: _run_wasm(src))
+            self.assertEqual(
+                py_out, wasm_out,
+                msg="parse_float random-corpus divergence",
+            )
+            total += len(vals)
+        self.assertGreater(total, 1000)
 
 
 if __name__ == "__main__":

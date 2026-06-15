@@ -68,11 +68,61 @@ def parse_int(s):
 
 def parse_float(s):
     """Tries to convert ``s`` to Float. Returns ``Some(f)`` on success,
-    ``None_`` on failure."""
-    try:
-        return Some(float(s.strip()))
-    except (ValueError, AttributeError):
+    ``None_`` on failure.
+
+    Canonical grammar (identical on both backends, aligned with
+    ``parse_int``): surrounding ASCII whitespace, an optional sign
+    ``[+-]``, a mantissa of decimal digits with an optional single
+    ``.`` (``12`` / ``12.5`` / ``.5`` / ``12.``), an optional exponent
+    ``[eE][+-]?digits``, and nothing else.
+
+    Deliberately stricter than Python's ``float``: the ``inf`` / ``nan``
+    / ``infinity`` constants are rejected (a parser must not synthesise
+    a non-finite Float out of textual input), PEP-515 underscores
+    (``"1_000.5"``) are rejected, and so is any Unicode whitespace that
+    the byte-level Wasm scanner cannot see. A magnitude that overflows
+    to infinity (``"1e400"``) returns ``None_`` rather than ``inf`` so
+    the two backends agree and no ``inf`` enters from input; underflow
+    returns ``0.0``. ``float()`` itself is correctly rounded, so once
+    the grammar and overflow are screened the value matches the Wasm
+    ``$parse_float`` (a bignum-backed correctly-rounded parser) bit for
+    bit. The same grammar is enforced by ``$parse_float`` in the Wasm
+    runtime."""
+    if not isinstance(s, str):
         return None_
+    body = s.strip(_ASCII_WS)
+    if not body:
+        return None_
+    i = 0
+    n = len(body)
+    if body[i] in "+-":
+        i += 1
+    saw_digit = False
+    while i < n and body[i].isascii() and body[i].isdigit():
+        i += 1
+        saw_digit = True
+    if i < n and body[i] == ".":
+        i += 1
+        while i < n and body[i].isascii() and body[i].isdigit():
+            i += 1
+            saw_digit = True
+    if not saw_digit:
+        return None_
+    if i < n and body[i] in "eE":
+        i += 1
+        if i < n and body[i] in "+-":
+            i += 1
+        estart = i
+        while i < n and body[i].isascii() and body[i].isdigit():
+            i += 1
+        if i == estart:
+            return None_
+    if i != n:
+        return None_
+    value = float(body)
+    if math.isinf(value):
+        return None_  # overflow past DBL_MAX
+    return Some(value)
 
 
 def to_float(i):

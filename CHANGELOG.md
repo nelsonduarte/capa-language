@@ -9,6 +9,36 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+**Cross-backend parity (`parse_float` / `parse_json` numbers, value
+miscompile + grammar).** The Wasm `parse_float` was a hand-rolled
+`val*10+digit` accumulator that (a) rejected scientific notation and
+(b) produced an f64 with a *different precision* from the Python
+backend's `float()` (a silent value miscompile, e.g.
+`123456789.987654321`). It is now a **correctly-rounded**
+decimal-string-to-f64 parser that is **bit-identical** to CPython
+`float()`: a Clinger fast path (one exact f64 multiply/divide when the
+significand has `<= 15` digits and `10^|exp|` is exact) with a
+limb-bignum slow path (reusing the Dragon4 `$bn_*` family) for the
+hard-rounding cases, ties to even. The reference it transliterates
+(`tools/float_ref.py::strtod`) is validated bit-for-bit against
+`float()` on ~10M random and boundary cases. Both backends now share
+one canonical grammar: surrounding ASCII whitespace, an optional
+`+`/`-` sign, a digit mantissa with an optional `.` (`12` / `12.5` /
+`.5` / `12.`), an optional `[eE][+-]?digits` exponent, and nothing
+else. The `inf` / `nan` / `infinity` constants, PEP-515 underscores,
+and Unicode whitespace are rejected on both backends (a parser must not
+synthesise a non-finite Float from text); a magnitude that overflows
+to infinity (`1e400`) returns `None` rather than `inf`, and underflow
+returns signed zero. `parse_json` rejects a numeric token that
+overflows to infinity (`1e400` is now `Err` on both backends, not a
+`JNum(inf)` that serialised to the invalid JSON literal `Infinity`).
+Scientific-notation JSON numbers now round-trip bit-identically (a
+latent `to_json` bug that stripped the trailing zero off an exponent,
+`1.5e-10` -> `1.5e-1`, is fixed). *Observable Python change:* the old
+`parse_float` accepted `inf` / `nan` / `1_000` via `float()` and the
+old `parse_json` accepted `1e400`; both now reject, closing the
+divergence.
+
 **Cross-backend parity (`parse_int`, 1 fix).** `parse_int` now follows
 one canonical grammar on both backends: surrounding ASCII whitespace
 (space, tab, LF, VT, FF, CR), an optional `+`/`-` sign, one or more

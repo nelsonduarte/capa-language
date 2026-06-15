@@ -452,14 +452,27 @@ pub fun __capa_to_json(jv: JsonValue) -> String
     return "null"
 
 fun __cj_num_to_string(f: Float) -> String
-    // ``${f}`` triggers the runtime's ftoa, which always emits a
-    // decimal point plus six fractional digits. Strip trailing
-    // zeros from the fraction (``1.500000`` -> ``1.5``) and the
-    // dot itself when no fractional digit survives (``3.000000``
-    // -> ``3``) so the JSON output matches the canonical
-    // ``json.dumps`` rendering.
+    // ``${f}`` triggers the runtime's ftoa, whose output is the
+    // shortest round-tripping decimal (matching Python ``repr``):
+    // either a plain decimal form (``1.5``, ``3.0``) or a scientific
+    // form (``1.5e-10``, ``1e+308``). Python's ``json.dumps`` uses the
+    // same ``repr`` spelling, EXCEPT it renders an integer-valued
+    // decimal form without the trailing ``.0`` (``3.0`` -> ``3``). So:
+    //
+    //  - scientific form is already canonical: return it verbatim
+    //    (stripping its trailing exponent zeros, e.g. ``1.5e-10`` ->
+    //    ``1.5e-1``, would corrupt the value);
+    //  - plain decimal form keeps the existing trailing-zero / dot
+    //    collapse so ``3.0`` -> ``3`` and ``-0.0`` survives.
     let raw = "${f}"
     let n = raw.length()
+    // Scientific form (contains 'e' or 'E') -> return verbatim.
+    var ei = 0
+    while ei < n
+        let ec = raw.substring(ei, ei + 1)
+        if ec == "e" or ec == "E"
+            return raw
+        ei = ei + 1
     // Locate the dot by linear scan (index_of is not yet wired in
     // the Wasm backend; substring-equality is enough).
     var dot = 0

@@ -75,6 +75,101 @@ def test_specials_and_signed_zero():
     assert float_ref.format_float(-0.0) == "-0.0"
 
 
+import math
+import struct
+
+
+def _bits(x: float) -> int:
+    return struct.unpack("<Q", struct.pack("<d", x))[0]
+
+
+def _oracle(s: str):
+    """CPython ``float()`` as the oracle, mapping overflow-to-inf and
+    grammar rejections to ``None`` the way ``strtod`` does."""
+    try:
+        v = float(s)
+    except ValueError:
+        return None
+    if math.isinf(v) or math.isnan(v):
+        return None
+    return _bits(v)
+
+
+STRTOD_HARD = [
+    "123456789.987654321", "1.5e-10", "2.5e2",
+    "1.7976931348623159e308",          # overflows -> None
+    "5e-324", "2.5e-324", "4.9e-324",  # smallest subnormals
+    "9007199254740993",                # 2^53 + 1, ties to even
+    "1.0000000000000002",
+    "2.2250738585072011e-308",         # subnormal/normal boundary
+    "2.2250738585072014e-308",         # DBL_MIN
+    "2.225073858507201e-308",          # largest subnormal
+    "0.1", "0.3", "100.5", "1e308", "1e-308",
+]
+
+
+def test_strtod_hard_cases_match_float():
+    # The boundary / hard-rounding cases the bignum slow path exists
+    # for: bit-identical to float() (or None on overflow).
+    for s in STRTOD_HARD:
+        assert float_ref.strtod(s) is not None or _oracle(s) is None, s
+        got = float_ref.strtod(s)
+        exp = _oracle(s)
+        if exp is None:
+            assert got is None, (s, got)
+        else:
+            assert got is not None and _bits(got) == exp, (s, got, float(s))
+
+
+def test_strtod_grammar_rejections():
+    # inf / nan / underscores / garbage / overflow -> None.
+    for s in ("inf", "nan", "infinity", "1_000", "1.2.3", "", "  ",
+              "1e", "1e+", "--1", "abc", "1e400", "1e309"):
+        assert float_ref.strtod(s) is None, s
+
+
+def test_strtod_underflow_and_signed_zero():
+    assert float_ref.strtod("1e-400") == 0.0
+    assert _bits(float_ref.strtod("0")) == 0
+    assert _bits(float_ref.strtod("-0")) == _bits(-0.0)
+    assert _bits(float_ref.strtod("-0.0")) == _bits(-0.0)
+
+
+def test_strtod_random_sweep_matches_float():
+    # Deterministic sweep over e-form, decimal, and bit-roundtrip
+    # spellings; every grammar-valid, non-overflowing input must be
+    # bit-identical to CPython float(). The heavy multi-million run is
+    # exercised out-of-band (tools/float_ref.py validation harness).
+    import random
+    rng = random.Random(0x57701D)
+    checked = 0
+    for _ in range(20_000):
+        k = rng.random()
+        if k < 0.4:
+            nd = rng.randint(1, 19)
+            s = "".join(rng.choice("0123456789") for _ in range(nd))
+            s += "e" + str(rng.randint(-330, 330))
+        elif k < 0.7:
+            a = "".join(rng.choice("0123456789")
+                        for _ in range(rng.randint(1, 12)))
+            b = "".join(rng.choice("0123456789")
+                        for _ in range(rng.randint(0, 12)))
+            s = a + "." + b
+        else:
+            bits = rng.getrandbits(64) & 0x7FFFFFFFFFFFFFFF
+            if (bits >> 52) == 0x7FF:
+                bits &= ~(0x7FF << 52)
+            s = repr(struct.unpack("<d", struct.pack("<Q", bits))[0])
+        checked += 1
+        got = float_ref.strtod(s)
+        exp = _oracle(s)
+        if exp is None:
+            assert got is None, (s, got)
+        else:
+            assert got is not None and _bits(got) == exp, (s, got, float(s))
+    assert checked == 20_000
+
+
 def test_dragon4_bignum_is_explicit_limb():
     # Portability guarantee: the Dragon4 bignum must be a list of 32-bit
     # limbs, never a Python big int. Spot-check the helpers' shape.

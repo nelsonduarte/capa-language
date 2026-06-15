@@ -208,6 +208,11 @@ class WasmEmitter(
         self._loop_labels: list[tuple[str, str]] = []
         # Per-function counter for unique block labels.
         self._block_counter = 0
+        # The limb-bignum helpers ($bn_*) are shared by the Dragon4
+        # float-to-string fallback and the correctly-rounded
+        # string-to-float parser; emit them at most once even when both
+        # paths are present.
+        self._bignum_helpers_emitted = False
         # Module-level string pool: maps a Python string to its
         # (offset, length_in_bytes) in the data segment. Populated
         # by ``_intern_string`` as the emitter walks the function
@@ -583,6 +588,11 @@ class WasmEmitter(
             if self._uses_parse_int(module):
                 self._emit_parse_int_function()
             if self._uses_parse_float(module):
+                # The correctly-rounded string->float parser needs the
+                # limb-bignum helpers for its hard-rounding slow path
+                # (the same family Dragon4 uses); emit them if the
+                # float-format path above did not already.
+                self._emit_bignum_helpers()
                 self._emit_parse_float_function()
             # _capa_chr (internal): one-codepoint String from an Int
             # code point; backs \uXXXX decoding in the bundled JSON

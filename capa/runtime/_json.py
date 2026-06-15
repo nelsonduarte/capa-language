@@ -152,7 +152,15 @@ def _python_to_json_value(v):
     if isinstance(v, bool):
         return JBool(v)
     if isinstance(v, (int, float)):
-        return JNum(float(v))
+        f = float(v)
+        if not _math.isfinite(f):
+            # A numeric token whose magnitude overflows the f64 range
+            # (``1e400``) decodes to ``inf`` under ``json.loads``; RFC
+            # 8259 cannot represent it and the Wasm parser returns Err
+            # (its parse_float yields None on overflow). Reject here so
+            # both backends agree and no ``inf`` enters from input.
+            raise ValueError("number out of range (overflows to infinity)")
+        return JNum(f)
     if isinstance(v, str):
         return JStr(v)
     if isinstance(v, list):

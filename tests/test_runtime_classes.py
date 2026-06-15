@@ -303,6 +303,31 @@ class TestConverts(unittest.TestCase):
         self.assertTrue(parse_float("nope").is_none())
         self.assertTrue(parse_float(None).is_none())
 
+    def test_parse_float_canonical_grammar(self):
+        # Scientific notation, bare/trailing dot, leading zeros, signs.
+        self.assertEqual(parse_float("2.5e2").unwrap(), 250.0)
+        self.assertEqual(parse_float("1.5e-10").unwrap(), 1.5e-10)
+        self.assertEqual(parse_float(".5").unwrap(), 0.5)
+        self.assertEqual(parse_float("12.").unwrap(), 12.0)
+        self.assertEqual(parse_float("007.5").unwrap(), 7.5)
+        self.assertEqual(parse_float("1E3").unwrap(), 1000.0)
+        # Underflow -> 0.0; signed zero preserved.
+        self.assertEqual(parse_float("1e-400").unwrap(), 0.0)
+        import math
+        self.assertEqual(
+            math.copysign(1.0, parse_float("-0.0").unwrap()), -1.0
+        )
+
+    def test_parse_float_rejects_non_finite_and_overflow(self):
+        # inf / nan / infinity constants, underscores, and a magnitude
+        # that overflows to infinity all return None_ (a parser must
+        # never synthesise a non-finite Float from textual input). This
+        # is observable: the old parse_float accepted these via float().
+        for bad in ("inf", "nan", "infinity", "Infinity", "NaN",
+                    "1_000", "1_000.5", "1e400", "1e309", "1.2.3",
+                    "1e", "1e+", "--1"):
+            self.assertTrue(parse_float(bad).is_none(), bad)
+
     def test_to_float_and_to_int(self):
         self.assertEqual(to_float(3), 3.0)
         self.assertEqual(to_int(3.7), 3)
@@ -414,6 +439,26 @@ class TestJsonParseRoundtrip(unittest.TestCase):
                     '{"x": -Infinity}'):
             r = parse_json(doc)
             self.assertTrue(r.is_err(), doc)
+
+    def test_number_overflowing_to_infinity_rejected(self):
+        # A plain numeric token whose magnitude overflows the f64 range
+        # (1e400) decodes to inf under json.loads; RFC 8259 cannot
+        # represent it and to_json would have serialised "Infinity"
+        # (invalid JSON). Both backends now Err, matching the Wasm
+        # parser (whose parse_float returns None on overflow).
+        for doc in ("1e400", "-1e400", "[1e400]", '{"x": 1e500}',
+                    "1.7976931348623159e308"):
+            r = parse_json(doc)
+            self.assertTrue(r.is_err(), doc)
+
+    def test_exponent_numbers_round_trip(self):
+        # Scientific-notation numbers parse to the correctly-rounded
+        # f64 and serialise back to the canonical json.dumps spelling.
+        r = parse_json("[1.5e-10, 2.5e2, 6.022e23]")
+        self.assertTrue(r.is_ok())
+        # 250.0 collapses to integer "250" (non-scientific integral
+        # value); the scientific forms keep their exponent spelling.
+        self.assertEqual(to_json(r.unwrap()), "[1.5e-10, 250, 6.022e+23]")
 
     def test_to_json_never_crashes_on_non_finite(self):
         # Pre-fix, the int() collapse in _json_value_to_python

@@ -604,6 +604,378 @@ def dragon4(x: float) -> tuple[str, int]:
 
 
 # ======================================================================
+# Decimal string -> f64 (the INVERSE of Dragon4): correctly-rounded
+# string-to-double parsing. This is the BLUEPRINT for the WAT
+# ``$parse_float`` rewrite (task F-strtod): a Clinger fast path that
+# uses one exact f64 operation for the easy cases, with a bignum slow
+# path (reusing the same 32-bit-limb ``_bn_*`` family as Dragon4) for
+# the hard-rounding cases.
+#
+# APPROACH (and why Clinger over Eisel-Lemire).
+#
+# Every number parses to ``(sign, mantissa, e10)`` where the value is
+# ``sign * mantissa * 10^e10`` and ``mantissa`` is the integer formed
+# by ALL significant decimal digits (the '.' only shifts ``e10``).
+#
+# - Clinger fast path. When ``mantissa`` is exactly representable in
+#   f64 (``mantissa < 2^53``) AND ``10^|e10|`` is exactly representable
+#   (``|e10| <= 22``, since 10^22 is the largest power of ten that is
+#   an exact f64), a SINGLE IEEE f64 multiply (e10 >= 0) or divide
+#   (e10 < 0) is correctly rounded: both operands are exact and round-
+#   to-nearest gives the correctly-rounded result of the real product.
+#   This is Clinger 1990 ("How to Read Floating Point Numbers
+#   Accurately"). It covers the overwhelming majority of real inputs
+#   with two f64 constants and one f64 op -- trivial to port to WAT and
+#   already bit-identical to CPython's ``float()`` there.
+#
+# - Bignum slow path. Otherwise compute the exact rational
+#   ``mantissa * 10^e10`` and round it to the nearest f64 (ties to
+#   even) using the limb bignum. This REUSES ``_bn_mul_pow10`` /
+#   ``_bn_shl`` / ``_bn_cmp`` -- the very helpers the Dragon4 WAT port
+#   already emits -- so the WAT slow path adds no new bignum primitive.
+#   Eisel-Lemire would be faster but needs a 128-bit-product path and a
+#   huge 10^k significand table that the existing WAT runtime does not
+#   have; the bignum slow path rides infrastructure that is already
+#   ported and validated, which the project's oracle-first rule favours.
+#
+# OVERFLOW -> None (the value exceeds DBL_MAX); UNDERFLOW -> 0.0.
+# ======================================================================
+
+# 10^0 .. 10^22 are each exactly representable in f64; beyond that the
+# power of ten is no longer exact and the single-op Clinger argument
+# breaks. 2^53 is the inclusive bound below which every integer is an
+# exact f64.
+_F64_EXACT_POW10_MAX = 22
+_F64_EXACT_INT_MAX = 1 << 53  # mantissa < this is exact
+
+# Exact f64 powers of ten for the fast path (index i == 10^i).
+_POW10_F64 = [float(10 ** i) for i in range(_F64_EXACT_POW10_MAX + 1)]
+
+_DBL_MAX = _double_of(0x7FEFFFFFFFFFFFFF)
+
+
+def _parse_decimal(s: str):
+    """Parse the canonical float grammar into ``(neg, digits, e10)`` or
+    ``None`` on a grammar violation.
+
+    Grammar (identical on both backends, aligned with ``parse_int``):
+    surrounding ASCII whitespace, optional sign ``[+-]``, a mantissa of
+    decimal digits with an optional single ``.`` (``12`` / ``12.5`` /
+    ``.5`` / ``12.``), an optional exponent ``[eE][+-]?digits``, and
+    nothing else. No inf / nan, no underscores, no hex.
+
+    ``digits`` is the significant-digit string with the decimal point
+    removed; ``e10`` is the power-of-ten exponent so that the value is
+    ``int(digits) * 10^e10``. Leading zeros are kept in ``digits`` (they
+    do not change the integer value); an all-zero mantissa yields
+    ``digits == "0"``.
+    """
+    _ASCII_WS = " \t\n\x0b\x0c\r"
+    body = s.strip(_ASCII_WS)
+    if not body:
+        return None
+    i = 0
+    n = len(body)
+    neg = False
+    if body[i] in "+-":
+        neg = body[i] == "-"
+        i += 1
+    int_digits = []
+    frac_digits = []
+    saw_digit = False
+    while i < n and body[i].isascii() and body[i].isdigit():
+        int_digits.append(body[i])
+        saw_digit = True
+        i += 1
+    if i < n and body[i] == ".":
+        i += 1
+        while i < n and body[i].isascii() and body[i].isdigit():
+            frac_digits.append(body[i])
+            saw_digit = True
+            i += 1
+    if not saw_digit:
+        return None
+    exp = 0
+    if i < n and body[i] in "eE":
+        i += 1
+        esign = 1
+        if i < n and body[i] in "+-":
+            if body[i] == "-":
+                esign = -1
+            i += 1
+        estart = i
+        eval_ = 0
+        while i < n and body[i].isascii() and body[i].isdigit():
+            eval_ = eval_ * 10 + (ord(body[i]) - 48)
+            i += 1
+        if i == estart:
+            return None  # 'e' with no exponent digits
+        exp = esign * eval_
+    if i != n:
+        return None  # trailing garbage
+    # Combine: each fractional digit lowers the exponent by one.
+    digits = "".join(int_digits) + "".join(frac_digits)
+    e10 = exp - len(frac_digits)
+    if not digits:
+        digits = "0"
+    return neg, digits, e10
+
+
+def _round_bignum_ratio_to_f64(num, den, neg):
+    """Round the exact positive rational ``num/den`` (both limb bignums,
+    den > 0) to the nearest f64, ties to even, applying ``neg``.
+
+    Returns the f64. Handles overflow (-> raises ``_Overflow``) and
+    underflow (-> signed zero). This is the rounding core the slow path
+    and the WAT port share; it is written entirely in terms of the
+    limb-bignum ``_bn_*`` helpers plus 64-bit integer mantissa math.
+    """
+    # Find binary exponent e such that 2^52 <= num/den / 2^e < 2^53,
+    # i.e. the f64 mantissa is a 53-bit integer q with
+    #   value ~= q * 2^e,  q in [2^52, 2^53).
+    # We scale num or den by powers of two (bignum shifts) until
+    # floor(num/den) has exactly 53 bits, then round.
+    #
+    # Start by bracketing with bit-length estimates, then refine by
+    # exact comparison. All shifts are bignum left-shifts; no Python big
+    # int leaks into the WAT-relevant path (here we use ints for the
+    # quotient, which fits in 64 bits by construction).
+    # Estimate the position. _bn_bitlen gives floor(log2)+1.
+    bl_num = _bn_bitlen(num)
+    bl_den = _bn_bitlen(den)
+    # We want q = floor(num * 2^-e / den) to have 53 bits. Equivalent:
+    # choose e so that num*2^(-e) is in [den*2^52, den*2^53).
+    # Initial guess from bit lengths.
+    e = bl_num - bl_den - 53
+    # Scale: compute scaled_num and scaled_den so that
+    #   q = floor(scaled_num / scaled_den)  with the 2^-e folded in.
+    if e >= 0:
+        scaled_num = num
+        scaled_den = _bn_shl(den, e)
+    else:
+        scaled_num = _bn_shl(num, -e)
+        scaled_den = den
+    # Refine e so q has exactly 53 bits ([2^52, 2^53)).
+    two52 = _bn_shl([1], 52)
+    two53 = _bn_shl([1], 53)
+    while True:
+        q, rem = _bn_divmod_full(scaled_num, scaled_den)
+        if _bn_cmp(q, two52) < 0:
+            # q too small: shrink e (multiply num side by 2).
+            e -= 1
+            if e >= 0:
+                scaled_num = num
+                scaled_den = _bn_shl(den, e)
+            else:
+                scaled_num = _bn_shl(num, -e)
+                scaled_den = den
+            continue
+        if _bn_cmp(q, two53) >= 0:
+            e += 1
+            if e >= 0:
+                scaled_num = num
+                scaled_den = _bn_shl(den, e)
+            else:
+                scaled_num = _bn_shl(num, -e)
+                scaled_den = den
+            continue
+        break
+    # q in [2^52, 2^53); the TRUE value is (q + rem/scaled_den) * 2^e
+    # with 0 <= rem/scaled_den < 1. The unbiased binary exponent of the
+    # value is E = 52 + e. If E < -1022 the result is subnormal and the
+    # significand must be rounded at a COARSER step than 1 ULP-of-q,
+    # otherwise we double-round (round to 53 bits, then again to the
+    # subnormal grid). So fold any extra right-shift into a single
+    # half-even rounding step here, against the exact remainder.
+    E = 52 + e
+    q_int = _bn_to_u64(q)
+    if E < -1022:
+        drop = -1022 - E  # bits to drop below the 53-bit grid
+        if drop >= 54:
+            return -0.0 if neg else 0.0
+        # Split q into the kept high part and the dropped low part; the
+        # discarded fraction is (low + rem/scaled_den) * 2^e, compared
+        # against the half-way point (2^(drop-1)).
+        kept = q_int >> drop
+        low = q_int & ((1 << drop) - 1)
+        half = 1 << (drop - 1)
+        if low > half:
+            round_up = True
+        elif low < half:
+            round_up = False
+        else:
+            # low == half exactly at the q grid; the sub-ULP remainder
+            # breaks the tie. rem > 0 => strictly above half => up;
+            # rem == 0 => exact tie => round to even.
+            if not _bn_is_zero(rem):
+                round_up = True
+            else:
+                round_up = (kept & 1) == 1
+        if round_up:
+            kept += 1
+        # kept may carry into 2^52, promoting to the smallest normal;
+        # _assemble_f64 handles that via the bits layout.
+        return _assemble_subnormal_bits(kept, neg)
+    # Normal path: round the 53-bit mantissa half-even against rem.
+    twice_rem = _bn_shl(rem, 1)
+    c = _bn_cmp(twice_rem, scaled_den)
+    round_up = c > 0 or (c == 0 and (q_int & 1) == 1)
+    if round_up:
+        q_int += 1
+        if q_int == _F64_EXACT_INT_MAX:  # carried 2^53 - 1 -> 2^53
+            q_int >>= 1
+            e += 1
+            E = 52 + e
+    return _assemble_f64(q_int, e, neg)
+
+
+class _Overflow(Exception):
+    pass
+
+
+def _assemble_f64(mant53, e, neg):
+    """Assemble the NORMAL f64 from a 53-bit mantissa ``mant53`` in
+    [2^52, 2^53) and binary exponent ``e`` (value == mant53 * 2^e).
+    Raises ``_Overflow`` past DBL_MAX. The subnormal regime is handled
+    by the caller (``_round_bignum_ratio_to_f64``) so that rounding
+    happens exactly once at the subnormal grid."""
+    # value = mant53 * 2^e; unbiased binary exponent E = 52 + e, with
+    # value = 1.fraction * 2^E and E in [-1022, 1023] for a normal.
+    E = 52 + e
+    if E > 1023:
+        raise _Overflow()
+    biased = E + 1023
+    frac = mant53 - (1 << 52)
+    bits = (biased << 52) | frac
+    if neg:
+        bits |= 1 << 63
+    return _double_of(bits)
+
+
+def _assemble_subnormal_bits(mant, neg):
+    """Assemble a subnormal (or smallest-normal) f64 directly from the
+    already-rounded significand ``mant`` (an integer in [0, 2^52]).
+    ``mant == 2^52`` means the rounding carried up into the smallest
+    normal, which the IEEE bit layout produces automatically (exponent
+    field 1, fraction 0)."""
+    bits = mant  # exponent field 0; a carry into bit 52 sets field to 1
+    if neg:
+        bits |= 1 << 63
+    return _double_of(bits)
+
+
+# --- bignum helpers the slow path adds on top of the Dragon4 family ---
+
+
+def _bn_bitlen(a):
+    """Bit length of the bignum (0 for zero), via the top limb's
+    bit length plus the lower limbs' fixed 32 bits each."""
+    if _bn_is_zero(a):
+        return 0
+    top = a[-1]
+    bits = 0
+    while top:
+        bits += 1
+        top >>= 1
+    return bits + 32 * (len(a) - 1)
+
+
+def _bn_to_u64(a):
+    """Value of a bignum known to fit in 64 bits."""
+    v = 0
+    for i in range(len(a) - 1, -1, -1):
+        v = (v << 32) | a[i]
+    return v
+
+
+def _bn_from_str(digits):
+    """Bignum from a decimal-digit string (Horner over limbs, all
+    32-bit-mul). Used for mantissas wider than 64 bits."""
+    a = [0]
+    for ch in digits:
+        a = _bn_mul_small(a, 10)
+        a = _bn_add(a, [ord(ch) - 48])
+    return a
+
+
+def _bn_divmod_full(num, den):
+    """Return ``(q, rem)`` with ``num == q*den + rem`` and ``0 <= rem <
+    den``, q and rem fresh bignums. Long division in base 2: shift den
+    up to align with num, then subtract-and-shift. All limb ops; the
+    bounded inner work mirrors a WAT loop.
+
+    Used only in the slow path where ``q`` is known to be < 2^54 (a
+    53-or-54-bit mantissa), so the quotient stays small."""
+    if _bn_cmp(num, den) < 0:
+        return [0], list(num)
+    shift = _bn_bitlen(num) - _bn_bitlen(den)
+    # d = den << shift; ensure d <= num by decrementing shift if needed.
+    d = _bn_shl(den, shift)
+    if _bn_cmp(d, num) > 0:
+        shift -= 1
+        d = _bn_shl(den, shift)
+    q = [0]
+    rem = list(num)
+    for s in range(shift, -1, -1):
+        ds = _bn_shl(den, s)
+        if _bn_cmp(rem, ds) >= 0:
+            rem = _bn_sub(rem, ds)
+            q = _bn_add(q, _bn_shl([1], s))
+    return _bn_norm(q), _bn_norm(rem)
+
+
+def strtod(s: str):
+    """Correctly-rounded decimal-string -> f64.
+
+    Returns the f64 ``Some``-value, or ``None`` on a grammar violation
+    OR on overflow past DBL_MAX (the value cannot be represented). This
+    is the reference the WAT ``$parse_float`` is transliterated from and
+    must equal CPython ``float(s)`` bit-for-bit on every grammar-valid,
+    non-overflowing input.
+    """
+    parsed = _parse_decimal(s)
+    if parsed is None:
+        return None
+    neg, digits, e10 = parsed
+    # Strip leading zeros from the significant digits; an all-zero
+    # mantissa is exact zero (signed).
+    stripped = digits.lstrip("0")
+    if not stripped:
+        return -0.0 if neg else 0.0
+    ndigits = len(stripped)
+
+    # Clinger fast path: mantissa exact in f64 and 10^|e10| exact.
+    if ndigits <= 15 and abs(e10) <= _F64_EXACT_POW10_MAX:
+        mant_int = int(stripped)  # <= 10^15 < 2^53, exact-fits check below
+        if mant_int < _F64_EXACT_INT_MAX:
+            mf = float(mant_int)
+            if e10 >= 0:
+                return -(mf * _POW10_F64[e10]) if neg else mf * _POW10_F64[e10]
+            return -(mf / _POW10_F64[-e10]) if neg else mf / _POW10_F64[-e10]
+
+    # Quick overflow / underflow screens to bound the bignum work.
+    # decimal_point_exp ~= number of digits + e10; |value| ~ 10^that.
+    approx_exp10 = ndigits + e10
+    if approx_exp10 > 309:  # 10^309 > DBL_MAX (~1.8e308)
+        return None
+    if approx_exp10 < -324:  # 10^-324 < smallest subnormal half-ulp
+        return -0.0 if neg else 0.0
+
+    # Slow path: exact rational mantissa * 10^e10, rounded half-even.
+    m = _bn_from_str(stripped)
+    if e10 >= 0:
+        num = _bn_mul_pow10(m, e10)
+        den = [1]
+    else:
+        num = m
+        den = _bn_mul_pow10([1], -e10)
+    try:
+        return _round_bignum_ratio_to_f64(num, den, neg)
+    except _Overflow:
+        return None
+
+
+# ======================================================================
 # Combined shortest-digit producer + Python repr spelling.
 # ======================================================================
 
