@@ -9,6 +9,30 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+**Cross-backend parity (`parse_int`, 1 fix).** `parse_int` now follows
+one canonical grammar on both backends: surrounding ASCII whitespace
+(space, tab, LF, VT, FF, CR), an optional `+`/`-` sign, one or more
+decimal digits, and a value in `[-2^63, 2^63)` (which *includes*
+`i64::MIN`, `-9223372036854775808`). Anything else returns `None`.
+Three divergences are closed: the Python backend used to accept PEP-515
+underscores (`"1_000"`) and Unicode whitespace via `int(s.strip())` and
+now rejects both; the Wasm backend used to reject leading/trailing
+whitespace and is now trimmed identically; and the Wasm overflow guard
+used to reject `i64::MIN` (its magnitude `2^63` has a trailing `8`
+beyond the positive `i64::MAX` bound) and now admits it. Underscores,
+`0x`/`0b`/`0o` bases, and Unicode digits are rejected on both backends.
+
+**Cross-backend parity (`to_json` numbers, 1 fix).** `to_json` now
+renders an integer-valued `JNum` identically on both backends. An
+integral float collapses to plain integer digits (`3` not `3.0`) only
+when its shortest round-trip form is non-scientific; an integral float
+that requires an exponent (`>= 1e16`) keeps the exponent form (`1e+16`).
+Previously the Python backend collapsed *any* integral float to full
+digits (`1e16` -> `10000000000000000`) while the Wasm serialiser emitted
+the exponent form (`1e+16`); above `2^53` the exponent form is also the
+honest rendering (not every integer is exactly representable in f64).
+Negative zero and non-finite values are unchanged.
+
 **Security / soundness (IFC, 3 fixes).** A `@secret` value can no longer
 be laundered to public by routing it through a `match`-expression value,
 an `if`-expression value, or a closure that captures it: the value of a

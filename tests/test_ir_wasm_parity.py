@@ -695,6 +695,20 @@ _PARITY_PROGRAMS: list[str] = [
     # method per element (multi-impl), a homogeneous annotated list, and
     # an empty annotated list keeping its declared element type.
     "list_lit_trait_annotation.capa",
+    # Number-parser parity slice (2026-06-15): closes the parse_int
+    # and to_json-number-formatting cross-backend divergences. Both
+    # backends now follow one canonical parse_int grammar (ASCII-ws
+    # trim, optional sign, decimal digits, [-2**63, 2**63) including
+    # i64::MIN, no PEP-515 underscores / 0x / Unicode digits) and one
+    # canonical to_json number form (integer digits only when the
+    # shortest repr is non-scientific, else the exponent form). Pre-
+    # fix the Wasm parse_int rejected leading/trailing whitespace and
+    # i64::MIN, the Python parse_int accepted "1_000", and to_json of
+    # an integral float >= 1e16 printed full digits on Python but the
+    # exponent form on Wasm. (Float-PARSE precision and scientific-
+    # notation parse_float / parse_json are a separate slice and not
+    # exercised here.)
+    "parse_int_json_number_parity.capa",
 ]
 
 # Programs deliberately excluded from parity and why; documented
@@ -1972,6 +1986,9 @@ class TestPythonWasmParity(unittest.TestCase):
 
     def test_list_lit_trait_annotation(self):
         self._assert_parity("list_lit_trait_annotation.capa")
+
+    def test_parse_int_json_number_parity(self):
+        self._assert_parity("parse_int_json_number_parity.capa")
 
     def test_inventory_matches_examples_dir(self):
         # Soundness check: every .capa under examples/wasm/ is

@@ -169,9 +169,23 @@ def _json_value_to_python(j):
     if isinstance(j, JBool):
         return j.value
     if isinstance(j, JNum):
-        # Keep integers whenever possible for cleaner output
-        # (json.dumps(3.0) prints "3.0"; Capa's to_json prints "3"
-        # on both backends). Two guards on the collapse:
+        # Render an integer-valued JNum as plain integer digits ("3"
+        # not "3.0") for cleaner JSON, but ONLY when the shortest
+        # round-tripping repr of the value is in non-scientific
+        # (decimal) form. This is the boundary that makes the Python
+        # and Wasm serialisers byte-identical: the bundled Wasm
+        # ``__cj_num_to_string`` strips a trailing ``.0`` off the
+        # ftoa decimal form and leaves the scientific form
+        # (``1e+16``) untouched, so a value Python's repr spells with
+        # an exponent (any integral float >= 1e16) must NOT collapse
+        # to full integer digits here -- otherwise Python would emit
+        # ``10000000000000000`` where Wasm emits ``1e+16``.
+        #
+        # Above ~2**53 not every integer is exactly representable in
+        # f64, so the exponent form is also the honest rendering: the
+        # shortest decimal that round-trips, with no false precision.
+        #
+        # Three guards on the collapse:
         #
         # - non-finite floats: int(inf) raises OverflowError and
         #   int(nan) raises ValueError; a JNum can hold them even
@@ -180,12 +194,16 @@ def _json_value_to_python(j):
         # - negative zero: int(-0.0) is 0, which silently drops the
         #   sign. json.dumps with the real value emits "-0.0", and
         #   the bundled Wasm serialiser agrees, so -0.0 stays float.
+        # - scientific-form values: kept as float so json.dumps
+        #   (which uses float.__repr__, == the Wasm ftoa spelling)
+        #   emits the exponent form on both backends.
         v = j.value
         if (
             isinstance(v, float)
             and _math.isfinite(v)
-            and v == int(v)
+            and v.is_integer()
             and not (v == 0.0 and _math.copysign(1.0, v) < 0.0)
+            and "e" not in repr(v)
         ):
             return int(v)
         return v

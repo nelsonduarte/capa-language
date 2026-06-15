@@ -255,6 +255,48 @@ class TestConverts(unittest.TestCase):
         # Non-string input should not raise; AttributeError is caught.
         self.assertTrue(parse_int(None).is_none())
 
+    def test_parse_int_canonical_grammar(self):
+        # Canonical grammar (identical on Python + Wasm): surrounding
+        # ASCII whitespace, optional sign, one+ decimal digits, range
+        # ``[-2**63, 2**63)``. Mirrors the cross-backend parity probe.
+        self.assertEqual(parse_int("7").unwrap(), 7)
+        self.assertEqual(parse_int(" 7 ").unwrap(), 7)
+        self.assertEqual(parse_int("+7").unwrap(), 7)
+        self.assertEqual(parse_int("-7").unwrap(), 7 * -1)
+        self.assertEqual(parse_int("0").unwrap(), 0)
+        self.assertEqual(parse_int("-0").unwrap(), 0)
+        # Every trimmed ASCII whitespace byte (space/tab/LF/VT/FF/CR).
+        self.assertEqual(parse_int("\t\n\x0b\x0c\r 42 \r\n").unwrap(), 42)
+        # i64::MAX and i64::MIN both inside the window.
+        self.assertEqual(
+            parse_int("9223372036854775807").unwrap(), (1 << 63) - 1
+        )
+        self.assertEqual(
+            parse_int("-9223372036854775808").unwrap(), -(1 << 63)
+        )
+        # One past each bound -> None.
+        self.assertTrue(parse_int("9223372036854775808").is_none())
+        self.assertTrue(parse_int("-9223372036854775809").is_none())
+        # Underscores (PEP 515) are rejected -- this is the divergence
+        # being closed; Python's bare ``int`` would accept "1_000".
+        self.assertTrue(parse_int("1_000").is_none())
+        # Non-decimal bases and non-integer forms.
+        self.assertTrue(parse_int("0x10").is_none())
+        self.assertTrue(parse_int("0b101").is_none())
+        self.assertTrue(parse_int("7.0").is_none())
+        self.assertTrue(parse_int("7 8").is_none())
+        self.assertTrue(parse_int("++7").is_none())
+        self.assertTrue(parse_int("- 7").is_none())
+        # All-whitespace and sign-only.
+        self.assertTrue(parse_int("   ").is_none())
+        self.assertTrue(parse_int("+").is_none())
+        self.assertTrue(parse_int("-").is_none())
+        # Unicode digits and Unicode whitespace are NOT recognised
+        # (the Wasm byte scanner cannot see them, so both reject).
+        self.assertTrue(parse_int("٤").is_none())  # Arabic-Indic 4
+        self.assertTrue(parse_int("²").is_none())  # superscript 2
+        self.assertTrue(parse_int(" 7").is_none())  # NBSP + '7'
+
     def test_parse_float(self):
         self.assertEqual(parse_float("3.14").unwrap(), 3.14)
         self.assertEqual(parse_float("  -0.5  ").unwrap(), -0.5)
@@ -392,6 +434,34 @@ class TestJsonParseRoundtrip(unittest.TestCase):
         self.assertEqual(
             to_json(JArr([JNum(-0.0), JNum(0.0)])), "[-0.0, 0]"
         )
+
+    def test_to_json_number_canonical_form(self):
+        # Canonical number form (byte-identical on Python + Wasm):
+        # an integer-valued JNum prints plain integer digits ONLY
+        # when its shortest round-trip repr is non-scientific; an
+        # integral float that repr spells with an exponent (>= 1e16)
+        # keeps the exponent form, matching the Wasm ftoa spelling.
+        self.assertEqual(to_json(JNum(0.0)), "0")
+        self.assertEqual(to_json(JNum(1.0)), "1")
+        self.assertEqual(to_json(JNum(-1.0)), "-1")
+        self.assertEqual(to_json(JNum(100.0)), "100")
+        self.assertEqual(to_json(JNum(1e15)), "1000000000000000")
+        # 2**53: the largest power-of-two with every-integer-exact
+        # neighbours; still decimal form.
+        self.assertEqual(
+            to_json(JNum(float(1 << 53))), "9007199254740992"
+        )
+        self.assertEqual(
+            to_json(JNum(9999999999999998.0)), "9999999999999998"
+        )
+        # >= 1e16: repr uses an exponent, so NO integer collapse.
+        # Pre-fix Python printed "10000000000000000" where Wasm
+        # printed "1e+16"; the agreed form is the exponent.
+        self.assertEqual(to_json(JNum(1e16)), "1e+16")
+        self.assertEqual(to_json(JNum(1e20)), "1e+20")
+        # Non-integers print the shortest round-tripping decimal.
+        self.assertEqual(to_json(JNum(3.14)), "3.14")
+        self.assertEqual(to_json(JNum(0.5)), "0.5")
 
     def test_nesting_depth_cap_mirrors_wasm(self):
         # __CJ_MAX_DEPTH=100 in capa/ir/_builtin_json.capa; the

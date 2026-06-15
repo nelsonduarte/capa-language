@@ -1,0 +1,61 @@
+// Cross-backend parity: parse_int canonical grammar + to_json
+// number formatting.
+//
+// parse_int follows one canonical grammar on BOTH backends:
+//   surrounding ASCII whitespace, optional sign, one+ decimal
+//   digits, value in [-2**63, 2**63). No PEP-515 underscores, no
+//   0x/0b/0o bases, no Unicode digits or whitespace. i64::MIN
+//   (-9223372036854775808) is in range.
+//
+// to_json prints an integer-valued JNum as plain integer digits
+// ONLY when the value's shortest round-trip form is non-scientific;
+// an integral float that needs an exponent (>= 1e16) keeps the
+// exponent form. The collapse boundary is byte-identical on both
+// backends.
+
+fun show_int(stdio: Stdio, s: String)
+    match parse_int(s)
+        Some(n) -> stdio.println("[${s}] => ${n}")
+        None -> stdio.println("[${s}] => None")
+
+fun main(stdio: Stdio)
+    // parse_int grammar.
+    show_int(stdio, "7")
+    show_int(stdio, " 7 ")
+    show_int(stdio, "\t 42 \r\n")
+    show_int(stdio, "+7")
+    show_int(stdio, "-7")
+    show_int(stdio, "-0")
+    show_int(stdio, "00007")
+    show_int(stdio, "9223372036854775807")
+    show_int(stdio, "-9223372036854775808")
+    show_int(stdio, "9223372036854775808")
+    show_int(stdio, "-9223372036854775809")
+    show_int(stdio, "1_000")
+    show_int(stdio, "0x10")
+    show_int(stdio, "7.0")
+    show_int(stdio, "7 8")
+    show_int(stdio, "")
+    show_int(stdio, "+")
+
+    // to_json number formatting.
+    stdio.println(to_json(JNum(0.0)))
+    stdio.println(to_json(JNum(1.0)))
+    stdio.println(to_json(JNum(-1.0)))
+    stdio.println(to_json(JNum(100.0)))
+    stdio.println(to_json(JNum(1000000000000000.0)))
+    stdio.println(to_json(JNum(9007199254740992.0)))
+    stdio.println(to_json(JNum(9999999999999998.0)))
+    stdio.println(to_json(JNum(10000000000000000.0)))
+    stdio.println(to_json(JNum(100000000000000000000.0)))
+    stdio.println(to_json(JNum(3.14)))
+    stdio.println(to_json(JNum(-0.0)))
+    stdio.println(to_json(JNum(0.5)))
+
+    // Round-trip parse_json -> to_json.
+    match parse_json("42")
+        Ok(jv) -> stdio.println(to_json(jv))
+        Err(m) -> stdio.println("ERR ${m}")
+    match parse_json("10000000000000000")
+        Ok(jv) -> stdio.println(to_json(jv))
+        Err(m) -> stdio.println("ERR ${m}")

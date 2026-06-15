@@ -463,6 +463,95 @@ class _RuntimeHelpersMixin:
         self._indent -= 1
         self._write(")")
 
+    def _emit_parse_int_ws_predicate(self) -> None:
+        """Leave 1 on the stack iff ``$byte`` is one of the six ASCII
+        whitespace bytes trimmed by ``parse_int`` (space 0x20, tab
+        0x09, LF 0x0A, VT 0x0B, FF 0x0C, CR 0x0D). The caller has
+        already loaded the byte into ``$byte``."""
+        # (byte == 0x20) | (byte >= 0x09 & byte <= 0x0D)
+        self._write("local.get $byte")
+        self._write("i32.const 32")
+        self._write("i32.eq")
+        self._write("local.get $byte")
+        self._write("i32.const 9")
+        self._write("i32.ge_u")
+        self._write("local.get $byte")
+        self._write("i32.const 13")
+        self._write("i32.le_u")
+        self._write("i32.and")
+        self._write("i32.or")
+
+    def _emit_parse_int_trim_leading_ws(self) -> None:
+        """Advance ``$ptr`` and shrink ``$len`` past leading ASCII
+        whitespace bytes."""
+        self._block_counter += 1
+        loop = f"$pitl{self._block_counter}_loop"
+        exit_ = f"$pitl{self._block_counter}_exit"
+        self._write(f"block {exit_}")
+        self._indent += 1
+        self._write(f"loop {loop}")
+        self._indent += 1
+        # if len == 0: break
+        self._write("local.get $len")
+        self._write("i32.eqz")
+        self._write(f"br_if {exit_}")
+        # byte = ptr[0]; if not whitespace: break
+        self._write("local.get $ptr")
+        self._write("i32.load8_u")
+        self._write("local.set $byte")
+        self._emit_parse_int_ws_predicate()
+        self._write("i32.eqz")
+        self._write(f"br_if {exit_}")
+        # ptr += 1; len -= 1
+        self._write("local.get $ptr")
+        self._write("i32.const 1")
+        self._write("i32.add")
+        self._write("local.set $ptr")
+        self._write("local.get $len")
+        self._write("i32.const 1")
+        self._write("i32.sub")
+        self._write("local.set $len")
+        self._write(f"br {loop}")
+        self._indent -= 1
+        self._write("end")
+        self._indent -= 1
+        self._write("end")
+
+    def _emit_parse_int_trim_trailing_ws(self) -> None:
+        """Shrink ``$len`` past trailing ASCII whitespace bytes."""
+        self._block_counter += 1
+        loop = f"$pitt{self._block_counter}_loop"
+        exit_ = f"$pitt{self._block_counter}_exit"
+        self._write(f"block {exit_}")
+        self._indent += 1
+        self._write(f"loop {loop}")
+        self._indent += 1
+        # if len == 0: break
+        self._write("local.get $len")
+        self._write("i32.eqz")
+        self._write(f"br_if {exit_}")
+        # byte = ptr[len - 1]; if not whitespace: break
+        self._write("local.get $ptr")
+        self._write("local.get $len")
+        self._write("i32.add")
+        self._write("i32.const 1")
+        self._write("i32.sub")
+        self._write("i32.load8_u")
+        self._write("local.set $byte")
+        self._emit_parse_int_ws_predicate()
+        self._write("i32.eqz")
+        self._write(f"br_if {exit_}")
+        # len -= 1
+        self._write("local.get $len")
+        self._write("i32.const 1")
+        self._write("i32.sub")
+        self._write("local.set $len")
+        self._write(f"br {loop}")
+        self._indent -= 1
+        self._write("end")
+        self._indent -= 1
+        self._write("end")
+
     def _emit_parse_int_function(self) -> None:
         """Emit ``$parse_int(ptr: i32, len: i32) -> i32`` returning
         a freshly-allocated ``Option<Int>`` pointer.
@@ -495,6 +584,23 @@ class _RuntimeHelpersMixin:
         self._write("i32.const 1")
         self._write("i32.store")
         # Empty string -> None (already default).
+        self._write("local.get $len")
+        self._write("i32.eqz")
+        self._write("if")
+        self._indent += 1
+        self._write("local.get $result")
+        self._write("return")
+        self._indent -= 1
+        self._write("end")
+        # Trim surrounding ASCII whitespace (space / tab / LF / VT /
+        # FF / CR -- bytes 0x20, 0x09, 0x0A, 0x0B, 0x0C, 0x0D), the
+        # same six bytes the Python helper trims via ``str.strip``
+        # over an explicit set. After trimming, $ptr points at the
+        # first non-whitespace byte and $len is the trimmed length;
+        # the sign check and digit loop below run on that window.
+        self._emit_parse_int_trim_leading_ws()
+        self._emit_parse_int_trim_trailing_ws()
+        # An all-whitespace input trims to empty -> None.
         self._write("local.get $len")
         self._write("i32.eqz")
         self._write("if")
@@ -563,15 +669,22 @@ class _RuntimeHelpersMixin:
         self._write("return")
         self._indent -= 1
         self._write("end")
-        # Overflow check (audit fix C5): before ``acc = acc * 10 +
-        # digit``, reject inputs that would push ``acc`` past
-        # ``i64::MAX``. Threshold is ``i64::MAX / 10 ==
-        # 922337203685477580``; if ``acc`` already exceeds it, the
-        # multiply overflows. If ``acc`` equals it and ``digit > 7``,
-        # the add overflows. Either case returns None so the Wasm
-        # backend mirrors the Python helper's
-        # ``-(2**63) <= n < 2**63`` window check; without this the
-        # accumulator silently wrapped mod 2^64.
+        # Overflow check: before ``acc = acc * 10 + digit``, reject
+        # inputs that would push the magnitude past the allowed
+        # bound. Threshold is ``i64::MAX / 10 == 922337203685477580``;
+        # if ``acc`` already exceeds it, the multiply overflows.
+        #
+        # At the boundary (``acc == threshold``) the last admissible
+        # digit depends on the sign: the positive bound is
+        # ``i64::MAX == ...807`` (last digit 7) and the negative bound
+        # is the magnitude ``2**63 == ...808`` (last digit 8, which
+        # is ``i64::MIN``). So the boundary rejects ``digit > 7`` for
+        # a positive value and ``digit > 8`` for a negative one; the
+        # rejecting byte is ``'7' + neg`` (55 or 56). Magnitude 2**63
+        # is accumulated as the bit pattern 0x8000000000000000 and the
+        # later ``0 - acc`` step wraps it back to ``i64::MIN``
+        # exactly. This mirrors the Python helper's
+        # ``-(2**63) <= n < 2**63`` window, including ``i64::MIN``.
         self._write("local.get $acc")
         self._write("i64.const 922337203685477580")
         self._write("i64.gt_s")
@@ -588,6 +701,8 @@ class _RuntimeHelpersMixin:
         self._indent += 1
         self._write("local.get $byte")
         self._write("i32.const 55")  # '7'
+        self._write("local.get $neg")
+        self._write("i32.add")       # '7' + neg -> '7' (pos) / '8' (neg)
         self._write("i32.gt_u")
         self._write("if")
         self._indent += 1

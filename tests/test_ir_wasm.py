@@ -5568,6 +5568,44 @@ class TestWasmSafetyTraps(unittest.TestCase):
         )
         self.assertEqual(self._run_main_stdout(src), "Some(3.5)\n")
 
+    def test_parse_int_i64_min_accepted(self):
+        # ``-9223372036854775808`` (i64::MIN) sits inside the
+        # ``[-2**63, 2**63)`` window. The overflow guard used to
+        # compare the magnitude against i64::MAX with no sign case
+        # and rejected it (magnitude last digit 8 > 7); it now admits
+        # digit 8 at the boundary when a sign is present.
+        src = (
+            'fun main(stdio: Stdio)\n'
+            '    match parse_int("-9223372036854775808")\n'
+            '        Some(n) -> stdio.println("Some(${n})")\n'
+            '        None -> stdio.println("None")\n'
+        )
+        self.assertEqual(
+            self._run_main_stdout(src), "Some(-9223372036854775808)\n"
+        )
+
+    def test_parse_int_trims_ascii_whitespace(self):
+        # Surrounding ASCII whitespace (space/tab/LF/VT/FF/CR) is
+        # trimmed before parsing, matching the Python helper; a bare
+        # ``" 7 "`` used to return None on the Wasm backend.
+        src = (
+            'fun main(stdio: Stdio)\n'
+            '    match parse_int("\\t 42 \\r\\n")\n'
+            '        Some(n) -> stdio.println("Some(${n})")\n'
+            '        None -> stdio.println("None")\n'
+        )
+        self.assertEqual(self._run_main_stdout(src), "Some(42)\n")
+
+    def test_parse_int_rejects_underscores(self):
+        # Canonical grammar has no PEP-515 digit separators.
+        src = (
+            'fun main(stdio: Stdio)\n'
+            '    match parse_int("1_000")\n'
+            '        Some(n) -> stdio.println("Some(${n})")\n'
+            '        None -> stdio.println("None")\n'
+        )
+        self.assertEqual(self._run_main_stdout(src), "None\n")
+
 
 @unittest.skipUnless(
     _has_wasm_tools() and _has_wasmtime_py(),

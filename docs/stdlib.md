@@ -255,7 +255,7 @@ type JsonValue =
 
 | Function | Type | Notes |
 |---|---|---|
-| `parse_int(s: String)` | `Option<Int>` | Returns `None` on invalid input |
+| `parse_int(s: String)` | `Option<Int>` | Surrounding ASCII whitespace, optional sign, decimal digits only; range `[-2^63, 2^63)`. No `_` separators or `0x`/`0b`/`0o` bases. `None` otherwise |
 | `parse_float(s: String)` | `Option<Float>` | Same for floats |
 | `to_float(i: Int)` | `Float` | Total, every Int has an exact Float representation |
 | `to_int(f: Float)` | `Int` | Truncates toward zero |
