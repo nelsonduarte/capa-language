@@ -202,6 +202,32 @@ class TestCliInProcess(unittest.TestCase):
             self.assertNotEqual(rc, 0)
             self.assertIn("error", err.lower())
 
+    def test_deep_flat_chain_parse_no_traceback(self):
+        # A pathological flat chain must yield a clean diagnostic under
+        # both --parse and --check, never a raw RecursionError traceback
+        # (which the left-deep AST would otherwise trigger in the AST
+        # dump and the analyzer's recursive walks).
+        n = 3000
+        bodies = {
+            "binary": "    let x = " + "1+" * n + "1",
+            "field": "    let x = a" + ".f" * n,
+            "index": "    let x = a" + "[0]" * n,
+            "call": "    let x = a" + "()" * n,
+            "or": "    let x = a" + " or a" * n,
+        }
+        with tempfile.TemporaryDirectory() as td:
+            td_path = Path(td)
+            for kind, body in bodies.items():
+                src = "fun main()\n" + body + "\n"
+                p = _write_capa(td_path, f"deep_{kind}.capa", src)
+                for flag in ("--parse", "--check"):
+                    with self.subTest(kind=kind, flag=flag):
+                        rc, out, err = _run_main([flag, str(p)], cwd=td_path)
+                        self.assertNotEqual(rc, 0)
+                        self.assertNotIn("Traceback", err)
+                        self.assertNotIn("RecursionError", err)
+                        self.assertIn("error", err.lower())
+
     def test_check_missing_file(self):
         with tempfile.TemporaryDirectory() as td:
             td_path = Path(td)

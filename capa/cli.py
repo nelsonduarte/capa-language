@@ -1166,11 +1166,28 @@ def main() -> int:
         privates_map = (
             linked.module_privates if linked is not None else None
         )
-        result = analyze(
-            module, source=source, filename=filename,
-            sources=sources_map,
-            module_privates=privates_map,
-        )
+        # Belt-and-braces: the parser caps both nesting depth and flat
+        # chain length, so a pathological expression is rejected before
+        # an AST that could blow the analyzer's recursive walks is ever
+        # built. Should any path still recurse past the interpreter
+        # limit, convert the RecursionError into a clean diagnostic
+        # rather than letting a raw stack trace escape ``capa --check``.
+        try:
+            result = analyze(
+                module, source=source, filename=filename,
+                sources=sources_map,
+                module_privates=privates_map,
+            )
+        except RecursionError:
+            msg = (
+                f"{filename}: error: expression too deep or complex to "
+                "analyze; simplify or split it"
+            )
+            if use_color:
+                print(f"{C.RED}{msg}{C.RESET}", file=sys.stderr)
+            else:
+                print(msg, file=sys.stderr)
+            return 1
         # Non-fatal warnings (information-flow secret->sink under the
         # warn-then-enforce roll-out, roadmap S2.4; the dead-Unsafe
         # migrate nudge) print regardless of whether the program
@@ -1524,7 +1541,23 @@ def main() -> int:
             sys.argv = saved_argv
 
     if args.parse:
-        print(ast_dump(module))
+        # Belt-and-braces (see the analyze call above): the parser
+        # caps nesting and flat-chain length so the dumped AST is
+        # never deep enough to overflow ``ast_dump``'s recursive walk;
+        # convert any leaked RecursionError into a clean error rather
+        # than a raw stack trace under ``capa --parse``.
+        try:
+            print(ast_dump(module))
+        except RecursionError:
+            msg = (
+                f"{filename}: error: expression too deep or complex to "
+                "dump; simplify or split it"
+            )
+            if use_color:
+                print(f"{C.RED}{msg}{C.RESET}", file=sys.stderr)
+            else:
+                print(msg, file=sys.stderr)
+            return 1
         return 0
 
     for tok in tokens:

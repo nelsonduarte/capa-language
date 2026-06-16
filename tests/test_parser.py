@@ -758,6 +758,62 @@ class TestExpressionDepthCap(unittest.TestCase):
             parse(src)
         self.assertIn(f"limit {MAX_EXPR_DEPTH}", ctx.exception.message)
 
+
+class TestFlatChainCap(unittest.TestCase):
+    """A flat left-associative or postfix chain is parsed by ``while``
+    loops that never re-enter ``_parse_expr``, so the recursive
+    MAX_EXPR_DEPTH guard does not see it. Such a chain builds a
+    left-deep AST that blows the interpreter stack the moment a
+    downstream recursive traversal walks it (``ast_dump`` under
+    ``--parse``; the analyzer under ``--check``), surfacing a raw
+    ``RecursionError`` instead of a diagnostic. The parser caps the
+    chain length so it is rejected cleanly before that AST is built.
+    """
+
+    def _deep_program(self, kind: str, n: int) -> str:
+        bodies = {
+            "binary": "    let x = " + "1+" * n + "1",
+            "field": "    let x = a" + ".f" * n,
+            "index": "    let x = a" + "[0]" * n,
+            "call": "    let x = a" + "()" * n,
+            "or": "    let x = a" + " or a" * n,
+        }
+        return "fun main()\n" + bodies[kind] + "\n"
+
+    def test_deep_flat_chains_raise_clean_diagnostic(self):
+        from capa.parser._expressions import MAX_CHAIN_LEN
+
+        for kind in ("binary", "field", "index", "call", "or"):
+            src = self._deep_program(kind, MAX_CHAIN_LEN * 6)
+            with self.subTest(kind=kind):
+                with self.assertRaises(ParserError) as ctx:
+                    parse(src)
+                self.assertIn("too long", ctx.exception.message)
+
+    def test_deep_flat_chains_do_not_leak_recursionerror(self):
+        for kind in ("binary", "field", "index", "call", "or"):
+            src = self._deep_program(kind, 3000)
+            with self.subTest(kind=kind):
+                try:
+                    parse(src)
+                except ParserError:
+                    pass
+                except RecursionError:  # pragma: no cover
+                    self.fail(f"{kind} chain leaked a RecursionError")
+
+    def test_moderate_flat_chains_still_parse(self):
+        # A reasonable chain (well under the cap) must keep working.
+        for kind in ("binary", "field", "index", "call", "or"):
+            src = self._deep_program(kind, 50)
+            with self.subTest(kind=kind):
+                parse(src)  # must not raise
+
+    def test_many_small_expressions_do_not_accumulate(self):
+        # The chain counter resets per top-level expression, so a
+        # module full of normal-sized expressions never trips the cap.
+        lines = "".join(f"    let x{i} = 1 + 2 + 3\n" for i in range(400))
+        parse("fun main()\n" + lines)  # must not raise
+
     def test_legitimately_nested_program_still_parses(self):
         # Far deeper than any real Capa program (the whole corpus tops
         # out at 7 levels of _parse_expr), but shallow enough to parse

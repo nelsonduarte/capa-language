@@ -95,9 +95,51 @@ _SHIFT_OPS = {T.LSHIFT: "<<", T.RSHIFT: ">>"}
 # lowered the recursion limit below this cap.
 MAX_EXPR_DEPTH = 40
 
+# Maximum length of a single LEFT-ASSOCIATIVE or POSTFIX chain the
+# parser accepts before raising the same clean diagnostic. The
+# MAX_EXPR_DEPTH counter only catches RECURSIVE re-entry of
+# ``_parse_expr`` (the ``((((...))))`` shape); flat chains such as
+# ``1+1+1+...`` (binary), ``a.f.f.f...`` (field), ``a[0][0]...``
+# (index), ``a()()()...`` (call) and ``a or a or a...`` are built by
+# the ``while`` loops in the precedence-climbing levels and in
+# ``_parse_postfix``, which never re-enter ``_parse_expr``. They parse
+# fine but yield a left-deep AST that blows the interpreter stack the
+# moment a downstream RECURSIVE traversal walks it (``capa_ast.dump``
+# under ``--parse``; the analyzer's taint/IFC walks under ``--check``),
+# surfacing a raw ``RecursionError`` instead of a diagnostic.
+#
+# Capping the chain length in the parser stops the left-deep AST from
+# ever being built, so the DoS surface is closed at the source rather
+# than at each downstream consumer. The bound is generous: the deepest
+# real chain in the corpus is well under 100, so 500 leaves ample
+# headroom while keeping any resulting AST shallow enough for every
+# recursive consumer. As a belt-and-braces fallback, ``--parse`` and
+# ``--check`` additionally convert any leaked ``RecursionError`` into a
+# clean error at their entry points.
+MAX_CHAIN_LEN = 500
+
 
 class _ExpressionsMixin:
+    def _chain_step(self) -> None:
+        """Count one element of a flat left-associative / postfix chain
+        and reject the expression once the cumulative count exceeds
+        ``MAX_CHAIN_LEN``. Called once per iteration by every chain
+        ``while`` loop so a pathologically long flat chain (which the
+        recursive ``MAX_EXPR_DEPTH`` guard does not see) cannot build a
+        left-deep AST that crashes downstream recursive traversals."""
+        self._chain_len += 1
+        if self._chain_len > MAX_CHAIN_LEN:
+            raise self._error(
+                f"expression too long (chain limit {MAX_CHAIN_LEN}); "
+                "simplify or split the expression"
+            )
+
     def _parse_expr(self) -> A.Expr:
+        # Reset the flat-chain counter at each top-level expression
+        # entry (depth 0 -> 1) so the cap measures one expression's
+        # chains, not the whole module's cumulative total.
+        if self._expr_depth == 0:
+            self._chain_len = 0
         self._expr_depth += 1
         if self._expr_depth > MAX_EXPR_DEPTH:
             self._expr_depth -= 1
@@ -143,6 +185,7 @@ class _ExpressionsMixin:
     def _parse_or(self) -> A.Expr:
         left = self._parse_and()
         while self._match(T.KW_OR):
+            self._chain_step()
             right = self._parse_and()
             left = A.BinOp(pos=left.pos, op="or", left=left, right=right)
         return left
@@ -150,6 +193,7 @@ class _ExpressionsMixin:
     def _parse_and(self) -> A.Expr:
         left = self._parse_not()
         while self._match(T.KW_AND):
+            self._chain_step()
             right = self._parse_not()
             left = A.BinOp(pos=left.pos, op="and", left=left, right=right)
         return left
@@ -216,6 +260,7 @@ class _ExpressionsMixin:
         # the module docstring for the full precedence diagram.
         left = self._parse_bitwise_xor()
         while self._peek().kind in _BITWISE_OR_OPS:
+            self._chain_step()
             op_tok = self._advance()
             op = _BITWISE_OR_OPS[op_tok.kind]
             right = self._parse_bitwise_xor()
@@ -225,6 +270,7 @@ class _ExpressionsMixin:
     def _parse_bitwise_xor(self) -> A.Expr:
         left = self._parse_bitwise_and()
         while self._peek().kind in _BITWISE_XOR_OPS:
+            self._chain_step()
             op_tok = self._advance()
             op = _BITWISE_XOR_OPS[op_tok.kind]
             right = self._parse_bitwise_and()
@@ -238,6 +284,7 @@ class _ExpressionsMixin:
         # shift -> additive -> multiplicative below.
         left = self._parse_shift()
         while self._peek().kind in _BITWISE_AND_OPS:
+            self._chain_step()
             op_tok = self._advance()
             op = _BITWISE_AND_OPS[op_tok.kind]
             right = self._parse_shift()
@@ -252,6 +299,7 @@ class _ExpressionsMixin:
         # (shift wraps before bitwise sees it). Left associative.
         left = self._parse_additive()
         while self._peek().kind in _SHIFT_OPS:
+            self._chain_step()
             op_tok = self._advance()
             op = _SHIFT_OPS[op_tok.kind]
             right = self._parse_additive()
@@ -261,6 +309,7 @@ class _ExpressionsMixin:
     def _parse_additive(self) -> A.Expr:
         left = self._parse_multiplicative()
         while self._peek().kind in _ADDITIVE_OPS:
+            self._chain_step()
             op_tok = self._advance()
             op = _ADDITIVE_OPS[op_tok.kind]
             right = self._parse_multiplicative()
@@ -270,6 +319,7 @@ class _ExpressionsMixin:
     def _parse_multiplicative(self) -> A.Expr:
         left = self._parse_unary()
         while self._peek().kind in _MULTIPLICATIVE_OPS:
+            self._chain_step()
             op_tok = self._advance()
             op = _MULTIPLICATIVE_OPS[op_tok.kind]
             right = self._parse_unary()
@@ -286,6 +336,8 @@ class _ExpressionsMixin:
     def _parse_postfix(self) -> A.Expr:
         expr = self._parse_primary()
         while True:
+            if self._check(T.DOT, T.LPAREN, T.LBRACKET, T.QUESTION):
+                self._chain_step()
             if self._match(T.DOT):
                 name_tok = self._expect(T.IDENT, "expected field or method name")
                 # Method call if followed by '(' or turbofish '::<'.

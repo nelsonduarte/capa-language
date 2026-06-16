@@ -22,6 +22,22 @@ hex/octal/binary paths and floats are unaffected (different bounds, cheap
 conversion). A valid literal, `i64::MAX`, and the `2**63` magnitude of
 `i64::MIN` all still lex; `2**63 + 1` is still rejected cleanly.
 
+**Robustness (deep flat expression chains crashed `--parse` / `--check`
+with `RecursionError`).** The parser's nesting guard only counted
+*recursive* re-entry of `_parse_expr` (the `((((...))))` shape). A flat
+left-associative or postfix chain (`1+1+1+...`, `a.f.f.f...`,
+`a[0][0]...`, `a()()()...`, `a or a or a...`) is parsed by `while` loops
+that never re-enter `_parse_expr`, so a ~3000-element chain parsed fine
+but built a left-deep AST that overflowed the interpreter stack the
+moment a downstream recursive traversal walked it (the AST dump under
+`--parse`; the analyzer's taint/IFC walks under `--check`), surfacing a
+raw traceback. The parser now caps the cumulative flat-chain length per
+expression and rejects an over-long chain with the same clean diagnostic
+as deep nesting, so the left-deep AST is never built; `--parse` and
+`--check` additionally convert any leaked `RecursionError` into a clean
+error as a belt-and-braces fallback. Chains of reasonable size are
+unaffected.
+
 **Cross-backend parity (`to_upper` / `to_lower` are now ASCII-only on
 both backends).** `String.to_upper()` / `to_lower()` did full Unicode
 case folding on the Python backend (Python's native `str.upper()` /

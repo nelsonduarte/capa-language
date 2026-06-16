@@ -91,6 +91,14 @@ class Parser(
         # yields a clean parse diagnostic rather than a raw
         # ``RecursionError`` (audit 2026-05-25 M2).
         self._expr_depth = 0
+        # Cumulative length of flat left-associative / postfix chains in
+        # the expression currently being parsed, guarded by
+        # MAX_CHAIN_LEN. Reset by the statement/expression entry so a
+        # whole module of normal-sized expressions never trips it; it
+        # exists to cap a single pathological flat chain (``1+1+...``,
+        # ``a.f.f...``, ``a()()...``) whose left-deep AST would crash a
+        # downstream recursive traversal with ``RecursionError``.
+        self._chain_len = 0
 
     def _build_string_lit(self, value: str, pos, interp_positions=None) -> A.Expr:
         """Builds a string literal. If it contains ``${...}``, returns
