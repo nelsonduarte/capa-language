@@ -2468,6 +2468,39 @@ class TestInterpolatedString(unittest.TestCase):
         # then `y` is col 31.
         self.assertEqual(r.errors[0].pos.col, 31)
 
+    def test_trailing_tokens_in_interpolation_rejected(self):
+        # ``${x y}`` used to drop the ``y`` silently (the sub-parser
+        # parsed ``x`` and never checked it had reached EOF), so a
+        # forgotten operator compiled clean. It is now a clean parse
+        # error (raised by parse_module, before analysis).
+        from capa import ParserError
+
+        for body in ("${x y}", "${a b}", "${a;}"):
+            with self.subTest(body=body):
+                with self.assertRaises(ParserError) as ctx:
+                    check(
+                        "fun main(stdio: Stdio)\n"
+                        "    let x = 1\n"
+                        "    let a = 2\n"
+                        f"    stdio.println(\"{body}\")\n"
+                    )
+                self.assertIn("interpolation", ctx.exception.message)
+
+    def test_single_expression_interpolation_still_ok(self):
+        # The EOF check must not reject a legitimate single expression,
+        # including multi-token ones and calls with comma arguments.
+        for body in ("${x}", "${x + y}", "${f(x, y)}"):
+            with self.subTest(body=body):
+                r = check(
+                    "fun f(p: Int, q: Int) -> Int\n"
+                    "    return p\n"
+                    "fun main(stdio: Stdio)\n"
+                    "    let x = 1\n"
+                    "    let y = 2\n"
+                    f"    stdio.println(\"{body}\")\n"
+                )
+                self.assertTrue(r.ok, r.errors)
+
 
 class TestInterpolationFormattability(unittest.TestCase):
     """A ``${value}`` part must render on BOTH backends. The analyzer

@@ -38,6 +38,16 @@ as deep nesting, so the left-deep AST is never built; `--parse` and
 error as a belt-and-braces fallback. Chains of reasonable size are
 unaffected.
 
+**Robustness (extra tokens inside `${...}` were silently discarded).** A
+string interpolation such as `"${x y}"`, `"${a b}"`, or `"${a;}"` parsed
+only the first expression (`x`) and dropped the rest without any error,
+so a forgotten operator compiled clean. The interpolation sub-parser now
+requires the whole `${...}` content to be consumed (a single expression);
+trailing tokens are a clean "unexpected token after interpolation
+expression" error. Valid single-expression interpolations, including
+multi-token ones and calls with comma arguments (`"${f(a, b)}"`), are
+unaffected.
+
 **Cross-backend parity (`to_upper` / `to_lower` are now ASCII-only on
 both backends).** `String.to_upper()` / `to_lower()` did full Unicode
 case folding on the Python backend (Python's native `str.upper()` /

@@ -179,8 +179,17 @@ class Parser(
         character of ``expr_text`` in the outer source), so every
         token, AST node, and diagnostic produced from inside the
         interpolation reports a position valid in the outer source.
+
+        After parsing the expression we require the sub-parser to be at
+        end of input (a trailing NEWLINE / DEDENT from the sub-lexer is
+        allowed, since the substring carries no real line breaks). Any
+        other leftover token means the interpolation held more than one
+        expression's worth of syntax (e.g. ``${x y}`` or ``${a;}``),
+        which used to be silently discarded; it is now a clean error.
         """
         from ..lexer import Lexer
+        from ..tokens import TokenKind
+
         try:
             sub_tokens = Lexer(
                 expr_text,
@@ -193,6 +202,19 @@ class Parser(
                 sub_tokens, source=expr_text, filename=self.filename,
             )
             expr = sub_parser._parse_expr()
+            # Require the whole interpolation to have been consumed.
+            # The sub-lexer appends a structural NEWLINE (and possibly
+            # DEDENT) before EOF; those are not real trailing syntax,
+            # so skip past them before demanding EOF.
+            while sub_parser._check(TokenKind.NEWLINE, TokenKind.DEDENT):
+                sub_parser._advance()
+            if not sub_parser._at_end():
+                leftover = sub_parser._peek()
+                raise sub_parser._error(
+                    "unexpected token after interpolation expression; "
+                    "an interpolation must contain exactly one expression",
+                    leftover,
+                )
         except (LexerError, ParserError) as e:
             # Re-raise as an error of the outer literal, with position.
             raise self._error(
