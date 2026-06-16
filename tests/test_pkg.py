@@ -282,6 +282,35 @@ class TestGitUrlAllowList(_TempDirMixin, unittest.TestCase):
             )
         self.assertIn("starts with '-'", str(cm.exception))
 
+    def test_scheme_url_with_dash_host_rejected(self):
+        # ``ssh://-oProxyCommand=calc/repo`` does NOT start with '-'
+        # (it starts with ``ssh://``) so the URL-position check above
+        # misses it, but the host the ssh transport sees does. Modern
+        # git mitigates, but the promised defence-in-depth must reject
+        # a host component starting with '-' across schemes.
+        for url in (
+            "ssh://-evil/repo",
+            "https://-evil/repo",
+            "ssh://user@-evil/repo",
+            "ssh://-oProxyCommand=calc/repo",
+        ):
+            with self.subTest(url=url):
+                with self.assertRaises(ManifestError) as cm:
+                    read_manifest(self._capa_toml_with_git(url))
+                self.assertIn("starts with '-'", str(cm.exception))
+
+    def test_scheme_url_with_normal_host_allowed(self):
+        # Hosts that merely contain a dash, ports, and user@ prefixes
+        # must still pass; only a LEADING dash on the host is refused.
+        for url in (
+            "https://my-host.example/x/y",
+            "ssh://git@github.com/x/y",
+            "https://github.com:443/x/y",
+        ):
+            with self.subTest(url=url):
+                m = read_manifest(self._capa_toml_with_git(url))
+                self.assertEqual(m.dependencies[0].git, url)
+
     def test_unknown_scheme_rejected(self):
         # rsync:// is real but not in our allow-list; bumping the
         # allow-list should be a deliberate decision.

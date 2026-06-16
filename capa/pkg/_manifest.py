@@ -308,6 +308,15 @@ def _validate_git_url(path: Path, name: str, url: str) -> None:
       Refuse URLs that start with ``-`` outright, and refuse the
       ``git@host:path`` SSH shortcut when the ``path`` segment
       starts with ``-``.
+
+    - **Option injection at the host component of a scheme URL**.
+      A scheme like ``ssh://-oProxyCommand=calc/repo`` does not
+      start with ``-`` (it starts with ``ssh://``), but the host
+      that ``git`` / the ssh transport eventually sees does. Modern
+      git mitigates the ``ssh://-...`` shape, but the promised
+      defence-in-depth means we also reject any URL whose host
+      component (after ``scheme://`` and an optional ``user@``)
+      starts with ``-``.
     """
     if url.startswith("-"):
         raise ManifestError(
@@ -327,7 +336,10 @@ def _validate_git_url(path: Path, name: str, url: str) -> None:
                 f"command-line option). Got {url!r}"
             )
         return
-    if not any(url.startswith(s) for s in _ALLOWED_GIT_SCHEMES):
+    matched_scheme = next(
+        (s for s in _ALLOWED_GIT_SCHEMES if url.startswith(s)), None,
+    )
+    if matched_scheme is None:
         raise ManifestError(
             f"{path}: dependencies.{name}.git must use one of the "
             f"allow-listed transports "
@@ -336,6 +348,25 @@ def _validate_git_url(path: Path, name: str, url: str) -> None:
             f"ext:: transport (CVE-2017-1000117 class), among other "
             f"git URL injection patterns."
         )
+    # Reject a host component that starts with '-'. The host is the
+    # text after ``scheme://`` and an optional ``user@`` prefix, up to
+    # the first path / port separator. A leading '-' there reintroduces
+    # the option-injection class one level down from the URL position
+    # (e.g. ``ssh://-oProxyCommand=calc/repo``). ``file://`` paths have
+    # no host and are exempt.
+    if matched_scheme != "file://":
+        authority = url[len(matched_scheme):]
+        # Drop an optional ``user[:pass]@`` prefix; the host is what
+        # follows. Then cut at the first '/', ':' (port), or '?'.
+        host = authority.split("@", 1)[-1]
+        host = host.split("/", 1)[0].split(":", 1)[0].split("?", 1)[0]
+        if host.startswith("-"):
+            raise ManifestError(
+                f"{path}: dependencies.{name}.git host component "
+                f"{host!r} starts with '-'; this would be parsed as a "
+                f"command-line option by git / the ssh transport. "
+                f"Got {url!r}"
+            )
 
 
 def _parse_dep(path: Path, name: str, spec: dict) -> Dependency:
