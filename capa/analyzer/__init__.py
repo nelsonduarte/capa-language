@@ -42,6 +42,7 @@ and resolved bindings.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Optional
@@ -81,6 +82,26 @@ from ..typesys import (
 class AnalysisError(LexerError):
     """Semantic error (resolution or type) detected during analysis."""
     pass
+
+
+# The loader renames non-root module items to keep private items and
+# unselected pub items out of the importer's scope. A private item
+# becomes ``_capa_m<N>__<name>``; an unselected pub item (under a
+# selective import) becomes ``_capa_m<N>__sel__<name>``. Those mangled
+# names are an internal linking detail and must never reach a user's
+# diagnostic; we strip the prefix back to the name the author actually
+# wrote before any error / warning is rendered. The trailing capture
+# is the original name (which may itself contain underscores).
+_MANGLE_RE = re.compile(r"_capa_m\d+__(?:sel__)?([A-Za-z_][A-Za-z0-9_]*)")
+
+
+def _demangle(message: str) -> str:
+    """Replace every loader mangled name in ``message`` with the
+    original name the author wrote. A no-op on messages with no
+    mangled name (the common case)."""
+    if "_capa_m" not in message:
+        return message
+    return _MANGLE_RE.sub(lambda m: m.group(1), message)
 
 
 # ===========================================================
@@ -607,7 +628,7 @@ class Analyzer(
         if pos.filename and pos.filename in self.sources:
             src = self.sources[pos.filename]
             fname = pos.filename
-        self.errors.append(AnalysisError(message, pos, src, fname))
+        self.errors.append(AnalysisError(_demangle(message), pos, src, fname))
 
     def _warn(self, message: str, pos: Pos) -> None:
         """Record a non-fatal warning (does not affect ``ok``).
@@ -619,7 +640,7 @@ class Analyzer(
         if pos.filename and pos.filename in self.sources:
             src = self.sources[pos.filename]
             fname = pos.filename
-        self.warnings.append(AnalysisError(message, pos, src, fname))
+        self.warnings.append(AnalysisError(_demangle(message), pos, src, fname))
 
     def _warn_dead_unsafe(self, module: A.Module) -> None:
         """Warn on every ``Unsafe`` parameter whose token provably

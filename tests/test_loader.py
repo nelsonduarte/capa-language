@@ -1802,6 +1802,68 @@ class TestPrivateDiagnostic(_TempDirMixin, unittest.TestCase):
         self.assertIn("'b'", result.stderr)
 
 
+class TestMangledNamesNotInDiagnostics(_TempDirMixin, unittest.TestCase):
+    """The loader renames private + unselected-pub items to
+    ``_capa_m<N>__...`` to keep them out of the importer's scope.
+    Those internal names must never surface in a user-facing
+    diagnostic: the message must show the name the author wrote."""
+
+    def _check(self, root: Path):
+        return subprocess.run(
+            [sys.executable, "-m", "capa", "--check", str(root)],
+            capture_output=True, text=True, encoding="utf-8",
+        )
+
+    def test_private_function_name_demangled_in_error(self):
+        # A type error at a call to a PRIVATE imported function used to
+        # render ``call to '_capa_m1__helper'``.
+        self._write(
+            "lib.capa",
+            "fun helper(x: Int) -> Int\n    return x\n"
+            "pub fun shown() -> String\n"
+            "    return helper(\"not an int\")\n"
+        )
+        root = self._write(
+            "root.capa",
+            "import lib\nfun main()\n    return\n",
+        )
+        result = self._check(root)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("call to 'helper'", result.stderr)
+        self.assertNotIn("_capa_m", result.stderr)
+
+    def test_demangle_unit(self):
+        from capa.analyzer import _demangle
+        self.assertEqual(_demangle("call to '_capa_m1__helper'"),
+                         "call to 'helper'")
+        self.assertEqual(_demangle("call to '_capa_m12__sel__do_thing'"),
+                         "call to 'do_thing'")
+        # Underscored original names survive intact.
+        self.assertEqual(_demangle("'_capa_m3__my_helper_fn'"),
+                         "'my_helper_fn'")
+        # No mangled name -> untouched.
+        self.assertEqual(_demangle("plain message"), "plain message")
+
+    def test_unselected_pub_function_name_demangled_in_error(self):
+        # A type error at a call to an UNSELECTED pub function (hidden
+        # by a selective import) used to render the
+        # ``_capa_m1__sel__<name>`` form.
+        self._write(
+            "lib.capa",
+            "pub fun shown() -> String\n"
+            "    return secret_helper(\"x\")\n"
+            "pub fun secret_helper(x: Int) -> Int\n    return x\n"
+        )
+        root = self._write(
+            "root.capa",
+            "import lib (shown)\nfun main()\n    return\n",
+        )
+        result = self._check(root)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("call to 'secret_helper'", result.stderr)
+        self.assertNotIn("_capa_m", result.stderr)
+
+
 class TestModuleSystemEndToEnd(_TempDirMixin, unittest.TestCase):
     """End-to-end: capa --run with an imported file produces the
     expected output and exit code 0.
