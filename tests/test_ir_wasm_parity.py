@@ -93,6 +93,12 @@ _PARITY_PROGRAMS: list[str] = [
     "string_replace.capa",
     "string_char_at.capa",
     "string_index_of.capa",
+    # Parity slice: to_upper / to_lower are ASCII-only on both backends
+    # (only A-Z <-> a-z fold; accents, Greek, Cyrillic, and emoji pass
+    # through). The Python backend routes through _capa_to_upper /
+    # _capa_to_lower instead of str.upper()/str.lower() so the two
+    # backends are byte-identical on non-ASCII input.
+    "string_case_ascii.capa",
     # Slice (2026-06-13): String.bytes() returns the receiver's UTF-8
     # bytes as a List<Int> (each 0..255). The Wasm backend stores
     # strings as their raw UTF-8 byte slice so it copies the bytes
@@ -1036,6 +1042,17 @@ class TestPythonWasmParity(unittest.TestCase):
         # == "XaXbXcX"`` is suppressed by the Python emitter's
         # lambda guard); see _emit_string_replace.
         self._assert_parity("string_replace.capa")
+
+    def test_string_case_ascii(self):
+        # Parity slice: ``to_upper`` / ``to_lower`` are ASCII-only on
+        # both backends. Only A-Z <-> a-z fold; accents (é), Greek,
+        # Cyrillic, and a 4-byte emoji pass through untouched. The
+        # Python backend routes through ``_capa_to_upper`` /
+        # ``_capa_to_lower`` instead of Python's full-Unicode
+        # ``str.upper()`` / ``str.lower()``, which would have folded
+        # the non-ASCII letters and diverged silently from Wasm. This
+        # closes the last non-numeric cross-backend divergence.
+        self._assert_parity("string_case_ascii.capa")
 
     def test_string_char_at(self):
         # Slice 4 (2026-05): ``String.char_at`` returns

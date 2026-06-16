@@ -22,8 +22,8 @@ Capa program, no imports required.
 |---|---|---|
 | `length()` | `Int` | Number of characters |
 | `is_empty()` | `Bool` | True if the string is empty |
-| `to_upper()` | `String` | Convert to upper case |
-| `to_lower()` | `String` | Convert to lower case |
+| `to_upper()` | `String` | Convert to upper case (ASCII-only; see below) |
+| `to_lower()` | `String` | Convert to lower case (ASCII-only; see below) |
 | `trim()` | `String` | Strip whitespace at both ends |
 | `trim_start()` | `String` | Strip leading whitespace only |
 | `trim_end()` | `String` | Strip trailing whitespace only |
@@ -41,6 +41,16 @@ Indexing for `char_at`, `substring`, and `index_of` is by Unicode
 code point, not byte, and is identical on the Python and Wasm
 backends (`"abcé".char_at(3)` is `Some("é")`, `"abcé".substring(0, 4)`
 is `"abcé"`).
+
+`to_upper()` and `to_lower()` are **ASCII-only by design**: only the
+26 Latin letters fold (`A`-`Z` <-> `a`-`z`); every other code point
+passes through untouched, identically on the Python and Wasm backends.
+`"café".to_upper()` is `"CAFé"` (the `é` is unchanged), and a string
+with no ASCII letters (Greek, Cyrillic, an emoji) is returned as-is.
+This is deliberate: full Unicode case folding is locale- and
+script-dependent, costs a large mapping table, and is out of scope for
+the built-in methods. A program that needs Unicode case folding can
+reach for a host helper via `py_import`.
 
 `bytes()` is the public door to a string's encoded form, for hashing,
 base64, and other byte-level libraries. For well-formed text the

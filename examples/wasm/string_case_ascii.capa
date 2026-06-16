@@ -1,0 +1,22 @@
+// String.to_upper / to_lower parity (parity slice). Both methods are
+// ASCII-only by design: only A-Z <-> a-z fold, every other code point
+// passes through untouched, byte-identical on the Python and Wasm
+// backends. Python's native str.upper()/str.lower() would case-fold
+// non-ASCII letters too (e.g. "café".upper() == "CAFÉ"); Capa routes
+// the Python backend through _capa_to_upper/_capa_to_lower so the
+// accented é, Greek, Cyrillic, and the emoji all survive unchanged on
+// both backends. Only the surrounding ASCII letters change case.
+
+fun main(stdio: Stdio)
+    stdio.println("hello".to_upper())
+    stdio.println("HELLO".to_lower())
+    stdio.println("Hello World 123!".to_upper())
+    stdio.println("Hello World 123!".to_lower())
+    stdio.println("café".to_upper())
+    stdio.println("CAFÉ".to_lower())
+    stdio.println("Ελληνικά".to_upper())
+    stdio.println("Привет".to_lower())
+    stdio.println("a😀B".to_upper())
+    stdio.println("a😀B".to_lower())
+    stdio.println("".to_upper())
+    stdio.println("日本語".to_lower())

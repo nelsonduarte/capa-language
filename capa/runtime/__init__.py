@@ -94,6 +94,8 @@ from ._safety import (
     _capa_shl,
     _capa_shr,
     _capa_substring,
+    _capa_to_lower,
+    _capa_to_upper,
 )
 
 
@@ -129,5 +131,7 @@ __all__ = [
     "_capa_shr",
     "_capa_list_get",
     "_capa_substring",
+    "_capa_to_lower",
+    "_capa_to_upper",
     "_capa_chr",
 ]

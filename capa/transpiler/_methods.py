@@ -64,9 +64,15 @@ class _MethodsMixin:
         if method == "ends_with":
             return f"{recv}.endswith({args[0]})"
         if method == "to_upper":
-            return f"{recv}.upper()"
+            # ASCII-only case folding (parity slice): route through
+            # the runtime helper instead of Python's full-Unicode
+            # ``str.upper()`` so the Python and Wasm backends are
+            # byte-identical. Only A-Z <-> a-z fold; every other code
+            # point passes through, exactly like the Wasm backend's
+            # byte-wise ``_emit_string_case_transform``.
+            return f"_capa_to_upper({recv})"
         if method == "to_lower":
-            return f"{recv}.lower()"
+            return f"_capa_to_lower({recv})"
         if method == "trim":
             return f"{recv}.strip()"
         if method == "trim_start":

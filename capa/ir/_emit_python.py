@@ -729,8 +729,13 @@ class PythonEmitter:
         if m == "contains":    return f"({a[0]} in {r})"
         if m == "starts_with": return f"{r}.startswith({a[0]})"
         if m == "ends_with":   return f"{r}.endswith({a[0]})"
-        if m == "to_upper":    return f"{r}.upper()"
-        if m == "to_lower":    return f"{r}.lower()"
+        # ASCII-only case folding (parity slice): the runtime helpers
+        # fold only A-Z <-> a-z and leave every other code point intact,
+        # byte-identical with the Wasm backend. Python's native
+        # ``str.upper()`` / ``str.lower()`` would case-fold non-ASCII
+        # letters too and diverge silently.
+        if m == "to_upper":    return f"_capa_to_upper({r})"
+        if m == "to_lower":    return f"_capa_to_lower({r})"
         if m == "trim":        return f"{r}.strip()"
         if m == "trim_start":  return f"{r}.lstrip()"
         if m == "trim_end":    return f"{r}.rstrip()"

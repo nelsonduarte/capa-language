@@ -180,3 +180,36 @@ def _capa_substring(s: str, start: int, end: int) -> str:
             f"substring out of range: start={start}, end={end}, len={n}"
         )
     return s[start:end]
+
+
+# ASCII-only case folding. Capa's ``String.to_upper`` /
+# ``String.to_lower`` are ASCII-only by design (Phase 6, parity
+# slice): only the 26 Latin letters fold (A-Z <-> a-z), every other
+# code point passes through untouched. This matches the Wasm
+# backend's ``_emit_string_case_transform``, which walks the UTF-8
+# bytes and folds only the bytes in ``0x41-0x5a`` / ``0x61-0x7a``;
+# every byte of a multi-byte code point is >= 0x80, so non-ASCII
+# code points are never partially affected on either backend.
+#
+# Python's native ``str.upper()`` / ``str.lower()`` apply full
+# Unicode case folding, which diverged silently from Wasm on any
+# non-ASCII letter (``"café".upper()`` gave ``"CAFÉ"`` on Python but
+# ``"CAFé"`` on Wasm). Routing both methods through these helpers
+# closes that divergence: the two backends are now byte-identical.
+# For full Unicode case folding, drop down to ``py_import`` / a host
+# helper; it is deliberately out of scope for the built-in methods.
+
+def _capa_to_upper(s: str) -> str:
+    """ASCII-only upper-casing: fold ``a-z`` to ``A-Z``, leave every
+    other code point intact. Byte-identical with the Wasm backend."""
+    return "".join(
+        chr(ord(c) - 32) if "a" <= c <= "z" else c for c in s
+    )
+
+
+def _capa_to_lower(s: str) -> str:
+    """ASCII-only lower-casing: fold ``A-Z`` to ``a-z``, leave every
+    other code point intact. Byte-identical with the Wasm backend."""
+    return "".join(
+        chr(ord(c) + 32) if "A" <= c <= "Z" else c for c in s
+    )

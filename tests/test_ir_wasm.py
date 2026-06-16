@@ -1320,6 +1320,35 @@ class TestWasmStringMethods(unittest.TestCase):
         self.assertEqual(self._read_string(store, exp, "lower"), "hello world")
         self.assertEqual(self._read_string(store, exp, "mixed"), "HELLO, WORLD!")
 
+    def test_to_upper_lower_ascii_only_non_ascii_intact(self):
+        # to_upper / to_lower are ASCII-only by design: only A-Z <-> a-z
+        # fold, every other code point passes through untouched. This
+        # mirrors the Python backend (which routes through
+        # _capa_to_upper / _capa_to_lower for byte-identical parity).
+        # The accented "é", Greek, Cyrillic, and the emoji must survive
+        # unchanged; only the surrounding ASCII letters change case.
+        src = (
+            "fun u_accent() -> String\n"
+            "    return \"café\".to_upper()\n"
+            "fun l_accent() -> String\n"
+            "    return \"CAFÉx\".to_lower()\n"
+            "fun greek() -> String\n"
+            "    return \"Ελλ\".to_upper()\n"
+            "fun emoji() -> String\n"
+            "    return \"a\U0001F600B\".to_upper()\n"
+        )
+        store, exp = self._instantiate(src)
+        # "café" -> "CAFé": the é is unchanged (Python's full-Unicode
+        # .upper() would have produced "CAFÉ"; ASCII-only does not).
+        self.assertEqual(self._read_string(store, exp, "u_accent"), "CAFé")
+        # "CAFÉx" -> "cafÉx": only the ASCII x lowers; the É is intact.
+        self.assertEqual(self._read_string(store, exp, "l_accent"), "cafÉx")
+        # Greek letters have no ASCII fold, so they pass through.
+        self.assertEqual(self._read_string(store, exp, "greek"), "Ελλ")
+        # Emoji is a 4-byte code point; its bytes are never folded.
+        # The surrounding ASCII letters do fold: "a😀B" -> "A😀B".
+        self.assertEqual(self._read_string(store, exp, "emoji"), "A\U0001F600B")
+
     def test_trim_variants(self):
         src = (
             "fun both() -> String\n"

@@ -9,6 +9,22 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+**Cross-backend parity (`to_upper` / `to_lower` are now ASCII-only on
+both backends).** `String.to_upper()` / `to_lower()` did full Unicode
+case folding on the Python backend (Python's native `str.upper()` /
+`str.lower()`) but were ASCII-only on Wasm, which folds the bytes in
+`0x41`-`0x5a` / `0x61`-`0x7a` and passes everything else through. The
+two diverged silently on any non-ASCII letter: `"café".to_upper()` gave
+`"CAFÉ"` on Python but `"CAFé"` on Wasm. Both methods are now ASCII-only
+on both backends: only `A`-`Z` <-> `a`-`z` fold, every other code point
+(accents, Greek, Cyrillic, emoji) passes through untouched. The Python
+backend routes through new `_capa_to_upper` / `_capa_to_lower` runtime
+helpers instead of the native string methods. Verified byte-identical
+across ASCII, accented Latin, Greek, Cyrillic, a 4-byte emoji, and the
+empty string. This closes the last non-numeric cross-backend divergence.
+Full Unicode case folding is deliberately out of scope for the built-in
+methods (see `docs/stdlib.md`).
+
 **Cross-backend parity (named binder over a Unit payload miscompiled on
 Wasm).** A `match` arm with a *named* binder over a `Unit` payload
 (`Ok(s)` on a `Result<Unit, _>`) emitted `local.set $s` for a local that
