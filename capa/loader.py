@@ -145,6 +145,16 @@ class ModuleLoader:
         # "private to module X" diagnostic; never consulted by
         # the qualified-call rewriter (privates must not rewrite).
         self._module_privates: dict[str, set[str]] = {}
+        # Resolved path -> the (alias, selectors) signature of the
+        # FIRST import that linked it. A later import of the same path
+        # is normally deduplicated to a no-op; but if its selection
+        # diverges (whole-module after a selective view, or two
+        # different selective views), the dedup would silently drop the
+        # second import and only the first view would survive. We keep
+        # the first signature so the dedup path can detect a divergent
+        # re-import and error instead of hiding symbols. See
+        # ``_import_signature``.
+        self._import_sig: dict[Path, tuple] = {}
 
     # -------- public entry points --------
 
@@ -343,7 +353,29 @@ class ModuleLoader:
 
         if target in seen_paths:
             # Already linked: this is the multi-import deduplication
-            # path. No work to do.
+            # path. A second import of the SAME path is a benign no-op
+            # *only* when it asks for the same view as the first. A
+            # divergent re-import (e.g. ``import lib (foo)`` then a
+            # whole ``import lib``, or two different selective lists)
+            # would be silently dropped here, leaving only the first
+            # view's symbols available with no diagnostic. The reverse
+            # order happens to expose more, so the visible surface
+            # would depend on import order. Refuse the divergence
+            # outright.
+            prior_sig = self._import_sig.get(target)
+            this_sig = _import_signature(imp)
+            if prior_sig is not None and prior_sig != this_sig:
+                joined = ".".join(imp.path)
+                raise LoaderError(
+                    f"module '{joined}' imported twice with different "
+                    f"selection: the first import and this one ask for "
+                    f"different symbols, so which symbols end up visible "
+                    f"would depend on import order. Make the two imports "
+                    f"identical, or merge them into one import that "
+                    f"selects every symbol you need.",
+                    pos=imp.pos,
+                    filename=str(module_path),
+                )
             return
         if target in self._loading:
             # Cycle detected. Render the cycle for the error.
@@ -353,6 +385,11 @@ class ModuleLoader:
                 pos=imp.pos,
                 filename=str(module_path),
             )
+
+        # First import of this path: remember its selection signature
+        # so a later divergent re-import (handled in the dedup branch
+        # above) can be refused rather than silently dropped.
+        self._import_sig[target] = _import_signature(imp)
 
         try:
             source = target.read_text(encoding="utf-8")
@@ -452,6 +489,21 @@ class ModuleLoader:
         # when the user reached for a private item.
         existing_privates = self._module_privates.get(alias, set())
         self._module_privates[alias] = existing_privates | set(private_rename.keys())
+
+
+def _import_signature(imp: "A.Import") -> tuple:
+    """A hashable, order-independent fingerprint of what an import
+    brings into scope: its alias and its selector set. Two imports of
+    the same path with equal signatures are the same view (a benign
+    no-op on the second); unequal signatures diverge (whole vs
+    selective, or two different selective lists) and must not be
+    silently deduplicated. Selectors are normalised to a frozenset so
+    ``(a, b)`` and ``(b, a)`` compare equal."""
+    selectors = (
+        None if imp.selectors is None
+        else frozenset(imp.selectors)
+    )
+    return (imp.alias, selectors)
 
 
 def _item_name(item: A.Item) -> Optional[str]:

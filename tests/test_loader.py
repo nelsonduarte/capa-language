@@ -766,6 +766,99 @@ class TestSelectiveImport(_TempDirMixin, unittest.TestCase):
         self.assertEqual(linked.module_exports["lib"], {"lib_parse"})
 
 
+class TestDivergentReimport(_TempDirMixin, unittest.TestCase):
+    """A second import of the SAME module path is deduplicated to a
+    no-op. That is safe only when both imports ask for the same view.
+    A divergent re-import (selective + whole, or two different
+    selective lists) used to be silently dropped, so the visible
+    symbol surface depended on import order. It is now a clear error."""
+
+    def _lib(self) -> None:
+        self._write(
+            "lib.capa",
+            "pub fun foo() -> Int\n    return 1\n"
+            "pub fun bar() -> Int\n    return 2\n"
+        )
+
+    def test_selective_then_whole_errors(self):
+        self._lib()
+        root = self._write(
+            "root.capa",
+            "import lib (foo)\n"
+            "import lib\n"
+            "fun main()\n    return\n"
+        )
+        loader = ModuleLoader()
+        with self.assertRaises(LoaderError) as ctx:
+            loader.load_root(root.read_text(), str(root))
+        self.assertIn("imported twice with different selection",
+                      str(ctx.exception))
+
+    def test_whole_then_selective_errors(self):
+        # The reverse order must error too (the bug was that the two
+        # orders behaved differently).
+        self._lib()
+        root = self._write(
+            "root.capa",
+            "import lib\n"
+            "import lib (foo)\n"
+            "fun main()\n    return\n"
+        )
+        loader = ModuleLoader()
+        with self.assertRaises(LoaderError) as ctx:
+            loader.load_root(root.read_text(), str(root))
+        self.assertIn("imported twice with different selection",
+                      str(ctx.exception))
+
+    def test_two_different_selective_lists_error(self):
+        self._lib()
+        root = self._write(
+            "root.capa",
+            "import lib (foo)\n"
+            "import lib (bar)\n"
+            "fun main()\n    return\n"
+        )
+        loader = ModuleLoader()
+        with self.assertRaises(LoaderError) as ctx:
+            loader.load_root(root.read_text(), str(root))
+        self.assertIn("imported twice with different selection",
+                      str(ctx.exception))
+
+    def test_identical_whole_imports_are_benign(self):
+        self._lib()
+        root = self._write(
+            "root.capa",
+            "import lib\n"
+            "import lib\n"
+            "fun main()\n    return\n"
+        )
+        loader = ModuleLoader()
+        loader.load_root(root.read_text(), str(root))  # no raise
+
+    def test_identical_selective_imports_are_benign(self):
+        self._lib()
+        root = self._write(
+            "root.capa",
+            "import lib (foo)\n"
+            "import lib (foo)\n"
+            "fun main()\n    return\n"
+        )
+        loader = ModuleLoader()
+        loader.load_root(root.read_text(), str(root))  # no raise
+
+    def test_different_modules_are_fine(self):
+        self._lib()
+        self._write("other.capa", "pub fun baz() -> Int\n    return 3\n")
+        root = self._write(
+            "root.capa",
+            "import lib\n"
+            "import other\n"
+            "fun main()\n    return\n"
+        )
+        loader = ModuleLoader()
+        loader.load_root(root.read_text(), str(root))  # no raise
+
+
 class TestLoaderErrorFormat(unittest.TestCase):
     """The ``LoaderError.format()`` shape is what the CLI feeds
     into its single-line diagnostic renderer. Two branches:
