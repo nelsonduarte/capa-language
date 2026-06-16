@@ -140,12 +140,20 @@ def build_manifest(
     *,
     filename: str = "<input>",
     capa_version: Optional[str] = None,
+    expr_labels: Optional[dict[int, str]] = None,
 ) -> dict[str, Any]:
     """Build a manifest dict from an analysed module.
 
     The dict is directly JSON-serialisable. The caller is expected to
     have run the analyser first; this builder does not re-validate
     attributes or types.
+
+    ``expr_labels`` is the analyser's ``id(expr) -> label`` map
+    (``AnalysisResult.expr_labels``). When supplied, the
+    ``declassification_sites`` count records only genuine ``@secret ->
+    @public`` bridges, dropping no-op declassifies of already-public
+    values. When omitted, every syntactic declassify is counted (the
+    historical, analysis-free behaviour).
     """
     if capa_version is None:
         from .. import __version__ as capa_version
@@ -230,6 +238,7 @@ def build_manifest(
                 container=None, implicit_cap=None,
                 reachable=reachable, unprovable=unprovable,
                 linear_types=linear_types,
+                expr_labels=expr_labels,
             ))
         elif isinstance(item, A.ImplBlock):
             implicit = (
@@ -244,6 +253,7 @@ def build_manifest(
                     implicit_cap=implicit,
                     reachable=reachable, unprovable=unprovable,
                     linear_types=linear_types,
+                    expr_labels=expr_labels,
                 ))
 
     summary = {
@@ -302,6 +312,7 @@ def _fun_record(
     reachable: Optional[dict[str, set[str]]] = None,
     unprovable: Optional[set[str]] = None,
     linear_types: Optional[set[str]] = None,
+    expr_labels: Optional[dict[int, str]] = None,
 ) -> dict[str, Any]:
     if reachable is None:
         reachable = {}
@@ -438,7 +449,9 @@ def _fun_record(
     # reason -- the regulator-facing record of where the program lets
     # secret data cross to a public sink.
     declassifications: list[dict[str, Any]] = []
-    _collect_declassifications(fn.body, declassifications)
+    _collect_declassifications(
+        fn.body, declassifications, expr_labels=expr_labels,
+    )
 
     # Surface the source-level identifier (the loader's
     # ``_capa_m{N}__<source>`` mangle is for collision-avoidance

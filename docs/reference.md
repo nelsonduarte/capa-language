@@ -482,7 +482,8 @@ branch guarded by a secret condition is reported).
 single auditable secret-to-public bridge. It is identity at runtime
 and relabels its result `@public`; the `reason` must be a named
 string literal so the manifest can record it. Declassifying a value
-that is not `@secret` is reported as a no-op warning. Every call site
+that is not `@secret` is reported as a no-op warning and is excluded
+from the SBOM record. Every *genuine* `@secret -> @public` call site
 is recorded in the SBOM as `declassifications` per function and
 `declassification_sites` in the summary.
 

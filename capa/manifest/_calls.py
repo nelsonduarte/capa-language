@@ -113,7 +113,12 @@ def _collect_calls(
                                 )
 
 
-def _collect_declassifications(node, sites: list[dict[str, Any]]) -> None:
+def _collect_declassifications(
+    node,
+    sites: list[dict[str, Any]],
+    *,
+    expr_labels: Optional[dict[int, str]] = None,
+) -> None:
     """Recursively collect ``declassify(value, reason: "...")`` call
     sites from a function body (roadmap S2.5).
 
@@ -122,6 +127,16 @@ def _collect_declassifications(node, sites: list[dict[str, Any]]) -> None:
     is the regulatory centerpiece of the IFC work: an SBOM consumer
     reads off every point where the program deliberately lets a
     ``@secret`` value cross to ``@public``, and the stated reason.
+
+    ``expr_labels`` is the analyzer's ``id(expr) -> label`` map. When
+    supplied, a ``declassify`` whose value argument is provably NOT
+    ``@secret`` is skipped: such a call is a no-op (the analyzer already
+    warns on it), and counting it would inflate the manifest's
+    ``declassification_sites`` with disclosures that never happen,
+    contradicting the field's definition ("every point where @secret
+    crosses to @public"). When ``expr_labels`` is ``None`` (a manifest
+    built without an accompanying analysis), every syntactic declassify
+    is recorded, the historical behaviour.
 
     The analyzer has already enforced the call shape (a required
     ``reason:`` string literal), so this walker trusts it; a
@@ -138,11 +153,18 @@ def _collect_declassifications(node, sites: list[dict[str, Any]]) -> None:
         and node.arg_names[1] == "reason"
         and isinstance(node.args[1], A.StringLit)
     ):
-        sites.append({
-            "reason": node.args[1].value,
-            "value": _stringify_expr(node.args[0]),
-            "pos": f"{node.pos.line}:{node.pos.col}",
-        })
+        # Only a declassify of a genuinely @secret value is a real
+        # disclosure. With label info, drop the no-op case.
+        is_real = True
+        if expr_labels is not None:
+            label = expr_labels.get(id(node.args[0]))
+            is_real = label == "secret"
+        if is_real:
+            sites.append({
+                "reason": node.args[1].value,
+                "value": _stringify_expr(node.args[0]),
+                "pos": f"{node.pos.line}:{node.pos.col}",
+            })
 
     # Always keep walking: a declassify can be nested anywhere, and a
     # declassified value may itself contain a nested declassify.
@@ -152,12 +174,16 @@ def _collect_declassifications(node, sites: list[dict[str, Any]]) -> None:
                 continue
             v = getattr(node, f.name)
             if isinstance(v, A.Node):
-                _collect_declassifications(v, sites)
+                _collect_declassifications(v, sites, expr_labels=expr_labels)
             elif isinstance(v, list):
                 for item in v:
                     if isinstance(item, A.Node):
-                        _collect_declassifications(item, sites)
+                        _collect_declassifications(
+                            item, sites, expr_labels=expr_labels,
+                        )
                     elif isinstance(item, tuple):
                         for it in item:
                             if isinstance(it, A.Node):
-                                _collect_declassifications(it, sites)
+                                _collect_declassifications(
+                                    it, sites, expr_labels=expr_labels,
+                                )

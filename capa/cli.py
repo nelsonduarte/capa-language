@@ -1216,7 +1216,10 @@ def main() -> int:
             return 1
         if args.manifest:
             import json
-            manifest = build_manifest(module, filename=filename)
+            manifest = build_manifest(
+                module, filename=filename,
+                expr_labels=result.expr_labels,
+            )
             emit_artifact(json.dumps(manifest, indent=2))
             return 0
         if args.cyclonedx or args.spdx or args.vex or args.provenance:
@@ -1240,6 +1243,7 @@ def main() -> int:
             import json
             sbom = build_cyclonedx(
                 module, filename=filename, source=source, timestamp=build_ts,
+                expr_labels=result.expr_labels,
             )
             emit_artifact(json.dumps(sbom, indent=2))
             return 0
@@ -1247,6 +1251,7 @@ def main() -> int:
             import json
             sbom = build_spdx(
                 module, filename=filename, source=source, timestamp=build_ts,
+                expr_labels=result.expr_labels,
             )
             emit_artifact(json.dumps(sbom, indent=2))
             return 0

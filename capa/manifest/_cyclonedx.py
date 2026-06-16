@@ -70,6 +70,7 @@ def build_cyclonedx(
     timestamp: Optional[str] = None,
     serial_number: Optional[str] = None,
     source: Optional[str] = None,
+    expr_labels: Optional[dict[int, str]] = None,
 ) -> dict[str, Any]:
     """Build a CycloneDX 1.5 SBOM with embedded Capa capability metadata.
 
@@ -83,7 +84,10 @@ def build_cyclonedx(
     """
     if capa_version is None:
         from .. import __version__ as capa_version
-    inner = build_manifest(module, filename=filename, capa_version=capa_version)
+    inner = build_manifest(
+        module, filename=filename, capa_version=capa_version,
+        expr_labels=expr_labels,
+    )
 
     if timestamp is None:
         timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")

@@ -281,6 +281,14 @@ class AnalysisResult:
     # become hard errors when the function opts into ``@strict_ifc``
     # (those go in ``errors``, not here).
     warnings: list[AnalysisError] = field(default_factory=list)
+    # id(expr) -> information-flow label ("public" / "secret") computed
+    # during IFC analysis. Exposed so the manifest builder can tell a
+    # genuine @secret -> @public declassification site apart from a
+    # no-op declassify of an already-public value (the analyzer already
+    # warns on the latter; the manifest's declassification_sites count
+    # must not include it). Keyed by node identity, valid only against
+    # the exact AST the analysis ran on.
+    expr_labels: dict[int, str] = field(default_factory=dict)
 
     @property
     def ok(self) -> bool:
@@ -607,6 +615,7 @@ class Analyzer(
             types=self.types,
             bindings=self.bindings,
             global_symbols=dict(self.global_scope.symbols),
+            expr_labels=dict(self._expr_labels),
         )
 
     # ===========================================================

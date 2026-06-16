@@ -214,6 +214,70 @@ class TestLinearObligations(unittest.TestCase):
         self.assertFalse(mn["linear_obligations"]["produces_linear"])
 
 
+class TestDeclassificationSites(unittest.TestCase):
+    """``declassification_sites`` counts only genuine ``@secret ->
+    @public`` bridges. A no-op declassify of an already-public value
+    (which the analyzer warns about) must NOT inflate the count, since
+    the field is defined as "every point where secret crosses to
+    public". The count is precise only when the manifest is built with
+    the analysis's ``expr_labels``; without it, the historical
+    syntactic count stands."""
+
+    def _build(self, src: str):
+        tokens = Lexer(src).lex()
+        module = Parser(tokens, source=src).parse_module()
+        result = analyze(module, source=src)
+        self.assertTrue(result.ok, [e.format() for e in result.errors])
+        return module, result
+
+    def test_secret_declassify_is_counted(self):
+        src = (
+            "fun leak(s: @secret String, stdio: Stdio)\n"
+            "    stdio.println(declassify(s, reason: \"audited\"))\n"
+        )
+        module, result = self._build(src)
+        m = build_manifest(module, expr_labels=result.expr_labels)
+        self.assertEqual(m["summary"]["declassification_sites"], 1)
+
+    def test_noop_declassify_of_public_is_not_counted(self):
+        src = (
+            "fun noop(x: Int, stdio: Stdio)\n"
+            "    let y = declassify(x, reason: \"no-op\")\n"
+            "    stdio.println(\"${y}\")\n"
+        )
+        module, result = self._build(src)
+        m = build_manifest(module, expr_labels=result.expr_labels)
+        self.assertEqual(m["summary"]["declassification_sites"], 0)
+
+    def test_mixed_counts_only_the_real_one(self):
+        src = (
+            "fun leak(s: @secret String, x: Int, stdio: Stdio)\n"
+            "    stdio.println(declassify(s, reason: \"real\"))\n"
+            "    let y = declassify(x, reason: \"noop\")\n"
+            "    stdio.println(\"${y}\")\n"
+        )
+        module, result = self._build(src)
+        m = build_manifest(module, expr_labels=result.expr_labels)
+        self.assertEqual(m["summary"]["declassification_sites"], 1)
+        # The single recorded entry is the real (secret) one.
+        fn = m["functions"][0]
+        self.assertEqual(len(fn["declassifications"]), 1)
+        self.assertEqual(fn["declassifications"][0]["reason"], "real")
+
+    def test_without_labels_falls_back_to_syntactic(self):
+        # A manifest built WITHOUT expr_labels keeps the historical
+        # syntactic count (every declassify), so manifest-only callers
+        # are unaffected.
+        src = (
+            "fun noop(x: Int, stdio: Stdio)\n"
+            "    let y = declassify(x, reason: \"no-op\")\n"
+            "    stdio.println(\"${y}\")\n"
+        )
+        module, _ = self._build(src)
+        m = build_manifest(module)  # no expr_labels
+        self.assertEqual(m["summary"]["declassification_sites"], 1)
+
+
 class TestSourceNameDemangle(unittest.TestCase):
     """The loader prefixes non-pub items imported from another module
     with ``_capa_m{N}__`` for collision-avoidance. The manifest must

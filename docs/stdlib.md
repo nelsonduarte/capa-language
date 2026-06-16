@@ -322,9 +322,11 @@ meaningful audit trail:
   string literal (not an interpolation or a computed value), so it can
   be recorded verbatim.
 
-A `declassify` of a value that is *not* `@secret` is a no-op and is
-flagged as a warning: a dead security annotation is dangerous noise in
-a regulated SBOM.
+A `declassify` of a value that is *not* `@secret` is a no-op: it is
+flagged as a warning (a dead security annotation is dangerous noise in
+a regulated SBOM) and it is *excluded* from the manifest's
+`declassifications` list and the `declassification_sites` count, which
+record only genuine `@secret -> @public` disclosures.
 
 ```capa
 fun main(env: Env, stdio: Stdio)
