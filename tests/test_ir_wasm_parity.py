@@ -714,6 +714,11 @@ _PARITY_PROGRAMS: list[str] = [
     # (byte-by-byte UTF-8 == Python code-point order). Covers a
     # sorted_by String comparator and Unicode.
     "string_order_cmp.capa",
+    # Bug #3 (2026-06-16): a named binder over a Unit payload (Ok(s)
+    # on Result<Unit, _>), previously emitting local.set for an
+    # undeclared local, now treated as a wildcard; also exercises the
+    # ``let _ = unit_returning_fn()`` call-site bind.
+    "match_unit_payload.capa",
 ]
 
 # Programs deliberately excluded from parity and why; documented
@@ -2001,6 +2006,13 @@ class TestPythonWasmParity(unittest.TestCase):
         # previously rejected at emit. Covers a sorted_by comparator
         # and Unicode.
         self._assert_parity("string_order_cmp.capa")
+
+    def test_match_unit_payload(self):
+        # Bug #3: a named binder over a Unit payload (Ok(s) on
+        # Result<Unit, _>) is treated as a wildcard rather than
+        # emitting local.set for an undeclared local; the
+        # ``let _ = unit_returning_fn()`` call-site bind is also fixed.
+        self._assert_parity("match_unit_payload.capa")
 
     def test_inventory_matches_examples_dir(self):
         # Soundness check: every .capa under examples/wasm/ is

@@ -1,0 +1,26 @@
+// Bug #3 parity: a `match` arm with a NAMED binder over a Unit
+// payload (`Ok(s)` on a `Result<Unit, _>`). Unit has no runtime
+// representation, so the Wasm match emitter used to write a
+// `local.set $s` for a local the locals sweep never declared,
+// failing wasm-tools parse ("unknown local $s"); only `Ok(_)`
+// compiled. The binder is now treated as a wildcard, matching the
+// Python backend. The same repro exercises `let _ = f()` for a
+// Unit-returning function, whose call site no longer emits a stray
+// `local.set` for a value the callee never pushes.
+
+fun show_named(r: Result<Unit, IoError>, stdio: Stdio)
+    match r
+        Ok(s) -> stdio.println("named: OK")
+        Err(e) -> stdio.println("named: ERR")
+
+fun show_wild(r: Result<Unit, IoError>, stdio: Stdio)
+    match r
+        Ok(_) -> stdio.println("wild: OK")
+        Err(e) -> stdio.println("wild: ERR")
+
+fun main(fs: Fs, stdio: Stdio)
+    show_named(fs.mkdir("/tmp/capa_unit_dir_a"), stdio)
+    show_wild(fs.mkdir("/tmp/capa_unit_dir_b"), stdio)
+    // Bind a Unit-returning call to `_`.
+    let _ = show_named(fs.mkdir("/tmp/capa_unit_dir_c"), stdio)
+    stdio.println("done")

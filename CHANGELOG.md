@@ -9,6 +9,20 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+**Cross-backend parity (named binder over a Unit payload miscompiled on
+Wasm).** A `match` arm with a *named* binder over a `Unit` payload
+(`Ok(s)` on a `Result<Unit, _>`) emitted `local.set $s` for a local that
+the locals sweep never declared (Unit has no runtime representation),
+so `wasm-tools parse` failed with "unknown local: failed to find name
+`$s`"; `Ok(_)` was the only spelling that compiled. The match emitter
+now treats a Unit-payload binder as a wildcard (Unit carries no value),
+matching the Python backend where the name binds the unit value. The
+same fix path also corrected a related call-site miscompile that the
+repro exposed: `let _ = f()` for a Unit-returning `f` emitted a trailing
+`local.set` for a value the callee never pushes (a "expected i64 but
+nothing on stack" validation failure); the call site now consults the
+callee's declared return type and omits the bind for Unit returns.
+
 **Cross-backend parity (String order operators rejected on Wasm).** The
 ordering operators `<` / `>` / `<=` / `>=` on `String` operands compared
 lexicographically on the Python backend but were **rejected at Wasm

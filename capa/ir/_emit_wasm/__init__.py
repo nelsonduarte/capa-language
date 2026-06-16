@@ -313,6 +313,14 @@ class WasmEmitter(
         # be shadowed by a user definition of the same name: the user
         # function wins, matching the Python backend.
         self._user_fn_names = {fn.name for fn in module.functions}
+        # Bug #3: map each user function to its declared return type so
+        # a call site can tell whether the callee leaves a value on the
+        # stack. A Unit-returning function emits no result clause, so a
+        # ``let _ = f()`` (or any bound call) must NOT emit a trailing
+        # ``local.set`` for a value that was never pushed.
+        self._user_fn_return_types = {
+            fn.name: (fn.return_type or "") for fn in module.functions
+        }
         for c in module.consts:
             if len(c.body) == 1 and isinstance(c.body[0], AssignConst):
                 src = c.body[0].src
@@ -1518,6 +1526,19 @@ class WasmEmitter(
         self._push_call_args(instr.args)
         self._write(f"call ${instr.callee_name}")
         if instr.dst is not None:
+            # Bug #3: a Unit-returning callee leaves nothing on the
+            # stack (its header has no result clause), so binding the
+            # result -- ``let _ = void_fn()`` -- must emit no
+            # ``local.set``; otherwise the validator reports "expected
+            # i64 but nothing on stack". The dst temp's own type can be
+            # a stale i64 default, so consult the callee's declared
+            # return type, which is the source of truth for what the
+            # call actually pushes.
+            ret_ty = self._user_fn_return_types.get(instr.callee_name)
+            if ret_ty is not None:
+                head = _strip_type_qualifiers(ret_ty)
+                if head in ("Unit", "") or ret_ty == "()":
+                    return
             dst_ty = self._dst_capa_ty(instr.dst)
             # If the callee returns a non-empty value, store it in
             # ``instr.dst``. Capability / Unit dsts have no Wasm

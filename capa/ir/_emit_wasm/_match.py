@@ -568,6 +568,16 @@ class _MatchEmissionMixin:
             bind_ty = payload_ty
             if self._current_fn is not None and bind_ty != "Any":
                 self._current_fn.locals[sub_pat.name] = bind_ty
+        if bind_ty == "Unit" or payload_ty == "Unit":
+            # Bug #3: a named binder over a Unit payload (``Ok(s)`` on a
+            # ``Result<Unit, _>``) has nothing to bind: Unit carries no
+            # runtime value, so the locals sweep never declares a local
+            # for it (see _locals.py). Emitting ``local.set $s`` here
+            # would reference an undeclared local and fail wasm-tools
+            # parse. Treat it as a wildcard -- identical observable
+            # behaviour to ``Ok(_)``, matching the Python backend where
+            # the bound name is simply the unit value ``()``.
+            return
         if bind_ty == "String":
             self._write(f"local.get ${scrut_local_name}")
             self._write(f"i64.load offset={offset}")
