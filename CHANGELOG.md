@@ -48,6 +48,17 @@ expression" error. Valid single-expression interpolations, including
 multi-token ones and calls with comma arguments (`"${f(a, b)}"`), are
 unaffected.
 
+**Fix (leading whitespace inside `${...}` was wrongly rejected).** A
+space or tab immediately after `${` was lexed by the interpolation
+sub-lexer as start-of-line indentation: `"${ n * 2}"` failed with
+"expected expression, got INDENT" and `"${\tx}"` tripped the "tabs are
+not allowed at the start of a line" rule, even though `"${n * 2}"` (no
+leading space) worked and the docs use `${n * 2}`. The interpolation
+content now has its leading horizontal whitespace stripped before
+sub-lexing (with the reported position biased to match, so inner
+diagnostics still point at the right column), so `"${ x }"` and
+`"${ n * 2 }"` are accepted; interior spaces were always fine.
+
 **Cross-backend parity (`to_upper` / `to_lower` are now ASCII-only on
 both backends).** `String.to_upper()` / `to_lower()` did full Unicode
 case folding on the Python backend (Python's native `str.upper()` /

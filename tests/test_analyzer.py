@@ -2501,6 +2501,35 @@ class TestInterpolatedString(unittest.TestCase):
                 )
                 self.assertTrue(r.ok, r.errors)
 
+    def test_leading_whitespace_in_interpolation_accepted(self):
+        # A leading space or tab inside ``${...}`` used to be lexed as
+        # an INDENT (or trip the "tabs at start of line" rule) and
+        # rejected, even though docs use ``${n * 2}``. Leading
+        # horizontal whitespace is now stripped, so ``${ x }`` works;
+        # interior spaces were already fine.
+        for body in ("${ x }", "${ n * 2 }", "${\tx}", "${ n * 2}"):
+            with self.subTest(body=body):
+                r = check(
+                    "fun main(stdio: Stdio)\n"
+                    "    let x = 1\n"
+                    "    let n = 2\n"
+                    f"    stdio.println(\"{body}\")\n"
+                )
+                self.assertTrue(r.ok, r.errors)
+
+    def test_leading_whitespace_keeps_correct_diagnostic_position(self):
+        # Stripping leading whitespace must bias the reported position
+        # so a typo inside ``${  missing}`` still points at the typo,
+        # not at the (stripped) spaces.
+        source = (
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"${  zzz}\")\n"
+        )
+        r = check(source)
+        self.assertFalse(r.ok)
+        self.assertIn("undefined name 'zzz'", r.errors[0].message)
+        self.assertEqual(r.errors[0].pos.line, 2)
+
 
 class TestInterpolationFormattability(unittest.TestCase):
     """A ``${value}`` part must render on BOTH backends. The analyzer

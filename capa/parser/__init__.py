@@ -180,6 +180,18 @@ class Parser(
         token, AST node, and diagnostic produced from inside the
         interpolation reports a position valid in the outer source.
 
+        Leading horizontal whitespace is stripped before sub-lexing.
+        An interpolation is a single expression with no line structure,
+        but the sub-Lexer applies start-of-line indentation rules to
+        the substring; a leading space would otherwise lex as an INDENT
+        (rejecting ``${ x }``) and a leading tab would trip the
+        "tabs are not allowed at the start of a line" rule (rejecting
+        ``${\\tx}``). Trimming the leading whitespace (and biasing the
+        start position by the trimmed width so diagnostics still point
+        at the right column) sidesteps both without touching the
+        expression itself; interior spaces are mid-line whitespace and
+        are unaffected, so ``${a + b}`` still works.
+
         After parsing the expression we require the sub-parser to be at
         end of input (a trailing NEWLINE / DEDENT from the sub-lexer is
         allowed, since the substring carries no real line breaks). Any
@@ -188,15 +200,27 @@ class Parser(
         which used to be silently discarded; it is now a clean error.
         """
         from ..lexer import Lexer
-        from ..tokens import TokenKind
+        from ..tokens import Pos, TokenKind
+
+        # Strip leading horizontal whitespace and advance the reported
+        # start position to match, so inner diagnostics keep correct
+        # columns/offsets. Only spaces and tabs are stripped here; a
+        # leading newline cannot occur inside ``${...}`` (the string
+        # lexer rejects raw newlines in a literal).
+        stripped = expr_text.lstrip(" \t")
+        skipped = len(expr_text) - len(stripped)
+        sub_pos = Pos(
+            pos.line, pos.col + skipped, pos.offset + skipped, pos.filename,
+        ) if skipped else pos
+        expr_text = stripped
 
         try:
             sub_tokens = Lexer(
                 expr_text,
                 filename=self.filename,
-                start_line=pos.line,
-                start_col=pos.col,
-                start_offset=pos.offset,
+                start_line=sub_pos.line,
+                start_col=sub_pos.col,
+                start_offset=sub_pos.offset,
             ).lex()
             sub_parser = Parser(
                 sub_tokens, source=expr_text, filename=self.filename,
