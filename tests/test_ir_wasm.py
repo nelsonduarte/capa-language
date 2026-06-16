@@ -5752,6 +5752,30 @@ class TestWasmBoundsChecks(unittest.TestCase):
         )
         self._exec_main_expect_trap(src)
 
+    # ---- String split (Bug #4) ------------------------------------
+
+    def test_split_nonempty_separator_works(self):
+        # Positive parity: a non-empty separator splits as before.
+        src = (
+            'fun main(stdio: Stdio)\n'
+            '    let parts = "a,b,c".split(",")\n'
+            '    stdio.println("${parts.length()}")\n'
+        )
+        self.assertEqual(self._exec_main(src), "3\n")
+
+    def test_split_empty_separator_traps(self):
+        # ``"hello".split("")`` is a usage error: Python raises
+        # ``ValueError: empty separator``. The Wasm backend used to
+        # return the whole receiver as one element; it now traps on a
+        # zero-length separator so both backends fail loud on the same
+        # invalid input.
+        src = (
+            'fun main(stdio: Stdio)\n'
+            '    let parts = "hello".split("")\n'
+            '    stdio.println("${parts.length()}")\n'
+        )
+        self._exec_main_expect_trap(src)
+
 
 @unittest.skipUnless(
     _has_wasm_tools(),

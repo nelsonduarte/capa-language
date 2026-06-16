@@ -9,6 +9,14 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+**Cross-backend parity (`split("")` empty separator).** `String.split`
+with an empty separator **trapped** on the Python backend (`ValueError:
+empty separator`) but **succeeded** on Wasm (returning the whole receiver
+as one element). An empty separator is a usage error; in line with
+Capa's fail-loud-on-invalid-input stance the Wasm backend now traps
+(`unreachable`) on a zero-length separator too, so both backends fail on
+the same input. `split` with a non-empty separator is unchanged.
+
 **Cross-backend parity (`<<` silent wrap vs trap).** A left shift whose
 result left the signed 64-bit window (`1 << 63`) **trapped** on the
 Python backend (`OverflowError`, via `_capa_shl`) but **silently

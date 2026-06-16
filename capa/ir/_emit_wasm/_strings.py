@@ -669,14 +669,23 @@ class _StringEmissionMixin:
         self._push_string_value_as_ptr_len(recv)
         self._write("local.set $_str_a_len")
         self._write("local.set $_str_a_ptr")
-        # Load the separator byte (first byte of sep). Assumes
-        # sep.len >= 1; an empty sep would degenerate to a per-
-        # character split which is not yet supported. We do not
-        # error here; the result is just the unchanged receiver in
-        # one chunk.
+        # Load the separator (ptr, len).
         self._push_string_value_as_ptr_len(sep)
         self._write("local.set $_str_b_len")
         self._write("local.set $_str_b_ptr")
+        # Bug #4: an empty separator is a usage error. Python's
+        # ``str.split("")`` raises ``ValueError: empty separator``;
+        # the Wasm backend used to silently return the whole receiver
+        # as a single chunk. Trap (``unreachable``) on ``sep.len == 0``
+        # so both backends fail loud on the same invalid input, in line
+        # with Capa's secure-by-default stance.
+        self._write("local.get $_str_b_len")
+        self._write("i32.eqz")
+        self._write("if")
+        self._indent += 1
+        self._write("unreachable")
+        self._indent -= 1
+        self._write("end")
         # sep_byte = i32.load8_u(sep.ptr)
         self._write("local.get $_str_b_ptr")
         self._write("i32.load8_u")
