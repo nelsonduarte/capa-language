@@ -84,6 +84,14 @@ The 2026-05-25 audit record lives at the repository root in
   drop, `var` / re-assignment, partial consume in `match`) and two
   information-flow fixes (`@secret` field read and destructure both
   dropped the label), shipped in `1.2.0` under the security exception.
+- [`docs/advisories/2026-06-16-soundness.md`](docs/advisories/2026-06-16-soundness.md):
+  two information-flow fixes (a `@secret` laundered through a `match` /
+  `if` value or a capturing closure, and a captured-secret closure passed
+  to a higher-order function that invokes it and sinks the result), one
+  linear-affinity fix (double-consume via alias or captured closure), and
+  two manifest fixes (`provably_excluded_capabilities` falsely excluded a
+  capability reachable through a closure hidden in a struct field or a
+  sum-variant payload), shipped in `1.3.0` under the security exception.
 
 ## Public disclosure
 

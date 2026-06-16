@@ -9,6 +9,63 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+## [1.3.0], 2026-06-16
+
+**Capa 1.3.0.** A MINOR release that completes Python / Wasm parity,
+closes five more soundness holes, and hardens the frontend and the
+package manager. The static-analysis tightenings fall under the
+documented-bug / security carve-out of [`STABILITY.md`](STABILITY.md);
+see the advisory at
+[`docs/advisories/2026-06-16-soundness.md`](docs/advisories/2026-06-16-soundness.md).
+No new language features.
+
+**Security / soundness (5 fixes).** A `@secret` can no longer be
+laundered to public through the value of a `match` / `if`, through a
+closure that captures it, or through a closure passed to a higher-order
+function that invokes it and sends the result to a sink. A linear /
+typestate value can no longer be consumed twice by aliasing
+(`let h2 = h`) or by capture in a closure invoked more than once.
+`provably_excluded_capabilities` no longer falsely excludes a capability
+reachable through a closure hidden in a struct field or in the payload of
+a sum-type variant. Full per-finding rationale and the explicit
+security-exception justification (why each is a MINOR bump, not a MAJOR)
+are in
+[`docs/advisories/2026-06-16-soundness.md`](docs/advisories/2026-06-16-soundness.md).
+
+**Cross-backend parity is now complete.** `parse_float` on Wasm is now a
+correctly-rounded decimal-to-f64 parser, bit-identical to CPython
+`float()` (it previously produced different bits, a value miscompile).
+Order operators over `String`, a named binder over a `Unit` payload, and
+`let _ = f()` for a Unit-returning `f` now compile on Wasm. `parse_int`
+follows one canonical grammar on both backends. This was the last
+non-numeric divergence to close.
+
+**Frontend robustness.** Clean diagnostics (no traceback) for integers
+longer than 4300 digits, for deep flat expression chains (avoiding a
+`RecursionError`), and for extra tokens inside `${...}`; leading
+whitespace inside `${ ... }` is now accepted.
+
+**Package-manager quality.** `capa add --force` no longer corrupts an
+inline dependency; git URLs whose host starts with `-` are rejected;
+path dependencies outside the project tree warn; a divergent re-import of
+the same module gives a clear error; the loader's internal names no
+longer leak into diagnostics; VEX soft-validates `@vex` against the
+CycloneDX vocabulary.
+
+**Observable behaviour changes (read before upgrading).**
+`parse_int` / `parse_float` no longer accept underscores or Unicode
+whitespace (new on the Python backend); `parse_float` no longer accepts
+`inf` / `nan` / `infinity` (returns `None`, affects Python-only code);
+`to_upper` / `to_lower` are now ASCII-only on both backends (the Python
+backend no longer applies Unicode case folding, e.g.
+`"café".to_upper()` no longer upper-cases the accent, a silent change for
+Python-only code; full Unicode is out of scope); `1 << 63` and any
+left-shift outside the i64 window trap on Wasm; `String.split("")` traps
+on Wasm; `parse_json("1e400")` is now `Err` on both (previously
+`Ok(Infinity)`, which was invalid JSON); `"${x y}"` (extra tokens) is now
+an error; `declassification_sites` counts only genuine declassifies of a
+`@secret` (the count may drop; the schema does not change).
+
 **Bug fix (`capa add --force` corrupted an inline-form dependency).**
 With a dependency declared in the inline form `foo = { git = "...", tag =
 "v1.0.0" }` under `[dependencies]` (the shape `docs/packages.md` teaches),
