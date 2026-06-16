@@ -1285,6 +1285,71 @@ class TestCapaAdd(_TempDirMixin, unittest.TestCase):
         self.assertEqual(len(foo), 1)
         self.assertEqual(foo[0].tag, "v2.0.0")
 
+    def test_add_force_over_inline_form_same_table(self):
+        # The inline form ``foo = { git = ..., tag = ... }`` is what
+        # docs/packages.md teaches; a --force overwrite must replace it
+        # in place, not append a second ``[dependencies.foo]`` block
+        # that produces a TOML duplicate-key parse failure.
+        project = self._project('''\
+            [package]
+            name = "demo"
+            version = "0.1.0"
+
+            [dependencies]
+            foo = { git = "https://github.com/example/foo", tag = "v1.0.0" }
+        ''')
+        add_dependency(
+            project, "foo", "https://github.com/example/foo",
+            tag="v2.0.0", force=True,
+        )
+        # File parses (no duplicate key) and carries exactly one foo.
+        m = read_manifest(project / "capa.toml")
+        foo = [d for d in m.dependencies if d.name == "foo"]
+        self.assertEqual(len(foo), 1)
+        self.assertEqual(foo[0].tag, "v2.0.0")
+
+    def test_add_force_inline_to_dev_does_not_leave_both(self):
+        # Moving an inline [dependencies] entry to [dev-dependencies]
+        # with --force --dev must remove the old inline entry, not
+        # leave foo declared in both tables (a hard parse error).
+        project = self._project('''\
+            [package]
+            name = "demo"
+            version = "0.1.0"
+
+            [dependencies]
+            foo = { git = "https://github.com/example/foo", tag = "v1.0.0" }
+        ''')
+        add_dependency(
+            project, "foo", "https://github.com/example/foo",
+            tag="v2.0.0", force=True, dev=True,
+        )
+        m = read_manifest(project / "capa.toml")
+        self.assertEqual([d.name for d in m.dependencies], [])
+        dev = [d for d in m.dev_dependencies if d.name == "foo"]
+        self.assertEqual(len(dev), 1)
+        self.assertEqual(dev[0].tag, "v2.0.0")
+
+    def test_add_force_inline_preserves_sibling_entries(self):
+        # A --force overwrite of one inline entry must not touch a
+        # sibling inline entry in the same table.
+        project = self._project('''\
+            [package]
+            name = "demo"
+            version = "0.1.0"
+
+            [dependencies]
+            bar = { git = "https://github.com/example/bar", tag = "v0.1.0" }
+            foo = { git = "https://github.com/example/foo", tag = "v1.0.0" }
+        ''')
+        add_dependency(
+            project, "foo", "https://github.com/example/foo",
+            tag="v2.0.0", force=True,
+        )
+        m = read_manifest(project / "capa.toml")
+        by_name = {d.name: d.tag for d in m.dependencies}
+        self.assertEqual(by_name, {"bar": "v0.1.0", "foo": "v2.0.0"})
+
     def test_add_rejects_dangerous_git_url(self):
         project = self._project()
         with self.assertRaises(ManifestError):

@@ -18,6 +18,7 @@ ordering, and formatting of the existing manifest are preserved.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Optional
 
@@ -164,18 +165,47 @@ def _render_block(
 
 
 def _strip_block(text: str, table: str, name: str) -> str:
-    """Remove an existing ``[<table>.<name>]`` block so a
+    """Remove an existing declaration of ``name`` under ``table`` so a
     ``--force`` overwrite does not leave a stale duplicate.
 
-    Drops the header line and every subsequent line up to (but not
-    including) the next table header or end of file.
+    A dependency can be declared two ways, and a ``--force`` overwrite
+    has to remove whichever the manifest actually uses or the rewrite
+    produces a TOML file with a duplicate key:
+
+    * the dotted table-header form::
+
+          [dependencies.foo]
+          git = "..."
+          tag = "v1.0.0"
+
+    * the inline-table form documented in ``docs/packages.md``, sitting
+      under the plain ``[dependencies]`` header::
+
+          [dependencies]
+          foo = { git = "...", tag = "v1.0.0" }
+
+    The header form drops the header line plus every line up to the
+    next table header. The inline form drops just the one
+    ``foo = { ... }`` assignment line, and only while we are inside the
+    matching ``[<table>]`` section (so an unrelated ``foo`` key in
+    another table is never touched).
     """
     header = f"[{table}.{name}]"
+    plain_header = f"[{table}]"
+    # ``foo = { ... }`` or ``"foo" = { ... }`` (TOML allows the quoted
+    # key form too); match the bare key up to the ``=``.
+    inline_re = re.compile(
+        r"^\s*(?:" + re.escape(name) + r"|\"" + re.escape(name)
+        + r"\"|'" + re.escape(name) + r"')\s*="
+    )
     out: list[str] = []
     lines = text.splitlines(keepends=True)
     i = 0
+    in_target_table = False
     while i < len(lines):
-        if lines[i].strip() == header:
+        stripped = lines[i].strip()
+        if stripped == header:
+            # Dotted table-header block: drop header + body.
             i += 1
             while i < len(lines) and not lines[i].lstrip().startswith("["):
                 i += 1
@@ -183,6 +213,16 @@ def _strip_block(text: str, table: str, name: str) -> str:
             while out and out[-1].strip() == "":
                 out.pop()
                 break
+            continue
+        if stripped.startswith("["):
+            in_target_table = stripped == plain_header
+            out.append(lines[i])
+            i += 1
+            continue
+        if in_target_table and inline_re.match(lines[i]):
+            # Inline ``name = { ... }`` under ``[<table>]``: drop just
+            # this assignment line.
+            i += 1
             continue
         out.append(lines[i])
         i += 1
