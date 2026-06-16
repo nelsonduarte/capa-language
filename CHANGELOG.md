@@ -9,6 +9,18 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+**Cross-backend parity (String order operators rejected on Wasm).** The
+ordering operators `<` / `>` / `<=` / `>=` on `String` operands compared
+lexicographically on the Python backend but were **rejected at Wasm
+emit** ("String operator '<' not supported"), so a program that passed
+`--check` and ran under Python (commonly a `sorted_by` comparator) failed
+to compile to Wasm. The Wasm backend now lowers them through a new
+`$str_cmp` helper that compares the UTF-8 bytes unsigned; for well-formed
+UTF-8 that yields Unicode code-point order, which is exactly Python's
+`str` ordering (a shorter string that is a prefix of the other is
+smaller). Verified byte-identical across ASCII, accents and astral-plane
+code points.
+
 **Cross-backend parity (`split("")` empty separator).** `String.split`
 with an empty separator **trapped** on the Python backend (`ValueError:
 empty separator`) but **succeeded** on Wasm (returning the whole receiver

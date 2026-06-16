@@ -709,6 +709,11 @@ _PARITY_PROGRAMS: list[str] = [
     # notation parse_float / parse_json are a separate slice and not
     # exercised here.)
     "parse_int_json_number_parity.capa",
+    # Bug #2 (2026-06-16): String ordering operators (< > <= >=),
+    # previously rejected at Wasm emit, now lowered through $str_cmp
+    # (byte-by-byte UTF-8 == Python code-point order). Covers a
+    # sorted_by String comparator and Unicode.
+    "string_order_cmp.capa",
 ]
 
 # Programs deliberately excluded from parity and why; documented
@@ -1989,6 +1994,13 @@ class TestPythonWasmParity(unittest.TestCase):
 
     def test_parse_int_json_number_parity(self):
         self._assert_parity("parse_int_json_number_parity.capa")
+
+    def test_string_order_cmp(self):
+        # Bug #2: String < > <= >= lower through $str_cmp on the Wasm
+        # backend (byte-by-byte UTF-8 == Python code-point order),
+        # previously rejected at emit. Covers a sorted_by comparator
+        # and Unicode.
+        self._assert_parity("string_order_cmp.capa")
 
     def test_inventory_matches_examples_dir(self):
         # Soundness check: every .capa under examples/wasm/ is

@@ -100,6 +100,123 @@ class _RuntimeHelpersMixin:
         self._indent -= 1
         self._write(")")
 
+    def _emit_str_cmp_function(self) -> None:
+        """Helper: ``$str_cmp(p1, l1, p2, l2) -> i32`` returns -1, 0
+        or 1 for the lexicographic ordering of the two byte slices
+        (``s1 < s2`` -> -1, equal -> 0, ``s1 > s2`` -> 1).
+
+        Bytes are compared UNSIGNED (``i32.load8_u``); for well-formed
+        UTF-8 a byte-by-byte unsigned comparison yields the same order
+        as comparing Unicode code points, which is exactly Python's
+        ``str`` ordering (verified by oracle over ASCII, accents and
+        astral-plane code points). At the first differing byte the
+        slice with the smaller byte is smaller. If one slice is a
+        prefix of the other, the shorter slice is smaller. Backs the
+        Wasm lowering of the String ``<`` / ``>`` / ``<=`` / ``>=``
+        operators so they match the Python backend byte-for-byte."""
+        self._write(
+            "(func $str_cmp (param $p1 i32) (param $l1 i32) "
+            "(param $p2 i32) (param $l2 i32) (result i32)"
+        )
+        self._indent += 1
+        self._write("(local $i i32)")
+        self._write("(local $n i32)")
+        self._write("(local $b1 i32)")
+        self._write("(local $b2 i32)")
+        # n = min(l1, l2): the common prefix length to scan.
+        self._write("local.get $l1")
+        self._write("local.get $l2")
+        self._write("i32.lt_s")
+        self._write("if (result i32)")
+        self._indent += 1
+        self._write("local.get $l1")
+        self._indent -= 1
+        self._write("else")
+        self._indent += 1
+        self._write("local.get $l2")
+        self._indent -= 1
+        self._write("end")
+        self._write("local.set $n")
+        self._write("i32.const 0")
+        self._write("local.set $i")
+        self._write("block $cmp_exit (result i32)")
+        self._indent += 1
+        self._write("loop $cmp_loop")
+        self._indent += 1
+        # if i >= n: prefix matched; order by length.
+        self._write("local.get $i")
+        self._write("local.get $n")
+        self._write("i32.ge_s")
+        self._write("if")
+        self._indent += 1
+        # l1 < l2 -> -1; l1 > l2 -> 1; equal -> 0.
+        self._write("local.get $l1")
+        self._write("local.get $l2")
+        self._write("i32.lt_s")
+        self._write("if")
+        self._indent += 1
+        self._write("i32.const -1")
+        self._write("br $cmp_exit")
+        self._indent -= 1
+        self._write("end")
+        self._write("local.get $l1")
+        self._write("local.get $l2")
+        self._write("i32.gt_s")
+        self._write("if")
+        self._indent += 1
+        self._write("i32.const 1")
+        self._write("br $cmp_exit")
+        self._indent -= 1
+        self._write("end")
+        self._write("i32.const 0")
+        self._write("br $cmp_exit")
+        self._indent -= 1
+        self._write("end")
+        # b1 = p1[i], b2 = p2[i] (unsigned).
+        self._write("local.get $p1")
+        self._write("local.get $i")
+        self._write("i32.add")
+        self._write("i32.load8_u")
+        self._write("local.set $b1")
+        self._write("local.get $p2")
+        self._write("local.get $i")
+        self._write("i32.add")
+        self._write("i32.load8_u")
+        self._write("local.set $b2")
+        # if b1 < b2 -> -1; if b1 > b2 -> 1; else continue.
+        self._write("local.get $b1")
+        self._write("local.get $b2")
+        self._write("i32.lt_u")
+        self._write("if")
+        self._indent += 1
+        self._write("i32.const -1")
+        self._write("br $cmp_exit")
+        self._indent -= 1
+        self._write("end")
+        self._write("local.get $b1")
+        self._write("local.get $b2")
+        self._write("i32.gt_u")
+        self._write("if")
+        self._indent += 1
+        self._write("i32.const 1")
+        self._write("br $cmp_exit")
+        self._indent -= 1
+        self._write("end")
+        # i += 1; continue.
+        self._write("local.get $i")
+        self._write("i32.const 1")
+        self._write("i32.add")
+        self._write("local.set $i")
+        self._write("br $cmp_loop")
+        self._indent -= 1
+        self._write("end")
+        # The loop never falls through; satisfy the block's result type.
+        self._write("unreachable")
+        self._indent -= 1
+        self._write("end")
+        self._indent -= 1
+        self._write(")")
+
     def _emit_str_starts_with_function(self) -> None:
         """Helper: ``$str_starts_with(hp, hl, np, nl) -> i32`` returns
         1 if the haystack ``hp[..hl]`` begins with the needle

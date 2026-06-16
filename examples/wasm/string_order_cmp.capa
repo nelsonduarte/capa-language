@@ -1,0 +1,46 @@
+// Bug #2 parity: String ordering operators (`<`, `>`, `<=`, `>=`).
+// The Python backend compares strings lexicographically; the Wasm
+// backend used to reject these operators at emit time. The Wasm
+// emitter now lowers them through `$str_cmp` (byte-by-byte UTF-8
+// comparison == Unicode code-point order == Python's `str` order).
+// Output is byte-identical on both backends.
+
+fun cmp(a: String, b: String) -> Int
+    if a < b
+        return 0 - 1
+    if a > b
+        return 1
+    return 0
+
+fun show(stdio: Stdio, label: String, cond: Bool)
+    if cond
+        stdio.println("${label}: true")
+    else
+        stdio.println("${label}: false")
+
+fun main(stdio: Stdio)
+    // Basic ordering.
+    show(stdio, "a<b", "a" < "b")
+    show(stdio, "b<a", "b" < "a")
+    // Differ at an interior byte.
+    show(stdio, "apple<apply", "apple" < "apply")
+    // Prefix is smaller than the longer string.
+    show(stdio, "app<apple", "app" < "apple")
+    // Empty string is smallest.
+    show(stdio, "<a", "" < "a")
+    // Equality through the order operators.
+    show(stdio, "a<=a", "a" <= "a")
+    show(stdio, "a>=a", "a" >= "a")
+    show(stdio, "a<a", "a" < "a")
+    // Greater-than direction.
+    show(stdio, "b>a", "b" > "a")
+    // Unicode: byte-by-byte UTF-8 order matches Python's code-point order.
+    show(stdio, "á<é", "á" < "é")
+    show(stdio, "z<á", "z" < "á")
+    show(stdio, "smiley", "😀" < "😁")
+
+    // sorted_by using a String comparator (the common real-world case).
+    let xs = ["banana", "apple", "cherry", "app", ""]
+    let ordered = xs.sorted_by(cmp)
+    for s in ordered
+        stdio.println("sorted: ${s}")

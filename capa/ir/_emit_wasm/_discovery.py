@@ -392,6 +392,21 @@ class _DiscoveryMixin:
                         return True
         return False
 
+    def _uses_string_order_cmp(self, module: Module) -> bool:
+        """True if any ``<`` / ``>`` / ``<=`` / ``>=`` BinOp has a
+        String operand (Bug #2). These lower to a ``call $str_cmp``,
+        so the helper must be emitted whenever the gate fires -- in
+        any function body, lifted-lambda body (a ``sorted_by``
+        comparator closure is the common case), or match-arm guard
+        prelude that the shared module walk reaches."""
+        for _fn, instr in walk_module(module):
+            if (isinstance(instr, BinOp)
+                    and instr.op in ("<", ">", "<=", ">=")
+                    and (instr.left.ty == "String"
+                         or instr.right.ty == "String")):
+                return True
+        return False
+
     # ----- discovery pass ---------------------------------------
 
     def _discover(self, module: Module) -> None:

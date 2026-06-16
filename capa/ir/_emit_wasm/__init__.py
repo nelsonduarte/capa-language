@@ -136,6 +136,17 @@ _FLOAT_CMP_BINOP = {
     ">=": "f64.ge",
 }
 
+# Bug #2: String order comparison folds ``$str_cmp``'s -1/0/1 result
+# against zero with the matching i32 signed comparison opcode. The
+# helper's sign IS the ordering (``s1 < s2`` -> -1), so ``s1 < s2``
+# is ``str_cmp(...) < 0`` and so on.
+_STR_CMP_FOLD = {
+    "<":  "i32.lt_s",
+    "<=": "i32.le_s",
+    ">":  "i32.gt_s",
+    ">=": "i32.ge_s",
+}
+
 
 # Audit H1 (2026-05): default memory cap on the emitted linear
 # memory. 256 pages = 16 MiB. Caps the bump allocator's
@@ -548,6 +559,11 @@ class WasmEmitter(
                     or needs_proc_allows
                     or self._eq_needs_str_eq(module)):
                 self._emit_str_eq_function()
+            if self._uses_string_order_cmp(module):
+                # Bug #2: String ``<`` / ``>`` / ``<=`` / ``>=`` lower
+                # to ``call $str_cmp`` (byte-by-byte UTF-8 ordering ==
+                # Python's code-point ordering). Independent of $str_eq.
+                self._emit_str_cmp_function()
             if needs_starts_with:
                 self._emit_str_starts_with_function()
             if needs_proc_allows:
@@ -988,6 +1004,20 @@ class WasmEmitter(
             # Concatenate two strings. Allocates a fresh buffer of
             # combined length, memory.copies each source.
             self._emit_string_concat(instr)
+            return
+        if is_string and op in ("<", ">", "<=", ">="):
+            # Order comparison (Bug #2): the Python backend compares
+            # strings lexicographically. ``$str_cmp`` returns -1 / 0 / 1
+            # for the byte-by-byte UTF-8 ordering (== Python's code-point
+            # ordering for well-formed UTF-8); fold its result into the
+            # requested boolean with the matching i32 comparison against
+            # zero.
+            self._push_string_value_as_ptr_len(instr.left)
+            self._push_string_value_as_ptr_len(instr.right)
+            self._write("call $str_cmp")
+            self._write("i32.const 0")
+            self._write(_STR_CMP_FOLD[op])
+            self._write(f"local.set ${instr.dst}")
             return
         if is_string:
             raise WasmEmissionError(
