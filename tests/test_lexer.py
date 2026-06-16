@@ -114,6 +114,23 @@ class TestIntegerLiterals(unittest.TestCase):
         with self.assertRaises(LexerError):
             lex("0b1" + "0" * 64)  # 2**64
 
+    def test_int_over_cpython_digit_limit_clean_error(self):
+        # A decimal literal past CPython's 4300-digit str->int
+        # conversion cap must yield a clean out-of-range LexerError,
+        # not a raw ValueError. Such a literal is far beyond i64
+        # anyway, so it is rejected on digit count before int() is
+        # ever called (which would otherwise crash).
+        for ndigits in (4300, 4301, 10000):
+            with self.assertRaises(LexerError) as ctx:
+                lex("9" * ndigits)
+            self.assertIn("out of range for Int", ctx.exception.message)
+
+    def test_huge_underscored_int_clean_error(self):
+        # Underscores are stripped before the digit-count check, so a
+        # grouped pathological literal is rejected just the same.
+        with self.assertRaises(LexerError):
+            lex("_".join("9" * 5000))
+
 
 # =============================================================
 # Float literals

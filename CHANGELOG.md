@@ -9,6 +9,19 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+**Robustness (lexer crash on a >4300-digit integer literal).** A decimal
+integer literal longer than CPython's 4300-digit `str`->`int` conversion
+cap (e.g. 4301 nines) crashed the lexer with an uncaught `ValueError`
+traceback instead of a clean diagnostic. The lexer converted the digit
+text with `int()` *before* the magnitude check; any such literal is far
+beyond the signed-64-bit `Int` range anyway. The lexer now rejects an
+over-long magnitude on digit count (a literal with more digits than
+`2**63` has, after stripping the sign and `_` separators) and emits the
+same clean "out of range for Int" error without ever calling `int()`. The
+hex/octal/binary paths and floats are unaffected (different bounds, cheap
+conversion). A valid literal, `i64::MAX`, and the `2**63` magnitude of
+`i64::MIN` all still lex; `2**63 + 1` is still rejected cleanly.
+
 **Cross-backend parity (`to_upper` / `to_lower` are now ASCII-only on
 both backends).** `String.to_upper()` / `to_lower()` did full Unicode
 case folding on the Python backend (Python's native `str.upper()` /

@@ -43,6 +43,12 @@ _BIN_DIGITS = "01"
 # with "constant out of range". Neither matched the source-level
 # intent; both are now a clean compile-time error.
 _INT_MAGNITUDE_MAX = 1 << 63  # 2**63 == abs(i64::MIN)
+# Decimal digit count of the largest in-range magnitude (2**63 ==
+# 9223372036854775808, 19 digits). Used to reject a pathologically
+# long decimal literal on length alone BEFORE calling ``int()`` --
+# CPython raises a bare ValueError past 4300 digits, which would
+# otherwise escape as an uncaught crash. See ``_lex_number``.
+_INT_MAGNITUDE_MAX_DIGITS = len(str(_INT_MAGNITUDE_MAX))
 
 
 class _LiteralsMixin:
@@ -92,7 +98,29 @@ class _LiteralsMixin:
             value = float(text.replace("_", ""))
             self._emit(TokenKind.FLOAT_LIT, text, start, value=value)
         else:
-            value = int(text.replace("_", ""))
+            # Reject an over-long magnitude from the TEXT before calling
+            # ``int()``. CPython caps str->int base-10 conversion at 4300
+            # digits and raises a bare ``ValueError`` past that, which
+            # would escape as an uncaught crash. Such a literal is far
+            # beyond i64 anyway, so emit the same clean out-of-range
+            # diagnostic ``_check_int_magnitude`` produces, without
+            # converting. 2**63 has 19 decimal digits, so any literal
+            # with more digits than that is unconditionally out of range
+            # (the hex/oct/bin path above and floats are not affected:
+            # their magnitudes are bounded differently and the bases are
+            # cheap to convert). ``_INT_MAGNITUDE_MAX_DIGITS`` is the
+            # digit count of the largest in-range magnitude (2**63), so
+            # only counts strictly greater than it can be rejected on
+            # length alone; equal-length texts still go through the exact
+            # numeric check below.
+            digits = text.replace("_", "")
+            if len(digits) > _INT_MAGNITUDE_MAX_DIGITS:
+                raise self._error(
+                    f"integer literal {text!r} is out of range for Int "
+                    f"(signed 64-bit; max magnitude {_INT_MAGNITUDE_MAX})",
+                    start,
+                )
+            value = int(digits)
             self._check_int_magnitude(value, text, start)
             self._emit(TokenKind.INT_LIT, text, start, value=value)
 
