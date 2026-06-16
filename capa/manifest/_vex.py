@@ -33,6 +33,7 @@ sink cannot be reached from this entry point".
 from __future__ import annotations
 
 import os
+import sys
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -55,6 +56,52 @@ _KNOWN_JUSTIFICATIONS = {
     "protected_by_compiler", "protected_at_runtime",
     "protected_at_perimeter", "protected_by_mitigating_control",
 }
+
+
+def _warn_invalid_vex(
+    qualname: str, cve: str, state: str, args: dict[str, Any],
+) -> None:
+    """Soft-validate one ``@vex`` declaration against the CycloneDX
+    vocabulary and warn (never error) on a schema-questionable
+    statement. Strict validation is the consumer's job; this just
+    nudges so an author does not ship a document that
+    Dependency-Track / Grype will reject or silently misread.
+
+    Three nudges:
+
+    * ``state`` outside the CycloneDX ``state`` enum;
+    * ``state == "not_affected"`` with no explanation (the spec
+      requires a justification; CycloneDX rejects the document
+      otherwise). ``justification`` or a free-text ``detail`` both
+      satisfy the author's intent here;
+    * ``justification`` outside the CycloneDX ``justification`` enum.
+    """
+    where = f"{qualname} (@vex {cve})"
+    if state not in _KNOWN_STATES:
+        print(
+            f"warning: {where}: VEX status {state!r} is not a CycloneDX "
+            f"state; consumers may reject the document. Known states: "
+            f"{', '.join(sorted(_KNOWN_STATES))}.",
+            file=sys.stderr,
+        )
+    if state == "not_affected" and not (
+        args.get("justification") or args.get("detail")
+    ):
+        print(
+            f"warning: {where}: VEX status \"not_affected\" requires a "
+            f"justification per the CycloneDX spec; add "
+            f"justification: \"...\" (or at least detail: \"...\"). "
+            f"The emitted document is schema-invalid without it.",
+            file=sys.stderr,
+        )
+    justification = args.get("justification")
+    if justification is not None and justification not in _KNOWN_JUSTIFICATIONS:
+        print(
+            f"warning: {where}: VEX justification {justification!r} is "
+            f"not a CycloneDX justification value; consumers may reject "
+            f"it. Known values: {', '.join(sorted(_KNOWN_JUSTIFICATIONS))}.",
+            file=sys.stderr,
+        )
 
 
 def build_vex_entries(
@@ -98,6 +145,7 @@ def build_vex_entries(
             args = attr["args"]
             cve = args.get("cve") or "UNKNOWN"
             state = args.get("status") or "in_triage"
+            _warn_invalid_vex(qualname, cve, state, args)
             analysis: dict[str, Any] = {"state": state}
             if "justification" in args:
                 analysis["justification"] = args["justification"]

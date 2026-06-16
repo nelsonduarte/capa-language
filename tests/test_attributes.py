@@ -1502,6 +1502,68 @@ class TestVEX(unittest.TestCase):
         self.assertTrue(result.ok, [e.format() for e in result.errors])
 
 
+def vex_warnings_of(source: str, filename: str = "test.capa") -> str:
+    """Capture the stderr emitted while building the VEX entries."""
+    import io
+    from contextlib import redirect_stderr
+    tokens = Lexer(source).lex()
+    module = Parser(tokens, source=source).parse_module()
+    buf = io.StringIO()
+    with redirect_stderr(buf):
+        build_vex_entries(module, filename=filename,
+                          timestamp="2026-05-12T00:00:00Z")
+    return buf.getvalue()
+
+
+class TestVEXSoftValidation(unittest.TestCase):
+    """The CycloneDX vocabulary is checked softly: a schema-invalid
+    VEX statement still emits (it is an author's declaration, not the
+    compiler's call), but a warning goes to stderr so the author is
+    not surprised when Dependency-Track / Grype reject the document."""
+
+    def test_not_affected_without_justification_warns(self):
+        # The CycloneDX spec REQUIRES a justification for
+        # state=not_affected; emitting one without is schema-invalid.
+        warns = vex_warnings_of(
+            '@vex(cve: "CVE-1", status: "not_affected")\n'
+            'fun foo(s: String) -> String\n    return s\n'
+        )
+        self.assertIn("not_affected", warns)
+        self.assertIn("requires a justification", warns)
+
+    def test_not_affected_with_justification_no_warning(self):
+        warns = vex_warnings_of(
+            '@vex(cve: "CVE-1", status: "not_affected", '
+            'justification: "code_not_reachable")\n'
+            'fun foo(s: String) -> String\n    return s\n'
+        )
+        self.assertEqual(warns, "")
+
+    def test_not_affected_with_detail_only_no_warning(self):
+        # A free-text detail satisfies the "explain yourself" intent.
+        warns = vex_warnings_of(
+            '@vex(cve: "CVE-1", status: "not_affected", '
+            'detail: "no Net capability")\n'
+            'fun foo(s: String) -> String\n    return s\n'
+        )
+        self.assertEqual(warns, "")
+
+    def test_unknown_status_warns(self):
+        warns = vex_warnings_of(
+            '@vex(cve: "CVE-1", status: "made_up")\n'
+            'fun foo(s: String) -> String\n    return s\n'
+        )
+        self.assertIn("not a CycloneDX state", warns)
+
+    def test_unknown_justification_warns(self):
+        warns = vex_warnings_of(
+            '@vex(cve: "CVE-1", status: "not_affected", '
+            'justification: "nonsense")\n'
+            'fun foo(s: String) -> String\n    return s\n'
+        )
+        self.assertIn("not a CycloneDX justification", warns)
+
+
 # =============================================================
 # SLSA Build L1 provenance attestation
 # =============================================================
