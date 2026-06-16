@@ -9,6 +9,75 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+**Bug fix (`capa add --force` corrupted an inline-form dependency).**
+With a dependency declared in the inline form `foo = { git = "...", tag =
+"v1.0.0" }` under `[dependencies]` (the shape `docs/packages.md` teaches),
+`capa add foo ... --tag v2.0.0 --force` appended a fresh
+`[dependencies.foo]` table-header block without removing the inline entry,
+producing a `capa.toml` that no longer parses (TOML duplicate key) or, with
+`--dev`, left `foo` declared in both tables (a hard error). The block
+stripper only recognised the dotted table-header form. It now also removes
+the inline `name = { ... }` assignment under the matching table header,
+touching only that one line and leaving sibling inline entries intact. The
+table-header form, the inline-to-dev move, and a mixed-form manifest all
+round-trip to a valid, updated file.
+
+**Bug fix (divergent re-import of the same module silently hid symbols).**
+`import lib (foo)` followed by a whole `import lib` deduplicated the second
+import by resolved path *before* selection was applied, so it became a
+no-op and only the selective view survived: the module's other symbols
+were unavailable with no diagnostic, and the reverse import order exposed
+both. The loader now records each path's first import signature (alias +
+selector set) and rejects a later import of the same path whose selection
+diverges with a clear "module 'lib' imported twice with different
+selection" error. Two identical imports of the same path stay a benign
+no-op; imports of different modules are unaffected.
+
+**Bug fix (loader-mangled names leaked into user diagnostics).** An error
+in a private or unselected-pub imported function rendered the loader's
+internal rename (`call to '_capa_m1__helper'`,
+`_capa_m2__sel__do_thing`) instead of the name the author wrote. Analyzer
+errors and warnings now strip the `_capa_m<N>__`(`sel__`) mangle prefix
+back to the original name before rendering, at the single point where the
+diagnostic is recorded, so every consumer (CLI, LSP, `migrate`) benefits.
+
+**Hardening (git URL allow-list missed an option-injected host).** A
+scheme URL such as `ssh://-oProxyCommand=calc/repo` (and `ssh://-evil`,
+`https://-evil`, `ssh://user@-evil`) passed `_validate_git_url`: the check
+rejected URLs *starting* with `-` and the shortcut `git@host:-path`, but
+not the host component of a scheme URL. Modern git mitigates this, but the
+promised defence-in-depth now also rejects any URL whose host (after
+`scheme://` and an optional `user@`) starts with `-`. Normal URLs,
+`user@`-prefixed SSH URLs, ports, and dash-containing hosts still pass;
+`file://` (no host) is exempt.
+
+**Diagnostics (path dependency escaping the project tree now warns).** A
+`path = "../evil"` or absolute-path dependency was accepted with no trace:
+it is never vendored and never appears in `capa.lock` or the SBOM, so it
+was invisible to supply-chain verification. `capa install` now prints a
+non-blocking stderr warning when a path dependency resolves outside the
+project tree. A path dependency that stays within the tree is unaffected.
+
+**Diagnostics (schema-invalid `@vex` declaration now warns).** A
+`@vex(status: "not_affected")` with no justification emits a
+schema-invalid CycloneDX VEX statement (the spec requires a justification
+for `not_affected`); the `_KNOWN_STATES` / `_KNOWN_JUSTIFICATIONS`
+vocabularies were also dead code. VEX emission now soft-validates against
+those vocabularies and warns (never errors) on an unknown state, a
+`not_affected` with no `justification`/`detail`, or an unknown
+justification value. A well-formed declaration is silent.
+
+**Bug fix (`declassification_sites` counted no-op declassifies).** A
+`declassify(x, reason: ...)` where `x` is not `@secret` is an IFC no-op
+(the analyzer already warns on it), but it still counted toward the
+manifest's `declassification_sites`, contradicting the field's definition
+("every point where secret crosses to public"). The analyzer now exposes
+its per-expression information-flow labels on `AnalysisResult.expr_labels`,
+and the manifest / CycloneDX / SPDX builders consult them to count only
+genuine `@secret -> @public` bridges. A manifest built without an
+accompanying analysis keeps the historical syntactic count, so
+manifest-only callers are unaffected; the docs are updated to match.
+
 **Robustness (lexer crash on a >4300-digit integer literal).** A decimal
 integer literal longer than CPython's 4300-digit `str`->`int` conversion
 cap (e.g. 4301 nines) crashed the lexer with an uncaught `ValueError`
