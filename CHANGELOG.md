@@ -9,6 +9,19 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+**Cross-backend parity (`<<` silent wrap vs trap).** A left shift whose
+result left the signed 64-bit window (`1 << 63`) **trapped** on the
+Python backend (`OverflowError`, via `_capa_shl`) but **silently
+wrapped** on Wasm: `i64.shl` discards the high bits without notice, so
+`1 << 63` quietly became `i64::MIN` and the program kept running. The
+Wasm `<<` emitter now surfaces the same loss: after the shift it
+arithmetic-right-shifts the result back by the count and traps
+(`unreachable`) when that does not recover the original operand, which
+is bit-identical to `_capa_shl`'s masked-compare for every legal
+`(a, b)` (verified by oracle). Both backends now trap on the same
+inputs and agree on the same results for the rest (`1 << 62`, negative
+operands, `0 << n`, `n << 0`).
+
 **Cross-backend parity (`parse_float` / `parse_json` numbers, value
 miscompile + grammar).** The Wasm `parse_float` was a hand-rolled
 `val*10+digit` accumulator that (a) rejected scientific notation and

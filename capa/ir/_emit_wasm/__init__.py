@@ -1136,6 +1136,31 @@ class WasmEmitter(
             self._push_value(instr.left)
             self._push_value(instr.right)
             self._write(_INT_BINOP[op])
+            if op == "<<":
+                # Safety + parity (Bug #1): ``i64.shl`` silently discards
+                # the bits that leave the signed 64-bit window, so
+                # ``1 << 63`` wraps to i64::MIN instead of raising. The
+                # Python backend's ``_capa_shl`` traps whenever the
+                # shifted value loses significant (or sign) bits. Detect
+                # the same loss here: arithmetic-shift the result back
+                # right by the count; if it does not recover the original
+                # operand, high bits were dropped. This is bit-identical
+                # to ``_capa_shl``'s masked-compare for every (a, b) in
+                # the legal count range (verified by oracle). The result
+                # of ``i64.shl`` is still on the stack; stash it, run the
+                # check against the stash, then bind it.
+                self._write("local.set $_alloc_tmp_i64")
+                self._write("local.get $_alloc_tmp_i64")
+                self._push_value(instr.right)
+                self._write("i64.shr_s")
+                self._push_value(instr.left)
+                self._write("i64.ne")
+                self._write("if")
+                self._indent += 1
+                self._write("unreachable")
+                self._indent -= 1
+                self._write("end")
+                self._write("local.get $_alloc_tmp_i64")
             self._write(f"local.set ${instr.dst}")
             return
         if op in ("+", "-", "*") and op in _INT_BINOP and not is_float:

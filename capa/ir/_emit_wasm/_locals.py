@@ -397,16 +397,19 @@ class _LocalsCollectionMixin:
                     # for String payload unpacking. Both locals are
                     # declared via has_match + the i64-scratch group.
                     has_match = True
-                if isinstance(instr, BinOp) and instr.op in ("%", "/"):
+                if isinstance(instr, BinOp) and instr.op in ("%", "/", "<<"):
                     # Int ``%`` lowers to a floored-modulo correction
                     # (``i64.rem_s`` then sign-adjust against the
                     # divisor), and Int ``/`` lowers to a floored-
                     # division correction (``i64.div_s`` then subtract 1
                     # against the divisor); both need ``$_alloc_tmp_i64``
-                    # as scratch. Skip when either operand is Float (the
-                    # Float ``/`` path emits a bare ``f64.div`` and the
-                    # Float ``%`` path uses the f64.floor formula, neither
-                    # of which touches the i64 stash).
+                    # as scratch. Int ``<<`` (Bug #1) stashes the shift
+                    # result in the same slot to run the bit-loss trap
+                    # check (``(r >> b) != a`` => high bits dropped).
+                    # Skip when either operand is Float (the Float ``/``
+                    # path emits a bare ``f64.div`` and the Float ``%``
+                    # path uses the f64.floor formula, neither of which
+                    # touches the i64 stash; ``<<`` is Int-only).
                     lt = (instr.left.ty or "")
                     rt = (instr.right.ty or "")
                     if lt != "Float" and rt != "Float":

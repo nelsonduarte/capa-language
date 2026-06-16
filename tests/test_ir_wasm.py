@@ -5237,6 +5237,35 @@ class TestWasmSafetyTraps(unittest.TestCase):
         with self.assertRaises(wasmtime.Trap):
             self._exec(src, "shr", 1, 64)
 
+    # ---- Bug #1: ``<<`` result leaving the i64 window traps --------
+
+    def test_shift_left_result_overflow_traps(self):
+        # ``1 << 63`` leaves the signed 64-bit window. The count (63)
+        # is in range, so the old code emitted a bare ``i64.shl`` and
+        # silently wrapped to i64::MIN; the Python backend's
+        # ``_capa_shl`` traps. The Wasm emitter now arithmetic-shifts
+        # the result back and traps when it does not recover the
+        # operand, matching Python. ``1 << 62`` is the largest power
+        # of two that fits and must NOT trap.
+        import wasmtime
+        src = (
+            "fun shl(a: Int, b: Int) -> Int\n"
+            "    return a << b\n"
+        )
+        # In-window shifts (incl. the i64::MIN boundary) return.
+        self.assertEqual(self._exec(src, "shl", 1, 62), 1 << 62)
+        self.assertEqual(self._exec(src, "shl", -1, 63), -(1 << 63))
+        self.assertEqual(self._exec(src, "shl", -2, 62), -(1 << 63))
+        self.assertEqual(self._exec(src, "shl", 0, 40), 0)
+        self.assertEqual(self._exec(src, "shl", 5, 0), 5)
+        # Result-window overflow traps (count in range, bits lost).
+        with self.assertRaises(wasmtime.Trap):
+            self._exec(src, "shl", 1, 63)
+        with self.assertRaises(wasmtime.Trap):
+            self._exec(src, "shl", 2, 62)
+        with self.assertRaises(wasmtime.Trap):
+            self._exec(src, "shl", -2, 63)
+
     # ---- Fix C6: Float % by zero traps ----------------------------
 
     def test_float_modulo_zero_traps(self):
