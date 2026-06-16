@@ -506,6 +506,50 @@ class TestInstallLocal(_TempDirMixin, unittest.TestCase):
             install(project)
         self.assertIn("does not exist", str(cm.exception))
 
+    def test_path_dep_outside_tree_warns(self):
+        # A ``../`` escape (and an absolute path) is accepted but is
+        # invisible to the lockfile / SBOM, so install warns on stderr.
+        import io
+        from contextlib import redirect_stderr
+        lib_dir = self._tmp / "mylib"
+        _write(lib_dir / "log.capa", 'pub fun hi() -> String\n    return "hi"\n')
+        project = self._tmp / "proj"
+        _write(project / "capa.toml", '''
+            [package]
+            name = "proj"
+            version = "0.1.0"
+
+            [dependencies]
+            mylib = { path = "../mylib" }
+        ''')
+        buf = io.StringIO()
+        with redirect_stderr(buf):
+            install(project)
+        err = buf.getvalue()
+        self.assertIn("outside the project tree", err)
+        self.assertIn("mylib", err)
+
+    def test_path_dep_inside_tree_no_warning(self):
+        # A path dep that stays within the project tree is the common,
+        # SBOM-friendly case and must NOT warn.
+        import io
+        from contextlib import redirect_stderr
+        project = self._tmp / "proj"
+        _write(project / "local" / "log.capa",
+               'pub fun hi() -> String\n    return "hi"\n')
+        _write(project / "capa.toml", '''
+            [package]
+            name = "proj"
+            version = "0.1.0"
+
+            [dependencies]
+            mylib = { path = "./local" }
+        ''')
+        buf = io.StringIO()
+        with redirect_stderr(buf):
+            install(project)
+        self.assertNotIn("outside the project tree", buf.getvalue())
+
     def test_install_without_manifest_errors(self):
         empty = self._tmp / "empty"
         empty.mkdir()

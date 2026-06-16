@@ -298,6 +298,32 @@ def _check_path_dep(manifest: Manifest, dep: Dependency) -> None:
         raise InstallError(
             f"path dependency {dep.name!r}: {p} is not a directory"
         )
+    # A path dep that resolves OUTSIDE the project tree (a ``../``
+    # escape or an absolute path) is accepted -- it lives in the
+    # consumer's own capa.toml -- but it never gets vendored and never
+    # appears in capa.lock or the SBOM, so it is invisible to the
+    # "verifiable-by-construction" supply-chain story. Emit a
+    # non-blocking warning so the escape leaves a trace on stderr.
+    project_root = manifest.manifest_dir.resolve()
+    if not _is_within(p, project_root):
+        print(
+            f"warning: path dependency {dep.name!r} resolves to {p}, "
+            f"outside the project tree ({project_root}). It is not "
+            f"vendored and does not appear in capa.lock or the SBOM, "
+            f"so it is invisible to supply-chain verification.",
+            file=sys.stderr,
+        )
+
+
+def _is_within(path: Path, root: Path) -> bool:
+    """True when ``path`` is ``root`` itself or nested under it.
+    Both arguments must already be resolved (absolute, symlink-free).
+    """
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
 
 
 def _fetch_git_dep(
