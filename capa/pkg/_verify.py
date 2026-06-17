@@ -43,7 +43,14 @@ adulterates ``vendor/<name>``, commits the change coherently so HEAD
 moves, AND rewrites ``capa.lock`` to match the new commit. The
 committed lockfile is part of the project's trusted computing base; an
 attacker who can rewrite it has already breached that boundary, and
-this build-time check does not defend against it.
+this build-time check does not defend against it. In the same
+out-of-model class: an attacker who runs ``git update-index
+--assume-unchanged`` / ``--skip-worktree`` on a vendor file (or leaves
+a vendored submodule uninitialised) can make ``git status --porcelain``
+report clean over an edit. That requires an attacker who already has
+local write access and runs git locally; the lockfile and the local
+git state are part of the project's trusted computing base, so this is
+the same class of threat as a coherently rewritten lock, not a new gap.
 
 POSTURE: fail-closed by default, with an explicit opt-out. The build
 is refused (``VendorVerificationError``) when, for any git dep:

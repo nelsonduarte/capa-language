@@ -340,7 +340,14 @@ post-install vendor tampering. By the same premise, what this
 does **not** catch is an attacker who adulterates `vendor/<name>`,
 commits the change so HEAD moves, *and* rewrites `capa.lock` to
 match: an attacker who can rewrite the committed lockfile has
-already breached the trusted computing base this check builds on.
+already breached the trusted computing base this check builds on. In
+the same out-of-model class, `git update-index --assume-unchanged` or
+`--skip-worktree` on a vendor file (or an uninitialised vendored
+submodule) can mask an edit from `git status --porcelain`. That too
+requires an attacker who already has local write access and runs git
+locally, against a lockfile and a local git state that are part of the
+project's trusted computing base, so it is the same class of threat as
+a coherently rewritten lock, not a new gap.
 
 The check applies to git deps declared in `capa.toml` and
 vendored under `./vendor/` only. Path deps carry no locked commit
