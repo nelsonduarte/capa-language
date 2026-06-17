@@ -837,6 +837,104 @@ class TestPerImplReachability(unittest.TestCase):
         for cap in ("Stdio", "Fs", "Net", "Unsafe", "Clock"):
             self.assertIn(cap, fn["provably_excluded_capabilities"])
 
+    def test_sum_variant_payload_carries_cap_bearing_struct(self):
+        # Audit 2026-06-17: a cap reachable ONLY through a sum-variant
+        # payload. ``Wrap = Carry(SmtpMailer) | Nope`` with
+        # ``process(w: Wrap)`` doing ``match w { Carry(m) -> m.send }``
+        # exercises both the user-cap SendEmail and the built-in Net
+        # wrapped inside SmtpMailer; pre-fix the sum had no reachable
+        # entry so both were falsely provably-excluded.
+        m = self._build(
+            "capability SendEmail\n"
+            "    fun send(self, to: String) -> Bool\n"
+            "type SmtpMailer { net: Net }\n"
+            "impl SendEmail for SmtpMailer\n"
+            "    fun send(self, to: String) -> Bool\n"
+            "        return true\n"
+            "type Wrap =\n"
+            "    Carry(SmtpMailer)\n"
+            "    Nope\n"
+            "fun process(w: Wrap) -> Bool\n"
+            "    match w\n"
+            "        Carry(m) -> return m.send(\"a@b\")\n"
+            "        Nope -> return false\n"
+        )
+        proc = self._find(m, "process")
+        self.assertIn("SendEmail", proc["transitively_reachable_capabilities"])
+        self.assertIn("Net", proc["transitively_reachable_capabilities"])
+        self.assertNotIn("SendEmail", proc["provably_excluded_capabilities"])
+        self.assertNotIn("Net", proc["provably_excluded_capabilities"])
+
+    def test_sum_in_struct_field_propagates_variant_caps(self):
+        # The sum is nested inside a plain struct field: Outer { w: Wrap }.
+        # Both the struct's reachable entry and the sum's must compose so
+        # ``handle(o: Outer)`` still reports Net + SendEmail.
+        m = self._build(
+            "capability SendEmail\n"
+            "    fun send(self, to: String) -> Bool\n"
+            "type SmtpMailer { net: Net }\n"
+            "impl SendEmail for SmtpMailer\n"
+            "    fun send(self, to: String) -> Bool\n"
+            "        return true\n"
+            "type Wrap =\n"
+            "    Carry(SmtpMailer)\n"
+            "    Nope\n"
+            "type Outer { w: Wrap }\n"
+            "fun handle(o: Outer) -> Bool\n"
+            "    match o.w\n"
+            "        Carry(m) -> return m.send(\"a@b\")\n"
+            "        Nope -> return false\n"
+        )
+        fn = self._find(m, "handle")
+        self.assertIn("SendEmail", fn["transitively_reachable_capabilities"])
+        self.assertIn("Net", fn["transitively_reachable_capabilities"])
+        self.assertNotIn("SendEmail", fn["provably_excluded_capabilities"])
+        self.assertNotIn("Net", fn["provably_excluded_capabilities"])
+
+    def test_sum_carrying_struct_that_nests_cap_chain_propagates(self):
+        # Chain through a sum: Wrap = Hold(Middle) where Middle nests a
+        # cap-bearing SmtpMailer. The sum's reachable set must pick up the
+        # transitively-closed reachable set of the struct it carries.
+        m = self._build(
+            "capability SendEmail\n"
+            "    fun send(self, to: String) -> Bool\n"
+            "type SmtpMailer { net: Net }\n"
+            "impl SendEmail for SmtpMailer\n"
+            "    fun send(self, to: String) -> Bool\n"
+            "        return true\n"
+            "type Middle { mailer: SmtpMailer }\n"
+            "type Wrap =\n"
+            "    Hold(Middle)\n"
+            "    Nope\n"
+            "fun process(w: Wrap) -> Bool\n"
+            "    match w\n"
+            "        Hold(mid) -> return mid.mailer.send(\"a@b\")\n"
+            "        Nope -> return false\n"
+        )
+        proc = self._find(m, "process")
+        self.assertIn("SendEmail", proc["transitively_reachable_capabilities"])
+        self.assertIn("Net", proc["transitively_reachable_capabilities"])
+        self.assertNotIn("SendEmail", proc["provably_excluded_capabilities"])
+        self.assertNotIn("Net", proc["provably_excluded_capabilities"])
+
+    def test_pure_data_sum_still_excludes_everything(self):
+        # Guard against over-declaration: a sum whose variants carry only
+        # plain data reaches no cap, so a function taking it still
+        # provably-excludes every built-in cap.
+        m = self._build(
+            "type Color =\n"
+            "    Red\n"
+            "    Named(String)\n"
+            "fun describe(c: Color) -> Int\n"
+            "    match c\n"
+            "        Red -> return 0\n"
+            "        Named(s) -> return 1\n"
+        )
+        fn = self._find(m, "describe")
+        self.assertEqual(fn["transitively_reachable_capabilities"], [])
+        for cap in ("Stdio", "Fs", "Net", "Unsafe", "Clock"):
+            self.assertIn(cap, fn["provably_excluded_capabilities"])
+
 
 class TestSourceNameInSboms(unittest.TestCase):
     """The CycloneDX / SPDX wrappers must display the source-level
@@ -1818,6 +1916,75 @@ class TestMultiFileSourceDigest(unittest.TestCase):
         )
         self.assertEqual(len(prov["subject"]), 1)
         self.assertEqual(prov["subject"][0]["name"], "main.capa")
+
+    def test_single_file_cli_path_keeps_historical_identifiers(self):
+        # Audit 2026-06-17: the CLI ALWAYS forwards ``linked.sources``.
+        # For an import-free program that map has one entry (the root),
+        # which must NOT trip the multi-file ``<display>\n<sha256>`` join:
+        # doing so changed the serialNumber / documentNamespace /
+        # invocationId of every already-signed single-file program. The
+        # historical seed is ``<display>:sha256(source)``; verify the
+        # one-entry-root path reproduces it byte-for-byte and matches the
+        # no-sources fallback. The existing single-subject test missed
+        # this because it called build_provenance WITHOUT ``sources``.
+        import hashlib
+        root = self._write(
+            "solo.capa",
+            "fun main(stdio: Stdio)\n    stdio.println(\"hi\")\n",
+        )
+        loader = ModuleLoader()
+        linked = loader.load_root(root.read_text(), str(root))
+        # An import-free program links exactly itself.
+        self.assertEqual(len(linked.sources), 1)
+        source = root.read_text()
+        fn = str(root)
+
+        # CLI path: sources = one-entry root map.
+        prov_cli = build_provenance(
+            source, filename=fn, sources=linked.sources,
+            started_on="2020-01-01T00:00:00Z",
+            finished_on="2020-01-01T00:00:00Z",
+        )
+        cdx_cli = build_cyclonedx(
+            linked.module, filename=fn, source=source,
+            sources=linked.sources, timestamp="2020-01-01T00:00:00Z",
+        )
+        spdx_cli = build_spdx(
+            linked.module, filename=fn, source=source,
+            sources=linked.sources, timestamp="2020-01-01T00:00:00Z",
+        )
+
+        # Historical path: no sources map at all.
+        prov_hist = build_provenance(
+            source, filename=fn,
+            started_on="2020-01-01T00:00:00Z",
+            finished_on="2020-01-01T00:00:00Z",
+        )
+        cdx_hist = build_cyclonedx(
+            linked.module, filename=fn, source=source,
+            timestamp="2020-01-01T00:00:00Z",
+        )
+        spdx_hist = build_spdx(
+            linked.module, filename=fn, source=source,
+            timestamp="2020-01-01T00:00:00Z",
+        )
+
+        # Single subject, digested as the bare sha256 of the source -
+        # exactly the pre-2026-06-17 value.
+        self.assertEqual(len(prov_cli["subject"]), 1)
+        bare = hashlib.sha256(source.encode("utf-8")).hexdigest()
+        self.assertEqual(prov_cli["subject"][0]["digest"]["sha256"], bare)
+
+        # CLI path identifiers are IDENTICAL to the historical ones.
+        self.assertEqual(
+            prov_cli["predicate"]["runDetails"]["metadata"]["invocationId"],
+            prov_hist["predicate"]["runDetails"]["metadata"]["invocationId"],
+        )
+        self.assertEqual(prov_cli["subject"], prov_hist["subject"])
+        self.assertEqual(cdx_cli["serialNumber"], cdx_hist["serialNumber"])
+        self.assertEqual(
+            spdx_cli["documentNamespace"], spdx_hist["documentNamespace"],
+        )
 
 
 class TestSelImportDemangle(unittest.TestCase):

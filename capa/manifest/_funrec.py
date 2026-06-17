@@ -133,21 +133,48 @@ def program_source_digest(
     produce identical SBOMs and SOURCE_DATE_EPOCH still governs only
     timestamps.
 
-    With no ``sources`` map but a root ``source``, falls back to the
-    single-file digest (identical to the historical behaviour, so a
-    single-file program's identifiers do not change). With neither,
-    returns ``None``.
+    A SINGLE-FILE program is digested as the bare ``sha256(text)`` of
+    its one source, byte-identical to the pre-2026-06-17 behaviour, so
+    its serialNumber / documentNamespace / invocationId never move.
+    This holds whether the caller passes no ``sources`` map at all
+    (library callers) or -- as the CLI always does -- a one-entry map
+    whose single file IS the root (a program with no imports): the CLI
+    unconditionally forwards ``linked.sources``, which for an
+    import-free program contains exactly the root, and the multi-file
+    ``<display>\n<sha256(text)>`` join would otherwise silently change
+    every single-file program's identifiers (audit 2026-06-17). The
+    multi-file join is taken only when more than one module is linked.
+    With no ``sources`` and no ``source``, returns ``None``.
     """
-    if sources:
+    if sources and not _is_single_root(sources, filename):
         lines: list[str] = []
         for path, text in sources.items():
             disp = _display_path(path, filename)
             lines.append(f"{disp}\n{_sha256_text(text)}")
         joined = "\n".join(sorted(lines))
         return _sha256_text(joined)
+    if sources:
+        # One linked file that is the root: bare single-file digest.
+        (only_text,) = sources.values()
+        return _sha256_text(only_text)
     if source is not None:
         return _sha256_text(source)
     return None
+
+
+def _is_single_root(sources: dict[str, str], filename: str) -> bool:
+    """True when ``sources`` holds exactly one file and that file is the
+    root (an import-free program). Path comparison is by resolved
+    absolute path so the loader's resolved keys match the CLI's raw
+    ``filename`` argument; if resolution fails (synthetic placeholder
+    names), a single-entry map is still treated as the root."""
+    if len(sources) != 1:
+        return False
+    (only_path,) = sources.keys()
+    try:
+        return Path(only_path).resolve() == Path(filename).resolve()
+    except OSError:
+        return True
 
 
 def _sha256_text(text: str) -> str:

@@ -271,6 +271,18 @@ def compute_reachability(
         reachable[name] = set()
     for name in structs_by_name:
         reachable.setdefault(name, set())
+    # Seed every sum type too. Audit 2026-06-17: a cap reachable ONLY
+    # through a sum-variant payload (``type Wrap = Carry(SmtpMailer) |
+    # Nope`` with ``process(w: Wrap)`` doing ``match w { Carry(m) ->
+    # m.send(...) }``) escapes the reachability the same way a plain
+    # struct nesting a cap-bearing struct did before commit 3cdb421:
+    # without a ``reachable`` entry ``_caps_via_type`` resolves the sum
+    # name to empty and the variant caps never surface, so the function
+    # falsely provably-excludes Net + SendEmail despite exercising both.
+    # Seeding each sum (mirroring ``sum_payloads_by_name``) lets the
+    # fixpoint union the per-variant caps up through any nesting depth.
+    for name in sum_payloads_by_name:
+        reachable.setdefault(name, set())
     # Seed ``unprovable`` with every Fun-bearing struct (cap-bearing or
     # plain data), so ``_type_mentions_any(t, unprovable)`` downgrades any
     # signature that touches one. A plain data struct gets no ``reachable``
@@ -301,6 +313,31 @@ def compute_reachability(
                 if hf:
                     unprovable.add(sname)
                 if _type_mentions_any(fld.type_expr, unprovable):
+                    unprovable.add(sname)
+            if (
+                new_caps != reachable[sname]
+                or (sname in unprovable and not was_unprovable)
+            ):
+                reachable[sname] = new_caps
+                changed = True
+
+        # Every sum type: union the built-in (and user-) caps reachable
+        # via each variant payload. A sum one of whose variants carries a
+        # cap-bearing struct (``Carry(SmtpMailer)``) thereby inherits both
+        # the struct's built-in caps and the user-cap it implements, at
+        # any nesting depth -- and a sum carrying a struct that itself
+        # nests a cap-bearing struct (a chain) too, because the struct's
+        # ``reachable`` entry is already the transitive closure by the
+        # time ``_caps_via_type`` resolves it (audit 2026-06-17).
+        for sname, payloads in sum_payloads_by_name.items():
+            was_unprovable = sname in unprovable
+            new_caps = set(reachable[sname])
+            for p in payloads:
+                cs, hf = _caps_via_type(p, reachable)
+                new_caps |= cs
+                if hf:
+                    unprovable.add(sname)
+                if _type_mentions_any(p, unprovable):
                     unprovable.add(sname)
             if (
                 new_caps != reachable[sname]
