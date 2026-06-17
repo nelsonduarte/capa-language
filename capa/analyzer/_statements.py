@@ -39,7 +39,95 @@ class _StatementsMixin:
         self._push_scope()
         for stmt in block.stmts:
             self._check_stmt(stmt)
+            # Roadmap S2.implicit (strict only): a divergence (return /
+            # break / continue / panic) that runs under a secret pc makes
+            # the fall-through control-dependent on the secret -- reaching
+            # the statements AFTER it reveals that the divergence did NOT
+            # fire (audit 2026-06-17). ``var x = "y"; if secret > 0:
+            # return; sink("leak")`` leaks the predicate bit through the
+            # sink's mere execution. The per-statement pc raises and
+            # restores around its own body, so we re-raise the ENCLOSING
+            # block's pc here for the remaining statements. Monotonic
+            # (never lowers); strict-only, so the default tier is
+            # unchanged.
+            if getattr(self, "_strict_ifc", False):
+                secret_div = self._secret_conditioned_divergence(stmt)
+                if secret_div is not None:
+                    self._pc_label = L.join(self._pc_label, secret_div)
         self._pop_scope()
+
+    def _secret_conditioned_divergence(self, stmt: A.Stmt):
+        """The pc-label under which ``stmt`` could DIVERGE (return / break
+        / continue / panic) out of the enclosing block when that
+        divergence is conditioned on a @secret value, or ``None`` when
+        ``stmt`` carries no such secret-conditioned divergence. Strict-only
+        helper for ``_check_block``'s post-statement pc raise.
+
+        Covers the conditional shapes that can host an early divergence:
+        an ``if`` (any branch ending in return / break / continue, or a
+        bare ``panic(...)`` statement), and a ``while`` / ``for`` whose
+        body diverges. The returned label is the join of the guarding
+        condition labels; only a @secret guard raises the block pc."""
+        if isinstance(stmt, A.IfStmt):
+            guards = [stmt.cond] + [c for c, _ in stmt.elif_arms]
+            guard_label = L.join_all(self._label_of(c) for c in guards)
+            if L.normalize(guard_label) != L.SECRET:
+                return None
+            arms = (
+                [stmt.then_block]
+                + [b for _, b in stmt.elif_arms]
+                + ([stmt.else_block] if stmt.else_block is not None else [])
+            )
+            if any(self._block_has_divergence(b) for b in arms):
+                return guard_label
+            return None
+        if isinstance(stmt, (A.WhileStmt, A.ForStmt)):
+            ctrl = stmt.cond if isinstance(stmt, A.WhileStmt) else stmt.iter
+            ctrl_label = self._label_of(ctrl)
+            if L.normalize(ctrl_label) != L.SECRET:
+                return None
+            if self._block_has_divergence(stmt.body):
+                return ctrl_label
+            return None
+        return None
+
+    def _block_has_divergence(self, block) -> bool:
+        """True if ``block`` contains a divergence (return / break /
+        continue, or a bare ``panic(...)`` call statement) on some path.
+        Conservative: any nested occurrence counts, since reaching past
+        the enclosing branch reveals the divergence did not fire."""
+        if block is None:
+            return False
+        for st in block.stmts:
+            if isinstance(st, (A.ReturnStmt, A.BreakStmt, A.ContinueStmt)):
+                return True
+            if isinstance(st, A.ExprStmt) and self._is_panic_call(st.expr):
+                return True
+            if isinstance(st, A.IfStmt):
+                arms = (
+                    [st.then_block]
+                    + [b for _, b in st.elif_arms]
+                    + ([st.else_block] if st.else_block is not None else [])
+                )
+                if any(self._block_has_divergence(b) for b in arms):
+                    return True
+            if isinstance(st, (A.WhileStmt, A.ForStmt)):
+                if self._block_has_divergence(st.body):
+                    return True
+        return False
+
+    def _is_panic_call(self, e) -> bool:
+        """True if ``e`` is a call to the built-in ``panic`` (a divergent
+        abort that writes to stderr). Mirrors ``_is_declassify_call``'s
+        builtin-position guard so a user function named ``panic`` is not
+        treated as divergent here."""
+        from ..builtins import BUILTIN_POS
+        if not isinstance(e, A.Call):
+            return False
+        if not isinstance(e.callee, A.Ident) or e.callee.name != "panic":
+            return False
+        sym = self.bindings.get(id(e.callee))
+        return sym is not None and sym.pos == BUILTIN_POS
 
     def _check_stmt(self, stmt: A.Stmt) -> None:
         if isinstance(stmt, A.LetStmt):
@@ -271,16 +359,20 @@ class _StatementsMixin:
         value_ty = self._check_expr(s.value)
         if isinstance(s.target, A.Ident):
             sym = self.bindings.get(id(s.target))
-            # Roadmap S2.implicit (strict only): a reassignment performed
-            # under a secret pc raises the target's label monotonically,
-            # so a value written inside a secret-conditioned branch / loop
-            # becomes secret -- catching the classic implicit channel
-            # ``var x = "no"; if secret { x = "yes" }; sink(x)``. Joined
-            # with the RHS value's label too, so an explicit secret store
-            # under strict is also reflected on the same Symbol carried
-            # across branches (monotonic; never lowers). Gated to strict
-            # so the default tier's reassignment behaviour is unchanged.
-            if sym is not None and getattr(self, "_strict_ifc", False):
+            # Roadmap S2.3: a reassignment ``x = rhs`` is an EXPLICIT data
+            # flow, so the RHS value's label joins onto the target's label
+            # UNCONDITIONALLY (every tier), exactly like ``let x = rhs`` /
+            # ``var x = rhs``. Without this, ``var x = "pub"; x = secret;
+            # sink(x)`` laundered the secret in the default tier -- a silent
+            # PII leak (audit 2026-06-17). The join is monotonic (never
+            # lowers) and runs on the same Symbol carried across branches.
+            #
+            # Roadmap S2.implicit (strict only): the pc-label join (an
+            # IMPLICIT flow -- a value written inside a secret-conditioned
+            # branch / loop becomes secret) stays gated to ``@strict_ifc``
+            # via ``_join_pc_if_strict``, so the default tier still does not
+            # report implicit flows.
+            if sym is not None:
                 sym.label = self._join_pc_if_strict(
                     L.join(getattr(sym, "label", None), self._label_of(s.value))
                 )

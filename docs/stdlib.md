@@ -531,12 +531,16 @@ backends agree on outcomes for the same on-disk file.
 | `exec(path: String, sql: String)` | `Result<(), IoError>` | Run DDL / DML against the SQLite file at `path`. Multiple statements separated by `;` are supported (via SQLite's `executescript`). |
 | `query(path: String, sql: String)` | `Result<String, IoError>` | Run a `SELECT` and return the rows as a JSON-encoded `[[col, col, ...], ...]` string. Parse it with `parse_json`. |
 
-Attenuation is a **boundary-aware** prefix match, not a raw string
-prefix: a path is admitted only on an exact match with an allowed
-prefix or where the prefix lines up with a `/` path-component
-boundary. `db.restrict_to("/var/data")` admits `/var/data` and
-`/var/data/app.db` but rejects `/var/data_evil/secrets.db`. The same
-rule runs in the Python runtime and the Wasm hosts.
+Attenuation **canonicalises** both the queried path and the stored
+prefixes through `realpath` before a boundary-aware containment check,
+exactly as `Fs` does: `..` / `.` segments and symlinks are resolved so
+a path is admitted only when its true on-disk target lies inside an
+allowed prefix. `db.restrict_to("/var/data")` admits `/var/data` and
+`/var/data/app.db`, rejects `/var/data_evil/secrets.db` (boundary
+lookalike), and rejects `/var/data/../escaped.db` (a `..` traversal
+that escapes the prefix on disk). The same rule runs in the Python
+runtime and the Wasm hosts (the privileged ops enforce it host-side
+via the receiver cap's `allows`).
 
 `query` returns a single cross-backend wire shape: a JSON array of
 rows, each row a JSON array of strings (one per selected column).
@@ -565,7 +569,7 @@ install the same authorizer.
 
 ### `Proc`
 
-Sandboxed subprocess execution, with first-class basename-prefix
+Sandboxed subprocess execution, with first-class command-identity
 attenuation. Execution is `subprocess.run(argv, capture_output=True,
 timeout=30, shell=False)`; `shell=False` is always enforced, so
 `proc.exec("rm -rf /", "[]")` passes `"rm -rf /"` as `argv[0]` and
@@ -579,11 +583,26 @@ timeout).
 | `allows(cmd: String)` | `Bool` | Test whether the current `Proc` would permit running `cmd`; performs no I/O. |
 | `exec(cmd: String, args_json: String)` | `Result<String, IoError>` | Run `cmd`. `args_json` is a JSON-encoded array of strings consumed as the argv tail. Returns `Ok(stdout)` on a zero exit; `Err` on non-zero exit, timeout, malformed argv JSON, or denial. |
 
-Attenuation matches on the command's **basename** (so a
-fully-qualified `/usr/bin/git` still gates against a
-`restrict_to("git")` cap) plus a `-` suffix boundary:
-`restrict_to("git")` admits `git` and `git-lfs` (a git plugin) but
-rejects `gitlab` (a different binary that happens to share a prefix).
+Attenuation fixes the binary's **identity**, not merely its basename,
+so a binary an attacker plants in their own directory and invokes by
+absolute path cannot impersonate a permitted command:
+
+- A **bare-name** restriction (no path separator, e.g.
+  `restrict_to("git")`) admits only **bare-name** commands: the
+  command's basename must equal the prefix, or start with `prefix + "-"`
+  (a plugin). `restrict_to("git")` admits `git` and `git-lfs` but
+  rejects `gitlab` (a prefix lookalike) **and** rejects `/attacker/git`
+  (an absolute path with the same basename) -- otherwise any planted
+  `git` would defeat the sandbox. Resolving a bare name to a binary is
+  left to the OS `PATH` lookup, which the deploying environment
+  controls.
+- A **path** restriction (contains a separator, e.g.
+  `restrict_to("/usr/bin/git")`) gates on the resolved, normalised
+  path: the command's normalised path must equal the restriction's
+  normalised path exactly. `restrict_to("/usr/bin/git")` admits
+  `/usr/bin/git` (and `/usr/bin/../bin/git`, which normalises to the
+  same path) but not `/attacker/git` and not the bare name `git`.
+
 The same rule runs in the Python runtime, the core Wasm host, and the
 Component Model host, so `allows(cmd)` returns the same `Bool` on
 every backend.

@@ -19,6 +19,7 @@ import time
 import unittest
 
 from capa.runtime import Fs, Env, Net, Clock, Random, Ok, Err, None_
+from capa.runtime._capabilities import Db, Proc
 
 
 # =============================================================
@@ -459,6 +460,92 @@ class TestNetAttenuationStillWorks(unittest.TestCase):
         # is empty.
         self.assertFalse(n2.allows("api.example.com"))
         self.assertFalse(n2.allows("other.example.com"))
+
+
+class TestProcAttenuationIdentity(unittest.TestCase):
+    """Audit 2026-06-17 (Finding 1): ``Proc.restrict_to`` must fix the
+    binary's IDENTITY, not merely its basename. A planted binary an
+    attacker drops in their own directory and invokes by absolute path
+    cannot impersonate a permitted command name."""
+
+    def test_bare_name_admits_bare_command(self):
+        p = Proc().restrict_to("git")
+        self.assertTrue(p.allows("git"))
+
+    def test_bare_name_admits_plugin_suffix(self):
+        p = Proc().restrict_to("git")
+        self.assertTrue(p.allows("git-lfs"))
+
+    def test_bare_name_rejects_prefix_lookalike(self):
+        p = Proc().restrict_to("git")
+        self.assertFalse(p.allows("gitlab"))
+
+    def test_bare_name_rejects_planted_absolute_path(self):
+        # The vector: a ``git.exe`` planted in an attacker directory,
+        # invoked by absolute path, used to pass because the old check
+        # matched on ``os.path.basename`` only. A bare-name restriction
+        # must NOT authorise an absolute path with the same basename.
+        p = Proc().restrict_to("git")
+        self.assertFalse(p.allows("/attacker/git"))
+        self.assertFalse(p.allows("/tmp/evil/git"))
+
+    def test_path_restriction_admits_exact_path(self):
+        p = Proc().restrict_to("/usr/bin/git")
+        self.assertTrue(p.allows("/usr/bin/git"))
+
+    def test_path_restriction_admits_normalised_equal_path(self):
+        p = Proc().restrict_to("/usr/bin/git")
+        self.assertTrue(p.allows("/usr/bin/../bin/git"))
+
+    def test_path_restriction_rejects_other_path_same_basename(self):
+        p = Proc().restrict_to("/usr/bin/git")
+        self.assertFalse(p.allows("/attacker/git"))
+
+    def test_path_restriction_rejects_bare_name(self):
+        p = Proc().restrict_to("/usr/bin/git")
+        self.assertFalse(p.allows("git"))
+
+    def test_unrestricted_allows_everything(self):
+        p = Proc()
+        self.assertTrue(p.allows("git"))
+        self.assertTrue(p.allows("/attacker/git"))
+
+
+class TestDbAttenuationTraversal(unittest.TestCase):
+    """Audit 2026-06-17 (Finding 2): ``Db.allows`` must canonicalise the
+    path through ``realpath`` before the boundary check, exactly as
+    ``Fs.allows`` does, so a ``prefix/../escaped.db`` traversal that
+    escapes the prefix on disk is denied (it previously passed a purely
+    lexical prefix match)."""
+
+    def test_path_inside_prefix_is_allowed(self):
+        with tempfile.TemporaryDirectory() as base:
+            prefix = os.path.join(base, "data")
+            os.mkdir(prefix)
+            db = Db().restrict_to(prefix)
+            self.assertTrue(db.allows(os.path.join(prefix, "app.db")))
+
+    def test_dotdot_traversal_is_denied(self):
+        with tempfile.TemporaryDirectory() as base:
+            prefix = os.path.join(base, "data")
+            os.mkdir(prefix)
+            db = Db().restrict_to(prefix)
+            traversal = os.path.join(prefix, "..", "escaped.db")
+            self.assertFalse(db.allows(traversal))
+
+    def test_db_matches_fs_on_same_traversal(self):
+        # The Fs equivalent already denies the same attack; Db must agree.
+        with tempfile.TemporaryDirectory() as base:
+            prefix = os.path.join(base, "data")
+            os.mkdir(prefix)
+            traversal = os.path.join(prefix, "..", "escaped.db")
+            db = Db().restrict_to(prefix)
+            fs = Fs().restrict_to(prefix)
+            self.assertEqual(db.allows(traversal), fs.allows(traversal))
+            self.assertFalse(db.allows(traversal))
+
+    def test_unrestricted_allows_everything(self):
+        self.assertTrue(Db().allows("/anywhere/x.db"))
 
 
 if __name__ == "__main__":

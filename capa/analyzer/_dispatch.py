@@ -418,6 +418,12 @@ class _DispatchMixin:
         # data-dependent memory access.
         self._check_ct_method_index(e, recv_ty)
 
+        # Roadmap S4: in a @constant_time function, a short-circuiting
+        # String / List compare method (starts_with / ends_with / contains
+        # / index_of) on a @secret operand is a timing oracle, the
+        # method-call analogue of ``==`` on a secret.
+        self._check_ct_method_compare(e, recv_ty)
+
         from . import SymbolKind
 
         # Capabilities: consult registered methods. Covers both

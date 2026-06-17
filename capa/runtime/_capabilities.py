@@ -665,15 +665,31 @@ class Proc:
       malformed argv JSON, or denial.
 
     Attenuation rule (matches the Wasm-side ``$proc_allows``
-    runtime helper): match on ``os.path.basename(cmd)`` so a
-    fully-qualified ``/usr/bin/git`` still gates correctly
-    against a ``restrict_to("git")`` cap. The boundary is the
-    basename plus a ``-`` suffix: ``restrict_to("git")`` admits
-    ``git`` and ``git-lfs`` (a git plugin) but rejects
-    ``gitlab`` (a different binary that happens to share a
-    prefix). The same rule lives in both backends so a
-    ``Proc.allows(cmd)`` query returns the same Bool on Python,
-    core Wasm, and the Component Model.
+    runtime helper). The rule fixes the IDENTITY of the binary,
+    not merely its basename, so a binary an attacker plants in
+    their own directory and invokes by absolute path cannot
+    impersonate a permitted command:
+
+    - A BARE-NAME restriction (no path separator, e.g.
+      ``restrict_to("git")``) admits only BARE-NAME commands: the
+      command's basename must equal the prefix, or start with
+      ``prefix + '-'`` (a plugin, ``git-lfs``). A command given as
+      a PATH (``/attacker/git``) is REJECTED by a bare-name
+      restriction -- otherwise any planted binary named ``git``
+      would pass and defeat the sandbox. Resolution of a bare name
+      to an on-disk binary is left to the OS ``PATH`` lookup, which
+      the deploying environment controls.
+    - A PATH restriction (contains a separator, e.g.
+      ``restrict_to("/usr/bin/git")``) gates on the RESOLVED,
+      NORMALISED path: the command's normalised absolute path must
+      equal the restriction's normalised absolute path exactly.
+      ``restrict_to("/usr/bin/git")`` admits ``/usr/bin/git`` (and
+      ``/usr/bin/../bin/git``, which normalises to the same path)
+      but not ``/attacker/git``.
+
+    The same rule lives in both backends so a ``Proc.allows(cmd)``
+    query returns the same Bool on Python, core Wasm, and the
+    Component Model.
     """
 
     __slots__ = ("_allowed",)
@@ -691,11 +707,25 @@ class Proc:
         if self._allowed is None:
             return True
         import os
-        base = os.path.basename(cmd)
+
+        def _has_sep(s: str) -> bool:
+            return "/" in s or os.sep in s or (os.altsep or "") in s
+
+        cmd_is_path = _has_sep(cmd)
+        cmd_norm = os.path.normpath(cmd) if cmd_is_path else None
         for p in self._allowed:
-            if base == p:
-                return True
-            if base.startswith(p + "-"):
+            if _has_sep(p):
+                # Path restriction: fix the binary's identity by its
+                # normalised path. A bare-name command can never match a
+                # path restriction (it has no path to gate on).
+                if cmd_is_path and cmd_norm == os.path.normpath(p):
+                    return True
+                continue
+            # Bare-name restriction: admit only bare-name commands so a
+            # planted ``/attacker/git`` cannot impersonate ``git``.
+            if cmd_is_path:
+                continue
+            if cmd == p or cmd.startswith(p + "-"):
                 return True
         return False
 
@@ -830,7 +860,9 @@ class Db:
         self._allowed = _allowed
 
     def restrict_to(self, path: str) -> "Db":
-        new = frozenset({path})
+        import os
+        canon = os.path.realpath(path)
+        new = frozenset({canon})
         if self._allowed is not None:
             new = new & self._allowed
         return Db(_allowed=new)
@@ -838,18 +870,23 @@ class Db:
     def allows(self, path: str) -> bool:
         if self._allowed is None:
             return True
-        # Boundary-aware prefix match (audit 2026-05-29): a
-        # naive ``path.startswith(p)`` would admit
-        # ``/var/data_evil/secrets.db`` when restricted to
-        # ``/var/data``. Require either an exact match or a
-        # following ``/`` so the prefix lines up with a path
-        # component boundary. Mirrors the Wasm-side
-        # ``_emit_path_prefix_check`` semantics.
+        # Canonicalise BOTH the queried path and the stored prefixes
+        # through ``os.path.realpath`` before the boundary check, exactly
+        # as ``Fs.allows`` does. A purely lexical prefix match (audit
+        # 2026-06-17) admitted ``prefix/../escaped.db`` -- the ``..`` walks
+        # out of the prefix on disk while still matching it textually.
+        # ``realpath`` resolves ``..`` / ``.`` / symlinks so the boundary
+        # check sees the true target. ``restrict_to`` already stores
+        # canonical prefixes, so this resolves the argument to the same
+        # form before comparing.
+        import os
+        from pathlib import Path
+        try:
+            canon = Path(os.path.realpath(path))
+        except (OSError, ValueError):
+            return False
         for p in self._allowed:
-            if path == p:
-                return True
-            sep = p if p.endswith("/") else p + "/"
-            if path.startswith(sep):
+            if canon == Path(p) or canon.is_relative_to(p):
                 return True
         return False
 

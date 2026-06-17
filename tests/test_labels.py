@@ -1460,6 +1460,85 @@ class TestConstantTime(unittest.TestCase):
         )
         self.assertTrue(r.ok, [e.message for e in r.errors])
 
+    def test_secret_string_eq_rejected(self):
+        # Audit 2026-06-17 (Finding 4): comparing a @secret String with
+        # ``==`` short-circuits byte-by-byte (the Wasm ``$str_eq`` even
+        # has a length fast-path + early exit), so the timing reveals the
+        # first differing byte -- the MAC / token / password compare
+        # oracle. The headline case must be rejected with a constant-time
+        # error that points at the comparison.
+        r = self._analyze(
+            "@constant_time()\n"
+            "fun f(s: @secret String, g: String) -> Bool\n"
+            "    return s == g\n"
+        )
+        self.assertFalse(r.ok)
+        errs = self._ct_errors(r)
+        self.assertTrue(errs)
+        self.assertIn("==", errs[0].message)
+
+    def test_secret_string_neq_rejected(self):
+        r = self._analyze(
+            "@constant_time()\n"
+            "fun f(s: @secret String, g: String) -> Bool\n"
+            "    return s != g\n"
+        )
+        self.assertTrue(self._ct_errors(r))
+
+    def test_secret_string_ordering_rejected(self):
+        r = self._analyze(
+            "@constant_time()\n"
+            "fun f(s: @secret String, g: String) -> Bool\n"
+            "    return s < g\n"
+        )
+        self.assertTrue(self._ct_errors(r))
+
+    def test_secret_list_eq_rejected(self):
+        r = self._analyze(
+            "@constant_time()\n"
+            "fun f(a: @secret List<Int>, b: List<Int>) -> Bool\n"
+            "    return a == b\n"
+        )
+        self.assertTrue(self._ct_errors(r))
+
+    def test_secret_starts_with_rejected(self):
+        r = self._analyze(
+            "@constant_time()\n"
+            "fun f(s: @secret String, g: String) -> Bool\n"
+            "    return s.starts_with(g)\n"
+        )
+        self.assertTrue(self._ct_errors(r))
+
+    def test_secret_arg_contains_rejected(self):
+        # A @secret ARGUMENT to a short-circuit method is equally unsafe.
+        r = self._analyze(
+            "@constant_time()\n"
+            "fun f(s: String, secret: @secret String) -> Bool\n"
+            "    return s.contains(secret)\n"
+        )
+        self.assertTrue(self._ct_errors(r))
+
+    def test_secret_int_eq_is_fine(self):
+        # Int scalar comparison is single-cycle on the targets we emit,
+        # so an Int ``==`` is NOT a short-circuit byte-scan and stays
+        # allowed (only String / List comparison is rejected). The
+        # branch-on-secret rule still governs an ``if`` using it.
+        r = self._analyze(
+            "@constant_time()\n"
+            "fun f(a: @secret Int, b: @secret Int) -> Bool\n"
+            "    return a == b\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+
+    def test_public_string_eq_is_fine(self):
+        # No secret operand -> the compare is allowed even on Strings.
+        r = self._analyze(
+            "@constant_time()\n"
+            "fun f(s: String, g: String) -> Bool\n"
+            "    return s == g\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+
     def test_no_attribute_means_no_ct_rule(self):
         # Without @constant_time, a secret branch is allowed (the IFC
         # data-flow rules still apply, but timing is not checked).
@@ -1485,6 +1564,139 @@ class TestConstantTime(unittest.TestCase):
         by_name = {f["source_name"]: f for f in manifest["functions"]}
         self.assertTrue(by_name["add"]["constant_time"])
         self.assertFalse(by_name["plain"]["constant_time"])
+
+
+class TestVarReassignTaint(unittest.TestCase):
+    """Audit 2026-06-17 (Finding 3): a reassignment ``x = secret`` is an
+    EXPLICIT data flow, so the RHS label must join onto the target's
+    label in the DEFAULT tier too (like ``let x = secret``). Previously
+    only ``@strict_ifc`` did so, silently laundering PII in the default
+    warn tier."""
+
+    def _analyze(self, src: str):
+        from capa import analyze
+        m = _parse(src)
+        return analyze(m, source=src)
+
+    def test_reassign_from_secret_warns_in_default_tier(self):
+        r = self._analyze(
+            "fun h(s: @secret String, stdio: Stdio)\n"
+            "    var x = \"pub\"\n"
+            "    x = s\n"
+            "    stdio.println(x)\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertTrue(
+            any("information-flow" in w.message for w in r.warnings),
+            [w.message for w in r.warnings],
+        )
+
+    def test_reassign_initializer_already_warned(self):
+        # The control case the bug report names: ``var x = s`` (an
+        # initializer) already warned; reassignment must now match it.
+        r = self._analyze(
+            "fun h(s: @secret String, stdio: Stdio)\n"
+            "    var x = s\n"
+            "    stdio.println(x)\n"
+        )
+        self.assertTrue(
+            any("information-flow" in w.message for w in r.warnings)
+        )
+
+    def test_reassign_to_public_stays_clean(self):
+        # Reassigning a public value never raises a label (monotonic
+        # join from public is a no-op), so no false positive.
+        r = self._analyze(
+            "fun h(stdio: Stdio)\n"
+            "    var x = \"a\"\n"
+            "    x = \"b\"\n"
+            "    stdio.println(x)\n"
+        )
+        self.assertEqual(len(r.warnings), 0)
+        self.assertEqual(len(r.errors), 0)
+
+    def test_reassign_leak_via_env_get_end_to_end(self):
+        # End-to-end via the Env.get secret source, matching the bug
+        # report's ``--manifest ... declassification_sites:0`` framing:
+        # the leak is now flagged rather than silently laundered.
+        r = self._analyze(
+            "fun h(env: Env, stdio: Stdio)\n"
+            "    var x = \"pub\"\n"
+            "    match env.get(\"API_KEY\")\n"
+            "        Some(k) -> x = k\n"
+            "        None -> x = \"\"\n"
+            "    stdio.println(x)\n"
+        )
+        self.assertTrue(
+            any("information-flow" in w.message for w in r.warnings),
+            [w.message for w in r.warnings],
+        )
+
+
+class TestStrictEarlyReturnImplicitFlow(unittest.TestCase):
+    """Audit 2026-06-17 (Finding 5): under ``@strict_ifc``, a divergence
+    (return / break / continue / panic) inside a secret-conditioned
+    branch makes the rest of the enclosing block control-dependent on the
+    secret. A sink on the post-branch line leaks the predicate bit and
+    must be flagged. Strict-only, monotonic."""
+
+    def _analyze(self, src: str):
+        from capa import analyze
+        m = _parse(src)
+        return analyze(m, source=src)
+
+    def test_early_return_then_sink_is_flagged(self):
+        r = self._analyze(
+            "@strict_ifc()\n"
+            "fun probe(secret: @secret Int, stdio: Stdio)\n"
+            "    if secret > 0\n"
+            "        return\n"
+            "    stdio.println(\"leak\")\n"
+        )
+        self.assertFalse(r.ok)
+        self.assertTrue(
+            any("information-flow" in e.message for e in r.errors),
+            [e.message for e in r.errors],
+        )
+
+    def test_return_inside_while_then_sink_is_flagged(self):
+        r = self._analyze(
+            "@strict_ifc()\n"
+            "fun probe(secret: @secret Int, stdio: Stdio)\n"
+            "    var i = 0\n"
+            "    while secret > i\n"
+            "        return\n"
+            "    stdio.println(\"leak\")\n"
+        )
+        self.assertFalse(r.ok)
+        self.assertTrue(
+            any("information-flow" in e.message for e in r.errors)
+        )
+
+    def test_public_early_return_then_sink_is_clean(self):
+        # A PUBLIC-conditioned early return reveals nothing secret, so no
+        # false positive even under strict.
+        r = self._analyze(
+            "@strict_ifc()\n"
+            "fun probe(flag: Bool, stdio: Stdio)\n"
+            "    if flag\n"
+            "        return\n"
+            "    stdio.println(\"fine\")\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+
+    def test_no_strict_means_no_implicit_flag(self):
+        # The default tier does not report implicit flows, so the early
+        # return + post-branch sink analyses cleanly there.
+        r = self._analyze(
+            "fun probe(secret: @secret Int, stdio: Stdio)\n"
+            "    if secret > 0\n"
+            "        return\n"
+            "    stdio.println(\"leak\")\n"
+        )
+        self.assertEqual(
+            [e for e in r.errors if "information-flow" in e.message], []
+        )
 
 
 class TestDeclassify(unittest.TestCase):

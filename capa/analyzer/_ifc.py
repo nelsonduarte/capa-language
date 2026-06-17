@@ -116,6 +116,34 @@ _CT_INDEX_METHODS: dict[tuple[str, str], set[int]] = {
 # here, and ``_check_ct_arith`` picks it up with no further change.
 _VARIABLE_TIME_OPS: frozenset[str] = frozenset({"/", "%"})
 
+# Comparison operators that short-circuit byte-by-byte over a String /
+# List operand on the targets we emit (CWE-208). ``==`` / ``!=`` on a
+# String or List run ``$str_eq`` / element-wise compare with a
+# length fast-path and an early exit at the first differing element, so
+# the timing reveals the position of the first difference -- the classic
+# MAC / token / password compare oracle. The ordering operators
+# (``<`` ``<=`` ``>`` ``>=``) on a String are a lexicographic byte scan
+# with the same early exit. A @secret operand of any of these in a
+# ``@constant_time`` function is rejected (see ``_check_ct_compare``).
+# Int / Float scalar comparison is single-cycle and stays allowed.
+_SHORT_CIRCUIT_COMPARE_OPS: frozenset[str] = frozenset({
+    "==", "!=", "<", "<=", ">", ">=",
+})
+
+# String / List methods that short-circuit byte-by-byte against a
+# @secret operand, the method-call analogue of the comparison operators
+# above. ``starts_with`` / ``ends_with`` / ``contains`` early-exit at the
+# first mismatch; ``index_of`` scans for a match. Keyed
+# ``(TypeName, method)`` -> the 0-based argument positions whose @secret
+# label (or a @secret receiver) makes the call a timing oracle.
+_CT_SHORT_CIRCUIT_METHODS: dict[tuple[str, str], set[int]] = {
+    ("String", "starts_with"): {0},
+    ("String", "ends_with"):   {0},
+    ("String", "contains"):    {0},
+    ("String", "index_of"):    {0},
+    ("List",   "contains"):    {0},
+}
+
 
 class _IfcMixin:
     def _label_expr(self, e: A.Expr) -> str:
@@ -1001,6 +1029,84 @@ class _IfcMixin:
                 f"must avoid variable-time arithmetic on secret data.",
                 e.pos,
             )
+
+    def _check_ct_compare(self, e: A.BinOp) -> None:
+        """In a ``@constant_time`` function, comparing a @secret String or
+        List with ``==`` / ``!=`` / ``<`` / ``<=`` / ``>`` / ``>=`` leaks
+        the secret through timing (CWE-208): the comparison short-circuits
+        byte-by-byte (the Wasm ``$str_eq`` even has a length fast-path and
+        an early exit), so the running time reveals the position of the
+        first differing byte -- the classic MAC / token / password compare
+        oracle. Reject it; the fix is a dedicated XOR-accumulate
+        constant-time compare (e.g. ``capa_hash.strings_equal``).
+
+        Int / Float scalar comparison is single-cycle on the targets we
+        emit and stays allowed, so the check is scoped to String / List
+        operands (the receiver-side types of the two operands)."""
+        from ..typesys import TyName
+        if not getattr(self, "_constant_time", False):
+            return
+        if e.op not in _SHORT_CIRCUIT_COMPARE_OPS:
+            return
+        left_secret = L.normalize(self._label_of(e.left)) == L.SECRET
+        right_secret = L.normalize(self._label_of(e.right)) == L.SECRET
+        if not (left_secret or right_secret):
+            return
+        # Scope to String / List operands; an Int / Float compare is
+        # fixed-latency. Either operand typing to String / List makes the
+        # compare a byte-scan (the other operand has the same type by the
+        # type-checker's rules for ``==`` / ordering).
+        lt = self.types.get(id(e.left))
+        rt = self.types.get(id(e.right))
+        names = {
+            getattr(t, "name", None) for t in (lt, rt) if isinstance(t, TyName)
+        }
+        if not (names & {"String", "List"}):
+            return
+        self._err(
+            f"constant-time violation: {e.op!r} on a @secret String / List "
+            f"operand leaks it through timing -- the comparison "
+            f"short-circuits byte-by-byte and reveals the position of the "
+            f"first difference (the MAC / token compare oracle, CWE-208). "
+            f"Use a dedicated constant-time compare (XOR-accumulate over "
+            f"every byte with no early exit) instead of '=='.",
+            e.pos,
+        )
+
+    def _check_ct_method_compare(self, e: A.MethodCall, recv_ty) -> None:
+        """Method-call form of the constant-time compare check:
+        ``s.starts_with(secret)`` / ``s.ends_with(secret)`` /
+        ``s.contains(secret)`` / ``s.index_of(secret)`` /
+        ``list.contains(secret)`` in a ``@constant_time`` function
+        short-circuits byte-by-byte against the @secret operand, the same
+        timing oracle ``==`` is. A @secret RECEIVER is equally unsafe (the
+        scan walks the secret's bytes), so both the receiver and the
+        listed argument positions are tested."""
+        if not getattr(self, "_constant_time", False):
+            return
+        cap_name = getattr(recv_ty, "name", None)
+        if cap_name is None:
+            return
+        arg_positions = _CT_SHORT_CIRCUIT_METHODS.get((cap_name, e.method))
+        if arg_positions is None:
+            return
+        secret = L.normalize(self._label_of(e.receiver)) == L.SECRET
+        if not secret:
+            for idx in arg_positions:
+                if idx < len(e.args) and \
+                        L.normalize(self._label_of(e.args[idx])) == L.SECRET:
+                    secret = True
+                    break
+        if not secret:
+            return
+        self._err(
+            f"constant-time violation: {cap_name}.{e.method} on a @secret "
+            f"operand leaks it through timing -- it short-circuits "
+            f"byte-by-byte and reveals where the first difference is (the "
+            f"compare oracle, CWE-208). Use a dedicated constant-time "
+            f"compare (XOR-accumulate over every byte) instead.",
+            e.pos,
+        )
 
     # ---- declassify (roadmap S2.5) -------------------------------
 

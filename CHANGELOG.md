@@ -9,6 +9,36 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+**Security / soundness (6 fixes).** Six localised audit findings
+(2026-06-17), under the documented-bug / security carve-out of
+[`STABILITY.md`](STABILITY.md):
+
+- `Proc.restrict_to` now fixes the binary's **identity**, not merely
+  its basename. A bare-name restriction (`restrict_to("git")`) admits
+  only bare-name commands and rejects a planted absolute path with the
+  same basename (`/attacker/git`); a path restriction gates on the
+  resolved, normalised path. Python / Wasm parity preserved.
+- `Db.allows` now canonicalises the path through `realpath` before the
+  boundary check, exactly as `Fs.allows` does, so a `prefix/../x.db`
+  traversal that escapes the prefix on disk is denied on both backends.
+- An IFC variable reassignment (`x = secret`) now joins the RHS label
+  onto the target in the **default** tier too (an explicit data flow,
+  like `let x = secret`); previously only `@strict_ifc` did, silently
+  laundering the value in the default warn tier.
+- A `@constant_time` function now rejects a short-circuiting **String /
+  List comparison** (`==` `!=` `<` ... and `starts_with` / `ends_with`
+  / `contains` / `index_of`) on a `@secret` operand -- the MAC / token
+  / password compare oracle (CWE-208). Int / Float scalar comparison
+  stays allowed.
+- Under `@strict_ifc`, a divergence (return / break / continue / panic)
+  inside a secret-conditioned branch now keeps the pc elevated for the
+  rest of the enclosing block, so a sink on the post-branch line that
+  leaks the predicate bit is flagged.
+- `parse_int` now rejects an out-of-range magnitude by length **before**
+  `int(body)`, so a many-digit string no longer trips CPython's
+  int<->str conversion cap with an uncaught `ValueError` (a DoS); it
+  returns `None`, matching the Wasm `$parse_int`.
+
 ## [1.3.0], 2026-06-16
 
 **Capa 1.3.0.** A MINOR release that completes Python / Wasm parity,

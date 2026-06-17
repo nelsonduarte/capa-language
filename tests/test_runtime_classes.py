@@ -297,6 +297,27 @@ class TestConverts(unittest.TestCase):
         self.assertTrue(parse_int("²").is_none())  # superscript 2
         self.assertTrue(parse_int(" 7").is_none())  # NBSP + '7'
 
+    def test_parse_int_oversized_magnitude_is_none_not_crash(self):
+        # Audit 2026-06-17 (Finding 6): a many-digit all-ASCII string used
+        # to reach ``int(body)`` unguarded, tripping CPython's ~4300-digit
+        # int<->str cap with an UNCAUGHT ValueError (a DoS for a server
+        # parsing third-party numbers). The Wasm ``$parse_int`` already
+        # rejected such magnitudes as None, so the Python side diverged.
+        # It must now return None (out-of-range), never raise.
+        self.assertTrue(parse_int("9" * 5000).is_none())
+        self.assertTrue(parse_int("-" + "9" * 5000).is_none())
+        # A digit count just past the i64 window is also None, and still
+        # never reaches a crashing ``int`` conversion.
+        self.assertTrue(parse_int("1" + "0" * 30).is_none())
+        # And valid i64 magnitudes still parse (the guard must not be so
+        # tight that it rejects in-range values).
+        self.assertEqual(
+            parse_int("9223372036854775807").unwrap(), (1 << 63) - 1
+        )
+        self.assertEqual(
+            parse_int("-9223372036854775808").unwrap(), -(1 << 63)
+        )
+
     def test_parse_float(self):
         self.assertEqual(parse_float("3.14").unwrap(), 3.14)
         self.assertEqual(parse_float("  -0.5  ").unwrap(), -0.5)

@@ -60,6 +60,19 @@ def parse_int(s):
         digits = body[1:]
     if not digits or not digits.isascii() or not digits.isdigit():
         return None_
+    # Reject out-of-range magnitudes BEFORE ``int(body)``. CPython caps
+    # int<->str conversion at ~4300 digits and raises an uncaught
+    # ValueError past that (a DoS for a server parsing third-party
+    # numbers); the Wasm ``$parse_int`` already rejects overflow as
+    # ``None``. ``i64::MAX`` / ``i64::MIN`` have 19 significant digits, so
+    # any magnitude with more digits than that cannot fit the i64 window
+    # and is ``None`` -- screening it here is both the overflow check and
+    # the DoS guard, and keeps the two backends in lockstep (both
+    # ``None`` for out-of-range). 20 digits is the conservative cutoff
+    # (``len('9223372036854775807') == 19``); a 19-or-20-digit value
+    # still goes through the exact i64-window check below.
+    if len(digits) > 20:
+        return None_
     n = int(body)
     if n < _I64_MIN or n > _I64_MAX:
         return None_

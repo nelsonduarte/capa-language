@@ -688,6 +688,9 @@ class _ExpressionsMixin:
         rt = self._check_expr(e.right)
         op = e.op
         self._check_ct_arith(e)
+        # Roadmap S4: in a @constant_time function, a short-circuiting
+        # String / List comparison on a @secret operand is a timing oracle.
+        self._check_ct_compare(e)
         if op in ("+", "-", "*", "/", "%"):
             if compatible(TyInt, lt) and compatible(TyInt, rt):
                 return TyInt
