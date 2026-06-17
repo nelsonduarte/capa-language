@@ -7,6 +7,51 @@ The project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 starting at 1.0; before then, minor-version bumps may introduce
 breaking changes and the discipline is still being shaped.
 
+## [1.5.0], 2026-06-17
+
+**Capa 1.5.0.** A MINOR release that hardens the package manager's
+supply-chain trust by re-verifying vendored git dependencies at build
+time. New behaviour, no new language features. The change is a
+fail-closed enforcement tightening on the read/build path and falls
+under the documented security carve-out of
+[`STABILITY.md`](STABILITY.md) (a behaviour change that refuses
+previously-accepted unverified state), hence a MINOR bump rather than a
+MAJOR.
+
+**Security / supply chain.**
+
+- *Build-time re-verification of `./vendor/` (PKG-1).* The supply-chain
+  checks `capa install` runs (lockfile-SHA enforcement, GPG signature
+  verification, SLSA provenance) all happened **inside** install. The
+  read/build path (`capa --check` / `--run` / `--transpile`, `capa
+  migrate`, and the per-test subprocesses `capa test` spawns) reached
+  the vendored sources straight out of `./vendor/<name>/` **without**
+  re-consulting `capa.lock`, leaving `vendor/` a re-entry point into the
+  trusted computing base that nothing re-validated: code tampered with
+  after install (a rebase onto a malicious commit, an in-place edit of
+  the checked-out files, or a stale checkout drifted from the lock)
+  would execute on the next build undetected. The build now re-verifies
+  every declared git dep against `capa.lock` before the loader is
+  allowed to read `./vendor/`, with two local, offline checks per dep
+  (no network, no re-clone, no re-run of GPG): the vendor HEAD must
+  equal the locked commit **and** the working tree must be clean at that
+  commit (`git status --porcelain` empty, so an in-place edit that
+  leaves HEAD untouched, a deletion, a substitution, or a planted
+  untracked importable module is also caught). This is **fail-closed**:
+  the build is refused, naming the dependency, when the lock is absent
+  while git deps are declared, the vendor dir is missing or has no
+  `.git`, the HEAD differs from the locked commit, the working tree is
+  not clean, the tree cannot be inspected, or a declared git dep has no
+  lock entry. Path deps carry no locked commit and are never verified.
+
+- *Opt-out `CAPA_NO_VERIFY=1`.* Setting this skips the build-time
+  verification with a single warning; it **annuls the build-time
+  supply-chain guarantee** that `./vendor/` matches the locked, verified
+  commits, and exists only for the rare case (offline bisecting against
+  a hand-checked-out vendor tree, etc.) where the re-verification is
+  genuinely in the way. Do not set it in CI or in any build whose
+  supply-chain integrity you rely on.
+
 ## [1.4.1], 2026-06-17
 
 **Capa 1.4.1.** A PATCH release that fixes a single platform-dependent
