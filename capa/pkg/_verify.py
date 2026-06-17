@@ -14,14 +14,36 @@ build with no detection.
 
 This module closes that gap. Before the loader is allowed to read
 ``vendor/``, every git dependency declared in ``capa.toml`` is matched
-against ``capa.lock``: the current HEAD commit of ``vendor/<name>``
-must equal the SHA frozen in the lockfile for that dep. The check is
-deliberately CHEAP and OFFLINE: a single ``git -C vendor/<name>
-rev-parse HEAD`` per dep, no clone, no network, no re-run of GPG. The
-premise is that ``capa.lock`` is committed and is part of the
+against ``capa.lock``. Two conditions must both hold for ``vendor/<name>``:
+
+  1. its current HEAD commit must equal the SHA frozen in the lockfile
+     for that dep (catches a rebase / checkout onto a different commit
+     and a stale checkout); and
+  2. its working tree must be CLEAN at that commit (catches an
+     in-place edit, deletion, or substitution of a checked-out,
+     importable file that leaves HEAD untouched but changes the code
+     the loader actually reads).
+
+HEAD-only matching is not enough on its own: editing a tracked file in
+``vendor/<name>`` without committing leaves HEAD equal to the locked
+SHA, so the adulterated code would run undetected. The working-tree
+check is what closes that, the most trivial post-install tamper vector.
+
+The check is deliberately CHEAP and OFFLINE: per dep, a single
+``git -C vendor/<name> rev-parse HEAD`` plus a single ``git -C
+vendor/<name> status --porcelain``, no clone, no network, no re-run of
+GPG. The premise is that ``capa.lock`` is committed and is part of the
 project's trusted computing base: its ``commit`` was already GPG /
-SLSA-verified at install time, so re-checking the SHA on every build
-is exactly what catches post-install vendor tampering.
+SLSA-verified at install time, so re-checking the SHA AND the working
+tree on every build is exactly what catches post-install vendor
+tampering.
+
+What this does NOT catch (by stated premise): an attacker who
+adulterates ``vendor/<name>``, commits the change coherently so HEAD
+moves, AND rewrites ``capa.lock`` to match the new commit. The
+committed lockfile is part of the project's trusted computing base; an
+attacker who can rewrite it has already breached that boundary, and
+this build-time check does not defend against it.
 
 POSTURE: fail-closed by default, with an explicit opt-out. The build
 is refused (``VendorVerificationError``) when, for any git dep:
@@ -29,8 +51,14 @@ is refused (``VendorVerificationError``) when, for any git dep:
   (a) ``capa.lock`` is absent while git deps are declared;
   (b) ``vendor/<name>`` is missing or has no ``.git`` (unverifiable);
   (c) the current HEAD of ``vendor/<name>`` differs from the locked
-      commit (tamper / stale checkout);
-  (d) a git dep in ``capa.toml`` has no entry in ``capa.lock``.
+      commit (rebase / checkout onto a different commit / stale
+      checkout);
+  (d) the working tree of ``vendor/<name>`` is not clean at HEAD
+      (an in-place edit, deletion, or substitution of a checked-out
+      file: HEAD still matches but the code on disk does not);
+  (e) the working tree of ``vendor/<name>`` cannot be inspected (git
+      absent / transient git error: unverifiable, so fail-closed);
+  (f) a git dep in ``capa.toml`` has no entry in ``capa.lock``.
 
 Each error names the offending dependency and the failure kind, tells
 the user to run ``capa install``, and mentions the opt-out.
@@ -55,7 +83,6 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from ._manifest import (
-    Dependency,
     LOCK_FILENAME,
     LockedDependency,
     Manifest,
@@ -107,11 +134,48 @@ def _vendor_head_sha(vendor_path: Path) -> Optional[str]:
     return r.stdout.strip()
 
 
+def _vendor_tree_clean(vendor_path: Path) -> Optional[bool]:
+    """Return whether the working tree of ``vendor_path`` is clean at
+    HEAD, via ``git -C <path> status --porcelain``: ``True`` when there
+    is no output (no modifications, deletions, or untracked files),
+    ``False`` when there is, and ``None`` when the status cannot be
+    obtained (path is not a git checkout / git is unavailable / git
+    errored) so the caller can fail closed.
+
+    ``status --porcelain`` (rather than ``diff --quiet HEAD``) is used
+    deliberately: it catches the full post-install execution vector,
+    not only in-place edits of tracked files but also their deletion
+    and substitution-via-untracked, and a planted untracked importable
+    module. A freshly cloned vendor tree (``git clone --depth 1
+    --branch <tag>``) reports empty here, and a normal Capa check / run
+    / test cycle writes no artifacts into ./vendor source dirs, so the
+    untracked-file sensitivity strengthens the check without a false
+    positive on a healthy install.
+
+    Factored out (like ``_vendor_head_sha``) so tests can patch the
+    cleanliness verdict without a real git repo. Read-only: ``status``
+    never writes."""
+    git_dir = vendor_path / ".git"
+    if not git_dir.exists():
+        return None
+    try:
+        r = subprocess.run(
+            ["git", "-C", str(vendor_path), "status", "--porcelain"],
+            capture_output=True, text=True, encoding="utf-8",
+        )
+    except FileNotFoundError:
+        return None
+    if r.returncode != 0:
+        return None
+    return r.stdout.strip() == ""
+
+
 def verify_vendored_deps(
     project_dir: Path,
     manifest: Manifest,
     *,
     head_sha: Callable[[Path], Optional[str]] = _vendor_head_sha,
+    tree_clean: Callable[[Path], Optional[bool]] = _vendor_tree_clean,
     warn: Optional[Callable[[str], None]] = None,
 ) -> None:
     """Re-verify the vendored git deps of ``manifest`` against
@@ -122,9 +186,11 @@ def verify_vendored_deps(
     dependency-free project is untouched). No-op (with a one-shot
     warning) when ``CAPA_NO_VERIFY=1``.
 
-    ``head_sha`` resolves a vendor dir to its HEAD commit; the default
-    shells out to git, tests inject a pure function. ``warn`` receives
-    the opt-out notice; defaults to a once-per-process stderr line."""
+    ``head_sha`` resolves a vendor dir to its HEAD commit and
+    ``tree_clean`` resolves it to a working-tree cleanliness verdict;
+    both default to git shell-outs, tests inject pure functions.
+    ``warn`` receives the opt-out notice; defaults to a once-per-process
+    stderr line."""
     git_deps = [
         d for d in (manifest.dependencies + manifest.dev_dependencies)
         if d.is_git
@@ -184,12 +250,42 @@ def verify_vendored_deps(
                 f"{LOCK_FILENAME}:\n"
                 f"    locked  {locked.commit}\n"
                 f"    vendor  {actual}\n\n"
-                f"vendor/{dep.name} has been tampered with, rebased onto a "
+                f"vendor/{dep.name} has been rebased or checked out onto a "
                 f"different commit, or left stale since `capa install`. The "
                 f"build refuses to read code that the lockfile did not "
                 f"verify. Run `capa install` to restore the locked commit "
                 f"(investigate first if you did not change this dependency "
                 f"yourself).\n\n"
+                f"To bypass this check (which annuls the build-time "
+                f"supply-chain guarantee), set {_NO_VERIFY_ENV}=1."
+            )
+
+        clean = tree_clean(vendor_path)
+        if clean is None:
+            raise VendorVerificationError(
+                f"git dependency {dep.name!r} cannot be verified: the "
+                f"working tree of {vendor_path} could not be inspected "
+                f"(git is unavailable or errored), so build-time tamper "
+                f"detection is not possible. Run `capa install` to "
+                f"(re)vendor it.\n\n"
+                f"To bypass this check (which annuls the build-time "
+                f"supply-chain guarantee), set {_NO_VERIFY_ENV}=1."
+            )
+        if not clean:
+            raise VendorVerificationError(
+                f"vendored dependency {dep.name!r} is at the locked commit "
+                f"{locked.commit} but its working tree has uncommitted "
+                f"changes:\n"
+                f"    vendor/{dep.name} has files modified, deleted, or "
+                f"added since `capa install` checked out the locked "
+                f"commit.\n\n"
+                f"A direct edit of the checked-out files leaves HEAD "
+                f"matching the lock while changing the code the build "
+                f"actually reads. The build refuses to read code that the "
+                f"lockfile did not verify. Run `capa install` to restore "
+                f"the locked checkout, or `git -C vendor/{dep.name} status` "
+                f"to inspect the changes (investigate first if you did not "
+                f"change this dependency yourself).\n\n"
                 f"To bypass this check (which annuls the build-time "
                 f"supply-chain guarantee), set {_NO_VERIFY_ENV}=1."
             )

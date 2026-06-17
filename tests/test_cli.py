@@ -1550,6 +1550,31 @@ class TestVendorVerificationOnBuild(unittest.TestCase):
             self.assertIn("capa install", err)
             self.assertIn("CAPA_NO_VERIFY", err)
 
+    def test_in_place_edit_without_commit_refuses_and_names_dep(self):
+        # The most trivial post-install tamper vector: edit a tracked
+        # file in vendor/util WITHOUT committing. HEAD stays equal to the
+        # locked commit (HEAD-only matching would pass), but the working
+        # tree now holds adulterated code that the loader would read.
+        # The working-tree check must catch this and refuse.
+        with tempfile.TemporaryDirectory() as td:
+            project, root, head = self._build_project(Path(td))
+            vutil = project / "vendor" / "util"
+            # Adulterate in place; do NOT commit, so HEAD is unchanged.
+            (vutil / "util.capa").write_text(
+                "pub fun bump(n: Int) -> Int\n    return n + 99\n",
+                encoding="utf-8",
+            )
+            # HEAD still equals the locked commit: HEAD-only matching
+            # would have let this through.
+            self.assertEqual(
+                self._git(vutil, "rev-parse", "HEAD"), head,
+            )
+            rc, _out, err = _run_main(["--run", str(root)], cwd=project)
+            self.assertEqual(rc, 1)
+            self.assertIn("util", err)
+            self.assertIn("capa install", err)
+            self.assertIn("CAPA_NO_VERIFY", err)
+
     def test_tampered_vendor_passes_with_opt_out(self):
         # The opt-out warning is emitted at most once per process; reset
         # the guard so this test sees it regardless of run order.

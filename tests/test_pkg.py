@@ -2766,10 +2766,50 @@ class TestVerifyVendoredDeps(_TempDirMixin, unittest.TestCase):
             toml=self._GIT_TOML, lock=self._lock_for(self._SHA1),
         )
         manifest = read_manifest(proj / "capa.toml")
-        # vendor HEAD == lock.commit: no exception.
+        # vendor HEAD == lock.commit and working tree clean: no exception.
         verify_vendored_deps(
-            proj, manifest, head_sha=lambda _p: self._SHA1,
+            proj, manifest,
+            head_sha=lambda _p: self._SHA1,
+            tree_clean=lambda _p: True,
         )
+
+    def test_dirty_working_tree_fails_and_names_dep(self):
+        # HEAD matches the lock (no rebase / checkout), but the working
+        # tree is dirty: an in-place edit / deletion / substitution of a
+        # checked-out file. This is the vector HEAD-only matching misses.
+        proj = self._project(
+            toml=self._GIT_TOML, lock=self._lock_for(self._SHA1),
+        )
+        manifest = read_manifest(proj / "capa.toml")
+        with self.assertRaises(VendorVerificationError) as ctx:
+            verify_vendored_deps(
+                proj, manifest,
+                head_sha=lambda _p: self._SHA1,   # HEAD is fine
+                tree_clean=lambda _p: False,      # tree is dirty
+            )
+        msg = str(ctx.exception)
+        self.assertIn("mylib", msg)
+        self.assertIn("uncommitted changes", msg)
+        self.assertIn("capa install", msg)
+        self.assertIn("CAPA_NO_VERIFY", msg)
+
+    def test_tree_status_unobtainable_fails_closed(self):
+        # Working-tree status cannot be read (git absent / errored):
+        # unverifiable, so the build must refuse even with a matching
+        # HEAD.
+        proj = self._project(
+            toml=self._GIT_TOML, lock=self._lock_for(self._SHA1),
+        )
+        manifest = read_manifest(proj / "capa.toml")
+        with self.assertRaises(VendorVerificationError) as ctx:
+            verify_vendored_deps(
+                proj, manifest,
+                head_sha=lambda _p: self._SHA1,
+                tree_clean=lambda _p: None,
+            )
+        msg = str(ctx.exception)
+        self.assertIn("mylib", msg)
+        self.assertIn("capa install", msg)
 
     def test_mismatched_sha_fails_and_names_dep(self):
         proj = self._project(
@@ -2891,7 +2931,9 @@ class TestVerifyVendoredDeps(_TempDirMixin, unittest.TestCase):
             queried.append(p)
             return self._SHA1
 
-        verify_vendored_deps(proj, manifest, head_sha=_head)
+        verify_vendored_deps(
+            proj, manifest, head_sha=_head, tree_clean=lambda _p: True,
+        )
         # Exactly one SHA query, for the git dep's vendor dir.
         self.assertEqual(len(queried), 1)
         self.assertTrue(str(queried[0]).endswith("mylib"))

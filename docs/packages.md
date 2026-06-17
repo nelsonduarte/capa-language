@@ -297,29 +297,62 @@ is vendored, the read/build path (`capa --check` / `--run` /
 `--transpile`, `capa migrate`, and the per-test subprocesses
 `capa test` spawns) reads the sources straight out of
 `./vendor/<name>/`. If those files are tampered with *after*
-install (a rebase of `vendor/<name>` onto a malicious commit, a
-direct edit, or a stale checkout that drifted from the lock),
-nothing would otherwise notice. So before the loader is allowed
-to read `./vendor/`, Capa re-verifies every git dep against
-`capa.lock`: the current HEAD commit of `vendor/<name>` (a single
-local `git -C vendor/<name> rev-parse HEAD`, no network, no
-re-clone, no re-run of GPG) must equal the SHA the lockfile
-froze. This is **fail-closed**: the build is refused, naming the
+install (a rebase of `vendor/<name>` onto a malicious commit, an
+in-place edit of the checked-out files, or a stale checkout that
+drifted from the lock), nothing would otherwise notice. So before
+the loader is allowed to read `./vendor/`, Capa re-verifies every
+git dep against `capa.lock`. Per dep, two local, offline checks
+(no network, no re-clone, no re-run of GPG):
+
+- `git -C vendor/<name> rev-parse HEAD` must equal the SHA the
+  lockfile froze; and
+- `git -C vendor/<name> status --porcelain` must be empty, i.e.
+  the working tree must be clean at that commit.
+
+The HEAD check alone is not enough: editing a tracked file in
+`vendor/<name>` *without committing* leaves HEAD equal to the
+locked SHA, so the adulterated code would run undetected. The
+working-tree check closes that, the most trivial post-install
+tamper vector. It uses `status --porcelain` (not `diff --quiet
+HEAD`) so it also catches a deleted or substituted file and a
+planted untracked importable module; a freshly cloned vendor tree
+reports clean, and a normal Capa build writes no artifacts into
+`./vendor/` source dirs, so this does not produce a false
+positive on a healthy install.
+
+This is **fail-closed**: the build is refused, naming the
 dependency and telling you to run `capa install`, when
 
 - `capa.toml` declares git deps but there is no `capa.lock`;
 - `vendor/<name>` is missing or has no `.git` (not verifiable);
 - the HEAD of `vendor/<name>` differs from the locked commit;
+- the working tree of `vendor/<name>` is not clean at HEAD (an
+  in-place edit, deletion, or substitution of a checked-out file);
+- the working tree cannot be inspected (git absent or errored:
+  unverifiable, so fail-closed);
 - a git dep in `capa.toml` has no entry in `capa.lock`.
 
 The premise is that `capa.lock` is committed and is part of the
 project's trusted computing base: its `commit` was already
-GPG/SLSA-verified at install time, so re-checking the SHA on each
-build is exactly what catches post-install vendor tampering. The
-check applies to git deps only; path deps carry no locked commit
-and are never verified. `capa install` and `capa add` are not
-subject to it (they *generate* the verified state; verifying
-before install would be circular).
+GPG/SLSA-verified at install time, so re-checking the SHA *and*
+the working tree on each build is exactly what catches
+post-install vendor tampering. By the same premise, what this
+does **not** catch is an attacker who adulterates `vendor/<name>`,
+commits the change so HEAD moves, *and* rewrites `capa.lock` to
+match: an attacker who can rewrite the committed lockfile has
+already breached the trusted computing base this check builds on.
+
+The check applies to git deps declared in `capa.toml` and
+vendored under `./vendor/` only. Path deps carry no locked commit
+and are never verified. `CAPA_PATH` directories and the
+`./libraries/` fallback are **operator-trusted source roots that
+sit outside this per-SHA guarantee**: the verification is keyed by
+the git deps of `capa.toml` resolved under `./vendor/`, not by
+arbitrary search paths, so code reached through `CAPA_PATH` or
+`./libraries/` is read on the operator's trust, not against a
+locked commit. `capa install` and `capa add` are not subject to
+the check (they *generate* the verified state; verifying before
+install would be circular).
 
 **Opt-out: `CAPA_NO_VERIFY=1`.** Setting this environment
 variable skips the build-time verification entirely, with a
@@ -329,6 +362,14 @@ commits, and exists only for the rare case where the
 re-verification is genuinely in the way (for instance bisecting
 offline against a hand-checked-out vendor tree). Do not set it in
 CI or in any build whose supply-chain integrity you rely on.
+
+> **Note (LSP).** The language server does not resolve imports
+> from `./vendor/`, so it never executes or analyzes
+> unverified vendor code. This is a known divergence from the
+> compiler's loader resolution: the editor experience does not
+> reach into `./vendor/`, and the execution risk from that path
+> is therefore nil. The build-time check above is what guards the
+> compiler's read of `./vendor/`.
 
 ## Loader resolution order
 

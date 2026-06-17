@@ -56,11 +56,17 @@ In scope:
   Both ends are verified: `capa install` enforces the locked SHA (and
   GPG / SLSA when a `verify_key` is set), and the build path
   (`capa --check` / `--run` / `--transpile`, `capa migrate`,
-  `capa test`) re-verifies each git dep's `vendor/<name>` HEAD against
-  `capa.lock` before reading it, fail-closed. The build-time check is
-  the post-install tamper guard; it is bypassed only by the explicit
-  `CAPA_NO_VERIFY=1` opt-out, which annuls the guarantee by design and
-  is therefore not a vulnerability.
+  `capa test`) re-verifies each git dep before reading `vendor/<name>`,
+  fail-closed, on two conditions: its HEAD must equal the locked commit
+  *and* its working tree must be clean at that commit. The working-tree
+  check matters because an in-place edit of a checked-out file leaves
+  HEAD matching the lock while changing the code the build reads. What
+  this does not catch, by stated premise, is an attacker who adulterates
+  `vendor/<name>`, commits the change, and rewrites the committed
+  `capa.lock` to match: the lockfile is part of the project's trusted
+  computing base. The build-time check is the post-install tamper guard;
+  it is bypassed only by the explicit `CAPA_NO_VERIFY=1` opt-out, which
+  annuls the guarantee by design and is therefore not a vulnerability.
 
 Out of scope:
 
