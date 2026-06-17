@@ -33,7 +33,14 @@ from pathlib import Path
 from typing import Any
 
 from capa import Lexer, Parser, analyze
-from capa.manifest import SCHEMA_VERSION, build_cyclonedx, build_manifest, build_spdx
+from capa.manifest import (
+    SCHEMA_VERSION,
+    build_cyclonedx,
+    build_manifest,
+    build_provenance,
+    build_spdx,
+)
+from capa.loader import ModuleLoader
 
 
 def _analysed(source: str):
@@ -752,6 +759,83 @@ class TestPerImplReachability(unittest.TestCase):
         self.assertNotIn(
             "SendEmail", g["provably_excluded_capabilities"],
         )
+
+    def test_plain_struct_nesting_cap_bearing_struct_propagates(self):
+        # Audit 2026-06-17: a PLAIN data struct ``Outer { mailer:
+        # SmtpMailer }`` that merely nests a cap-bearing struct must
+        # propagate the nested caps. ``process(o: Outer)`` calling
+        # ``o.mailer.send(...)`` exercises both the user-cap SendEmail
+        # and the built-in Net wrapped inside SmtpMailer; pre-fix the
+        # manifest falsely provably-excluded both because Outer (not
+        # being cap-bearing) had no reachable entry and resolved empty.
+        m = self._build(
+            "capability SendEmail\n"
+            "    fun send(self, to: String) -> Bool\n"
+            "type SmtpMailer { net: Net }\n"
+            "impl SendEmail for SmtpMailer\n"
+            "    fun send(self, to: String) -> Bool\n"
+            "        return true\n"
+            "type Outer { mailer: SmtpMailer }\n"
+            "fun process(o: Outer) -> Bool\n"
+            "    return o.mailer.send(\"a@b\")\n"
+        )
+        proc = self._find(m, "process")
+        self.assertIn(
+            "SendEmail", proc["transitively_reachable_capabilities"],
+        )
+        self.assertIn(
+            "Net", proc["transitively_reachable_capabilities"],
+        )
+        self.assertNotIn(
+            "SendEmail", proc["provably_excluded_capabilities"],
+        )
+        self.assertNotIn(
+            "Net", proc["provably_excluded_capabilities"],
+        )
+
+    def test_two_level_struct_nesting_propagates(self):
+        # A deeper chain: Outer -> Middle -> SmtpMailer. Both plain
+        # data structs must carry the nested caps up so a function
+        # touching the outermost struct still reports Net + SendEmail.
+        m = self._build(
+            "capability SendEmail\n"
+            "    fun send(self, to: String) -> Bool\n"
+            "type SmtpMailer { net: Net }\n"
+            "impl SendEmail for SmtpMailer\n"
+            "    fun send(self, to: String) -> Bool\n"
+            "        return true\n"
+            "type Middle { mailer: SmtpMailer }\n"
+            "type Outer { mid: Middle }\n"
+            "fun process(o: Outer) -> Bool\n"
+            "    return o.mid.mailer.send(\"a@b\")\n"
+        )
+        proc = self._find(m, "process")
+        self.assertIn(
+            "SendEmail", proc["transitively_reachable_capabilities"],
+        )
+        self.assertIn(
+            "Net", proc["transitively_reachable_capabilities"],
+        )
+        self.assertNotIn(
+            "SendEmail", proc["provably_excluded_capabilities"],
+        )
+        self.assertNotIn(
+            "Net", proc["provably_excluded_capabilities"],
+        )
+
+    def test_plain_struct_not_nesting_cap_keeps_strong_exclusion(self):
+        # Guard against over-propagation: a plain data struct with no
+        # cap-bearing field reaches nothing, so a function taking it
+        # still provably-excludes every built-in cap.
+        m = self._build(
+            "type Plain { n: Int }\n"
+            "fun touch(p: Plain) -> Int\n"
+            "    return p.n\n"
+        )
+        fn = self._find(m, "touch")
+        self.assertEqual(fn["transitively_reachable_capabilities"], [])
+        for cap in ("Stdio", "Fs", "Net", "Unsafe", "Clock"):
+            self.assertIn(cap, fn["provably_excluded_capabilities"])
 
 
 class TestSourceNameInSboms(unittest.TestCase):
@@ -1620,6 +1704,163 @@ class TestManifestStringHelpers(unittest.TestCase):
             elements=[A.TypeName(pos=_P, name="Int")],
         )
         self.assertIsNone(_root_type_name(tup))
+
+
+class TestMultiFileSourceDigest(unittest.TestCase):
+    """Audit 2026-06-17: the provenance subject and the CDX
+    ``serialNumber`` / SPDX ``documentNamespace`` seeds must cover
+    EVERY linked module, not only the root. Pre-fix an attacker could
+    rewrite an imported module (changing its capability surface) while
+    the root stayed byte-identical and the attestation subject digest,
+    CDX serial, and SPDX namespace stayed UNCHANGED -- a verifier
+    accepted a program whose imports had been swapped."""
+
+    def setUp(self) -> None:
+        self._tmp = Path(tempfile.mkdtemp(prefix="capa_sbom_digest_"))
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self._tmp, ignore_errors=True)
+
+    def _write(self, name: str, body: str) -> Path:
+        p = self._tmp / name
+        p.write_text(body, encoding="utf-8")
+        return p
+
+    _ROOT = (
+        "import util\n"
+        "fun main(stdio: Stdio)\n"
+        '    stdio.println("hi")\n'
+    )
+
+    def _link(self, util_body: str):
+        self._write("util.capa", util_body)
+        root = self._write("root.capa", self._ROOT)
+        loader = ModuleLoader()
+        linked = loader.load_root(root.read_text(), str(root))
+        return root, linked
+
+    def _artifacts(self, util_body: str):
+        root, linked = self._link(util_body)
+        source = root.read_text()
+        fn = str(root)
+        prov = build_provenance(
+            source, filename=fn, sources=linked.sources,
+            started_on="2020-01-01T00:00:00Z",
+            finished_on="2020-01-01T00:00:00Z",
+        )
+        cdx = build_cyclonedx(
+            linked.module, filename=fn, source=source,
+            sources=linked.sources, timestamp="2020-01-01T00:00:00Z",
+        )
+        spdx = build_spdx(
+            linked.module, filename=fn, source=source,
+            sources=linked.sources, timestamp="2020-01-01T00:00:00Z",
+        )
+        return prov, cdx, spdx
+
+    def test_rewriting_imported_module_changes_every_digest(self):
+        # Two programs with a BYTE-IDENTICAL root but a differing
+        # imported module. Every source-derived identifier must differ.
+        prov_a, cdx_a, spdx_a = self._artifacts(
+            "pub fun helper(x: Int) -> Int\n"
+            "    return x + 1\n"
+        )
+        prov_b, cdx_b, spdx_b = self._artifacts(
+            "pub fun helper(net: Net) -> Int\n"
+            "    return 0\n"
+        )
+        self.assertNotEqual(
+            prov_a["subject"], prov_b["subject"],
+            "rewriting the import left the provenance subject unchanged",
+        )
+        self.assertNotEqual(
+            prov_a["predicate"]["runDetails"]["metadata"]["invocationId"],
+            prov_b["predicate"]["runDetails"]["metadata"]["invocationId"],
+        )
+        self.assertNotEqual(cdx_a["serialNumber"], cdx_b["serialNumber"])
+        self.assertNotEqual(
+            spdx_a["documentNamespace"], spdx_b["documentNamespace"],
+        )
+
+    def test_provenance_carries_one_subject_per_module(self):
+        prov, _, _ = self._artifacts(
+            "pub fun helper(x: Int) -> Int\n"
+            "    return x + 1\n"
+        )
+        names = sorted(s["name"] for s in prov["subject"])
+        self.assertEqual(names, ["root.capa", "util.capa"])
+        for s in prov["subject"]:
+            self.assertEqual(len(s["digest"]["sha256"]), 64)
+
+    def test_multi_file_build_is_reproducible(self):
+        # Two builds of the SAME multi-file input must be byte-identical
+        # (deterministic ordering; no machine state leaks).
+        util = (
+            "pub fun helper(x: Int) -> Int\n"
+            "    return x + 1\n"
+        )
+        prov_a, cdx_a, spdx_a = self._artifacts(util)
+        prov_b, cdx_b, spdx_b = self._artifacts(util)
+        self.assertEqual(prov_a, prov_b)
+        self.assertEqual(cdx_a["serialNumber"], cdx_b["serialNumber"])
+        self.assertEqual(
+            spdx_a["documentNamespace"], spdx_b["documentNamespace"],
+        )
+
+    def test_single_file_still_one_subject_and_works(self):
+        # No sources map: the historical single-subject provenance and
+        # single-source seed are preserved exactly.
+        src = "fun main(stdio: Stdio)\n    stdio.println(\"hi\")\n"
+        prov = build_provenance(
+            src, filename="main.capa",
+            started_on="2020-01-01T00:00:00Z",
+            finished_on="2020-01-01T00:00:00Z",
+        )
+        self.assertEqual(len(prov["subject"]), 1)
+        self.assertEqual(prov["subject"][0]["name"], "main.capa")
+
+
+class TestSelImportDemangle(unittest.TestCase):
+    """Audit 2026-06-17: a pub capability NOT selected by a selective
+    import ``import foo (X)`` is renamed ``_capa_m{N}__sel__<Name>`` by
+    the loader. The manifest demangle must strip the ``sel__`` infix too
+    so the SBOM shows the source-level ``Name`` (not ``sel__Name``)."""
+
+    def setUp(self) -> None:
+        self._tmp = Path(tempfile.mkdtemp(prefix="capa_sel_demangle_"))
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self._tmp, ignore_errors=True)
+
+    def _write(self, name: str, body: str) -> Path:
+        p = self._tmp / name
+        p.write_text(body, encoding="utf-8")
+        return p
+
+    def test_unselected_cap_demangles_without_sel_prefix(self):
+        self._write(
+            "caps.capa",
+            "pub capability Logger\n"
+            "    fun log(self, msg: String)\n"
+            "pub capability Pinger\n"
+            "    fun ping(self)\n",
+        )
+        # Select only Pinger; Logger becomes _capa_m{N}__sel__Logger.
+        root = self._write(
+            "root.capa",
+            "import caps (Pinger)\n"
+            "fun main(stdio: Stdio)\n"
+            '    stdio.println("hi")\n',
+        )
+        loader = ModuleLoader()
+        linked = loader.load_root(root.read_text(), str(root))
+        m = build_manifest(linked.module, filename=str(root))
+        cap_names = {uc["name"] for uc in m["user_defined_capabilities"]}
+        self.assertIn("Logger", cap_names)
+        self.assertNotIn("sel__Logger", cap_names)
+        leak = re.compile(r"sel__")
+        for uc in m["user_defined_capabilities"]:
+            self.assertIsNone(leak.search(uc["name"]))
 
 
 if __name__ == "__main__":

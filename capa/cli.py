@@ -1242,7 +1242,9 @@ def main() -> int:
         if args.cyclonedx:
             import json
             sbom = build_cyclonedx(
-                module, filename=filename, source=source, timestamp=build_ts,
+                module, filename=filename, source=source,
+                sources=linked.sources if linked is not None else None,
+                timestamp=build_ts,
                 expr_labels=result.expr_labels,
             )
             emit_artifact(json.dumps(sbom, indent=2))
@@ -1250,7 +1252,9 @@ def main() -> int:
         if args.spdx:
             import json
             sbom = build_spdx(
-                module, filename=filename, source=source, timestamp=build_ts,
+                module, filename=filename, source=source,
+                sources=linked.sources if linked is not None else None,
+                timestamp=build_ts,
                 expr_labels=result.expr_labels,
             )
             emit_artifact(json.dumps(sbom, indent=2))
@@ -1267,6 +1271,7 @@ def main() -> int:
             doc = build_provenance(
                 source, filename=filename,
                 started_on=build_ts, finished_on=build_ts,
+                sources=linked.sources if linked is not None else None,
             )
             emit_artifact(json.dumps(doc, indent=2))
             return 0

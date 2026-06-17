@@ -39,8 +39,19 @@ SCHEMA_VERSION = 1
 _MANGLE_RE = re.compile(r"^_capa_m(\d+)__(.+)$")
 # Inline form for rewriting mangled identifiers that appear inside
 # a type-text string (``List<_capa_m1__Foo>``) - anchored at a
-# word boundary so it doesn't munge unrelated names.
-_MANGLE_INLINE_RE = re.compile(r"\b_capa_m\d+__([A-Za-z_]\w*)")
+# word boundary so it doesn't munge unrelated names. The optional
+# ``sel__`` group is the selective-import infix (see ``_SEL_RE``)
+# stamped on a pub item the importer did NOT select; it is dropped
+# alongside the module prefix.
+_MANGLE_INLINE_RE = re.compile(r"\b_capa_m\d+__(?:sel__)?([A-Za-z_]\w*)")
+# Selective-import infix: when ``import foo (X, Y)`` does NOT select a
+# pub item, the loader renames it ``_capa_m{N}__sel__<Name>`` (see
+# ``capa/loader.py``). After the outer module prefix is stripped the
+# ``sel__`` infix remains; strip it too so the regulator-facing SBOM
+# shows the source-level ``Name`` (e.g. ``Logger``, never
+# ``sel__Logger``). Over-naming, not hiding, but a name-based gate on
+# ``Logger`` would still miss the prefixed form.
+_SEL_RE = re.compile(r"^sel__(.+)$")
 
 
 def _display_path(decl_file: str, root_filename: str) -> str:
@@ -96,23 +107,76 @@ def display_filename(filename: str) -> str:
     return _display_path(filename, filename)
 
 
-def _identifier_seed(filename: str, source: Optional[str]) -> str:
+def program_source_digest(
+    filename: str,
+    source: Optional[str],
+    sources: Optional[dict[str, str]] = None,
+) -> Optional[str]:
+    """Single sha256 covering ALL source files of the linked program.
+
+    Audit 2026-06-17: the provenance subject and the CycloneDX /
+    SPDX identifier seeds historically digested ONLY the root file.
+    A program whose capability surface lives in an IMPORTED module
+    could have that module rewritten (capabilities changed) while
+    the root stayed byte-identical, leaving the attestation subject
+    digest, the CDX ``serialNumber`` and the SPDX
+    ``documentNamespace`` UNCHANGED -- so a verifier accepted a
+    program whose imported modules had been swapped.
+
+    When ``sources`` (the loader's path -> text map for every linked
+    module) is given, the digest covers every module: it is
+    ``sha256`` over a canonical, deterministically ORDERED join of
+    ``<display_path>\\n<sha256(text)>`` lines, one per file, sorted by
+    display path. Ordering by the machine-stable display path (POSIX,
+    root-relative) keeps the result byte-reproducible across machines
+    and invocation styles, so two builds of the same multi-file input
+    produce identical SBOMs and SOURCE_DATE_EPOCH still governs only
+    timestamps.
+
+    With no ``sources`` map but a root ``source``, falls back to the
+    single-file digest (identical to the historical behaviour, so a
+    single-file program's identifiers do not change). With neither,
+    returns ``None``.
+    """
+    if sources:
+        lines: list[str] = []
+        for path, text in sources.items():
+            disp = _display_path(path, filename)
+            lines.append(f"{disp}\n{_sha256_text(text)}")
+        joined = "\n".join(sorted(lines))
+        return _sha256_text(joined)
+    if source is not None:
+        return _sha256_text(source)
+    return None
+
+
+def _sha256_text(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _identifier_seed(
+    filename: str,
+    source: Optional[str],
+    sources: Optional[dict[str, str]] = None,
+) -> str:
     """Seed string for the deterministic uuid5 identifiers
     (CycloneDX ``serialNumber``, the UUID component of the SPDX
     ``documentNamespace``, the provenance ``invocationId``).
 
     The display form alone would make two unrelated projects that
     share a root basename (every project called ``main.capa``)
-    collide on the same identifier, so when the source text is
-    available the seed is ``<display>:<sha256(source)>``, exactly
-    the shape the provenance ``invocationId`` has always used.
-    Without the source (library callers that only hold the analysed
-    module) the seed falls back to the display form alone.
+    collide on the same identifier, so when source text is
+    available the seed is ``<display>:<digest>``. ``digest`` covers
+    EVERY linked module when the ``sources`` map is supplied (audit
+    2026-06-17: rewriting an imported module must change the seed),
+    falling back to the root source alone otherwise. Without any
+    source (library callers that only hold the analysed module) the
+    seed falls back to the display form alone.
     """
     display = display_filename(filename)
-    if source is None:
+    digest = program_source_digest(filename, source, sources)
+    if digest is None:
         return display
-    digest = hashlib.sha256(source.encode("utf-8")).hexdigest()
     return f"{display}:{digest}"
 
 
@@ -123,7 +187,11 @@ def _demangle(name: str) -> tuple[str, Optional[int]]:
     m = _MANGLE_RE.match(name)
     if m is None:
         return name, None
-    return m.group(2), int(m.group(1))
+    source_name = m.group(2)
+    sel = _SEL_RE.match(source_name)
+    if sel is not None:
+        source_name = sel.group(1)
+    return source_name, int(m.group(1))
 
 
 def _demangle_type_text(s: str) -> str:

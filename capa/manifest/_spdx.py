@@ -103,6 +103,7 @@ def build_spdx(
     timestamp: Optional[str] = None,
     document_namespace: Optional[str] = None,
     source: Optional[str] = None,
+    sources: Optional[dict[str, str]] = None,
     expr_labels: Optional[dict[int, str]] = None,
 ) -> dict[str, Any]:
     """Build an SPDX 2.3 document with embedded Capa capability metadata.
@@ -134,7 +135,7 @@ def build_spdx(
     display = display_filename(filename)
     if document_namespace is None:
         ns = uuid.uuid5(uuid.NAMESPACE_URL, "https://capa-language.com/spdx")
-        seed = _identifier_seed(filename, source)
+        seed = _identifier_seed(filename, source, sources)
         document_namespace = (
             f"https://capa-language.com/spdx/{uuid.uuid5(ns, seed)}"
         )

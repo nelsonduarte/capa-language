@@ -70,6 +70,7 @@ def build_cyclonedx(
     timestamp: Optional[str] = None,
     serial_number: Optional[str] = None,
     source: Optional[str] = None,
+    sources: Optional[dict[str, str]] = None,
     expr_labels: Optional[dict[int, str]] = None,
 ) -> dict[str, Any]:
     """Build a CycloneDX 1.5 SBOM with embedded Capa capability metadata.
@@ -103,7 +104,7 @@ def build_cyclonedx(
         # Deterministic UUID per (filename, source): reruns produce
         # identical serial numbers, which is friendly to SBOM diffing.
         ns = uuid.uuid5(uuid.NAMESPACE_URL, "https://capa-language.com/sbom")
-        seed = _identifier_seed(filename, source)
+        seed = _identifier_seed(filename, source, sources)
         serial_number = "urn:uuid:" + str(uuid.uuid5(ns, seed))
 
     bom_basename = os.path.basename(display) or display

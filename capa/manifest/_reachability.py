@@ -154,8 +154,10 @@ def compute_reachability(
 
     - ``reachable[name]`` is the set of built-in capability names
       that values of type ``name`` can transitively cause to be
-      exercised. Defined for every user-defined capability and
-      every cap-bearing struct in the module.
+      exercised. Defined for every user-defined capability, every
+      cap-bearing struct, and every plain data struct in the module
+      (a plain struct that nests a cap-bearing struct in a field
+      inherits the nested struct's reachable caps at any depth).
 
     - ``unprovable`` is the set of type names whose reachable set
       is *not* a sound upper bound - typically because an impl
@@ -254,8 +256,21 @@ def compute_reachability(
             impls_by_trait.setdefault(item.trait_name, []).append(item)
 
     reachable: dict[str, set[str]] = {}
+    # Seed a reachable entry for every user-cap, every cap-bearing
+    # struct, AND every plain data struct. Audit 2026-06-17: a plain
+    # data struct ``Outer { mailer: SmtpMailer }`` that merely NESTS a
+    # cap-bearing struct must propagate the nested caps too, otherwise a
+    # function ``process(o: Outer)`` calling ``o.mailer.send(...)``
+    # falsely provably-excludes SendEmail and Net. Without a reachable
+    # entry, ``_caps_via_type`` resolves the plain struct to empty and
+    # the nested caps never surface. Seeding every struct (mirroring how
+    # ``fun_bearing_structs`` walks all structs transitively) lets the
+    # fixpoint union the nested caps up through the field chain at any
+    # depth.
     for name in user_cap_names | cap_bearing_structs:
         reachable[name] = set()
+    for name in structs_by_name:
+        reachable.setdefault(name, set())
     # Seed ``unprovable`` with every Fun-bearing struct (cap-bearing or
     # plain data), so ``_type_mentions_any(t, unprovable)`` downgrades any
     # signature that touches one. A plain data struct gets no ``reachable``
@@ -267,12 +282,14 @@ def compute_reachability(
     while changed:
         changed = False
 
-        # Cap-bearing structs: union built-in caps reachable via
-        # each field type.
-        for sname in cap_bearing_structs:
-            td = structs_by_name.get(sname)
-            if td is None:
-                continue
+        # Every struct (cap-bearing or plain data): union built-in
+        # caps reachable via each field type, plus -- for cap-bearing
+        # structs -- the user-cap(s) the struct itself implements. A
+        # plain data struct that nests a cap-bearing struct in a field
+        # thereby inherits both the nested struct's built-in caps and
+        # the user-cap it implements, at any nesting depth (audit
+        # 2026-06-17).
+        for sname, td in structs_by_name.items():
             was_unprovable = sname in unprovable
             new_caps = set(reachable[sname])
             # The user-cap(s) this struct implements are exercisable

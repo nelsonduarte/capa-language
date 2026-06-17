@@ -2,9 +2,13 @@
 
 Capa emits a **SLSA Build L1** provenance attestation
 ([`capa --provenance`](../README.md)): an in-toto Statement v1
-envelope carrying a SLSA Provenance v1.0 predicate, with the
-source SHA-256 as the subject. L1 is "provenance generated and
-distributed".
+envelope carrying a SLSA Provenance v1.0 predicate. The subject is
+the SHA-256 of every linked source file: a single-file program
+yields one subject (the root's SHA-256), and a multi-file program
+yields one subject per module (root plus every transitively imported
+`.capa` file, each with its own SHA-256), so the attestation covers
+the program's whole source surface rather than only its root. L1 is
+"provenance generated and distributed".
 
 **SLSA Build L2** adds signed provenance and a hosted, tamper-
 resistant build platform. Capa stays independent of any

@@ -7,7 +7,11 @@ slsa-verifier, in-toto attest) knows how to read.
 
 What this provides:
 
-- **Subject**: SHA-256 of the source .capa file under build.
+- **Subject**: SHA-256 of every linked source .capa file. A
+  single-file build yields one subject (the root); a multi-file
+  build yields one subject per module (root plus every imported
+  file), so the attestation covers the whole source surface and a
+  rewritten imported module changes the statement.
 - **Build definition**: a stable build-type URI identifying the
   Capa transpile-to-Python toolchain, the source filename as an
   external parameter, and the Capa version + target Python
@@ -40,7 +44,11 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from ._funrec import _identifier_seed, display_filename
+from ._funrec import (
+    _display_path,
+    _identifier_seed,
+    display_filename,
+)
 
 
 # Stable URI identifying the Capa build process. Versioned so a
@@ -70,14 +78,19 @@ def build_provenance(
     started_on: Optional[str] = None,
     finished_on: Optional[str] = None,
     invocation_id: Optional[str] = None,
+    sources: Optional[dict[str, str]] = None,
 ) -> dict[str, Any]:
     """Build an in-toto v1 statement with SLSA Provenance v1.0 predicate.
 
-    ``source`` is the raw text of the .capa file under build (used
-    to derive the subject's sha256 digest). ``started_on``,
-    ``finished_on``, and ``invocation_id`` are exposed for
-    deterministic test output; production callers should leave
-    them as the defaults.
+    ``source`` is the raw text of the root .capa file under build.
+    ``sources`` is the loader's path -> text map for EVERY linked
+    module; when supplied the statement carries one subject per
+    source file (each with its own sha256, ordered deterministically
+    by display path) so an attestation covers the whole program, not
+    just its root (audit 2026-06-17: rewriting an imported module
+    must change the attestation). ``started_on``, ``finished_on``,
+    and ``invocation_id`` are exposed for deterministic test output;
+    production callers should leave them as the defaults.
     """
     if capa_version is None:
         from .. import __version__ as capa_version
@@ -87,32 +100,54 @@ def build_provenance(
     if finished_on is None:
         finished_on = now
 
-    source_bytes = source.encode("utf-8")
-    source_digest = _sha256(source_bytes)
     # Seed the invocation ID from the display form of the filename
-    # (root-relative; the basename for the root file) plus the source
-    # digest (see ``_identifier_seed``), never the raw CLI argument:
-    # the raw form varies with the invocation style (relative vs
-    # absolute, cwd) and across machines, which would break the
-    # "re-run the build, get the same attestation" property between
-    # two builders.
+    # (root-relative; the basename for the root file) plus a digest
+    # covering EVERY linked module (see ``_identifier_seed``), never
+    # the raw CLI argument: the raw form varies with the invocation
+    # style (relative vs absolute, cwd) and across machines, which
+    # would break the "re-run the build, get the same attestation"
+    # property between two builders.
     display = display_filename(filename)
     bom_basename = os.path.basename(display) or display
 
     if invocation_id is None:
-        # Deterministic-per-source: a verifier that re-runs the
+        # Deterministic-per-program: a verifier that re-runs the
         # build with the same input gets the same invocation ID.
         ns = uuid.uuid5(uuid.NAMESPACE_URL, "https://capa-language.com/provenance")
-        invocation_id = str(uuid.uuid5(ns, _identifier_seed(filename, source)))
+        invocation_id = str(
+            uuid.uuid5(ns, _identifier_seed(filename, source, sources))
+        )
+
+    # One subject per linked source file, sorted by display path for
+    # determinism. A single-file build (no ``sources`` map) keeps the
+    # historical single-subject shape under the root's basename.
+    subjects: list[dict[str, Any]]
+    if sources:
+        subjects = []
+        ordered = sorted(
+            sources.items(),
+            key=lambda kv: _display_path(kv[0], filename),
+        )
+        for path, text in ordered:
+            # Use the full root-relative display path (not the bare
+            # basename) so two modules sharing a basename in different
+            # subdirectories stay distinct subjects.
+            disp = _display_path(path, filename)
+            subjects.append({
+                "name": disp,
+                "digest": {"sha256": _sha256(text.encode("utf-8"))},
+            })
+    else:
+        subjects = [
+            {
+                "name": bom_basename,
+                "digest": {"sha256": _sha256(source.encode("utf-8"))},
+            },
+        ]
 
     statement: dict[str, Any] = {
         "_type": INTOTO_STATEMENT_TYPE,
-        "subject": [
-            {
-                "name": bom_basename,
-                "digest": {"sha256": source_digest},
-            },
-        ],
+        "subject": subjects,
         "predicateType": SLSA_PREDICATE_TYPE,
         "predicate": {
             "buildDefinition": {
