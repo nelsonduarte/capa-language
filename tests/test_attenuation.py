@@ -17,6 +17,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 from capa.runtime import Fs, Env, Net, Clock, Random, Ok, Err, None_
 from capa.runtime._capabilities import Db, Proc
@@ -509,6 +510,46 @@ class TestProcAttenuationIdentity(unittest.TestCase):
         p = Proc()
         self.assertTrue(p.allows("git"))
         self.assertTrue(p.allows("/attacker/git"))
+
+    def test_path_detection_is_platform_independent(self):
+        # Regression for the POSIX ``os.altsep is None`` trap (v1.4.0 CI
+        # break): the old check ``"/" in s or os.sep in s or
+        # (os.altsep or "") in s`` evaluated ``(os.altsep or "")`` to ``""``
+        # on POSIX, and ``"" in s`` is True for EVERY string, so every bare
+        # name was misclassified as a path and a bare-name restriction
+        # rejected everything (including "git" and "git-lfs").
+        #
+        # This test forces os.sep/os.altsep into the POSIX configuration
+        # (sep="/", altsep=None) regardless of the host OS running the
+        # suite, so it reproduces the regression even on Windows (where
+        # os.altsep == "/" masked the bug originally). It would FAIL against
+        # the buggy code because under altsep=None the buggy ``_has_sep``
+        # returns True for "git" and "git-lfs", denying both.
+        import os
+        with mock.patch.object(os, "sep", "/"), \
+                mock.patch.object(os, "altsep", None):
+            p = Proc().restrict_to("git")
+            # Bare names must still be admitted (the broken path).
+            self.assertTrue(p.allows("git"))
+            self.assertTrue(p.allows("git-lfs"))
+            # Both separator conventions must be recognised as paths and
+            # rejected under a bare-name restriction.
+            self.assertFalse(p.allows("/attacker/git"))
+            self.assertFalse(p.allows("C:\\evil\\git"))
+
+    def test_path_detection_independent_of_windows_altsep(self):
+        # Symmetric guard: force the Windows configuration
+        # (sep="\\", altsep="/"). The fix must NOT reopen the RCE here:
+        # a backslash path must be classified as a path and rejected under
+        # a bare-name restriction, and a bare name must still be admitted.
+        import os
+        with mock.patch.object(os, "sep", "\\"), \
+                mock.patch.object(os, "altsep", "/"):
+            p = Proc().restrict_to("git")
+            self.assertTrue(p.allows("git"))
+            self.assertTrue(p.allows("git-lfs"))
+            self.assertFalse(p.allows("C:\\evil\\git"))
+            self.assertFalse(p.allows("/attacker/git"))
 
 
 class TestDbAttenuationTraversal(unittest.TestCase):

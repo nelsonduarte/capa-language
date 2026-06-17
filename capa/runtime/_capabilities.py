@@ -716,7 +716,14 @@ class Proc:
         import os
 
         def _has_sep(s: str) -> bool:
-            return "/" in s or os.sep in s or (os.altsep or "") in s
+            # Platform-independent path detection. A command is a path if it
+            # contains ANY recognised path separator ("/" or "\\"), regardless
+            # of the OS the compiler runs on, so the security rule is identical
+            # everywhere. Do NOT consult os.sep/os.altsep: on POSIX
+            # os.altsep is None, and ``(os.altsep or "") in s`` is always True
+            # (the empty string is a substring of every string), which would
+            # misclassify every bare name as a path.
+            return "/" in s or "\\" in s
 
         cmd_is_path = _has_sep(cmd)
         cmd_norm = os.path.normpath(cmd) if cmd_is_path else None
