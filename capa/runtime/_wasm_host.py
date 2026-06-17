@@ -1454,6 +1454,8 @@ class WasmHost:
         import json
         import sqlite3
 
+        from ._fs_guard import PostOpenDenied
+
         ft_handle_two_string_indirect = wasmtime.FuncType(
             [
                 wasmtime.ValType.i32(),  # handle (slice 25.4)
@@ -1557,15 +1559,22 @@ class WasmHost:
                 )
                 return
             try:
-                from ._capabilities import _install_sqlite_authorizer
-                conn = sqlite3.connect(path)
-                _install_sqlite_authorizer(conn)
+                # _connect_verified applies the post-open symlink-swap
+                # guard (audit 2026-06-17) and installs the
+                # ATTACH/DETACH authorizer, so the Wasm backend closes
+                # the same TOCTOU window as the Python runtime.
+                conn = db._connect_verified(path)
                 try:
                     conn.executescript(sql)
                     conn.commit()
                 finally:
                     conn.close()
                 _write_result_ok_unit(caller, ret_area)
+            except PostOpenDenied:
+                _write_result_err_ioerror(
+                    caller, ret_area,
+                    f"Db capability does not permit exec: {path}",
+                )
             except (sqlite3.Error, OSError, ValueError) as e:
                 _write_result_err_ioerror(
                     caller, ret_area, "SQLite exec failed", str(e),
@@ -1600,9 +1609,7 @@ class WasmHost:
                 )
                 return
             try:
-                from ._capabilities import _install_sqlite_authorizer
-                conn = sqlite3.connect(path)
-                _install_sqlite_authorizer(conn)
+                conn = db._connect_verified(path)
                 try:
                     cur = conn.execute(sql)
                     rows = cur.fetchall()
@@ -1622,6 +1629,11 @@ class WasmHost:
                 payload = json.dumps(stringified)
                 s_ptr, s_len = _alloc_utf8(caller, payload)
                 _write_result_ok_string(caller, ret_area, s_ptr, s_len)
+            except PostOpenDenied:
+                _write_result_err_ioerror(
+                    caller, ret_area,
+                    f"Db capability does not permit query: {path}",
+                )
             except (sqlite3.Error, OSError, ValueError) as e:
                 _write_result_err_ioerror(
                     caller, ret_area, "SQLite query failed", str(e),

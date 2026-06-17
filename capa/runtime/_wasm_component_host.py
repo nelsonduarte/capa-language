@@ -515,7 +515,7 @@ class WasmComponentHost:
         import sqlite3
         db_ifc = root.add_instance("capa:host/db")
 
-        from ._capabilities import _install_sqlite_authorizer
+        from ._fs_guard import PostOpenDenied
 
         def db_exec(_store, handle: int, path: str, sql: str):
             db = self._lookup_or(handle, Db)
@@ -529,14 +529,21 @@ class WasmComponentHost:
                     message=f"Db capability does not permit exec: {path}",
                 )
             try:
-                conn = sqlite3.connect(path)
-                _install_sqlite_authorizer(conn)
+                # _connect_verified applies the post-open symlink-swap
+                # guard (audit 2026-06-17) and installs the
+                # ATTACH/DETACH authorizer; the Component Model backend
+                # closes the same TOCTOU window as the Python runtime.
+                conn = db._connect_verified(path)
                 try:
                     conn.executescript(sql)
                     conn.commit()
                 finally:
                     conn.close()
                 return None
+            except PostOpenDenied:
+                return IoErrorRecord(
+                    message=f"Db capability does not permit exec: {path}",
+                )
             except (sqlite3.Error, OSError, ValueError) as e:
                 return IoErrorRecord(
                     message="SQLite exec failed", cause=str(e),
@@ -554,8 +561,7 @@ class WasmComponentHost:
                     message=f"Db capability does not permit query: {path}",
                 )
             try:
-                conn = sqlite3.connect(path)
-                _install_sqlite_authorizer(conn)
+                conn = db._connect_verified(path)
                 try:
                     cur = conn.execute(sql)
                     rows = cur.fetchall()
@@ -570,6 +576,10 @@ class WasmComponentHost:
                     for row in rows
                 ]
                 return _stdlib_json.dumps(stringified)
+            except PostOpenDenied:
+                return IoErrorRecord(
+                    message=f"Db capability does not permit query: {path}",
+                )
             except (sqlite3.Error, OSError, ValueError) as e:
                 return IoErrorRecord(
                     message="SQLite query failed", cause=str(e),

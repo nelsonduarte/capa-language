@@ -859,6 +859,30 @@ class Db:
     (CREATE / SELECT / INSERT / UPDATE / DELETE / DROP /
     transactions) remain allowed; the authorizer is narrowly
     scoped to the two bypass-shaped opcodes.
+
+    TOCTOU hardening (audit 2026-06-17), closing the symlink-swap
+    race: ``allows()`` resolves the path with ``realpath`` and
+    checks the prefixes, but ``sqlite3.connect`` then reopens the
+    *original* path, so a symlink swapped between the check and the
+    connect would land SQLite on a file outside the prefixes. This
+    mirrors the ``Fs`` read/write fix: before connecting, the file
+    is opened directly (``_fs_guard.verify_path_open``) and the
+    kernel-reported true path of that handle is re-validated against
+    the prefixes; on mismatch the op is denied with nothing opened
+    by SQLite. ``sqlite3.connect`` creates the file if absent, so
+    the verifying open uses ``O_CREAT`` too: a legitimately new
+    ``.db`` inside a prefix passes, a symlink pointing out is
+    caught. Restricted caps only; unrestricted ``Db`` skips it.
+
+    Because ``sqlite3`` never exposes its connection fd, exact
+    parity with ``Fs`` (which re-validates the *operating* handle)
+    is impossible: a residual window remains between the verifying
+    close and SQLite's own open. It is far narrower than the
+    original allows()-to-connect gap and is documented on
+    ``_fs_guard.verify_path_open``. The guard lives on the host-
+    side ``_connect_verified`` shared by the Python runtime and
+    both Wasm host bridges, so all three backends close the same
+    window.
     """
 
     __slots__ = ("_allowed",)
@@ -906,19 +930,56 @@ class Db:
             f"current restrictions: {allowed_repr}",
         ))
 
+    def _post_open_allows(self, true_path: str) -> bool:
+        """Containment check for the kernel-resolved path of an
+        already-open handle. The path is symlink-free as the OS
+        reports it (see ``_fs_guard.fd_true_path``), so it is
+        compared directly against the stored canonical prefixes and
+        must NOT be re-resolved through ``realpath`` (that would walk
+        the filesystem again and reopen the race). Same shape as
+        ``Fs._post_open_allows``."""
+        if self._allowed is None:
+            return True
+        try:
+            canon = Path(true_path)
+        except ValueError:
+            return False
+        for p in self._allowed:
+            if canon == Path(p) or canon.is_relative_to(p):
+                return True
+        return False
+
+    def _connect_verified(self, path: str):
+        """Open a SQLite connection on ``path`` with the post-open
+        TOCTOU guard and the ATTACH/DETACH authorizer installed.
+
+        Restricted caps re-validate the kernel true path of the file
+        before SQLite connects (raising ``_fs_guard.PostOpenDenied``
+        on a swapped symlink that escapes the prefix); unrestricted
+        caps skip the guard. Shared by the Python runtime and both
+        Wasm host bridges so every backend closes the same window.
+        """
+        import sqlite3
+        if self._allowed is not None:
+            _fs_guard.verify_path_open(path, self._post_open_allows)
+        conn = sqlite3.connect(path)
+        _install_sqlite_authorizer(conn)
+        return conn
+
     def exec(self, path: str, sql: str):
         import sqlite3
         if not self.allows(path):
             return self._deny(path, "exec")
         try:
-            conn = sqlite3.connect(path)
-            _install_sqlite_authorizer(conn)
+            conn = self._connect_verified(path)
             try:
                 conn.executescript(sql)
                 conn.commit()
                 return Ok(None)
             finally:
                 conn.close()
+        except _fs_guard.PostOpenDenied:
+            return self._deny(path, "exec")
         except (sqlite3.Error, OSError) as e:
             return Err(IoError("SQLite exec failed", str(e)))
 
@@ -928,8 +989,7 @@ class Db:
         if not self.allows(path):
             return self._deny(path, "query")
         try:
-            conn = sqlite3.connect(path)
-            _install_sqlite_authorizer(conn)
+            conn = self._connect_verified(path)
             try:
                 cur = conn.execute(sql)
                 rows = cur.fetchall()
@@ -950,6 +1010,8 @@ class Db:
                 return Ok(json.dumps(stringified))
             finally:
                 conn.close()
+        except _fs_guard.PostOpenDenied:
+            return self._deny(path, "query")
         except (sqlite3.Error, OSError, ValueError) as e:
             return Err(IoError("SQLite query failed", str(e)))
 

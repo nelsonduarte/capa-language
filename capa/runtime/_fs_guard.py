@@ -196,6 +196,35 @@ def _fdopen(fd: int, mode: str):
         raise
 
 
+def verify_path_open(path: str, verify) -> None:
+    """Open ``path`` (creating it if absent, like ``sqlite3.connect``),
+    confirm the kernel-reported true path of the resulting handle
+    satisfies ``verify(true_path) -> bool``, then close the handle.
+
+    Raises ``PostOpenDenied`` (handle closed) when the verification
+    refuses. Used by the ``Db`` capability, which cannot apply the
+    full ``open_verified_*`` flow because ``sqlite3`` owns its own
+    connection fd and never exposes it: the closest analog is to
+    open the same path ourselves first, take the kernel's symlink-
+    free path for *that* handle, and re-validate it against the
+    prefixes before letting SQLite open the (now-resolved) file. The
+    ``O_NOFOLLOW`` defence-in-depth and the platform fallback in
+    ``_verify_fd`` behave exactly as for the read/write path.
+
+    Residual (documented): a symlink swapped between this verified
+    close and SQLite's subsequent open is not caught -- the same
+    narrow class of residual the read/write guard accepts on
+    platforms without a handle-path mechanism. The window is far
+    smaller than the original allows()-to-connect gap and requires
+    re-winning the race a second time.
+    """
+    fd = _open_fd(path, os.O_RDONLY | os.O_CREAT | _O_BINARY)
+    try:
+        _verify_fd(fd, verify)
+    finally:
+        os.close(fd)
+
+
 def open_verified_read(path: str, verify):
     """Open ``path`` for reading; verify the handle's true path with
     ``verify(true_path) -> bool`` before returning the (text-mode,
