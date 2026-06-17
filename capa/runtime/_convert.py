@@ -55,8 +55,10 @@ def parse_int(s):
     body = s.strip(_ASCII_WS)
     if not body:
         return None_
+    sign = ""
     digits = body
     if body[0] in "+-":
+        sign = body[0]
         digits = body[1:]
     if not digits or not digits.isascii() or not digits.isdigit():
         return None_
@@ -64,16 +66,25 @@ def parse_int(s):
     # int<->str conversion at ~4300 digits and raises an uncaught
     # ValueError past that (a DoS for a server parsing third-party
     # numbers); the Wasm ``$parse_int`` already rejects overflow as
-    # ``None``. ``i64::MAX`` / ``i64::MIN`` have 19 significant digits, so
-    # any magnitude with more digits than that cannot fit the i64 window
-    # and is ``None`` -- screening it here is both the overflow check and
-    # the DoS guard, and keeps the two backends in lockstep (both
-    # ``None`` for out-of-range). 20 digits is the conservative cutoff
-    # (``len('9223372036854775807') == 19``); a 19-or-20-digit value
-    # still goes through the exact i64-window check below.
-    if len(digits) > 20:
+    # ``None``. The screen here is both the overflow check and the DoS
+    # guard, and keeps the two backends in lockstep (both ``None`` for
+    # out-of-range).
+    #
+    # The cutoff must be on SIGNIFICANT digits, not raw length: the Wasm
+    # ``$parse_int`` accumulates digit-by-digit and only rejects when the
+    # i64 accumulator would overflow, so a long run of leading zeros
+    # (``"000...0009"``) accumulates harmlessly and yields ``Some(9)``.
+    # A raw-length guard rejected that in Python while Wasm accepted it
+    # -- a real cross-backend divergence for an in-range value (audit
+    # 2026-06-17). Stripping leading zeros first measures the magnitude
+    # the way Wasm does. ``i64::MAX`` / ``i64::MIN`` have 19 significant
+    # digits, so any magnitude with more than 19 significant digits
+    # cannot fit; 20 is the conservative cutoff (a 19-or-20-digit value
+    # still goes through the exact i64-window check below).
+    significant = digits.lstrip("0")
+    if len(significant) > 20:
         return None_
-    n = int(body)
+    n = int(sign + (significant or "0"))
     if n < _I64_MIN or n > _I64_MAX:
         return None_
     return Some(n)

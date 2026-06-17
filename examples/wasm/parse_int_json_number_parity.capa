@@ -27,6 +27,15 @@ fun main(stdio: Stdio)
     show_int(stdio, "-7")
     show_int(stdio, "-0")
     show_int(stdio, "00007")
+    // Audit 2026-06-17: a long run of leading zeros on an IN-RANGE
+    // value must parse to Some on BOTH backends. The Wasm $parse_int
+    // accumulates digit-by-digit and never overflows on zeros; the
+    // Python guard used to reject by RAW length and returned None,
+    // diverging. The fix screens SIGNIFICANT digits so both agree.
+    show_int(stdio, "000000000000000000000000000009")
+    // A genuinely out-of-range magnitude (30 nines) stays None on
+    // both; the significant-digit screen is still the overflow guard.
+    show_int(stdio, "999999999999999999999999999999")
     show_int(stdio, "9223372036854775807")
     show_int(stdio, "-9223372036854775808")
     show_int(stdio, "9223372036854775808")

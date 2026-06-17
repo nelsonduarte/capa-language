@@ -360,12 +360,21 @@ class _StatementsMixin:
         if isinstance(s.target, A.Ident):
             sym = self.bindings.get(id(s.target))
             # Roadmap S2.3: a reassignment ``x = rhs`` is an EXPLICIT data
-            # flow, so the RHS value's label joins onto the target's label
-            # UNCONDITIONALLY (every tier), exactly like ``let x = rhs`` /
-            # ``var x = rhs``. Without this, ``var x = "pub"; x = secret;
-            # sink(x)`` laundered the secret in the default tier -- a silent
-            # PII leak (audit 2026-06-17). The join is monotonic (never
-            # lowers) and runs on the same Symbol carried across branches.
+            # flow, so the RHS value's label JOINS onto the target's label
+            # UNCONDITIONALLY (every tier). Without this, ``var x = "pub";
+            # x = secret; sink(x)`` laundered the secret in the default
+            # tier -- a silent PII leak (audit 2026-06-17). The join is
+            # monotonic on the SAME Symbol (it never lowers), which is the
+            # important difference from a ``let x = rhs`` introduction: a
+            # fresh ``let`` binds a new Symbol whose label is exactly the
+            # RHS's, whereas this reassignment can only RAISE the existing
+            # binding's label. The known, pre-existing consequence is
+            # flow-insensitivity: once ``x`` has been tainted secret,
+            # reassigning a public value back to it (``x = "pub"``) does
+            # NOT lower the label, so a later public use of ``x`` is still
+            # treated as secret. That conservative over-approximation is
+            # inherent to the single-Symbol flow-insensitive model and is
+            # out of scope for this fix.
             #
             # Roadmap S2.implicit (strict only): the pc-label join (an
             # IMPLICIT flow -- a value written inside a secret-conditioned

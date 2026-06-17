@@ -152,6 +152,12 @@ _PARITY_PROGRAMS: list[str] = [
     # Fs/Env/Db.allows so programs can pass a runtime String
     # argument and get the cap-mediated answer on both backends.
     "allows_dynamic.capa",
+    # Audit 2026-06-17: guest-side proc.allows / db.allows query
+    # parity for the path-identity (a bare-name Proc restriction
+    # rejects a planted ``/attacker/git``) and lexical-traversal
+    # (a Db literal walking out via ``..`` is denied) cases the
+    # pre-fix Wasm collapse answered differently from Python.
+    "allows_traversal_parity.capa",
     # Slice 15 (2026-05): Proc v1 (sandboxed subprocess) with
     # basename + suffix-boundary attenuation. proc_demo shells
     # out to ``python`` (present on every CI matrix entry) with
@@ -1294,6 +1300,22 @@ class TestPythonWasmParity(unittest.TestCase):
         # shares the prefix string but is not under the path - it
         # must be denied on both backends.
         self._assert_parity("allows_dynamic.capa")
+
+    def test_allows_traversal_parity(self):
+        # Audit 2026-06-17: the guest-side .allows() QUERY (not the
+        # host-side enforcement, which was already safe) drifted from
+        # the Python runtime on two purely-lexical shapes:
+        #   - Proc: ``restrict_to("git")`` is a BARE-NAME restriction;
+        #     the pre-fix Wasm collapse stripped a path cmd to its
+        #     basename and admitted ``/attacker/git``. Python denies a
+        #     path cmd against a bare-name restriction (identity rule);
+        #     both the literal collapse and the ``$proc_allows`` helper
+        #     now mirror it via the ``$str_has_slash`` guard.
+        #   - Db: ``db.allows("prefix/../escaped.db")`` walks out of
+        #     the prefix; the pre-fix lexical startswith admitted it.
+        #     Both backends now normalise ``..`` away (lexically, at
+        #     emit time for literals) before the boundary check.
+        self._assert_parity("allows_traversal_parity.capa")
 
     def test_float_interpolation(self):
         # Audit C1 (2026-06-09) + F2 (2026-06-10): computed-float

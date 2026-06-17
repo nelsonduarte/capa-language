@@ -579,6 +579,10 @@ class WasmEmitter(
                 # basename + suffix-boundary check Proc.allows
                 # attenuations require. Emitted only when the
                 # discovery walker flips on the gate.
+                # Audit 2026-06-17: ``$proc_allows`` now calls
+                # ``$str_has_slash`` for the bare-name-restriction
+                # identity guard, so emit that helper alongside it.
+                self._emit_str_has_slash_function()
                 self._emit_proc_allows_function()
             if self._uses_string_codepoint_index(module):
                 # Slice 17 (2026-05-29): String.length and

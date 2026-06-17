@@ -849,5 +849,82 @@ class TestCrossFnClosureInvokeSink(unittest.TestCase):
         self.assertIn("Box.take", w[0].message)
 
 
+class TestStrictPcDoesNotLeakAcrossFunctions(unittest.TestCase):
+    """Audit 2026-06-17 (BLOCKER): the implicit-flow pc-label is a
+    per-function quantity. ``_check_block`` raises it monotonically
+    when a statement diverges (e.g. ``return``) under a @secret guard
+    and does NOT lower it before the block ends. ``_check_fun`` must
+    reset the pc at the function boundary; otherwise a function that
+    EXITS with the pc still raised contaminates whichever @strict_ifc
+    function is CHECKED NEXT, turning a clean public sink there into an
+    order-dependent false positive.
+
+    The suite had no two-strict-function-in-adversarial-order case, so
+    the leak shipped. These tests pin it shut and confirm the genuine
+    intra-function elevation still fires."""
+
+    def _strict_errors(self, r):
+        return [
+            e for e in r.errors
+            if "runs under secret control flow" in e.message
+        ]
+
+    def test_leaky_first_clean_second_no_false_positive(self):
+        # ``leaky`` ends with a @secret-conditioned early return, so its
+        # body exits with the pc raised. ``clean`` that follows has no
+        # secret anywhere; its sink must NOT be flagged. Pre-fix the
+        # raised pc leaked across the function boundary and the error
+        # landed on ``clean``'s ``println`` (order-dependent false
+        # positive).
+        r = _analyze(
+            "@strict_ifc()\n"
+            "fun leaky(s: @secret Int, stdio: Stdio)\n"
+            "    stdio.println(\"start\")\n"
+            "    if s > 0\n"
+            "        return\n"
+            "@strict_ifc()\n"
+            "fun clean(stdio: Stdio)\n"
+            "    stdio.println(\"clean\")\n"
+        )
+        self.assertTrue(
+            r.ok,
+            "pc-label leaked from leaky into clean: "
+            f"{[e.message for e in r.errors]}",
+        )
+        self.assertEqual(self._strict_errors(r), [])
+
+    def test_intra_function_elevation_still_flagged(self):
+        # The original Finding 5: an early return under a @secret guard
+        # followed by a public sink in the SAME body must still be a
+        # hard error. The per-function reset must not weaken this.
+        r = _analyze(
+            "@strict_ifc()\n"
+            "fun leaky(s: @secret Int, stdio: Stdio)\n"
+            "    if s > 0\n"
+            "        return\n"
+            "    stdio.println(\"leak\")\n"
+        )
+        self.assertFalse(r.ok)
+        self.assertEqual(len(self._strict_errors(r)), 1,
+                         [e.message for e in r.errors])
+
+    def test_clean_first_leaky_second_symmetric(self):
+        # The reverse order is also clean for the first function: a leak
+        # in the SECOND function must not retroactively touch the first,
+        # and the first's clean sink stays clean regardless of order.
+        r = _analyze(
+            "@strict_ifc()\n"
+            "fun clean(stdio: Stdio)\n"
+            "    stdio.println(\"clean\")\n"
+            "@strict_ifc()\n"
+            "fun leaky(s: @secret Int, stdio: Stdio)\n"
+            "    stdio.println(\"start\")\n"
+            "    if s > 0\n"
+            "        return\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(self._strict_errors(r), [])
+
+
 if __name__ == "__main__":
     unittest.main()

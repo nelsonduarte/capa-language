@@ -318,6 +318,36 @@ class TestConverts(unittest.TestCase):
             parse_int("-9223372036854775808").unwrap(), -(1 << 63)
         )
 
+    def test_parse_int_leading_zeros_screen_significant_digits(self):
+        # Audit 2026-06-17: the oversized-magnitude guard must screen
+        # SIGNIFICANT digits, not raw length. The Wasm ``$parse_int``
+        # accumulates digit-by-digit and a run of leading zeros never
+        # overflows the i64 accumulator, so ``"000...0009"`` (21 chars,
+        # value 9) yields Some(9). The pre-fix Python guard rejected by
+        # raw length and returned None -- a real cross-backend
+        # divergence for an IN-RANGE value. Stripping leading zeros
+        # before measuring restores parity.
+        self.assertEqual(parse_int("0" * 30 + "9").unwrap(), 9)
+        self.assertEqual(parse_int("-" + "0" * 30 + "5").unwrap(), -5)
+        self.assertEqual(parse_int("+" + "0" * 30 + "5").unwrap(), 5)
+        # All zeros (no significant digit) is the value 0, not None.
+        self.assertEqual(parse_int("0" * 40).unwrap(), 0)
+        # A genuinely out-of-range magnitude (no leading zeros to strip)
+        # is still None and still never crashes.
+        self.assertTrue(parse_int("9" * 30).is_none())
+        # Leading zeros do not rescue an out-of-range magnitude: 20
+        # zeros followed by 19 nines is still > i64::MAX.
+        self.assertTrue(parse_int("0" * 20 + "9" * 19).is_none())
+        # i64::MAX / i64::MIN with leading zeros still parse exactly.
+        self.assertEqual(
+            parse_int("0" * 5 + "9223372036854775807").unwrap(),
+            (1 << 63) - 1,
+        )
+        self.assertEqual(
+            parse_int("-" + "0" * 5 + "9223372036854775808").unwrap(),
+            -(1 << 63),
+        )
+
     def test_parse_float(self):
         self.assertEqual(parse_float("3.14").unwrap(), 3.14)
         self.assertEqual(parse_float("  -0.5  ").unwrap(), -0.5)

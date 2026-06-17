@@ -25,6 +25,7 @@ pulls helpers (``_check_expr``, ``_check_block``,
 from __future__ import annotations
 
 from .. import capa_ast as A
+from .. import _labels as L
 from ..typesys import (
     CAPABILITY_NAMES,
     Ty, TyFun, TyName, TyUnit, TyUnknown, TyVar,
@@ -146,6 +147,22 @@ class _ItemsMixin:
             a.name == "constant_time" for a in fn.attributes
         )
 
+        # Roadmap S2.implicit: the pc-label is a per-function quantity.
+        # ``_check_block`` raises it monotonically when a statement
+        # diverges under a @secret guard (a leaky early-return), and that
+        # raise is NOT lowered before the block ends. A body that exits
+        # with the pc still raised (``if s > 0: return``) would otherwise
+        # carry that elevation into whichever @strict_ifc function is
+        # CHECKED NEXT, turning a clean public sink there into an
+        # order-dependent false positive (audit 2026-06-17). Save the
+        # entry pc and restore it on exit so the raise stays inside this
+        # function, exactly as ``_strict_ifc`` / ``_constant_time`` are
+        # scoped. Intra-function elevation (the original Finding 5:
+        # early-return followed by a sink in the SAME body) is unaffected
+        # -- it lives entirely within ``_check_block``.
+        prev_pc_label = getattr(self, "_pc_label", L.PUBLIC)
+        self._pc_label = L.PUBLIC
+
         # Capability parameters: collected so the analyzer can
         # warn at the end of the body if any are declared but
         # never used.
@@ -266,6 +283,7 @@ class _ItemsMixin:
 
         self._strict_ifc = prev_strict_ifc
         self._constant_time = prev_constant_time
+        self._pc_label = prev_pc_label
         self._pop_scope()
         self._pop_type_params()
 

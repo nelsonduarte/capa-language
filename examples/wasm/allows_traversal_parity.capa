@@ -1,0 +1,37 @@
+// Audit 2026-06-17: guest-side ``proc.allows`` / ``db.allows`` query
+// parity for the path-identity and lexical-traversal cases that the
+// pre-fix Wasm emit answered differently from the Python runtime.
+//
+// - Proc: a BARE-NAME restriction (``restrict_to("git")``) must NOT
+//   admit a planted path command (``/attacker/git``). The pre-fix
+//   Wasm collapse stripped the cmd to its basename and said "yes";
+//   Python (and now Wasm) say "no" because a path can never match a
+//   bare-name restriction.
+// - Db: a literal query that walks out of the prefix with ``..``
+//   (``prefix/../escaped.db``) must be denied. The pre-fix Wasm
+//   lexical ``startswith`` admitted it; both backends now normalise
+//   ``..`` away before the boundary check.
+//
+// No IO beyond the yes/no prints, so the example is parity-clean by
+// construction.
+
+fun show(stdio: Stdio, label: String, flag: Bool)
+    if flag
+        stdio.println("${label}: yes")
+    else
+        stdio.println("${label}: no")
+
+fun main(stdio: Stdio, proc: Proc, db: Db)
+    let scoped_git = proc.restrict_to("git")
+    show(stdio, "proc.allows(git)", scoped_git.allows("git"))
+    show(stdio, "proc.allows(git-lfs)", scoped_git.allows("git-lfs"))
+    show(stdio, "proc.allows(/attacker/git)",
+        scoped_git.allows("/attacker/git"))
+    show(stdio, "proc.allows(/usr/bin/git)",
+        scoped_git.allows("/usr/bin/git"))
+
+    let scoped_db = db.restrict_to("prefix")
+    show(stdio, "db.allows(prefix/inner.db)",
+        scoped_db.allows("prefix/inner.db"))
+    show(stdio, "db.allows(prefix/../escaped.db)",
+        scoped_db.allows("prefix/../escaped.db"))

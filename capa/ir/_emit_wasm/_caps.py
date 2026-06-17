@@ -973,13 +973,22 @@ class _CapDispatchMixin:
         admitting ``/tmproot/secret`` that a naive
         ``$str_starts_with(path, "/tmp")`` would accept.
 
-        The Python ``Fs.allows`` uses ``Path.is_relative_to``
-        after ``os.path.realpath`` canonicalisation, which is
-        strictly stronger (resolves ``..`` / symlinks). We can't
-        realpath at emit time, but the component-boundary check
-        closes the simple lexical bypass and matches Python's
-        semantics for the common case of well-formed paths
-        without traversal.
+        This is the GUEST-SIDE query check and is a LEXICAL
+        APPROXIMATION of the authoritative host-side enforcement.
+        The Python ``Fs.allows`` / ``Db.allows`` use
+        ``Path.is_relative_to`` after ``os.path.realpath``
+        canonicalisation, which resolves ``..`` / ``.`` / symlinks
+        and is strictly stronger. The guest Wasm has no filesystem,
+        so it cannot realpath at runtime: the component-boundary
+        check closes the simple ``/tmproot`` lexical bypass, but a
+        path that escapes via a runtime ``..`` (``prefix/../x``) or a
+        symlink is NOT caught here on the dynamic-arg path. The
+        AUTHORITATIVE answer is the host-side check; this guest query
+        is a best-effort lexical hint, so the backends do not fully
+        agree on every dynamic traversal query. (Literal-string
+        queries are normalised lexically at emit time, which does
+        collapse ``..``; only the runtime dynamic-arg path is
+        approximate.)
 
         The prefix is interned once with and once without a
         trailing slash to avoid emitting the canonicalisation
@@ -1075,6 +1084,23 @@ class _CapDispatchMixin:
             # the boundary-aware check now matches the Python
             # runtime's ``Path.is_relative_to`` semantics for
             # well-formed lexical paths.
+            #
+            # Audit 2026-06-17: the Python runtime's ``Fs.allows`` /
+            # ``Db.allows`` resolve ``..`` / ``.`` / symlinks through
+            # ``os.path.realpath`` before the boundary check, so
+            # ``prefix/../escaped.db`` is denied (the ``..`` walks out
+            # of the prefix). The pre-fix lexical ``startswith`` here
+            # admitted it. We cannot ``realpath`` at emit time (no
+            # target FS), but ``os.path.normpath`` collapses the ``..``
+            # / ``.`` lexically, which closes the obvious traversal
+            # bypass. Symlink-based escapes still require the host's
+            # realpath; the guest-side answer is a lexical
+            # approximation of the authoritative host check.
+            # ``posixpath`` (not ``os.path``) so the normalisation is
+            # platform-independent and keeps ``/`` separators on a
+            # Windows build host -- the runtime path strings are POSIX.
+            import posixpath as _ppath
+            literal_norm = _ppath.normpath(literal)
             result = True
             for att in attenuations:
                 if att.get("method") != "restrict_to":
@@ -1087,9 +1113,12 @@ class _CapDispatchMixin:
                     raise WasmEmissionError(
                         f"{cap}.restrict_to attenuation with no arg"
                     )
-                prefix = _unquote_attenuation_arg(args[0])
+                prefix = _ppath.normpath(
+                    _unquote_attenuation_arg(args[0])
+                )
                 sep = prefix if prefix.endswith("/") else prefix + "/"
-                if not (literal == prefix or literal.startswith(sep)):
+                if not (literal_norm == prefix
+                        or literal_norm.startswith(sep)):
                     result = False
                     break
         elif cap == "Net":
@@ -1116,17 +1145,35 @@ class _CapDispatchMixin:
                     result = False
                     break
         elif cap == "Proc":
-            # AND over each restrict_to(prefix): the literal cmd
-            # must satisfy every prefix in the chain at a basename
-            # + suffix boundary (basename == prefix OR
-            # basename.startswith(prefix + '-')). Mirrors the
-            # Python runtime's ``Proc.allows`` rule and the
-            # ``$proc_allows`` runtime helper used on the
-            # dynamic-arg path. ``os.path.basename`` is computed
-            # at emit time so ``/usr/bin/git`` gates against
-            # ``restrict_to("git")``.
-            import os as _os
-            base = _os.path.basename(literal)
+            # AND over each restrict_to(prefix), mirroring the Python
+            # runtime's ``Proc.allows`` rule (audit 2026-06-17). That
+            # rule is identity-based, NOT basename-based:
+            #
+            # - a PATH restriction (prefix contains a separator) only
+            #   admits a path cmd whose ``normpath`` equals the prefix's
+            #   ``normpath``; a bare-name cmd never matches it.
+            # - a BARE-NAME restriction (no separator) only admits a
+            #   bare-name cmd (``cmd == prefix`` or ``cmd.startswith(
+            #   prefix + '-')``); a PATH cmd never matches, so a planted
+            #   ``/attacker/git`` cannot impersonate ``restrict_to("git")``.
+            #
+            # The pre-fix code collapsed the cmd to its basename, which
+            # let ``/attacker/git`` slip through ``restrict_to("git")`` --
+            # the exact bypass the Python runtime now denies. This whole
+            # rule is purely lexical, so the literal collapse mirrors it
+            # exactly. ``os.path.normpath`` is computed at emit time on
+            # the known literals.
+            # ``posixpath`` for the normalisation so a Windows build
+            # host keeps ``/`` separators; the runtime treats commands
+            # as POSIX path strings. Separator detection still looks at
+            # ``/`` only, matching the Python runtime's ``_has_sep``
+            # intent on the wire format.
+            import posixpath as _ppath
+
+            def _has_sep(s: str) -> bool:
+                return "/" in s
+
+            cmd_is_path = _has_sep(literal)
             result = True
             for att in attenuations:
                 if att.get("method") != "restrict_to":
@@ -1140,8 +1187,19 @@ class _CapDispatchMixin:
                         "Proc.restrict_to attenuation with no arg"
                     )
                 prefix = _unquote_attenuation_arg(args[0])
-                if not (base == prefix
-                        or base.startswith(prefix + "-")):
+                if _has_sep(prefix):
+                    matched = (
+                        cmd_is_path
+                        and _ppath.normpath(literal)
+                        == _ppath.normpath(prefix)
+                    )
+                else:
+                    matched = (
+                        not cmd_is_path
+                        and (literal == prefix
+                             or literal.startswith(prefix + "-"))
+                    )
+                if not matched:
                     result = False
                     break
         else:  # cap == "Env"

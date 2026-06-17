@@ -295,26 +295,99 @@ class _RuntimeHelpersMixin:
         self._indent -= 1
         self._write(")")
 
+    def _emit_str_has_slash_function(self) -> None:
+        """Helper: ``$str_has_slash(p, l) -> i32`` returns 1 if any of
+        the ``l`` bytes at ``p`` is a forward slash ``'/'`` (byte 47),
+        0 otherwise. Used by ``$proc_allows`` to tell a bare-name
+        command from a path one. Forward slash only, matching the
+        Python runtime's wire-format view of paths (the guest never
+        sees a host-native separator)."""
+        self._write(
+            "(func $str_has_slash (param $p i32) (param $l i32) "
+            "(result i32)"
+        )
+        self._indent += 1
+        self._write("(local $i i32)")
+        self._write("i32.const 0")
+        self._write("local.set $i")
+        self._write("block $exit")
+        self._indent += 1
+        self._write("loop $scan")
+        self._indent += 1
+        # if i >= l: exit (no slash found).
+        self._write("local.get $i")
+        self._write("local.get $l")
+        self._write("i32.ge_s")
+        self._write("br_if $exit")
+        # if p[i] == '/': return 1.
+        self._write("local.get $p")
+        self._write("local.get $i")
+        self._write("i32.add")
+        self._write("i32.load8_u")
+        self._write("i32.const 47")  # '/'
+        self._write("i32.eq")
+        self._write("if")
+        self._indent += 1
+        self._write("i32.const 1")
+        self._write("return")
+        self._indent -= 1
+        self._write("end")
+        # i += 1; loop.
+        self._write("local.get $i")
+        self._write("i32.const 1")
+        self._write("i32.add")
+        self._write("local.set $i")
+        self._write("br $scan")
+        self._indent -= 1
+        self._write("end")
+        self._indent -= 1
+        self._write("end")
+        self._write("i32.const 0")
+        self._indent -= 1
+        self._write(")")
+
     def _emit_proc_allows_function(self) -> None:
         """Helper: ``$proc_allows(cp, cl, pp, pl) -> i32`` returns
         1 if the command at ``cp[..cl]`` is admitted by the prefix
-        at ``pp[..pl]``, 0 otherwise. Mirrors the Python runtime's
-        ``Proc.allows`` rule on the Wasm side so all three backends
-        agree on attenuation outcomes for any (cmd, prefix) pair.
+        at ``pp[..pl]``, 0 otherwise. This is the GUEST-SIDE query
+        helper; it is a LEXICAL APPROXIMATION of the authoritative
+        host-side ``Proc.allows`` check. The guest Wasm has no
+        filesystem, so where the rule needs path resolution the host
+        is the source of truth (see below).
+
+        Python runtime rule it mirrors (audit 2026-06-17):
+        - a BARE-NAME restriction (prefix has no '/') admits only a
+          bare-name cmd (``cmd == prefix`` or ``cmd.startswith(prefix
+          + '-')``); a cmd that contains a '/' is a path and never
+          matches a bare-name restriction, so a planted
+          ``/attacker/git`` cannot impersonate ``restrict_to("git")``.
+        - a PATH restriction (prefix has a '/') admits only a path cmd
+          whose ``os.path.normpath`` equals the prefix's; a bare-name
+          cmd never matches.
+
+        Fully mirrored here: the bare-name-restriction case, including
+        the rejection of a slash-bearing cmd, which is the
+        security-relevant identity guard and is purely lexical.
+
+        Approximated here: the PATH-restriction case. The guest cannot
+        run ``realpath`` (no FS), so this helper compares the cmd's
+        basename against the prefix rather than resolving ``..`` /
+        symlinks. For a path-vs-path query the AUTHORITATIVE answer is
+        the host-side check; the guest query is a best-effort lexical
+        hint. (The backends therefore do NOT fully agree on every
+        path-restriction query; only the host enforcement is binding.)
 
         Algorithm:
-        - basename = substring of cmd after the last '/'; if cmd
-          contains no '/', basename = cmd. Walk from the end so
-          we find the LAST slash (e.g. ``/usr/local/bin/git`` ->
-          ``git``).
-        - Return 1 if basename == prefix OR
-          basename.startswith(prefix + '-'). The second arm uses an
-          inline byte-by-byte compare against the prefix bytes
-          (admitting ``git-lfs`` for prefix ``git``) followed by a
-          single ``-`` boundary byte test (rejecting ``gitlab``).
+        - If the prefix has no '/' (bare-name restriction) AND the cmd
+          has a '/' (a path): return 0 immediately.
+        - Otherwise: basename = substring of cmd after the last '/'
+          (the full cmd when it has none). Return 1 if basename ==
+          prefix OR basename.startswith(prefix + '-') (the '-' arm
+          admits ``git-lfs`` for prefix ``git`` and rejects ``gitlab``
+          via a boundary byte test).
 
         Used by:
-        - ``Proc.allows`` dynamic-arg path. The privileged op
+        - ``Proc.allows`` dynamic-arg query. The privileged op
           (``Proc.exec``) moved to the host handle table in
           slice 25.4 (2026-05-30); the host enforces
           ``proc.allows(cmd)`` from the receiver's recorded
@@ -330,6 +403,33 @@ class _RuntimeHelpersMixin:
         self._write("(local $bs i32)")       # basename start (cp + offset)
         self._write("(local $bl i32)")       # basename length
         self._write("(local $j i32)")        # byte-cmp index
+        self._write("(local $cmd_has_sep i32)")    # cmd contains '/'
+        self._write("(local $prefix_has_sep i32)")  # prefix contains '/'
+        # Bare-name-restriction identity guard (audit 2026-06-17): a
+        # cmd containing '/' is a path and can never match a bare-name
+        # restriction. Scan the prefix and the cmd for '/'; if the
+        # prefix has none and the cmd has one, deny outright before the
+        # basename logic (which would otherwise strip the path and let
+        # ``/attacker/git`` impersonate ``git``).
+        self._write("local.get $pp")
+        self._write("local.get $pl")
+        self._write("call $str_has_slash")
+        self._write("local.set $prefix_has_sep")
+        self._write("local.get $cp")
+        self._write("local.get $cl")
+        self._write("call $str_has_slash")
+        self._write("local.set $cmd_has_sep")
+        # if prefix_has_sep == 0 and cmd_has_sep != 0: return 0.
+        self._write("local.get $prefix_has_sep")
+        self._write("i32.eqz")
+        self._write("local.get $cmd_has_sep")
+        self._write("i32.and")
+        self._write("if")
+        self._indent += 1
+        self._write("i32.const 0")
+        self._write("return")
+        self._indent -= 1
+        self._write("end")
         # Find the last '/' in cmd. Walk i from cl - 1 down to 0;
         # break on the first match. ``bs`` defaults to cp + 0 (no
         # slash found -> basename = full cmd).
