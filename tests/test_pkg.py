@@ -281,6 +281,32 @@ class TestGitUrlAllowList(_TempDirMixin, unittest.TestCase):
                     read_manifest(self._capa_toml_with_git(url))
                 self.assertIn("traversal", str(cm.exception).lower())
 
+    def test_file_percent_encoded_traversal_rejected(self):
+        # The literal ``..`` filter alone is bypassable: git decodes a
+        # file:// path's percent-encoding before resolving it, so an
+        # encoded ``%2e%2e`` (``..``) still traverses. These must be
+        # rejected on the decoded form, including a mixed
+        # encoded/literal-separator shape.
+        for url in (
+            "file://%2e%2e/x",
+            "file:///a/%2e%2e/b",
+            "file://%2e%2e%2f..",
+            "file://%2e%2e\\\\..\\\\x",
+            "file://%2E%2E/x",
+        ):
+            with self.subTest(url=url):
+                with self.assertRaises(ManifestError) as cm:
+                    read_manifest(self._capa_toml_with_git(url))
+                self.assertIn("traversal", str(cm.exception).lower())
+
+    def test_file_double_encoded_dot_allowed(self):
+        # ``%252e`` decodes once (as git does) to a literal ``%2e``
+        # filename component, not ``..``; it is not a traversal and must
+        # stay accepted so legitimate odd-but-literal paths still work.
+        url = "file:///repos/%252e%252e/repo"
+        m = read_manifest(self._capa_toml_with_git(url))
+        self.assertEqual(m.dependencies[0].git, url)
+
     def test_git_ssh_shortcut_allowed(self):
         m = read_manifest(self._capa_toml_with_git("git@github.com:x/y.git"))
         self.assertEqual(m.dependencies[0].git, "git@github.com:x/y.git")

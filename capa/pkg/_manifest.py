@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import re
 import sys
+import urllib.parse
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -355,14 +356,30 @@ def _validate_git_url(path: Path, name: str, url: str) -> None:
     # build. Refuse any ``..`` component in a file:// path while
     # keeping plain absolute paths (``file:///home/user/repo``,
     # ``file:///C:/abs/path/repo``) accepted.
+    #
+    # The literal ``..`` check is not sufficient on its own: git
+    # percent-decodes a file:// path before resolving it, so a URL
+    # like ``file://%2e%2e/x`` (or ``file:///a/%2e%2e/b``) carries no
+    # literal ``..`` yet still traverses once git decodes it. We must
+    # therefore decode the encoding the same way git does *before*
+    # inspecting components. A single ``unquote`` is exactly the right
+    # depth: git decodes once, so ``%2e%2e`` -> ``..`` (traversal,
+    # rejected) while a double-encoded ``%252e`` -> ``%2e`` literal
+    # (a real filename component, not traversal) - the same view git
+    # ends up acting on. Decoding more than once would diverge from
+    # git and over-reject legitimate literal-``%2e`` paths.
     if matched_scheme == "file://":
         file_path = url[len(matched_scheme):]
-        # Normalise both separators so ``..\..`` is caught on every OS.
-        for component in file_path.replace("\\", "/").split("/"):
+        # Decode percent-encoding to the depth git resolves, then
+        # normalise both separators so ``..``, ``..\..``, and any
+        # encoded variant collapse to the same comparable form.
+        decoded = urllib.parse.unquote(file_path).replace("\\", "/")
+        for component in decoded.split("/"):
             if component == "..":
                 raise ManifestError(
                     f"{path}: dependencies.{name}.git is a file:// URL "
-                    f"containing a '..' path component, which is a "
+                    f"containing a '..' path component (possibly "
+                    f"percent-encoded, e.g. '%2e%2e'), which is a "
                     f"path-traversal vector (it can escape the intended "
                     f"directory and vendor arbitrary local content). "
                     f"Use an absolute file:// path with no '..'. "
