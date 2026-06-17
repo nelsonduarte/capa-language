@@ -51,6 +51,16 @@ In scope:
 - Crash or arbitrary code execution in the analyzer / transpiler when
   given a malformed `.capa` input. While Capa is not yet positioned
   as a sandbox for untrusted source, defensible behaviour matters.
+- A vendored dependency under `./vendor/` whose code no longer matches
+  the commit `capa.lock` froze is read and built without detection.
+  Both ends are verified: `capa install` enforces the locked SHA (and
+  GPG / SLSA when a `verify_key` is set), and the build path
+  (`capa --check` / `--run` / `--transpile`, `capa migrate`,
+  `capa test`) re-verifies each git dep's `vendor/<name>` HEAD against
+  `capa.lock` before reading it, fail-closed. The build-time check is
+  the post-install tamper guard; it is bypassed only by the explicit
+  `CAPA_NO_VERIFY=1` opt-out, which annuls the guarantee by design and
+  is therefore not a vulnerability.
 
 Out of scope:
 

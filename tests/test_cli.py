@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import io
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -1432,6 +1433,159 @@ class TestEmitArtifactHelper(unittest.TestCase):
         sink = io.StringIO()
         emit_artifact("a\r\nb", stream=sink)
         self.assertEqual(sink.getvalue(), "a\nb\n")
+
+
+def _has_git() -> bool:
+    try:
+        return subprocess.run(
+            ["git", "--version"], capture_output=True, text=True,
+        ).returncode == 0
+    except FileNotFoundError:
+        return False
+
+
+@unittest.skipUnless(_has_git(), "git not on PATH")
+class TestVendorVerificationOnBuild(unittest.TestCase):
+    """PKG-1: end-to-end wiring of build-time vendor verification.
+
+    Builds a real project with a git dependency vendored from a local
+    repo, a coherent capa.lock, and a root file that imports it, then
+    drives ``capa --run`` (the production path that goes through
+    ``_capa_search_paths``). Tampering with vendor/<name>'s HEAD must
+    make the build refuse; the opt-out must let it through."""
+
+    _GIT_ENV = {
+        "GIT_AUTHOR_NAME": "capa-test",
+        "GIT_AUTHOR_EMAIL": "test@example.invalid",
+        "GIT_COMMITTER_NAME": "capa-test",
+        "GIT_COMMITTER_EMAIL": "test@example.invalid",
+    }
+
+    def _git(self, repo: Path, *args: str) -> str:
+        r = subprocess.run(
+            ["git", "-C", str(repo), *args],
+            capture_output=True, text=True, encoding="utf-8",
+            env={**os.environ, **self._GIT_ENV},
+        )
+        if r.returncode != 0:
+            raise RuntimeError(f"git {args}: {r.stderr}")
+        return r.stdout.strip()
+
+    def _build_project(self, td_path: Path) -> tuple[Path, Path, str]:
+        """Create an upstream git repo (a Capa lib), vendor it into a
+        project at the right commit, write a coherent capa.lock and a
+        root program that imports it. Returns (project, root_file,
+        head_sha)."""
+        upstream = td_path / "upstream"
+        upstream.mkdir()
+        self._git(upstream, "init", "-b", "main")
+        (upstream / "util.capa").write_text(
+            "pub fun bump(n: Int) -> Int\n    return n + 1\n",
+            encoding="utf-8",
+        )
+        self._git(upstream, "add", "util.capa")
+        self._git(upstream, "commit", "-m", "initial")
+        self._git(upstream, "tag", "v0.1")
+
+        project = td_path / "proj"
+        project.mkdir()
+        vendor = project / "vendor"
+        vendor.mkdir()
+        # Vendor by cloning the upstream at the tag (mirrors install).
+        subprocess.run(
+            ["git", "clone", "--depth", "1", "--branch", "v0.1",
+             upstream.as_uri(), str(vendor / "util")],
+            capture_output=True, text=True, check=True,
+            env={**os.environ, **self._GIT_ENV},
+        )
+        head = self._git(vendor / "util", "rev-parse", "HEAD")
+
+        (project / "capa.toml").write_text(
+            "[package]\n"
+            'name = "proj"\n'
+            'version = "0.1.0"\n'
+            "\n"
+            "[dependencies]\n"
+            f'util = {{ git = "{upstream.as_uri()}", tag = "v0.1" }}\n',
+            encoding="utf-8",
+        )
+        (project / "capa.lock").write_text(
+            "[[dependencies]]\n"
+            'name = "util"\n'
+            f'git = "{upstream.as_uri()}"\n'
+            'pin = "v0.1"\n'
+            'pin_kind = "tag"\n'
+            f'commit = "{head}"\n',
+            encoding="utf-8",
+        )
+        root = project / "root.capa"
+        root.write_text(
+            "import util.util\n"
+            "fun main(stdio: Stdio)\n"
+            '    stdio.println("${bump(2)}")\n',
+            encoding="utf-8",
+        )
+        return project, root, head
+
+    def test_healthy_vendor_runs(self):
+        with tempfile.TemporaryDirectory() as td:
+            project, root, _ = self._build_project(Path(td))
+            rc, out, err = _run_main(["--run", str(root)], cwd=project)
+            self.assertEqual(rc, 0, err)
+            self.assertIn("3", out)
+
+    def test_tampered_vendor_refuses_and_names_dep(self):
+        with tempfile.TemporaryDirectory() as td:
+            project, root, _ = self._build_project(Path(td))
+            # Tamper: add a new commit to vendor/util so HEAD != lock.
+            vutil = project / "vendor" / "util"
+            (vutil / "util.capa").write_text(
+                "pub fun bump(n: Int) -> Int\n    return n + 99\n",
+                encoding="utf-8",
+            )
+            self._git(vutil, "commit", "-am", "tamper")
+            rc, _out, err = _run_main(["--run", str(root)], cwd=project)
+            self.assertEqual(rc, 1)
+            self.assertIn("util", err)
+            self.assertIn("capa install", err)
+            self.assertIn("CAPA_NO_VERIFY", err)
+
+    def test_tampered_vendor_passes_with_opt_out(self):
+        # The opt-out warning is emitted at most once per process; reset
+        # the guard so this test sees it regardless of run order.
+        import capa.pkg._verify as _v
+        _v._warned_opt_out = False
+        with tempfile.TemporaryDirectory() as td:
+            project, root, _ = self._build_project(Path(td))
+            vutil = project / "vendor" / "util"
+            # A new commit (SHA changes, so HEAD != lock) whose source
+            # still compiles and prints the same answer. The opt-out
+            # must let it through despite the mismatch.
+            (vutil / "util.capa").write_text(
+                "pub fun bump(n: Int) -> Int\n"
+                "    let one: Int = 1\n"
+                "    return n + one\n",
+                encoding="utf-8",
+            )
+            self._git(vutil, "commit", "-am", "tamper-but-same-behaviour")
+            rc, out, err = _run_main(
+                ["--run", str(root)], cwd=project,
+                env={"CAPA_NO_VERIFY": "1"},
+            )
+            self.assertEqual(rc, 0, err)
+            self.assertIn("3", out)
+            self.assertIn("CAPA_NO_VERIFY", err)
+            self.assertIn("OFF", err)
+
+    def test_missing_lock_refuses(self):
+        with tempfile.TemporaryDirectory() as td:
+            project, root, _ = self._build_project(Path(td))
+            (project / "capa.lock").unlink()
+            rc, _out, err = _run_main(["--run", str(root)], cwd=project)
+            self.assertEqual(rc, 1)
+            self.assertIn("util", err)
+            self.assertIn("capa.lock", err)
+            self.assertIn("capa install", err)
 
 
 if __name__ == "__main__":

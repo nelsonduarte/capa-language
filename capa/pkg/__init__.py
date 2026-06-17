@@ -30,6 +30,12 @@ Public surface:
   not produce -- the canonical "upstream tag was moved"
   signal.
 - ``InstallError`` / ``LockMismatchError``: error variants.
+- ``verify_vendored_deps(project_dir, manifest)``: re-verify the
+  vendored git deps against ``capa.lock`` on the read/build path.
+  Fail-closed; raises ``VendorVerificationError`` on a missing
+  lock, a missing / non-git vendor dir, a SHA mismatch, or a
+  declared git dep absent from the lock. Skipped (with a warning)
+  under ``CAPA_NO_VERIFY=1``.
 
 The CLI entry point ``capa install`` calls into this module.
 """
@@ -46,6 +52,7 @@ from ._manifest import (
     MANIFEST_FILENAME,
 )
 from ._install import InstallError, LockMismatchError, VerificationError, install
+from ._verify import VendorVerificationError, verify_vendored_deps
 from ._add import add_dependency
 from ._registry import (
     RegistryEntry,
@@ -61,9 +68,11 @@ __all__ = [
     "InstallError",
     "LockMismatchError",
     "VerificationError",
+    "VendorVerificationError",
     "read_manifest",
     "read_lock",
     "install",
+    "verify_vendored_deps",
     "add_dependency",
     "RegistryEntry",
     "RegistryError",

@@ -291,6 +291,45 @@ The check fires for `tag`-pinned deps only in practice; an
 mismatch there means the upstream rewrote git history, which
 should also be loud.
 
+**Build-time re-verification of `./vendor/`.** Lockfile
+enforcement at install time is not enough on its own: once a dep
+is vendored, the read/build path (`capa --check` / `--run` /
+`--transpile`, `capa migrate`, and the per-test subprocesses
+`capa test` spawns) reads the sources straight out of
+`./vendor/<name>/`. If those files are tampered with *after*
+install (a rebase of `vendor/<name>` onto a malicious commit, a
+direct edit, or a stale checkout that drifted from the lock),
+nothing would otherwise notice. So before the loader is allowed
+to read `./vendor/`, Capa re-verifies every git dep against
+`capa.lock`: the current HEAD commit of `vendor/<name>` (a single
+local `git -C vendor/<name> rev-parse HEAD`, no network, no
+re-clone, no re-run of GPG) must equal the SHA the lockfile
+froze. This is **fail-closed**: the build is refused, naming the
+dependency and telling you to run `capa install`, when
+
+- `capa.toml` declares git deps but there is no `capa.lock`;
+- `vendor/<name>` is missing or has no `.git` (not verifiable);
+- the HEAD of `vendor/<name>` differs from the locked commit;
+- a git dep in `capa.toml` has no entry in `capa.lock`.
+
+The premise is that `capa.lock` is committed and is part of the
+project's trusted computing base: its `commit` was already
+GPG/SLSA-verified at install time, so re-checking the SHA on each
+build is exactly what catches post-install vendor tampering. The
+check applies to git deps only; path deps carry no locked commit
+and are never verified. `capa install` and `capa add` are not
+subject to it (they *generate* the verified state; verifying
+before install would be circular).
+
+**Opt-out: `CAPA_NO_VERIFY=1`.** Setting this environment
+variable skips the build-time verification entirely, with a
+single warning. It **annuls the build-time supply-chain
+guarantee** that `./vendor/` matches the locked, verified
+commits, and exists only for the rare case where the
+re-verification is genuinely in the way (for instance bisecting
+offline against a hand-checked-out vendor tree). Do not set it in
+CI or in any build whose supply-chain integrity you rely on.
+
 ## Loader resolution order
 
 When the loader resolves `import x.y` from inside a `capa.toml`
@@ -302,6 +341,10 @@ project, it walks the following search paths, in order:
    variable.
 3. `./vendor/`: when `capa.toml` declares at least one git
    dependency (in `[dependencies]` or `[dev-dependencies]`).
+   Before this entry is added, the vendored git deps are
+   re-verified against `capa.lock` (see "Build-time
+   re-verification of `./vendor/`" above); an unverifiable vendor
+   tree refuses the build unless `CAPA_NO_VERIFY=1` is set.
 4. The parent of every `path = "..."` dependency (both tables).
 5. `./libraries/`: conventional fallback for hand-vendored
    projects.

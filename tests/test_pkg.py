@@ -33,12 +33,14 @@ from capa.pkg import (
     ManifestError,
     RegistryEntry,
     RegistryError,
+    VendorVerificationError,
     add_dependency,
     install,
     read_manifest,
     read_lock,
     resolve_name,
     search_packages,
+    verify_vendored_deps,
 )
 
 
@@ -2719,6 +2721,180 @@ class TestCapaAddDev(_TempDirMixin, unittest.TestCase):
                 tag="v0.2.0",
             )
         self.assertIn("[dev-dependencies]", str(ctx.exception))
+
+
+class TestVerifyVendoredDeps(_TempDirMixin, unittest.TestCase):
+    """PKG-1: build-time re-verification of ./vendor against capa.lock.
+
+    The SHA-of-vendor lookup is injected via the ``head_sha`` callback
+    so the fail-closed logic is exercised without spinning up real git
+    repositories on every run. A separate CLI-level test (test_cli.py)
+    covers the real-git end-to-end wiring."""
+
+    _SHA1 = "1111111111111111111111111111111111111111"
+    _SHA2 = "2222222222222222222222222222222222222222"
+
+    def _project(self, *, toml: str, lock: str | None = None) -> Path:
+        proj = self._tmp / "proj"
+        proj.mkdir()
+        _write(proj / "capa.toml", toml)
+        if lock is not None:
+            _write(proj / "capa.lock", lock)
+        return proj
+
+    _GIT_TOML = '''
+        [package]
+        name = "demo"
+        version = "0.1.0"
+
+        [dependencies]
+        mylib = { git = "https://example.invalid/mylib.git", tag = "v0.1" }
+    '''
+
+    def _lock_for(self, commit: str) -> str:
+        return (
+            "[[dependencies]]\n"
+            'name = "mylib"\n'
+            'git = "https://example.invalid/mylib.git"\n'
+            'pin = "v0.1"\n'
+            'pin_kind = "tag"\n'
+            f'commit = "{commit}"\n'
+        )
+
+    def test_matching_sha_passes(self):
+        proj = self._project(
+            toml=self._GIT_TOML, lock=self._lock_for(self._SHA1),
+        )
+        manifest = read_manifest(proj / "capa.toml")
+        # vendor HEAD == lock.commit: no exception.
+        verify_vendored_deps(
+            proj, manifest, head_sha=lambda _p: self._SHA1,
+        )
+
+    def test_mismatched_sha_fails_and_names_dep(self):
+        proj = self._project(
+            toml=self._GIT_TOML, lock=self._lock_for(self._SHA1),
+        )
+        manifest = read_manifest(proj / "capa.toml")
+        with self.assertRaises(VendorVerificationError) as ctx:
+            verify_vendored_deps(
+                proj, manifest, head_sha=lambda _p: self._SHA2,
+            )
+        msg = str(ctx.exception)
+        self.assertIn("mylib", msg)
+        self.assertIn(self._SHA1, msg)   # locked
+        self.assertIn(self._SHA2, msg)   # vendor
+        self.assertIn("capa install", msg)
+        self.assertIn("CAPA_NO_VERIFY", msg)
+
+    def test_missing_lock_with_git_deps_fails(self):
+        proj = self._project(toml=self._GIT_TOML, lock=None)
+        manifest = read_manifest(proj / "capa.toml")
+        with self.assertRaises(VendorVerificationError) as ctx:
+            verify_vendored_deps(
+                proj, manifest, head_sha=lambda _p: self._SHA1,
+            )
+        msg = str(ctx.exception)
+        self.assertIn("mylib", msg)
+        self.assertIn("capa.lock", msg)
+        self.assertIn("capa install", msg)
+
+    def test_vendor_without_git_fails(self):
+        proj = self._project(
+            toml=self._GIT_TOML, lock=self._lock_for(self._SHA1),
+        )
+        manifest = read_manifest(proj / "capa.toml")
+        # head_sha returns None -> vendor dir missing / has no .git.
+        with self.assertRaises(VendorVerificationError) as ctx:
+            verify_vendored_deps(
+                proj, manifest, head_sha=lambda _p: None,
+            )
+        msg = str(ctx.exception)
+        self.assertIn("mylib", msg)
+        self.assertIn(".git", msg)
+        self.assertIn("capa install", msg)
+
+    def test_git_dep_absent_from_lock_fails(self):
+        # Lock pins a DIFFERENT name than the manifest declares.
+        other_lock = (
+            "[[dependencies]]\n"
+            'name = "otherlib"\n'
+            'git = "https://example.invalid/otherlib.git"\n'
+            'pin = "v0.1"\n'
+            'pin_kind = "tag"\n'
+            f'commit = "{self._SHA1}"\n'
+        )
+        proj = self._project(toml=self._GIT_TOML, lock=other_lock)
+        manifest = read_manifest(proj / "capa.toml")
+        with self.assertRaises(VendorVerificationError) as ctx:
+            verify_vendored_deps(
+                proj, manifest, head_sha=lambda _p: self._SHA1,
+            )
+        msg = str(ctx.exception)
+        self.assertIn("mylib", msg)
+        self.assertIn("capa.lock", msg)
+
+    def test_opt_out_skips_with_warning(self):
+        proj = self._project(toml=self._GIT_TOML, lock=None)
+        manifest = read_manifest(proj / "capa.toml")
+        from unittest.mock import patch
+        warnings: list[str] = []
+        # A mismatch that WOULD fail closed; the opt-out skips it.
+        with patch.dict(os.environ, {"CAPA_NO_VERIFY": "1"}):
+            # Reset the once-per-process guard so this test sees the warn.
+            import capa.pkg._verify as _v
+            _v._warned_opt_out = False
+            verify_vendored_deps(
+                proj, manifest,
+                head_sha=lambda _p: self._SHA2,
+                warn=warnings.append,
+            )
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("CAPA_NO_VERIFY", warnings[0])
+        self.assertIn("OFF", warnings[0])
+
+    def test_no_git_deps_is_noop(self):
+        # A path-only project: verification never engages, no lock needed.
+        toml = '''
+            [package]
+            name = "demo"
+            version = "0.1.0"
+
+            [dependencies]
+            util = { path = "deps/util" }
+        '''
+        proj = self._project(toml=toml, lock=None)
+        manifest = read_manifest(proj / "capa.toml")
+        # No lock, no vendor, no exception: path deps are not verified.
+        verify_vendored_deps(
+            proj, manifest,
+            head_sha=lambda _p: self.fail("should not query vendor SHA"),
+        )
+
+    def test_path_dep_alongside_git_dep_not_verified(self):
+        # A git dep (verified) and a path dep (ignored) together: only
+        # the git dep's SHA is queried.
+        toml = '''
+            [package]
+            name = "demo"
+            version = "0.1.0"
+
+            [dependencies]
+            mylib = { git = "https://example.invalid/mylib.git", tag = "v0.1" }
+            util = { path = "deps/util" }
+        '''
+        proj = self._project(toml=toml, lock=self._lock_for(self._SHA1))
+        manifest = read_manifest(proj / "capa.toml")
+        queried: list[Path] = []
+
+        def _head(p: Path) -> str:
+            queried.append(p)
+            return self._SHA1
+
+        verify_vendored_deps(proj, manifest, head_sha=_head)
+        # Exactly one SHA query, for the git dep's vendor dir.
+        self.assertEqual(len(queried), 1)
+        self.assertTrue(str(queried[0]).endswith("mylib"))
 
 
 if __name__ == "__main__":

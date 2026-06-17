@@ -28,6 +28,7 @@ from capa.manifest import (
     resolve_build_timestamp, SourceDateEpochError,
 )
 from capa._artifact_io import emit_artifact
+from capa.pkg import VendorVerificationError
 from capa.docgen import build_html as build_doc_html
 from capa.formatter import format_source, is_formatted
 from capa.init_project import init_project
@@ -139,7 +140,7 @@ def _capa_search_paths() -> list[Path]:
     manifest_path = Path.cwd() / "capa.toml"
     if manifest_path.exists():
         try:
-            from capa.pkg import read_manifest
+            from capa.pkg import read_manifest, verify_vendored_deps
             manifest = read_manifest(manifest_path)
             # Dev-dependencies resolve exactly like regular deps:
             # ``capa install`` vendors them into the same ./vendor
@@ -148,11 +149,28 @@ def _capa_search_paths() -> list[Path]:
             all_deps = manifest.dependencies + manifest.dev_dependencies
             has_git = any(d.is_git for d in all_deps)
             if has_git:
+                # PKG-1: re-verify the vendored git deps against
+                # capa.lock BEFORE the loader is allowed to read
+                # ./vendor. Fail-closed (raises VendorVerificationError)
+                # on a missing lock, a missing / non-git vendor dir, a
+                # SHA mismatch, or a declared git dep absent from the
+                # lock. The check is the only re-validation of vendor/
+                # on the build path; ``capa install`` / ``capa add``
+                # never hit this function (they call install() directly)
+                # so they are not subject to the circular pre-check.
+                verify_vendored_deps(Path.cwd(), manifest)
                 _append(Path.cwd() / "vendor")
             for d in all_deps:
                 if d.is_path and d.path is not None:
                     dep_path = (manifest.manifest_dir / d.path).resolve()
                     _append(dep_path.parent)
+        except VendorVerificationError:
+            # Fail-closed: an unverifiable vendor tree is a hard stop,
+            # NOT a "broken capa.toml" warning. Re-raise so the CLI
+            # surfaces a clear error and refuses the build, rather than
+            # silently dropping ./vendor from the search path (which
+            # would degrade to a confusing "module not found").
+            raise
         except Exception as e:
             # A broken capa.toml should produce a clear warning but
             # not block unrelated operations (e.g. `capa --check` on
@@ -751,6 +769,18 @@ def _dispatch_test(argv: list[str]) -> int:
 
 
 def main() -> int:
+    """CLI entry point. Wraps the dispatch in a fail-closed guard for
+    ``VendorVerificationError`` (PKG-1): an unverifiable ./vendor tree
+    is a clean, named error + exit 1 on any read/build path, never a
+    traceback."""
+    try:
+        return _main_dispatch()
+    except VendorVerificationError as e:
+        print(f"capa: {e}", file=sys.stderr)
+        return 1
+
+
+def _main_dispatch() -> int:
     # Make stdout/stderr UTF-8 with replacement so CLI output never
     # crashes the process on a non-ASCII byte. The token dump uses a
     # ``->`` arrow glyph, error messages can carry unicode file names,
