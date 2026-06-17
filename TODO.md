@@ -17,6 +17,109 @@ Status legend: `[x]` done · `[~]` partial · `[ ]` pending.
 
 ---
 
+## Current state (June 2026)
+
+Compiler at **v1.3.0** (tagged 2026-06-16; `pyproject.toml`
+`version = "1.3.0"`, git tag `v1.3.0`). Suite at 2965 passed /
+15 skipped / 1 xfailed / 1658 subtests, CI green.
+
+The **Wasm Component Model backend is long complete** with full
+Python / Wasm parity. The May 2026 goal below (the three demos
+running end-to-end under `--component --run`) closed long ago; the
+backend then grew past the demo surface (generics + traits parity,
+2026-06-08) and the remaining cross-backend divergences, numeric and
+non-numeric, were closed in this June window. The last non-numeric
+divergence (String order operators, a Unit-payload binder, ASCII-only
+case folding) and the last numeric one (a correctly-rounded
+decimal-to-f64 `parse_float` bit-identical to CPython `float()`) both
+landed in v1.3.0.
+
+A **rigorous six-axis bug hunt** ran across this window and closed the
+soundness holes it surfaced: IFC `@secret` laundering (through
+`match` / `if` / closure values, intra- and cross-function), linear /
+typestate double-consume (via alias and captured closure), and
+manifest `provably_excluded_capabilities` false exclusions (a `Fun`
+hidden in a struct field or a sum-variant payload), plus full
+cross-backend parity and frontend / package-manager robustness. Two
+soundness advisories were published
+([`docs/advisories/2026-06-15-soundness.md`](docs/advisories/2026-06-15-soundness.md),
+[`docs/advisories/2026-06-16-soundness.md`](docs/advisories/2026-06-16-soundness.md)).
+
+The **ecosystem** ships 8 published seed libraries (`capa_cli`,
+`capa_datetime`, `capa_http`, `capa_log`, `capa_sbom`, `capa_test`,
+`capa_csv`, `capa_hash`) on a signed registry, plus 3 public
+showcases (`capa_paymentguard`, `capa_cra_template`, `capa_claimdesk`).
+
+See the per-release notes in [`CHANGELOG.md`](CHANGELOG.md) and the
+"June 2026 releases + bug hunt" section below for the detail; the
+canonical list of what is still open is under "Remaining open items".
+
+---
+
+## June 2026 releases + bug hunt
+
+Concise record; full reasoning in [`CHANGELOG.md`](CHANGELOG.md) and the
+two advisories under [`docs/advisories/`](docs/advisories/).
+
+**Releases (real tag dates).**
+- **v1.1.0** (2026-06-14): first minor since 1.0. Byte-reproducible
+  SBOMs / attestations via `SOURCE_DATE_EPOCH`, `String.bytes()`,
+  builtin `panic(message)`, `capa test` (with `--both`), `capa migrate`,
+  `[dev-dependencies]` + `capa add --dev`, Wasm tail-call optimisation,
+  typestate completed.
+- **v1.2.0** (2026-06-15): hardens the soundness core and closes parity
+  gaps. New feature: selective import with renaming
+  (`import foo (a, b as c)`), resolving `pub` name collisions between
+  dependencies. Six soundness fixes (see the 2026-06-15 advisory).
+- **v1.3.0** (2026-06-16): completes Python / Wasm parity, closes five
+  more soundness holes, hardens the frontend and the package manager.
+  No new language features (see the 2026-06-16 advisory).
+
+**New language / tooling features in this window.** Selective import
+with renaming; `capa test` (`--both` for cross-backend parity) and
+`capa migrate` subcommands; `[dev-dependencies]` + `capa add --dev`;
+builtin `panic`; `String.bytes()`; byte-reproducible SBOMs via
+`SOURCE_DATE_EPOCH`.
+
+**The rigorous six-axis bug hunt and what it closed.**
+- *Soundness (IFC).* `@secret` label now survives a `match` / `if`
+  value and a capturing closure, intra-function and cross-function (a
+  captured-secret closure invoked-and-sunk through a HOF).
+- *Soundness (linear affinity).* Double-consume closed via alias
+  (`let h2 = h`) and via a closure captured-and-reinvoked; the
+  must-consume obligation now moves on an aliasing `let` / `var`.
+- *Soundness (manifest).* `provably_excluded_capabilities` no longer
+  over-claims when a `Fun` is hidden in a struct field or a sum-variant
+  payload; `declassification_sites` counts only genuine secret
+  declassifies.
+- *Cross-backend parity, now complete.* Correctly-rounded
+  decimal-to-f64 `parse_float` (oracle-first, `tools/float_ref.py`);
+  `1 << 63` and any out-of-window left shift trap on Wasm; `String`
+  order operators, a Unit-payload binder and Unit-returning bind on
+  Wasm; `String.split("")` traps; ASCII-only `to_upper` / `to_lower`
+  on both backends; canonical `parse_int` and `to_json` number forms.
+- *Frontend robustness.* Clean diagnostics for over-long int literals,
+  deep flat expression chains (no `RecursionError`), and extra / leading
+  whitespace tokens inside `${...}`.
+- *Package-manager quality (7 fixes).* `capa add --force` over an
+  inline dep, git-URL host option-injection, escaping path deps,
+  divergent re-import of a module, loader-mangled names in diagnostics,
+  `@vex` soft-validation against the CycloneDX vocabulary.
+
+Two soundness advisories published:
+[`docs/advisories/2026-06-15-soundness.md`](docs/advisories/2026-06-15-soundness.md)
+and
+[`docs/advisories/2026-06-16-soundness.md`](docs/advisories/2026-06-16-soundness.md).
+
+**Ecosystem.** 8 seed libraries published on the signed registry
+(`capa_cli`, `capa_datetime`, `capa_http`, `capa_log`, `capa_sbom`,
+`capa_test`, `capa_csv`, `capa_hash`); the enterprise showcase
+`capa_claimdesk` published (exercises the whole language, with its
+guarantees proved in the SBOM); `capa_paymentguard` and
+`capa_cra_template` carry byte-for-byte reproducibility.
+
+---
+
 ## Current goal (May 2026)
 
 Wasm milestones closed.
@@ -570,7 +673,10 @@ the current Wasm critical path.
   1730 passed / 5 skipped / 0 fail. Downstream `sbom-watch`
   smoke verified.
 
-- [~] **Test-coverage review**. Three passes landed:
+- [~] **Test-coverage review**. Stays incremental; the June 2026 bug
+  hunt added many targeted cases as it closed soundness / parity holes
+  (suite now 2965 passed / 15 skipped / 1 xfailed / 1658 subtests).
+  The per-module passes below remain the record:
   - 2026-05-25 (1): `capa/runtime/_wasm_component_host.py`
     lifted 0% → 74% via 4 `TestWasmComponentHost` cases.
   - 2026-05-25 (2): `capa/loader.py` lifted 60% → 65% via
@@ -725,6 +831,8 @@ the current Wasm critical path.
   Paper now at v1.9 in `docs/paper-draft.md` (gitignored,
   local-only per commit 900318e). Remaining: targeted venue
   conversion to LaTeX when ready to submit.
+  June 2026: still local-only; LaTeX conversion is 2027 work on
+  venue submission (unchanged).
 
 - [x] **Wasm Float formatting: bit-identical with Python `str(float)`**
   (closed 2026-05-25). The legacy fixed-6-decimal `$ftoa` is
@@ -957,7 +1065,10 @@ right primitives. Listed at the top of this section accordingly.
   function's `pos` stamped the ROOT file's name onto the
   imported file's line/col (wrong file in every SBOM surface);
   it now carries the declaring file.
-  Still deferred: a website "Migrating from Python" chapter.
+  June 2026: the `capa migrate` subcommand shipped in v1.1.0; all three
+  slices are done. The interop / hardening pattern is complete; what
+  keeps this `[~]` is the deferred website "Migrating from Python"
+  chapter.
 
 - [x] **Package manager + minimal registry** (closed
   2026-05-27). Core install flow ships (`capa.toml` +
@@ -1023,6 +1134,9 @@ right primitives. Listed at the top of this section accordingly.
   Python column ranges, deliberately deferred as high-effort /
   fragile); a real stepping debugger (DAP adapter) is a
   separate, larger arc. ⏱ remaining is open-ended.
+  June 2026: unchanged. DAP + per-expression source maps still pending
+  (see "Debugger: DAP + per-expression source maps" under Remaining
+  open items).
 
 - [x] **Analyzer performance benchmarks** (closed 2026-05-25).
   New runner at [`benchmarks/compile_bench.py`](benchmarks/compile_bench.py)
@@ -3521,22 +3635,21 @@ Remaining open items (no concrete driver yet):
   `docs/stdlib.md`. Possible hardening: refuse multi-link files
   (`st_nlink > 1`) on restricted caps, with the trade-off of
   false negatives on legitimately multi-link files.
-- **Niche Wasm attenuation gap.** A dynamic (non-literal)
+- **IFC C-2 residual: a captured-`@secret` closure passed by name
+  cross-function.** The 2026-06-16 fix (commit `909959c`) closes the
+  cross-function leak when a captured-`@secret` closure is passed as an
+  inline argument to a higher-order function that invokes-and-sinks it.
+  Left open: a closure bound to a `let` / field first and then passed by
+  name (rather than inline) is not yet flagged. This is a documented
+  false **negative**, never a false positive, and the boundary is a
+  conscious decision not to close it now to avoid risking false
+  positives; recorded under "Known residual" in
+  `docs/advisories/2026-06-16-soundness.md`.
+- **Niche Wasm attenuation gap (GAP 2b).** A dynamic (non-literal)
   `restrict_to` prefix is not inline-enforced on the Wasm
   backend; cross-function attenuation chains still rely on the
   analyzer's static discipline check (intra-function inline
-  enforcement only, per the C2 note above).
-- **Wasm `parse_float` has no scientific notation.** The
-  `$parse_float` runtime helper accepts only the canonical
-  `-12.345` shape (documented in its docstring in
-  `capa/ir/_emit_wasm/_runtime.py`); `parse_float("1e3")` and a
-  JSON number with an exponent return None / Err on Wasm where
-  Python parses them. Re-confirmed still documented during the
-  2026-06-10 JSON `\uXXXX` hardening. Closing it requires a
-  correctly ROUNDED decimal-to-binary conversion (Clinger/Eisel-
-  Lemire class, the inverse of the Dragon4 work), oracle-first
-  with a Python reference like `tools/float_ref.py`; out of scope
-  for the JSON parser slices.
+  enforcement only, per the C2 note above). Still open.
 - **Wasm: `self` captured by a lambda inside an impl method.** A
   lambda defined inside an `impl` method that closes over `self`
   and reads one of its fields (`let f = fun () -> String => return
@@ -3575,10 +3688,17 @@ Remaining open items (no concrete driver yet):
   high-effort / fragile).
 - **Paper -> LaTeX.** Draft v1.9 is local-only; LaTeX conversion
   is 2027 work, on venue submission.
-- **Website Tier 2 leftovers** (separate repo): `regulatory.html`
-  dedicated page, the "From source to SBOM" tutorial chapter
-  (ch14), home-page trim, the `why.html` thesis pull-quote, and
-  the stale website test count (2372 vs ~2531).
+
+Closed since this list was last reconciled (June 2026):
+- **Wasm `parse_float` has no scientific notation** - CLOSED in
+  v1.3.0 (commit `782a0d2`). `$parse_float` on Wasm is now a
+  correctly-rounded decimal-to-f64 conversion, bit-identical to
+  CPython `float()`, with scientific notation, done oracle-first
+  against `tools/float_ref.py`. The last numeric cross-backend
+  divergence.
+- **Website Tier 2 (and Tier 3) leftovers** (separate repo) - CLOSED.
+  The website is updated to v1.3.0; the old "2372 vs ~2531" test-count
+  note is obsolete. Tracked in the website repo, not here.
 
 Resolved since this list was first written: **typestate** is now full
 (S3.1-S3.5: state-indexed types, `become`, fields/payload, and
