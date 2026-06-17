@@ -433,31 +433,52 @@ def _verify_signed_pin(
             f"  gpg --import path/to/publisher.asc"
         )
     # --raw emits machine-readable status lines to stderr; look for
-    # ``VALIDSIG <fingerprint>``.
-    fingerprint = None
+    # ``VALIDSIG <fingerprint>``. Per GnuPG doc/DETAILS the VALIDSIG
+    # line is ``VALIDSIG <sig-fpr> <date> <ts> <expire> <ver> <reserved>
+    # <pkalgo> <hashalgo> <class> <primary-key-fpr>``: the FIRST field
+    # is the fingerprint of the key (often a dedicated signing subkey)
+    # that produced the signature, and the LAST field is the PRIMARY
+    # key fingerprint. ``verify_key`` is the publisher identity, i.e.
+    # the primary key, so we anchor on the last field. This accepts
+    # any valid signing subkey under that primary (gpg already proved
+    # the subkey<-primary binding by emitting the primary fpr), which
+    # keeps verification working when a publisher rotates to a
+    # dedicated signing subkey (recommended GPG practice).
+    signing_fpr = None
+    primary_fpr = None
     for line in r.stderr.splitlines():
         if line.startswith("[GNUPG:] VALIDSIG "):
             parts = line.split()
             if len(parts) >= 3:
-                fingerprint = parts[2].upper()
+                signing_fpr = parts[2].upper()
+                # parts[-1] is the primary-key fpr. On a primary-only
+                # signature (no signing subkey) it equals parts[2];
+                # falling back to parts[2] also tolerates the rare GPG
+                # build that emits a short VALIDSIG line.
+                primary_fpr = parts[-1].upper()
                 break
-    if fingerprint is None:
+    if primary_fpr is None:
         raise VerificationError(
             f"signature verification on {dep_name!r}: ``git "
             f"{git_cmd}`` succeeded but no VALIDSIG line in the GPG "
             f"raw output. This is unusual; please report the case.\n\n"
             f"git stderr:\n{r.stderr.strip()}"
         )
-    if fingerprint != expected_fingerprint:
+    if primary_fpr != expected_fingerprint:
+        via_subkey = (
+            f" (signature made by signing subkey {signing_fpr})"
+            if signing_fpr is not None and signing_fpr != primary_fpr
+            else ""
+        )
         raise VerificationError(
-            f"signature on {dep_name!r} pin {pin!r}: signed by "
-            f"{fingerprint}, capa.toml declares verify_key "
+            f"signature on {dep_name!r} pin {pin!r}: primary key "
+            f"{primary_fpr}{via_subkey}, capa.toml declares verify_key "
             f"{expected_fingerprint}. Either (a) the upstream rotated "
-            f"its signing key -- confirm out of band and update the "
+            f"its primary key -- confirm out of band and update the "
             f"verify_key field; or (b) someone else signed a tag "
             f"with this name. Refusing the install."
         )
-    return fingerprint
+    return primary_fpr
 
 
 _GITHUB_URL_RE = re.compile(

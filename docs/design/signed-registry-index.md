@@ -58,9 +58,12 @@ decisão final:
     Escape hatch explícito para mirrors air-gapped / self-hosted que
     legitimamente servem um índice não-assinado. Cobre apenas
     assinatura ausente, nunca inválida.
-- **gpg ausente do PATH** → **fail-open com aviso**. Limitação de
-  ambiente do utilizador, não um vetor controlável pelo atacante de
-  rede; degrada em vez de bloquear.
+- **gpg ausente do PATH** → **fail-closed** (`RegistryError`), salvo
+  `CAPA_REGISTRY_ALLOW_UNSIGNED=1` (aí fail-open com aviso). O índice é
+  a raiz de confiança; um índice assinado mas não-verificável é
+  recusado, igual à verificação de tag em `_install.py` que recusa
+  quando git/gpg falta. O opt-out explícito resgata mirrors
+  air-gapped / self-hosted.
 - **chave-raiz vazia** (`_REGISTRY_ROOT_KEY == ""`, só builds pre-1.0)
   → fail-open com aviso.
 

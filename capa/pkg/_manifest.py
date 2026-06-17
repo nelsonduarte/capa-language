@@ -348,25 +348,45 @@ def _validate_git_url(path: Path, name: str, url: str) -> None:
             f"ext:: transport (CVE-2017-1000117 class), among other "
             f"git URL injection patterns."
         )
+    # ``file://`` is allow-listed for legitimate local mirrors / test
+    # repos, but it must not become a path-traversal primitive: a dep
+    # like ``file://../../../etc/passwd`` would pull arbitrary local
+    # content (and, once vendored, attacker-chosen code) into the
+    # build. Refuse any ``..`` component in a file:// path while
+    # keeping plain absolute paths (``file:///home/user/repo``,
+    # ``file:///C:/abs/path/repo``) accepted.
+    if matched_scheme == "file://":
+        file_path = url[len(matched_scheme):]
+        # Normalise both separators so ``..\..`` is caught on every OS.
+        for component in file_path.replace("\\", "/").split("/"):
+            if component == "..":
+                raise ManifestError(
+                    f"{path}: dependencies.{name}.git is a file:// URL "
+                    f"containing a '..' path component, which is a "
+                    f"path-traversal vector (it can escape the intended "
+                    f"directory and vendor arbitrary local content). "
+                    f"Use an absolute file:// path with no '..'. "
+                    f"Got {url!r}"
+                )
+        return
     # Reject a host component that starts with '-'. The host is the
     # text after ``scheme://`` and an optional ``user@`` prefix, up to
     # the first path / port separator. A leading '-' there reintroduces
     # the option-injection class one level down from the URL position
-    # (e.g. ``ssh://-oProxyCommand=calc/repo``). ``file://`` paths have
-    # no host and are exempt.
-    if matched_scheme != "file://":
-        authority = url[len(matched_scheme):]
-        # Drop an optional ``user[:pass]@`` prefix; the host is what
-        # follows. Then cut at the first '/', ':' (port), or '?'.
-        host = authority.split("@", 1)[-1]
-        host = host.split("/", 1)[0].split(":", 1)[0].split("?", 1)[0]
-        if host.startswith("-"):
-            raise ManifestError(
-                f"{path}: dependencies.{name}.git host component "
-                f"{host!r} starts with '-'; this would be parsed as a "
-                f"command-line option by git / the ssh transport. "
-                f"Got {url!r}"
-            )
+    # (e.g. ``ssh://-oProxyCommand=calc/repo``). The file:// case
+    # already returned above.
+    authority = url[len(matched_scheme):]
+    # Drop an optional ``user[:pass]@`` prefix; the host is what
+    # follows. Then cut at the first '/', ':' (port), or '?'.
+    host = authority.split("@", 1)[-1]
+    host = host.split("/", 1)[0].split(":", 1)[0].split("?", 1)[0]
+    if host.startswith("-"):
+        raise ManifestError(
+            f"{path}: dependencies.{name}.git host component "
+            f"{host!r} starts with '-'; this would be parsed as a "
+            f"command-line option by git / the ssh transport. "
+            f"Got {url!r}"
+        )
 
 
 def _parse_dep(path: Path, name: str, spec: dict) -> Dependency:

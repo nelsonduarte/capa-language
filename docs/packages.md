@@ -101,6 +101,39 @@ verify_key = "1234 5678 90AB CDEF 1234 5678 90AB CDEF 1234 5678"
 The 40-char fingerprint may include spaces or colons for
 readability; the parser normalises before comparison.
 
+#### Where `verify_key` comes from, and what it actually proves
+
+You can set `verify_key` two ways, and they give **different**
+strength guarantees:
+
+- **Pinned by hand** (you write the fingerprint into `capa.toml`,
+  or pass `capa add --verify-key <fpr>`). This is the strong form:
+  you obtained the publisher's fingerprint out of band (their
+  website, a keyserver you trust, a prior known-good release) and
+  the install refuses anything not signed by that exact primary
+  key. The trust is anchored on the publisher's own identity.
+
+- **Filled from the registry index** (`capa add <name>` with no
+  `--verify-key`). The index entry carries the `verify_key`, and
+  the index itself is signed by the registry **root key** baked
+  into the toolchain. This is **trust-on-first-use (TOFU) anchored
+  on the root key**, not independent verification of the publisher:
+  you are trusting that whoever holds the root key vouches for the
+  fingerprint in that entry. It is genuinely weaker than a
+  hand-pinned key, where you verified the publisher yourself.
+
+For anything you care about, prefer pinning `verify_key` by hand.
+
+> **Known limitation: single root key.** The registry index and
+> every package fingerprint it vouches for are anchored on one
+> root key. That key is a single point of failure: a compromise of
+> the root key lets an attacker re-sign an index that points every
+> unpinned dependency at attacker-chosen code and keys. Pinning
+> `verify_key` manually removes that dependency for the deps you
+> pin (they no longer trust the index for their fingerprint).
+> Per-publisher keys / delegated trust are a deliberate future
+> direction, not a property of the current model.
+
 #### SLSA L2 build provenance (implicit)
 
 When `verify_key` is set AND the git URL points at GitHub AND

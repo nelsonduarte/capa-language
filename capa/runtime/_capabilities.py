@@ -442,6 +442,13 @@ class Random:
     previous implementation delegated to Python's ``random.Random``
     (Mersenne Twister); seeded outputs changed when this switch
     landed.
+
+    NOT CRYPTOGRAPHICALLY SECURE. SplitMix64 is a fast, reproducible
+    PRNG for simulation, sampling, jitter, and test data. Do NOT use
+    it for tokens, API keys, passwords, session IDs, nonces, salts, or
+    any value whose security depends on unpredictability: its output
+    is predictable and, when seeded, fully reproducible. Use a
+    dedicated cryptographic source for those.
     """
 
     __slots__ = ("_state",)

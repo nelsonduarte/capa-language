@@ -485,6 +485,13 @@ RNG was made deterministic before being handed onward. The PRNG is
 SplitMix64 on both backends, so a seeded `Random` produces a
 byte-identical sequence on Python and Wasm.
 
+> **Not cryptographically secure.** `Random` (SplitMix64) is a fast,
+> reproducible PRNG for simulation, sampling, jitter, and test data.
+> Do **not** use it for tokens, API keys, passwords, session IDs,
+> nonces, salts, or any value whose security depends on
+> unpredictability: its output is predictable and, when seeded, fully
+> reproducible. Use a dedicated cryptographic source for those.
+
 ### `Net`
 
 | Method | Type | Description |

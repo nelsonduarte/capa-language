@@ -197,7 +197,9 @@ def _diagnose_lineending_mismatch(
         for line in r.stdout.splitlines():
             if line.startswith("[GNUPG:] VALIDSIG "):
                 parts = line.split()
-                if len(parts) >= 3 and parts[2].upper() == expected:
+                # parts[-1] is the primary-key fpr (see doc/DETAILS);
+                # match the accept gate, which anchors on the primary.
+                if len(parts) >= 3 and parts[-1].upper() == expected:
                     return True
     return False
 
@@ -222,9 +224,15 @@ def _verify_index_signature(
                      signature is a downgrade-attack vector when the
                      toolchain knows the key, so absence is refused.
       * signature present, gpg binary missing (FileNotFoundError)
-            -> warn once, return. gpg-not-on-PATH is an environment
-               limitation, not an attacker-controllable vector, so it
-               degrades rather than blocks.
+            - with ``CAPA_REGISTRY_ALLOW_UNSIGNED=1`` set
+                  -> warn once, return (explicit air-gapped /
+                     self-hosted opt-out).
+            - otherwise
+                  -> raise RegistryError (FAIL-CLOSED). The index is
+                     the trust root; an unverifiable signed index is
+                     refused, matching the tag-verification path in
+                     _install.py which fails closed when git/gpg is
+                     absent.
       * signature present, gpg non-zero / no VALIDSIG / fingerprint
         mismatch
             -> raise RegistryError (FAIL-CLOSED; an attack signal).
@@ -293,12 +301,32 @@ def _verify_index_signature(
                 capture_output=True, text=True, encoding="utf-8",
             )
         except FileNotFoundError:
-            _warn_once(
-                "nogpg",
+            # The index is the registry trust root: a signature is
+            # present but gpg cannot verify it. Fail closed, matching
+            # the tag-verification path in _install.py (which refuses
+            # when git/gpg is missing). Trusting an unverifiable signed
+            # index would silently downgrade the trust root. The
+            # explicit air-gapped / self-hosted opt-out still rescues
+            # callers who knowingly cannot run gpg.
+            if os.environ.get(_ALLOW_UNSIGNED_ENV) == "1":
+                _warn_once(
+                    "nogpg",
+                    "registry index carries a signature but 'gpg' is not "
+                    f"on PATH; {_ALLOW_UNSIGNED_ENV}=1 is set, so it is "
+                    "trusted unverified (air-gapped / self-hosted "
+                    "opt-out).",
+                )
+                return
+            raise RegistryError(
                 "registry index carries a signature but 'gpg' is not on "
-                "PATH, so it cannot be verified; trusting it unverified.",
+                "PATH, so the signature cannot be verified. The index is "
+                "the registry trust root, so an unverifiable signed index "
+                "is refused (fail-closed), the same way tag signature "
+                "verification refuses a missing verifier.\n\n"
+                "Install GnuPG and put 'gpg' on PATH, or, if you are "
+                "pointing at an air-gapped / self-hosted mirror you trust "
+                f"out of band, set {_ALLOW_UNSIGNED_ENV}=1 to opt out."
             )
-            return
 
     if r.returncode != 0:
         # Defence-in-depth diagnostic ONLY. The accept gate above
@@ -339,13 +367,19 @@ def _verify_index_signature(
         )
 
     # ``--status-fd 1`` routes the machine-readable status lines to
-    # stdout; look for ``[GNUPG:] VALIDSIG <fingerprint>``.
+    # stdout; look for ``[GNUPG:] VALIDSIG <fingerprint>``. Per GnuPG
+    # doc/DETAILS the LAST field of VALIDSIG is the primary-key
+    # fingerprint; the root key is a publisher identity (the primary),
+    # so anchor on parts[-1]. This accepts a signature made by a
+    # dedicated signing subkey under the pinned root primary (gpg
+    # already proved the subkey<-primary binding), so the root key can
+    # rotate to a signing subkey without breaking index verification.
     fingerprint = None
     for line in r.stdout.splitlines():
         if line.startswith("[GNUPG:] VALIDSIG "):
             parts = line.split()
             if len(parts) >= 3:
-                fingerprint = parts[2].upper()
+                fingerprint = parts[-1].upper()
                 break
     if fingerprint is None:
         raise RegistryError(

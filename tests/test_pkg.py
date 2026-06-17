@@ -254,6 +254,33 @@ class TestGitUrlAllowList(_TempDirMixin, unittest.TestCase):
         m = read_manifest(self._capa_toml_with_git("file:///tmp/local-repo"))
         self.assertEqual(m.dependencies[0].git, "file:///tmp/local-repo")
 
+    def test_file_absolute_paths_allowed(self):
+        # Plain absolute file:// paths (no ``..``) stay accepted: the
+        # legitimate local-mirror / test-repo use case.
+        for url in (
+            "file:///home/user/repo",
+            "file:///C:/abs/path/repo",
+            "file:///var/lib/mirrors/mylib.git",
+        ):
+            with self.subTest(url=url):
+                m = read_manifest(self._capa_toml_with_git(url))
+                self.assertEqual(m.dependencies[0].git, url)
+
+    def test_file_path_traversal_rejected(self):
+        # file:// must not become a path-traversal primitive: a ``..``
+        # component can escape the intended directory and vendor
+        # arbitrary local content. Both separators are caught.
+        for url in (
+            "file://../../../etc/passwd",
+            "file://../../x",
+            "file://..\\\\..\\\\x",
+            "file:///home/user/../../etc/passwd",
+        ):
+            with self.subTest(url=url):
+                with self.assertRaises(ManifestError) as cm:
+                    read_manifest(self._capa_toml_with_git(url))
+                self.assertIn("traversal", str(cm.exception).lower())
+
     def test_git_ssh_shortcut_allowed(self):
         m = read_manifest(self._capa_toml_with_git("git@github.com:x/y.git"))
         self.assertEqual(m.dependencies[0].git, "git@github.com:x/y.git")
@@ -325,6 +352,66 @@ class TestGitUrlAllowList(_TempDirMixin, unittest.TestCase):
         with self.assertRaises(ManifestError) as cm:
             read_manifest(self._capa_toml_with_git("/tmp/local-repo"))
         self.assertIn("allow-listed transports", str(cm.exception))
+
+
+class TestVerifySignedPinPrimaryAnchor(unittest.TestCase):
+    """Audit 2026-06-17 PKG-2: ``_verify_signed_pin`` must anchor the
+    declared ``verify_key`` on the PRIMARY key fingerprint (last field
+    of the GnuPG ``VALIDSIG`` line per doc/DETAILS), not on the field
+    that names the signing (sub)key. This lets a publisher rotate to a
+    dedicated signing subkey without breaking verification, since gpg
+    already proves the subkey<-primary binding by emitting the primary
+    fpr. The cases drive a mocked ``git verify-tag --raw`` so no real
+    keyring is needed."""
+
+    _PRIMARY = "A" * 40
+    _SUBKEY = "B" * 40
+
+    @staticmethod
+    def _validsig_line(signing_fpr: str, primary_fpr: str) -> str:
+        # Full 11-token VALIDSIG: [GNUPG:] VALIDSIG <sig-fpr> <date>
+        # <ts> <expire> <ver> <reserved> <pkalgo> <hashalgo> <class>
+        # <primary-key-fpr>.
+        return (
+            f"[GNUPG:] VALIDSIG {signing_fpr} 2026-06-17 1750000000 0 "
+            f"4 0 22 8 00 {primary_fpr}"
+        )
+
+    def _run(self, validsig: str, expected_fpr: str):
+        from unittest.mock import patch, MagicMock
+        from capa.pkg._install import _verify_signed_pin
+        from pathlib import Path as _P
+        result = MagicMock(returncode=0, stderr=validsig, stdout="")
+        with patch(
+            "capa.pkg._install.subprocess.run", return_value=result
+        ):
+            return _verify_signed_pin(
+                _P("/tmp/dest"), "tag", "v1.0", expected_fpr, "mylib",
+            )
+
+    def test_primary_only_signature_verifies(self):
+        # Current registry case: the primary itself signs, so signing
+        # fpr == primary fpr == verify_key. Must still pass.
+        line = self._validsig_line(self._PRIMARY, self._PRIMARY)
+        self.assertEqual(self._run(line, self._PRIMARY), self._PRIMARY)
+
+    def test_subkey_rotation_verifies_against_primary(self):
+        # Rotation case: a signing subkey produced the signature
+        # (parts[2] == subkey) but the primary fpr (parts[-1]) equals
+        # the declared verify_key. Anchoring on the primary -> PASS.
+        line = self._validsig_line(self._SUBKEY, self._PRIMARY)
+        self.assertEqual(self._run(line, self._PRIMARY), self._PRIMARY)
+
+    def test_wrong_primary_fails_and_names_subkey(self):
+        # The primary does NOT match the declared verify_key: refuse,
+        # and the diagnostic names both the subkey used and the primary.
+        from capa.pkg._install import VerificationError
+        line = self._validsig_line(self._SUBKEY, "C" * 40)
+        with self.assertRaises(VerificationError) as cm:
+            self._run(line, self._PRIMARY)
+        msg = str(cm.exception)
+        self.assertIn("C" * 40, msg)
+        self.assertIn(self._SUBKEY, msg)
 
 
 class TestDependencyNameAllowList(_TempDirMixin, unittest.TestCase):
@@ -1900,6 +1987,70 @@ class TestRegistryIndexSignature(_TempDirMixin, unittest.TestCase):
                     "capa_http", registry_url=url,
                     cache_dir=self._cache_dir(),
                 )
+
+    def test_signed_index_gpg_absent_fails_closed(self):
+        # Audit 2026-06-17: a signature is present but gpg is not on
+        # PATH. The index is the registry trust root, so an
+        # unverifiable signed index must FAIL CLOSED (was previously a
+        # warn-and-trust fail-open), matching tag verification in
+        # _install.py. Modelled by patching subprocess.run to raise
+        # FileNotFoundError (the "gpg missing" signal) so the test runs
+        # regardless of whether gpg is actually installed.
+        from unittest.mock import patch
+        body = self._good_index()
+        idx = self._tmp / "index.json"
+        idx.write_text(body, encoding="utf-8")
+        (self._tmp / "index.json.asc").write_text(
+            "-----BEGIN PGP SIGNATURE-----\nsig\n"
+            "-----END PGP SIGNATURE-----\n",
+            encoding="utf-8",
+        )
+        url = idx.as_uri()
+        with patch("capa.pkg._registry._REGISTRY_ROOT_KEY", self._KEY), \
+                patch(
+                    "capa.pkg._registry.subprocess.run",
+                    side_effect=FileNotFoundError(),
+                ):
+            with self.assertRaises(RegistryError) as ctx:
+                resolve_name(
+                    "capa_http", registry_url=url,
+                    cache_dir=self._cache_dir(),
+                )
+        msg = str(ctx.exception).lower()
+        self.assertIn("gpg", msg)
+        self.assertIn("allow_unsigned", msg)
+
+    def test_signed_index_gpg_absent_opt_out_resolves(self):
+        # Same as above but with CAPA_REGISTRY_ALLOW_UNSIGNED=1: the
+        # explicit air-gapped / self-hosted opt-out warns once and
+        # resolves instead of failing closed.
+        import io
+        import contextlib
+        from unittest.mock import patch
+        body = self._good_index()
+        idx = self._tmp / "index.json"
+        idx.write_text(body, encoding="utf-8")
+        (self._tmp / "index.json.asc").write_text(
+            "-----BEGIN PGP SIGNATURE-----\nsig\n"
+            "-----END PGP SIGNATURE-----\n",
+            encoding="utf-8",
+        )
+        url = idx.as_uri()
+        buf = io.StringIO()
+        with patch("capa.pkg._registry._REGISTRY_ROOT_KEY", self._KEY), \
+                patch(
+                    "capa.pkg._registry.subprocess.run",
+                    side_effect=FileNotFoundError(),
+                ), \
+                patch.dict(
+                    os.environ, {"CAPA_REGISTRY_ALLOW_UNSIGNED": "1"}
+                ), \
+                contextlib.redirect_stderr(buf):
+            entry = resolve_name(
+                "capa_http", registry_url=url, cache_dir=self._cache_dir(),
+            )
+        self.assertEqual(entry.name, "capa_http")
+        self.assertIn("gpg", buf.getvalue().lower())
 
     # --- fail-closed positive/negative with a real ephemeral key --------
 
