@@ -7,6 +7,25 @@ The project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 starting at 1.0; before then, minor-version bumps may introduce
 breaking changes and the discipline is still being shaped.
 
+## [1.4.1], 2026-06-17
+
+**Capa 1.4.1.** A PATCH release that fixes a single platform-dependent
+regression introduced in 1.4.0. No new language features and no further
+security changes beyond the fix below.
+
+**Fixes.**
+
+- *Capability attenuation (POSIX).* `Proc.restrict_to` bare-name
+  matching was broken on Linux and macOS in 1.4.0. The path-separator
+  detection used `(os.altsep or "")`, which evaluates to `""` on POSIX
+  (where `os.altsep` is `None`), so the empty string was treated as a
+  separator and **every** command, including a plain bare name, was
+  classified as a path and rejected. The detection now tests for the
+  separator characters directly and is platform-independent, so
+  `restrict_to("git")` again accepts the bare command name on every
+  platform while still requiring an exact identity match for an absolute
+  or relative path.
+
 ## [1.4.0], 2026-06-17
 
 **Capa 1.4.0.** A MINOR release that closes a window of localised audit
