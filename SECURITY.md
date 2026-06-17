@@ -92,6 +92,24 @@ The 2026-05-25 audit record lives at the repository root in
   two manifest fixes (`provably_excluded_capabilities` falsely excluded a
   capability reachable through a closure hidden in a struct field or a
   sum-variant payload), shipped in `1.3.0` under the security exception.
+- [`docs/advisories/2026-06-17-security.md`](docs/advisories/2026-06-17-security.md):
+  capability-attenuation and enforcement fixes (`Proc.restrict_to` fixed
+  the binary identity not just the basename, `Db.allows` canonicalises
+  through `realpath`, and a `Db` open re-validates the kernel true path
+  to close a symlink TOCTOU), information-flow and constant-time fixes (a
+  reassignment laundered a `@secret` in the default tier, a
+  `@constant_time` function admitted a short-circuiting secret string /
+  list compare, and an early return under `@strict_ifc` leaked the
+  predicate bit and across a function boundary), encapsulation fixes
+  (field access through an abstract-capability / trait receiver, and
+  `Unsafe` hidden in a capability-bearing struct), manifest fixes
+  (`provably_excluded_capabilities` falsely excluded a capability
+  reachable through a cap-bearing struct, a nested field, or a
+  sum-variant payload, plus a multi-module provenance / SBOM digest and
+  stable single-file identifiers), and supply-chain fixes (GPG anchored
+  on the primary key, `file://` traversal incl. percent-encoding,
+  fail-closed registry index) plus a `parse_int` DoS, shipped in `1.4.0`
+  under the security exception.
 
 ## Public disclosure
 

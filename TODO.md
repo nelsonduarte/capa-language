@@ -19,9 +19,8 @@ Status legend: `[x]` done · `[~]` partial · `[ ]` pending.
 
 ## Current state (June 2026)
 
-Compiler at **v1.3.0** (tagged 2026-06-16; `pyproject.toml`
-`version = "1.3.0"`, git tag `v1.3.0`). Suite at 2965 passed /
-15 skipped / 1 xfailed / 1658 subtests, CI green.
+Compiler at **v1.4.0** (released 2026-06-17; `pyproject.toml`
+`version = "1.4.0"`). Suite green, CI green.
 
 The **Wasm Component Model backend is long complete** with full
 Python / Wasm parity. The May 2026 goal below (the three demos
@@ -74,6 +73,21 @@ two advisories under [`docs/advisories/`](docs/advisories/).
 - **v1.3.0** (2026-06-16): completes Python / Wasm parity, closes five
   more soundness holes, hardens the frontend and the package manager.
   No new language features (see the 2026-06-16 advisory).
+- **v1.4.0** (2026-06-17): a window of localised audit findings across
+  capability attenuation / enforcement (`Proc` basename->identity RCE,
+  `Db` `..`-traversal, `Db` post-open symlink TOCTOU), information-flow
+  and constant-time (default-tier secret reassign, `@constant_time`
+  secret-compare rejection, `@strict_ifc` early-return implicit flow +
+  cross-function pc leak), capability encapsulation (field access via an
+  abstract-cap receiver, `Unsafe` in a cap-bearing struct), manifest /
+  SBOM integrity (false exclusions via cap-bearing struct / nested field
+  / sum-variant payload, multi-module digest, stable single-file
+  identifiers), supply chain (GPG primary-key anchor, `file://`
+  traversal incl. percent-encoding, fail-closed registry index), and a
+  `parse_int` DoS. No new language features (see the 2026-06-17
+  advisory). Three new rejections under the security exception:
+  `@constant_time` secret-compare, `Unsafe` in a cap-bearing struct,
+  field access through an abstract-cap / trait receiver.
 
 **New language / tooling features in this window.** Selective import
 with renaming; `capa test` (`--both` for cross-backend parity) and
@@ -106,10 +120,11 @@ builtin `panic`; `String.bytes()`; byte-reproducible SBOMs via
   divergent re-import of a module, loader-mangled names in diagnostics,
   `@vex` soft-validation against the CycloneDX vocabulary.
 
-Two soundness advisories published:
-[`docs/advisories/2026-06-15-soundness.md`](docs/advisories/2026-06-15-soundness.md)
+Three soundness / security advisories published:
+[`docs/advisories/2026-06-15-soundness.md`](docs/advisories/2026-06-15-soundness.md),
+[`docs/advisories/2026-06-16-soundness.md`](docs/advisories/2026-06-16-soundness.md),
 and
-[`docs/advisories/2026-06-16-soundness.md`](docs/advisories/2026-06-16-soundness.md).
+[`docs/advisories/2026-06-17-security.md`](docs/advisories/2026-06-17-security.md).
 
 **Ecosystem.** 8 seed libraries published on the signed registry
 (`capa_cli`, `capa_datetime`, `capa_http`, `capa_log`, `capa_sbom`,
@@ -3635,6 +3650,42 @@ Remaining open items (no concrete driver yet):
   `docs/stdlib.md`. Possible hardening: refuse multi-link files
   (`st_nlink > 1`) on restricted caps, with the trade-off of
   false negatives on legitimately multi-link files.
+- **PKG-1: `vendor/` consumed without re-verification against
+  `capa.lock`.** Surfaced by the 2026-06-17 security review. Only
+  `capa install` verifies vendored content against the lockfile;
+  `capa build` / `check` / `run` consume whatever sits under
+  `vendor/` without re-checking it against `capa.lock`, so a
+  post-install tamper of `vendor/` is invisible to the build path.
+  Wants a lock re-verification (content digest against the
+  recorded pins) on the consume path, or an explicit
+  `--frozen`-style gate. Still open.
+- **Infra: floating-tag GitHub Actions and git tags across the
+  ecosystem.** Surfaced by the 2026-06-17 review. GitHub Actions
+  are pinned by a floating tag (not a commit SHA) across ~12
+  repos, including the release channel; the CI GPG gate imports
+  the signing key from the repository it is verifying (a circular
+  trust root); and the CRA / governance packs carry floating git
+  tags. Wants SHA-pinned actions, a CI trust root anchored outside
+  the verified repo, and immutable release tags. Infra, separate
+  from the compiler tree; still open.
+- **Db post-open TOCTOU residual window.** The 2026-06-17 fix
+  (commit `77ee0c5`) re-derives the connection's true path from
+  the kernel after open and re-validates it against the prefix,
+  closing the realistic symlink-swap window. A narrow residual
+  remains because `sqlite3` does not accept a pre-opened file
+  descriptor, so there is still a gap between the kernel-side open
+  and the true-path re-derivation. Documented residual in the
+  2026-06-17 advisory; closing it fully needs an fd-accepting open
+  path that `sqlite3` does not currently expose.
+- **IFC variable-reassignment flow-insensitivity.** The 2026-06-17
+  fix (commit `1f645e0`) makes `x = secret` join the RHS label onto
+  the target in the default tier too, closing the silent-laundering
+  hole. The join is monotonic on the target Symbol (it never lowers
+  the label), so the analysis stays flow-insensitive across
+  reassignment: a name that held a secret keeps its label even after
+  being reassigned to a public value. This is a known pre-existing
+  limitation (conservative, never unsound), recorded here so the
+  boundary is explicit.
 - **IFC C-2 residual: a captured-`@secret` closure passed by name
   cross-function.** The 2026-06-16 fix (commit `909959c`) closes the
   cross-function leak when a captured-`@secret` closure is passed as an
@@ -3690,6 +3741,42 @@ Remaining open items (no concrete driver yet):
   is 2027 work, on venue submission.
 
 Closed since this list was last reconciled (June 2026):
+- **Capability attenuation / enforcement holes** - CLOSED in v1.4.0.
+  `Proc.restrict_to` now fixes the binary identity not the basename
+  (RCE vector); `Db.allows` canonicalises through `realpath` before
+  the boundary check (`..`-traversal); a `Db` open re-validates the
+  kernel true path (symlink TOCTOU, narrow residual recorded above).
+  Commits `1f645e0`, `dcf47af`, `77ee0c5`. See the 2026-06-17 advisory.
+- **IFC / constant-time holes** - CLOSED in v1.4.0. A default-tier
+  secret reassignment now warns; a `@constant_time` function rejects a
+  short-circuiting secret string / list compare (CWE-208); an early
+  return inside a secret branch under `@strict_ifc` keeps the pc
+  elevated and no longer leaks across a function boundary. Commits
+  `1f645e0`, `dcf47af`. See the 2026-06-17 advisory.
+- **Capability encapsulation holes** - CLOSED in v1.4.0. Field access
+  through an abstract-cap / trait receiver and `Unsafe` hidden in a
+  cap-bearing struct are both rejected now (`Unsafe` rejection walks
+  parameter types recursively on Wasm). Commit `3cdb421`. See the
+  2026-06-17 advisory.
+- **Manifest / SBOM false exclusions and digest gaps** - CLOSED in
+  v1.4.0. `provably_excluded_capabilities` no longer over-claims via a
+  cap-bearing struct, a nested field, or a sum-variant payload; the
+  provenance / SBOM digest covers all modules and demangles `sel__`;
+  single-file SBOM identifiers are restored to their historical values.
+  Commits `3cdb421`, `30e66e3`, `2b6ee0f`. See the 2026-06-17 advisory.
+- **Supply-chain trust-root weaknesses** - CLOSED in v1.4.0. GPG verify
+  is anchored on the primary key; `file://` traversal (incl.
+  percent-encoded `%2e%2e`) is rejected; the registry index fails closed
+  when unverifiable. Commits `de16b21`, `9369f11`. See the 2026-06-17
+  advisory.
+- **Random non-cryptographic documentation** - CLOSED in v1.4.0
+  (commit `de16b21`). `Random` (SplitMix64) is now documented as not
+  cryptographically secure in both `docs/stdlib.md` and the `Random`
+  docstring; the registry TOFU anchoring is documented in
+  `docs/packages.md`.
+- **`parse_int` many-digit DoS** - CLOSED in v1.4.0 (commits `1f645e0`,
+  `dcf47af`). `parse_int` screens significant-digit count and returns
+  `None` before `int(body)`, matching the Wasm `$parse_int`.
 - **Wasm `parse_float` has no scientific notation** - CLOSED in
   v1.3.0 (commit `782a0d2`). `$parse_float` on Wasm is now a
   correctly-rounded decimal-to-f64 conversion, bit-identical to

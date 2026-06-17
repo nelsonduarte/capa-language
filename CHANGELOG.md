@@ -7,58 +7,94 @@ The project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 starting at 1.0; before then, minor-version bumps may introduce
 breaking changes and the discipline is still being shaped.
 
-## [Unreleased]
+## [1.4.0], 2026-06-17
 
-**Security / soundness (9 fixes).** Nine localised audit findings
-(2026-06-17), under the documented-bug / security carve-out of
-[`STABILITY.md`](STABILITY.md):
+**Capa 1.4.0.** A MINOR release that closes a window of localised audit
+findings across capability attenuation and enforcement, information-flow
+and constant-time, capability encapsulation, manifest / SBOM integrity,
+and the package manager's supply-chain trust root. The static-analysis,
+runtime-enforcement, and manifest tightenings fall under the
+documented-bug / security carve-out of [`STABILITY.md`](STABILITY.md);
+full per-finding rationale and the explicit security-exception
+justification (why each is a MINOR bump, not a MAJOR) are in the
+advisory at
+[`docs/advisories/2026-06-17-security.md`](docs/advisories/2026-06-17-security.md).
+No new language features.
 
-- `Proc.restrict_to` now fixes the binary's **identity**, not merely
-  its basename. A bare-name restriction (`restrict_to("git")`) admits
-  only bare-name commands and rejects a planted absolute path with the
-  same basename (`/attacker/git`); a path restriction gates on the
-  resolved, normalised path. Python / Wasm parity preserved.
-- `Db.allows` now canonicalises the path through `realpath` before the
+**Security / soundness.** Grouped as in the advisory:
+
+- *Capability attenuation and enforcement.* `Proc.restrict_to` now
+  fixes the binary's **identity**, not merely its basename, so a planted
+  absolute path with the same basename (`/attacker/git`) no longer
+  satisfies `restrict_to("git")` (a sandbox-defeating RCE vector).
+  `Db.allows` now canonicalises the path through `realpath` before the
   boundary check, exactly as `Fs.allows` does, so a `prefix/../x.db`
-  traversal that escapes the prefix on disk is denied on both backends.
-- An IFC variable reassignment (`x = secret`) now joins the RHS label
-  onto the target in the **default** tier too (an explicit data flow,
-  like `let x = secret`); previously only `@strict_ifc` did, silently
-  laundering the value in the default warn tier.
-- A `@constant_time` function now rejects a short-circuiting **String /
-  List comparison** (`==` `!=` `<` ... and `starts_with` / `ends_with`
-  / `contains` / `index_of`) on a `@secret` operand -- the MAC / token
-  / password compare oracle (CWE-208). Int / Float scalar comparison
-  stays allowed.
-- Under `@strict_ifc`, a divergence (return / break / continue / panic)
-  inside a secret-conditioned branch now keeps the pc elevated for the
-  rest of the enclosing block, so a sink on the post-branch line that
-  leaks the predicate bit is flagged.
-- `parse_int` now rejects an out-of-range magnitude by length **before**
+  traversal is denied on both backends. A `Db` open now re-derives the
+  connection's true path from the kernel and re-validates it against the
+  capability's prefix, closing the symlink TOCTOU window (a narrow
+  residual remains because `sqlite3` does not accept a pre-opened fd).
+- *Information-flow and constant-time.* An IFC variable reassignment
+  (`x = secret`) now joins the RHS label onto the target in the
+  **default** tier too (previously only `@strict_ifc` did, silently
+  laundering the value in the warn tier). A `@constant_time` function
+  now **rejects** a short-circuiting `@secret` `String` / `List`
+  comparison (`==` `!=` `<` ... and `starts_with` / `ends_with` /
+  `contains` / `index_of`) as a MAC / token / password timing oracle
+  (CWE-208); Int / Float scalar comparison stays allowed. Under
+  `@strict_ifc`, a divergence (return / break / continue / panic) inside
+  a secret-conditioned branch now keeps the pc elevated for the rest of
+  the enclosing block (so a post-branch sink leaking the predicate bit
+  is flagged) and no longer leaks across an `@strict_ifc` function
+  boundary (the pc is reset on entry and restored on exit).
+- *Capability encapsulation.* Field access through a value whose
+  **static type is an abstract capability or trait** is now **rejected**
+  (`lg: Logger` ... `lg.fs`), since the concrete implementor's fields
+  are private to its `impl` and reaching one would exercise undeclared
+  authority; access through the concrete struct type and `self.field`
+  inside the `impl` stay allowed. `Unsafe` is now **rejected** as a
+  struct field even inside a capability-bearing struct (the relaxation
+  covers only the attenuable built-in caps); the Wasm backend's `Unsafe`
+  rejection now also walks a parameter type recursively (struct fields,
+  sum payloads, generic args).
+- *Manifest / SBOM integrity.* `provably_excluded_capabilities` no
+  longer falsely excludes a capability reachable through a
+  capability-bearing struct, a cap-bearing type nested in a struct
+  field, or a capability carried in a **sum-variant payload** (every
+  struct and sum is now seeded and folded into one reachability
+  fixpoint at any nesting depth). The provenance / SBOM digest now
+  covers **all** linked modules and demangles cross-module names
+  (`sel__`, `_capa_m<N>__`) in capability names; a single-file program's
+  `serialNumber` / `documentNamespace` / `invocationId` are restored to
+  their historical byte-stable values (the multi-file digest join is now
+  taken only when more than one module is linked).
+- *Supply chain.* GPG verification is now anchored on the **primary-key**
+  fingerprint of the `VALIDSIG` line (not the signing-subkey field), so
+  verification survives a subkey rotation. A `file://` git URL with a
+  `..` component is rejected, including the **percent-encoded** form
+  (`file://%2e%2e/x`), which git would otherwise decode and resolve. The
+  registry index now **fails closed** when a signature is present but
+  `gpg` is unavailable (the `CAPA_REGISTRY_ALLOW_UNSIGNED` opt-out still
+  rescues air-gapped mirrors). Docs note that `Random` (SplitMix64) is
+  not cryptographically secure and that an index-derived `verify_key` is
+  TOFU anchored on the root key.
+- *Input robustness.* `parse_int` now screens the significant digit
+  count and returns `None` for an out-of-range magnitude **before**
   `int(body)`, so a many-digit string no longer trips CPython's
-  int<->str conversion cap with an uncaught `ValueError` (a DoS); it
-  returns `None`, matching the Wasm `$parse_int`.
-- Field access through a value whose **static type is an abstract
-  capability or trait** is now rejected (`lg: Logger` ... `lg.fs`).
-  The runtime value is the concrete implementor, so reaching its
-  private field would exercise a built-in cap the signature never
-  declares; the implementor's fields are private to its `impl`.
-  Access through the concrete struct type, and `self.field` inside the
-  `impl`, stay allowed (the legitimate reachable-via-struct model).
-- `Unsafe` is now rejected as a **struct field even in a
-  capability-bearing struct**. The cap-bearing relaxation covers only
-  the attenuable built-in caps (Fs / Net / Db / Proc / Env / Clock /
-  Random); `Unsafe` is the FFI escape hatch and must never hide behind
-  an abstract cap. The Wasm backend's `Unsafe` rejection now also walks
-  a parameter type recursively (struct fields, sum payloads, generic
-  args) so an `Unsafe`-bearing type is refused loud rather than
-  emitting an invalid `call $py_import`.
-- `provably_excluded_capabilities` no longer falsely excludes a
-  **user-defined capability reachable through a cap-bearing struct**: a
-  holder of `S` where `impl C for S` can exercise `C`, so `C` is now in
-  `transitively_reachable_capabilities` and out of the exclusion list.
-  The bound is derived from the signature, so it stays sound regardless
-  of the body (conservative: may over-declare, never under-declare).
+  int-to-str conversion cap with an uncaught `ValueError` (a DoS),
+  matching the Wasm `$parse_int`.
+
+**Observable behaviour changes (read before upgrading).** Three fixes
+turn a program that previously compiled into a compile error, each under
+the security exception: a `@constant_time` function comparing a
+`@secret` `String` / `List` with a short-circuiting operator; an
+`Unsafe` field inside a capability-bearing struct; and field access
+through an abstract-capability or trait receiver. An IFC reassignment of
+a `@secret` now warns in the default tier where it previously did not.
+`provably_excluded_capabilities` may now list fewer exclusions (it
+declines the ones it cannot prove). Single-file SBOM identifiers are
+restored to their pre-1.3 historical values. See
+[`docs/advisories/2026-06-17-security.md`](docs/advisories/2026-06-17-security.md)
+for the per-finding rationale.
 
 ## [1.3.0], 2026-06-16
 
