@@ -200,6 +200,13 @@ class _DeclarationsMixin:
                         self._check_no_capability(
                             fty, fld.pos, f"struct field {fld.name!r}",
                         )
+                    else:
+                        # The cap-bearing relaxation covers only the
+                        # attenuable built-in caps; Unsafe never
+                        # benefits from it (audit 2026-06-17 C5).
+                        self._check_no_unsafe_field(
+                            fty, fld.pos, f"struct field {fld.name!r}",
+                        )
                     sym.struct_fields[fld.name] = fty
                     self._record_field_label(sym, fld)
                 self._pop_type_params()

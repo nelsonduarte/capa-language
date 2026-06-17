@@ -2012,18 +2012,17 @@ class TestTranspileExamples(unittest.TestCase):
     def test_llm_agent_runner_manifest_agent_loop_excludes_net(self):
         # The agent_loop function's signature names four caps
         # (Stdio, LlmClient, SearchWeb, SendEmail). Under per-impl
-        # reachability (audit slice 21 closure, 2026-05-29) the
-        # ``transitively_reachable_capabilities`` field adds caps
-        # the named user-cap impls can transitively exercise, and
-        # ``provably_excluded_capabilities`` is computed against
-        # the transitive set. The AnthropicLlmClient impl in this
-        # file holds ``u: Unsafe`` in its struct, so LlmClient
-        # transitively reaches Unsafe - agent_loop therefore
-        # honestly cannot claim to provably exclude Unsafe (any
-        # built-in cap). The headline claim survives in the
-        # weaker form: ``declared_capabilities`` is exactly the
-        # four-cap surface the agent asked for; nothing the LLM
-        # says lets the agent acquire a fifth cap at runtime.
+        # reachability the ``transitively_reachable_capabilities``
+        # field adds the user-caps each named cap implements plus
+        # any built-in caps those impls reach through their fields,
+        # and ``provably_excluded_capabilities`` is computed against
+        # that transitive set. Audit 2026-06-17 C5: Unsafe is the
+        # FFI escape hatch and is no longer allowed to hide inside a
+        # capability-bearing struct, so the AnthropicLlmClient
+        # skeleton no longer carries it. None of agent_loop's impls
+        # reach Unsafe or Net (the stubs hold no built-in cap), so
+        # the agent honestly provably excludes both - the strongest
+        # form of the headline claim.
         import json
         import subprocess
         import sys
@@ -2043,18 +2042,22 @@ class TestTranspileExamples(unittest.TestCase):
             sorted(loop["declared_capabilities"]),
             sorted(["Stdio", "LlmClient", "SearchWeb", "SendEmail"]),
         )
-        # Transitively reachable: declared + Unsafe (from
-        # AnthropicLlmClient.u). The honest SBOM surfaces the
-        # ambient authority the impl chain carries.
-        for cap in ("Stdio", "LlmClient", "SearchWeb", "SendEmail", "Unsafe"):
+        # Transitively reachable: the four declared caps and nothing
+        # else - the stub impls hold no built-in authority.
+        for cap in ("Stdio", "LlmClient", "SearchWeb", "SendEmail"):
             self.assertIn(cap, loop["transitively_reachable_capabilities"])
-        # Exclusion is empty because Unsafe is reachable; once an
-        # Unsafe path exists no cap can be honestly excluded.
-        self.assertEqual(loop["provably_excluded_capabilities"], [])
-        # ``has_unsafe`` is True under the new semantics because
-        # the signature transitively reaches Unsafe via the
-        # AnthropicLlmClient impl.
-        self.assertTrue(loop["has_unsafe"])
+        self.assertNotIn(
+            "Unsafe", loop["transitively_reachable_capabilities"],
+        )
+        self.assertNotIn(
+            "Net", loop["transitively_reachable_capabilities"],
+        )
+        # Exclusion now honestly names Unsafe and Net: no impl in
+        # this function's reach holds either, and Unsafe can no
+        # longer be smuggled through a cap-bearing struct field.
+        self.assertIn("Unsafe", loop["provably_excluded_capabilities"])
+        self.assertIn("Net", loop["provably_excluded_capabilities"])
+        self.assertFalse(loop["has_unsafe"])
 
     def test_llm_anthropic_real_compiles_and_handles_missing_key(self):
         # The real-API demo: cannot exercise the HTTP round-trip in
@@ -2149,16 +2152,14 @@ class TestTranspileExamples(unittest.TestCase):
     # policy-eval) and via each library's own CI.
 
     def test_llm_anthropic_real_manifest_run_chat_caps(self):
-        # ``run_chat`` declares Stdio + LlmClient at the signature
-        # level - Unsafe is NOT in the declared list. Under per-
-        # impl reachability (audit slice 21 closure, 2026-05-29)
-        # the manifest also surfaces what the user-cap impls
-        # transitively bring along: AnthropicClient holds Unsafe
-        # for the urllib bridge, so LlmClient transitively
-        # reaches Unsafe. The honest SBOM disclosure: the
-        # *signature* contains Unsafe to the impl module, but the
-        # function CAN reach Unsafe through the LlmClient call;
-        # exclusion is empty, ``has_unsafe`` is True.
+        # Audit 2026-06-17 C5: a real LLM turn crosses the Python FFI
+        # boundary, so the Unsafe escape hatch is no longer laundered
+        # through a cap-bearing struct field (that is now a compile
+        # error). It is threaded explicitly through ``ask`` and
+        # ``run_chat``, so ``run_chat`` honestly DECLARES Stdio +
+        # LlmClient + Unsafe at the signature level. The SBOM records
+        # Unsafe as a first-class disclosure rather than a hidden
+        # reachable; exclusion is empty, ``has_unsafe`` is True.
         import json
         import subprocess
         import sys
@@ -2172,14 +2173,14 @@ class TestTranspileExamples(unittest.TestCase):
         run_chat = next(
             f for f in m["functions"] if f["name"] == "run_chat"
         )
-        # Signature surface: just Stdio + LlmClient.
+        # Signature surface: Stdio + LlmClient + Unsafe, all named.
         self.assertIn("Stdio", run_chat["declared_capabilities"])
         self.assertIn("LlmClient", run_chat["declared_capabilities"])
-        self.assertNotIn("Unsafe", run_chat["declared_capabilities"])
-        # Transitive surface: Unsafe joins via the AnthropicClient
-        # impl's struct field.
+        self.assertIn("Unsafe", run_chat["declared_capabilities"])
+        # Transitive surface includes Unsafe (now via the explicit
+        # parameter rather than a hidden field).
         self.assertIn("Unsafe", run_chat["transitively_reachable_capabilities"])
-        # Exclusion: empty, because Unsafe is reachable.
+        # Exclusion: empty, because Unsafe is in scope.
         self.assertEqual(run_chat["provably_excluded_capabilities"], [])
         self.assertTrue(run_chat["has_unsafe"])
 

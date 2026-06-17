@@ -3475,6 +3475,134 @@ class TestUserDefinedCapabilities(unittest.TestCase):
             r = check(f.read())
         self.assertTrue(r.ok, r.errors)
 
+    # ---- Audit 2026-06-17 H1: field access through an abstract
+    # capability / trait receiver is rejected. The runtime value is
+    # the concrete implementor, so reaching its private field would
+    # exercise a built-in cap the signature never declares. ----
+
+    def test_field_access_through_abstract_cap_rejected(self):
+        # ``mailer: SendEmail`` is the abstract cap as a parameter
+        # type. ``mailer.net`` would reach the implementor's private
+        # Net; this must be a field-access type error.
+        msgs = errors_of(
+            self._SETUP
+            + "fun leak(mailer: SendEmail, stdio: Stdio)\n"
+            + "    stdio.println(\"${mailer.net}\")\n"
+        )
+        self.assertTrue(
+            any(
+                "field 'net'" in m and "capability type 'SendEmail'" in m
+                for m in msgs
+            ),
+            msgs,
+        )
+
+    def test_nonexistent_field_through_abstract_cap_rejected(self):
+        # Even a totally fake field name is rejected through an
+        # abstract cap receiver (pre-fix it silently typed Unknown).
+        msgs = errors_of(
+            self._SETUP
+            + "fun leak(mailer: SendEmail, stdio: Stdio)\n"
+            + "    stdio.println(\"${mailer.totally_fake}\")\n"
+        )
+        self.assertTrue(
+            any("capability type 'SendEmail'" in m for m in msgs),
+            msgs,
+        )
+
+    def test_field_access_through_trait_receiver_rejected(self):
+        # The same rule applies to a plain (non-capability) trait
+        # used as a parameter type: the holder sees only the trait's
+        # surface, not the implementor's fields.
+        msgs = errors_of(
+            "trait Greeter\n"
+            "    fun greet(self) -> String\n"
+            "type Person { name: String }\n"
+            "impl Greeter for Person\n"
+            "    fun greet(self) -> String\n"
+            "        return self.name\n"
+            "fun peek(g: Greeter) -> String\n"
+            "    return g.name\n"
+        )
+        self.assertTrue(
+            any(
+                "field 'name'" in m and "trait type 'Greeter'" in m
+                for m in msgs
+            ),
+            msgs,
+        )
+
+    def test_field_access_through_concrete_struct_still_allowed(self):
+        # The legitimate reachable-via-struct model: a parameter of
+        # the CONCRETE struct type that implements a cap can still
+        # read its fields (e.g. a factory's own helper). Only the
+        # abstract-cap type is barred.
+        r = check(
+            self._SETUP
+            + "fun host_of(m: SmtpMailer) -> String\n"
+            + "    return m.server\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+    def test_self_field_access_in_impl_still_allowed(self):
+        # ``self`` inside the impl is the concrete struct, so
+        # ``self.net`` / ``self.server`` keep compiling.
+        r = check(
+            "capability SendEmail\n"
+            "    fun send(self, to: String) -> Result<Unit, IoError>\n"
+            "type SmtpMailer { server: String, net: Net }\n"
+            "impl SendEmail for SmtpMailer\n"
+            "    fun send(self, to: String) -> Result<Unit, IoError>\n"
+            "        let _ = self.server\n"
+            "        return Ok(())\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+    # ---- Audit 2026-06-17 C5(a): Unsafe is rejected as a struct
+    # field even when the struct implements a user-cap. The
+    # cap-bearing relaxation covers only the attenuable built-in
+    # caps, never the FFI escape hatch. ----
+
+    def test_unsafe_field_rejected_in_cap_bearing_struct(self):
+        msgs = errors_of(
+            "capability Client\n"
+            "    fun do_it(self) -> Int\n"
+            "type RealClient { u: Unsafe }\n"
+            "impl Client for RealClient\n"
+            "    fun do_it(self) -> Int\n"
+            "        return 0\n"
+        )
+        self.assertTrue(
+            any(
+                "'Unsafe' cannot appear in struct field 'u'" in m
+                and "capability-bearing struct" in m
+                for m in msgs
+            ),
+            msgs,
+        )
+
+    def test_unsafe_nested_in_field_rejected_in_cap_bearing_struct(self):
+        # Unsafe reached through a generic argument of a field type
+        # is rejected too (the relaxation is not a blanket pass).
+        msgs = errors_of(
+            "capability Client\n"
+            "    fun do_it(self) -> Int\n"
+            "type RealClient { us: List<Unsafe> }\n"
+            "impl Client for RealClient\n"
+            "    fun do_it(self) -> Int\n"
+            "        return 0\n"
+        )
+        self.assertTrue(
+            any("'Unsafe' cannot appear in struct field 'us'" in m for m in msgs),
+            msgs,
+        )
+
+    def test_attenuable_cap_field_still_allowed_in_cap_bearing_struct(self):
+        # The relaxation still admits the attenuable built-in caps
+        # (here Net) - only Unsafe is carved out.
+        r = check(self._SETUP + "fun main()\n    return\n")
+        self.assertTrue(r.ok, r.errors)
+
 
 # =============================================================
 # JSON: built-in JsonValue type and parse_json/to_json

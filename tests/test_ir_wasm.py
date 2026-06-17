@@ -6408,5 +6408,118 @@ class TestWasmHostAllocGuard(unittest.TestCase):
         self.assertEqual(host._host_alloc(object(), 8), 4096)
 
 
+class TestWasmRejectsUnsafeReachingTypes(unittest.TestCase):
+    """Audit 2026-06-17 C5(b): the Wasm discovery pass rejects a
+    parameter whose type merely CONTAINS Unsafe (through a struct
+    field, a sum-variant payload, or a generic argument), not only a
+    literal ``Unsafe`` head. The analyzer normally blocks Unsafe in a
+    struct field upstream (C5(a)); this is the defense-in-depth check
+    one layer down, so we build the IR by hand to exercise it."""
+
+    def _emit(self, module):
+        return emit_wat(module)
+
+    def test_struct_field_unsafe_param_is_rejected(self):
+        from capa.ir._nodes import (
+            Module, Function, Param, StructDecl, StructField,
+        )
+        module = Module(
+            functions=[
+                Function(
+                    name="f",
+                    params=[Param(name="w", ty="Wrapper")],
+                    return_type="Unit",
+                    declared_caps=[],
+                    body=[],
+                ),
+            ],
+            types=[
+                StructDecl(
+                    name="Wrapper",
+                    fields=[StructField(name="u", ty="Unsafe")],
+                ),
+            ],
+        )
+        with self.assertRaises(WasmEmissionError) as ctx:
+            self._emit(module)
+        self.assertIn("Unsafe", str(ctx.exception))
+        # The offender is named with its real (struct) type, and no
+        # invalid ``call $py_import`` is emitted.
+        self.assertIn("f(w: Wrapper)", str(ctx.exception))
+
+    def test_nested_struct_field_unsafe_param_is_rejected(self):
+        from capa.ir._nodes import (
+            Module, Function, Param, StructDecl, StructField,
+        )
+        module = Module(
+            functions=[
+                Function(
+                    name="f",
+                    params=[Param(name="o", ty="Outer")],
+                    return_type="Unit",
+                    declared_caps=[],
+                    body=[],
+                ),
+            ],
+            types=[
+                StructDecl(
+                    name="Outer",
+                    fields=[StructField(name="inner", ty="Inner")],
+                ),
+                StructDecl(
+                    name="Inner",
+                    fields=[StructField(name="u", ty="Unsafe")],
+                ),
+            ],
+        )
+        with self.assertRaises(WasmEmissionError) as ctx:
+            self._emit(module)
+        self.assertIn("Unsafe", str(ctx.exception))
+
+    def test_generic_arg_unsafe_param_is_rejected(self):
+        from capa.ir._nodes import Module, Function, Param
+        module = Module(
+            functions=[
+                Function(
+                    name="f",
+                    params=[Param(name="xs", ty="List<Unsafe>")],
+                    return_type="Unit",
+                    declared_caps=[],
+                    body=[],
+                ),
+            ],
+        )
+        with self.assertRaises(WasmEmissionError) as ctx:
+            self._emit(module)
+        self.assertIn("Unsafe", str(ctx.exception))
+
+    def test_unsafe_free_struct_param_still_emits(self):
+        # A struct that does NOT reach Unsafe is untouched by the
+        # tightened check.
+        from capa.ir._nodes import (
+            Module, Function, Param, StructDecl, StructField,
+        )
+        module = Module(
+            functions=[
+                Function(
+                    name="f",
+                    params=[Param(name="p", ty="Point")],
+                    return_type="Unit",
+                    declared_caps=[],
+                    body=[],
+                ),
+            ],
+            types=[
+                StructDecl(
+                    name="Point",
+                    fields=[StructField(name="x", ty="Int")],
+                ),
+            ],
+        )
+        # Should not raise the Unsafe rejection (it emits normally).
+        wat = self._emit(module)
+        self.assertIn("(module", wat)
+
+
 if __name__ == "__main__":
     unittest.main()

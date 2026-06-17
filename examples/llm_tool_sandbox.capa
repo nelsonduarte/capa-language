@@ -67,8 +67,15 @@ type StubMailer {
     net: Net
 }
 
+// A real code-runner would route through Unsafe (py_invoke into a
+// sandboxed interpreter), but Unsafe is the FFI escape hatch and is
+// never allowed to hide inside a capability-bearing struct: a holder
+// of the abstract RunCode cap must not be able to reach Unsafe
+// through a private field. A production runner would therefore take
+// Unsafe in its own signature (and run on the Python backend); this
+// offline stub carries no authority at all.
 type StubRunner {
-    u: Unsafe
+    label: String
 }
 
 impl SearchWeb for StubSearch
@@ -88,10 +95,11 @@ impl SendEmail for StubMailer
 
 impl RunCode for StubRunner
     fun run(self, code: String) -> Result<String, IoError>
-        // A real implementation would route through self.u
-        // (Unsafe) to invoke a Python interpreter or sandbox.
+        // A real implementation would route through Unsafe to invoke
+        // a Python interpreter or sandbox; that Unsafe would have to
+        // be in the runner's own signature, not hidden in a field.
         // The stub echoes the request without running anything.
-        return Ok("(would have run: ${code})")
+        return Ok("(${self.label} would have run: ${code})")
 
 // =========================================================
 // Factories
@@ -114,8 +122,8 @@ pub fun make_mailer(net: Net, smtp_host: String) -> StubMailer
         net: net.restrict_to(smtp_host)
     }
 
-pub fun make_runner(u: Unsafe) -> StubRunner
-    return StubRunner { u: u }
+pub fun make_runner() -> StubRunner
+    return StubRunner { label: "sandbox" }
 
 // =========================================================
 // The agent

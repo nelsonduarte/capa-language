@@ -31,6 +31,8 @@ orchestration + per-instruction dispatch.
 
 from __future__ import annotations
 
+import re
+
 from .._nodes import (
     Module, Instr, Value, Function,
     BinOp, Call, MethodCall, FormatStr, Match,
@@ -440,17 +442,78 @@ class _DiscoveryMixin:
         for fn in iter_functions(module):
             self._discover_instrs(fn.body)
 
+    @staticmethod
+    def _type_name_tokens(ty: str) -> set[str]:
+        """Every type-name identifier appearing in a CIR type
+        string, including generic args and tuple elements. A simple
+        word scan is sound for the Unsafe reachability check: the
+        only false positives would be a user type whose name happens
+        to be a substring of another, which the ``\\b`` boundaries
+        rule out."""
+        if not ty:
+            return set()
+        return set(re.findall(r"[A-Za-z_]\w*", ty))
+
+    def _unsafe_bearing_type_names(self, module: Module) -> set[str]:
+        """Fixpoint set of struct / sum type names that
+        transitively reach ``Unsafe`` through a field or variant
+        payload, so a parameter of such a type is rejected even
+        when ``Unsafe`` never appears literally in the signature
+        (audit 2026-06-17 C5(b))."""
+        field_tys: dict[str, list[str]] = {}
+        for decl in module.types:
+            fields = getattr(decl, "fields", None)
+            if fields is not None:
+                field_tys[decl.name] = [f.ty for f in fields]
+                continue
+            variants = getattr(decl, "variants", None)
+            if variants is not None:
+                field_tys[decl.name] = [
+                    pty for v in variants for pty in v.payload_tys
+                ]
+        bearing: set[str] = set()
+        changed = True
+        while changed:
+            changed = False
+            for name, tys in field_tys.items():
+                if name in bearing:
+                    continue
+                for ty in tys:
+                    toks = self._type_name_tokens(ty)
+                    if "Unsafe" in toks or toks & bearing:
+                        bearing.add(name)
+                        changed = True
+                        break
+        return bearing
+
     def _reject_unsafe_signatures(self, module: Module) -> None:
-        """Surface ``Unsafe``-typed parameters at discovery time
+        """Surface ``Unsafe``-reaching parameters at discovery time
         with a diagnostic that names the function, the parameter,
         and the only two valid responses (run on the Python
         backend, or remove the Unsafe argument). Scans both
-        top-level functions and impl methods."""
+        top-level functions and impl methods.
+
+        Audit 2026-06-17 C5(b): the check walks each param type
+        RECURSIVELY through named struct fields, sum-variant
+        payloads, and generic arguments, so a param of a type that
+        merely *contains* Unsafe (``type Wrapper { u: Unsafe }``)
+        is rejected loud rather than slipping through to emit an
+        invalid ``call $py_import``. Mirrors the manifest's
+        reachability traversal: Unsafe is detected wherever it is
+        reachable through the type, not only as a literal head."""
+        unsafe_bearing = self._unsafe_bearing_type_names(module)
+
+        def reaches_unsafe(ty: str) -> bool:
+            for name in self._type_name_tokens(ty):
+                if name == "Unsafe" or name in unsafe_bearing:
+                    return True
+            return False
+
         offenders: list[str] = []
         for fn in module.functions:
             for p in fn.params:
-                if p.ty == "Unsafe":
-                    offenders.append(f"{fn.name}({p.name}: Unsafe)")
+                if reaches_unsafe(p.ty):
+                    offenders.append(f"{fn.name}({p.name}: {p.ty})")
         for impl in module.impls:
             impl_label = (
                 f"impl {impl.trait_name} for {impl.type_name}"
@@ -458,10 +521,10 @@ class _DiscoveryMixin:
             )
             for method in impl.methods:
                 for p in method.params:
-                    if p.ty == "Unsafe":
+                    if reaches_unsafe(p.ty):
                         offenders.append(
                             f"{impl_label}::{method.name}"
-                            f"({p.name}: Unsafe)"
+                            f"({p.name}: {p.ty})"
                         )
         if not offenders:
             return

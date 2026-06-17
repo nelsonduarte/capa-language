@@ -336,6 +336,44 @@ class _DisciplineMixin:
                     return found
         return None
 
+    def _contains_unsafe(self, ty: Ty) -> Optional[TyName]:
+        """Recursive walk returning the first ``Unsafe`` mention in
+        ``ty`` (head TyName, tuple element, or generic argument).
+        ``Unsafe`` is the FFI escape hatch, never an attenuable
+        built-in cap, so it is rejected even where the cap-bearing
+        relaxation lets the attenuable caps (Fs/Net/Db/Proc/Env/
+        Clock/Random) be encapsulated in a struct field (audit
+        2026-06-17 C5)."""
+        if isinstance(ty, TyName):
+            if ty.name == "Unsafe":
+                return ty
+            for a in ty.args:
+                found = self._contains_unsafe(a)
+                if found is not None:
+                    return found
+        if isinstance(ty, TyTuple):
+            for elem in ty.elements:
+                found = self._contains_unsafe(elem)
+                if found is not None:
+                    return found
+        return None
+
+    def _check_no_unsafe_field(self, ty: Ty, pos: Pos, context: str) -> None:
+        """Reject an ``Unsafe`` anywhere in ``ty``. Used for fields of
+        a cap-bearing struct, which otherwise skip
+        :meth:`_check_no_capability` so they can encapsulate
+        attenuable built-in caps; ``Unsafe`` must not slip through
+        that relaxation (audit 2026-06-17 C5)."""
+        cap = self._contains_unsafe(ty)
+        if cap is None:
+            return
+        self._err(
+            f"capability 'Unsafe' cannot appear in {context}, even "
+            f"in a capability-bearing struct; Unsafe is the FFI escape "
+            f"hatch, not an attenuable built-in capability",
+            pos,
+        )
+
     def _check_no_builtin_capability(
         self, ty: Ty, pos: Pos, context: str,
     ) -> None:

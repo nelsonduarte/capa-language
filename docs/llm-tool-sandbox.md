@@ -52,14 +52,18 @@ capability RunCode
 
 **One implementor per backend**, wrapping the low-level capability
 it actually uses. The cap-bearing struct pattern (a struct that
-implements a user-defined capability is allowed to hold a
-built-in capability as a field) lets the implementor carry the
-authority it needs:
+implements a user-defined capability is allowed to hold a built-in
+capability as a field) lets the implementor carry the *attenuable*
+authority it needs. `Unsafe` is the one exception: it is the FFI
+escape hatch, not an attenuable capability, so it can never hide in
+a cap-bearing struct field. A runner that genuinely shells out to a
+sandbox therefore takes `Unsafe` as a parameter of its `run` method
+(and runs on the Python backend), keeping the escape hatch visible:
 
 ```capa
 type StubSearch { net: Net, allowed_domain: String }
 type StubMailer { net: Net }
-type StubRunner { u: Unsafe }
+type StubRunner { label: String }
 
 impl SearchWeb for StubSearch
     fun search(self, query: String) -> Result<String, IoError>
@@ -71,7 +75,8 @@ impl SendEmail for StubMailer
 
 impl RunCode for StubRunner
     fun run(self, code: String) -> Result<String, IoError>
-        // routes through self.u (Unsafe) to a sandboxed runtime
+        // A real runner would take `u: Unsafe` here and route
+        // through it to a sandboxed interpreter; the stub echoes.
         ...
 ```
 
@@ -313,19 +318,25 @@ what the model emits.
 
 The `MockLlmClient` in the example scripts a fixed conversation
 to keep the demo offline. A real `AnthropicLlmClient` (or
-`OpenAILlmClient`) routes through `Unsafe` to call the API:
+`OpenAILlmClient`) routes through `Unsafe` to call the API.
+Because `Unsafe` is the FFI escape hatch and is never allowed to
+hide inside a cap-bearing struct field, the client takes it as an
+explicit parameter of the `next_turn` method rather than storing
+it on the struct:
 
 ```capa
+capability LlmClient
+    fun next_turn(self, u: Unsafe, history_json: String) -> Result<String, IoError>
+
 type AnthropicLlmClient {
-    u: Unsafe,
     api_key: String,
     model: String
 }
 
 impl LlmClient for AnthropicLlmClient
-    fun chat(self, history: List<Message>) -> Result<LlmResponse, IoError>
-        let urllib = py_import(self.u, "urllib.request")
-        let json   = py_import(self.u, "json")
+    fun next_turn(self, u: Unsafe, history_json: String) -> Result<String, IoError>
+        let urllib = py_import(u, "urllib.request")
+        let json   = py_import(u, "json")
         // 1. Build the request body: convert history + tool schemas
         //    into the API's JSON shape.
         // 2. POST to api.anthropic.com with x-api-key and
@@ -335,40 +346,42 @@ impl LlmClient for AnthropicLlmClient
         return Ok(parsed)
 ```
 
-The factory takes `Unsafe` and the configuration:
+The factory only takes the configuration:
 
 ```capa
-fun make_anthropic_client(u: Unsafe, env: Env) -> AnthropicLlmClient
+fun make_anthropic_client(env: Env) -> AnthropicLlmClient
     let key = env.get("ANTHROPIC_API_KEY").unwrap_or("")
     return AnthropicLlmClient {
-        u: u,
         api_key: key,
         model: "claude-sonnet-4-5"
     }
 ```
 
-Wiring at the top:
+Wiring at the top threads `Unsafe` to the agent, which forwards it
+to each LLM turn:
 
 ```capa
 fun main(stdio: Stdio, u: Unsafe, env: Env)
-    let llm    = make_anthropic_client(u, env)
+    let llm    = make_anthropic_client(env)
     let search = make_search("capa-language.com")
     let mail   = make_mailer()
-    // agent_loop's signature has not changed; it still receives
-    // a LlmClient, a SearchWeb, and a SendEmail. The fact that
-    // the LlmClient is now real instead of mocked is invisible
-    // to the agent, by design.
-    agent_loop(stdio, llm, search, mail, "what is new?")
+    // agent_loop now also receives Unsafe, because a real LLM turn
+    // crosses the Python FFI boundary. That authority is named in
+    // the signature, not laundered through the client's fields.
+    agent_loop(stdio, llm, search, mail, u, "what is new?")
 ```
 
-Two things to notice about this. First, `agent_loop`'s signature
-does not change when the LLM client is swapped from mock to
-real. The agent is decoupled from the LLM implementation
-through the `LlmClient` capability. Second, the manifest for
-`agent_loop` still declares only `(Stdio, LlmClient, SearchWeb,
-SendEmail)`. The fact that `make_anthropic_client` needed
-`Unsafe` is visible at the construction site, *not* at the
-agent's signature. The agent itself remains free of `Unsafe`.
+Two things to notice about this. First, the agent stays decoupled
+from the concrete LLM implementation through the `LlmClient`
+capability: swapping mock for real changes no agent logic.
+Second, the manifest for `agent_loop` now honestly declares
+`(Stdio, LlmClient, SearchWeb, SendEmail, Unsafe)`. The `Unsafe`
+the network turn needs is visible in the agent's signature rather
+than hidden behind the abstract cap. That is the whole point of
+the audit: a holder of an abstract capability must never be able
+to reach `Unsafe` through a private field it cannot see. The
+agent still provably has **no** `Net` and **no** `Fs`, no matter
+what the model emits.
 
 ### A working real-API round-trip
 
@@ -410,20 +423,22 @@ The manifest still tells the audit story:
 ```bash
 $ capa --manifest examples/llm_anthropic_real.capa | jq '.functions[] | select(.name=="run_chat")'
 {
-  "declared_capabilities": ["Stdio", "LlmClient"],
+  "declared_capabilities": ["Stdio", "LlmClient", "Unsafe"],
   "provably_excluded_capabilities": [
     "Clock", "Db", "Env", "Fs", "Net",
-    "Proc", "Random", "Unsafe"
+    "Proc", "Random"
   ],
-  "has_unsafe": false
+  "has_unsafe": true
 }
 ```
 
-The agent-equivalent function `run_chat` is `Unsafe`-free, even
-though the program as a whole uses `Unsafe` for the network
-call. The discipline has contained the `Unsafe` to its
-implementor; the function that does the actual conversation
-work cannot reach it.
+`run_chat` declares `Unsafe` because asking the model crosses the
+Python FFI boundary, and that authority is named in the signature
+rather than laundered through the client's fields. The honest SBOM
+is the stronger guarantee: it still proves `run_chat` cannot touch
+`Net`, `Fs`, `Db`, `Proc`, `Env`, `Clock`, or `Random`, and it
+records `Unsafe` openly so an auditor sees exactly where the FFI
+boundary is crossed.
 
 ### The full end-to-end: real Anthropic + tool dispatch
 

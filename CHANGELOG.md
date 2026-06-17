@@ -9,7 +9,7 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
-**Security / soundness (6 fixes).** Six localised audit findings
+**Security / soundness (9 fixes).** Nine localised audit findings
 (2026-06-17), under the documented-bug / security carve-out of
 [`STABILITY.md`](STABILITY.md):
 
@@ -38,6 +38,27 @@ breaking changes and the discipline is still being shaped.
   `int(body)`, so a many-digit string no longer trips CPython's
   int<->str conversion cap with an uncaught `ValueError` (a DoS); it
   returns `None`, matching the Wasm `$parse_int`.
+- Field access through a value whose **static type is an abstract
+  capability or trait** is now rejected (`lg: Logger` ... `lg.fs`).
+  The runtime value is the concrete implementor, so reaching its
+  private field would exercise a built-in cap the signature never
+  declares; the implementor's fields are private to its `impl`.
+  Access through the concrete struct type, and `self.field` inside the
+  `impl`, stay allowed (the legitimate reachable-via-struct model).
+- `Unsafe` is now rejected as a **struct field even in a
+  capability-bearing struct**. The cap-bearing relaxation covers only
+  the attenuable built-in caps (Fs / Net / Db / Proc / Env / Clock /
+  Random); `Unsafe` is the FFI escape hatch and must never hide behind
+  an abstract cap. The Wasm backend's `Unsafe` rejection now also walks
+  a parameter type recursively (struct fields, sum payloads, generic
+  args) so an `Unsafe`-bearing type is refused loud rather than
+  emitting an invalid `call $py_import`.
+- `provably_excluded_capabilities` no longer falsely excludes a
+  **user-defined capability reachable through a cap-bearing struct**: a
+  holder of `S` where `impl C for S` can exercise `C`, so `C` is now in
+  `transitively_reachable_capabilities` and out of the exclusion list.
+  The bound is derived from the signature, so it stays sound regardless
+  of the body (conservative: may over-declare, never under-declare).
 
 ## [1.3.0], 2026-06-16
 

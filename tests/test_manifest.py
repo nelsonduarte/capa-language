@@ -633,12 +633,15 @@ class TestPerImplReachability(unittest.TestCase):
             "Stdio", use["provably_excluded_capabilities"]
         )
 
-    def test_user_cap_unsafe_in_impl_propagates_has_unsafe(self):
-        # A user-cap whose impl holds Unsafe makes any function
-        # taking the user-cap reach Unsafe; ``has_unsafe`` flips
-        # to True and exclusion is empty (Unsafe is the
-        # universal escape hatch).
-        m = self._build(
+    def test_unsafe_in_cap_bearing_struct_is_rejected(self):
+        # Audit 2026-06-17 C5(a): the cap-bearing relaxation lets a
+        # struct that implements a user-cap encapsulate the
+        # ATTENUABLE built-in caps in its fields, but Unsafe never
+        # benefits from it (it is the FFI escape hatch, not an
+        # attenuable cap). A struct field of type Unsafe is rejected
+        # at analysis even when the struct implements a user-cap, so
+        # the manifest can never be built for such a program.
+        tokens = Lexer(
             "capability Client\n"
             "    fun do_it(self) -> Int\n"
             "type RealClient { u: Unsafe }\n"
@@ -647,11 +650,18 @@ class TestPerImplReachability(unittest.TestCase):
             "        return 0\n"
             "fun use_it(c: Client) -> Int\n"
             "    return c.do_it()\n"
+        ).lex()
+        module = Parser(tokens).parse_module()
+        result = analyze(module)
+        self.assertFalse(result.ok)
+        self.assertTrue(
+            any(
+                "Unsafe" in e.message
+                and "capability-bearing struct" in e.message
+                for e in result.errors
+            ),
+            result.errors,
         )
-        use = self._find(m, "use_it")
-        self.assertIn("Unsafe", use["transitively_reachable_capabilities"])
-        self.assertTrue(use["has_unsafe"])
-        self.assertEqual(use["provably_excluded_capabilities"], [])
 
     def test_no_impl_means_no_extras(self):
         # A user-cap with no in-scope impls reaches no caps;
@@ -688,6 +698,59 @@ class TestPerImplReachability(unittest.TestCase):
         self.assertIn("Stdio", log["transitively_reachable_capabilities"])
         self.assertNotIn(
             "Stdio", log["provably_excluded_capabilities"],
+        )
+
+    def test_user_cap_via_struct_is_reachable_not_excluded(self):
+        # Audit 2026-06-17 C6: a holder of a cap-bearing struct ``S``
+        # can exercise the user-cap ``C`` that ``S`` implements (by
+        # calling a method of ``C`` on the value), so ``C`` is in the
+        # transitive reachable set and NOT provably excluded. The
+        # claim is derived from the SIGNATURE, so it cannot depend on
+        # whether the body happens to call the method - a body that
+        # does call it would emit the same record, and only the
+        # conservative answer (cap reachable) is sound.
+        m = self._build(
+            "capability SendEmail\n"
+            "    fun send(self, to: String) -> Bool\n"
+            "type SmtpMailer { net: Net }\n"
+            "impl SendEmail for SmtpMailer\n"
+            "    fun send(self, to: String) -> Bool\n"
+            "        return true\n"
+            "fun process(m: SmtpMailer) -> Bool\n"
+            "    return m.send(\"a@b\")\n"
+        )
+        proc = self._find(m, "process")
+        self.assertIn(
+            "SendEmail", proc["transitively_reachable_capabilities"],
+        )
+        self.assertNotIn(
+            "SendEmail", proc["provably_excluded_capabilities"],
+        )
+        # The wrapped built-in cap (Net) is reachable too, and no
+        # user-cap that is exercised ever lands in the exclusion set.
+        self.assertIn("Net", proc["transitively_reachable_capabilities"])
+
+    def test_user_cap_inert_body_still_reachable(self):
+        # Same struct, but the body never calls ``send`` (returns a
+        # constant). The conservative bound still reports SendEmail
+        # reachable - the signature alone determines it, so a quiet
+        # body cannot be used to falsely claim exclusion.
+        m = self._build(
+            "capability SendEmail\n"
+            "    fun send(self, to: String) -> Bool\n"
+            "type SmtpMailer { net: Net }\n"
+            "impl SendEmail for SmtpMailer\n"
+            "    fun send(self, to: String) -> Bool\n"
+            "        return true\n"
+            "fun greeting(mailer: SmtpMailer) -> Int\n"
+            "    return 1\n"
+        )
+        g = self._find(m, "greeting")
+        self.assertIn(
+            "SendEmail", g["transitively_reachable_capabilities"],
+        )
+        self.assertNotIn(
+            "SendEmail", g["provably_excluded_capabilities"],
         )
 
 

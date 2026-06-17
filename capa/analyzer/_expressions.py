@@ -806,6 +806,40 @@ class _ExpressionsMixin:
             )
         if isinstance(rty, TyName):
             sym = self.global_scope.lookup(rty.name)
+            # Audit 2026-06-17 H1: field access through a value whose
+            # *static* type is an abstract capability (or trait) is
+            # rejected. The runtime value is the concrete implementor,
+            # so ``m.net`` on ``m: SendEmail`` would otherwise reach
+            # the implementor's private built-in cap and exercise
+            # Fs/Net under a signature that only declares the user-cap.
+            # The implementor's fields are private to its ``impl``.
+            # Three cases stay distinct:
+            #   (i)  receiver of a concrete STRUCT type that implements
+            #        a cap -> field access stays allowed (the legitimate
+            #        reachable-via-struct model; falls into the
+            #        TYPE_STRUCT branch below);
+            #   (ii) receiver of an abstract CAPABILITY / TRAIT type
+            #        (the cap name used as a parameter type) -> rejected
+            #        here;
+            #   (iii) ``self`` inside an ``impl`` -> ``self``'s type is
+            #        the concrete struct (TYPE_STRUCT), so it never
+            #        reaches this branch.
+            if sym is not None and sym.kind in (
+                SymbolKind.CAPABILITY, SymbolKind.TRAIT,
+            ):
+                kind = (
+                    "capability" if sym.kind == SymbolKind.CAPABILITY
+                    else "trait"
+                )
+                self._err(
+                    f"cannot access field {e.field_name!r} through a "
+                    f"value of {kind} type {rty.name!r}; the "
+                    f"implementor's fields are private to its `impl` "
+                    f"and a holder of the abstract {kind} only sees "
+                    f"the {kind}'s methods",
+                    e.pos,
+                )
+                return TyUnknown
             if sym is not None and sym.kind == SymbolKind.TYPE_STRUCT:
                 fty = sym.struct_fields.get(e.field_name)
                 if fty is None:

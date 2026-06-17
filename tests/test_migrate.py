@@ -357,10 +357,14 @@ class TestTransitiveRemovable(unittest.TestCase):
         removable = self._removable_by_name(src)
         self.assertNotIn("g", removable)
 
-    def test_token_smuggled_via_cap_bearing_struct_is_not_removable(self):
-        # pack embeds the token in a cap-bearing struct it returns; the
-        # signature-poison rule must keep the whole chain non-removable
-        # even though no bridge call is syntactically in sight.
+    def test_unsafe_in_cap_bearing_struct_is_rejected(self):
+        # Audit 2026-06-17 C5(a): embedding the Unsafe token in a
+        # cap-bearing struct used to be the migrate "signature
+        # poison" smuggling shape this suite guarded against. The
+        # hole is now closed at the type level - a struct field of
+        # type Unsafe is rejected at analysis even when the struct
+        # implements a user-cap - so the program can never reach the
+        # migrate report at all. Assert the rejection directly.
         src = (
             "capability Wrap\n"
             "    fun ping(self) -> Int\n"
@@ -377,8 +381,18 @@ class TestTransitiveRemovable(unittest.TestCase):
             "fun g(u: Unsafe) -> Holder\n"
             "    return pack(u)\n"
         )
-        rep = migrate_report(_module_from_source(src))
-        self.assertEqual(rep["removable"], [])
+        tokens = Lexer(src).lex()
+        module = Parser(tokens, source=src).parse_module()
+        result = analyze(module, source=src)
+        self.assertFalse(result.ok)
+        self.assertTrue(
+            any(
+                "Unsafe" in e.message
+                and "capability-bearing struct" in e.message
+                for e in result.errors
+            ),
+            result.errors,
+        )
 
 
 class TestBoundNameCollectorParserSync(unittest.TestCase):

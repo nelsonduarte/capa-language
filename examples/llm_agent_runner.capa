@@ -105,20 +105,25 @@ impl LlmClient for MockLlmClient
 //
 // A production client would route through Unsafe + py_import to
 // invoke an HTTP library that supports custom headers (the
-// Anthropic API needs `x-api-key` and `anthropic-version`).
-// Sketch:
+// Anthropic API needs `x-api-key` and `anthropic-version`). Note
+// that Unsafe is the FFI escape hatch and is never allowed to hide
+// inside a capability-bearing struct: a holder of the abstract
+// LlmClient cap must not be able to reach Unsafe through a private
+// field. The Unsafe therefore has to be a parameter of whatever
+// function performs the py_invoke (and that function runs on the
+// Python backend), passed in at the call site rather than stored on
+// the client. Sketch:
 //
-//   impl LlmClient for AnthropicLlmClient
-//       fun chat(self, history: List<Message>) -> Result<LlmResponse, IoError>
-//           let urllib = py_import(self.u, "urllib.request")
-//           let json   = py_import(self.u, "json")
-//           // ... build request, POST, parse, extract tool_use ...
-//           return Ok(parsed)
+//   fun ask_anthropic(u: Unsafe, client: AnthropicLlmClient,
+//                     history: List<Message>) -> Result<LlmResponse, IoError>
+//       let urllib = py_import(u, "urllib.request")
+//       let json   = py_import(u, "json")
+//       // ... build request, POST, parse, extract tool_use ...
+//       return Ok(parsed)
 //
 // The full implementation lives in `docs/llm-tool-sandbox.md`.
 
 type AnthropicLlmClient {
-    u: Unsafe,
     api_key: String,
     model: String
 }

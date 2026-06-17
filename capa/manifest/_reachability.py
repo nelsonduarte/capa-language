@@ -171,6 +171,12 @@ def compute_reachability(
     produced them. The manifest builder demangles for the
     regulator-facing surfaces."""
     cap_bearing_structs: set[str] = set()
+    # struct name -> set of user-defined caps it implements. Audit
+    # 2026-06-17 C6: a holder of a cap-bearing struct ``S`` can
+    # exercise the user-cap ``C`` that ``S`` implements (by calling a
+    # method of ``C`` on it), so ``C`` itself must be reachable via
+    # ``S`` -- not only the built-in caps that ``S``'s fields reach.
+    user_caps_of_struct: dict[str, set[str]] = {}
     for item in module.items:
         if (
             isinstance(item, A.ImplBlock)
@@ -178,6 +184,9 @@ def compute_reachability(
             and item.trait_name in user_cap_names
         ):
             cap_bearing_structs.add(item.type_name)
+            user_caps_of_struct.setdefault(item.type_name, set()).add(
+                item.trait_name
+            )
 
     structs_by_name: dict[str, A.TypeStruct] = {
         item.name: item
@@ -266,6 +275,9 @@ def compute_reachability(
                 continue
             was_unprovable = sname in unprovable
             new_caps = set(reachable[sname])
+            # The user-cap(s) this struct implements are exercisable
+            # by any holder of the struct (audit 2026-06-17 C6).
+            new_caps |= user_caps_of_struct.get(sname, set())
             for fld in td.fields:
                 cs, hf = _caps_via_type(fld.type_expr, reachable)
                 new_caps |= cs

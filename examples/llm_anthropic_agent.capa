@@ -30,8 +30,15 @@
 capability SearchWeb
     fun search(self, query: String) -> Result<String, IoError>
 
+// A real LLM client crosses the Python FFI boundary (py_invoke into
+// the helper), so the Unsafe escape hatch must be VISIBLE in the
+// method signature rather than hidden inside the implementor's
+// fields: Unsafe never benefits from the capability-bearing struct
+// relaxation. Threading `u: Unsafe` through `next_turn` keeps the
+// authority honest - any holder of `LlmClient` sees that a turn can
+// reach Unsafe, and the agent loop below declares it too.
 capability LlmClient
-    fun next_turn(self, history_json: String) -> Result<String, IoError>
+    fun next_turn(self, u: Unsafe, history_json: String) -> Result<String, IoError>
 
 // =========================================================
 // AnthropicClient implementation
@@ -43,7 +50,6 @@ capability LlmClient
 // uniform with the rest of the agent's error handling.
 
 type AnthropicClient {
-    u: Unsafe,
     api_key: String,
     model: String,
     tools_json: String,
@@ -51,9 +57,9 @@ type AnthropicClient {
 }
 
 impl LlmClient for AnthropicClient
-    fun next_turn(self, history_json: String) -> Result<String, IoError>
-        let helper = py_import(self.u, "llm_anthropic_helper")
-        let raw = py_invoke(self.u, helper.chat_with_tools, [
+    fun next_turn(self, u: Unsafe, history_json: String) -> Result<String, IoError>
+        let helper = py_import(u, "llm_anthropic_helper")
+        let raw = py_invoke(u, helper.chat_with_tools, [
             self.api_key,
             self.model,
             history_json,
@@ -81,10 +87,9 @@ impl SearchWeb for StubSearch
 // Factories
 // =========================================================
 
-fun make_anthropic_client(u: Unsafe, env: Env) -> AnthropicClient
+fun make_anthropic_client(env: Env) -> AnthropicClient
     let key = env.get("ANTHROPIC_API_KEY").unwrap_or("")
     return AnthropicClient {
-        u: u,
         api_key: key,
         model: "claude-sonnet-4-5",
         tools_json: tool_specs_json(),
@@ -253,15 +258,18 @@ fun parse_turn_obj(obj: Map<String, JsonValue>) -> TurnOutcome
 // The agent loop
 // =========================================================
 //
-// Note the signature: Stdio + LlmClient + SearchWeb. No Unsafe,
-// no Net, no Fs. The agent's tool surface is exactly these three
-// caps; the manifest emits that, regardless of what the model
-// emits at runtime.
+// Note the signature: Stdio + LlmClient + SearchWeb + Unsafe. The
+// Unsafe is explicit because a real LLM turn crosses the Python FFI
+// boundary; the manifest emits exactly this surface, and crucially
+// the agent provably has NO Net and NO Fs no matter what the model
+// emits at runtime. Unsafe is visible rather than laundered through
+// the client's fields - the honest disclosure the audit requires.
 
 fun agent_loop(
     stdio: Stdio,
     llm: LlmClient,
     search: SearchWeb,
+    u: Unsafe,
     user_prompt: String
 ) -> Result<Unit, IoError>
     var history: List<String> = []
@@ -273,7 +281,7 @@ fun agent_loop(
     while step < 10
         step = step + 1
         let history_str = build_history_array(history)
-        match llm.next_turn(history_str)
+        match llm.next_turn(u, history_str)
             Err(e) ->
                 stdio.eprintln("llm error: ${e}")
                 return Err(e)
@@ -312,11 +320,11 @@ fun bootstrap_path(u: Unsafe)
 
 fun main(stdio: Stdio, env: Env, u: Unsafe)
     bootstrap_path(u)
-    let llm    = make_anthropic_client(u, env)
+    let llm    = make_anthropic_client(env)
     let search = make_search("capa-language.com")
 
     let prompt = "Use the search_web tool to find information about Capa language. Then summarise what you found."
 
-    match agent_loop(stdio, llm, search, prompt)
+    match agent_loop(stdio, llm, search, u, prompt)
         Ok(_)  -> return
         Err(_) -> return

@@ -507,7 +507,16 @@ class TestIneligibilityProofs(unittest.TestCase):
         # exclusion set.
         self.assertIn("SendEmail", excl)
 
-    def test_declared_user_cap_not_excluded(self):
+    def test_user_cap_via_struct_not_excluded(self):
+        # Audit 2026-06-17 C6: a holder of a cap-bearing struct can
+        # exercise the user-cap the struct implements (by calling a
+        # method of that cap on the value), so the cap is in
+        # ``transitively_reachable`` and NOT in ``provably_excluded``.
+        # The exclusion is derived from the SIGNATURE, so it cannot
+        # depend on the body: ``return 1`` vs a body that calls
+        # ``mailer.send(...)`` would emit the same record, and the
+        # conservative answer (cap reachable, not excluded) is the
+        # only sound one.
         m = manifest_of(
             "capability SendEmail\n"
             "    fun send(self, to: String) -> Bool\n"
@@ -518,13 +527,16 @@ class TestIneligibilityProofs(unittest.TestCase):
             "fun greeting(mailer: SmtpMailer) -> Int\n"
             "    return 1\n"
         )
-        # greeting takes SmtpMailer, which implements SendEmail.
-        # SmtpMailer itself isn't a capability name, so the
-        # exclusion set should still list SendEmail (greeting
-        # provably does not exercise the cap directly).
         for f in m["functions"]:
             if f["name"] == "greeting":
-                self.assertIn("SendEmail", f["provably_excluded_capabilities"])
+                self.assertIn(
+                    "SendEmail",
+                    f["transitively_reachable_capabilities"],
+                )
+                self.assertNotIn(
+                    "SendEmail",
+                    f["provably_excluded_capabilities"],
+                )
                 break
         else:
             self.fail("greeting not found in manifest")

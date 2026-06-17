@@ -22,31 +22,34 @@
 // The LLM capability (subset of llm_agent_runner)
 // =========================================================
 
+// A real LLM client crosses the Python FFI boundary, so the Unsafe
+// escape hatch is a VISIBLE parameter of `ask` rather than hidden in
+// the implementor's fields: Unsafe never benefits from the
+// capability-bearing struct relaxation. Any holder of `LlmClient`
+// therefore sees that asking the model can reach Unsafe.
 capability LlmClient
-    fun ask(self, prompt: String) -> Result<String, IoError>
+    fun ask(self, u: Unsafe, prompt: String) -> Result<String, IoError>
 
 // =========================================================
 // Real implementor
 // =========================================================
 //
-// The implementor holds the Unsafe + configuration, and the
-// `ask` method routes through py_invoke to call the helper.
-// Notice that the Unsafe is contained inside the cap-bearing
-// struct, not surfaced in the caller's signature.
+// The implementor holds only configuration; the Unsafe needed for
+// the py_invoke is passed in to `ask` at the call site (it is the
+// FFI escape hatch and cannot hide in a cap-bearing struct field).
 
 type AnthropicClient {
-    u: Unsafe,
     api_key: String,
     model: String,
     max_tokens: Int
 }
 
 impl LlmClient for AnthropicClient
-    fun ask(self, prompt: String) -> Result<String, IoError>
-        let helper = py_import(self.u, "llm_anthropic_helper")
+    fun ask(self, u: Unsafe, prompt: String) -> Result<String, IoError>
+        let helper = py_import(u, "llm_anthropic_helper")
         // py_invoke takes a homogeneous List, so the max_tokens
         // int rides over as a string and the helper parses it.
-        let raw = py_invoke(self.u, helper.chat, [
+        let raw = py_invoke(u, helper.chat, [
             self.api_key, self.model, prompt, "${self.max_tokens}"
         ])
         // The helper always returns a JSON string. Parse it and
@@ -100,10 +103,9 @@ fun extract_error(obj: Map<String, JsonValue>) -> String
 // client. Defaults to a current Sonnet variant; pick a different
 // model by hand if your account has access to others.
 
-fun make_anthropic_client(u: Unsafe, env: Env) -> AnthropicClient
+fun make_anthropic_client(env: Env) -> AnthropicClient
     let key = env.get("ANTHROPIC_API_KEY").unwrap_or("")
     return AnthropicClient {
-        u: u,
         api_key: key,
         model: "claude-sonnet-4-5",
         max_tokens: 256
@@ -129,13 +131,15 @@ fun bootstrap_path(u: Unsafe)
 // The "agent" (single-turn for this demo)
 // =========================================================
 //
-// Note the signature: Stdio + LlmClient. No Unsafe in scope here;
-// the agent-equivalent function gets a sanitised LlmClient and
-// nothing else. The Unsafe stays contained in `main`.
+// Note the signature: Stdio + LlmClient + Unsafe. The Unsafe is
+// explicit because asking the model crosses the Python FFI boundary;
+// it is threaded to `llm.ask` rather than laundered through the
+// client's fields, so the SBOM honestly records that this function
+// can reach Unsafe.
 
-fun run_chat(stdio: Stdio, llm: LlmClient, prompt: String) -> Result<Unit, IoError>
+fun run_chat(stdio: Stdio, llm: LlmClient, u: Unsafe, prompt: String) -> Result<Unit, IoError>
     stdio.println("user: ${prompt}")
-    match llm.ask(prompt)
+    match llm.ask(u, prompt)
         Ok(reply) ->
             stdio.println("assistant: ${reply}")
             return Ok(())
@@ -149,11 +153,11 @@ fun run_chat(stdio: Stdio, llm: LlmClient, prompt: String) -> Result<Unit, IoErr
 
 fun main(stdio: Stdio, env: Env, u: Unsafe)
     bootstrap_path(u)
-    let llm = make_anthropic_client(u, env)
+    let llm = make_anthropic_client(env)
 
     // A short prompt to keep token usage minimal during demos.
     let prompt = "In one sentence: what is capability-based security?"
 
-    match run_chat(stdio, llm, prompt)
+    match run_chat(stdio, llm, u, prompt)
         Ok(_)  -> return
         Err(_) -> return
