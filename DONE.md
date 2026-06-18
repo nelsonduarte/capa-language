@@ -25,6 +25,26 @@ The deepest hardening window to date: a six-axis adversarial review
 (~25 real findings) followed by four releases and an infrastructure
 sweep.
 
+### Consolidated supply-chain trust model page (2026-06-18)
+
+- **Created [`docs/trust-model.md`](docs/trust-model.md)**, a single
+  honest page for a sceptical supply-chain auditor that consolidates what
+  was spread across `SECURITY.md`, `docs/packages.md`,
+  `docs/regulatory.md`, and the advisories. It separates the
+  **unconditional / fail-closed** guarantees (SBOM claims by construction
+  with the conservative `provably_excluded` note, lockfile-SHA retag
+  catch, GPG anchored on the primary key, PKG-1 vendor re-verification,
+  signed registry index, byte-reproducible SBOMs) from the **best-effort
+  / fail-open** SLSA L2 layer (graceful-skip on missing `gh` / tarball /
+  non-GitHub host; M4 `verify_provenance="required"` not yet a default)
+  from the **TCB premises** (committed `capa.lock`, local git state of
+  `vendor/`, the toolchain itself, install.sh M3, operator-trusted
+  `CAPA_PATH` / `./libraries`) from what is **outside the threat model**
+  (`Unsafe` escape hatch, microarchitectural timing, trust-anchor
+  compromise). Each line is checkable against the code. Linked from
+  `README.md`, `SECURITY.md`, and `docs/packages.md`. Closes the
+  short-term TODO consolidation item.
+
 ### Stalled-demo revalidation against v1.5.1 (2026-06-18)
 
 - **Revalidated the three stalled downstream demos (`sbom-watch`,

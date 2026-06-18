@@ -9,6 +9,10 @@ When a `capa.toml` file is present in the working directory, the
 Capa loader picks up `./vendor/` and the parent of every `path =`
 dep automatically, no `CAPA_PATH` environment variable needed.
 
+For the security posture of each step below (which checks are
+fail-closed, which are best-effort, and what is trusted as a premise),
+see the [trust model](trust-model.md).
+
 ## Quick start
 
 A two-file project:

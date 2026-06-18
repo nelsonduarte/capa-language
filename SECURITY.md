@@ -5,6 +5,11 @@ properties. If you find a way that the language fails to deliver on
 those properties, a way to bypass the capability discipline, escape
 attenuation, or compromise the analyzer, please report it.
 
+For a consolidated map of what the toolchain verifies unconditionally
+(fail-closed), what is best-effort (fail-open), what it trusts as a
+premise, and what is outside the threat model, see
+[`docs/trust-model.md`](docs/trust-model.md).
+
 ## Reporting a vulnerability
 
 **Please do not open a public GitHub issue for security reports.**

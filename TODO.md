@@ -15,10 +15,6 @@ code.
 
 ## Short term (consolidation)
 
-- **Publish an honest "trust model" page/section.** Separate what is
-  unconditional (lockfile-SHA + GPG + PKG-1 vendor re-verification) from
-  what is best-effort (the SLSA L2 layer is fail-open; M4
-  `verify_provenance="required"` is not yet the default).
 - **(Optional, low cost) Close the Wasm `self`-in-lambda parity gap**
   inside an `impl` method (see "Pendentes tecnicos" / DONE.md for the
   shape; a lambda capturing `self` and reading a field loses the

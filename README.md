@@ -319,6 +319,10 @@ NIS2, DORA (cybersecurity articles), NIST SSDF, and OWASP SCVS
 side-by-side; the article-by-article CRA mapping lives in
 [`docs/cra.md`](docs/cra.md).
 
+What each of these artefacts actually guarantees, separating
+fail-closed from best-effort from trusted premise, is consolidated in
+the [**trust model**](docs/trust-model.md).
+
 The `lambda_cap` soundness theorems are **mechanised in Agda**,
 no `postulate` remaining. Roughly 600 lines of self-contained
 Agda (no `agda-stdlib` dependency) cover Progress, Preservation,
@@ -347,6 +351,7 @@ code they describe.
 | [`docs/reference.md`](docs/reference.md) | language reference (syntax + semantics) |
 | [`docs/stdlib.md`](docs/stdlib.md) | runtime + library APIs |
 | [`docs/packages.md`](docs/packages.md) | `capa.toml` + `capa install` + lockfile semantics |
+| [`docs/trust-model.md`](docs/trust-model.md) | what is fail-closed vs best-effort vs trusted premise vs out-of-model |
 | [`docs/testing.md`](docs/testing.md) | `capa test`: discovery, result contract, `--both` parity diff |
 | [`docs/positioning.md`](docs/positioning.md) | honest comparison vs Pony, Koka, Roc, Wasm CM, Zero |
 | [`docs/semantics.md`](docs/semantics.md) | lambda_cap calculus sketch + soundness theorems |

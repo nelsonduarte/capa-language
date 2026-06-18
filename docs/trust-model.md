@@ -1,0 +1,192 @@
+# Trust model
+
+This page consolidates, in one place, exactly what the Capa toolchain
+verifies about a build and its dependencies, and what it does not. It is
+written for a sceptical supply-chain auditor: every line here is meant to
+be checkable against the code, and where a guarantee has an edge the edge
+is stated rather than rounded up.
+
+Four tiers, in decreasing order of strength:
+
+1. **Unconditional (fail-closed)** the build is refused, or the claim is
+   true by construction.
+2. **Best-effort (fail-open)** an extra layer that runs when it can and
+   silently steps aside when it cannot. It never downgrades trust on its
+   own; it is backed by the unconditional tier underneath it.
+3. **Premises / TCB boundary** things the toolchain trusts rather than
+   verifies.
+4. **Outside the threat model** explicitly not defended here.
+
+The detailed mechanics live in
+[`SECURITY.md`](../SECURITY.md) (threat model + advisories),
+[`docs/packages.md`](packages.md) (`capa.toml` / `capa install` /
+lockfile), and
+[`docs/regulatory.md`](regulatory.md) (reproducibility, regulatory
+mapping). This page references them rather than restating them.
+
+## 1. Unconditional guarantees (fail-closed)
+
+These are either true by construction or cause the build / install to be
+refused on failure.
+
+- **SBOM capability claims are derived from the source, not guessed.**
+  The `capabilities`, `provably_excluded_capabilities`,
+  `declassification_sites`, `has_unsafe`, and `constant_time` fields in
+  the manifest / CycloneDX / SPDX output are computed by the analyzer
+  from the same signatures and flow analysis it uses to accept or reject
+  the program (`capa/manifest/`). They are not a heuristic scan layered
+  on afterwards: if the code exercises a capability, the type system
+  already required it to be declared, and the SBOM reads it off that.
+  - `provably_excluded_capabilities` is **conservative**: it is a sound
+    over-approximation of what a value's type can transitively reach,
+    closed-world over all impls in the program
+    (`capa/manifest/_reachability.py`). A capability is listed as
+    provably excluded only when no reachable impl, struct field,
+    sum-variant payload, or captured closure can reach it. It will under-
+    claim before it over-claims.
+  - `has_unsafe` is true whenever `Unsafe` is reachable. The escape hatch
+    always surfaces in the SBOM (see tier 4).
+
+- **Lockfile SHA enforcement catches a moved tag (retag).** When
+  `capa.lock` already pins a commit for a tag dependency, `capa install`
+  checks the remote tag still resolves to that commit via
+  `git ls-remote` **before** touching `vendor/<name>`, so a force-pushed
+  upstream tag is refused (`LockMismatchError`) without ever overwriting
+  the vendored sources. Rev pins are re-checked after clone. See
+  `capa/pkg/_install.py`.
+
+- **GPG tag/commit signature verification is anchored on the primary
+  key.** When a dependency declares `verify_key` (a 40-char fingerprint),
+  `capa install` runs `git verify-tag` / `verify-commit` and matches the
+  **primary-key** fingerprint from the GPG `VALIDSIG` line (the last
+  field) against the declared key. Anchoring on the primary accepts a
+  valid signing subkey under it (GPG has already proved the subkey-to-
+  primary binding) and refuses an unsigned ref, an unknown key, or a
+  different key. See `_verify_signed_pin` in `capa/pkg/_install.py`.
+
+- **Build-time vendor re-verification (PKG-1).** Before the loader reads
+  `./vendor`, every git dependency is re-checked against `capa.lock` on
+  every build path (`capa --check` / `--run` / `--transpile`,
+  `capa migrate`, `capa test`). Two conditions must both hold,
+  fail-closed: the vendored HEAD must equal the locked commit **and** the
+  working tree must be clean at that commit (`git status --porcelain`).
+  The working-tree half is what catches an in-place edit of a checked-out
+  file, which leaves HEAD matching the lock while changing the code that
+  actually runs. See `capa/pkg/_verify.py`. Opt-out: `CAPA_NO_VERIFY=1`
+  (annuls the guarantee, by design; see tier 3 for the premise it rests
+  on).
+
+- **The registry index is signature-verified, fail-closed.** When
+  `capa add <name>` resolves a name through the registry, the index JSON
+  is verified against a root-key fingerprint baked into the toolchain
+  (not shipped with the index). A missing, invalid, mismatched, or
+  unverifiable-because-tampered signature is refused. See
+  `capa/pkg/_registry.py` and
+  [`docs/design/signed-registry-index.md`](design/signed-registry-index.md).
+  Opt-out for a missing signature only (air-gapped / self-hosted
+  mirrors): `CAPA_REGISTRY_ALLOW_UNSIGNED=1`. A present-but-invalid
+  signature is **always** refused, env var or not.
+
+- **SBOMs are byte-reproducible.** With `SOURCE_DATE_EPOCH` set, the
+  CycloneDX / SPDX / VEX / SLSA artefacts are byte-for-byte identical
+  across runs and machines, so an auditor can rebuild and diff. See
+  `capa/manifest/_timestamp.py` and
+  [the reproducible-artefacts section of the regulatory note](regulatory.md#reproducible-sboms-rebuild-and-diff-byte-for-byte).
+
+## 2. Best-effort (fail-open)
+
+These run when they can and step aside when they cannot. They add
+defence in depth but do **not**, on their own, make or break the
+trust decision: the unconditional tier above stands underneath them.
+
+- **SLSA L2 build-provenance attestation of dependencies.** When a git
+  dependency declares `verify_key`, is GitHub-hosted, and is pinned to a
+  tag, `capa install` also runs `gh attestation verify` against the
+  release source tarball, checking the Sigstore Rekor log. This layer
+  **fail-opens** (skips silently) when: `gh` is not on PATH; the release
+  has no matching source tarball; the host is not GitHub; or the release
+  endpoint is unreachable. It **fail-closes** only when the tarball IS
+  present and `gh attestation verify` returns non-zero. The honest
+  consequence: an attacker who removes the release tarball, or serves the
+  dependency from a non-GitHub host, skips this layer. Such a build is
+  still defended by the unconditional lockfile-SHA and GPG layers beneath
+  it; the SLSA layer is additive, not load-bearing. See
+  `_verify_slsa_provenance` in `capa/pkg/_install.py`.
+
+- **`verify_provenance = "required"` does not exist yet (M4).** There is
+  no field today to flip every SLSA graceful-skip path to fail-closed.
+  Until it lands, the SLSA layer is best-effort for every dependency.
+  Tracked as M4 in [`TODO.md`](../TODO.md) and
+  [`docs/packages.md`](packages.md).
+
+## 3. Premises / TCB boundary
+
+These are trusted, not verified. An auditor must account for them
+separately.
+
+- **`capa.lock` is part of the trusted computing base.** PKG-1 verifies
+  that `vendor/<name>` matches the **committed lock**; it does not verify
+  the authenticity of the lock itself. An attacker who adulterates
+  `vendor/<name>`, commits the change so HEAD moves, **and** rewrites
+  `capa.lock` to match the new commit coherently is not caught by the
+  build-time check: rewriting the committed lock already breaches the TCB
+  boundary. The lock's commit was GPG / SLSA-verified at install time;
+  re-running `capa install` is what re-establishes that anchor.
+
+- **The local git state of `./vendor` is part of the TCB.** PKG-1 reads
+  `git status --porcelain`. An attacker with local write access who runs
+  `git update-index --assume-unchanged` / `--skip-worktree` on a vendor
+  file (or leaves a vendored submodule uninitialised) can make `status`
+  report clean over an edit. This is the same class as a coherently
+  rewritten lock: it requires an attacker who already has local git
+  write access, which is inside the TCB boundary, not a new gap.
+
+- **The compiler and toolchain themselves.** The analyzer is not formally
+  verified; the Agda `lambda_if` / `lambda_cap` proofs are over the model,
+  so a soundness gap between the analyzer and that model is in scope as a
+  *vulnerability* (see [`SECURITY.md`](../SECURITY.md)) but the running
+  Python toolchain is trusted to execute.
+
+- **`install.sh` channel integrity (M3).** Same-channel SHA pinning for
+  the one-line installer is **deferred by design** and tracked as M3
+  ([`TODO.md`](../TODO.md)). Until it lands, the installer trusts its
+  download channel.
+
+- **Operator-trusted source roots.** `CAPA_PATH` directories and the
+  `./libraries/` fallback are read on the operator's trust: they are not
+  vendored, not pinned in `capa.lock`, and not covered by the per-SHA
+  verification. Code reached through them is the operator's
+  responsibility. See the source-resolution section of
+  [`docs/packages.md`](packages.md).
+
+## 4. Outside the threat model
+
+- **`Unsafe` / Python interop.** `Unsafe` is the declared escape hatch
+  out of the capability discipline. It is not a vulnerability, but it
+  **always** appears in the SBOM (`has_unsafe`, plus reachability), so a
+  build that uses it cannot hide that fact from an auditor. Attacks that
+  require `Unsafe` or `py_import` are out of scope by design
+  ([`SECURITY.md`](../SECURITY.md)).
+
+- **Microarchitectural / cache timing.** The `@constant_time` marker is a
+  **language-level** check: it forbids data-dependent branching and
+  short-circuiting on secret values in the marked function. It does not,
+  and cannot, certify the absence of cache-, port-, or
+  microarchitecture-level timing leaks below the language.
+
+- **Compromise of the GitHub release channel or a signing key.** The
+  registry root key and a dependency's `verify_key` are trust anchors: an
+  attacker who holds the corresponding private key can produce signatures
+  that verify. CI release-action pinning by SHA reduces the surface, but
+  a compromised trust anchor is outside what per-build verification can
+  detect.
+
+## Where to go next
+
+- [`SECURITY.md`](../SECURITY.md) the declared threat model, what counts
+  as a vulnerability, and the published advisories under
+  [`docs/advisories/`](advisories/).
+- [`docs/packages.md`](packages.md) `capa.toml`, `capa install`, the
+  lockfile, and source resolution.
+- [`docs/regulatory.md`](regulatory.md) reproducibility and the
+  regulatory mapping (EU CRA, NIS2, DORA, NIST SSDF, OWASP SCVS).
