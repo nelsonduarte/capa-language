@@ -21,8 +21,8 @@ jobs:
     name: Typecheck Agda proofs
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: wenkokke/setup-agda@v2
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+      - uses: wenkokke/setup-agda@52f1e708494c8717630b3e1378383b01a56a379c  # v2.5.0
         with:
           agda-version: '2.6.4.3'
       - name: Typecheck CapaSyntax
