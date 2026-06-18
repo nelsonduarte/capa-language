@@ -1,0 +1,56 @@
+// Wasm-parity slice: a lambda defined inside an impl method that
+// captures `self` and reads one of its fields.
+//
+// Pre-fix this failed loud on the Wasm backend with "FieldAccess on
+// receiver of type 'Unknown': no struct layout known": the lambda
+// body is lifted to a top-level Wasm function, and the lifted
+// function's `self` capture carried no concrete type on the
+// FieldAccess receiver Value (it stays `Unknown`) nor in the
+// synthesised function's locals (it is a capture, not a body-local).
+// The lift's env layout DID resolve `self`'s concrete impl type, so
+// the field-access emitter now consults it. The Python backend
+// already ran this correctly.
+
+type Box { n: Int, label: String }
+
+impl Box
+    // Single field, String-typed.
+    fun describe(self) -> String
+        let f = fun () -> String =>
+            return "n=${self.n}"
+        return f()
+
+    // Multiple fields of self read by one lambda.
+    fun describe_full(self) -> String
+        let f = fun () -> String =>
+            return "${self.label}=${self.n}"
+        return f()
+
+    // Lambda captures self AND an enclosing let-local.
+    fun describe_bumped(self) -> String
+        let bump = 10
+        let f = fun () -> String =>
+            return "n=${self.n + bump}"
+        return f()
+
+    // Nested lambda: the inner reads self.n through two lift levels.
+    fun describe_nested(self) -> String
+        let outer = fun () -> String =>
+            let inner = fun () -> String =>
+                return "n=${self.n}"
+            return inner()
+        return outer()
+
+    // Non-String field type returned straight out of the lambda.
+    fun next(self) -> Int
+        let f = fun () -> Int =>
+            return self.n + 1
+        return f()
+
+fun main(stdio: Stdio)
+    let b = Box { n: 5, label: "count" }
+    stdio.println(b.describe())
+    stdio.println(b.describe_full())
+    stdio.println(b.describe_bumped())
+    stdio.println(b.describe_nested())
+    stdio.println("${b.next()}")

@@ -34,6 +34,27 @@ from ._layout import (
 
 
 class _StructEmissionMixin:
+    def _capture_type_of(self, recv: Value) -> str | None:
+        """Return the concrete Capa type of a captured local/param
+        receiver while a lifted lambda body is being emitted, or
+        ``None`` when the receiver is not a capture.
+
+        A lambda nested inside an impl method captures ``self`` (and
+        possibly other struct locals); the lowerer leaves the
+        FieldAccess receiver Value typed ``Unknown`` and the
+        synthesised lifted function's ``locals`` omits the name
+        because it is a capture, not a body-local. The lift's env
+        layout (``self._current_captures``) did resolve the concrete
+        type, so it is the authoritative source here -- the same map
+        ``_push_value`` already uses to load the captured pointer."""
+        if recv.kind not in ("local", "param"):
+            return None
+        entry = self._current_captures.get(recv.name)
+        if entry is None:
+            return None
+        _, capa_ty = entry
+        return _strip_type_qualifiers(capa_ty)
+
     def _resolve_construction_sum(self, instr: Call) -> str:
         """Resolve the sum type a variant constructor builds.
 
@@ -267,6 +288,19 @@ class _StructEmissionMixin:
                 if layout is not None:
                     recv_ty = fallback
         if layout is None:
+            # Lifted-lambda receiver: a lambda inside an impl method
+            # captures ``self`` (or any struct local) whose concrete
+            # type the lowerer never threaded onto the receiver Value
+            # (it stays ``Unknown``) and which is absent from the
+            # synthesised lifted function's ``locals`` because it is a
+            # capture, not a body-local. The lift's env layout DID
+            # resolve the concrete type; reuse it.
+            cap = self._capture_type_of(instr.receiver)
+            if cap is not None:
+                layout = self._struct_layouts.get(cap)
+                if layout is not None:
+                    recv_ty = cap
+        if layout is None:
             raise WasmEmissionError(
                 f"FieldAccess on receiver of type {recv_ty!r}: no "
                 f"struct layout known. The IR's type inference must "
@@ -341,6 +375,16 @@ class _StructEmissionMixin:
                 layout = self._struct_layouts.get(fallback)
                 if layout is not None:
                     recv_ty = fallback
+        if layout is None:
+            # Same lifted-lambda capture fallback as
+            # _emit_field_access: a captured struct receiver (e.g.
+            # ``self`` from the enclosing impl method) carries its
+            # concrete type only in the lift's env layout.
+            cap = self._capture_type_of(instr.receiver)
+            if cap is not None:
+                layout = self._struct_layouts.get(cap)
+                if layout is not None:
+                    recv_ty = cap
         if layout is None:
             raise WasmEmissionError(
                 f"FieldStore on receiver of type {recv_ty!r}: no "

@@ -50,6 +50,14 @@ _PARITY_PROGRAMS: list[str] = [
     "strings.capa",
     "word_count.capa",
     "closures.capa",
+    # Slice (2026-06-18): a lambda inside an impl method that
+    # captures ``self`` and reads its fields. The lifted lambda's
+    # ``self`` capture carried no concrete type on the FieldAccess
+    # receiver Value nor in the synthesised function's locals; the
+    # field-access emitter now reads the type the lift's env layout
+    # already resolved. Covers single/multiple fields, self+local
+    # capture, a doubly-nested lambda, and an Int (non-String) field.
+    "self_in_impl_lambda.capa",
     "json_demo.capa",
     "generic_accumulator.capa",
     "list_struct_basics.capa",
@@ -891,6 +899,9 @@ class TestPythonWasmParity(unittest.TestCase):
 
     def test_closures(self):
         self._assert_parity("closures.capa")
+
+    def test_self_in_impl_lambda(self):
+        self._assert_parity("self_in_impl_lambda.capa")
 
     def test_json_demo(self):
         self._assert_parity("json_demo.capa")
@@ -3848,17 +3859,33 @@ class TestLambdaGuardedTailMatchParity(unittest.TestCase):
     "wasm-tools and/or wasmtime-py not installed",
 )
 class TestSelfCapturedInImplMethodLambda(unittest.TestCase):
-    """Known limitation pin (TODO.md "Known limitations"): a lambda
-    inside an impl method that captures ``self`` and reads one of
-    its fields fails loud on Wasm with "FieldAccess on receiver of
-    type 'Unknown': no struct layout known" while the Python backend
-    runs it correctly. The receiver's concrete impl type is lost
-    when the lambda body is lifted. Marked ``expectedFailure`` so
-    this gives a clear signal (an unexpected pass) the day the
-    lifter threads ``self``'s owning type through; flip it to a
-    normal assertion then."""
+    """Closed gap (was a known limitation): a lambda inside an impl
+    method that captures ``self`` and reads one of its fields used to
+    fail loud on Wasm with "FieldAccess on receiver of type 'Unknown':
+    no struct layout known" while the Python backend ran it correctly.
 
-    @unittest.expectedFailure
+    The lambda body lifts to a top-level Wasm function; the lifted
+    function's ``self`` capture carried no concrete type on the
+    FieldAccess receiver Value (it stays ``Unknown``) and was absent
+    from the synthesised function's ``locals`` (it is a capture, not a
+    body-local). The lift's env layout did resolve ``self``'s concrete
+    impl type, so the field-access emitter now consults it. These
+    assert byte-identical Python/Wasm output; the example fixture
+    ``self_in_impl_lambda.capa`` (in ``_PARITY_PROGRAMS``) covers the
+    same shapes end-to-end."""
+
+    def _assert_parity(self, src: str, expect: str) -> None:
+        py_out = _capture_stdout(lambda: _run_python(src))
+        wasm_out = _capture_stdout(lambda: _run_wasm(src))
+        self.assertEqual(
+            py_out, wasm_out,
+            msg=(
+                f"Python/Wasm divergence.\n"
+                f"--- python ---\n{py_out}\n--- wasm ---\n{wasm_out}"
+            ),
+        )
+        self.assertEqual(py_out, expect)
+
     def test_self_field_access_in_impl_method_lambda(self):
         src = (
             "type Box { n: Int }\n"
@@ -3873,10 +3900,78 @@ class TestSelfCapturedInImplMethodLambda(unittest.TestCase):
             "    let b = Box { n: 5 }\n"
             "    stdio.println(b.describe())\n"
         )
-        py_out = _capture_stdout(lambda: _run_python(src))
-        wasm_out = _capture_stdout(lambda: _run_wasm(src))
-        self.assertEqual(py_out, wasm_out)
-        self.assertEqual(py_out, "n=5\n")
+        self._assert_parity(src, "n=5\n")
+
+    def test_self_multiple_fields_in_lambda(self):
+        # One lambda reading two distinct fields of self.
+        src = (
+            "type Box { n: Int, label: String }\n"
+            "\n"
+            "impl Box\n"
+            "    fun describe(self) -> String\n"
+            "        let f = fun () -> String =>\n"
+            '            return "${self.label}=${self.n}"\n'
+            "        return f()\n"
+            "\n"
+            "fun main(stdio: Stdio)\n"
+            '    let b = Box { n: 5, label: "count" }\n'
+            "    stdio.println(b.describe())\n"
+        )
+        self._assert_parity(src, "count=5\n")
+
+    def test_self_and_local_captured_in_lambda(self):
+        # The lambda closes over self AND an enclosing let-local.
+        src = (
+            "type Box { n: Int }\n"
+            "\n"
+            "impl Box\n"
+            "    fun describe(self) -> String\n"
+            "        let bump = 10\n"
+            "        let f = fun () -> String =>\n"
+            '            return "n=${self.n + bump}"\n'
+            "        return f()\n"
+            "\n"
+            "fun main(stdio: Stdio)\n"
+            "    let b = Box { n: 5 }\n"
+            "    stdio.println(b.describe())\n"
+        )
+        self._assert_parity(src, "n=15\n")
+
+    def test_self_field_in_nested_lambda(self):
+        # The inner lambda reads self.n through two lift levels.
+        src = (
+            "type Box { n: Int }\n"
+            "\n"
+            "impl Box\n"
+            "    fun describe(self) -> String\n"
+            "        let outer = fun () -> String =>\n"
+            "            let inner = fun () -> String =>\n"
+            '                return "n=${self.n}"\n'
+            "            return inner()\n"
+            "        return outer()\n"
+            "\n"
+            "fun main(stdio: Stdio)\n"
+            "    let b = Box { n: 7 }\n"
+            "    stdio.println(b.describe())\n"
+        )
+        self._assert_parity(src, "n=7\n")
+
+    def test_self_int_field_in_lambda(self):
+        # A non-String (Int) field returned straight out of the lambda.
+        src = (
+            "type Box { n: Int }\n"
+            "\n"
+            "impl Box\n"
+            "    fun next(self) -> Int\n"
+            "        let f = fun () -> Int =>\n"
+            "            return self.n + 1\n"
+            "        return f()\n"
+            "\n"
+            "fun main(stdio: Stdio)\n"
+            "    let b = Box { n: 41 }\n"
+            '    stdio.println("${b.next()}")\n'
+        )
+        self._assert_parity(src, "42\n")
 
 
 @unittest.skipUnless(

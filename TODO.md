@@ -15,11 +15,6 @@ code.
 
 ## Short term (consolidation)
 
-- **(Optional, low cost) Close the Wasm `self`-in-lambda parity gap**
-  inside an `impl` method (see "Pendentes tecnicos" / DONE.md for the
-  shape; a lambda capturing `self` and reading a field loses the
-  receiver's struct layout on Wasm).
-
 ## Medium term (prove the value)
 
 - **NLnet empirical study.** Analyse 10-20 real libraries and measure the
@@ -27,8 +22,7 @@ code.
   tools. Highest-return NLnet deliverable.
 - **Make Python/Wasm parity universal.** Lift it beyond the
   `_PARITY_PROGRAMS` subset: close GAP-2b (a dynamic-prefix `restrict_to`
-  attenuation is not inline-enforced on Wasm) and the `self`-in-lambda
-  gap.
+  attenuation is not inline-enforced on Wasm).
 - **M4: `verify_provenance="required"` as an option/default**, closing
   the SLSA L2 fail-open layer.
 - **Paper -> LaTeX.** Draft v1.9 is local-only; LaTeX conversion targets
