@@ -146,7 +146,8 @@ The migration touches ~10 files. Phased rollout, one cap at a time:
 
 Until slices 25.2–25.8 land:
 
-- The bug is documented honestly in `TODO.md` under slice 25.
+- The bug is documented honestly under slice 25 (now closed; see
+  `DONE.md`).
 - `docs/regulatory.md` gains a paragraph: "Wasm cap discipline is sound
   intra-function only; cross-function attenuation enforcement is in
   progress (issue tracker link)".
