@@ -7,6 +7,29 @@ The project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 starting at 1.0; before then, minor-version bumps may introduce
 breaking changes and the discipline is still being shaped.
 
+## [1.5.1], 2026-06-18
+
+**Capa 1.5.1.** A PATCH release that fixes a single import-resolution
+discrepancy between the build path and the test runner. No new language
+features and no security changes beyond the fix below; the PKG-1
+build-time vendor verification introduced in 1.5.0 is preserved.
+
+**Fixes.**
+
+- *Package self-reference resolution under `--check` / `--run`.* A
+  project whose own root directory is the package being built (a package
+  that imports itself, e.g. `import mypkg.model` from inside the `mypkg`
+  repo) failed to resolve those self-referential imports under `capa
+  --check` and `capa --run`, even though `capa test` resolved them
+  cleanly. The two paths had drifted: the test runner already placed the
+  package on the search path, but the direct build did not. The build
+  now adds the parent directory of the current working directory to the
+  search path when a `capa.toml` with a valid `[package]` table is
+  present, restoring parity with the test runner. This does **not**
+  bypass PKG-1: the verified `./vendor/` retains precedence in
+  resolution, so the self-reference path cannot shadow or override a
+  verified vendored dependency.
+
 ## [1.5.0], 2026-06-17
 
 **Capa 1.5.0.** A MINOR release that hardens the package manager's
