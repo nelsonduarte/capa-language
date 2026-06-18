@@ -48,7 +48,7 @@ eval = ["matplotlib>=3.8"]
 # external pip install. The ``wasm-tools`` binary still needs to
 # be on PATH separately - it ships as a Rust executable and is
 # the only piece of the Wasm pipeline Python cannot vendor.
-wasm = ["wasmtime>=20"]
+wasm = ["wasmtime>=45"]
 
 [project.scripts]
 capa = "capa.cli:main"

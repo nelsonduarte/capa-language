@@ -7,6 +7,26 @@ The project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 starting at 1.0; before then, minor-version bumps may introduce
 breaking changes and the discipline is still being shaped.
 
+## [Unreleased]
+
+**Maintenance.**
+
+- *Optional dev/runtime extras refreshed to current PyPI.* The optional
+  dependency groups in `pyproject.toml` are dev/eval/wasm extras only;
+  the compiler stays standard-library-only at runtime. Refreshed the
+  installed pins of the `test`, `eval`, and `wasm` extras to their
+  latest releases and re-ran the full suite green against them: pytest
+  9.0.3 to 9.1.0, hypothesis 6.152.9 to 6.155.3, matplotlib 3.10.9 to
+  3.11.0, and wasmtime 44.0.0 to 45.0.0. No CVEs were involved; this is
+  a routine staying-current pass. The wasmtime 44 to 45 major bump did
+  not change any of the API the Wasm backend uses
+  (`Engine`/`Store`/`Linker`/`FuncType`/`ValType`/`Module.deserialize`/
+  `wasmtime.component`), so no compiler code changed.
+- *`wasmtime` floor raised to `>=45`.* The `wasm` extra floor had
+  drifted far behind reality (`>=20`). Raised it to `>=45`, the version
+  the suite was validated against, so the declared minimum reflects a
+  tested baseline rather than a stale lower bound.
+
 ## [1.5.1], 2026-06-18
 
 **Capa 1.5.1.** A PATCH release that fixes a single import-resolution
