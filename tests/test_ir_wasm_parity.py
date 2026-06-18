@@ -3973,6 +3973,28 @@ class TestSelfCapturedInImplMethodLambda(unittest.TestCase):
         )
         self._assert_parity(src, "42\n")
 
+    def test_self_field_mutated_in_lambda(self):
+        # The lambda WRITES a field of the captured ``self`` (``self.n
+        # = self.n + 100``), exercising the symmetric _emit_field_store
+        # capture fallback (the read tests above only cover
+        # _emit_field_access). The in-place write must be visible to
+        # the subsequent read, on both backends, byte-identically.
+        src = (
+            "type Box { n: Int }\n"
+            "\n"
+            "impl Box\n"
+            "    fun bump(self) -> Int\n"
+            "        let f = fun () -> Int =>\n"
+            "            self.n = self.n + 100\n"
+            "            return self.n\n"
+            "        return f()\n"
+            "\n"
+            "fun main(stdio: Stdio)\n"
+            "    let b = Box { n: 5 }\n"
+            '    stdio.println("${b.bump()}")\n'
+        )
+        self._assert_parity(src, "105\n")
+
 
 @unittest.skipUnless(
     _has_wasm_tools() and _has_wasmtime_py(),
