@@ -196,15 +196,19 @@ The runtime ships built-in types (`Result`, `Option`, `List`,
 `Fs`, `Net`, `Env`, `Clock`, `Random`, `Db`, `Proc`, `Unsafe`).
 Full reference in [`docs/stdlib.md`](docs/stdlib.md).
 
-Four **seed libraries** live in standalone repos and are
+Eight **seed libraries** live in standalone repos and are
 consumed via the package manager:
 
 | Library | Repo | Surface |
 |---------|------|---------|
 | `capa_cli` | [nelsonduarte/capa_cli](https://github.com/nelsonduarte/capa_cli) | argument parser: positionals, flags, options, `--help` |
+| `capa_csv` | [nelsonduarte/capa_csv](https://github.com/nelsonduarte/capa_csv) | RFC 4180 CSV parser, header view, and writer; zero-capability |
 | `capa_datetime` | [nelsonduarte/capa_datetime](https://github.com/nelsonduarte/capa_datetime) | ISO 8601 parsing + Y/M/D/h/m/s arithmetic, zero-capability |
-| `capa_log` | [nelsonduarte/capa_log](https://github.com/nelsonduarte/capa_log) | levelled logging (`DEBUG`/`INFO`/`WARN`/`ERROR`) via a `Logger` capability over `Stdio` |
+| `capa_hash` | [nelsonduarte/capa_hash](https://github.com/nelsonduarte/capa_hash) | SHA-256/SHA-224/HMAC-SHA256, zero-capability, with constant-time tag comparison |
 | `capa_http` | [nelsonduarte/capa_http](https://github.com/nelsonduarte/capa_http) | capability-typed HTTP client over `urllib`; caller sees `Http`, never `Unsafe` |
+| `capa_log` | [nelsonduarte/capa_log](https://github.com/nelsonduarte/capa_log) | levelled logging (`DEBUG`/`INFO`/`WARN`/`ERROR`) via a `Logger` capability over `Stdio` |
+| `capa_sbom` | [nelsonduarte/capa_sbom](https://github.com/nelsonduarte/capa_sbom) | CycloneDX + SPDX JSON parsing with `capa:*` capability queries; zero-capability |
+| `capa_test` | [nelsonduarte/capa_test](https://github.com/nelsonduarte/capa_test) | tiny assertion library for the `capa test` runner; `Stdio`-only |
 
 To use any of them in a project:
 
@@ -255,7 +259,7 @@ capa/                 # Python package: compiler + runtime + pkg manager
   lexer/  parser/  analyzer/  transpiler/  runtime/
   ir/                 # CIR + Wasm Component Model backend + WIT emitter
   manifest/  docgen/  lsp/    pkg/    cli.py
-tests/                # 2593 unit, end-to-end, and property tests
+tests/                # 3000+ unit, end-to-end, and property tests
 examples/             # .capa programs (basics, CVE case studies, LLM sandbox)
 # (seed libraries now all live in standalone repos; see Standard library section)
 docs/                 # public website (HTML) + design writeups (.md)
@@ -276,7 +280,7 @@ typestate protocols) and the fully functional Wasm backend (see
 breaking changes to the covered surfaces require a major bump, and
 deprecations get one minor release of warning first.
 
-**2593 tests** spanning the lexer, parser, analyzer, transpiler,
+**3000+ tests** spanning the lexer, parser, analyzer, transpiler,
 LSP, formatter, attribute-schema validation, package manager, the
 information-flow / constant-time / typestate checkers, the Wasm
 backend (with a Python/Wasm output parity harness), and

@@ -25,6 +25,24 @@ The deepest hardening window to date: a six-axis adversarial review
 (~25 real findings) followed by four releases and an infrastructure
 sweep.
 
+### Documentation reconciliation (2026-06-18)
+
+- **Reconciled the documentation with the real v1.5.1 state.** The
+  compiler `README.md` advertised 2593 tests and four seed libraries; the
+  real numbers are 3080 tests and eight published libraries
+  (`capa_cli`, `capa_csv`, `capa_datetime`, `capa_hash`, `capa_http`,
+  `capa_log`, `capa_sbom`, `capa_test`). Updated the README metrics and
+  switched the volatile test count to durable round-down phrasing
+  (`3000+ tests`) so it stays true across commits without per-release
+  maintenance; the seed-library table now lists all eight. The website
+  (separate repo) carried the same drift: the test count moved to
+  `3000+` across `index.html`, `start.html`, `community.html`, and
+  `roadmap.html`, and the stale `v1.2.0` current-state version was
+  refreshed to `v1.5.1` (page colophons plus the index / roadmap /
+  regulatory / compare narrative). This item also covered the original
+  TODO/DONE split itself, the first practical application of the
+  TODO->DONE convention those files declare.
+
 ### Security review (2026-06-16/17)
 
 - **Six-axis adversarial security review.** A full review across six

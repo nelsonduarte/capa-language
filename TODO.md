@@ -15,11 +15,6 @@ code.
 
 ## Short term (consolidation)
 
-- **Reconcile documentation with the real v1.5.1 state.** `README.md`
-  still advertises 2593 tests and 4 seed libraries; the real numbers are
-  3080 tests and 8 published libraries. The website carries the same
-  test-count drift (separate repo). (This very TODO/DONE split is itself
-  part of that reconciliation.)
 - **Revalidate the three stalled demos against v1.5.1.** `sbom-watch`,
   `policy-eval`, and `audit-trail-reporter` last ran on 2026-05-23.
   Re-run them on the v1.5.1 compiler and either commit a `capa.lock`
