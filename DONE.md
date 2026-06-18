@@ -716,6 +716,20 @@ guarantees proved in the SBOM); `capa_paymentguard` and
 
 ## Wasm-specific gaps closed (not P0)
 
+- [x] **`self`-in-lambda field parity inside an impl method**
+  (2026-06-18). A lambda defined inside an `impl` method that captures
+  `self` and reads or writes one of its fields used to fail loud on
+  the Wasm backend ("FieldAccess on receiver of type 'Unknown': no
+  struct layout known") while the Python backend ran it correctly: the
+  lifted lambda's `self` capture carried its concrete type only in the
+  lift's env layout, which the field emitter never consulted. The Wasm
+  emitter now resolves the captured receiver's struct layout from that
+  env layout, restoring byte-identical output; the read and write
+  paths share one receiver-layout resolver. Covers field read and
+  in-place mutation (`self.n = self.n + 100`), multiple fields,
+  self+local capture, a doubly-nested lambda, and an Int field. Parity
+  fixture `examples/wasm/self_in_impl_lambda.capa`; shipped in v1.5.2.
+
 - [x] **Bug-hunt batch: cross-backend parity, soundness, Wasm
   patterns** (2026-06-03). Integer `/` now floors on both backends
   and both trap on `MIN / -1`; unary integer negation traps on

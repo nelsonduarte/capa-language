@@ -27,6 +27,30 @@ breaking changes and the discipline is still being shaped.
   the suite was validated against, so the declared minimum reflects a
   tested baseline rather than a stale lower bound.
 
+## [1.5.2], 2026-06-18
+
+**Capa 1.5.2.** A PATCH release that restores Python/Wasm parity for a
+lambda capturing `self` inside an `impl` method. No new language
+features and no API or security changes; the only behavioural change is
+that a previously rejected program now compiles and runs.
+
+**Fixes.**
+
+- *Wasm `self`-in-lambda field access (and mutation) parity.* A lambda
+  defined inside an `impl` method that captures `self` and reads (or
+  writes) one of its fields failed loud on the Wasm backend with
+  "FieldAccess on receiver of type 'Unknown': no struct layout known",
+  while the Python backend ran it correctly. The lambda body lifts to a
+  top-level Wasm function; the receiver `self` carried no concrete type
+  on the field-access Value (it stayed `Unknown`) and was absent from
+  the lifted function's locals because it is a capture, not a
+  body-local. The Wasm emitter now resolves the captured receiver's
+  struct layout from the lift's env layout (the same map used to load
+  the captured pointer), restoring byte-identical Python/Wasm output.
+  The symmetric field-store (in-place mutation of a captured `self`
+  field) is covered too; the read and write paths now share one
+  receiver-layout resolver so they cannot diverge.
+
 ## [1.5.1], 2026-06-18
 
 **Capa 1.5.1.** A PATCH release that fixes a single import-resolution
