@@ -882,6 +882,41 @@ class TestCliInProcess(unittest.TestCase):
             self.assertEqual(rc, 0, err)
             self.assertIn("3", out)
 
+    def test_capa_toml_enables_package_self_reference(self):
+        # Regression: a seed library whose repository directory *is*
+        # the package resolves its own ``import <pkg>.<module>`` lines
+        # under ``capa --check`` / ``--run``, the same way ``capa
+        # test`` already does (testrunner injects the project root's
+        # parent into CAPA_PATH). The layout: ``<tmp>/mypkg/`` holds
+        # the manifest and two modules; ``model.capa`` is imported by
+        # ``entry.capa`` as ``mypkg.model``, which only resolves if
+        # the parent of the cwd (``<tmp>``) is on the search path.
+        with tempfile.TemporaryDirectory() as td:
+            td_path = Path(td)
+            pkg = td_path / "mypkg"
+            pkg.mkdir()
+            (pkg / "capa.toml").write_text(
+                '[package]\n'
+                'name = "mypkg"\n'
+                'version = "0.1.0"\n',
+                encoding="utf-8",
+            )
+            _write_capa(
+                pkg, "model.capa",
+                "pub fun bump(n: Int) -> Int\n    return n + 1\n",
+            )
+            entry = _write_capa(
+                pkg, "entry.capa",
+                "import mypkg.model\n"
+                "fun main(stdio: Stdio)\n"
+                '    stdio.println("${bump(2)}")\n',
+            )
+            # cwd is the package dir, exactly as a developer running
+            # the command from the repo root would have it.
+            rc, out, err = _run_main(["--run", str(entry)], cwd=pkg)
+            self.assertEqual(rc, 0, err)
+            self.assertIn("3", out)
+
     def test_broken_capa_toml_emits_warning_but_keeps_running(self):
         with tempfile.TemporaryDirectory() as td:
             td_path = Path(td)

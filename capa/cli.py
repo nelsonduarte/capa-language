@@ -164,6 +164,21 @@ def _capa_search_paths() -> list[Path]:
                 if d.is_path and d.path is not None:
                     dep_path = (manifest.manifest_dir / d.path).resolve()
                     _append(dep_path.parent)
+            # A ``capa.toml`` in the cwd marks it as the project root,
+            # so add its parent as a search root. This makes a package
+            # self-reference resolve: a seed library whose repository
+            # directory *is* the package (the dir is named ``capa_csv``
+            # and its modules import one another as ``capa_csv.model``)
+            # needs ``<root>/../capa_csv/model.capa`` to be reachable.
+            # ``capa test`` already injects the same parent into the
+            # child's ``CAPA_PATH`` (see ``testrunner._child_env``);
+            # without this, ``capa --check`` / ``--run`` on those files
+            # failed to resolve imports that ``capa test`` resolved, an
+            # inconsistency between the two build paths. Added AFTER
+            # ./vendor and the path-deps above (and de-duped) so it can
+            # never shadow a verified vendored dep or a declared path
+            # dep with a same-named sibling working copy of the parent.
+            _append(Path.cwd().parent)
         except VendorVerificationError:
             # Fail-closed: an unverifiable vendor tree is a hard stop,
             # NOT a "broken capa.toml" warning. Re-raise so the CLI
