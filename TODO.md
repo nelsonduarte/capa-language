@@ -15,10 +15,6 @@ code.
 
 ## Short term (consolidation)
 
-- **Revalidate the three stalled demos against v1.5.1.** `sbom-watch`,
-  `policy-eval`, and `audit-trail-reporter` last ran on 2026-05-23.
-  Re-run them on the v1.5.1 compiler and either commit a `capa.lock`
-  for PKG-1 conformity or retire them deliberately.
 - **Publish an honest "trust model" page/section.** Separate what is
   unconditional (lockfile-SHA + GPG + PKG-1 vendor re-verification) from
   what is best-effort (the SLSA L2 layer is fail-open; M4

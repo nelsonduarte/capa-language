@@ -25,6 +25,25 @@ The deepest hardening window to date: a six-axis adversarial review
 (~25 real findings) followed by four releases and an infrastructure
 sweep.
 
+### Stalled-demo revalidation against v1.5.1 (2026-06-18)
+
+- **Revalidated the three stalled downstream demos (`sbom-watch`,
+  `policy-eval`, `audit-trail-reporter`) against compiler v1.5.1.** All
+  three last ran on 2026-05-23, predating the four security releases
+  (laundered-`Unsafe`-in-cap-bearing-struct rejection, secret-dependent
+  compare in `@constant_time`, field-access through an abstract
+  capability receiver, `@secret` var-reassign warning, and the PKG-1
+  fail-closed vendor-vs-lock verification). All three came up clean with
+  no changes required: each passes `capa --check` on its entrypoint
+  (`watch.capa`, `policy_eval.capa`, `reporter.capa` respectively),
+  runs end-to-end via `capa --run` on its bundled sample data, and is
+  PKG-1-coherent (every vendored git-dep HEAD matches its `capa.lock`
+  `commit` and every vendor working tree is clean). No security bit-rot:
+  none of the demos used any of the now-rejected anti-patterns, so no
+  honest-model rewrite was needed. No PKG-1 drift and no compiler
+  regression surfaced. No demo commits were made (nothing to change);
+  each repo's tree stayed clean (generated reports are gitignored).
+
 ### Documentation reconciliation (2026-06-18)
 
 - **Reconciled the documentation with the real v1.5.1 state.** The
