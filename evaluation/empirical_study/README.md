@@ -1,8 +1,12 @@
 # Capability-recall study (Phases 1a + 1b)
 
-This harness measures how well three different treatments recover
-per-function capability facts from a corpus of real-world-shaped Python
-libraries, and scores each treatment against an auditable ground truth.
+This harness measures, for three different treatments, two distinct
+things about per-function capability facts over a corpus of
+real-world-shaped Python libraries: whether the treatment **positively
+attributes** a capability to the function that exercises it (Q1), and
+whether, under **closed-world SBOM semantics**, it **false-clears** a
+function that does (Q2). Each treatment is scored against an auditable
+ground truth by the **same criterion** within each question.
 
 It is the quantitative core of the NLnet empirical study. It runs over
 **two corpus roots**:
@@ -19,14 +23,65 @@ It is the quantitative core of the NLnet empirical study. It runs over
 
 Phase 1c (see *Pending* below) adds CodeQL as a literal dataflow layer.
 
-## Unit of recall
+## Two questions, one criterion each
 
-One fact = a pair `(python_function, capability)`. A treatment "recovers"
-a fact if it attributes that capability to that function. Capabilities
-are Capa's axes: `Fs`, `Net`, `Clock`, `Env`, `Random`, `Proc`, `Stdio`.
+One fact = a pair `(python_function, capability)`. Capabilities are
+Capa's axes: `Fs`, `Net`, `Clock`, `Env`, `Random`, `Proc`, `Stdio`.
 
-The ground truth lives in [`ground_truth.csv`](ground_truth.csv) with a
-`how` column recording how each function reaches the capability:
+The study asks **two separate questions** and scores **all three
+treatments by the same criterion within each**. They are reported in
+separate columns and are never collapsed, because a treatment can do
+well on one and badly on the other.
+
+- **Q1 - positive-attribution recall.** Does the treatment attribute
+  capability `C` to the **named** function `F` that exercises it?
+  Identical criterion for all three: `C` appears in the treatment's
+  output **for `F`** (not merely somewhere in the pair). This is a
+  **modest** measure. On it Capa does **not** dramatically beat a
+  good-faith heuristic: Capa is **sound, not omniscient**. It honestly
+  declines to say which handler a dispatcher will run, so it does not
+  positively attribute a handler's authority to the dispatcher.
+
+- **Q2 - false-clearance under closed-world SBOM semantics.** This is
+  the **headline** and the real argument for Capa. Under the semantics
+  of an SBOM (a **closed list**: what is not listed for a function is
+  implicitly **excluded**), a treatment commits a **false-clearance**
+  for a true fact `(F, C)` if it gives the consumer **no way to know `F`
+  can exercise `C`**. The operational definition per treatment:
+  - **T1**: no per-function granularity -> cannot distinguish functions
+    -> false-clears **every** per-function fact.
+  - **T2**: `C` is cleared for `F` if `C` is **absent** from the
+    detections for `F` (absence = implicit exclusion under the
+    closed-world reading) -> false-clears exactly the facts it misses.
+  - **T3**: Capa's manifest gives each `(F, C)` **three** states:
+    *reachable* (attributed), *provably-excluded* (sound, proved in
+    Agda), or *not-determined*. Capa false-clears `(F, C)` **only if `C`
+    is in `F`'s `provably_excluded_capabilities` while `F` truly
+    exercises `C`** - which never happens, because provably-excluded is
+    sound (used ⊆ declared; used ∩ provably-excluded = ∅). For the
+    dispatchers `provably_excluded = []`, so no axis is cleared:
+    **zero** false-clearances. The harness **computes** this from the
+    real manifest rather than asserting it.
+
+**The result, in one line:** Capa's advantage is **not** attributing
+more (Q1, where it ties the good-faith heuristic) - it is **never
+clearing a function incorrectly** under closed-world semantics, because
+it distinguishes *provably excluded* from *not determined*.
+
+### Python <-> Capa function correspondence (Q1)
+
+Q1 attributes a fact to the **named** function, so T3 must be scored
+against the Capa function that plays the **same role** as the Python
+one. Most names coincide; the dispatcher functions keep the same name
+on both sides (`dispatch`, `emit`, `run_action`, `run_pipeline`). Where
+the faithful `.capa` transliteration renamed a function, the mapping is
+recorded **explicitly** in the `capa_function` column of
+[`ground_truth.csv`](ground_truth.csv) (e.g. the Python `_fetch` handler
+is `fetch_handler` in Capa; `load_config` is the orchestrator
+`load_full_config`; `stage_audit` is the factory `make_audit_stage`),
+so the correspondence is auditable rather than guessed.
+
+The `how` column records how each function reaches the capability:
 
 | `how` | meaning | corpus |
 |---|---|---|
@@ -111,33 +166,57 @@ through a helper call (`via-helper`), a runtime-selected callable
 (`via-dispatch`), or a data tag (`via-data`).
 
 ### T3 Capa by construction
-The per-function manifest from `python -m capa --manifest`. Capa
-attributes every capability a function can reach (declared +
-transitively reachable) by construction. Because Capa's type system
-forbids reaching a capability that is not on a function's signature, axis
-coverage from the manifest is a faithful, non-inflated reading of what
-the Capa SBOM asserts.
+The per-function manifest from `python -m capa --manifest`. For **Q1**,
+Capa attributes `C` to `F` iff `C` is in `F`'s
+`transitively_reachable_capabilities` (declared + reachable through the
+call graph). This is scored **per named function**, against the
+`capa_function` from the ground truth - **not** as pair-level axis
+coverage. The honest consequence: Capa attributes the two `via-helper`
+facts (the helper's authority is on the caller's type) but does **not**
+attribute the ten dispatcher facts, because it does not resolve which
+handler runs. So on Q1 Capa **ties** the heuristic.
+
+For **Q2**, the manifest's `provably_excluded_capabilities` is the sound
+exclusion set (proved in Agda). Capa false-clears `(F, C)` only if `C`
+is in that set while `F` truly exercises `C`; this never happens, and
+the dispatchers carry `provably_excluded = []`, so Capa false-clears
+**zero** facts. This is where Capa separates from the heuristic: the
+heuristic, read closed-world, false-clears every dispatcher fact it
+cannot see, while Capa reports those axes as **not-determined** (neither
+reachable nor provably-excluded) and therefore clears nothing.
 
 ## Honesty statement (read this before reading the numbers)
 
-- **On direct calls, the pattern heuristic ties Capa.** Capa does **not**
-  win on the easy cases. For every `direct` fact, T2 and T3 both score.
-- **The T2 gap is entirely in indirection.** Every fact T2 misses is a
-  `via-helper`, `via-dispatch`, or `via-data` fact (see
+- **On Q1 (positive attribution) Capa does NOT win big.** T2 attributes
+  **36/48**, Capa **38/48**. The two-fact edge is the `via-helper` cases
+  (the helper's authority is on the caller's Capa type). On the ten
+  dispatcher facts Capa attributes **nothing**: it does not vouch which
+  handler a dispatcher runs. The Q1 story is **parity**, and we say so.
+  A "100%" here would have been a measurement artefact of the old,
+  asymmetric axis-coverage scoring (any function in the pair reaching
+  the axis credited the dispatcher); that has been removed.
+- **The real result is Q2 (false-clearance), and there Capa is 0/48.**
+  Under closed-world SBOM semantics T1 false-clears all 48, T2
+  false-clears the 12 facts it misses, and Capa false-clears **none** -
+  because it distinguishes *provably-excluded* (sound) from
+  *not-determined*. That zero is the guarantee: used ⊆ declared and
+  used ∩ provably-excluded = ∅, proved in Agda.
+- **On direct calls, the pattern heuristic ties Capa on Q1.** For every
+  `direct` fact T2 and T3 both attribute. Capa does not win the easy
+  cases.
+- **The T2 Q1 gap is entirely indirection.** Every fact T2 fails to
+  attribute is a `via-helper`, `via-dispatch`, or `via-data` fact (see
   [`false_negatives.csv`](false_negatives.csv)). T2 never misses a
-  direct fact.
-- **The gap is not uniform, and we say so.** The 2 `via-helper` misses
-  are dataflow-resolvable: an interprocedural tool (CodeQL) follows the
-  local call edge. The 10 `via-dispatch` / `via-data` misses (Phase 1b)
-  are where the target is chosen at runtime; here only the type-carried
-  capability is expected to recover the fact, except at the
-  constant-table end (`command_registry`) which dataflow can still
+  direct fact. The 2 `via-helper` misses are dataflow-resolvable
+  (CodeQL follows the local call edge); the 10 `via-dispatch` /
+  `via-data` misses are where the target is chosen at runtime, except at
+  the constant-table end (`command_registry`) which dataflow can still
   enumerate. The per-pair CodeQL expectation is recorded in each
   Phase-1b README and confirmed in Phase 1c.
-- **The gap versus T1 is granularity, not detection.** T1 recovers 0
-  per-function facts because a dependency SBOM is package-granular, not
-  because it "fails to detect" anything. Comparing T1 to T2/T3 is a
-  per-function-vs-per-package comparison, and we say so explicitly.
+- **The gap versus T1 is granularity, not detection.** T1 attributes 0
+  per-function facts (Q1) and false-clears all 48 (Q2) because a
+  dependency SBOM is package-granular, not because it "fails to detect"
+  anything.
 - No straw man: the T2 ruleset is deliberately strong so that any miss is
   structural, not a thin-ruleset artefact; and the Phase-1b dispatchers
   genuinely exercise the authority (the handlers do real I/O), so the
@@ -154,20 +233,30 @@ the Capa SBOM asserts.
 
 ## Outputs
 
-Running the harness writes three CSVs next to it:
+Running the harness writes three CSVs next to it. Each carries **both
+questions** side by side; a Q1 number is never presented as if it
+answered Q2.
 
-- [`per_pair.csv`](per_pair.csv) - one row per pair: ground-truth count
-  and T1 / T2 / T3 recall (count and percent).
-- [`aggregate.csv`](aggregate.csv) - totals and recall percentage per
-  treatment.
-- [`false_negatives.csv`](false_negatives.csv) - every fact T2 misses,
-  with its `how` cause, the conservative class-level
-  `dataflow_would_resolve` flag (`via-helper` yes; `via-dispatch` /
-  `via-data` no), and a `t2b_codeql` column for the **literal** CodeQL
-  verdict (`pending` until Phase 1c runs it). The finer per-pair CodeQL
-  expectation lives in each Phase-1b pair's README, since a constant
-  function table is points-to-resolvable while a computed name or a
-  deserialized tag is not.
+- [`per_pair.csv`](per_pair.csv) - one row per pair: ground-truth count,
+  the Q1 positive-attribution columns (`q1_t1_attr` / `q1_t2_attr` /
+  `q1_t3_attr`) and the Q2 false-clearance columns
+  (`q2_t1_falseclear` / `q2_t2_falseclear` / `q2_t3_falseclear`, where
+  **lower is better**).
+- [`aggregate.csv`](aggregate.csv) - one row per **(question,
+  treatment)**, so a reader can never mistake a Q1 count for a Q2 count.
+  The `T2b_codeql` rows are `pending` until Phase 1c.
+- [`false_negatives.csv`](false_negatives.csv) - every **distinguishing**
+  fact (one T2 or T3 fails to attribute), with per-treatment
+  `t2_attributes` / `t3_attributes`, the closed-world
+  `t2_false_clears` / `t3_false_clears` verdicts (note `t3_false_clears`
+  is `no` on every row - the soundness guarantee made visible), the
+  `how` cause, the conservative class-level `dataflow_would_resolve`
+  flag (`via-helper` yes; `via-dispatch` / `via-data` no), and a
+  `t2b_codeql` column for the **literal** CodeQL verdict (`pending`
+  until Phase 1c runs it). The finer per-pair CodeQL expectation lives
+  in each Phase-1b pair's README, since a constant function table is
+  points-to-resolvable while a computed name or a deserialized tag is
+  not.
 
 [`summary.md`](summary.md) is the human-readable writeup of one run.
 
@@ -242,10 +331,15 @@ attribute. That absence is itself the security property.
 | 1c | add **CodeQL** as a dataflow layer (T2b) to confirm it resolves `via-helper` and the constant-table dispatch but not the computed-name / deserialized-tag facts | pending (the `t2b_codeql` slot is wired) |
 
 **Where the corpus now stands:** the 20 Phase-1a pairs make the
-**granularity** point over T1 (per-function vs per-package) and show
-parity-plus-structure versus T2 on direct calls. The 5 Phase-1b pairs
-add the indirection that defeats a pattern heuristic outright (T2 falls
-to 75 %) and, at the opaque end, is expected to defeat interprocedural
-dataflow too -- which Phase 1c will confirm with a literal CodeQL run.
-The spectrum is deliberately visible: `command_registry` is the easy
-(dataflow-resolvable) end and is reported as such, not hidden.
+**granularity** point over T1 (per-function vs per-package). On **Q1
+(positive attribution)** Capa and the good-faith heuristic are at
+**parity** (38/48 vs 36/48): Capa is sound, not omniscient. The real
+result is **Q2 (false-clearance)**: under closed-world SBOM semantics
+T1 false-clears all 48, the heuristic false-clears the 12 facts it
+misses, and **Capa false-clears 0** because it distinguishes
+*provably-excluded* from *not-determined*. The 5 Phase-1b pairs supply
+the indirection that drives the heuristic's Q2 false-clearances and, at
+the opaque end, is expected to defeat interprocedural dataflow too -
+which Phase 1c will confirm with a literal CodeQL run in **both**
+questions. The spectrum is deliberately visible: `command_registry` is
+the easy (dataflow-resolvable) end and is reported as such, not hidden.

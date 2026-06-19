@@ -31,9 +31,12 @@ def test_ground_truth_columns_and_vocabulary():
         rows = list(csv.DictReader(f))
     assert rows, "ground_truth.csv must not be empty"
     for r in rows:
-        assert set(r) == {"pair", "python_function", "capability", "how"}
+        assert set(r) == {
+            "pair", "python_function", "capa_function", "capability", "how"
+        }
         assert r["capability"] in valid_caps, r
         assert r["how"] in valid_how, r
+        assert r["capa_function"], r  # explicit Python<->Capa mapping
 
 
 def test_ground_truth_facts_reference_real_functions():
@@ -47,14 +50,14 @@ def test_ground_truth_facts_reference_real_functions():
             n.name for n in ast.walk(ast.parse(py.read_text(encoding="utf-8")))
             if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
         }
-        for (fn, _cap, _how) in rows:
+        for (fn, _cf, _cap, _how) in rows:
             assert fn in names, f"{pair}: ground-truth names unknown fn {fn!r}"
 
 
 def test_ground_truth_facts_are_unique():
     gt = rs.load_ground_truth()
     for pair, rows in gt.items():
-        keys = [(fn, cap) for (fn, cap, _how) in rows]
+        keys = [(fn, cap) for (fn, _cf, cap, _how) in rows]
         assert len(keys) == len(set(keys)), f"duplicate fact in {pair}"
 
 
@@ -95,28 +98,110 @@ def test_t1_extracts_cap_bearing_imports(tmp_path):
 # ----------------------------------------------------------------------
 # Scoring arithmetic + classification (no subprocesses)
 # ----------------------------------------------------------------------
-def test_score_pair_arithmetic(monkeypatch):
+def test_q1_positive_attribution_is_per_function(monkeypatch):
+    """Q1 scores every treatment by the SAME criterion: the capability
+    is attributed to the NAMED function. T3 is scored against the Capa
+    function's own reachable set, NOT pair-level axis coverage. Here the
+    Capa-side ``g`` does NOT reach Net, so T3 must NOT credit it -- this
+    is the asymmetry the Phase-1b honesty fix removed."""
+    #            python_fn, capa_fn, capability, how
     gt_rows = [
-        ("f", "Fs", "direct"),
-        ("g", "Net", "via-helper"),
+        ("f", "f", "Fs", "direct"),
+        ("g", "g", "Net", "via-helper"),
     ]
-    # Stub out the subprocess-backed pieces.
     monkeypatch.setattr(rs, "t2_facts", lambda _py: {("f", "Fs")})
     monkeypatch.setattr(rs, "t1_modules", lambda _py: {"os"})
+    # Capa attributes Fs to f, but NOT Net to g (g is not-determined for
+    # Net even though Net is reachable elsewhere in the pair).
     monkeypatch.setattr(
         rs, "t3_capa_caps",
-        lambda _pair: ({"f": {"Fs"}, "g": {"Net"}}, {"Fs", "Net"}),
+        lambda _pair: (
+            {"f": {"Fs"}, "g": set(), "other": {"Net"}},   # reachable
+            {"f": set(), "g": set(), "other": set()},       # provably-excluded
+        ),
     )
     r = rs.score_pair("config_loader", gt_rows)
     assert r["gt_count"] == 2
-    assert r["t1_hits"] == 0          # never per-function
-    assert r["t2_hits"] == 1          # only the direct fact
-    assert r["t3_hits"] == 2          # both axes covered
-    # the via-helper miss is classified as dataflow-resolvable, with a
-    # "pending" slot for the literal CodeQL verdict (filled in 1c).
-    assert r["t2_false_negatives"] == [
-        ("g", "Net", "via-helper", True, "pending")
+    assert r["q1_t1"] == 0   # never per-function
+    assert r["q1_t2"] == 1   # only the direct fact
+    # T3 credits f (Fs reachable) but NOT g: the axis is reachable in the
+    # pair, yet g does not positively attribute it. The OLD axis-coverage
+    # scoring would have wrongly returned 2 here.
+    assert r["q1_t3"] == 1
+
+
+def test_q2_false_clearance_zero_for_capa_dispatcher(monkeypatch):
+    """Q2: under closed-world semantics T2 false-clears every fact it
+    misses; Capa false-clears a fact ONLY if its axis is in the named
+    function's provably-excluded set. A dispatcher with reachable=[] and
+    provably_excluded=[] (not-determined) commits ZERO false-clearances,
+    while the heuristic false-clears it."""
+    #            python_fn, capa_fn, capability, how
+    gt_rows = [
+        ("dispatch", "dispatch", "Net", "via-dispatch"),
+        ("dispatch", "dispatch", "Fs", "via-dispatch"),
     ]
+    monkeypatch.setattr(rs, "t2_facts", lambda _py: set())  # heuristic sees nothing
+    monkeypatch.setattr(rs, "t1_modules", lambda _py: set())
+    # The dispatcher is not-determined: neither reachable nor excluded.
+    monkeypatch.setattr(
+        rs, "t3_capa_caps",
+        lambda _pair: ({"dispatch": set()}, {"dispatch": set()}),
+    )
+    r = rs.score_pair("command_registry", gt_rows)
+    # Q1: neither tool attributes; Capa does not vouch the dispatcher.
+    assert r["q1_t2"] == 0
+    assert r["q1_t3"] == 0
+    # Q2: this is the headline. T2 false-clears both (absence = exclusion
+    # under closed-world reading); Capa false-clears NEITHER.
+    assert r["fc_t2"] == 2
+    assert r["fc_t3"] == 0
+    # T1 false-clears everything (no per-function granularity at all).
+    assert r["fc_t1"] == 2
+
+
+def test_q2_capa_false_clears_only_when_provably_excluded(monkeypatch):
+    """If (counterfactually) Capa's manifest provably-excluded an axis
+    the function truly exercises, THAT would be a false-clearance and the
+    metric must catch it. The soundness guarantee is what keeps this 0 in
+    practice; the metric itself is honest about what it measures."""
+    gt_rows = [("h", "h", "Fs", "direct")]
+    monkeypatch.setattr(rs, "t2_facts", lambda _py: {("h", "Fs")})
+    monkeypatch.setattr(rs, "t1_modules", lambda _py: set())
+    # Deliberately broken manifest: Fs provably-excluded for h.
+    monkeypatch.setattr(
+        rs, "t3_capa_caps",
+        lambda _pair: ({"h": set()}, {"h": {"Fs"}}),
+    )
+    r = rs.score_pair("config_loader", gt_rows)
+    assert r["fc_t3"] == 1  # the metric DOES flag a (hypothetical) unsound clearance
+
+
+def test_distinguishing_facts_carry_pending_codeql_slot(monkeypatch):
+    """Every distinguishing fact (one a tool fails to attribute) carries
+    a per-treatment attribution / clearance record plus a 'pending'
+    CodeQL slot until Phase 1c fills it."""
+    gt_rows = [
+        ("d", "d", "Net", "via-dispatch"),
+        ("e", "e", "Fs", "via-data"),
+    ]
+    monkeypatch.setattr(rs, "t2_facts", lambda _py: set())
+    monkeypatch.setattr(rs, "t1_modules", lambda _py: set())
+    monkeypatch.setattr(
+        rs, "t3_capa_caps",
+        lambda _pair: ({"d": set(), "e": set()}, {"d": set(), "e": set()}),
+    )
+    r = rs.score_pair("command_registry", gt_rows)
+    assert r["q1_t3"] == 0   # Capa does not attribute the dispatcher axes
+    assert r["q1_t2"] == 0   # neither sink is lexical
+    distinguishing = [
+        d for d in r["detail"] if not (d["t2_attr"] and d["t3_attr"])
+    ]
+    assert len(distinguishing) == 2
+    for d in distinguishing:
+        assert d["t2b_codeql"] == "pending"
+        assert d["t2_false_clear"] is True   # closed-world: absence excludes
+        assert d["t3_false_clear"] is False  # Capa: not-determined, no clearance
 
 
 def test_dataflow_classification_table():
@@ -151,24 +236,7 @@ def test_dispatch_pairs_present_with_indirection_facts():
     }
     assert expected <= set(gt), "missing a Phase-1b pair from ground truth"
     for pair in expected:
-        causes = {how for (_fn, _cap, how) in gt[pair]}
+        causes = {how for (_fn, _cf, _cap, how) in gt[pair]}
         assert causes & {"via-dispatch", "via-data"}, (
             f"{pair} has no via-dispatch / via-data fact"
         )
-
-
-def test_false_negative_rows_carry_pending_codeql_slot(monkeypatch):
-    """Every T2 false-negative row carries a (dataflow, t2b_codeql)
-    tail; the CodeQL slot is 'pending' until Phase 1c fills it."""
-    gt_rows = [("d", "Net", "via-dispatch"), ("e", "Fs", "via-data")]
-    monkeypatch.setattr(rs, "t2_facts", lambda _py: set())
-    monkeypatch.setattr(rs, "t1_modules", lambda _py: set())
-    monkeypatch.setattr(
-        rs, "t3_capa_caps",
-        lambda _pair: ({"x": {"Net", "Fs"}}, {"Net", "Fs"}),
-    )
-    r = rs.score_pair("command_registry", gt_rows)
-    assert r["t3_hits"] == 2          # axis coverage recovers both
-    assert r["t2_hits"] == 0          # neither sink is lexical
-    for (_fn, _cap, _how, _df, t2b) in r["t2_false_negatives"]:
-        assert t2b == "pending"
