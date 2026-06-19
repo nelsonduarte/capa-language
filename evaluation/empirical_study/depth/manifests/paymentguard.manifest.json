@@ -1,0 +1,5850 @@
+{
+  "capa_version": "1.5.2",
+  "schema_version": 1,
+  "filename": "main.capa",
+  "user_defined_capabilities": [],
+  "typestates": [],
+  "functions": [
+    {
+      "name": "risk_name",
+      "source_name": "risk_name",
+      "container": null,
+      "source_container": null,
+      "source_module_index": null,
+      "pos": "domain.capa:66:5",
+      "is_pub": true,
+      "doc": null,
+      "params": [
+        {
+          "name": "r",
+          "type": "RiskCategory",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        }
+      ],
+      "return_type": "String",
+      "declared_capabilities": [],
+      "transitively_reachable_capabilities": [],
+      "provably_excluded_capabilities": [
+        "Clock",
+        "Db",
+        "Env",
+        "Fs",
+        "Net",
+        "Proc",
+        "Random",
+        "Stdio",
+        "Unsafe"
+      ],
+      "linear_obligations": {
+        "consumes": [],
+        "produces_linear": false
+      },
+      "has_unsafe": false,
+      "constant_time": false,
+      "attributes": [],
+      "calls": [],
+      "declassifications": []
+    },
+    {
+      "name": "risk_rank",
+      "source_name": "risk_rank",
+      "container": null,
+      "source_container": null,
+      "source_module_index": null,
+      "pos": "domain.capa:73:5",
+      "is_pub": true,
+      "doc": null,
+      "params": [
+        {
+          "name": "r",
+          "type": "RiskCategory",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        }
+      ],
+      "return_type": "Int",
+      "declared_capabilities": [],
+      "transitively_reachable_capabilities": [],
+      "provably_excluded_capabilities": [
+        "Clock",
+        "Db",
+        "Env",
+        "Fs",
+        "Net",
+        "Proc",
+        "Random",
+        "Stdio",
+        "Unsafe"
+      ],
+      "linear_obligations": {
+        "consumes": [],
+        "produces_linear": false
+      },
+      "has_unsafe": false,
+      "constant_time": false,
+      "attributes": [],
+      "calls": [],
+      "declassifications": []
+    },
+    {
+      "name": "max_risk",
+      "source_name": "max_risk",
+      "container": null,
+      "source_container": null,
+      "source_module_index": null,
+      "pos": "domain.capa:80:5",
+      "is_pub": true,
+      "doc": null,
+      "params": [
+        {
+          "name": "a",
+          "type": "RiskCategory",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        },
+        {
+          "name": "b",
+          "type": "RiskCategory",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        }
+      ],
+      "return_type": "RiskCategory",
+      "declared_capabilities": [],
+      "transitively_reachable_capabilities": [],
+      "provably_excluded_capabilities": [
+        "Clock",
+        "Db",
+        "Env",
+        "Fs",
+        "Net",
+        "Proc",
+        "Random",
+        "Stdio",
+        "Unsafe"
+      ],
+      "linear_obligations": {
+        "consumes": [],
+        "produces_linear": false
+      },
+      "has_unsafe": false,
+      "constant_time": false,
+      "attributes": [],
+      "calls": [
+        {
+          "kind": "fn",
+          "callee": "risk_rank",
+          "pos": "81:8",
+          "args": [
+            "a"
+          ],
+          "args_flow": [
+            null
+          ]
+        },
+        {
+          "kind": "fn",
+          "callee": "risk_rank",
+          "pos": "81:24",
+          "args": [
+            "b"
+          ],
+          "args_flow": [
+            null
+          ]
+        }
+      ],
+      "declassifications": []
+    },
+    {
+      "name": "factor_name",
+      "source_name": "factor_name",
+      "container": null,
+      "source_container": null,
+      "source_module_index": null,
+      "pos": "domain.capa:98:5",
+      "is_pub": true,
+      "doc": null,
+      "params": [
+        {
+          "name": "f",
+          "type": "FactorClass",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        }
+      ],
+      "return_type": "String",
+      "declared_capabilities": [],
+      "transitively_reachable_capabilities": [],
+      "provably_excluded_capabilities": [
+        "Clock",
+        "Db",
+        "Env",
+        "Fs",
+        "Net",
+        "Proc",
+        "Random",
+        "Stdio",
+        "Unsafe"
+      ],
+      "linear_obligations": {
+        "consumes": [],
+        "produces_linear": false
+      },
+      "has_unsafe": false,
+      "constant_time": false,
+      "attributes": [],
+      "calls": [],
+      "declassifications": []
+    },
+    {
+      "name": "decision_name",
+      "source_name": "decision_name",
+      "container": null,
+      "source_container": null,
+      "source_module_index": null,
+      "pos": "domain.capa:117:5",
+      "is_pub": true,
+      "doc": null,
+      "params": [
+        {
+          "name": "d",
+          "type": "Decision",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        }
+      ],
+      "return_type": "String",
+      "declared_capabilities": [],
+      "transitively_reachable_capabilities": [],
+      "provably_excluded_capabilities": [
+        "Clock",
+        "Db",
+        "Env",
+        "Fs",
+        "Net",
+        "Proc",
+        "Random",
+        "Stdio",
+        "Unsafe"
+      ],
+      "linear_obligations": {
+        "consumes": [],
+        "produces_linear": false
+      },
+      "has_unsafe": false,
+      "constant_time": false,
+      "attributes": [],
+      "calls": [],
+      "declassifications": []
+    },
+    {
+      "name": "_capa_m5__hex_digit",
+      "source_name": "hex_digit",
+      "container": null,
+      "source_container": null,
+      "source_module_index": 5,
+      "pos": "vendor/capa_hash/tables.capa:12:1",
+      "is_pub": false,
+      "doc": "One lowercase hex character for a nibble in 0..15.",
+      "params": [
+        {
+          "name": "nibble",
+          "type": "Int",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        }
+      ],
+      "return_type": "String",
+      "declared_capabilities": [],
+      "transitively_reachable_capabilities": [],
+      "provably_excluded_capabilities": [
+        "Clock",
+        "Db",
+        "Env",
+        "Fs",
+        "Net",
+        "Proc",
+        "Random",
+        "Stdio",
+        "Unsafe"
+      ],
+      "linear_obligations": {
+        "consumes": [],
+        "produces_linear": false
+      },
+      "has_unsafe": false,
+      "constant_time": false,
+      "attributes": [],
+      "calls": [
+        {
+          "kind": "method",
+          "callee": "_capa_m5__HEX_DIGITS.char_at",
+          "pos": "13:18",
+          "args": [
+            "nibble"
+          ],
+          "args_flow": [
+            null
+          ]
+        }
+      ],
+      "declassifications": []
+    },
+    {
+      "name": "to_hex",
+      "source_name": "to_hex",
+      "container": null,
+      "source_container": null,
+      "source_module_index": null,
+      "pos": "vendor/capa_hash/tables.capa:18:5",
+      "is_pub": true,
+      "doc": "Encode a byte list as a lowercase hex String, two chars per byte.",
+      "params": [
+        {
+          "name": "bytes",
+          "type": "List<Int>",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        }
+      ],
+      "return_type": "String",
+      "declared_capabilities": [],
+      "transitively_reachable_capabilities": [],
+      "provably_excluded_capabilities": [
+        "Clock",
+        "Db",
+        "Env",
+        "Fs",
+        "Net",
+        "Proc",
+        "Random",
+        "Stdio",
+        "Unsafe"
+      ],
+      "linear_obligations": {
+        "consumes": [],
+        "produces_linear": false
+      },
+      "has_unsafe": false,
+      "constant_time": false,
+      "attributes": [],
+      "calls": [
+        {
+          "kind": "fn",
+          "callee": "_capa_m5__hex_digit",
+          "pos": "23:24",
+          "args": [
+            "hi"
+          ],
+          "args_flow": [
+            null
+          ]
+        },
+        {
+          "kind": "fn",
+          "callee": "_capa_m5__hex_digit",
+          "pos": "23:40",
+          "args": [
+            "lo"
+          ],
+          "args_flow": [
+            null
+          ]
+        }
+      ],
+      "declassifications": []
+    },
+    {
+      "name": "_capa_m4__rotr32",
+      "source_name": "rotr32",
+      "container": null,
+      "source_container": null,
+      "source_module_index": 4,
+      "pos": "vendor/capa_hash/sha256.capa:28:1",
+      "is_pub": false,
+      "doc": "Rotate a 32-bit word right by `n` bits. `x` is assumed already\nmasked to 32 bits; `(x << (32 - n))` can reach 2^63 only if x had\nhigh bits, so the whole expression is re-masked to 32 bits.",
+      "params": [
+        {
+          "name": "x",
+          "type": "Int",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        },
+        {
+          "name": "n",
+          "type": "Int",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        }
+      ],
+      "return_type": "Int",
+      "declared_capabilities": [],
+      "transitively_reachable_capabilities": [],
+      "provably_excluded_capabilities": [
+        "Clock",
+        "Db",
+        "Env",
+        "Fs",
+        "Net",
+        "Proc",
+        "Random",
+        "Stdio",
+        "Unsafe"
+      ],
+      "linear_obligations": {
+        "consumes": [],
+        "produces_linear": false
+      },
+      "has_unsafe": false,
+      "constant_time": true,
+      "attributes": [
+        {
+          "name": "constant_time",
+          "args": {}
+        }
+      ],
+      "calls": [],
+      "declassifications": []
+    },
+    {
+      "name": "_capa_m4__shr32",
+      "source_name": "shr32",
+      "container": null,
+      "source_container": null,
+      "source_module_index": 4,
+      "pos": "vendor/capa_hash/sha256.capa:33:1",
+      "is_pub": false,
+      "doc": "Logical right shift of an already-masked 32-bit word.",
+      "params": [
+        {
+          "name": "x",
+          "type": "Int",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        },
+        {
+          "name": "n",
+          "type": "Int",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        }
+      ],
+      "return_type": "Int",
+      "declared_capabilities": [],
+      "transitively_reachable_capabilities": [],
+      "provably_excluded_capabilities": [
+        "Clock",
+        "Db",
+        "Env",
+        "Fs",
+        "Net",
+        "Proc",
+        "Random",
+        "Stdio",
+        "Unsafe"
+      ],
+      "linear_obligations": {
+        "consumes": [],
+        "produces_linear": false
+      },
+      "has_unsafe": false,
+      "constant_time": true,
+      "attributes": [
+        {
+          "name": "constant_time",
+          "args": {}
+        }
+      ],
+      "calls": [],
+      "declassifications": []
+    },
+    {
+      "name": "_capa_m4__round_constants",
+      "source_name": "round_constants",
+      "container": null,
+      "source_container": null,
+      "source_module_index": 4,
+      "pos": "vendor/capa_hash/sha256.capa:39:1",
+      "is_pub": false,
+      "doc": "The 64 round constants (first 32 bits of the fractional parts of\nthe cube roots of the first 64 primes).",
+      "params": [],
+      "return_type": "List<Int>",
+      "declared_capabilities": [],
+      "transitively_reachable_capabilities": [],
+      "provably_excluded_capabilities": [
+        "Clock",
+        "Db",
+        "Env",
+        "Fs",
+        "Net",
+        "Proc",
+        "Random",
+        "Stdio",
+        "Unsafe"
+      ],
+      "linear_obligations": {
+        "consumes": [],
+        "produces_linear": false
+      },
+      "has_unsafe": false,
+      "constant_time": false,
+      "attributes": [],
+      "calls": [],
+      "declassifications": []
+    },
+    {
+      "name": "_capa_m4__iv256",
+      "source_name": "iv256",
+      "container": null,
+      "source_container": null,
+      "source_module_index": 4,
+      "pos": "vendor/capa_hash/sha256.capa:60:1",
+      "is_pub": false,
+      "doc": "SHA-256 initial hash value.",
+      "params": [],
+      "return_type": "List<Int>",
+      "declared_capabilities": [],
+      "transitively_reachable_capabilities": [],
+      "provably_excluded_capabilities": [
+        "Clock",
+        "Db",
+        "Env",
+        "Fs",
+        "Net",
+        "Proc",
+        "Random",
+        "Stdio",
+        "Unsafe"
+      ],
+      "linear_obligations": {
+        "consumes": [],
+        "produces_linear": false
+      },
+      "has_unsafe": false,
+      "constant_time": false,
+      "attributes": [],
+      "calls": [],
+      "declassifications": []
+    },
+    {
+      "name": "_capa_m4__iv224",
+      "source_name": "iv224",
+      "container": null,
+      "source_container": null,
+      "source_module_index": 4,
+      "pos": "vendor/capa_hash/sha256.capa:67:1",
+      "is_pub": false,
+      "doc": "SHA-224 initial hash value.",
+      "params": [],
+      "return_type": "List<Int>",
+      "declared_capabilities": [],
+      "transitively_reachable_capabilities": [],
+      "provably_excluded_capabilities": [
+        "Clock",
+        "Db",
+        "Env",
+        "Fs",
+        "Net",
+        "Proc",
+        "Random",
+        "Stdio",
+        "Unsafe"
+      ],
+      "linear_obligations": {
+        "consumes": [],
+        "produces_linear": false
+      },
+      "has_unsafe": false,
+      "constant_time": false,
+      "attributes": [],
+      "calls": [],
+      "declassifications": []
+    },
+    {
+      "name": "_capa_m4__read_word",
+      "source_name": "read_word",
+      "container": null,
+      "source_container": null,
+      "source_module_index": 4,
+      "pos": "vendor/capa_hash/sha256.capa:76:1",
+      "is_pub": false,
+      "doc": "Read one 32-bit big-endian word from `block` starting at byte `i`.\nEach byte is in 0..255; the top byte is masked to 8 bits before\nthe 24-bit shift so the product stays well under i64.",
+      "params": [
+        {
+          "name": "block",
+          "type": "List<Int>",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        },
+        {
+          "name": "i",
+          "type": "Int",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        }
+      ],
+      "return_type": "Int",
+      "declared_capabilities": [],
+      "transitively_reachable_capabilities": [],
+      "provably_excluded_capabilities": [
+        "Clock",
+        "Db",
+        "Env",
+        "Fs",
+        "Net",
+        "Proc",
+        "Random",
+        "Stdio",
+        "Unsafe"
+      ],
+      "linear_obligations": {
+        "consumes": [],
+        "produces_linear": false
+      },
+      "has_unsafe": false,
+      "constant_time": true,
+      "attributes": [
+        {
+          "name": "constant_time",
+          "args": {}
+        }
+      ],
+      "calls": [],
+      "declassifications": []
+    },
+    {
+      "name": "_capa_m4__schedule",
+      "source_name": "schedule",
+      "container": null,
+      "source_container": null,
+      "source_module_index": 4,
+      "pos": "vendor/capa_hash/sha256.capa:85:1",
+      "is_pub": false,
+      "doc": "Build the 64-word message schedule for one 64-byte block.",
+      "params": [
+        {
+          "name": "block",
+          "type": "List<Int>",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        }
+      ],
+      "return_type": "List<Int>",
+      "declared_capabilities": [],
+      "transitively_reachable_capabilities": [],
+      "provably_excluded_capabilities": [
+        "Clock",
+        "Db",
+        "Env",
+        "Fs",
+        "Net",
+        "Proc",
+        "Random",
+        "Stdio",
+        "Unsafe"
+      ],
+      "linear_obligations": {
+        "consumes": [],
+        "produces_linear": false
+      },
+      "has_unsafe": false,
+      "constant_time": true,
+      "attributes": [
+        {
+          "name": "constant_time",
+          "args": {}
+        }
+      ],
+      "calls": [
+        {
+          "kind": "method",
+          "callee": "w.push",
+          "pos": "90:9",
+          "args": [
+            "_capa_m4__read_word(block, t * 4)"
+          ],
+          "args_flow": [
+            null
+          ]
+        },
+        {
+          "kind": "fn",
+          "callee": "_capa_m4__read_word",
+          "pos": "90:16",
+          "args": [
+            "block",
+            "t * 4"
+          ],
+          "args_flow": [
+            null,
+            null
+          ]
+        },
+        {
+          "kind": "fn",
+          "callee": "_capa_m4__rotr32",
+          "pos": "96:19",
+          "args": [
+            "w15",
+            "7"
+          ],
+          "args_flow": [
+            null,
+            null
+          ]
+        },
+        {
+          "kind": "fn",
+          "callee": "_capa_m4__rotr32",
+          "pos": "96:36",
+          "args": [
+            "w15",
+            "18"
+          ],
+          "args_flow": [
+            null,
+            null
+          ]
+        },
+        {
+          "kind": "fn",
+          "callee": "_capa_m4__shr32",
+          "pos": "96:55",
+          "args": [
+            "w15",
+            "3"
+          ],
+          "args_flow": [
+            null,
+            null
+          ]
+        },
+        {
+          "kind": "fn",
+          "callee": "_capa_m4__rotr32",
+          "pos": "97:19",
+          "args": [
+            "w2",
+            "17"
+          ],
+          "args_flow": [
+            null,
+            null
+          ]
+        },
+        {
+          "kind": "fn",
+          "callee": "_capa_m4__rotr32",
+          "pos": "97:36",
+          "args": [
+            "w2",
+            "19"
+          ],
+          "args_flow": [
+            null,
+            null
+          ]
+        },
+        {
+          "kind": "fn",
+          "callee": "_capa_m4__shr32",
+          "pos": "97:54",
+          "args": [
+            "w2",
+            "10"
+          ],
+          "args_flow": [
+            null,
+            null
+          ]
+        },
+        {
+          "kind": "method",
+          "callee": "w.push",
+          "pos": "99:9",
+          "args": [
+            "nw"
+          ],
+          "args_flow": [
+            null
+          ]
+        }
+      ],
+      "declassifications": []
+    },
+    {
+      "name": "_capa_m4__compress",
+      "source_name": "compress",
+      "container": null,
+      "source_container": null,
+      "source_module_index": 4,
+      "pos": "vendor/capa_hash/sha256.capa:105:1",
+      "is_pub": false,
+      "doc": "One block of the compression function. Returns the updated state\n(the eight working words added back into the incoming state).",
+      "params": [
+        {
+          "name": "state",
+          "type": "List<Int>",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        },
+        {
+          "name": "block",
+          "type": "List<Int>",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        }
+      ],
+      "return_type": "List<Int>",
+      "declared_capabilities": [],
+      "transitively_reachable_capabilities": [],
+      "provably_excluded_capabilities": [
+        "Clock",
+        "Db",
+        "Env",
+        "Fs",
+        "Net",
+        "Proc",
+        "Random",
+        "Stdio",
+        "Unsafe"
+      ],
+      "linear_obligations": {
+        "consumes": [],
+        "produces_linear": false
+      },
+      "has_unsafe": false,
+      "constant_time": true,
+      "attributes": [
+        {
+          "name": "constant_time",
+          "args": {}
+        }
+      ],
+      "calls": [
+        {
+          "kind": "fn",
+          "callee": "_capa_m4__schedule",
+          "pos": "107:13",
+          "args": [
+            "block"
+          ],
+          "args_flow": [
+            null
+          ]
+        },
+        {
+          "kind": "fn",
+          "callee": "_capa_m4__round_constants",
+          "pos": "108:13",
+          "args": [],
+          "args_flow": []
+        },
+        {
+          "kind": "fn",
+          "callee": "_capa_m4__rotr32",
+          "pos": "121:23",
+          "args": [
+            "e",
+            "6"
+          ],
+          "args_flow": [
+            null,
+            null
+          ]
+        },
+        {
+          "kind": "fn",
+          "callee": "_capa_m4__rotr32",
+          "pos": "121:38",
+          "args": [
+            "e",
+            "11"
+          ],
+          "args_flow": [
+            null,
+            null
+          ]
+        },
+        {
+          "kind": "fn",
+          "callee": "_capa_m4__rotr32",
+          "pos": "121:55",
+          "args": [
+            "e",
+            "25"
+          ],
+          "args_flow": [
+            null,
+            null
+          ]
+        },
+        {
+          "kind": "fn",
+          "callee": "_capa_m4__rotr32",
+          "pos": "127:23",
+          "args": [
+            "a",
+            "2"
+          ],
+          "args_flow": [
+            null,
+            null
+          ]
+        },
+        {
+          "kind": "fn",
+          "callee": "_capa_m4__rotr32",
+          "pos": "127:38",
+          "args": [
+            "a",
+            "13"
+          ],
+          "args_flow": [
+            null,
+            null
+          ]
+        },
+        {
+          "kind": "fn",
+          "callee": "_capa_m4__rotr32",
+          "pos": "127:55",
+          "args": [
+            "a",
+            "22"
+          ],
+          "args_flow": [
+            null,
+            null
+          ]
+        }
+      ],
+      "declassifications": []
+    },
+    {
+      "name": "_capa_m4__pad",
+      "source_name": "pad",
+      "container": null,
+      "source_container": null,
+      "source_module_index": 4,
+      "pos": "vendor/capa_hash/sha256.capa:154:1",
+      "is_pub": false,
+      "doc": "SHA padding: append 0x80, then zeros, then the 64-bit big-endian\nbit length, to a multiple of 64 bytes. Returns a fresh byte list.",
+      "params": [
+        {
+          "name": "message",
+          "type": "List<Int>",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        }
+      ],
+      "return_type": "List<Int>",
+      "declared_capabilities": [],
+      "transitively_reachable_capabilities": [],
+      "provably_excluded_capabilities": [
+        "Clock",
+        "Db",
+        "Env",
+        "Fs",
+        "Net",
+        "Proc",
+        "Random",
+        "Stdio",
+        "Unsafe"
+      ],
+      "linear_obligations": {
+        "consumes": [],
+        "produces_linear": false
+      },
+      "has_unsafe": false,
+      "constant_time": false,
+      "attributes": [],
+      "calls": [
+        {
+          "kind": "method",
+          "callee": "out.push",
+          "pos": "157:9",
+          "args": [
+            "byte & 255"
+          ],
+          "args_flow": [
+            null
+          ]
+        },
+        {
+          "kind": "method",
+          "callee": "message.length",
+          "pos": "158:19",
+          "args": [],
+          "args_flow": []
+        },
+        {
+          "kind": "method",
+          "callee": "out.push",
+          "pos": "159:5",
+          "args": [
+            "128"
+          ],
+          "args_flow": [
+            null
+          ]
+        },
+        {
+          "kind": "method",
+          "callee": "out.length",
+          "pos": "161:11",
+          "args": [],
+          "args_flow": []
+        },
+        {
+          "kind": "method",
+          "callee": "out.push",
+          "pos": "162:9",
+          "args": [
+            "0"
+          ],
+          "args_flow": [
+            null
+          ]
+        },
+        {
+          "kind": "method",
+          "callee": "out.push",
+          "pos": "167:9",
+          "args": [
+            "bit_len >> shift & 255"
+          ],
+          "args_flow": [
+            null
+          ]
+        }
+      ],
+      "declassifications": []
+    },
+    {
+      "name": "_capa_m4__digest_words",
+      "source_name": "digest_words",
+      "container": null,
+      "source_container": null,
+      "source_module_index": 4,
+      "pos": "vendor/capa_hash/sha256.capa:173:1",
+      "is_pub": false,
+      "doc": "Run the full hash over `message` starting from `iv`, returning the\neight 32-bit state words.",
+      "params": [
+        {
+          "name": "message",
+          "type": "List<Int>",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        },
+        {
+          "name": "iv",
+          "type": "List<Int>",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        }
+      ],
+      "return_type": "List<Int>",
+      "declared_capabilities": [],
+      "transitively_reachable_capabilities": [],
+      "provably_excluded_capabilities": [
+        "Clock",
+        "Db",
+        "Env",
+        "Fs",
+        "Net",
+        "Proc",
+        "Random",
+        "Stdio",
+        "Unsafe"
+      ],
+      "linear_obligations": {
+        "consumes": [],
+        "produces_linear": false
+      },
+      "has_unsafe": false,
+      "constant_time": false,
+      "attributes": [],
+      "calls": [
+        {
+          "kind": "fn",
+          "callee": "_capa_m4__pad",
+          "pos": "175:16",
+          "args": [
+            "message"
+          ],
+          "args_flow": [
+            null
+          ]
+        },
+        {
+          "kind": "method",
+          "callee": "data.length",
+          "pos": "176:19",
+          "args": [],
+          "args_flow": []
+        },
+        {
+          "kind": "fn",
+          "callee": "_capa_m4__slice64",
+          "pos": "179:21",
+          "args": [
+            "data",
+            "i * 64"
+          ],
+          "args_flow": [
+            null,
+            null
+          ]
+        },
+        {
+          "kind": "fn",
+          "callee": "_capa_m4__compress",
+          "pos": "180:17",
+          "args": [
+            "state",
+            "block"
+          ],
+          "args_flow": [
+            null,
+            null
+          ]
+        }
+      ],
+      "declassifications": []
+    },
+    {
+      "name": "_capa_m4__slice64",
+      "source_name": "slice64",
+      "container": null,
+      "source_container": null,
+      "source_module_index": 4,
+      "pos": "vendor/capa_hash/sha256.capa:185:1",
+      "is_pub": false,
+      "doc": "Copy a 64-byte block starting at `start`.",
+      "params": [
+        {
+          "name": "data",
+          "type": "List<Int>",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        },
+        {
+          "name": "start",
+          "type": "Int",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        }
+      ],
+      "return_type": "List<Int>",
+      "declared_capabilities": [],
+      "transitively_reachable_capabilities": [],
+      "provably_excluded_capabilities": [
+        "Clock",
+        "Db",
+        "Env",
+        "Fs",
+        "Net",
+        "Proc",
+        "Random",
+        "Stdio",
+        "Unsafe"
+      ],
+      "linear_obligations": {
+        "consumes": [],
+        "produces_linear": false
+      },
+      "has_unsafe": false,
+      "constant_time": false,
+      "attributes": [],
+      "calls": [
+        {
+          "kind": "method",
+          "callee": "block.push",
+          "pos": "189:9",
+          "args": [
+            "data[start + j]"
+          ],
+          "args_flow": [
+            null
+          ]
+        }
+      ],
+      "declassifications": []
+    },
+    {
+      "name": "_capa_m4__words_to_bytes",
+      "source_name": "words_to_bytes",
+      "container": null,
+      "source_container": null,
+      "source_module_index": 4,
+      "pos": "vendor/capa_hash/sha256.capa:194:1",
+      "is_pub": false,
+      "doc": "Serialize `count` state words as big-endian bytes (4 each).",
+      "params": [
+        {
+          "name": "words",
+          "type": "List<Int>",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        },
+        {
+          "name": "count",
+          "type": "Int",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        }
+      ],
+      "return_type": "List<Int>",
+      "declared_capabilities": [],
+      "transitively_reachable_capabilities": [],
+      "provably_excluded_capabilities": [
+        "Clock",
+        "Db",
+        "Env",
+        "Fs",
+        "Net",
+        "Proc",
+        "Random",
+        "Stdio",
+        "Unsafe"
+      ],
+      "linear_obligations": {
+        "consumes": [],
+        "produces_linear": false
+      },
+      "has_unsafe": false,
+      "constant_time": false,
+      "attributes": [],
+      "calls": [
+        {
+          "kind": "method",
+          "callee": "out.push",
+          "pos": "199:9",
+          "args": [
+            "word >> 24 & 255"
+          ],
+          "args_flow": [
+            null
+          ]
+        },
+        {
+          "kind": "method",
+          "callee": "out.push",
+          "pos": "200:9",
+          "args": [
+            "word >> 16 & 255"
+          ],
+          "args_flow": [
+            null
+          ]
+        },
+        {
+          "kind": "method",
+          "callee": "out.push",
+          "pos": "201:9",
+          "args": [
+            "word >> 8 & 255"
+          ],
+          "args_flow": [
+            null
+          ]
+        },
+        {
+          "kind": "method",
+          "callee": "out.push",
+          "pos": "202:9",
+          "args": [
+            "word & 255"
+          ],
+          "args_flow": [
+            null
+          ]
+        }
+      ],
+      "declassifications": []
+    },
+    {
+      "name": "sha256_bytes",
+      "source_name": "sha256_bytes",
+      "container": null,
+      "source_container": null,
+      "source_module_index": null,
+      "pos": "vendor/capa_hash/sha256.capa:220:5",
+      "is_pub": true,
+      "doc": "SHA-256 digest of `message` as 32 raw bytes.\n`message`: bytes, each in 0..255; out-of-range elements are\nsilently masked to 8 bits (`& 0xFF`). See the BYTE CONTRACT above.",
+      "params": [
+        {
+          "name": "message",
+          "type": "List<Int>",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        }
+      ],
+      "return_type": "List<Int>",
+      "declared_capabilities": [],
+      "transitively_reachable_capabilities": [],
+      "provably_excluded_capabilities": [
+        "Clock",
+        "Db",
+        "Env",
+        "Fs",
+        "Net",
+        "Proc",
+        "Random",
+        "Stdio",
+        "Unsafe"
+      ],
+      "linear_obligations": {
+        "consumes": [],
+        "produces_linear": false
+      },
+      "has_unsafe": false,
+      "constant_time": false,
+      "attributes": [],
+      "calls": [
+        {
+          "kind": "fn",
+          "callee": "_capa_m4__words_to_bytes",
+          "pos": "221:12",
+          "args": [
+            "_capa_m4__digest_words(message, _capa_m4__iv256())",
+            "8"
+          ],
+          "args_flow": [
+            null,
+            null
+          ]
+        },
+        {
+          "kind": "fn",
+          "callee": "_capa_m4__digest_words",
+          "pos": "221:27",
+          "args": [
+            "message",
+            "_capa_m4__iv256()"
+          ],
+          "args_flow": [
+            null,
+            null
+          ]
+        },
+        {
+          "kind": "fn",
+          "callee": "_capa_m4__iv256",
+          "pos": "221:49",
+          "args": [],
+          "args_flow": []
+        }
+      ],
+      "declassifications": []
+    },
+    {
+      "name": "sha256_hex",
+      "source_name": "sha256_hex",
+      "container": null,
+      "source_container": null,
+      "source_module_index": null,
+      "pos": "vendor/capa_hash/sha256.capa:226:5",
+      "is_pub": true,
+      "doc": "SHA-256 digest of `message` as a 64-character lowercase hex String.\n`message`: bytes, each in 0..255; out-of-range elements are\nsilently masked to 8 bits (`& 0xFF`). See the BYTE CONTRACT above.",
+      "params": [
+        {
+          "name": "message",
+          "type": "List<Int>",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        }
+      ],
+      "return_type": "String",
+      "declared_capabilities": [],
+      "transitively_reachable_capabilities": [],
+      "provably_excluded_capabilities": [
+        "Clock",
+        "Db",
+        "Env",
+        "Fs",
+        "Net",
+        "Proc",
+        "Random",
+        "Stdio",
+        "Unsafe"
+      ],
+      "linear_obligations": {
+        "consumes": [],
+        "produces_linear": false
+      },
+      "has_unsafe": false,
+      "constant_time": false,
+      "attributes": [],
+      "calls": [
+        {
+          "kind": "fn",
+          "callee": "to_hex",
+          "pos": "227:12",
+          "args": [
+            "sha256_bytes(message)"
+          ],
+          "args_flow": [
+            null
+          ]
+        },
+        {
+          "kind": "fn",
+          "callee": "sha256_bytes",
+          "pos": "227:19",
+          "args": [
+            "message"
+          ],
+          "args_flow": [
+            null
+          ]
+        }
+      ],
+      "declassifications": []
+    },
+    {
+      "name": "sha256_hex_utf8",
+      "source_name": "sha256_hex_utf8",
+      "container": null,
+      "source_container": null,
+      "source_module_index": null,
+      "pos": "vendor/capa_hash/sha256.capa:230:5",
+      "is_pub": true,
+      "doc": "SHA-256 of a String's UTF-8 bytes, as lowercase hex.",
+      "params": [
+        {
+          "name": "text",
+          "type": "String",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        }
+      ],
+      "return_type": "String",
+      "declared_capabilities": [],
+      "transitively_reachable_capabilities": [],
+      "provably_excluded_capabilities": [
+        "Clock",
+        "Db",
+        "Env",
+        "Fs",
+        "Net",
+        "Proc",
+        "Random",
+        "Stdio",
+        "Unsafe"
+      ],
+      "linear_obligations": {
+        "consumes": [],
+        "produces_linear": false
+      },
+      "has_unsafe": false,
+      "constant_time": false,
+      "attributes": [],
+      "calls": [
+        {
+          "kind": "fn",
+          "callee": "sha256_hex",
+          "pos": "231:12",
+          "args": [
+            "text.bytes()"
+          ],
+          "args_flow": [
+            null
+          ]
+        },
+        {
+          "kind": "method",
+          "callee": "text.bytes",
+          "pos": "231:23",
+          "args": [],
+          "args_flow": []
+        }
+      ],
+      "declassifications": []
+    },
+    {
+      "name": "sha224_bytes",
+      "source_name": "sha224_bytes",
+      "container": null,
+      "source_container": null,
+      "source_module_index": null,
+      "pos": "vendor/capa_hash/sha256.capa:237:5",
+      "is_pub": true,
+      "doc": "SHA-224 digest of `message` as 28 raw bytes (the first seven\nstate words; the eighth is dropped).\n`message`: bytes, each in 0..255; out-of-range elements are\nsilently masked to 8 bits (`& 0xFF`). See the BYTE CONTRACT above.",
+      "params": [
+        {
+          "name": "message",
+          "type": "List<Int>",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        }
+      ],
+      "return_type": "List<Int>",
+      "declared_capabilities": [],
+      "transitively_reachable_capabilities": [],
+      "provably_excluded_capabilities": [
+        "Clock",
+        "Db",
+        "Env",
+        "Fs",
+        "Net",
+        "Proc",
+        "Random",
+        "Stdio",
+        "Unsafe"
+      ],
+      "linear_obligations": {
+        "consumes": [],
+        "produces_linear": false
+      },
+      "has_unsafe": false,
+      "constant_time": false,
+      "attributes": [],
+      "calls": [
+        {
+          "kind": "fn",
+          "callee": "_capa_m4__words_to_bytes",
+          "pos": "238:12",
+          "args": [
+            "_capa_m4__digest_words(message, _capa_m4__iv224())",
+            "7"
+          ],
+          "args_flow": [
+            null,
+            null
+          ]
+        },
+        {
+          "kind": "fn",
+          "callee": "_capa_m4__digest_words",
+          "pos": "238:27",
+          "args": [
+            "message",
+            "_capa_m4__iv224()"
+          ],
+          "args_flow": [
+            null,
+            null
+          ]
+        },
+        {
+          "kind": "fn",
+          "callee": "_capa_m4__iv224",
+          "pos": "238:49",
+          "args": [],
+          "args_flow": []
+        }
+      ],
+      "declassifications": []
+    },
+    {
+      "name": "sha224_hex",
+      "source_name": "sha224_hex",
+      "container": null,
+      "source_container": null,
+      "source_module_index": null,
+      "pos": "vendor/capa_hash/sha256.capa:243:5",
+      "is_pub": true,
+      "doc": "SHA-224 digest of `message` as a 56-character lowercase hex String.\n`message`: bytes, each in 0..255; out-of-range elements are\nsilently masked to 8 bits (`& 0xFF`). See the BYTE CONTRACT above.",
+      "params": [
+        {
+          "name": "message",
+          "type": "List<Int>",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        }
+      ],
+      "return_type": "String",
+      "declared_capabilities": [],
+      "transitively_reachable_capabilities": [],
+      "provably_excluded_capabilities": [
+        "Clock",
+        "Db",
+        "Env",
+        "Fs",
+        "Net",
+        "Proc",
+        "Random",
+        "Stdio",
+        "Unsafe"
+      ],
+      "linear_obligations": {
+        "consumes": [],
+        "produces_linear": false
+      },
+      "has_unsafe": false,
+      "constant_time": false,
+      "attributes": [],
+      "calls": [
+        {
+          "kind": "fn",
+          "callee": "to_hex",
+          "pos": "244:12",
+          "args": [
+            "sha224_bytes(message)"
+          ],
+          "args_flow": [
+            null
+          ]
+        },
+        {
+          "kind": "fn",
+          "callee": "sha224_bytes",
+          "pos": "244:19",
+          "args": [
+            "message"
+          ],
+          "args_flow": [
+            null
+          ]
+        }
+      ],
+      "declassifications": []
+    },
+    {
+      "name": "sha224_hex_utf8",
+      "source_name": "sha224_hex_utf8",
+      "container": null,
+      "source_container": null,
+      "source_module_index": null,
+      "pos": "vendor/capa_hash/sha256.capa:247:5",
+      "is_pub": true,
+      "doc": "SHA-224 of a String's UTF-8 bytes, as lowercase hex.",
+      "params": [
+        {
+          "name": "text",
+          "type": "String",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        }
+      ],
+      "return_type": "String",
+      "declared_capabilities": [],
+      "transitively_reachable_capabilities": [],
+      "provably_excluded_capabilities": [
+        "Clock",
+        "Db",
+        "Env",
+        "Fs",
+        "Net",
+        "Proc",
+        "Random",
+        "Stdio",
+        "Unsafe"
+      ],
+      "linear_obligations": {
+        "consumes": [],
+        "produces_linear": false
+      },
+      "has_unsafe": false,
+      "constant_time": false,
+      "attributes": [],
+      "calls": [
+        {
+          "kind": "fn",
+          "callee": "sha224_hex",
+          "pos": "248:12",
+          "args": [
+            "text.bytes()"
+          ],
+          "args_flow": [
+            null
+          ]
+        },
+        {
+          "kind": "method",
+          "callee": "text.bytes",
+          "pos": "248:23",
+          "args": [],
+          "args_flow": []
+        }
+      ],
+      "declassifications": []
+    },
+    {
+      "name": "_capa_m3__key_block",
+      "source_name": "key_block",
+      "container": null,
+      "source_container": null,
+      "source_module_index": 3,
+      "pos": "vendor/capa_hash/hmac.capa:19:1",
+      "is_pub": false,
+      "doc": "Normalize a key to exactly 64 bytes: hash it if it is longer than\nthe block, then zero-pad to the block size.",
+      "params": [
+        {
+          "name": "key",
+          "type": "List<Int>",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        }
+      ],
+      "return_type": "List<Int>",
+      "declared_capabilities": [],
+      "transitively_reachable_capabilities": [],
+      "provably_excluded_capabilities": [
+        "Clock",
+        "Db",
+        "Env",
+        "Fs",
+        "Net",
+        "Proc",
+        "Random",
+        "Stdio",
+        "Unsafe"
+      ],
+      "linear_obligations": {
+        "consumes": [],
+        "produces_linear": false
+      },
+      "has_unsafe": false,
+      "constant_time": false,
+      "attributes": [],
+      "calls": [
+        {
+          "kind": "method",
+          "callee": "key.length",
+          "pos": "21:8",
+          "args": [],
+          "args_flow": []
+        },
+        {
+          "kind": "fn",
+          "callee": "sha256_bytes",
+          "pos": "22:13",
+          "args": [
+            "key"
+          ],
+          "args_flow": [
+            null
+          ]
+        },
+        {
+          "kind": "method",
+          "callee": "k.length",
+          "pos": "26:16",
+          "args": [],
+          "args_flow": []
+        },
+        {
+          "kind": "method",
+          "callee": "out.push",
+          "pos": "27:13",
+          "args": [
+            "k[i] & 255"
+          ],
+          "args_flow": [
+            null
+          ]
+        },
+        {
+          "kind": "method",
+          "callee": "out.push",
+          "pos": "29:13",
+          "args": [
+            "0"
+          ],
+          "args_flow": [
+            null
+          ]
+        }
+      ],
+      "declassifications": []
+    },
+    {
+      "name": "_capa_m3__xor_pad",
+      "source_name": "xor_pad",
+      "container": null,
+      "source_container": null,
+      "source_module_index": 3,
+      "pos": "vendor/capa_hash/hmac.capa:34:1",
+      "is_pub": false,
+      "doc": "XOR every byte of a 64-byte block with a constant pad byte.",
+      "params": [
+        {
+          "name": "block",
+          "type": "List<Int>",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        },
+        {
+          "name": "pad",
+          "type": "Int",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        }
+      ],
+      "return_type": "List<Int>",
+      "declared_capabilities": [],
+      "transitively_reachable_capabilities": [],
+      "provably_excluded_capabilities": [
+        "Clock",
+        "Db",
+        "Env",
+        "Fs",
+        "Net",
+        "Proc",
+        "Random",
+        "Stdio",
+        "Unsafe"
+      ],
+      "linear_obligations": {
+        "consumes": [],
+        "produces_linear": false
+      },
+      "has_unsafe": false,
+      "constant_time": false,
+      "attributes": [],
+      "calls": [
+        {
+          "kind": "method",
+          "callee": "out.push",
+          "pos": "37:9",
+          "args": [
+            "byte ^ pad & 255"
+          ],
+          "args_flow": [
+            null
+          ]
+        }
+      ],
+      "declassifications": []
+    },
+    {
+      "name": "_capa_m3__concat",
+      "source_name": "concat",
+      "container": null,
+      "source_container": null,
+      "source_module_index": 3,
+      "pos": "vendor/capa_hash/hmac.capa:41:1",
+      "is_pub": false,
+      "doc": "Concatenate two byte lists into a fresh list.",
+      "params": [
+        {
+          "name": "a",
+          "type": "List<Int>",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        },
+        {
+          "name": "b",
+          "type": "List<Int>",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        }
+      ],
+      "return_type": "List<Int>",
+      "declared_capabilities": [],
+      "transitively_reachable_capabilities": [],
+      "provably_excluded_capabilities": [
+        "Clock",
+        "Db",
+        "Env",
+        "Fs",
+        "Net",
+        "Proc",
+        "Random",
+        "Stdio",
+        "Unsafe"
+      ],
+      "linear_obligations": {
+        "consumes": [],
+        "produces_linear": false
+      },
+      "has_unsafe": false,
+      "constant_time": false,
+      "attributes": [],
+      "calls": [
+        {
+          "kind": "method",
+          "callee": "out.push",
+          "pos": "44:9",
+          "args": [
+            "x"
+          ],
+          "args_flow": [
+            null
+          ]
+        },
+        {
+          "kind": "method",
+          "callee": "out.push",
+          "pos": "46:9",
+          "args": [
+            "y"
+          ],
+          "args_flow": [
+            null
+          ]
+        }
+      ],
+      "declassifications": []
+    },
+    {
+      "name": "hmac_sha256_bytes",
+      "source_name": "hmac_sha256_bytes",
+      "container": null,
+      "source_container": null,
+      "source_module_index": null,
+      "pos": "vendor/capa_hash/hmac.capa:55:5",
+      "is_pub": true,
+      "doc": "HMAC-SHA256 of `message` under `key`, as 32 raw bytes.\nBYTE CONTRACT: each element of `key` and `message` must be in\n0..255. Out-of-range elements are silently masked to 8 bits\n(`& 0xFF`: 256 -> 0, -1 -> 255), with no error, identically on\nboth backends. For text, prefer the `_utf8` wrapper or\n`String.bytes()`, which are always in range.",
+      "params": [
+        {
+          "name": "key",
+          "type": "List<Int>",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        },
+        {
+          "name": "message",
+          "type": "List<Int>",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        }
+      ],
+      "return_type": "List<Int>",
+      "declared_capabilities": [],
+      "transitively_reachable_capabilities": [],
+      "provably_excluded_capabilities": [
+        "Clock",
+        "Db",
+        "Env",
+        "Fs",
+        "Net",
+        "Proc",
+        "Random",
+        "Stdio",
+        "Unsafe"
+      ],
+      "linear_obligations": {
+        "consumes": [],
+        "produces_linear": false
+      },
+      "has_unsafe": false,
+      "constant_time": false,
+      "attributes": [],
+      "calls": [
+        {
+          "kind": "fn",
+          "callee": "_capa_m3__key_block",
+          "pos": "56:14",
+          "args": [
+            "key"
+          ],
+          "args_flow": [
+            null
+          ]
+        },
+        {
+          "kind": "fn",
+          "callee": "sha256_bytes",
+          "pos": "57:17",
+          "args": [
+            "_capa_m3__concat(_capa_m3__xor_pad(k0, 54), message)"
+          ],
+          "args_flow": [
+            null
+          ]
+        },
+        {
+          "kind": "fn",
+          "callee": "_capa_m3__concat",
+          "pos": "57:30",
+          "args": [
+            "_capa_m3__xor_pad(k0, 54)",
+            "message"
+          ],
+          "args_flow": [
+            null,
+            null
+          ]
+        },
+        {
+          "kind": "fn",
+          "callee": "_capa_m3__xor_pad",
+          "pos": "57:37",
+          "args": [
+            "k0",
+            "54"
+          ],
+          "args_flow": [
+            null,
+            null
+          ]
+        },
+        {
+          "kind": "fn",
+          "callee": "sha256_bytes",
+          "pos": "58:12",
+          "args": [
+            "_capa_m3__concat(_capa_m3__xor_pad(k0, 92), inner)"
+          ],
+          "args_flow": [
+            null
+          ]
+        },
+        {
+          "kind": "fn",
+          "callee": "_capa_m3__concat",
+          "pos": "58:25",
+          "args": [
+            "_capa_m3__xor_pad(k0, 92)",
+            "inner"
+          ],
+          "args_flow": [
+            null,
+            null
+          ]
+        },
+        {
+          "kind": "fn",
+          "callee": "_capa_m3__xor_pad",
+          "pos": "58:32",
+          "args": [
+            "k0",
+            "92"
+          ],
+          "args_flow": [
+            null,
+            null
+          ]
+        }
+      ],
+      "declassifications": []
+    },
+    {
+      "name": "hmac_sha256_hex",
+      "source_name": "hmac_sha256_hex",
+      "container": null,
+      "source_container": null,
+      "source_module_index": null,
+      "pos": "vendor/capa_hash/hmac.capa:64:5",
+      "is_pub": true,
+      "doc": "HMAC-SHA256 of `message` under `key`, as lowercase hex.\nBYTE CONTRACT: each element of `key` and `message` must be in\n0..255; out-of-range elements are silently masked to 8 bits\n(`& 0xFF`), with no error, identically on both backends.",
+      "params": [
+        {
+          "name": "key",
+          "type": "List<Int>",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        },
+        {
+          "name": "message",
+          "type": "List<Int>",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        }
+      ],
+      "return_type": "String",
+      "declared_capabilities": [],
+      "transitively_reachable_capabilities": [],
+      "provably_excluded_capabilities": [
+        "Clock",
+        "Db",
+        "Env",
+        "Fs",
+        "Net",
+        "Proc",
+        "Random",
+        "Stdio",
+        "Unsafe"
+      ],
+      "linear_obligations": {
+        "consumes": [],
+        "produces_linear": false
+      },
+      "has_unsafe": false,
+      "constant_time": false,
+      "attributes": [],
+      "calls": [
+        {
+          "kind": "fn",
+          "callee": "to_hex",
+          "pos": "65:12",
+          "args": [
+            "hmac_sha256_bytes(key, message)"
+          ],
+          "args_flow": [
+            null
+          ]
+        },
+        {
+          "kind": "fn",
+          "callee": "hmac_sha256_bytes",
+          "pos": "65:19",
+          "args": [
+            "key",
+            "message"
+          ],
+          "args_flow": [
+            null,
+            null
+          ]
+        }
+      ],
+      "declassifications": []
+    },
+    {
+      "name": "hmac_sha256_hex_utf8",
+      "source_name": "hmac_sha256_hex_utf8",
+      "container": null,
+      "source_container": null,
+      "source_module_index": null,
+      "pos": "vendor/capa_hash/hmac.capa:69:5",
+      "is_pub": true,
+      "doc": "HMAC-SHA256 over the UTF-8 bytes of a String key and message, as\nlowercase hex.",
+      "params": [
+        {
+          "name": "key",
+          "type": "String",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        },
+        {
+          "name": "message",
+          "type": "String",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        }
+      ],
+      "return_type": "String",
+      "declared_capabilities": [],
+      "transitively_reachable_capabilities": [],
+      "provably_excluded_capabilities": [
+        "Clock",
+        "Db",
+        "Env",
+        "Fs",
+        "Net",
+        "Proc",
+        "Random",
+        "Stdio",
+        "Unsafe"
+      ],
+      "linear_obligations": {
+        "consumes": [],
+        "produces_linear": false
+      },
+      "has_unsafe": false,
+      "constant_time": false,
+      "attributes": [],
+      "calls": [
+        {
+          "kind": "fn",
+          "callee": "hmac_sha256_hex",
+          "pos": "70:12",
+          "args": [
+            "key.bytes()",
+            "message.bytes()"
+          ],
+          "args_flow": [
+            null,
+            null
+          ]
+        },
+        {
+          "kind": "method",
+          "callee": "key.bytes",
+          "pos": "70:28",
+          "args": [],
+          "args_flow": []
+        },
+        {
+          "kind": "method",
+          "callee": "message.bytes",
+          "pos": "70:41",
+          "args": [],
+          "args_flow": []
+        }
+      ],
+      "declassifications": []
+    },
+    {
+      "name": "is_supported_currency",
+      "source_name": "is_supported_currency",
+      "container": null,
+      "source_container": null,
+      "source_module_index": null,
+      "pos": "validate.capa:17:5",
+      "is_pub": true,
+      "doc": null,
+      "params": [
+        {
+          "name": "code",
+          "type": "String",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        }
+      ],
+      "return_type": "Bool",
+      "declared_capabilities": [],
+      "transitively_reachable_capabilities": [],
+      "provably_excluded_capabilities": [
+        "Clock",
+        "Db",
+        "Env",
+        "Fs",
+        "Net",
+        "Proc",
+        "Random",
+        "Stdio",
+        "Unsafe"
+      ],
+      "linear_obligations": {
+        "consumes": [],
+        "produces_linear": false
+      },
+      "has_unsafe": false,
+      "constant_time": false,
+      "attributes": [],
+      "calls": [],
+      "declassifications": []
+    },
+    {
+      "name": "validate_structure",
+      "source_name": "validate_structure",
+      "container": null,
+      "source_container": null,
+      "source_module_index": null,
+      "pos": "validate.capa:20:5",
+      "is_pub": true,
+      "doc": null,
+      "params": [
+        {
+          "name": "tx",
+          "type": "Transaction",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        }
+      ],
+      "return_type": "Result<Unit, String>",
+      "declared_capabilities": [],
+      "transitively_reachable_capabilities": [],
+      "provably_excluded_capabilities": [
+        "Clock",
+        "Db",
+        "Env",
+        "Fs",
+        "Net",
+        "Proc",
+        "Random",
+        "Stdio",
+        "Unsafe"
+      ],
+      "linear_obligations": {
+        "consumes": [],
+        "produces_linear": false
+      },
+      "has_unsafe": false,
+      "constant_time": false,
+      "attributes": [],
+      "calls": [
+        {
+          "kind": "fn",
+          "callee": "Err",
+          "pos": "22:16",
+          "args": [
+            "\"amount must be positive\""
+          ],
+          "args_flow": [
+            null
+          ]
+        },
+        {
+          "kind": "fn",
+          "callee": "is_supported_currency",
+          "pos": "23:12",
+          "args": [
+            "tx.currency"
+          ],
+          "args_flow": [
+            null
+          ]
+        },
+        {
+          "kind": "fn",
+          "callee": "Err",
+          "pos": "24:16",
+          "args": [
+            "\"unsupported currency: ${...}\""
+          ],
+          "args_flow": [
+            null
+          ]
+        },
+        {
+          "kind": "fn",
+          "callee": "Err",
+          "pos": "26:16",
+          "args": [
+            "\"beneficiary is required\""
+          ],
+          "args_flow": [
+            null
+          ]
+        },
+        {
+          "kind": "fn",
+          "callee": "Err",
+          "pos": "28:16",
+          "args": [
+            "\"customer is required\""
+          ],
+          "args_flow": [
+            null
+          ]
+        },
+        {
+          "kind": "fn",
+          "callee": "Ok",
+          "pos": "29:12",
+          "args": [
+            "()"
+          ],
+          "args_flow": [
+            null
+          ]
+        }
+      ],
+      "declassifications": []
+    },
+    {
+      "name": "_capa_m2__link_material",
+      "source_name": "link_material",
+      "container": null,
+      "source_container": null,
+      "source_module_index": 2,
+      "pos": "validate.capa:41:1",
+      "is_pub": false,
+      "doc": null,
+      "params": [
+        {
+          "name": "tx",
+          "type": "Transaction",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        },
+        {
+          "name": "nonce",
+          "type": "String",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        }
+      ],
+      "return_type": "String",
+      "declared_capabilities": [],
+      "transitively_reachable_capabilities": [],
+      "provably_excluded_capabilities": [
+        "Clock",
+        "Db",
+        "Env",
+        "Fs",
+        "Net",
+        "Proc",
+        "Random",
+        "Stdio",
+        "Unsafe"
+      ],
+      "linear_obligations": {
+        "consumes": [],
+        "produces_linear": false
+      },
+      "has_unsafe": false,
+      "constant_time": false,
+      "attributes": [],
+      "calls": [],
+      "declassifications": []
+    },
+    {
+      "name": "authorization_code",
+      "source_name": "authorization_code",
+      "container": null,
+      "source_container": null,
+      "source_module_index": null,
+      "pos": "validate.capa:44:5",
+      "is_pub": true,
+      "doc": null,
+      "params": [
+        {
+          "name": "tx",
+          "type": "Transaction",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        },
+        {
+          "name": "nonce",
+          "type": "String",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        }
+      ],
+      "return_type": "String",
+      "declared_capabilities": [],
+      "transitively_reachable_capabilities": [],
+      "provably_excluded_capabilities": [
+        "Clock",
+        "Db",
+        "Env",
+        "Fs",
+        "Net",
+        "Proc",
+        "Random",
+        "Stdio",
+        "Unsafe"
+      ],
+      "linear_obligations": {
+        "consumes": [],
+        "produces_linear": false
+      },
+      "has_unsafe": false,
+      "constant_time": false,
+      "attributes": [],
+      "calls": [
+        {
+          "kind": "fn",
+          "callee": "hmac_sha256_hex_utf8",
+          "pos": "49:12",
+          "args": [
+            "\"auth-code-key\"",
+            "_capa_m2__link_material(tx, nonce)"
+          ],
+          "args_flow": [
+            null,
+            null
+          ]
+        },
+        {
+          "kind": "fn",
+          "callee": "_capa_m2__link_material",
+          "pos": "49:50",
+          "args": [
+            "tx",
+            "nonce"
+          ],
+          "args_flow": [
+            null,
+            null
+          ]
+        }
+      ],
+      "declassifications": []
+    },
+    {
+      "name": "verify_dynamic_link",
+      "source_name": "verify_dynamic_link",
+      "container": null,
+      "source_container": null,
+      "source_module_index": null,
+      "pos": "validate.capa:51:5",
+      "is_pub": true,
+      "doc": null,
+      "params": [
+        {
+          "name": "tx",
+          "type": "Transaction",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        },
+        {
+          "name": "code",
+          "type": "String",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        },
+        {
+          "name": "nonce",
+          "type": "String",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        }
+      ],
+      "return_type": "Bool",
+      "declared_capabilities": [],
+      "transitively_reachable_capabilities": [],
+      "provably_excluded_capabilities": [
+        "Clock",
+        "Db",
+        "Env",
+        "Fs",
+        "Net",
+        "Proc",
+        "Random",
+        "Stdio",
+        "Unsafe"
+      ],
+      "linear_obligations": {
+        "consumes": [],
+        "produces_linear": false
+      },
+      "has_unsafe": false,
+      "constant_time": false,
+      "attributes": [],
+      "calls": [
+        {
+          "kind": "fn",
+          "callee": "authorization_code",
+          "pos": "52:12",
+          "args": [
+            "tx",
+            "nonce"
+          ],
+          "args_flow": [
+            null,
+            null
+          ]
+        }
+      ],
+      "declassifications": []
+    },
+    {
+      "name": "idempotency_key",
+      "source_name": "idempotency_key",
+      "container": null,
+      "source_container": null,
+      "source_module_index": null,
+      "pos": "validate.capa:62:5",
+      "is_pub": true,
+      "doc": null,
+      "params": [
+        {
+          "name": "tx",
+          "type": "Transaction",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        }
+      ],
+      "return_type": "String",
+      "declared_capabilities": [],
+      "transitively_reachable_capabilities": [],
+      "provably_excluded_capabilities": [
+        "Clock",
+        "Db",
+        "Env",
+        "Fs",
+        "Net",
+        "Proc",
+        "Random",
+        "Stdio",
+        "Unsafe"
+      ],
+      "linear_obligations": {
+        "consumes": [],
+        "produces_linear": false
+      },
+      "has_unsafe": false,
+      "constant_time": false,
+      "attributes": [],
+      "calls": [],
+      "declassifications": []
+    },
+    {
+      "name": "claim",
+      "source_name": "claim",
+      "container": null,
+      "source_container": null,
+      "source_module_index": null,
+      "pos": "validate.capa:65:5",
+      "is_pub": true,
+      "doc": null,
+      "params": [
+        {
+          "name": "seen",
+          "type": "Set<String>",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        },
+        {
+          "name": "key",
+          "type": "String",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        }
+      ],
+      "return_type": "Bool",
+      "declared_capabilities": [],
+      "transitively_reachable_capabilities": [],
+      "provably_excluded_capabilities": [
+        "Clock",
+        "Db",
+        "Env",
+        "Fs",
+        "Net",
+        "Proc",
+        "Random",
+        "Stdio",
+        "Unsafe"
+      ],
+      "linear_obligations": {
+        "consumes": [],
+        "produces_linear": false
+      },
+      "has_unsafe": false,
+      "constant_time": false,
+      "attributes": [],
+      "calls": [
+        {
+          "kind": "method",
+          "callee": "seen.contains",
+          "pos": "66:8",
+          "args": [
+            "key"
+          ],
+          "args_flow": [
+            null
+          ]
+        },
+        {
+          "kind": "method",
+          "callee": "seen.add",
+          "pos": "68:5",
+          "args": [
+            "key"
+          ],
+          "args_flow": [
+            null
+          ]
+        }
+      ],
+      "declassifications": []
+    },
+    {
+      "name": "slow_hash",
+      "source_name": "slow_hash",
+      "container": null,
+      "source_container": null,
+      "source_module_index": null,
+      "pos": "crypto_stub.capa:33:5",
+      "is_pub": true,
+      "doc": null,
+      "params": [
+        {
+          "name": "secret",
+          "type": "String",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        },
+        {
+          "name": "salt",
+          "type": "String",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        }
+      ],
+      "return_type": "String",
+      "declared_capabilities": [],
+      "transitively_reachable_capabilities": [],
+      "provably_excluded_capabilities": [
+        "Clock",
+        "Db",
+        "Env",
+        "Fs",
+        "Net",
+        "Proc",
+        "Random",
+        "Stdio",
+        "Unsafe"
+      ],
+      "linear_obligations": {
+        "consumes": [],
+        "produces_linear": false
+      },
+      "has_unsafe": false,
+      "constant_time": false,
+      "attributes": [],
+      "calls": [],
+      "declassifications": []
+    },
+    {
+      "name": "encrypt",
+      "source_name": "encrypt",
+      "container": null,
+      "source_container": null,
+      "source_module_index": null,
+      "pos": "crypto_stub.capa:39:5",
+      "is_pub": true,
+      "doc": null,
+      "params": [
+        {
+          "name": "plaintext",
+          "type": "String",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        },
+        {
+          "name": "key",
+          "type": "String",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        }
+      ],
+      "return_type": "String",
+      "declared_capabilities": [],
+      "transitively_reachable_capabilities": [],
+      "provably_excluded_capabilities": [
+        "Clock",
+        "Db",
+        "Env",
+        "Fs",
+        "Net",
+        "Proc",
+        "Random",
+        "Stdio",
+        "Unsafe"
+      ],
+      "linear_obligations": {
+        "consumes": [],
+        "produces_linear": false
+      },
+      "has_unsafe": false,
+      "constant_time": false,
+      "attributes": [],
+      "calls": [],
+      "declassifications": []
+    },
+    {
+      "name": "bytes_equal",
+      "source_name": "bytes_equal",
+      "container": null,
+      "source_container": null,
+      "source_module_index": null,
+      "pos": "vendor/capa_hash/verify.capa:33:1",
+      "is_pub": true,
+      "doc": "Compare two byte lists in constant time, returning whether they are\nequal. Differing lengths return false immediately (a tag's length\nis not secret). For equal lengths, every byte pair is XORed and the\ndifferences are OR-accumulated across the WHOLE list with no\nshort-circuit, so the running time depends only on the length, not\non where (or whether) the two lists first differ.\n\nBYTE CONTRACT: each element of `a` and `b` should be in 0..255, as\nproduced by the hash functions here or by `String.bytes()`. Out-of-\nrange elements are masked to 8 bits (`& 0xFF`) before comparison,\nidentically on both backends, so e.g. 256 and 0 compare equal.",
+      "params": [
+        {
+          "name": "a",
+          "type": "List<Int>",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        },
+        {
+          "name": "b",
+          "type": "List<Int>",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        }
+      ],
+      "return_type": "Bool",
+      "declared_capabilities": [],
+      "transitively_reachable_capabilities": [],
+      "provably_excluded_capabilities": [
+        "Clock",
+        "Db",
+        "Env",
+        "Fs",
+        "Net",
+        "Proc",
+        "Random",
+        "Stdio",
+        "Unsafe"
+      ],
+      "linear_obligations": {
+        "consumes": [],
+        "produces_linear": false
+      },
+      "has_unsafe": false,
+      "constant_time": true,
+      "attributes": [
+        {
+          "name": "constant_time",
+          "args": {}
+        }
+      ],
+      "calls": [
+        {
+          "kind": "method",
+          "callee": "a.length",
+          "pos": "36:8",
+          "args": [],
+          "args_flow": []
+        },
+        {
+          "kind": "method",
+          "callee": "b.length",
+          "pos": "36:22",
+          "args": [],
+          "args_flow": []
+        },
+        {
+          "kind": "method",
+          "callee": "a.length",
+          "pos": "40:13",
+          "args": [],
+          "args_flow": []
+        }
+      ],
+      "declassifications": []
+    },
+    {
+      "name": "strings_equal",
+      "source_name": "strings_equal",
+      "container": null,
+      "source_container": null,
+      "source_module_index": null,
+      "pos": "vendor/capa_hash/verify.capa:56:1",
+      "is_pub": true,
+      "doc": "Compare two strings for equality in constant time over their UTF-8\nbytes. Intended for tags carried as text: two HMAC hex digests, two\none-time codes, two base64 tokens. Delegates to `bytes_equal` after\n`.bytes()`; the time depends only on the byte length, not on the\nposition of the first difference.",
+      "params": [
+        {
+          "name": "a",
+          "type": "String",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        },
+        {
+          "name": "b",
+          "type": "String",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        }
+      ],
+      "return_type": "Bool",
+      "declared_capabilities": [],
+      "transitively_reachable_capabilities": [],
+      "provably_excluded_capabilities": [
+        "Clock",
+        "Db",
+        "Env",
+        "Fs",
+        "Net",
+        "Proc",
+        "Random",
+        "Stdio",
+        "Unsafe"
+      ],
+      "linear_obligations": {
+        "consumes": [],
+        "produces_linear": false
+      },
+      "has_unsafe": false,
+      "constant_time": true,
+      "attributes": [
+        {
+          "name": "constant_time",
+          "args": {}
+        }
+      ],
+      "calls": [
+        {
+          "kind": "fn",
+          "callee": "bytes_equal",
+          "pos": "58:12",
+          "args": [
+            "a.bytes()",
+            "b.bytes()"
+          ],
+          "args_flow": [
+            null,
+            null
+          ]
+        },
+        {
+          "kind": "method",
+          "callee": "a.bytes",
+          "pos": "58:24",
+          "args": [],
+          "args_flow": []
+        },
+        {
+          "kind": "method",
+          "callee": "b.bytes",
+          "pos": "58:35",
+          "args": [],
+          "args_flow": []
+        }
+      ],
+      "declassifications": []
+    },
+    {
+      "name": "verify_knowledge",
+      "source_name": "verify_knowledge",
+      "container": null,
+      "source_container": null,
+      "source_module_index": null,
+      "pos": "auth.capa:20:5",
+      "is_pub": true,
+      "doc": null,
+      "params": [
+        {
+          "name": "provided_pin",
+          "type": "String",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        },
+        {
+          "name": "stored_hash",
+          "type": "String",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        },
+        {
+          "name": "salt",
+          "type": "String",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        }
+      ],
+      "return_type": "Bool",
+      "declared_capabilities": [],
+      "transitively_reachable_capabilities": [],
+      "provably_excluded_capabilities": [
+        "Clock",
+        "Db",
+        "Env",
+        "Fs",
+        "Net",
+        "Proc",
+        "Random",
+        "Stdio",
+        "Unsafe"
+      ],
+      "linear_obligations": {
+        "consumes": [],
+        "produces_linear": false
+      },
+      "has_unsafe": false,
+      "constant_time": false,
+      "attributes": [],
+      "calls": [
+        {
+          "kind": "fn",
+          "callee": "slow_hash",
+          "pos": "21:20",
+          "args": [
+            "provided_pin",
+            "salt"
+          ],
+          "args_flow": [
+            null,
+            null
+          ]
+        }
+      ],
+      "declassifications": []
+    },
+    {
+      "name": "verify_possession",
+      "source_name": "verify_possession",
+      "container": null,
+      "source_container": null,
+      "source_module_index": null,
+      "pos": "auth.capa:24:5",
+      "is_pub": true,
+      "doc": null,
+      "params": [
+        {
+          "name": "provided_otp",
+          "type": "String",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        },
+        {
+          "name": "expected_otp",
+          "type": "String",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        }
+      ],
+      "return_type": "Bool",
+      "declared_capabilities": [],
+      "transitively_reachable_capabilities": [],
+      "provably_excluded_capabilities": [
+        "Clock",
+        "Db",
+        "Env",
+        "Fs",
+        "Net",
+        "Proc",
+        "Random",
+        "Stdio",
+        "Unsafe"
+      ],
+      "linear_obligations": {
+        "consumes": [],
+        "produces_linear": false
+      },
+      "has_unsafe": false,
+      "constant_time": false,
+      "attributes": [],
+      "calls": [
+        {
+          "kind": "fn",
+          "callee": "strings_equal",
+          "pos": "29:12",
+          "args": [
+            "provided_otp",
+            "expected_otp"
+          ],
+          "args_flow": [
+            null,
+            null
+          ]
+        }
+      ],
+      "declassifications": []
+    },
+    {
+      "name": "sca_factor_count",
+      "source_name": "sca_factor_count",
+      "container": null,
+      "source_container": null,
+      "source_module_index": null,
+      "pos": "auth.capa:35:5",
+      "is_pub": true,
+      "doc": null,
+      "params": [
+        {
+          "name": "knowledge_ok",
+          "type": "Bool",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        },
+        {
+          "name": "possession_ok",
+          "type": "Bool",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        },
+        {
+          "name": "inherence_ok",
+          "type": "Bool",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        }
+      ],
+      "return_type": "Int",
+      "declared_capabilities": [],
+      "transitively_reachable_capabilities": [],
+      "provably_excluded_capabilities": [
+        "Clock",
+        "Db",
+        "Env",
+        "Fs",
+        "Net",
+        "Proc",
+        "Random",
+        "Stdio",
+        "Unsafe"
+      ],
+      "linear_obligations": {
+        "consumes": [],
+        "produces_linear": false
+      },
+      "has_unsafe": false,
+      "constant_time": false,
+      "attributes": [],
+      "calls": [],
+      "declassifications": []
+    },
+    {
+      "name": "sca_satisfied",
+      "source_name": "sca_satisfied",
+      "container": null,
+      "source_container": null,
+      "source_module_index": null,
+      "pos": "auth.capa:45:5",
+      "is_pub": true,
+      "doc": null,
+      "params": [
+        {
+          "name": "knowledge_ok",
+          "type": "Bool",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        },
+        {
+          "name": "possession_ok",
+          "type": "Bool",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        },
+        {
+          "name": "inherence_ok",
+          "type": "Bool",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        }
+      ],
+      "return_type": "Bool",
+      "declared_capabilities": [],
+      "transitively_reachable_capabilities": [],
+      "provably_excluded_capabilities": [
+        "Clock",
+        "Db",
+        "Env",
+        "Fs",
+        "Net",
+        "Proc",
+        "Random",
+        "Stdio",
+        "Unsafe"
+      ],
+      "linear_obligations": {
+        "consumes": [],
+        "produces_linear": false
+      },
+      "has_unsafe": false,
+      "constant_time": false,
+      "attributes": [],
+      "calls": [
+        {
+          "kind": "fn",
+          "callee": "sca_factor_count",
+          "pos": "46:12",
+          "args": [
+            "knowledge_ok",
+            "possession_ok",
+            "inherence_ok"
+          ],
+          "args_flow": [
+            null,
+            null,
+            null
+          ]
+        }
+      ],
+      "declassifications": []
+    },
+    {
+      "name": "should_lock_account",
+      "source_name": "should_lock_account",
+      "container": null,
+      "source_container": null,
+      "source_module_index": null,
+      "pos": "auth.capa:52:5",
+      "is_pub": true,
+      "doc": null,
+      "params": [
+        {
+          "name": "consecutive_failures",
+          "type": "Int",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        },
+        {
+          "name": "max_attempts",
+          "type": "Int",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        }
+      ],
+      "return_type": "Bool",
+      "declared_capabilities": [],
+      "transitively_reachable_capabilities": [],
+      "provably_excluded_capabilities": [
+        "Clock",
+        "Db",
+        "Env",
+        "Fs",
+        "Net",
+        "Proc",
+        "Random",
+        "Stdio",
+        "Unsafe"
+      ],
+      "linear_obligations": {
+        "consumes": [],
+        "produces_linear": false
+      },
+      "has_unsafe": false,
+      "constant_time": false,
+      "attributes": [],
+      "calls": [],
+      "declassifications": []
+    },
+    {
+      "name": "evaluate_exemption",
+      "source_name": "evaluate_exemption",
+      "container": null,
+      "source_container": null,
+      "source_module_index": null,
+      "pos": "auth.capa:67:5",
+      "is_pub": true,
+      "doc": null,
+      "params": [
+        {
+          "name": "tx",
+          "type": "Transaction",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        },
+        {
+          "name": "low_value_threshold_cents",
+          "type": "Int",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        },
+        {
+          "name": "is_trusted",
+          "type": "Bool",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        }
+      ],
+      "return_type": "ScaExemption",
+      "declared_capabilities": [],
+      "transitively_reachable_capabilities": [],
+      "provably_excluded_capabilities": [
+        "Clock",
+        "Db",
+        "Env",
+        "Fs",
+        "Net",
+        "Proc",
+        "Random",
+        "Stdio",
+        "Unsafe"
+      ],
+      "linear_obligations": {
+        "consumes": [],
+        "produces_linear": false
+      },
+      "has_unsafe": false,
+      "constant_time": false,
+      "attributes": [],
+      "calls": [],
+      "declassifications": []
+    },
+    {
+      "name": "requires_sca",
+      "source_name": "requires_sca",
+      "container": null,
+      "source_container": null,
+      "source_module_index": null,
+      "pos": "auth.capa:74:5",
+      "is_pub": true,
+      "doc": null,
+      "params": [
+        {
+          "name": "ex",
+          "type": "ScaExemption",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        }
+      ],
+      "return_type": "Bool",
+      "declared_capabilities": [],
+      "transitively_reachable_capabilities": [],
+      "provably_excluded_capabilities": [
+        "Clock",
+        "Db",
+        "Env",
+        "Fs",
+        "Net",
+        "Proc",
+        "Random",
+        "Stdio",
+        "Unsafe"
+      ],
+      "linear_obligations": {
+        "consumes": [],
+        "produces_linear": false
+      },
+      "has_unsafe": false,
+      "constant_time": false,
+      "attributes": [],
+      "calls": [],
+      "declassifications": []
+    },
+    {
+      "name": "exemption_reason",
+      "source_name": "exemption_reason",
+      "container": null,
+      "source_container": null,
+      "source_module_index": null,
+      "pos": "auth.capa:80:5",
+      "is_pub": true,
+      "doc": null,
+      "params": [
+        {
+          "name": "ex",
+          "type": "ScaExemption",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        }
+      ],
+      "return_type": "String",
+      "declared_capabilities": [],
+      "transitively_reachable_capabilities": [],
+      "provably_excluded_capabilities": [
+        "Clock",
+        "Db",
+        "Env",
+        "Fs",
+        "Net",
+        "Proc",
+        "Random",
+        "Stdio",
+        "Unsafe"
+      ],
+      "linear_obligations": {
+        "consumes": [],
+        "produces_linear": false
+      },
+      "has_unsafe": false,
+      "constant_time": false,
+      "attributes": [],
+      "calls": [],
+      "declassifications": []
+    },
+    {
+      "name": "_capa_m9__rule_high_amount",
+      "source_name": "rule_high_amount",
+      "container": null,
+      "source_container": null,
+      "source_module_index": 9,
+      "pos": "fraud.capa:38:1",
+      "is_pub": false,
+      "doc": null,
+      "params": [
+        {
+          "name": "tx",
+          "type": "Transaction",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        },
+        {
+          "name": "high_threshold_cents",
+          "type": "Int",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        }
+      ],
+      "return_type": "Option<FraudSignal>",
+      "declared_capabilities": [],
+      "transitively_reachable_capabilities": [],
+      "provably_excluded_capabilities": [
+        "Clock",
+        "Db",
+        "Env",
+        "Fs",
+        "Net",
+        "Proc",
+        "Random",
+        "Stdio",
+        "Unsafe"
+      ],
+      "linear_obligations": {
+        "consumes": [],
+        "produces_linear": false
+      },
+      "has_unsafe": false,
+      "constant_time": false,
+      "attributes": [],
+      "calls": [
+        {
+          "kind": "fn",
+          "callee": "Some",
+          "pos": "40:16",
+          "args": [
+            "FraudSignal { code: \"AMOUNT_HIGH\", description: \"amount ${...} at or above hi..."
+          ],
+          "args_flow": [
+            null
+          ]
+        }
+      ],
+      "declassifications": []
+    },
+    {
+      "name": "_capa_m9__rule_velocity",
+      "source_name": "rule_velocity",
+      "container": null,
+      "source_container": null,
+      "source_module_index": 9,
+      "pos": "fraud.capa:47:1",
+      "is_pub": false,
+      "doc": null,
+      "params": [
+        {
+          "name": "recent_count",
+          "type": "Int",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        },
+        {
+          "name": "velocity_limit",
+          "type": "Int",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        }
+      ],
+      "return_type": "Option<FraudSignal>",
+      "declared_capabilities": [],
+      "transitively_reachable_capabilities": [],
+      "provably_excluded_capabilities": [
+        "Clock",
+        "Db",
+        "Env",
+        "Fs",
+        "Net",
+        "Proc",
+        "Random",
+        "Stdio",
+        "Unsafe"
+      ],
+      "linear_obligations": {
+        "consumes": [],
+        "produces_linear": false
+      },
+      "has_unsafe": false,
+      "constant_time": false,
+      "attributes": [],
+      "calls": [
+        {
+          "kind": "fn",
+          "callee": "Some",
+          "pos": "49:16",
+          "args": [
+            "FraudSignal { code: \"VELOCITY\", description: \"${...} recent transactions exce..."
+          ],
+          "args_flow": [
+            null
+          ]
+        }
+      ],
+      "declassifications": []
+    },
+    {
+      "name": "_capa_m9__rule_sanctions",
+      "source_name": "rule_sanctions",
+      "container": null,
+      "source_container": null,
+      "source_module_index": 9,
+      "pos": "fraud.capa:56:1",
+      "is_pub": false,
+      "doc": null,
+      "params": [
+        {
+          "name": "tx",
+          "type": "Transaction",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        },
+        {
+          "name": "blocklist",
+          "type": "List<String>",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        }
+      ],
+      "return_type": "Option<FraudSignal>",
+      "declared_capabilities": [],
+      "transitively_reachable_capabilities": [],
+      "provably_excluded_capabilities": [
+        "Clock",
+        "Db",
+        "Env",
+        "Fs",
+        "Net",
+        "Proc",
+        "Random",
+        "Stdio",
+        "Unsafe"
+      ],
+      "linear_obligations": {
+        "consumes": [],
+        "produces_linear": false
+      },
+      "has_unsafe": false,
+      "constant_time": false,
+      "attributes": [],
+      "calls": [
+        {
+          "kind": "method",
+          "callee": "blocklist.contains",
+          "pos": "57:8",
+          "args": [
+            "tx.beneficiary"
+          ],
+          "args_flow": [
+            null
+          ]
+        },
+        {
+          "kind": "fn",
+          "callee": "Some",
+          "pos": "58:16",
+          "args": [
+            "FraudSignal { code: \"SANCTIONS\", description: \"beneficiary is on the block / ..."
+          ],
+          "args_flow": [
+            null
+          ]
+        }
+      ],
+      "declassifications": []
+    },
+    {
+      "name": "pan_fingerprint_blocked",
+      "source_name": "pan_fingerprint_blocked",
+      "container": null,
+      "source_container": null,
+      "source_module_index": null,
+      "pos": "fraud.capa:81:5",
+      "is_pub": true,
+      "doc": null,
+      "params": [
+        {
+          "name": "fingerprint",
+          "type": "String",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        },
+        {
+          "name": "fp_blocklist",
+          "type": "List<String>",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        }
+      ],
+      "return_type": "Bool",
+      "declared_capabilities": [],
+      "transitively_reachable_capabilities": [],
+      "provably_excluded_capabilities": [
+        "Clock",
+        "Db",
+        "Env",
+        "Fs",
+        "Net",
+        "Proc",
+        "Random",
+        "Stdio",
+        "Unsafe"
+      ],
+      "linear_obligations": {
+        "consumes": [],
+        "produces_linear": false
+      },
+      "has_unsafe": false,
+      "constant_time": false,
+      "attributes": [],
+      "calls": [
+        {
+          "kind": "fn",
+          "callee": "strings_equal",
+          "pos": "84:12",
+          "args": [
+            "fingerprint",
+            "entry"
+          ],
+          "args_flow": [
+            null,
+            null
+          ]
+        }
+      ],
+      "declassifications": []
+    },
+    {
+      "name": "_capa_m9__rule_structuring",
+      "source_name": "rule_structuring",
+      "container": null,
+      "source_container": null,
+      "source_module_index": 9,
+      "pos": "fraud.capa:88:1",
+      "is_pub": false,
+      "doc": null,
+      "params": [
+        {
+          "name": "tx",
+          "type": "Transaction",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        },
+        {
+          "name": "report_threshold_cents",
+          "type": "Int",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        }
+      ],
+      "return_type": "Option<FraudSignal>",
+      "declared_capabilities": [],
+      "transitively_reachable_capabilities": [],
+      "provably_excluded_capabilities": [
+        "Clock",
+        "Db",
+        "Env",
+        "Fs",
+        "Net",
+        "Proc",
+        "Random",
+        "Stdio",
+        "Unsafe"
+      ],
+      "linear_obligations": {
+        "consumes": [],
+        "produces_linear": false
+      },
+      "has_unsafe": false,
+      "constant_time": false,
+      "attributes": [],
+      "calls": [
+        {
+          "kind": "fn",
+          "callee": "Some",
+          "pos": "93:16",
+          "args": [
+            "FraudSignal { code: \"STRUCTURING\", description: \"amount just below the report..."
+          ],
+          "args_flow": [
+            null
+          ]
+        }
+      ],
+      "declassifications": []
+    },
+    {
+      "name": "assess",
+      "source_name": "assess",
+      "container": null,
+      "source_container": null,
+      "source_module_index": null,
+      "pos": "fraud.capa:104:5",
+      "is_pub": true,
+      "doc": null,
+      "params": [
+        {
+          "name": "tx",
+          "type": "Transaction",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        },
+        {
+          "name": "recent_count",
+          "type": "Int",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        },
+        {
+          "name": "blocklist",
+          "type": "List<String>",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        },
+        {
+          "name": "cfg",
+          "type": "FraudConfig",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        }
+      ],
+      "return_type": "RiskAssessment",
+      "declared_capabilities": [],
+      "transitively_reachable_capabilities": [],
+      "provably_excluded_capabilities": [
+        "Clock",
+        "Db",
+        "Env",
+        "Fs",
+        "Net",
+        "Proc",
+        "Random",
+        "Stdio",
+        "Unsafe"
+      ],
+      "linear_obligations": {
+        "consumes": [],
+        "produces_linear": false
+      },
+      "has_unsafe": false,
+      "constant_time": false,
+      "attributes": [],
+      "calls": [
+        {
+          "kind": "fn",
+          "callee": "_capa_m9__rule_high_amount",
+          "pos": "111:11",
+          "args": [
+            "tx",
+            "cfg.high_threshold_cents"
+          ],
+          "args_flow": [
+            null,
+            null
+          ]
+        },
+        {
+          "kind": "method",
+          "callee": "signals.push",
+          "pos": "112:20",
+          "args": [
+            "s"
+          ],
+          "args_flow": [
+            null
+          ]
+        },
+        {
+          "kind": "fn",
+          "callee": "_capa_m9__rule_velocity",
+          "pos": "114:11",
+          "args": [
+            "recent_count",
+            "cfg.velocity_limit"
+          ],
+          "args_flow": [
+            null,
+            null
+          ]
+        },
+        {
+          "kind": "method",
+          "callee": "signals.push",
+          "pos": "115:20",
+          "args": [
+            "s"
+          ],
+          "args_flow": [
+            null
+          ]
+        },
+        {
+          "kind": "fn",
+          "callee": "_capa_m9__rule_sanctions",
+          "pos": "117:11",
+          "args": [
+            "tx",
+            "blocklist"
+          ],
+          "args_flow": [
+            null,
+            null
+          ]
+        },
+        {
+          "kind": "method",
+          "callee": "signals.push",
+          "pos": "118:20",
+          "args": [
+            "s"
+          ],
+          "args_flow": [
+            null
+          ]
+        },
+        {
+          "kind": "fn",
+          "callee": "_capa_m9__rule_structuring",
+          "pos": "120:11",
+          "args": [
+            "tx",
+            "cfg.report_threshold_cents"
+          ],
+          "args_flow": [
+            null,
+            null
+          ]
+        },
+        {
+          "kind": "method",
+          "callee": "signals.push",
+          "pos": "121:20",
+          "args": [
+            "s"
+          ],
+          "args_flow": [
+            null
+          ]
+        },
+        {
+          "kind": "fn",
+          "callee": "max_risk",
+          "pos": "126:15",
+          "args": [
+            "top",
+            "s.risk"
+          ],
+          "args_flow": [
+            null,
+            null
+          ]
+        }
+      ],
+      "declassifications": []
+    },
+    {
+      "name": "explain",
+      "source_name": "explain",
+      "container": null,
+      "source_container": null,
+      "source_module_index": null,
+      "pos": "fraud.capa:133:5",
+      "is_pub": true,
+      "doc": null,
+      "params": [
+        {
+          "name": "a",
+          "type": "RiskAssessment",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        }
+      ],
+      "return_type": "String",
+      "declared_capabilities": [],
+      "transitively_reachable_capabilities": [],
+      "provably_excluded_capabilities": [
+        "Clock",
+        "Db",
+        "Env",
+        "Fs",
+        "Net",
+        "Proc",
+        "Random",
+        "Stdio",
+        "Unsafe"
+      ],
+      "linear_obligations": {
+        "consumes": [],
+        "produces_linear": false
+      },
+      "has_unsafe": false,
+      "constant_time": false,
+      "attributes": [],
+      "calls": [
+        {
+          "kind": "method",
+          "callee": "a.signals.is_empty",
+          "pos": "134:8",
+          "args": [],
+          "args_flow": []
+        }
+      ],
+      "declassifications": []
+    },
+    {
+      "name": "risk_to_decision",
+      "source_name": "risk_to_decision",
+      "container": null,
+      "source_container": null,
+      "source_module_index": null,
+      "pos": "fraud.capa:143:5",
+      "is_pub": true,
+      "doc": null,
+      "params": [
+        {
+          "name": "a",
+          "type": "RiskAssessment",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        }
+      ],
+      "return_type": "Decision",
+      "declared_capabilities": [],
+      "transitively_reachable_capabilities": [],
+      "provably_excluded_capabilities": [
+        "Clock",
+        "Db",
+        "Env",
+        "Fs",
+        "Net",
+        "Proc",
+        "Random",
+        "Stdio",
+        "Unsafe"
+      ],
+      "linear_obligations": {
+        "consumes": [],
+        "produces_linear": false
+      },
+      "has_unsafe": false,
+      "constant_time": false,
+      "attributes": [],
+      "calls": [
+        {
+          "kind": "fn",
+          "callee": "Declined",
+          "pos": "145:21",
+          "args": [
+            "\"critical risk: ${...}\""
+          ],
+          "args_flow": [
+            null
+          ]
+        },
+        {
+          "kind": "fn",
+          "callee": "explain",
+          "pos": "145:48",
+          "args": [
+            "a"
+          ],
+          "args_flow": [
+            null
+          ]
+        },
+        {
+          "kind": "fn",
+          "callee": "Review",
+          "pos": "146:21",
+          "args": [
+            "\"high risk: ${...}\""
+          ],
+          "args_flow": [
+            null
+          ]
+        },
+        {
+          "kind": "fn",
+          "callee": "explain",
+          "pos": "146:42",
+          "args": [
+            "a"
+          ],
+          "args_flow": [
+            null
+          ]
+        },
+        {
+          "kind": "fn",
+          "callee": "Review",
+          "pos": "147:21",
+          "args": [
+            "\"medium risk: ${...}\""
+          ],
+          "args_flow": [
+            null
+          ]
+        },
+        {
+          "kind": "fn",
+          "callee": "explain",
+          "pos": "147:44",
+          "args": [
+            "a"
+          ],
+          "args_flow": [
+            null
+          ]
+        }
+      ],
+      "declassifications": []
+    },
+    {
+      "name": "mask_pan",
+      "source_name": "mask_pan",
+      "container": null,
+      "source_container": null,
+      "source_module_index": null,
+      "pos": "mask.capa:31:5",
+      "is_pub": true,
+      "doc": null,
+      "params": [
+        {
+          "name": "pan",
+          "type": "String",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        }
+      ],
+      "return_type": "String",
+      "declared_capabilities": [],
+      "transitively_reachable_capabilities": [],
+      "provably_excluded_capabilities": [
+        "Clock",
+        "Db",
+        "Env",
+        "Fs",
+        "Net",
+        "Proc",
+        "Random",
+        "Stdio",
+        "Unsafe"
+      ],
+      "linear_obligations": {
+        "consumes": [],
+        "produces_linear": false
+      },
+      "has_unsafe": false,
+      "constant_time": false,
+      "attributes": [],
+      "calls": [
+        {
+          "kind": "method",
+          "callee": "pan.length",
+          "pos": "32:13",
+          "args": [],
+          "args_flow": []
+        },
+        {
+          "kind": "method",
+          "callee": "pan.substring",
+          "pos": "38:17",
+          "args": [
+            "n - 4",
+            "n"
+          ],
+          "args_flow": [
+            null,
+            null
+          ]
+        },
+        {
+          "kind": "fn",
+          "callee": "declassify",
+          "pos": "39:12",
+          "args": [
+            "\"**** **** **** ${...}\"",
+            "\"PCI DSS 3.4: display only the last four PAN digits\""
+          ],
+          "args_flow": [
+            null,
+            null
+          ]
+        }
+      ],
+      "declassifications": [
+        {
+          "reason": "PCI DSS 3.4: display only the last four PAN digits",
+          "value": "\"**** **** **** ${...}\"",
+          "pos": "39:12"
+        }
+      ]
+    },
+    {
+      "name": "pan_fingerprint",
+      "source_name": "pan_fingerprint",
+      "container": null,
+      "source_container": null,
+      "source_module_index": null,
+      "pos": "mask.capa:57:5",
+      "is_pub": true,
+      "doc": null,
+      "params": [
+        {
+          "name": "pan",
+          "type": "String",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        },
+        {
+          "name": "key",
+          "type": "String",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        }
+      ],
+      "return_type": "String",
+      "declared_capabilities": [],
+      "transitively_reachable_capabilities": [],
+      "provably_excluded_capabilities": [
+        "Clock",
+        "Db",
+        "Env",
+        "Fs",
+        "Net",
+        "Proc",
+        "Random",
+        "Stdio",
+        "Unsafe"
+      ],
+      "linear_obligations": {
+        "consumes": [],
+        "produces_linear": false
+      },
+      "has_unsafe": false,
+      "constant_time": false,
+      "attributes": [],
+      "calls": [
+        {
+          "kind": "fn",
+          "callee": "hmac_sha256_hex_utf8",
+          "pos": "61:12",
+          "args": [
+            "key",
+            "pan"
+          ],
+          "args_flow": [
+            null,
+            null
+          ]
+        }
+      ],
+      "declassifications": []
+    },
+    {
+      "name": "storable_credential",
+      "source_name": "storable_credential",
+      "container": null,
+      "source_container": null,
+      "source_module_index": null,
+      "pos": "mask.capa:66:5",
+      "is_pub": true,
+      "doc": null,
+      "params": [
+        {
+          "name": "secret",
+          "type": "String",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        },
+        {
+          "name": "salt",
+          "type": "String",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        }
+      ],
+      "return_type": "String",
+      "declared_capabilities": [],
+      "transitively_reachable_capabilities": [],
+      "provably_excluded_capabilities": [
+        "Clock",
+        "Db",
+        "Env",
+        "Fs",
+        "Net",
+        "Proc",
+        "Random",
+        "Stdio",
+        "Unsafe"
+      ],
+      "linear_obligations": {
+        "consumes": [],
+        "produces_linear": false
+      },
+      "has_unsafe": false,
+      "constant_time": false,
+      "attributes": [],
+      "calls": [
+        {
+          "kind": "fn",
+          "callee": "declassify",
+          "pos": "67:12",
+          "args": [
+            "slow_hash(secret, salt)",
+            "\"credential stored only as a salted slow-hash, never in clear\""
+          ],
+          "args_flow": [
+            null,
+            null
+          ]
+        },
+        {
+          "kind": "fn",
+          "callee": "slow_hash",
+          "pos": "68:9",
+          "args": [
+            "secret",
+            "salt"
+          ],
+          "args_flow": [
+            null,
+            null
+          ]
+        }
+      ],
+      "declassifications": [
+        {
+          "reason": "credential stored only as a salted slow-hash, never in clear",
+          "value": "slow_hash(secret, salt)",
+          "pos": "67:12"
+        }
+      ]
+    },
+    {
+      "name": "storable_ciphertext",
+      "source_name": "storable_ciphertext",
+      "container": null,
+      "source_container": null,
+      "source_module_index": null,
+      "pos": "mask.capa:74:5",
+      "is_pub": true,
+      "doc": null,
+      "params": [
+        {
+          "name": "pan",
+          "type": "String",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        },
+        {
+          "name": "data_key",
+          "type": "String",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        }
+      ],
+      "return_type": "String",
+      "declared_capabilities": [],
+      "transitively_reachable_capabilities": [],
+      "provably_excluded_capabilities": [
+        "Clock",
+        "Db",
+        "Env",
+        "Fs",
+        "Net",
+        "Proc",
+        "Random",
+        "Stdio",
+        "Unsafe"
+      ],
+      "linear_obligations": {
+        "consumes": [],
+        "produces_linear": false
+      },
+      "has_unsafe": false,
+      "constant_time": false,
+      "attributes": [],
+      "calls": [
+        {
+          "kind": "fn",
+          "callee": "declassify",
+          "pos": "75:12",
+          "args": [
+            "encrypt(pan, data_key)",
+            "\"PCI DSS 3.4: PAN stored only as AES ciphertext under a KMS data key\""
+          ],
+          "args_flow": [
+            null,
+            null
+          ]
+        },
+        {
+          "kind": "fn",
+          "callee": "encrypt",
+          "pos": "76:9",
+          "args": [
+            "pan",
+            "data_key"
+          ],
+          "args_flow": [
+            null,
+            null
+          ]
+        }
+      ],
+      "declassifications": [
+        {
+          "reason": "PCI DSS 3.4: PAN stored only as AES ciphertext under a KMS data key",
+          "value": "encrypt(pan, data_key)",
+          "pos": "75:12"
+        }
+      ]
+    },
+    {
+      "name": "format_line",
+      "source_name": "format_line",
+      "container": null,
+      "source_container": null,
+      "source_module_index": null,
+      "pos": "audit.capa:33:5",
+      "is_pub": true,
+      "doc": null,
+      "params": [
+        {
+          "name": "prev_chain",
+          "type": "String",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        },
+        {
+          "name": "e",
+          "type": "AuditEvent",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        }
+      ],
+      "return_type": "String",
+      "declared_capabilities": [],
+      "transitively_reachable_capabilities": [],
+      "provably_excluded_capabilities": [
+        "Clock",
+        "Db",
+        "Env",
+        "Fs",
+        "Net",
+        "Proc",
+        "Random",
+        "Stdio",
+        "Unsafe"
+      ],
+      "linear_obligations": {
+        "consumes": [],
+        "produces_linear": false
+      },
+      "has_unsafe": false,
+      "constant_time": false,
+      "attributes": [],
+      "calls": [
+        {
+          "kind": "fn",
+          "callee": "hmac_sha256_hex_utf8",
+          "pos": "38:17",
+          "args": [
+            "\"audit-chain-key\"",
+            "\"${...}|${...}\""
+          ],
+          "args_flow": [
+            null,
+            null
+          ]
+        }
+      ],
+      "declassifications": []
+    },
+    {
+      "name": "build_log",
+      "source_name": "build_log",
+      "container": null,
+      "source_container": null,
+      "source_module_index": null,
+      "pos": "audit.capa:43:5",
+      "is_pub": true,
+      "doc": null,
+      "params": [
+        {
+          "name": "events",
+          "type": "List<AuditEvent>",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        }
+      ],
+      "return_type": "List<String>",
+      "declared_capabilities": [],
+      "transitively_reachable_capabilities": [],
+      "provably_excluded_capabilities": [
+        "Clock",
+        "Db",
+        "Env",
+        "Fs",
+        "Net",
+        "Proc",
+        "Random",
+        "Stdio",
+        "Unsafe"
+      ],
+      "linear_obligations": {
+        "consumes": [],
+        "produces_linear": false
+      },
+      "has_unsafe": false,
+      "constant_time": false,
+      "attributes": [],
+      "calls": [
+        {
+          "kind": "fn",
+          "callee": "format_line",
+          "pos": "47:20",
+          "args": [
+            "prev",
+            "e"
+          ],
+          "args_flow": [
+            null,
+            null
+          ]
+        },
+        {
+          "kind": "method",
+          "callee": "lines.push",
+          "pos": "48:9",
+          "args": [
+            "line"
+          ],
+          "args_flow": [
+            null
+          ]
+        },
+        {
+          "kind": "fn",
+          "callee": "hmac_sha256_hex_utf8",
+          "pos": "49:16",
+          "args": [
+            "\"audit-chain-key\"",
+            "line"
+          ],
+          "args_flow": [
+            null,
+            null
+          ]
+        }
+      ],
+      "declassifications": []
+    },
+    {
+      "name": "write_log",
+      "source_name": "write_log",
+      "container": null,
+      "source_container": null,
+      "source_module_index": null,
+      "pos": "audit.capa:55:5",
+      "is_pub": true,
+      "doc": null,
+      "params": [
+        {
+          "name": "fs",
+          "type": "Fs",
+          "consuming": false,
+          "is_capability": true,
+          "is_linear": false
+        },
+        {
+          "name": "path",
+          "type": "String",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        },
+        {
+          "name": "events",
+          "type": "List<AuditEvent>",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        }
+      ],
+      "return_type": "Result<Unit, IoError>",
+      "declared_capabilities": [
+        "Fs"
+      ],
+      "transitively_reachable_capabilities": [
+        "Fs"
+      ],
+      "provably_excluded_capabilities": [
+        "Clock",
+        "Db",
+        "Env",
+        "Net",
+        "Proc",
+        "Random",
+        "Stdio",
+        "Unsafe"
+      ],
+      "linear_obligations": {
+        "consumes": [],
+        "produces_linear": false
+      },
+      "has_unsafe": false,
+      "constant_time": false,
+      "attributes": [],
+      "calls": [
+        {
+          "kind": "fn",
+          "callee": "build_log",
+          "pos": "56:17",
+          "args": [
+            "events"
+          ],
+          "args_flow": [
+            null
+          ]
+        },
+        {
+          "kind": "method",
+          "callee": "fs.write",
+          "pos": "60:12",
+          "args": [
+            "path",
+            "content"
+          ],
+          "args_flow": [
+            null,
+            null
+          ]
+        }
+      ],
+      "declassifications": []
+    },
+    {
+      "name": "demo_now",
+      "source_name": "demo_now",
+      "container": null,
+      "source_container": null,
+      "source_module_index": null,
+      "pos": "main.capa:22:1",
+      "is_pub": false,
+      "doc": null,
+      "params": [],
+      "return_type": "Float",
+      "declared_capabilities": [],
+      "transitively_reachable_capabilities": [],
+      "provably_excluded_capabilities": [
+        "Clock",
+        "Db",
+        "Env",
+        "Fs",
+        "Net",
+        "Proc",
+        "Random",
+        "Stdio",
+        "Unsafe"
+      ],
+      "linear_obligations": {
+        "consumes": [],
+        "produces_linear": false
+      },
+      "has_unsafe": false,
+      "constant_time": false,
+      "attributes": [],
+      "calls": [],
+      "declassifications": []
+    },
+    {
+      "name": "audit_event",
+      "source_name": "audit_event",
+      "container": null,
+      "source_container": null,
+      "source_module_index": null,
+      "pos": "main.capa:25:1",
+      "is_pub": false,
+      "doc": null,
+      "params": [
+        {
+          "name": "action",
+          "type": "String",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        },
+        {
+          "name": "source",
+          "type": "String",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        },
+        {
+          "name": "detail",
+          "type": "String",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        }
+      ],
+      "return_type": "AuditEvent",
+      "declared_capabilities": [],
+      "transitively_reachable_capabilities": [],
+      "provably_excluded_capabilities": [
+        "Clock",
+        "Db",
+        "Env",
+        "Fs",
+        "Net",
+        "Proc",
+        "Random",
+        "Stdio",
+        "Unsafe"
+      ],
+      "linear_obligations": {
+        "consumes": [],
+        "produces_linear": false
+      },
+      "has_unsafe": false,
+      "constant_time": false,
+      "attributes": [],
+      "calls": [
+        {
+          "kind": "fn",
+          "callee": "demo_now",
+          "pos": "27:25",
+          "args": [],
+          "args_flow": []
+        }
+      ],
+      "declassifications": []
+    },
+    {
+      "name": "process",
+      "source_name": "process",
+      "container": null,
+      "source_container": null,
+      "source_module_index": null,
+      "pos": "main.capa:51:1",
+      "is_pub": true,
+      "doc": null,
+      "params": [
+        {
+          "name": "fs",
+          "type": "Fs",
+          "consuming": false,
+          "is_capability": true,
+          "is_linear": false
+        },
+        {
+          "name": "card",
+          "type": "Card",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        },
+        {
+          "name": "tx",
+          "type": "Transaction",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        },
+        {
+          "name": "knowledge_ok",
+          "type": "Bool",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        },
+        {
+          "name": "possession_ok",
+          "type": "Bool",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        },
+        {
+          "name": "inherence_ok",
+          "type": "Bool",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        },
+        {
+          "name": "seen",
+          "type": "Set<String>",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        },
+        {
+          "name": "blocklist",
+          "type": "List<String>",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        },
+        {
+          "name": "fp_key",
+          "type": "String",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        },
+        {
+          "name": "fp_blocklist",
+          "type": "List<String>",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        },
+        {
+          "name": "recent_count",
+          "type": "Int",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        },
+        {
+          "name": "cfg",
+          "type": "FraudConfig",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        },
+        {
+          "name": "auth_code",
+          "type": "String",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        },
+        {
+          "name": "nonce",
+          "type": "String",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        },
+        {
+          "name": "trail",
+          "type": "List<AuditEvent>",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        }
+      ],
+      "return_type": "Decision",
+      "declared_capabilities": [
+        "Fs"
+      ],
+      "transitively_reachable_capabilities": [
+        "Fs"
+      ],
+      "provably_excluded_capabilities": [
+        "Clock",
+        "Db",
+        "Env",
+        "Net",
+        "Proc",
+        "Random",
+        "Stdio",
+        "Unsafe"
+      ],
+      "linear_obligations": {
+        "consumes": [],
+        "produces_linear": false
+      },
+      "has_unsafe": false,
+      "constant_time": false,
+      "attributes": [
+        {
+          "name": "strict_ifc",
+          "args": {}
+        }
+      ],
+      "calls": [
+        {
+          "kind": "fn",
+          "callee": "mask_pan",
+          "pos": "69:18",
+          "args": [
+            "card.pan"
+          ],
+          "args_flow": [
+            null
+          ]
+        },
+        {
+          "kind": "fn",
+          "callee": "pan_fingerprint",
+          "pos": "75:18",
+          "args": [
+            "card.pan",
+            "fp_key"
+          ],
+          "args_flow": [
+            null,
+            null
+          ]
+        },
+        {
+          "kind": "fn",
+          "callee": "evaluate_exemption",
+          "pos": "78:21",
+          "args": [
+            "tx",
+            "3000",
+            "false"
+          ],
+          "args_flow": [
+            null,
+            null,
+            null
+          ]
+        },
+        {
+          "kind": "fn",
+          "callee": "requires_sca",
+          "pos": "79:8",
+          "args": [
+            "exemption"
+          ],
+          "args_flow": [
+            null
+          ]
+        },
+        {
+          "kind": "fn",
+          "callee": "sca_satisfied",
+          "pos": "80:16",
+          "args": [
+            "knowledge_ok",
+            "possession_ok",
+            "inherence_ok"
+          ],
+          "args_flow": [
+            null,
+            null,
+            null
+          ]
+        },
+        {
+          "kind": "method",
+          "callee": "trail.push",
+          "pos": "81:13",
+          "args": [
+            "audit_event(\"AUTH_FAILED\", \"web\", \"card ${...}: SCA not satisfied\")"
+          ],
+          "args_flow": [
+            null
+          ]
+        },
+        {
+          "kind": "fn",
+          "callee": "audit_event",
+          "pos": "81:24",
+          "args": [
+            "\"AUTH_FAILED\"",
+            "\"web\"",
+            "\"card ${...}: SCA not satisfied\""
+          ],
+          "args_flow": [
+            null,
+            null,
+            null
+          ]
+        },
+        {
+          "kind": "fn",
+          "callee": "Declined",
+          "pos": "82:20",
+          "args": [
+            "\"strong authentication required\""
+          ],
+          "args_flow": [
+            null
+          ]
+        },
+        {
+          "kind": "method",
+          "callee": "trail.push",
+          "pos": "83:5",
+          "args": [
+            "audit_event(\"AUTH_OK\", \"web\", \"card ${...}; exemption=${...}\")"
+          ],
+          "args_flow": [
+            null
+          ]
+        },
+        {
+          "kind": "fn",
+          "callee": "audit_event",
+          "pos": "83:16",
+          "args": [
+            "\"AUTH_OK\"",
+            "\"web\"",
+            "\"card ${...}; exemption=${...}\""
+          ],
+          "args_flow": [
+            null,
+            null,
+            null
+          ]
+        },
+        {
+          "kind": "fn",
+          "callee": "exemption_reason",
+          "pos": "83:75",
+          "args": [
+            "exemption"
+          ],
+          "args_flow": [
+            null
+          ]
+        },
+        {
+          "kind": "fn",
+          "callee": "validate_structure",
+          "pos": "86:11",
+          "args": [
+            "tx"
+          ],
+          "args_flow": [
+            null
+          ]
+        },
+        {
+          "kind": "method",
+          "callee": "trail.push",
+          "pos": "89:13",
+          "args": [
+            "audit_event(\"VALIDATION_FAILED\", \"web\", \"card ${...}: ${...}\")"
+          ],
+          "args_flow": [
+            null
+          ]
+        },
+        {
+          "kind": "fn",
+          "callee": "audit_event",
+          "pos": "89:24",
+          "args": [
+            "\"VALIDATION_FAILED\"",
+            "\"web\"",
+            "\"card ${...}: ${...}\""
+          ],
+          "args_flow": [
+            null,
+            null,
+            null
+          ]
+        },
+        {
+          "kind": "fn",
+          "callee": "Declined",
+          "pos": "90:20",
+          "args": [
+            "\"invalid transaction: ${...}\""
+          ],
+          "args_flow": [
+            null
+          ]
+        },
+        {
+          "kind": "fn",
+          "callee": "verify_dynamic_link",
+          "pos": "94:12",
+          "args": [
+            "tx",
+            "auth_code",
+            "nonce"
+          ],
+          "args_flow": [
+            null,
+            null,
+            null
+          ]
+        },
+        {
+          "kind": "method",
+          "callee": "trail.push",
+          "pos": "95:9",
+          "args": [
+            "audit_event(\"DYNLINK_FAILED\", \"web\", \"card ${...}: amount/beneficiary changed..."
+          ],
+          "args_flow": [
+            null
+          ]
+        },
+        {
+          "kind": "fn",
+          "callee": "audit_event",
+          "pos": "95:20",
+          "args": [
+            "\"DYNLINK_FAILED\"",
+            "\"web\"",
+            "\"card ${...}: amount/beneficiary changed after authorization\""
+          ],
+          "args_flow": [
+            null,
+            null,
+            null
+          ]
+        },
+        {
+          "kind": "fn",
+          "callee": "Declined",
+          "pos": "96:16",
+          "args": [
+            "\"authorization no longer matches the transaction\""
+          ],
+          "args_flow": [
+            null
+          ]
+        },
+        {
+          "kind": "fn",
+          "callee": "claim",
+          "pos": "99:12",
+          "args": [
+            "seen",
+            "idempotency_key(tx)"
+          ],
+          "args_flow": [
+            null,
+            null
+          ]
+        },
+        {
+          "kind": "fn",
+          "callee": "idempotency_key",
+          "pos": "99:33",
+          "args": [
+            "tx"
+          ],
+          "args_flow": [
+            null
+          ]
+        },
+        {
+          "kind": "method",
+          "callee": "trail.push",
+          "pos": "100:9",
+          "args": [
+            "audit_event(\"DUPLICATE\", \"web\", \"card ${...}: duplicate transaction ${...}\")"
+          ],
+          "args_flow": [
+            null
+          ]
+        },
+        {
+          "kind": "fn",
+          "callee": "audit_event",
+          "pos": "100:20",
+          "args": [
+            "\"DUPLICATE\"",
+            "\"web\"",
+            "\"card ${...}: duplicate transaction ${...}\""
+          ],
+          "args_flow": [
+            null,
+            null,
+            null
+          ]
+        },
+        {
+          "kind": "fn",
+          "callee": "Declined",
+          "pos": "101:16",
+          "args": [
+            "\"duplicate transaction\""
+          ],
+          "args_flow": [
+            null
+          ]
+        },
+        {
+          "kind": "fn",
+          "callee": "declassify",
+          "pos": "119:24",
+          "args": [
+            "pan_fingerprint_blocked(pan_fp, fp_blocklist)",
+            "\"PCI DSS 3.4: disclosing that a transaction's PAN matched the blocklist drive..."
+          ],
+          "args_flow": [
+            null,
+            null
+          ]
+        },
+        {
+          "kind": "fn",
+          "callee": "pan_fingerprint_blocked",
+          "pos": "120:9",
+          "args": [
+            "pan_fp",
+            "fp_blocklist"
+          ],
+          "args_flow": [
+            null,
+            null
+          ]
+        },
+        {
+          "kind": "fn",
+          "callee": "declassify",
+          "pos": "124:28",
+          "args": [
+            "pan_fp",
+            "\"PCI DSS 3.4: a matched PAN blocklist fingerprint is recorded in the fraud-al..."
+          ],
+          "args_flow": [
+            null,
+            null
+          ]
+        },
+        {
+          "kind": "method",
+          "callee": "fs.write",
+          "pos": "129:15",
+          "args": [
+            "\"fraud_alerts.txt\"",
+            "alert"
+          ],
+          "args_flow": [
+            null,
+            null
+          ]
+        },
+        {
+          "kind": "method",
+          "callee": "trail.push",
+          "pos": "132:9",
+          "args": [
+            "audit_event(\"BLOCKLIST\", \"web\", \"card ${...}: PAN on blocklist (fingerprint $..."
+          ],
+          "args_flow": [
+            null
+          ]
+        },
+        {
+          "kind": "fn",
+          "callee": "audit_event",
+          "pos": "132:20",
+          "args": [
+            "\"BLOCKLIST\"",
+            "\"web\"",
+            "\"card ${...}: PAN on blocklist (fingerprint ${...})\""
+          ],
+          "args_flow": [
+            null,
+            null,
+            null
+          ]
+        },
+        {
+          "kind": "fn",
+          "callee": "Declined",
+          "pos": "133:16",
+          "args": [
+            "\"PAN on blocklist\""
+          ],
+          "args_flow": [
+            null
+          ]
+        },
+        {
+          "kind": "fn",
+          "callee": "assess",
+          "pos": "136:22",
+          "args": [
+            "tx",
+            "recent_count",
+            "blocklist",
+            "cfg"
+          ],
+          "args_flow": [
+            null,
+            null,
+            null,
+            null
+          ]
+        },
+        {
+          "kind": "fn",
+          "callee": "risk_to_decision",
+          "pos": "137:20",
+          "args": [
+            "assessment"
+          ],
+          "args_flow": [
+            null
+          ]
+        },
+        {
+          "kind": "method",
+          "callee": "trail.push",
+          "pos": "141:23",
+          "args": [
+            "audit_event(\"APPROVED\", \"web\", \"card ${...}; amount=${...} ${...}\")"
+          ],
+          "args_flow": [
+            null
+          ]
+        },
+        {
+          "kind": "fn",
+          "callee": "audit_event",
+          "pos": "141:34",
+          "args": [
+            "\"APPROVED\"",
+            "\"web\"",
+            "\"card ${...}; amount=${...} ${...}\""
+          ],
+          "args_flow": [
+            null,
+            null,
+            null
+          ]
+        },
+        {
+          "kind": "method",
+          "callee": "trail.push",
+          "pos": "142:23",
+          "args": [
+            "audit_event(\"REVIEW\", \"web\", \"card ${...}: ${...}\")"
+          ],
+          "args_flow": [
+            null
+          ]
+        },
+        {
+          "kind": "fn",
+          "callee": "audit_event",
+          "pos": "142:34",
+          "args": [
+            "\"REVIEW\"",
+            "\"web\"",
+            "\"card ${...}: ${...}\""
+          ],
+          "args_flow": [
+            null,
+            null,
+            null
+          ]
+        },
+        {
+          "kind": "method",
+          "callee": "trail.push",
+          "pos": "143:24",
+          "args": [
+            "audit_event(\"DECLINED\", \"web\", \"card ${...}: ${...}\")"
+          ],
+          "args_flow": [
+            null
+          ]
+        },
+        {
+          "kind": "fn",
+          "callee": "audit_event",
+          "pos": "143:35",
+          "args": [
+            "\"DECLINED\"",
+            "\"web\"",
+            "\"card ${...}: ${...}\""
+          ],
+          "args_flow": [
+            null,
+            null,
+            null
+          ]
+        }
+      ],
+      "declassifications": [
+        {
+          "reason": "PCI DSS 3.4: disclosing that a transaction's PAN matched the blocklist drives the public refusal decision",
+          "value": "pan_fingerprint_blocked(pan_fp, fp_blocklist)",
+          "pos": "119:24"
+        },
+        {
+          "reason": "PCI DSS 3.4: a matched PAN blocklist fingerprint is recorded in the fraud-alert log; it is a keyed one-way value, not the PAN",
+          "value": "pan_fp",
+          "pos": "124:28"
+        }
+      ]
+    },
+    {
+      "name": "print_decision",
+      "source_name": "print_decision",
+      "container": null,
+      "source_container": null,
+      "source_module_index": null,
+      "pos": "main.capa:157:1",
+      "is_pub": false,
+      "doc": null,
+      "params": [
+        {
+          "name": "stdio",
+          "type": "Stdio",
+          "consuming": false,
+          "is_capability": true,
+          "is_linear": false
+        },
+        {
+          "name": "label",
+          "type": "String",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        },
+        {
+          "name": "d",
+          "type": "Decision",
+          "consuming": false,
+          "is_capability": false,
+          "is_linear": false
+        }
+      ],
+      "return_type": "Unit",
+      "declared_capabilities": [
+        "Stdio"
+      ],
+      "transitively_reachable_capabilities": [
+        "Stdio"
+      ],
+      "provably_excluded_capabilities": [
+        "Clock",
+        "Db",
+        "Env",
+        "Fs",
+        "Net",
+        "Proc",
+        "Random",
+        "Unsafe"
+      ],
+      "linear_obligations": {
+        "consumes": [],
+        "produces_linear": false
+      },
+      "has_unsafe": false,
+      "constant_time": false,
+      "attributes": [],
+      "calls": [
+        {
+          "kind": "fn",
+          "callee": "declassify",
+          "pos": "158:19",
+          "args": [
+            "d",
+            "\"authorization decision is the pipeline's public output: approve/decline/revi..."
+          ],
+          "args_flow": [
+            null,
+            null
+          ]
+        },
+        {
+          "kind": "method",
+          "callee": "stdio.println",
+          "pos": "166:5",
+          "args": [
+            "\"${...}: ${...}\""
+          ],
+          "args_flow": [
+            null
+          ]
+        }
+      ],
+      "declassifications": [
+        {
+          "reason": "authorization decision is the pipeline's public output: approve/decline/review plus a rule-derived reason, no cardholder data",
+          "value": "d",
+          "pos": "158:19"
+        }
+      ]
+    },
+    {
+      "name": "main",
+      "source_name": "main",
+      "container": null,
+      "source_container": null,
+      "source_module_index": null,
+      "pos": "main.capa:168:5",
+      "is_pub": true,
+      "doc": null,
+      "params": [
+        {
+          "name": "stdio",
+          "type": "Stdio",
+          "consuming": false,
+          "is_capability": true,
+          "is_linear": false
+        },
+        {
+          "name": "fs",
+          "type": "Fs",
+          "consuming": false,
+          "is_capability": true,
+          "is_linear": false
+        }
+      ],
+      "return_type": "()",
+      "declared_capabilities": [
+        "Stdio",
+        "Fs"
+      ],
+      "transitively_reachable_capabilities": [
+        "Fs",
+        "Stdio"
+      ],
+      "provably_excluded_capabilities": [
+        "Clock",
+        "Db",
+        "Env",
+        "Net",
+        "Proc",
+        "Random",
+        "Unsafe"
+      ],
+      "linear_obligations": {
+        "consumes": [],
+        "produces_linear": false
+      },
+      "has_unsafe": false,
+      "constant_time": false,
+      "attributes": [],
+      "calls": [
+        {
+          "kind": "method",
+          "callee": "stdio.println",
+          "pos": "169:5",
+          "args": [
+            "\"== capa_paymentguard demo ==\""
+          ],
+          "args_flow": [
+            null
+          ]
+        },
+        {
+          "kind": "fn",
+          "callee": "demo_now",
+          "pos": "205:25",
+          "args": [],
+          "args_flow": []
+        },
+        {
+          "kind": "fn",
+          "callee": "authorization_code",
+          "pos": "212:18",
+          "args": [
+            "tx_a",
+            "nonce"
+          ],
+          "args_flow": [
+            null,
+            null
+          ]
+        },
+        {
+          "kind": "fn",
+          "callee": "new_set",
+          "pos": "213:18",
+          "args": [],
+          "args_flow": []
+        },
+        {
+          "kind": "fn",
+          "callee": "process",
+          "pos": "214:17",
+          "args": [
+            "fs",
+            "card",
+            "tx_a",
+            "true",
+            "true",
+            "false",
+            "seen_a",
+            "blocklist",
+            "fp_key",
+            "fp_blocklist",
+            "1",
+            "cfg",
+            "code_a",
+            "nonce",
+            "trail"
+          ],
+          "args_flow": [
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null
+          ]
+        },
+        {
+          "kind": "fn",
+          "callee": "print_decision",
+          "pos": "215:5",
+          "args": [
+            "stdio",
+            "\"Scenario A (small purchase)\"",
+            "dec_a"
+          ],
+          "args_flow": [
+            null,
+            null,
+            null
+          ]
+        },
+        {
+          "kind": "fn",
+          "callee": "demo_now",
+          "pos": "220:25",
+          "args": [],
+          "args_flow": []
+        },
+        {
+          "kind": "fn",
+          "callee": "authorization_code",
+          "pos": "227:18",
+          "args": [
+            "tx_b",
+            "nonce"
+          ],
+          "args_flow": [
+            null,
+            null
+          ]
+        },
+        {
+          "kind": "fn",
+          "callee": "new_set",
+          "pos": "228:18",
+          "args": [],
+          "args_flow": []
+        },
+        {
+          "kind": "fn",
+          "callee": "process",
+          "pos": "229:17",
+          "args": [
+            "fs",
+            "card",
+            "tx_b",
+            "true",
+            "true",
+            "false",
+            "seen_b",
+            "blocklist",
+            "fp_key",
+            "fp_blocklist",
+            "1",
+            "cfg",
+            "code_b",
+            "nonce",
+            "trail"
+          ],
+          "args_flow": [
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null
+          ]
+        },
+        {
+          "kind": "fn",
+          "callee": "print_decision",
+          "pos": "230:5",
+          "args": [
+            "stdio",
+            "\"Scenario B (sanctioned payee)\"",
+            "dec_b"
+          ],
+          "args_flow": [
+            null,
+            null,
+            null
+          ]
+        },
+        {
+          "kind": "fn",
+          "callee": "demo_now",
+          "pos": "235:25",
+          "args": [],
+          "args_flow": []
+        },
+        {
+          "kind": "fn",
+          "callee": "authorization_code",
+          "pos": "242:18",
+          "args": [
+            "tx_c",
+            "nonce"
+          ],
+          "args_flow": [
+            null,
+            null
+          ]
+        },
+        {
+          "kind": "fn",
+          "callee": "demo_now",
+          "pos": "245:25",
+          "args": [],
+          "args_flow": []
+        },
+        {
+          "kind": "fn",
+          "callee": "new_set",
+          "pos": "252:18",
+          "args": [],
+          "args_flow": []
+        },
+        {
+          "kind": "fn",
+          "callee": "process",
+          "pos": "253:17",
+          "args": [
+            "fs",
+            "card",
+            "tx_c_tampered",
+            "true",
+            "true",
+            "false",
+            "seen_c",
+            "blocklist",
+            "fp_key",
+            "fp_blocklist",
+            "1",
+            "cfg",
+            "code_c",
+            "nonce",
+            "trail"
+          ],
+          "args_flow": [
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null
+          ]
+        },
+        {
+          "kind": "fn",
+          "callee": "print_decision",
+          "pos": "254:5",
+          "args": [
+            "stdio",
+            "\"Scenario C (tampered amount)\"",
+            "dec_c"
+          ],
+          "args_flow": [
+            null,
+            null,
+            null
+          ]
+        },
+        {
+          "kind": "fn",
+          "callee": "demo_now",
+          "pos": "273:25",
+          "args": [],
+          "args_flow": []
+        },
+        {
+          "kind": "fn",
+          "callee": "authorization_code",
+          "pos": "280:18",
+          "args": [
+            "tx_d",
+            "nonce"
+          ],
+          "args_flow": [
+            null,
+            null
+          ]
+        },
+        {
+          "kind": "fn",
+          "callee": "new_set",
+          "pos": "281:18",
+          "args": [],
+          "args_flow": []
+        },
+        {
+          "kind": "fn",
+          "callee": "process",
+          "pos": "282:17",
+          "args": [
+            "fs",
+            "blocked_card",
+            "tx_d",
+            "true",
+            "true",
+            "false",
+            "seen_d",
+            "blocklist",
+            "fp_key",
+            "fp_blocklist",
+            "1",
+            "cfg",
+            "code_d",
+            "nonce",
+            "trail"
+          ],
+          "args_flow": [
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null
+          ]
+        },
+        {
+          "kind": "fn",
+          "callee": "print_decision",
+          "pos": "283:5",
+          "args": [
+            "stdio",
+            "\"Scenario D (blocklisted PAN)\"",
+            "dec_d"
+          ],
+          "args_flow": [
+            null,
+            null,
+            null
+          ]
+        },
+        {
+          "kind": "fn",
+          "callee": "write_log",
+          "pos": "288:11",
+          "args": [
+            "fs",
+            "\"audit_log.txt\"",
+            "trail"
+          ],
+          "args_flow": [
+            null,
+            null,
+            null
+          ]
+        },
+        {
+          "kind": "method",
+          "callee": "stdio.println",
+          "pos": "289:21",
+          "args": [
+            "\"audit trail written to audit_log.txt (${...} events)\""
+          ],
+          "args_flow": [
+            null
+          ]
+        },
+        {
+          "kind": "method",
+          "callee": "trail.length",
+          "pos": "289:76",
+          "args": [],
+          "args_flow": []
+        },
+        {
+          "kind": "method",
+          "callee": "stdio.eprintln",
+          "pos": "290:21",
+          "args": [
+            "\"failed to write audit trail\""
+          ],
+          "args_flow": [
+            null
+          ]
+        }
+      ],
+      "declassifications": []
+    }
+  ],
+  "summary": {
+    "total_functions": 70,
+    "functions_with_capabilities": 4,
+    "functions_with_attributes": 8,
+    "functions_crossing_unsafe": 0,
+    "declassification_sites": 6,
+    "protocol_states": 0
+  }
+}

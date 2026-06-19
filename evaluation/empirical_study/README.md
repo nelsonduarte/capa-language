@@ -8,8 +8,15 @@ whether, under **closed-world SBOM semantics**, it **false-clears** a
 function that does (Q2). Each treatment is scored against an auditable
 ground truth by the **same criterion** within each question.
 
-It is the quantitative core of the NLnet empirical study. It runs over
-**two corpus roots**:
+It is the **breadth** half of the NLnet empirical study (the head-to-head
+against real tools). The **depth** half, two real enterprise Capa
+programs measured from their actual emitted SBOM, is in
+[`depth/`](depth/): it drops the tool comparison (these programs have no
+Python equivalent to scan) and instead shows the richness, scale, and
+authority concentration of the per-function manifest on real code. See
+[`depth/README.md`](depth/README.md).
+
+It runs over **two corpus roots**:
 
 - **Phase 1a**: the 20-pair corpus in [`../sbom_diff/`](../sbom_diff/),
   whose authority is reached by `direct` calls or a local `via-helper`.

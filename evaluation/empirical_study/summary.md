@@ -1,5 +1,16 @@
 # Capability-recall study, Phase 1a + 1b + 1c results
 
+> This is the **breadth** half of the NLnet empirical study (the
+> head-to-head against real tools). The **depth** half, two real
+> enterprise Capa programs (`capa_paymentguard`, `capa_claimdesk`)
+> measured from their actual emitted manifest, is in
+> [`depth/README.md`](depth/README.md). Depth shows the richness, scale,
+> and authority concentration of the per-function SBOM on real code:
+> 88-94 % of functions provably pure, no sensitive axis held by more than
+> 4.3 % of functions, 625 and 2,295 sound provably-excluded facts that no
+> dependency SBOM expresses.
+
+
 Run over 25 hand-Python / Capa pairs: the 20 Phase-1a pairs in
 [`../sbom_diff/`](../sbom_diff/) (direct + via-helper) and the 5
 Phase-1b pairs in [`dispatch_pairs/`](dispatch_pairs/) (via-dispatch

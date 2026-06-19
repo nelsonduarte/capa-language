@@ -19,6 +19,44 @@ pending item in [`TODO.md`](TODO.md).
 
 ---
 
+## NLnet empirical study (2026-06-18)
+
+The headline NLnet deliverable: a two-part empirical study of the
+per-function capability SBOM, under
+[`evaluation/empirical_study/`](evaluation/empirical_study/).
+
+- **Breadth (head-to-head).** 25 hand-built Python / Capa pairs, four
+  treatments (T1 dependency SBOM, T2 Semgrep, T2b CodeQL 2.25.6, T3 Capa),
+  scored by one per-function `(function, capability)` fact across two
+  questions. **Q1 (positive attribution): a clean three-way tie at the
+  top** -- Capa and CodeQL both attribute 38/48, Semgrep 36/48; Capa does
+  not see more than the best dataflow tool. **Q2 (false-clearance under
+  closed-world SBOM semantics): Capa = 0/48**, against CodeQL 10/48,
+  Semgrep 12/48, and the dependency SBOM 48/48. The separation is in Q2,
+  it holds against the strongest real dataflow tool, and the ten
+  dispatcher facts CodeQL silently clears are the ones Capa reports as
+  *not-determined* rather than clearing.
+- **Depth (richness + scale + concentration).** Two real enterprise Capa
+  programs measured from their actual emitted manifest in
+  [`evaluation/empirical_study/depth/`](evaluation/empirical_study/depth/):
+  `capa_paymentguard` (PCI core, 70 functions) and `capa_claimdesk`
+  (claims engine, 213 functions). No Python equivalent exists, so this is
+  deliberately not a tool comparison. Measured: **88-94 % of functions
+  provably pure**, no sensitive axis held by more than **4.3 %** of
+  functions (data for the positioning-doc concentration claim), and
+  **625 / 2,295 sound provably-excluded `(function, capability)` facts**
+  that no dependency SBOM expresses. A genuine in-the-wild dynamic
+  dispatch (`render_report` over a `Reporter` trait object) is present
+  and typed soundly; it is benign here because all three reporter impls
+  are pure. A v1.5.2 regeneration finding (claimdesk's app-side selective
+  `import capa_csv.model` collides with the vendored library's
+  whole-module import of the same module) is recorded honestly in the
+  depth README.
+
+Follow-up still open: consolidate both halves into the paper (paper
+&sect;5). The depth harness reads only committed manifests, so it is
+deterministic and CI-safe.
+
 ## Security arc (2026-06-16 .. 2026-06-18)
 
 The deepest hardening window to date: a six-axis adversarial review

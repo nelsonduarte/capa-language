@@ -17,9 +17,6 @@ code.
 
 ## Medium term (prove the value)
 
-- **NLnet empirical study.** Analyse 10-20 real libraries and measure the
-  false-negative SBOM findings avoided by construction versus heuristic
-  tools. Highest-return NLnet deliverable.
 - **Make Python/Wasm parity universal.** Lift it beyond the
   `_PARITY_PROGRAMS` subset: close GAP-2b (a dynamic-prefix `restrict_to`
   attenuation is not inline-enforced on Wasm).
