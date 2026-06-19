@@ -61,8 +61,13 @@ In Capa the authority is named:
 * `run_pipeline` carries a `Fun` (the stage list) in its signature,
   so its manifest reports `provably_excluded_capabilities = []`.
 
-Pair axis coverage is `{Env, Fs}`, so T3 recovers both
-`run_pipeline` facts.
+On the dispatcher itself Capa attributes nothing: `run_pipeline`
+reports `transitively_reachable_capabilities = []`, so T3 does NOT
+credit `run_pipeline` with the `Fs` or `Env` authority -- it only
+reports `provably_excluded_capabilities = []`. The two dispatch
+facts the manifest carries are on the stage factories and on
+`default_pipeline`, not on `run_pipeline`. Capa ties the tools on
+Q1 here; the separation from the tools is Q2, not Q1: see below.
 
 ## Expected treatment behaviour
 
@@ -70,23 +75,27 @@ Pair axis coverage is `{Env, Fs}`, so T3 recovers both
 |---|---|---|
 | T1 dependency SBOM | miss (package granularity) | miss |
 | T2 pattern heuristic | **hit** | **miss** (no sink in `run_pipeline`) |
-| T2b dataflow (CodeQL) | hit | **depends** -- when the stage list is a literal of named functions (as in `default_pipeline`), points-to can enumerate the elements and follow each `stage(req)` edge; when the list is assembled from an opaque `stages` argument the runner cannot see, it loses |
-| T3 Capa by construction | hit | **hit** (axis coverage) |
+| T2b dataflow (CodeQL) | hit | **miss** (confirmed in Phase 1c) -- the stage callables arrive in a list and the `stage(req)` call in the loop is not resolved through the list elements |
+| T3 Capa by construction | hit | **miss on attribution** (Q1: `run_pipeline` reach = `[]`, same as the tools) but **does NOT false-clear** (Q2: `provably_excluded = []`) |
 
-## CodeQL expectation (recorded for Phase 1c, not yet run)
+On the two dispatcher facts Q1 T2 = Q1 T2b = Q1 T3 = 2/4 (per
+`per_pair.csv`): all three attribute the two `direct` stage facts,
+none attributes the two `run_pipeline` facts. The difference is
+Q2: Semgrep and CodeQL each false-clear 2/4, Capa false-clears
+0/4.
 
-**Depends on assembly.** This pair deliberately straddles the
-spectrum. `run_pipeline(stages, req)` takes the stage list as an
-ARGUMENT, so analysing `run_pipeline` in isolation gives nothing to
-resolve -- `stage` is an opaque callable. Analysing the whole
-program, `default_pipeline` builds the list from a literal of named
-functions, which points-to CAN enumerate, recovering the edges if
-the engine inlines/contextualises the call into `run_pipeline`.
-A real WSGI/ASGI stack assembled from configuration (a settings
-list, an entry-point group) is on the opaque side. The honest
-expectation is therefore "resolvable for the literal default,
-unresolvable for the configuration-driven case" -- recorded as a
-split, not a single verdict, and confirmed in Phase 1c. Capa needs
-neither analysis: `run_pipeline`'s manifest already declines to
-exclude any capability, and the assembly site names exactly what it
-holds.
+## CodeQL verdict (Phase 1c, measured)
+
+**Loses.** Running the good-faith reachability query
+(`scratch_codeql/capquery/CapabilityReachability.ql`, CodeQL
+2.25.6, `python-all` 7.1.2) against `naive.py` attributes `Fs` to
+`stage_audit` and `Env` to `stage_inject_token` (the direct sinks)
+and reports NOTHING for `run_pipeline` (confirmed in
+`scratch_codeql/codeql_facts.csv`, where `run_pipeline` never
+appears). This is a SINGLE verdict, not a split: even with the
+default `default_pipeline` that builds the list from a literal of
+named functions, CodeQL does not resolve the `stage(req)` call in
+the loop through the list elements, so the `Fs` / `Env` authority
+never propagates to `run_pipeline`. Capa needs no such analysis:
+`run_pipeline`'s manifest declines to exclude any capability, and
+the assembly site names exactly what it holds.

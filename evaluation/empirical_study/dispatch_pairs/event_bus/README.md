@@ -61,8 +61,14 @@ In Capa the authority is named:
   `provably_excluded_capabilities = []`: Capa will not vouch the
   bus core is capability-free.
 
-Pair axis coverage in the manifest is `{Fs, Net}`, so T3 recovers
-both `emit` facts.
+On the dispatcher itself Capa attributes nothing: `emit` reports
+`transitively_reachable_capabilities = []`, so T3 does NOT credit
+`emit` with the `Fs` or `Net` authority. Capa ties the tools on
+Q1 here -- all three attribute the two `direct` subscriber facts
+and none attributes the two `emit` facts. The two dispatch facts
+the manifest carries are on `audit_to_disk` / `forward_to_webhook`
+and on the `run` wiring site, not on `emit`. The separation from
+the tools is Q2, not Q1: see below.
 
 ## Expected treatment behaviour
 
@@ -70,17 +76,27 @@ both `emit` facts.
 |---|---|---|
 | T1 dependency SBOM | miss (package granularity) | miss |
 | T2 pattern heuristic | **hit** | **miss** (no sink in `emit`) |
-| T2b dataflow (CodeQL) | hit | **likely miss** -- the subscriber list is built by runtime `append` calls, not a literal; resolving `cb` in the loop requires tracking every `subscribe` call site into the list and back out, across the bus boundary. Default points-to typically loses the list contents |
-| T3 Capa by construction | hit | **hit** (axis coverage) |
+| T2b dataflow (CodeQL) | hit | **miss** (confirmed in Phase 1c) -- the subscriber list is filled by runtime `append` calls; the list contents are not resolved in the dispatch loop |
+| T3 Capa by construction | hit | **miss on attribution** (Q1: `emit` reach = `[]`, same as the tools) but **does NOT false-clear** (Q2: `provably_excluded = []`) |
 
-## CodeQL expectation (recorded for Phase 1c, not yet run)
+On the two dispatcher facts Q1 T2 = Q1 T2b = Q1 T3 = 2/4 (per
+`per_pair.csv`): all three attribute the two `direct` subscriber
+facts, none attributes the two `emit` facts. The difference is Q2:
+Semgrep and CodeQL each false-clear 2/4, Capa false-clears 0/4.
 
-**Likely loses.** The callbacks reach the dispatch loop through a
-mutable list filled by separate `subscribe` calls. To resolve
-`cb(event)` to `audit_to_disk` / `forward_to_webhook`, the engine
-must model the list's contents flowing in via `append` and out via
-iteration, across the `EventBus` instance. This is the middle of
-the indirection spectrum: harder than a constant dict
-(`command_registry`), easier than a name computed from external
-input (`reflect_dispatch`). The honest expectation is a miss with
-default CodeQL settings; Phase 1c will confirm.
+## CodeQL verdict (Phase 1c, measured)
+
+**Loses.** Running the good-faith reachability query
+(`scratch_codeql/capquery/CapabilityReachability.ql`, CodeQL
+2.25.6, `python-all` 7.1.2) against `naive.py` attributes `Fs` to
+`audit_to_disk` and `Net` to `forward_to_webhook` (the direct
+sinks) and reports NOTHING for `emit` (confirmed in
+`scratch_codeql/codeql_facts.csv`, where `emit` never appears). The
+callbacks reach the dispatch loop through a list filled at runtime
+by separate `subscribe` calls; CodeQL's points-to does not resolve
+the list's contents, so the `cb(event)` edge is never followed and
+the `Fs` / `Net` authority never propagates to `emit`. This is the
+middle of the indirection spectrum: harder than a constant dict
+(`command_registry` also loses), easier than a name computed from
+external input (`reflect_dispatch`). Capa carries the authority in
+the closure's type instead, with no points-to budget.

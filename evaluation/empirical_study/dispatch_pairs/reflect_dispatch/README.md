@@ -61,10 +61,13 @@ target is selected by a runtime-computed name, which is the
 property the study is testing.
 
 In Capa the authority is named: `handle_sync` carries `Net`,
-`handle_persist` carries `Fs`, `build_table` carries both, and
-`dispatch` reports `provably_excluded_capabilities = []`. Pair
-axis coverage is `{Fs, Net, Stdio}`, so T3 recovers both
-`dispatch` facts.
+`handle_persist` carries `Fs`, `build_table` carries both. On the
+dispatcher itself Capa attributes nothing: `dispatch` reports
+`transitively_reachable_capabilities = []`, so T3 does NOT credit
+`dispatch` with the `Net` or `Fs` authority -- it only reports
+`provably_excluded_capabilities = []` (it will not vouch the
+dispatcher is capability-free). Capa ties the tools on Q1 here;
+the separation from the tools is Q2, not Q1: see below.
 
 ## Expected treatment behaviour
 
@@ -73,17 +76,29 @@ axis coverage is `{Fs, Net, Stdio}`, so T3 recovers both
 | T1 dependency SBOM | miss (package granularity) | miss |
 | T2 pattern heuristic | **hit** | **miss** (no sink in `dispatch`) |
 | T2b dataflow (CodeQL) | hit | **miss** -- the call target is `getattr(self, "handle_" + msg_type)`, a name computed from runtime input; there is no value for points-to to enumerate |
-| T3 Capa by construction | hit | **hit** (axis coverage) |
+| T3 Capa by construction | hit | **miss on attribution** (Q1: `dispatch` reach = `[]`, same as the tools) but **does NOT false-clear** (Q2: `provably_excluded = []`) |
 
-## CodeQL expectation (recorded for Phase 1c, not yet run)
+On the two dispatcher facts Q1 T2 = Q1 T2b = Q1 T3 = 2/4 (per
+`per_pair.csv`): all three attribute the two `direct` handler
+facts, none attributes the two `dispatch` facts. The difference is
+Q2: Semgrep and CodeQL each false-clear 2/4, Capa false-clears
+0/4.
 
-**Loses.** This is the opaque end of the spectrum. The call target
-is a method resolved by a name string assembled from runtime
-input. CodeQL's points-to has no value to follow at the `method =
-getattr(...)` line: it would have to predict the string
-`"handle_" + msg_type` and match it against method names, which
-default dataflow does not do. Reflection dispatch is the canonical
-case where interprocedural dataflow cannot resolve the target and
-a type-carried capability still can, because Capa never needs to
-know WHICH handler runs -- only that the dispatcher can reach
-whatever authority the registered handlers hold. Phase 1c confirms.
+## CodeQL verdict (Phase 1c, measured)
+
+**Loses.** This is the opaque end of the spectrum. Running the
+good-faith reachability query
+(`scratch_codeql/capquery/CapabilityReachability.ql`, CodeQL
+2.25.6, `python-all` 7.1.2) against `naive.py` attributes `Net` to
+`handle_sync` and `Fs` to `handle_persist` (the direct sinks) and
+reports NOTHING for `dispatch` (confirmed in
+`scratch_codeql/codeql_facts.csv`, where `dispatch` never appears).
+The call target is a method resolved by a name string assembled
+from runtime input; CodeQL's points-to has no value to follow at
+the `method = getattr(...)` line, since it would have to predict
+the string `"handle_" + msg_type` and match it against method
+names, which default dataflow does not do. Reflection dispatch is
+the canonical case where interprocedural dataflow cannot resolve
+the target and a type-carried capability still can, because Capa
+never needs to know WHICH handler runs -- only that the dispatcher
+can reach whatever authority the registered handlers hold.

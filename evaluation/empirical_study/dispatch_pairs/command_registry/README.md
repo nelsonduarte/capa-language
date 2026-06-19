@@ -67,9 +67,15 @@ In Capa the authority is named, not hidden:
   can reach whatever the table carries. That empty exclusion list
   is the honest record an auditor needs.
 
-The pair's axis coverage in the Capa manifest is `{Fs, Net,
-Stdio}`, so T3 (axis coverage) recovers both the `Net` and the
-`Fs` dispatch facts.
+On the dispatcher itself Capa attributes nothing: `dispatch`
+reports `transitively_reachable_capabilities = []`, so T3 does NOT
+credit `dispatch` with the `Net` or `Fs` authority. Capa ties the
+tools on Q1 here -- all three (Semgrep, CodeQL, Capa) attribute
+the two `direct` handler facts (`_fetch:Net`, `_save:Fs`) and none
+attributes the two dispatcher facts. The two dispatch facts the
+manifest does carry are on the handlers and on `build_registry`,
+not on `dispatch`. The separation from the tools is Q2, not Q1:
+see below.
 
 ## Expected treatment behaviour
 
@@ -78,7 +84,13 @@ Stdio}`, so T3 (axis coverage) recovers both the `Net` and the
 | T1 dependency SBOM | miss (package granularity) | miss (package granularity) |
 | T2 pattern heuristic (Semgrep) | **hit** (sink is lexical) | **miss** (sink not in `dispatch` body) |
 | T2b dataflow (CodeQL) | hit | **miss** (confirmed in Phase 1c) -- points-to does NOT traverse the dict-subscript `HANDLERS[name]`, so the handler edges are never followed, even though the dict is a module-level constant |
-| T3 Capa by construction | hit | **hit** (axis coverage; the handlers and `build_registry` name the authority) |
+| T3 Capa by construction | hit | **miss on attribution** (Q1: `dispatch` reach = `[]`, same as the tools) but **does NOT false-clear** (Q2: `provably_excluded = []`, no false sense of safety) |
+
+On the two dispatcher facts Q1 T2 = Q1 T2b = Q1 T3 = 2/4 (per
+`per_pair.csv`): all three attribute the two `direct` handler
+facts, none attributes the two `dispatch` facts. The difference is
+Q2: Semgrep and CodeQL each false-clear 2/4, Capa false-clears
+0/4.
 
 ## CodeQL verdict (Phase 1c, measured)
 

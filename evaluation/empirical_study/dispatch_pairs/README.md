@@ -58,5 +58,11 @@ each manifest):
 
 Ground truth for these pairs lives in ../ground_truth.csv with
 how = via-dispatch / via-data. The harness (../run_study.py) scores both
-corpus roots together; T3 (Capa axis coverage) recovers every dispatch /
-data fact, T2 (Semgrep pattern) recovers none of them.
+corpus roots together. On Q1 (positive attribution) Capa does NOT credit
+the dispatcher with the handler's authority: on each 1b pair T3 attributes
+2/4 (the two direct handler facts only), exactly tying CodeQL and Semgrep,
+which also miss the two dispatcher facts. Capa's advantage is in Q2: on
+each dispatcher fact Capa reports provably_excluded_capabilities = []
+(false-clears 0/4), while both tools clear it under closed-world semantics
+(false-clear 2/4). The separation is the sound non-clearance in Q2, not
+extra attribution in Q1.

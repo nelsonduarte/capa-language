@@ -53,10 +53,14 @@ data, exactly as in the Python.
 In Capa the authority is named, and the consequence of the
 deserialization is bounded by construction: `action_export` carries
 `Net`, `action_archive` carries `Fs`, `build_actions` carries both,
-`doc_body` is provably pure, and `run_action` reports
-`provably_excluded_capabilities = []` (its authority is whatever the
-table carries under the data-supplied tag). Pair axis coverage is
-`{Fs, Net, Stdio}`, so T3 recovers both `run_action` facts.
+`doc_body` is provably pure. On the dispatcher itself Capa
+attributes nothing: `run_action` reports
+`transitively_reachable_capabilities = []`, so T3 does NOT credit
+`run_action` with the `Net` or `Fs` authority -- it only reports
+`provably_excluded_capabilities = []` (its authority is whatever
+the table carries under the data-supplied tag, which it will not
+vouch away). Capa ties the tools on Q1 here; the separation from
+the tools is Q2, not Q1: see below.
 
 This is the same deserialization-dispatch class as the pickle /
 PyYAML CVEs, with the consequence scoped: `run_action` can reach
@@ -70,17 +74,28 @@ manifest states that bound.
 | T1 dependency SBOM | miss (package granularity) | miss |
 | T2 pattern heuristic | **hit** | **miss** (no sink in `run_action`) |
 | T2b dataflow (CodeQL) | hit | **miss** -- the tag is `json.loads(raw)["type"]`, a value from external input; points-to has no constant to follow into `_ACTIONS[tag]` |
-| T3 Capa by construction | hit | **hit** (axis coverage) |
+| T3 Capa by construction | hit | **miss on attribution** (Q1: `run_action` reach = `[]`, same as the tools) but **does NOT false-clear** (Q2: `provably_excluded = []`) |
 
-## CodeQL expectation (recorded for Phase 1c, not yet run)
+On the two dispatcher facts Q1 T2 = Q1 T2b = Q1 T3 = 2/4 (per
+`per_pair.csv`): all three attribute the two `direct` handler
+facts, none attributes the two `run_action` facts. The difference
+is Q2: Semgrep and CodeQL each false-clear 2/4, Capa false-clears
+0/4.
 
-**Loses.** The selector `tag` is `doc["type"]` where `doc =
-json.loads(raw)`. The value is external data, so points-to cannot
-fix it to a constant key, and `_ACTIONS[tag]` cannot be resolved to
-a single handler -- the engine would have to model the deserialized
-document's contents, which it treats as opaque. Even though
-`_ACTIONS` itself is a constant dict (as in `command_registry`), the
-KEY is runtime data, so the lookup is unresolved. This is near the
-opaque end of the spectrum, alongside `reflect_dispatch`, and is the
-direct analogue of why deserialization CVEs are dangerous: the data
-chooses the code. Capa bounds it by construction. Phase 1c confirms.
+## CodeQL verdict (Phase 1c, measured)
+
+**Loses.** Running the good-faith reachability query
+(`scratch_codeql/capquery/CapabilityReachability.ql`, CodeQL
+2.25.6, `python-all` 7.1.2) against `naive.py` attributes `Net` to
+`_action_export` and `Fs` to `_action_archive` (the direct sinks)
+and reports NOTHING for `run_action` (confirmed in
+`scratch_codeql/codeql_facts.csv`, where `run_action` never
+appears). The selector `tag` is `doc["type"]` where `doc =
+json.loads(raw)`: the value is external data, so points-to cannot
+fix it to a constant key and `_ACTIONS[tag]` is never resolved to a
+single handler. Even though `_ACTIONS` itself is a constant dict
+(as in `command_registry`, which also loses), the KEY is runtime
+data, so the lookup is unresolved. This is near the opaque end of
+the spectrum, alongside `reflect_dispatch`, and is the direct
+analogue of why deserialization CVEs are dangerous: the data
+chooses the code. Capa bounds it by construction.
