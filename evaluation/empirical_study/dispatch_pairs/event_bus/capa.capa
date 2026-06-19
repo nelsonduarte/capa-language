@@ -1,0 +1,73 @@
+// Capa transliteration of `naive.py`: an event bus / observer
+// registry. Callbacks are carried in a data structure, registered
+// at runtime, and invoked in a dispatch loop.
+//
+// FAITHFULNESS NOTE. This keeps the SAME shape as the Python: an
+// `EventBus` struct holds a `List<Fun(String) -> Unit>`,
+// `subscribe` pushes a callback onto that list at runtime, and
+// `emit` iterates the list and calls each callback. The
+// subscriber list is data; nothing is a literal a scanner can
+// read off the page. The capability is reached exactly as in the
+// Python: through whatever callback was subscribed.
+//
+// Where the authority lives, by construction:
+//
+//   - `audit_to_disk`      holds `Fs`  (and only `Fs`).
+//   - `forward_to_webhook` holds `Net` (and only `Net`).
+//   - `run` is the wiring site. It holds `Fs` AND `Net` because it
+//     must have both in scope to capture them into the subscriber
+//     closures. Its signature names the full authority that can
+//     flow into the bus.
+//   - `new_bus`, `subscribe`, and `emit` all carry a `Fun` in
+//     their signature (directly, or via the `EventBus` struct
+//     that holds a `List<Fun>`). Their manifest reports NO
+//     provably-excluded capabilities: Capa will not vouch that
+//     `emit` is capability-free, because the callbacks it invokes
+//     can carry any authority. That empty exclusion list is the
+//     honest record an auditor needs for a publish/subscribe core.
+//
+// Run:
+//   capa --manifest .../event_bus/capa.capa
+
+// The bus carries its subscribers as data: a list of callbacks.
+// A struct that holds a `List<Fun>` propagates the "can reach any
+// capability the callbacks hold" property to every function that
+// touches it.
+type EventBus {
+    subscribers: List<Fun(String) -> Unit>
+}
+
+fun new_bus() -> EventBus
+    return EventBus { subscribers: [] }
+
+// Runtime registration. The callback is data appended to the
+// list; its authority is whatever the caller captured into it.
+fun subscribe(bus: EventBus, cb: Fun(String) -> Unit)
+    bus.subscribers.push(cb)
+
+// The dispatch loop. Same mechanism as the Python `for cb in
+// self._subscribers: cb(event)`. No sink is lexically present;
+// the authority is reached only through the registered callbacks.
+fun emit(bus: EventBus, event: String)
+    for cb in bus.subscribers
+        cb(event)
+
+// Fs-only subscriber: append the event to an on-disk audit log.
+fun audit_to_disk(fs: Fs, event: String)
+    let _ = fs.write("events.log", event)
+    ()
+
+// Net-only subscriber: POST the event to a webhook endpoint.
+fun forward_to_webhook(net: Net, event: String)
+    let _ = net.post("https://hooks.example.com/ingest", event)
+    ()
+
+// The wiring site: register subscribers at runtime, then emit.
+// `run` holds both `Fs` and `Net` so it can capture them into the
+// subscriber closures; its signature names the full authority
+// surface that can flow into the bus.
+fun run(fs: Fs, net: Net, event: String)
+    let bus = new_bus()
+    subscribe(bus, fun (e: String) -> Unit => audit_to_disk(fs, e))
+    subscribe(bus, fun (e: String) -> Unit => forward_to_webhook(net, e))
+    emit(bus, event)

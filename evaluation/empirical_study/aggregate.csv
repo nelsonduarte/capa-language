@@ -1,4 +1,4 @@
 "treatment","facts_recovered","facts_total","recall_pct"
-"T1_dependency_sbom","0","28","0.0"
-"T2_pattern_heuristic","26","28","92.9"
-"T3_capa_by_construction","28","28","100.0"
+"T1_dependency_sbom","0","48","0.0"
+"T2_pattern_heuristic","36","48","75.0"
+"T3_capa_by_construction","48","48","100.0"

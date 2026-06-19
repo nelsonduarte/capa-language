@@ -1,0 +1,92 @@
+// Capa transliteration of `naive.py`: a command/handler registry
+// dispatched by a runtime name (the CLI-subcommand / URL-router
+// shape).
+//
+// FAITHFULNESS NOTE. Capa has no module-level mutable dict and no
+// bare function values that smuggle authority implicitly, so the
+// `HANDLERS = {"fetch": _fetch, "save": _save}` table becomes a
+// `Map<String, Fun(String) -> Result<String, DispatchError>>`
+// built at runtime. The dispatch mechanism is the SAME as the
+// Python: a string key indexes a table of callables and the
+// resolved callable is invoked. The capability is reached exactly
+// as in the Python: through the handler that the runtime key
+// selects.
+//
+// Where the authority lives, by construction:
+//
+//   - `fetch_handler` holds `Net`: it (and only it) can GET.
+//   - `save_handler`  holds `Fs` : it (and only it) can write.
+//   - `build_registry` holds BOTH `Net` and `Fs`, because to
+//     build the Net-bearing and Fs-bearing closures it must have
+//     both capabilities in scope. This is the registration site,
+//     and its signature names the full authority surface of the
+//     table it produces. A pattern scan of the Python `HANDLERS
+//     = {...}` literal sees no sink; Capa's `build_registry`
+//     signature names `Net` and `Fs`.
+//   - `dispatch` is the pure runtime dispatcher. It takes the
+//     table and a key and invokes the resolved closure. Its
+//     manifest reports NO provably-excluded capabilities: Capa
+//     refuses to vouch that the dispatcher is capability-free,
+//     because at runtime it can reach whatever capability the
+//     table carries. This is the honest behaviour an auditor
+//     needs: "this function's authority depends on what was
+//     registered into the table it is handed".
+//
+// Run:
+//   capa --manifest .../command_registry/capa.capa
+
+type DispatchError =
+    UnknownCommand(String)
+    HandlerFailed(String)
+
+// Net-only handler: GET the URL. The authority is named in the
+// signature; the type checker forbids any disk or environment
+// access inside this body.
+fun fetch_handler(net: Net, arg: String) -> Result<String, DispatchError>
+    match net.get(arg)
+        Ok(body) -> return Ok(body)
+        Err(_) -> return Err(HandlerFailed("fetch"))
+
+// Fs-only handler: write the argument to disk. The signature
+// names `Fs` and nothing else.
+fun save_handler(fs: Fs, arg: String) -> Result<String, DispatchError>
+    match fs.write("dispatch_out.txt", arg)
+        Ok(_) -> return Ok("saved")
+        Err(_) -> return Err(HandlerFailed("save"))
+
+// The registration site. It holds both capabilities so it can
+// capture them into the handler closures. Its signature is the
+// full authority surface of the produced table. This is the Capa
+// analogue of the Python `HANDLERS = {...}` module-level literal,
+// except the authority is named instead of hidden.
+fun build_registry(
+    net: Net,
+    fs: Fs
+) -> Map<String, Fun(String) -> Result<String, DispatchError>>
+    let reg: Map<String, Fun(String) -> Result<String, DispatchError>> = new_map()
+    reg.set("fetch", fun (arg: String) -> Result<String, DispatchError> => fetch_handler(net, arg))
+    reg.set("save", fun (arg: String) -> Result<String, DispatchError> => save_handler(fs, arg))
+    return reg
+
+// The pure runtime dispatcher. Same mechanism as the Python
+// `HANDLERS[name](arg)`: a runtime key selects a callable and the
+// callable is invoked. The manifest reports no provably-excluded
+// capabilities for this function, because the authority it can
+// reach is exactly the authority carried by the table it receives.
+fun dispatch(
+    reg: Map<String, Fun(String) -> Result<String, DispatchError>>,
+    name: String,
+    arg: String
+) -> Result<String, DispatchError>
+    match reg.get(name)
+        Some(h) -> return h(arg)
+        None -> return Err(UnknownCommand(name))
+
+// Demo entry point. Builds the registry (so it holds Net + Fs)
+// and dispatches one command. `main` honestly carries Net, Fs,
+// and Stdio in its signature.
+fun main(net: Net, fs: Fs, stdio: Stdio)
+    let reg = build_registry(net, fs)
+    match dispatch(reg, "fetch", "https://example.com")
+        Ok(s) -> stdio.println("fetch -> ${s}")
+        Err(_) -> stdio.println("fetch -> error")

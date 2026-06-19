@@ -1,0 +1,104 @@
+// Capa transliteration of `naive.py`: a factory whose authority is
+// selected by a TAG field read from deserialized data.
+//
+// FAITHFULNESS NOTE. This keeps the SAME shape as the Python: the
+// raw input is parsed (`parse_json`, a pure free function -- no
+// capability), a DATA field (`doc["type"]`) is read at runtime, and
+// that runtime value selects a handler from a table. The capability
+// reached depends entirely on the bytes that arrive, exactly as in
+// the Python. Parsing carries no authority; the authority is in the
+// handler the data names.
+//
+// This is the deserialization-driven-dispatch class the repo
+// already studies through the pickle / PyYAML CVE examples
+// (`examples/cve_pickle.capa`, `examples/cve_pyyaml*.capa`): a tag
+// in untrusted data chooses what runs. Here the consequence is
+// scoped by construction -- `run_action` can reach only the
+// capabilities carried by the registered handlers, and the
+// manifest says so.
+//
+// Where the authority lives, by construction:
+//
+//   - `action_export`  holds `Net` (and only `Net`).
+//   - `action_archive` holds `Fs`  (and only `Fs`).
+//   - `build_actions` is the registration site; it holds `Net` AND
+//     `Fs` because it captures both into the handler closures.
+//   - `run_action` parses the input, reads the `type` tag, and
+//     invokes the resolved closure. Its manifest reports NO
+//     provably-excluded capabilities: the authority it reaches is
+//     whatever the table carries under the data-supplied tag.
+//
+// Run:
+//   capa --manifest .../tagged_factory/capa.capa
+
+type ActionError =
+    UnknownTag(String)
+    BadDocument(String)
+    HandlerFailed(String)
+
+// Pure helper: render a JsonValue back to a compact string for
+// transport / storage. No capability.
+fun doc_body(doc: JsonValue) -> String
+    return match doc.as_object()
+        None -> ""
+        Some(obj) -> match obj.get("body")
+            None -> ""
+            Some(b) -> match b.as_string()
+                None -> ""
+                Some(s) -> s
+
+// Net-only handler: ship the document body to an export endpoint.
+fun action_export(net: Net, doc: JsonValue) -> Result<String, ActionError>
+    match net.post("https://export.example.com/v1", doc_body(doc))
+        Ok(body) -> return Ok(body)
+        Err(_) -> return Err(HandlerFailed("export"))
+
+// Fs-only handler: archive the document body to disk.
+fun action_archive(fs: Fs, doc: JsonValue) -> Result<String, ActionError>
+    match fs.write("archive.jsonl", doc_body(doc))
+        Ok(_) -> return Ok("archived")
+        Err(_) -> return Err(HandlerFailed("archive"))
+
+// Registration site. Holds Net + Fs to capture them into the
+// handler closures; its signature is the full authority surface of
+// the action table.
+fun build_actions(
+    net: Net,
+    fs: Fs
+) -> Map<String, Fun(JsonValue) -> Result<String, ActionError>>
+    let actions: Map<String, Fun(JsonValue) -> Result<String, ActionError>> = new_map()
+    actions.set("export", fun (d: JsonValue) -> Result<String, ActionError> => action_export(net, d))
+    actions.set("archive", fun (d: JsonValue) -> Result<String, ActionError> => action_archive(fs, d))
+    return actions
+
+// The data-driven dispatcher. Parses untrusted input, reads the
+// `type` tag from the parsed data, and invokes the handler the tag
+// selects -- the same mechanism as the Python `_ACTIONS[doc["type"]]`.
+// The manifest reports no provably-excluded capabilities for this
+// function: the tag comes from data, so the authority reached is
+// whatever the table carries.
+fun run_action(
+    actions: Map<String, Fun(JsonValue) -> Result<String, ActionError>>,
+    raw: String
+) -> Result<String, ActionError>
+    let doc = match parse_json(raw)
+        Ok(v) -> v
+        Err(msg) -> return Err(BadDocument(msg))
+    let obj = match doc.as_object()
+        Some(m) -> m
+        None -> return Err(BadDocument("not an object"))
+    let tag = match obj.get("type")
+        Some(tv) -> match tv.as_string()
+            Some(s) -> s
+            None -> return Err(BadDocument("type not a string"))
+        None -> return Err(BadDocument("missing type"))
+    match actions.get(tag)
+        Some(h) -> return h(doc)
+        None -> return Err(UnknownTag(tag))
+
+// Demo entry point.
+fun main(net: Net, fs: Fs, stdio: Stdio)
+    let actions = build_actions(net, fs)
+    match run_action(actions, "{\"type\":\"archive\",\"body\":\"hello\"}")
+        Ok(s) -> stdio.println("run_action -> ${s}")
+        Err(_) -> stdio.println("run_action -> error")

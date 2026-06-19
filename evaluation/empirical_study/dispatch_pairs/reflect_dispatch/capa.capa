@@ -1,0 +1,81 @@
+// Capa transliteration of `naive.py`: reflection dispatch, where a
+// handler is selected by a NAME built at runtime.
+//
+// FAITHFULNESS NOTE. Capa has NO reflection: there is no `getattr`,
+// no attribute lookup by computed string, no way to turn a runtime
+// String into a call target except by indexing a table the program
+// built explicitly. This is itself the point -- the class of
+// "invoke a method whose name I computed from input" does not exist
+// in the language. The faithful equivalent keeps the defining
+// property of the Python (the selector is a string BUILT from
+// runtime input, `"handle_" + msg_type`) by constructing the
+// lookup key the same way and indexing a `Map<String, Fun>`. An
+// unknown computed name resolves to `None` instead of raising
+// `AttributeError`; the authority reached is still exactly the
+// handler the computed name selects.
+//
+// Where the authority lives, by construction:
+//
+//   - `handle_sync`    holds `Net` (and only `Net`).
+//   - `handle_persist` holds `Fs`  (and only `Fs`).
+//   - `build_table` is the registration site; it holds `Net` AND
+//     `Fs` because it captures both into the handler closures.
+//   - `dispatch` builds the key from runtime input
+//     (`"handle_" + msg_type`) and invokes the resolved closure.
+//     Its manifest reports NO provably-excluded capabilities: the
+//     authority it reaches is whatever the table carries under the
+//     computed key.
+//
+// Run:
+//   capa --manifest .../reflect_dispatch/capa.capa
+
+type DispatchError =
+    UnknownMessage(String)
+    HandlerFailed(String)
+
+// Net-only handler. The analogue of `handle_sync`.
+fun handle_sync(net: Net, payload: String) -> Result<String, DispatchError>
+    match net.post("https://api.example.com/sync", payload)
+        Ok(body) -> return Ok(body)
+        Err(_) -> return Err(HandlerFailed("sync"))
+
+// Fs-only handler. The analogue of `handle_persist`.
+fun handle_persist(fs: Fs, payload: String) -> Result<String, DispatchError>
+    match fs.write("messages.db", payload)
+        Ok(_) -> return Ok("persisted")
+        Err(_) -> return Err(HandlerFailed("persist"))
+
+// Registration site. Keys are the fully-resolved handler names, the
+// same strings the Python `getattr` would build. Holds Net + Fs to
+// capture them into the closures.
+fun build_table(
+    net: Net,
+    fs: Fs
+) -> Map<String, Fun(String) -> Result<String, DispatchError>>
+    let table: Map<String, Fun(String) -> Result<String, DispatchError>> = new_map()
+    table.set("handle_sync", fun (p: String) -> Result<String, DispatchError> => handle_sync(net, p))
+    table.set("handle_persist", fun (p: String) -> Result<String, DispatchError> => handle_persist(fs, p))
+    return table
+
+// The dispatcher. The selector is BUILT from runtime input exactly
+// as in the Python (`"handle_" + msg_type`), then used to index the
+// table. No reflection exists in Capa, so the target can only be a
+// closure the program registered; an unknown computed name resolves
+// to `None`. The manifest reports no provably-excluded capabilities
+// for this function: it can reach whatever the table carries.
+fun dispatch(
+    table: Map<String, Fun(String) -> Result<String, DispatchError>>,
+    msg_type: String,
+    payload: String
+) -> Result<String, DispatchError>
+    let method_name = "handle_" + msg_type
+    match table.get(method_name)
+        Some(method) -> return method(payload)
+        None -> return Err(UnknownMessage(msg_type))
+
+// Demo entry point.
+fun main(net: Net, fs: Fs, stdio: Stdio)
+    let table = build_table(net, fs)
+    match dispatch(table, "persist", "hello")
+        Ok(s) -> stdio.println("dispatch -> ${s}")
+        Err(_) -> stdio.println("dispatch -> error")

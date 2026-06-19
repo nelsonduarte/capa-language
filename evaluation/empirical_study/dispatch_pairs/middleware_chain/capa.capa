@@ -1,0 +1,77 @@
+// Capa transliteration of `naive.py`: a middleware / pipeline chain
+// assembled at runtime. Each stage is a function; the request flows
+// through the list of stages.
+//
+// FAITHFULNESS NOTE. This keeps the SAME shape as the Python: a
+// `List<Fun(String) -> String>` of stages is assembled at runtime
+// and `run_pipeline` folds the request through every stage by
+// calling `stage(current)`. Some stages are pure; some carry a
+// capability. The pipeline runner reaches whatever the assembled
+// list holds, exactly as in the Python.
+//
+// Where the authority lives, by construction:
+//
+//   - `stage_uppercase`  is provably pure (a bare `Fun` value with
+//     no captured capability; its manifest excludes every axis).
+//   - `make_audit_stage` holds `Fs` : it captures `Fs` into the
+//     audit closure it returns.
+//   - `make_token_stage` holds `Env`: it captures `Env` into the
+//     token closure it returns.
+//   - `default_pipeline` is the assembly site; it holds `Fs` AND
+//     `Env` because it must have both in scope to build the
+//     capability-bearing stages. Its signature names the full
+//     authority surface of the pipeline it assembles.
+//   - `run_pipeline` is the pure fold. It carries a `Fun` in its
+//     signature (the stage list), so its manifest reports NO
+//     provably-excluded capabilities: Capa will not vouch the
+//     runner is capability-free, because the stages it folds can
+//     carry any authority.
+//
+// Run:
+//   capa --manifest .../middleware_chain/capa.capa
+
+// Pure stage: transform the request. A bare function value with no
+// captured capability; usable directly as a `Fun(String) -> String`.
+fun stage_uppercase(req: String) -> String
+    return req.to_upper()
+
+// Fs-bearing stage factory: returns a closure that appends the
+// request to an on-disk audit trail. The `Fs` capability is named
+// in the factory's signature.
+fun make_audit_stage(fs: Fs) -> Fun(String) -> String
+    return fun (req: String) -> String =>
+        let _ = fs.write("pipeline_audit.log", req)
+        req
+
+// Env-bearing stage factory: returns a closure that reads an API
+// token from the environment and attaches it. The `Env` capability
+// is named in the factory's signature -- the "harmless-looking"
+// middleware that quietly reaches for a secret cannot hide it.
+fun make_token_stage(env: Env) -> Fun(String) -> String
+    return fun (req: String) -> String =>
+        let token = match env.get("API_TOKEN")
+            Some(t) -> t
+            None -> ""
+        req + " [token=" + token + "]"
+
+// The pipeline runner: fold the request through every assembled
+// stage. Same mechanism as the Python `for stage in stages: req =
+// stage(req)`. No sink is lexically present; the authority is
+// reached only through the assembled stages.
+fun run_pipeline(stages: List<Fun(String) -> String>, req: String) -> String
+    var current = req
+    for stage in stages
+        current = stage(current)
+    return current
+
+// The assembly site: build the stage list at runtime and run it.
+// `default_pipeline` holds `Fs` and `Env` so it can build the
+// capability-bearing stages; its signature names the full authority
+// surface that flows into the pipeline.
+fun default_pipeline(fs: Fs, env: Env, req: String) -> String
+    let stages: List<Fun(String) -> String> = [
+        stage_uppercase,
+        make_token_stage(env),
+        make_audit_stage(fs)
+    ]
+    return run_pipeline(stages, req)

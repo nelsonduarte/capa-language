@@ -1,10 +1,13 @@
-"""Capability-recall study harness (Phase 1a).
+"""Capability-recall study harness (Phases 1a + 1b).
 
 Scores three treatments for recovering per-function capability facts
-over the ``evaluation/sbom_diff`` corpus of 20 hand-Python / Capa
-pairs. The unit of recall is a single ``(python_function, capability)``
-fact, authored in ``ground_truth.csv`` (see that file's ``how`` column
-and the README for how it was derived and validated).
+over two corpora: the Phase-1a ``evaluation/sbom_diff`` pairs (direct
+and via-helper calls) and the Phase-1b ``dispatch_pairs`` directory
+beside this file (via-dispatch and via-data indirection, where the
+sink is selected at runtime through a callable or a data table). The
+unit of recall is a single ``(python_function, capability)`` fact,
+authored in ``ground_truth.csv`` (see that file's ``how`` column and
+the README for how it was derived and validated).
 
 Treatments
 ----------
@@ -58,9 +61,30 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
+# Two corpus roots are scored together. ``sbom_diff`` is the Phase-1a
+# corpus of direct / via-helper pairs; ``dispatch_pairs`` is the
+# Phase-1b corpus of via-dispatch / via-data indirection pairs (the
+# sink is selected at runtime through a callable or a data table).
+# A pair name is resolved to its root by ``pair_dir`` below; the
+# harness is otherwise agnostic to which corpus a pair came from.
 PAIRS = ROOT / "evaluation" / "sbom_diff"
+DISPATCH_PAIRS = HERE / "dispatch_pairs"
+CORPORA = (PAIRS, DISPATCH_PAIRS)
 RULES = HERE / "rules" / "capability_rules.yaml"
 GROUND_TRUTH = HERE / "ground_truth.csv"
+
+
+def pair_dir(pair: str) -> Path:
+    """Resolve a pair name to its directory across both corpus roots.
+
+    A pair lives under exactly one root; the dispatch_pairs root is
+    checked first so a name collision (none today) would prefer the
+    Phase-1b corpus. Falls back to the sbom_diff root so an unknown
+    name still yields a stable, inspectable path in error messages."""
+    for root in (DISPATCH_PAIRS, PAIRS):
+        if (root / pair).is_dir():
+            return root / pair
+    return PAIRS / pair
 
 # Isolated semgrep interpreter. Created once with:
 #   python -m venv evaluation/empirical_study/.semgrep-venv
@@ -205,7 +229,7 @@ def t2_facts(py_path: Path) -> set[tuple[str, str]]:
 def _capa_manifest(pair: str) -> dict:
     proc = subprocess.run(
         [sys.executable, "-m", "capa", "--manifest",
-         str(PAIRS / pair / "capa.capa")],
+         str(pair_dir(pair) / "capa.capa")],
         capture_output=True, text=True,
     )
     if proc.returncode != 0:
@@ -245,15 +269,20 @@ DATAFLOW_RESOLVES = {
     # direct: lexically present; even a line-level tool gets these.
     "direct": False,  # not a false-negative cause for a sound heuristic
     # dispatch / data: the sink is selected at runtime via a callable
-    # or a data table; dataflow cannot resolve it without the type
-    # system. (Not present in the Phase-1a corpus; listed for 1b/1c.)
+    # or a data table; interprocedural dataflow cannot resolve it in
+    # general without the type system. This is the conservative
+    # CLASS-level default. A specific pair can sit anywhere on the
+    # spectrum (a constant function table is points-to-resolvable; a
+    # name from external input is not) -- that per-pair CodeQL
+    # expectation is recorded in each Phase-1b pair's README and will
+    # be confirmed empirically in Phase 1c via the ``t2b_codeql`` slot.
     "via-dispatch": False,
     "via-data": False,
 }
 
 
 def score_pair(pair: str, gt_rows: list[tuple[str, str, str]]) -> dict:
-    py = PAIRS / pair / "naive.py"
+    py = pair_dir(pair) / "naive.py"
     gt_set = {(fn, cap) for (fn, cap, _how) in gt_rows}
     how_of = {(fn, cap): how for (fn, cap, how) in gt_rows}
 
@@ -270,7 +299,14 @@ def score_pair(pair: str, gt_rows: list[tuple[str, str, str]]) -> dict:
     fns = []
     for (fn, cap) in sorted(gt_set - t2):
         how = how_of[(fn, cap)]
-        fns.append((fn, cap, how, DATAFLOW_RESOLVES.get(how, False)))
+        # ``dataflow_would_resolve`` is the conservative class-level
+        # expectation (via-helper: yes; via-dispatch / via-data: no).
+        # ``t2b_codeql`` is the slot for the LITERAL CodeQL verdict,
+        # filled in Phase 1c by an actual run; "pending" until then.
+        # The per-pair CodeQL expectation (which can differ within a
+        # class, e.g. command_registry's constant dict) is recorded in
+        # each pair's README, not collapsed into this class-level flag.
+        fns.append((fn, cap, how, DATAFLOW_RESOLVES.get(how, False), "pending"))
 
     return {
         "pair": pair,
@@ -326,11 +362,13 @@ def write_reports(results: list[dict]) -> None:
         w = csv.writer(f, quoting=csv.QUOTE_ALL)
         w.writerow([
             "pair", "python_function", "capability", "how",
-            "dataflow_would_resolve",
+            "dataflow_would_resolve", "t2b_codeql",
         ])
         for r in results:
-            for (fn, cap, how, df) in r["t2_false_negatives"]:
-                w.writerow([r["pair"], fn, cap, how, "yes" if df else "no"])
+            for (fn, cap, how, df, t2b) in r["t2_false_negatives"]:
+                w.writerow([
+                    r["pair"], fn, cap, how, "yes" if df else "no", t2b,
+                ])
 
     return {"total": total, "t1": t1, "t2": t2, "t3": t3}
 
@@ -353,7 +391,7 @@ def print_console(results: list[dict], totals: dict) -> None:
     print("\n=== T2 FALSE-NEGATIVES (classified) ===")
     any_fn = False
     for r in results:
-        for (fn, cap, how, df) in r["t2_false_negatives"]:
+        for (fn, cap, how, df, _t2b) in r["t2_false_negatives"]:
             any_fn = True
             tag = "dataflow-resolvable" if df else "needs-types"
             print(f"  {r['pair']}/{fn} ({cap})  cause={how}  -> {tag}")
@@ -371,10 +409,24 @@ def print_console(results: list[dict], totals: dict) -> None:
             direct_pairs.append(r["pair"])
         else:
             indir_pairs.append(r["pair"])
-    print("\n=== CORPUS DISTRIBUTION (20 pairs) ===")
+    print(f"\n=== CORPUS DISTRIBUTION ({len(results)} pairs) ===")
     print(f"  pure (zero cap facts)          : {len(pure_pairs)}  {pure_pairs}")
     print(f"  purely-direct (T2 ties Capa)   : {len(direct_pairs)}  {direct_pairs}")
     print(f"  genuine indirection (T2 < Capa): {len(indir_pairs)}  {indir_pairs}")
+
+    # Split the indirection by cause so the spectrum is visible: a
+    # via-helper miss is dataflow-resolvable, a via-dispatch / via-data
+    # miss needs the type system. This is the Phase-1b headline.
+    helper, dispatch_data = [], []
+    for r in results:
+        causes = {how for (_fn, _cap, how, _df, _t2b) in r["t2_false_negatives"]}
+        if causes & {"via-dispatch", "via-data"}:
+            dispatch_data.append(r["pair"])
+        elif "via-helper" in causes:
+            helper.append(r["pair"])
+    print("  -- of the indirection pairs:")
+    print(f"     via-helper (dataflow resolves)        : {len(helper)}  {helper}")
+    print(f"     via-dispatch/via-data (needs types)   : {len(dispatch_data)}  {dispatch_data}")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -384,10 +436,13 @@ def main(argv: list[str] | None = None) -> int:
     args = p.parse_args(argv)
 
     gt = load_ground_truth()
-    # Every pair directory is scored; pairs absent from the ground
-    # truth contribute zero facts (the pure-library cases).
+    # Every pair directory across both corpus roots is scored; pairs
+    # absent from the ground truth contribute zero facts (the
+    # pure-library cases). Names are unique across the two roots.
     all_pairs = sorted(
-        d.name for d in PAIRS.iterdir()
+        d.name
+        for root in CORPORA
+        for d in root.iterdir()
         if d.is_dir() and (d / "naive.py").exists() and (d / "capa.capa").exists()
     )
     if args.pair:
