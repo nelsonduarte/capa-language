@@ -1,0 +1,3 @@
+"pair","python_function","capability","how","dataflow_would_resolve"
+"log_forwarder","forward_log","Fs","via-helper","yes"
+"session_token","generate_token","Random","via-helper","yes"

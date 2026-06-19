@@ -15,6 +15,10 @@ dist/
 venv/
 env/
 .python-version
+# Isolated semgrep interpreter for the empirical study (T2 treatment).
+# Semgrep's pinned deps must not contaminate the compiler venv, so it
+# lives in its own venv that is recreated on demand (see the study README).
+evaluation/empirical_study/.semgrep-venv/
 
 # Test / coverage
 .pytest_cache/

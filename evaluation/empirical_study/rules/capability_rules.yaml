@@ -1,0 +1,147 @@
+# Good-faith capability heuristic rules for the capability-recall
+# study (treatment T2). Each rule maps a Python sink API to one of
+# Capa's capability axes (Fs, Net, Clock, Env, Random, Proc, Stdio).
+#
+# These rules are deliberately the BEST reasonable line-level
+# patterns a competent reviewer would write: they cover the common
+# DIRECT sink calls well (including os.path probes, which a lazy
+# ruleset would miss), so that any false-negative in the study comes
+# from STRUCTURAL indirection (authority reached via a helper /
+# dispatch / data) and not from a thin ruleset.
+#
+# Semgrep reports a (file, line) for each match. The runner maps that
+# line back to its enclosing Python function via the `ast` module,
+# producing (function, capability) facts comparable to the
+# ground-truth surface.
+#
+# Invocation (from the repo root) uses the ISOLATED semgrep venv so
+# semgrep's pinned dependencies never contaminate the compiler venv:
+#
+#   evaluation/empirical_study/.semgrep-venv/Scripts/semgrep scan \
+#     --config evaluation/empirical_study/rules/capability_rules.yaml \
+#     --json --no-git-ignore --quiet <naive.py>
+#
+# The runner (run_study.py) does exactly this.
+rules:
+  # ---- Fs ----
+  - id: cap-fs-open
+    languages: [python]
+    severity: INFO
+    message: "Fs"
+    metadata: {capability: Fs}
+    patterns:
+      - pattern-either:
+          - pattern: open(...)
+          - pattern: io.open(...)
+  - id: cap-fs-pathlib
+    languages: [python]
+    severity: INFO
+    message: "Fs"
+    metadata: {capability: Fs}
+    patterns:
+      - pattern-either:
+          - pattern: $P.read_text(...)
+          - pattern: $P.write_text(...)
+          - pattern: $P.read_bytes(...)
+          - pattern: $P.write_bytes(...)
+          - pattern: $P.open(...)
+  - id: cap-fs-os
+    languages: [python]
+    severity: INFO
+    message: "Fs"
+    metadata: {capability: Fs}
+    patterns:
+      - pattern-either:
+          - pattern: os.walk(...)
+          - pattern: os.listdir(...)
+          - pattern: os.scandir(...)
+          - pattern: os.remove(...)
+          - pattern: os.stat(...)
+          - pattern: os.makedirs(...)
+          - pattern: os.mkdir(...)
+          - pattern: os.path.exists(...)
+          - pattern: os.path.isfile(...)
+          - pattern: os.path.isdir(...)
+          - pattern: os.path.getmtime(...)
+          - pattern: os.path.getsize(...)
+          - pattern: glob.glob(...)
+          - pattern: glob.iglob(...)
+          - pattern: shutil.$F(...)
+  # ---- Net ----
+  - id: cap-net-urllib
+    languages: [python]
+    severity: INFO
+    message: "Net"
+    metadata: {capability: Net}
+    patterns:
+      - pattern-either:
+          - pattern: urllib.request.urlopen(...)
+          - pattern: urlopen(...)
+          - pattern: requests.$M(...)
+          - pattern: httpx.$M(...)
+          - pattern: socket.socket(...)
+          - pattern: http.client.$C(...)
+  # ---- Clock ----
+  - id: cap-clock
+    languages: [python]
+    severity: INFO
+    message: "Clock"
+    metadata: {capability: Clock}
+    patterns:
+      - pattern-either:
+          - pattern: time.time(...)
+          - pattern: time.sleep(...)
+          - pattern: time.monotonic(...)
+          - pattern: time.perf_counter(...)
+          - pattern: datetime.datetime.now(...)
+          - pattern: datetime.now(...)
+  # ---- Env ----
+  - id: cap-env
+    languages: [python]
+    severity: INFO
+    message: "Env"
+    metadata: {capability: Env}
+    patterns:
+      - pattern-either:
+          - pattern: os.environ
+          - pattern: os.environ.get(...)
+          - pattern: os.environ[...]
+          - pattern: os.getenv(...)
+  # ---- Random ----
+  - id: cap-random
+    languages: [python]
+    severity: INFO
+    message: "Random"
+    metadata: {capability: Random}
+    patterns:
+      - pattern-either:
+          - pattern: random.$F(...)
+          - pattern: secrets.$F(...)
+          - pattern: os.urandom(...)
+  # ---- Proc ----
+  - id: cap-proc
+    languages: [python]
+    severity: INFO
+    message: "Proc"
+    metadata: {capability: Proc}
+    patterns:
+      - pattern-either:
+          - pattern: subprocess.$F(...)
+          - pattern: os.system(...)
+          - pattern: os.popen(...)
+          - pattern: os.spawnl(...)
+          - pattern: os.spawnv(...)
+          - pattern: os.spawnvp(...)
+          - pattern: os.execv(...)
+          - pattern: os.execvp(...)
+  # ---- Stdio ----
+  - id: cap-stdio
+    languages: [python]
+    severity: INFO
+    message: "Stdio"
+    metadata: {capability: Stdio}
+    patterns:
+      - pattern-either:
+          - pattern: print(...)
+          - pattern: sys.stdout.$F(...)
+          - pattern: sys.stderr.$F(...)
