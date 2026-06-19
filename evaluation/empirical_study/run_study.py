@@ -1,6 +1,6 @@
-"""Capability-recall study harness (Phases 1a + 1b).
+"""Capability-recall study harness (Phases 1a + 1b + 1c).
 
-Scores three treatments over two corpora: the Phase-1a
+Scores four treatments over two corpora: the Phase-1a
 ``evaluation/sbom_diff`` pairs (direct and via-helper calls) and the
 Phase-1b ``dispatch_pairs`` directory beside this file (via-dispatch
 and via-data indirection, where the sink is selected at runtime through
@@ -49,6 +49,17 @@ T2  good-faith pattern heuristic : the Semgrep ruleset in
     helper / dispatch / data; for those facts it has no detection, and
     under closed-world reading ABSENCE is exclusion, so it false-clears
     exactly the facts it misses.
+T2b good-faith dataflow (CodeQL) : a CodeQL interprocedural-dataflow
+    reachability query (Phase 1c). Unlike Semgrep it follows the call
+    graph, so it recovers via-helper facts the pattern heuristic misses.
+    But it loses every via-dispatch / via-data fact: its points-to call
+    graph does not traverse a runtime-keyed dict-subscript, a getattr on
+    a computed name, a runtime-registered callback list, or a handler
+    chosen by external data. Its facts are PRE-COMPUTED (CodeQL 2.25.6,
+    python-all 7.1.2) and read from ``scratch_codeql/codeql_facts.csv``
+    so the harness never invokes the 1.3GB CLI; the same per-function
+    criterion as T2 applies, and like T2 it has no explicit-exclusion
+    field, so under closed-world semantics absence is read as exclusion.
 T3  Capa by construction         : the per-function capability manifest
     emitted by ``python -m capa --manifest``. The manifest gives each
     function THREE states per axis C: reachable (positively attributed),
@@ -320,24 +331,67 @@ def t3_capa_caps(
 # ----------------------------------------------------------------------
 DATAFLOW_RESOLVES = {
     # via-helper: the sink is in a local function the target calls.
-    # An interprocedural DATAFLOW tool (CodeQL) would follow that edge.
+    # An interprocedural DATAFLOW tool (CodeQL) follows that edge. This
+    # is confirmed empirically in Phase 1c: CodeQL caught both via-helper
+    # facts (log_forwarder.forward_log:Fs, session_token.generate_token:
+    # Random).
     "via-helper": True,
     # direct: lexically present; even a line-level tool gets these.
+    # Confirmed: CodeQL caught 36/36 direct facts in Phase 1c.
     "direct": False,  # not a false-negative cause for a sound heuristic
     # dispatch / data: the sink is selected at runtime via a callable
-    # or a data table; interprocedural dataflow cannot resolve it in
-    # general without the type system. This is the conservative
-    # CLASS-level default. A specific pair can sit anywhere on the
-    # spectrum (a constant function table is points-to-resolvable; a
-    # name from external input is not) -- that per-pair CodeQL
-    # expectation is recorded in each Phase-1b pair's README and will
-    # be confirmed empirically in Phase 1c via the ``t2b_codeql`` slot.
+    # or a data table; interprocedural dataflow does not resolve it in
+    # general without the type system. Phase 1c MEASURED this: CodeQL
+    # (2.25.6, python-all 7.1.2) loses ALL ten dispatch / data facts,
+    # INCLUDING command_registry. The Phase-1b note guessing that a
+    # constant function table would be points-to-resolvable was WRONG:
+    # CodeQL's points-to call graph does not traverse the dict-subscript
+    # ``HANDLERS[name]`` even when the dict is a module-level constant
+    # and the key is constant, so the handler edges are never followed.
+    # The opacity SPECTRUM (constant dict -> runtime-registered list ->
+    # getattr / external-data) is the degree of dynamism, not a recall
+    # split: the real tool loses across the whole spectrum. The literal
+    # per-pair CodeQL verdict lives in ``codeql_facts.csv`` and is read
+    # back into the ``t2b_codeql`` slot below.
     "via-dispatch": False,
     "via-data": False,
 }
 
 
-def score_pair(pair: str, gt_rows: list[tuple[str, str, str, str]]) -> dict:
+# ----------------------------------------------------------------------
+# T2b: CodeQL dataflow (PRE-COMPUTED facts, read from CSV)
+# ----------------------------------------------------------------------
+# The T2b treatment is a good-faith CodeQL interprocedural-dataflow
+# reachability analysis. CodeQL's CLI is 1.3GB and database creation is
+# slow and platform-specific, so it is NOT coupled to this harness:
+# the facts are generated ONCE by ``scratch_codeql/build_facts.py``
+# (CodeQL 2.25.6, ``python-all`` 7.1.2; see ``scratch_codeql/REPRODUCE.md``)
+# and committed as ``scratch_codeql/codeql_facts.csv``. The harness reads
+# only that CSV, so it stays deterministic and CI-safe (no CodeQL CLI in
+# CI). Each row is a ``(pair, python_function, capability)`` fact CodeQL
+# attributed to the NAMED Python function -- the SAME criterion as T2.
+CODEQL_FACTS = HERE / "scratch_codeql" / "codeql_facts.csv"
+
+
+def load_codeql_facts() -> set[tuple[str, str, str]]:
+    """Return the pre-computed CodeQL ``(pair, python_function,
+    capability)`` fact set. Missing file -> empty set, so the harness
+    still runs (T2b columns then read as zero) on a checkout without the
+    generated CSV; in this repo the CSV is committed so the set is full."""
+    facts: set[tuple[str, str, str]] = set()
+    if not CODEQL_FACTS.exists():
+        return facts
+    with CODEQL_FACTS.open(encoding="utf-8") as f:
+        for row in csv.DictReader(f):
+            facts.add((row["pair"], row["python_function"], row["capability"]))
+    return facts
+
+
+def score_pair(
+    pair: str,
+    gt_rows: list[tuple[str, str, str, str]],
+    codeql_facts: set[tuple[str, str, str]],
+) -> dict:
     py = pair_dir(pair) / "naive.py"
     # Each ground-truth fact carries the Python function (what T1/T2 see)
     # and the Capa function that plays the same role (what T3 is scored
@@ -348,6 +402,9 @@ def score_pair(pair: str, gt_rows: list[tuple[str, str, str, str]]) -> dict:
 
     t1 = t1_facts(py)
     t2 = t2_facts(py)
+    # T2b: CodeQL facts for THIS pair, keyed (python_function, capability)
+    # like T2, so Q1 / Q2 use the identical per-function criterion.
+    t2b = {(fn, cap) for (p, fn, cap) in codeql_facts if p == pair}
     capa_reach, capa_excl = t3_capa_caps(pair)
 
     # ---- Q1: positive-attribution recall (same criterion per treatment)
@@ -356,6 +413,7 @@ def score_pair(pair: str, gt_rows: list[tuple[str, str, str, str]]) -> dict:
     # fact is attributed iff that Capa function reaches the axis.
     q1_t1 = len(gt_set & t1)  # 0 by construction (no per-function facts)
     q1_t2 = len(gt_set & t2)
+    q1_t2b = len(gt_set & t2b)  # same per-function criterion as T2
     q1_t3 = sum(
         1 for (pyfn, cap) in gt_set
         if cap in capa_reach.get(capa_fn_of[(pyfn, cap)], set())
@@ -370,6 +428,11 @@ def score_pair(pair: str, gt_rows: list[tuple[str, str, str, str]]) -> dict:
     #     always 0; we COMPUTE it from the manifest rather than assert it.
     fc_t1 = len(gt_set)
     fc_t2 = len(gt_set - t2)
+    # T2b: like T2, CodeQL's native output has NO explicit-exclusion
+    # field; absence of an attribution is read as exclusion under
+    # closed-world SBOM semantics, so T2b false-clears exactly the facts
+    # it fails to attribute (its Q1 misses).
+    fc_t2b = len(gt_set - t2b)
     fc_t3 = sum(
         1 for (pyfn, cap) in gt_set
         if cap in capa_excl.get(capa_fn_of[(pyfn, cap)], set())
@@ -381,32 +444,36 @@ def score_pair(pair: str, gt_rows: list[tuple[str, str, str, str]]) -> dict:
         how = how_of[(pyfn, cap)]
         cf = capa_fn_of[(pyfn, cap)]
         t2_attr = (pyfn, cap) in t2
+        t2b_attr = (pyfn, cap) in t2b
         t3_attr = cap in capa_reach.get(cf, set())
         t3_fc = cap in capa_excl.get(cf, set())
         # ``dataflow_would_resolve`` is the conservative class-level
         # expectation (via-helper: yes; via-dispatch / via-data: no).
-        # ``t2b_codeql`` is the slot for the LITERAL CodeQL verdict,
-        # filled in Phase 1c by an actual run; "pending" until then.
+        # ``t2b_codeql`` is the LITERAL CodeQL verdict for this fact,
+        # read back from the pre-computed ``codeql_facts.csv``.
         detail.append({
             "python_function": pyfn,
             "capa_function": cf,
             "capability": cap,
             "how": how,
             "t2_attr": t2_attr,
+            "t2b_attr": t2b_attr,
             "t3_attr": t3_attr,
             "t2_false_clear": not t2_attr,
+            "t2b_false_clear": not t2b_attr,
             "t3_false_clear": t3_fc,
             "dataflow_would_resolve": DATAFLOW_RESOLVES.get(how, False),
-            "t2b_codeql": "pending",
+            "t2b_codeql": "attributes" if t2b_attr else "misses",
         })
 
     return {
         "pair": pair,
         "gt_count": len(gt_set),
-        "q1_t1": q1_t1, "q1_t2": q1_t2, "q1_t3": q1_t3,
-        "fc_t1": fc_t1, "fc_t2": fc_t2, "fc_t3": fc_t3,
+        "q1_t1": q1_t1, "q1_t2": q1_t2, "q1_t2b": q1_t2b, "q1_t3": q1_t3,
+        "fc_t1": fc_t1, "fc_t2": fc_t2, "fc_t2b": fc_t2b, "fc_t3": fc_t3,
         "detail": detail,
         "t2_facts": sorted(t2),
+        "t2b_facts": sorted(t2b),
         "t1_modules": sorted(t1_modules(py)),
     }
 
@@ -425,16 +492,19 @@ def write_reports(results: list[dict]) -> dict:
         w.writerow([
             "pair", "ground_truth_facts",
             # Q1: positive-attribution recall (attributed to the function)
-            "q1_t1_attr", "q1_t2_attr", "q1_t3_attr",
+            "q1_t1_attr", "q1_t2_attr", "q1_t2b_attr", "q1_t3_attr",
             # Q2: closed-world false-clearances (lower is better)
-            "q2_t1_falseclear", "q2_t2_falseclear", "q2_t3_falseclear",
+            "q2_t1_falseclear", "q2_t2_falseclear", "q2_t2b_falseclear",
+            "q2_t3_falseclear",
         ])
         for r in results:
             n = r["gt_count"]
             w.writerow([
                 r["pair"], n,
-                f"{r['q1_t1']}/{n}", f"{r['q1_t2']}/{n}", f"{r['q1_t3']}/{n}",
-                f"{r['fc_t1']}/{n}", f"{r['fc_t2']}/{n}", f"{r['fc_t3']}/{n}",
+                f"{r['q1_t1']}/{n}", f"{r['q1_t2']}/{n}",
+                f"{r['q1_t2b']}/{n}", f"{r['q1_t3']}/{n}",
+                f"{r['fc_t1']}/{n}", f"{r['fc_t2']}/{n}",
+                f"{r['fc_t2b']}/{n}", f"{r['fc_t3']}/{n}",
             ])
 
     total = sum(r["gt_count"] for r in results)
@@ -442,9 +512,11 @@ def write_reports(results: list[dict]) -> dict:
         "total": total,
         "q1_t1": sum(r["q1_t1"] for r in results),
         "q1_t2": sum(r["q1_t2"] for r in results),
+        "q1_t2b": sum(r["q1_t2b"] for r in results),
         "q1_t3": sum(r["q1_t3"] for r in results),
         "fc_t1": sum(r["fc_t1"] for r in results),
         "fc_t2": sum(r["fc_t2"] for r in results),
+        "fc_t2b": sum(r["fc_t2b"] for r in results),
         "fc_t3": sum(r["fc_t3"] for r in results),
     }
 
@@ -458,7 +530,7 @@ def write_reports(results: list[dict]) -> dict:
         w.writerow(["Q1_positive_attribution", "T2_pattern_heuristic",
                     agg["q1_t2"], total, _pct(agg["q1_t2"], total)])
         w.writerow(["Q1_positive_attribution", "T2b_codeql",
-                    "pending", total, "pending"])
+                    agg["q1_t2b"], total, _pct(agg["q1_t2b"], total)])
         w.writerow(["Q1_positive_attribution", "T3_capa_by_construction",
                     agg["q1_t3"], total, _pct(agg["q1_t3"], total)])
         w.writerow(["Q2_false_clearance", "T1_dependency_sbom",
@@ -466,7 +538,7 @@ def write_reports(results: list[dict]) -> dict:
         w.writerow(["Q2_false_clearance", "T2_pattern_heuristic",
                     agg["fc_t2"], total, _pct(agg["fc_t2"], total)])
         w.writerow(["Q2_false_clearance", "T2b_codeql",
-                    "pending", total, "pending"])
+                    agg["fc_t2b"], total, _pct(agg["fc_t2b"], total)])
         w.writerow(["Q2_false_clearance", "T3_capa_by_construction",
                     agg["fc_t3"], total, _pct(agg["fc_t3"], total)])
 
@@ -476,22 +548,24 @@ def write_reports(results: list[dict]) -> dict:
         w = csv.writer(f, quoting=csv.QUOTE_ALL)
         w.writerow([
             "pair", "python_function", "capa_function", "capability", "how",
-            "t2_attributes", "t3_attributes",
-            "t2_false_clears", "t3_false_clears",
+            "t2_attributes", "t2b_attributes", "t3_attributes",
+            "t2_false_clears", "t2b_false_clears", "t3_false_clears",
             "dataflow_would_resolve", "t2b_codeql",
         ])
         for r in results:
             for d in r["detail"]:
                 # Only emit rows where some treatment fails to attribute,
                 # i.e. the facts that distinguish the treatments.
-                if d["t2_attr"] and d["t3_attr"]:
+                if d["t2_attr"] and d["t2b_attr"] and d["t3_attr"]:
                     continue
                 w.writerow([
                     r["pair"], d["python_function"], d["capa_function"],
                     d["capability"], d["how"],
                     "yes" if d["t2_attr"] else "no",
+                    "yes" if d["t2b_attr"] else "no",
                     "yes" if d["t3_attr"] else "no",
                     "yes" if d["t2_false_clear"] else "no",
+                    "yes" if d["t2b_false_clear"] else "no",
                     "yes" if d["t3_false_clear"] else "no",
                     "yes" if d["dataflow_would_resolve"] else "no",
                     d["t2b_codeql"],
@@ -505,48 +579,57 @@ def print_console(results: list[dict], agg: dict) -> None:
 
     print("\n=== Q1: POSITIVE-ATTRIBUTION RECALL "
           "(capability attributed to the named function) ===")
-    print(f"{'pair':<16} {'GT':>3} {'T1':>6} {'T2':>6} {'T3':>6}")
+    print(f"{'pair':<16} {'GT':>3} {'T1':>6} {'T2':>6} {'T2b':>6} {'T3':>6}")
     for r in results:
         n = r["gt_count"]
         print(f"{r['pair']:<16} {n:>3} "
-              f"{r['q1_t1']:>3}/{n:<2} {r['q1_t2']:>3}/{n:<2} {r['q1_t3']:>3}/{n:<2}")
+              f"{r['q1_t1']:>3}/{n:<2} {r['q1_t2']:>3}/{n:<2} "
+              f"{r['q1_t2b']:>3}/{n:<2} {r['q1_t3']:>3}/{n:<2}")
     print(f"  T1 dependency-SBOM     : {agg['q1_t1']}/{total}  "
           f"({_pct(agg['q1_t1'], total)}%)")
     print(f"  T2 pattern-heuristic   : {agg['q1_t2']}/{total}  "
           f"({_pct(agg['q1_t2'], total)}%)")
+    print(f"  T2b CodeQL dataflow    : {agg['q1_t2b']}/{total}  "
+          f"({_pct(agg['q1_t2b'], total)}%)")
     print(f"  T3 capa-by-construction: {agg['q1_t3']}/{total}  "
           f"({_pct(agg['q1_t3'], total)}%)")
-    print("  NOTE: on positive attribution Capa does NOT dramatically "
-          "beat the good-faith heuristic; it is sound, not omniscient, "
-          "and does not vouch which handler a dispatcher runs.")
+    print("  NOTE: on positive attribution Capa does NOT beat the best "
+          "dataflow (CodeQL) -- it TIES it. Neither attributes the "
+          "capability to a dispatcher; Capa is sound, not omniscient, and "
+          "does not vouch which handler a dispatcher runs.")
 
     print("\n=== Q2: FALSE-CLEARANCES UNDER CLOSED-WORLD SBOM SEMANTICS "
           "(lower is better) ===")
-    print(f"{'pair':<16} {'GT':>3} {'T1':>6} {'T2':>6} {'T3':>6}")
+    print(f"{'pair':<16} {'GT':>3} {'T1':>6} {'T2':>6} {'T2b':>6} {'T3':>6}")
     for r in results:
         n = r["gt_count"]
         print(f"{r['pair']:<16} {n:>3} "
-              f"{r['fc_t1']:>3}/{n:<2} {r['fc_t2']:>3}/{n:<2} {r['fc_t3']:>3}/{n:<2}")
+              f"{r['fc_t1']:>3}/{n:<2} {r['fc_t2']:>3}/{n:<2} "
+              f"{r['fc_t2b']:>3}/{n:<2} {r['fc_t3']:>3}/{n:<2}")
     print(f"  T1 dependency-SBOM     : {agg['fc_t1']}/{total} false-cleared")
     print(f"  T2 pattern-heuristic   : {agg['fc_t2']}/{total} false-cleared")
+    print(f"  T2b CodeQL dataflow    : {agg['fc_t2b']}/{total} false-cleared")
     print(f"  T3 capa-by-construction: {agg['fc_t3']}/{total} false-cleared")
     print("  HEADLINE: Capa commits ZERO false-clearances by construction "
-          "(provably-excluded is sound); the heuristic false-clears every "
-          "fact it cannot see.")
+          "(provably-excluded is sound); BOTH real tools (Semgrep AND "
+          "CodeQL) leave the dispatcher silently blank, read as cleared "
+          "under closed-world semantics.")
 
-    print("\n=== DISTINGUISHING FACTS (T2 or T3 fails to attribute) ===")
+    print("\n=== DISTINGUISHING FACTS (some treatment fails to attribute) ===")
     any_row = False
     for r in results:
         for d in r["detail"]:
-            if d["t2_attr"] and d["t3_attr"]:
+            if d["t2_attr"] and d["t2b_attr"] and d["t3_attr"]:
                 continue
             any_row = True
             tag = "dataflow-resolvable" if d["dataflow_would_resolve"] else "needs-types"
             print(f"  {r['pair']}/{d['python_function']} ({d['capability']})"
                   f"  cause={d['how']}  "
                   f"T2attr={'y' if d['t2_attr'] else 'n'} "
+                  f"T2battr={'y' if d['t2b_attr'] else 'n'} "
                   f"T3attr={'y' if d['t3_attr'] else 'n'} "
                   f"T2fc={'y' if d['t2_false_clear'] else 'n'} "
+                  f"T2bfc={'y' if d['t2b_false_clear'] else 'n'} "
                   f"T3fc={'y' if d['t3_false_clear'] else 'n'}  -> {tag}")
     if not any_row:
         print("  (none)")
@@ -591,6 +674,7 @@ def main(argv: list[str] | None = None) -> int:
     args = p.parse_args(argv)
 
     gt = load_ground_truth()
+    codeql_facts = load_codeql_facts()
     # Every pair directory across both corpus roots is scored; pairs
     # absent from the ground truth contribute zero facts (the
     # pure-library cases). Names are unique across the two roots.
@@ -606,7 +690,7 @@ def main(argv: list[str] | None = None) -> int:
     results = []
     for pair in all_pairs:
         rows = gt.get(pair, [])
-        results.append(score_pair(pair, rows))
+        results.append(score_pair(pair, rows, codeql_facts))
 
     totals = write_reports(results)
     print_console(results, totals)

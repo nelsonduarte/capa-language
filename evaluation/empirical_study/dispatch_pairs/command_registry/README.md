@@ -77,18 +77,30 @@ Stdio}`, so T3 (axis coverage) recovers both the `Net` and the
 |---|---|---|
 | T1 dependency SBOM | miss (package granularity) | miss (package granularity) |
 | T2 pattern heuristic (Semgrep) | **hit** (sink is lexical) | **miss** (sink not in `dispatch` body) |
-| T2b dataflow (CodeQL) | hit | **likely hit** -- the registry is a CONSTANT dict; points-to resolves `HANDLERS[name]` to the two handler values and follows both edges |
+| T2b dataflow (CodeQL) | hit | **miss** (confirmed in Phase 1c) -- points-to does NOT traverse the dict-subscript `HANDLERS[name]`, so the handler edges are never followed, even though the dict is a module-level constant |
 | T3 Capa by construction | hit | **hit** (axis coverage; the handlers and `build_registry` name the authority) |
 
-## CodeQL expectation (recorded for Phase 1c, not yet run)
+## CodeQL verdict (Phase 1c, measured)
 
-**Likely resolves.** `HANDLERS` is a module-level constant dict
-with literal function values. A points-to / dataflow engine can
-enumerate the dict's values and treat `HANDLERS[name](arg)` as a
-call to each of them, recovering both authorities. This is the
-*easy* end of the indirection spectrum: dispatch through a static
-table is within dataflow's reach. It is included precisely to
-show that end honestly -- Capa's win here is parity-plus-guarantee
-(no points-to budget, no table-must-be-constant precondition),
-not a recall gap. The opaque end (`reflect_dispatch`,
-`tagged_factory`) is where dataflow is expected to lose.
+**Loses.** This is the empirical correction to the Phase-1b
+expectation, which guessed CodeQL would resolve a constant table.
+It does not. Running the good-faith reachability query
+(`scratch_codeql/capquery/CapabilityReachability.ql`, CodeQL
+2.25.6, `python-all` 7.1.2) against `naive.py` attributes `Net` to
+`_fetch` and `Fs` to `_save` (the direct sinks) and reports
+NOTHING for `dispatch`. The reason is precise and is NOT the
+dynamicity of the key: CodeQL's points-to call graph does not
+traverse a dict-subscript. Even with a module-level constant dict
+and a constant key, `HANDLERS[name](arg)` is not resolved to the
+enumerated values, so the handler edges are never followed and the
+`Net` / `Fs` authority never propagates to `dispatch`. The
+"constant table is the easy end of dataflow's reach" intuition is
+wrong for this engine: subscript-through-a-container is already
+outside its precise points-to. A *sound* analysis could only
+recover this by over-approximating the subscript to every value
+the container can hold, which is imprecise in general and degrades
+to "any value" once the table is populated from outside the
+module. Capa carries the authority through the closure's type
+instead, with no points-to budget and no constant-table
+precondition. So even at the supposedly-easy end of the spectrum,
+the real tool loses and Capa keeps the record by construction.

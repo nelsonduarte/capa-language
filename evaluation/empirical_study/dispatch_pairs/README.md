@@ -17,18 +17,32 @@ Each pair directory holds:
   README.md  pattern, provenance, ground-truth facts, faithfulness
              note, and the per-pair CodeQL (dataflow) expectation.
 
-The pairs, ordered from dataflow-resolvable to opaque:
+The pairs, ordered by opacity (least dynamic to most), with the
+Phase-1c CodeQL verdict MEASURED (not guessed). CodeQL loses ALL five
+dispatch facts; the order is the degree of opacity, not a recall split:
 
   command_registry   constant {name: handler} dict, runtime key
-                     -> via-dispatch ; CodeQL: likely resolves
-  middleware_chain   pipeline of stages assembled at runtime
-                     -> via-dispatch ; CodeQL: split (literal vs config)
+                     -> via-dispatch ; CodeQL: LOSES (points-to does
+                        not traverse the dict-subscript, even constant)
+  middleware_chain   pipeline of stages passed in as a list parameter
+                     -> via-dispatch ; CodeQL: LOSES (locally-built list,
+                        stages not resolved through the list)
   event_bus          callbacks registered at runtime, invoked in a loop
-                     -> via-dispatch ; CodeQL: likely loses
+                     -> via-dispatch ; CodeQL: LOSES (callbacks appended
+                        to a list at runtime, not resolved in the loop)
   reflect_dispatch   getattr(self, "handle_" + name)
-                     -> via-dispatch ; CodeQL: loses (computed name)
+                     -> via-dispatch ; CodeQL: LOSES (computed attribute
+                        name from runtime input)
   tagged_factory     handler chosen by a tag in deserialized data
-                     -> via-data ; CodeQL: loses (external data)
+                     -> via-data ; CodeQL: LOSES (handler selected by a
+                        field of externally-deserialized data)
+
+Phase 1c (the CodeQL T2b treatment) confirmed this empirically: with a
+good-faith reachability query (scratch_codeql/, CodeQL 2.25.6,
+python-all 7.1.2) CodeQL attributes every DIRECT sink (36/36) and the
+two via-helper facts, but ZERO of the ten dispatch / data facts. The
+correction to record is command_registry: Phase 1b guessed CodeQL would
+resolve the constant dict; it does not.
 
 How the Capa side carries the authority, by construction (verified in
 each manifest):
