@@ -38,6 +38,19 @@ function actually exercises. The ten dispatcher facts land in
 false-clearances by construction**. The heuristic, read closed-world,
 clears all 12 facts it misses.
 
+A skeptic could ask whether it is fair to give Capa an exclusion field
+and deny one to Semgrep. The honest answer: a consumer who **ignored**
+`provably_excluded` and read Capa's `reachable = []` closed-world -
+exactly the only reading available for Semgrep's output, where absence =
+exclusion - would **also** false-clear all ten dispatchers. What
+separates Capa is not a softer scoring rule applied to it: it is that
+Capa **offers** a *sound* exclusion channel (`provably_excluded`, with an
+explicit *provably-excluded* vs *not-determined* distinction) a consumer
+can rely on, while Semgrep's native output carries only positive
+detections and no sound way to answer the exclusion question. The
+per-treatment difference in how the rule is worded is a consequence of
+the different output formats, not a scoring bias.
+
 ## The modest result: positive-attribution recall (Q1)
 
 Does the treatment attribute `C` to the **named** function `F`?

@@ -68,6 +68,20 @@ more (Q1, where it ties the good-faith heuristic) - it is **never
 clearing a function incorrectly** under closed-world semantics, because
 it distinguishes *provably excluded* from *not determined*.
 
+**On the format asymmetry (a fair-scoring objection).** It is reasonable
+to ask whether giving Capa a `provably_excluded` field but scoring T2 by
+absence is a scoring bias. It is not. A consumer who **ignored**
+`provably_excluded` and read Capa's `reachable = []` closed-world -
+exactly the only reading T2's output admits (absence = exclusion) -
+would **also** false-clear all ten dispatchers. The separation is not
+that the metric applies a softer rule to Capa; it is that Capa **offers**
+a *sound* exclusion channel (`provably_excluded`, with the explicit
+*provably-excluded* vs *not-determined* distinction) a consumer can rely
+on, while Semgrep's native output has only positive detections and no
+sound way to answer the exclusion question at all. The per-treatment
+difference in the operational rule above is a consequence of the
+different output formats, not a thumb on the scale.
+
 ### Python <-> Capa function correspondence (Q1)
 
 Q1 attributes a fact to the **named** function, so T3 must be scored
