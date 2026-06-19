@@ -81,8 +81,8 @@ Capability reach (functions that transitively reach each axis):
 **Concentration: extreme.** 66 of 70 functions are provably pure. Only
 **3 functions (4.3 %)** reach `Fs` (the audit-log write path), 2 reach
 `Stdio`, and **no function reaches `Net`, `Db`, `Proc`, or `Unsafe`** at
-all. The entire crypto core (`capa_hash`: 26 functions of SHA-256 and
-HMAC) is pure. An auditor reviewing this program for filesystem authority
+all. The entire crypto core (the 28 functions of the vendored `capa_hash`
+dependency) is pure. An auditor reviewing this program for filesystem authority
 reads 3 functions out of 70 and is done; the build has *proved* the other
 67 cannot touch the disk.
 
@@ -91,8 +91,8 @@ reads 3 functions out of 70 and is done; the build has *proved* the other
 An expense-claim intake, rules engine, tamper-evident audit ledger,
 multi-format reporter, and CLI. Entrypoint `main.capa`; six runtime
 dependencies (`capa_hash`, `capa_csv`, `capa_cli`, `capa_log`,
-`capa_datetime`, `capa_sbom`) plus a dev-dependency. 140 app functions
-and 73 vendored functions are reachable.
+`capa_datetime`, `capa_sbom`) plus a dev-dependency. Of the 213 functions
+analysed, 131 are the application's own and 82 are vendored.
 
 | Metric | Value |
 |---|---|

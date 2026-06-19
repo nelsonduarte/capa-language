@@ -39,6 +39,12 @@ def test_extract_is_deterministic():
 def test_paymentguard_headline_numbers():
     m = _metrics()["capa_paymentguard"]
     assert m["total_functions"] == 70
+    # App vs vendored split, derived from each function's source path.
+    assert m["app_functions"] == 42
+    assert m["vendored_functions"] == 28
+    assert m["app_functions"] + m["vendored_functions"] == m["total_functions"]
+    # The crypto dependency the README's prose cites.
+    assert m["vendor_dep_functions"]["capa_hash"] == 28
     assert m["pure_functions"] == 66
     assert m["pure_pct"] == 94.3
     assert m["provably_excluded_facts"] == 625
@@ -56,6 +62,10 @@ def test_paymentguard_headline_numbers():
 def test_claimdesk_headline_numbers():
     m = _metrics()["capa_claimdesk"]
     assert m["total_functions"] == 213
+    # App vs vendored split, derived from each function's source path.
+    assert m["app_functions"] == 131
+    assert m["vendored_functions"] == 82
+    assert m["app_functions"] + m["vendored_functions"] == m["total_functions"]
     assert m["pure_functions"] == 187
     assert m["pure_pct"] == 87.8
     assert m["provably_excluded_facts"] == 2295

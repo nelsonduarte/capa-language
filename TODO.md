@@ -44,6 +44,30 @@ code.
 
 ## Known technical residuals (documented limitations, low priority)
 
+- **Selective import is not scoped to the importing module.** A
+  selective `import foo (a, b)` is implemented by mangling `foo`'s
+  unselected `pub` symbols *in place* on the parsed-and-cached module
+  AST, in a single flat global scope. The mangled AST is then shared by
+  every other module that imports the same `foo` (whole, or with a
+  different selection), so one importer's selection leaks into the
+  others and the visible surface would be order-dependent. The loader
+  guard that *rejects* mixing selective and whole-module (or two
+  divergent selective) imports of the same module is the correct
+  stopgap: it refuses the divergence outright (`module 'foo' imported
+  twice with different selection`) rather than silently dropping a view.
+  This cross-module shape (not same-root) is what `capa_claimdesk` hit
+  in v1.5.2: the app selectively imported `capa_csv.model` while the
+  vendored `capa_csv` lib whole-imported it; the downstream fix was to
+  align on the whole-module import. The real cure is to make import
+  visibility per-importer (each importer sees its own view of the
+  shared module) rather than a single mutated global namespace, which
+  is non-trivial module-system work. Locus: `capa/loader.py`
+  (`_apply_selective_import`, the `_mangle_private_items` rename, and
+  the `seen_paths` / `_cache` / `_import_sig` dedup at the top of
+  `_link`). Test gap: `TestDivergentReimport` in `tests/test_loader.py`
+  only covers the same-root case (both imports in one file); it does
+  not exercise the cross-module shape (module A selective, module B
+  whole) the claimdesk surfaced.
 - **Fs hardlink `st_nlink`.** A hard link created in-prefix to an
   out-of-prefix file passes the checks.
 - **Db post-open TOCTOU.** Narrow residual window; `sqlite3` does not

@@ -69,9 +69,42 @@ def load(path: Path) -> dict:
         return json.load(fh)
 
 
+def _source_file(fn: dict) -> str:
+    """The source file a manifest function came from, taken from its
+    ``pos`` (``"<file>:<line>:<col>"``). Vendored dependencies live under
+    ``vendor/`` and bare filenames are the application's own modules, so
+    this prefix is the clean app-vs-vendored discriminator. Returns ``""``
+    when ``pos`` is absent (treated as app, i.e. not vendored)."""
+    pos = fn.get("pos") or ""
+    return pos.rsplit(":", 2)[0] if pos else ""
+
+
+def _is_vendored(fn: dict) -> bool:
+    return _source_file(fn).startswith("vendor/")
+
+
 def extract(manifest: dict) -> dict:
     fns = manifest["functions"]
     total = len(fns)
+
+    # App vs vendored split, derived from each function's source path.
+    # A function is "vendored" iff it comes from a ``vendor/`` module
+    # (the package manager's checkout of a git/path dependency); the rest
+    # are the application's own modules. Both counts are derived here so
+    # the README can cite them without hard-coding an unverifiable number.
+    vendored_functions = sum(1 for f in fns if _is_vendored(f))
+    app_functions = total - vendored_functions
+
+    # Per-dependency vendored function counts, keyed by the top-level
+    # ``vendor/<dep>`` directory. Lets the prose cite, e.g., how many
+    # functions the crypto dependency contributes, with the number
+    # measured from the manifest rather than asserted.
+    vendor_dep_functions: dict[str, int] = {}
+    for f in fns:
+        sf = _source_file(f)
+        if sf.startswith("vendor/"):
+            dep = sf.split("/")[1]
+            vendor_dep_functions[dep] = vendor_dep_functions.get(dep, 0) + 1
 
     # All axes that appear anywhere (built-in + user-defined), so the
     # reach table covers Logger / Notifier without hard-coding them.
@@ -112,6 +145,9 @@ def extract(manifest: dict) -> dict:
         "capa_version": manifest.get("capa_version"),
         "entrypoint": manifest.get("filename"),
         "total_functions": total,
+        "app_functions": app_functions,
+        "vendored_functions": vendored_functions,
+        "vendor_dep_functions": dict(sorted(vendor_dep_functions.items())),
         "pure_functions": len(pure),
         "pure_pct": frac(len(pure)),
         "reach": reach,
@@ -142,6 +178,9 @@ def render_text(name: str, m: dict) -> str:
     lines.append(f"## {name}  (capa {m['capa_version']}, entry {m['entrypoint']})")
     lines.append("")
     lines.append(f"- functions analysed: {m['total_functions']}")
+    lines.append(
+        f"  ({m['app_functions']} app + {m['vendored_functions']} vendored)"
+    )
     lines.append(
         f"- pure (zero reachable capabilities): "
         f"{m['pure_functions']} ({m['pure_pct']} %)"
