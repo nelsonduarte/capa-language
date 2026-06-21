@@ -1462,7 +1462,7 @@ class TestVerifyProvenanceModes(unittest.TestCase):
         dep = self._dep(git="https://github.com/foo/bar", level=level)
         return dep, "v0.1", "tag", None, None, "gh not found"
 
-    def _case_tarball_missing(self, level):
+    def _case_download_failed(self, level):
         # gh release download returns non-zero -> graceful skip path.
         from unittest.mock import MagicMock
         dep = self._dep(git="https://github.com/foo/bar", level=level)
@@ -1472,11 +1472,28 @@ class TestVerifyProvenanceModes(unittest.TestCase):
 
         return dep, "v0.1", "tag", "/usr/bin/gh", side_effect, "release download"
 
+    def _case_tarball_absent_on_disk(self, level):
+        # gh release download returns 0 but never writes the tarball
+        # file (release exists yet ships no matching asset). This is
+        # the ``not tarball_path.exists()`` skip path: an attacker who
+        # strips the source tarball must not slip past silently under
+        # "required".
+        from unittest.mock import MagicMock
+        dep = self._dep(git="https://github.com/foo/bar", level=level)
+
+        def side_effect(cmd, *a, **kw):
+            # returncode 0, but no file is written to --dir.
+            return MagicMock(returncode=0, stderr="", stdout="")
+
+        return (dep, "v0.1", "tag", "/usr/bin/gh", side_effect,
+                "no attestation tarball")
+
     _SKIP_CASES = (
         "_case_non_github",
         "_case_rev_pin",
         "_case_gh_missing",
-        "_case_tarball_missing",
+        "_case_download_failed",
+        "_case_tarball_absent_on_disk",
     )
 
     def _run(self, dep, pin, pin_kind, which_ret, side_effect):
