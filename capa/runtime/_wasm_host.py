@@ -698,6 +698,44 @@ class WasmHost:
             env_restrict_to_keys, access_caller=True,
         )
 
+        # Env.allows(handle, key_ptr, key_len) -> i32 (bool). GAP-2b
+        # (2026-06-21): looks up the receiver Env cap and returns
+        # ``env.allows(key)`` (canon-key allow-list membership). This
+        # is the case that DIVERGED SILENTLY pre-route: the guest-side
+        # key-list reconstruction returned [] for a dynamic
+        # restrict_to_keys list, so the query answered ``no`` where
+        # Python answered ``yes``. Routing it host-side restores
+        # parity. Bad handle / invalid UTF-8 fail closed (0).
+        ft_allows = wasmtime.FuncType(
+            [
+                wasmtime.ValType.i32(),  # handle
+                wasmtime.ValType.i32(),  # key_ptr
+                wasmtime.ValType.i32(),  # key_len
+            ],
+            [wasmtime.ValType.i32()],
+        )
+
+        def env_allows(caller, handle, key_ptr, key_len):
+            if self._memory is None:
+                raise RuntimeError(
+                    "env.allows called before memory was set"
+                )
+            try:
+                key = bytes(
+                    self._memory.read(caller, key_ptr, key_ptr + key_len)
+                ).decode("utf-8")
+            except UnicodeDecodeError:
+                return 0
+            env = _lookup_env(handle)
+            if env is None:
+                return 0
+            return 1 if env.allows(key) else 0
+
+        self.linker.define_func(
+            "capa:host/env", "allows", ft_allows,
+            env_allows, access_caller=True,
+        )
+
     def _register_fs(self) -> None:
         """Register ``capa:host/fs`` interface methods.
 
@@ -969,6 +1007,42 @@ class WasmHost:
         self.linker.define_func(
             "capa:host/fs", "restrict-to", ft_restrict_to,
             fs_restrict_to, access_caller=True,
+        )
+
+        # Fs.allows(handle, path_ptr, path_len) -> i32 (bool). GAP-2b
+        # (2026-06-21): the authoritative guest-side query. Looks up
+        # the receiver Fs cap and returns ``fs.allows(path)`` - the
+        # same realpath-canonicalising containment check the
+        # privileged ops enforce - so the query answer equals the
+        # enforcement. Invalid UTF-8 or a bad handle fail closed (0).
+        ft_allows = wasmtime.FuncType(
+            [
+                wasmtime.ValType.i32(),  # handle
+                wasmtime.ValType.i32(),  # path_ptr
+                wasmtime.ValType.i32(),  # path_len
+            ],
+            [wasmtime.ValType.i32()],
+        )
+
+        def fs_allows(caller, handle, path_ptr, path_len):
+            if self._memory is None:
+                raise RuntimeError(
+                    "fs.allows called before memory was set"
+                )
+            try:
+                path = bytes(
+                    self._memory.read(caller, path_ptr, path_ptr + path_len)
+                ).decode("utf-8")
+            except UnicodeDecodeError:
+                return 0
+            fs = _lookup_fs_bool(caller, handle)
+            if fs is None:
+                return 0
+            return 1 if fs.allows(path) else 0
+
+        self.linker.define_func(
+            "capa:host/fs", "allows", ft_allows,
+            fs_allows, access_caller=True,
         )
 
         # Fs.exists / Fs.is_dir: (handle, path_ptr, path_len) -> i32 (bool).
@@ -1424,6 +1498,41 @@ class WasmHost:
             net_restrict_to, access_caller=True,
         )
 
+        # Net.allows(handle, host_ptr, host_len) -> i32 (bool). GAP-2b
+        # (2026-06-21): looks up the receiver Net cap and returns
+        # ``net.allows(host)`` (exact host-set membership). Bad handle
+        # / invalid UTF-8 fail closed (0).
+        ft_allows = wasmtime.FuncType(
+            [
+                wasmtime.ValType.i32(),  # handle
+                wasmtime.ValType.i32(),  # host_ptr
+                wasmtime.ValType.i32(),  # host_len
+            ],
+            [wasmtime.ValType.i32()],
+        )
+
+        def net_allows(caller, handle, host_ptr, host_len):
+            if self._memory is None:
+                raise RuntimeError(
+                    "net.allows called before memory was set"
+                )
+            try:
+                host = bytes(
+                    self._memory.read(caller, host_ptr, host_ptr + host_len)
+                ).decode("utf-8")
+            except UnicodeDecodeError:
+                return 0
+            try:
+                net = self._cap_handles.lookup(handle, Net)
+            except CapHandleError:
+                return 0
+            return 1 if net.allows(host) else 0
+
+        self.linker.define_func(
+            "capa:host/net", "allows", ft_allows,
+            net_allows, access_caller=True,
+        )
+
     def _register_db(self) -> None:
         """Register the ``capa:host/db`` interface methods.
 
@@ -1684,6 +1793,41 @@ class WasmHost:
             db_restrict_to, access_caller=True,
         )
 
+        # Db.allows(handle, path_ptr, path_len) -> i32 (bool). GAP-2b
+        # (2026-06-21): looks up the receiver Db cap and returns
+        # ``db.allows(path)`` (same realpath prefix containment as
+        # Fs.allows). Bad handle / invalid UTF-8 fail closed (0).
+        ft_allows = wasmtime.FuncType(
+            [
+                wasmtime.ValType.i32(),  # handle
+                wasmtime.ValType.i32(),  # path_ptr
+                wasmtime.ValType.i32(),  # path_len
+            ],
+            [wasmtime.ValType.i32()],
+        )
+
+        def db_allows(caller, handle, path_ptr, path_len):
+            if self._memory is None:
+                raise RuntimeError(
+                    "db.allows called before memory was set"
+                )
+            try:
+                path = bytes(
+                    self._memory.read(caller, path_ptr, path_ptr + path_len)
+                ).decode("utf-8")
+            except UnicodeDecodeError:
+                return 0
+            try:
+                db = self._cap_handles.lookup(handle, Db)
+            except CapHandleError:
+                return 0
+            return 1 if db.allows(path) else 0
+
+        self.linker.define_func(
+            "capa:host/db", "allows", ft_allows,
+            db_allows, access_caller=True,
+        )
+
     def _register_proc(self) -> None:
         """Register the ``capa:host/proc`` interface methods.
 
@@ -1890,6 +2034,41 @@ class WasmHost:
         self.linker.define_func(
             "capa:host/proc", "restrict-to", ft_restrict_to,
             proc_restrict_to, access_caller=True,
+        )
+
+        # Proc.allows(handle, cmd_ptr, cmd_len) -> i32 (bool). GAP-2b
+        # (2026-06-21): looks up the receiver Proc cap and returns
+        # ``proc.allows(cmd)`` (identity basename + suffix-boundary
+        # rule). Bad handle / invalid UTF-8 fail closed (0).
+        ft_allows = wasmtime.FuncType(
+            [
+                wasmtime.ValType.i32(),  # handle
+                wasmtime.ValType.i32(),  # cmd_ptr
+                wasmtime.ValType.i32(),  # cmd_len
+            ],
+            [wasmtime.ValType.i32()],
+        )
+
+        def proc_allows(caller, handle, cmd_ptr, cmd_len):
+            if self._memory is None:
+                raise RuntimeError(
+                    "proc.allows called before memory was set"
+                )
+            try:
+                cmd = bytes(
+                    self._memory.read(caller, cmd_ptr, cmd_ptr + cmd_len)
+                ).decode("utf-8")
+            except UnicodeDecodeError:
+                return 0
+            try:
+                proc = self._cap_handles.lookup(handle, Proc)
+            except CapHandleError:
+                return 0
+            return 1 if proc.allows(cmd) else 0
+
+        self.linker.define_func(
+            "capa:host/proc", "allows", ft_allows,
+            proc_allows, access_caller=True,
         )
 
     def _register_json(self) -> None:

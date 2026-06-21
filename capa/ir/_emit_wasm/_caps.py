@@ -53,82 +53,19 @@ from ._layout import WasmEmissionError
 # ``_emit_bool_query_with_attenuation_check``,
 # ``_emit_clock_with_attenuation_check``,
 # ``_emit_attenuation_err_into_ret_area``,
-# ``_ATTENUATION_PRIVILEGED_OPS``). The ``.allows(arg)`` query
-# methods still inline (``_emit_atten_allows`` collapses the
-# literal-arg case to a const at emit time;
-# ``_emit_atten_allows_runtime`` handles the dynamic-arg case via
-# ``_emit_path_prefix_check`` / ``$proc_allows``), because those
-# are guest-side queries with no host syscall to short-circuit.
-
-
-def _unquote_attenuation_arg(s: str) -> str:
-    """``_stringify_expr`` quotes string literals with double quotes
-    (``'"/tmp/"'``). The Wasm-side attenuation check only supports
-    literal-string arguments; anything else (a runtime variable, a
-    format string) is rejected at emit time with a
-    ``WasmEmissionError`` so the Python and Wasm backends never
-    disagree on what the check enforced.
-
-    Returns the unquoted string for the literal case; raises
-    ``WasmEmissionError`` otherwise.
-    """
-    if len(s) >= 2 and s.startswith('"') and s.endswith('"'):
-        return s[1:-1]
-    raise WasmEmissionError(
-        f"Wasm attenuation check requires a literal-string arg; "
-        f"got {s!r}. Add the literal at the source-level "
-        f"restrict_to* call, or rely on the Python runtime for "
-        f"the dynamic-string case (the analyzer's static "
-        f"discipline still applies)."
-    )
-
-
-def _parse_attenuation_key_list(args: list) -> list[str]:
-    """``Env.restrict_to_keys(["HOME", "PATH"])`` stringifies its
-    single ListLit arg via ``_stringify_expr`` as
-    ``'["HOME", "PATH"]'``. Extract the key list back into a Python
-    list of unquoted strings. Returns an empty list when the form
-    isn't a literal-only list.
-    """
-    if not args:
-        return []
-    first = args[0].strip()
-    # A single literal key (``restrict_to_keys("HOME")``) is a
-    # degenerate but legal shape.
-    if first.startswith('"') and first.endswith('"'):
-        return [first[1:-1]]
-    if not (first.startswith("[") and first.endswith("]")):
-        return []
-    inner = first[1:-1].strip()
-    if not inner:
-        return []
-    out: list[str] = []
-    # Comma-split with quote awareness.
-    buf = ""
-    in_quotes = False
-    for ch in inner:
-        if ch == '"':
-            in_quotes = not in_quotes
-            buf += ch
-            continue
-        if ch == "," and not in_quotes:
-            piece = buf.strip()
-            if piece.startswith('"') and piece.endswith('"'):
-                out.append(piece[1:-1])
-            else:
-                # Non-literal key: bail out (fall-back to refusing
-                # the whole list so the check stays sound).
-                return []
-            buf = ""
-            continue
-        buf += ch
-    piece = buf.strip()
-    if piece:
-        if piece.startswith('"') and piece.endswith('"'):
-            out.append(piece[1:-1])
-        else:
-            return []
-    return out
+# ``_ATTENUATION_PRIVILEGED_OPS``).
+# GAP-2b (2026-06-21): the ``.allows(arg)`` query methods on Fs /
+# Db / Net / Proc / Env were the last guest-side inline check. They
+# now route through a ``$<Cap>_allows(handle, arg) -> bool`` host
+# function (``_emit_cap_allows_with_handle``) that returns the
+# receiver cap's authoritative ``allows(arg)``. The dead inline
+# machinery (``_emit_atten_allows``, ``_emit_atten_allows_runtime``,
+# ``_emit_one_attenuation``, ``_emit_path_prefix_check``, the
+# ``_unquote_attenuation_arg`` / ``_parse_attenuation_key_list``
+# helpers) was deleted with this slice. Routing the query host-side
+# closes the dynamic-prefix gap (literal and dynamic args travel
+# identically as a string) and makes the query answer equal to the
+# enforcement (no more guest-side lexical realpath approximation).
 
 
 _CANONICAL_INDIRECT_RETURN: dict[tuple[str, str], tuple[int, str]] = {
@@ -282,10 +219,17 @@ class _CapDispatchMixin:
             # but the Ok arm carries a list<string> instead of a
             # string. handle + (ptr, len) + ret_area.
             return (["i32", "i32", "i32", "i32"], "")
-        if "func(handle: u32, path: string) -> bool" in wit:
+        if ("func(handle: u32, path: string) -> bool" in wit
+                or "func(handle: u32, host: string) -> bool" in wit
+                or "func(handle: u32, cmd: string) -> bool" in wit
+                or "func(handle: u32, key: string) -> bool" in wit):
             # Slice 25.2: Fs.exists / Fs.is_dir - handle + (ptr, len)
             # -> i32 (Bool is i32 on the Wasm side). Direct return,
             # no canonical-ABI indirect dance.
+            # GAP-2b (2026-06-21): the ``<cap>.allows(arg)`` host
+            # query shares this exact wire shape (handle + a single
+            # string arg -> bool) for Fs / Db (path), Net (host),
+            # Proc (cmd) and Env (key).
             return (["i32", "i32", "i32"], "i32")
         if "func(path: string) -> result<_, io-error>" in wit:
             # Fs.mkdir: single-string arg version of Fs.write's
@@ -436,16 +380,21 @@ class _CapDispatchMixin:
         if method in ("restrict_to", "restrict_to_keys",
                       "restrict_to_after"):
             return
-        # ``allows`` on Fs / Env / Db / Proc is inlined at emit time
-        # (D4 Option B). For a literal-string argument we collapse the
-        # attenuation chain to a static i32 result; for a non-literal
-        # argument we emit a runtime check that walks the attenuation
-        # chain. ``Clock.allows`` is special-cased (slice 25.6 routes
-        # it through a host call that consults the handle's
-        # ``not_before`` deadline against the live wall clock) - see
-        # the cap == "Clock" + method == "allows" branch below.
+        # GAP-2b (2026-06-21): ``allows`` on Fs / Env / Db / Proc /
+        # Net routes through an authoritative host function
+        # ``$<Cap>_allows(handle, arg) -> bool``. The host looks up
+        # the receiver cap and returns ``cap.allows(arg)`` - the same
+        # hardened method (realpath containment for Fs/Db, exact
+        # host-set membership for Net, identity basename rule for
+        # Proc, canon-key membership for Env) the privileged ops
+        # already enforce. This closes the dynamic-prefix gap (the old
+        # inline path rejected non-literal args for Fs/Db/Net/Proc and
+        # diverged silently for Env) AND aligns the query with the
+        # enforcement (the old guest-side lexical prefix check could
+        # not realpath). ``Clock.allows`` was already host-side (it
+        # takes no string arg) - see the branch below.
         if method == "allows" and cap in ("Fs", "Env", "Db", "Proc", "Net"):
-            self._emit_atten_allows(instr, cap)
+            self._emit_cap_allows_with_handle(instr, cap)
             return
         # Slice 25.6 (2026-05-30): Clock.allows now takes a handle
         # the host looks up to consult the cap's real not-before
@@ -500,9 +449,6 @@ class _CapDispatchMixin:
         # passing helper. The host bridge looks up the receiver cap
         # from the table and enforces ``cap.allows(arg)`` before
         # the syscall, closing audit slice 25 F1 for these caps.
-        # The old inline attenuation-check machinery in
-        # ``_emit_one_attenuation`` is now dead code for these caps
-        # and is kept (commented) for the slice-25.9 cleanup.
         if cap in ("Db", "Proc", "Env") and indirect is not None:
             self._emit_indirect_with_cap_handle(instr, cap, method, indirect)
             return
@@ -830,6 +776,29 @@ class _CapDispatchMixin:
         if instr.dst is not None:
             self._write(f"local.set ${instr.dst}")
 
+    def _emit_cap_allows_with_handle(
+        self, instr: MethodCall, cap: str,
+    ) -> None:
+        """Emit ``cap.allows(arg)`` for Fs / Db / Net / Proc / Env
+        (GAP-2b, 2026-06-21). Pushes the receiver handle + the single
+        string arg (ptr, len), calls ``$<Cap>_allows``, binds the
+        i32 (Bool) result. The host resolves the handle and returns
+        the receiver cap's authoritative ``allows(arg)``; literal and
+        dynamic args travel identically as a string, so the
+        dynamic-prefix case has full Python parity and the answer is
+        the same as the enforcement (no guest-side lexical
+        approximation)."""
+        if len(instr.args) != 1:
+            raise WasmEmissionError(
+                f"{cap}.allows expected 1 string arg, got "
+                f"{len(instr.args)} -- analyzer should have rejected"
+            )
+        self._push_cap_handle(instr.receiver, cap)
+        self._push_string_arg(instr.args[0])
+        self._write(f"call ${cap}_allows")
+        if instr.dst is not None:
+            self._write(f"local.set ${instr.dst}")
+
     def _push_string_arg(self, arg) -> None:
         """Push a string Value as (ptr, len). Replicates the inline
         argument-push shape used by ``_emit_cap_method_call`` so the
@@ -846,428 +815,6 @@ class _CapDispatchMixin:
             self._write(f"local.get ${arg.name}_len")
         else:
             self._push_value(arg)
-
-    def _emit_one_attenuation(
-        self, cap: str, method: str, att: dict,
-    ) -> None:
-        """AND one attenuation into ``$_atten_ok``. Each attenuation
-        is a record ``{"method": str, "args": [str_form, ...]}`` as
-        produced by ``_flatten_restrict_chain``.
-
-        Slice 25.9 (2026-05-30): only invoked from the
-        ``_emit_atten_allows_runtime`` dynamic-arg path on caps
-        Fs / Env / Db / Proc (the literal-arg path collapses to a
-        const at emit time without this helper). Net never reaches
-        here (``net.allows(...)`` is rejected by the WIT table at
-        discovery time) and the privileged-op paths moved to the
-        host handle table in slices 25.2-25.8, so the original
-        per-cap branch set is reduced to the four caps that still
-        host a guest-side ``.allows()`` query."""
-        att_method = att.get("method")
-        args = att.get("args", [])
-        if cap == "Fs":
-            if att_method != "restrict_to" or not args:
-                raise WasmEmissionError(
-                    f"unsupported Fs attenuation: {att_method!r} "
-                    f"with args {args!r}"
-                )
-            prefix = _unquote_attenuation_arg(args[0])
-            self._emit_path_prefix_check(prefix)
-            return
-        if cap == "Db":
-            if att_method != "restrict_to" or not args:
-                raise WasmEmissionError(
-                    f"unsupported Db attenuation: {att_method!r} "
-                    f"with args {args!r}"
-                )
-            prefix = _unquote_attenuation_arg(args[0])
-            self._emit_path_prefix_check(prefix)
-            return
-        if cap == "Net":
-            # Net.allows is EXACT host equality: ok &= (host == arg).
-            # Net.restrict_to intersects single-host sets, so the AND
-            # over the chain reproduces the intersection (two distinct
-            # hosts collapse to never-allowed).
-            if att_method != "restrict_to" or not args:
-                raise WasmEmissionError(
-                    f"unsupported Net attenuation: {att_method!r} "
-                    f"with args {args!r}"
-                )
-            host = _unquote_attenuation_arg(args[0])
-            offset, length = self._intern_string(host)
-            self._write("local.get $_atten_path_ptr")
-            self._write("local.get $_atten_path_len")
-            self._write(f"i32.const {offset}")
-            self._write(f"i32.const {length}")
-            self._write("call $str_eq")
-            self._write("local.get $_atten_ok")
-            self._write("i32.and")
-            self._write("local.set $_atten_ok")
-            return
-        if cap == "Proc":
-            # Basename + suffix-boundary check via the
-            # ``$proc_allows`` runtime helper (matches Python's
-            # ``Proc.allows`` semantics).
-            if att_method != "restrict_to" or not args:
-                raise WasmEmissionError(
-                    f"unsupported Proc attenuation: {att_method!r} "
-                    f"with args {args!r}"
-                )
-            prefix = _unquote_attenuation_arg(args[0])
-            offset, length = self._intern_string(prefix)
-            self._write("local.get $_atten_path_ptr")
-            self._write("local.get $_atten_path_len")
-            self._write(f"i32.const {offset}")
-            self._write(f"i32.const {length}")
-            self._write("call $proc_allows")
-            # ok &= predicate
-            self._write("local.get $_atten_ok")
-            self._write("i32.and")
-            self._write("local.set $_atten_ok")
-            return
-        if cap == "Env":
-            # Walk the literal key list and OR-equality the
-            # requested name against each key, AND-combine into
-            # the running predicate.
-            if att_method != "restrict_to_keys":
-                raise WasmEmissionError(
-                    f"unsupported Env attenuation: {att_method!r}"
-                )
-            # args is a list of stringified keys, normally the
-            # single ListLit form (``[\"K1\", \"K2\"]``). Walk
-            # the items; OR str_eq against the requested name.
-            keys = _parse_attenuation_key_list(args)
-            if not keys:
-                # Empty allow-list: nothing matches. Force ok=0.
-                self._write("i32.const 0")
-                self._write("local.set $_atten_ok")
-                return
-            # Build OR-chain: any_match = (name == K1) | (name == K2) ...
-            self._write("i32.const 0")
-            self._write("local.set $_atten_match")
-            for k in keys:
-                koff, klen = self._intern_string(k)
-                self._write("local.get $_atten_path_ptr")
-                self._write("local.get $_atten_path_len")
-                self._write(f"i32.const {koff}")
-                self._write(f"i32.const {klen}")
-                self._write("call $str_eq")
-                self._write("local.get $_atten_match")
-                self._write("i32.or")
-                self._write("local.set $_atten_match")
-            # ok &= any_match
-            self._write("local.get $_atten_ok")
-            self._write("local.get $_atten_match")
-            self._write("i32.and")
-            self._write("local.set $_atten_ok")
-            return
-        raise WasmEmissionError(
-            f"attenuation enforcement for cap {cap!r} not implemented"
-        )
-
-    def _emit_path_prefix_check(self, prefix: str) -> None:
-        """Emit a path-prefix attenuation check that respects path
-        component boundaries: ``path == prefix`` OR ``path``
-        starts with ``prefix + '/'``. The combined check rejects
-        the classic boundary bypass ``Fs.restrict_to("/tmp")``
-        admitting ``/tmproot/secret`` that a naive
-        ``$str_starts_with(path, "/tmp")`` would accept.
-
-        This is the GUEST-SIDE query check and is a LEXICAL
-        APPROXIMATION of the authoritative host-side enforcement.
-        The Python ``Fs.allows`` / ``Db.allows`` use
-        ``Path.is_relative_to`` after ``os.path.realpath``
-        canonicalisation, which resolves ``..`` / ``.`` / symlinks
-        and is strictly stronger. The guest Wasm has no filesystem,
-        so it cannot realpath at runtime: the component-boundary
-        check closes the simple ``/tmproot`` lexical bypass, but a
-        path that escapes via a runtime ``..`` (``prefix/../x``) or a
-        symlink is NOT caught here on the dynamic-arg path. The
-        AUTHORITATIVE answer is the host-side check; this guest query
-        is a best-effort lexical hint, so the backends do not fully
-        agree on every dynamic traversal query. (Literal-string
-        queries are normalised lexically at emit time, which does
-        collapse ``..``; only the runtime dynamic-arg path is
-        approximate.)
-
-        The prefix is interned once with and once without a
-        trailing slash to avoid emitting the canonicalisation
-        logic at runtime. ``prefix + '/'`` is the slash-suffixed
-        form used for the ``startswith`` arm; ``prefix`` is the
-        exact-match arm. Result: ok &&= (eq OR starts_with_slash).
-        """
-        # exact-match arm: $str_eq(path, prefix)
-        offset_eq, length_eq = self._intern_string(prefix)
-        self._write("local.get $_atten_path_ptr")
-        self._write("local.get $_atten_path_len")
-        self._write(f"i32.const {offset_eq}")
-        self._write(f"i32.const {length_eq}")
-        self._write("call $str_eq")
-        # boundary-aware startswith arm: $str_starts_with(path,
-        # prefix + '/'). The trailing slash forces the next char
-        # of ``path`` (if any) to be a separator, blocking the
-        # ``/tmproot`` lookalike.
-        prefix_with_slash = prefix if prefix.endswith("/") else prefix + "/"
-        offset_sw, length_sw = self._intern_string(prefix_with_slash)
-        self._write("local.get $_atten_path_ptr")
-        self._write("local.get $_atten_path_len")
-        self._write(f"i32.const {offset_sw}")
-        self._write(f"i32.const {length_sw}")
-        self._write("call $str_starts_with")
-        # combine: eq OR starts_with_slash
-        self._write("i32.or")
-        # ok &= combined
-        self._write("local.get $_atten_ok")
-        self._write("i32.and")
-        self._write("local.set $_atten_ok")
-
-    def _emit_atten_allows(
-        self, instr: MethodCall, cap: str,
-    ) -> None:
-        """Emit a ``Fs.allows(path)`` / ``Env.allows(name)`` call
-        inline (D4 Option B). With no attenuations the call is
-        trivially true (matches the Python ``self._allowed is None``
-        branch); otherwise we walk the chain at emit time and AND
-        each predicate into the result. Privileged ops (Fs.read /
-        Env.get / ...) enforce the same restriction via the host
-        handle table since slice 25 (2026-05-30); this query path
-        stays inline because it has no host syscall to short-
-        circuit.
-
-        Two argument shapes (slice 14, 2026-05-29):
-        - **Literal-string argument**: the answer is fully known at
-          emit time. Collapse to a single ``i32.const 0/1`` push;
-          zero runtime cost.
-        - **Dynamic argument (local / param / computed)**: emit a
-          runtime check that mirrors the privileged-op path's
-          ``_emit_path_prefix_check`` / key-AND machinery, bound
-          to dst as i32.
-
-        Pre-slice-14 the dynamic case raised
-        ``WasmEmissionError`` -- programs that passed a non-literal
-        path to ``fs.allows(...)`` compiled on Python but crashed
-        compile on Wasm. Lifting this restriction removes the
-        last cross-backend portability gap from the audit P2
-        backlog.
-        """
-        attenuations = getattr(instr, "attenuations", None) or []
-        # No-arg form would be a bug; both Fs and Env.allows take
-        # a single string. Defensive check so a future analyzer
-        # change surfaces here rather than producing wrong code.
-        if len(instr.args) != 1:
-            raise WasmEmissionError(
-                f"{cap}.allows expected 1 string arg, got "
-                f"{len(instr.args)} -- analyzer should have rejected"
-            )
-        arg = instr.args[0]
-        if arg.kind != "lit_str":
-            # Dynamic-arg path: emit a runtime check. No
-            # attenuations -> always true.
-            self._emit_atten_allows_runtime(instr, cap, arg, attenuations)
-            return
-        literal: str = arg.literal
-        # Compute the static answer. No attenuations -> always true
-        # (mirrors ``self._allowed_prefixes is None`` /
-        # ``self._allowed_keys is None`` in the Python runtime).
-        if not attenuations:
-            result = True
-        elif cap in ("Fs", "Db"):
-            # AND over each restrict_to(prefix): literal must
-            # match every prefix in the chain at a component
-            # boundary (exact match OR followed by '/'). Anything
-            # else (a different attenuation method, a non-literal
-            # prefix) is a structural error -- the analyzer should
-            # have rejected it on the privileged op already, so
-            # we mirror that loudness here. Audit 2026-05-29:
-            # pre-fix the check used a naive ``startswith`` which
-            # admitted ``/tmproot/x`` when restricted to ``/tmp``;
-            # the boundary-aware check now matches the Python
-            # runtime's ``Path.is_relative_to`` semantics for
-            # well-formed lexical paths.
-            #
-            # Audit 2026-06-17: the Python runtime's ``Fs.allows`` /
-            # ``Db.allows`` resolve ``..`` / ``.`` / symlinks through
-            # ``os.path.realpath`` before the boundary check, so
-            # ``prefix/../escaped.db`` is denied (the ``..`` walks out
-            # of the prefix). The pre-fix lexical ``startswith`` here
-            # admitted it. We cannot ``realpath`` at emit time (no
-            # target FS), but ``os.path.normpath`` collapses the ``..``
-            # / ``.`` lexically, which closes the obvious traversal
-            # bypass. Symlink-based escapes still require the host's
-            # realpath; the guest-side answer is a lexical
-            # approximation of the authoritative host check.
-            # ``posixpath`` (not ``os.path``) so the normalisation is
-            # platform-independent and keeps ``/`` separators on a
-            # Windows build host -- the runtime path strings are POSIX.
-            import posixpath as _ppath
-            literal_norm = _ppath.normpath(literal)
-            result = True
-            for att in attenuations:
-                if att.get("method") != "restrict_to":
-                    raise WasmEmissionError(
-                        f"unsupported {cap} attenuation on .allows: "
-                        f"{att.get('method')!r}"
-                    )
-                args = att.get("args", [])
-                if not args:
-                    raise WasmEmissionError(
-                        f"{cap}.restrict_to attenuation with no arg"
-                    )
-                prefix = _ppath.normpath(
-                    _unquote_attenuation_arg(args[0])
-                )
-                sep = prefix if prefix.endswith("/") else prefix + "/"
-                if not (literal_norm == prefix
-                        or literal_norm.startswith(sep)):
-                    result = False
-                    break
-        elif cap == "Net":
-            # AND over each restrict_to(host): the literal host must
-            # equal EVERY host in the chain (Net.restrict_to intersects
-            # single-host sets, so any two distinct hosts narrow to the
-            # empty set -> never allowed). Net.allows is EXACT equality
-            # (``host in self._allowed``), not a prefix check, so a host
-            # that merely shares a prefix is NOT allowed.
-            result = True
-            for att in attenuations:
-                if att.get("method") != "restrict_to":
-                    raise WasmEmissionError(
-                        f"unsupported Net attenuation on .allows: "
-                        f"{att.get('method')!r}"
-                    )
-                args = att.get("args", [])
-                if not args:
-                    raise WasmEmissionError(
-                        "Net.restrict_to attenuation with no arg"
-                    )
-                host = _unquote_attenuation_arg(args[0])
-                if literal != host:
-                    result = False
-                    break
-        elif cap == "Proc":
-            # AND over each restrict_to(prefix), mirroring the Python
-            # runtime's ``Proc.allows`` rule (audit 2026-06-17). That
-            # rule is identity-based, NOT basename-based:
-            #
-            # - a PATH restriction (prefix contains a separator) only
-            #   admits a path cmd whose ``normpath`` equals the prefix's
-            #   ``normpath``; a bare-name cmd never matches it.
-            # - a BARE-NAME restriction (no separator) only admits a
-            #   bare-name cmd (``cmd == prefix`` or ``cmd.startswith(
-            #   prefix + '-')``); a PATH cmd never matches, so a planted
-            #   ``/attacker/git`` cannot impersonate ``restrict_to("git")``.
-            #
-            # The pre-fix code collapsed the cmd to its basename, which
-            # let ``/attacker/git`` slip through ``restrict_to("git")`` --
-            # the exact bypass the Python runtime now denies. This whole
-            # rule is purely lexical, so the literal collapse mirrors it
-            # exactly. ``os.path.normpath`` is computed at emit time on
-            # the known literals.
-            # ``posixpath`` for the normalisation so a Windows build
-            # host keeps ``/`` separators; the runtime treats commands
-            # as POSIX path strings. Separator detection still looks at
-            # ``/`` only, matching the Python runtime's ``_has_sep``
-            # intent on the wire format.
-            import posixpath as _ppath
-
-            def _has_sep(s: str) -> bool:
-                return "/" in s
-
-            cmd_is_path = _has_sep(literal)
-            result = True
-            for att in attenuations:
-                if att.get("method") != "restrict_to":
-                    raise WasmEmissionError(
-                        f"unsupported Proc attenuation on .allows: "
-                        f"{att.get('method')!r}"
-                    )
-                args = att.get("args", [])
-                if not args:
-                    raise WasmEmissionError(
-                        "Proc.restrict_to attenuation with no arg"
-                    )
-                prefix = _unquote_attenuation_arg(args[0])
-                if _has_sep(prefix):
-                    matched = (
-                        cmd_is_path
-                        and _ppath.normpath(literal)
-                        == _ppath.normpath(prefix)
-                    )
-                else:
-                    matched = (
-                        not cmd_is_path
-                        and (literal == prefix
-                             or literal.startswith(prefix + "-"))
-                    )
-                if not matched:
-                    result = False
-                    break
-        else:  # cap == "Env"
-            # AND over each restrict_to_keys: literal must appear
-            # in EVERY key list (intersection semantics, matching
-            # the runtime's ``self._allowed_keys is None`` /
-            # ``name in self._allowed_keys`` walk through the
-            # chain). An empty key list means nothing matches.
-            result = True
-            for att in attenuations:
-                if att.get("method") != "restrict_to_keys":
-                    raise WasmEmissionError(
-                        f"unsupported Env attenuation on .allows: "
-                        f"{att.get('method')!r}"
-                    )
-                keys = _parse_attenuation_key_list(att.get("args", []))
-                if literal not in keys:
-                    result = False
-                    break
-        self._write(f"i32.const {1 if result else 0}")
-        if instr.dst is not None:
-            self._write(f"local.set ${instr.dst}")
-
-    def _emit_atten_allows_runtime(
-        self, instr, cap: str, arg, attenuations: list,
-    ) -> None:
-        """Runtime version of ``_emit_atten_allows`` for the
-        dynamic-argument case. Stashes the path / name in the
-        same ``$_atten_path_*`` scratch the privileged-op
-        attenuation check uses, walks the attenuation chain
-        emitting per-attenuation checks (AND-combined), then
-        binds the i32 accumulator to dst.
-
-        - ``cap in {Fs, Db}``: path-prefix check via
-          ``_emit_path_prefix_check`` (the same boundary-aware
-          ``eq OR starts-with-slash`` shape the privileged path
-          uses).
-        - ``cap == Env``: per-attenuation OR-chain of name-equality
-          against the keys in that restrict_to_keys list, AND-
-          combined across the chain. Empty key list -> ok=0.
-        - ``cap == Proc``: per-attenuation call to ``$proc_allows``
-          with the prefix literal; basename + suffix-boundary
-          match runs at runtime.
-        - No attenuations: push 1 (unrestricted, matches
-          ``self._allowed_prefixes is None`` /
-          ``self._allowed_keys is None``).
-        """
-        if not attenuations:
-            self._write("i32.const 1")
-            if instr.dst is not None:
-                self._write(f"local.set ${instr.dst}")
-            return
-        # Stash the arg in scratch locals (declared by the locals
-        # walker on demand whenever a dynamic-arg ``.allows()``
-        # call appears in the function).
-        self._push_string_arg(arg)
-        self._write("local.set $_atten_path_len")
-        self._write("local.set $_atten_path_ptr")
-        # ok = 1; AND each per-attenuation check into it.
-        self._write("i32.const 1")
-        self._write("local.set $_atten_ok")
-        # Method-name parameter for _emit_one_attenuation is just
-        # used in error messages; pass through the source method.
-        for att in attenuations:
-            self._emit_one_attenuation(cap, instr.method, att)
-        self._write("local.get $_atten_ok")
-        if instr.dst is not None:
-            self._write(f"local.set ${instr.dst}")
 
     def _emit_cap_indirect_materialise(self, ret_kind: str, dst) -> None:
         """Materialise a Capa-side value from the flat fields the

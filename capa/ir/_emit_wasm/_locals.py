@@ -130,21 +130,10 @@ class _LocalsCollectionMixin:
         # canonical-ABI indirect return; drives the ``$_ret_area``
         # scratch local declaration.
         has_indirect_cap_call = False
-        # Set when any MethodCall is a ``.allows(dynamic_arg)`` on
-        # Fs / Env / Db / Proc with a non-empty ``attenuations``
-        # list. Drives declaration of the ``$_atten_path_*`` and
-        # ``$_atten_ok`` scratch locals the dynamic-arg runtime
-        # check needs (literal-arg ``.allows()`` collapses to a
-        # const at emit time and needs no locals). Privileged ops
-        # moved to the host handle table in slice 25; their
-        # emit-time inline check is gone, so the ``$_atten_*``
-        # locals are only declared on demand for the still-inline
-        # ``.allows()`` dynamic-arg path.
-        has_attenuation_check = False
-        # ``$_atten_match`` is the per-Env-restrict_to_keys
-        # OR-chain scratch; declared only when an Env attenuation
-        # surface is present.
-        has_attenuation_env_check = False
+        # GAP-2b (2026-06-21): ``cap.allows(arg)`` queries route
+        # through the ``$<Cap>_allows`` host import now, so they need
+        # no ``$_atten_*`` scratch locals (the old guest-side inline
+        # runtime check that used them was deleted).
         # Audit fix C1: List indexing emits an inline ``i32.ge_u``
         # bounds-check trap; the wrapped-i32 idx is stashed in
         # ``$_bounds_idx`` so the check and the subsequent address
@@ -183,7 +172,6 @@ class _LocalsCollectionMixin:
             nonlocal has_int_overflow_check
             nonlocal cur_for_depth, max_for_depth
             nonlocal has_indirect_cap_call
-            nonlocal has_attenuation_check, has_attenuation_env_check
             nonlocal has_list_index_bounds
             nonlocal has_map_pointer_key
             nonlocal has_multi_impl_dispatch
@@ -471,29 +459,10 @@ class _LocalsCollectionMixin:
                         in _CANONICAL_INDIRECT_RETURN
                     ):
                         has_indirect_cap_call = True
-                    # Capability attenuation check: the privileged
-                    # ops (Fs.read / Net.get / ...) moved to the
-                    # host handle table in slice 25 and no longer
-                    # need any emit-time inline check or scratch
-                    # locals. Only the dynamic-arg path of
-                    # ``cap.allows(path)`` on Fs / Env / Db / Proc
-                    # still emits an inline runtime check (the
-                    # literal-arg path collapses to a const), so
-                    # the ``$_atten_path_*`` / ``$_atten_ok``
-                    # scratch is declared only when that pattern
-                    # appears. Env attenuations additionally use
-                    # ``$_atten_match`` for the per-restrict_to_keys
-                    # OR-chain.
-                    if getattr(instr, "attenuations", None):
-                        cap = instr.cap_used or ""
-                        m = instr.method
-                        if (cap in ("Fs", "Env", "Db", "Proc", "Net")
-                                and m == "allows"
-                                and instr.args
-                                and instr.args[0].kind != "lit_str"):
-                            has_attenuation_check = True
-                            if cap == "Env":
-                                has_attenuation_env_check = True
+                    # GAP-2b (2026-06-21): ``cap.allows(arg)`` queries
+                    # route through the ``$<Cap>_allows`` host import,
+                    # so they need no ``$_atten_*`` scratch locals; the
+                    # guest-side inline check that used them is gone.
                     if recv_ty.startswith("List"):
                         # List method calls (push / contains / get
                         # / length / is_empty / ...) reuse $_m_scrut
@@ -1023,16 +992,6 @@ class _LocalsCollectionMixin:
             # by the variant_ctor / for-loop branches above.
             out.setdefault("_m_tag", "i32")
             out.setdefault("_alloc_tmp", "i32")
-        if has_attenuation_check:
-            # Dynamic-arg ``.allows()`` check stashes the path/
-            # name in ``$_atten_path_*`` and accumulates the
-            # predicate into ``$_atten_ok``. Env-specific OR-chain
-            # against the key list uses ``$_atten_match``.
-            out["_atten_path_ptr"] = "i32"
-            out["_atten_path_len"] = "i32"
-            out["_atten_ok"] = "i32"
-            if has_attenuation_env_check:
-                out["_atten_match"] = "i32"
         if has_list_index_bounds:
             # Audit fix C1: ``$_bounds_idx`` holds the wrapped-i32
             # index for the inline bounds check in ``_emit_index``.

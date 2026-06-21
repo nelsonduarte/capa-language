@@ -554,17 +554,13 @@ class WasmEmitter(
             # operation may run; it compares two (ptr, len) string
             # pairs byte-by-byte. Always emit when a map is in
             # play -- inlining it at every set/get call site would
-            # bloat the WAT. ``cap.allows(arg)`` queries on Fs /
-            # Env / Db / Proc with a tracked attenuation chain also
-            # pull in ``$str_eq`` (Env's allow-list compare;
-            # ``$proc_allows`` uses it for the exact-match arm of
-            # its basename check).
-            needs_starts_with, needs_proc_allows = (
-                self._uses_attenuation_check(module)
-            )
+            # bloat the WAT.
+            # GAP-2b (2026-06-21): ``cap.allows(arg)`` queries no
+            # longer emit any guest-side attenuation helper - they
+            # route through the ``$<Cap>_allows`` host import - so
+            # the old ``$str_starts_with`` / ``$proc_allows`` /
+            # ``$str_has_slash`` gate is gone.
             if (self._uses_map_ops(module)
-                    or needs_starts_with
-                    or needs_proc_allows
                     or self._eq_needs_str_eq(module)):
                 self._emit_str_eq_function()
             if self._uses_string_order_cmp(module):
@@ -572,18 +568,6 @@ class WasmEmitter(
                 # to ``call $str_cmp`` (byte-by-byte UTF-8 ordering ==
                 # Python's code-point ordering). Independent of $str_eq.
                 self._emit_str_cmp_function()
-            if needs_starts_with:
-                self._emit_str_starts_with_function()
-            if needs_proc_allows:
-                # Slice 15 (2026-05): ``$proc_allows`` does the
-                # basename + suffix-boundary check Proc.allows
-                # attenuations require. Emitted only when the
-                # discovery walker flips on the gate.
-                # Audit 2026-06-17: ``$proc_allows`` now calls
-                # ``$str_has_slash`` for the bare-name-restriction
-                # identity guard, so emit that helper alongside it.
-                self._emit_str_has_slash_function()
-                self._emit_proc_allows_function()
             if self._uses_string_codepoint_index(module):
                 # Slice 17 (2026-05-29): String.length and
                 # String.substring switched from byte-indexing to

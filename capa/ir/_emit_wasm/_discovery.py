@@ -267,44 +267,6 @@ class _DiscoveryMixin:
                     return True
         return False
 
-    def _uses_attenuation_check(
-        self, module: Module,
-    ) -> tuple[bool, bool]:
-        """Walk the module for ``cap.allows(arg)`` MethodCalls on
-        Fs / Env / Db / Proc with a tracked attenuation chain.
-        Only ``.allows()`` queries still emit an inline runtime
-        check; the privileged ops (Fs.read / Net.get / ...) moved
-        to the host handle table in slice 25 (2026-05-30), so this
-        helper no longer needs to scan them.
-
-        Returns ``(needs_starts_with, needs_proc_allows)``:
-        - ``needs_starts_with``: Fs.allows / Db.allows requires
-          the prefix-component check via ``$str_starts_with``.
-        - ``needs_proc_allows``: Proc.allows requires the basename
-          + suffix-boundary check via ``$proc_allows``.
-
-        Env.allows uses ``$str_eq`` (already emitted via the
-        Map / String-method discovery branches; no separate flag
-        is needed)."""
-        needs_starts_with = False
-        needs_proc_allows = False
-        for _fn, instr in walk_module(module):
-            if isinstance(instr, MethodCall) and instr.attenuations:
-                cap = instr.cap_used or ""
-                # Conservatively flag the helper whenever
-                # ``.allows()`` exists with a tracked
-                # attenuation chain: the literal-arg fast-path
-                # collapses to a const without the helper, the
-                # dynamic-arg path needs it. Deciding which is
-                # which lives at emit time; over-emitting one
-                # unused helper adds <100 bytes to the WAT.
-                if (cap in ("Fs", "Db")
-                        and instr.method == "allows"):
-                    needs_starts_with = True
-                if cap == "Proc" and instr.method == "allows":
-                    needs_proc_allows = True
-        return needs_starts_with, needs_proc_allows
-
     def _uses_map_ops(self, module: Module) -> bool:
         """True if the module needs the ``$str_eq`` helper. After
         the M4 key generalisation, the Map gate is restricted to
@@ -589,31 +551,18 @@ class _DiscoveryMixin:
                     pass
                 elif (cap in ("Fs", "Env", "Db", "Proc", "Net")
                       and instr.method == "allows"):
-                    # Fs.allows / Env.allows / Db.allows / Proc.allows
-                    # lower to inline-attenuation checks at emit time
-                    # (D4 Option B): no host import, no WIT signature
-                    # needed. ``Clock.allows`` is the exception
-                    # (no string arg, needs the live wall clock)
-                    # and still uses the host bridge.
-                    #
-                    # Pre-intern every string the dynamic-arg emit
-                    # path will reference. The literal-arg path
-                    # collapses to a const so it needs nothing here,
-                    # but the dynamic-arg path
-                    # (``_emit_atten_allows_runtime``) interns the
-                    # boundary-aware prefix forms while emitting the
-                    # function body -- AFTER the data segment has
-                    # been written. An offset interned that late
-                    # points at uninitialised memory. The classic
-                    # symptom (audit C2): a no-trailing-slash prefix
-                    # like ``restrict_to("/home/data")`` needs the
-                    # slash-suffixed ``"/home/data/"`` for the
-                    # ``starts_with`` arm, but that string never
-                    # appears as a literal Value so discovery never
-                    # sees it. Mirror the exact strings the emit
-                    # path will reference so they land in the data
-                    # segment.
-                    self._discover_attenuation_strings(cap, instr)
+                    # GAP-2b (2026-06-21): Fs.allows / Env.allows /
+                    # Db.allows / Proc.allows / Net.allows route
+                    # through the authoritative host function
+                    # ``$<Cap>_allows(handle, arg) -> bool`` (the same
+                    # host-route ``Clock.allows`` already used).
+                    # Register the host import so the linker resolves
+                    # the callback. No string pre-interning is needed
+                    # anymore: the arg travels guest->host as a normal
+                    # ``(ptr, len)`` string, so the host-route embeds
+                    # nothing statically (this is what fixes the
+                    # dynamic-prefix gap and the silent Env divergence).
+                    self._used_caps.add((cap, "allows"))
                 elif cap == "Random" and instr.method in (
                     "with_seed", "int_range", "float_unit",
                 ):
@@ -664,78 +613,6 @@ class _DiscoveryMixin:
                 for part in instr.parts:
                     if isinstance(part, str) and part:
                         self._intern_string(part)
-
-    def _discover_attenuation_strings(
-        self, cap: str, instr: MethodCall,
-    ) -> None:
-        """Pre-intern the data-segment strings the dynamic-arg
-        ``.allows()`` emit path will reference, so they land in the
-        data segment that is written before any function body.
-
-        Mirrors ``_emit_atten_allows_runtime`` /
-        ``_emit_one_attenuation`` exactly:
-        - Fs / Db: each ``restrict_to`` prefix needs both the
-          exact-match form and the boundary-aware slash-suffixed
-          form (``prefix + '/'``) for the ``starts_with`` arm.
-        - Proc: each ``restrict_to`` prefix is interned verbatim
-          (the ``$proc_allows`` basename check reads it directly).
-        - Env: each key in every ``restrict_to_keys`` list.
-
-        Only the dynamic-arg shape reaches the runtime emit path;
-        the literal-arg shape collapses to a const and needs no
-        interned strings. Pre-interning the dynamic strings even
-        for a literal-arg call is harmless (the data segment just
-        carries an extra unused string), so we do not special-case
-        the arg kind here.
-        """
-        from ._caps import (
-            _unquote_attenuation_arg, _parse_attenuation_key_list,
-        )
-        attenuations = getattr(instr, "attenuations", None) or []
-        for att in attenuations:
-            if cap in ("Fs", "Db"):
-                if att.get("method") != "restrict_to":
-                    continue
-                args = att.get("args", [])
-                if not args:
-                    continue
-                try:
-                    prefix = _unquote_attenuation_arg(args[0])
-                except WasmEmissionError:
-                    continue
-                self._intern_string(prefix)
-                slash = prefix if prefix.endswith("/") else prefix + "/"
-                self._intern_string(slash)
-            elif cap == "Proc":
-                if att.get("method") != "restrict_to":
-                    continue
-                args = att.get("args", [])
-                if not args:
-                    continue
-                try:
-                    prefix = _unquote_attenuation_arg(args[0])
-                except WasmEmissionError:
-                    continue
-                self._intern_string(prefix)
-            elif cap == "Net":
-                # Net.allows is exact host equality (``host in
-                # self._allowed``), so each restrict_to host is interned
-                # verbatim for the dynamic-arg ``$str_eq`` compare.
-                if att.get("method") != "restrict_to":
-                    continue
-                args = att.get("args", [])
-                if not args:
-                    continue
-                try:
-                    host = _unquote_attenuation_arg(args[0])
-                except WasmEmissionError:
-                    continue
-                self._intern_string(host)
-            elif cap == "Env":
-                if att.get("method") != "restrict_to_keys":
-                    continue
-                for key in _parse_attenuation_key_list(att.get("args", [])):
-                    self._intern_string(key)
 
     @staticmethod
     def _values_of(instr: Instr) -> list[Value]:

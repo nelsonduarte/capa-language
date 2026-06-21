@@ -109,6 +109,13 @@ _WIT_SIGNATURES: dict[tuple[str, str], str] = {
     # (str_ptr, str_len) i32 pairs out of the data buffer.
     ("Env", "restrict_to_keys"):
         "restrict-to-keys: func(handle: u32, keys: list<string>) -> u32",
+    # Env.allows: the authoritative guest-side attenuation query
+    # (GAP-2b, 2026-06-21). The host looks up the receiver Env cap
+    # and returns ``env.allows(key)`` - the exact hardened method the
+    # privileged ops already consult. Pre-route the query was inlined
+    # guest-side and diverged silently on a dynamic restrict-to-keys
+    # list (the lexical key-list reconstruction returned []).
+    ("Env", "allows"): "allows: func(handle: u32, key: string) -> bool",
 
     # Fs: filesystem reads + writes. Phase 7C scope (Result<T, IoError>).
     # IoError is a Capa-side record with two String fields (message,
@@ -145,6 +152,15 @@ _WIT_SIGNATURES: dict[tuple[str, str], str] = {
     # handle as the receiver of every subsequent Fs call from this
     # branch of the program.
     ("Fs", "restrict_to"): "restrict-to: func(handle: u32, prefix: string) -> u32",
+    # Fs.allows: authoritative guest-side query (GAP-2b, 2026-06-21).
+    # The host looks up the receiver Fs cap and returns
+    # ``fs.allows(path)`` - the same realpath-canonicalising method
+    # the privileged ops enforce. Pre-route the query was a guest-side
+    # LEXICAL approximation (``_emit_path_prefix_check``) that could
+    # not realpath and so diverged from the host enforcement on a
+    # dynamic ``..`` / symlink path; routing it through the host makes
+    # query == enforcement == Python.
+    ("Fs", "allows"): "allows: func(handle: u32, path: string) -> bool",
 
     # Random: entropy source only. The actual SplitMix64 PRNG runs
     # guest-side (see ``capa.ir._emit_wasm._random``); the only thing
@@ -180,6 +196,12 @@ _WIT_SIGNATURES: dict[tuple[str, str], str] = {
     # as the receiver of every subsequent Net call in this branch
     # of the program.
     ("Net", "restrict_to"): "restrict-to: func(handle: u32, host: string) -> u32",
+    # Net.allows: authoritative guest-side query (GAP-2b,
+    # 2026-06-21). The host looks up the receiver Net cap and
+    # returns ``net.allows(host)`` (exact host-set membership). Pre-
+    # route the query inlined ``$str_eq`` over the chain, which
+    # rejected any dynamic (non-literal) host with a WasmEmissionError.
+    ("Net", "allows"): "allows: func(handle: u32, host: string) -> bool",
 
     # Db: SQLite-backed key-value + tabular store (slice 11,
     # 2026-05). ``exec`` runs DDL / DML and returns
@@ -207,6 +229,10 @@ _WIT_SIGNATURES: dict[tuple[str, str], str] = {
         "query: func(handle: u32, path: string, sql: string) -> result<string, io-error>",
     ("Db", "restrict_to"):
         "restrict-to: func(handle: u32, prefix: string) -> u32",
+    # Db.allows: authoritative guest-side query (GAP-2b, 2026-06-21).
+    # Same realpath-backed prefix containment as Fs.allows; the host
+    # returns ``db.allows(path)``.
+    ("Db", "allows"): "allows: func(handle: u32, path: string) -> bool",
 
     # Proc: sandboxed subprocess execution (slice 15, 2026-05).
     # ``exec`` takes the command path + a JSON-encoded argv tail
@@ -228,6 +254,11 @@ _WIT_SIGNATURES: dict[tuple[str, str], str] = {
         "exec: func(handle: u32, cmd: string, args-json: string) -> result<string, io-error>",
     ("Proc", "restrict_to"):
         "restrict-to: func(handle: u32, prefix: string) -> u32",
+    # Proc.allows: authoritative guest-side query (GAP-2b,
+    # 2026-06-21). The host returns ``proc.allows(cmd)`` - the
+    # identity-based basename + suffix-boundary rule. Pre-route the
+    # query inlined ``$proc_allows`` and rejected a dynamic cmd.
+    ("Proc", "allows"): "allows: func(handle: u32, cmd: string) -> bool",
 
     # ``parse_json`` / ``to_json`` used to live here as a synthetic
     # ``Json`` capability so the Wasm import machinery had something
@@ -311,29 +342,18 @@ _METHODS_NEEDING_IO_ERROR: dict[str, frozenset[str]] = {
 # the core-wasm imports stay in lockstep.
 _GUEST_ONLY_METHODS: dict[str, frozenset[str]] = {
     "Random": frozenset({"with_seed", "int_range", "float_unit"}),
-    # Slice 1 (2026-05): ``Fs.allows`` / ``Env.allows`` / ``Db.allows``
-    # are inlined at emit time (D4 inline-attenuation Option B).
-    # The Wasm emitter walks the attenuation chain and produces a
-    # static i32 Bool result without ever crossing the host
-    # boundary; the WIT generator must therefore not produce a
-    # signature for them either, or the Component Model wrap
-    # will demand a host import that the runtime never
-    # registers. ``Clock.allows`` is the exception: it takes no
-    # string arg and queries the live wall clock against a
-    # ``restrict_to_after`` deadline, so it stays a host call
-    # (see _WIT_SIGNATURES).
-    "Fs":  frozenset({"allows"}),
-    "Env": frozenset({"allows"}),
-    "Db":  frozenset({"allows"}),
-    # Net.allows is exact host-set membership (``host in self._allowed``),
-    # inlined at emit time on both backends; no host import / WIT
-    # signature, same rationale as Fs/Env/Db.allows.
-    "Net": frozenset({"allows"}),
-    # Proc.allows is inlined at emit time too (slice 15): the
-    # basename + suffix-boundary check runs entirely in the
-    # guest via the ``$proc_allows`` runtime helper, so no
-    # host import / WIT signature is produced.
-    "Proc": frozenset({"allows"}),
+    # GAP-2b (2026-06-21): ``Fs.allows`` / ``Env.allows`` /
+    # ``Db.allows`` / ``Net.allows`` / ``Proc.allows`` used to be
+    # inlined at emit time (D4 inline-attenuation Option B). That
+    # inline path could not handle a dynamic (non-literal) attenuation
+    # prefix - Fs / Db / Net / Proc raised a WasmEmissionError and Env
+    # diverged silently (returned ``no``). They now route through a
+    # ``<cap>-allows(handle, arg) -> bool`` host function that returns
+    # the receiver cap's authoritative ``allows(arg)`` (the same
+    # hardened method the privileged ops enforce), so they carry a
+    # real WIT signature and are no longer guest-only. ``Clock.allows``
+    # was already host-side (it takes no string arg and queries the
+    # live wall clock against a ``restrict_to_after`` deadline).
 }
 
 

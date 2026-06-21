@@ -1,0 +1,84 @@
+// GAP-2b (2026-06-21): dynamic-prefix attenuation parity for the
+// guest-side ``.allows()`` query on every restriction-bearing cap.
+//
+// Before this slice the query was inlined guest-side and could not
+// handle a NON-LITERAL attenuation prefix: Fs / Db / Net / Proc
+// crashed emit with a WasmEmissionError, and Env diverged SILENTLY
+// (the lexical key-list reconstruction returned [] for a dynamic
+// restrict_to_keys list, so the query answered "no" where Python
+// answered "yes"). Routing the query through the authoritative
+// ``$<Cap>_allows(handle, arg)`` host function (the same hardened
+// ``cap.allows(arg)`` the privileged ops enforce) closes the gap:
+// literal and dynamic args travel identically as a string, so the
+// per-call yes/no decision is byte-identical with Python and equal
+// to the enforcement (no guest-side lexical realpath approximation).
+//
+// Every prefix below is built at runtime (interpolation / concat /
+// list element) so it exercises the dynamic path specifically. No IO
+// beyond the yes/no prints, so the program is parity-clean.
+
+fun show(stdio: Stdio, label: String, flag: Bool)
+    if flag
+        stdio.println("${label}: yes")
+    else
+        stdio.println("${label}: no")
+
+fun main(stdio: Stdio, fs: Fs, net: Net, db: Db, proc: Proc, env: Env)
+    let base = "/srv/app"
+
+    // (a) Fs: dynamic prefix ``base + "/data"`` + allows in / out.
+    let fs_prefix = "${base}/data"
+    let scoped_fs = fs.restrict_to(fs_prefix)
+    let fs_in = "${base}/data/report.csv"
+    let fs_out = "${base}/secrets/key.pem"
+    show(stdio, "fs.allows(in)", scoped_fs.allows(fs_in))
+    show(stdio, "fs.allows(out)", scoped_fs.allows(fs_out))
+
+    // (b) Net: dynamic host.
+    let host_label = "api"
+    let net_host = "${host_label}.example.com"
+    let scoped_net = net.restrict_to(net_host)
+    let net_in = "${host_label}.example.com"
+    let net_out = "evil.example.com"
+    show(stdio, "net.allows(in)", scoped_net.allows(net_in))
+    show(stdio, "net.allows(out)", scoped_net.allows(net_out))
+
+    // (c) Db: dynamic prefix.
+    let db_prefix = "${base}/db"
+    let scoped_db = db.restrict_to(db_prefix)
+    let db_in = "${base}/db/users.db"
+    let db_out = "${base}/elsewhere/x.db"
+    show(stdio, "db.allows(in)", scoped_db.allows(db_in))
+    show(stdio, "db.allows(out)", scoped_db.allows(db_out))
+
+    // (d) Proc: dynamic cmd restriction (bare name).
+    let tool = "git"
+    let proc_prefix = "${tool}"
+    let scoped_proc = proc.restrict_to(proc_prefix)
+    let proc_in = "${tool}"
+    let proc_subcmd = "${tool}-lfs"
+    let proc_out = "rm"
+    show(stdio, "proc.allows(in)", scoped_proc.allows(proc_in))
+    show(stdio, "proc.allows(subcmd)", scoped_proc.allows(proc_subcmd))
+    show(stdio, "proc.allows(out)", scoped_proc.allows(proc_out))
+
+    // (e) Env: dynamic restrict_to_keys list + allows. This is the
+    // case that DIVERGED SILENTLY pre-route.
+    let key_a = "CAPA_HOME"
+    let key_b = "CAPA_PATH"
+    let keys = [key_a, key_b]
+    let scoped_env = env.restrict_to_keys(keys)
+    let env_in = "${key_a}"
+    let env_out = "NOT_GRANTED"
+    show(stdio, "env.allows(in)", scoped_env.allows(env_in))
+    show(stdio, "env.allows(out)", scoped_env.allows(env_out))
+
+    // (f) Traversal / realpath: the query used to be a guest-side
+    // LEXICAL approximation that diverged from the host enforcement.
+    // A dynamic path that walks out of the prefix with ``..`` must be
+    // denied identically on both backends now (query == enforcement
+    // == Python's realpath-backed allows).
+    let esc_prefix = "${base}/data"
+    let scoped_esc = fs.restrict_to(esc_prefix)
+    let esc_path = "${base}/data/../secrets/key.pem"
+    show(stdio, "fs.allows(traversal-escape)", scoped_esc.allows(esc_path))

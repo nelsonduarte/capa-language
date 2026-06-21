@@ -289,9 +289,20 @@ class WasmComponentHost:
             except CapHandleError:
                 return 0
 
+        def env_allows(_store, handle: int, key: str) -> bool:
+            # GAP-2b (2026-06-21): authoritative ``env.allows(key)``
+            # query, mirroring the core host. A dynamic
+            # restrict_to_keys list now answers correctly (the old
+            # guest-side inline check diverged silently to ``no``).
+            env_cap = self._lookup_or(handle, Env)
+            if env_cap is None:
+                return False
+            return bool(env_cap.allows(key))
+
         env_ifc.add_func("args",             env_args)
         env_ifc.add_func("get",              env_get)
         env_ifc.add_func("restrict-to-keys", env_restrict_to_keys)
+        env_ifc.add_func("allows",           env_allows)
         env_ifc.close()
 
     def _register_fs(self, root: wc.LinkerInstance) -> None:
@@ -421,6 +432,15 @@ class WasmComponentHost:
                     message=str(e), cause=type(e).__name__,
                 )
 
+        def fs_allows(_store, handle: int, path: str) -> bool:
+            # GAP-2b (2026-06-21): authoritative ``fs.allows(path)``
+            # query (realpath prefix containment) - same method the
+            # privileged ops enforce, so query == enforcement.
+            fs = self._lookup_or(handle, Fs)
+            if fs is None:
+                return False
+            return bool(fs.allows(path))
+
         fs_ifc.add_func("read",         fs_read)
         fs_ifc.add_func("write",        fs_write)
         fs_ifc.add_func("restrict-to",  fs_restrict_to)
@@ -428,6 +448,7 @@ class WasmComponentHost:
         fs_ifc.add_func("is-dir",       fs_is_dir)
         fs_ifc.add_func("mkdir",        fs_mkdir)
         fs_ifc.add_func("list-dir",     fs_list_dir)
+        fs_ifc.add_func("allows",       fs_allows)
         fs_ifc.close()
 
     def _register_random(self, root: wc.LinkerInstance) -> None:
@@ -497,9 +518,18 @@ class WasmComponentHost:
             except CapHandleError:
                 return 0
 
+        def net_allows(_store, handle: int, host: str) -> bool:
+            # GAP-2b (2026-06-21): authoritative ``net.allows(host)``
+            # query (exact host-set membership).
+            net = self._lookup_or(handle, Net)
+            if net is None:
+                return False
+            return bool(net.allows(host))
+
         net_ifc.add_func("get",         net_get)
         net_ifc.add_func("post",        net_post)
         net_ifc.add_func("restrict-to", net_restrict_to)
+        net_ifc.add_func("allows",      net_allows)
         net_ifc.close()
 
     def _register_db(self, root: wc.LinkerInstance) -> None:
@@ -591,9 +621,18 @@ class WasmComponentHost:
             except CapHandleError:
                 return 0
 
+        def db_allows(_store, handle: int, path: str) -> bool:
+            # GAP-2b (2026-06-21): authoritative ``db.allows(path)``
+            # query (realpath prefix containment, same as Fs.allows).
+            db = self._lookup_or(handle, Db)
+            if db is None:
+                return False
+            return bool(db.allows(path))
+
         db_ifc.add_func("exec",        db_exec)
         db_ifc.add_func("query",       db_query)
         db_ifc.add_func("restrict-to", db_restrict_to)
+        db_ifc.add_func("allows",      db_allows)
         db_ifc.close()
 
     def _register_proc(self, root: wc.LinkerInstance) -> None:
@@ -661,8 +700,17 @@ class WasmComponentHost:
             except CapHandleError:
                 return 0
 
+        def proc_allows(_store, handle: int, cmd: str) -> bool:
+            # GAP-2b (2026-06-21): authoritative ``proc.allows(cmd)``
+            # query (identity basename + suffix-boundary rule).
+            proc = self._lookup_or(handle, Proc)
+            if proc is None:
+                return False
+            return bool(proc.allows(cmd))
+
         proc_ifc.add_func("exec",        proc_exec)
         proc_ifc.add_func("restrict-to", proc_restrict_to)
+        proc_ifc.add_func("allows",      proc_allows)
         proc_ifc.close()
 
     def _register_json(self, root: wc.LinkerInstance) -> None:

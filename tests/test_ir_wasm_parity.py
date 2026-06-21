@@ -58,6 +58,10 @@ _PARITY_PROGRAMS: list[str] = [
     # already resolved. Covers single/multiple fields, self+local
     # capture, a doubly-nested lambda, and an Int (non-String) field.
     "self_in_impl_lambda.capa",
+    # GAP-2b (2026-06-21): dynamic-prefix ``.allows()`` parity across
+    # Fs / Net / Db / Proc / Env (host-route closes the crash + the
+    # silent Env divergence + the realpath/traversal query drift).
+    "allows_dynamic_prefix_parity.capa",
     "json_demo.capa",
     "generic_accumulator.capa",
     "list_struct_basics.capa",
@@ -1293,6 +1297,22 @@ class TestPythonWasmParity(unittest.TestCase):
             if os.path.exists(path):
                 os.unlink(path)
 
+    def test_allows_dynamic_prefix_parity(self):
+        # GAP-2b (2026-06-21): dynamic-prefix attenuation parity on
+        # the guest-side ``.allows()`` query for EVERY restriction-
+        # bearing cap. Pre-route the inline query could not handle a
+        # non-literal attenuation prefix: Fs / Db / Net / Proc crashed
+        # emit (WasmEmissionError from ``_unquote_attenuation_arg``)
+        # and Env diverged SILENTLY (the lexical key-list rebuild
+        # returned [] for a dynamic restrict_to_keys list, so the
+        # query said "no" where Python said "yes"). The query now
+        # routes through the authoritative ``$<Cap>_allows`` host
+        # function, so every cap is byte-identical with Python AND the
+        # query answer equals the enforcement (the program includes a
+        # ``..`` traversal-escape case where the old guest-side lexical
+        # check could drift from the host's realpath containment).
+        self._assert_parity("allows_dynamic_prefix_parity.capa")
+
     def test_allows_dynamic(self):
         # Slice 14 (2026-05-29): the literal-only restriction on
         # Fs/Env/Db.allows is lifted. Pre-slice the program below
@@ -2130,7 +2150,11 @@ _CM_HOST_BRIDGE_SUBSET: list[str] = [
     "net_get.capa",        # Fs.write + Net.get duo
     "net_post.capa",       # Net.post two-string-arg variant
     "net_restrict.capa",   # attenuation-deny short-circuit
-    "allows_inline.capa",  # Fs.allows / Env.allows / Clock.allows inline
+    "allows_inline.capa",  # Fs.allows / Env.allows / Clock.allows
+    # GAP-2b (2026-06-21): dynamic-prefix ``.allows()`` host-route on
+    # the Component Model path (Fs / Net / Db / Proc / Env), incl. the
+    # Env silent-divergence case and the realpath/traversal query.
+    "allows_dynamic_prefix_parity.capa",
     "db_demo.capa",        # Db.exec / Db.query two-string-arg + attenuation
     # Slice 13 audit-fix surface under CM. The Clock.sleep gate
     # threads through the inline ``clock.now_secs()`` host call,

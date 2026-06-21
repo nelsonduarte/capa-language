@@ -2099,14 +2099,18 @@ class TestWasmSlice1HostBridges(unittest.TestCase):
 
 
 class TestWasmAllowsInlineEmit(unittest.TestCase):
-    """Slice 1 D4: ``Fs.allows`` / ``Env.allows`` lower to inline
-    static checks at emit time; ``Clock.allows`` stays on the host
-    bridge. These tests pin the emit-time contract independent of
-    the runtime so the rejection / inlining behaviour is visible
-    even on machines without the Wasm toolchain.
+    """GAP-2b (2026-06-21): ``Fs.allows`` / ``Env.allows`` /
+    ``Db.allows`` / ``Net.allows`` / ``Proc.allows`` route through
+    the authoritative ``$<Cap>_allows(handle, arg) -> bool`` host
+    function (the same host-route ``Clock.allows`` already used), so
+    a host import IS emitted and no guest-side ``$_atten_*`` check is
+    left behind. Pre-route these queries were inlined at emit time
+    and the dynamic-prefix case failed/diverged. These tests pin the
+    emit-time contract independent of the runtime so the routing is
+    visible even on machines without the Wasm toolchain.
     """
 
-    def test_fs_allows_literal_no_host_import(self):
+    def test_fs_allows_literal_emits_host_import(self):
         src = (
             "fun main(stdio: Stdio, fs: Fs)\n"
             "    if fs.allows(\"/x\")\n"
@@ -2116,12 +2120,13 @@ class TestWasmAllowsInlineEmit(unittest.TestCase):
         )
         ir_mod, _, _ = _parse_lower(src)
         wat = emit_wat(ir_mod)
-        # No host import generated for Fs.allows (we inline). The
-        # Stdio.println import is still present.
-        self.assertNotIn("\"capa:host/fs\" \"allows\"", wat)
+        # GAP-2b: Fs.allows now routes through the host. The
+        # Stdio.println import is still present too.
+        self.assertIn("\"capa:host/fs\" \"allows\"", wat)
+        self.assertIn("call $Fs_allows", wat)
         self.assertIn("\"capa:host/stdio\" \"println\"", wat)
 
-    def test_env_allows_literal_no_host_import(self):
+    def test_env_allows_literal_emits_host_import(self):
         src = (
             "fun main(stdio: Stdio, env: Env)\n"
             "    if env.allows(\"HOME\")\n"
@@ -2131,17 +2136,15 @@ class TestWasmAllowsInlineEmit(unittest.TestCase):
         )
         ir_mod, _, _ = _parse_lower(src)
         wat = emit_wat(ir_mod)
-        self.assertNotIn("\"capa:host/env\" \"allows\"", wat)
+        self.assertIn("\"capa:host/env\" \"allows\"", wat)
+        self.assertIn("call $Env_allows", wat)
 
-    def test_fs_allows_dynamic_arg_unrestricted_collapses_to_const(self):
-        # Slice 14 (2026-05-29): the literal-only restriction is
-        # lifted. For the unrestricted-cap case (no attenuations)
-        # the answer is always true so the runtime check collapses
-        # to ``i32.const 1`` and ``$_atten_path_*`` locals aren't
-        # needed. The ``fs.allows`` call is still inlined (no host
-        # import). Pre-slice this raised ``WasmEmissionError``;
-        # the canary test for that rejection is now a positive
-        # assertion that the WAT compiles cleanly.
+    def test_fs_allows_dynamic_arg_routes_through_host(self):
+        # GAP-2b (2026-06-21): the dynamic-arg case (the gap) now
+        # travels guest->host as a normal (ptr, len) string, so the
+        # WAT carries no ``$_atten_*`` scratch and calls the host
+        # import. Pre-route the unrestricted case collapsed to a
+        # const and the attenuated case emitted an inline check.
         src = (
             "fun main(stdio: Stdio, fs: Fs)\n"
             "    let p = \"/x\"\n"
@@ -2152,13 +2155,17 @@ class TestWasmAllowsInlineEmit(unittest.TestCase):
         )
         ir_mod, _, _ = _parse_lower(src)
         wat = emit_wat(ir_mod)
-        self.assertNotIn("\"capa:host/fs\" \"allows\"", wat)
+        self.assertIn("\"capa:host/fs\" \"allows\"", wat)
+        self.assertIn("call $Fs_allows", wat)
+        self.assertNotIn("$_atten_ok", wat)
 
-    def test_fs_allows_dynamic_arg_attenuated_emits_runtime_check(self):
-        # The dynamic-arg + attenuated case is where the slice 14
-        # work actually lands: the path is stashed into
-        # ``$_atten_path_*`` and a boundary-aware prefix check is
-        # AND-combined into ``$_atten_ok`` over the chain.
+    def test_fs_allows_dynamic_arg_attenuated_routes_through_host(self):
+        # GAP-2b (2026-06-21): the dynamic-arg + attenuated case is
+        # exactly what diverged before (the guest-side lexical prefix
+        # check could not realpath). It now pushes the receiver
+        # handle + the (ptr, len) string and calls the host import,
+        # which consults the authoritative ``fs.allows(path)``; no
+        # ``$_atten_*`` machinery remains.
         src = (
             "fun main(stdio: Stdio, fs: Fs)\n"
             "    let scoped = fs.restrict_to(\"/tmp/\")\n"
@@ -2170,12 +2177,16 @@ class TestWasmAllowsInlineEmit(unittest.TestCase):
         )
         ir_mod, _, _ = _parse_lower(src)
         wat = emit_wat(ir_mod)
-        self.assertIn("$_atten_path_ptr", wat)
-        self.assertIn("$_atten_ok", wat)
-        self.assertNotIn("\"capa:host/fs\" \"allows\"", wat)
+        self.assertNotIn("$_atten_path_ptr", wat)
+        self.assertNotIn("$_atten_ok", wat)
+        self.assertIn("call $Fs_allows", wat)
+        self.assertIn("call $Fs_restrict_to", wat)
 
-    def test_env_allows_dynamic_arg_now_supported(self):
-        # Same slice 14 lift for Env.allows.
+    def test_env_allows_dynamic_arg_routes_through_host(self):
+        # GAP-2b: same host-route for Env.allows. The dynamic
+        # restrict_to_keys list was the silent-divergence case
+        # (the lexical key-list reconstruction returned []); routing
+        # it host-side restores parity.
         src = (
             "fun main(stdio: Stdio, env: Env)\n"
             "    let n = \"HOME\"\n"
@@ -2186,7 +2197,32 @@ class TestWasmAllowsInlineEmit(unittest.TestCase):
         )
         ir_mod, _, _ = _parse_lower(src)
         wat = emit_wat(ir_mod)
-        self.assertNotIn("\"capa:host/env\" \"allows\"", wat)
+        self.assertIn("\"capa:host/env\" \"allows\"", wat)
+        self.assertIn("call $Env_allows", wat)
+
+    def test_net_proc_db_allows_emit_host_import(self):
+        # GAP-2b: Net / Proc / Db .allows also route host-side.
+        src = (
+            "fun main(stdio: Stdio, net: Net, proc: Proc, db: Db)\n"
+            "    let n = \"example.com\"\n"
+            "    let c = \"git\"\n"
+            "    let p = \"/var/data/x.db\"\n"
+            "    if net.allows(n)\n"
+            "        stdio.println(\"a\")\n"
+            "    if proc.allows(c)\n"
+            "        stdio.println(\"b\")\n"
+            "    if db.allows(p)\n"
+            "        stdio.println(\"c\")\n"
+        )
+        ir_mod, _, _ = _parse_lower(src)
+        wat = emit_wat(ir_mod)
+        self.assertIn("\"capa:host/net\" \"allows\"", wat)
+        self.assertIn("\"capa:host/proc\" \"allows\"", wat)
+        self.assertIn("\"capa:host/db\" \"allows\"", wat)
+        self.assertIn("call $Net_allows", wat)
+        self.assertIn("call $Proc_allows", wat)
+        self.assertIn("call $Db_allows", wat)
+        self.assertNotIn("$_atten_ok", wat)
 
     def test_clock_allows_stays_on_host_bridge(self):
         # Clock.allows depends on the live wall clock; per D4 we
