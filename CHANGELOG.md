@@ -27,6 +27,51 @@ breaking changes and the discipline is still being shaped.
   the suite was validated against, so the declared minimum reflects a
   tested baseline rather than a stale lower bound.
 
+## [1.7.0], 2026-06-21
+
+**Capa 1.7.0.** A MINOR release (M4) that hardens SLSA provenance
+verification for git dependencies. The headline change is a new per-dep
+`verify_provenance` field with three modes, and the closing of a
+fail-open weakness where the SLSA layer skipped silently on any missing
+precondition. No breaking changes: the default behaviour stays
+best-effort, it is now merely *visible*.
+
+**Security.**
+
+- *New per-dep `verify_provenance` field in `capa.toml` with three
+  modes.* Each git dependency may now declare how strictly its SLSA
+  provenance is checked:
+  - `"off"` skips the SLSA layer silently.
+  - `"warn"` (the default) is best-effort, but now makes **every** skip
+    of the SLSA layer visible: each reason a check could not complete is
+    printed to stderr instead of vanishing.
+  - `"required"` (opt-in) is fail-closed: every path that previously
+    skipped silently, `gh` not in `PATH`, a non-GitHub-hosted git URL, a
+    rev pin (provenance needs a tag), a missing release tarball, or being
+    offline, now raises a `VerificationError` and refuses the install.
+- *SLSA verification now runs for every git dependency.* The check was
+  previously nested under `verify_key`, so a git dep without a signing
+  key never reached the provenance layer at all. It now runs for all
+  git deps regardless of `verify_key`.
+- *Attestation verified with `--repo owner/repo`, not only `--owner`.*
+  `gh attestation verify` is now scoped to the exact repository as well
+  as the owner. This closes the weakness where any attestation issued by
+  the same owner (for instance, from a different repo under that owner)
+  would satisfy the check.
+- *`CAPA_REQUIRE_PROVENANCE=1` env override.* Setting this environment
+  variable lifts every dependency to `required`, regardless of its
+  per-dep mode (including explicit `"off"`). It is a one-way tightening
+  intended as a CI gate; it can only make verification stricter, never
+  looser.
+
+**Follow-up (honest scope).**
+
+- The attestation identity is not yet pinned to a specific
+  `--signer-workflow`. A `required` install today proves a valid
+  attestation exists for the exact `owner/repo`, but does not yet
+  constrain *which* workflow produced it. Pinning `--signer-workflow`
+  is the next step in narrowing the trusted-builder identity.
+
 ## [1.6.0], 2026-06-21
 
 **Capa 1.6.0.** A MINOR release that closes GAP-2b: the `.allows()` query
