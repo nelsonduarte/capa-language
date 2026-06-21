@@ -754,6 +754,23 @@ guarantees proved in the SBOM); `capa_paymentguard` and
 
 ## Wasm-specific gaps closed (not P0)
 
+- [x] **GAP-2b: dynamic-prefix `.allows()` attenuation parity via the
+  host-route** (2026-06-19; shipped in v1.6.0). The `.allows(arg)` query
+  on `Fs` / `Db` / `Net` / `Proc` / `Env` now routes through the
+  authoritative host function (the `Clock.allows` pattern) instead of a
+  guest-side inline check. The inline check crashed on a dynamic
+  (non-literal) `restrict_to` prefix/key for `Fs` / `Db` / `Net` /
+  `Proc` and diverged silently for `Env`; routing through the host
+  restores Python/Wasm parity for attenuation with a dynamic argument
+  and aligns the query with the binding enforcement (`realpath` for
+  `Fs` / `Db`), closing the lexical-query divergences for `Proc` / `Db`
+  / `Net` from the 2026-06-17 security audit. The three orphaned
+  guest-side runtime helpers (`$str_starts_with`, `$str_has_slash`,
+  `$proc_allows`) were dropped. Parity fixture
+  `examples/wasm/allows_dynamic_prefix_parity.capa`. The companion
+  `self`-in-lambda gap was already closed in v1.5.2 (below); broader
+  parity beyond the `_PARITY_PROGRAMS` subset remains open in `TODO.md`.
+
 - [x] **`self`-in-lambda field parity inside an impl method**
   (2026-06-18). A lambda defined inside an `impl` method that captures
   `self` and reads or writes one of its fields used to fail loud on

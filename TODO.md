@@ -7,7 +7,7 @@
 > This file holds only what is still open; everything already shipped
 > lives in [`DONE.md`](DONE.md).
 
-Compiler at **v1.5.2** (released 2026-06-18). Suite green (3080 tests),
+Compiler at **v1.6.0** (released 2026-06-21). Suite green (3081 tests),
 CI green. Items are grouped by time horizon, not by an internal priority
 code.
 
@@ -18,8 +18,9 @@ code.
 ## Medium term (prove the value)
 
 - **Make Python/Wasm parity universal.** Lift it beyond the
-  `_PARITY_PROGRAMS` subset: close GAP-2b (a dynamic-prefix `restrict_to`
-  attenuation is not inline-enforced on Wasm).
+  `_PARITY_PROGRAMS` subset (every program runs identically on both
+  backends, not just the registered set). GAP-2b (dynamic-prefix
+  `.allows()` attenuation) closed in v1.6.0.
 - **M4: `verify_provenance="required"` as an option/default**, closing
   the SLSA L2 fail-open layer.
 - **Paper -> LaTeX.** Draft v1.9 is local-only; LaTeX conversion targets

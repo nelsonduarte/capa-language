@@ -27,6 +27,31 @@ breaking changes and the discipline is still being shaped.
   the suite was validated against, so the declared minimum reflects a
   tested baseline rather than a stale lower bound.
 
+## [1.6.0], 2026-06-21
+
+**Capa 1.6.0.** A MINOR release that closes GAP-2b: the `.allows()` query
+on the `Fs` / `Db` / `Net` / `Proc` / `Env` capabilities now routes
+through the authoritative host function on Wasm, restoring Python/Wasm
+parity for dynamic-argument attenuation and aligning the query with the
+binding enforcement. No breaking changes.
+
+**Parity.**
+
+- *`.allows()` routes through the authoritative host function (GAP-2b).*
+  The capability `.allows(arg)` query on `Fs` / `Db` / `Net` / `Proc` /
+  `Env` is now encoded as a call into the authoritative host function
+  (the pattern already used by `Clock.allows`) instead of a guest-side
+  inline check. The previous inline check failed on a dynamic
+  (non-literal) `restrict_to` prefix/key for `Fs` / `Db` / `Net` /
+  `Proc`, and diverged silently for `Env`; routing through the host
+  restores Python/Wasm parity for attenuation with a dynamic argument.
+  Because the host answers from the receiver's recorded restriction, the
+  query now matches the binding enforcement exactly, including `realpath`
+  resolution for `Fs` / `Db`. This closes the lexical-query divergences
+  for `Proc` / `Db` / `Net` recorded in the 2026-06-17 security audit
+  (where a guest-side lexical approximation could disagree with the
+  host's path-resolving enforcement).
+
 ## [1.5.2], 2026-06-18
 
 **Capa 1.5.2.** A PATCH release that restores Python/Wasm parity for a
