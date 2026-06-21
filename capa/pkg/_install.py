@@ -38,9 +38,14 @@ When a dep declares ``verify_key`` (a 40-char GPG fingerprint),
   2. ``gh attestation verify`` against the public Sigstore
      Rekor log, against the source tarball attached to the
      GitHub release for this tag (the SLSA L2 build-provenance
-     layer). Implicit; runs only on GitHub-hosted tag pins
-     when the ``gh`` CLI is available, and skips silently for
-     other hosts / for releases that don't ship attestations.
+     layer). Runs on GitHub-hosted tag pins when the ``gh`` CLI
+     is available; what happens when a precondition is missing
+     is governed by the per-dep ``verify_provenance`` level
+     (``off`` silent / ``warn`` (default) stderr warning then
+     continue / ``required`` fail-closed). Driven by
+     ``verify_provenance``, not by ``verify_key``, so a dep can
+     require provenance without also pinning a GPG key. The env
+     ``CAPA_REQUIRE_PROVENANCE=1`` raises every dep to ``required``.
 
 The implementation shells out to ``git`` so the runtime does
 not pull in a heavyweight git library. ``git`` must be on the
@@ -73,6 +78,26 @@ from ._manifest import (
 
 
 VENDOR_DIRNAME = "vendor"
+
+# When set to "1", raises the effective verify_provenance level of
+# EVERY git dep to "required" (a CI gate that refuses any build whose
+# SLSA provenance cannot be verified). It only TIGHTENS: it never
+# lowers a dep already configured stricter than the env implies. Same
+# read convention as CAPA_NO_VERIFY / CAPA_REGISTRY_ALLOW_UNSIGNED.
+_REQUIRE_PROVENANCE_ENV = "CAPA_REQUIRE_PROVENANCE"
+
+
+def _effective_provenance_level(dep: Dependency) -> str:
+    """The verify_provenance level actually applied to ``dep``.
+
+    The per-dep ``capa.toml`` value, unless ``CAPA_REQUIRE_PROVENANCE=1``
+    forces every dep up to ``"required"``. The env only tightens; a dep
+    already at ``"required"`` is unaffected, and an env that is unset (or
+    not exactly ``"1"``) leaves the per-dep value as-is.
+    """
+    if os.environ.get(_REQUIRE_PROVENANCE_ENV) == "1":
+        return "required"
+    return dep.verify_provenance
 
 
 class InstallError(Exception):
@@ -379,14 +404,18 @@ def _fetch_git_dep(
         signing_key = _verify_signed_pin(
             dest, pin_kind, pin, dep.verify_key, dep.name,
         )
-        # Layer 3 of the supply-chain stack: try SLSA L2 build
-        # provenance via Sigstore when the dep is GitHub-hosted
-        # and pinned to a tag. The verification is implicit
-        # (no separate opt-in field): if you already trust this
-        # publisher with verify_key + the repo is on GitHub, we
-        # also check the build came through the attested CI path.
-        # See _verify_slsa_provenance for the graceful-skip rules.
-        _verify_slsa_provenance(dep, pin, pin_kind)
+
+    # Layer 3 of the supply-chain stack: SLSA L2 build provenance
+    # via Sigstore. This runs INDEPENDENTLY of the GPG layer: the
+    # ``verify_provenance`` level (per-dep, default "warn") drives
+    # it, NOT the presence of ``verify_key``. A dep with
+    # ``verify_provenance = "required"`` but no ``verify_key`` must
+    # still reach this check and fail-closed when it cannot validate;
+    # nesting it under the verify_key block (the pre-M4 shape) would
+    # silently skip provenance for exactly that case. The function
+    # short-circuits to a no-op when the effective level is "off".
+    # See _verify_slsa_provenance for the per-level skip rules.
+    _verify_slsa_provenance(dep, pin, pin_kind)
 
     return LockedDependency(
         name=dep.name,
@@ -503,45 +532,72 @@ def _parse_github_owner_repo(url: str) -> Optional[tuple[str, str]]:
 def _verify_slsa_provenance(
     dep: Dependency, pin: str, pin_kind: str,
 ) -> None:
-    """Try to verify a SLSA L2 build-provenance attestation for the
+    """Verify a SLSA L2 build-provenance attestation for the
     just-cloned dependency against the public Sigstore Rekor log.
 
-    Implicit verification: this runs only when the dep already
-    declares ``verify_key`` (the GPG layer is the trigger) AND the
-    git URL points at GitHub AND the pin is a tag. The two layers
-    are independent supply-chain claims; if GPG passes but SLSA
-    fails, the install refuses.
+    Driven by the dep's effective ``verify_provenance`` level (the
+    per-dep ``capa.toml`` value, raised to ``"required"`` when
+    ``CAPA_REQUIRE_PROVENANCE=1``). The level decides what happens on
+    each graceful-skip path:
 
-    The verifier is the ``gh`` CLI's ``attestation verify``
-    subcommand. Skipping silently rather than raising when:
+      * ``"off"``      every skip path is a silent no-op.
+      * ``"warn"``     (default) every skip path prints a clear stderr
+                       warning naming the dep and the reason, then
+                       continues the install (best-effort but visible).
+      * ``"required"`` every path that would otherwise skip becomes
+                       fail-closed: a ``VerificationError`` that names
+                       the dep and the reason. Only a valid attestation
+                       passes.
 
-      * the dep is not GitHub-hosted (no attestation pipeline);
-      * the pin is a ``rev`` (releases live on tags);
-      * the ``gh`` CLI is not installed on the caller's PATH;
-      * the GitHub release for this tag exists but has no source
-        tarball asset (publisher pre-dates the workflow, or hasn't
-        adopted it yet);
-      * the release endpoint is unreachable (offline / network
-        glitch).
+    The runs-only-when preconditions (GitHub-hosted + tag pin + ``gh``
+    on PATH + a release tarball present) are unchanged; what changed in
+    M4 is that failing a precondition is no longer unconditionally
+    silent. The trigger is no longer ``verify_key``: this runs whenever
+    the effective level is not ``"off"``, so ``"required"`` is reached
+    even for a dep with no GPG key.
 
-    Raising ``VerificationError`` when the release tarball IS
-    present but ``gh attestation verify`` returns non-zero (the
-    attestation in Rekor was tampered, or the workflow that signed
-    it was not run from this owner's identity).
+    The verifier is the ``gh`` CLI's ``attestation verify`` subcommand,
+    scoped to ``--repo {owner}/{repo}`` (M4: previously only ``--owner``,
+    which accepted any attestation under the same owner). Pinning the
+    signing workflow as well (``--signer-workflow``) is a possible
+    follow-up; it needs the publisher's workflow filename, which the
+    manifest does not carry today.
 
-    A future iteration can add a ``verify_provenance = "required"``
-    field to flip every graceful-skip path to fail-closed.
+    The pre-existing fail-closed path (tarball present but
+    ``gh attestation verify`` returns non-zero) is unchanged and fires
+    in all three levels.
     """
-    if pin_kind != "tag":
+    level = _effective_provenance_level(dep)
+    if level == "off":
         return
+
+    def _skip(reason: str) -> None:
+        """Apply the warn / required policy to a graceful-skip path."""
+        if level == "required":
+            raise VerificationError(
+                f"SLSA provenance is 'required' for {dep.name!r} but "
+                f"could not be verified: {reason}. Refusing the install. "
+                f"Set verify_provenance = \"warn\" (or \"off\") for this "
+                f"dependency, or satisfy the requirement (GitHub-hosted "
+                f"tag pin with a published release tarball and a valid "
+                f"Sigstore attestation), to proceed."
+            )
+        print(
+            f"capa: warning: SLSA provenance not verified for "
+            f"{dep.name!r}: {reason}",
+            file=sys.stderr,
+        )
+
+    if pin_kind != "tag":
+        return _skip("rev pin (provenance needs a tag)")
     assert dep.git is not None
     owner_repo = _parse_github_owner_repo(dep.git)
     if owner_repo is None:
-        return
+        return _skip("dependency is not GitHub-hosted")
     owner, repo = owner_repo
 
     if shutil.which("gh") is None:
-        return
+        return _skip("gh not found in PATH")
 
     tarball_name = f"{repo}-{pin}.tar.gz"
     with tempfile.TemporaryDirectory(prefix="capa_slsa_") as td:
@@ -556,19 +612,23 @@ def _verify_slsa_provenance(
             capture_output=True, text=True, encoding="utf-8",
         )
         # Release missing, no matching asset, no auth, or offline.
-        # All graceful skips: an honest publisher just hasn't
-        # adopted SLSA yet, or this user is offline. We never
-        # downgrade trust because of these.
+        # In "warn" these are best-effort skips; in "required" they
+        # are fail-closed (an attacker who removes the tarball, or a
+        # user who is offline, no longer slips past silently).
         if r.returncode != 0:
-            return
+            return _skip(
+                "release download failed (release/tarball missing, "
+                "no auth, or offline)"
+            )
         tarball_path = td_path / tarball_name
         if not tarball_path.exists():
-            return
+            return _skip("release has no attestation tarball")
 
         r = subprocess.run(
             [
                 "gh", "attestation", "verify", str(tarball_path),
                 "--owner", owner,
+                "--repo", f"{owner}/{repo}",
             ],
             capture_output=True, text=True, encoding="utf-8",
         )
@@ -583,7 +643,7 @@ def _verify_slsa_provenance(
             f"gh output:\n{(r.stderr or r.stdout).strip()}\n\n"
             f"The release ships a tarball but its SLSA attestation "
             f"in Sigstore Rekor is either missing, tampered, or "
-            f"was issued by a different identity than {owner!r}. "
+            f"was issued by a different identity than {owner}/{repo}. "
             f"Refusing the install."
         )
 

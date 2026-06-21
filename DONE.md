@@ -19,6 +19,41 @@ pending item in [`TODO.md`](TODO.md).
 
 ---
 
+## M4: `verify_provenance` modes close the SLSA fail-open layer (2026-06-21)
+
+- **Per-dep `verify_provenance` field (`off` / `warn` / `required`),
+  default `warn`.** The SLSA L2 build-provenance layer was best-effort /
+  fail-open on every graceful-skip path (missing `gh`, non-GitHub host,
+  rev pin, no release tarball, offline) and skipped silently. M4 makes the
+  per-skip behaviour configurable: `off` keeps the silent skip, `warn`
+  (the new default) prints a clear stderr warning naming the dep and the
+  reason then continues (best-effort but visible), `required` turns every
+  skip into a fail-closed `VerificationError`. The pre-existing fail-closed
+  path (tarball present + invalid attestation) is unchanged in all modes.
+  Field parsed + validated in `capa/pkg/_manifest.py` (allow-listed in
+  `_DEP_GIT_KEYS`, rejected on path deps); semantics in
+  `_verify_slsa_provenance` (`capa/pkg/_install.py`).
+- **`required` is reached independently of `verify_key`.** The SLSA call
+  used to be nested under `if dep.verify_key is not None`, so a
+  `required` dep with no GPG key would have skipped provenance entirely.
+  The call now runs whenever the effective level is not `off`, so
+  `required` without a `verify_key` still runs and fails closed.
+- **Attestation scoped to `--repo {owner}/{repo}` (owner-only weakness
+  closed).** `gh attestation verify` previously passed only `--owner`, so
+  any attestation under the same owner satisfied it. It now also passes
+  `--repo {owner}/{repo}`. (`--signer-workflow` is a possible follow-up; it
+  needs the publisher's workflow filename, which the manifest does not
+  carry today.)
+- **`CAPA_REQUIRE_PROVENANCE=1` CI gate.** When set, raises the effective
+  level of every dep to `required`. Only tightens; never lowers a dep
+  below its `capa.toml` level. Same read convention as `CAPA_NO_VERIFY`.
+- Docs updated (`docs/trust-model.md` now lists `required` as a tier-1
+  fail-closed guarantee and re-frames `warn` as best-effort-but-visible;
+  `docs/packages.md` documents the three modes + the env gate + `--repo`).
+  Tests in `tests/test_pkg.py` (`TestVerifyProvenanceModes`): the three
+  modes over each skip path, `required` without `verify_key`, the
+  `--repo` arg, and the env override.
+
 ## NLnet empirical study (2026-06-18)
 
 The headline NLnet deliverable: a two-part empirical study of the
@@ -74,7 +109,8 @@ sweep.
   catch, GPG anchored on the primary key, PKG-1 vendor re-verification,
   signed registry index, byte-reproducible SBOMs) from the **best-effort
   / fail-open** SLSA L2 layer (graceful-skip on missing `gh` / tarball /
-  non-GitHub host; M4 `verify_provenance="required"` not yet a default)
+  non-GitHub host; M4 `verify_provenance="required"` not yet a default at
+  the time, since landed 2026-06-21, see the M4 entry above)
   from the **TCB premises** (committed `capa.lock`, local git state of
   `vendor/`, the toolchain itself, install.sh M3, operator-trusted
   `CAPA_PATH` / `./libraries`) from what is **outside the threat model**
@@ -316,9 +352,10 @@ guarantees proved in the SBOM); `capa_paymentguard` and
   the medium / low findings were hardened (`2ea7740`), with two
   parser depth-cap fixes alongside (`a0fc2f0`, `0cba6f7`). An
   em-dash / en-dash cleanup of the Python source landed in the
-  same window (`7780006`). Two findings are deferred by design:
-  M3 (install.sh same-channel SHA) and M4
-  (`verify_provenance="required"` default).
+  same window (`7780006`). Two findings were deferred by design at
+  the time: M3 (install.sh same-channel SHA, still open) and M4
+  (`verify_provenance="required"`, since landed 2026-06-21, see the
+  M4 entry near the top of this file).
 
 - [x] **Feasibility studies: async/await + native LLVM backend,
   both DEFERRED** (closed 2026-06-10, commit `2934da4`). Wrote

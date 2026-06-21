@@ -87,6 +87,21 @@ refused on failure.
   mirrors): `CAPA_REGISTRY_ALLOW_UNSIGNED=1`. A present-but-invalid
   signature is **always** refused, env var or not.
 
+- **SLSA L2 provenance is fail-closed under `verify_provenance =
+  "required"` (M4).** When a git dependency sets `verify_provenance =
+  "required"` (or `CAPA_REQUIRE_PROVENANCE=1` is set, which raises every
+  dependency's effective level to `required`), every path the `warn`
+  default would skip becomes a refused install: `gh` missing, no release
+  tarball, non-GitHub host, offline, or a rev pin all raise a
+  `VerificationError` naming the dependency and the reason. The check is
+  reached independently of `verify_key`, so a dependency can require
+  provenance without also pinning a GPG key, and the attestation is
+  scoped to `--repo {owner}/{repo}` (M4 closed the prior owner-only
+  weakness, where any attestation under the same owner satisfied it).
+  `CAPA_REQUIRE_PROVENANCE` only **tightens**: it never lowers a
+  dependency below its `capa.toml` level. See `_verify_slsa_provenance`
+  in `capa/pkg/_install.py`.
+
 - **SBOMs are byte-reproducible.** With `SOURCE_DATE_EPOCH` set, the
   CycloneDX / SPDX / VEX / SLSA artefacts are byte-for-byte identical
   across runs and machines, so an auditor can rebuild and diff. See
@@ -99,25 +114,26 @@ These run when they can and step aside when they cannot. They add
 defence in depth but do **not**, on their own, make or break the
 trust decision: the unconditional tier above stands underneath them.
 
-- **SLSA L2 build-provenance attestation of dependencies.** When a git
-  dependency declares `verify_key`, is GitHub-hosted, and is pinned to a
-  tag, `capa install` also runs `gh attestation verify` against the
-  release source tarball, checking the Sigstore Rekor log. This layer
-  **fail-opens** (skips silently) when: `gh` is not on PATH; the release
-  has no matching source tarball; the host is not GitHub; or the release
-  endpoint is unreachable. It **fail-closes** only when the tarball IS
-  present and `gh attestation verify` returns non-zero. The honest
-  consequence: an attacker who removes the release tarball, or serves the
-  dependency from a non-GitHub host, skips this layer. Such a build is
-  still defended by the unconditional lockfile-SHA and GPG layers beneath
-  it; the SLSA layer is additive, not load-bearing. See
-  `_verify_slsa_provenance` in `capa/pkg/_install.py`.
-
-- **`verify_provenance = "required"` does not exist yet (M4).** There is
-  no field today to flip every SLSA graceful-skip path to fail-closed.
-  Until it lands, the SLSA layer is best-effort for every dependency.
-  Tracked as M4 in [`TODO.md`](../TODO.md) and
-  [`docs/packages.md`](packages.md).
+- **SLSA L2 build-provenance attestation of dependencies (`warn`
+  default).** For a GitHub-hosted git dependency pinned to a tag, `capa
+  install` runs `gh attestation verify` against the release source
+  tarball, checking the Sigstore Rekor log, scoped to `--repo
+  {owner}/{repo}` (an attestation from a different repo under the same
+  owner does not satisfy it). The per-dep `verify_provenance` field (M4)
+  decides what a *missing precondition* does. At the default level
+  `warn`, the layer is **best-effort but visible**: when `gh` is not on
+  PATH, the release has no matching tarball, the host is not GitHub, the
+  endpoint is unreachable, or the pin is a rev, it prints a clear stderr
+  warning naming the dependency and the reason, then continues. It
+  **always fail-closes** when the tarball IS present and
+  `gh attestation verify` returns non-zero. The honest consequence under
+  `warn`: an attacker who removes the release tarball, or serves the
+  dependency from a non-GitHub host, downgrades this layer, but the
+  downgrade is now printed rather than silent, and the build is still
+  defended by the unconditional lockfile-SHA and GPG layers beneath it.
+  Set `verify_provenance = "off"` to silence the warning deliberately.
+  See `_verify_slsa_provenance` in `capa/pkg/_install.py`. For the
+  fail-closed mode, see tier 1's `verify_provenance = "required"` entry.
 
 ## 3. Premises / TCB boundary
 

@@ -138,48 +138,74 @@ For anything you care about, prefer pinning `verify_key` by hand.
 > Per-publisher keys / delegated trust are a deliberate future
 > direction, not a property of the current model.
 
-#### SLSA L2 build provenance (implicit)
+#### SLSA L2 build provenance (`verify_provenance`)
 
-When `verify_key` is set AND the git URL points at GitHub AND
-the pin is a tag AND the `gh` CLI is on your PATH, `capa
-install` also runs `gh attestation verify` against the source
-tarball attached to the GitHub release for that tag, against
-the public Sigstore Rekor transparency log. This is the third
-supply-chain layer (lockfile SHA + GPG fingerprint + SLSA L2
-provenance); it runs automatically with no extra capa.toml
-field needed.
+When the git URL points at GitHub AND the pin is a tag AND the
+`gh` CLI is on your PATH, `capa install` runs
+`gh attestation verify` against the source tarball attached to
+the GitHub release for that tag, against the public Sigstore
+Rekor transparency log. This is the third supply-chain layer
+(lockfile SHA + GPG fingerprint + SLSA L2 provenance). The
+attestation check is scoped to `--repo {owner}/{repo}` (not just
+`--owner`), so an attestation built from a *different* repo under
+the same owner does not satisfy it.
 
-`capa install` refuses when the release tarball is published
-**and** its SLSA attestation in Rekor is invalid, tampered, or
-issued by a different identity than the repository owner.
+`capa install` always refuses when the release tarball is
+published **and** its SLSA attestation in Rekor is invalid,
+tampered, or issued by a different identity than the repository.
+That fail-closed path holds in every mode.
 
-It gracefully skips (logs nothing, install continues) when:
+What happens when a *precondition* is missing (not GitHub-hosted,
+`gh` absent, no release tarball, offline, or a rev pin) is
+controlled per dependency by the `verify_provenance` field, which
+takes one of three values:
 
-- The repo is not GitHub-hosted (no Sigstore pipeline today).
-- The `gh` CLI is missing from PATH.
-- The release for this tag has no source-tarball asset
-  (publisher hasn't adopted the attesting workflow yet).
-- The network is unreachable.
+```toml
+[dependencies.mylib]
+git = "https://github.com/user/mylib"
+tag = "v0.1"
+verify_provenance = "warn"   # off | warn | required
+```
 
-The skip-on-missing behaviour is deliberate: the SLSA layer
-augments the GPG layer rather than replacing it. A publisher
-who hasn't shipped attestations yet still gets verified by
-the GPG fingerprint. A future opt-in `verify_provenance =
-"required"` field can flip every skip path to fail-closed for
-consumers who want the strictest mode.
+- **`off`** every graceful-skip path is a silent no-op. Use this
+  only when you deliberately want SLSA verification disabled for
+  this dependency.
+- **`warn`** (**default**) every graceful-skip path prints a clear
+  stderr warning naming the dependency and the reason
+  (`capa: warning: SLSA provenance not verified for 'mylib': gh
+  not found in PATH`), then continues the install. Best-effort,
+  but no longer invisible: a silent SLSA downgrade now leaves a
+  trace.
+- **`required`** every path that would otherwise skip becomes
+  **fail-closed**: the install is refused with a message that
+  names the dependency and the reason. Only a build with a valid
+  Sigstore attestation passes. This is the strict, supply-chain-
+  hardened mode.
 
-> **Security posture (best-effort / fail-open).** The SLSA
-> provenance check is *best-effort*: it is a fail-open layer
-> today. When `gh` is absent, the asset is missing, or the
-> network is down, the install **continues without** the SLSA
-> check rather than refusing. Do not read "the three-layer
-> stack" as "SLSA provenance is always verified whenever
-> `verify_key` is set" - only the lockfile-SHA and GPG-
-> fingerprint layers are unconditional; the SLSA layer fires
-> only when all of its preconditions hold. A `verify_provenance
-> = "required"` config field that makes the SLSA layer fail-
-> closed is **deferred** (see audit 2026-05-25 M4); until it
-> lands, treat SLSA verification as a bonus, not a guarantee.
+`verify_provenance` is independent of `verify_key`: a dependency
+can require provenance without pinning a GPG key, and the SLSA
+layer is reached on its own (it is no longer gated behind
+`verify_key`). It applies only to git deps; setting it on a path
+dependency is a manifest error.
+
+> **CI gate: `CAPA_REQUIRE_PROVENANCE=1`.** Setting this
+> environment variable raises the *effective* level of **every**
+> dependency to `required`, regardless of each dep's `capa.toml`
+> value. It only **tightens** (it never lowers a dep below what
+> its `capa.toml` already asks for). Set it in CI to refuse any
+> build whose SLSA provenance cannot be verified, without editing
+> every dependency entry.
+
+> **Security posture.** In `warn` (the default) the SLSA layer is
+> **best-effort but visible**: when `gh` is absent, the asset is
+> missing, the host is not GitHub, or the network is down, the
+> install continues but prints a warning. It is `required` (per
+> dep, or globally via `CAPA_REQUIRE_PROVENANCE=1`) that makes the
+> layer **fail-closed**. Do not read the default as a guarantee:
+> only the lockfile-SHA and GPG-fingerprint layers are
+> unconditional in every mode. Under `warn`, treat SLSA
+> verification as a bonus you can *see* the absence of; under
+> `required`, it is load-bearing.
 
 The reference seed libraries (capa_cli, capa_datetime,
 capa_log, capa_http) ship attestations from v0.1.2 onwards;
@@ -201,9 +227,9 @@ not silent.
 
 Test- and tooling-only dependencies live in their own table with
 **exactly the same per-entry schema** (git + `tag`/`rev` +
-optional `verify_key`, or `path`) and the same security
-validation (URL allow-list, name allow-list, pin shape, GPG /
-SLSA verification):
+optional `verify_key` + optional `verify_provenance`, or `path`)
+and the same security validation (URL allow-list, name allow-list,
+pin shape, GPG / SLSA verification):
 
 ```toml
 [dev-dependencies]

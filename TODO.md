@@ -21,8 +21,6 @@ code.
   `_PARITY_PROGRAMS` subset (every program runs identically on both
   backends, not just the registered set). GAP-2b (dynamic-prefix
   `.allows()` attenuation) closed in v1.6.0.
-- **M4: `verify_provenance="required"` as an option/default**, closing
-  the SLSA L2 fail-open layer.
 - **Paper -> LaTeX.** Draft v1.9 is local-only; LaTeX conversion targets
   a 2027 venue submission.
 - **Debugger: DAP adapter + per-expression source maps.** Statement-level

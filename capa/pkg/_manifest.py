@@ -50,7 +50,13 @@ LOCK_FILENAME = "capa.lock"
 
 # Keys recognised in each table; anything else is an error.
 _PACKAGE_KEYS = frozenset({"name", "version", "capa"})
-_DEP_GIT_KEYS = frozenset({"git", "tag", "rev", "verify_key"})
+_DEP_GIT_KEYS = frozenset({"git", "tag", "rev", "verify_key", "verify_provenance"})
+
+# The three accepted values for ``verify_provenance`` (per git dep).
+# See ``capa/pkg/_install.py`` for the fail-open / fail-closed semantics
+# each one drives over the SLSA build-provenance layer.
+_VERIFY_PROVENANCE_VALUES = ("off", "warn", "required")
+_DEFAULT_VERIFY_PROVENANCE = "warn"
 _DEP_PATH_KEYS = frozenset({"path"})
 
 # Allow-list of URL schemes that ``git clone`` is willing to handle
@@ -101,13 +107,28 @@ class Dependency:
     cloned dep and rejects the install unless the signature
     matches that fingerprint. The fingerprint is the trust
     anchor: it must already be present in the consumer's GPG
-    keyring (``gpg --import`` or ``gpg --recv-keys``)."""
+    keyring (``gpg --import`` or ``gpg --recv-keys``).
+
+    ``verify_provenance`` selects how the SLSA L2 build-provenance
+    layer behaves for this git dep. One of:
+
+      * ``"off"``    silent skip on every graceful-skip path;
+      * ``"warn"``   (default) a stderr warning on each skip path,
+                     then continue the install (best-effort but
+                     visible);
+      * ``"required"`` every graceful-skip path becomes fail-closed:
+                     the install is refused unless a valid SLSA
+                     attestation is found.
+
+    Only meaningful for git deps; path deps carry the field's
+    default but never run the SLSA layer."""
     name: str
     git: Optional[str] = None
     tag: Optional[str] = None
     rev: Optional[str] = None
     path: Optional[str] = None
     verify_key: Optional[str] = None
+    verify_provenance: str = _DEFAULT_VERIFY_PROVENANCE
 
     @property
     def is_git(self) -> bool:
@@ -461,8 +482,22 @@ def _parse_dep(path: Path, name: str, spec: dict) -> Dependency:
                     f"Got {verify_key!r}"
                 )
             verify_key = normalised
+        verify_provenance = spec.get("verify_provenance")
+        if verify_provenance is None:
+            verify_provenance = _DEFAULT_VERIFY_PROVENANCE
+        elif (not isinstance(verify_provenance, str)
+                or verify_provenance not in _VERIFY_PROVENANCE_VALUES):
+            raise ManifestError(
+                f"{path}: dependencies.{name}.verify_provenance must be "
+                f"one of {list(_VERIFY_PROVENANCE_VALUES)} (got "
+                f"{verify_provenance!r}). \"off\" skips SLSA provenance "
+                f"silently, \"warn\" (default) warns on stderr and "
+                f"continues, \"required\" refuses the install unless a "
+                f"valid attestation is found."
+            )
         return Dependency(
             name=name, git=git, tag=tag, rev=rev, verify_key=verify_key,
+            verify_provenance=verify_provenance,
         )
     # path source
     _check_keys(path, f"dependencies.{name}", spec, _DEP_PATH_KEYS)

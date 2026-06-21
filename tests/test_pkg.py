@@ -128,6 +128,72 @@ class TestManifestParser(_TempDirMixin, unittest.TestCase):
         self.assertEqual(d.rev, "abc123")
         self.assertIsNone(d.tag)
 
+    def test_verify_provenance_defaults_to_warn(self):
+        # M4: absent verify_provenance -> "warn".
+        p = self._tmp / "capa.toml"
+        _write(p, '''
+            [package]
+            name = "demo"
+            version = "0.1.0"
+
+            [dependencies]
+            mylib = { git = "https://example.invalid/mylib.git", tag = "v0.1" }
+        ''')
+        d = read_manifest(p).dependencies[0]
+        self.assertEqual(d.verify_provenance, "warn")
+
+    def test_verify_provenance_accepts_each_valid_value(self):
+        for value in ("off", "warn", "required"):
+            with self.subTest(value=value):
+                p = self._tmp / "capa.toml"
+                _write(p, f'''
+                    [package]
+                    name = "demo"
+                    version = "0.1.0"
+
+                    [dependencies.mylib]
+                    git = "https://example.invalid/mylib.git"
+                    tag = "v0.1"
+                    verify_provenance = "{value}"
+                ''')
+                d = read_manifest(p).dependencies[0]
+                self.assertEqual(d.verify_provenance, value)
+
+    def test_verify_provenance_invalid_value_rejected(self):
+        p = self._tmp / "capa.toml"
+        _write(p, '''
+            [package]
+            name = "demo"
+            version = "0.1.0"
+
+            [dependencies.mylib]
+            git = "https://example.invalid/mylib.git"
+            tag = "v0.1"
+            verify_provenance = "strict"
+        ''')
+        with self.assertRaises(ManifestError) as cm:
+            read_manifest(p)
+        msg = str(cm.exception)
+        self.assertIn("verify_provenance", msg)
+        self.assertIn("strict", msg)
+
+    def test_verify_provenance_rejected_on_path_dep(self):
+        # SLSA applies only to git deps; the field is not in the path
+        # key allow-list, so it is a clear unknown-key error there.
+        p = self._tmp / "capa.toml"
+        _write(p, '''
+            [package]
+            name = "demo"
+            version = "0.1.0"
+
+            [dependencies.mylib]
+            path = "../mylib"
+            verify_provenance = "required"
+        ''')
+        with self.assertRaises(ManifestError) as cm:
+            read_manifest(p)
+        self.assertIn("verify_provenance", str(cm.exception))
+
     def test_path_dependency(self):
         p = self._tmp / "capa.toml"
         _write(p, '''
@@ -1176,17 +1242,25 @@ class TestInstallSlsaProvenance(_TempDirMixin, unittest.TestCase):
     test, so each case patches subprocess.run to model what gh
     would return for the situation under test.
 
-    The behaviour matrix the tests cover:
+    The behaviour matrix the tests cover (default level is "warn"
+    after M4, so each graceful-skip path now also emits a stderr
+    warning; it still does NOT raise and adds no subprocess calls):
 
-      * Non-GitHub git URL: SLSA path is a no-op (verifier never
-        touches subprocess). The graceful-skip is observed by the
-        absence of any ``gh`` invocation.
+      * Non-GitHub git URL: SLSA path is a no-op subprocess-wise
+        (verifier never touches gh). The graceful-skip is observed by
+        the absence of any ``gh`` invocation; under the default level
+        it also prints a warning.
       * gh CLI missing: graceful skip (no subprocess error).
       * Release tarball missing on GitHub: graceful skip.
       * Release tarball present + attestation valid: install
         succeeds (no error raised).
       * Release tarball present + attestation invalid:
         VerificationError raised, lockfile NOT written.
+
+    The three verify_provenance levels (off / warn / required) over
+    every skip path, the env override, the required-without-verify_key
+    hole, and the --repo scoping are covered by
+    TestVerifyProvenanceModes below.
 
     GPG verification is shared scaffolding from TestInstallVerifyKey;
     we reuse its helpers via inheritance for the live signing case
@@ -1346,6 +1420,180 @@ class TestInstallSlsaProvenance(_TempDirMixin, unittest.TestCase):
         with patch("capa.pkg._install.shutil.which", return_value="/usr/bin/gh"):
             with patch("capa.pkg._install.subprocess.run", side_effect=fake_run):
                 _verify_slsa_provenance(dep, "v0.1", "tag")
+
+
+class TestVerifyProvenanceModes(unittest.TestCase):
+    """M4: the three ``verify_provenance`` levels (off / warn /
+    required) over every SLSA graceful-skip path, the
+    ``CAPA_REQUIRE_PROVENANCE`` env override, the
+    required-without-verify_key hole, and the ``--repo`` scoping.
+
+    Each case drives ``_verify_slsa_provenance`` directly with a
+    mocked ``subprocess.run`` (and ``shutil.which``), exactly like
+    TestInstallSlsaProvenance, so no network / gh is required.
+    """
+
+    def _dep(self, *, git, pin_kind="tag", level="warn", verify_key="A" * 40):
+        from capa.pkg._manifest import Dependency
+        kwargs = dict(name="mylib", git=git, verify_provenance=level)
+        if pin_kind == "tag":
+            kwargs["tag"] = "v0.1"
+        else:
+            kwargs["rev"] = "deadbeef" * 5
+        if verify_key is not None:
+            kwargs["verify_key"] = verify_key
+        return Dependency(**kwargs)
+
+    # ---- skip-path factories: each returns (dep, pin, pin_kind,
+    # which_return, run_side_effect, expected_reason_substring). ----
+
+    def _case_non_github(self, level):
+        dep = self._dep(git="file:///tmp/local-upstream", level=level)
+        return dep, "v0.1", "tag", "/usr/bin/gh", None, "not GitHub-hosted"
+
+    def _case_rev_pin(self, level):
+        dep = self._dep(
+            git="https://github.com/foo/bar", pin_kind="rev", level=level,
+        )
+        return (dep, "deadbeef" * 5, "rev", "/usr/bin/gh", None,
+                "rev pin")
+
+    def _case_gh_missing(self, level):
+        dep = self._dep(git="https://github.com/foo/bar", level=level)
+        return dep, "v0.1", "tag", None, None, "gh not found"
+
+    def _case_tarball_missing(self, level):
+        # gh release download returns non-zero -> graceful skip path.
+        from unittest.mock import MagicMock
+        dep = self._dep(git="https://github.com/foo/bar", level=level)
+
+        def side_effect(cmd, *a, **kw):
+            return MagicMock(returncode=1, stderr="release not found", stdout="")
+
+        return dep, "v0.1", "tag", "/usr/bin/gh", side_effect, "release download"
+
+    _SKIP_CASES = (
+        "_case_non_github",
+        "_case_rev_pin",
+        "_case_gh_missing",
+        "_case_tarball_missing",
+    )
+
+    def _run(self, dep, pin, pin_kind, which_ret, side_effect):
+        """Invoke the verifier with the given mocks; return captured
+        stderr text. Raises whatever the verifier raises."""
+        import io
+        from contextlib import redirect_stderr
+        from unittest.mock import patch, MagicMock
+        from capa.pkg._install import _verify_slsa_provenance
+
+        eff = side_effect
+        if eff is None:
+            eff = lambda *a, **kw: MagicMock(returncode=0, stderr="", stdout="")
+        buf = io.StringIO()
+        with patch("capa.pkg._install.shutil.which", return_value=which_ret), \
+                patch("capa.pkg._install.subprocess.run", side_effect=eff), \
+                redirect_stderr(buf):
+            _verify_slsa_provenance(dep, pin, pin_kind)
+        return buf.getvalue()
+
+    def test_off_is_silent_on_every_skip_path(self):
+        for case in self._SKIP_CASES:
+            with self.subTest(case=case):
+                dep, pin, pin_kind, which, se, _ = getattr(self, case)("off")
+                err = self._run(dep, pin, pin_kind, which, se)
+                self.assertEqual(err, "", f"{case}: expected no stderr")
+
+    def test_warn_warns_and_continues_on_every_skip_path(self):
+        for case in self._SKIP_CASES:
+            with self.subTest(case=case):
+                dep, pin, pin_kind, which, se, reason = getattr(
+                    self, case)("warn")
+                err = self._run(dep, pin, pin_kind, which, se)
+                self.assertIn("warning", err.lower())
+                self.assertIn("SLSA provenance not verified", err)
+                self.assertIn("mylib", err)
+                self.assertIn(reason, err)
+
+    def test_required_raises_on_every_skip_path(self):
+        from capa.pkg import VerificationError
+        for case in self._SKIP_CASES:
+            with self.subTest(case=case):
+                dep, pin, pin_kind, which, se, reason = getattr(
+                    self, case)("required")
+                with self.assertRaises(VerificationError) as cm:
+                    self._run(dep, pin, pin_kind, which, se)
+                msg = str(cm.exception)
+                self.assertIn("mylib", msg)
+                self.assertIn("required", msg)
+                self.assertIn(reason, msg)
+
+    def test_required_without_verify_key_still_runs_and_fails_closed(self):
+        # The pre-M4 shape nested the SLSA call under ``if verify_key``.
+        # A required dep with NO verify_key must still reach the check
+        # and fail-closed when a precondition is missing.
+        from capa.pkg import VerificationError
+        dep = self._dep(
+            git="https://github.com/foo/bar", level="required",
+            verify_key=None,
+        )
+        with self.assertRaises(VerificationError) as cm:
+            # gh missing -> would be a skip; required makes it fatal.
+            self._run(dep, "v0.1", "tag", None, None)
+        self.assertIn("mylib", str(cm.exception))
+
+    def test_repo_scope_passed_to_attestation_verify(self):
+        # The attestation verify call must carry --repo owner/repo, not
+        # only --owner (M4 closes the owner-only weakness).
+        from unittest.mock import patch, MagicMock
+        from capa.pkg._install import _verify_slsa_provenance
+        dep = self._dep(git="https://github.com/foo/bar", level="warn")
+        seen = []
+
+        def fake_run(cmd, *a, **kw):
+            seen.append(cmd)
+            if "download" in cmd:
+                dir_idx = cmd.index("--dir") + 1
+                (Path(cmd[dir_idx]) / "bar-v0.1.tar.gz").write_bytes(b"stub")
+            return MagicMock(returncode=0, stderr="", stdout="")
+
+        with patch("capa.pkg._install.shutil.which", return_value="/usr/bin/gh"), \
+                patch("capa.pkg._install.subprocess.run", side_effect=fake_run):
+            _verify_slsa_provenance(dep, "v0.1", "tag")
+
+        verify_cmd = next(c for c in seen if "verify" in c)
+        self.assertIn("--repo", verify_cmd)
+        repo_idx = verify_cmd.index("--repo") + 1
+        self.assertEqual(verify_cmd[repo_idx], "foo/bar")
+        # --owner still present (belt and braces).
+        self.assertIn("--owner", verify_cmd)
+
+    def test_env_override_raises_on_warn_dep(self):
+        # CAPA_REQUIRE_PROVENANCE=1 lifts a "warn" dep to required.
+        from unittest.mock import patch
+        from capa.pkg import VerificationError
+        dep = self._dep(git="https://github.com/foo/bar", level="warn")
+        with patch.dict(os.environ, {"CAPA_REQUIRE_PROVENANCE": "1"}):
+            with self.assertRaises(VerificationError):
+                self._run(dep, "v0.1", "tag", None, None)  # gh missing
+
+    def test_env_override_raises_on_off_dep(self):
+        # The env only tightens: even an explicit "off" dep is lifted.
+        from unittest.mock import patch
+        from capa.pkg import VerificationError
+        dep = self._dep(git="https://github.com/foo/bar", level="off")
+        with patch.dict(os.environ, {"CAPA_REQUIRE_PROVENANCE": "1"}):
+            with self.assertRaises(VerificationError):
+                self._run(dep, "v0.1", "tag", None, None)  # gh missing
+
+    def test_env_unset_leaves_per_dep_level(self):
+        # Without the env, an "off" dep is silent on a skip path.
+        from unittest.mock import patch
+        dep = self._dep(git="https://github.com/foo/bar", level="off")
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("CAPA_REQUIRE_PROVENANCE", None)
+            err = self._run(dep, "v0.1", "tag", None, None)
+        self.assertEqual(err, "")
 
 
 class TestLoaderIntegration(_TempDirMixin, unittest.TestCase):
