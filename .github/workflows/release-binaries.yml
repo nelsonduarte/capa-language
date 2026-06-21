@@ -97,3 +97,25 @@ jobs:
             dist/${{ matrix.asset }}
             dist/${{ matrix.asset }}.sha256
           fail_on_unmatched_files: true
+
+  installer:
+    name: Publish install.sh
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+
+      - name: Compute SHA-256
+        # Hash with a bare filename (cd into deploy/) so that a user who
+        # downloads install.sh and install.sh.sha256 side by side can run
+        # `sha256sum -c install.sh.sha256` without a path-prefix mismatch.
+        run: cd deploy && sha256sum install.sh > install.sh.sha256
+
+      - name: Upload installer to release
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65  # v2.6.2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          files: |
+            deploy/install.sh
+            deploy/install.sh.sha256
+          fail_on_unmatched_files: true
