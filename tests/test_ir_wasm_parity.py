@@ -743,6 +743,17 @@ _PARITY_PROGRAMS: list[str] = [
     # undeclared local, now treated as a wildcard; also exercises the
     # ``let _ = unit_returning_fn()`` call-site bind.
     "match_unit_payload.capa",
+    # perf/wasm-concat-inplace (2026-06-22): String ``+`` lowers to
+    # the ``$str_concat`` runtime helper, which grows the left
+    # operand's buffer in place when it is the last bump allocation
+    # (``out = out + chunk`` in a loop is now O(n) amortised instead
+    # of O(n^2)). The program pins byte-identical output for the loop
+    # accumulator AND the grow-only aliasing contract: a snapshot
+    # taken before a growing concat keeps the old value, a substring
+    # view stays valid across a grow, ``out = out + out`` (auto-
+    # concat / RHS aliases LHS) doubles correctly, an allocating RHS
+    # forces the fallback path, and chained concats agree.
+    "string_concat_loop.capa",
 ]
 
 # Programs deliberately excluded from parity and why; documented
@@ -2083,6 +2094,18 @@ class TestPythonWasmParity(unittest.TestCase):
         # emitting local.set for an undeclared local; the
         # ``let _ = unit_returning_fn()`` call-site bind is also fixed.
         self._assert_parity("match_unit_payload.capa")
+
+    def test_string_concat_loop(self):
+        # perf/wasm-concat-inplace: String ``+`` lowers to the
+        # ``$str_concat`` helper that grows the left operand's buffer
+        # in place when it is the last bump allocation. This pins
+        # byte-identical output for the loop accumulator (the O(n)
+        # win) AND the grow-only aliasing contract -- snapshot before
+        # a grow, substring view across a grow, ``out = out + out``
+        # auto-concat, an allocating RHS forcing the fallback, and
+        # chained concats. Any corruption from the in-place write
+        # surfaces here as a Python/Wasm divergence.
+        self._assert_parity("string_concat_loop.capa")
 
     def test_inventory_matches_examples_dir(self):
         # Soundness check: every .capa under examples/wasm/ is
@@ -4378,6 +4401,187 @@ class TestParseFloatBitParity(unittest.TestCase):
             )
             total += len(vals)
         self.assertGreater(total, 1000)
+
+
+@unittest.skipUnless(
+    _has_wasm_tools() and _has_wasmtime_py(),
+    "wasm-tools and/or wasmtime-py not installed",
+)
+class TestStringConcatInPlaceGrow(unittest.TestCase):
+    """Adversarial aliasing + performance coverage for the
+    ``$str_concat`` in-place-grow optimisation (perf/wasm-concat-
+    inplace, 2026-06-22).
+
+    The optimisation grows the left operand's buffer in place when it
+    is the last bump allocation, so a snapshot / view of the old
+    value, an auto-concat, or an allocating RHS could each in
+    principle observe corruption if the grow-only contract were
+    wrong. Every test below asserts byte-identical Python/Wasm output
+    so any corruption surfaces as a divergence. The final test pins
+    the headline win: a ~2 MB string built by ``out = out + chunk``
+    in a loop -- which trapped (out-of-bounds / OOM) under the old
+    O(n^2) allocate-and-copy-both emit -- now completes."""
+
+    def _assert_src_parity(self, src: str, expect: str | None = None) -> None:
+        py_out = _capture_stdout(lambda: _run_python(src))
+        wasm_out = _capture_stdout(lambda: _run_wasm(src))
+        self.assertEqual(
+            py_out, wasm_out,
+            msg=(
+                f"Python/Wasm output divergence.\n"
+                f"--- python ---\n{py_out}\n"
+                f"--- wasm ---\n{wasm_out}"
+            ),
+        )
+        if expect is not None:
+            self.assertEqual(py_out, expect)
+
+    def test_snapshot_before_inplace_concat(self):
+        # (i) A snapshot taken before the growing concat must keep the
+        # OLD value. ``out`` is the last allocation so the next concat
+        # grows it in place; ``s`` (a separate (ptr, len) bound to the
+        # pre-grow length) must NOT see the appended bytes.
+        src = (
+            "fun build() -> String\n"
+            '    var out = "abc"\n'
+            "    out = out + \"d\"\n"  # make out a heap allocation (last)
+            "    let s = out\n"
+            "    out = out + \"EF\"\n"  # grows out in place
+            '    return "s=${s} out=${out}"\n'
+            "\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(build())\n"
+        )
+        self._assert_src_parity(src, expect="s=abcd out=abcdEF\n")
+
+    def test_substring_view_before_concat(self):
+        # (ii) A substring view of ``out`` captured before a growing
+        # concat must remain correct after the concat appends bytes.
+        src = (
+            "fun build() -> String\n"
+            '    var out = "hello"\n'
+            '    out = out + " world"\n'
+            "    let view = out.substring(0, 5)\n"
+            '    out = out + "!!!"\n'
+            '    return "view=${view} out=${out}"\n'
+            "\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(build())\n"
+        )
+        self._assert_src_parity(
+            src, expect="view=hello out=hello world!!!\n",
+        )
+
+    def test_literal_initial_first_concat_does_not_optimize(self):
+        # (iii) ``out = "lit"; out = out + x``: the first concat reads
+        # ``out`` from the data segment (a literal, not a heap
+        # allocation), so the in-place guard fails and it falls back to
+        # alloc+copy; the SECOND concat then grows the heap buffer.
+        src = (
+            "fun build(x: String) -> String\n"
+            '    var out = "lit"\n'
+            "    out = out + x\n"
+            '    out = out + "Z"\n'
+            "    return out\n"
+            "\n"
+            "fun main(stdio: Stdio)\n"
+            '    stdio.println(build("MID"))\n'
+        )
+        self._assert_src_parity(src, expect="litMIDZ\n")
+
+    def test_rhs_allocation_forces_fallback(self):
+        # (iv) ``let mid = a + b`` makes ``a`` no longer the last
+        # allocation, so ``let r = a + c`` must take the fallback path
+        # and copy ``a`` fresh -- not grow ``a`` in place over ``mid``.
+        src = (
+            "fun build() -> String\n"
+            '    let a = "AA"\n'
+            '    let mid = a + "BB"\n'
+            '    let r = a + "CC"\n'
+            '    return "mid=${mid} r=${r} a=${a}"\n'
+            "\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(build())\n"
+        )
+        self._assert_src_parity(src, expect="mid=AABB r=AACC a=AA\n")
+
+    def test_auto_concat_rhs_aliases_lhs(self):
+        # (v) ``out = out + out``: the RHS is the LHS buffer itself.
+        # The disjointness guard (b ends exactly at the write cursor)
+        # keeps source and destination non-overlapping, so the result
+        # is the correctly doubled string.
+        src = (
+            "fun build() -> String\n"
+            '    var out = "xy"\n'
+            '    out = out + "z"\n'  # make out a heap allocation (last)
+            "    out = out + out\n"  # auto-concat
+            "    return out\n"
+            "\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(build())\n"
+        )
+        self._assert_src_parity(src, expect="xyzxyz\n")
+
+    def test_chained_concats_and_interpolation(self):
+        # (vi) Chained concats in one expression and an interpolation
+        # (which lowers through FormatStr, a single-buffer fill) must
+        # both agree with Python.
+        src = (
+            "fun build(n: Int) -> String\n"
+            '    let chain = "1" + "2" + "3" + "4"\n'
+            '    let interp = "n=${n} chain=${chain}"\n'
+            '    return interp + "!"\n'
+            "\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(build(7))\n"
+        )
+        self._assert_src_parity(src, expect="n=7 chain=1234!\n")
+
+    def test_loop_accumulator_parity(self):
+        # Loop accumulator (``out = out + chunk``) byte-identical
+        # across backends at a size large enough to cross several
+        # 64 KiB pages (so the in-place page-grow path is exercised).
+        src = (
+            "fun build(n: Int) -> String\n"
+            '    var out = ""\n'
+            "    var i = 0\n"
+            "    while i < n\n"
+            '        out = out + "0123456789"\n'
+            "        i = i + 1\n"
+            "    return out\n"
+            "\n"
+            "fun main(stdio: Stdio)\n"
+            "    let s = build(10000)\n"
+            '    stdio.println("len=${s.length()}")\n'
+            '    stdio.println(s.substring(0, 10))\n'
+            '    stdio.println(s.substring(99990, 100000))\n'
+        )
+        self._assert_src_parity(
+            src, expect="len=100000\n0123456789\n0123456789\n",
+        )
+
+    def test_two_megabyte_string_no_trap(self):
+        # Headline: a ~2 MB string built by loop concat. Under the old
+        # O(n^2) emit (allocate len(a)+len(b) and copy BOTH operands
+        # every iteration) the bump allocator's never-freed garbage
+        # crossed the default 16 MiB memory cap and trapped well
+        # before completing. With in-place grow the live footprint is
+        # ~2 MB and the run finishes; we assert the produced length.
+        src = (
+            "fun build(n: Int) -> String\n"
+            '    var out = ""\n'
+            "    var i = 0\n"
+            "    while i < n\n"
+            '        out = out + "01234567890123456789"\n'
+            "        i = i + 1\n"
+            "    return out\n"
+            "\n"
+            "fun main(stdio: Stdio)\n"
+            "    let s = build(100000)\n"  # 100000 * 20 = 2,000,000 bytes
+            '    stdio.println("len=${s.length()}")\n'
+        )
+        # Wasm must complete without trapping AND match Python.
+        self._assert_src_parity(src, expect="len=2000000\n")
 
 
 if __name__ == "__main__":

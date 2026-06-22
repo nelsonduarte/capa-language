@@ -563,6 +563,12 @@ class WasmEmitter(
             if (self._uses_map_ops(module)
                     or self._eq_needs_str_eq(module)):
                 self._emit_str_eq_function()
+            if self._uses_string_concat(module):
+                # String ``+`` lowers to ``call $str_concat`` (see
+                # _emit_binop's String branch). The helper grows the
+                # last bump allocation in place so ``out = out + x``
+                # in a loop is O(n) amortised rather than O(n^2).
+                self._emit_str_concat_function()
             if self._uses_string_order_cmp(module):
                 # Bug #2: String ``<`` / ``>`` / ``<=`` / ``>=`` lower
                 # to ``call $str_cmp`` (byte-by-byte UTF-8 ordering ==

@@ -1,0 +1,59 @@
+// String concatenation in a loop (``out = out + chunk``). This is
+// the accumulator shape the in-place-grow ``$str_concat`` helper
+// optimises from O(n^2) to O(n) amortised on the Wasm backend; the
+// output must stay byte-identical to the Python backend.
+//
+// The aliasing cases below pin the grow-only safety contract:
+//   - a snapshot taken before the concat still reads the OLD value,
+//   - a substring view taken before the concat stays correct,
+//   - ``out = out + out`` (auto-concat) produces the doubled string,
+//   - chained concats and an interpolation that also uses concat.
+
+fun build(n: Int) -> String
+    var out = ""
+    var i = 0
+    while i < n
+        out = out + "ab"
+        i = i + 1
+    return out
+
+fun main(stdio: Stdio)
+    // Loop accumulator: 1000 iterations of "ab" -> 2000 bytes.
+    let big = build(1000)
+    stdio.println("len=${big.length()}")
+    stdio.println("head=${big.substring(0, 6)}")
+    stdio.println("tail=${big.substring(1994, 2000)}")
+
+    // Snapshot-before-concat: ``s`` must keep the pre-concat value
+    // even though the next concat grows ``out`` in place.
+    var out = "lit"
+    let snap = out
+    out = out + "X"
+    stdio.println("snap=${snap}")
+    stdio.println("out=${out}")
+
+    // Substring view taken before a growing concat stays valid.
+    var acc = "hello"
+    acc = acc + " world"
+    let view = acc.substring(0, 5)
+    acc = acc + "!!!"
+    stdio.println("view=${view}")
+    stdio.println("acc=${acc}")
+
+    // RHS that allocates between two uses of ``a``: after ``mid``,
+    // ``a`` is no longer the last allocation, so the second concat
+    // takes the fallback path.
+    let a = "AA"
+    let mid = a + "BB"
+    let r = a + "CC"
+    stdio.println("mid=${mid}")
+    stdio.println("r=${r}")
+
+    // Auto-concat: RHS aliases LHS.
+    var dup = "xy"
+    dup = dup + dup
+    stdio.println("dup=${dup}")
+
+    // Chained concats in one expression.
+    let chain = "1" + "2" + "3" + "4"
+    stdio.println("chain=${chain}")

@@ -403,10 +403,13 @@ class _LocalsCollectionMixin:
                     if lt != "Float" and rt != "Float":
                         has_int_modulo = True
                 if isinstance(instr, BinOp) and instr.op == "+":
-                    # String concatenation reuses the same _str_*
-                    # scratch locals as the String methods. The
-                    # operand type tells us; both operands have
-                    # type String when concat applies.
+                    # String ``+`` now lowers to ``call $str_concat``
+                    # (the in-place-grow runtime helper) and uses no
+                    # per-call scratch locals of its own. We still set
+                    # has_string_method so the shared _str_* locals are
+                    # declared: a concat-bearing function very often
+                    # also calls a String method, and the spare i32
+                    # locals are free when it does not.
                     if (instr.left.ty == "String"
                             or instr.right.ty == "String"):
                         has_string_method = True

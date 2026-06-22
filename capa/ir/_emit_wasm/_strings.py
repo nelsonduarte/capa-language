@@ -36,41 +36,23 @@ from ._layout import (
 
 class _StringEmissionMixin:
     def _emit_string_concat(self, instr: BinOp) -> None:
-        """Emit a String + String concatenation: allocate a new
-        buffer of combined length, memory.copy each operand, bind
-        the resulting (ptr, len) to the dst String locals.
+        """Emit a String + String concatenation by delegating to the
+        ``$str_concat`` runtime helper, which returns the result's
+        (ptr, len) on the operand stack.
 
-        Used by source-level ``a + b`` where both operands have
-        type String. Allocates one fresh buffer per concat.
-        """
+        Used by source-level ``a + b`` where both operands have type
+        String. ``$str_concat`` grows the left operand's buffer in
+        place when it is the last bump allocation (so ``out = out +
+        chunk`` in a loop is O(n) amortised instead of O(n^2)) and
+        otherwise allocates a fresh buffer and copies both operands;
+        either way the result is a new (ptr, len) pair that leaves
+        the existing bytes of both operands untouched, so every live
+        view of ``a`` or ``b`` stays valid. See
+        ``_RuntimeHelpersMixin._emit_str_concat_function`` for the
+        grow-only safety argument."""
         self._push_string_value_as_ptr_len(instr.left)
-        self._write("local.set $_str_a_len")
-        self._write("local.set $_str_a_ptr")
         self._push_string_value_as_ptr_len(instr.right)
-        self._write("local.set $_str_b_len")
-        self._write("local.set $_str_b_ptr")
-        # total = a_len + b_len
-        self._write("local.get $_str_a_len")
-        self._write("local.get $_str_b_len")
-        self._write("i32.add")
-        self._write("local.tee $_str_new_len")
-        # alloc total
-        self._write("call $alloc")
-        self._write("local.tee $_str_new_ptr")
-        # memory.copy(new_ptr, a_ptr, a_len)
-        self._write("local.get $_str_a_ptr")
-        self._write("local.get $_str_a_len")
-        self._write("memory.copy")
-        # memory.copy(new_ptr + a_len, b_ptr, b_len)
-        self._write("local.get $_str_new_ptr")
-        self._write("local.get $_str_a_len")
-        self._write("i32.add")
-        self._write("local.get $_str_b_ptr")
-        self._write("local.get $_str_b_len")
-        self._write("memory.copy")
-        # bind dst
-        self._write("local.get $_str_new_ptr")
-        self._write("local.get $_str_new_len")
+        self._write("call $str_concat")
         self._set_string_dst(instr.dst)
 
     def _push_string_field_ptr_only(self, v: Value) -> None:

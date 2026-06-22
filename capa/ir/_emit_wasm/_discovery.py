@@ -371,6 +371,20 @@ class _DiscoveryMixin:
                 return True
         return False
 
+    def _uses_string_concat(self, module: Module) -> bool:
+        """True if any ``+`` BinOp has a String operand. These lower
+        to a ``call $str_concat`` (see ``_emit_string_concat``), so
+        the runtime helper must be present in the module whenever the
+        gate fires -- in any function body, lifted-lambda body, or
+        match-arm guard prelude the shared module walk reaches."""
+        for _fn, instr in walk_module(module):
+            if (isinstance(instr, BinOp)
+                    and instr.op == "+"
+                    and (instr.left.ty == "String"
+                         or instr.right.ty == "String")):
+                return True
+        return False
+
     # ----- discovery pass ---------------------------------------
 
     def _discover(self, module: Module) -> None:

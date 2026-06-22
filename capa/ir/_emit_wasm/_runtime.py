@@ -100,6 +100,177 @@ class _RuntimeHelpersMixin:
         self._indent -= 1
         self._write(")")
 
+    def _emit_str_concat_function(self) -> None:
+        """Helper: ``$str_concat(a_ptr, a_len, b_ptr, b_len) ->
+        (i32 ptr, i32 len)`` returns the (ptr, len) of ``a ++ b``.
+
+        Two paths:
+
+        - GROW-IN-PLACE: when ``a``'s buffer is the last allocation in
+          the bump heap (``a_ptr + align8(a_len) == heap_top``) and
+          ``b`` is disjoint from the bytes we are about to write
+          (``b_ptr + b_len <= a_ptr + a_len``), append ``b`` directly
+          after ``a`` in the free space, bump ``heap_top`` by whatever
+          the extension needs, and return ``(a_ptr, a_len + b_len)``.
+          This is what turns ``out = out + chunk`` in a loop from
+          O(n^2) total bytes copied into O(n) amortised: the growing
+          accumulator is the last allocation each iteration, so each
+          concat copies only the freshly-appended ``b``, never the
+          already-accumulated prefix.
+
+        - FALLBACK (a is a data-segment literal, or some other
+          allocation has happened after a, or b overlaps the write
+          region): allocate a fresh ``a_len + b_len`` buffer and
+          ``memory.copy`` both operands. Identical to the pre-
+          optimisation inline emit.
+
+        Grow-only safety: the in-place path writes ONLY into the free
+        space at/after ``a_ptr + a_len`` (the align-8 padding of a's
+        own allocation plus newly-bumped, previously-unallocated
+        bytes). It never moves, frees, or mutates the existing bytes
+        ``[a_ptr, a_ptr + a_len)``. Capa strings are immutable
+        (ptr, len) views and every live view of a's buffer has
+        ``len <= a_len``, so no existing view can observe the appended
+        bytes: a snapshot ``let s = a`` taken before the concat still
+        reads ``(a_ptr, old a_len)``. The result is a brand-new
+        (ptr, len) pair; the old ``a`` value, if still live, keeps its
+        own length. The disjointness guard ``b_ptr + b_len <= a_ptr +
+        a_len`` makes the append a non-overlapping copy (source ends
+        at or before the write cursor) even when ``b`` aliases ``a``
+        (the ``out = out + out`` case: b is [a_ptr, a_ptr+a_len), the
+        write target is [a_ptr+a_len, ...), the two are disjoint, so
+        the result is a correct ``out ++ out``)."""
+        self._write(
+            "(func $str_concat (param $a_ptr i32) (param $a_len i32) "
+            "(param $b_ptr i32) (param $b_len i32) (result i32 i32)"
+        )
+        self._indent += 1
+        self._write("(local $new_len i32)")
+        self._write("(local $a_end i32)")
+        self._write("(local $a_cap_end i32)")
+        self._write("(local $new_ptr i32)")
+        self._write("(local $new_top i32)")
+        self._write("(local $needed_pages i32)")
+        self._write("(local $cur_pages i32)")
+        # new_len = a_len + b_len
+        self._write("local.get $a_len")
+        self._write("local.get $b_len")
+        self._write("i32.add")
+        self._write("local.set $new_len")
+        # a_end = a_ptr + a_len (the byte just past a's content)
+        self._write("local.get $a_ptr")
+        self._write("local.get $a_len")
+        self._write("i32.add")
+        self._write("local.set $a_end")
+        # a_cap_end = a_ptr + align8(a_len) = a_ptr + ((a_len + 7) & -8)
+        self._write("local.get $a_ptr")
+        self._write("local.get $a_len")
+        self._write("i32.const 7")
+        self._write("i32.add")
+        self._write("i32.const -8")
+        self._write("i32.and")
+        self._write("i32.add")
+        self._write("local.set $a_cap_end")
+        # In-place grow guard:
+        #   a is the last allocation:  a_cap_end == heap_top
+        #   AND b is disjoint from the write region:
+        #       b_ptr + b_len <= a_end
+        # Both must hold (i32.and); when either fails we fall through
+        # to the alloc + copy path below.
+        self._write("local.get $a_cap_end")
+        self._write("global.get $heap_top")
+        self._write("i32.eq")
+        self._write("local.get $b_ptr")
+        self._write("local.get $b_len")
+        self._write("i32.add")
+        self._write("local.get $a_end")
+        self._write("i32.le_u")
+        self._write("i32.and")
+        self._write("if")
+        self._indent += 1
+        # --- grow in place ---
+        # new_top = align8(a_len + b_len) past a_ptr. The grown
+        # buffer's own capacity end becomes the heap top so the next
+        # allocation starts cleanly and this buffer can grow again
+        # next iteration.
+        self._write("local.get $a_ptr")
+        self._write("local.get $new_len")
+        self._write("i32.const 7")
+        self._write("i32.add")
+        self._write("i32.const -8")
+        self._write("i32.and")
+        self._write("i32.add")
+        self._write("local.set $new_top")
+        # Page-grow exactly like $alloc: the append may write past the
+        # current memory.size boundary, so grow linear memory first
+        # (and trap on host refusal at the source-declared ceiling)
+        # before any store. Omitting this was an out-of-bounds write
+        # the moment the accumulator crossed a 64 KiB page.
+        # needed_pages = (new_top + 65535) >> 16
+        self._write("local.get $new_top")
+        self._write("i32.const 65535")
+        self._write("i32.add")
+        self._write("i32.const 16")
+        self._write("i32.shr_u")
+        self._write("local.set $needed_pages")
+        # cur_pages = memory.size
+        self._write("memory.size")
+        self._write("local.set $cur_pages")
+        # if needed_pages > cur_pages: grow(needed_pages - cur_pages)
+        self._write("local.get $needed_pages")
+        self._write("local.get $cur_pages")
+        self._write("i32.gt_u")
+        self._write("if")
+        self._indent += 1
+        self._write("local.get $needed_pages")
+        self._write("local.get $cur_pages")
+        self._write("i32.sub")
+        self._write("memory.grow")
+        self._write("i32.const -1")
+        self._write("i32.eq")
+        self._write("if")
+        self._indent += 1
+        self._write("unreachable")
+        self._indent -= 1
+        self._write("end")
+        self._indent -= 1
+        self._write("end")
+        # Commit the bump and append b into the freed space.
+        self._write("local.get $new_top")
+        self._write("global.set $heap_top")
+        # memory.copy(dst = a_end, src = b_ptr, n = b_len)
+        self._write("local.get $a_end")
+        self._write("local.get $b_ptr")
+        self._write("local.get $b_len")
+        self._write("memory.copy")
+        # Result: (a_ptr, new_len)
+        self._write("local.get $a_ptr")
+        self._write("local.get $new_len")
+        self._write("return")
+        self._indent -= 1
+        self._write("end")
+        # --- fallback: alloc fresh + copy both operands ---
+        self._write("local.get $new_len")
+        self._write("call $alloc")
+        self._write("local.set $new_ptr")
+        # memory.copy(dst = new_ptr, src = a_ptr, n = a_len)
+        self._write("local.get $new_ptr")
+        self._write("local.get $a_ptr")
+        self._write("local.get $a_len")
+        self._write("memory.copy")
+        # memory.copy(dst = new_ptr + a_len, src = b_ptr, n = b_len)
+        self._write("local.get $new_ptr")
+        self._write("local.get $a_len")
+        self._write("i32.add")
+        self._write("local.get $b_ptr")
+        self._write("local.get $b_len")
+        self._write("memory.copy")
+        # Result: (new_ptr, new_len)
+        self._write("local.get $new_ptr")
+        self._write("local.get $new_len")
+        self._indent -= 1
+        self._write(")")
+
     def _emit_str_cmp_function(self) -> None:
         """Helper: ``$str_cmp(p1, l1, p2, l2) -> i32`` returns -1, 0
         or 1 for the lexicographic ordering of the two byte slices
