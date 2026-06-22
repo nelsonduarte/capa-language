@@ -27,6 +27,37 @@ breaking changes and the discipline is still being shaped.
   the suite was validated against, so the declared minimum reflects a
   tested baseline rather than a stale lower bound.
 
+## [1.9.0], 2026-06-22
+
+**Capa 1.9.0.** A MINOR release that turns JSON serialisation of arrays
+and objects on the Wasm backend from quadratic into linear. The headline
+change is a two-phase builder that activates the in-place grow of the
+last bump allocation introduced in 1.8.0, so a large array or object now
+serialises in linear time instead of trapping at the memory cap. No
+breaking changes: there is no API change and no change to observable
+output, the emitted bytes stay identical between the Python and Wasm
+backends.
+
+**Performance.**
+
+- *JSON array/object serialisation is now O(n) on Wasm.* Building a JSON
+  string for an array or object previously concatenated each element
+  fragment onto the accumulated result, and because each `++` produced a
+  fresh allocation the whole serialisation was O(n^2): a large array or
+  object would exhaust the bump allocator and trap at the memory cap. The
+  serialiser now uses a two-phase builder that appends fragments into a
+  single growing allocation, which activates the grow-in-place path added
+  in 1.8.0 so the accumulated prefix is never reallocated or recopied.
+  Large arrays and objects that previously trapped at the memory cap now
+  serialise linearly.
+
+**Parity.**
+
+- *Output is byte-identical between Python and Wasm.* The optimization is
+  purely a serialisation strategy: the resulting JSON bytes, and the
+  observable program output, are unchanged. The Wasm parity suite covers
+  the two-phase builder path against the Python reference.
+
 ## [1.8.0], 2026-06-22
 
 **Capa 1.8.0.** A MINOR release that turns String concatenation on the
