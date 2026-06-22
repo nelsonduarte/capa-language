@@ -9,35 +9,6 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
-**Performance.**
-
-- *`parse_json` is now linear on the Wasm backend (was quadratic).* The
-  bundled JSON parser extracted every string / number value and object
-  key with `s.substring(a, b)`. On the Wasm backend `substring` re-walks
-  the input from byte 0 to translate code point `a` into a byte offset,
-  so the k-th extraction cost O(its position in the document) and the
-  sum over N values was O(N^2); Python's `json.loads` is linear, so a
-  large document was a silent parity-of-behaviour gap and a DoS surface.
-  Because the parser already threads a `List<String>` of one-code-point
-  views (each holding the byte `(ptr, len)` of its code point inside the
-  input buffer), the byte offset of every value is already materialised.
-  A new internal builtin `_capa_str_span(chars, a, b)` forms a value as
-  an O(1) `(ptr, len)` view spanning code points `[a, b)` of that list
-  (`chars[a].ptr .. chars[b-1].ptr + chars[b-1].len`) instead of copying
-  with `substring`. The slice is the same one `substring(a, b)` returned,
-  byte-identical, with no walk and no copy; the escape path keeps folding
-  between-escape chunks but each chunk is now a span too, so combined
-  with the 1.8.0 grow-in-place `$str_concat` it is linear in the string
-  length. Doubling the element count of a string / number array now
-  roughly doubles parse time (was ~4x). The view aliases the input
-  buffer, which is safe in the bump heap (no free, strings immutable) and
-  the parser never grows the input in place; the helper is internal-only
-  (analyzer-gated like `_capa_chr`) and emitted only when `parse_json` is
-  used, and the Python backend is unaffected (it uses the native
-  `capa.runtime._json`). No API change and no change to observable
-  output: the emitted bytes stay identical between the Python and Wasm
-  backends.
-
 **Maintenance.**
 
 - *Optional dev/runtime extras refreshed to current PyPI.* The optional
@@ -55,6 +26,53 @@ breaking changes and the discipline is still being shaped.
   drifted far behind reality (`>=20`). Raised it to `>=45`, the version
   the suite was validated against, so the declared minimum reflects a
   tested baseline rather than a stale lower bound.
+
+## [1.10.0], 2026-06-22
+
+**Capa 1.10.0.** A MINOR release that turns JSON parsing on the Wasm
+backend from quadratic into linear in the time spent extracting values.
+The headline change is an O(1) span view that covers the code points
+already materialised by the parser, so values and object keys are
+extracted without re-walking the input buffer per substring. No breaking
+changes: there is no API change and no change to observable output, the
+emitted bytes stay identical between the Python and Wasm backends and
+error positions are unchanged.
+
+**Performance.**
+
+- *`parse_json` value extraction is now O(n) on Wasm (was O(n^2)).* The
+  bundled JSON parser extracted every string / number value and object
+  key with `s.substring(a, b)`. On the Wasm backend `substring` re-walks
+  the input from byte 0 to translate code point `a` into a byte offset,
+  so the k-th extraction cost O(its position in the document) and the
+  sum over N values was O(n^2); Python's `json.loads` is linear, so a
+  large document was a silent parity-of-behaviour gap and a DoS surface.
+  Because the parser already threads a `List<String>` of one-code-point
+  views (each holding the byte `(ptr, len)` of its code point inside the
+  input buffer), the byte offset of every value is already materialised.
+  A new internal builtin `_capa_str_span(chars, a, b)` forms a value as
+  an O(1) `(ptr, len)` view spanning code points `[a, b)` of that list
+  (`chars[a].ptr .. chars[b-1].ptr + chars[b-1].len`) instead of copying
+  with `substring`, re-walking the buffer per substring no longer
+  happens. The escape path keeps folding between-escape chunks but each
+  chunk is now a span too, so combined with the 1.8.0 grow-in-place
+  `$str_concat` it is linear in the string length. Large arrays and
+  objects that previously scaled quadratically in extraction time now
+  scale linearly: doubling the element count of a string / number array
+  now roughly doubles parse time (was ~4x). The view aliases the input
+  buffer, which is safe in the bump heap (no free, strings immutable) and
+  the parser never grows the input in place; the helper is internal-only
+  (analyzer-gated like `_capa_chr`) and emitted only when `parse_json` is
+  used.
+
+**Parity.**
+
+- *Output is byte-identical and error positions are unchanged.* The
+  optimization is purely an extraction strategy: the parsed values, the
+  observable program output, and the reported error positions are all
+  unchanged. The Python backend is unaffected (it uses the native
+  `capa.runtime._json`), and the Wasm parity suite covers the span path
+  against the Python reference.
 
 ## [1.9.0], 2026-06-22
 
