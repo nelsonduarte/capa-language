@@ -754,6 +754,23 @@ _PARITY_PROGRAMS: list[str] = [
     # concat / RHS aliases LHS) doubles correctly, an allocating RHS
     # forces the fallback path, and chained concats agree.
     "string_concat_loop.capa",
+    # perf/wasm-json-builder (2026-06-22): ``to_json`` on an array /
+    # object is now O(n) on the Wasm backend. The serialiser collects
+    # every output piece into a ``List<String>`` first (phase 1, all
+    # child allocation here) then folds the pieces with ``out = out +
+    # piece`` over a ``for piece in parts`` loop (phase 2, which binds
+    # each element as an allocation-free (ptr, len) view), so ``out``
+    # stays the last bump allocation and grows in place. Pre-builder
+    # the naive ``out = out + __capa_to_json(x)`` allocated the child
+    # right before the concat, defeating the v1.8.0 grow-in-place fast
+    # path: every element copied the whole prefix again (quadratic) and
+    # a large array trapped at the 256-page memory cap. The program
+    # pins byte-identical output for a large array of objects (the
+    # headline linear case) plus the empty array / empty object, an
+    # array of mixed scalars (int / fraction / scientific / -0.0 / bool
+    # / null / string), strings with escapes and an astral code point,
+    # a nested object, and a deeply nested array.
+    "json_serialize_builder.capa",
 ]
 
 # Programs deliberately excluded from parity and why; documented
@@ -2106,6 +2123,24 @@ class TestPythonWasmParity(unittest.TestCase):
         # chained concats. Any corruption from the in-place write
         # surfaces here as a Python/Wasm divergence.
         self._assert_parity("string_concat_loop.capa")
+
+    def test_json_serialize_builder(self):
+        # perf/wasm-json-builder: ``to_json`` on an array / object is
+        # now O(n) on the Wasm backend via a two-phase builder
+        # (collect pieces into a List<String> in phase 1, fold them
+        # with ``out = out + piece`` over an allocation-free
+        # ``for piece in parts`` loop in phase 2 so ``out`` keeps
+        # growing in place). This pins byte-identical output for a
+        # large array of objects (the headline linear case that
+        # pre-builder ran quadratically and trapped at the 256-page
+        # memory cap) plus the empty array / empty object, an array
+        # of mixed scalars, strings with escapes and an astral code
+        # point, a nested object, and a deeply nested array. The
+        # builder only reorders WHEN concatenation happens, never
+        # WHAT, so the text matches the pre-builder revision and
+        # json.dumps. The dedicated linearity / large-input cap
+        # cases live in TestJsonSerializeBuilderLinearity below.
+        self._assert_parity("json_serialize_builder.capa")
 
     def test_inventory_matches_examples_dir(self):
         # Soundness check: every .capa under examples/wasm/ is
@@ -4582,6 +4617,141 @@ class TestStringConcatInPlaceGrow(unittest.TestCase):
         )
         # Wasm must complete without trapping AND match Python.
         self._assert_src_parity(src, expect="len=2000000\n")
+
+
+@unittest.skipUnless(
+    _has_wasm_tools() and _has_wasmtime_py(),
+    "wasm-tools and/or wasmtime-py not installed",
+)
+class TestJsonSerializeBuilderLinearity(unittest.TestCase):
+    """Linearity + large-input coverage for the two-phase JSON
+    serialiser (perf/wasm-json-builder, 2026-06-22).
+
+    ``__cj_array_to_string`` / ``__cj_object_to_string`` used to
+    accumulate with ``out = out + __capa_to_json(child)``, where the
+    recursive call ALLOCATES the child string immediately before the
+    concat. That left ``out`` no longer the last bump allocation, so
+    the v1.8.0 grow-in-place ``$str_concat`` fast path could not fire
+    and every element copied the whole accumulated prefix again --
+    O(n^2) time and O(n^2) never-freed bump garbage that trapped at
+    the 256-page memory cap for a large array.
+
+    The serialiser now collects every output piece into a
+    ``List<String>`` first (phase 1, where all child allocation
+    happens) and folds the pieces with ``out = out + piece`` over a
+    ``for piece in parts`` loop (phase 2). On the Wasm backend that
+    loop binds each element as an allocation-free (ptr, len) view, so
+    ``out`` stays the last allocation and each piece appends in O(1)
+    amortised. These tests pin that a large runtime-built array now
+    serialises with byte-identical Python/Wasm output, including a
+    size that traps at the DEFAULT memory cap but completes once the
+    cap is raised (so the win is the per-call linearity, not a bigger
+    ceiling)."""
+
+    def _assert_src_parity(self, src: str, expect: str | None = None) -> None:
+        py_out = _capture_stdout(lambda: _run_python(src))
+        wasm_out = _capture_stdout(lambda: _run_wasm(src))
+        self.assertEqual(
+            py_out, wasm_out,
+            msg=(
+                f"Python/Wasm output divergence.\n"
+                f"--- python ---\n{py_out}\n"
+                f"--- wasm ---\n{wasm_out}"
+            ),
+        )
+        if expect is not None:
+            self.assertEqual(py_out, expect)
+
+    @staticmethod
+    def _run_wasm_with_cap(src: str, cap_pages: int) -> None:
+        """Compile + run under ``WasmHost`` with an explicit memory
+        cap (pages). Lets a large-array test prove the work completes
+        when the bump heap has headroom even though the same input
+        traps at the 256-page default."""
+        from capa.runtime._wasm_host import WasmHost
+        module, result = _parse_and_analyze(src)
+        blob = compile_wasm(
+            module, types=result.types, memory_cap_pages=cap_pages,
+        )
+        host = WasmHost()
+        host.run_main(blob)
+
+    @staticmethod
+    def _array_of_objects_src(n: int) -> str:
+        """A main() that builds a JSON array of ``n`` objects
+        ``{"id": i, "sq": i*i}`` and prints the serialisation's length
+        plus its head and tail (so a truncated / reordered result
+        cannot pass)."""
+        return (
+            "fun main(stdio: Stdio)\n"
+            "    var xs: List<JsonValue> = []\n"
+            "    var i = 0\n"
+            f"    while i < {n}\n"
+            "        var o: Map<String, JsonValue> = new_map()\n"
+            "        let fi = to_float(i)\n"
+            '        o.set("id", JNum(fi))\n'
+            '        o.set("sq", JNum(fi * fi))\n'
+            "        xs.push(JObj(o))\n"
+            "        i = i + 1\n"
+            "    let s = to_json(JArr(xs))\n"
+            "    let n = s.length()\n"
+            '    stdio.println("len=${n}")\n'
+            '    stdio.println(s.substring(0, 20))\n'
+            "    stdio.println(s.substring(n - 4, n))\n"
+        )
+
+    def test_large_array_of_objects_parity_default_cap(self):
+        # 4000 objects serialise (well under the default cap) with
+        # byte-identical output. Pre-builder this both ran
+        # quadratically and exhausted the bump heap.
+        src = self._array_of_objects_src(4000)
+        py_out = _capture_stdout(lambda: _run_python(src))
+        wasm_out = _capture_stdout(lambda: _run_wasm(src))
+        self.assertEqual(py_out, wasm_out)
+        # Head / tail pin the exact text; the leading "[" and the
+        # closing "}]" bracket the builder's phase-2 fold.
+        self.assertIn('[{"id": 0, "sq": 0}', py_out)
+        self.assertTrue(py_out.rstrip().endswith("}]"))
+
+    def test_large_array_traps_at_default_cap_completes_when_raised(self):
+        # The headline cap case: a 60000-object array. The never-freed
+        # bump garbage from building 60000 JsonValue records crosses
+        # the 256-page (16 MiB) default cap and traps. The SAME module
+        # with a raised cap completes -- proving the serialiser's
+        # phase-2 fold is itself bounded (each append grows ``out`` in
+        # place; the trap is the upstream record-building volume, not a
+        # quadratic blow-up in the fold). Pre-builder the quadratic
+        # fold trapped at a far smaller N regardless of the cap.
+        src = self._array_of_objects_src(60000)
+        from wasmtime import Trap
+        with self.assertRaises(Trap):
+            _capture_stdout(lambda: _run_wasm(src))
+        # Raised to 8192 pages (512 MiB) the run completes; pin the
+        # length against the Python reference for byte parity.
+        py_out = _capture_stdout(lambda: _run_python(src))
+        wasm_out = _capture_stdout(
+            lambda: self._run_wasm_with_cap(src, 8192)
+        )
+        self.assertEqual(py_out, wasm_out)
+
+    def test_array_quadruples_without_quadratic_blowup(self):
+        # Two sizes N and 4N (both under a raised cap) must agree with
+        # Python. The brief's linearity claim is timed out-of-band in
+        # the slice report; here the functional guard is that a 4x
+        # larger array still produces byte-identical output and does
+        # not trap -- a quadratic fold would have exhausted even the
+        # raised cap at 4N (an O(n^2) copy of a 4x-longer prefix per
+        # element is 16x the bytes).
+        for n in (8000, 32000):
+            src = self._array_of_objects_src(n)
+            py_out = _capture_stdout(lambda: _run_python(src))
+            wasm_out = _capture_stdout(
+                lambda: self._run_wasm_with_cap(src, 8192)
+            )
+            self.assertEqual(
+                py_out, wasm_out,
+                msg=f"divergence at N={n}",
+            )
 
 
 if __name__ == "__main__":

@@ -1,0 +1,104 @@
+// JSON serialisation via the two-phase builder (perf/wasm-json-
+// builder, 2026-06-22). ``to_json`` on an array / object used to be
+// O(n^2) on the Wasm backend: each ``out = out + __capa_to_json(x)``
+// allocated the child string right before the accumulation, so the
+// v1.8.0 grow-in-place ``$str_concat`` fast path could not fire and
+// every element copied the whole accumulated prefix again. A large
+// array (tens of thousands of elements) was slow and trapped at the
+// 256-page memory cap.
+//
+// The serialiser now collects every output piece into a
+// ``List<String>`` first (phase 1, where all child allocation
+// happens) and then folds the pieces into one result with
+// ``out = out + piece`` over a ``for piece in parts`` loop (phase
+// 2). On the Wasm backend that loop binds each element as a (ptr,
+// len) view with NO per-iteration allocation, so ``out`` stays the
+// last bump allocation and each piece appends in O(1) amortised.
+//
+// This program pins byte-identical output across the Python and
+// Wasm backends for the serialiser's shapes AND exercises a large
+// array of objects (the headline linear case). The builder only
+// reorders WHEN concatenation happens, never WHAT, so the text is
+// identical to the pre-builder revision.
+
+// Build a JSON array of ``n`` small objects ``{"id": i, "sq": i*i}``
+// and return its serialisation. The headline large-input case: the
+// array AND every nested object route through the two-phase builder.
+fun build_records(n: Int) -> String
+    var xs: List<JsonValue> = []
+    var i = 0
+    while i < n
+        var o: Map<String, JsonValue> = new_map()
+        let fi = to_float(i)
+        o.set("id", JNum(fi))
+        o.set("sq", JNum(fi * fi))
+        xs.push(JObj(o))
+        i = i + 1
+    return to_json(JArr(xs))
+
+fun main(stdio: Stdio)
+    // Large array of objects: 5000 records. Pre-builder this both
+    // ran quadratically and trapped well before here. Check the
+    // length plus the exact head and tail so a silently truncated
+    // or reordered serialisation cannot pass.
+    let big = build_records(5000)
+    stdio.println("big_len=${big.length()}")
+    stdio.println("big_head=${big.substring(0, 24)}")
+    let bl = big.length()
+    stdio.println("big_tail=${big.substring(bl - 24, bl)}")
+
+    // Empty array and empty object.
+    let empty_arr: List<JsonValue> = []
+    stdio.println("empty_arr=${to_json(JArr(empty_arr))}")
+    let empty_obj: Map<String, JsonValue> = new_map()
+    stdio.println("empty_obj=${to_json(JObj(empty_obj))}")
+
+    // Array of scalars: int, fraction, scientific, -0.0, bool, null,
+    // string. Pins the number-formatting branches through the builder.
+    var scalars: List<JsonValue> = []
+    scalars.push(JNum(42.0))
+    scalars.push(JNum(1.5))
+    scalars.push(JNum(0.0000000015))
+    scalars.push(JNum(-0.0))
+    scalars.push(JBool(true))
+    scalars.push(JNull)
+    scalars.push(JStr("hi"))
+    stdio.println("scalars=${to_json(JArr(scalars))}")
+
+    // Strings with escapes and a 4-byte (astral) code point. The
+    // child quoting is unchanged; the builder only changes how the
+    // quoted pieces are concatenated.
+    var strs: List<JsonValue> = []
+    strs.push(JStr("a\"b"))
+    strs.push(JStr("c\\d"))
+    strs.push(JStr("e\nf\tg"))
+    strs.push(JStr("\u{1}"))
+    strs.push(JStr("\u{1F600}"))
+    stdio.println("strs=${to_json(JArr(strs))}")
+
+    // Nested object whose values are themselves an array and an
+    // object: exercises the recursive descent through both builders
+    // at more than one nesting level.
+    var inner: Map<String, JsonValue> = new_map()
+    inner.set("x", JNum(1.0))
+    inner.set("y", JNum(2.0))
+    var inner_list: List<JsonValue> = []
+    inner_list.push(JNum(10.0))
+    inner_list.push(JStr("k"))
+    var outer: Map<String, JsonValue> = new_map()
+    outer.set("point", JObj(inner))
+    outer.set("items", JArr(inner_list))
+    outer.set("name", JStr("node"))
+    stdio.println("nested=${to_json(JObj(outer))}")
+
+    // Deep nesting: an array of arrays of arrays. Each level is a
+    // separate builder call, so a per-level regression surfaces here.
+    var l1: List<JsonValue> = []
+    l1.push(JNum(1.0))
+    var l2: List<JsonValue> = []
+    l2.push(JArr(l1))
+    l2.push(JNum(2.0))
+    var l3: List<JsonValue> = []
+    l3.push(JArr(l2))
+    l3.push(JNum(3.0))
+    stdio.println("deep=${to_json(JArr(l3))}")

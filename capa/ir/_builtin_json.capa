@@ -541,27 +541,65 @@ fun __cj_escape_char(c: String) -> String
     let lo = k % 16
     return "\\u00" + hex.substring(hi, hi + 1) + hex.substring(lo, lo + 1)
 
+// Two-phase builder (perf/wasm-json-builder, 2026-06-22). The
+// naive ``out = out + __capa_to_json(x)`` form is O(n^2) on the
+// Wasm backend: the recursive call ALLOCATES the child string in
+// the bump heap immediately before the accumulation, so ``out`` is
+// no longer the last allocation and the v1.8.0 grow-in-place
+// ``$str_concat`` fast path cannot fire -- every element falls back
+// to alloc+copy-the-whole-prefix. A large array (tens of thousands
+// of elements) is slow and traps at the 256-page memory cap.
+//
+// PHASE 1 (collect) runs every child serialisation up front and
+// stashes the pieces (brackets, ", " separators, and the already-
+// serialised child / key / value strings) into a ``List<String>``.
+// All per-element allocation happens here.
+//
+// PHASE 2 (accumulate) walks that list with ``for piece in parts``
+// -- which on the Wasm backend binds each element as a (ptr, len)
+// VIEW into the list's data array with NO per-iteration allocation
+// -- and folds the pieces into one result via ``out = out +
+// piece``. Because phase 2 allocates nothing but the growth of
+// ``out`` itself, ``out`` stays the last bump allocation across
+// iterations, so each piece appends in O(1) amortised via grow-in-
+// place. Total cost is O(total output bytes), i.e. linear.
+//
+// The builder only reorders WHEN concatenation happens; WHAT gets
+// concatenated (the same brackets, separators, and child strings in
+// the same order) is unchanged, so the output stays byte-identical
+// to the previous revision and to the Python backend's json.dumps.
 fun __cj_array_to_string(xs: List<JsonValue>) -> String
-    var out = "["
+    // Phase 1: collect the pieces (all child allocation lands here).
+    var parts: List<String> = []
     var first = true
     for x in xs
         if not first
-            out = out + ", "
-        out = out + __capa_to_json(x)
+            parts.push(", ")
+        parts.push(__capa_to_json(x))
         first = false
+    // Phase 2: fold the pieces with no per-iteration allocation, so
+    // ``out`` keeps growing in place.
+    var out = "["
+    for piece in parts
+        out = out + piece
     out = out + "]"
     return out
 
 fun __cj_object_to_string(m: Map<String, JsonValue>) -> String
-    var out = "{"
+    // Phase 1: collect the pieces (all key / value allocation here).
+    var parts: List<String> = []
     var first = true
     for pair in m.pairs()
         let (k, v) = pair
         if not first
-            out = out + ", "
-        out = out + __cj_quote_string(k)
-        out = out + ": "
-        out = out + __capa_to_json(v)
+            parts.push(", ")
+        parts.push(__cj_quote_string(k))
+        parts.push(": ")
+        parts.push(__capa_to_json(v))
         first = false
+    // Phase 2: fold the pieces; ``out`` stays the last allocation.
+    var out = "{"
+    for piece in parts
+        out = out + piece
     out = out + "}"
     return out
