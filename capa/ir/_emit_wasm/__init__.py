@@ -617,6 +617,13 @@ class WasmEmitter(
             # parser. Emit only when used.
             if self._uses_capa_chr(module):
                 self._emit_chr_function()
+            # _capa_str_span (internal): O(1) String view over code
+            # points [a, b) of the parser's per-character List<String>;
+            # backs value / key extraction in the bundled JSON parser
+            # (linear instead of substring's per-extraction re-walk).
+            # Emit only when used.
+            if self._uses_str_span(module):
+                self._emit_str_span_function()
             # Generated structural-equality helpers ($eq_<Type>) for
             # any compound type compared with == / != (or used as a
             # pointer-shape List.contains element). Emitted here, at
@@ -812,7 +819,7 @@ class WasmEmitter(
     _TAIL_CALL_INTRINSICS = frozenset({
         "Random", "parse_json", "to_json",
         "parse_int", "parse_float", "to_float", "to_int",
-        "_capa_chr", "panic",
+        "_capa_chr", "_capa_str_span", "panic",
     })
 
     def _emit_body(self, instrs: list) -> None:
@@ -1492,6 +1499,22 @@ class WasmEmitter(
                 and instr.callee_name not in self._user_fn_names:
             self._push_value(instr.args[0])
             self._write("call $chr")
+            if instr.dst is not None:
+                self._set_string_dst(instr.dst)
+            else:
+                self._write("drop")
+                self._write("drop")
+            return
+        # _capa_str_span (internal builtin): (List<String> chars, Int a,
+        # Int b) -> String, an O(1) (ptr, len) view spanning code points
+        # [a, b) of the per-character list, via the $str_span helper.
+        if instr.callee_name == "_capa_str_span" \
+                and len(instr.args) == 3 \
+                and instr.callee_name not in self._user_fn_names:
+            self._push_value(instr.args[0])  # chars: List pointer (i32)
+            self._push_value(instr.args[1])  # a: i64
+            self._push_value(instr.args[2])  # b: i64
+            self._write("call $str_span")
             if instr.dst is not None:
                 self._set_string_dst(instr.dst)
             else:

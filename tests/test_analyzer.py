@@ -7336,6 +7336,21 @@ class TestInternalBuiltinRejection(unittest.TestCase):
             errs,
         )
 
+    def test_user_call_to_capa_str_span_is_rejected(self):
+        # _capa_str_span (perf/wasm-json-span) is the same kind of
+        # internal-only plumbing as _capa_chr: the bundled parser uses
+        # it for O(1) value extraction, user code must not reach it.
+        errs = errors_of(
+            "fun main(stdio: Stdio)\n"
+            "    var cs: List<String> = []\n"
+            '    cs.push("a")\n'
+            "    stdio.println(_capa_str_span(cs, 0, 1))\n"
+        )
+        self.assertTrue(
+            any("internal compiler builtin" in e for e in errs),
+            errs,
+        )
+
     def test_user_underscore_function_still_callable(self):
         # A user-defined function that happens to start with ``_``
         # has a real source position (never BUILTIN_POS) and stays

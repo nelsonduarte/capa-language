@@ -63,6 +63,11 @@ _PARITY_PROGRAMS: list[str] = [
     # silent Env divergence + the realpath/traversal query drift).
     "allows_dynamic_prefix_parity.capa",
     "json_demo.capa",
+    # perf/wasm-json-span (2026-06-22): parse-side O(1) value / key
+    # extraction. Parses large string / number arrays plus a document
+    # whose keys / values sit after multibyte prefixes, byte-identical
+    # across backends.
+    "json_parse_span.capa",
     "generic_accumulator.capa",
     "list_struct_basics.capa",
     "list_struct_map_identity.capa",
@@ -937,6 +942,9 @@ class TestPythonWasmParity(unittest.TestCase):
 
     def test_json_demo(self):
         self._assert_parity("json_demo.capa")
+
+    def test_json_parse_span(self):
+        self._assert_parity("json_parse_span.capa")
 
     def test_generic_accumulator(self):
         self._assert_parity("generic_accumulator.capa")
@@ -4744,6 +4752,225 @@ class TestJsonSerializeBuilderLinearity(unittest.TestCase):
         # element is 16x the bytes).
         for n in (8000, 32000):
             src = self._array_of_objects_src(n)
+            py_out = _capture_stdout(lambda: _run_python(src))
+            wasm_out = _capture_stdout(
+                lambda: self._run_wasm_with_cap(src, 8192)
+            )
+            self.assertEqual(
+                py_out, wasm_out,
+                msg=f"divergence at N={n}",
+            )
+
+
+@unittest.skipUnless(
+    _has_wasm_tools() and _has_wasmtime_py(),
+    "wasm-tools and/or wasmtime-py not installed",
+)
+class TestJsonParseSpanLinearity(unittest.TestCase):
+    """Linearity + parity + memory-safety for the O(1) value / key
+    extraction in the bundled JSON parser (perf/wasm-json-span,
+    2026-06-22).
+
+    ``__cj_parse_string`` / ``__cj_finish_number`` / object keys used
+    to extract values with ``s.substring(a, b)``. On the Wasm backend
+    ``substring`` re-walks the input from byte 0 to map code point
+    ``a`` to a byte offset, so the k-th extraction cost O(its position
+    in the document) and N values summed to O(N^2) (Python's
+    ``json.loads`` is linear, so a big document was a silent parity-of-
+    behaviour gap and a DoS surface). The internal ``_capa_str_span``
+    builtin now forms each value as an O(1) (ptr, len) view spanning
+    the code points' already-materialised bytes inside the input
+    buffer -- the same slice, byte-identical, no walk and no copy.
+
+    These tests pin: byte-identical Python/Wasm output on large
+    arrays (the pure span signal, no Map involved), on a document
+    whose keys / values sit AFTER multibyte prefixes (so a wrong span
+    would point at the wrong bytes), and on the escape / empty-string
+    paths (the ``a == b`` empty-span guard and the chunked decode);
+    plus a LONGEVITY check that a string value extracted as a view
+    stays correct after the parser allocates a great deal more. The
+    view aliases the input buffer, so its bytes must never be the
+    bump heap's last allocation that ``$str_concat`` grows in place;
+    the parser never concatenates onto the input, so the view is
+    stable for the program's lifetime (bump heap, no free, immutable
+    strings)."""
+
+    def _assert_src_parity(self, src: str, expect: str | None = None) -> None:
+        py_out = _capture_stdout(lambda: _run_python(src))
+        wasm_out = _capture_stdout(lambda: _run_wasm(src))
+        self.assertEqual(
+            py_out, wasm_out,
+            msg=(
+                f"Python/Wasm output divergence.\n"
+                f"--- python ---\n{py_out}\n"
+                f"--- wasm ---\n{wasm_out}"
+            ),
+        )
+        if expect is not None:
+            self.assertEqual(py_out, expect)
+
+    @staticmethod
+    def _run_wasm_with_cap(src: str, cap_pages: int) -> None:
+        from capa.runtime._wasm_host import WasmHost
+        module, result = _parse_and_analyze(src)
+        blob = compile_wasm(
+            module, types=result.types, memory_cap_pages=cap_pages,
+        )
+        host = WasmHost()
+        host.run_main(blob)
+
+    def test_multibyte_prefix_extraction_points_at_right_bytes(self):
+        # The decisive span test: every key and value in this object
+        # sits AFTER multibyte (2- / 3- / 4-byte) code points earlier
+        # in the document. ``substring`` re-walked from byte 0 so it
+        # was immune to the prefix; the span uses chars[a].ptr
+        # directly, so a one-byte error in the offset would corrupt
+        # the slice. Byte-identical Python/Wasm output proves the view
+        # lands on the exact bytes the old substring copied.
+        src = (
+            "fun main(stdio: Stdio)\n"
+            '    let doc = "{\\"caf\\u{e9}\\": \\"r\\u{e9}sum\\u{e9}\\", '
+            '\\"\\u{1f600}key\\": 42, \\"after\\": [1, 2, 3], '
+            '\\"\\u{4e2d}\\u{6587}\\": \\"\\u{2728}done\\"}"\n'
+            "    match parse_json(doc)\n"
+            '        Ok(jv) -> stdio.println("Ok ${to_json(jv)}")\n'
+            '        Err(m) -> stdio.println("Err ${m}")\n'
+        )
+        self._assert_src_parity(src)
+
+    def test_number_extraction_after_multibyte_prefix(self):
+        # Numbers (int / fraction / scientific / -0.0) extracted after
+        # a multibyte string element. __cj_finish_number now spans the
+        # number token; a wrong offset would feed parse_float garbage.
+        src = (
+            "fun main(stdio: Stdio)\n"
+            '    let doc = "[\\"\\u{1f680}\\u{1f6f0}\\", 12345, -7, '
+            '1.25, -0.5, 6.022e23, 1e308, -0.0]"\n'
+            "    match parse_json(doc)\n"
+            '        Ok(jv) -> stdio.println("Ok ${to_json(jv)}")\n'
+            '        Err(m) -> stdio.println("Err ${m}")\n'
+        )
+        self._assert_src_parity(src)
+
+    def test_empty_string_span_guard(self):
+        # ``a == b`` must yield the empty string WITHOUT reading
+        # chars[b-1] (which underflows at a==b==0). Several empty
+        # string values, including the leading one at code point 1.
+        src = (
+            "fun main(stdio: Stdio)\n"
+            '    let doc = "[\\"\\", \\"x\\", \\"\\", \\"\\u{e9}\\", \\"\\"]"\n'
+            "    match parse_json(doc)\n"
+            '        Ok(jv) -> stdio.println("Ok ${to_json(jv)}")\n'
+            '        Err(m) -> stdio.println("Err ${m}")\n'
+        )
+        self._assert_src_parity(src, expect='Ok ["", "x", "", "é", ""]\n')
+
+    def test_escape_chunks_are_spans(self):
+        # The escape path folds between-escape runs; each run is now a
+        # span chunk (not a substring). Tab / newline / quote /
+        # backslash / \\uXXXX (BMP) / surrogate-pair (astral) all
+        # round-trip byte-identically, with multibyte text between the
+        # escapes so a wrong chunk offset would surface.
+        src = (
+            "fun main(stdio: Stdio)\n"
+            '    let doc = "\\"caf\\u{e9} \\\\u00e9 \\\\ud83d\\\\ude00 '
+            'a\\\\tb\\\\nc \\u{4e2d} \\\\\\\\ end\\""\n'
+            "    match parse_json(doc)\n"
+            '        Ok(jv) -> stdio.println("Ok ${to_json(jv)}")\n'
+            '        Err(m) -> stdio.println("Err ${m}")\n'
+        )
+        self._assert_src_parity(src)
+
+    def test_view_longevity_after_more_allocations(self):
+        # MEMORY SAFETY: a string value extracted as a view into the
+        # input buffer must stay correct after the parser allocates a
+        # great deal more. Parse a document, keep its first string
+        # value, then parse a SECOND large document (thousands of
+        # allocations) and build a long concatenated string (which
+        # exercises $str_concat's grow-in-place), then read the kept
+        # value again. If the view had aliased reused / grown memory
+        # the second print would differ from the first; byte-identical
+        # output on both backends proves the alias is stable.
+        src = (
+            "fun main(stdio: Stdio)\n"
+            '    let kept = match parse_json("[\\"keepsafe\\", 1, 2]")\n'
+            "        Ok(jv) -> to_json(jv)\n"
+            '        Err(m) -> "err"\n'
+            '    stdio.println(kept)\n'
+            # Churn the bump heap: parse a big second document...
+            '    var big = "["\n'
+            "    var i = 0\n"
+            "    while i < 3000\n"
+            '        big = big + "1,"\n'
+            "        i = i + 1\n"
+            '    big = big + "0]"\n'
+            "    match parse_json(big)\n"
+            '        Ok(jv2) -> stdio.println("parsed2")\n'
+            '        Err(m) -> stdio.println("err2")\n'
+            # ...and grow a long string in place.
+            '    var s = ""\n'
+            "    var j = 0\n"
+            "    while j < 2000\n"
+            '        s = s + "xy"\n'
+            "        j = j + 1\n"
+            '    stdio.println("slen=${s.length()}")\n'
+            # Re-read the kept value: must equal the first print.
+            "    stdio.println(kept)\n"
+        )
+        self._assert_src_parity(src)
+
+    @staticmethod
+    def _array_of_strings_src(n: int) -> str:
+        """A main() that parses a JSON array of ``n`` distinct string
+        elements (embedded as a Capa string LITERAL so the document is
+        a single interned allocation, not a quadratic runtime build)
+        and prints the parsed array's length plus its first and last
+        element (so a wrong span would corrupt the printed text). No
+        Map, so the timing signal is the span extraction alone (object
+        parsing is O(n^2) in the Map's linear-scan set, unrelated to
+        this slice)."""
+        body = "[" + ",".join('\\"item%d\\"' % i for i in range(n)) + "]"
+        return (
+            "fun main(stdio: Stdio)\n"
+            f'    let doc = "{body}"\n'
+            "    match parse_json(doc)\n"
+            "        Ok(jv) -> match jv.as_array()\n"
+            "            Some(xs) ->\n"
+            "                let m = xs.length()\n"
+            '                stdio.println("len=${m}")\n'
+            "                match xs.first()\n"
+            '                    Some(f) -> stdio.println("first=${to_json(f)}")\n'
+            '                    None -> stdio.println("nofirst")\n'
+            "                match xs.last()\n"
+            '                    Some(l) -> stdio.println("last=${to_json(l)}")\n'
+            '                    None -> stdio.println("nolast")\n'
+            '            None -> stdio.println("notarray")\n'
+            '        Err(m) -> stdio.println("err ${m}")\n'
+        )
+
+    def test_large_array_of_strings_parity(self):
+        # 8000 string elements parse with byte-identical Python/Wasm
+        # output, well under the default cap. Pre-span the k-th
+        # substring re-walked O(k) bytes so this ran quadratically;
+        # the span makes each extraction O(1). The first / last element
+        # pin the exact decoded text.
+        src = self._array_of_strings_src(8000)
+        py_out = _capture_stdout(lambda: _run_python(src))
+        wasm_out = _capture_stdout(lambda: _run_wasm(src))
+        self.assertEqual(py_out, wasm_out)
+        self.assertIn("len=8000", py_out)
+        self.assertIn('first="item0"', py_out)
+        self.assertIn('last="item7999"', py_out)
+
+    def test_array_quadruples_without_quadratic_blowup(self):
+        # N and 4N both agree with Python and complete under a raised
+        # cap. Pre-span the 4x-longer document re-walked a 4x-longer
+        # buffer on every one of 4x-more extractions -- 16x the byte
+        # traffic, the quadratic signature. Byte-identical output at
+        # both sizes is the functional guard for the linearity claim
+        # timed out-of-band in the slice report.
+        for n in (5000, 20000):
+            src = self._array_of_strings_src(n)
             py_out = _capture_stdout(lambda: _run_python(src))
             wasm_out = _capture_stdout(
                 lambda: self._run_wasm_with_cap(src, 8192)

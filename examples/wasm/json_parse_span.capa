@@ -1,0 +1,114 @@
+// JSON parsing via O(1) value extraction (perf/wasm-json-span,
+// 2026-06-22). ``parse_json`` on a document with many values used
+// to be O(n^2) on the Wasm backend: each value / object key was
+// extracted with ``s.substring(a, b)``, and ``substring`` re-walks
+// the input from byte 0 to translate code point ``a`` to a byte
+// offset, so the k-th extraction cost O(its position) and N values
+// summed to O(N^2). Python's ``json.loads`` is linear, so a large
+// document was a silent parity-of-behaviour gap.
+//
+// The parser threads a ``List<String>`` of one-code-point views
+// built once per parse (``for c in s``); each ``chars[p]`` already
+// holds the (ptr, len) of code point ``p``'s bytes inside the input
+// buffer. The internal ``_capa_str_span`` builtin forms each value
+// as an O(1) view spanning ``chars[a] .. chars[b-1]`` -- the same
+// code-point slice ``substring(a, b)`` returned, byte-identical, but
+// with no walk and no copy.
+//
+// This program builds a large array of strings and a large array of
+// numbers (the pure span signal: no Map, whose linear-scan ``set``
+// is a separate O(n^2) unrelated to this slice), parses each, and
+// prints the parsed length plus head / tail elements so a wrong span
+// would corrupt the printed text. It also covers strings AFTER a
+// multibyte prefix (a wrong offset would point at the wrong bytes),
+// escapes / unicode, and an empty string value (the ``a == b``
+// empty-span guard). Byte-identical Python/Wasm output is the
+// parity guarantee; the linearity is timed out-of-band.
+
+// Fold a list of string pieces into one document, linearly: phase 2
+// of the builder pattern keeps ``out`` the last bump allocation so
+// each append grows in place (v1.8.0). Building the document this
+// way avoids a quadratic runtime concat that would dwarf the parse.
+fun join_pieces(parts: List<String>) -> String
+    var out = ""
+    for piece in parts
+        out = out + piece
+    return out
+
+// A JSON array literal ``["item0","item1",...,"item{n-1}"]`` as a
+// String, built linearly.
+fun string_array_doc(n: Int) -> String
+    var parts: List<String> = []
+    parts.push("[")
+    var i = 0
+    while i < n
+        if i > 0
+            parts.push(",")
+        parts.push("\"item")
+        parts.push("${i}")
+        parts.push("\"")
+        i = i + 1
+    parts.push("]")
+    return join_pieces(parts)
+
+// A JSON array literal ``[0,1,2,...,n-1]`` as a String, built linearly.
+fun number_array_doc(n: Int) -> String
+    var parts: List<String> = []
+    parts.push("[")
+    var i = 0
+    while i < n
+        if i > 0
+            parts.push(",")
+        parts.push("${i}")
+        i = i + 1
+    parts.push("]")
+    return join_pieces(parts)
+
+fun first_of(jv: JsonValue) -> String
+    match jv.as_array()
+        Some(xs) ->
+            match xs.first()
+                Some(f) -> return to_json(f)
+                None    -> return "none"
+        None -> return "notarray"
+
+fun last_of(jv: JsonValue) -> String
+    match jv.as_array()
+        Some(xs) ->
+            match xs.last()
+                Some(l) -> return to_json(l)
+                None    -> return "none"
+        None -> return "notarray"
+
+fun len_of(jv: JsonValue) -> Int
+    match jv.as_array()
+        Some(xs) -> return xs.length()
+        None     -> return -1
+
+fun main(stdio: Stdio)
+    // Large array of strings: 4000 distinct elements. Pre-span this
+    // ran quadratically; each extraction is now O(1).
+    let sdoc = string_array_doc(4000)
+    match parse_json(sdoc)
+        Ok(jv) -> stdio.println("strings len=${len_of(jv)} first=${first_of(jv)} last=${last_of(jv)}")
+        Err(m) -> stdio.println("strings err ${m}")
+
+    // Large array of numbers: 4000 elements through __cj_finish_number.
+    let ndoc = number_array_doc(4000)
+    match parse_json(ndoc)
+        Ok(jv) -> stdio.println("numbers len=${len_of(jv)} first=${first_of(jv)} last=${last_of(jv)}")
+        Err(m) -> stdio.println("numbers err ${m}")
+
+    // Keys and values AFTER multibyte prefixes: a wrong span would
+    // point at the wrong bytes. ``café`` (2-byte), CJK (3-byte), and
+    // an emoji (4-byte) precede the extracted text.
+    let mb = "{\"café\": \"résumé\", \"中文\": 42, \"😀key\": [1, 2, 3]}"
+    match parse_json(mb)
+        Ok(jv) -> stdio.println("multibyte ${to_json(jv)}")
+        Err(m) -> stdio.println("multibyte err ${m}")
+
+    // Escapes / unicode and an empty string value (the a==b guard).
+    let esc = "[\"\", \"a\\tb\\nc\", \"caf\\u00e9\", \"\\ud83d\\ude00\", \"\"]"
+    match parse_json(esc)
+        Ok(jv) -> stdio.println("escapes ${to_json(jv)}")
+        Err(m) -> stdio.println("escapes err ${m}")

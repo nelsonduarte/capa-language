@@ -190,6 +190,18 @@ class _DiscoveryMixin:
             return False
         return self._uses_builtin_free_fn(module, "_capa_chr")
 
+    def _uses_str_span(self, module: Module) -> bool:
+        """Gates emission of the ``$str_span`` runtime helper backing
+        the internal ``_capa_str_span`` builtin (used by the bundled
+        JSON parser to extract string / number values and object keys
+        as O(1) views into the input buffer). The discovery walk runs
+        after ``_builtin_json.inject_into`` splices the parser
+        functions in, so the calls inside ``__cj_parse_string`` /
+        ``__cj_finish_number`` are visible here."""
+        if any(fn.name == "_capa_str_span" for fn in module.functions):
+            return False
+        return self._uses_builtin_free_fn(module, "_capa_str_span")
+
     def _uses_panic(self, module: Module) -> bool:
         """Gates the ``capa:host/panic`` import emission. A
         user-defined ``panic`` shadows the builtin (the user

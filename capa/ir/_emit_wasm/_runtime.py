@@ -1983,3 +1983,98 @@ class _RuntimeHelpersMixin:
         self._write("local.get $l")
         self._indent -= 1
         self._write(")")
+
+    def _emit_str_span_function(self) -> None:
+        """``$str_span(chars: i32, a: i64, b: i64) -> (i32 ptr, i32 len)``
+        - form a String as an O(1) view spanning code points ``[a, b)``
+        of ``chars``, a ``List<String>`` whose every element is a
+        one-code-point view (the per-character list the bundled JSON
+        parser builds once per parse). Backs the internal
+        ``_capa_str_span`` builtin.
+
+        Each ``chars[p]`` is stored as a packed i64 (ptr in the low 32
+        bits, byte length in the high 32) pointing at the UTF-8 bytes
+        of code point ``p`` inside the input buffer. Because ``for c
+        in s`` binds these views in input order with no copies, the
+        bytes of code points ``a..b`` are exactly the contiguous run
+        ``chars[a].ptr .. chars[b-1].ptr + chars[b-1].len``. The span
+        is therefore ``(chars[a].ptr, end - chars[a].ptr)`` with NO
+        walk from the buffer start and NO copy -- the result aliases
+        the input buffer, which is safe in the bump heap (no free,
+        strings immutable, and ``parse_json`` never grows the input in
+        place; the escape path allocates a separate ``out``).
+
+        Empty-span guard: ``a == b`` returns ``(0, 0)`` WITHOUT reading
+        ``chars[b-1]`` (which would underflow at ``a == b == 0``). The
+        bundled parser only ever passes ``0 <= a <= b <= length`` and
+        the per-character views span the whole input, so the end byte
+        never exceeds ``input.ptr + input.len``; this helper trusts the
+        caller's range like the other ``__cj_*`` internals and is
+        unreachable from user code (analyzer-gated)."""
+        self._write(
+            "(func $str_span (param $chars i32) (param $a i64) "
+            "(param $b i64) (result i32 i32)"
+        )
+        self._indent += 1
+        self._write("(local $ai i32)")
+        self._write("(local $bi i32)")
+        self._write("(local $data i32)")
+        self._write("(local $start_ptr i32)")
+        self._write("(local $last i64)")
+        self._write("(local $end i32)")
+        # ai = wrap(a); bi = wrap(b).
+        self._write("local.get $a")
+        self._write("i32.wrap_i64")
+        self._write("local.set $ai")
+        self._write("local.get $b")
+        self._write("i32.wrap_i64")
+        self._write("local.set $bi")
+        # Empty span (a == b): return (0, 0) without touching chars.
+        self._write("local.get $ai")
+        self._write("local.get $bi")
+        self._write("i32.eq")
+        self._write("if")
+        self._indent += 1
+        self._write("i32.const 0")
+        self._write("i32.const 0")
+        self._write("return")
+        self._indent -= 1
+        self._write("end")
+        # data = chars.data_ptr (List header: data_ptr at offset 8).
+        self._write("local.get $chars")
+        self._write("i32.load offset=8")
+        self._write("local.set $data")
+        # start_ptr = low32(chars[a]) = i32.load(data + a*8).
+        self._write("local.get $data")
+        self._write("local.get $ai")
+        self._write("i32.const 8")
+        self._write("i32.mul")
+        self._write("i32.add")
+        self._write("i32.load")
+        self._write("local.set $start_ptr")
+        # last = chars[b-1] (packed i64 at data + (b-1)*8).
+        self._write("local.get $data")
+        self._write("local.get $bi")
+        self._write("i32.const 1")
+        self._write("i32.sub")
+        self._write("i32.const 8")
+        self._write("i32.mul")
+        self._write("i32.add")
+        self._write("i64.load")
+        self._write("local.set $last")
+        # end = low32(last) + high32(last) = last_ptr + last_len.
+        self._write("local.get $last")
+        self._write("i32.wrap_i64")
+        self._write("local.get $last")
+        self._write("i64.const 32")
+        self._write("i64.shr_u")
+        self._write("i32.wrap_i64")
+        self._write("i32.add")
+        self._write("local.set $end")
+        # Result: (start_ptr, end - start_ptr).
+        self._write("local.get $start_ptr")
+        self._write("local.get $end")
+        self._write("local.get $start_ptr")
+        self._write("i32.sub")
+        self._indent -= 1
+        self._write(")")

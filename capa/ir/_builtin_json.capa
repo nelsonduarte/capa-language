@@ -25,9 +25,27 @@
 // time through the bump allocator (no free), which is O(n^2)
 // bytes of allocation. A 70 KiB JSON string needed ~2.5 GiB of
 // bump allocation and trapped at the 16 MiB memory cap where the
-// Python backend returned Ok. String contents now come out as a
-// single ``substring`` when no escape is present, or as
-// between-escape chunks otherwise.
+// Python backend returned Ok.
+//
+// Span note (perf/wasm-json-span, 2026-06-22): value / key
+// extraction no longer goes through ``s.substring(a, b)`` either.
+// ``substring`` re-walks the input from byte 0 to translate code
+// point ``a`` to a byte offset, so the k-th extraction cost O(its
+// position in the document) and the sum over N values was again
+// O(N^2) on Wasm (Python's ``json.loads`` is linear). Because each
+// ``chars[p]`` already holds the (ptr, len) of code point ``p``'s
+// bytes inside the input buffer, the byte offset is materialised:
+// the internal ``_capa_str_span(chars, a, b)`` builtin forms the
+// value as an O(1) view spanning ``chars[a].ptr ..
+// chars[b-1].ptr + chars[b-1].len`` -- the same code-point slice
+// ``substring(a, b)`` returned, byte-identical, with no walk and
+// no copy. The no-escape string value is one span; the escape path
+// still folds between-escape chunks with ``out = out + chunk``, but
+// each chunk is now a span too, so combined with the v1.8.0
+// grow-in-place ``$str_concat`` it is linear in the string length.
+// The view aliases the input buffer, which is safe in the bump heap
+// (no free, strings immutable) and the parser never grows the input
+// in place (the escape path allocates a separate ``out``).
 
 // Audit 2026-05-25 H4: the recursive descent in __cj_parse_value
 // / __cj_parse_array / __cj_parse_object has no nesting cap. An
@@ -45,7 +63,7 @@ pub fun __capa_parse_json(s: String) -> Result<JsonValue, String>
     for c in s
         chars.push(c)
     let start = __cj_skip_ws(chars, 0)
-    match __cj_parse_value(s, chars, start, 0)
+    match __cj_parse_value(chars, start, 0)
         Ok(jv_pos) ->
             let (jv, after) = jv_pos
             // RFC 8259: a JSON text is ONE value (plus whitespace).
@@ -144,7 +162,7 @@ fun __cj_skip_ws(chars: List<String>, pos: Int) -> Int
             return p
     return p
 
-fun __cj_parse_value(s: String, chars: List<String>, pos: Int, depth: Int) -> Result<(JsonValue, Int), String>
+fun __cj_parse_value(chars: List<String>, pos: Int, depth: Int) -> Result<(JsonValue, Int), String>
     if depth > __CJ_MAX_DEPTH
         return Err("max nesting depth ${__CJ_MAX_DEPTH} exceeded at ${pos}")
     if pos >= chars.length()
@@ -155,12 +173,12 @@ fun __cj_parse_value(s: String, chars: List<String>, pos: Int, depth: Int) -> Re
     if c == "t" or c == "f"
         return __cj_parse_bool(chars, pos)
     if c == "\""
-        return __cj_parse_string(s, chars, pos)
+        return __cj_parse_string(chars, pos)
     if c == "["
-        return __cj_parse_array(s, chars, pos, depth + 1)
+        return __cj_parse_array(chars, pos, depth + 1)
     if c == "{"
-        return __cj_parse_object(s, chars, pos, depth + 1)
-    return __cj_parse_number(s, chars, pos)
+        return __cj_parse_object(chars, pos, depth + 1)
+    return __cj_parse_number(chars, pos)
 
 fun __cj_parse_null(chars: List<String>, pos: Int) -> Result<(JsonValue, Int), String>
     if pos + 3 < chars.length()
@@ -215,10 +233,10 @@ fun __cj_u4(chars: List<String>, p: Int) -> Int
 // control characters (RFC 8259 section 7), invalid escape
 // introducers, and \u escapes without four hex digits, and records
 // whether any escape occurred. When the scan saw no escape, the
-// value is one ``substring`` -- a single allocation, so 100 KiB+
-// strings parse in linear memory. With escapes, the decode pass
-// copies the runs between escapes as chunks and splices the decoded
-// escape characters in between.
+// value is one ``_capa_str_span`` -- an O(1) view into the input,
+// no copy, so 100 KiB+ strings parse in linear memory. With
+// escapes, the decode pass copies the runs between escapes as span
+// chunks and splices the decoded escape characters in between.
 //
 // Handles \" \\ \/ \b \f \n \r \t and \uXXXX. \uXXXX decodes to
 // the real code point via the internal ``_capa_chr`` builtin,
@@ -234,7 +252,7 @@ fun __cj_u4(chars: List<String>, p: Int) -> Int
 //   in codepoint parity with Python; note Python itself cannot
 //   PRINT that string (UnicodeEncodeError at the stdout encoder),
 //   so byte-exact print parity is moot for unpaired surrogates.
-fun __cj_parse_string(s: String, chars: List<String>, pos: Int) -> Result<(JsonValue, Int), String>
+fun __cj_parse_string(chars: List<String>, pos: Int) -> Result<(JsonValue, Int), String>
     let n = chars.length()
     var p = pos + 1
     var has_escape = false
@@ -268,7 +286,7 @@ fun __cj_parse_string(s: String, chars: List<String>, pos: Int) -> Result<(JsonV
     if close < 0
         return Err("unterminated string at ${pos}")
     if not has_escape
-        return Ok((JStr(s.substring(pos + 1, close)), close + 1))
+        return Ok((JStr(_capa_str_span(chars, pos + 1, close)), close + 1))
     // Decode pass: copy between-escape runs as chunks.
     var out = ""
     var run_start = pos + 1
@@ -276,7 +294,7 @@ fun __cj_parse_string(s: String, chars: List<String>, pos: Int) -> Result<(JsonV
     while p < close
         if chars[p] == "\\"
             if run_start < p
-                out = out + s.substring(run_start, p)
+                out = out + _capa_str_span(chars, run_start, p)
             let e = chars[p + 1]
             if e == "u"
                 // Scan pass guaranteed four valid hex digits for
@@ -320,7 +338,7 @@ fun __cj_parse_string(s: String, chars: List<String>, pos: Int) -> Result<(JsonV
         else
             p = p + 1
     if run_start < close
-        out = out + s.substring(run_start, close)
+        out = out + _capa_str_span(chars, run_start, close)
     return Ok((JStr(out), close + 1))
 
 // Parse a number: optional minus, integer part, optional fraction,
@@ -328,7 +346,7 @@ fun __cj_parse_string(s: String, chars: List<String>, pos: Int) -> Result<(JsonV
 // not in ``0123456789.eE+-``. Routes through the built-in
 // ``parse_float`` (already a Wasm runtime helper) for the actual
 // conversion.
-fun __cj_parse_number(s: String, chars: List<String>, pos: Int) -> Result<(JsonValue, Int), String>
+fun __cj_parse_number(chars: List<String>, pos: Int) -> Result<(JsonValue, Int), String>
     let n = chars.length()
     var p = pos
     if p < n
@@ -338,13 +356,13 @@ fun __cj_parse_number(s: String, chars: List<String>, pos: Int) -> Result<(JsonV
         if __cj_is_number_char(chars[p])
             p = p + 1
         else
-            return __cj_finish_number(s, chars, pos, p)
-    return __cj_finish_number(s, chars, pos, p)
+            return __cj_finish_number(chars, pos, p)
+    return __cj_finish_number(chars, pos, p)
 
-fun __cj_finish_number(s: String, chars: List<String>, start: Int, end: Int) -> Result<(JsonValue, Int), String>
+fun __cj_finish_number(chars: List<String>, start: Int, end: Int) -> Result<(JsonValue, Int), String>
     if start == end
         return Err("expected number at ${start}")
-    let text = s.substring(start, end)
+    let text = _capa_str_span(chars, start, end)
     if not __cj_number_token_valid(chars, start, end)
         return Err("bad number '${text}' at ${start}")
     // Python's json parses integer-form tokens (no fraction, no
@@ -359,7 +377,7 @@ fun __cj_finish_number(s: String, chars: List<String>, start: Int, end: Int) -> 
         Some(f) -> return Ok((JNum(f), end))
         None    -> return Err("bad number '${text}' at ${start}")
 
-fun __cj_parse_array(s: String, chars: List<String>, pos: Int, depth: Int) -> Result<(JsonValue, Int), String>
+fun __cj_parse_array(chars: List<String>, pos: Int, depth: Int) -> Result<(JsonValue, Int), String>
     var items: List<JsonValue> = []
     var p = __cj_skip_ws(chars, pos + 1)
     let n = chars.length()
@@ -367,7 +385,7 @@ fun __cj_parse_array(s: String, chars: List<String>, pos: Int, depth: Int) -> Re
         if chars[p] == "]"
             return Ok((JArr(items), p + 1))
     while p < n
-        match __cj_parse_value(s, chars, p, depth)
+        match __cj_parse_value(chars, p, depth)
             Err(msg) -> return Err(msg)
             Ok(jv_pos) ->
                 let (jv, after) = jv_pos
@@ -384,7 +402,7 @@ fun __cj_parse_array(s: String, chars: List<String>, pos: Int, depth: Int) -> Re
                     return Err("expected , or ] at ${p}, got '${sep}'")
     return Err("unterminated array")
 
-fun __cj_parse_object(s: String, chars: List<String>, pos: Int, depth: Int) -> Result<(JsonValue, Int), String>
+fun __cj_parse_object(chars: List<String>, pos: Int, depth: Int) -> Result<(JsonValue, Int), String>
     var obj: Map<String, JsonValue> = new_map()
     var p = __cj_skip_ws(chars, pos + 1)
     let n = chars.length()
@@ -394,7 +412,7 @@ fun __cj_parse_object(s: String, chars: List<String>, pos: Int, depth: Int) -> R
     while p < n
         if chars[p] != "\""
             return Err("expected key string at ${p}")
-        let k_res = __cj_parse_string(s, chars, p)
+        let k_res = __cj_parse_string(chars, p)
         match k_res
             Err(msg) -> return Err(msg)
             Ok(k_pos) ->
@@ -408,7 +426,7 @@ fun __cj_parse_object(s: String, chars: List<String>, pos: Int, depth: Int) -> R
                 if chars[p] != ":"
                     return Err("expected ':' at ${p}")
                 p = __cj_skip_ws(chars, p + 1)
-                match __cj_parse_value(s, chars, p, depth)
+                match __cj_parse_value(chars, p, depth)
                     Err(msg) -> return Err(msg)
                     Ok(v_pos) ->
                         let (v_jv, after_v) = v_pos

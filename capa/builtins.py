@@ -293,6 +293,22 @@ FREE_FUNCTIONS: dict[str, tuple[TyFun, list[str]]] = {
     # surrogates in ``str``); out-of-range traps / raises on both
     # backends.
     "_capa_chr":   (fun(TyInt, TyString),                                          []),
+    # Internal (underscore-prefixed, undocumented): form a String as
+    # an O(1) view spanning code points ``[a, b)`` of a
+    # ``List<String>`` of one-code-point views (the per-character
+    # ``chars`` list the bundled JSON parser builds once per parse).
+    # Each ``chars[p]`` already holds a (ptr, len) view of the bytes
+    # of code point ``p`` inside the input buffer, so the span's
+    # bytes are ``chars[a].ptr .. chars[b-1].ptr + chars[b-1].len``;
+    # the result is the same code-point slice ``substring(a, b)``
+    # would copy, but without re-walking from the start of the
+    # buffer (which made parse_json O(n^2) on the Wasm backend).
+    # ``a == b`` yields the empty string without reading ``chars[b-1]``.
+    # Exists only so the bundled parser (analyzed with internal=True)
+    # can extract string / number values and object keys in O(1); the
+    # Python backend never lowers the bundle (it uses the native
+    # ``capa.runtime._json``), so there is no Python runtime twin.
+    "_capa_str_span": (fun(lst(TyString), TyInt, TyInt, TyString),                 []),
     # Roadmap S2.5: the single auditable @secret -> @public bridge.
     # ``declassify(value, reason: "...")`` returns ``value`` with a
     # @public label. The analyzer special-cases its call shape (the
