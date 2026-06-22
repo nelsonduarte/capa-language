@@ -27,6 +27,36 @@ breaking changes and the discipline is still being shaped.
   the suite was validated against, so the declared minimum reflects a
   tested baseline rather than a stale lower bound.
 
+## [1.8.0], 2026-06-22
+
+**Capa 1.8.0.** A MINOR release that turns String concatenation on the
+Wasm backend from quadratic into linear. The headline change is an
+in-place grow of the last bump allocation, so a loop that builds a
+multi-megabyte string by repeated `++` now completes in linear time
+instead of trapping. No breaking changes: there is no API change and no
+change to observable output, the emitted bytes stay identical between
+the Python and Wasm backends.
+
+**Performance.**
+
+- *String concat is now O(n) amortized on Wasm (Problem A closed).*
+  Each `++` previously allocated a fresh buffer and copied both operands,
+  so building a string of length n by repeated concatenation in a loop
+  was O(n^2): a multi-megabyte result would exhaust the bump allocator
+  and trap. The backend now grows the last bump allocation in place when
+  the left operand is the most recent allocation, appending the right
+  operand without reallocating or recopying the accumulated prefix. The
+  worst case (concatenating two unrelated strings) is unchanged; the
+  hot loop case drops to linear. Strings of several megabytes built in a
+  loop, which previously trapped, now complete in linear time.
+
+**Parity.**
+
+- *Output is byte-identical between Python and Wasm.* The optimization
+  is purely an allocation strategy: the resulting string bytes, and the
+  observable program output, are unchanged. The Wasm parity suite covers
+  the grow-in-place path against the Python reference.
+
 ## [1.7.0], 2026-06-21
 
 **Capa 1.7.0.** A MINOR release (M4) that hardens SLSA provenance
