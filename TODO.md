@@ -7,7 +7,7 @@
 > This file holds only what is still open; everything already shipped
 > lives in [`DONE.md`](DONE.md).
 
-Compiler at **v1.10.0** (released 2026-06-22). Suite green (3109 tests),
+Compiler at **v1.10.0** (released 2026-06-22). Suite green (3127 tests),
 CI green. Items are grouped by time horizon, not by an internal priority
 code.
 
@@ -36,9 +36,14 @@ code.
   months, and the gate to start the backend proper remains a concrete
   driver (a perf-bound consumer the Wasm-AOT path provably cannot serve,
   a hard native-FFI requirement, or a target with no acceptable Wasm
-  runtime). What is actionable in the near future are the low-risk
-  prerequisites the feasibility doc section 5.3 already flags as "do
-  independently first, benefits Wasm too":
+  runtime). The phased execution plan (the "how", as opposed to the
+  feasibility doc's "if / when / how much") lives in
+  `docs/design/native-backend-plan.md`, which marks **Phase 0
+  (prerequisites) and Phase 1 (spike) as AUTHORISED to start**, decides
+  Phase 2 after their results, and keeps Phases 3+ gated on a driver.
+  What is actionable in the near future are the low-risk prerequisites
+  the feasibility doc section 5.3 already flags as "do independently
+  first, benefits Wasm too" (Phase 0 of the plan):
   - Refactor `_layout.py` to be parameterised by pointer width and
     alignment (32 vs 64 bit). The Wasm backend consumes it too, and
     doing it in isolation de-risks the largest regression surface.
@@ -53,7 +58,9 @@ code.
   is meant to deliver. See `docs/design/llvm-backend-feasibility.md`
   (sections 5.3 and 6 for the prerequisites and the gate; the doc weighs
   llvmlite vs textual `.ll` vs Cranelift-direct without deciding, and
-  that toolchain choice is left open here too).
+  that toolchain choice is left open here too) and
+  `docs/design/native-backend-plan.md` (the phased "how", with Phase 0+1
+  authorised and the rest gated).
 - **Async/await.** Triple gate: a real I/O-bound workload, GC, and the
   appetite to reopen the noninterference proof. See
   `docs/design/async-feasibility.md`.
