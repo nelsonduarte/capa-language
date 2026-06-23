@@ -258,8 +258,8 @@ structurally.
 
 ### Phase 4: Host bridges (GATED on a driver)
 
-**Objective.** The 11 capability namespaces
-(`capa:host/{stdio,clock,env,fs,random,net,db,proc,json}`, ~30 host
+**Objective.** The 10 capability namespaces
+(`capa:host/{stdio,panic,clock,env,fs,random,net,db,proc,json}`, ~36 host
 functions, ~2050 LOC, feasibility 2.5) plus the attenuation enforcement
 that travels with each handle.
 

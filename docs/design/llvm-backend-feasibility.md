@@ -272,15 +272,15 @@ must build a collector that Wasm can borrow from the host.
 
 ### 2.5 Capability host bridges: scope this honestly
 
-The Wasm host (`capa/runtime/_wasm_host.py`, ~2050 lines) defines ~30
-host functions across 11 capability namespaces:
-`capa:host/{stdio,clock,env,fs,random,net,db,proc,json}`. These are
+The Wasm host (`capa/runtime/_wasm_host.py`, ~2050 lines) defines ~36
+host functions across 10 capability namespaces:
+`capa:host/{stdio,panic,clock,env,fs,random,net,db,proc,json}`. These are
 where capabilities cross to the OS, and where attenuation is enforced
 (the handle-table design in `wasm-cap-handles.md`).
 
 A native backend needs the equivalent: either syscall shims emitted
 into the native code, or a **C/native runtime library** the generated
-code links against, re-implementing all 11 namespaces AND the
+code links against, re-implementing all 10 namespaces AND the
 attenuation enforcement that travels with each handle. There are two
 sub-options:
 
