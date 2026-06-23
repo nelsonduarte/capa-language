@@ -791,6 +791,38 @@ guarantees proved in the SBOM); `capa_paymentguard` and
 
 ## Wasm-specific gaps closed (not P0)
 
+- [x] **Wasm performance: string concat, JSON serialisation, and JSON
+  parsing all linearised** (closed 2026-06-23; shipped across v1.8.0,
+  v1.9.0, v1.10.0). Three releases turned the quadratic Wasm hot paths
+  the old "Wasm performance" TODO item described into linear, with
+  byte-identical output to the Python oracle throughout. This closes
+  that TODO item; what remains of the Wasm-runtime story (the Map
+  O(N^2) and the bump-allocator doubling leak) is recorded as a
+  documented residual in `TODO.md`, with its structural cure deferred to
+  the future native backend.
+  - **v1.8.0: String concat is O(n) amortised (Problem A closed).** Each
+    `++` used to allocate a fresh buffer and copy both operands, so
+    building a string of length n by repeated concatenation in a loop was
+    O(n^2) and a multi-megabyte result trapped at the memory cap. The
+    backend now grows the last bump allocation in place when the left
+    operand is the most recent allocation, appending the right operand
+    without reallocating or recopying the accumulated prefix; the
+    unrelated-operand worst case is unchanged.
+  - **v1.9.0: JSON array/object serialisation is O(n).** A two-phase
+    builder appends element fragments into a single growing allocation,
+    activating the 1.8.0 grow-in-place path so the accumulated prefix is
+    never reallocated. Large arrays/objects that previously trapped at
+    the memory cap now serialise linearly.
+  - **v1.10.0: `parse_json` value extraction is O(n) (was O(n^2)).** A
+    new internal `_capa_str_span(chars, a, b)` builtin forms each
+    extracted value / object key as an O(1) `(ptr, len)` span view over
+    the code-point list the parser already threads, instead of
+    `substring` re-walking the input buffer from byte 0 per substring.
+    Combined with the 1.8.0 grow-in-place concat, parsing a large
+    document is now linear in its length. The view aliases the immutable
+    input buffer (safe in the bump heap); the helper is internal-only and
+    emitted only when `parse_json` is used.
+
 - [x] **GAP-2b: dynamic-prefix `.allows()` attenuation parity via the
   host-route** (2026-06-19; shipped in v1.6.0). The `.allows(arg)` query
   on `Fs` / `Db` / `Net` / `Proc` / `Env` now routes through the

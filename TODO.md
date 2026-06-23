@@ -26,15 +26,34 @@ code.
 - **Debugger: DAP adapter + per-expression source maps.** Statement-level
   source maps + caret snippets already ship; the stepping adapter and
   sub-expression granularity remain open.
-- **Wasm performance.** The bump allocator is O(n^2) on string concat in a
-  loop; `parse_json` costs O(n) handles per document. Only material with
-  large payloads.
 
 ## Long term (gated, do NOT start without a concrete driver)
 
-- **Native LLVM backend.** Gate: a perf-bound consumer the Wasm-AOT path
-  provably cannot serve, or native FFI. See
-  `docs/design/llvm-backend-feasibility.md`.
+- **Native backend (declared future direction).** Evolving Capa toward a
+  native backend with Rust/Go-level performance is the declared future
+  direction, not merely an optional gated item. The honesty of the
+  feasibility doc stands: a from-scratch native backend is an arc of many
+  months, and the gate to start the backend proper remains a concrete
+  driver (a perf-bound consumer the Wasm-AOT path provably cannot serve,
+  a hard native-FFI requirement, or a target with no acceptable Wasm
+  runtime). What is actionable in the near future are the low-risk
+  prerequisites the feasibility doc section 5.3 already flags as "do
+  independently first, benefits Wasm too":
+  - Refactor `_layout.py` to be parameterised by pointer width and
+    alignment (32 vs 64 bit). The Wasm backend consumes it too, and
+    doing it in isolation de-risks the largest regression surface.
+  - Tighten CIR type resolution so the native ABI no longer depends on
+    the `_layout.py` "default unknown to Int" fallback.
+  - Decide the memory-management strategy (bump-on-mmap first, then
+    refcounting, the honest staged answer).
+  These three are the near-future actionable steps; the backend proper
+  stays gated on a driver. The Map O(N^2) and the bump-allocator
+  doubling leak in "Known technical residuals" below are the Wasm-runtime
+  limitations whose structural cure this backend (a real allocator / GC)
+  is meant to deliver. See `docs/design/llvm-backend-feasibility.md`
+  (sections 5.3 and 6 for the prerequisites and the gate; the doc weighs
+  llvmlite vs textual `.ll` vs Cranelift-direct without deciding, and
+  that toolchain choice is left open here too).
 - **Async/await.** Triple gate: a real I/O-bound workload, GC, and the
   appetite to reopen the noninterference proof. See
   `docs/design/async-feasibility.md`.
@@ -43,6 +62,27 @@ code.
 
 ## Known technical residuals (documented limitations, low priority)
 
+- **Wasm `Map<K,V>` is a linear array of pairs.** On the Wasm backend a
+  Map is stored as a flat array of key/value pairs with a linear scan,
+  so `get` / `set` / `contains_key` are O(N) and building a Map of N
+  keys is O(N^2). The Python backend uses a native dict (O(1)). It is
+  imperceptible for Maps with tens to hundreds of keys and only matters
+  for a single Map holding thousands of keys; the semantics (insertion
+  order, overwrite in place) are identical on both backends. Documented
+  for the user in `docs/stdlib.md`. The structural cure (an O(1) hash
+  map backed by a real allocator) belongs to the future native backend,
+  not a hand-written WAT hash table in a backend that is not the
+  performance destination.
+- **Wasm bump allocator leaks on doubling.** The Wasm runtime uses a
+  bump allocator with no `free`, so any array that grows by doubling
+  (List / Map / Set, and the concat fallback) leaks the previous buffer
+  at each doubling. This is harmless for short CLI runs (the wasm
+  instance is torn down and linear memory vanishes) and is the same
+  no-free limitation the layout/GC discussion in
+  `docs/design/llvm-backend-feasibility.md` (sections 2.4, 5.3) tracks.
+  The structural fix (a real allocator with reclamation, refcounting,
+  or GC) belongs to the future native backend, linked from the native
+  backend entry above.
 - **Selective import is not scoped to the importing module.** A
   selective `import foo (a, b)` is implemented by mangling `foo`'s
   unselected `pub` symbols *in place* on the parsed-and-cached module

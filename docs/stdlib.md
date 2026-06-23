@@ -152,6 +152,16 @@ match m.get("a")
     None -> stdio.println("not found")
 ```
 
+> **Performance note (Wasm backend).** The Python backend uses a native
+> dict, so `get` / `set` / `contains_key` are O(1). The Wasm backend
+> currently stores a Map as a linear array of key/value pairs, so those
+> operations are O(N) and building a Map of N keys is O(N^2). This is
+> imperceptible for small Maps (tens to hundreds of keys) and only
+> matters for a single Map holding thousands of keys. The semantics
+> (insertion order, overwrite in place) are identical on both backends;
+> the structural fix (an O(1) hash map) is planned for the future
+> native backend rather than the Wasm runtime.
+
 ---
 
 ## `Set<T>`
