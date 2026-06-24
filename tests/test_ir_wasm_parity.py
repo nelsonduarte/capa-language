@@ -5237,5 +5237,113 @@ class TestSetTupleIterPointerComponentParity(unittest.TestCase):
         self._assert_src_parity(src, expect=expect)
 
 
+@unittest.skipUnless(
+    _has_wasm_tools() and _has_wasmtime_py(),
+    "wasm-tools and/or wasmtime-py not installed",
+)
+class TestIntMinLiteralParity(unittest.TestCase):
+    """Regression net for the Wasm trap on the ``i64::MIN`` literal
+    (``-9223372036854775808``).
+
+    Root cause: the parser emits a negative int literal as
+    ``UnaryOp('-', IntLit(9223372036854775808))``. The Wasm backend
+    has no ``i64.neg`` and synthesised ``-x`` as ``0 - x`` behind an
+    overflow guard that traps when ``x == i64::MIN``. For the literal
+    that guard fired on a *valid* value: ``9223372036854775808`` pushed
+    as ``i64.const`` is already the i64::MIN bit pattern, so the guard
+    saw MIN and trapped, even though the written literal is in range.
+    The Python backend (the oracle) folds the same expression with
+    bignums and prints it correctly. Fixed by constant-folding
+    ``-<int literal>`` into a single negative ``lit_int`` in the
+    lowerer, which emits ``i64.const -9223372036854775808`` directly
+    and bypasses the runtime negation path.
+
+    Crucially the fix preserves the overflow guard for *runtime*
+    negation: negating a value computed at runtime that equals
+    i64::MIN still overflows and traps in BOTH backends (Python
+    ``OverflowError``, Wasm ``unreachable``), secure-by-default."""
+
+    def _assert_src_parity(self, src: str, expect: str | None = None) -> None:
+        py_out = _capture_stdout(lambda: _run_python(src))
+        wasm_out = _capture_stdout(lambda: _run_wasm(src))
+        self.assertEqual(
+            py_out, wasm_out,
+            msg=(
+                f"Python/Wasm output divergence.\n"
+                f"--- python ---\n{py_out}\n"
+                f"--- wasm ---\n{wasm_out}"
+            ),
+        )
+        if expect is not None:
+            self.assertEqual(py_out, expect)
+
+    def test_int_min_literal_interpolated(self):
+        # The headline repro: the i64::MIN literal must print, not trap.
+        src = (
+            "fun main(stdio: Stdio)\n"
+            '    stdio.println("${-9223372036854775808}")\n'
+        )
+        self._assert_src_parity(src, expect="-9223372036854775808\n")
+
+    def test_int_min_literal_let_and_arithmetic(self):
+        # Bound to a let and used in arithmetic (add / divide).
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    let mn = -9223372036854775808\n"
+            '    stdio.println("${mn + 0}")\n'
+            '    stdio.println("${mn / 2}")\n'
+        )
+        self._assert_src_parity(
+            src, expect="-9223372036854775808\n-4611686018427387904\n",
+        )
+
+    def test_int_min_literal_returned_from_fun(self):
+        # Returned from a function and printed by the caller.
+        src = (
+            "fun f() -> Int\n"
+            "    return -9223372036854775808\n"
+            "fun main(stdio: Stdio)\n"
+            '    stdio.println("${f()}")\n'
+        )
+        self._assert_src_parity(src, expect="-9223372036854775808\n")
+
+    def test_neighbour_literals(self):
+        # i64::MAX, -i64::MAX, a normal negative, double negation, zero.
+        src = (
+            "fun main(stdio: Stdio)\n"
+            '    stdio.println("${9223372036854775807}")\n'
+            '    stdio.println("${-9223372036854775807}")\n'
+            '    stdio.println("${-5}")\n'
+            '    stdio.println("${-(-5)}")\n'
+            '    stdio.println("${-0}")\n'
+        )
+        self._assert_src_parity(
+            src,
+            expect=(
+                "9223372036854775807\n"
+                "-9223372036854775807\n"
+                "-5\n5\n0\n"
+            ),
+        )
+
+    def test_runtime_negate_int_min_traps_in_both_backends(self):
+        # The distinction the fix must preserve: i64::MIN reached as a
+        # RUNTIME value (folded -i64::MAX minus 1) and then negated
+        # overflows (+2^63 does not fit in i64) and MUST trap in both
+        # backends. The literal fold must not have weakened the guard.
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    let almost = -9223372036854775807\n"
+            "    let mn = almost - 1\n"
+            "    let neg = -mn\n"
+            '    stdio.println("${neg}")\n'
+        )
+        with self.assertRaises(OverflowError):
+            _capture_stdout(lambda: _run_python(src))
+        with self.assertRaises(Exception) as ctx:
+            _capture_stdout(lambda: _run_wasm(src))
+        self.assertNotIsInstance(ctx.exception, OverflowError)
+
+
 if __name__ == "__main__":
     unittest.main()

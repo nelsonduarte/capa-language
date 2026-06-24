@@ -503,6 +503,23 @@ class _LowerExprMixin:
         return Value(kind="local", name=dst, ty=result_ty)
 
     def _lower_unary(self, e: A.UnaryOp) -> Value:
+        # Constant-fold ``-<int literal>`` written in source into a
+        # single negative ``lit_int``. This matters for ``i64::MIN``
+        # (``-9223372036854775808``): the parser emits it as
+        # ``UnaryOp('-', IntLit(9223372036854775808))``, and routing
+        # that through the runtime negation (``0 - x``) would push the
+        # operand as ``i64.const 9223372036854775808`` -- already the
+        # i64::MIN bit pattern -- and the Wasm backend's overflow guard
+        # would trap on it, even though the *literal* is a valid value
+        # (the Python backend folds with bignums and prints it fine).
+        # Folding here emits ``i64.const -9223372036854775808``
+        # directly. Crucially this only fires for a literal operand:
+        # negating a runtime value that happens to equal i64::MIN still
+        # goes through the guard and traps in both backends.
+        if e.op == "-" and isinstance(e.operand, A.IntLit):
+            return Value(
+                kind="lit_int", literal=-e.operand.value, ty="Int",
+            )
         operand = self._lower_expr(e.operand)
         result_ty = operand.ty
         dst = fresh_local(self._counter)
