@@ -313,6 +313,14 @@ The Tier 1 supply-chain artefacts are **all shipping** today:
 | WIT spec            | `capa --wit`          | one interface per capability the program touches |
 | Wasm CM component   | `capa --wasm --component --output app.wasm` | WIT embedded, canonical ABI |
 
+An [**empirical study**](https://capa-language.com/study.html)
+backs the capability-aware SBOM claim. Under closed-world semantics
+Capa emits **zero false clearances (0/48)**, against CodeQL (10/48,
+the strongest real dataflow tool tested), Semgrep (12/48), and a
+dependency-level SBOM (48/48). On positive attribution Capa **ties**
+CodeQL at 38/48; it does not beat it. The reproducible artefacts live
+in [`evaluation/empirical_study/`](evaluation/empirical_study/).
+
 Tier 2 (regulatory mapping) is **complete**:
 [`docs/regulatory.md`](docs/regulatory.md) covers the EU CRA,
 NIS2, DORA (cybersecurity articles), NIST SSDF, and OWASP SCVS
