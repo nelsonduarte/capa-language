@@ -163,9 +163,16 @@ class _MapEmissionMixin:
         scan. Per-type:
 
         - String: push ptr/len via the existing string helper, stash
-          into ``$_alloc_tmp`` (ptr) and ``$_alloc_tmp_key_len`` (len).
+          into ``$_alloc_tmp_key_i32`` (ptr) and
+          ``$_alloc_tmp_key_len`` (len). A dedicated ptr local (not the
+          shared ``$_alloc_tmp``) is required because the value pushed
+          next may construct a heap record that reuses ``$_alloc_tmp``
+          as scratch (a payloadless variant ctor does ``call $alloc``
+          + ``local.tee $_alloc_tmp``), which would otherwise destroy
+          the key pointer before the scan compares / stores it.
         - Int: push i64, stash into ``$_alloc_tmp_key_i64``.
-        - Bool: push i32, stash into ``$_alloc_tmp`` (i32 slot).
+        - Bool: push i32, stash into ``$_alloc_tmp_key_i32`` (same
+          clobber-safe dedicated slot the String key ptr uses).
         - Pointer-shape (struct / sum / tuple): push i32 pointer,
           stash into ``$_alloc_tmp_key_ptr`` so the linear scan can
           pass it as the second operand of ``call $eq_<TypeName>``
@@ -178,7 +185,7 @@ class _MapEmissionMixin:
         if key_ty == "String":
             self._push_string_value_as_ptr_len(key_value)
             self._write("local.set $_alloc_tmp_key_len")
-            self._write("local.set $_alloc_tmp")
+            self._write("local.set $_alloc_tmp_key_i32")
             return
         if key_ty == "Int":
             # Dedicated key local: $_alloc_tmp_i64 is also used by
@@ -190,7 +197,7 @@ class _MapEmissionMixin:
             return
         if key_ty == "Bool":
             self._push_value(key_value)
-            self._write("local.set $_alloc_tmp")
+            self._write("local.set $_alloc_tmp_key_i32")
             return
         if self._is_pointer_shape_ty(key_ty):
             self._push_value(key_value)
@@ -221,7 +228,7 @@ class _MapEmissionMixin:
             self._write(f"i32.load offset={_MAP_PAIR_KEY_PTR_OFFSET}")
             self._write(f"local.get ${pair_addr_local}")
             self._write(f"i32.load offset={_MAP_PAIR_KEY_LEN_OFFSET}")
-            self._write("local.get $_alloc_tmp")
+            self._write("local.get $_alloc_tmp_key_i32")
             self._write("local.get $_alloc_tmp_key_len")
             self._write("call $str_eq")
             return
@@ -234,7 +241,7 @@ class _MapEmissionMixin:
         if key_ty == "Bool":
             self._write(f"local.get ${pair_addr_local}")
             self._write("i32.load offset=0")
-            self._write("local.get $_alloc_tmp")
+            self._write("local.get $_alloc_tmp_key_i32")
             self._write("i32.eq")
             return
         if self._is_pointer_shape_ty(key_ty):
@@ -265,7 +272,7 @@ class _MapEmissionMixin:
         self._reject_trait_map_key(key_ty)
         if key_ty == "String":
             self._write(f"local.get ${pair_addr_local}")
-            self._write("local.get $_alloc_tmp")
+            self._write("local.get $_alloc_tmp_key_i32")
             self._write(f"i32.store offset={_MAP_PAIR_KEY_PTR_OFFSET}")
             self._write(f"local.get ${pair_addr_local}")
             self._write("local.get $_alloc_tmp_key_len")
@@ -278,7 +285,7 @@ class _MapEmissionMixin:
             return
         if key_ty == "Bool":
             self._write(f"local.get ${pair_addr_local}")
-            self._write("local.get $_alloc_tmp")
+            self._write("local.get $_alloc_tmp_key_i32")
             self._write("i32.store offset=0")
             return
         if self._is_pointer_shape_ty(key_ty):

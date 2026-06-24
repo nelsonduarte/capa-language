@@ -861,6 +861,17 @@ class _LocalsCollectionMixin:
             out.setdefault("_m_scrut", "i32")
             out.setdefault("_m_tag", "i32")
             out["_alloc_tmp_key_len"] = "i32"
+            # Dedicated i32-key canonical stash (String key ptr, Bool
+            # key value). These used to live in the shared $_alloc_tmp,
+            # but a Map value whose construction reuses $_alloc_tmp as
+            # scratch (a payloadless variant ctor does ``call $alloc``
+            # + ``local.tee $_alloc_tmp``) clobbered the key between the
+            # canonical-key push and the linear-scan compare / pair-key
+            # store, so ``set(k, None)`` then ``get(k)`` missed the key
+            # (the value's variant pointer overwrote the key). A
+            # dedicated local keeps the key co-resident with the value
+            # across the whole set / get / contains_key operation.
+            out["_alloc_tmp_key_i32"] = "i32"
             out["_alloc_tmp_pair"] = "i32"
             out["_alloc_tmp_newcap"] = "i32"
             out["_alloc_tmp_new_data"] = "i32"

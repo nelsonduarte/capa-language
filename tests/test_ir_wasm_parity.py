@@ -4981,5 +4981,139 @@ class TestJsonParseSpanLinearity(unittest.TestCase):
             )
 
 
+class TestMapPayloadlessVariantValueParity(unittest.TestCase):
+    """Regression net for the silent Wasm miscompile where a Map whose
+    VALUE is a payloadless variant (``None``, a user sum's nullary
+    variant like ``Empty``) and whose KEY is i32-shaped (String / Bool)
+    reported a present key as absent.
+
+    Root cause: the canonical key was stashed in the shared
+    ``$_alloc_tmp``; the value pushed next constructs a heap record for
+    the payloadless variant via ``call $alloc`` + ``local.tee
+    $_alloc_tmp``, which clobbered the key pointer between the
+    canonical-key push and the append-branch pair-key store. The pair's
+    key was then written from the variant's heap pointer instead of the
+    real key, so a subsequent ``get`` / ``contains_key`` never matched.
+    Fixed by stashing the i32 key (String ptr / Bool value) in a
+    dedicated ``$_alloc_tmp_key_i32`` local immune to the value's
+    construction scratch. The Python backend was always correct (it is
+    the oracle); these assert byte-identical output."""
+
+    def _assert_src_parity(self, src: str, expect: str | None = None) -> None:
+        py_out = _capture_stdout(lambda: _run_python(src))
+        wasm_out = _capture_stdout(lambda: _run_wasm(src))
+        self.assertEqual(
+            py_out, wasm_out,
+            msg=(
+                f"Python/Wasm output divergence.\n"
+                f"--- python ---\n{py_out}\n"
+                f"--- wasm ---\n{wasm_out}"
+            ),
+        )
+        if expect is not None:
+            self.assertEqual(py_out, expect)
+
+    def test_string_key_none_value_found(self):
+        # The headline repro: Map<String, Option<Int>> with a None
+        # value. Pre-fix the Wasm backend printed "missing".
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    let m: Map<String, Option<Int>> = new_map()\n"
+            '    m.set("b", None)\n'
+            '    match m.get("b")\n'
+            '        Some(inner) -> stdio.println("found")\n'
+            '        None -> stdio.println("missing")\n'
+        )
+        self._assert_src_parity(src, expect="found\n")
+
+    def test_string_key_user_nullary_variant_value(self):
+        # A user sum's payloadless variant value is the same hazard
+        # (the variant ctor's alloc+tee clobbers the key ptr).
+        src = (
+            "type E =\n"
+            "    Empty\n"
+            "    Full(Int)\n"
+            "\n"
+            "fun main(stdio: Stdio)\n"
+            "    let m: Map<String, E> = new_map()\n"
+            '    m.set("b", Empty)\n'
+            '    match m.get("b")\n'
+            '        Some(inner) -> stdio.println("found")\n'
+            '        None -> stdio.println("missing")\n'
+        )
+        self._assert_src_parity(src, expect="found\n")
+
+    def test_bool_key_none_value_found(self):
+        # The same shared-scratch collision affects Bool keys: the Bool
+        # key value also lived in $_alloc_tmp pre-fix.
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    let m: Map<Bool, Option<Int>> = new_map()\n"
+            "    m.set(true, None)\n"
+            "    match m.get(true)\n"
+            '        Some(inner) -> stdio.println("found")\n'
+            '        None -> stdio.println("missing")\n'
+        )
+        self._assert_src_parity(src, expect="found\n")
+
+    def test_string_key_contains_none_value(self):
+        # contains_key shares the canonical-key + compare path with get.
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    let m: Map<String, Option<Int>> = new_map()\n"
+            '    m.set("b", None)\n'
+            '    if m.contains_key("b")\n'
+            '        stdio.println("has b")\n'
+            "    else\n"
+            '        stdio.println("no b")\n'
+        )
+        self._assert_src_parity(src, expect="has b\n")
+
+    def test_string_key_payload_value_still_works(self):
+        # Neighbour guard: a payload-bearing variant value (Some(7))
+        # was always correct and must stay so.
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    let m: Map<String, Option<Int>> = new_map()\n"
+            '    m.set("b", Some(7))\n'
+            '    match m.get("b")\n'
+            "        Some(inner) -> match inner\n"
+            '            Some(x) -> stdio.println("found ${x}")\n'
+            '            None -> stdio.println("found none")\n'
+            '        None -> stdio.println("missing")\n'
+        )
+        self._assert_src_parity(src, expect="found 7\n")
+
+    def test_string_key_miss_still_misses(self):
+        # Neighbour guard: a genuinely absent key still reports None.
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    let m: Map<String, Option<Int>> = new_map()\n"
+            '    m.set("b", None)\n'
+            '    match m.get("z")\n'
+            '        Some(inner) -> stdio.println("found")\n'
+            '        None -> stdio.println("missing")\n'
+        )
+        self._assert_src_parity(src, expect="missing\n")
+
+    def test_string_key_none_value_across_grow(self):
+        # Many None-valued keys force the data array to grow; every key
+        # must still be found afterwards (the append-branch pair-key
+        # store is the corrupted path).
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    let m: Map<String, Option<Int>> = new_map()\n"
+            "    for i in 0..20\n"
+            '        m.set("k${i}", None)\n'
+            '    match m.get("k0")\n'
+            '        Some(inner) -> stdio.println("found k0")\n'
+            '        None -> stdio.println("missing k0")\n'
+            '    match m.get("k19")\n'
+            '        Some(inner) -> stdio.println("found k19")\n'
+            '        None -> stdio.println("missing k19")\n'
+        )
+        self._assert_src_parity(src, expect="found k0\nfound k19\n")
+
+
 if __name__ == "__main__":
     unittest.main()

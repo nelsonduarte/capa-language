@@ -906,6 +906,10 @@ class _EqualityMixin:
         self._write("(local $_alloc_tmp i32)")
         self._write("(local $_alloc_tmp_key_len i32)")
         self._write("(local $_alloc_tmp_key_ptr i32)")
+        # Dedicated i32-key stash (String key ptr / Bool key value).
+        # ``_emit_compare_pair_key_to`` reads it for those key kinds, so
+        # this self-contained helper must declare it too.
+        self._write("(local $_alloc_tmp_key_i32 i32)")
         self._write("(local $_alloc_tmp_key_i64 i64)")
         self._write("(local $_alloc_tmp_i64 i64)")
         self._write("(local $_eq_map_val_a i64)")
@@ -1037,17 +1041,23 @@ class _EqualityMixin:
         load issues ``i32.load`` / ``i64.load`` at the pair offset
         rather than evaluating an IR Value.
 
-        - String: ``$_alloc_tmp`` = key_ptr; ``$_alloc_tmp_key_len``
-          = key_len (two adjacent i32s at offsets 0 / 4).
+        - String: ``$_alloc_tmp_key_i32`` = key_ptr;
+          ``$_alloc_tmp_key_len`` = key_len (two adjacent i32s at
+          offsets 0 / 4).
         - Int: ``$_alloc_tmp_key_i64`` = key (i64 at offset 0).
-        - Bool: ``$_alloc_tmp`` = key (i32 at offset 0).
+        - Bool: ``$_alloc_tmp_key_i32`` = key (i32 at offset 0).
         - Pointer-shape: ``$_alloc_tmp_key_ptr`` = key pointer (i32
           at offset 0).
+
+        The String / Bool key slot is ``$_alloc_tmp_key_i32`` (not the
+        shared ``$_alloc_tmp``) to stay in lock-step with
+        ``_emit_compare_pair_key_to``, which reads the canonical key
+        from that dedicated local.
         """
         if key_ty == "String":
             self._write(f"local.get ${pair_addr_local}")
             self._write(f"i32.load offset={_MAP_PAIR_KEY_PTR_OFFSET}")
-            self._write("local.set $_alloc_tmp")
+            self._write("local.set $_alloc_tmp_key_i32")
             self._write(f"local.get ${pair_addr_local}")
             self._write(f"i32.load offset={_MAP_PAIR_KEY_LEN_OFFSET}")
             self._write("local.set $_alloc_tmp_key_len")
@@ -1060,7 +1070,7 @@ class _EqualityMixin:
         if key_ty == "Bool":
             self._write(f"local.get ${pair_addr_local}")
             self._write("i32.load offset=0")
-            self._write("local.set $_alloc_tmp")
+            self._write("local.set $_alloc_tmp_key_i32")
             return
         if self._is_pointer_shape_ty(key_ty):
             self._write(f"local.get ${pair_addr_local}")
