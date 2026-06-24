@@ -27,6 +27,20 @@ breaking changes and the discipline is still being shaped.
   the suite was validated against, so the declared minimum reflects a
   tested baseline rather than a stale lower bound.
 
+## [1.11.0], 2026-06-24
+
+**Capa 1.11.0.** A MINOR release that extends the `Range` type with the
+transform and indexed-query methods of `List`.
+
+**Added.**
+
+- *`Range` gains the `List` transform and query methods.* `Range` now
+  supports `map`, `filter`, `fold`, `first`, `last`, `get`, `find`, and
+  `find_index`, with the same semantics as `range.to_list().<method>`,
+  and with byte-identical Python/Wasm output. This closes the gap in
+  which "a range is just a `List<Int>`" did not hold for the
+  transforming methods.
+
 ## [1.10.1], 2026-06-24
 
 **Capa 1.10.1.** A PATCH release that fixes four Wasm-backend parity
