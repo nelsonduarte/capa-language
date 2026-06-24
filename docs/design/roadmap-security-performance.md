@@ -5,6 +5,14 @@
 > dependências e tese de posicionamento. Não substitui o plano de
 > curto prazo (estabilização v1.0); é o arco que vem depois.
 
+> Nota (2026-06-24): a tese foi reconciliada com o eixo aditivo de
+> performance / backend nativo. Performance é um *enabler* de
+> deployabilidade, não o fosso. Ver
+> [`native-backend-plan.md`](native-backend-plan.md) (o plano de
+> execução faseado e gated) e
+> [`llvm-backend-feasibility.md`](llvm-backend-feasibility.md) (a análise
+> de feasibility).
+
 ## Tese de posicionamento (ler primeiro)
 
 O Capa **não vai** ganhar:
@@ -13,7 +21,11 @@ O Capa **não vai** ganhar:
   (inferência de efeitos, handlers, polimorfismo de efeitos);
 - a qualquer linguagem mainstream em maturidade de ecossistema.
 
-Tentar competir nessas frentes é perder devagar. A aposta vencedora é
+Tentar competir nessas frentes é perder devagar. Clarificação: o Capa
+não compete em performance como proposta de valor nem como fosso, mas
+almeja performance de nível-produção (incluindo, no futuro, execução
+nativa) como *enabler* da deployabilidade da sua proposta de segurança;
+performance é meio, não fim. A aposta vencedora é
 a **interseção que mais ninguém ocupa**:
 
 > **Capabilities + Information Flow Control + um SBOM machine-verificável
@@ -256,9 +268,16 @@ alto ao mesmo tempo.
 
 ## O que NÃO fazer (anti-âmbito)
 
-- **Não** construir um backend LLVM do zero. Wasm AOT cobre 90% do
-  valor a 10% do custo. LLVM só se houver um caso de performance que o
-  Wasm comprovadamente não atinja.
+- **Não** construir o backend nativo *propriamente dito* sem um driver
+  concreto. Wasm AOT cobre 90% do valor a 10% do custo; o nativo é para
+  o caso que o Wasm comprovadamente não atinja. Isto já deixou de ser uma
+  proibição de *pensar* no assunto: existe agora um plano de execução
+  faseado e gated ([`native-backend-plan.md`](native-backend-plan.md)),
+  com pré-requisitos de baixo risco já autorizados (que beneficiam também
+  o Wasm, como a parametrização da largura de ponteiro no layout) e o
+  backend em si gated num dos três drivers concretos. A disciplina do
+  gate mantém-se; o que muda é que a sequência está mapeada em vez de
+  vedada.
 - **Não** perseguir inferência de efeitos estilo Koka. É um arco de
   investigação inteiro e não é o fosso do Capa; o fosso é o SBOM, não
   a elegância do effect system.
