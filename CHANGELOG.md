@@ -27,6 +27,41 @@ breaking changes and the discipline is still being shaped.
   the suite was validated against, so the declared minimum reflects a
   tested baseline rather than a stale lower bound.
 
+## [1.10.1], 2026-06-24
+
+**Capa 1.10.1.** A PATCH release that fixes four Wasm-backend parity
+bugs found in an adversarial bug hunt: in each case the Wasm backend
+diverged from the Python oracle, and each fix restores byte-identical
+output between the two backends. No API change and no behaviour change
+for code that was already correct; this purely closes Python/Wasm
+divergences.
+
+**Bugfixes / Parity.**
+
+- *`Map<K, V>` with an `i32` key (`String`/`Bool`) corrupted the stored
+  key when the value heap-allocated.* Storing an entry whose value
+  allocates on the heap, in particular a payload-less variant such as
+  `None`, clobbered the canonical key, so a later `get` / `contains_key`
+  on a key that was present reported it absent. The cause was a scratch
+  local colliding between the canonical key and the construction of the
+  value's record; a dedicated local now isolates the two. Restores
+  byte-identical Python/Wasm output.
+- *Iterating a `Set` whose element has a pointer-shaped component (for
+  example `Set<(Int, String)>`) yielded garbage for the pointer
+  component.* The `String` component came out as a junk integer because
+  the lowerer only resolved the element type for `List`, not `Set`;
+  adding the `Set` branch resolves the element type correctly. Restores
+  byte-identical Python/Wasm output.
+- *The `i64::MIN` literal (`-9223372036854775808`) trapped on Wasm.* The
+  literal is fixed by constant-folding the negative literal in the
+  lowerer, while the overflow trap on negating a runtime value is
+  preserved. Restores byte-identical Python/Wasm output.
+- *`println` / `print` / `eprintln` of a `String` containing a lone
+  surrogate (for example from a JSON `\uD800` escape) diverged, with
+  Wasm destroying the surrogate.* The Wasm host decoding is aligned with
+  the Python backend's representation by decoding with `surrogatepass`
+  and a fallback. Restores byte-identical Python/Wasm output.
+
 ## [1.10.0], 2026-06-22
 
 **Capa 1.10.0.** A MINOR release that turns JSON parsing on the Wasm

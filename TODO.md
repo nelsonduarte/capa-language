@@ -7,7 +7,7 @@
 > This file holds only what is still open; everything already shipped
 > lives in [`DONE.md`](DONE.md).
 
-Compiler at **v1.10.0** (released 2026-06-22). Suite green (3127 tests),
+Compiler at **v1.10.1** (released 2026-06-24). Suite green (3130 tests),
 CI green. Items are grouped by time horizon, not by an internal priority
 code.
 
