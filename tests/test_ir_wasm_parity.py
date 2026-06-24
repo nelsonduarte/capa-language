@@ -5043,6 +5043,10 @@ class TestJsonParseSpanLinearity(unittest.TestCase):
             )
 
 
+@unittest.skipUnless(
+    _has_wasm_tools() and _has_wasmtime_py(),
+    "wasm-tools and/or wasmtime-py not installed",
+)
 class TestMapPayloadlessVariantValueParity(unittest.TestCase):
     """Regression net for the silent Wasm miscompile where a Map whose
     VALUE is a payloadless variant (``None``, a user sum's nullary
@@ -5178,6 +5182,10 @@ class TestMapPayloadlessVariantValueParity(unittest.TestCase):
 
 
 
+@unittest.skipUnless(
+    _has_wasm_tools() and _has_wasmtime_py(),
+    "wasm-tools and/or wasmtime-py not installed",
+)
 class TestSetTupleIterPointerComponentParity(unittest.TestCase):
     """Regression net for the silent Wasm miscompile where iterating a
     ``Set`` of tuples whose element has a pointer-shaped component (a
