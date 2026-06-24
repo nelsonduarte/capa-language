@@ -165,25 +165,41 @@ class WasmHost:
         # construction time would freeze the file objects to the
         # values they had then.
         # Stdio has no return value, so it cannot signal failure
-        # back to the guest the way Fs / Env do. Audit fix H3: print
-        # invalid UTF-8 with the Unicode replacement character (U+FFFD)
-        # in place of unparseable bytes rather than raising
-        # ``UnicodeDecodeError`` out of the host callback (which would
-        # crash the whole wasmtime store). Choice rationale: silent
-        # corruption is unacceptable for a security-oriented language,
-        # but the alternative (trapping the guest) would propagate a
-        # purely cosmetic encoding bug into a hard crash. Replacement
-        # is the well-known middle ground that the guest can detect by
-        # comparing its outgoing bytes against the observed output.
+        # back to the guest the way Fs / Env do. Audit fix H3: never
+        # raise ``UnicodeDecodeError`` out of the host callback (which
+        # would crash the whole wasmtime store); degrade malformed
+        # bytes to the Unicode replacement character (U+FFFD) instead.
+        # Choice rationale: silent corruption is unacceptable for a
+        # security-oriented language, but trapping the guest would
+        # propagate a purely cosmetic encoding bug into a hard crash.
+        #
+        # Capa strings are WTF-8 (UTF-8 plus lone surrogates), so the
+        # decode uses ``errors="surrogatepass"`` to preserve unpaired
+        # surrogates (e.g. a ``\uD800`` carried through from JSON) as
+        # the same str the Python backend holds (``'\ud800'``). Both
+        # backends then share ``_write_safe``, which handles the
+        # terminal codec identically, so the two paths stay byte-
+        # identical at the writer. Strict ``errors="replace"`` here
+        # would mangle the three WTF-8 surrogate bytes into three
+        # U+FFFD before ``_write_safe`` ever saw them, diverging from
+        # the Python oracle. ``surrogatepass`` only handles surrogates;
+        # genuinely invalid (non-WTF-8) bytes still raise, so the
+        # ``except`` falls back to ``replace`` to keep audit fix H3's
+        # no-crash guarantee for malformed input.
+        def _decode_wtf8(data):
+            raw = bytes(data)
+            try:
+                return raw.decode("utf-8", errors="surrogatepass")
+            except UnicodeDecodeError:
+                return raw.decode("utf-8", errors="replace")
+
         def stdio_print(caller, ptr, length):
             if self._memory is None:
                 raise RuntimeError(
                     "stdio called before instance memory was set"
                 )
             data = self._memory.read(caller, ptr, ptr + length)
-            _write_safe(
-                sys.stdout, bytes(data).decode("utf-8", errors="replace"),
-            )
+            _write_safe(sys.stdout, _decode_wtf8(data))
             sys.stdout.flush()
 
         def stdio_println(caller, ptr, length):
@@ -192,10 +208,7 @@ class WasmHost:
                     "stdio called before instance memory was set"
                 )
             data = self._memory.read(caller, ptr, ptr + length)
-            _write_safe(
-                sys.stdout,
-                bytes(data).decode("utf-8", errors="replace") + "\n",
-            )
+            _write_safe(sys.stdout, _decode_wtf8(data) + "\n")
             sys.stdout.flush()
 
         def stdio_eprintln(caller, ptr, length):
@@ -204,10 +217,7 @@ class WasmHost:
                     "stdio called before instance memory was set"
                 )
             data = self._memory.read(caller, ptr, ptr + length)
-            _write_safe(
-                sys.stderr,
-                bytes(data).decode("utf-8", errors="replace") + "\n",
-            )
+            _write_safe(sys.stderr, _decode_wtf8(data) + "\n")
             sys.stderr.flush()
 
         self.linker.define_func(

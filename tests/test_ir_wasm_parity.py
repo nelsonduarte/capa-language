@@ -2712,10 +2712,16 @@ class TestJsonUnicodeEscapeAndExtraDataParity(unittest.TestCase):
     ``json.loads('"\ud800"')`` does NOT error -- it returns a string
     holding the lone surrogate, length 1. The Wasm side stores that
     lone surrogate as WTF-8 bytes, which keeps ``length()`` (code
-    point count) identical. Note that Python itself cannot PRINT a
-    lone surrogate (``UnicodeEncodeError`` at the stdout encoder),
-    so the unpaired-surrogate probes pin Ok-ness + length, never the
-    raw character.
+    point count) identical. A real terminal cannot encode a lone
+    surrogate (``UnicodeEncodeError`` at the stdout codec), but the
+    parity harness captures stdout into an ``io.StringIO``, which
+    keeps the surrogate untouched -- exactly the mode in which the
+    printed-output divergence shows. See
+    ``test_print_lone_surrogate_parity`` below: the Python backend
+    hands ``'\ud800'`` to the writer while the pre-fix Wasm host
+    (``decode("utf-8", errors="replace")``) handed three U+FFFD.
+    Both backends now decode with ``surrogatepass`` so the printed
+    bytes match.
 
     D2 (extra data): ``parse_json("1 2")`` returned ``Ok(1)`` on
     Wasm where Python raises "Extra data" -- the wrapper simply
@@ -2851,6 +2857,62 @@ class TestJsonUnicodeEscapeAndExtraDataParity(unittest.TestCase):
             "Ok ${v.length()}",
         )
         self._assert_src_parity(src, expect="Ok 2\n")
+
+    def test_print_lone_surrogate_parity(self):
+        # Regression for the stdio decode divergence: printing a
+        # String holding a lone surrogate (from a JSON \uXXXX escape)
+        # must produce byte-identical output on both backends.
+        #
+        # The bytes stored are byte-identical already (WTF-8: ED A0 80
+        # for U+D800); the divergence was purely in the Wasm host's
+        # stdio bridge, which decoded the outgoing String with
+        # ``errors="replace"`` and turned the three surrogate bytes
+        # into three U+FFFD BEFORE the writer saw them, while the
+        # Python backend handed the writer the surrogate intact
+        # (``'\ud800'``). The fix aligns both on
+        # ``errors="surrogatepass"``.
+        #
+        # This assertion FAILS against the old ``errors="replace"``
+        # host (Python ``'\ud800'`` vs Wasm three ``U+FFFD``) and
+        # passes after. The ``io.StringIO`` capture in the harness
+        # preserves lone surrogates, so the divergence is observable
+        # here where a real cp1252 / strict-utf-8 terminal would mask
+        # it by collapsing both backends to replacement characters.
+        #
+        # Variants: high isolated (D800, DBFF), low isolated (DC00,
+        # DFFF), two surrogates in one string, a surrogate mixed with
+        # plain text, and a lone surrogate immediately followed by a
+        # VALID astral pair (the emoji must still decode to its single
+        # astral code point, unaffected by the surrogatepass change).
+        for esc, label in (
+            (r"\\uD800", "high D800"),
+            (r"\\uDBFF", "high DBFF"),
+            (r"\\uDC00", "low DC00"),
+            (r"\\uDFFF", "low DFFF"),
+            (r"\\uDC00\\uDFFF", "two lows"),
+            (r"a\\uD800b", "mixed with text"),
+            (r"\\uD800\\ud83d\\ude00", "surrogate then astral pair"),
+        ):
+            with self.subTest(case=label):
+                src = self._string_value_probe(
+                    f'"\\"{esc}\\""',
+                    "${v} ${to_json(jv)}",
+                )
+                self._assert_src_parity(src)
+
+    def test_print_plain_string_unaffected(self):
+        # The surrogatepass change must not perturb ordinary strings:
+        # an ASCII / BMP / astral mix stays byte-identical and prints
+        # the same exact characters on both backends.
+        src = self._string_value_probe(
+            r'"\"abc \\u00e9 \\u4e2d \\ud83d\\ude00\""',
+            "${v} ${to_json(jv)}",
+        )
+        self._assert_src_parity(
+            src,
+            expect='abc é 中 \U0001f600 '
+            '"abc é 中 \U0001f600"\n',
+        )
 
     def test_escapes_mixed_with_text(self):
         # Escapes interleaved with plain runs: the chunked decode
