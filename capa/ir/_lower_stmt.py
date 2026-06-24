@@ -356,6 +356,18 @@ class _LowerStmtMixin:
         bind_ty = "Unknown"
         if iter_value.ty.startswith("List<") and iter_value.ty.endswith(">"):
             bind_ty = iter_value.ty[5:-1]
+        elif iter_value.ty.startswith("Set<") and iter_value.ty.endswith(">"):
+            # A Set shares the List in-memory layout and yields its
+            # single type argument per iteration, exactly like a List.
+            # Without this branch the loop variable (and any tuple-
+            # destructured component) stayed ``Unknown``, so the Wasm
+            # emitter defaulted every component to an i64 scalar load:
+            # a ``Set<(Int, String)>`` element's String component was
+            # decoded as a raw packed i64 and printed as a garbage
+            # integer instead of as (ptr, len). Stripping the element
+            # type here matches the List path and the analyzer (which
+            # already binds the Set's element type to the pattern).
+            bind_ty = iter_value.ty[4:-1]
         elif iter_value.ty.startswith("Range"):
             bind_ty = "Int"
         elif iter_value.ty == "String":

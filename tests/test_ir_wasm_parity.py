@@ -5115,5 +5115,127 @@ class TestMapPayloadlessVariantValueParity(unittest.TestCase):
         self._assert_src_parity(src, expect="found k0\nfound k19\n")
 
 
+
+class TestSetTupleIterPointerComponentParity(unittest.TestCase):
+    """Regression net for the silent Wasm miscompile where iterating a
+    ``Set`` of tuples whose element has a pointer-shaped component (a
+    String) decoded that component as a raw i64 scalar.
+
+    Root cause: the IR lowerer's ``_lower_for`` resolved the loop
+    variable's element type only for ``List<T>`` iterables; a ``Set<T>``
+    fell through to ``Unknown``, so a tuple-destructured component
+    (``let (n, t) = pair`` over ``Set<(Int, String)>``) bound the String
+    ``t`` as ``Unknown``. The emitter then defaulted it to an i64 scalar
+    load and printed the packed ``ptr | len << 32`` as a garbage integer
+    (e.g. ``4294967307``) instead of the string. Fixed by stripping the
+    Set's element type identically to the List path. The Python backend
+    (the oracle) was always correct; these assert byte-identical
+    output."""
+
+    def _assert_src_parity(self, src: str, expect: str | None = None) -> None:
+        py_out = _capture_stdout(lambda: _run_python(src))
+        wasm_out = _capture_stdout(lambda: _run_wasm(src))
+        self.assertEqual(
+            py_out, wasm_out,
+            msg=(
+                f"Python/Wasm output divergence.\n"
+                f"--- python ---\n{py_out}\n"
+                f"--- wasm ---\n{wasm_out}"
+            ),
+        )
+        if expect is not None:
+            self.assertEqual(py_out, expect)
+
+    def test_set_int_string_let_destructure(self):
+        # The headline repro: ``let (n, t) = pair`` over a single set
+        # element. Pre-fix ``t`` printed a garbage integer.
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    let s: Set<(Int, String)> = new_set()\n"
+            '    s.add((1, "a"))\n'
+            "    for pair in s\n"
+            "        let (n, t) = pair\n"
+            '        stdio.println("elem ${n},${t}")\n'
+        )
+        self._assert_src_parity(src, expect="elem 1,a\n")
+
+    def test_set_int_string_for_tuple_pattern(self):
+        # The ``for (n, t) in s`` form over several elements.
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    let s: Set<(Int, String)> = new_set()\n"
+            '    s.add((1, "a"))\n'
+            '    s.add((2, "bb"))\n'
+            "    for (n, t) in s\n"
+            '        stdio.println("elem ${n},${t}")\n'
+        )
+        self._assert_src_parity(src, expect="elem 1,a\nelem 2,bb\n")
+
+    def test_set_string_int_pointer_first(self):
+        # The pointer component in slot 0 (String, Int) must decode too.
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    let s: Set<(String, Int)> = new_set()\n"
+            '    s.add(("a", 1))\n'
+            "    for (t, n) in s\n"
+            '        stdio.println("elem ${t},${n}")\n'
+        )
+        self._assert_src_parity(src, expect="elem a,1\n")
+
+    def test_set_int_int_unaffected(self):
+        # Neighbour guard: a scalar-only tuple element was always
+        # correct (no pointer component to mis-decode).
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    let s: Set<(Int, Int)> = new_set()\n"
+            "    s.add((1, 2))\n"
+            "    for (a, b) in s\n"
+            '        stdio.println("elem ${a},${b}")\n'
+        )
+        self._assert_src_parity(src, expect="elem 1,2\n")
+
+    def test_set_struct_with_string_field_unaffected(self):
+        # Neighbour guard: a struct element with a String field was
+        # always correct (the loop binds a single struct pointer; the
+        # field read goes through the struct layout, not the tuple slot).
+        src = (
+            "type P { name: String, n: Int }\n"
+            "fun main(stdio: Stdio)\n"
+            "    let s: Set<P> = new_set()\n"
+            '    s.add(P { name: "ann", n: 3 })\n'
+            "    for p in s\n"
+            '        stdio.println("p=${p.name},${p.n}")\n'
+        )
+        self._assert_src_parity(src, expect="p=ann,3\n")
+
+    def test_set_string_scalar_iter_unaffected(self):
+        # Neighbour guard: a bare Set<String> (element IS the String,
+        # not a tuple component) iterated correctly before and after.
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    let s: Set<String> = new_set()\n"
+            '    s.add("x")\n'
+            '    s.add("yy")\n'
+            "    for t in s\n"
+            '        stdio.println("t=${t}")\n'
+        )
+        self._assert_src_parity(src, expect="t=x\nt=yy\n")
+
+    def test_set_tuple_dedup_and_grow(self):
+        # Force a grow (>8 elements) and a dedup, then iterate; every
+        # String component must still decode after the data array moves.
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    let s: Set<(Int, String)> = new_set()\n"
+            "    for i in 0..12\n"
+            '        s.add((i, "v${i}"))\n'
+            '    s.add((0, "v0"))\n'
+            "    for (n, t) in s\n"
+            '        stdio.println("${n}:${t}")\n'
+        )
+        expect = "".join(f"{i}:v{i}\n" for i in range(12))
+        self._assert_src_parity(src, expect=expect)
+
+
 if __name__ == "__main__":
     unittest.main()
