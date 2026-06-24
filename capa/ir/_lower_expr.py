@@ -26,6 +26,16 @@ from ._nodes import (
 )
 
 
+# Range methods that are NOT emitted natively by the Wasm backend
+# and instead desugar to ``range.to_list().<method>(...)``. The four
+# native Range methods (length / contains / is_empty / to_list) are
+# emitted directly against the Range record and are excluded here.
+_RANGE_DESUGAR_METHODS = frozenset({
+    "map", "filter", "fold",
+    "first", "last", "get", "find", "find_index",
+})
+
+
 class _LowerExprMixin:
     def _lower_expr(self, e: A.Expr) -> Value:
         if isinstance(e, A.IntLit):
@@ -715,6 +725,27 @@ class _LowerExprMixin:
             if tracked:
                 atts = list(tracked)
         receiver = self._lower_expr(e.receiver)
+        # Range transform / indexed-query methods desugar to
+        # ``range.to_list().<method>(...)``. The teaching material's
+        # promise is that "a range is just a List", so these carry the
+        # exact List semantics. The Wasm backend has no native Range
+        # HOF emitter; materialising first and routing through the
+        # List method emitters keeps that backend untouched while
+        # guaranteeing ``r.map(f)`` == ``r.to_list().map(f)``.
+        if (
+            (receiver.ty or "").startswith("Range")
+            and e.method in _RANGE_DESUGAR_METHODS
+        ):
+            list_dst = fresh_local(self._counter)
+            list_ty = "List<Int>"
+            self._locals[list_dst] = list_ty
+            self._instrs.append(
+                MethodCall(
+                    dst=list_dst, receiver=receiver, method="to_list",
+                    args=[], cap_used=None, attenuations=None,
+                )
+            )
+            receiver = Value(kind="local", name=list_dst, ty=list_ty)
         args = [self._lower_expr(arg) for arg in e.args]
         cap_used: Optional[str] = None
         # If the receiver is a capability-typed parameter, record the

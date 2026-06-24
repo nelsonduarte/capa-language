@@ -234,10 +234,14 @@ class _MethodsMixin:
         Range is the lazy iterable produced by ``a..b`` and
         ``a..=b``. The runtime class is ``CapaRange``, a thin
         wrapper around Python's ``range``. ``length`` /
-        ``contains`` / ``is_empty`` are answered by the wrapped
-        range without materialising; ``to_list`` produces a
-        fresh ``CapaList`` and is the user's explicit opt-in
-        for the full ``List<T>`` method surface.
+        ``contains`` / ``is_empty`` / ``to_list`` map to the
+        ``CapaRange`` methods of the same name; the transform and
+        indexed-query methods (``map`` / ``filter`` / ``fold`` /
+        ``first`` / ``last`` / ``get`` / ``find`` / ``find_index``)
+        are also ``CapaRange`` methods, each defined there as
+        ``self.to_list().method(...)``, so a plain
+        ``recv.method(args)`` call yields exactly the List
+        semantics.
         """
         from . import _safe_ident
         if method == "length":

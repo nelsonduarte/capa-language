@@ -3115,19 +3115,47 @@ class TestRangeExpressions(unittest.TestCase):
         )
         self.assertTrue(r.ok, r.errors)
 
-    def test_range_filter_directly_rejected(self):
-        # Direct .filter on a Range is now a type error; the
-        # discipline forces the user to opt into materialisation
-        # via `.to_list()`.
-        msgs = errors_of(
+    def test_range_filter_directly_typechecks(self):
+        # The teaching material's exact example: a Range carries the
+        # List transform methods, so direct `.filter` on a range
+        # type-checks and yields `List<Int>` (the same type as
+        # `(0..10).to_list().filter(...)`). Both backends desugar
+        # through `.to_list()`.
+        from capa import Lexer, Parser, analyze, ty_str
+        src = (
             "fun main(stdio: Stdio)\n"
             "    let evens = (0..10).filter(fun (x: Int) -> Bool => x % 2 == 0)\n"
             "    stdio.println(\"${evens.length()}\")\n"
         )
-        self.assertTrue(
-            any("type 'Range' has no method 'filter'" in m for m in msgs),
-            msgs,
+        tokens = Lexer(src).lex()
+        module = Parser(tokens, source=src).parse_module()
+        result = analyze(module, source=src)
+        self.assertTrue(result.ok, result.errors)
+        let_evens = module.items[0].body.stmts[0]
+        self.assertEqual(ty_str(result.types[id(let_evens.value)]), "List<Int>")
+
+    def test_range_transform_methods_typecheck(self):
+        # map / fold / first / get carry the same signatures as their
+        # List homonyms: map -> List<U>, fold -> the accumulator, the
+        # indexed queries -> Option<T>.
+        from capa import Lexer, Parser, analyze, ty_str
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    let squares = (0..5).map(fun (x: Int) -> Int => x * x)\n"
+            "    let total = (1..=5).fold(0, fun (a: Int, x: Int) -> Int => a + x)\n"
+            "    let head = (0..5).first()\n"
+            "    let at = (0..5).get(2)\n"
+            "    stdio.println(\"${squares.length()} ${total}\")\n"
         )
+        tokens = Lexer(src).lex()
+        module = Parser(tokens, source=src).parse_module()
+        result = analyze(module, source=src)
+        self.assertTrue(result.ok, result.errors)
+        stmts = module.items[0].body.stmts
+        self.assertEqual(ty_str(result.types[id(stmts[0].value)]), "List<Int>")
+        self.assertEqual(ty_str(result.types[id(stmts[1].value)]), "Int")
+        self.assertEqual(ty_str(result.types[id(stmts[2].value)]), "Option<Int>")
+        self.assertEqual(ty_str(result.types[id(stmts[3].value)]), "Option<Int>")
 
 
 class TestNumericConversions(unittest.TestCase):

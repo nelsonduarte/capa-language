@@ -1300,8 +1300,8 @@ class TestRangeExpressions(unittest.TestCase):
         self.assertEqual(out, "10\n11\n")
 
     def test_range_to_list_in_pipeline(self):
-        # The List-API surface (filter, fold, map) on a range now
-        # requires explicit materialisation via `.to_list()`.
+        # The List-API surface (filter, fold, map) chains off an
+        # explicit `.to_list()`.
         rc, out, err = run_capa(
             'fun main(stdio: Stdio)\n'
             '    let xs = (0..10).to_list()\n'
@@ -1312,6 +1312,23 @@ class TestRangeExpressions(unittest.TestCase):
         )
         self.assertEqual(rc, 0, err)
         self.assertEqual(out, "5\n20\n")  # 5 evens (0,2,4,6,8), sum 20
+
+    def test_range_transform_methods_direct(self):
+        # A range carries the List transform methods directly:
+        # `range.map(f)` == `range.to_list().map(f)`. The book's exact
+        # example `(0..10).filter(x % 2 == 0)` must yield the evens
+        # below 10; map / fold likewise mirror the materialised form.
+        rc, out, err = run_capa(
+            'fun main(stdio: Stdio)\n'
+            '    let evens = (0..10).filter(fun (x: Int) -> Bool => x % 2 == 0)\n'
+            '    let squares = (0..5).map(fun (x: Int) -> Int => x * x)\n'
+            '    let total = (1..=5).fold(0, fun (a: Int, x: Int) -> Int => a + x)\n'
+            '    stdio.println("${evens.length()}")\n'
+            '    stdio.println("${squares.length()}")\n'
+            '    stdio.println("${total}")\n'
+        )
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out, "5\n5\n15\n")  # 5 evens, 5 squares, sum 1..=5 = 15
 
     def test_for_range_is_lazy(self):
         # The naive lowering of `for x in a..b` was

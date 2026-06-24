@@ -99,14 +99,16 @@ class CapaRange:
     """A lazy integer range. Backs the Capa ``Range<T>`` built-in
     type produced by the ``a..b`` and ``a..=b`` syntactic forms.
 
-    The legitimate operations on a range are bounded queries
-    (``length``, ``contains``) and explicit materialisation
-    (``to_list``). ``filter`` / ``map`` / ``fold`` are not on the
-    Range surface; users that need them call ``.to_list()``
-    first so the choice to allocate is explicit. The Python
-    ``__iter__`` is implemented so a Capa ``for x in range_val``
-    iterates lazily, matching what the transpiler emits for the
-    direct ``for x in a..b`` form (which bypasses CapaRange
+    The bounded queries (``length``, ``contains``, ``is_empty``) are
+    answered directly against the wrapped Python ``range`` without
+    materialising. The transform methods (``map`` / ``filter`` /
+    ``fold``) and the indexed queries (``first`` / ``last`` / ``get``
+    / ``find`` / ``find_index``) carry the same surface as their
+    ``CapaList`` homonyms and are defined as ``self.to_list().method(
+    ...)``: ``r.map(f)`` is byte-identical to ``r.to_list().map(f)``.
+    The Python ``__iter__`` is implemented so a Capa ``for x in
+    range_val`` iterates lazily, matching what the transpiler emits
+    for the direct ``for x in a..b`` form (which bypasses CapaRange
     entirely and uses Python's ``range`` straight).
     """
 
@@ -126,6 +128,32 @@ class CapaRange:
 
     def to_list(self):
         return CapaList(self._range)
+
+    # Transform + indexed queries delegate to the materialised list so
+    # the semantics are, by construction, exactly to_list().method(...).
+    def map(self, f):
+        return self.to_list().map(f)
+
+    def filter(self, p):
+        return self.to_list().filter(p)
+
+    def fold(self, init, f):
+        return self.to_list().fold(init, f)
+
+    def first(self):
+        return self.to_list().first()
+
+    def last(self):
+        return self.to_list().last()
+
+    def get(self, i):
+        return self.to_list().get(i)
+
+    def find(self, p):
+        return self.to_list().find(p)
+
+    def find_index(self, p):
+        return self.to_list().find_index(p)
 
     def __iter__(self):
         return iter(self._range)

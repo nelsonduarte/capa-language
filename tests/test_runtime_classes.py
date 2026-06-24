@@ -142,6 +142,48 @@ class TestCapaRange(unittest.TestCase):
         r = CapaRange(1, 4)
         self.assertEqual(repr(r), "CapaRange(1, 4)")
 
+    def test_transform_methods_match_to_list(self):
+        # The contract: r.map(f) == r.to_list().map(f), and likewise
+        # for filter / fold. CapaRange delegates to the materialised
+        # list, so equality is by construction.
+        r = CapaRange(0, 10)
+        self.assertEqual(
+            list(r.filter(lambda x: x % 2 == 0)),
+            list(r.to_list().filter(lambda x: x % 2 == 0)),
+        )
+        self.assertEqual(
+            list(r.map(lambda x: x * x)),
+            list(r.to_list().map(lambda x: x * x)),
+        )
+        self.assertEqual(
+            r.fold(0, lambda a, x: a + x),
+            r.to_list().fold(0, lambda a, x: a + x),
+        )
+        # Concrete values for the book example.
+        self.assertEqual(list(r.filter(lambda x: x % 2 == 0)), [0, 2, 4, 6, 8])
+        self.assertEqual(r.fold(0, lambda a, x: a + x), 45)
+
+    def test_indexed_queries_match_to_list(self):
+        r = CapaRange(0, 5)
+        self.assertEqual(r.first(), r.to_list().first())
+        self.assertEqual(r.last(), r.to_list().last())
+        self.assertEqual(r.get(2), r.to_list().get(2))
+        self.assertEqual(r.get(9), r.to_list().get(9))  # out of range -> None
+        self.assertEqual(
+            r.find(lambda x: x > 3), r.to_list().find(lambda x: x > 3),
+        )
+        self.assertEqual(
+            r.find_index(lambda x: x > 3),
+            r.to_list().find_index(lambda x: x > 3),
+        )
+
+    def test_empty_range_transforms(self):
+        r = CapaRange(5, 5)
+        self.assertEqual(list(r.map(lambda x: x + 1)), [])
+        self.assertEqual(list(r.filter(lambda x: True)), [])
+        self.assertEqual(r.fold(7, lambda a, x: a + x), 7)
+        self.assertTrue(r.first().is_none())
+
 
 class TestSomeAndNone(unittest.TestCase):
     def test_some_is_some_unwrap(self):

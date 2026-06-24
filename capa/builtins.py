@@ -108,17 +108,32 @@ METHODS: dict[str, list[tuple[str, TyFun, list[str]]]] = {
     ],
     "Range": [
         # Range<T> is a lazy iterable produced by `a..b` and `a..=b`.
-        # Its method surface is intentionally minimal: ``length`` and
-        # ``contains`` answer queries against the bounds without
-        # materialising the elements, ``to_list`` materialises into a
-        # ``List<T>`` when the full List API is actually needed.
+        # The teaching material's promise is that "a range is just a
+        # List<T>, so everything you have learned about lists applies":
+        # looping, the transforming methods, and the indexed queries.
+        # ``length`` / ``contains`` / ``is_empty`` answer bounded
+        # queries without materialising; the transform methods
+        # (``map`` / ``filter`` / ``fold``) and the indexed queries
+        # (``first`` / ``last`` / ``get`` / ``find`` / ``find_index``)
+        # carry the SAME signatures and semantics as their List
+        # homonyms: ``r.map(f)`` is exactly ``r.to_list().map(f)``.
+        # Both backends desugar them through ``to_list``, so the
+        # only contract here is the type surface.
         # Range values are first-class iterables in ``for`` loops; the
         # for-loop emitter consumes them directly without going through
         # ``to_list``.
-        ("length",   fun(TyInt),                                                   []),
-        ("contains", fun(T, TyBool),                                               []),
-        ("to_list",  fun(lst(T)),                                                  []),
-        ("is_empty", fun(TyBool),                                                  []),
+        ("length",     fun(TyInt),                                                 []),
+        ("contains",   fun(T, TyBool),                                             []),
+        ("to_list",    fun(lst(T)),                                                []),
+        ("is_empty",   fun(TyBool),                                                []),
+        ("map",        fun(fun(T, U), lst(U)),                                     ["U"]),
+        ("filter",     fun(fun(T, TyBool), lst(T)),                                []),
+        ("fold",       fun(U, fun(U, T, U), U),                                    ["U"]),
+        ("first",      fun(opt(T)),                                                []),
+        ("last",       fun(opt(T)),                                                []),
+        ("get",        fun(TyInt, opt(T)),                                         []),
+        ("find",       fun(fun(T, TyBool), opt(T)),                                []),
+        ("find_index", fun(fun(T, TyBool), opt(TyInt)),                            []),
     ],
     "String": [
         ("length",      fun(TyInt),                                                []),

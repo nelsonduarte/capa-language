@@ -776,6 +776,20 @@ _PARITY_PROGRAMS: list[str] = [
     # / null / string), strings with escapes and an astral code point,
     # a nested object, and a deeply nested array.
     "json_serialize_builder.capa",
+    # Range transform + indexed-query methods (2026-06-24): map /
+    # filter / fold / first / last / get / find / find_index on a
+    # Range. The teaching material promises "a range is just a List,
+    # so everything you have learned about lists applies", but these
+    # methods previously raised "type 'Range' has no method ...".
+    # Both backends now desugar ``range.method(...)`` to
+    # ``range.to_list().method(...)`` (the transpiler via the CapaRange
+    # methods, the Wasm IR lowerer by materialising then routing
+    # through the List emitters), so the result is byte-identical to
+    # the materialised-list form. Covers the exact book example
+    # ``(0..10).filter(x % 2 == 0)``, map / fold, an empty range
+    # (5..5), inclusive (a..=b), variable bounds at both ends, the
+    # indexed queries, and a filter -> map chain.
+    "range_transform_methods.capa",
 ]
 
 # Programs deliberately excluded from parity and why; documented
@@ -1414,6 +1428,19 @@ class TestPythonWasmParity(unittest.TestCase):
         # [start, stop) semantics matching CapaRange; covers empty
         # (5..5), single, inclusive (a..=b), and contains boundaries.
         self._assert_parity("range_methods.capa")
+
+    def test_range_transform_methods(self):
+        # Range transform + indexed queries (2026-06-24): map / filter /
+        # fold / first / last / get / find / find_index on a Range. These
+        # were previously absent ("type 'Range' has no method 'filter'"),
+        # contradicting the teaching material's "a range is just a List"
+        # promise. Both backends desugar ``range.m(...)`` to
+        # ``range.to_list().m(...)``, so ``range.map(f)`` is byte-
+        # identical to ``range.to_list().map(f)``. Covers the exact book
+        # example ``(0..10).filter(x % 2 == 0)``, map / fold, empty range
+        # (5..5), inclusive (a..=b), variable bounds, indexed queries,
+        # and a filter -> map chain.
+        self._assert_parity("range_transform_methods.capa")
 
     def test_net_allows(self):
         # Loud-error stdlib gap (2026-06-10): Net.allows(host) inlined

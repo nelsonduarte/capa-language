@@ -1,0 +1,81 @@
+// Range transform + indexed-query methods on the Wasm backend:
+// map / filter / fold / first / last / get / find / find_index.
+// The teaching material's promise is that "a range is just a List,
+// so everything you have learned about lists applies to it,
+// including the transforming methods". Each of these is desugared to
+// range.to_list().<method>(...) on BOTH backends, so the result is,
+// by construction, exactly what the materialised list would give.
+// Edge cases: empty range (5..5), inclusive (a..=b), variable
+// bounds, and chained filter -> map (both return List).
+
+fun show(stdio: Stdio, label: String, n: Int)
+    stdio.println("${label}: ${n}")
+
+fun show_opt_int(stdio: Stdio, label: String, o: Option<Int>)
+    if o.is_some()
+        stdio.println("${label}: Some(${o.unwrap_or(-999)})")
+    else
+        stdio.println("${label}: None")
+
+fun join(xs: List<Int>) -> String
+    var out = ""
+    for x in xs
+        out = out + "${x},"
+    return out
+
+fun main(stdio: Stdio)
+    // ---- filter: the exact example from the teaching material ----
+    // (0..10).filter(fun (x: Int) -> Bool => x % 2 == 0) -> evens < 10.
+    let evens = (0..10).filter(fun (x: Int) -> Bool => x % 2 == 0)
+    stdio.println("0..10 evens: ${join(evens)}")
+
+    // ---- map ----
+    let n = 5
+    let squares = (0..n).map(fun (x: Int) -> Int => x * x)
+    stdio.println("0..n squares: ${join(squares)}")
+
+    // map over an inclusive range.
+    let doubled = (1..=4).map(fun (x: Int) -> Int => x * 2)
+    stdio.println("1..=4 doubled: ${join(doubled)}")
+
+    // ---- fold ----
+    // Sum of an inclusive range.
+    let total = (1..=5).fold(0, fun (acc: Int, x: Int) -> Int => acc + x)
+    show(stdio, "1..=5 sum", total)
+
+    // Product as a non-Int-shaped accumulator path is the same shape;
+    // keep it Int but start from 1.
+    let prod = (1..=4).fold(1, fun (acc: Int, x: Int) -> Int => acc * x)
+    show(stdio, "1..=4 prod", prod)
+
+    // ---- empty range ----
+    let empty_mapped = (5..5).map(fun (x: Int) -> Int => x + 100)
+    stdio.println("5..5 map len: ${empty_mapped.length()}")
+    let empty_filtered = (5..5).filter(fun (x: Int) -> Bool => x > 0)
+    stdio.println("5..5 filter len: ${empty_filtered.length()}")
+    let empty_fold = (5..5).fold(7, fun (acc: Int, x: Int) -> Int => acc + x)
+    show(stdio, "5..5 fold", empty_fold)
+
+    // ---- variable bounds at both ends ----
+    let lo = 2
+    let hi = 6
+    let scaled = (lo..hi).map(fun (x: Int) -> Int => x * 10)
+    stdio.println("lo..hi scaled: ${join(scaled)}")
+
+    // ---- indexed queries ----
+    show_opt_int(stdio, "0..5 first", (0..5).first())
+    show_opt_int(stdio, "0..5 last", (0..5).last())
+    show_opt_int(stdio, "1..=5 first", (1..=5).first())
+    show_opt_int(stdio, "1..=5 last", (1..=5).last())
+    show_opt_int(stdio, "5..5 first", (5..5).first())
+    show_opt_int(stdio, "0..5 get 2", (0..5).get(2))
+    show_opt_int(stdio, "0..5 get 9", (0..5).get(9))
+    show_opt_int(stdio, "find >3", (0..10).find(fun (x: Int) -> Bool => x > 3))
+    show_opt_int(stdio, "idx >3", (0..10).find_index(fun (x: Int) -> Bool => x > 3))
+    show_opt_int(stdio, "find >99", (0..10).find(fun (x: Int) -> Bool => x > 99))
+
+    // ---- chaining: filter then map (both return List) ----
+    let chained = (0..20)
+        .filter(fun (x: Int) -> Bool => x % 2 == 0)
+        .map(fun (x: Int) -> Int => x + 1)
+    stdio.println("0..20 chain: ${join(chained)}")
