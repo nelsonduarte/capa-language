@@ -29,18 +29,21 @@ code.
 
 ## Long term (gated, do NOT start without a concrete driver)
 
-- **Native backend (declared future direction).** Evolving Capa toward a
-  native backend with Rust/Go-level performance is the declared future
-  direction, not merely an optional gated item. The honesty of the
-  feasibility doc stands: a from-scratch native backend is an arc of many
-  months, and the gate to start the backend proper remains a concrete
-  driver (a perf-bound consumer the Wasm-AOT path provably cannot serve,
-  a hard native-FFI requirement, or a target with no acceptable Wasm
-  runtime). The phased execution plan (the "how", as opposed to the
-  feasibility doc's "if / when / how much") lives in
+- **Native backend (additive future axis, gated).** A native backend
+  with Rust/Go-level performance is an additive future axis: it sits
+  underneath the security mission (capabilities + IFC + SBOM stay the
+  priority) and removes an adoption objection rather than redefining the
+  project. It stays future work, conditioned on a concrete driver. The
+  honesty of the feasibility doc stands: a from-scratch native backend is
+  an arc of many months, and the gate to start the backend proper remains
+  a concrete driver (a perf-bound consumer the Wasm-AOT path provably
+  cannot serve, a hard native-FFI requirement, or a target with no
+  acceptable Wasm runtime). The phased execution plan (the "how", as
+  opposed to the feasibility doc's "if / when / how much") lives in
   `docs/design/native-backend-plan.md`, which marks **Phase 0
-  (prerequisites) and Phase 1 (spike) as AUTHORISED to start**, decides
-  Phase 2 after their results, and keeps Phases 3+ gated on a driver.
+  (prerequisites) and Phase 1 (spike) as AUTHORISED to start as
+  background work that also benefits the Wasm backend**, decides Phase 2
+  after their results, and keeps Phases 3+ gated on a driver.
   What is actionable in the near future are the low-risk prerequisites
   the feasibility doc section 5.3 already flags as "do independently
   first, benefits Wasm too" (Phase 0 of the plan):
@@ -60,7 +63,7 @@ code.
   llvmlite vs textual `.ll` vs Cranelift-direct without deciding, and
   that toolchain choice is left open here too) and
   `docs/design/native-backend-plan.md` (the phased "how", with Phase 0+1
-  authorised and the rest gated).
+  authorised as Wasm-benefiting background work and the rest gated).
 - **Async/await.** Triple gate: a real I/O-bound workload, GC, and the
   appetite to reopen the noninterference proof. See
   `docs/design/async-feasibility.md`.
