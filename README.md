@@ -14,6 +14,8 @@
 
 **Website: <https://capa-language.com/>**
 
+**Machine-verifiable supply-chain SBOMs by construction.**
+
 Capa is a small, capability-typed programming language. Every
 function declares the authorities it holds (`Fs`, `Net`, `Stdio`,
 `Clock`, `Random`, `Env`, `Db`, `Proc`, `Unsafe`), the analyzer
