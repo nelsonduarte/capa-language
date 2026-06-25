@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.12.0
+
+- Bundled language server client. The extension now ships a TypeScript
+  client (built on `vscode-languageclient` 8.1, compatible with the
+  declared `vscode ^1.80.0` engine) that launches the Capa language
+  server over stdio and wires up its rich features: diagnostics, hover,
+  go-to-definition, find-references, document highlight, rename,
+  formatting, document and workspace symbols, semantic tokens,
+  completion, signature help, inlay hints, folding, selection ranges,
+  code actions, and code lenses. The client starts when a `.capa` file
+  is opened and stops when the extension is deactivated. Highlighting,
+  snippets, and indentation are unchanged and keep working with or
+  without the server.
+- Runtime requirement: the server runs as a Python process, so it needs
+  Python >=3.10 with `pip install "capa[lsp]"` (which provides `pygls`).
+  The standalone PyInstaller binary does not yet serve the LSP because it
+  does not bundle `pygls`.
+- Graceful degradation. If the launch command cannot run (for example
+  Python is not on PATH), the extension reports it with a hint to fix the
+  `capa.languageServer.command` setting and keeps highlighting active. If
+  the server exits because `pygls` is missing (exit code 2), the message
+  is specific and offers to copy `pip install "capa[lsp]"`. Auto-restart
+  is capped so a broken command cannot loop forever.
+- Settings (all under `capa.`): `capa.languageServer.enabled` (default
+  `true`), `capa.languageServer.command` (default
+  `["python", "-m", "capa", "lsp"]`), and `capa.languageServer.capaPath`
+  (passed to the server as `CAPA_PATH`). Changing any of them restarts
+  the client.
+- Commands: `Capa: Restart Language Server` and `Capa: Show Language
+  Server Output`.
+- Build: client code lives in `src/`, is bundled to `dist/extension.js`
+  with esbuild, and is excluded from the packaged `.vsix` along with
+  `node_modules` and source maps. The `.vsix` carries the final bundle
+  plus the existing grammar, snippets, language configuration, and icons.
+
 ## 0.11.1
 
 - Added import snippets, completing the snippet set. Three prefixes cover

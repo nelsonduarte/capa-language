@@ -1,10 +1,11 @@
 {
     "name": "capa-language",
     "displayName": "Capa Language",
-    "description": "Syntax highlighting for the Capa programming language",
-    "version": "0.11.1",
+    "description": "Syntax highlighting and language server client for the Capa programming language",
+    "version": "0.12.0",
     "publisher": "nelsonduarte",
     "icon": "icon.png",
+    "main": "./dist/extension.js",
     "engines": {
         "vscode": "^1.80.0"
     },
@@ -29,6 +30,9 @@
         "url": "https://github.com/nelsonduarte/capa-language.git",
         "directory": "vscode"
     },
+    "activationEvents": [
+        "onLanguage:capa"
+    ],
     "contributes": {
         "languages": [
             {
@@ -59,6 +63,65 @@
                 "language": "capa",
                 "path": "./snippets/capa.json"
             }
+        ],
+        "configuration": {
+            "title": "Capa",
+            "properties": {
+                "capa.languageServer.enabled": {
+                    "type": "boolean",
+                    "default": true,
+                    "markdownDescription": "Enable the Capa language server client (diagnostics, hover, go-to-definition, rename, formatting, and more). When disabled, only syntax highlighting, snippets, and indentation remain active."
+                },
+                "capa.languageServer.command": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    },
+                    "default": [
+                        "python",
+                        "-m",
+                        "capa",
+                        "lsp"
+                    ],
+                    "markdownDescription": "Command used to launch the Capa language server over stdio, given as an argument vector (the first item is the executable, the rest are arguments). The default `python -m capa lsp` requires Python >=3.10 with `capa[lsp]` installed and `python` on PATH. On systems where the interpreter is named `python3`, change the first item to `python3`. You may also point this at an installed `capa` console script, for example `[\"capa\", \"lsp\"]`."
+                },
+                "capa.languageServer.capaPath": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    },
+                    "default": [],
+                    "markdownDescription": "Extra directories the language server searches when resolving Capa imports, passed to the server as the `CAPA_PATH` environment variable. Each entry is one directory; they are joined with the platform path separator."
+                }
+            }
+        },
+        "commands": [
+            {
+                "command": "capa.restartLanguageServer",
+                "title": "Restart Language Server",
+                "category": "Capa"
+            },
+            {
+                "command": "capa.showServerOutput",
+                "title": "Show Language Server Output",
+                "category": "Capa"
+            }
         ]
+    },
+    "scripts": {
+        "vscode:prepublish": "npm run bundle",
+        "bundle": "esbuild ./src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --minify",
+        "compile": "esbuild ./src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node",
+        "watch": "npm run compile -- --sourcemap --watch",
+        "check-types": "tsc --noEmit"
+    },
+    "dependencies": {
+        "vscode-languageclient": "^8.1.0"
+    },
+    "devDependencies": {
+        "@types/node": "^18.19.0",
+        "@types/vscode": "^1.80.0",
+        "esbuild": "^0.21.5",
+        "typescript": "^5.4.5"
     }
 }

@@ -2,7 +2,7 @@
 
 Syntax highlighting for the [Capa programming language](https://github.com/nelsonduarte/capa-language), a capability-centric language with a pythonic surface, built around the idea that the authorities a function holds (network, filesystem, environment, ...) must be visible in its signature.
 
-This extension provides TextMate-based highlighting. A capability-aware language server has shipped separately (`python -m capa lsp`); you can wire it up with any generic LSP client extension for VSCode (search the Marketplace for "Generic LSP" or similar) pointed at `python -m capa lsp`. A first-party VSCode extension that bundles the LSP client is on the roadmap.
+This extension provides TextMate-based highlighting and a bundled client for the Capa language server, which adds diagnostics, hover, go-to-definition, find-references, rename, formatting, document and workspace symbols, semantic tokens, completion, signature help, inlay hints, folding, code actions, and code lenses. See [Language server](#language-server) below for the runtime requirements.
 
 ## What it highlights
 
@@ -59,6 +59,59 @@ the next line. One-line `if ... then ... else` expressions and inline `=>`
 lambdas (which carry their body on the same line) do not trigger an indent,
 and `else` / `elif` are dedented back to their `if`.
 
+## Language server
+
+The extension bundles a client that launches the Capa language server and
+connects the editor's rich features (diagnostics, hover, go-to-definition,
+rename, formatting, and the rest) to it. The client talks to the server
+over stdio; there is no socket or port to configure.
+
+### Requirements
+
+The server runs as a Python process, so the client needs:
+
+- Python >=3.10 available to the configured launch command.
+- The `capa` package with its language-server extra installed:
+  `pip install "capa[lsp]"`. This pulls in `pygls`, which the server
+  requires. If `pygls` is missing the server exits immediately and the
+  extension shows a message telling you to run that command.
+
+The standalone (PyInstaller) Capa binary does not yet serve the LSP,
+because it does not bundle `pygls`; point the client at a Python
+interpreter with `capa[lsp]` installed instead.
+
+If the launch command cannot run (Python not found, wrong command) or the
+server keeps stopping, the extension reports it and stays out of the way:
+syntax highlighting, snippets, and indentation keep working without the
+server.
+
+### Settings
+
+All settings live under the `capa.` prefix:
+
+- `capa.languageServer.enabled` (boolean, default `true`): turn the
+  language server client on or off. With it off, only highlighting,
+  snippets, and indentation remain.
+- `capa.languageServer.command` (string array, default
+  `["python", "-m", "capa", "lsp"]`): the command used to launch the
+  server, as an argument vector (first item is the executable). On systems
+  where the interpreter is named `python3`, set the first item to
+  `python3`. If you installed the `capa` console script you can also use
+  `["capa", "lsp"]`.
+- `capa.languageServer.capaPath` (string array, default `[]`): extra
+  directories the server searches when resolving Capa imports, passed as
+  the `CAPA_PATH` environment variable (joined with the platform path
+  separator).
+
+Changing any of these restarts the client automatically.
+
+### Commands
+
+- `Capa: Restart Language Server`: restarts the client (use this after
+  installing `capa[lsp]` or fixing the launch command).
+- `Capa: Show Language Server Output`: opens the output channel where the
+  server's logs and stderr appear.
+
 ## Install
 
 From the VSCode Marketplace: search for "Capa Language" in the
@@ -86,17 +139,19 @@ Restart VSCode. `.capa` files should now highlight.
 cp -r vscode ~/.vscode/extensions/capa-language
 ```
 
-Or package as a `.vsix`:
+Or package as a `.vsix`. The extension now carries TypeScript client code
+that is bundled with esbuild, so install the dev dependencies and let
+`vsce` run the bundle step first:
 
 ```bash
-npm install -g @vscode/vsce
-cd vscode && vsce package
-code --install-extension capa-language-0.11.0.vsix
+cd vscode
+npm install
+npx @vscode/vsce package --no-dependencies
+code --install-extension capa-language-0.12.0.vsix
 ```
 
-## What's not in this extension yet
-
-- **Bundled LSP client**: the LSP server itself (`python -m capa lsp`) is shipped and delivers diagnostics, hover, go-to-definition, find-references, document symbols, and Quick Fixes. This extension does not yet auto-launch it; you currently wire it up through a generic LSP client extension or in a fork that adds the `vscode-languageclient` dependency. A first-party bundled client is queued.
+`npm run bundle` produces `dist/extension.js` (the entry point named by
+`main`); `npm run watch` rebuilds it on change while you work.
 
 ## Reporting issues
 

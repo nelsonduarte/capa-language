@@ -1,4 +1,11 @@
 .vscodeignore
+.gitignore
 **/*.vsix
 node_modules/**
 .git/**
+src/**
+**/*.ts
+**/*.map
+tsconfig.json
+package-lock.json
+.vscode/**
