@@ -186,6 +186,16 @@ class _LiteralsMixin:
         interp_depth = 0
         while not self._at_end():
             c = self._peek()
+            if interp_depth > 0 and c == '"':
+                # A ``"`` encountered *inside* an interpolation opens a
+                # NESTED string literal (e.g. ``${m.get("k")}``). It must
+                # not terminate the outer string, and the braces inside
+                # it must not affect the interpolation's brace depth.
+                # Copy it verbatim (escapes and all) into ``buf``: the
+                # parser re-lexes the interpolation body, so it is the
+                # one that finally processes the nested string's escapes.
+                self._consume_nested_string(buf, start)
+                continue
             if c == '"':
                 self._advance()
                 text = self._slice_from(start)
@@ -222,8 +232,9 @@ class _LiteralsMixin:
                 # Inside an interpolation: track brace depth so we know
                 # when the matching ``}`` closes it. Matches the
                 # parser's value-side depth counter character-for-
-                # character (neither ignores braces inside nested
-                # string literals; that is a pre-existing limitation).
+                # character. Nested string literals are handled above
+                # (their inner braces never reach here), so the two
+                # counters stay in lock-step.
                 if c == "{":
                     interp_depth += 1
                 elif c == "}":
@@ -231,6 +242,40 @@ class _LiteralsMixin:
             buf.append(c)
             self._advance()
         raise self._error("unterminated string literal", start)
+
+    def _consume_nested_string(self, buf: list[str], outer_start: Pos) -> None:
+        """Consume a string literal that appears inside a ``${...}``
+        interpolation, copying it verbatim into ``buf``.
+
+        The cursor is positioned on the opening ``"``. Every character
+        up to and including the matching unescaped closing ``"`` is
+        appended to ``buf`` exactly as written (escape sequences are
+        kept as the literal ``\\`` + next-char pair, not decoded): the
+        parser later re-lexes the interpolation body and that re-lex is
+        what decodes the escapes. A backslash escapes the next
+        character so an escaped quote ``\\"`` does not close the nested
+        string. A raw newline is rejected, mirroring the outer rule.
+        """
+        buf.append(self._advance())  # opening quote of the nested string
+        while not self._at_end():
+            c = self._peek()
+            if c == "\\":
+                buf.append(self._advance())  # backslash
+                if self._at_end():
+                    raise self._error(
+                        "unterminated string literal", outer_start,
+                    )
+                buf.append(self._advance())  # the escaped character
+                continue
+            if c == "\n":
+                raise self._error(
+                    "unterminated string literal (newline before closing quote)",
+                    outer_start,
+                )
+            buf.append(self._advance())
+            if c == '"':
+                return
+        raise self._error("unterminated string literal", outer_start)
 
     def _lex_raw_string(self, start: Pos) -> None:
         """Lexes a raw string literal ``r"..."``.

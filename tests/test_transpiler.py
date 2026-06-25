@@ -191,6 +191,116 @@ class TestTranspileBasic(unittest.TestCase):
         self.assertEqual(out, "Olá, Capa!\n")
 
 
+class TestNestedStringInterpolation(unittest.TestCase):
+    """fix/interp-nested-strings (2026-06-25): a string literal nested
+    inside a ``${...}`` interpolation must not terminate the outer
+    string. Before the fix, ``"a is ${m.get("a")...}"`` failed with
+    "unterminated interpolation in string literal" because the lexer
+    closed the outer literal at the inner ``"``. The lexer now consumes
+    a nested string verbatim inside an interpolation (its quotes and
+    braces are stepped over), and the parser's matching-``}`` scan does
+    the same.
+    """
+
+    def test_nested_string_in_interpolation(self):
+        # The book idiom that triggered the bug report.
+        rc, out, err = run_capa(
+            'fun main(stdio: Stdio)\n'
+            '    let m: Map<String, Int> = new_map()\n'
+            '    m.set("a", 1)\n'
+            '    stdio.println("a is ${m.get("a").unwrap_or(0)}")\n'
+        )
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out, "a is 1\n")
+
+    def test_chained_method_with_nested_string(self):
+        rc, out, err = run_capa(
+            'fun main(stdio: Stdio)\n'
+            '    let m: Map<String, Int> = new_map()\n'
+            '    m.set("key", 42)\n'
+            '    let d: Int = 0\n'
+            '    stdio.println("v=${m.get("key").unwrap_or(d)}")\n'
+        )
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out, "v=42\n")
+
+    def test_literal_brace_inside_nested_string(self):
+        # A ``}`` living inside the nested string must NOT be mistaken
+        # for the interpolation's closing brace.
+        rc, out, err = run_capa(
+            'fun main(stdio: Stdio)\n'
+            '    let m: Map<String, Int> = new_map()\n'
+            '    m.set("}", 7)\n'
+            '    stdio.println("got ${m.get("}").unwrap_or(0)}")\n'
+        )
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out, "got 7\n")
+
+    def test_recursive_nested_interpolation(self):
+        # An interpolation inside a string inside an interpolation.
+        rc, out, err = run_capa(
+            'fun greet(name: String) -> String\n'
+            '    return "hi ${name}"\n'
+            '\n'
+            'fun main(stdio: Stdio)\n'
+            '    let y: String = "bob"\n'
+            '    stdio.println("${greet("${y}")}")\n'
+        )
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out, "hi bob\n")
+
+    def test_dollar_escape_preserved(self):
+        rc, out, err = run_capa(
+            'fun main(stdio: Stdio)\n'
+            '    let x: Int = 5\n'
+            '    stdio.println("escape $${x}")\n'
+        )
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out, "escape ${x}\n")
+
+    def test_raw_string_preserved(self):
+        # Raw strings are lexed by a separate path (``_lex_raw_string``)
+        # that this fix does not touch: no escape processing and the
+        # lexer attaches no interpolation positions. Backslashes pass
+        # through literally and the value is emitted verbatim.
+        rc, out, err = run_capa(
+            'fun main(stdio: Stdio)\n'
+            '    stdio.println(r"raw text \\n untouched")\n'
+        )
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out, "raw text \\n untouched\n")
+
+    def test_raw_string_has_no_interp_positions(self):
+        # The lexer must NOT record interpolation positions for a raw
+        # string, even when its text contains a literal ``${...}``: a
+        # raw string is never interpolated at the lexer/parser level.
+        toks = Lexer('let s = r"raw ${x} here"').lex()
+        lits = [t for t in toks if t.kind.name == "STRING_LIT"]
+        self.assertEqual(len(lits), 1)
+        self.assertEqual(lits[0].value, "raw ${x} here")
+        self.assertEqual(lits[0].interp_positions, [])
+
+    def test_literal_brace_outside_interpolation(self):
+        rc, out, err = run_capa(
+            'fun main(stdio: Stdio)\n'
+            '    stdio.println("a } literal")\n'
+        )
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out, "a } literal\n")
+
+    def test_unterminated_nested_string_still_errors(self):
+        # A genuinely unterminated nested string must remain an error
+        # (no swallowing the rest of the line).
+        from capa.errors import LexerError
+        src = (
+            'fun main(stdio: Stdio)\n'
+            '    let m: Map<String, Int> = new_map()\n'
+            '    stdio.println("v ${m.get("a}")\n'
+        )
+        with self.assertRaises(LexerError):
+            Lexer(src).lex()
+
+
 class TestBoolInterpolationLowercase(unittest.TestCase):
     """Capa renders a Bool as ``true`` / ``false`` (lowercase) inside a
     ``${...}`` interpolation, matching JSON and the Wasm backend, never

@@ -624,6 +624,14 @@ _PARITY_PROGRAMS: list[str] = [
     # computed-float class in this program is now byte-identical with
     # Python repr across both backends, so the file is parity-clean.
     "float_interpolation.capa",
+    # fix/interp-nested-strings (2026-06-25): a string literal nested
+    # inside a ``${...}`` interpolation (``"a is ${m.get("a")...}"``)
+    # used to terminate the outer string at the inner quote. The lexer
+    # and the parser's matching-``}`` scan now step over nested strings.
+    # Covers the headline idiom, a ``}`` inside a nested string,
+    # recursive nesting, and the preserved interpolation behaviours,
+    # byte-identical across backends.
+    "string_interp_nested.capa",
     # Loud-error stdlib gap closure (2026-06-10): three method families
     # that previously raised a clean WasmEmissionError now compile to
     # Wasm with Python parity.
@@ -1412,6 +1420,19 @@ class TestPythonWasmParity(unittest.TestCase):
         # was excluded from this harness before, which is exactly why
         # the divergence reached audit instead of CI.
         self._assert_parity("float_interpolation.capa")
+
+    def test_string_interp_nested(self):
+        # fix/interp-nested-strings (2026-06-25): a string literal
+        # inside a ``${...}`` interpolation (``"a is ${m.get("a")...}"``)
+        # used to make the lexer terminate the OUTER string at the
+        # nested ``"`` ("unterminated interpolation"). The lexer and
+        # the parser's matching-``}`` scan now both step over nested
+        # strings. The example pins the headline idiom, a ``}`` living
+        # inside a nested string, recursive nesting, and every
+        # preserved interpolation behaviour (plain / arithmetic /
+        # chained method / ``$$`` escape / raw string / literal ``}`` /
+        # empty string), all byte-identical across backends.
+        self._assert_parity("string_interp_nested.capa")
 
     def test_list_query_methods(self):
         # Loud-error stdlib gap (2026-06-10): List.first / last / find /

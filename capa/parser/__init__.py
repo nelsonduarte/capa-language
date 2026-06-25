@@ -133,15 +133,23 @@ class Parser(
                 # End accumulated literal text.
                 parts.append("".join(buf))
                 buf.clear()
-                # Find the matching `}`, counting depth (to support
-                # `${ {x: 1} }` in the future, although today such
-                # cases are uncommon).
+                # Find the matching `}`, counting brace depth and
+                # skipping over nested string literals so that a brace
+                # *inside* a string (e.g. ``${m.get("}")}``) does not
+                # confuse the count, and a closing quote of a nested
+                # string (``${m.get("k")}``) is not mistaken for outer
+                # text. Mirrors the lexer's own depth tracking, which
+                # likewise steps over nested strings.
                 depth = 1
                 j = i + 2
                 while j < len(value) and depth > 0:
-                    if value[j] == "{":
+                    ch = value[j]
+                    if ch == '"':
+                        j = self._skip_nested_string(value, j)
+                        continue
+                    if ch == "{":
                         depth += 1
-                    elif value[j] == "}":
+                    elif ch == "}":
                         depth -= 1
                     if depth > 0:
                         j += 1
@@ -169,6 +177,30 @@ class Parser(
         # Remaining text after the last interpolation.
         parts.append("".join(buf))
         return A.InterpolatedString(pos=pos, parts=parts)
+
+    @staticmethod
+    def _skip_nested_string(value: str, start: int) -> int:
+        """Return the index just past a nested string literal in
+        ``value`` that opens at ``value[start] == '"'``.
+
+        Honours backslash escapes so an escaped quote ``\\"`` does not
+        close the string. If the string is unterminated, returns
+        ``len(value)`` (the caller then reports the same unterminated-
+        interpolation diagnostic). Used while scanning for an
+        interpolation's matching ``}`` so braces and quotes inside a
+        nested string literal are stepped over rather than counted.
+        """
+        k = start + 1
+        n = len(value)
+        while k < n:
+            ch = value[k]
+            if ch == "\\":
+                k += 2
+                continue
+            if ch == '"':
+                return k + 1
+            k += 1
+        return n
 
     def _parse_interpolation(self, expr_text: str, pos) -> A.Expr:
         """Parses ``expr_text`` (the content between ``${`` and ``}``)

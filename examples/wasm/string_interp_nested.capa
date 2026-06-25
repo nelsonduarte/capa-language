@@ -1,0 +1,49 @@
+// Nested-string interpolation parity (fix/interp-nested-strings).
+//
+// Before this fix the lexer terminated the OUTER string at the first
+// ``"`` it met inside a ``${...}`` interpolation, so the book's own
+// idiom ``"a is ${m.get("a").unwrap_or(0)}"`` failed with
+// "unterminated interpolation in string literal". The lexer now
+// recognises a nested string literal inside an interpolation (its
+// quotes do not close the outer string and its braces do not affect
+// the interpolation's brace depth), and the parser's matching-``}``
+// scan steps over nested strings symmetrically.
+//
+// This program pins byte-identical output for the nested-string idiom
+// AND every interpolation behaviour that had to be preserved:
+// plain ``${x}``, arithmetic, chained method calls, the ``$$`` escape,
+// raw strings, a literal ``}`` outside any interpolation, the empty
+// string, and a ``}`` living INSIDE a nested string (which must not
+// close the interpolation early).
+
+fun greet(name: String) -> String
+    return "hi ${name}"
+
+fun main(stdio: Stdio)
+    let x: Int = 5
+    let n: Int = 3
+    let s: String = "hello"
+    let m: Map<String, Int> = new_map()
+    m.set("a", 1)
+    m.set("}", 7)
+
+    // The headline idiom: a nested string literal inside ${...}.
+    stdio.println("a is ${m.get("a").unwrap_or(0)}")
+
+    // A literal ``}`` living inside the nested string: it must be
+    // stepped over, not mistaken for the interpolation's close brace.
+    stdio.println("brace key ${m.get("}").unwrap_or(0)}")
+
+    // Recursive nesting: an interpolation inside a string inside an
+    // interpolation.
+    stdio.println("${greet("bob")}")
+
+    // Preserved behaviours.
+    stdio.println("simple ${x}")
+    stdio.println("arith ${n * 2}")
+    stdio.println("method ${s.length()}")
+    stdio.println("escape $${x}")
+    stdio.println(r"raw text \n untouched")
+    stdio.println("literal brace } here")
+    stdio.println("")
+    stdio.println("x=${x}!")
