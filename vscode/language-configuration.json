@@ -23,8 +23,8 @@
         ["'", "'"]
     ],
     "indentationRules": {
-        "increaseIndentPattern": "^.*((\\b(fun|if|elif|else|while|for|match|type|trait|impl|capability)\\b.*)|->.*\\)\\s*$|=>\\s*$)",
-        "decreaseIndentPattern": "^\\s*$"
+        "increaseIndentPattern": "^\\s*(pub\\s+)?(fun\\s+[A-Za-z_]\\w*.*|type\\b.*[{=]\\s*$|(impl|trait|capability|typestate|linear)\\b.*|(if|elif|while|for)\\b(?!.*\\bthen\\b).*|else\\s*$|(return\\s+|=\\s*|let\\b.*=\\s*)?match\\b.*|.*->\\s*$)\\s*$",
+        "decreaseIndentPattern": "^\\s*(else|elif)\\b.*"
     },
     "wordPattern": "(-?\\d+\\.\\d\\w*)|([a-zA-Z_][a-zA-Z0-9_]*)"
 }

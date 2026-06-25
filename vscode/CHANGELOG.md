@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.10.0
+
+- Python-style automatic indentation. Pressing Enter after a block header
+  now indents the next line. The previous `indentationRules` were too
+  loose: the increase pattern was anchored with `^.*`, so any line that
+  merely contained a keyword (`fun`, `if`, `for`, `type`, `match`, ...)
+  anywhere, including inside string literals, inline lambdas, one-line
+  `if ... then ... else` expressions, and identifiers that happen to
+  contain a keyword as a substring, would indent the following line. The
+  decrease pattern was a blank line, which made no sense.
+- The increase pattern is now anchored to the start of the line (after
+  the current indentation and an optional `pub `) and only fires on real
+  block headers: a named `fun` definition (not a `fun (...)` lambda), a
+  `type` struct or sum-type opener, `impl` / `trait` / `capability` /
+  `typestate` / `linear`, the `if` / `elif` / `else` / `while` / `for` /
+  `match` statements (and `return` / `let` match-expressions), and a
+  `match` arm whose body is on the next line (the line ends with `->`).
+  One-line `if ... then ... else` expressions and inline lambdas no
+  longer trigger indentation.
+- The decrease pattern now aligns `else` and `elif` back to their `if`
+  instead of keying off blank lines.
+
 ## 0.9.0
 
 - The extension now ships the Capa logo as its marketplace icon
