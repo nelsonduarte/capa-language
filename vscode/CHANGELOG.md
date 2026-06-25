@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.11.0
+
+- Code snippets for common Capa constructs, contributed through
+  `contributes.snippets` and registered against the `capa` language. Type
+  a prefix and press Tab to expand a skeleton with Tab-navigable
+  placeholders. Bodies are indented with four spaces to match the language
+  convention, so an expansion is valid, correctly indented Capa.
+- Prefixes: `main`, `fun`, `pubfun`, `lambda`, `struct`, `sum`, `impl`,
+  `impltrait`, `trait`, `capability`, `match`, `ifelif`, `ifelse`, `for`,
+  `while`, `let`, `var`, `println`, `print`, `security`, `constant_time`,
+  and `strict_ifc`. Each was checked against the examples and the grammar;
+  an assembled program exercising every construct passes `capa --check`.
+- Import snippets were intentionally left out: an import snippet uses a
+  placeholder module name that never resolves in isolation, so its
+  expansion could not pass `capa --check` the way the other snippets do.
+
 ## 0.10.1
 
 - Documentation refresh. The README now describes the Python-style

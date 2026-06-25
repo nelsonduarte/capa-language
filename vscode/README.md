@@ -17,6 +17,35 @@ This extension provides TextMate-based highlighting. A capability-aware language
 - Range operators `..` and `..=`, the lambda body separator `=>`, the return-type / match-arm arrow `->`, the result-propagation operator `?`, and the or-pattern separator `|`.
 - Reserved-for-future-use keywords (`async`, `await`, `yield`, `defer`, `where`, `mut`) are flagged with the `invalid.deprecated.reserved` scope so themes can render them as a warning.
 
+## Snippets
+
+The extension ships a set of code snippets for common Capa constructs.
+Type a prefix and press Tab to expand a skeleton with Tab-navigable
+placeholders. The bodies are indented with four spaces, matching the
+convention used across the examples, so an expansion drops in as valid,
+correctly indented Capa.
+
+Available prefixes:
+
+- `main`: entry point `fun main(stdio: Stdio)` with a `println`.
+- `fun` / `pubfun`: a function (or `pub` function) with parameters and a
+  return type.
+- `lambda`: an inline `fun (x: Int) -> Int => ...` lambda.
+- `struct`: a `type` with fields.
+- `sum`: a `type` with variants.
+- `impl` / `impltrait`: an inherent `impl` block, or `impl Trait for Type`.
+- `trait`: a `trait` declaration.
+- `capability`: a user-defined `capability` declaration.
+- `match`: a `match` expression with arms and a `_` fallback.
+- `ifelif` / `ifelse`: an `if` / `elif` / `else` chain or an `if` / `else`.
+- `for`: a `for ... in` loop.
+- `while`: a `while` loop.
+- `let` / `var`: an immutable or mutable binding.
+- `println` / `print`: writing to stdout through the `Stdio` capability.
+- `security`: a function annotated with a `@security(...)` audit record.
+- `constant_time`: a `@constant_time()` function with a `@secret` parameter.
+- `strict_ifc`: a `@strict_ifc()` entry point.
+
 ## Editing
 
 Capa is indent-sensitive, and the extension ships Python-style automatic
@@ -59,13 +88,12 @@ Or package as a `.vsix`:
 ```bash
 npm install -g @vscode/vsce
 cd vscode && vsce package
-code --install-extension capa-language-0.10.1.vsix
+code --install-extension capa-language-0.11.0.vsix
 ```
 
 ## What's not in this extension yet
 
 - **Bundled LSP client**: the LSP server itself (`python -m capa lsp`) is shipped and delivers diagnostics, hover, go-to-definition, find-references, document symbols, and Quick Fixes. This extension does not yet auto-launch it; you currently wire it up through a generic LSP client extension or in a fork that adds the `vscode-languageclient` dependency. A first-party bundled client is queued.
-- **Snippets** for `fun main(stdio: Stdio)` etc.: would be a small follow-up.
 
 ## Reporting issues
 

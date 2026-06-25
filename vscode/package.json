@@ -2,7 +2,7 @@
     "name": "capa-language",
     "displayName": "Capa Language",
     "description": "Syntax highlighting for the Capa programming language",
-    "version": "0.10.1",
+    "version": "0.11.0",
     "publisher": "nelsonduarte",
     "icon": "icon.png",
     "engines": {
@@ -52,6 +52,12 @@
                 "language": "capa",
                 "scopeName": "source.capa",
                 "path": "./syntaxes/capa.tmLanguage.json"
+            }
+        ],
+        "snippets": [
+            {
+                "language": "capa",
+                "path": "./snippets/capa.json"
             }
         ]
     }

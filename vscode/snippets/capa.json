@@ -1,0 +1,191 @@
+{
+    "Entry point (main with Stdio)": {
+        "prefix": "main",
+        "body": [
+            "fun main(stdio: Stdio)",
+            "    stdio.println(\"${1:Hello, world!}\")$0"
+        ],
+        "description": "Program entry point that takes the Stdio capability"
+    },
+    "Function": {
+        "prefix": "fun",
+        "body": [
+            "fun ${1:name}(${2:arg: Int}) -> ${3:Int}",
+            "    ${0:return arg}"
+        ],
+        "description": "Function definition with parameters and a return type"
+    },
+    "Public function": {
+        "prefix": "pubfun",
+        "body": [
+            "pub fun ${1:name}(${2:arg: Int}) -> ${3:Int}",
+            "    ${0:return arg}"
+        ],
+        "description": "Public (pub) function exported from the module"
+    },
+    "Lambda": {
+        "prefix": "lambda",
+        "body": [
+            "fun (${1:x: Int}) -> ${2:Int} => ${0:x}"
+        ],
+        "description": "Inline lambda expression"
+    },
+    "Struct type": {
+        "prefix": "struct",
+        "body": [
+            "type ${1:Name} {",
+            "    ${2:field}: ${3:Int}$0",
+            "}"
+        ],
+        "description": "Struct type with fields"
+    },
+    "Sum type": {
+        "prefix": "sum",
+        "body": [
+            "type ${1:Name} =",
+            "    ${2:VariantA}",
+            "    ${3:VariantB}$0"
+        ],
+        "description": "Sum type with variants"
+    },
+    "impl block": {
+        "prefix": "impl",
+        "body": [
+            "impl ${1:Type}",
+            "    fun ${2:method}(self) -> ${3:Int}",
+            "        ${0:return self.field}"
+        ],
+        "description": "Inherent impl block with a method"
+    },
+    "impl trait for type": {
+        "prefix": "impltrait",
+        "body": [
+            "impl ${1:Trait} for ${2:Type}",
+            "    fun ${3:method}(self) -> ${4:Int}",
+            "        ${0:return self.field}"
+        ],
+        "description": "Trait implementation for a type"
+    },
+    "Trait": {
+        "prefix": "trait",
+        "body": [
+            "trait ${1:Name}",
+            "    fun ${2:method}(self) -> ${3:Int}$0"
+        ],
+        "description": "Trait declaration"
+    },
+    "Capability": {
+        "prefix": "capability",
+        "body": [
+            "capability ${1:Name}",
+            "    fun ${2:method}(self, ${3:arg: String}) -> ${4:Result<Unit, IoError>}$0"
+        ],
+        "description": "User-defined capability declaration"
+    },
+    "match": {
+        "prefix": "match",
+        "body": [
+            "match ${1:value}",
+            "    ${2:Pattern} -> ${3:result}",
+            "    _ -> ${0:fallback}"
+        ],
+        "description": "match expression with arms"
+    },
+    "if / elif / else": {
+        "prefix": "ifelif",
+        "body": [
+            "if ${1:cond}",
+            "    ${2:body}",
+            "elif ${3:cond}",
+            "    ${4:body}",
+            "else",
+            "    ${0:body}"
+        ],
+        "description": "if / elif / else chain"
+    },
+    "if / else": {
+        "prefix": "ifelse",
+        "body": [
+            "if ${1:cond}",
+            "    ${2:body}",
+            "else",
+            "    ${0:body}"
+        ],
+        "description": "if / else statement"
+    },
+    "for ... in": {
+        "prefix": "for",
+        "body": [
+            "for ${1:item} in ${2:items}",
+            "    ${0:body}"
+        ],
+        "description": "for-in loop over an iterable"
+    },
+    "while": {
+        "prefix": "while",
+        "body": [
+            "while ${1:cond}",
+            "    ${0:body}"
+        ],
+        "description": "while loop"
+    },
+    "let binding": {
+        "prefix": "let",
+        "body": [
+            "let ${1:name} = ${0:value}"
+        ],
+        "description": "Immutable let binding"
+    },
+    "var binding": {
+        "prefix": "var",
+        "body": [
+            "var ${1:name} = ${0:value}"
+        ],
+        "description": "Mutable var binding"
+    },
+    "println": {
+        "prefix": "println",
+        "body": [
+            "stdio.println(\"${0:message}\")"
+        ],
+        "description": "Print a line to stdout via the Stdio capability"
+    },
+    "print": {
+        "prefix": "print",
+        "body": [
+            "stdio.print(\"${0:message}\")"
+        ],
+        "description": "Print to stdout (no newline) via the Stdio capability"
+    },
+    "@security attribute": {
+        "prefix": "security",
+        "body": [
+            "@security(",
+            "    cve: \"${1:CVE-0000-0000}\",",
+            "    severity: \"${2:medium}\",",
+            "    description: \"${3:what the issue was and how it was fixed}\"",
+            ")",
+            "fun ${4:name}(${5:arg: String}) -> ${6:Bool}",
+            "    ${0:return true}"
+        ],
+        "description": "Function annotated with a @security audit record"
+    },
+    "@constant_time function": {
+        "prefix": "constant_time",
+        "body": [
+            "@constant_time()",
+            "fun ${1:name}(${2:secret}: @secret ${3:Int}, ${4:other}: ${5:Int}) -> ${6:Bool}",
+            "    ${0:return false}"
+        ],
+        "description": "Constant-time function: must not branch on a @secret value"
+    },
+    "@strict_ifc main": {
+        "prefix": "strict_ifc",
+        "body": [
+            "@strict_ifc()",
+            "fun main(stdio: Stdio${1:, env: Env})",
+            "    ${0:body}"
+        ],
+        "description": "Entry point under the strict information-flow regime"
+    }
+}
