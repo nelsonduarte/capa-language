@@ -68,22 +68,39 @@ over stdio; there is no socket or port to configure.
 
 ### Requirements
 
-The server runs as a Python process, so the client needs:
+The server ships with the Capa compiler. There are two supported ways to
+provide it:
 
-- Python >=3.10 available to the configured launch command.
-- The `capa` package with its language-server extra installed:
-  `pip install "capa[lsp]"`. This pulls in `pygls`, which the server
-  requires. If `pygls` is missing the server exits immediately and the
-  extension shows a message telling you to run that command.
+- Standalone binary (>= compiler v1.12.0): the `capa` binary installed via
+  `install.sh` / `install.ps1` serves the LSP out of the box. It bundles
+  everything the server needs (including `pygls`), so no extra `pip` step
+  is required. The extension auto-detects this binary on PATH (see below).
+- Pip install of the compiler: the server runs as a Python process under
+  `python -m capa lsp`. This requires Python >=3.10 and the
+  language-server extra: `pip install "capa[lsp]"`. The extra pulls in
+  `pygls`, which the server requires. If `pygls` is missing the server
+  exits immediately and the extension shows a message telling you to run
+  that command.
 
-The standalone (PyInstaller) Capa binary does not yet serve the LSP,
-because it does not bundle `pygls`; point the client at a Python
-interpreter with `capa[lsp]` installed instead.
+### Server auto-detection
 
-If the launch command cannot run (Python not found, wrong command) or the
-server keeps stopping, the extension reports it and stays out of the way:
-syntax highlighting, snippets, and indentation keep working without the
-server.
+By default the `capa.languageServer.command` setting is empty, which means
+"auto-detect". When it is empty the extension resolves the launch command
+itself: it looks for a `capa` executable on PATH (`capa.exe` and the
+PATHEXT variants on Windows) and, if one is found, launches `capa lsp`.
+When no `capa` binary is on PATH it falls back to `python -m capa lsp`.
+
+Detection is deterministic: the extension resolves the executable's
+presence on PATH and does not spawn any probe process. Setting the command
+to an explicit argument vector (in any settings scope) overrides
+auto-detection and is always used verbatim.
+
+If the resolved command cannot run (binary or Python not found, wrong
+command) or the server keeps stopping, the extension reports it and stays
+out of the way: syntax highlighting, snippets, and indentation keep working
+without the server. When the Python fallback exits because `pygls` is
+missing (exit code 2), the message is specific and offers to copy the
+install command.
 
 ### Settings
 
@@ -92,12 +109,14 @@ All settings live under the `capa.` prefix:
 - `capa.languageServer.enabled` (boolean, default `true`): turn the
   language server client on or off. With it off, only highlighting,
   snippets, and indentation remain.
-- `capa.languageServer.command` (string array, default
-  `["python", "-m", "capa", "lsp"]`): the command used to launch the
-  server, as an argument vector (first item is the executable). On systems
-  where the interpreter is named `python3`, set the first item to
-  `python3`. If you installed the `capa` console script you can also use
-  `["capa", "lsp"]`.
+- `capa.languageServer.command` (string array, default `[]`): the command
+  used to launch the server, as an argument vector (first item is the
+  executable). The empty default means auto-detect (prefer the `capa`
+  binary on PATH, otherwise `python -m capa lsp`); see
+  [Server auto-detection](#server-auto-detection). Set an explicit vector
+  to override, for example `["capa", "lsp"]` to force the binary, or
+  `["python3", "-m", "capa", "lsp"]` where the interpreter is named
+  `python3`.
 - `capa.languageServer.capaPath` (string array, default `[]`): extra
   directories the server searches when resolving Capa imports, passed as
   the `CAPA_PATH` environment variable (joined with the platform path
@@ -108,7 +127,8 @@ Changing any of these restarts the client automatically.
 ### Commands
 
 - `Capa: Restart Language Server`: restarts the client (use this after
-  installing `capa[lsp]` or fixing the launch command).
+  installing the `capa` binary, installing `capa[lsp]`, or fixing the
+  launch command).
 - `Capa: Show Language Server Output`: opens the output channel where the
   server's logs and stderr appear.
 
@@ -147,7 +167,7 @@ that is bundled with esbuild, so install the dev dependencies and let
 cd vscode
 npm install
 npx @vscode/vsce package --no-dependencies
-code --install-extension capa-language-0.12.0.vsix
+code --install-extension capa-language-0.13.0.vsix
 ```
 
 `npm run bundle` produces `dist/extension.js` (the entry point named by

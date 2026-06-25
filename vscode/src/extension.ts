@@ -1,4 +1,6 @@
 import * as vscode from "vscode";
+import * as fs from "fs";
+import * as path from "path";
 import {
     CloseAction,
     ErrorAction,
@@ -28,15 +30,99 @@ interface ServerConfig {
     capaPath: string[];
 }
 
+// The fallback launch command when auto-detection cannot find the `capa`
+// binary on PATH. This is the historical default for the setting.
+const PYTHON_FALLBACK_COMMAND = ["python", "-m", "capa", "lsp"];
+
 function readConfig(): ServerConfig {
     const cfg = vscode.workspace.getConfiguration("capa.languageServer");
-    const command = cfg.get<string[]>("command", ["python", "-m", "capa", "lsp"]);
+    const command = resolveCommand(cfg);
     const capaPath = cfg.get<string[]>("capaPath", []);
     return {
         enabled: cfg.get<boolean>("enabled", true),
-        command: Array.isArray(command) ? command : [],
+        command,
         capaPath: Array.isArray(capaPath) ? capaPath : [],
     };
+}
+
+// Resolve the launch command. A command explicitly configured by the user
+// (in any settings scope) is always respected verbatim. When the user has
+// not configured one, the setting is left at its default empty array, which
+// means "auto-detect": prefer the `capa` binary on PATH (which serves the
+// LSP since the v1.12.0 standalone build) and fall back to the Python module
+// invocation otherwise.
+function resolveCommand(cfg: vscode.WorkspaceConfiguration): string[] {
+    const inspected = cfg.inspect<string[]>("command");
+    const userValue =
+        inspected?.workspaceFolderValue ??
+        inspected?.workspaceValue ??
+        inspected?.globalValue;
+    if (Array.isArray(userValue) && userValue.length > 0) {
+        return userValue;
+    }
+    // Not configured (or configured to an empty array, which also means
+    // auto-detect): pick the best available launch command.
+    return autoDetectCommand();
+}
+
+function autoDetectCommand(): string[] {
+    const capa = findCapaBinary();
+    if (capa) {
+        return [capa, "lsp"];
+    }
+    return [...PYTHON_FALLBACK_COMMAND];
+}
+
+// Deterministically resolve the `capa` executable on PATH without spawning
+// any test process. On Windows the executable is `capa.exe` (and PATHEXT
+// variants); elsewhere it is `capa`. Returns the absolute path of the first
+// match, or undefined if none is on PATH.
+function findCapaBinary(): string | undefined {
+    const pathVar = process.env.PATH ?? process.env.Path ?? "";
+    if (!pathVar) {
+        return undefined;
+    }
+    const dirs = pathVar.split(path.delimiter).filter((d) => d.length > 0);
+    const candidates =
+        process.platform === "win32"
+            ? executableNames(["capa"])
+            : ["capa"];
+    for (const dir of dirs) {
+        for (const name of candidates) {
+            const full = path.join(dir, name);
+            if (isExecutableFile(full)) {
+                return full;
+            }
+        }
+    }
+    return undefined;
+}
+
+// On Windows, expand a base name with the executable extensions from
+// PATHEXT (uppercased and lowercased), defaulting to the common set.
+function executableNames(bases: string[]): string[] {
+    const pathext = process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD";
+    const exts = pathext
+        .split(";")
+        .map((e) => e.trim())
+        .filter((e) => e.length > 0);
+    const names: string[] = [];
+    for (const base of bases) {
+        for (const ext of exts) {
+            names.push(base + ext.toLowerCase());
+            names.push(base + ext.toUpperCase());
+        }
+    }
+    return names;
+}
+
+function isExecutableFile(full: string): boolean {
+    try {
+        const stat = fs.statSync(full);
+        return stat.isFile();
+    } catch {
+        return false;
+    }
 }
 
 function getOutputChannel(): vscode.OutputChannel {

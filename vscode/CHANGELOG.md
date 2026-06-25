@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.13.0
+
+- Server auto-detection. The `capa.languageServer.command` setting now
+  defaults to an empty array, which means "auto-detect". When it is empty
+  the extension resolves the launch command itself: it prefers a `capa`
+  binary on PATH (the standalone build serves the LSP out of the box since
+  compiler v1.12.0) and falls back to `python -m capa lsp` when no `capa`
+  binary is found. Detection is deterministic, resolving the executable's
+  presence on PATH (`capa.exe` plus the PATHEXT variants on Windows,
+  `capa` elsewhere) without spawning a probe process. An explicit command
+  configured in any settings scope is always respected verbatim and
+  overrides auto-detection. Users who previously relied on the old default
+  now get auto-detection; users who set their own command are unaffected.
+- Graceful degradation is unchanged: a command that cannot run, a server
+  that keeps stopping, and the missing-`pygls` exit (code 2) on the Python
+  fallback all still produce specific messages and keep highlighting,
+  snippets, and indentation working. The restart cap still applies.
+- Documentation. The README now states accurately that the standalone
+  binary (>= compiler v1.12.0) serves the LSP without an extra `pip` step,
+  that a pip install of the compiler needs the `capa[lsp]` extra, and
+  describes the new auto-detection.
+- Build: bumped the `esbuild` devDependency to the 0.28 line, clearing the
+  moderate dev-server advisory on esbuild <=0.24.2. esbuild is a
+  build-time bundler only; it is not distributed in the `.vsix`. The
+  bundle and type-check still pass and the packaged `.vsix` is unchanged in
+  shape (bundle plus grammar, snippets, language configuration, and icons).
+
 ## 0.12.0
 
 - Bundled language server client. The extension now ships a TypeScript
