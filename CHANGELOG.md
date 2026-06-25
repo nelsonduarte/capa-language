@@ -9,6 +9,11 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+## [1.11.3], 2026-06-24
+
+**Capa 1.11.3.** A PATCH release with one analyzer fix and routine
+maintenance.
+
 **Maintenance.**
 
 - *A nested struct-pattern in a `let`/`for` is now rejected at check
