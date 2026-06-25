@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.11.1
+
+- Added import snippets, completing the snippet set. Three prefixes cover
+  every import form the grammar accepts: `import` for a plain
+  `import module`, `importas` for `import module as alias`, and
+  `importfrom` for a selective `import module (name as alias)`. The
+  syntactic form matches the parser and the formatter's canonical output.
+  Unlike the other snippets, an import skeleton uses a placeholder module
+  name that does not resolve on its own, so its expansion is not expected
+  to pass `capa --check` in isolation; it is a skeleton to fill in inside
+  a real file.
+
 ## 0.11.0
 
 - Code snippets for common Capa constructs, contributed through

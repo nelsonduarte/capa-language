@@ -27,6 +27,9 @@ correctly indented Capa.
 
 Available prefixes:
 
+- `import` / `importas` / `importfrom`: a plain `import module`, an
+  aliased `import module as alias`, or a selective
+  `import module (name as alias)`.
 - `main`: entry point `fun main(stdio: Stdio)` with a `println`.
 - `fun` / `pubfun`: a function (or `pub` function) with parameters and a
   return type.
