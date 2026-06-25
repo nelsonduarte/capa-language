@@ -209,12 +209,53 @@ class _StatementsMixin:
             # @_capa_wrap unless something else in the function
             # still needs it.
             tmp = self._emit_try_check(s.value.expr)
+            if isinstance(s.pattern, A.StructPat):
+                self._emit_struct_destructure(s.pattern, f"{tmp}.value")
+                return
             target = self._emit_pattern_lvalue(s.pattern)
             self.em.write(f"{target} = {tmp}.value")
             return
         value = self._emit_expr(s.value)
+        if isinstance(s.pattern, A.StructPat):
+            # ``let Point { x, y } = p``: struct destructuring has no
+            # single Python l-value form, so bind each field
+            # explicitly off the value (hoisting it to a temp first if
+            # it is not already a simple name, so a side-effecting RHS
+            # runs once).
+            self._emit_struct_destructure(s.pattern, value)
+            return
         target = self._emit_pattern_lvalue(s.pattern)
         self.em.write(f"{target} = {value}")
+
+    def _emit_struct_destructure(self, p: A.StructPat, value_code: str) -> None:
+        """Bind each named field of a struct pattern off ``value_code``.
+
+        ``let Point { x, y } = p`` becomes ``x = p.x`` / ``y = p.y``;
+        the rename form ``Point { x: a }`` binds ``a = p.x``; an
+        explicit wildcard ``Point { x: _ }`` reads and binds nothing.
+        When ``value_code`` is not a bare name it is hoisted to a temp
+        first so a side-effecting receiver is evaluated exactly once.
+        """
+        from . import _safe_ident
+        recv = value_code
+        if not value_code.isidentifier():
+            recv = f"__capa_struct_{self._tmp_counter}"
+            self._tmp_counter += 1
+            self.em.write(f"{recv} = {value_code}")
+        for fname, fpat in p.fields:
+            if isinstance(fpat, A.WildcardPat):
+                continue
+            if fpat is None:
+                bind_name = _safe_ident(fname)
+            elif isinstance(fpat, A.IdentPat):
+                bind_name = _safe_ident(fpat.name)
+            else:
+                from . import TranspilerError
+                raise TranspilerError(
+                    "nested struct-pattern in let/for not supported: "
+                    f"{type(fpat).__name__}"
+                )
+            self.em.write(f"{bind_name} = {recv}.{_safe_ident(fname)}")
 
     def _emit_pattern_lvalue(self, p: A.Pattern) -> str:
         """Emits a pattern as an assignment target (let/for).
@@ -265,7 +306,18 @@ class _StatementsMixin:
         self.em.dedent()
 
     def _emit_for(self, s: A.ForStmt) -> None:
-        target = self._emit_pattern_lvalue(s.pattern)
+        # Struct-destructuring for-pattern (``for P { a, b } in xs``):
+        # the loop binds each element to a temp, then the field
+        # bindings are emitted as the first statements of the body so
+        # they run once per iteration with the components in scope.
+        # This mirrors the tuple form, which Python expresses directly
+        # as a tuple l-value, but a struct has no such l-value form.
+        struct_pat = s.pattern if isinstance(s.pattern, A.StructPat) else None
+        if struct_pat is not None:
+            target = f"__capa_forelem_{self._tmp_counter}"
+            self._tmp_counter += 1
+        else:
+            target = self._emit_pattern_lvalue(s.pattern)
         # Special case: `for x in a..b` and `for x in a..=b` iterate
         # over Python's lazy `range()` directly, without materialising
         # a CapaList. A bare RangeExpr in this position is the common
@@ -283,6 +335,11 @@ class _StatementsMixin:
             iter_code = self._emit_expr(s.iter)
             self.em.write(f"for {target} in {iter_code}:")
         self.em.indent()
+        if struct_pat is not None:
+            # ``target`` is already a bare name (the forelem temp), so
+            # the destructure binds fields directly off it without an
+            # extra hoist.
+            self._emit_struct_destructure(struct_pat, target)
         self._emit_block_body(s.body)
         self.em.dedent()
 

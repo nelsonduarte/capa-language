@@ -147,6 +147,17 @@ class Lowerer(
         # this list mirrors its payloadless rows.
         for v_name in ("None", "JNull"):
             self._payloadless_variants.add(v_name)
+        # Pre-scan struct declarations so struct-destructuring let/for
+        # patterns can resolve each bound field's type (``let Point {
+        # x, y } = p`` binds ``x`` / ``y`` at the struct's declared
+        # field types, mirroring how the tuple path threads element
+        # types). Keyed by struct name -> {field name -> type string}.
+        self._struct_field_types: dict[str, dict[str, str]] = {}
+        for item in module.items:
+            if isinstance(item, A.TypeStruct):
+                self._struct_field_types[item.name] = {
+                    f.name: _type_name(f.type_expr) for f in item.fields
+                }
         for item in module.items:
             if isinstance(item, A.TypeSum):
                 for v in item.variants:

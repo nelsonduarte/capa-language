@@ -5463,5 +5463,177 @@ class TestIntMinLiteralParity(unittest.TestCase):
         self.assertNotIsInstance(ctx.exception, OverflowError)
 
 
+@unittest.skipUnless(
+    _has_wasm_tools() and _has_wasmtime_py(),
+    "wasm-tools and/or wasmtime-py not installed",
+)
+class TestStructDestructureLetForParity(unittest.TestCase):
+    """Struct destructuring in ``let`` and ``for`` bindings.
+
+    ``let Point { x, y } = p`` and ``for P { a, b } in xs`` used to
+    pass ``capa --check`` but raise ``TranspilerError: complex pattern
+    in let/for not yet supported: StructPat`` at run time (and were
+    rejected by the IR lowerer too). These pin the now-supported forms
+    and keep the two backends bit-identical.
+    """
+
+    def _assert_src_parity(self, src: str, expect: str | None = None) -> None:
+        py_out = _capture_stdout(lambda: _run_python(src))
+        wasm_out = _capture_stdout(lambda: _run_wasm(src))
+        self.assertEqual(
+            py_out, wasm_out,
+            msg=(
+                f"Python/Wasm output divergence.\n"
+                f"--- python ---\n{py_out}\n"
+                f"--- wasm ---\n{wasm_out}"
+            ),
+        )
+        if expect is not None:
+            self.assertEqual(py_out, expect)
+
+    def test_book_idiom_let_struct_destructure(self):
+        # The exact Chapter 7 teaching idiom from the bug report.
+        src = (
+            "type Point { x: Int, y: Int }\n"
+            "\n"
+            "fun main(stdio: Stdio)\n"
+            "    let p = Point { x: 3, y: 4 }\n"
+            "    let Point { x, y } = p\n"
+            '    stdio.println("${x + y}")\n'
+        )
+        self._assert_src_parity(src, expect="7\n")
+
+    def test_let_struct_multi_field_types(self):
+        # Mixed field types (String / Int / Bool) bound positionally
+        # by name; all three components must round-trip.
+        src = (
+            "type Named { label: String, value: Int, flag: Bool }\n"
+            "\n"
+            "fun main(stdio: Stdio)\n"
+            '    let n = Named { label: "hi", value: 10, flag: true }\n'
+            "    let Named { label, value, flag } = n\n"
+            '    stdio.println("${label} ${value} ${flag}")\n'
+        )
+        self._assert_src_parity(src, expect="hi 10 true\n")
+
+    def test_let_struct_field_rename(self):
+        # ``Named { value: v, label: l }`` binds the renamed locals and
+        # tolerates fields in a different order than the declaration.
+        src = (
+            "type Named { label: String, value: Int, flag: Bool }\n"
+            "\n"
+            "fun main(stdio: Stdio)\n"
+            '    let n = Named { label: "hi", value: 10, flag: true }\n'
+            "    let Named { value: v, label: l } = n\n"
+            '    stdio.println("${l} ${v}")\n'
+        )
+        self._assert_src_parity(src, expect="hi 10\n")
+
+    def test_let_struct_partial_fields(self):
+        # Only one field listed: the others are simply not bound.
+        src = (
+            "type Point { x: Int, y: Int }\n"
+            "\n"
+            "fun main(stdio: Stdio)\n"
+            "    let p = Point { x: 9, y: 4 }\n"
+            "    let Point { y } = p\n"
+            '    stdio.println("${y}")\n'
+        )
+        self._assert_src_parity(src, expect="4\n")
+
+    def test_let_struct_wildcard_subpattern(self):
+        # ``Point { x: _, y }`` reads and binds nothing for x.
+        src = (
+            "type Point { x: Int, y: Int }\n"
+            "\n"
+            "fun main(stdio: Stdio)\n"
+            "    let p = Point { x: 9, y: 4 }\n"
+            "    let Point { x: _, y } = p\n"
+            '    stdio.println("${y}")\n'
+        )
+        self._assert_src_parity(src, expect="4\n")
+
+    def test_let_nested_struct_in_struct(self):
+        # A struct field is itself a struct; destructure both levels.
+        src = (
+            "type Point { x: Int, y: Int }\n"
+            "type Wrap { p: Point, tag: String }\n"
+            "\n"
+            "fun main(stdio: Stdio)\n"
+            "    let w = Wrap { p: Point { x: 1, y: 2 }, tag: \"outer\" }\n"
+            "    let Wrap { p: inner, tag } = w\n"
+            "    let Point { x: ix, y: iy } = inner\n"
+            '    stdio.println("${tag} ${ix} ${iy}")\n'
+        )
+        self._assert_src_parity(src, expect="outer 1 2\n")
+
+    def test_for_struct_destructure_over_list(self):
+        # ``for Point { x, y } in pts`` binds each element's fields per
+        # iteration and accumulates.
+        src = (
+            "type Point { x: Int, y: Int }\n"
+            "\n"
+            "fun main(stdio: Stdio)\n"
+            "    let pts = [Point { x: 1, y: 1 }, Point { x: 2, y: 3 }, "
+            "Point { x: 5, y: 8 }]\n"
+            "    var total = 0\n"
+            "    for Point { x, y } in pts\n"
+            "        total += x + y\n"
+            '    stdio.println("${total}")\n'
+        )
+        self._assert_src_parity(src, expect="20\n")
+
+    def test_for_struct_destructure_mixed_field_types(self):
+        # for-loop struct destructure with String / Int / Bool fields.
+        src = (
+            "type Named { label: String, value: Int, flag: Bool }\n"
+            "\n"
+            "fun main(stdio: Stdio)\n"
+            '    let xs = [Named { label: "a", value: 1, flag: false }, '
+            'Named { label: "b", value: 2, flag: true }]\n'
+            "    for Named { label, value, flag } in xs\n"
+            '        stdio.println("${label}=${value} ${flag}")\n'
+        )
+        self._assert_src_parity(src, expect="a=1 false\nb=2 true\n")
+
+    def test_for_struct_destructure_wildcard_subpattern(self):
+        # ``for Point { x, y: _ } in pts``: bind x, drop y.
+        src = (
+            "type Point { x: Int, y: Int }\n"
+            "\n"
+            "fun main(stdio: Stdio)\n"
+            "    let pts = [Point { x: 1, y: 2 }, Point { x: 3, y: 4 }]\n"
+            "    for Point { x, y: _ } in pts\n"
+            '        stdio.println("${x}")\n'
+        )
+        self._assert_src_parity(src, expect="1\n3\n")
+
+    def test_tuple_destructure_still_works(self):
+        # Non-regression: the tuple let/for path must be unchanged.
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    let pair = (3, 4)\n"
+            "    let (a, b) = pair\n"
+            '    stdio.println("${a + b}")\n'
+            "    let pairs = [(1, 2), (3, 4)]\n"
+            "    for (x, y) in pairs\n"
+            '        stdio.println("${x * y}")\n'
+        )
+        self._assert_src_parity(src, expect="7\n2\n12\n")
+
+    def test_match_struct_pattern_still_works(self):
+        # Non-regression: struct destructuring inside ``match`` (which
+        # always worked) must be unchanged.
+        src = (
+            "type Point { x: Int, y: Int }\n"
+            "\n"
+            "fun main(stdio: Stdio)\n"
+            "    let p = Point { x: 3, y: 4 }\n"
+            "    match p\n"
+            '        Point { x, y } -> stdio.println("${x + y}")\n'
+        )
+        self._assert_src_parity(src, expect="7\n")
+
+
 if __name__ == "__main__":
     unittest.main()

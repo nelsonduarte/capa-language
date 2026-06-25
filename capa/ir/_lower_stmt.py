@@ -124,6 +124,38 @@ class _LowerStmtMixin:
                     Index(dst=bound, receiver=value, index=idx_v)
                 )
             return
+        if isinstance(s.pattern, A.StructPat):
+            # ``let Point { x, y } = p`` binds each named field to a
+            # local read off the struct value. This mirrors the tuple
+            # path but reads fields by name (FieldAccess) rather than by
+            # position (Index); both backends already lower FieldAccess
+            # for ``p.x``, so no IR-node or emitter change is needed.
+            value = self._lower_expr(s.value)
+            field_types = self._struct_field_types.get(s.pattern.type_name, {})
+            elem_v = value
+            for fname, fpat in s.pattern.fields:
+                # ``let Point { x: _ } = p``: an explicit wildcard
+                # sub-pattern reads nothing and binds nothing.
+                if isinstance(fpat, A.WildcardPat):
+                    continue
+                # Only shorthand (``x``) and rename-to-ident
+                # (``x: a``) are supported here; nested destructuring
+                # in a let struct-pattern is rejected loudly, matching
+                # the tuple path's nested-pattern guard.
+                if fpat is None:
+                    bind_name = fname
+                elif isinstance(fpat, A.IdentPat):
+                    bind_name = fpat.name
+                else:
+                    raise UnsupportedInIR(
+                        f"nested let struct-pattern {type(fpat).__name__}"
+                    )
+                bind_ty = field_types.get(fname, "Unknown")
+                bound = self._bind_local(bind_name, bind_ty)
+                self._instrs.append(
+                    FieldAccess(dst=bound, receiver=elem_v, field=fname)
+                )
+            return
         raise UnsupportedInIR(
             f"let-pattern {type(s.pattern).__name__}"
         )
@@ -337,14 +369,15 @@ class _LowerStmtMixin:
         )
 
     def _lower_for(self, s: A.ForStmt) -> None:
-        # Three for-pattern shapes are supported: a single ``IdentPat``
+        # Four for-pattern shapes are supported: a single ``IdentPat``
         # (``for x in xs``), a wildcard ``WildcardPat`` (``for _ in xs``)
-        # that iterates without binding a visible name, and a
-        # ``TuplePat`` (``for (a, b) in pairs``) that destructures each
-        # element positionally. Any other pattern shape is rejected
-        # loudly rather than miscompiled.
+        # that iterates without binding a visible name, a ``TuplePat``
+        # (``for (a, b) in pairs``) that destructures each element
+        # positionally, and a ``StructPat`` (``for P { a, b } in xs``)
+        # that destructures each struct element by field name. Any other
+        # pattern shape is rejected loudly rather than miscompiled.
         if not isinstance(
-            s.pattern, (A.IdentPat, A.WildcardPat, A.TuplePat)
+            s.pattern, (A.IdentPat, A.WildcardPat, A.TuplePat, A.StructPat)
         ):
             raise UnsupportedInIR(
                 f"for-pattern {type(s.pattern).__name__}"
@@ -403,6 +436,36 @@ class _LowerStmtMixin:
             bound = fresh_local(self._counter, prefix="wildfor")
             self._locals[bound] = bind_ty
             destructure = []
+        elif isinstance(s.pattern, A.StructPat):
+            # Struct-destructuring for-pattern. Bind each iteration's
+            # element to a fresh temporary carrying the struct type,
+            # then read the named fields off it (FieldAccess) into the
+            # bound locals. Mirrors the tuple branch below, swapping the
+            # positional Index for a by-name FieldAccess; both backends
+            # already lower FieldAccess for ``p.x``.
+            bound = fresh_local(self._counter, prefix="forelem")
+            self._locals[bound] = bind_ty
+            field_types = self._struct_field_types.get(
+                s.pattern.type_name, {}
+            )
+            elem_v = Value(kind="local", name=bound, ty=bind_ty)
+            destructure = []
+            for fname, fpat in s.pattern.fields:
+                if isinstance(fpat, A.WildcardPat):
+                    continue
+                if fpat is None:
+                    bind_name = fname
+                elif isinstance(fpat, A.IdentPat):
+                    bind_name = fpat.name
+                else:
+                    raise UnsupportedInIR(
+                        f"nested for struct-pattern {type(fpat).__name__}"
+                    )
+                sub_ty = field_types.get(fname, "Unknown")
+                sub_bound = self._bind_local(bind_name, sub_ty)
+                destructure.append(
+                    FieldAccess(dst=sub_bound, receiver=elem_v, field=fname)
+                )
         else:
             # Tuple-destructuring for-pattern. Bind each iteration's
             # element to a fresh temporary carrying the tuple type,
