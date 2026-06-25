@@ -9,6 +9,11 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+## [1.12.0], 2026-06-25
+
+**Capa 1.12.0.** A MINOR release: the pre-built standalone binary now
+serves the LSP (pygls bundled).
+
 **Changed.**
 
 - *The pre-built standalone binary now bundles the language server, so
