@@ -2,7 +2,7 @@
     "name": "capa-language",
     "displayName": "Capa Language",
     "description": "Syntax highlighting for the Capa programming language",
-    "version": "0.10.0",
+    "version": "0.10.1",
     "publisher": "nelsonduarte",
     "icon": "icon.png",
     "engines": {

@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.10.1
+
+- Documentation refresh. The README now describes the Python-style
+  automatic indentation shipped in 0.10.0 (previously it still listed
+  "better indentation rules" as not-yet-implemented and told users to
+  indent with Tab and Shift-Tab). Added a short "Editing" section
+  describing what the indent rule does, documented the `->` arrow as a
+  highlighted operator (it was already in the grammar but unlisted), and
+  updated the example `.vsix` filename to the current version. No grammar
+  or behaviour changes.
+
 ## 0.10.0
 
 - Python-style automatic indentation. Pressing Enter after a block header

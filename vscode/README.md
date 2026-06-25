@@ -14,8 +14,18 @@ This extension provides TextMate-based highlighting. A capability-aware language
 - Built-in variant constructors (`Some`, `None`, `Ok`, `Err`, and the `JsonValue` variants).
 - Built-in functions (`parse_int`, `parse_float`, `to_int`, `to_float`, `new_map`, `new_set`, `parse_json`, `to_json`, `py_import`, `py_invoke`, `declassify`).
 - Integer (decimal, hex, octal, binary), float, and string literals, with proper handling of `${...}` interpolation (the interpolated expression is highlighted recursively).
-- Range operators `..` and `..=`, the lambda body separator `=>`, the result-propagation operator `?`, and the or-pattern separator `|`.
+- Range operators `..` and `..=`, the lambda body separator `=>`, the return-type / match-arm arrow `->`, the result-propagation operator `?`, and the or-pattern separator `|`.
 - Reserved-for-future-use keywords (`async`, `await`, `yield`, `defer`, `where`, `mut`) are flagged with the `invalid.deprecated.reserved` scope so themes can render them as a warning.
+
+## Editing
+
+Capa is indent-sensitive, and the extension ships Python-style automatic
+indentation. Pressing Enter after a block header (a named `fun` definition,
+a `type` opener, `impl` / `trait` / `capability` / `typestate` / `linear`,
+or an `if` / `elif` / `else` / `while` / `for` / `match` statement) indents
+the next line. One-line `if ... then ... else` expressions and inline `=>`
+lambdas (which carry their body on the same line) do not trigger an indent,
+and `else` / `elif` are dedented back to their `if`.
 
 ## Install
 
@@ -49,14 +59,13 @@ Or package as a `.vsix`:
 ```bash
 npm install -g @vscode/vsce
 cd vscode && vsce package
-code --install-extension capa-language-0.8.0.vsix
+code --install-extension capa-language-0.10.1.vsix
 ```
 
 ## What's not in this extension yet
 
 - **Bundled LSP client**: the LSP server itself (`python -m capa lsp`) is shipped and delivers diagnostics, hover, go-to-definition, find-references, document symbols, and Quick Fixes. This extension does not yet auto-launch it; you currently wire it up through a generic LSP client extension or in a fork that adds the `vscode-languageclient` dependency. A first-party bundled client is queued.
 - **Snippets** for `fun main(stdio: Stdio)` etc.: would be a small follow-up.
-- **Better indentation rules**: Capa is indent-sensitive, but the auto-indent heuristics here are minimal. Use Tab and Shift-Tab explicitly.
 
 ## Reporting issues
 
