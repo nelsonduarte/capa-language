@@ -757,60 +757,17 @@ class _ExpressionsMixin:
         return "(" + " + ".join(pieces) + ")"
 
     def _emit_string_lit(self, value: str) -> str:
-        """Converts a Capa literal to Python.
+        """Converts a plain Capa ``StringLit`` to Python via ``repr``.
 
-        If the literal contains ``${expr}``, emits a ``str(...) +
-        repr(...)`` concatenation (see ``_emit_interpolated_string``
-        for why we avoid f-strings: a nested string inside ``${...}``
-        would otherwise produce PEP 701 syntax that only parses on
-        Python >= 3.12). Otherwise, emits with ``repr``.
-
-        ``$$`` escapes a literal ``$``.
+        Strings containing ``${...}`` never reach here: the parser's
+        ``_build_string_lit`` routes any value with ``${`` to an
+        ``InterpolatedString`` node, which is emitted by
+        ``_emit_interpolated_string`` (the only place that handles the
+        Bool/Display formatting rules). The assertion below pins that
+        invariant so a future parser change cannot silently diverge.
         """
-        from . import TranspilerError
-        if "${" not in value:
-            return repr(value)
-        # Split into literal-text runs and ``${expr}`` fields, then
-        # join with ``+``. Literal runs go through ``repr``; fields are
-        # wrapped in ``str(...)``.
-        pieces: list[str] = []
-        literal: list[str] = []
-
-        def flush_literal() -> None:
-            if literal:
-                pieces.append(repr("".join(literal)))
-                literal.clear()
-
-        i = 0
-        while i < len(value):
-            c = value[i]
-            if c == "$" and i + 1 < len(value) and value[i + 1] == "$":
-                literal.append("$")
-                i += 2
-                continue
-            if c == "$" and i + 1 < len(value) and value[i + 1] == "{":
-                # Find the matching `}`.
-                depth = 1
-                j = i + 2
-                while j < len(value) and depth > 0:
-                    if value[j] == "{":
-                        depth += 1
-                    elif value[j] == "}":
-                        depth -= 1
-                    if depth > 0:
-                        j += 1
-                if depth != 0:
-                    raise TranspilerError(
-                        f"unterminated interpolation in string literal: {value!r}"
-                    )
-                expr_text = value[i + 2 : j]
-                flush_literal()
-                pieces.append(f"str({expr_text})")
-                i = j + 1
-                continue
-            literal.append(c)
-            i += 1
-        flush_literal()
-        if not pieces:
-            return "''"
-        return "(" + " + ".join(pieces) + ")"
+        assert "${" not in value, (
+            "interpolated strings must go through InterpolatedString / "
+            "_emit_interpolated_string, not _emit_string_lit"
+        )
+        return repr(value)

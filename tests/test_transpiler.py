@@ -301,6 +301,64 @@ class TestNestedStringInterpolation(unittest.TestCase):
             Lexer(src).lex()
 
 
+class TestStringLitInterpolationInvariant(unittest.TestCase):
+    """fix/polish-followups: the transpiler's ``_emit_string_lit`` only
+    ever sees plain ``StringLit`` values, never ones carrying ``${``.
+    The parser's ``_build_string_lit`` routes any ``${``-bearing string
+    to an ``InterpolatedString`` node (emitted by
+    ``_emit_interpolated_string``, the only place that applies the
+    Bool/Display formatting rules). The old ``${`` branch inside
+    ``_emit_string_lit`` was dead code that silently lacked those rules;
+    it is now a single ``assert`` pinning the invariant.
+    """
+
+    def test_parser_never_makes_stringlit_with_interp(self):
+        from capa import Parser
+        import capa.capa_ast as A
+
+        src = (
+            'fun main(stdio: Stdio)\n'
+            '    let x: Int = 5\n'
+            '    stdio.println("a ${x} b")\n'
+            '    stdio.println("no interp here")\n'
+        )
+        module = Parser(Lexer(src).lex(), source=src).parse_module()
+
+        def walk(node):
+            yield node
+            for v in vars(node).values() if hasattr(node, "__dict__") else []:
+                items = v if isinstance(v, (list, tuple)) else [v]
+                for it in items:
+                    if isinstance(it, A.Node):
+                        yield from walk(it)
+                    elif isinstance(it, (list, tuple)):
+                        for inner in it:
+                            if isinstance(inner, A.Node):
+                                yield from walk(inner)
+
+        string_lits = [
+            n for n in walk(module) if isinstance(n, A.StringLit)
+        ]
+        self.assertTrue(string_lits)  # at least the plain one
+        for lit in string_lits:
+            self.assertNotIn("${", lit.value)
+
+    def test_emit_string_lit_asserts_on_interp(self):
+        # The invariant is enforced, not silently mishandled: feeding a
+        # ``${``-bearing value directly trips the assertion.
+        from capa.transpiler import Transpiler
+
+        t = Transpiler()
+        with self.assertRaises(AssertionError):
+            t._emit_string_lit("a ${x} b")
+
+    def test_plain_string_lit_emits_repr(self):
+        from capa.transpiler import Transpiler
+
+        t = Transpiler()
+        self.assertEqual(t._emit_string_lit("hello"), repr("hello"))
+
+
 def _pep701_offenders(code):
     """Return the f-strings in ``code`` that only parse on Python >= 3.12
     (PEP 701): a nested f-string, or a plain string literal inside a
