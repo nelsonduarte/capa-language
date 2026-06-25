@@ -27,6 +27,33 @@ breaking changes and the discipline is still being shaped.
   the suite was validated against, so the declared minimum reflects a
   tested baseline rather than a stale lower bound.
 
+## [1.11.1], 2026-06-24
+
+**Capa 1.11.1.** A PATCH release that fixes two compiler bugs and two
+installer issues.
+
+**Fixed.**
+
+- *The lexer now accepts nested string literals inside a `${...}`
+  interpolation.* Previously a string literal opened inside an
+  interpolation reported "unterminated interpolation"; an idiom such as
+  interpolating `m.get("k").unwrap_or(0)` inside a string now compiles.
+- *Struct destructuring in a `let`/`for` now runs on both backends.* A
+  binding such as `let Point { x, y } = p` previously passed `--check`
+  but failed in the transpiler; it now executes with Python/Wasm parity.
+- *The Windows installer (`deploy/install.ps1`) fixes its SHA-256
+  verification.* The check failed with "[System.Byte] does not contain a
+  method named 'Trim'" because the `.sha256` arrives as bytes; the
+  installer now decodes it before validating, and the verification is
+  retained.
+
+**Changed.**
+
+- *The Linux/macOS installer (`deploy/install.sh`) now adds the install
+  directory to `PATH` automatically.* It updates bash/zsh/fish and
+  `~/.profile`, is idempotent, supports the `CAPA_NO_MODIFY_PATH`
+  opt-out, and brings parity with the Windows installer.
+
 ## [1.11.0], 2026-06-24
 
 **Capa 1.11.0.** A MINOR release that extends the `Range` type with the
