@@ -38,7 +38,16 @@ $ProgressPreference = "SilentlyContinue"
 try {
     Invoke-WebRequest -Uri $Url -OutFile $Dest -UseBasicParsing
     $ShaResponse = Invoke-WebRequest -Uri $ShaUrl -UseBasicParsing
-    $ExpectedSha = ($ShaResponse.Content.Trim() -split '\s+')[0].ToLower()
+    # GitHub serves the .sha256 sibling as application/octet-stream, so
+    # Invoke-WebRequest hands back $ShaResponse.Content as a [Byte[]],
+    # not a [String]. Calling .Trim() on a [Byte[]] enumerates each
+    # [System.Byte] (which has no Trim), throwing. Decode to UTF-8 text
+    # ourselves, handling both the Byte[] and String shapes.
+    $ShaContent = $ShaResponse.Content
+    if ($ShaContent -is [byte[]]) {
+        $ShaContent = [System.Text.Encoding]::UTF8.GetString($ShaContent)
+    }
+    $ExpectedSha = ($ShaContent.Trim() -split '\s+')[0].ToLower()
 } finally {
     $ProgressPreference = $prev
 }
