@@ -11,6 +11,14 @@ breaking changes and the discipline is still being shaped.
 
 **Maintenance.**
 
+- *A nested struct-pattern in a `let`/`for` is now rejected at check
+  time.* A binding such as `let Outer { inner: Inner { a } } = o` is
+  caught by the analyzer with a clear, source-aligned diagnostic that
+  suggests the two-step form, instead of passing `--check` and only
+  failing under `--run`. One-level struct-patterns continue to work.
+- *Dead branch removed from the transpiler's string-literal emitter.*
+  An unreachable `${...}` code path in the string-literal emitter was
+  replaced with an explicit invariant, with no change in behaviour.
 - *Optional dev/runtime extras refreshed to current PyPI.* The optional
   dependency groups in `pyproject.toml` are dev/eval/wasm extras only;
   the compiler stays standard-library-only at runtime. Refreshed the
