@@ -9,6 +9,18 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+## [1.11.4], 2026-06-24
+
+**Capa 1.11.4.** A PATCH release with a packaging-only change to the
+pre-built Windows binary.
+
+**Changed.**
+
+- *The pre-built Windows binary (`capa-windows-x86_64.exe`) now embeds
+  the Capa icon instead of the generic Python icon.* A new
+  `deploy/capa.ico` is wired into the PyInstaller spec only on the
+  Windows build; the Linux and macOS builds are unchanged.
+
 ## [1.11.3], 2026-06-24
 
 **Capa 1.11.3.** A PATCH release with one analyzer fix and routine
