@@ -2,8 +2,9 @@
     "name": "capa-language",
     "displayName": "Capa Language",
     "description": "Syntax highlighting for the Capa programming language",
-    "version": "0.8.0",
+    "version": "0.9.0",
     "publisher": "nelsonduarte",
+    "icon": "icon.png",
     "engines": {
         "vscode": "^1.80.0"
     },
@@ -39,7 +40,11 @@
                 "extensions": [
                     ".capa"
                 ],
-                "configuration": "./language-configuration.json"
+                "configuration": "./language-configuration.json",
+                "icon": {
+                    "light": "./icons/capa-file-light.svg",
+                    "dark": "./icons/capa-file.svg"
+                }
             }
         ],
         "grammars": [

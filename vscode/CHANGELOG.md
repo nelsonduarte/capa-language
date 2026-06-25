@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.9.0
+
+- The extension now ships the Capa logo as its marketplace icon
+  (the hooded figure), shown in the VSCode extensions list.
+- `.capa` files now display the Capa icon in the explorer when the
+  active icon theme supports language icons (the default VSCode theme
+  does). A purple-on-transparent variant is used for the dark theme and
+  a higher-contrast purple variant for the light theme.
+
 ## 0.8.0
 
 - Highlight the typestate, information-flow, linearity, and
