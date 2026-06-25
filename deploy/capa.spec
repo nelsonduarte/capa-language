@@ -24,6 +24,12 @@
 #   binary (see capa.cli, --run mode). The binary therefore needs to
 #   carry capa.runtime as part of the bundle even though the compiler
 #   itself does not import it; that is what `hiddenimports` ensures.
+# - `capa lsp` starts an LSP server built on pygls (+ lsprotocol,
+#   cattrs, attrs). Those are Capa's only runtime dependencies and are
+#   needed only for this subcommand. They must be pip-installed in the
+#   build environment (e.g. `pip install -e .[lsp]`) for the bundle to
+#   ship a working `capa lsp`; see the "Language-server stack" block
+#   below for how they are collected.
 # - Single-file mode (`exe = EXE(..., onefile=True)` via the EXE
 #   constructor) trades startup time (~100-300ms self-extract) for
 #   distribution simplicity. For a CLI tool used interactively this
@@ -39,8 +45,52 @@
 
 import os
 import sys
+
+from PyInstaller.utils.hooks import collect_submodules, copy_metadata
+
 SPEC_DIR = os.path.dirname(os.path.abspath(SPEC))
 ROOT = os.path.abspath(os.path.join(SPEC_DIR, '..'))
+
+# --- Language-server stack -------------------------------------------------
+#
+# `capa lsp` runs an LSP server built on pygls, which pulls in lsprotocol,
+# cattrs and attrs (the only runtime dependencies Capa has, and only for
+# this one subcommand). PyInstaller's static analysis follows most of the
+# import graph, but cattrs/lsprotocol dispatch some converters at runtime
+# rather than via plain top-level imports, so a purely static crawl can
+# silently drop submodules and the bundled `capa lsp` then fails at import
+# time. To make the bundle reliable we collect every submodule of each
+# package explicitly. We also copy each distribution's metadata: it is cheap
+# insurance against any of these libraries (now or in a future version)
+# reading their own version through importlib.metadata at import time.
+#
+# pygls also has an *optional* websockets transport; the stdio transport
+# used by `capa lsp` (server.start_io()) does not need it, so websockets is
+# deliberately left out and the "missing websockets" notes PyInstaller emits
+# are expected and harmless.
+LSP_PACKAGES = ['pygls', 'lsprotocol', 'cattrs', 'attr', 'attrs']
+
+lsp_hiddenimports = []
+for _pkg in LSP_PACKAGES:
+    try:
+        lsp_hiddenimports += collect_submodules(_pkg)
+    except Exception:
+        # The package is not installed in this build environment. The core
+        # compiler still builds; only `capa lsp` will be unavailable. The
+        # release workflow installs the `[lsp]` extra so this path is not
+        # taken there.
+        pass
+
+lsp_datas = []
+for _dist in ['pygls', 'lsprotocol', 'cattrs', 'attrs']:
+    try:
+        lsp_datas += copy_metadata(_dist)
+    except Exception:
+        # copy_metadata raises if the distribution is not installed; the
+        # core compiler still builds fine without the LSP stack, so skip
+        # quietly and let the optional `capa lsp` command be the only thing
+        # that is unavailable in such a build.
+        pass
 
 # Embed the Capa logo as the executable icon. Only Windows PE binaries
 # carry an embedded .ico; Linux ELF binaries have no icon slot and
@@ -54,21 +104,24 @@ a = Analysis(
     [os.path.join(SPEC_DIR, 'capa-entry.py')],
     pathex=[ROOT],
     binaries=[],
-    datas=[],
+    datas=lsp_datas,
     hiddenimports=[
         # The transpiled Capa program imports from capa.runtime at
         # runtime via exec(). PyInstaller's static analysis does not
         # see those imports, so list them explicitly.
         'capa.runtime',
-    ],
+    ] + lsp_hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
     excludes=[
-        # Capa has zero runtime dependencies outside the Python
-        # standard library; nothing else should be pulled in. The
-        # excludes below trim the resulting binary by dropping things
-        # PyInstaller may speculatively include.
+        # The compiler core has no runtime dependencies outside the
+        # Python standard library; the only third-party code in the
+        # bundle is the language-server stack (pygls + lsprotocol +
+        # cattrs + attrs) wired in above for `capa lsp`. The excludes
+        # below trim the resulting binary by dropping things PyInstaller
+        # may speculatively include and that neither the compiler nor
+        # the LSP server needs.
         'tkinter',
         'unittest',
         'pydoc',

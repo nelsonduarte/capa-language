@@ -9,6 +9,19 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+**Changed.**
+
+- *The pre-built standalone binary now bundles the language server, so
+  `capa lsp` works without a separate Python or pygls install.* Previously
+  the PyInstaller binary deliberately shipped without the LSP stack and
+  `capa lsp` exited with code 2 and a "pygls is required" message. The
+  PyInstaller spec now collects pygls, lsprotocol, cattrs and attrs (and
+  their metadata) into the bundle, the release workflow installs the
+  project's `[lsp]` extra before the build, and a new stdio `initialize`
+  smoke test guards the bundled server on all three platforms. The binary
+  grows by roughly 0.8 MB. This is packaging only; no compiler behaviour
+  changes.
+
 ## [1.11.4], 2026-06-24
 
 **Capa 1.11.4.** A PATCH release with a packaging-only change to the

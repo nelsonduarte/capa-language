@@ -53,8 +53,13 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Install PyInstaller
-        run: pip install pyinstaller>=6.0
+      - name: Install PyInstaller and the LSP stack
+        # The LSP stack (pygls + lsprotocol + cattrs + attrs) must be
+        # importable in the build environment so PyInstaller can bundle it
+        # into the binary; otherwise `capa lsp` ships broken. Installing the
+        # project's own `[lsp]` extra keeps the pinned set in one place
+        # (pyproject.toml) instead of duplicating versions here.
+        run: pip install "pyinstaller>=6.0" ".[lsp]"
 
       - name: Build binary
         run: pyinstaller deploy/capa.spec --distpath dist --workpath build/pyinstaller
@@ -73,6 +78,17 @@ jobs:
           ./dist/capa.exe --check examples/hello.capa
           ./dist/capa.exe --run examples/hello.capa
           ./dist/capa.exe --manifest examples/hello.capa > /dev/null
+
+      - name: Smoke-test LSP server in binary
+        # Prove the bundled `capa lsp` actually serves the language server
+        # rather than falling into the "pygls not installed" path (exit 2).
+        # We drive the binary over stdio with a single LSP `initialize`
+        # request, framed with Content-Length, and assert we get a JSON-RPC
+        # result back. Driven from Python (via the matrix runner's system
+        # Python, separate from the bundled interpreter) to stay identical
+        # across the three platforms and avoid shell-quoting differences.
+        shell: bash
+        run: python deploy/lsp_smoke_test.py "dist/capa${{ matrix.ext }}"
 
       - name: Rename binary for upload
         shell: bash
