@@ -699,12 +699,24 @@ class _ExpressionsMixin:
         return ty
 
     def _emit_interpolated_string(self, e: A.InterpolatedString) -> str:
-        """Emits a string with interpolations as a Python f-string.
+        """Emits a string with interpolations as a Python concatenation.
 
         Each Expr part is processed via ``_emit_expr`` (with correct
-        type dispatch, e.g., ``s.length()`` -> ``len(s)``). Literal
-        text between interpolations is escaped so it does not interfere
-        with f-string syntax.
+        type dispatch, e.g., ``s.length()`` -> ``len(s)``) and wrapped
+        in ``str(...)``; each literal text part is emitted with
+        ``repr``. The pieces are joined with ``+``.
+
+        We deliberately avoid an f-string here. An interpolated
+        expression can itself contain a string literal or a nested
+        interpolation (e.g. ``"${greet("${y}")}"``), whose emitted
+        Python reuses the ``"`` quote inside the field. Embedding that
+        in an f-string only parses on Python >= 3.12 (PEP 701); on the
+        3.10 / 3.11 interpreters our ``pyproject`` supports it is a
+        ``SyntaxError``. A ``str(...) + repr(...)`` concatenation is a
+        plain expression that parses on every supported version, keeps
+        each sub-expression evaluated exactly once, and produces a
+        byte-identical result (Capa interpolation has no format specs,
+        so ``f"{x}"`` and ``str(x)`` always agree).
 
         Display protocol: when an interpolated expression's type
         declares a ``fun to_string(self) -> String`` method (tracked
@@ -717,20 +729,11 @@ class _ExpressionsMixin:
         any struct that opted in.
         """
         from ..typesys import TyName
-        parts: list[str] = []
+        pieces: list[str] = []
         for part in e.parts:
             if isinstance(part, str):
-                # Escape f-string special characters: { } and \
-                escaped = (
-                    part.replace("\\", "\\\\")
-                    .replace('"', '\\"')
-                    .replace("{", "{{")
-                    .replace("}", "}}")
-                    .replace("\n", "\\n")
-                    .replace("\t", "\\t")
-                    .replace("\r", "\\r")
-                )
-                parts.append(escaped)
+                if part:
+                    pieces.append(repr(part))
             else:
                 expr_code = self._emit_expr(part)
                 ty = self._interp_type(part)
@@ -741,33 +744,48 @@ class _ExpressionsMixin:
                     # most modern languages). Force the lowercase form
                     # here so ``${flag}`` is parity-clean across
                     # backends.
-                    expr_code = f"('true' if ({expr_code}) else 'false')"
+                    pieces.append(f"('true' if ({expr_code}) else 'false')")
                 elif (
                     isinstance(ty, TyName)
                     and ty.name in self._display_types
                 ):
-                    expr_code = f"({expr_code}).to_string()"
-                parts.append("{" + expr_code + "}")
-        return 'f"' + "".join(parts) + '"'
+                    pieces.append(f"({expr_code}).to_string()")
+                else:
+                    pieces.append(f"str({expr_code})")
+        if not pieces:
+            return "''"
+        return "(" + " + ".join(pieces) + ")"
 
     def _emit_string_lit(self, value: str) -> str:
         """Converts a Capa literal to Python.
 
-        If the literal contains ``${expr}``, emits an f-string.
-        Otherwise, emits with ``repr``.
+        If the literal contains ``${expr}``, emits a ``str(...) +
+        repr(...)`` concatenation (see ``_emit_interpolated_string``
+        for why we avoid f-strings: a nested string inside ``${...}``
+        would otherwise produce PEP 701 syntax that only parses on
+        Python >= 3.12). Otherwise, emits with ``repr``.
 
         ``$$`` escapes a literal ``$``.
         """
         from . import TranspilerError
         if "${" not in value:
             return repr(value)
-        # Build an f-string. We must escape literal { and }.
-        parts: list[str] = []
+        # Split into literal-text runs and ``${expr}`` fields, then
+        # join with ``+``. Literal runs go through ``repr``; fields are
+        # wrapped in ``str(...)``.
+        pieces: list[str] = []
+        literal: list[str] = []
+
+        def flush_literal() -> None:
+            if literal:
+                pieces.append(repr("".join(literal)))
+                literal.clear()
+
         i = 0
         while i < len(value):
             c = value[i]
             if c == "$" and i + 1 < len(value) and value[i + 1] == "$":
-                parts.append("$")
+                literal.append("$")
                 i += 2
                 continue
             if c == "$" and i + 1 < len(value) and value[i + 1] == "{":
@@ -786,24 +804,13 @@ class _ExpressionsMixin:
                         f"unterminated interpolation in string literal: {value!r}"
                     )
                 expr_text = value[i + 2 : j]
-                parts.append("{" + expr_text + "}")
+                flush_literal()
+                pieces.append(f"str({expr_text})")
                 i = j + 1
                 continue
-            if c == "{":
-                parts.append("{{")
-                i += 1
-                continue
-            if c == "}":
-                parts.append("}}")
-                i += 1
-                continue
-            parts.append(c)
+            literal.append(c)
             i += 1
-        body = "".join(parts)
-        # Escape backslashes and quotes for safe f-string repr.
-        # The simplest way: emit as f"..." with double quotes, escaping
-        # only `\` and `"`.
-        escaped = body.replace("\\", "\\\\").replace('"', '\\"')
-        # Literal newlines must become \n to fit in a single-line f-string.
-        escaped = escaped.replace("\n", "\\n").replace("\t", "\\t")
-        return f'f"{escaped}"'
+        flush_literal()
+        if not pieces:
+            return "''"
+        return "(" + " + ".join(pieces) + ")"

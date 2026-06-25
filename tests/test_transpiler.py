@@ -301,6 +301,106 @@ class TestNestedStringInterpolation(unittest.TestCase):
             Lexer(src).lex()
 
 
+def _pep701_offenders(code):
+    """Return the f-strings in ``code`` that only parse on Python >= 3.12
+    (PEP 701): a nested f-string, or a plain string literal inside a
+    ``${...}`` field that reuses the enclosing f-string's quote char.
+
+    ``ast.parse(code, feature_version=(3, 10))`` does NOT catch this: on a
+    >= 3.12 interpreter the new f-string tokenizer accepts the syntax and
+    ``feature_version`` does not downgrade it. So we walk the f-string
+    tokens directly. A pre-3.12 tokenizer reads an f-string as a single
+    STRING token and terminates it at the first matching quote, so any of
+    these shapes raises ``SyntaxError: f-string: ...`` on Python 3.10/3.11.
+    """
+    import io
+    import tokenize
+
+    offenders = []
+    quote_stack = []
+    toks = tokenize.generate_tokens(io.StringIO(code).readline)
+    for tok in toks:
+        name = tokenize.tok_name[tok.type]
+        if name == "FSTRING_START":
+            quote = tok.string.lstrip("fFrRbB")
+            if quote_stack:
+                offenders.append((tok.start, "nested f-string"))
+            quote_stack.append(quote)
+        elif name == "FSTRING_END":
+            if quote_stack:
+                quote_stack.pop()
+        elif name == "STRING" and quote_stack:
+            inner_quote = '"' if '"' in tok.string[:2] else "'"
+            if inner_quote == quote_stack[-1]:
+                offenders.append((tok.start, "quote reuse inside f-string"))
+    return offenders
+
+
+class TestInterpolationPython310Compatible(unittest.TestCase):
+    """Regression: v1.11.1 (commit c4c3522) let nested-string and
+    recursive interpolation reach the transpiler, but the f-string
+    emitter then produced output like ``f"{greet(f"{y}")}"`` that reuses
+    the ``"`` quote inside the field. That only parses on Python >= 3.12
+    (PEP 701); on the 3.10 / 3.11 interpreters ``pyproject`` supports it
+    is a ``SyntaxError: f-string: unmatched '('``, so the ``tests`` CI
+    gate went red on every OS for Python 3.10 while 3.12 / 3.14 passed.
+
+    The emitter now lowers interpolation to a ``str(...) + repr(...)``
+    concatenation instead of an f-string, so the output never depends on
+    PEP 701. These tests transpile representative interpolation shapes
+    and assert the emitted Python contains no PEP-701-only f-string,
+    which fails on the old emitter and pins the fix on every runner
+    (including this 3.14 machine) without needing a 3.10 interpreter.
+    """
+
+    def _assert_310_clean(self, source):
+        code = transpile_only(source)
+        offenders = _pep701_offenders(code)
+        self.assertEqual(
+            offenders,
+            [],
+            "transpiled Python uses PEP-701-only f-string syntax that "
+            "fails on Python 3.10/3.11:\n" + code,
+        )
+        return code
+
+    def test_recursive_interpolation_is_310_compatible(self):
+        # The exact shape that broke CI: an interpolation inside a string
+        # inside an interpolation -> ``f"{greet(f"{y}")}"`` on the old
+        # emitter, which is a SyntaxError on Python 3.10/3.11.
+        self._assert_310_clean(
+            'fun greet(name: String) -> String\n'
+            '    return "hi ${name}"\n'
+            '\n'
+            'fun main(stdio: Stdio)\n'
+            '    let y: String = "bob"\n'
+            '    stdio.println("${greet("${y}")}")\n'
+        )
+
+    def test_nested_string_interpolation_is_310_compatible(self):
+        self._assert_310_clean(
+            'fun main(stdio: Stdio)\n'
+            '    let m: Map<String, Int> = new_map()\n'
+            '    m.set("a", 1)\n'
+            '    stdio.println("a is ${m.get("a").unwrap_or(0)}")\n'
+        )
+
+    def test_assorted_interpolation_shapes_are_310_compatible(self):
+        # Simple, arithmetic, multiple-in-one-string, $$ escape, and an
+        # adjacency case all stay 3.10-clean too (the new emitter applies
+        # uniformly, so this guards against a future partial regression).
+        self._assert_310_clean(
+            'fun main(stdio: Stdio)\n'
+            '    let x: Int = 5\n'
+            '    let n: Int = 7\n'
+            '    stdio.println("simple ${x}")\n'
+            '    stdio.println("arith ${n * 2}")\n'
+            '    stdio.println("multi ${x} and ${n} done")\n'
+            '    stdio.println("escape $${x} literal")\n'
+            '    stdio.println("x=${x}!")\n'
+        )
+
+
 class TestBoolInterpolationLowercase(unittest.TestCase):
     """Capa renders a Bool as ``true`` / ``false`` (lowercase) inside a
     ``${...}`` interpolation, matching JSON and the Wasm backend, never

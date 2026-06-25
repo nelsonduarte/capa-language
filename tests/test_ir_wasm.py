@@ -4508,8 +4508,12 @@ class TestWasmStructToStringDisplay(unittest.TestCase):
         # expression before appending `.to_string()` so a complex
         # sub-expression (e.g. a method call) stays self-contained.
         self.assertIn("(p).to_string()", py)
-        # And the f-string interpolates the result, not the bare `p`.
-        self.assertIn("{(p).to_string()}", py)
+        # And the interpolation concatenates that result, not the bare
+        # `p`. Interpolation lowers to a ``str(...) + ...`` concatenation
+        # (not an f-string) so nested-string / recursive interpolation
+        # stays Python-3.10-compatible; the Display field is appended
+        # verbatim because ``to_string()`` already returns a String.
+        self.assertIn("'p = ' + (p).to_string()", py)
 
 
 @unittest.skipUnless(
