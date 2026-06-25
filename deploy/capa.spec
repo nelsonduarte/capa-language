@@ -38,8 +38,15 @@
 # happy.
 
 import os
+import sys
 SPEC_DIR = os.path.dirname(os.path.abspath(SPEC))
 ROOT = os.path.abspath(os.path.join(SPEC_DIR, '..'))
+
+# Embed the Capa logo as the executable icon. Only Windows PE binaries
+# carry an embedded .ico; Linux ELF binaries have no icon slot and
+# macOS PyInstaller expects an .icns, so leave the icon unset there to
+# keep those builds working unchanged.
+ICON = os.path.join(SPEC_DIR, 'capa.ico') if sys.platform == 'win32' else None
 
 block_cipher = None
 
@@ -92,4 +99,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon=ICON,
 )
