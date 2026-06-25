@@ -27,6 +27,20 @@ breaking changes and the discipline is still being shaped.
   the suite was validated against, so the declared minimum reflects a
   tested baseline rather than a stale lower bound.
 
+## [1.11.2], 2026-06-24
+
+**Capa 1.11.2.** A PATCH release that restores Python 3.10/3.11
+compatibility for the source install.
+
+**Fixed.**
+
+- *The transpiler no longer emits f-strings (PEP 701) that required
+  Python 3.12 or later.* String interpolation now generates Python code
+  compatible with the declared minimum version (3.10), fixing the
+  v1.11.1 regression that prevented `capa` installed from source from
+  running on Python 3.10/3.11. The result is byte-identical and users of
+  the pre-built binary were not affected.
+
 ## [1.11.1], 2026-06-24
 
 **Capa 1.11.1.** A PATCH release that fixes two compiler bugs and two
