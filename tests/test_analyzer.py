@@ -2850,6 +2850,100 @@ class TestTuplePatterns(unittest.TestCase):
 
 
 # =============================================================
+# Struct-pattern bindings in let / for
+# =============================================================
+
+class TestStructPatternBinding(unittest.TestCase):
+    """``let`` / ``for`` accept a one-level struct-destructuring
+    pattern, but a struct sub-pattern nested inside a field is
+    rejected at analysis time: neither backend can lower it (the
+    transpiler raised "nested struct-pattern in let/for not
+    supported" and the IR lowerer raised UnsupportedInIR), so
+    ``--check`` and ``--run`` must agree by rejecting it up front.
+    ``match`` arms keep their nesting support (a different code
+    path) and are exercised by TestTuplePatterns / the parity
+    suite, not here."""
+
+    _NESTED_MSG = "nested struct-pattern in a 'let' / 'for' binding"
+
+    def test_one_level_let_struct_destructure_ok(self):
+        r = check(
+            "type Point { x: Int, y: Int }\n"
+            "fun main(stdio: Stdio)\n"
+            "    let p = Point { x: 1, y: 2 }\n"
+            "    let Point { x, y } = p\n"
+            "    let Point { x: a } = p\n"
+            "    let Point { x: _, y: yy } = p\n"
+            "    stdio.println(\"${x} ${y} ${a} ${yy}\")\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+    def test_one_level_for_struct_destructure_ok(self):
+        r = check(
+            "type Pair { a: Int, b: Int }\n"
+            "fun main(stdio: Stdio)\n"
+            "    let xs = [Pair { a: 1, b: 2 }]\n"
+            "    for Pair { a, b } in xs\n"
+            "        stdio.println(\"${a} ${b}\")\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+    def test_nested_struct_pattern_in_let_rejected(self):
+        msgs = errors_of(
+            "type Inner { a: Int }\n"
+            "type Outer { inner: Inner }\n"
+            "fun main(stdio: Stdio)\n"
+            "    let o = Outer { inner: Inner { a: 7 } }\n"
+            "    let Outer { inner: Inner { a } } = o\n"
+            "    stdio.println(\"${a}\")\n"
+        )
+        self.assertTrue(
+            any(self._NESTED_MSG in m for m in msgs), msgs
+        )
+
+    def test_nested_struct_pattern_in_for_rejected(self):
+        msgs = errors_of(
+            "type Inner { a: Int }\n"
+            "type Outer { inner: Inner }\n"
+            "fun main(stdio: Stdio)\n"
+            "    let xs = [Outer { inner: Inner { a: 7 } }]\n"
+            "    for Outer { inner: Inner { a } } in xs\n"
+            "        stdio.println(\"${a}\")\n"
+        )
+        self.assertTrue(
+            any(self._NESTED_MSG in m for m in msgs), msgs
+        )
+
+    def test_nested_struct_pattern_in_tuple_let_rejected(self):
+        # A struct sub-pattern hidden inside a tuple element of a
+        # let binding is the same unlowerable shape.
+        msgs = errors_of(
+            "type Inner { a: Int }\n"
+            "fun main(stdio: Stdio)\n"
+            "    let t = (Inner { a: 1 }, 2)\n"
+            "    let (Inner { a }, b) = t\n"
+            "    stdio.println(\"${a} ${b}\")\n"
+        )
+        self.assertTrue(
+            any(self._NESTED_MSG in m for m in msgs), msgs
+        )
+
+    def test_match_nested_struct_pattern_still_ok(self):
+        # The match path supports the nesting the let/for guard
+        # rejects; confirm it was not caught in the crossfire.
+        r = check(
+            "type Inner { a: Int }\n"
+            "type Outer { inner: Inner }\n"
+            "fun main(stdio: Stdio)\n"
+            "    let o = Outer { inner: Inner { a: 7 } }\n"
+            "    match o\n"
+            "        Outer { inner: Inner { a } } -> "
+            "stdio.println(\"${a}\")\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+
+# =============================================================
 # Or-patterns
 # =============================================================
 

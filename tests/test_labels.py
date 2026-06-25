@@ -987,11 +987,18 @@ class TestDestructuredSecretField(unittest.TestCase):
         self.assertEqual(len(r.warnings), 1)
 
     def test_nested_destructure_secret_subfield_flagged(self):
+        # A struct-pattern nested inside a let field is rejected by the
+        # analyzer (neither backend lowers it; see
+        # test_analyzer.TestStructPatternBinding). The supported form is
+        # the two-step destructure: bind the sub-struct, then destructure
+        # it separately. The secret-subfield taint must still flow
+        # through that form so sinking ``sec`` warns.
         r = self._analyze(
             "type Inner { tag: String, sec: @secret String }\n"
             "type Outer { inner: Inner, name: String }\n"
             "fun leak(o: Outer, stdio: Stdio)\n"
-            "    let Outer { inner: Inner { tag, sec }, name } = o\n"
+            "    let Outer { inner, name } = o\n"
+            "    let Inner { tag, sec } = inner\n"
             "    stdio.println(sec)\n"
         )
         self.assertEqual(len(r.warnings), 1)
@@ -1035,11 +1042,17 @@ class TestDestructuredSecretField(unittest.TestCase):
         self.assertTrue(r.ok)
 
     def test_nested_destructure_public_only_is_clean(self):
+        # Two-step destructure (the supported form; a struct-pattern
+        # nested inside a let field is rejected by the analyzer).
+        # Destructuring only the PUBLIC subfield out of the sub-struct
+        # must not over-taint, even though the sub-struct also declares a
+        # @secret field.
         r = self._analyze(
             "type Inner { tag: String, sec: @secret String }\n"
             "type Outer { inner: Inner, name: String }\n"
             "fun ok(o: Outer, stdio: Stdio)\n"
-            "    let Outer { inner: Inner { tag, sec }, name } = o\n"
+            "    let Outer { inner, name } = o\n"
+            "    let Inner { tag, sec } = inner\n"
             "    stdio.println(tag)\n"
         )
         self.assertEqual(len(r.warnings), 0)

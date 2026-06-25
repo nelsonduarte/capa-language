@@ -546,6 +546,55 @@ class _PatternsMixin:
             return
         self._err(f"unknown pattern type {type(p).__name__}", p.pos)
 
+    def _reject_nested_struct_in_binding(self, p: A.Pattern) -> None:
+        """Reject a struct sub-pattern nested inside a ``let`` / ``for``
+        binding pattern.
+
+        A top-level struct-pattern in a ``let`` / ``for`` is fine
+        (``let Point { x, y } = p``), and so are its field binders in
+        shorthand, rename, or wildcard form (``Point { x }``,
+        ``Point { x: a }``, ``Point { x: _ }``). What neither backend
+        can lower is a struct-pattern *inside* a field (or inside a
+        tuple element), e.g. ``let Outer { inner: Inner { a } } = o``:
+        the transpiler raises ``nested struct-pattern in let/for`` and
+        the IR lowerer raises ``UnsupportedInIR``. ``match`` arms do
+        support that nesting and go through ``_bind_pattern``, not this
+        guard, so they are unaffected.
+
+        Walk the binding pattern and emit a precise diagnostic for each
+        nested struct-pattern so ``--check`` and ``--run`` agree
+        (both reject) instead of ``--check`` greenlighting a program
+        the backends crash on. Reported at the nested struct-pattern's
+        own source position, with a fix suggestion (bind the field to a
+        name, then destructure it in a separate ``let``).
+        """
+
+        def walk(node: A.Pattern, nested: bool) -> None:
+            if isinstance(node, A.StructPat):
+                if nested:
+                    self._err(
+                        "nested struct-pattern in a 'let' / 'for' binding "
+                        "is not supported; bind the field to a name first, "
+                        "then destructure it in a separate binding (e.g. "
+                        "`let Outer { inner } = o` followed by "
+                        "`let Inner { a } = inner`)",
+                        node.pos,
+                    )
+                    return
+                for fname, fpat in node.fields:
+                    if fpat is None or isinstance(
+                        fpat, (A.WildcardPat, A.IdentPat)
+                    ):
+                        continue
+                    walk(fpat, nested=True)
+                return
+            if isinstance(node, A.TuplePat):
+                for sub in node.elements:
+                    walk(sub, nested=True)
+                return
+
+        walk(p, nested=False)
+
     def _pattern_has_binding(self, p: A.Pattern) -> bool:
         """``True`` iff the pattern binds at least one name
         (rather than just matching). Used to enforce the v0

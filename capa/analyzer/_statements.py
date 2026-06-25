@@ -227,6 +227,7 @@ class _StatementsMixin:
         # later passed around.
         if not isinstance(s.value, (A.MethodCall, A.Call)):
             self._check_no_capability(actual, s.pos, "a 'let' binding")
+        self._reject_nested_struct_in_binding(s.pattern)
         self._bind_pattern(s.pattern, actual, mutable=False)
         # Roadmap S2.3: the binding's label is the join of any declared
         # ``@secret``/``@public`` annotation and the label of the RHS
@@ -727,6 +728,7 @@ class _StatementsMixin:
         # Restored in the ``finally`` so the raise scopes to the body
         # only; strict-gated downstream, so the default tier is unaffected.
         saved_pc = self._pc_raise(s.iter)
+        self._reject_nested_struct_in_binding(s.pattern)
         # Same two-pass dry-run / real-run dance as ``_check_while``.
         self._loop_depth += 1
         try:
