@@ -9,6 +9,8 @@ import {
 
 let client: LanguageClient | undefined;
 let outputChannel: vscode.OutputChannel | undefined;
+let fileWatcher: vscode.FileSystemWatcher | undefined;
+let extensionContext: vscode.ExtensionContext | undefined;
 
 // How many times the client may auto-restart the server after an
 // unexpected close before it gives up. This guards against an aggressive
@@ -40,8 +42,21 @@ function readConfig(): ServerConfig {
 function getOutputChannel(): vscode.OutputChannel {
     if (!outputChannel) {
         outputChannel = vscode.window.createOutputChannel("Capa Language Server");
+        // Dispose the channel when the extension deactivates. The channel is
+        // created lazily, so register it here rather than in activate().
+        extensionContext?.subscriptions.push(outputChannel);
     }
     return outputChannel;
+}
+
+function getFileWatcher(): vscode.FileSystemWatcher {
+    if (!fileWatcher) {
+        fileWatcher = vscode.workspace.createFileSystemWatcher("**/*.capa");
+        // Created lazily and shared across client restarts; dispose it on
+        // deactivation via context.subscriptions.
+        extensionContext?.subscriptions.push(fileWatcher);
+    }
+    return fileWatcher;
 }
 
 function pathDelimiter(): string {
@@ -98,7 +113,12 @@ async function startClient(config: ServerConfig): Promise<void> {
         documentSelector: [{ scheme: "file", language: "capa" }],
         outputChannel: channel,
         synchronize: {
-            fileEvents: vscode.workspace.createFileSystemWatcher("**/*.capa"),
+            // Reuse a single watcher owned by the extension and disposed on
+            // deactivation. Creating a fresh watcher here would leak one
+            // orphaned watcher on every client restart, because the library
+            // only disposes the listeners it attaches to a watcher instance,
+            // not the watcher itself.
+            fileEvents: getFileWatcher(),
         },
         errorHandler: {
             error: () => ({ action: ErrorAction.Continue }),
@@ -320,6 +340,7 @@ async function restart(): Promise<void> {
 }
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
+    extensionContext = context;
     context.subscriptions.push(
         vscode.commands.registerCommand("capa.restartLanguageServer", () =>
             restart()
@@ -346,4 +367,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
 export async function deactivate(): Promise<void> {
     await stopClient();
+    // The output channel and file watcher are disposed via
+    // context.subscriptions; drop our references so a later reactivation
+    // starts clean.
+    outputChannel = undefined;
+    fileWatcher = undefined;
+    extensionContext = undefined;
 }
