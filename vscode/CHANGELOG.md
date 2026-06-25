@@ -15,10 +15,14 @@
   block headers: a named `fun` definition (not a `fun (...)` lambda), a
   `type` struct or sum-type opener, `impl` / `trait` / `capability` /
   `typestate` / `linear`, the `if` / `elif` / `else` / `while` / `for` /
-  `match` statements (and `return` / `let` match-expressions), and a
-  `match` arm whose body is on the next line (the line ends with `->`).
-  One-line `if ... then ... else` expressions and inline lambdas no
-  longer trigger indentation.
+  `match` statements (and `return` / `let` match-expressions), a
+  `match` arm whose body is on the next line (the line ends with `->`),
+  and a multi-line lambda whose body starts on the next line (the line
+  ends with `=>`). One-line `if ... then ... else` expressions and inline
+  lambdas (which carry their body after `=>` on the same line) no longer
+  trigger indentation. The `if` / `elif` / `while` / `for` exclusion of
+  one-line `then` expressions now ignores a `then` that appears only
+  inside a `//` line comment.
 - The decrease pattern now aligns `else` and `elif` back to their `if`
   instead of keying off blank lines.
 
