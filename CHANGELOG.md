@@ -9,6 +9,27 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+## [1.13.0], 2026-06-26
+
+**Capa 1.13.0.** A MINOR release: a batch of standard-library additions
+across `Option`/`Result`, `Set`, and `List`.
+
+**Added.**
+
+- *`Option` and `Result` gain `.unwrap()` and `.expect(msg)`.* `.unwrap()`
+  returns the contained value and aborts on `None`/`Err`; `.expect(msg)`
+  does the same but reports the caller-supplied message on failure. Both
+  give a concise way to assert presence at a use site instead of
+  threading a full match.
+- *`Set` gains the core algebra: `.union(other)`, `.intersection(other)`,
+  `.difference(other)`, and `.is_subset(other)`.* The first three return a
+  new `Set`; `.is_subset` returns a `Bool`. Inputs are left unmutated.
+- *`List` gains `.reverse()`, `.enumerate()`, `.zip(other)`,
+  and `.flat_map(f)`.* `.reverse()` returns the elements in reverse order;
+  `.enumerate()` pairs each element with its index; `.zip(other)` pairs
+  elements positionally and stops at the shorter list; `.flat_map(f)`
+  maps then flattens one level.
+
 ## [1.12.0], 2026-06-25
 
 **Capa 1.12.0.** A MINOR release: the pre-built standalone binary now
