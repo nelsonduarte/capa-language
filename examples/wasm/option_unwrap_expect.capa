@@ -1,0 +1,31 @@
+// Slice (2026-06-26): Option<T> / Result<T, E> unwrap() + expect(msg).
+// Exercises the SUCCESS paths (Some / Ok) only, across Int and String
+// payloads, so the output is byte-identical on both backends. The
+// failure paths (None / Err) panic, which aborts the program rather
+// than producing comparable stdout, so they are covered by the
+// dedicated panic-style tests in tests/test_panic.py instead.
+
+fun main(stdio: Stdio)
+    // ---- Option.unwrap on Some ----
+    let some_i: Option<Int> = Some(42)
+    stdio.println("Some(42).unwrap() = ${some_i.unwrap()}")
+
+    let some_s: Option<String> = Some("hi")
+    stdio.println("Some(hi).unwrap() = ${some_s.unwrap()}")
+
+    // ---- Option.expect on Some ----
+    let some_neg: Option<Int> = Some(-7)
+    let neg = some_neg.expect("must hold")
+    stdio.println("Some(-7).expect() = ${neg}")
+
+    // ---- Result.unwrap on Ok ----
+    let ok_i: Result<Int, String> = Ok(11)
+    stdio.println("Ok(11).unwrap() = ${ok_i.unwrap()}")
+
+    let ok_s: Result<String, Int> = Ok("done")
+    stdio.println("Ok(done).unwrap() = ${ok_s.unwrap()}")
+
+    // ---- Result.expect on Ok ----
+    let ok_again: Result<Int, String> = Ok(99)
+    let nine = ok_again.expect("must be ok")
+    stdio.println("Ok(99).expect() = ${nine}")

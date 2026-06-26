@@ -12,6 +12,8 @@ break the public method surface.
 
 from __future__ import annotations
 
+import io
+import sys
 import unittest
 
 from capa.runtime._list import CapaList, CapaRange
@@ -191,14 +193,36 @@ class TestSomeAndNone(unittest.TestCase):
         self.assertTrue(s.is_some())
         self.assertFalse(s.is_none())
         self.assertEqual(s.unwrap(), 42)
+        self.assertEqual(s.expect("unreachable"), 42)
         self.assertEqual(s.unwrap_or(0), 42)
         self.assertEqual(s.value, 42)
 
     def test_none_is_none_unwrap_or(self):
         self.assertTrue(None_.is_none())
         self.assertFalse(None_.is_some())
-        with self.assertRaises(Exception):
-            None_.unwrap()
+        # ``unwrap()`` on None reuses the panic mechanism: it writes
+        # ``panic: <msg>`` to stderr and raises ``SystemExit(1)`` (a
+        # ``BaseException``, not ``Exception``), byte-identically to the
+        # Wasm backend. ``expect(msg)`` does the same with the caller's
+        # message.
+        err = io.StringIO()
+        saved = sys.stderr
+        sys.stderr = err
+        try:
+            with self.assertRaises(SystemExit) as ctx:
+                None_.unwrap()
+            self.assertEqual(ctx.exception.code, 1)
+            self.assertEqual(
+                err.getvalue(), "panic: called unwrap() on a None value\n",
+            )
+            err.truncate(0)
+            err.seek(0)
+            with self.assertRaises(SystemExit) as ctx2:
+                None_.expect("need a value")
+            self.assertEqual(ctx2.exception.code, 1)
+            self.assertEqual(err.getvalue(), "panic: need a value\n")
+        finally:
+            sys.stderr = saved
         self.assertEqual(None_.unwrap_or(7), 7)
 
     def test_map_some_and_none(self):
@@ -247,6 +271,35 @@ class TestOkAndErr(unittest.TestCase):
         self.assertFalse(r.is_ok())
         self.assertEqual(r.unwrap_or(99), 99)
         self.assertEqual(r.error, "boom")
+
+    def test_err_unwrap_and_expect_panic(self):
+        # ``Err.unwrap()`` panics with a fixed message that does NOT
+        # embed the error value (so the Python and Wasm backends cannot
+        # diverge on formatting it); ``expect`` panics with the
+        # caller's message. Both raise ``SystemExit(1)`` and write the
+        # canonical ``panic:`` line to stderr.
+        err = io.StringIO()
+        saved = sys.stderr
+        sys.stderr = err
+        try:
+            with self.assertRaises(SystemExit) as ctx:
+                Err("boom").unwrap()
+            self.assertEqual(ctx.exception.code, 1)
+            self.assertEqual(
+                err.getvalue(), "panic: called unwrap() on an Err value\n",
+            )
+            err.truncate(0)
+            err.seek(0)
+            with self.assertRaises(SystemExit) as ctx2:
+                Err(42).expect("db handle required")
+            self.assertEqual(ctx2.exception.code, 1)
+            self.assertEqual(err.getvalue(), "panic: db handle required\n")
+        finally:
+            sys.stderr = saved
+
+    def test_ok_unwrap_and_expect_return_value(self):
+        self.assertEqual(Ok(7).unwrap(), 7)
+        self.assertEqual(Ok("v").expect("unreachable"), "v")
 
     def test_map_and_map_err(self):
         self.assertEqual(Ok(3).map(lambda x: x * 10).unwrap(), 30)

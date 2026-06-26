@@ -76,6 +76,37 @@ OPTRES_HOF_METHODS: frozenset[str] = frozenset({
     "map", "and_then", "filter", "or_else", "map_err",
 })
 
+# Fixed panic messages for ``unwrap()`` on the value-less variant.
+# Interned verbatim into linear memory so a ``None.unwrap()`` /
+# ``Err.unwrap()`` trap writes the same ``panic: <message>`` line the
+# Python runtime writes (capa/runtime/_result.py uses the identical
+# strings). ``Result.unwrap()`` deliberately omits the Err value:
+# formatting an arbitrary E identically on both backends is not
+# guaranteed, and byte-for-byte parity is the central promise.
+_UNWRAP_NONE_MSG = "called unwrap() on a None value"
+_UNWRAP_ERR_MSG = "called unwrap() on an Err value"
+
+# Option / Result methods that can panic (and so reach the
+# ``capa:host/panic`` import) on the value-less variant. Used by the
+# discovery / WIT walkers to gate the import emission the same way a
+# direct ``panic(...)`` call does.
+_PANICKING_OPTRES_METHODS: frozenset[str] = frozenset({"unwrap", "expect"})
+
+
+def methodcall_may_panic(instr) -> bool:
+    """True when ``instr`` is an Option / Result ``unwrap`` / ``expect``
+    MethodCall, i.e. one whose value-less arm reaches ``$panic``. The
+    Wasm discovery + WIT walkers use this (alongside the direct
+    ``panic(...)`` call check) to decide whether the module imports
+    ``capa:host/panic``."""
+    from .._nodes import MethodCall
+    if not isinstance(instr, MethodCall):
+        return False
+    if instr.method not in _PANICKING_OPTRES_METHODS:
+        return False
+    recv_ty = (instr.receiver.ty or "") if instr.receiver is not None else ""
+    return recv_ty.split("<", 1)[0] in ("Option", "Result")
+
 
 class _OptionEmissionMixin:
     def _emit_option_method_call(self, instr: MethodCall) -> None:
@@ -102,6 +133,32 @@ class _OptionEmissionMixin:
                     f"{sum_name}.unwrap_or expects 1 argument"
                 )
             self._emit_optres_unwrap_or(recv, instr.args[0], instr.dst)
+            return
+        if method in ("unwrap", "expect"):
+            # ``unwrap`` / ``expect`` emit ``call $panic`` on the
+            # value-less arm. ``$panic`` is the host import; a user
+            # function literally named ``panic`` is emitted as ``$panic``
+            # too, so the two would collide and the module would be
+            # invalid. The Python backend is immune (the runtime calls
+            # its own ``panic`` directly), so rather than miscompile we
+            # surface the conflict precisely. Shadowing ``panic`` while
+            # also calling ``.unwrap()`` is pathological; this keeps the
+            # backend honest instead of silently diverging.
+            if "panic" in self._user_fn_names:
+                raise WasmEmissionError(
+                    f"{sum_name}.{method} cannot be lowered while a "
+                    f"user function named 'panic' shadows the builtin "
+                    f"(the panic host import collides with it); rename "
+                    f"the function or use a match instead"
+                )
+            if method == "unwrap":
+                self._emit_optres_unwrap(sum_name, recv, instr.dst)
+                return
+            if not instr.args:
+                raise WasmEmissionError(
+                    f"{sum_name}.expect expects 1 argument"
+                )
+            self._emit_optres_expect(recv, instr.args[0], instr.dst)
             return
         if method == "map":
             self._emit_optres_map(sum_name, instr)
@@ -185,6 +242,80 @@ class _OptionEmissionMixin:
         self._write("else")
         self._indent += 1
         self._push_value(default)
+        self._indent -= 1
+        self._write("end")
+        self._write(f"local.set ${dst}")
+
+    def _emit_optres_unwrap(self, sum_name: str, recv: Value, dst) -> None:
+        """``opt.unwrap() / res.unwrap()``: if the tag is 0 (Some / Ok)
+        extract the payload at offset 8 into dst; otherwise panic with
+        a fixed message and trap (``call $panic`` + ``unreachable``).
+        The panic message is byte-identical to the Python runtime's."""
+        msg = (
+            _UNWRAP_NONE_MSG if sum_name == "Option" else _UNWRAP_ERR_MSG
+        )
+        offset, length = self._intern_string(msg)
+        self._emit_optres_value_or_panic(recv, dst, msg_ptr=offset, msg_len=length)
+
+    def _emit_optres_expect(self, recv: Value, msg: Value, dst) -> None:
+        """``opt.expect(msg) / res.expect(msg)``: like ``unwrap`` but
+        panics with the caller-supplied message on the value-less
+        variant."""
+        self._emit_optres_value_or_panic(recv, dst, msg_value=msg)
+
+    def _emit_optres_value_or_panic(
+        self, recv: Value, dst, *,
+        msg_ptr: int | None = None, msg_len: int | None = None,
+        msg_value: Value | None = None,
+    ) -> None:
+        """Shared body for ``unwrap`` / ``expect``. Branch on the tag:
+        the value arm extracts the offset-8 payload into dst; the
+        fallback arm pushes the panic message (an interned fixed string
+        when ``msg_ptr``/``msg_len`` are given, or a runtime String
+        Value for ``expect``), calls ``$panic`` and traps. The
+        ``unreachable`` makes the fallback arm valid regardless of the
+        value arm's result type."""
+        if dst is None:
+            return
+        dst_ty = self._dst_capa_ty(dst) or ""
+
+        def emit_panic() -> None:
+            if msg_value is not None:
+                self._push_string_value_as_ptr_len(msg_value)
+            else:
+                self._write(f"i32.const {msg_ptr}")
+                self._write(f"i32.const {msg_len}")
+            self._write("call $panic")
+            self._write("unreachable")
+
+        self._push_value(recv)
+        self._write("local.set $_m_scrut")
+        self._write("local.get $_m_scrut")
+        self._write("i32.load")
+        self._write("i32.const 0")
+        self._write("i32.eq")
+        if dst_ty == "String":
+            self._write("if")
+            self._indent += 1
+            self._write("local.get $_m_scrut")
+            self._write("i64.load offset=8")
+            self._emit_unpack_i64_to_string(f"{dst}_ptr", f"{dst}_len")
+            self._indent -= 1
+            self._write("else")
+            self._indent += 1
+            emit_panic()
+            self._indent -= 1
+            self._write("end")
+            return
+        wasm_ty = self._wasm_type(dst_ty or "Int")
+        self._write(f"if (result {wasm_ty})")
+        self._indent += 1
+        self._write("local.get $_m_scrut")
+        self._emit_load_optres_payload(dst_ty, base_local="_m_scrut")
+        self._indent -= 1
+        self._write("else")
+        self._indent += 1
+        emit_panic()
         self._indent -= 1
         self._write("end")
         self._write(f"local.set ${dst}")

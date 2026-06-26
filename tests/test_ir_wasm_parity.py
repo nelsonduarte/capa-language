@@ -137,6 +137,11 @@ _PARITY_PROGRAMS: list[str] = [
     "map_keys_values.capa",
     "range_iter.capa",
     "option_result_hofs.capa",
+    # Slice (2026-06-26): Option<T> / Result<T, E> unwrap() + expect(msg)
+    # success paths (Some / Ok) across Int and String payloads. The
+    # value-less panic paths (None / Err) abort rather than produce
+    # comparable stdout, so they live in tests/test_panic.py.
+    "option_unwrap_expect.capa",
     "fn_ref_as_closure.capa",
     "net_post.capa",
     # ``fs_demo`` and ``env_demo`` were both flagged as deferred
@@ -1207,6 +1212,15 @@ class TestPythonWasmParity(unittest.TestCase):
         # existing has_list_hof declarations via the locals-
         # collection extension shipped in the same slice.
         self._assert_parity("option_result_hofs.capa")
+
+    def test_option_unwrap_expect(self):
+        # Slice (2026-06-26): Option<T> / Result<T, E> unwrap() +
+        # expect(msg) on the value-bearing variant (Some / Ok), across
+        # Int and String payloads. The success path extracts the
+        # offset-8 payload exactly like unwrap_or's value arm, so the
+        # two backends print byte-identical results; the None / Err
+        # panic paths abort and are covered in tests/test_panic.py.
+        self._assert_parity("option_unwrap_expect.capa")
 
     def test_fn_ref_as_closure(self):
         # Slice 6.1 (2026-05): top-level functions used as

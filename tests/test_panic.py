@@ -260,6 +260,150 @@ class TestPanicWasmBackend(unittest.TestCase):
         self.assertEqual(err, "panic: bad code 7\n")
 
 
+_NONE_UNWRAP = (
+    'fun main(stdio: Stdio)\n'
+    '    stdio.println("before")\n'
+    '    let o: Option<Int> = None\n'
+    '    let x = o.unwrap()\n'
+    '    stdio.println("after ${x}")\n'
+)
+
+_ERR_UNWRAP = (
+    'fun main(stdio: Stdio)\n'
+    '    stdio.println("before")\n'
+    '    let r: Result<Int, String> = Err("boom")\n'
+    '    let x = r.unwrap()\n'
+    '    stdio.println("after ${x}")\n'
+)
+
+_NONE_EXPECT = (
+    'fun main(stdio: Stdio)\n'
+    '    stdio.println("before")\n'
+    '    let o: Option<Int> = None\n'
+    '    let x = o.expect("config value required")\n'
+    '    stdio.println("after ${x}")\n'
+)
+
+_ERR_EXPECT = (
+    'fun main(stdio: Stdio)\n'
+    '    stdio.println("before")\n'
+    '    let r: Result<Int, String> = Err("boom")\n'
+    '    let x = r.expect("db handle required")\n'
+    '    stdio.println("after ${x}")\n'
+)
+
+# Success paths: unwrap / expect on the value-bearing variant return
+# the payload, never panic.
+_SOME_UNWRAP_OK = (
+    'fun main(stdio: Stdio)\n'
+    '    let o: Option<Int> = Some(7)\n'
+    '    stdio.println("${o.unwrap()}")\n'
+    '    let r: Result<String, Int> = Ok("hi")\n'
+    '    let s = r.expect("unreachable")\n'
+    '    stdio.println("${s}")\n'
+)
+
+
+class TestUnwrapExpectPanic(unittest.TestCase):
+    """Option / Result ``unwrap()`` / ``expect(msg)`` reuse the panic
+    mechanism on the value-less variant, byte-identically across the
+    Python and Wasm backends. ``unwrap()`` uses a fixed message;
+    ``Result.unwrap()`` deliberately omits the Err value so the two
+    backends cannot diverge on formatting. ``expect(msg)`` panics with
+    the caller's message. Success paths return the payload, no panic.
+    """
+
+    # Fixed messages, asserted as literals so a drift in either backend
+    # (or between this test and the runtime / emitter) is caught here.
+    _NONE_MSG = "panic: called unwrap() on a None value\n"
+    _ERR_MSG = "panic: called unwrap() on an Err value\n"
+
+    def _assert_python_panic(self, src: str, expected_stderr: str) -> None:
+        out, err, exc = _run_python_backend(src)
+        self.assertIsInstance(exc, SystemExit)
+        self.assertEqual(exc.code, 1)
+        self.assertEqual(out, "before\n")
+        self.assertEqual(err, expected_stderr)
+
+    def test_python_none_unwrap(self):
+        self._assert_python_panic(_NONE_UNWRAP, self._NONE_MSG)
+
+    def test_python_err_unwrap(self):
+        self._assert_python_panic(_ERR_UNWRAP, self._ERR_MSG)
+
+    def test_python_none_expect(self):
+        self._assert_python_panic(
+            _NONE_EXPECT, "panic: config value required\n",
+        )
+
+    def test_python_err_expect(self):
+        self._assert_python_panic(
+            _ERR_EXPECT, "panic: db handle required\n",
+        )
+
+    def test_python_success_paths_return_payload(self):
+        out, err, exc = _run_python_backend(_SOME_UNWRAP_OK)
+        self.assertIsNone(exc)
+        self.assertEqual(out, "7\nhi\n")
+        self.assertEqual(err, "")
+
+
+@unittest.skipUnless(_has_wasm_toolchain(), "wasm toolchain not installed")
+class TestUnwrapExpectPanicWasm(unittest.TestCase):
+    """The Wasm-backend twin of :class:`TestUnwrapExpectPanic`. The
+    value-less arm of ``unwrap`` / ``expect`` calls the ``$panic`` host
+    import and traps; the message line on stderr matches the Python
+    backend exactly."""
+
+    _NONE_MSG = "panic: called unwrap() on a None value\n"
+    _ERR_MSG = "panic: called unwrap() on an Err value\n"
+
+    def _run_core(self, src: str) -> tuple[str, str, object]:
+        from capa.ir import compile_wasm
+        from capa.runtime._wasm_host import WasmHost
+        module, result = _parse_analyze(src)
+        assert result.ok, f"analyzer errors: {result.errors}"
+        blob = compile_wasm(module, types=result.types)
+
+        def thunk():
+            WasmHost().run_main(blob)
+
+        return _capture_streams(thunk)
+
+    def _assert_wasm_panic(self, src: str, expected_stderr: str) -> None:
+        out, err, exc = self._run_core(src)
+        self.assertIsNotNone(exc, "unwrap/expect must trap on the value-less arm")
+        self.assertNotIsInstance(exc, SystemExit)
+        self.assertEqual(out, "before\n")
+        self.assertEqual(err, expected_stderr)
+
+    def test_wasm_none_unwrap(self):
+        self._assert_wasm_panic(_NONE_UNWRAP, self._NONE_MSG)
+
+    def test_wasm_err_unwrap(self):
+        self._assert_wasm_panic(_ERR_UNWRAP, self._ERR_MSG)
+
+    def test_wasm_none_expect(self):
+        self._assert_wasm_panic(_NONE_EXPECT, "panic: config value required\n")
+
+    def test_wasm_err_expect(self):
+        self._assert_wasm_panic(_ERR_EXPECT, "panic: db handle required\n")
+
+    def test_wasm_success_paths_return_payload(self):
+        out, err, exc = self._run_core(_SOME_UNWRAP_OK)
+        self.assertIsNone(exc)
+        self.assertEqual(out, "7\nhi\n")
+
+    def test_wit_imports_panic_for_unwrap(self):
+        # unwrap / expect reach the host panic import, so the WIT world
+        # must declare it even with no direct panic(...) call.
+        from capa.ir import compile_wit
+        module, result = _parse_analyze(_NONE_UNWRAP)
+        assert result.ok, result.errors
+        wit = compile_wit(module, types=result.types)
+        self.assertIn("import panic;", wit)
+
+
 class TestPanicWit(unittest.TestCase):
     """The WIT surface is pure text generation; no toolchain needed."""
 

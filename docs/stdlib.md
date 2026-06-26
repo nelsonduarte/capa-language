@@ -194,6 +194,8 @@ type Option<T> =
 | `is_some()` | `Bool` | |
 | `is_none()` | `Bool` | |
 | `unwrap_or(default: T)` | `T` | Return value or default |
+| `unwrap()` | `T` | The value if `Some`, otherwise `panic`s with `called unwrap() on a None value` |
+| `expect(msg: String)` | `T` | The value if `Some`, otherwise `panic`s with `msg` |
 | `map<U>(f: Fun(T) -> U)` | `Option<U>` | Transform if `Some` |
 | `and_then<U>(f: Fun(T) -> Option<U>)` | `Option<U>` | Monadic bind |
 | `ok_or<E>(err: E)` | `Result<T, E>` | Convert to a `Result` |
@@ -217,6 +219,8 @@ type Result<T, E> =
 | `is_ok()` | `Bool` | |
 | `is_err()` | `Bool` | |
 | `unwrap_or(default: T)` | `T` | Return value or default |
+| `unwrap()` | `T` | The value if `Ok`, otherwise `panic`s with `called unwrap() on an Err value` (the error value is not embedded, so both backends panic identically) |
+| `expect(msg: String)` | `T` | The value if `Ok`, otherwise `panic`s with `msg` |
 | `map<U>(f: Fun(T) -> U)` | `Result<U, E>` | Transform the success value |
 | `and_then<U>(f: Fun(T) -> Result<U, E>)` | `Result<U, E>` | Monadic bind |
 | `map_err<F>(f: Fun(E) -> F)` | `Result<T, F>` | Transform only the error |

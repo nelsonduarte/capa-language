@@ -206,10 +206,21 @@ class _DiscoveryMixin:
         """Gates the ``capa:host/panic`` import emission. A
         user-defined ``panic`` shadows the builtin (the user
         function is emitted and called instead), matching the
-        Python backend and the parse_int rule above."""
+        Python backend and the parse_int rule above.
+
+        Besides a direct ``panic(...)`` call, an Option / Result
+        ``unwrap`` / ``expect`` reaches ``$panic`` on its value-less
+        arm, so the import must also be emitted when one is present.
+        Shadowing a user ``panic`` still wins (it has no host import)."""
         if any(fn.name == "panic" for fn in module.functions):
             return False
-        return self._uses_builtin_free_fn(module, "panic")
+        if self._uses_builtin_free_fn(module, "panic"):
+            return True
+        from ._option import methodcall_may_panic
+        return any(
+            methodcall_may_panic(instr)
+            for _fn, instr in walk_module(module)
+        )
 
     def _uses_builtin_free_fn(self, module: Module, name: str) -> bool:
         """True if any function / impl-method / lambda body Calls

@@ -14,9 +14,21 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable, Generic, TypeVar
 
+from ._panic import panic
+
 T = TypeVar("T")
 E = TypeVar("E")
 U = TypeVar("U")
+
+# Fixed panic messages for ``unwrap()`` on the value-less variant.
+# These strings are byte-identical to the ones the Wasm backend
+# interns in capa/ir/_emit_wasm/_option.py, so a ``None.unwrap()`` /
+# ``Err.unwrap()`` panic produces the same ``panic: <message>`` line
+# on both backends. ``Result.unwrap()`` deliberately does NOT embed
+# the Err value: formatting an arbitrary E identically across the two
+# backends is not guaranteed, and parity is the central promise.
+_UNWRAP_NONE_MSG = "called unwrap() on a None value"
+_UNWRAP_ERR_MSG = "called unwrap() on an Err value"
 
 
 @dataclass(frozen=True)
@@ -33,6 +45,9 @@ class Ok(Generic[T]):
         return False
 
     def unwrap(self) -> T:
+        return self.value
+
+    def expect(self, msg: str) -> T:
         return self.value
 
     def unwrap_or(self, default: T) -> T:
@@ -71,7 +86,10 @@ class Err(Generic[E]):
         return True
 
     def unwrap(self) -> Any:
-        raise RuntimeError(f"called unwrap() on Err: {self.error!r}")
+        panic(_UNWRAP_ERR_MSG)
+
+    def expect(self, msg: str) -> Any:
+        panic(msg)
 
     def unwrap_or(self, default: T) -> T:
         return default
@@ -115,6 +133,9 @@ class Some(Generic[T]):
     def unwrap(self) -> T:
         return self.value
 
+    def expect(self, msg: str) -> T:
+        return self.value
+
     def unwrap_or(self, default: T) -> T:
         return self.value
 
@@ -148,7 +169,10 @@ class _NoneType:
         return True
 
     def unwrap(self) -> Any:
-        raise RuntimeError("called unwrap() on None_")
+        panic(_UNWRAP_NONE_MSG)
+
+    def expect(self, msg: str) -> Any:
+        panic(msg)
 
     def unwrap_or(self, default: T) -> T:
         return default

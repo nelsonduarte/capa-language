@@ -181,6 +181,13 @@ METHODS: dict[str, list[tuple[str, TyFun, list[str]]]] = {
         ("is_some",   fun(TyBool),                                                 []),
         ("is_none",   fun(TyBool),                                                 []),
         ("unwrap_or", fun(T, T),                                                   []),
+        # ``unwrap()`` returns the Some payload, or panics on None with
+        # a fixed message. ``expect(msg)`` is the same but panics with
+        # the caller's message. Both panic identically (byte for byte)
+        # on the Python and Wasm backends; see capa/runtime/_result.py
+        # and capa/ir/_emit_wasm/_option.py.
+        ("unwrap",    fun(T),                                                      []),
+        ("expect",    fun(TyString, T),                                           []),
         ("map",       fun(fun(T, U), opt(U)),                                      ["U"]),
         ("and_then",  fun(fun(T, opt(U)), opt(U)),                                 ["U"]),
         ("ok_or",     fun(E, res(T, E)),                                           ["E"]),
@@ -191,6 +198,13 @@ METHODS: dict[str, list[tuple[str, TyFun, list[str]]]] = {
         ("is_ok",     fun(TyBool),                                                 []),
         ("is_err",    fun(TyBool),                                                 []),
         ("unwrap_or", fun(T, T),                                                   []),
+        # ``unwrap()`` returns the Ok payload, or panics on Err with a
+        # fixed message that does NOT embed the error value (embedding
+        # it would require formatting an arbitrary E identically on both
+        # backends, which is not guaranteed; parity wins over richness).
+        # ``expect(msg)`` panics with the caller's message instead.
+        ("unwrap",    fun(T),                                                      []),
+        ("expect",    fun(TyString, T),                                           []),
         ("map",       fun(fun(T, U), res(U, E)),                                   ["U"]),
         ("and_then",  fun(fun(T, res(U, E)), res(U, E)),                           ["U"]),
         ("map_err",   fun(fun(E, F), res(T, F)),                                   ["F"]),

@@ -48,7 +48,7 @@ from .._nodes import (
 # ``_discovery.py`` (early validation); not referenced directly
 # from this module any more after the mixin extraction.
 from .._capa_types import BUILTIN_CAPS
-from .._walk import iter_functions
+from .._walk import iter_functions, walk_module
 from ._layout import (
     WasmEmissionError,
     _TYPE_SIZE,
@@ -414,6 +414,25 @@ class WasmEmitter(
         for name, v in self._const_values.items():
             if v.kind == "lit_str":
                 self._intern_string(v.literal)
+        # Pre-intern the fixed panic messages for Option / Result
+        # ``unwrap()``. Like every other literal, these must be in the
+        # data segment (laid out below) before the function bodies that
+        # reference them are emitted; interning at emit time would point
+        # the host past the segment's end and print NUL bytes. ``expect``
+        # carries a runtime String message (pushed via ptr/len), so only
+        # ``unwrap``'s fixed strings need pre-interning here.
+        from ._option import (
+            _UNWRAP_NONE_MSG, _UNWRAP_ERR_MSG, methodcall_may_panic,
+        )
+        from .._nodes import MethodCall
+        for _fn, instr in walk_module(module):
+            if (isinstance(instr, MethodCall)
+                    and instr.method == "unwrap"
+                    and methodcall_may_panic(instr)):
+                head = (instr.receiver.ty or "").split("<", 1)[0]
+                self._intern_string(
+                    _UNWRAP_NONE_MSG if head == "Option" else _UNWRAP_ERR_MSG
+                )
         self._discover(module)
         self._discover_lambdas(module)
 

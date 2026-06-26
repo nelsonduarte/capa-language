@@ -483,8 +483,10 @@ def _module_calls_panic(module: Module) -> bool:
     and produces no import."""
     if any(fn.name == "panic" for fn in module.functions):
         return False
+    from ._emit_wasm._option import methodcall_may_panic
     return any(
-        isinstance(instr, Call) and instr.callee_name == "panic"
+        (isinstance(instr, Call) and instr.callee_name == "panic")
+        or methodcall_may_panic(instr)
         for _fn, instr in walk_module(module)
     )
 
